@@ -476,3 +476,13 @@ test('counter width: loop budgets cannot hide writes through module bindings', (
       return [sum, ip]
     }`, [[], [], []])
 })
+
+test('counter width: imul takes the product\'s range within one word, any word beyond', () => {
+  if (onKernel()) return
+  const range = (a, b) => intExprRange(['()', 'math.imul', [',', 'imul_a', 'imul_b']], (name) => name === 'imul_a' ? a : b)
+  is(intExprRange(['()', 'math.imul', [',', [null, 3], [null, 5]]]), [15, 15], 'literals')
+  is(range([0, 640], [0, 480]), [0, 307200], 'bounded names')
+  is(range([-3, 2], [4, 5]), [-15, 10], 'a signed operand')
+  is(range([0, 100000], [0, 100000]), [-2147483648, 2147483647], 'past one word: any word')
+  is(range([0, 10], null), [-2147483648, 2147483647], 'an unknown operand: any word')
+})

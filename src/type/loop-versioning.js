@@ -223,6 +223,9 @@ export function affineIdxOfIV(idx, iv, body, env) {
       const t = aff(intLiteralValue(y) === 0 ? x : y)
       if (t && (t.a !== 0 || t.slots.some(u => u.wrap))) return t
     }
+    // (an `imul` of a word index (plan/integral-loops.js) is a product: of a
+    // literal, a scaled form; of invariants, a slot the guard evaluates as the loop does)
+    if (op === '()' && e.length === 3 && x === 'math.imul' && Array.isArray(y) && y[0] === ',' && y.length === 3) return aff(['*', y[1], y[2]])
     if (e.length === 3 && op === '*') {
       const L = intLiteralValue(x) ?? intLiteralValue(y)
       if (L != null) {
@@ -264,6 +267,8 @@ function invariantIdxExpr(e, iv, body, env) {
   if (intLiteralValue(e) != null) return true
   if (typeof e === 'string')
     return e !== iv && !env?.has(e) && !isReassigned(body, e) && !redeclaresName(body, e)
+  if (Array.isArray(e) && e[0] === '()' && e.length === 3 && e[1] === 'math.imul' && Array.isArray(e[2]) && e[2][0] === ',' && e[2].length === 3)
+    return invariantIdxExpr(e[2][1], iv, body, env) && invariantIdxExpr(e[2][2], iv, body, env)
   if (!Array.isArray(e) || !SLOT_OPS.has(e[0]) || e.length > 3) return false
   for (let k = 1; k < e.length; k++) if (!invariantIdxExpr(e[k], iv, body, env)) return false
   return true

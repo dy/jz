@@ -195,6 +195,15 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const args = callArgs(e)
       if (args.length === 1) return ev(args[0])
     }
+    // `Math.imul(a, b)`: the product where it fits one signed word (exact there), any word otherwise.
+    if (op === '()' && x === 'math.imul') {
+      const args = callArgs(e)
+      if (args.length === 2) {
+        const A = ev(args[0]), B = ev(args[1])
+        if (A && B) { const p = [A[0] * B[0], A[0] * B[1], A[1] * B[0], A[1] * B[1]], r = [Math.min(...p), Math.max(...p)]; if (ipOk(r)) return r }
+        return [I32_MIN, I32_MAX]
+      }
+    }
     // Grouping and numeric conversion preserve a proven integer interval.
     // Load-CSE uses unary plus when its temporary needs a Number carrier.
     if (e.length === 2 && (op === '()' || op === 'u+')) return ev(x, wide)

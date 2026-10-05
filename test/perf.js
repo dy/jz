@@ -5,6 +5,7 @@ import { belowOpt, levels, onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 import parseWat from 'watr/parse'
+import printWat from 'watr/print'
 import { parse as watTree, callsOutside, walk as walkWat } from '../scripts/wat-probe.mjs'
 import { foldWords, oracle, funcWat } from './util.js'
 
@@ -2103,3 +2104,56 @@ golden('typed-array loop', `export let f = (arr) => {
 // frame rewind saves and restores the heap pointer around the Float64Array copy (+14).
 // 930→1111: watr-HEAD codegen era (pre-dates every session-7 jz commit — measured 1113 at
 // a7c2eb3 with the same linked watr; timing caps green).
+
+test('codegen: a remainder of two words by a divisor that may be zero is the hardware remainder behind a test', () => {
+  if (belowOpt(2)) return
+  // `c % gw` of a queue's cell by a grid width: two faithful i32 views whose
+  // divisor no interval excludes from zero ran the fmod helper per pop; it is
+  // `i32.rem_s` under `gw === 0 ? NaN : …`, the dividend's sign kept for an
+  // exact zero (`-6 % 3` is -0). Exact over every edge the host reaches.
+  const src = `export let rem = (a, b) => { let x = a | 0, y = b | 0; return x % y }
+    export let left = (a, b) => { let x = a | 0, y = b | 0; return (x % y) > 0 ? 1 : 0 }`
+  const w = compile(src, { optimize: 'speed', wat: true })
+  ok(/i32\.rem_s/.test(funcWat(w, 'rem')) && !/call \$__rem/.test(funcWat(w, 'rem')), 'the hardware remainder, no fmod call')
+  const m = jz(src, { optimize: 'speed' }).exports, host = oracle(src)
+  for (const a of [0, 1, -1, 7, -7, 2147483647, -2147483648, 5.5, NaN, Infinity, -0])
+    for (const b of [0, 1, -1, 3, -3, 7, 2147483647, -2147483648, NaN, 0.5, -0]) {
+      ok(Object.is(m.rem(a, b), host.rem(a, b)), `${a} % ${b}: ${m.rem(a, b)} vs ${host.rem(a, b)}`)
+      is(m.left(a, b), host.left(a, b), `(${a} % ${b}) > 0`)
+    }
+})
+
+test('codegen: a word of the copy the typed-bounds guard proves in range keeps its arithmetic narrow', () => {
+  if (belowOpt(2)) return
+  // dithering's relief: `i = py * W + qx` is a word of the loop copy; the
+  // typed-bounds guard proves `hf[i]` in range, so `i` lies in [0, length) and
+  // `hf[qx > 0 ? i - 1 : i]` subtracts in i32 (an unknown word needed the
+  // difference wide, a wrap test and a select on every read).
+  const src = `let W = 0, H = 0, hf, out
+    export let resize = (w, h) => { W = w; H = h; hf = new Float64Array(w * h); out = new Float64Array(w * h); let i = 0; while (i < w * h) { hf[i] = (i * 37 % 11) / 11; i++ } return out }
+    export let relief = () => {
+      let py = 0
+      while (py < H) {
+        let qx = 0
+        while (qx < W) {
+          let i = py * W + qx
+          let gl = hf[qx > 0 ? i - 1 : i], gr = hf[qx < W - 1 ? i + 1 : i]
+          let gu = hf[py > 0 ? i - W : i], gd = hf[py < H - 1 ? i + W : i]
+          out[i] = (gr - gl) * 0.5 + (gd - gu) * 0.5
+          qx++
+        }
+        py++
+      }
+    }`
+  // (the fast nest comes first; its inner copy is the loop that subtracts in i32)
+  const tree = parseWat(funcWat(compile(src, { optimize: 'speed', wat: true }), 'relief'))
+  const loops = (n, out = []) => { if (Array.isArray(n)) { if (n[0] === 'loop') out.push(n); for (const c of n) loops(c, out) } return out }
+  const nest = loops(tree)[0], inner = loops(nest).slice(1).map(l => printWat(l))
+  ok(inner.some(t => /i32\.sub/.test(t) && !/i64\.sub/.test(t) && !/i64\.eq\b/.test(t)), 'an inner copy subtracts in i32: no wide difference, no wrap test')
+  const m = jz(src, { optimize: 'speed' }).exports, host = oracle(src)
+  for (const [ww, hh] of [[5, 4], [1, 1], [2, 3], [3.5, 2], [0, 2]]) {
+    const got = m.resize(ww, hh), want = host.resize(ww, hh)
+    m.relief(); host.relief()
+    is(Array.from(got), Array.from(want), `${ww}×${hh}`)
+  }
+})

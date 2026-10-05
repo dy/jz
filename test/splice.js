@@ -179,3 +179,21 @@ test('splice: a helper nothing calls changes no byte', () => {
     is(run(records + helper + main, { optimize }).main(), want, `at ${optimize}: the answer`)
   }
 })
+
+// A store target of a name and a key (`out[c] = samp(…)`) names its element
+// before the call and after the splice alike: the callee's body under its own
+// view decides whether the splice runs user code before the store, where its
+// renamed prefix under the caller's view knows no kind of its parameters (a
+// clamp of a Number parameter runs no conversion). watercolor's bilinear
+// sample, called per pixel from the ink step, took the body only at a `let`.
+test('splice: a store into an element takes a straight-line body whose prefix clamps its parameters', () => {
+  if (belowOpt(3)) return
+  const src = DRIVER + `const F = new Float64Array(16)
+    function samp(f, x, w) { if (x < 0.5) x = 0.5; else if (x > w - 1.5) x = w - 1.5; let i0 = x | 0, s = x - i0; return f[i0] * (1 - s) + f[i0 + 1] * s }
+    export let fill = (w) => { for (let i = 0; i < 64; i++) OUT[i] = samp(F, X[i] * 0.3 + 2, w) }\n`
+  const fill = funcWat(wat(src, { jzify: true, optimize: 3 }), 'fill')
+  ok(!/call \$samp/.test(fill), 'the sample splices into the element store')
+  const host = oracle(src), m = run(src, { jzify: true, optimize: 3 })
+  host.xs().set(INPUTS); m.xs().set(INPUTS); host.fill(16); m.fill(16)
+  for (let i = 0; i < 64; i++) is(m.outs()[i], host.outs()[i], `element ${i}`)
+})

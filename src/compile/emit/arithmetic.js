@@ -646,6 +646,21 @@ export const arithmeticOps = {
           ['f64.convert_i32_s', ['local.get', t]]], 'f64')
       }
     }
+    // Two faithful i32 views with a divisor that may be zero: the hardware
+    // remainder behind a test of the divisor (NaN there, as JS answers), the
+    // dividend's sign kept for an exact zero. Both operands run once, in order.
+    // (`c % gw` of a queue's cell by a grid width, where a call to fmod ran.)
+    if (!isLit(vb) && !va.unsigned && !vb.unsigned) {
+      const pa = peelI32(va), pb = peelI32(vb)
+      if (pa && pb) {
+        const ta = '$' + tempI32('rem'), tb = '$' + tempI32('rem')
+        return typed(['block', ['result', 'f64'],
+          ['local.set', ta, pa], ['local.set', tb, pb],
+          ['if', ['result', 'f64'], ['i32.eqz', ['local.get', tb]],
+            ['then', ['f64.const', 'nan']],
+            ['else', ['f64.copysign', ['f64.convert_i32_s', ['i32.rem_s', ['local.get', ta], ['local.get', tb]]], ['f64.convert_i32_s', ['local.get', ta]]]]]], 'f64')
+      }
+    }
     // Fast path: positive literal divisor → inline a - trunc(a/b) * b, signed
     // like the dividend: `%` gives a zero remainder the dividend's sign
     // (`-4 % 2` is -0), which the subtraction alone loses.

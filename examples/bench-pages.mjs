@@ -87,7 +87,11 @@ const jzEngine = (name, wasm) => {
   return instantiate(compile(code, { ...OPT, optimize, modules })).exports
 }
 
-const timeFrames = (engine, { config, demo }, [W, H]) => {
+// Both engines run the same frames: the JS run sets the plan (how many frames
+// warm, how many a batch holds) and the jz run follows it, so a faster engine
+// is not timed deeper into a demo whose frames grow heavier as it runs (a
+// sandpile's avalanches, an orbit diagram's zoom) or at another phase of it.
+const timeFrames = (engine, { config, demo }, [W, H], plan = null) => {
   demo.engine = engine; demo.W = W; demo.H = H
   engine.resize?.(W, H)
   config.load?.(engine, demo)
@@ -96,17 +100,18 @@ const timeFrames = (engine, { config, demo }, [W, H]) => {
   const step = () => { t += 1 / 60; demo.t = t; config.frame(engine, t, demo) }
   // warm: compile tiers and let the simulation leave its first-frame transient
   const w0 = performance.now()
-  for (let i = 0; i < 400 && performance.now() - w0 < 1500; i++) step()
+  let warm = 0
+  for (; warm < (plan?.warm ?? 400) && (plan || performance.now() - w0 < 1500); warm++) step()
   // median of 7 batches, each ~150 ms
-  const one = Math.max(0.01, (performance.now() - w0) / 400)
-  const per = Math.max(2, Math.min(2000, Math.round(150 / one)))
+  const one = Math.max(0.01, (performance.now() - w0) / Math.max(1, warm))
+  const per = plan?.per ?? Math.max(2, Math.min(2000, Math.round(150 / one)))
   const samples = []
   for (let r = 0; r < 7; r++) {
     const a = performance.now()
     for (let i = 0; i < per; i++) step()
     samples.push((performance.now() - a) / per)
   }
-  return samples.sort((a, b) => a - b)[3]
+  return { ms: samples.sort((a, b) => a - b)[3], plan: { warm, per } }
 }
 
 const only = args.filter(a => !a.startsWith('--'))
@@ -124,8 +129,8 @@ for (const { name } of examples) {
     // a page whose build prepares sources (vendored modules) runs it first, as the site's build does
     if (existsSync(join(dir, name, 'build.mjs'))) execFileSync(process.execPath, [join(dir, name, 'build.mjs')], { cwd: join(dir, name), stdio: 'ignore' })
     const js = await import(pathToFileURL(join(dir, name, `${name}.js`)).href)
-    const jsT = timeFrames({ ...js }, await pageConfig(name), size)
-    const jzT = timeFrames(jzEngine(name, page.config.wasm), await pageConfig(name), size)
+    const jsR = timeFrames({ ...js }, await pageConfig(name), size), jsT = jsR.ms
+    const jzT = timeFrames(jzEngine(name, page.config.wasm), await pageConfig(name), size, jsR.plan).ms
     const sp = jsT / jzT
     rows.push({ name, sp })
     console.log(`${(sp > 1 ? '  ' : '✗ ') + name.padEnd(18)} ${(size[0] + '×' + size[1]).padEnd(11)} ${jsT.toFixed(3).padStart(11)} ${jzT.toFixed(3).padStart(12)}    ${sp.toFixed(2)}×`)
