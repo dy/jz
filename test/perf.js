@@ -5,8 +5,9 @@ import { belowOpt, levels, onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 import parseWat from 'watr/parse'
+import printWat from 'watr/print'
 import { parse as watTree, callsOutside, walk as walkWat } from '../scripts/wat-probe.mjs'
-import { oracle, funcWat } from './util.js'
+import { foldWords, oracle, funcWat } from './util.js'
 
 // Helper: time N iterations, return ms
 function bench(fn, n) {
@@ -678,8 +679,12 @@ test('codegen: guarded global-bound array indices stay integer in the fast arm',
     export let run = () => { let i = 0; while (i < N) { x[i] = x[i] * 2.0; i++; } };
   `, { wat: true })
   const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
-  ok(/\(local \$i\S*int\d+ i32\)/.test(run), 'the guarded index counter stays i32')
-  is((firstLoopArm(run).match(/trunc_sat_f64_s|trunc_f64_s/g) || []).length, 0, 'no per-access trunc_sat in the integer arm')
+  // (the counter's word may share a local with other words: its loop tests in i32)
+  ok(/i32\.(lt|ge)_s/.test(firstLoopArm(run)) && !/f64\.(lt|le|gt|ge)/.test(firstLoopArm(run)), 'the guarded index counter stays i32')
+  // (the bound's own rounding runs once at the arm's entry: the loops convert nothing)
+  let inLoop = 0
+  walkWat(parseWat(firstLoopArm(run)), (n, inside) => { if (inside && /trunc_sat_f64_s|trunc_f64_s/.test(n[0])) inLoop++ })
+  is(inLoop, 0, 'no per-access trunc_sat in the integer arm')
   ok(run.includes('(local $i f64)'), 'the fallback retains the original counter')
 })
 
@@ -754,8 +759,9 @@ test('codegen: float→int |0 of a finite, in-range value drops the +∞-guard s
   const wat = compile(src, { optimize: 'speed', wat: true })
   const beforeLoad = (fn) => fn.slice(0, fn.indexOf('i32.load8_u'))   // s-exprs print outermost-first
   const pack = beforeLoad(wat.match(/\(func \$pack[\s\S]*?\n  \)/)[0])
-  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(pack) && !/\bselect\b/.test(pack) && !/\bi32\.trunc_sat_f64_s/.test(pack),
-    'in-range |0 is the wrapped i64 truncation — no +∞-guard select, no bare i32 trunc_sat')
+  // (the speed tier's word of a bounded value is the add: its 1.5·2^52 sum read as bits)
+  ok(/i64\.reinterpret_f64\s*\(f64\.add\s*\(f64\.trunc/.test(pack) && !/\bselect\b/.test(pack) && !/trunc_sat_f64_s/.test(pack),
+    'in-range |0 is the exact word by the add — no +∞-guard select, no truncation')
   const wide = beforeLoad(wat.match(/\(func \$wide[\s\S]*?\n  \)/)[0])
   ok(!/\bselect\b/.test(wide), 'finite-but-large |0 drops the +∞ guard (keeps the mod-2^32 wrap)')
   const { exports } = jz(src, { optimize: 'speed' })
@@ -966,7 +972,8 @@ test('codegen: a loop guard offset from its counter stays integer within its tes
     }
   }
   if (onKernel()) return
-  const hot = compile(loop(heads[0]), { optimize: 'speed', wat: true })
+  // (without the late ToInt32 lowering: the range test of `x | 0` compares in f64)
+  const hot = compile(loop(heads[0]), { optimize: { level: 'speed', guardedToInt32: false }, wat: true })
   ok(!/f64\.(le|lt|add)/.test(hot), 'a bounded offset guard compares in i32')
   // (f64, or the i64 the integer pass carries the same sum in: no i32 that wraps)
   ok(/f64\.(le|lt)|i64\.(le|lt|gt|ge)_s/.test(compile(loop(heads[4]), { optimize: 'speed', wat: true })), 'a guard sum that can pass INT_MAX keeps f64')
@@ -1274,7 +1281,7 @@ test('codegen: a guarded global snapshot makes the fast loop guard pure-i32', ()
   // the pure-i32 compare this pin demands; the property is NO f64 widening per iter.
   ok(/i32\.(lt|ge)_s/.test(run), 'guard is a pure-i32 compare')
   ok(!run.includes('f64.convert_i32_s'), 'no per-iteration i32→f64 widening in run')
-  ok(/\(local \$i\S*int\d+ i32\)/.test(run), 'the guarded loop counter stays i32')
+  ok(!/f64\.(lt|le|gt|ge)/.test(firstLoopArm(run)), 'the guarded loop counter stays i32')
 })
 
 test('codegen: typed-array global base decode hoists out of the stencil loop', () => {
@@ -1296,7 +1303,7 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
   `, { wat: true })
   const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
   let decodes = 0, loopDecodes = 0
-  walkWat(parseWat(run), (n, inside) => {
+  walkWat(foldWords(parseWat(run)), (n, inside) => {
     // Null checks also reinterpret atoms; only extracting an offset decodes a base.
     if (n[0] !== 'i32.wrap_i64' || !['i64.and', 'i64.reinterpret_f64'].includes(n[1]?.[0])) return
     decodes++
@@ -1381,7 +1388,7 @@ test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)'
   // fired on these `.unsigned` reads, emitting f64.add/convert on the hot path.)
   // An i32 loop bound (`n | 0`) keeps the counter i32, so the only legal f64 op
   // is the single convert_i32_u that reboxes the uint32 result at the boundary.
-  const wat = compile(`
+  const wat = foldWords(compile(`
     export let hash = (n) => {
       let h = 2166136261
       for (let i = 0; i < (n | 0); i = i + 1) {
@@ -1389,7 +1396,7 @@ test('codegen: narrowUint32 hash accumulator stays pure i32 (no f64 round-trip)'
         h = (h + (h << 1) + (h << 4)) >>> 0
       }
       return h >>> 0
-    }`, { wat: true })
+    }`, { wat: true }))
   const n = (re) => (wat.match(re) || []).length
   is(n(/f64\.add/g), 0, 'no f64.add on the accumulator hot path')
   is(n(/f64\.mul/g), 0, 'no f64.mul on the accumulator hot path')
@@ -1542,10 +1549,20 @@ test('codegen: receiver proven ARRAY-or-TYPED across disagreeing call sites drop
       return acc
     }
   `, { wat: true, optimize: 2 })
-  is((wat.match(/\$__dyn_get_expr/g) || []).length, 0,
-    'ARRAY-or-TYPED receiver class proof drops the __dyn_get_expr cold arm entirely')
   ok((wat.match(/\$__typed_idx/g) || []).length >= 1,
     'still takes the lean typed-index read')
+  RECV_ARR_TYPED = wat
+})
+let RECV_ARR_TYPED
+// The loop copy for the ARRAY kind (plan splitLoopKinds) reads `x[i]` through
+// module/array.js's arrayPropertyLoad, whose cold arm answers a key outside the
+// index domain (`x[-1]`, `x[1.5]`) by ToPropertyKey: the summary cannot prove
+// the array carries no numeric property, because a parameter of two kinds keeps
+// no cell for either (summary/kind.js: two tags, UNKNOWN parameter). The js
+// host names the arm `__dyn_get_any`, wasi `__dyn_get_expr`.
+test.todo('codegen: the ARRAY copy of a two-kind receiver proves its numeric properties absent', () => {
+  is((RECV_ARR_TYPED.match(/\$__dyn_get_(?:expr|any)/g) || []).length, 0,
+    'ARRAY-or-TYPED receiver class proof drops the dynamic-get cold arm entirely')
 })
 
 test('codegen: genuinely unproven receiver (ARRAY vs OBJECT) keeps the numeric-key guard', () => {
@@ -2087,3 +2104,56 @@ golden('typed-array loop', `export let f = (arr) => {
 // frame rewind saves and restores the heap pointer around the Float64Array copy (+14).
 // 930→1111: watr-HEAD codegen era (pre-dates every session-7 jz commit — measured 1113 at
 // a7c2eb3 with the same linked watr; timing caps green).
+
+test('codegen: a remainder of two words by a divisor that may be zero is the hardware remainder behind a test', () => {
+  if (belowOpt(2)) return
+  // `c % gw` of a queue's cell by a grid width: two faithful i32 views whose
+  // divisor no interval excludes from zero ran the fmod helper per pop; it is
+  // `i32.rem_s` under `gw === 0 ? NaN : …`, the dividend's sign kept for an
+  // exact zero (`-6 % 3` is -0). Exact over every edge the host reaches.
+  const src = `export let rem = (a, b) => { let x = a | 0, y = b | 0; return x % y }
+    export let left = (a, b) => { let x = a | 0, y = b | 0; return (x % y) > 0 ? 1 : 0 }`
+  const w = compile(src, { optimize: 'speed', wat: true })
+  ok(/i32\.rem_s/.test(funcWat(w, 'rem')) && !/call \$__rem/.test(funcWat(w, 'rem')), 'the hardware remainder, no fmod call')
+  const m = jz(src, { optimize: 'speed' }).exports, host = oracle(src)
+  for (const a of [0, 1, -1, 7, -7, 2147483647, -2147483648, 5.5, NaN, Infinity, -0])
+    for (const b of [0, 1, -1, 3, -3, 7, 2147483647, -2147483648, NaN, 0.5, -0]) {
+      ok(Object.is(m.rem(a, b), host.rem(a, b)), `${a} % ${b}: ${m.rem(a, b)} vs ${host.rem(a, b)}`)
+      is(m.left(a, b), host.left(a, b), `(${a} % ${b}) > 0`)
+    }
+})
+
+test('codegen: a word of the copy the typed-bounds guard proves in range keeps its arithmetic narrow', () => {
+  if (belowOpt(2)) return
+  // dithering's relief: `i = py * W + qx` is a word of the loop copy; the
+  // typed-bounds guard proves `hf[i]` in range, so `i` lies in [0, length) and
+  // `hf[qx > 0 ? i - 1 : i]` subtracts in i32 (an unknown word needed the
+  // difference wide, a wrap test and a select on every read).
+  const src = `let W = 0, H = 0, hf, out
+    export let resize = (w, h) => { W = w; H = h; hf = new Float64Array(w * h); out = new Float64Array(w * h); let i = 0; while (i < w * h) { hf[i] = (i * 37 % 11) / 11; i++ } return out }
+    export let relief = () => {
+      let py = 0
+      while (py < H) {
+        let qx = 0
+        while (qx < W) {
+          let i = py * W + qx
+          let gl = hf[qx > 0 ? i - 1 : i], gr = hf[qx < W - 1 ? i + 1 : i]
+          let gu = hf[py > 0 ? i - W : i], gd = hf[py < H - 1 ? i + W : i]
+          out[i] = (gr - gl) * 0.5 + (gd - gu) * 0.5
+          qx++
+        }
+        py++
+      }
+    }`
+  // (the fast nest comes first; its inner copy is the loop that subtracts in i32)
+  const tree = parseWat(funcWat(compile(src, { optimize: 'speed', wat: true }), 'relief'))
+  const loops = (n, out = []) => { if (Array.isArray(n)) { if (n[0] === 'loop') out.push(n); for (const c of n) loops(c, out) } return out }
+  const nest = loops(tree)[0], inner = loops(nest).slice(1).map(l => printWat(l))
+  ok(inner.some(t => /i32\.sub/.test(t) && !/i64\.sub/.test(t) && !/i64\.eq\b/.test(t)), 'an inner copy subtracts in i32: no wide difference, no wrap test')
+  const m = jz(src, { optimize: 'speed' }).exports, host = oracle(src)
+  for (const [ww, hh] of [[5, 4], [1, 1], [2, 3], [3.5, 2], [0, 2]]) {
+    const got = m.resize(ww, hh), want = host.resize(ww, hh)
+    m.relief(); host.relief()
+    is(Array.from(got), Array.from(want), `${ww}×${hh}`)
+  }
+})

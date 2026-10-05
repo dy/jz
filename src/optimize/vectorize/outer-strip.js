@@ -1,4 +1,4 @@
-import { walkAst } from '../../ast.js'
+import { walkAst, cloneNode } from '../../ast.js'
 import { isI32Const, isLocalGet, matchInc1, matchIncN } from './addr-model.js'
 import { LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
@@ -337,10 +337,11 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
 
   const liftInnerLoop = (block) => {
     const ibl = matchBlockLoop(block, { allowPreamble: true })
-    if (!ibl || ibl.preamble.length) return null
+    if (!ibl) return null
     const lifted = []
     for (const s of ibl.body) { const out = liftInnerStmt(s, ibl.incVar); if (!out) return null; lifted.push(...out) }
-    return ['block', ibl.blockLabel, ['loop', ibl.loopLabel, ibl.loopNode[2], ...lifted, ibl.loopNode[ibl.incIdx], ['br', ibl.loopLabel]]]
+    // (a hoisted invariant ahead of the loop runs ahead of the lanes' loop as it did: pure, set once)
+    return ['block', ibl.blockLabel, ...ibl.preamble.map(cloneNode), ['loop', ibl.loopLabel, ibl.loopNode[2], ...lifted, ibl.loopNode[ibl.incIdx], ['br', ibl.loopLabel]]]
   }
 
   // ---- laneCompute = obody[0..lastInner]: f64 seeds → shadow lift; scalar seeds kept; loops lifted ----

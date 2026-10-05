@@ -10,8 +10,10 @@ import { agree, funcWat, wat } from './util.js'
 const check = (src, args, name) => {
   for (const optimize of levels(0, 2, 3, 'size')) agree(src, 'f', args, { optimize }, `${name} at ${optimize}`)
 }
-// The conversions of the swap temp `tr` to a number: select(NaN, tr, tr is undefined).
-const conversions = text => (text.match(/\(select\s*\(f64\.const nan\)\s*\(local\.get \$[^\s()]*_tr\)/g) || []).length
+// The conversions of a local to a number: select(NaN, x, x is undefined). In the
+// swap fixture the temp `tr` is the only local that converts (its slot may carry
+// another name once locals are coalesced).
+const conversions = text => (text.match(/\(select\s*\(f64\.const nan\)\s*\(local\.get \$[^\s()]*\)/g) || []).length
 
 test('numeric conversion: a parameter fed by numeric elements retains only the undefined arm', () => {
   const src = `function calc(x) { return [x, x - 1] }

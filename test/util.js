@@ -3,6 +3,8 @@
 // shape, not preset names. Boundary variants belong on `opts.host`.
 import jz, { compile } from '../index.js'
 import { is } from 'tst/assert.js'
+import parseWat from 'watr/parse'
+import printWat from 'watr/print'
 
 /** Evaluate a JS expression via jz → WASM. */
 export async function evaluate(code) {
@@ -70,6 +72,43 @@ export const cases = (rows, opts) => {
     is(f(...args), want, label)
   }
 }
+
+const isArr = Array.isArray
+const op = (n, name) => isArr(n) && n[0] === name
+const konst = (n, type, ...vals) => op(n, type + '.const') && vals.some(v => String(n[1]) === String(v))
+const MAGIC = n => konst(n, 'f64', 6755399441055744)            // 1.5·2^52
+const BIAS = n => konst(n, 'i64', '0x4338000000000000', '4841369599423283200')
+const NEAR = n => konst(n, 'f64', 2 ** 51, 2 ** 31)
+const INF = n => konst(n, 'f64', 'inf', 'Infinity', '+inf')
+const local = n => isArr(n) && (n[0] === 'local.get' || n[0] === 'local.tee') ? n[1] : null
+const sameLocal = (a, b) => local(a) != null && local(a) === local(b)
+// (the word of a number is the word of its truncation)
+const word = x => ['word', op(x, 'f64.trunc') ? x[1] : x]
+const foldWord = n => {
+  if (!isArr(n)) return n
+  n = n.map(foldWord)
+  // the add: the truncation plus 1.5·2^52 read as bits, its low word or its 64 bits less the bias
+  const bits = op(n, 'i32.wrap_i64') ? n[1] : op(n, 'i64.sub') && BIAS(n[2]) ? n[1] : null
+  if (op(bits, 'i64.reinterpret_f64') && op(bits[1], 'f64.add') && MAGIC(bits[1][2])) return word(bits[1][1])
+  // the saturating truncations (the low word of a word is the word)
+  if (op(n, 'i32.trunc_sat_f64_s') || op(n, 'i64.trunc_sat_f64_s')) return word(n[1])
+  if (op(n, 'i32.wrap_i64') && op(n[1], 'word')) return n[1]
+  // ToInt32 exact: the word, Infinity taken to zero
+  if (op(n, 'select') && n.length === 4 && op(n[1], 'word') && konst(n[2], 'i32', 0) &&
+      op(n[3], 'f64.ne') && INF(n[3][2]) && sameLocal(n[1][1], n[3][1])) return word(n[1][1])
+  // the magnitude guard: one form within the range, the other past it
+  if (op(n, 'if') && op(n[1], 'result') && op(n[2], 'f64.lt') && op(n[2][1], 'f64.abs') && NEAR(n[2][2]) &&
+      op(n[3], 'then') && op(n[3][1], 'word') && op(n[4], 'else') && op(n[4][1], 'word') &&
+      sameLocal(n[2][1][1], n[3][1][1]) && sameLocal(n[2][1][1], n[4][1][1])) return word(n[2][1][1])
+  return n
+}
+/** The WAT with every integer word taken from a number folded to `(word x)`,
+ *  whatever lowering the tier chose (optimize/int-narrow.js `words`,
+ *  optimize/to-int32.js): the saturating truncations, the add of 1.5·2^52 read
+ *  as bits, ToInt32's exact form and the magnitude guard around either. A pin
+ *  then counts crossings from the number to its word, not the instructions of
+ *  one lowering. Takes WAT text or its parsed tree and answers in kind. */
+export const foldWords = wat => typeof wat === 'string' ? printWat(foldWord(parseWat(wat))) : foldWord(wat)
 
 /** One function's text out of a WAT module, by paren matching — slicing to the next
  *  `(func` would overrun into lifted closures and give false positives. */

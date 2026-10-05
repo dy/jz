@@ -10,7 +10,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, funcWat, oracle, run, wat } from './util.js'
+import { agree, foldWords, funcWat, oracle, run, wat } from './util.js'
 
 const src = `let t = new Float32Array(4); t[0] = 1; t[1] = 2; t[2] = 3; t[3] = 4
 let b = [1, 2, 3, 4]
@@ -62,7 +62,7 @@ test('index key: signed integer offsets keep word arithmetic without wrapping in
       is(actual.put(n, n & 255), host.put(n, n & 255), `put(${n}), ${optimize}`)
     }
     if (optimize >= 2 && !belowOpt(2)) {
-      const text = wat(src, { optimize }), f = funcWat(text, 'plus$exp') || funcWat(text, 'plus')
+      const text = foldWords(wat(src, { optimize })), f = funcWat(text, 'plus$exp') || funcWat(text, 'plus')
       ok(!/i64\.add|f64\.add|i32\.trunc_sat/.test(f), `plus: the input and offset stay in word arithmetic, ${optimize}`)
     }
   }

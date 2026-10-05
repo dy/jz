@@ -2110,6 +2110,23 @@ test('vectorize: f64 reduction unrolls to N accumulators under reduceUnroll', ()
   ok(!/\$__simd_acc\d+_\d+/.test(wat(src, SIMD_OPT)), 'default reduce stays single-accumulator')
 })
 
+test('vectorize: unrolled accumulators shift a load whose element offset rides its memarg', () => {
+  // `a[i + 1]` folds its constant to `offset=8`: accumulator k reads offset=8+16k, never an
+  // address built from the memarg text (the wasm then fails validation).
+  const src = `
+    export const main = (n) => {
+      const a = new Float64Array(64)
+      for (let i = 0; i < 64; i++) a[i] = (i * 37) % 23
+      let s = 0, i = 0
+      while (i < n - 1) { s += (a[i + 1] - a[i]) * (a[i + 1] - a[i]); i++ }
+      return s
+    }
+  `
+  const UNROLL = { optimize: { vectorizeLaneLocal: true, watr: true, reduceUnroll: true } }
+  for (const n of [0, 2, 9, 33, 64]) is(runVec(src, UNROLL).main(n), runVec(src, NOVEC).main(n))
+  ok(/\$__simd_acc\d+_\d+/.test(wat(src, UNROLL)), 'reduceUnroll → independent accumulators')
+})
+
 test('vectorize: stencil (a[i] depends on a[i-1]) must NOT lift', () => {
   const src = `
     export const main = () => {

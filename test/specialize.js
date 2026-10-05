@@ -13,9 +13,27 @@ import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { specializeLoops } from '../src/optimize/specialize.js'
 import { narrowInts } from '../src/optimize/int-narrow.js'
+import { T } from '../src/ast.js'
 
 const count = (text, op) => (text.match(new RegExp(`\\(${op.replace('.', '\\.')}[\\s)]`, 'g')) || []).length
 const copies = (text) => (text.match(/\(loop \$[^\s)]*\.f\d+[\s)]/g) || []).length
+// A loop carried in integer registers by either mechanism: the optimizer's copy
+// (`.f0`), or the plan's integral copy (plan/integral-loops.js), whose own
+// continue test reads a counter copy (`i·int3`) — the speed tier versions the
+// loops there first, so the optimizer's copy has nothing left to narrow and drops.
+const integerCopies = (text) => {
+  let n = 0
+  const walk = (x) => {
+    if (!Array.isArray(x)) return
+    if (x[0] === 'loop' && typeof x[1] === 'string') {
+      const test = x.find(c => Array.isArray(c) && c[0] === 'br_if' && c[1] === x[1])
+      if (/\.f\d+$/.test(x[1]) || (test && new RegExp(`\\$[^"]*${T}int\\d+`).test(JSON.stringify(test)))) n++
+    }
+    x.forEach(walk)
+  }
+  walk(parseWat(text))
+  return n
+}
 const shapes = (src, check) => { if (!belowOpt(2)) check(wat(src)) }
 const SIZES = [0, 1, 2, 3, 5, 7, 16, 100]
 const ANY = [...SIZES, -1, -3, 0.5, 2.75, NaN, -0, 1e9]
@@ -32,7 +50,7 @@ test('specialize: impossible byte extents do not hide reachable nested loops', (
       }
       return s
     }`
-    shapes(src, w => ok(copies(w) > 0, `${ctor}: reachable loops retain integer copies`))
+    shapes(src, w => ok(integerCopies(w) > 0, `${ctor}: reachable loops retain integer copies`))
     const actual = run(src), expected = oracle(src)
     for (const n of [0, 1, 8, 8, 3.5, NaN, 2, 8, -0]) for (const view of [false, true])
       ok(Object.is(actual.f(n, view), expected.f(n, view)), `${ctor}, view=${view}, length=${n}`)

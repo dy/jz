@@ -25,7 +25,7 @@ import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '..
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
-import { funcWat, run, oracle } from './util.js'
+import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 
@@ -74,6 +74,9 @@ const findFunc = (tree, name) => { let f = null; const w = n => { if (!Array.isA
 // the named `call` disappears while the computation (rightly) stays, so a post-watr
 // call count is vacuous-0 for hoist pins and false-0 for keep pins.
 const preWatr = (opt) => typeof opt === 'object' ? { watr: false, ...opt } : { level: opt, watr: false }
+// A tier without its late ToInt32 lowering, whose 32-bit range test brings an `if`,
+// an `f64.lt` and an `i32.trunc_sat_f64_s` beside every `|0`: for pins on the passes before it.
+const exactToInt32 = (level) => ({ level, guardedToInt32: false })
 const callsInLoop = (src, name, opt = 2) => loopCount(findFunc(parse(src, preWatr(opt)), '$f'), n => n[0] === 'call' && n[1] === name)
 
 // Count the operation on the executed path: mutually exclusive loop copies
@@ -2421,7 +2424,8 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
   `
   // eqcount is called twice with distinct arguments → stays its own function (value numbering
   // computes one call for two identical ones, and watr inlines a function with one caller).
-  const wat = jz.compile(SRC, { wat: true })
+  // (words folded: the guarded ToInt32 of the counter has an `else` of its own)
+  const wat = foldWords(jz.compile(SRC, { wat: true }))
   const start = wat.indexOf('(func $eqcount')
   let body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
   // Root F versions the param-bound loops: the cold checked twin (else arm)
@@ -2559,19 +2563,22 @@ test('if→select: short-circuit || with a side-effecting cond is NOT folded (re
   is(jz(SRC).exports.main(), 7, '|| short-circuit stays correct (0||5=5, 7||9=7, false||3=3)')
 })
 
-test('Math.floor(bounded)|0 → one i64 truncation, no +∞ guard', () => {
+test('Math.floor(bounded)|0 → one exact word, no +∞ guard', () => {
   // f64Range maps through f64.floor: Math.floor(u8 * scale) is a finite value, so toI32
-  // emits i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard — and keeps
-  // the i64 form, the fast one on V8 (bytebeat 1521 → 1370 µs against the bare
-  // i32.trunc_sat this used to pin). The image/audio index class (`Math.floor(pixel *
+  // emits i32.wrap_i64(i64.trunc_sat_f64_s) with no (select … f64.ne ∞) guard. The default
+  // tier keeps that i64 form (V8 arm64's fastest; bytebeat 1521 → 1370 µs against the bare
+  // i32.trunc_sat this used to pin); the speed tier takes the word of the bounded integer by
+  // the add (its 1.5·2^52 sum read as bits), no conversion at all: x64 4.1 → 1.0 ns, arm64
+  // within 0.1 ns (bench/lowering.mjs). The image/audio index class (`Math.floor(pixel *
   // scale)`). Bit-exact. (Inert when the floor's input is a bare param/local — f64Range
   // can't bound those without range-of-locals.)
   const SRC = `
     const f = (buf, out, n) => { for (let i = 0; i < n; i++) out[i] = (Math.floor(buf[i] * 0.5) | 0) & 255 }
     export const main = () => { const buf = new Uint8Array(8), out = new Int32Array(8); for (let i = 0; i < 8; i++) buf[i] = i * 31; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 }
   `
+  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(jz.compile(SRC, { wat: true, optimize: 2 })), 'the default tier: the i64 truncation, wrapped')
   const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })
-  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(wat), 'the i64 truncation, wrapped')
+  ok(/6755399441055744/.test(wat) && !/trunc_sat_f64_s/.test(wat), 'the speed tier: the add, no truncation')
   is(/i32\.trunc_sat_f64_s/.test(wat), false, 'no bare i32 trunc_sat for the bounded floor')
   is(/f64\.const inf/.test(wat), false, 'no +∞ guard for the bounded floor')
   const ref = (() => { const buf = [], out = []; for (let i = 0; i < 8; i++) buf[i] = (i * 31) & 255
@@ -4366,7 +4373,7 @@ test('int-div-lower: a bounded-product chain (mask → ternary → sum-of-produc
       return acc
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const w = jz.compile(src, { wat: true, optimize: exactToInt32('speed') })
   ok(/i32\.shr_u/.test(w), 'power-of-two divisor with a proven-nonneg dividend strength-reduces to i32.shr_u')
   // i64.trunc_sat_f64_s is the ordinary NaN-boxed param-unboxing ABI boundary (n0's
   // own coercion) — unrelated to the div lever. Only the i32 form is the round-trip
@@ -4416,7 +4423,7 @@ test('Pass-D range-proof exemption: bare-literal-only bounded chain stays i32 (d
       return acc
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const w = jz.compile(src, { wat: true, optimize: exactToInt32('speed') })
   ok(/i32\.shr_u/.test(w), 'power-of-two divisor over a range-proven bare-literal chain strength-reduces to i32.shr_u')
   ok(!/i32\.trunc_sat_f64_s/.test(w), 'no f64 round-trip survives for the div')
   const { f } = run(src, { optimize: 'speed' })
@@ -6564,7 +6571,7 @@ test('static const array reads fold: inline literal under a mask is one load, a 
 export let f = (k) => T[k & 3]
 export let g = (k) => [2, 4, 2, 9][k & 3]
 export let h = (k) => [1, 2, 3][k & 3]`
-  const w = compile(src, { optimize: 'speed', wat: true })
+  const w = compile(src, { optimize: exactToInt32('speed'), wat: true })
   const gw = funcWat(w, 'g'), fw = funcWat(w, 'f'), hw = funcWat(w, 'h')
   ok(!/__ptr_offset_fwd|i32\.lt_u|\(if/.test(gw) && (gw.match(/f64\.load/g) ?? []).length === 1, 'inline literal: the load alone')
   ok(!/__ptr_offset_fwd|i32\.lt_u|\(if/.test(fw) && (fw.match(/f64\.load/g) ?? []).length === 1, 'named const: the load alone as well')

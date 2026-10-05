@@ -253,6 +253,15 @@ export function intExprRange(n, nameRange = null) {
     const a = intExprRange(n[1], nameRange)
     return a ? (op === '++' ? [a[0] + 1, a[1] + 1] : [a[0] - 1, a[1] - 1]) : null
   }
+  // `Math.imul(a, b)`: the product where it fits one signed word (exact there), any word otherwise
+  if (op === '()' && n.length === 3 && n[1] === 'math.imul' && Array.isArray(n[2]) && n[2][0] === ',' && n[2].length === 3) {
+    const a = intExprRange(n[2][1], nameRange), b = intExprRange(n[2][2], nameRange)
+    if (a && b) {
+      const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]], lo = Math.min(...p), hi = Math.max(...p)
+      if (lo >= I32_MIN && hi <= I32_MAX) return [lo, hi]
+    }
+    return [I32_MIN, I32_MAX]
+  }
   if ((op === '+' || op === '-' || op === '*') && n.length === 3) {
     const a = intExprRange(n[1], nameRange), b = intExprRange(n[2], nameRange)
     if (!a || !b) return null

@@ -4,11 +4,11 @@
 // number, integral or not.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { _compileInProcess } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
 import { oracle, wat, funcWat } from './util.js'
 import { ctx } from '../src/ctx.js'
-import { TYPEOF } from '../src/ast.js'
+import { T, TYPEOF, walkAst } from '../src/ast.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
 import { extractRefinements, withRefinements } from '../src/compile/flow-types.js'
 import { versionableTypedNest } from '../src/type/loop-versioning-nest.js'
@@ -485,5 +485,664 @@ test('integral loops: explicit word counters preserve wrapping and full Number t
     const m = jz(functions, { optimize }).exports
     for (const n of [2147483647, 2147483649, 2147483649, -1.5, 2147483649, -2147483649, -0, NaN, Infinity, -Infinity])
       for (const name of Object.keys(js)) is(m[name](n), js[name](n), `${name}(${n}) at ${optimize}`)
+  }
+})
+
+test('integral loops: a number carried through a nested loop keeps its value across the outer loop', () => {
+  // The inner copy renames what it writes; the loop around runs it again, so
+  // the copy writes the originals back (this once reset `s` every row).
+  const src = `let px
+    export let init = (n) => { px = new Float64Array(n); return px }
+    export let f = (W, H) => {
+      let s = 0.5, j = 0, py = 0
+      while (py < H) {
+        let qx = 0
+        while (qx < W) { s = s + qx; px[j] = s; j++; qx++ }
+        py++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[4, 3], [1, 5], [3, 1], [0, 2], [2.5, 2], [2, 2.5]]) {
+      const got = m.init(16), want = js.init(16)
+      m.f(w, h); js.f(w, h)
+      is(Array.from(got), Array.from(want), `${w}×${h} at ${optimize}`)
+    }
+  }
+})
+
+test('integral loops: a nest over module dimensions is one version, its pixel cursor a word', () => {
+  // The outer copy decides the inner bound once, holds the inner fast arm alone
+  // (the loop as written keeps the inner loop as written), and budgets the
+  // cursor stepped per pixel by the trips of both levels: `j` runs as i32.
+  const src = `let W = 0, H = 0, px
+    export let resize = (w, h) => { W = w; H = h; px = new Uint32Array(w * h); return px }
+    export let frame = (t) => {
+      let j = 0, py = 0
+      while (py < H) {
+        let qx = 0
+        while (qx < W) {
+          let x = 0.5, L = 0, ai = 0
+          while (ai < 160) { x = 3.7 * x * (1 - x); L = L + Math.log(Math.abs(1 - 2 * x)); ai++ }
+          px[j] = (L > 0 ? 255 : 0) | (255 << 24)
+          j++; qx++
+        }
+        py++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[6, 4], [3, 2.5], [0, 3], [5, 1]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.frame(0); js.frame(0)
+      is(Array.from(got), Array.from(want), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const frame = funcWat(wat(src, { optimize: 'speed' }), 'frame')
+  ok(/\(local \$jint\d+ i32\)/.test(frame), 'the pixel cursor is carried as a word')
+  const loops = (frame.match(/\(loop /g) || []).length
+  ok(loops <= 24, `one version of the nest (${loops} loops; a version per level squares them)`)
+})
+
+test('integral loops: a raster nest\'s row base and derived index are words, so the stencil lifts', () => {
+  // `rowC = y * w`, `c = rowC + x`, `xW = x === 0 ? w - 1 : x - 1`: integers of the
+  // counter and of names the guard holds to int32s, reaching an element index.
+  // Their hulls over the loop are expressions of what the guard reads; where
+  // they fit i32 the copy declares each as its word, and the typed-bounds
+  // versioning reads an affine index of words: the 5-point stencil lifts. The
+  // loop as written keeps every other input (a fractional width reads past the
+  // row as JS does).
+  const src = `let W = 0, H = 0, uA, uB
+    export let resize = (w, h) => { W = w; H = h; uA = new Float64Array(w * h); uB = new Float64Array(w * h); for (let i = 0; i < uA.length; i++) uA[i] = i % 7; return uB }
+    export let step = () => {
+      let w = W, h = H, y = 0
+      while (y < h) {
+        let yN = y === 0 ? h - 1 : y - 1, yS = y === h - 1 ? 0 : y + 1
+        let rowC = y * w, rowN = yN * w, rowS = yS * w, x = 0
+        while (x < w) {
+          let xW = x === 0 ? w - 1 : x - 1, xE = x === w - 1 ? 0 : x + 1
+          let c = rowC + x
+          uB[c] = uA[rowN + x] + uA[rowS + x] + uA[rowC + xW] + uA[rowC + xE] - 4 * uA[c]
+          x++
+        }
+        y++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[0, 0], [1, 1], [3, 5], [7, 1], [1, 7], [16, 12], [6.5, 4], [5, NaN]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.step(); js.step()
+      is(Array.from(got).map(v => Number.isNaN(v) ? 'NaN' : v), Array.from(want).map(v => Number.isNaN(v) ? 'NaN' : v), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const step = funcWat(wat(src, { optimize: 'speed' }), 'step')
+  ok((step.match(/v128\.load/g) || []).length >= 4 && /f64x2\.add/.test(step), 'the neighbour stencil lifts to f64x2 (the row base and the derived index are words)')
+})
+
+test('integral loops: a ring counter is a cursor with a floor, and a loop under a literal bound guards nothing', () => {
+  // `si = si + 1; if (si >= N) si = 0` steps up by a literal and resets to one:
+  // its advance over the loop is the trips times the step, from the higher of
+  // its entry and the reset. A loop under a literal bound counts its trips
+  // without a guard of the bound; a cursor entering from a literal, or from the
+  // hull a copy just before left it in, runs as a word with no test at all. The
+  // pixel loop then holds two plain inner loops, and the iterated-map reduction
+  // lifts it.
+  const src = `let W = 0, H = 0, px, SEQLEN = 5, seq
+    export let resize = (w, h) => { W = w; H = h; px = new Uint32Array(w * h); seq = new Int32Array(8); seq[2] = 1; seq[4] = 1; return px }
+    export let setSeq = (bits, len) => { if (len < 2) len = 2; if (len > 6) len = 6; SEQLEN = len; let i = 0; while (i < len) { seq[i] = (bits >> i) & 1; i++ } }
+    export let frame = (ox, oy, span) => {
+      let j = 0, py = 0
+      while (py < H) {
+        let b = 2.5 + oy + py * span, qx = 0
+        while (qx < W) {
+          let a = 2.5 + ox + qx * span, x = 0.5, si = 0, wi = 0
+          while (wi < 80) { let r = seq[si] < 1 ? a : b; x = r * x * (1 - x); si = si + 1; if (si >= SEQLEN) si = 0; wi++ }
+          let L = 0, ai = 0
+          while (ai < 160) { let r = seq[si] < 1 ? a : b; let d = Math.abs(r * (1 - 2 * x)); x = r * x * (1 - x); if (d > 0) L = L + Math.log(d); si = si + 1; if (si >= SEQLEN) si = 0; ai++ }
+          px[j] = (L < 0 ? 255 : 0) | (255 << 24)
+          j++; qx++
+        }
+        py++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h, bits, len] of [[6, 4, 0b10100, 5], [3, 2, 0b1, 2], [5, 1, 0b111, 3.5], [4, 3, 0b10, NaN], [0, 3, 0b1, 4]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.setSeq(bits, len); js.setSeq(bits, len)
+      m.frame(0.1, 0.2, 0.03); js.frame(0.1, 0.2, 0.03)
+      is(Array.from(got), Array.from(want), `${w}×${h} seq ${len} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const frame = funcWat(wat(src, { optimize: 'speed' }), 'frame')
+  ok(/call \$math\.log_v/.test(frame) && /f64x2\.mul/.test(frame), 'the iterated-map reduction lifts the pixel loop (log → $math.log_v)')
+  ok(/\(local \$si\S* i32\)/.test(frame) && !/\(local \$si\S* f64\)/.test(frame), 'the ring counter is a word in every copy')
+})
+
+// The copy's words, read off the planned body: the plan pass rewrites in place,
+// so the function's body after a compile holds the copies it made.
+const planned = (src, name) => { _compileInProcess(src, { optimize: 'speed' }); return ctx.funcs.list.find(f => f.name === name)?.body }
+const countNodes = (node, pred) => { let k = 0; walkAst(node, { enter: n => { if (pred(n)) k++ } }); return k }
+const isWordOf = (n, pred) => Array.isArray(n) && n[0] === '|' && n.length === 3 && Array.isArray(n[2]) && n[2][0] == null && n[2][1] === 0 && pred(n[1])
+
+test('integral loops: a density scatter under a range test indexes by a word', () => {
+  // `row = (…) | 0; if (row >= 0 && row < H) dens[row * W + col]++`: the test
+  // bounds `row`, the guard holds W and H to int32s and tests the product's
+  // hull, and the copy declares the index as its word (an `imul` of words):
+  // the hot loop stores through an i32 index, where a Number index converted
+  // and checked on every count. The loop as written keeps fractional sizes.
+  const src = `let W = 0, H = 0, dens
+    export let resize = (w, h) => { W = w; H = h; dens = new Uint32Array(w * h); return dens }
+    export let frame = (r0, r1) => {
+      let n = W * H, i = 0
+      while (i < n) { dens[i] = 0; i++ }
+      let col = 0
+      while (col < W) {
+        let r = r0 + (col / W) * (r1 - r0), x = 0.5, k = 0
+        while (k < 40) { x = r * x * (1 - x); k++ }
+        k = 0
+        while (k < 60) {
+          x = r * x * (1 - x)
+          let row = (x * H) | 0
+          if (row >= 0 && row < H) { let idx = row * W + col; dens[idx] = dens[idx] + 1 }
+          k++
+        }
+        col++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[8, 6], [1, 1], [0, 4], [5, 2.5], [7.5, 3], [3, NaN]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.frame(2.9, 3.9); js.frame(2.9, 3.9)
+      is(Array.from(got), Array.from(want), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'frame')
+  ok(countNodes(body, n => isWordOf(n, e => Array.isArray(e) && e[0] === '+' && Array.isArray(e[1]) && e[1][0] === '()' && e[1][1] === 'math.imul')) >= 1, 'the index is a word of an imul of words')
+})
+
+test('integral loops: a deposit behind an early return reads its cell as a word', () => {
+  // lorenz's `dep`: spliced into the polyline loop, `if (ix < 1 || ix >= W - 1 || …) return`
+  // leaves its sequel with each test's negation; `c = iy * W + ix` is a word there.
+  const src = `let W = 0, H = 0, energy
+    export let resize = (w, h) => { W = w; H = h; energy = new Float32Array(w * h); return energy }
+    let dep = (ix, iy, add) => {
+      if (ix < 1 || ix >= W - 1 || iy < 1 || iy >= H - 1) return
+      let c = iy * W + ix
+      energy[c] = energy[c] + add
+      energy[c - 1] = energy[c - 1] + add * 0.25; energy[c + 1] = energy[c + 1] + add * 0.25
+      energy[c - W] = energy[c - W] + add * 0.25; energy[c + W] = energy[c + W] + add * 0.25
+    }
+    export let frame = (t) => {
+      let s = 0
+      while (s < 200) { let fx = 1.5 + 0.03 * s * (W - 3), fy = 1.5 + Math.sin(s * 0.17 + t) * 0.5 * (H - 3) + 0.5 * (H - 3); dep(fx | 0, fy | 0, 0.05); s++ }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[16, 12], [3, 3], [2, 2], [0, 5], [9.5, 7], [6, NaN]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.frame(0.3); js.frame(0.3)
+      is(Array.from(got), Array.from(want), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'frame')
+  ok(countNodes(body, n => isWordOf(n, e => Array.isArray(e) && e[0] === '+' && Array.isArray(e[1]) && e[1][0] === '()' && e[1][1] === 'math.imul')) >= 1, 'the cell is a word of an imul of words')
+})
+
+test('integral loops: a queue\'s module cursors and its elements run as words of the copy', () => {
+  // sandpile's relax: `c = queue[qHead]; qHead++; if (qHead >= QN) qHead = 0` with the
+  // cursors module bindings. The loop runs no user code and nothing in it can throw,
+  // so the copy steps its own words and stores them back; the ring's reset bounds
+  // them whatever the trips; the element read at a proven index is a word too.
+  const src = `let Gw = 0, grid, inq, queue, qHead = 0, qTail = 0, qCount = 0, QN = 0
+    export let resize = (w) => { Gw = w | 0; let n = Gw * Gw; QN = n; grid = new Int32Array(n); inq = new Int32Array(n); queue = new Int32Array(n); qHead = 0; qTail = 0; qCount = 0; return grid }
+    let push = (c) => { if (inq[c] === 0) { inq[c] = 1; queue[qTail] = c; qTail++; if (qTail >= QN) qTail = 0; qCount++ } }
+    export let drop = (c, n) => { grid[c] += n; if (grid[c] >= 4) push(c) }
+    export let relax = (budget) => {
+      let done = 0, gw = Gw
+      while (qCount > 0 && done < budget) {
+        let c = queue[qHead]
+        qHead++
+        if (qHead >= QN) qHead = 0
+        qCount--
+        inq[c] = 0
+        if (grid[c] >= 4) {
+          let gx = c % gw, gy = (c / gw) | 0
+          let topples = grid[c] >> 2
+          grid[c] -= topples * 4
+          done += topples
+          if (gx > 0) { let nb = c - 1; grid[nb] += topples; if (grid[nb] >= 4) push(nb) }
+          if (gx < gw - 1) { let nb = c + 1; grid[nb] += topples; if (grid[nb] >= 4) push(nb) }
+          if (gy > 0) { let nb = c - gw; grid[nb] += topples; if (grid[nb] >= 4) push(nb) }
+          if (gy < gw - 1) { let nb = c + gw; grid[nb] += topples; if (grid[nb] >= 4) push(nb) }
+          if (grid[c] >= 4) push(c)
+        }
+      }
+      return done
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, k] of [[9, 400], [4, 60], [1, 5], [12, 2000]]) {
+      const got = m.resize(w), want = js.resize(w)
+      m.drop((w * w) >> 1, k); js.drop((w * w) >> 1, k)
+      for (let r = 0; r < 5; r++) is(m.relax(50), js.relax(50), `relax ${w} ${k} round ${r} at ${optimize}`)
+      is(Array.from(got), Array.from(want), `grid ${w} ${k} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'relax')
+  ok(countNodes(body, n => isWordOf(n, e => Array.isArray(e) && e[0] === '[]' && /^queue/.test(e[1]))) >= 1, 'the popped cell is a word of the queue element')
+  ok(countNodes(body, n => isWordOf(n, e => Array.isArray(e) && e[0] === '+' && typeof e[1] === 'string' && /^qHead/.test(e[1]))) >= 1, 'the head cursor steps as a word')
+  const relax = funcWat(wat(src, { optimize: 'speed' }), 'relax')
+  ok(/global\.set \$qHead/.test(relax) && /global\.set \$qTail/.test(relax), 'the copy stores the cursors back')
+})
+
+test('integral loops: a union-find\'s find loops are one with the copy that proves their roots', () => {
+  // percolation: `find` spliced twice per union, its root a moving index of its own
+  // loop. In the sweep's copy the root enters as a word (the cell index, an imul of
+  // words) and stays one (`parent[parent[r]] | 0`), so the find loops need no test
+  // of their own there: the copy holds their fast arms alone.
+  const src = `let W = 0, H = 0, parent, rnk, r
+    export let resize = (w, h) => { W = w; H = h; parent = new Int32Array(w * h); rnk = new Int32Array(w * h); r = new Float64Array(w * h); let i = 0; while (i < w * h) { r[i] = ((i * 7919) % 101) / 101; i++ } return parent }
+    let find = (i) => { let cur = i; while (parent[cur] !== cur) { let pp = parent[parent[cur]] | 0; parent[cur] = pp; cur = pp } return cur }
+    let union = (a, b) => { let ra = find(a), rb = find(b); if (ra === rb) return; if (rnk[ra] < rnk[rb]) { let t = ra; ra = rb; rb = t } parent[rb] = ra; rnk[ra] = rnk[ra] + rnk[rb] }
+    export let frame = (p) => {
+      let w = W, h = H, n = w * h, i = 0
+      while (i < n) { if (r[i] < p) { parent[i] = i; rnk[i] = 1 } else parent[i] = -1; i++ }
+      let y = 0
+      while (y < h) {
+        let x = 0
+        while (x < w) {
+          let idx = y * w + x
+          if (parent[idx] >= 0) {
+            if (x < w - 1 && parent[idx + 1] >= 0) union(idx, idx + 1)
+            if (y < h - 1 && parent[idx + w] >= 0) union(idx, idx + w)
+          }
+          x++
+        }
+        y++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[12, 9], [1, 1], [2, 2], [0, 3], [5, 4.5]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.frame(0.6); js.frame(0.6)
+      is(Array.from(got), Array.from(want), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'frame')
+  // the aliases the guards capture (`n === (n$ = n | 0)`): the sweep's dimensions, never a find's root
+  const captures = countNodes(body, n => n[0] === '===' && Array.isArray(n[2]) && n[2][0] === '=' && typeof n[2][1] === 'string' && isWordOf(n[2][2], e => typeof e === 'string'))
+  ok(captures <= 4, `the find loops take no capture of their own (${captures} captures)`)
+})
+
+test('integral loops: a rounded coordinate under a range test is an integer there', () => {
+  // swarm's hairline: `ix = Math.floor(fx)` is an integer or not finite; inside
+  // `if (ix >= 0 && ix < W && iy >= 0 && iy < H)` it is finite within the test's
+  // hull, so `ink[iy * W + ix]` reads its word.
+  const src = `let W = 0, H = 0, ink
+    export let resize = (w, h) => { W = w; H = h; ink = new Float64Array(w * h); return ink }
+    let dep = (ix, iy, a) => { if (ix >= 0 && ix < W && iy >= 0 && iy < H) ink[iy * W + ix] += a }
+    export let trace = (ax, ay, bx, by) => {
+      let dx = bx - ax, dy = by - ay
+      let n = (Math.sqrt(dx * dx + dy * dy) * 2 | 0) + 1, k = 0
+      while (k < n) {
+        let fx = ax + dx * k / n - 0.5, fy = ay + dy * k / n - 0.5
+        let ix = Math.floor(fx), iy = Math.floor(fy), ux = fx - ix, uy = fy - iy
+        dep(ix, iy, (1 - ux) * (1 - uy)); dep(ix + 1, iy, ux * (1 - uy)); dep(ix, iy + 1, (1 - ux) * uy); dep(ix + 1, iy + 1, ux * uy)
+        k++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h, line] of [[20, 14, [1.2, 2.5, 17.8, 11.1]], [3, 3, [-2, -1, 5, 6]], [0, 2, [0, 0, 1, 1]], [7.5, 5, [0.5, 0.5, 6, 4]], [4, 4, [NaN, 1, 2, 2]]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.trace(...line); js.trace(...line)
+      is(Array.from(got).map(v => Number.isNaN(v) ? 'NaN' : v), Array.from(want).map(v => Number.isNaN(v) ? 'NaN' : v), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'trace')
+  ok(countNodes(body, n => isWordOf(n, e => Array.isArray(e) && e[0] === '+' && Array.isArray(e[1]) && e[1][0] === '()' && e[1][1] === 'math.imul')) >= 1, 'the deposit indexes by a word of an imul of words')
+})
+
+test('integral loops: a hull end at the word\'s extreme opens, so no guard that cannot hold', () => {
+  // sandpile's relax: `c = queue[qHead]` is any int32, so `nb = c - gw` fits one
+  // signed word only for a width at most zero. A test of that end
+  // (`-2147483648 - gw >= -2147483648`) fails on every run and leaves the loop
+  // as written, cold. The copy takes the element as its word and leaves the
+  // difference a Number.
+  const src = `let W = 0, grid, queue, QN = 0
+    export let resize = (w) => { W = w; grid = new Int32Array(w * w); queue = new Int32Array(w * w); QN = w * w; let i = 0; while (i < QN) { queue[i] = i; i++ } return grid }
+    export let relax = (n) => {
+      let done = 0, qHead = 0, gw = W
+      while (done < n) {
+        let c = queue[qHead]
+        qHead++; if (qHead >= QN) qHead = 0
+        let gx = c % gw
+        let nb = c - gw
+        if (gx > 0 && nb >= 0) grid[nb] += 1
+        done++
+      }
+      return qHead
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, n] of [[4, 30], [7, 100], [1, 5], [3, 0], [2.5, 9]]) {
+      const got = m.resize(w), want = js.resize(w)
+      is(m.relax(n), js.relax(n), `relax ${w} ${n} at ${optimize}`)
+      is(Array.from(got), Array.from(want), `grid ${w} ${n} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'relax')
+  ok(countNodes(body, n => isWordOf(n, e => Array.isArray(e) && e[0] === '[]')) >= 1, 'the popped cell is a word')
+  is(countNodes(body, n => isWordOf(n, e => Array.isArray(e) && e[0] === '-')), 0, 'the difference of an int32 element and a width is no word')
+  is(countNodes(body, n => Array.isArray(n) && (n[0] === '-' || n[0] === '+') && Array.isArray(n[1]) && n[1][0] == null && Math.abs(n[1][1]) >= 2147483647), 0, 'no test at the extreme')
+})
+
+test('integral loops: a module binding reset before every step of it is the loop\'s scratch, not a cursor', () => {
+  // maze's generation: the loop steps `qt` only after `qt = 0` (the solve's
+  // start, inlined), on the round that ends generation; `qt` is undefined until
+  // then. A cursor's guard holds its entry value to an int32, which undefined
+  // fails on every generation frame, leaving the loop as written: cold. With
+  // nothing of its entry value stepped, `qt` is no cursor: the copy writes it
+  // as written, and its entry value stays what it was.
+  const src = `let GX = 0, stack, sp = 0, q, qt, vis
+    export let resize = (n) => { GX = n; stack = new Int32Array(n + 1); vis = new Int32Array(n + 1); q = new Int32Array(n + 1); sp = 1; stack[0] = 0; return vis }
+    export let step = (rounds) => {
+      let k = 0
+      while (k < rounds) {
+        if (sp === 0) { qt = 0; q[qt] = 7; qt++; break }
+        let c = stack[sp - 1]
+        if (vis[c] === 0 && c + 1 < GX) { vis[c] = 1; stack[sp] = c + 1; sp++ } else sp--
+        k++
+      }
+      return k
+    }
+    export let tail = () => typeof qt === 'number' ? qt : -1`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [n, rounds] of [[5, 3], [5, 4], [5, 100], [1, 2], [8, 1], [4, 7.5]]) {
+      const got = m.resize(n), want = js.resize(n)
+      is([m.step(rounds), m.tail(), Array.from(got)], [js.step(rounds), js.tail(), Array.from(want)], `${n} ${rounds} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'step')
+  ok(countNodes(body, n => Array.isArray(n) && n[0] === 'while' && n.cold === true) >= 1, 'the loop has a copy')
+  is(countNodes(body, n => Array.isArray(n) && n[0] === 'typeof' && n[1] === 'qt'), 0, 'no test of what the loop enters with')
+})
+
+test('integral loops: a float clamped then truncated indexes by a word, its drift held to a Number', () => {
+  // dithering's sweep: `ysf = y + offY` clamped into [0, H - 1], `yi = ysf | 0`,
+  // `yi1 = yi + 1` clamped again: hulls the walk holds, so `sb[yi * W + x]`
+  // and `sb[yi1 * W + x]` are words of the copy. `offY = lpy / adx` is a
+  // fraction: the guard holds it to a Number, never to an int32 (a test that
+  // would fail on every run).
+  const src = `let W = 0, H = 0, sb, out
+    export let resize = (w, h) => { W = w; H = h; sb = new Float64Array(w * h); out = new Float64Array(w * h); let i = 0; while (i < w * h) { sb[i] = i * 0.5; i++ } return out }
+    export let sweep = (lpy, adx, col) => {
+      let offY = lpy / adx, x = col | 0
+      let y = 0
+      while (y < H) {
+        let ysf = y + offY
+        if (ysf < 0.0) ysf = 0.0
+        if (ysf > H - 1) ysf = H - 1
+        let yi = ysf | 0
+        let yi1 = yi + 1; if (yi1 > H - 1) yi1 = H - 1
+        let yf = ysf - yi
+        out[y * W + x] = sb[yi * W + x] * (1.0 - yf) + sb[yi1 * W + x] * yf
+        y++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h, lpy, adx, col] of [[5, 6, 1.5, 2, 2], [5, 6, -2.5, 1, 0], [3, 3, 100, 1, 1], [4, 4, -100, 3, 3], [4, 2.5, 0.5, 2, 1], [2, 2, NaN, 1, 0], [3, 3, 1, 0, 1]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.sweep(lpy, adx, col); js.sweep(lpy, adx, col)
+      is(Array.from(got).map(v => Number.isNaN(v) ? 'NaN' : v), Array.from(want).map(v => Number.isNaN(v) ? 'NaN' : v), `${w}×${h} ${lpy}/${adx} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'sweep')
+  ok(countNodes(body, n => isWordOf(n, e => Array.isArray(e) && e[0] === '+' && Array.isArray(e[1]) && e[1][0] === '()' && e[1][1] === 'math.imul')) >= 3, 'the three indexes are words')
+  is(countNodes(body, n => Array.isArray(n) && n[0] === '|' && typeof n[1] === 'string' && (n[1] === 'offY' || n[1].startsWith('offY' + T))), 0, 'the drift is held to no int32')
+})
+
+test('integral loops: a parameter some call passes a fraction is held to no int32', () => {
+  // dwa's rings: `(c + a * 255 + 0.5) | 0` with a = 0.95. An int32 test of `a`
+  // fails on every such call and leaves the loop as written, cold.
+  const src = `let px
+    export let resize = (n) => { px = new Int32Array(n); return px }
+    let blend = (n, a) => { let i = 0; while (i < n) { px[i] = (px[i] + a * 255 + 0.5) | 0; i++ } }
+    export let frame = (n, k) => { blend(n, 0.35); blend(n, k) }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [n, k] of [[8, 1], [8, 0.5], [3, -2.25], [0, 1], [5.5, 2]]) {
+      const got = m.resize(n), want = js.resize(n)
+      m.frame(n, k); js.frame(n, k)
+      is(Array.from(got), Array.from(want), `${n} ${k} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  for (const name of ['blend', 'frame']) {
+    const body = planned(src, name)
+    if (!body) continue
+    is(countNodes(body, n => Array.isArray(n) && n[0] === '|' && typeof n[1] === 'string' && (n[1] === 'a' || n[1].startsWith('a' + T))), 0, `${name}: the blend factor is held to no int32`)
+  }
+})
+
+test('integral loops: an inner copy\'s hull tests lift to the outer guard at the counter\'s ends, one version of the nest', () => {
+  // error diffusion: the row's word `idx = py * W + qx` and `r = idx + W` have
+  // hulls over the outer counter `py`. Tested per row inside the outer copy,
+  // the nest is a loop, a test and a loop, which no later pass reads as a nest;
+  // tested at py's ends in the outer guard, the copy holds the inner copy alone.
+  const src = `let W = 0, H = 0, gray, px
+    export let resize = (w, h) => { W = w; H = h; gray = new Float64Array(w * h); px = new Uint32Array(w * h); let i = 0; while (i < w * h) { gray[i] = (i % 7) / 7; i++ } return px }
+    export let frame = () => {
+      let py = 0
+      while (py < H) {
+        let qx = 0
+        while (qx < W) {
+          let idx = py * W + qx
+          let old = gray[idx], on = old >= 0.5 ? 1 : 0, e = (old - on) / 48
+          if (qx + 1 < W) gray[idx + 1] = gray[idx + 1] + e * 7
+          if (py + 1 < H) {
+            let r = idx + W
+            if (qx - 1 >= 0) gray[r - 1] = gray[r - 1] + e * 3
+            gray[r] = gray[r] + e * 5
+          }
+          px[idx] = on ? 255 : 0
+          qx++
+        }
+        py++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [w, h] of [[6, 5], [1, 1], [0, 3], [4.5, 2], [3, 0]]) {
+      const got = m.resize(w, h), want = js.resize(w, h)
+      m.frame(); js.frame()
+      is(Array.from(got), Array.from(want), `${w}×${h} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'frame')
+  const hasCold = (n) => Array.isArray(n) && (n.cold === true || n.some(hasCold))
+  is(countNodes(body, n => Array.isArray(n) && n[0] === 'if' && n.length === 4 && hasCold(n[3])), 1, 'one guard for the nest')
+})
+
+test('integral loops: a walk over links is a word of the copy, a missed link ending it', () => {
+  // fireflies' neighbour gather: `let j = head[c]; while (j >= 0) { … j = next[j] }`
+  // over int32 arrays. Every write of `j` is an element, an integer or a miss:
+  // undefined, which fails `j >= 0` and ends the walk. The copy reads a missed
+  // link as -1, the same end, and walks by an i32: no conversion per link.
+  const src = `let N = 0, head, next, val, out
+    export let resize = (n) => {
+      N = n; head = new Int32Array(4); next = new Int32Array(n); val = new Float64Array(n); out = new Float64Array(4)
+      let i = 0
+      while (i < 4) { head[i] = -1; i++ }
+      i = 0
+      while (i < n) { let c = i % 4; next[i] = head[c]; head[c] = i; val[i] = i * 0.5; i++ }
+      return out
+    }
+    export let sum = (c, k) => {
+      let j = head[c], s = 0.0, n = 0
+      while (j >= 0) {
+        if (j !== k) { s += val[j]; n++ }
+        j = next[j]
+      }
+      out[c] = n > 0 ? s / n : 0.0
+      return n
+    }
+    export let poke = (i, v) => { next[i] = v }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [n, c, k] of [[10, 0, 4], [10, 3, 100], [7, 2, 2], [1, 0, 0], [0, 1, 0], [5.5, 1, 1]]) {
+      const got = m.resize(n), want = js.resize(n)
+      is(m.sum(c, k), js.sum(c, k), `sum ${n} ${c} ${k} at ${optimize}`)
+      is(Array.from(got), Array.from(want), `out ${n} ${c} ${k} at ${optimize}`)
+    }
+    // a link past the array: a miss ends the walk as written
+    const got = m.resize(6), want = js.resize(6)
+    m.poke(1, 99); js.poke(1, 99)
+    is([m.sum(1, 7), Array.from(got)], [js.sum(1, 7), Array.from(want)], `missed link at ${optimize}`)
+    m.poke(5, 2147483647); js.poke(5, 2147483647)
+    is(m.sum(1, 7), js.sum(1, 7), `far link at ${optimize}`)
+    is(m.sum(2.5, 0), js.sum(2.5, 0), `a fractional head at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'sum')
+  ok(countNodes(body, n => Array.isArray(n) && n[0] === '?:' && Array.isArray(n[3]) && n[3][0] == null && n[3][1] === -1) >= 1, 'the copy reads a missed link as -1')
+  ok(countNodes(body, n => Array.isArray(n) && n[0] === 'while' && n.cold === true) >= 1, 'the walk as written is the other arm')
+})
+
+test('integral loops: a nest under inclusive bounds lifts its inner product tests to the outer guard', () => {
+  // the 3×3 cell search: `while (cy <= gy + 1) { while (cx <= gx + 1) { let cell = cy * cols + cx … } }`.
+  // The cell's product is tested at cy's ends (the bound itself, under `<=`)
+  // in the outer guard: nothing is tested between the loops, one nest for every
+  // later pass; the walk over links keeps its own test of its entry.
+  const src = `let cols = 0, rows = 0, head, next, seen, px, py, out
+    export let resize = (c, r, n) => {
+      cols = c; rows = r; head = new Int32Array(c * r); seen = new Int32Array(c * r); next = new Int32Array(n); px = new Float64Array(n); py = new Float64Array(n); out = new Float64Array(n)
+      let i = 0
+      while (i < c * r) { head[i] = -1; i++ }
+      i = 0
+      while (i < n) { px[i] = (i * 7) % c; py[i] = (i * 3) % r; let cell = py[i] * c + px[i]; next[i] = head[cell]; head[cell] = i; i++ }
+      return out
+    }
+    export let gather = (n) => {
+      let i = 0
+      while (i < n) {
+        let gx = px[i] | 0, gy = py[i] | 0
+        if (gx < 0) gx = 0; else if (gx >= cols) gx = cols - 1
+        if (gy < 0) gy = 0; else if (gy >= rows) gy = rows - 1
+        let s = 0.0, cy = gy - 1
+        while (cy <= gy + 1) {
+          if (cy >= 0 && cy < rows) {
+            let cx = gx - 1
+            while (cx <= gx + 1) {
+              if (cx >= 0 && cx < cols) {
+                let cell = cy * cols + cx
+                seen[cell] = seen[cell] + 1
+                let j = head[cell]
+                while (j >= 0) { if (j !== i) s += px[j] - px[i]; j = next[j] }
+              }
+              cx++
+            }
+          }
+          cy++
+        }
+        out[i] = s
+        i++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [c, r, n] of [[4, 3, 20], [1, 1, 5], [5, 5, 0], [3, 2, 7.5]]) {
+      const got = m.resize(c, r, n), want = js.resize(c, r, n)
+      m.gather(n); js.gather(n)
+      is(Array.from(got), Array.from(want), `${c}×${r} ${n} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const body = planned(src, 'gather')
+  const hasCold = (n) => Array.isArray(n) && (n.cold === true || n.some(hasCold))
+  const guards = []
+  walkAst(body, { enter: n => { if (Array.isArray(n) && n[0] === 'if' && n.length === 4 && hasCold(n[3])) guards.push(n) } })
+  // the cy loop's guard holds the product tests; no guard sits inside its copy but the walk's own
+  const product = (g) => countNodes(g[1], n => Array.isArray(n) && n[0] === '*') >= 1
+  const outer = guards.find(g => product(g) && countNodes(g[1], n => Array.isArray(n) && n[0] === '()' && n[1] === 'math.min') >= 1)
+  ok(outer, 'the outer guard tests the cell at the counter\'s ends')
+  is(guards.filter(g => product(g) && outer[2].includes(g) === false && countNodes(outer, n => n === g) > 0 && g !== outer).length, 0, 'no product test between the loops')
+})
+
+test('integral loops: optimize.coldTrap throws the version\'s number where the loop as written would run', () => {
+  // A guard failing on the input a copy was meant for runs the loop as written,
+  // cold, with nothing to show for it but time. The diagnostic replaces that arm
+  // with a throw of the version's number: a gallery page or a kernel driven
+  // under it names the guard that fails instead of hiding it.
+  const src = `let W = 0, grid, queue, QN = 0
+    export let resize = (w) => { W = w; grid = new Int32Array(w * w); queue = new Int32Array(w * w); QN = w * w; let i = 0; while (i < QN) { queue[i] = i; i++ } return grid }
+    export let relax = (n) => {
+      let done = 0, qHead = 0, gw = W
+      while (done < n) {
+        let c = queue[qHead]
+        qHead++; if (qHead >= QN) qHead = 0
+        let gx = c % gw
+        if (gx > 0) grid[c] += 1
+        done++
+      }
+      return qHead
+    }`
+  if (belowOpt(2)) return
+  // (the cursor's budget: a count of pops within the queue's length runs the copy; past it, the ring as written)
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports, js = oracle(src)
+  m.resize(4); js.resize(4)
+  is(m.relax(9), js.relax(9), 'pops within the queue run the copy')
+  throws(() => m.relax(40), 'pops past the queue fail the guard, and the trap names it')
+  const plain = jz(src, { optimize: { level: 3 } }).exports
+  plain.resize(4)
+  is(plain.relax(40), js.relax(40), 'without the diagnostic the ring runs as written')
+})
+
+test('integral loops: a self-call\'s argument reading its own parameter ends the fraction check', () => {
+  // `walk(n, x)` calling `walk(n - 1, x * 0.5)`: whether `x` is a fraction asks its
+  // call sites, one of which passes an expression of `x` itself; the check once
+  // recursed without end (stdlib-special in the benchmark corpus). An argument is
+  // read in its caller's scope: a local there is unknown, a fraction visible there counts.
+  const src = `let acc = new Float64Array(8)
+    let walk = (n, x) => { let i = 0; while (i < n) { acc[i] += x; i++ } if (n > 1) walk(n - 1, x * 0.5) }
+    export let run = (n) => { walk(n, 1.0); return acc[0] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    is(m.run(4), js.run(4), `at ${optimize}`)
   }
 })

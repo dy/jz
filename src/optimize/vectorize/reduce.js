@@ -404,8 +404,11 @@ function reduceWrapper(bl, freshIdRef, multiAcc, reduceEntry, opName, accName, c
   // Accumulator k reads the same lane-aligned data as acc 0, shifted by k chunks
   // (k·laneBytes). Acc 0 keeps the address tees (it sets them); acc k>0 reads the
   // tee'd address (normTee → local.get) and adds the byte offset to each load.
+  // (a load that carries its constant element offset as a memarg, `a[i + 1]`, adds to it)
   const offsetLoads = (node, off) => !isArr(node) ? node
-    : node[0] === 'v128.load' ? ['v128.load', ['i32.add', node[1], ['i32.const', off]]]
+    : node[0] === 'v128.load' ? (typeof node[1] === 'string' && node[1].startsWith('offset=')
+      ? ['v128.load', `offset=${+node[1].slice(7) + off}`, ...node.slice(2)]
+      : ['v128.load', ['i32.add', node[1], ['i32.const', off]]])
     : node.map(c => offsetLoads(c, off))
   const accOperandFor = (k) => k === 0 ? accumOperand : offsetLoads(normTee(accumOperand), k * laneBytes)
 

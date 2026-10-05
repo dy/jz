@@ -190,7 +190,8 @@ test('link: functions order by call count, runtime ties by name, user functions 
 
 test('link: tied runtime and user functions have a transitive order', () => {
   const inputs = [[], ['$user'], ['$__z', '$user2', '$__a', '$user1'],
-    ['$user2', '$__z', '$user1', '$__a'], ['$__a', '$user2', '$__z', '$user1']]
+    ['$user2', '$__z', '$user1', '$__a'], ['$__a', '$user2', '$__z', '$user1'],
+    ['$user2', '$user1', '$__z', '$__a']]
   for (const ns of inputs) for (const count of [0, 3]) {
     const m = ['module', ['memory', 1], ...ns.map(n => ['func', n, ['nop']])]
     const counts = new Map(ns.map(n => [n, count]))

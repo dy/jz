@@ -11,12 +11,16 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { agree, oracle, run, wat, funcWat as funcWatOf } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
+import { T } from '../src/ast.js'
 
 const funcWat = (text, name) => funcWatOf(text, name) || funcWatOf(text, `${name}$exp`)
-/** The storage of the local `name` in `fn`, through any inlining prefix. */
+/** The storage of the local `name` in `fn` — with its integral copies (`name·int3`,
+ *  plan/integral-loops.js) and the fresh locals a fast arm gives them (`·us7_name`,
+ *  emit/control-flow.js; `·` the separator T), through any inlining prefix: 'i32'
+ *  where every one is a word, 'f64' where one keeps the number, null where none is left. */
 const storage = (src, fn, name) => {
-  const m = new RegExp(`\\(local \\$(?:\\w+_)?${name} (i32|f64)\\)`).exec(funcWat(wat(src), fn))
-  return m ? m[1] : null
+  const types = [...funcWat(wat(src), fn).matchAll(new RegExp(`\\(local \\$(?:${T}?\\w+_)?${name}(?:${T}int\\d+)? (i32|f64)\\)`, 'g'))].map(m => m[1])
+  return !types.length ? null : types.every(t => t === 'i32') ? 'i32' : 'f64'
 }
 // The storage holds once the optimizer ran; every leg runs the differentials.
 const word = (src, name = 'h') => { if (!belowOpt(2)) is(storage(src, 'f', name), 'i32', `${name} holds its word`) }

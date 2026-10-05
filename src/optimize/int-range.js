@@ -198,6 +198,8 @@ export const conditional = n => {
   return { test, then, otherwise }
 }
 
+// A rounding of a number equals it exactly where it is an integer (or infinite).
+const ROUNDS = new Set(['f64.trunc', 'f64.floor', 'f64.ceil', 'f64.nearest'])
 /** How `y` reads the local `x` back: 'self' (the local itself: equal where
  *  it is a number), 'whole' (its truncation: equal where it is an integer),
  *  'i32', 'u32', 'i64' (its truncation through that integer: equal where it
@@ -212,7 +214,7 @@ export const readBack = (y, x) => {
   if (!isArr(y) || y[1] !== x) return null
   const [out, inner, third] = ops
   if (third) return out === 'f64.convert_i32_s' && inner === 'i32.wrap_i64' && third === 'i64.trunc_sat_f64_s' ? 'i32' : null
-  return out == null ? 'self' : inner == null ? (out === 'f64.trunc' ? 'whole' : null)
+  return out == null ? 'self' : inner == null ? (ROUNDS.has(out) ? 'whole' : null)
     : out === 'f64.convert_i32_s' && inner === 'i32.trunc_sat_f64_s' ? 'i32'
     : out === 'f64.convert_i32_u' && inner === 'i32.trunc_sat_f64_u' ? 'u32'
     : out === 'f64.convert_i64_s' && inner === 'i64.trunc_sat_f64_s' ? 'i64' : null
@@ -442,6 +444,7 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   // What a test establishes: the intervals of the locals it compares, in the
   // environment where it holds (`truth`) or fails.
   const readName = x => isArr(x) && (x[0] === 'local.get' || x[0] === 'local.tee') && typeof x[1] === 'string' && tracked(x[1]) ? x[1] : null
+  const absRead = (x, stale) => isArr(x) && x[0] === 'f64.abs' && x.length === 2 && !stale.has(x[1]) ? readName(x[1]) : null
   let definitions
   const publish = (env, name, value, proof = null) => {
     if (proof && --proof.left < 0) return
@@ -576,6 +579,14 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
         }
         publish(env, x, { lo, hi, int: true, nz: (v ? v.nz : true) && lo <= 0 && hi >= 0, nan: false }, proof)
       }
+      return
+    }
+    // `|x| < c` or `|x| <= c` where it holds: x is a number within c of zero
+    const ax = absRead(p, stale), ay = absRead(q, stale)
+    if ((ax && b && real(b) && truth && (op === 'f64.lt' || op === 'f64.le')) || (ay && a && real(a) && truth && (op === 'f64.gt' || op === 'f64.ge'))) {
+      const name = ax ?? ay, c = ax ? b : a, rel = ax ? F64_CMP[op] : FLIP[F64_CMP[op]]
+      bound(env, name, rel, c, true, proof)
+      bound(env, name, rel === 'lt' ? 'gt' : 'ge', { lo: -c.hi, hi: -c.lo }, true, proof)
       return
     }
     let rel = F64_CMP[op] ?? INT_CMP[op]
@@ -734,8 +745,9 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   // The interval of an operator over the intervals of its operands.
   const value = (n, op, a, b, x, y) => {
     switch (op) {
-      case 'f64.convert_i32_s': case 'i64.extend_i32_s': return word(a) ?? I32
-      case 'f64.convert_i32_u': case 'i64.extend_i32_u': return word(a) && a.lo >= 0 ? a : val(0, 2 ** 32 - 1)
+      // (a word holds no more than its width: a bound a loop widened past it is the width's)
+      case 'f64.convert_i32_s': case 'i64.extend_i32_s': return word(a) ? val(Math.max(a.lo, I32.lo), Math.min(a.hi, I32.hi)) ?? I32 : I32
+      case 'f64.convert_i32_u': case 'i64.extend_i32_u': return word(a) && a.lo >= 0 ? val(a.lo, Math.min(a.hi, 2 ** 32 - 1)) ?? a : val(0, 2 ** 32 - 1)
       case 'f64.convert_i64_s': return word(a)
       case 'f64.promote_f32': return NUMBER
       case 'i64.reinterpret_f64': return bitsOf(a?.of ? null : a)

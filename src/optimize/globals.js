@@ -457,6 +457,10 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
   if (!byteLens.size) return
   const writes = reachableMemoryWrites?.get(fn[1]) || new Set(['*'])
   if (writes.has('*') || !reachableGlobalWrites) return
+  // A store through one global leaves another's elements alone only when both
+  // hold buffers of their own: `b = a`, or a view of `a.buffer`, is a.
+  const own = ctx.scope.freshTypedGlobals
+  const apart = global => !writes.size || !!own?.has(global) && [...writes].every(g => own.has(g))
   const opWidth = op => op.startsWith('v128.') ? 16
     : op.startsWith('f64.') || op.startsWith('i64.') ? 8
     : op.includes('load8') ? 1 : op.includes('load16') ? 2 : 4
@@ -468,7 +472,7 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
     if (plainLoadOp(op)) {
       const { global, offset, exact } = memGlobal(n, aliases)
       const width = opWidth(op), limit = byteLens.get(global)
-      if (global && exact && !writes.has(global) && Number.isInteger(offset) && offset >= 0 && offset + width <= limit) {
+      if (global && exact && !writes.has(global) && apart(global) && Number.isInteger(offset) && offset >= 0 && offset + width <= limit) {
         // Keep sign/zero-extending loads distinct even at the same cell.
         const key = `${op}|${global}|${offset}`
         let rec = sites.get(key)

@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import { evaluate, run, oracle, funcWat } from './util.js'
+import { evaluate, foldWords, run, oracle, funcWat } from './util.js'
 import jz, { compile } from '../index.js'
 import { onKernel, levels, belowOpt } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
@@ -133,10 +133,11 @@ test('Math.round', async () => {
 test('Math.floor/ceil/trunc/round elide on intCertain operand', async () => {
   // Each function is a no-op on integer values. When the operand is provably
   // integer (intCertain lattice), the wasm op should not be emitted.
-  const wat = await compile(
+  // (words folded: the truncation of `x | 0` is its own, not Math.trunc's)
+  const wat = foldWords(await compile(
     'export let f = (x) => { let i = x | 0; return Math.floor(i) + Math.ceil(i) + Math.trunc(i) + Math.round(i) }',
     { wat: true }
-  )
+  ))
   is(/f64\.floor/.test(wat), false)
   is(/f64\.ceil/.test(wat), false)
   is(/f64\.trunc(?!_)/.test(wat), false)

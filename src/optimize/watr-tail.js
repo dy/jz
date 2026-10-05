@@ -19,6 +19,7 @@ import {
   SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
 } from './index.js'
 import { pureKernel } from './pure-funcs.js'
+import { guardToInt32 } from './to-int32.js'
 
 // A runtime helper's cold half, split off so the engine inlines the hot head
 // (module/core.js `__rem`, its long division `__rem_div`): the single-caller
@@ -542,6 +543,7 @@ export function watrTail(module, cfg, {
       for (const node of funcs) hoistGlobalPtrOffset(node, stableGlobals, reach)
     }
   }
+  if (cfg.guardedToInt32 === true) time('guardToInt32', () => guardToInt32(optimized, cfg.wordTruncation === 'add'))
   stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
   return optimized
 }

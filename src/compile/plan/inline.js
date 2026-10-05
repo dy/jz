@@ -391,7 +391,10 @@ const stableNames = (func) => {
   walkAst(frameNode(func), { enter: n => { if (n[0] === '=>') { walkAst(n, { enter: x => { for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string') captured.add(x[i]) } }); return false } } })
   return (name) => own.has(name) ? !captured.has(name) : !!ctx.scope.consts?.has(name)
 }
-const prefixCommutesWithLhs = (prefix, lhs) => {
+// `callee` and `args`, where given, name the splice before its renaming: its
+// body under its own view knows its parameters' kinds (a comparison of a Number
+// parameter runs no conversion), where the renamed prefix under the caller's does not.
+const prefixCommutesWithLhs = (prefix, lhs, callee = null, args = null) => {
   if (typeof lhs === 'string' || !prefix.length) return true
   const body = [';', ...prefix]
   // A target that runs nothing, over names the splice cannot store to, names the same
@@ -406,7 +409,8 @@ const prefixCommutesWithLhs = (prefix, lhs) => {
   // A target that names its receiver and its key (`out[i] = f(x)`, `o.k = f(x)`)
   // reads no memory: a store in the prefix changes neither, a name it writes does.
   if (plainTarget(lhs)) {
-    if (some(body, x => (x[0] === '()' && !isPureCallee(x[1])) || x[0] === '?.()' || x[0] === 'new' || implicitEffect(x))) return false
+    const effect = (n, view) => some(n, x => (x[0] === '()' && !isPureCallee(x[1])) || x[0] === '?.()' || x[0] === 'new' || implicitEffect(x, view))
+    if (callee ? effect(callee.body, ctx.summary?.at(callee.sig) ?? callerView) || (args ?? []).some(a => effect(a, callerView)) : effect(body, callerView)) return false
     const w = new Set()
     walkAst(body, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') w.add(x[1]) } })
     return !refsAny(lhs, w, REFS_IN_EXPR)
@@ -647,7 +651,7 @@ const inlineInStmt = (stmt, candidates, hot = false) => {
   if (stmt[0] === '=' && isCandidateCall(stmt[2], candidates, hot)) {
     const args = callArgs(stmt[2])
     const shape = args && inlinedBody(candidates.get(stmt[2][1]), args)
-    if (shape && shape.value !== null && prefixCommutesWithLhs(shape.prefix, stmt[1])) {
+    if (shape && shape.value !== null && prefixCommutesWithLhs(shape.prefix, stmt[1], candidates.get(stmt[2][1]), args)) {
       return spliceInlinedShape(shape.prefix, ['=', stmt[1], shape.value])
     }
   }

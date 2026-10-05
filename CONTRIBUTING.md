@@ -2444,7 +2444,7 @@ src/
                 plan/counted-loops.js: a counted loop over its trip number (computed start, secondary cursors, unrolled body rolled back, unit stride versioned); guards preserve full cursor entries and updates, including signed zero. Bounds must be stable and free of coercion calls; captures and mutable array lengths retain their original loops.
                 plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
                 plan/kind-split.js: a loop reading a name of several kinds, a typed array among them, a copy over that array where `instanceof` says the name holds it (the constructor from the name's values and its callers' arguments)
-                plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one
+                plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one; a cursor stepped by literals (a ring with its resets, a module binding in a loop that runs no user code) as a word under its advance budget; a derived integer of the counter and of proven int32s (a row base, a derived index, a guarded scatter cell, an index with a product, an element at a proven index, a clamped float truncated) as a word where its hull, kept by a walk of the body through its tests and early exits, fits i32 (an end at the type's extreme opens under a name, a visible fraction is held to a Number); a walk over links (`j = next[j]` under `j >= 0`) as a word reading a missed link as -1; an inner version whose names are such words absorbed into the copy, its tests over the counter lifted to the counter's ends
                 plan/loop-fields.js: a field or a Float64Array element a loop reads and writes through one receiver, in a local for the loop, stored back after it
                 plan/chosen-calls.js: a local holding one of several named functions and only called, the choice of direct calls
                 plan/called-args.js: a function whose parameter is only called or tested against strings, a copy for each named function or string literal a call passes there
@@ -3453,10 +3453,19 @@ was the strbuild checksum regression.
 
 ToInt32 of a value whose range is proven finite and below 2^63 (`f64Range`:
 literals, counters, `Math.floor` of a bounded product, a checked byte read) is
-`i32.wrap_i64(i64.trunc_sat_f64_s)` with no ±∞ guard, and the i64 form is
-kept on purpose: V8's arm64 lowering of `i32.trunc_sat_f64_s` adds a float
-round-trip and range checks (bytebeat 1521 → 1370 µs; a 5e7-iteration micro
-294 ns against 446). An unproven value keeps the guarded select. The range
+`i32.wrap_i64(i64.trunc_sat_f64_s)` with no ±∞ guard: V8's arm64 lowering of
+`i32.trunc_sat_f64_s` adds a float round-trip and range checks (bytebeat 1521
+→ 1370 µs; a 5e7-iteration micro 294 ns against 446). On x64 the same V8 runs
+that wide form at four times the cost, so the speed tier (`wordTruncation:
+'add'`) takes a word without any conversion: within ±2^51 and no NaN, the
+value's truncation plus 1.5·2^52 holds the integer in its low bits, exactly.
+Integer narrowing does that where the interval proves the range; elsewhere a
+test of the magnitude guards it, the wide form behind it, and an element
+key's exactness test (`convert(word) == key`) takes the sum's low bits as its
+word. `bench/lowering.mjs`, printed by examples-perf on each target: x64 4.1
+ns wide against 1.0 added, arm64 0.82 against 0.93, Apple M1 0.73 against
+0.81; the gallery on x64 went from 39 to 44 of 65 pages ahead of JS, arm64
+from 45 to 46. An unproven value keeps the guarded select. The range
 is flow-sensitive (`optimize/flow-range.js`): a comparison bounds the local in
 the arm it guards, the arms hull at their join, and a loop's written locals
 are unknown at its head, so a clamp (`if (v > K) v = K; else if (v < L) v = L`)

@@ -505,6 +505,7 @@ export function reset(proto, globals, bridge) {
     globalReps: null, // Map<name, ValueRep> — module-level pointer reps (TYPED const globals stored as raw i32 offset, etc.)
     consts: null,
     headerSafeFuncs: null, // Map<$name, {alloc}> — functions a loop may call without a header changing, for the module optimizer's pass (optimize/licm.js)
+    freshTypedGlobals: null, // Set<$name> — module bindings that only hold typed arrays of their own, pairwise distinct buffers (plan/literals.js), for optimize/licm.js
     constInts: null,      // Map<name, int> — module const folded to an integer literal (prepare/plan seed; static/ir read)
     constStrs: null,      // Map<name, string> — module const folded to a string literal
     shapeStrs: null,      // Map<expr, string> / shapeStrArrays: Map<name, string[]> — schema-shape string folds

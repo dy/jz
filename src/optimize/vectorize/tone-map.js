@@ -26,32 +26,33 @@ import { simdBound } from './scaffold.js'
 // No cross-lane reordering, so no ulp drift. Speculatively-evaluated arms are
 // trap-free (log/convert/mul/min/trunc never trap; there is no div/rem). Gated until
 // proven across the corpus, then promoted like the stencil/outer-strip wins.
+const _toneCalls = (n) => isArr(n) && (n[0] === 'call' || n.some(_toneCalls))
 const _toneStripTee = (n) => isArr(n) && n[0] === 'local.tee' && n.length === 3 ? n[2] : n
 
 // `(i32.wrap_i64 (i64.trunc_sat_f64_{s,u} X))` or `(i32.trunc_sat_f64_{s,u} X)` — the
-// f64→i32 `|0` bridge. Returns { inner, signed } (tee on X stripped) or null.
+// f64→i32 `|0` bridge. Returns { inner, signed, wrap } (tee on X stripped) or null: `wrap`,
+// the low word of the 64-bit truncation, which the 32-bit one equals only within its range.
 function matchTruncF64(expr) {
   if (!isArr(expr)) return null
   if (expr[0] === 'i32.wrap_i64' && isArr(expr[1])) {
     const t = expr[1]
-    if (t[0] === 'i64.trunc_sat_f64_s') return { inner: _toneStripTee(t[1]), signed: true }
-    if (t[0] === 'i64.trunc_sat_f64_u') return { inner: _toneStripTee(t[1]), signed: false }
+    if (t[0] === 'i64.trunc_sat_f64_s') return { inner: _toneStripTee(t[1]), signed: true, wrap: true }
+    if (t[0] === 'i64.trunc_sat_f64_u') return { inner: _toneStripTee(t[1]), signed: false, wrap: true }
   }
-  if (expr[0] === 'i32.trunc_sat_f64_s') return { inner: _toneStripTee(expr[1]), signed: true }
-  if (expr[0] === 'i32.trunc_sat_f64_u') return { inner: _toneStripTee(expr[1]), signed: false }
+  if (expr[0] === 'i32.trunc_sat_f64_s') return { inner: _toneStripTee(expr[1]), signed: true, wrap: false }
+  if (expr[0] === 'i32.trunc_sat_f64_u') return { inner: _toneStripTee(expr[1]), signed: false, wrap: false }
   return null
 }
 
-// The `|0` of a known-finite f64: `(select (trunc X) (i32.const 0) (f64.ne X' ±Inf))`.
-// Since the tonemap clamps L into [0,255] before the trunc, the `≠Inf` guard is always
-// true, so this lowers to a plain `trunc_sat` — returns the inner f64 to truncate.
+// ToInt32: `(select (trunc X) (i32.const 0) (f64.ne X' Inf))`, the low word of the
+// 64-bit truncation with Infinity taken to zero. Returns the inner f64 or null.
 function matchInfCanonTone(sel) {
   if (!isArr(sel) || sel[0] !== 'select' || sel.length !== 4) return null
   if (!(isI32Const(sel[2]) && constNum(sel[2]) === 0)) return null
   const c = sel[3]
   if (!(isArr(c) && c[0] === 'f64.ne' && isArr(c[2]) && c[2][0] === 'f64.const' && /inf/i.test(String(c[2][1])))) return null
   const tr = matchTruncF64(sel[1])
-  return tr ? tr.inner : null
+  return tr?.wrap && tr.signed ? tr.inner : null
 }
 
 // Loads tryToneMap accepts as the f64-island input. `i32.load` is the original (stride-4, no
@@ -67,12 +68,22 @@ const TONE_LOAD = {
   'i32.load8_s':  { shift: 0, widen: ['v128.load32_zero', ['i16x8.extend_low_i8x16_s', 'i32x4.extend_low_i16x8_s']], over: 2 },
   'i32.load16_u': { shift: 1, widen: ['v128.load32_zero', ['i32x4.extend_low_i16x8_u']], over: 0 },
   'i32.load16_s': { shift: 1, widen: ['v128.load32_zero', ['i32x4.extend_low_i16x8_s']], over: 0 },
+  // a Float32Array: two floats, promoted where `f64.promote_f32` reads them
+  'f32.load':     { shift: 2, widen: null, over: 0 },
 }
 
 // `base + (i << shift)` (shift 0 ⇒ bare `base + i`) with `base` a loop-invariant array pointer.
 // The address shape for a load/store at its element stride: the u32 store uses shift 2 (stride-4 ⇒
 // load64_zero/i64.store cover exactly 2 consecutive u32); a narrow load uses its own stride (0/1).
-function matchToneAddrShift(addr, ind, shift) {
+// `tees`: an address saved in a local (`(local.tee $a base+(i<<k))`, its other access reads
+// `$a`) — the locals set once so, by their stride exponent.
+function matchToneAddrShift(addr, ind, shift, tees = null) {
+  if (tees && isArr(addr) && addr[0] === 'local.tee' && addr.length === 3) {
+    const m = matchToneAddrShift(addr[2], ind, shift)
+    if (m && tees.once(addr[1])) tees.set(addr[1], shift)
+    return m
+  }
+  if (tees && isArr(addr) && addr[0] === 'local.get' && tees.get(addr[1]) === shift) return addr
   if (!isArr(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return null
   const pair = (baseN, offN) => {
     if (!isArr(baseN) || (baseN[0] !== 'local.get' && baseN[0] !== 'global.get')) return null
@@ -131,20 +142,22 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // f64-convert requirement is what distinguishes this from a plain i32 map (tryVectorize,
   // which runs earlier and already owns those).
   let hasConvert = false, storeCount = 0, loadCount = 0, overread = 0, ok = true
+  const addrTees = new Map()
+  addrTees.once = name => { let k = 0; for (const s of body) walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) k++ } }); return k === 1 }
   const inspect = n => {
     if (!ok || !isArr(n)) return false
     const o = n[0]
-    if (o === 'f64.convert_i32_s' || o === 'f64.convert_i32_u') hasConvert = true
-    if (o === 'i32.store') {
+    if (o === 'f64.convert_i32_s' || o === 'f64.convert_i32_u' || o === 'f64.promote_f32') hasConvert = true
+    if (o === 'i32.store' || o === 'f32.store') {
       storeCount++
-      if (!matchToneAddrShift(n[1], incVar, 2)) ok = false
+      if (!matchToneAddrShift(n[1], incVar, 2, addrTees)) ok = false
       if (ok) walkAst(n[2], { enter: inspect })
       return false
     }
     const ld = TONE_LOAD[o]
     if (ld && n.length === 2) {   // i32 (stride-4) or a narrow typed-array read at its own stride
       loadCount++
-      if (!matchToneAddrShift(n[1], incVar, ld.shift)) { ok = false; return false }
+      if (!matchToneAddrShift(n[1], incVar, ld.shift, addrTees)) { ok = false; return false }
       if (ld.over > overread) overread = ld.over
       return false
     }
@@ -182,6 +195,7 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     }
   }
 
+  const lifted = []
   const newLanedLocals = new Map()       // origName → laneName (bare string; see getOrAllocLanedLocal)
   const ctx = liftCtx('f64', incVar, localKind, freshIdRef, null, newLanedLocals)
   const toneSetBefore = new Set()         // lane locals already assigned (conditional-merge gate)
@@ -207,6 +221,34 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     return 'x'
   }
 
+  // The low word of each lane's 64-bit truncation, as the scalar form answers it: the
+  // 32-bit truncation where both lanes lie within its range (signed: |x| < 2^31,
+  // unsigned: 0 ≤ x < 2^32); otherwise `scalar` per lane, which NaN takes too.
+  // Within a statement every truncation's lanes are held in a local and tested
+  // together, one branch for the statement (a pixel's three channels, not three
+  // branches a pixel): the statement reads their words from locals (liftS).
+  let pending = null, pre = null
+  const inRangeOf = (get, signed) => signed
+    ? ['f64x2.lt', ['f64x2.abs', get], ['f64x2.splat', ['f64.const', 2147483648]]]
+    : ['v128.and', ['f64x2.ge', get, ['f64x2.splat', ['f64.const', 0]]], ['f64x2.lt', get, ['f64x2.splat', ['f64.const', 4294967296]]]]
+  const laneWord = (k, get, x, signed, scalar) => ['block', ['result', 'i32'], ['local.set', x, ['f64x2.extract_lane', k, get]],
+    scalar(['local.get', x]) ?? ['i32.wrap_i64', [signed ? 'i64.trunc_sat_f64_s' : 'i64.trunc_sat_f64_u', ['local.get', x]]]]
+  const truncZero = (signed, get) => [signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', get]
+  function truncLanes(v, signed, scalar) {
+    const t = freshMask(), x = `$__tl${freshIdRef.next++}`, get = ['local.get', t]
+    ctx.extraLocals.push(['local', x, 'f64'])
+    if (pending) {
+      const rt = freshMask()
+      pre.push(['local.set', t, v])
+      pending.push({ get, x, rt, signed, scalar })
+      return ['local.get', rt]
+    }
+    return ['block', ['result', 'v128'], ['local.set', t, v],
+      ['if', ['result', 'v128'], ['i64x2.all_true', inRangeOf(get, signed)],
+        ['then', truncZero(signed, get)],
+        ['else', ['i32x4.replace_lane', 1, ['i32x4.splat', laneWord(0, get, x, signed, scalar)], laneWord(1, get, x, signed, scalar)]]]]
+  }
+
   // Lift one value expression to v128. Result lane type comes from the op (f64.* → f64x2,
   // i32.* → i32x4; convert/trunc bridge between them). Bit-exact per lane.
   function liftV(expr) {
@@ -220,8 +262,15 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       const a = liftV(inner); if (ctx.fail) return null
       return [op === 'f64.convert_i32_s' ? 'f64x2.convert_low_i32x4_s' : 'f64x2.convert_low_i32x4_u', a]
     }
+    if (op === 'f64.promote_f32' && isArr(expr[1]) && expr[1][0] === 'f32.load' && expr[1].length === 2)
+      return ['f64x2.promote_low_f32x4', ['v128.load64_zero', expr[1][1]]]
     const tr = matchTruncF64(expr)   // f64 → i32 `|0` bridge
-    if (tr) { const a = liftV(tr.inner); if (ctx.fail) return null; return [tr.signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', a] }
+    if (tr) {
+      const a = liftV(tr.inner); if (ctx.fail) return null
+      return tr.wrap ? truncLanes(a, tr.signed, x => expr[0] === 'i32.wrap_i64' ? ['i32.wrap_i64', [expr[1][0], x]] : null)
+        : [tr.signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', a]
+    }
+    if (op === 'f32.load') return liftFail(ctx, 'tonemap: f32.load read other than promoted')
     if (TONE_LOAD[op] && expr.length === 2) {   // i32 → load64_zero (low 2 lanes); narrow → widen to i32x4 low lanes
       const w = TONE_LOAD[op].widen
       if (!w) return ['v128.load64_zero', expr[1]]   // address kept scalar
@@ -253,7 +302,10 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     }
     if (op === 'select' && expr.length === 4) {
       const inf = matchInfCanonTone(expr)
-      if (inf) { const a = liftV(inf); if (ctx.fail) return null; return ['i32x4.trunc_sat_f64x2_s_zero', a] }
+      if (inf) {
+        const a = liftV(inf); if (ctx.fail) return null
+        return truncLanes(a, true, x => ['select', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', x]], ['i32.const', 0], ['f64.ne', x, ['f64.const', Infinity]]])
+      }
       return liftSel(expr[1], expr[2], expr[3], true)
     }
     if (op === 'if' && isArr(expr[1]) && expr[1][0] === 'result' && isArr(expr[3]) && expr[3][0] === 'then' && isArr(expr[4]) && expr[4][0] === 'else')
@@ -308,7 +360,60 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   }
 
   // Lift one statement, pushing v128 stmts into `out`. Sets ctx.fail on any bail.
+  // Its truncations' inputs come first, into locals, then one test of them all and
+  // their words, then the statement. An input hoisted so must read no lane the rest
+  // of the statement tees: then the statement is lifted again, each truncation in place.
   function liftS(stmt, out) {
+    const outerPending = pending, outerPre = pre, setBefore = new Set(toneSetBefore)
+    pending = []; pre = []
+    const inner = []
+    liftS0(stmt, inner)
+    const mine = pending, mPre = pre
+    pending = outerPending; pre = outerPre
+    if (ctx.fail) return
+    if (!mine.length) { flushBatch(out); out.push(...inner); return }
+    // (a run of lane sets each of one truncation, `r = … | 0; g = … | 0; b = … | 0`,
+    // is tested as one: the next joins while its input reads no lane the run sets)
+    if (out === lifted && mine.length === 1 && inner.length === 1 && inner[0][0] === 'local.set' && inner[0][2]?.[0] === 'local.get' && inner[0][2][1] === mine[0].rt) {
+      const sets = new Set(batch.map(b => b.set[1]))
+      let reads = false
+      for (const n of mPre) walkAst(n, { enter: x => { if (x[0] === 'local.get' && sets.has(x[1])) reads = true } })
+      if (reads) flushBatch(out)
+      batch.push({ pre: mPre, p: mine[0], set: inner[0] })
+      return
+    }
+    flushBatch(out)
+    // (a lane the rest of the statement writes, in place or as a tee: its hoisted readers would read it early)
+    const teed = new Set()
+    for (const n of inner) walkAst(n, { enter: x => { if (x[0] === 'local.tee' || x[0] === 'local.set') teed.add(x[1]) } })
+    let unsafe = false
+    for (const n of mPre) walkAst(n, { enter: x => { if (x[0] === 'local.get' && teed.has(x[1])) unsafe = true } })
+    if (unsafe) {
+      toneSetBefore.clear(); for (const x of setBefore) toneSetBefore.add(x)
+      pending = null; pre = null
+      const again = []
+      liftS0(stmt, again)
+      pending = outerPending; pre = outerPre
+      if (!ctx.fail) out.push(...again)
+      return
+    }
+    testWords(out, mPre, mine)
+    out.push(...inner)
+  }
+  const batch = []
+  const testWords = (out, pres, ps) => {
+    const check = ps.map(p => inRangeOf(p.get, p.signed)).reduce((a, b) => ['v128.and', a, b])
+    out.push(...pres, ['if', ['i64x2.all_true', check],
+      ['then', ...ps.map(p => ['local.set', p.rt, truncZero(p.signed, p.get)])],
+      ['else', ...ps.map(p => ['local.set', p.rt, ['i32x4.replace_lane', 1, ['i32x4.splat', laneWord(0, p.get, p.x, p.signed, p.scalar)], laneWord(1, p.get, p.x, p.signed, p.scalar)]])]])
+  }
+  function flushBatch(out) {
+    if (!batch.length) return
+    testWords(out, batch.flatMap(b => b.pre), batch.map(b => b.p))
+    out.push(...batch.map(b => b.set))
+    batch.length = 0
+  }
+  function liftS0(stmt, out) {
     if (!isArr(stmt)) { liftFail(ctx, 'tonemap: non-array statement'); return }
     const op = stmt[0]
     if (op === 'block') {
@@ -323,6 +428,11 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       if (localKind.get(name) !== 'lane') { liftFail(ctx, `tonemap: set of non-lane ${name}`); return }
       const v = liftV(stmt[2]); if (ctx.fail) return
       out.push(['local.set', laned(name), v]); toneSetBefore.add(name); return
+    }
+    // f32.store ADDR (f32.demote_f64 VAL) → the two demoted lanes, one i64.store
+    if (op === 'f32.store' && stmt.length === 3 && isArr(stmt[2]) && stmt[2][0] === 'f32.demote_f64') {
+      const v = liftV(stmt[2][1]); if (ctx.fail) return
+      out.push(['i64.store', stmt[1], ['i64x2.extract_lane', 0, ['f32x4.demote_f64x2_zero', v]]]); return
     }
     if (STORE_OPS[op]) {   // i32.store ADDR VAL → masked i64.store of the low 2 lanes (2 pixels)
       if (op !== 'i32.store' || stmt.length !== 3) { liftFail(ctx, `tonemap: unsupported store ${op}`); return }
@@ -340,15 +450,26 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
       // (a) Conditional STORE — both arms (or then-only) end in a store to the same address.
       if (thenStore && (elseStore || !hasElse)) {
         if (elseStore && JSON.stringify(thenLast[1]) !== JSON.stringify(elseLast[1])) { liftFail(ctx, 'tonemap: arms store to different addresses'); return }
-        for (const s of thenStmts.slice(0, -1)) { liftS(s, out); if (ctx.fail) return }
-        if (hasElse) for (const s of elseStmts.slice(0, -1)) { liftS(s, out); if (ctx.fail) return }
-        const thenVal = liftV(thenLast[2]); if (ctx.fail) return
-        const elseVal = elseStore ? liftV(elseLast[2]) : ['v128.load64_zero', thenLast[1]]
-        if (ctx.fail) return
+        // The test first, as the scalar loop runs it; its low two i32 lanes are the pixels'.
         const m = liftMask(stmt[1], 'i32'); if (ctx.fail) return
-        const mt = freshMask()
-        out.push(['local.set', mt, m],
-          ['i64.store', thenLast[1], ['i64x2.extract_lane', 0, ['v128.bitselect', thenVal, elseVal, ['local.get', mt]]]])
+        const mt = freshMask(), lanes = ['i64x2.extract_lane', 0, ['local.get', mt]]
+        out.push(['local.set', mt, m])
+        // Each arm, then its value. An arm that calls (a log, an exp) runs only where
+        // a pixel takes it: the scalar loop skips it per pixel, and a sparse density
+        // map leaves most pairs on the cheap arm.
+        const arm = (stmts, last, taken) => {
+          const pre = []
+          for (const s of stmts.slice(0, -1)) { liftS(s, pre); if (ctx.fail) return null }
+          const v = liftV(last[2]); if (ctx.fail) return null
+          if (!stmts.some(s => _toneCalls(s))) { out.push(...pre); return v }
+          const t = freshMask()
+          out.push(['if', taken, ['then', ...pre, ['local.set', t, v]]])
+          return ['local.get', t]
+        }
+        const thenVal = arm(thenStmts, thenLast, ['i64.ne', lanes, ['i64.const', 0]]); if (ctx.fail) return
+        const elseVal = elseStore ? arm(elseStmts, elseLast, ['i64.ne', lanes, ['i64.const', -1]]) : ['v128.load64_zero', thenLast[1]]
+        if (ctx.fail) return
+        out.push(['i64.store', thenLast[1], ['i64x2.extract_lane', 0, ['v128.bitselect', thenVal, elseVal, ['local.get', mt]]]])
         return
       }
       // (b) Conditional VALUE update — `if (cond) { L = …; … }` (no else) updating lane locals.
@@ -375,8 +496,8 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     liftFail(ctx, `tonemap: unsupported statement ${op}`)
   }
 
-  const lifted = []
   for (const s of body) { liftS(s, lifted); if (ctx.fail) return null }
+  flushBatch(lifted)
   if (!lifted.length) return null
 
   // 2-wide SIMD wrapper (LANES=2, the f64x2 island's width). Scalar tail = original block.
