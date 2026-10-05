@@ -16,10 +16,21 @@
 // between the paired cells lives in a register and the loop overhead is halved. A `LO <= HI` guard
 // keeps the seed load in step with the original (which reads `arr[LO-1]` only when it iterates),
 // and falls back to the untouched loop on the empty range — sound for any trip count.
+//
+// The pairs stay one counted `for` over its own counter, stepped by 2, the second cell under
+// the loop's test one cell on (`for (let j = LO; j <= HI; j += 2) { cell(j); if (j + 1 <= HI)
+// cell(j + 1) }`): the loop's test bounds every read, and no tail reads at a counter past
+// the loop. A plan sweep (`unrollRecurrences`, ahead of the counted-loop passes) rewrites
+// every function so the summary and the loop versioning see the carry and the copies as they
+// see any source loop — a carry the summary never kinded was typed by the emitter's defaults
+// alone, a Number through a truncation where its array holds int32s.
 
-import { loopLitVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards, rewriteBlocks } from './loop-model.js'
+import { ctx } from '../ctx.js'
+import { loopLitVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards, rewriteBlocks, closureMutatedVars } from './loop-model.js'
+import { setFuncBody } from './analyze.js'
+import { frameNode } from '../function.js'
 import { cloneIR } from '../ir.js'
-import { walkAst, some } from '../ast.js'
+import { walkAst, some, isBlockBody, T } from '../ast.js'
 
 const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-compile kernel rejects a builtin used as a first-class value
 const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[2], 1)   // (iv - 1)
@@ -30,12 +41,12 @@ const REJECT = new Set(['for', 'while', 'break', 'continue', 'return',
   'throw', 'catch', 'finally', '=>', 'label'])
 const hasUnsafe = (n) => some(n, node => REJECT.has(node[0]) || (node[0] === '()' && typeof node[1] === 'string'))   // function call `f(args)`
 
-// Substitute every value-reference of `iv` with (iv + 1); leave the op slot and property keys.
-const subPlus1 = (n, iv) => {
-  if (n === iv) return ['+', iv, 1]
+// Substitute every value-reference of `iv` with `to`; leave the op slot and property keys.
+const subIv = (n, iv, to) => {
+  if (n === iv) return cloneIR(to)
   if (!isArr(n)) return n
-  if (n[0] === '.' && n.length === 3) return ['.', subPlus1(n[1], iv), n[2]]
-  return [n[0], ...n.slice(1).map(c => subPlus1(c, iv))]
+  if (n[0] === '.' && n.length === 3) return ['.', subIv(n[1], iv, to), n[2]]
+  return [n[0], ...n.slice(1).map(c => subIv(c, iv, to))]
 }
 
 // Rename every let/const-DECLARED var in `stmts` with a suffix, throughout — so the 2nd unrolled
@@ -130,19 +141,23 @@ function tryUnroll(stmt, cm) {
 
   // --- transform ---
   const id = freshLoopId()
-  const left = `__rec${id}`
+  const left = `${arr}${T}rec${id}`   // the array's carried cell (a declared name, not a temp: the narrowing passes type it)
   const bodyS = scalarReplace(stmts, arr, iv, left, storeVal)
-  const cellJ = () => bodyS.map(cloneIR)
-  const cellJ1 = renameDecls(bodyS.map(s => subPlus1(cloneIR(s), iv)), `$r${id}`)
+  // Each copy declares its own names, the counter included (the else arm keeps
+  // the loop as written): a name declared once per function is what every
+  // later pass assumes.
+  const j = `${iv}${T}j${id}`
+  const cellJ = (tag) => renameDecls(bodyS.map(s => subIv(s, iv, j)), `${T}${tag}${id}`)
+  const cellJ1 = renameDecls(bodyS.map(s => subIv(s, iv, ['+', j, [null, 1]])), `${T}r${id}`)
 
-  const seed = ['let', ['=', left, ['[]', arr, loVal - 1]]]          // left = arr[LO-1]
-  const letIv = ['let', ['=', iv, cloneIR(LO)]]                        // let iv = LO
-  const twoFit = cmpOp === '<=' ? ['<', iv, cloneIR(HI)] : ['<', iv, ['-', cloneIR(HI), 1]]
-  const main = ['while', twoFit,
-    [';', ['{}', [';', ...cellJ()]], ['{}', [';', ...cellJ1]], ['=', iv, ['+', iv, 2]]]]
-  const tail = ['if', [cmpOp, iv, cloneIR(HI)],
-    ['{}', [';', ...cellJ(), ['=', iv, ['+', iv, 1]]]]]
-  const block = ['{}', [';', letIv, seed, main, tail]]
+  const seed = ['let', ['=', left, ['[]', arr, [null, loVal - 1]]]]   // left = arr[LO-1]
+  // The loop's own test keeps the first cell in range; the second runs under
+  // the same test one cell on (`j + 1 <= HI`), so the last odd cell needs no
+  // tail after the loop (a tail reads at a counter no loop test bounds).
+  const main = ['for', ['let', ['=', j, cloneIR(LO)]], [cmpOp, j, cloneIR(HI)], ['+=', j, [null, 2]],
+    [';', ...cellJ('p'), ['if', [cmpOp, ['+', j, [null, 1]], cloneIR(HI)], [';', ...cellJ1]]]]
+  // a statement list, as prepare leaves an `if`'s arms (a block of its own is a scope)
+  const block = [';', seed, main]
   // Run the unrolled form only on a non-empty range (so the seed's arr[LO-1] load matches the
   // original, which reads it only when it iterates); otherwise the untouched loop.
   return [['if', [cmpOp, cloneIR(LO), cloneIR(HI)], block, stmt]]
@@ -150,6 +165,22 @@ function tryUnroll(stmt, cm) {
 
 export function unrollRecurrence(body, cm) {
   return rewriteBlocks(body, stmt => tryUnroll(stmt, cm))
+}
+
+/** Plan sweep: the recurrence loops of every function, its closures' included
+ *  (a closure's writes are in the function's census). */
+export const unrollRecurrences = () => {
+  const o = ctx.transform.optimize
+  if (!o || o.unrollRecurrence === false) return false
+  let changed = false
+  for (const func of ctx.funcs.list) {
+    if (func.raw || !isBlockBody(func.body)) continue
+    const body = unrollRecurrence(func.body, closureMutatedVars(frameNode(func)))
+    if (body === func.body) continue
+    setFuncBody(func, body)
+    changed = true
+  }
+  return changed
 }
 
 // ── Serial-chain ×2 unroll (speed tier) ──────────────────────────────────────
@@ -238,7 +269,7 @@ function tryUnrollScalarChain(stmt, cm) {
   // --- transform: pair + tail ---
   const id = freshLoopId()
   const cell = () => stmts.map(cloneIR)
-  const cell1 = renameDecls(stmts.map(s => subPlus1(cloneIR(s), iv)), `$c${id}`)
+  const cell1 = renameDecls(stmts.map(s => subIv(cloneIR(s), iv, ['+', iv, [null, 1]])), `$c${id}`)
   const letIv = ['let', ['=', iv, cloneIR(LO)]]
   const twoFit = cmpOp === '<=' ? ['<', iv, cloneIR(HI)] : ['<', iv, ['-', cloneIR(HI), 1]]
   const main = ['while', twoFit,

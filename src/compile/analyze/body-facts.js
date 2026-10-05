@@ -15,6 +15,7 @@ import { VAL, updateRep } from '../../reps.js'
 import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId, unsignedShiftFitsI32 } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
+import { definitelyAssigned } from '../../summary/definite.js'
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, narrowWordLocals,
@@ -189,6 +190,11 @@ function finalizeLocals(body, locals, valTypes, presentNodes) {
 
 function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
   const locals = new Map()
+  // A bare `let x` assigned on every path before it is read (summary/definite.js)
+  // never holds its declared undefined: its first assignment types it, as an
+  // initializer would, and the later ones widen it. Any other bare binding may
+  // be read undefined and is f64 storage.
+  const definite = definitelyAssigned(body)
   const valTypes = new Map()
   const arrElemSchemas = new Map()
   let arrElemSchemaSets = null  // name → Set<sid> | null — closed heterogeneous union
@@ -434,7 +440,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
       for (let i = 1; i < node.length; i++) {
         const a = node[i]
         // analyzeBody: bare-name decl
-        if (typeof a === 'string') { if (!locals.has(a)) locals.set(a, 'f64'); continue }
+        if (typeof a === 'string') { if (!locals.has(a) && !definite.has(a)) locals.set(a, 'f64'); continue }
         if (!Array.isArray(a) || a[0] !== '=') continue
         // analyzeBody: destructuring decl — set destructured names to f64, walk rhs only
         if (typeof a[1] !== 'string') {
@@ -482,7 +488,8 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
       markEscape(name)
       markEscapeValue(rhs)
       const wt = exprType(rhs, locals)
-      if (locals.has(name) && locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
+      if (!locals.has(name) && definite.has(name)) locals.set(name, wt)
+      else if (locals.has(name) && locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
       trackVal(name)
       trackTyped(name, rhs)
       if (arrElemSchemas.has(name) && !isArrayProducingRhs(rhs)) observeArrSchema(name, null)

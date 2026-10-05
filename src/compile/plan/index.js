@@ -55,6 +55,7 @@ import { indexArrayPatterns, splitMapPairs } from './index-array-patterns.js'
 import { resetBindingUsesCache, resetMutationNamesCache } from '../analyze-scans.js'
 import { declareUnseenKeys } from './declare-unseen-keys.js'
 import { peelClampedStencil } from '../peel-stencil.js'
+import { unrollRecurrences } from '../loop-recurrence.js'
 import { versionIntegralLoops } from './integral-loops.js'
 import { unswitchLoops } from './unswitch-loops.js'
 import { splitLoopKinds } from './kind-split.js'
@@ -204,6 +205,9 @@ export default function plan(ast, profiler, summarize) {
     // A field a loop reads and writes through one receiver, in a local for the
     // loop; the loops inlining left name what it spliced, so the summary looks again.
     if (loopFieldCandidates()) { ctx.summary = summarize(); sweep('promoteLoopFields', () => promoteLoopFields(ast)) }
+    // A row recurrence through memory (`arr[j-1]` after `arr[j] =`): its cell
+    // carried in a scalar, two cells a pass; the loop passes below read the pairs.
+    sweep('unrollRecurrences', () => { if (!unrollRecurrences()) return false; ctx.summary = summarize(); return true })
     // After inlining, so a stride passed as a literal is one: the loops then
     // read over their trip number, the form every later pass takes.
     sweep('guardConstants', guardConstants)

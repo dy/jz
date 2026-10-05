@@ -4299,8 +4299,78 @@ test('rec-unroll: bails (ON==OFF) on non-unit step / aliasing index / call / bre
 test('rec-unroll: fires (carry local emitted at speed, absent when disabled)', () => {
   if (onKernel()) return  // host-codegen SHAPE assertion; bit-exactness above is portable
   const src = `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<=n;j++){ const up=a[j]; const ins=a[j-1]+1; let m=up+1; if(ins<m)m=ins; a[j]=m } return a[60]|0 }`
-  ok(/__rec/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'carry present')
-  ok(!/__rec/.test(jz.compile(src, { wat: true, optimize: { level: 'speed', unrollRecurrence: false } })), 'absent when off')
+  // the carry is named after its array (`a` + the renaming separator + `rec<id>`)
+  ok(/\$a\S*rec\d+/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'carry present')
+  ok(!/\$a\S*rec\d+/.test(jz.compile(src, { wat: true, optimize: { level: 'speed', unrollRecurrence: false } })), 'absent when off')
+})
+
+test('rec-unroll: the pair loop computes in integers (the plan sweep declares the carry, the summary kinds it)', () => {
+  if (onKernel() || belowOpt(2)) return
+  // levenshtein's rolling row: `prev` an Int32Array, each cell carried to the next pair
+  const src = `
+    const LB = 64
+    const dist = (a, b, prev) => {
+      for (let j = 0; j <= LB; j++) prev[j] = j
+      for (let i = 1; i <= LB; i++) {
+        let diag = prev[0]
+        prev[0] = i
+        const ai = a[i - 1]
+        for (let j = 1; j <= LB; j++) {
+          const up = prev[j]
+          const sub = diag + (ai === b[j - 1] ? 0 : 1)
+          let m = up + 1
+          const ins = prev[j - 1] + 1
+          if (ins < m) m = ins
+          if (sub < m) m = sub
+          diag = up
+          prev[j] = m
+        }
+      }
+      return prev[LB]
+    }
+    export let f = (seed) => {
+      const a = new Uint8Array(LB), b = new Uint8Array(LB), prev = new Int32Array(LB + 1)
+      let s = seed | 0
+      for (let i = 0; i < LB; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; a[i] = s & 3; b[i] = (s >> 3) & 3 }
+      return dist(a, b, prev)
+    }`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  // (the kernel splices into its caller: its carry keeps the array's name)
+  ok(/prev\S*rec\d+/.test(wat), 'the carry is declared after its array')
+  // every loop over the row computes in integers: no float arithmetic, no truncation
+  is(loopCount(parseWat(wat), n => /^(?:f64\.(?:add|sub|lt|gt|le|ge)|i64\.trunc|i32\.trunc|f64\.convert)/.test(n[0])), 0, 'no float arithmetic or conversion in the loops')
+  const host = oracle(src).f
+  for (const seed of [1, 7, 12345, -3]) is(run(src, { optimize: 'speed' }).f(seed), host(seed), `seed ${seed}`)
+})
+
+test('a bare let assigned on every path before its reads is typed by its assignments', () => {
+  if (onKernel() || belowOpt(2)) return
+  const src = 'export let f = (n) => { let sum = 0; for (let i = 0; i < 1000; i++) { let x; if ((i & 1) === 0) x = (i + 1) | 0; else x = Math.imul(i, 3); sum = (sum + x) | 0 } return sum }'
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  is(loopCount(parseWat(wat), n => /^f64\./.test(n[0])), 0, 'the loop computes in i32')
+  is(run(src, { optimize: 'speed' }).f(0), oracle(src).f(0))
+  // a read some path reaches unassigned keeps its undefined
+  const may = 'export let f = (c) => { let x; if (c) x = 1; return x === undefined ? -1 : x }'
+  for (const c of [0, 1]) is(run(may, { optimize: 'speed' }).f(c), oracle(may).f(c), `c=${c}`)
+})
+
+test('inline: a callee returning a Math call splices into its loop site (a pure call commutes with the site\'s reads)', () => {
+  if (onKernel() || belowOpt(2)) return
+  const src = `
+    const measure = (o) => { const k = o.k; if (k === 0) return (o.x + o.y) | 0; return Math.imul(o.r, 3) }
+    export let f = (seed) => {
+      const rows = []
+      let s = seed | 0
+      for (let i = 0; i < 64; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; const a = s & 1023; if ((s & 1) === 0) rows.push({ k: 0, x: a, y: i }); else rows.push({ k: 1, r: a }) }
+      let sum = 0
+      for (let i = 0; i < rows.length; i++) sum = (sum + measure(rows[i])) | 0
+      return sum
+    }`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  ok(!/\(func \$measure/.test(wat), 'the callee is spliced away')
+  // the spliced result is a number: no undefined-sentinel test turns it into a NaN before the sum
+  is(loopCount(parseWat(wat), n => n[0] === 'i64.const' && /7FF80002/i.test(String(n[1]))), 0, 'no absent test on the spliced result')
+  for (const seed of [1, 7, 12345]) is(run(src, { optimize: 'speed' }).f(seed), oracle(src).f(seed), `seed=${seed}`)
 })
 
 test('int-div-lower: (a/b)|0 with i32 a,b → i32.div_s, bit-exact incl b=0 / INT_MIN÷-1', () => {

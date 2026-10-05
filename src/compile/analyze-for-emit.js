@@ -22,7 +22,7 @@ import { closureMutatedVars } from './loop-model.js'
 import { BIGINT_REP_BOXED, BIGINT_REP_RAW, mintRepresentationPlan, representationParamRep, representationProgramHasBigint } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
-import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
+import { unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
 import { cseLoads, UNTYPED, ARRAY } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
@@ -65,7 +65,6 @@ export function analyzeFuncForEmit(func, programFacts) {
     const cm = closureMutatedVars(frameNode(func))
     if (_o.loopIVDivMod !== false) func.body = strengthReduceLoopDivMod(func.body, cm)
     if (_o.loopSquare !== false) func.body = narrowBoundedSquare(func.body, cm)
-    if (_o.unrollRecurrence !== false) func.body = unrollRecurrence(func.body, cm)
     if (_o.unrollScalarChain === true) func.body = unrollScalarChains(func.body, cm)
     if (_o.selectArmUpdates === true) func.body = selectArmUpdatesIn(func.body, cm)
   }

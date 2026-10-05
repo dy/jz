@@ -769,9 +769,9 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   // belong to the caller, even when a parameter shares a caller binding's name.
   const viewOf = f => ctx.summary?.at(f.sig) ?? null
   const touchesMemory = (b, view, seen = null) => some(b, n => n[0] === 'new' || n[0] === '?.()' || implicitEffect(n, view) || (MUTATE_OPS.has(n[0]) && typeof n[1] !== 'string')
-    || (n[0] === '()' && (typeof n[1] !== 'string' || !bodies.has(n[1]) || (!seen?.has(n[1]) && touchesMemory(bodies.get(n[1]).body, viewOf(bodies.get(n[1])), (seen ??= new Set()).add(n[1]))))))
+    || (n[0] === '()' && !isPureCallee(n[1]) && !pureSIMDCall(n) && (typeof n[1] !== 'string' || !bodies.has(n[1]) || (!seen?.has(n[1]) && touchesMemory(bodies.get(n[1]).body, viewOf(bodies.get(n[1])), (seen ??= new Set()).add(n[1]))))))
   const assigns = (b, x, view, seen = null) => some(b, n => n[0] === 'new' || n[0] === '?.()' || implicitEffect(n, view) || (MUTATE_OPS.has(n[0]) && n[1] === x)
-    || (n[0] === '()' && (typeof n[1] !== 'string' || !bodies.has(n[1]) || (!seen?.has(n[1]) && assigns(bodies.get(n[1]).body, x, viewOf(bodies.get(n[1])), (seen ??= new Set()).add(n[1]))))))
+    || (n[0] === '()' && !isPureCallee(n[1]) && !pureSIMDCall(n) && (typeof n[1] !== 'string' || !bodies.has(n[1]) || (!seen?.has(n[1]) && assigns(bodies.get(n[1]).body, x, viewOf(bodies.get(n[1])), (seen ??= new Set()).add(n[1]))))))
   // `whole`: an expression that moves as it stands (a conditional lifted to a statement), in place of a call and its body
   const commutes = (call, eff, whole = null) => {
     if (eff.seen === true) return false
