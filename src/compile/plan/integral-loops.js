@@ -867,12 +867,14 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // `math.sqrt(d)`, a sum, difference, product or arm with one in it), or a
     // name any write of which is: the guard holds no such name to an int32,
     // as its test would fail where the loop runs.
-    const fractional = (e, seen = new Set()) => {
+    // (`foreign`: an argument of a call to this function, in its caller's scope: a
+    // local there is another binding, unknown here; a module binding is the same)
+    const fractional = (e, seen = new Set(), foreign = false) => {
       if (typeof e === 'string') {
-        if (seen.has(e)) return false
-        seen.add(e)
         if (!locals.has(e)) { const g = ctx.scope.globals.get(e); return g != null && typeof g.init === 'number' && !Number.isInteger(g.init) }
-        if (params.has(e)) return fractionalEntry(e, (a) => fractional(a, new Set()))
+        if (foreign || seen.has(e)) return false
+        seen.add(e)
+        if (params.has(e)) return fractionalEntry(e, (a) => fractional(a, seen, true))
         return (bodyWrites.get(e) ?? NO_WRITES).some(v => v != null && fractional(v, seen))
       }
       if (!Array.isArray(e)) return false
@@ -880,10 +882,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (op == null) return typeof e[1] === 'number' && !Number.isInteger(e[1])
       if (op === '/') return true
       if (op === '[]' && e.length === 3 && typeof e[1] === 'string') return /^(new\.)?Float(32|64)Array$/.test(view?.typedPayloadCtorOfExpr(unrenamed(e[1])) ?? '')
-      if (op === '()' && e.length === 2) return fractional(e[1], seen)
-      if (op === '()' && e.length === 3 && typeof e[1] === 'string') return FRACTIONAL.has(e[1]) || (e[1] === 'math.abs' || e[1] === 'math.min' || e[1] === 'math.max') && (e[2]?.[0] === ',' ? e[2].slice(1) : [e[2]]).some(a => fractional(a, seen))
-      if (op === '+' || op === '-' || op === '*' || op === 'u-') return e.slice(1).some(a => fractional(a, seen))
-      if (op === '?:') return fractional(e[2], seen) || fractional(e[3], seen)
+      if (op === '()' && e.length === 2) return fractional(e[1], seen, foreign)
+      if (op === '()' && e.length === 3 && typeof e[1] === 'string') return FRACTIONAL.has(e[1]) || (e[1] === 'math.abs' || e[1] === 'math.min' || e[1] === 'math.max') && (e[2]?.[0] === ',' ? e[2].slice(1) : [e[2]]).some(a => fractional(a, seen, foreign))
+      if (op === '+' || op === '-' || op === '*' || op === 'u-') return e.slice(1).some(a => fractional(a, seen, foreign))
+      if (op === '?:') return fractional(e[2], seen, foreign) || fractional(e[3], seen, foreign)
       return false
     }
     const intHere = (n, leaves, seen) => {

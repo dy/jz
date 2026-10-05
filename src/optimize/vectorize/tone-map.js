@@ -195,6 +195,7 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     }
   }
 
+  const lifted = []
   const newLanedLocals = new Map()       // origName → laneName (bare string; see getOrAllocLanedLocal)
   const ctx = liftCtx('f64', incVar, localKind, freshIdRef, null, newLanedLocals)
   const toneSetBefore = new Set()         // lane locals already assigned (conditional-merge gate)
@@ -223,18 +224,29 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // The low word of each lane's 64-bit truncation, as the scalar form answers it: the
   // 32-bit truncation where both lanes lie within its range (signed: |x| < 2^31,
   // unsigned: 0 ≤ x < 2^32); otherwise `scalar` per lane, which NaN takes too.
+  // Within a statement every truncation's lanes are held in a local and tested
+  // together, one branch for the statement (a pixel's three channels, not three
+  // branches a pixel): the statement reads their words from locals (liftS).
+  let pending = null, pre = null
+  const inRangeOf = (get, signed) => signed
+    ? ['f64x2.lt', ['f64x2.abs', get], ['f64x2.splat', ['f64.const', 2147483648]]]
+    : ['v128.and', ['f64x2.ge', get, ['f64x2.splat', ['f64.const', 0]]], ['f64x2.lt', get, ['f64x2.splat', ['f64.const', 4294967296]]]]
+  const laneWord = (k, get, x, signed, scalar) => ['block', ['result', 'i32'], ['local.set', x, ['f64x2.extract_lane', k, get]],
+    scalar(['local.get', x]) ?? ['i32.wrap_i64', [signed ? 'i64.trunc_sat_f64_s' : 'i64.trunc_sat_f64_u', ['local.get', x]]]]
+  const truncZero = (signed, get) => [signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', get]
   function truncLanes(v, signed, scalar) {
     const t = freshMask(), x = `$__tl${freshIdRef.next++}`, get = ['local.get', t]
     ctx.extraLocals.push(['local', x, 'f64'])
-    const inRange = signed
-      ? ['f64x2.lt', ['f64x2.abs', get], ['f64x2.splat', ['f64.const', 2147483648]]]
-      : ['v128.and', ['f64x2.ge', get, ['f64x2.splat', ['f64.const', 0]]], ['f64x2.lt', get, ['f64x2.splat', ['f64.const', 4294967296]]]]
-    const lane = k => ['block', ['result', 'i32'], ['local.set', x, ['f64x2.extract_lane', k, get]],
-      scalar(['local.get', x]) ?? ['i32.wrap_i64', [signed ? 'i64.trunc_sat_f64_s' : 'i64.trunc_sat_f64_u', ['local.get', x]]]]
+    if (pending) {
+      const rt = freshMask()
+      pre.push(['local.set', t, v])
+      pending.push({ get, x, rt, signed, scalar })
+      return ['local.get', rt]
+    }
     return ['block', ['result', 'v128'], ['local.set', t, v],
-      ['if', ['result', 'v128'], ['i64x2.all_true', inRange],
-        ['then', [signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', get]],
-        ['else', ['i32x4.replace_lane', 1, ['i32x4.splat', lane(0)], lane(1)]]]]
+      ['if', ['result', 'v128'], ['i64x2.all_true', inRangeOf(get, signed)],
+        ['then', truncZero(signed, get)],
+        ['else', ['i32x4.replace_lane', 1, ['i32x4.splat', laneWord(0, get, x, signed, scalar)], laneWord(1, get, x, signed, scalar)]]]]
   }
 
   // Lift one value expression to v128. Result lane type comes from the op (f64.* → f64x2,
@@ -348,7 +360,60 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   }
 
   // Lift one statement, pushing v128 stmts into `out`. Sets ctx.fail on any bail.
+  // Its truncations' inputs come first, into locals, then one test of them all and
+  // their words, then the statement. An input hoisted so must read no lane the rest
+  // of the statement tees: then the statement is lifted again, each truncation in place.
   function liftS(stmt, out) {
+    const outerPending = pending, outerPre = pre, setBefore = new Set(toneSetBefore)
+    pending = []; pre = []
+    const inner = []
+    liftS0(stmt, inner)
+    const mine = pending, mPre = pre
+    pending = outerPending; pre = outerPre
+    if (ctx.fail) return
+    if (!mine.length) { flushBatch(out); out.push(...inner); return }
+    // (a run of lane sets each of one truncation, `r = … | 0; g = … | 0; b = … | 0`,
+    // is tested as one: the next joins while its input reads no lane the run sets)
+    if (out === lifted && mine.length === 1 && inner.length === 1 && inner[0][0] === 'local.set' && inner[0][2]?.[0] === 'local.get' && inner[0][2][1] === mine[0].rt) {
+      const sets = new Set(batch.map(b => b.set[1]))
+      let reads = false
+      for (const n of mPre) walkAst(n, { enter: x => { if (x[0] === 'local.get' && sets.has(x[1])) reads = true } })
+      if (reads) flushBatch(out)
+      batch.push({ pre: mPre, p: mine[0], set: inner[0] })
+      return
+    }
+    flushBatch(out)
+    // (a lane the rest of the statement writes, in place or as a tee: its hoisted readers would read it early)
+    const teed = new Set()
+    for (const n of inner) walkAst(n, { enter: x => { if (x[0] === 'local.tee' || x[0] === 'local.set') teed.add(x[1]) } })
+    let unsafe = false
+    for (const n of mPre) walkAst(n, { enter: x => { if (x[0] === 'local.get' && teed.has(x[1])) unsafe = true } })
+    if (unsafe) {
+      toneSetBefore.clear(); for (const x of setBefore) toneSetBefore.add(x)
+      pending = null; pre = null
+      const again = []
+      liftS0(stmt, again)
+      pending = outerPending; pre = outerPre
+      if (!ctx.fail) out.push(...again)
+      return
+    }
+    testWords(out, mPre, mine)
+    out.push(...inner)
+  }
+  const batch = []
+  const testWords = (out, pres, ps) => {
+    const check = ps.map(p => inRangeOf(p.get, p.signed)).reduce((a, b) => ['v128.and', a, b])
+    out.push(...pres, ['if', ['i64x2.all_true', check],
+      ['then', ...ps.map(p => ['local.set', p.rt, truncZero(p.signed, p.get)])],
+      ['else', ...ps.map(p => ['local.set', p.rt, ['i32x4.replace_lane', 1, ['i32x4.splat', laneWord(0, p.get, p.x, p.signed, p.scalar)], laneWord(1, p.get, p.x, p.signed, p.scalar)]])]])
+  }
+  function flushBatch(out) {
+    if (!batch.length) return
+    testWords(out, batch.flatMap(b => b.pre), batch.map(b => b.p))
+    out.push(...batch.map(b => b.set))
+    batch.length = 0
+  }
+  function liftS0(stmt, out) {
     if (!isArr(stmt)) { liftFail(ctx, 'tonemap: non-array statement'); return }
     const op = stmt[0]
     if (op === 'block') {
@@ -431,8 +496,8 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     liftFail(ctx, `tonemap: unsupported statement ${op}`)
   }
 
-  const lifted = []
   for (const s of body) { liftS(s, lifted); if (ctx.fail) return null }
+  flushBatch(lifted)
   if (!lifted.length) return null
 
   // 2-wide SIMD wrapper (LANES=2, the f64x2 island's width). Scalar tail = original block.

@@ -1131,3 +1131,18 @@ test('integral loops: optimize.coldTrap throws the version\'s number where the l
   plain.resize(4)
   is(plain.relax(40), js.relax(40), 'without the diagnostic the ring runs as written')
 })
+
+test('integral loops: a self-call\'s argument reading its own parameter ends the fraction check', () => {
+  // `walk(n, x)` calling `walk(n - 1, x * 0.5)`: whether `x` is a fraction asks its
+  // call sites, one of which passes an expression of `x` itself; the check once
+  // recursed without end (stdlib-special in the benchmark corpus). An argument is
+  // read in its caller's scope: a local there is unknown, a fraction visible there counts.
+  const src = `let acc = new Float64Array(8)
+    let walk = (n, x) => { let i = 0; while (i < n) { acc[i] += x; i++ } if (n > 1) walk(n - 1, x * 0.5) }
+    export let run = (n) => { walk(n, 1.0); return acc[0] }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    is(m.run(4), js.run(4), `at ${optimize}`)
+  }
+})
