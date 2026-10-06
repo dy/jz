@@ -624,7 +624,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           if (e[0] === '*' && e.length === 3) { const k = constIntExpr(e[1]) ?? constIntExpr(e[2]); const a = k != null ? elementRange(constIntExpr(e[1]) != null ? e[2] : e[1]) : null; return a && k != null ? (k >= 0 ? [a[0] * k, a[1] * k] : [a[1] * k, a[0] * k]) : null }
           return null
         }
-        const budget = { constInt: constIntExpr, evRange: elementRange, closureWrites: captured, MUTATE_OPS }
+        const budget = { constInt: constIntExpr, evRange: elementRange, stepRange: elementRange, closureWrites: captured, MUTATE_OPS }
         const advance = maxAdvanceBudget(loop[2], counter, budget)
         if (advance > 0 && advance <= 2147483647) {
           const rounded = ['()', inclusive ? 'math.floor' : 'math.ceil', n]

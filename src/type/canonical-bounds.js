@@ -351,9 +351,11 @@ const NO_LIT_BOUNDS = new Map()
  *   stream[r++]`) and every write in the loop lowers it by at least 1 — at
  *   most its entry's most above L iterations.
  * A step by a value of a known nonnegative range (`p += run` over a run read
- * from bytes) rises by at most the range's top; a `let`/`const` of the body
- * or of an arm in it stands for its initializer there too, since a read of it
- * runs after the initializer or throws.
+ * from bytes) rises by at most the range's top, the range closed over the loop
+ * by `stepRange` (elements and literals; never a hull of the moment); a
+ * `let`/`const` of the body or of a block around the position stands for its
+ * initializer from its statement on, since a read of it there runs after the
+ * initializer or throws.
  * An abrupt edge out of a nested loop keeps the bound (fewer trips, never
  * more). Both the interval prover (advanceBudget) and the analysis-time
  * co-induction stamp state their cursor budgets through this one walk.
@@ -376,7 +378,7 @@ export const minAdvanceBudget = (root, name, options) => advanceBudget(root, nam
 // whole-loop ranges, never entry-only facts about a changing operand.
 export const maxMovementBudget = (root, name, options) => advanceBudget(root, name, options, false, true)
 
-function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false }, minimum, absolute = false) {
+function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false, stepRange = null }, minimum, absolute = false) {
   if (minimum && upperOnly) return null
   const stmts = Array.isArray(root) && (root[0] === ';' || root[0] === '{}') ? root.slice(1) : [root]
   const bodyDecls = new Map()
@@ -384,29 +386,16 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
   // A body decl written nowhere else stands for its initializer, transitively
   // (`np` → `20 + t % 101` → `20 + (s >>> 0) % 101`), so the range evaluator
   // sees the shapes it knows (`>>>`, masks, moduli) instead of provisional names.
-  // (the declarations of the body and of the arms of its `if`s, each name declared once; not a loop's or a closure's)
-  let blocks = null
-  const blockDecls = () => {
-    if (blocks) return blocks
-    blocks = new Map()
-    const twice = new Set()
-    const walk = (y) => {
-      if (!Array.isArray(y)) return
-      if (y[0] === ';' || y[0] === '{}') { for (let k = 1; k < y.length; k++) walk(y[k]); return }
-      if (y[0] === 'if') { for (let k = 2; k < y.length; k++) walk(y[k]); return }
-      if (y[0] === 'let' || y[0] === 'const') {
-        const here = new Map(); collectDecls(y, here)
-        for (const [nm, e] of here) { if (blocks.has(nm) || twice.has(nm)) { blocks.delete(nm); twice.add(nm) } else blocks.set(nm, e) }
-      }
-    }
-    for (const st of stmts) walk(st)
-    return blocks
-  }
-  // (a `let`/`const` of the body or of an arm in it: a read of it runs after its
-  // initializer, or throws, so the initializer's range is the read's)
-  const stable = (nm) => blockDecls().has(nm) && !closureWrites.has(nm) && !isReassigned(root, nm)
+  // The `let`/`const` declarations in scope where the walk stands: those of the
+  // body and of the blocks around the position, each from its statement on (a
+  // read before it, or outside its block, sees none). The walk pushes a block's
+  // scope entering it and a declaration once its statement is visited; a query
+  // outside the walk (a nested loop's bound) sees the body's.
+  const scopes = []
+  const declared = (nm) => { for (let k = scopes.length - 1; k >= 0; k--) if (scopes[k].has(nm)) return scopes[k].get(nm); return scopes.length ? undefined : bodyDecls.get(nm) }
+  const stable = (nm) => declared(nm) !== undefined && !closureWrites.has(nm) && !isReassigned(root, nm)
   const subst = (e, depth = 0) => {
-    if (typeof e === 'string') return stable(e) && depth < 8 ? subst(blockDecls().get(e), depth + 1) : e
+    if (typeof e === 'string') return stable(e) && depth < 8 ? subst(declared(e), depth + 1) : e
     if (!Array.isArray(e) || e[0] === '=>' || e[0] === '()' ) return e
     return e.map((c, i) => i === 0 ? c : subst(c, depth))
   }
@@ -475,7 +464,7 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     if (n[0] === 'while' && n.length === 3 && Array.isArray(n[1]) && (n[1][0] === '>' || n[1][0] === '>=')) {
       const [, cond, lb] = n
       const x = cond[1]
-      const init = typeof x === 'string' && !closureWrites.has(x) ? blockDecls().get(x) : null
+      const init = typeof x === 'string' && !closureWrites.has(x) ? declared(x) : null
       if (init == null) return null
       const E = evRange(init), L = constInt(cond[2])
       if (!E || !Number.isFinite(E[1]) || L == null) return null
@@ -509,8 +498,14 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     }
     if (n[0] === '++') return 1
     // (a step by a value of a known nonnegative range, `p += run` over a byte
-    // read's run, rises by at most the range's top)
-    const rise = (v) => { const d = constInt(v); if (d != null) return d > 0 ? d : null; const r = evIn(v); return r && Number.isFinite(r[1]) && r[0] >= 0 && !refsName(v, name, REFS_THROUGH_ARROWS) ? (minimum ? r[0] : r[1]) : null }
+    // read's run, rises by at most the range's top: a range closed over the
+    // loop, `stepRange`, of elements and literals, never a hull of the moment)
+    const rise = (v) => {
+      const d = constInt(v)
+      if (d != null) return d > 0 ? d : null
+      const r = stepRange ? stepRange(subst(v)) : null
+      return r && Number.isFinite(r[1]) && r[0] >= 0 && !refsName(v, name, REFS_THROUGH_ARROWS) ? (minimum ? r[0] : r[1]) : null
+    }
     if (n[0] === '+=') return rise(n[2])
     if (n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '+') return n[2][1] === name ? rise(n[2][2]) : n[2][2] === name ? rise(n[2][1]) : null
     if (!upperOnly) return null
@@ -523,9 +518,24 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
   }
   const leavesRound = (n) => { let out = false; const walk = (y) => { if (out || !Array.isArray(y)) return; if (y[0] === '=>') return; if (((y[0] === 'break' || y[0] === 'continue') && typeof y[1] === 'string') || y[0] === 'return' || y[0] === 'throw') { out = true; return } for (let i = 1; i < y.length; i++) walk(y[i]) }; walk(n); return out }
   const seq = (xs) => { let n = 0; for (const x of xs) { const d = eff(x); if (d == null) return null; n += d } return n }
+  // (a list opens a scope; a declaration in it is in scope from its statement on)
+  const seqScoped = (xs) => {
+    scopes.push(new Map())
+    try {
+      let n = 0
+      for (const x of xs) {
+        const d = eff(x)
+        if (Array.isArray(x) && (x[0] === 'let' || x[0] === 'const')) collectDecls(x, scopes[scopes.length - 1])
+        if (d == null) return null
+        n += d
+      }
+      return n
+    } finally { scopes.pop() }
+  }
   const eff = (n) => {
     if (!Array.isArray(n)) return 0
     const op = n[0]
+    if (op === ';' || op === '{}') return seqScoped(n.slice(1))
     if (op === '=>') return closureWrites.has(name) ? null : 0
     if (absolute && (op === 'for' || op === 'while' || op === 'do' || op === 'switch' || op === 'catch' || op === 'finally'))
       return isReassigned(n, name) ? null : 0
