@@ -58,6 +58,7 @@ import { declareUnseenKeys } from './declare-unseen-keys.js'
 import { peelClampedStencil } from '../peel-stencil.js'
 import { unrollRecurrences } from '../loop-recurrence.js'
 import { versionIntegralLoops } from './integral-loops.js'
+import { forwardConditions } from './forward-conditions.js'
 import { unswitchLoops } from './unswitch-loops.js'
 import { splitLoopKinds } from './kind-split.js'
 import { callChosenFunctions } from './chosen-calls.js'
@@ -212,7 +213,6 @@ export default function plan(ast, profiler, summarize) {
     if (loopFieldCandidates()) { ctx.summary = summarize(); sweep('promoteLoopFields', () => promoteLoopFields(ast)) }
     // A row recurrence through memory (`arr[j-1]` after `arr[j] =`): its cell
     // carried in a scalar, two cells a pass; the loop passes below read the pairs.
-    sweep('unrollRecurrences', () => { if (!unrollRecurrences()) return false; ctx.summary = summarize(); return true })
     // After inlining, so a stride passed as a literal is one: the loops then
     // read over their trip number, the form every later pass takes.
     sweep('guardConstants', guardConstants)
@@ -237,6 +237,8 @@ export default function plan(ast, profiler, summarize) {
     // factory's callback in the function that called the factory) has no view
     // in the one taken before the splice, so it looks again.
     if (spliced) ctx.summary = summarize()
+    // A boolean declared once from a condition for the `if` right after it: the `if` tests the condition.
+    sweep('forwardConditions', forwardConditions)
     // A loop testing a name it never writes: a copy for each answer.
     sweep('unswitchLoops', unswitchLoops)
     // A loop reading a name of several kinds, a typed array among them: a copy where it holds that array.
@@ -245,6 +247,8 @@ export default function plan(ast, profiler, summarize) {
     sweep('peelClampedStencil', peelClampedStencil)
     // A loop indexing by numbers of unknown integrality: a copy over their int32s, where they are ones.
     sweep('versionIntegralLoops', () => versionIntegralLoops(facts()))
+    // A DP recurrence's pairs, of the copy: its tests of a sum's wide side go with the cell they precede.
+    sweep('unrollRecurrences', () => { if (!unrollRecurrences()) return false; ctx.summary = summarize(); return true })
   }
   const programFacts = facts()
   // A module global's declaration-time literal length holds only while nothing

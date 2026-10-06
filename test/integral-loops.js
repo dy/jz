@@ -646,6 +646,15 @@ const loopFloats = (text) => {
   }
   return k
 }
+// the wide (i64) arithmetic and comparisons in the innermost loops of a module's text
+// (a loop around a version tests the version's guard, in i64 where the budget's ends may pass the word)
+const loopWide = (text) => {
+  let k = 0
+  const inner = (n) => Array.isArray(n) && (n[0] === 'loop' || n.some(inner))
+  const walk = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'loop' && !n.some(inner)) { k += (JSON.stringify(n).match(/"i64\.(?:add|sub|mul|lt_s|gt_s|le_s|ge_s)"/g) || []).length; return } for (const c of n) walk(c) }
+  walk(parseWat(text))
+  return k
+}
 const planned = (src, name) => { _compileInProcess(src, { optimize: 'speed' }); return ctx.funcs.list.find(f => f.name === name)?.body }
 const countNodes = (node, pred) => { let k = 0; walkAst(node, { enter: n => { if (pred(n)) k++ } }); return k }
 const isWordOf = (n, pred) => Array.isArray(n) && n[0] === '|' && n.length === 3 && Array.isArray(n[2]) && n[2][0] == null && n[2][1] === 0 && pred(n[1])
@@ -1401,4 +1410,162 @@ test('integral loops: a counter stepped by a byte-sized run takes a copy with a 
   is(loopFloats(wat(src, { optimize: { level: 3, coldTrap: true } })), 0, 'no Number arithmetic in the copy\'s loops')
   const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
   for (const n of [1, 300, 2000]) is(m.main(n), js.main(n), `the copy runs for ${n}`)
+})
+
+test('integral loops: a sum of int32s past the word takes a copy that tests it and leaves for the loop as written', () => {
+  // A DP row's cells: `up + 1` over an int32 element, `diag + (… ? 0 : 1)` over a
+  // name every write of which is an element, `prev[j - 1] + 1`. No hull holds the
+  // sums within int32, so the loop as written computed them wide. The copy tests
+  // the wide side before each statement (`up > 2147483646`), bailing to the loop
+  // as written, resumed at the copy's counter, where the result would leave the
+  // word; under the tests the sums are words. A row with a cell at the word's
+  // top bails and computes as written: the same values either way.
+  const src = `const LB = 64
+    const scan = (a, b, prev, n) => {
+      for (let i = 1; i <= n; i++) {
+        let diag = prev[0]
+        prev[0] = i
+        const ai = a[i - 1]
+        for (let j = 1; j <= LB; j++) {
+          const up = prev[j]
+          const sub = diag + (ai === b[j - 1] ? 0 : 1)
+          let m = up + 1
+          const ins = prev[j - 1] + 1
+          if (ins < m) m = ins
+          if (sub < m) m = sub
+          diag = up
+          prev[j] = m
+        }
+      }
+      let h = 0
+      for (let j = 0; j <= LB; j++) h = Math.imul(h ^ prev[j], 16777619)
+      return h
+    }
+    export let main = (seed, big) => {
+      const a = new Uint8Array(LB), b = new Uint8Array(LB), prev = new Int32Array(LB + 1)
+      let s = seed | 0
+      for (let i = 0; i < LB; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; a[i] = s & 3; b[i] = (s >> 3) & 3 }
+      for (let j = 0; j <= LB; j++) prev[j] = big && j % 5 === 0 ? 2147483647 : j
+      return scan(a, b, prev, LB)
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const seed of [1, 7, 12345]) for (const big of [0, 1]) is(m.main(seed, big), js.main(seed, big), `seed ${seed}, big ${big} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  // (the loop as written and the resumption replaced by traps: what remains is the copy, computing in words)
+  const text = wat(src, { optimize: { level: 3, coldTrap: true } })
+  is(loopFloats(text), 0, 'no Number arithmetic in the copy\'s loops')
+  is(loopWide(text), 0, 'no wide arithmetic in the copy\'s loops')
+  ok(/i32\.gt_s\s*\(local\.get \$[^)]*\)\s*\(i32\.const 2147483646\)/.test(text), 'the copy tests the wide side against the word\'s top less the step')
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  is(m.main(7, 0), js.main(7, 0), 'a row within the word runs the copy')
+  throws(() => m.main(7, 1), 'a row at the word\'s top leaves the copy, and the trap names it')
+})
+
+test('integral loops: a step in an arm of an `if` advances a cursor from zero to the step, so mixed signs budget each way', () => {
+  // `if (up) x += 2; else x -= 1`: a round advances x by 2 or by -1, never by their
+  // sum. The budget's top is the entry plus the trips times 2: a walk starting near
+  // the word's top under a count that would pass it leaves the copy to the loop as
+  // written, which sums as Numbers; the copy runs where the ends fit.
+  const src = `const walk = (dirs, x0, n) => {
+      let x = x0 | 0, acc = 0
+      let i = 0
+      while (i < n) { if (dirs[i] === 1) x += 2; else x -= 1; acc = (acc + (x & 1023)) | 0; i++ }
+      return x + acc
+    }
+    export let main = (x0, n, all) => {
+      const dirs = new Uint8Array(n)
+      for (let i = 0; i < n; i++) dirs[i] = all || (i % 3 === 0) ? 1 : 0
+      return walk(dirs, x0, n)
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [x0, n, all] of [[0, 100, 0], [0, 100, 1], [2147483000, 400, 1], [2147483000, 400, 0], [-2147483000, 400, 0], [5, 0, 1]]) is(m.main(x0, n, all), js.main(x0, n, all), `${x0} ${n} ${all} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  is(m.main(0, 100, 1), js.main(0, 100, 1), 'a walk within the word runs the copy')
+  throws(() => m.main(2147483000, 400, 1), 'a walk whose top would pass the word leaves the copy for the loop as written')
+})
+
+test('integral loops: a walk stepped up and down under a literal step count takes a copy of words', () => {
+  // square tracing: `x++`/`x--`/`y++`/`y--` under `while (steps < MAXCODES)` with
+  // MAXCODES a module constant. The count is literal but far past what the emitter
+  // unrolls, so the cursors take the copy: a word each, under the guard of its entry
+  // plus the count each way. The loop as written, for a start near the word's ends,
+  // stays beside it.
+  const src = `const W = 64, H = 64, MAXCODES = 4096
+    const trace = (bmp, visited, codes, nc, sx, sy) => {
+      let x = sx, y = sy, dir = 3, steps = 0
+      while (steps < MAXCODES) {
+        const inside = x >= 0 && x < W && y >= 0 && y < H && bmp[y * W + x] === 1
+        if (inside) { visited[y * W + x] = 1; dir = (dir + 3) & 3 } else dir = (dir + 1) & 3
+        if (nc < MAXCODES) codes[nc++] = dir
+        if (dir === 0) x++; else if (dir === 1) y++; else if (dir === 2) x--; else y--
+        steps++
+        if (x === sx && y === sy && dir === 3) break
+      }
+      return nc
+    }
+    export let main = (r) => {
+      const bmp = new Uint8Array(W * H), visited = new Uint8Array(W * H), codes = new Uint8Array(MAXCODES)
+      const R = r | 0
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const dx = x - 32, dy = y - 32; if (dx * dx + dy * dy <= R * R) bmp[y * W + x] = 1 }
+      let nc = 0, h = 0
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++)
+        if (bmp[y * W + x] === 1 && bmp[y * W + x - 1] === 0 && visited[y * W + x] === 0) { const start = nc; nc = trace(bmp, visited, codes, nc, x, y); h = Math.imul(h ^ (nc - start), 16777619) }
+      for (let i = 0; i < nc; i++) h = Math.imul(h ^ codes[i], 16777619)
+      return h
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const r of [3, 10, 20, 0]) is(m.main(r), js.main(r), `r ${r} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: { level: 3, coldTrap: true } })
+  is(loopFloats(text), 0, 'no Number arithmetic in the copy\'s loops')
+  // (`const inside = x >= 0 && … && bmp[y * W + x] === 1; if (inside)`: the `if` tests the
+  // condition itself (plan/forward-conditions.js), so the store's index is a word in range)
+  is(loopWide(text), 0, 'no wide arithmetic in the copy\'s loops: the arm refines by the condition')
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  for (const r of [3, 20]) is(m.main(r), js.main(r), `the copy traces r ${r}`)
+})
+
+test('forward conditions: a boolean declared once for the `if` right after it is the test itself', () => {
+  // The `if` then refines its arms by the condition's conjuncts; a boolean read
+  // anywhere else, or declared with `let`, or tested later, stays declared.
+  const src = `export let f = (a, i, n) => {
+      const ok = i >= 0 && i < n && a[i] === 1
+      if (ok) a[i] = 2
+      const twice = i > 0
+      if (twice) a[0] = i
+      return twice ? 1 : 0
+    }
+    export let g = (a, i, n) => {
+      let late = i < n
+      if (late) a[i] = 3
+      const apart = i > 1
+      a[1] = 0
+      if (apart) a[1] = 1
+      return 0
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [i, n] of [[0, 4], [2, 4], [5, 4], [-1, 4]]) {
+      const a = new Int32Array([1, 1, 1, 1]), b = new Int32Array([1, 1, 1, 1])
+      is([m.f(a, i, n), m.g(a, i, n), Array.from(a)], [js.f(b, i, n), js.g(b, i, n), Array.from(b)], `${i} ${n} at ${optimize}`)
+    }
+  }
+  const f = planned(src, 'f'), g = planned(src, 'g')
+  const decl = (body, name) => countNodes(body, n => Array.isArray(n) && (n[0] === 'const' || n[0] === 'let') && n.slice(1).some(d => Array.isArray(d) && typeof d[1] === 'string' && d[1].startsWith(name)))
+  is(decl(f, 'ok'), 0, 'the boolean read once by the if after it is forwarded')
+  ok(countNodes(f, n => Array.isArray(n) && n[0] === 'if' && Array.isArray(n[1]) && n[1][0] === '&&') >= 1, 'the if tests the conjunction')
+  is(decl(f, 'twice'), 1, 'a boolean read again stays')
+  is(decl(g, 'late'), 1, 'a let stays')
+  is(decl(g, 'apart'), 1, 'a boolean tested later stays')
 })

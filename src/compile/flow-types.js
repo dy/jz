@@ -53,8 +53,9 @@ export function extractRefinements(cond, out, sense = true) {
     if (rejected) mergeRefinement(out, rejected.name, { excludedNumberRange: rejected.range })
     return out
   }
-  if (op === '&&' && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
-  if (op === '||' && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
+  // (an eager conjunction or disjunction of comparisons, plan/inline.js: the same truth, both sides evaluated)
+  if ((op === '&&' || op === '__eager&&') && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
+  if ((op === '||' || op === '__eager||') && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
   // typeof x == 'number' | 'string' | 'function' — sense must be positive for "==", negative for "!="
   // Ordered int compares refine a name's closed integer hull for the guarded
   // arm (`x >= 0 && x < W` → x ∈ [0, W-1] inside the chain — the int twin of

@@ -104,6 +104,7 @@ export const PASS_NAMES = [
   'specializeCalledArgs',     // a parameter only called, given a named function: a copy calling it by name (plan/called-args.js)
   'hoistObjectReads',         // a key a loop reads of an object the function made and only reads: one read where it is made (plan/object-reads.js)
   'versionIntegralLoops',     // a loop indexing by numbers of unknown integrality: a copy over their int32s where they are ones (plan/integral-loops.js), speed-for-size
+  'forwardConditions',        // a boolean declared once from a condition for the `if` right after it: the `if` tests the condition (plan/forward-conditions.js)
   'unswitchLoops',            // a loop testing a name it never writes: a copy for each answer (plan/unswitch-loops.js), speed-for-size
   'splitLoopKinds',           // a loop reading a name of several kinds, a typed array among them: a copy where it holds that array (plan/kind-split.js), speed-for-size
   'loadCSE',                  // straight-line typed element-load CSE (compile-level, pre-analyze)

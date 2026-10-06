@@ -1,3 +1,4 @@
+import { foldWrappedWords, narrowBoxedLocals, narrowFlagLocals } from './int-narrow.js'
 /**
  * The final-optimizer tail, shared VERBATIM by the host pipeline (index.js)
  * and the self-compile kernel (scripts/self.js): watr option construction +
@@ -524,6 +525,10 @@ export function watrTail(module, cfg, {
   // tables, its truncations are guarded): value numbering and scheduling treat its calls
   // like arithmetic.
   if (watrOpts) watrOpts.pure = legalized.filter(n => Array.isArray(n) && n[0] === 'func' && pureKernel(n[1])).map(n => n[1])
+  // (a wrapped word operation over extended words is the word operation: `avail & -avail` negates in the word)
+  foldWrappedWords(legalized)
+  // (a boxed pointer in a local the function only unboxes: the local holds the pointer)
+  for (const n of legalized) narrowBoxedLocals(n)
   // Generic local rewrites run only here, after link consumed JZ annotations.
   // Fast mode uses the same passes without the full module fixpoint.
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts))
@@ -544,6 +549,11 @@ export function watrTail(module, cfg, {
     }
   }
   if (cfg.guardedToInt32 === true) time('guardToInt32', () => guardToInt32(optimized, cfg.wordTruncation === 'add'))
+  // (again, over what the optimizer's propagation and the truncation's lowering brought together:
+  // a word converted to a Number and rounded back is the word; a flag of literals, read as the
+  // optimizer leaves it, against literals, is a word)
+  foldWrappedWords(optimized)
+  for (const n of optimized) narrowFlagLocals(n)
   stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
   return optimized
 }

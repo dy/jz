@@ -975,7 +975,7 @@ than escaping its operands: the call throws at run time, and an escape is
 permanent. A nullish object spread copies no keys. A loop's test guards its body the way an
 `if` guards its branch, and an assignment as a condition (`(d = ops[i++])`)
 proves the assigned name truthy: the emitter carries that as a `notNullish`
-refinement (`flow-types.js`), the query layer marks the name `present` for the
+refinement (`flow-types.js`; an eager conjunction `__eager&&` of comparisons refines as `&&` does), the query layer marks the name `present` for the
 body's emission so every consumer reads the kind without its nullish part, and
 `dotRead` gives a present name the summary names as one shape the receiver
 layout the guarded read retains, so its members read as direct slots. A slot's
@@ -2442,10 +2442,11 @@ src/
                 analyze/frame-effects.js: per-function and per-loop escape census (what outlives a frame or an iteration)
                 plan/lanes.js: record parameters as scalar lanes (a parameter read only field by field, at literal or known-shape sites)
                 plan/counted-loops.js: a counted loop over its trip number (computed start, secondary cursors, unrolled body rolled back, unit stride versioned); guards preserve full cursor entries and updates, including signed zero. Bounds must be stable and free of coercion calls; captures and mutable array lengths retain their original loops.
+                plan/forward-conditions.js: a boolean declared once from a condition for the `if` right after it (`const inside = x >= 0 && … ; if (inside)`), the `if` testing the condition itself, so its arms refine by the conjuncts
                 plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
                 plan/kind-split.js: a loop reading a name of several kinds, a typed array among them, a copy over that array where `instanceof` says the name holds it (the constructor from the name's values and its callers' arguments)
-                loop-recurrence.js (`unrollRecurrences`): a unit-stride loop storing `arr[j]` and reading `arr[j-1]` (a row recurrence), the read a scalar carried from the store, two cells a pass of a counted loop stepped by 2 (the second under the loop's test one cell on), under a guard that the range is not empty
-                plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one; a cursor stepped by literals (a ring with its resets, a module binding in a loop that runs no user code, a stream position stepped inside an index) as a word under its advance budget, and one stepped by expressions of a literal hull, up or down, under the budget of both ends; a derived integer of the counter and of proven int32s (a row base, a derived index, a guarded scatter cell, an index with a product, an element at a proven index, a clamped float truncated) as a word where its hull, kept by a walk of the body through its tests and early exits, fits i32 (an end at the type's extreme opens under a name, a visible fraction is held to a Number); a walk over links (`j = next[j]` under `j >= 0`) as a word reading a missed link as -1; an inner version whose names are such words absorbed into the copy, its tests over the counter lifted to the counter's ends
+                loop-recurrence.js (`unrollRecurrences`, after the versioning: the pairs are of the copies): a unit-stride loop storing `arr[j]` and reading `arr[j-1]` (a row recurrence), the read a scalar carried from the store, two cells a pass of a counted loop stepped by 2 (the second under the loop's test one cell on), under a guard that the range is not empty; a `break` leaves the pair loop as it leaves the loop
+                plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one; a cursor stepped by literals (a ring with its resets, a module binding in a loop that runs no user code, a stream position stepped inside an index) as a word under its advance budget, and one stepped by expressions of a literal hull, up or down, under the budget of both ends; a derived integer of the counter and of proven int32s (a row base, a derived index, a guarded scatter cell, an index with a product, an element at a proven index, a clamped float truncated) as a word where its hull, kept by a walk of the body through its tests and early exits, fits i32 (an end at the type's extreme opens under a name, a visible fraction is held to a Number); a walk over links (`j = next[j]` under `j >= 0`) as a word reading a missed link as -1; an inner version whose names are such words absorbed into the copy, its tests over the counter lifted to the counter's ends; a sum or difference of int32s no hull holds within int32 (`up + 1` over an int32 element, a DP cell) as a word of the copy under a test of its wide side before the statement (`if (up > 2147483646) { j$ = j; bail = 1; break }`), the copy leaving for the loop as written, resumed at its counter, where the result would leave the word (the round runs nothing before the test it could not run again)
                 plan/loop-fields.js: a field or a Float64Array element a loop reads and writes through one receiver, in a local for the loop, stored back after it
                 plan/chosen-calls.js: a local holding one of several named functions and only called, the choice of direct calls
                 plan/called-args.js: a function whose parameter is only called or tested against strings, a copy for each named function or string literal a call passes there
@@ -2645,6 +2646,17 @@ subexpression through i32: that sum erases the subexpression's zero sign.
 The existing interval facts supply this proof, and the rewrite must remove
 more conversions than it adds. A bare product, an unknown other operand, or
 an out-of-i32 product keeps its floating semantics.
+
+Narrowings of the function's text sit around watr's optimizer (`optimize/watr-tail.js`).
+Before it: a wrapped word operation over extended words is the word operation (`avail &
+-avail` negates in the word: `i32.wrap_i64(i64.sub(0, i64.extend_i32_s(x)))` is `i32.sub(0,
+x)`, `foldWrappedWords`), and a pointer boxed into an f64 local the function reads only
+unboxed holds the pointer, an i32 (`narrowBoxedLocals`: a record of several shapes held by
+an inlined parameter, read field by field), or its bits, an i64, where every read is a bit
+read (an element of a list of records). After it: a word converted to a Number and rounded
+back through the 2^52 addend is the word (the fold again), and a flag of literals the
+optimizer leaves compared against literals is a word (`narrowFlagLocals`, the inliner's
+`done`).
 
 A loop is compiled twice where its values decide its types
 (`optimize/specialize.js`, the `specializeLoops` pass, off in the `size`

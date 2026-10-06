@@ -11,11 +11,12 @@
  */
 import test from 'tst'
 import { almost, is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { _compileInProcess } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
 import { fusedRewrite, lowerToInt32Tails } from '../src/optimize/peephole.js'
 import { ctx } from '../src/ctx.js'
+import { T, walkAst } from '../src/ast.js'
 import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
@@ -3178,8 +3179,9 @@ test('promoteIntArrayLiterals: .push disqualifies (length mutation)', () => {
     }
   `
   // Isolate the storage decision from subsequent removal of its carrier local.
+  // (the box is a Number, or its bits where the function reads it only as bits: int-narrow.js narrowBoxedLocals)
   const body = compileMain(src, { propagateLocals: false })
-  ok(/\(local \$xs f64\)/.test(body), '.push needs growable ARRAY storage; promotion must skip')
+  ok(/\(local \$xs (?:f64|i64)\)/.test(body), '.push needs growable ARRAY storage; promotion must skip')
   const { main } = run(src)
   is(main(), 4)
 })
@@ -3203,7 +3205,7 @@ test('promoteIntArrayLiterals: Array.isArray disqualifies (typed arrays return f
     }
   `
   const body = compileMain(src, { propagateLocals: false })
-  ok(/\(local \$xs f64\)/.test(body), 'Array.isArray would flip true→false under promotion')
+  ok(/\(local \$xs (?:f64|i64)\)/.test(body), 'Array.isArray would flip true→false under promotion')
   const { main } = run(src)
   is(main(), 3)
 })
@@ -3219,7 +3221,7 @@ test('promoteIntArrayLiterals: element write disqualifies', () => {
     }
   `
   const body = compileMain(src)
-  ok(/\(local \$xs f64\)/.test(body), 'element writes break v1 read-only assumption')
+  ok(/\(local \$xs (?:f64|i64)\)/.test(body), 'element writes break v1 read-only assumption')
   const { main } = run(src)
   is(main(0), 23)
 })
@@ -3237,7 +3239,7 @@ test('promoteIntArrayLiterals: bare-name escape disqualifies', () => {
     }
   `
   const body = compileMain(src, { propagateLocals: false })
-  ok(/\(local \$xs f64\)/.test(body), 'escape to callee with unknown receiver shape disqualifies')
+  ok(/\(local \$xs (?:f64|i64)\)/.test(body), 'escape to callee with unknown receiver shape disqualifies')
   const { main } = run(src)
   is(main(), 6)
 })
@@ -3257,7 +3259,7 @@ test('promoteIntArrayLiterals: closure-capture disqualifies', () => {
     }
   `
   const body = compileMain(src)
-  ok(/\(local \$xs f64\)/.test(body), 'capture into nested arrow disqualifies (shape unknown to inner)')
+  ok(/\(local \$xs (?:f64|i64)\)/.test(body), 'capture into nested arrow disqualifies (shape unknown to inner)')
   const { main } = run(src)
   is(main(0), 20)
 })
@@ -3276,7 +3278,7 @@ test('promoteIntArrayLiterals: spread receiver disqualifies', () => {
     }
   `
   const body = compileMain(src)
-  ok(/\(local \$xs f64\)/.test(body), '...spread expands generically over ARRAY; disqualify')
+  ok(/\(local \$xs (?:f64|i64)\)/.test(body), '...spread expands generically over ARRAY; disqualify')
   const { main } = run(src)
   is(main(0), 16)
 })
@@ -3464,7 +3466,7 @@ test('promoteIntArrayLiterals: hole disqualifies', () => {
     }
   `
   const body = compileMain(src, { propagateLocals: false })
-  ok(/\(local \$xs f64\)/.test(body), 'holes break dense int contract; disqualify')
+  ok(/\(local \$xs (?:f64|i64)\)/.test(body), 'holes break dense int contract; disqualify')
   const { main } = run(src)
   is(main(), 5)
 })
@@ -3480,7 +3482,7 @@ test('promoteIntArrayLiterals: ++/-- on element disqualifies', () => {
     }
   `
   const body = compileMain(src)
-  ok(/\(local \$xs f64\)/.test(body), 'element increment is a mutation; disqualify')
+  ok(/\(local \$xs (?:f64|i64)\)/.test(body), 'element increment is a mutation; disqualify')
   const { main } = run(src)
   is(main(0), 16)
 })
@@ -3893,6 +3895,22 @@ test('for-bound snapshot: a mutating call in the body still re-reads the bound',
 // ToInt32 is reduction mod 2^32; {+,−,×} are ring ops under it, so exact-int f64
 // trees compute in i32 with no trunc/Infinity guard. `/`/`%` narrow with const
 // divisors (`/` only at the ToInt32 root; `%` peels faithful converts at emit).
+
+// ---- wrapped words: a wrapped i64 operation over extended words is the word operation ----
+test('wrapped words: `avail & -avail` negates in the word, exact at the int32 extreme', () => {
+  // A negation of a word may exceed int32 (-INT_MIN), so the narrowing widened it to
+  // i64 and wrapped the result for its bitwise consumer: `i32.wrap_i64(i64.sub(0,
+  // i64.extend_i32_s x))`, which is `i32.sub(0, x)` exactly, modulo 2^32.
+  const src = `export let lowbit = (avail) => avail & -avail
+    export let count = (all) => { let cnt = 0, avail = all | 0; while (avail !== 0) { const b = avail & -avail; avail = avail - b; cnt++ } return cnt }`
+  const m = jz(src, { optimize: 'speed' }).exports
+  for (const x of [0, 1, 6, 12, 2147483647, -2147483648, -1, -6]) is(m.lowbit(x), x & -x, `lowbit(${x})`)
+  for (const x of [0, 1, 255, 2147483647, -2147483648, -1]) is(m.count(x), (x => { let c = 0, a = x | 0; while (a !== 0) { a -= a & -a; c++ } return c })(x), `count(${x})`)
+  if (onKernel()) return
+  const w = compile(src, { optimize: 'speed', wat: true })
+  // (an export's Number parameter still converts through the wide path, and an unbounded count widens; the negation itself is the word's)
+  for (const f of ['lowbit', 'count']) ok(!/i64\.sub\s*\(i64\.const 0\)|i64\.extend_i32_s \(local\.get \$avail\)/.test(funcWat(w, f)), `${f}: no wide negation, the negation is the word's`)
+})
 
 // ---- nanCanon: a canonical-NaN step only arithmetic reads is its value (optimize/nan-canon.js) ----
 const SIGN_SELECT_SRC = `const hs = new Int32Array(8), xs = new Float64Array(8)
@@ -4307,7 +4325,8 @@ test('loop-SR: escaped reads and callee writes keep the original counter domain'
 // ── Array-recurrence unroll (arr[j-1]/arr[j] DP/scan → scalar carry + ×2 unroll) ──
 // src/compile/loop-recurrence.js. Must be bit-exact vs disabled across ALL trip counts
 // (empty range / 1 / odd / even — the guard + 1-cell tail), and bail (ON==OFF) on any shape
-// it must not transform (non-unit step, an aliasing index, a call/break in the body).
+// it must not transform (non-unit step, an aliasing index, a call in the body); a break
+// in the body leaves the pair loop as it leaves the loop.
 const recOn = (src) => run(src, { optimize: 'speed' }).f
 const recOff = (src) => run(src, { optimize: { level: 'speed', unrollRecurrence: false } }).f
 
@@ -4320,7 +4339,7 @@ test('rec-unroll: DP recurrence (arr[j-1]→arr[j]) bit-exact ON vs OFF across t
   ]) { const on = recOn(src), off = recOff(src); for (const n of [0, 1, 2, 3, 4, 5, 8, 13, 32, 60]) is(on(n), off(n), `n=${n}`) }
 })
 
-test('rec-unroll: bails (ON==OFF) on non-unit step / aliasing index / call / break in body', () => {
+test('rec-unroll: bails (ON==OFF) on non-unit step / aliasing index / call in body, pairs a body with a break', () => {
   for (const src of [
     `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<=n;j+=2){ a[j]=a[j-1]+1 } return a[60]|0 }`,
     `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<n;j++){ a[j]=(a[j-1]+a[j+1])|0 } return a[60]|0 }`,
@@ -4332,12 +4351,19 @@ test('rec-unroll: bails (ON==OFF) on non-unit step / aliasing index / call / bre
   ]) for (const n of [0, 1, 2, 3, 8, 13, 40]) is(recOn(src)(n), recOff(src)(n), `n=${n}`)
 })
 
-test('rec-unroll: fires (carry local emitted at speed, absent when disabled)', () => {
+test('rec-unroll: fires (carry declared at speed, absent when disabled)', () => {
   if (onKernel()) return  // host-codegen SHAPE assertion; bit-exactness above is portable
   const src = `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<=n;j++){ const up=a[j]; const ins=a[j-1]+1; let m=up+1; if(ins<m)m=ins; a[j]=m } return a[60]|0 }`
-  // the carry is named after its array (`a` + the renaming separator + `rec<id>`)
-  ok(/\$a\S*rec\d+/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'carry present')
-  ok(!/\$a\S*rec\d+/.test(jz.compile(src, { wat: true, optimize: { level: 'speed', unrollRecurrence: false } })), 'absent when off')
+  // the carry is declared after its array (`a` + the renaming separator + `rec<id>`) in the planned
+  // body (the sums' copy reads it through a declaration of its own, which the optimizer may fold)
+  const carried = (optimize) => {
+    _compileInProcess(src, { optimize })
+    let found = false
+    walkAst(ctx.funcs.list.find(f => f.name === 'f').body, { enter: n => { if ((n[0] === 'let' || n[0] === 'const') && n.slice(1).some(d => Array.isArray(d) && typeof d[1] === 'string' && d[1].startsWith('a' + T) && /rec\d+$/.test(d[1]))) found = true } })
+    return found
+  }
+  ok(carried('speed'), 'carry present')
+  ok(!carried({ level: 'speed', unrollRecurrence: false }), 'absent when off')
 })
 
 test('rec-unroll: the pair loop computes in integers (the plan sweep declares the carry, the summary kinds it)', () => {
@@ -4370,7 +4396,8 @@ test('rec-unroll: the pair loop computes in integers (the plan sweep declares th
       for (let i = 0; i < LB; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; a[i] = s & 3; b[i] = (s >> 3) & 3 }
       return dist(a, b, prev)
     }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  // (the loop as written, where a cell leaves the word, replaced by a trap: the copies remain)
+  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', coldTrap: true } })
   // (the kernel splices into its caller: its carry keeps the array's name)
   ok(/prev\S*rec\d+/.test(wat), 'the carry is declared after its array')
   // every loop over the row computes in integers: no float arithmetic, no truncation
@@ -6713,4 +6740,103 @@ test('narrowLoopBound: raw i32 comparisons preserve every Number threshold', () 
       for (const bound of [NaN, -Infinity, -1e30, -2147483649, -2147483648, -2.5, -2, -0, 0.5, 2147483646.5, 2147483647, 2147483647.5, 2147483648, 1e30, Infinity])
         is(m.f(value, bound), Number(compare === 'lt' || compare === 'gt' ? value < bound : value <= bound), `${compare} i=${value}, n=${bound}`)
   }
+})
+
+test('a record of several shapes held by a local is read as the pointer, boxed only where a box is read', () => {
+  // shapes' scan: `measure(rows[i])` inlined into the kernel, its parameter holding one
+  // of four record shapes. The element is a pointer boxed into the parameter's local and
+  // unboxed at every field read: the local holds the pointer, so the field reads are
+  // plain loads (int-narrow.js narrowBoxedLocals). The sums are bit-identical.
+  const src = `const N = 256
+    const initRows = () => {
+      const rows = []
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < N; i++) {
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        const k = s & 3, a = (s >>> 3) & 1023, b = (s >>> 13) & 1023
+        if (k === 0) rows.push({ k: k, x: a, y: b })
+        else if (k === 1) rows.push({ k: k, r: a })
+        else if (k === 2) rows.push({ k: k, w: a, h: b })
+        else rows.push({ k: k, a: a, b: b, c: k })
+      }
+      return rows
+    }
+    const measure = (o) => {
+      const k = o.k
+      if (k === 0) return (o.x + o.y) | 0
+      else if (k === 1) return Math.imul(o.r, 3)
+      else if (k === 2) return Math.imul(o.w, o.h)
+      return (o.a + o.b + o.c) | 0
+    }
+    const runKernel = (rows, iters) => {
+      let h = 0
+      for (let it = 0; it < iters; it++) {
+        let sum = it | 0
+        for (let i = 0; i < rows.length; i++) sum = (sum + measure(rows[i])) | 0
+        h = Math.imul(h ^ sum, 16777619)
+      }
+      return h
+    }
+    export let main = (iters) => {
+      const rows = initRows()
+      let cs = 0
+      for (let i = 0; i < 2; i++) cs = runKernel(rows, iters)
+      for (let i = 0; i < 3; i++) cs = (cs + runKernel(rows, iters)) | 0
+      return cs
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) for (const n of [1, 3, 10]) is(run(src, { optimize }).main(n), js.main(n), `${n} at ${optimize}`)
+  if (onKernel() || belowOpt(2)) return
+  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const kernel = funcWat(w, 'runKernel')
+  ok(kernel, 'the kernel is a function of its own')
+  // (the innermost loops read the fields; a loop around a version reads the list's length through its box once a round)
+  const leaves = [], inner = (n) => Array.isArray(n) && (n[0] === 'loop' || n.some(inner))
+  walk(parseWat(kernel), n => { if (n[0] === 'loop' && !n.some(inner)) leaves.push(n) })
+  ok(leaves.length >= 1, 'the kernel has a scan loop')
+  is(leaves.reduce((k, n) => k + count(n, m => m[0] === 'i64.reinterpret_f64' || m[0] === 'f64.reinterpret_i64'), 0), 0, 'no box or unbox in the scan loops')
+})
+
+
+test('a word converted to a Number and rounded back is the word; a flag of literals is a word', () => {
+  // hashjoin's insert, inlined with the loop counter as its value: the value is a word
+  // the callee's Number parameter converted and truncated back (int-narrow.js
+  // foldWrappedWords), and the inliner's done flag a word of literals (narrowFlagLocals):
+  // the probe loops compute in integers alone.
+  const src = `const MASK = 1023
+    const put = (keys, vals, k, v) => {
+      let h = (Math.imul(k, 0x9e3779b1) >>> 0) & MASK
+      while (keys[h] !== -1) { if (keys[h] === k) { vals[h] = v; return } h = (h + 1) & MASK }
+      keys[h] = k; vals[h] = v
+    }
+    const get = (keys, vals, k) => {
+      let h = (Math.imul(k, 0x9e3779b1) >>> 0) & MASK
+      while (keys[h] !== -1) { if (keys[h] === k) return vals[h]; h = (h + 1) & MASK }
+      return 0
+    }
+    export let main = (count) => {
+      const keys = new Int32Array(MASK + 1).fill(-1), vals = new Int32Array(MASK + 1)
+      const n = count | 0
+      let s = 7
+      for (let i = 0; i < n; i++) { s = Math.imul(s ^ (s >>> 13), 0x5bd1e995); put(keys, vals, s & 0x7fffffff, i) }
+      let acc = 0
+      s = 7
+      for (let i = 0; i < n; i++) { s = Math.imul(s ^ (s >>> 13), 0x5bd1e995); acc = (acc + get(keys, vals, s & 0x7fffffff)) | 0 }
+      return acc
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) for (const n of [0, 5, 300]) is(run(src, { optimize }).main(n), js.main(n), `${n} at ${optimize}`)
+  if (onKernel() || belowOpt(2)) return
+  const w = funcWat(jz.compile(src, { wat: true, optimize: 'speed' }), 'main')
+  is(loopCount(parseWat(w), n => n[0] === 'f64.const' && String(n[1]) === '6755399441055744'), 0, 'no rounding of a word in the loops')
+  is(loopCount(parseWat(w), n => /^(?:f64|i64)\./.test(n[0])), 0, 'the loops compute in words')
+})
+
+test('a flag of literals: a write nested in another write\'s value is a write of its own', () => {
+  // `for (let i = 0, d; (d = ops[i++]); )`: the counter's step sits inside the test's
+  // assignment. A census that returned at the outer write never saw the step, took
+  // the counter for a flag written `0` alone, and the loop never ended.
+  const src = `const mk = (ops, fn = (a) => { for (let i = 0, d; (d = ops[i++]); ) { if (d === a) return i } return 0 }) => fn
+    export let main = () => mk([3, 4, 5])(4)`
+  for (const optimize of levels(0, 2, 'speed')) is(run(src, { optimize }).main(), 2, `at ${optimize}`)
 })

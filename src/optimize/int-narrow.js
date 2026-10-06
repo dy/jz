@@ -230,6 +230,197 @@ const sameRead = (p, q) => p === q || (Array.isArray(p) && Array.isArray(q) && p
  *  its low word), 'narrow' (`i32.trunc_sat_f64_s` where the value is within the
  *  word) or 'add' (also: a value within ±2^51 that is no NaN, its truncation
  *  plus 1.5·2^52 read as bits — no conversion instruction at all). */
+// A wrapped sum, difference or product of extended words is the word operation,
+// exact modulo 2^32 (`avail & -avail` negates in the word): the i32 node, or null.
+const WRAPPED_WORD_OPS = new Map([['i64.add', 'i32.add'], ['i64.sub', 'i32.sub'], ['i64.mul', 'i32.mul']])
+const wrappedWordOp = (node, rewrite = (x) => x) => {
+  if (!Array.isArray(node) || !WRAPPED_WORD_OPS.has(node[0]) || node.length !== 3) return null
+  const word = (x) => x?.[0] === 'i64.extend_i32_s' ? rewrite(x[1]) : x?.[0] === 'i64.const' && Number.isInteger(Number(x[1])) && Math.abs(Number(x[1])) <= 0x7fffffff ? ['i32.const', Number(x[1])] : null
+  const a = word(node[1]), b = a && word(node[2])
+  return a && b ? [WRAPPED_WORD_OPS.get(node[0]), a, b] : null
+}
+/** Every wrapped word operation of a module's functions folded to the word
+ *  operation, a tee of a wide temporary read nowhere else dropped on the way
+ *  (the saturation's temporary, whose test the interval removed). */
+// A word converted to a Number and rounded back to its int32 (the 2^52 + 2^51 addend's
+// low word, optimize/to-int32.js) is the word: `x`'s own bits, signed or unsigned.
+const ROUNDER = '6755399441055744', BIAS = '0x4338000000000000'
+const converted = (n) => n?.[0] === 'f64.trunc' ? converted(n[1]) : n?.[0] === 'f64.convert_i32_s' || n?.[0] === 'f64.convert_i32_u' ? n : null
+const roundedWord = (n) => {
+  if (n?.[0] !== 'i64.reinterpret_f64' || n[1]?.[0] !== 'f64.add' || n[1][2]?.[0] !== 'f64.const' || String(n[1][2][1]) !== ROUNDER) return null
+  const c = converted(n[1][1])
+  return c ? c[1] : null
+}
+// (the rounded bits less the addend's: the word's integer in i64)
+const roundedWide = (n) => {
+  if (n?.[0] !== 'i64.sub' || n[2]?.[0] !== 'i64.const' || String(n[2][1]).toLowerCase() !== BIAS) return null
+  const bits = n[1]
+  if (bits?.[0] !== 'i64.reinterpret_f64' || bits[1]?.[0] !== 'f64.add' || bits[1][2]?.[0] !== 'f64.const' || String(bits[1][2][1]) !== ROUNDER) return null
+  const c = converted(bits[1][1])
+  return c ? [c[0] === 'f64.convert_i32_u' ? 'i64.extend_i32_u' : 'i64.extend_i32_s', c[1]] : null
+}
+export function foldWrappedWords(module) {
+  if (!Array.isArray(module)) return module
+  for (const fn of module) {
+    if (!Array.isArray(fn) || fn[0] !== 'func') continue
+    // (a tee is a store: with no get of its local anywhere, each is a pass-through)
+    const got = new Set()
+    const census = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') got.add(n[1]); for (let i = 1; i < n.length; i++) census(n[i]) }
+    census(fn)
+    const fold = (n) => {
+      if (!Array.isArray(n)) return n
+      for (let i = 1; i < n.length; i++) n[i] = fold(n[i])
+      // (a word rounded back stored as a word: the low word of the i64 is the word; truncated, a word is itself)
+      if (n[0] === 'i64.store32') { const w = roundedWord(n[n.length - 1]); if (w) return ['i32.store', ...n.slice(1, -1), w] }
+      if (n[0] === 'f64.trunc' && converted(n[1])) return converted(n[1])
+      // (a literal word converted is the literal Number)
+      if ((n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n[1]?.[0] === 'i32.const' && Number.isInteger(Number(n[1][1]))) return ['f64.const', n[0] === 'f64.convert_i32_u' ? Number(n[1][1]) >>> 0 : Number(n[1][1]) | 0]
+      if (n[0] === 'i64.sub') return roundedWide(n) ?? n
+      if (n[0] !== 'i32.wrap_i64') return n
+      let x = n[1]
+      if (x?.[0] === 'local.tee' && !got.has(x[1])) x = x[2]
+      return roundedWord(x) ?? wrappedWordOp(x) ?? n
+    }
+    for (let i = 1; i < fn.length; i++) fn[i] = fold(fn[i])
+  }
+  return module
+}
+
+/** A flag in an f64 local, written small integer literals alone and read only against
+ *  literals (the inliner's `done`, a found/seen mark): an i32 local, its tests integer
+ *  comparisons; a read elsewhere converts the word. A read before every write on its
+ *  path keeps the local (zero is the same number either way, but the rule is one). */
+const FLAG_CMP = { 'f64.eq': 'i32.eq', 'f64.ne': 'i32.ne', 'f64.lt': 'i32.lt_s', 'f64.le': 'i32.le_s', 'f64.gt': 'i32.gt_s', 'f64.ge': 'i32.ge_s' }
+const smallLit = (n) => n?.[0] === 'f64.const' && Number.isInteger(Number(n[1])) && Math.abs(Number(n[1])) <= 0x7fffffff && !Object.is(Number(n[1]), -0) ? Number(n[1]) : null
+export function narrowFlagLocals(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return false
+  const decls = new Map(), params = new Set()
+  for (const d of fn) if (Array.isArray(d) && (d[0] === 'local' || d[0] === 'param') && typeof d[1] === 'string') { decls.set(d[1], d); if (d[0] === 'param') params.add(d[1]) }
+  const flags = new Set(), bad = new Set(), written = new Map()
+  const prefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i])
+  // (a read in arithmetic would convert the word: every read is a comparison against a literal)
+  const compared = (parent) => parent && FLAG_CMP[parent[0]] && parent.length === 3 && (smallLit(parent[1]) != null || smallLit(parent[2]) != null)
+  const census = (n, arms, parent) => {
+    if (!Array.isArray(n)) return
+    const op = n[0], l = n[1]
+    if ((op === 'local.set' || op === 'local.tee') && typeof l === 'string' && decls.get(l)?.[2] === 'f64') {
+      // (the value first: a write inside it is a write too)
+      census(n[2], arms, n)
+      if (smallLit(n[2]) == null || params.has(l) || op === 'local.tee') bad.add(l); else flags.add(l)
+      if (!written.has(l) || !written.get(l).some(w => prefix(w, arms))) (written.get(l) ?? written.set(l, []).get(l)).push(arms)
+      return
+    }
+    if (op === 'local.get' && typeof l === 'string' && decls.get(l)?.[2] === 'f64' && (!compared(parent) || !(written.get(l) ?? []).some(w => prefix(w, arms)))) bad.add(l)
+    for (let i = 1; i < n.length; i++) census(n[i], ARMS.has(n[i]?.[0]) ? [...arms, n[i]] : arms, n)
+  }
+  census(fn, [], null)
+  const chosen = new Set([...flags].filter(l => !bad.has(l)))
+  if (!chosen.size) return false
+  const rw = (n) => {
+    if (!Array.isArray(n)) return n
+    const op = n[0]
+    if (FLAG_CMP[op] && n.length === 3) {
+      const [, a, b] = n
+      if (a?.[0] === 'local.get' && chosen.has(a[1]) && smallLit(b) != null) return [FLAG_CMP[op], a, ['i32.const', smallLit(b)]]
+      if (b?.[0] === 'local.get' && chosen.has(b[1]) && smallLit(a) != null) return [FLAG_CMP[op], ['i32.const', smallLit(a)], b]
+    }
+    if (op === 'local.set' && chosen.has(n[1])) return ['local.set', n[1], ['i32.const', smallLit(n[2])]]
+    if (op === 'local.tee' && chosen.has(n[1])) return ['f64.convert_i32_s', ['local.tee', n[1], ['i32.const', smallLit(n[2])]]]
+    if (op === 'local.get' && chosen.has(n[1])) return ['f64.convert_i32_s', n]
+    for (let i = 1; i < n.length; i++) n[i] = rw(n[i])
+    return n
+  }
+  for (let i = 1; i < fn.length; i++) fn[i] = rw(fn[i])
+  for (const l of chosen) decls.get(l)[2] = 'i32'
+  return true
+}
+
+/** A pointer boxed into an f64 local the function reads mostly unboxed (a record of
+ *  several shapes held by an inlined parameter, read field by field): the local holds
+ *  the pointer, an i32; each unbox is the local itself, each other read boxes it again
+ *  with the one tag every write boxed it with. A read no write of the local comes
+ *  before on every path keeps the local as it is (the box of a zero is not a zero).
+ *  A box the function reads only as bits (an unbox, a tag test), written from loads
+ *  or boxes of several tags (an element of a list of records): the local holds the
+ *  bits, an i64, a load of them where it was a load of the Number. */
+const boxed = (n) => {
+  if (n?.[0] !== 'f64.reinterpret_i64' || n[1]?.[0] !== 'i64.or' || n[1].length !== 3) return null
+  const [, a, b] = n[1]
+  if (a?.[0] === 'i64.const' && b?.[0] === 'i64.extend_i32_u') return [String(a[1]), b[1]]
+  if (b?.[0] === 'i64.const' && a?.[0] === 'i64.extend_i32_u') return [String(b[1]), a[1]]
+  return null
+}
+const ARMS = new Set(['then', 'else', 'loop', 'block'])
+export function narrowBoxedLocals(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return false
+  const decls = new Map(), params = new Set()
+  for (const d of fn) if (Array.isArray(d) && (d[0] === 'local' || d[0] === 'param') && typeof d[1] === 'string') { decls.set(d[1], d); if (d[0] === 'param') params.add(d[1]) }
+  // every write a box of one tag; every read after a write on its path (the arms around the write a prefix of the read's)
+  const tags = new Map(), bad = new Set(), written = new Map()
+  const prefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i])
+  // (a read as a Number, boxed again, would cost what the unboxes save: every read is an unbox or a tag test)
+  const census = (n, arms, parent) => {
+    if (!Array.isArray(n)) return
+    const op = n[0], l = n[1]
+    if ((op === 'local.set' || op === 'local.tee') && typeof l === 'string' && decls.get(l)?.[2] === 'f64') {
+      census(n[2], arms, n)
+      const b = boxed(n[2])
+      if (!b || params.has(l) || (tags.has(l) && tags.get(l) !== b[0]) || (op === 'local.tee' && parent?.[0] !== 'i64.reinterpret_f64')) bad.add(l); else tags.set(l, b[0])
+      if (!written.has(l) || !written.get(l).some(w => prefix(w, arms))) (written.get(l) ?? written.set(l, []).get(l)).push(arms)
+      return
+    }
+    if (op === 'local.get' && typeof l === 'string' && decls.get(l)?.[2] === 'f64' && (parent?.[0] !== 'i64.reinterpret_f64' || !(written.get(l) ?? []).some(w => prefix(w, arms)))) bad.add(l)
+    for (let i = 1; i < n.length; i++) census(n[i], ARMS.has(n[i]?.[0]) ? [...arms, n[i]] : arms, n)
+  }
+  census(fn, [], null)
+  const chosen = new Set([...tags.keys()].filter(l => !bad.has(l)))
+  // (the bits: every read of the local is through `i64.reinterpret_f64`, its writes any Number)
+  const reads = new Map(), bits = new Set()
+  const walkReads = (n, parent) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'local.get' && typeof n[1] === 'string' && decls.get(n[1])?.[2] === 'f64' && !params.has(n[1]) && !chosen.has(n[1])) {
+      const r = reads.get(n[1]) ?? reads.set(n[1], { bits: 0, other: 0 }).get(n[1])
+      if (parent?.[0] === 'i64.reinterpret_f64') r.bits++; else r.other++
+    }
+    // (a write of a value on the stack, `(local.set $x)` after its value: no value to hold as bits)
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && decls.get(n[1])?.[2] === 'f64' && !params.has(n[1]) && !chosen.has(n[1])) { const r = reads.get(n[1]) ?? reads.set(n[1], { bits: 0, other: 0 }).get(n[1]); if (n.length < 3) r.other++; else r.written = true }
+    for (let i = 1; i < n.length; i++) walkReads(n[i], n)
+  }
+  walkReads(fn, null)
+  for (const [l, r] of reads) if (r.written && r.bits && !r.other) bits.add(l)
+  if (!chosen.size && !bits.size) return false
+  const box = (l, inner) => ['f64.reinterpret_i64', ['i64.or', ['i64.const', tags.get(l)], ['i64.extend_i32_u', inner]]]
+  const asBits = (v) => v?.[0] === 'f64.reinterpret_i64' ? v[1] : v?.[0] === 'f64.load' ? ['i64.load', ...v.slice(1)] : ['i64.reinterpret_f64', v]
+  const rw = (n) => {
+    if (!Array.isArray(n)) return n
+    const op = n[0]
+    if (op === 'i32.wrap_i64' && n[1]?.[0] === 'i64.reinterpret_f64') {
+      const x = n[1][1]
+      if (x?.[0] === 'local.get' && chosen.has(x[1])) return x
+      if (x?.[0] === 'local.tee' && chosen.has(x[1])) return ['local.tee', x[1], rw(boxed(x[2])[1])]
+    }
+    if (op === 'i64.reinterpret_f64') {
+      const x = n[1]
+      if (x?.[0] === 'local.get' && chosen.has(x[1])) return ['i64.or', ['i64.const', tags.get(x[1])], ['i64.extend_i32_u', x]]
+      if (x?.[0] === 'local.tee' && chosen.has(x[1])) return ['i64.or', ['i64.const', tags.get(x[1])], ['i64.extend_i32_u', ['local.tee', x[1], rw(boxed(x[2])[1])]]]
+    }
+    if (op === 'local.set' && chosen.has(n[1])) return ['local.set', n[1], rw(boxed(n[2])[1])]
+    if (op === 'local.tee' && chosen.has(n[1])) return box(n[1], ['local.tee', n[1], rw(boxed(n[2])[1])])
+    if (op === 'local.get' && chosen.has(n[1])) return box(n[1], n)
+    if (op === 'i64.reinterpret_f64' && n[1]?.[0] === 'local.get' && bits.has(n[1][1])) return n[1]
+    if (op === 'i64.reinterpret_f64' && n[1]?.[0] === 'local.tee' && bits.has(n[1][1])) return ['local.tee', n[1][1], asBits(rw(n[1][2]))]
+    if (op === 'local.set' && bits.has(n[1])) return ['local.set', n[1], asBits(rw(n[2]))]
+    if (op === 'local.tee' && bits.has(n[1])) return ['f64.reinterpret_i64', ['local.tee', n[1], asBits(rw(n[2]))]]
+    if (op === 'local.get' && bits.has(n[1])) return ['f64.reinterpret_i64', n]
+    for (let i = 1; i < n.length; i++) n[i] = rw(n[i])
+    return n
+  }
+  for (let i = 1; i < fn.length; i++) fn[i] = rw(fn[i])
+  for (const l of chosen) decls.get(l)[2] = 'i32'
+  for (const l of bits) decls.get(l)[2] = 'i64'
+  return true
+}
+
 export function narrowInts(fn, assume = null, expand = true, words = 'wide') {
   if (!isArr(fn) || fn[0] !== 'func') return false
   const plan = integerPlan(fn, assume)
@@ -248,7 +439,7 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide') {
   let did = false
 
   const widthOf = (...es) => es.every(e => fitsI32(at(e))) ? 'i32' : 'i64'
-  const as = (node, from, to) => from === to ? node : to === 'i64' ? ['i64.extend_i32_s', node] : ['i32.wrap_i64', node]
+  const as = (node, from, to) => from === to ? node : to === 'i64' ? ['i64.extend_i32_s', node] : wrappedWordOp(node) ?? ['i32.wrap_i64', node]
   const konst = (c, w) => w === 'i32' ? ['i32.const', int32(c)] : ['i64.const', String(Number(c) + 0)]
   // The truncation of `node` in width `w`, `of` its value before rewriting: the
   // conversion the value's interval admits (V8 prices them by architecture,
@@ -507,6 +698,9 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide') {
         else if (c === 0 || test(n[o])) { did = true; return F(n[o]) }
       }
     }
+    // (a wrapped sum, difference or product of extended words is the word
+    // operation, exact modulo 2^32: `avail & -avail` negates in the word)
+    if (op === 'i32.wrap_i64') { const w = wrappedWordOp(n[1], F); if (w) { did = true; return w } }
     // (a truncation integer arithmetic does not absorb converts as the interval admits)
     const conversion = v => (did ||= v[0] !== op || v[1]?.[0] !== n[1]?.[0], v)
     if (op === 'i32.wrap_i64' && n[1]?.[0] === 'i64.trunc_sat_f64_s') {

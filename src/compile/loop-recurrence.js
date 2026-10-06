@@ -10,8 +10,9 @@
 //
 // Recognized (post-prepare AST): a unit-stride `for (let j = LO; j </<= HI; j++)` whose body, for
 // ONE array `arr`, has a single store `arr[j] = <var>` and ≥1 read `arr[j-1]`, accesses `arr` at
-// no other index, never aliases `arr` elsewhere, and contains no call / nested loop / break /
-// continue / return / closure. The `arr[j-1]` read becomes a scalar `left` seeded from `arr[LO-1]`
+// no other index, never aliases `arr` elsewhere, and contains no call / nested loop /
+// continue / return / closure (a `break` leaves the pair loop as it leaves the loop: no cell
+// after it runs either way). The `arr[j-1]` read becomes a scalar `left` seeded from `arr[LO-1]`
 // and refreshed after each store; the body is then unrolled ×2 (with a 1-cell tail) so the carry
 // between the paired cells lives in a register and the loop overhead is halved. A `LO <= HI` guard
 // keeps the seed load in step with the original (which reads `arr[LO-1]` only when it iterates),
@@ -21,9 +22,11 @@
 // the loop's test one cell on (`for (let j = LO; j <= HI; j += 2) { cell(j); if (j + 1 <= HI)
 // cell(j + 1) }`): the loop's test bounds every read, and no tail reads at a counter past
 // the loop. A plan sweep (`unrollRecurrences`, ahead of the counted-loop passes) rewrites
-// every function so the summary and the loop versioning see the carry and the copies as they
-// see any source loop — a carry the summary never kinded was typed by the emitter's defaults
-// alone, a Number through a truncation where its array holds int32s.
+// every function, after the loop versioning (plan/integral-loops.js): the pairs are of the
+// versions' copies, so a copy's test of a sum's wide side goes with the cell it precedes, and
+// the summary sees the carry as it sees any source loop — a carry the summary never kinded
+// was typed by the emitter's defaults alone, a Number through a truncation where its array
+// holds int32s.
 
 import { ctx } from '../ctx.js'
 import { loopLitVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards, rewriteBlocks, closureMutatedVars } from './loop-model.js'
@@ -37,7 +40,8 @@ const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[
 
 // Ops whose presence makes duplicating the body in place unsound (control that escapes the cell,
 // or a call that could alias/mutate `arr` or reorder side effects).
-const REJECT = new Set(['for', 'while', 'break', 'continue', 'return',
+// (a `break` leaves the pair loop as it leaves the loop: no cell after it runs either way)
+const REJECT = new Set(['for', 'while', 'continue', 'return',
   'throw', 'catch', 'finally', '=>', 'label'])
 const hasUnsafe = (n) => some(n, node => REJECT.has(node[0]) || (node[0] === '()' && typeof node[1] === 'string'))   // function call `f(args)`
 
@@ -86,6 +90,8 @@ function scalarReplace(stmts, arr, iv, left, storeVal) {
 }
 
 function tryUnroll(stmt, cm) {
+  // (a loop a version left as written runs cold: no pair of it)
+  if (stmt.cold) return null
   const L = normalizeLoop(stmt)
   if (!L || L.kind !== 'for') return null
   const body = L.body
