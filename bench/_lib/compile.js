@@ -69,7 +69,9 @@ export const compileJzAt = (c, optimize, compiler = compile) => {
 // The compiler graph can exhaust V8's heap. Both harnesses isolate its build
 // so a crash is a failed row and the remaining cases can still be measured.
 export const compileJzSelf = (hostOut, sizeOut) => {
-  const timeout = 10 * 60 * 1000
+  // (the two builds take 22 minutes on an Apple M-series machine under load, 2026-10-05: a
+  // runner's budget is the job's, `timeout-minutes` in bench.yml)
+  const timeout = 60 * 60 * 1000
   const r = spawnSync(process.execPath, ['--max-old-space-size=8192', join(LIB, 'compile-jz-self.mjs'), hostOut || '-', sizeOut || '-'],
     { cwd: ROOT, encoding: 'utf8', timeout })
   const detail = (r.stderr || r.stdout || '').trim()
