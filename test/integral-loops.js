@@ -3,6 +3,7 @@
 // (plan/integral-loops.js): the same values, so the same results for every
 // number, integral or not.
 import test from 'tst'
+import parseWat from 'watr/parse'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { _compileInProcess } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
@@ -629,6 +630,22 @@ test('integral loops: a ring counter is a cursor with a floor, and a loop under 
 
 // The copy's words, read off the planned body: the plan pass rewrites in place,
 // so the function's body after a compile holds the copies it made.
+// The Number sums, differences and products inside the loops of a module's text
+// (a guard's `1 / x > 0`, a -0 test, divides). A loop the typed-bounds versioning
+// split is read in its fast arm (`label.fN`): the checked twin keeps the Number
+// path of a read past the end.
+const loopFloats = (text) => {
+  const loops = []
+  const walk = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'loop') { loops.push(n); return } for (const c of n) walk(c) }
+  walk(parseWat(text))
+  const labels = new Set(loops.map(n => n[1]))
+  let k = 0
+  for (const n of loops) {
+    if (!/\.f\d+$/.test(n[1]) && [...labels].some(l => l.startsWith(n[1] + '.f'))) continue
+    k += (JSON.stringify(n).match(/"f64\.(?:add|sub|mul)"/g) || []).length
+  }
+  return k
+}
 const planned = (src, name) => { _compileInProcess(src, { optimize: 'speed' }); return ctx.funcs.list.find(f => f.name === name)?.body }
 const countNodes = (node, pred) => { let k = 0; walkAst(node, { enter: n => { if (pred(n)) k++ } }); return k }
 const isWordOf = (n, pred) => Array.isArray(n) && n[0] === '|' && n.length === 3 && Array.isArray(n[2]) && n[2][0] == null && n[2][1] === 0 && pred(n[1])
@@ -1313,4 +1330,75 @@ test('integral loops: a loop over integer parameters and a peel\'s integer segme
   is(countNodes(body, n => Array.isArray(n) && n[0] === 'while' && n.cold === true), 1, 'one segment, under a difference, takes a copy')
   // (the kernel is spliced into its one caller: the lift's loop is in the module)
   ok(/__bmpx\d/.test(wat(src, { optimize: 'speed' })), 'the channel lift takes the interior segment')
+})
+
+test('integral loops: a scan whose counter steps inside an index and in a nested run over a byte takes a copy of integer words', () => {
+  // A glyph parser's flag scan: `flags[p++] = f`, and a repeat count read from the
+  // stream drives an inner loop stepping `p` again. The counter's advance over one
+  // round is bounded by the byte (at most 256), so the copy runs under a guard
+  // holding the bound below the word's top by that much; the counter is a word
+  // stepped as wraps, and the stream cursor a word with its budget. The loop as
+  // written, where `p` is a Number, runs only for a count past that bound.
+  const src = `const parse = (stream, counts, flags) => {
+      let h = 0
+      for (let g = 0; g < counts.length; g++) {
+        const np = counts[g]
+        let r = g << 6, p = 0
+        while (p < np) {
+          const f = stream[r++]
+          flags[p++] = f
+          if (f & 8) { let rep = stream[r++]; while (rep > 0) { flags[p++] = f; rep-- } }
+        }
+        for (let i = 0; i < np; i++) h = Math.imul(h ^ flags[i], 16777619)
+      }
+      return h
+    }
+    export let main = (n) => {
+      const stream = new Uint8Array(4096), counts = new Int32Array(n), flags = new Uint8Array(512)
+      for (let i = 0; i < stream.length; i++) stream[i] = (i * 37 + 11) & 255
+      for (let g = 0; g < n; g++) counts[g] = (g * 13) % 300
+      return parse(stream, counts, flags)
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [0, 1, 7, 40, 64]) is(m.main(n), js.main(n), `${n} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  // (the loop as written replaced by a trap: what remains is the copies, and their loops compute in words)
+  is(loopFloats(wat(src, { optimize: { level: 3, coldTrap: true } })), 0, 'no Number arithmetic in the copies\' loops')
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  for (const n of [1, 7, 40]) is(m.main(n), js.main(n), `the copies run for ${n} glyphs`)
+})
+
+test('integral loops: a counter stepped by a byte-sized run takes a copy with a budget of the byte', () => {
+  // `p += run` over a run of a byte plus one advances by at least 1 and at most 256
+  // a round, and the inner fill runs at most that often: the bounds come from the
+  // element's range, so the loop over a count of unknown integrality takes its copy,
+  // its counter and the byte cursor words of it.
+  const src = `const rle = (bytes, out, n) => {
+      let r = 0, p = 0
+      while (p < n) {
+        const run = bytes[r++] + 1, v = bytes[r++]
+        for (let k = 0; k < run; k++) out[p + k] = v
+        p += run
+      }
+      return p
+    }
+    export let main = (n) => {
+      const bytes = new Uint8Array(2048), out = new Uint8Array(4096)
+      for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 29 + 3) & 255
+      let s = rle(bytes, out, n)
+      for (let i = 0; i < out.length; i++) s = Math.imul(s ^ out[i], 16777619)
+      return s
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [0, 1, 300, 2000, 2.5]) is(m.main(n), js.main(n), `${n} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  is(loopFloats(wat(src, { optimize: { level: 3, coldTrap: true } })), 0, 'no Number arithmetic in the copy\'s loops')
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  for (const n of [1, 300, 2000]) is(m.main(n), js.main(n), `the copy runs for ${n}`)
 })

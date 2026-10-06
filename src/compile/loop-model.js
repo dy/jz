@@ -29,10 +29,13 @@ export const loopLitVal = (n) => Array.isArray(n) && n.length === 2 && n[0] == n
 export const litN = (n, k) => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] === k
 
 // The induction variable a statement increments by exactly +1, else null. Covers
-// `i++`, `++i`, `i += 1`, `i = i + 1` / `i = 1 + i`.
+// `i++`, `++i`, `i += 1`, `i = i + 1` / `i = 1 + i`, and the step of a loop copy's
+// word, `i = (i + 1) | 0` (plan/integral-loops.js: the word's own wrap is the step).
 export function unitIncVar(stmt) {
   if (!Array.isArray(stmt)) return null
   if (stmt[0] === 'postfix') stmt = stmt[1]
+  if (stmt[0] === '=' && typeof stmt[1] === 'string' && Array.isArray(stmt[2]) && stmt[2][0] === '|' && stmt[2].length === 3 && litN(stmt[2][2], 0) &&
+      Array.isArray(stmt[2][1]) && stmt[2][1][0] === '+') stmt = ['=', stmt[1], stmt[2][1]]
   let inc = stmt
   if (stmt[0] === '-' && litN(stmt[2], 1) && Array.isArray(stmt[1]) && stmt[1][0] === '++') inc = stmt[1]
   if (inc[0] === '++' && typeof inc[1] === 'string') return inc[1]

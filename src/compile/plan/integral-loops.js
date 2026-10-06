@@ -59,6 +59,11 @@
  * not: where its entry plus the least and the most of that, times the trips,
  * fit i32, the copy steps its word, the guard testing both ends; a literal
  * entry under literal trips needs no copy, the emitter proves such ends itself.
+ * A while's counter stepped inside an index (`flags[p++] = f`) and again in a
+ * nested run over a byte (`while (rep > 0) { flags[p++] = f; rep-- }`) advances
+ * by at most 256 a round: the guard holds the bound below the word's top by
+ * that, the copy's counter is a word stepped as wraps, and the stream cursor
+ * beside it a word with its budget over the rounds.
  *
  * A derived integer the loop declares once from the counter and from names the
  * guard holds to int32s (`rowC = y * w`, `c = rowC + x`, `xW = x === 0 ? w - 1 :
@@ -121,7 +126,7 @@ import { collectBindings, nodeSize } from './common.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
 import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
-import { maxAdvanceBudget } from '../../type/canonical-bounds.js'
+import { maxAdvanceBudget, minAdvanceBudget } from '../../type/canonical-bounds.js'
 import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { K, core, hasTag, tagOf, NUMBER } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
@@ -233,7 +238,10 @@ const place = (p, i, node) => { p[i] = Array.isArray(p) && p[0] === '{}' && i ==
 const unitStep = (body, counter) => {
   const list = Array.isArray(body) && (body[0] === ';' || body[0] === '{}') ? body.slice(1) : [body]
   const step = (n) => { const st = n?.[0] === 'postfix' ? n[1] : n; return (litStep(st, counter) ?? 0) >= 1 }
-  if (!list.some(step)) return false
+  // (a step every time round: a statement of the body, or inside one's expression, `buf[p++] = f`, outside any branch)
+  const always = (n) => Array.isArray(n) && n[0] !== '=>' && n[0] !== 'if' && n[0] !== '?:' && n[0] !== '&&' && n[0] !== '||' && n[0] !== '??' && !ALL_LOOPS.has(n[0]) &&
+    (step(n) || n.some((c, i) => i > 0 && always(c)))
+  if (!list.some(always)) return false
   let ok = true
   const walk = (n, inLoop) => {
     if (!ok || !Array.isArray(n) || n[0] === '=>') return
@@ -509,7 +517,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // a name the emitter holds to an int32 as written: a parameter every call passes an
     // integer of none, a local every write of which selects among such (a peel's segment
     // end, `r < w ? r : w`) or is an int32 by construction; a sum or difference of them
-    // it may widen, and a bound of one takes the copy's word
+    // it may widen, and an element it holds only where it proves the read present, so a
+    // bound of either takes the copy's word
     const int32Held = (n, seen = new Set()) => {
       if (seen.has(n)) return true
       seen.add(n)
@@ -523,7 +532,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       : e[0] === '?:' && e.length === 4 ? selects(e[2], seen) && selects(e[3], seen)
       : e[0] === '()' && e.length === 3 && (e[1] === 'math.min' || e[1] === 'math.max') && e[2]?.[0] === ',' && e[2].length === 3 ? selects(e[2][1], seen) && selects(e[2][2], seen)
       : e[0] === '()' && e.length === 2 ? selects(e[1], seen)
-      : BITWISE.has(e[0]) || (e[0] === '.' && e[2] === 'length') || (e[0] === '[]' && e.length === 3 && intArray(e[1]))
+      : BITWISE.has(e[0]) || (e[0] === '.' && e[2] === 'length')
     // a name the summary knows holds no number (an object key) is never an int32
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(unrenamed(n)); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const isNumberKind = (n) => { const k = view?.kindOfExpr(unrenamed(n)); return k != null && k !== 0 && tagOf(core(k)) === K.NUMBER && !hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) }
@@ -603,7 +612,20 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const counter = loop[1][1], n = loop[1][2], inclusive = loop[1][0] === '<='
       const terms = stableTerms(n)
       if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n) && !(typeof n === 'string' && int32Held(n))) {
-        const advance = maxAdvanceBudget(loop[2], counter, { constInt: constIntExpr, evRange: intExprRange, closureWrites: captured, MUTATE_OPS })
+        // (an element of an integer typed array ranges over its type, and a sum, difference or
+        // literal product of such over theirs: a byte read bounds a down-counting inner loop's
+        // trips, a run of a byte plus one a counter's step)
+        const elementRange = (e) => {
+          const r = intExprRange(e)
+          if (r) return r
+          if (!Array.isArray(e)) return null
+          if (e[0] === '[]' && e.length === 3 && typeof e[1] === 'string' && intArray(e[1])) return ELEMENT_RANGES[ctorOf(e[1])] ?? null
+          if ((e[0] === '+' || e[0] === '-') && e.length === 3) { const a = elementRange(e[1]), b = elementRange(e[2]); return a && b ? (e[0] === '+' ? [a[0] + b[0], a[1] + b[1]] : [a[0] - b[1], a[1] - b[0]]) : null }
+          if (e[0] === '*' && e.length === 3) { const k = constIntExpr(e[1]) ?? constIntExpr(e[2]); const a = k != null ? elementRange(constIntExpr(e[1]) != null ? e[2] : e[1]) : null; return a && k != null ? (k >= 0 ? [a[0] * k, a[1] * k] : [a[1] * k, a[0] * k]) : null }
+          return null
+        }
+        const budget = { constInt: constIntExpr, evRange: elementRange, closureWrites: captured, MUTATE_OPS }
+        const advance = maxAdvanceBudget(loop[2], counter, budget)
         if (advance > 0 && advance <= 2147483647) {
           const rounded = ['()', inclusive ? 'math.floor' : 'math.ceil', n]
           // (a counter entering as a literal needs no test of its own word: the copy takes it as read)
@@ -611,8 +633,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           counterBound = { name: n, terms, counter, entry, testAt: 1, comparison: '<',
             bound: ['>>', inclusive ? ['+', rounded, [null, 1]] : rounded, [null, 0]],
             min: -2147483648, max: 2147483647 - advance + (inclusive ? 0 : 1),
-            // (the trips: a literal start, at least a unit step up every time round)
-            trip: entry != null && unitStep(loop[2], counter) ? { n, adj: inclusive ? 1 : 0, entry } : null }
+            // (the trips: a literal start, at least a unit step up every time round: literal steps, or a rise of at least one by the budget)
+            trip: entry != null && (unitStep(loop[2], counter) || (minAdvanceBudget(loop[2], counter, budget) ?? 0) >= 1) ? { n, adj: inclusive ? 1 : 0, entry } : null }
         }
       }
     }
@@ -710,20 +732,28 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     let resets = null   // the literal resets of the cursor whose advance is being read
     const stepOf = (n) => litStep(n, n[1])
     // A step of `c` inside an expression of the statement `st` (`buf[w++] = v`,
-    // `const d = a[r++]`) moves after the statement in the copy, as a step of
-    // its word (a step the word's own storage reads as its `| 0`): a
-    // declaration, an assignment or an expression statement that reads `c`
-    // nowhere else, with that one step of it.
+    // `const d = a[r++]`, `const a = s[r++], b = s[r++]`) moves after the
+    // statement in the copy, as one step of its word (a step the word's own
+    // storage reads as its `| 0`), each occurrence reading the word plus the
+    // steps before it: a declaration, an assignment or an expression statement
+    // every occurrence of `c` in which is a literal step, none under a
+    // conditional operator (an arm may not run) and none in a closure.
     const hoistableStep = (st, c) => {
       const n = Array.isArray(st) && st[0] === 'postfix' ? st[1] : st
       if (!Array.isArray(n) || n[0] === ';' || n[0] === '{}' || n[0] === 'if' || n[0] === 'label' || ALL_LOOPS.has(n[0]) || LEAVES.has(n[0]) || n[0] === 'switch' || n[0] === 'try') return false
-      let refs = 0, steps = 0
-      walkAst(n, { enter: (m) => {
-        if (m[0] === '=>') return false
-        for (let k = 1; k < m.length; k++) if (m[k] === c) refs++
-        if (MUTATE_OPS.has(m[0]) && m[1] === c) steps++
-      } })
-      return refs === 1 && steps === 1
+      let refs = 0, steps = 0, ok = true
+      const walk = (m, cond) => {
+        if (!Array.isArray(m)) return
+        if (m[0] === '=>') { if (refsName(m, c, REFS_THROUGH_ARROWS)) ok = false; return }
+        const branch = m[0] === '&&' || m[0] === '||' || m[0] === '??' || m[0] === '?:'
+        for (let k = 1; k < m.length; k++) {
+          if (m[k] === c) { refs++; if (cond) ok = false }
+          walk(m[k], cond || (branch && k > 1))
+        }
+        if (MUTATE_OPS.has(m[0]) && m[1] === c) { steps++; if (litStep(m, c) == null) ok = false }
+      }
+      walk(n, false)
+      return ok && steps >= 1 && refs === steps
     }
     // What `c` advances by over one run of `node`, as terms, or null: a step
     // by a non-negative literal, a statement or (`wide`: a cursor entering from
@@ -875,8 +905,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       // (a cursor declared from a literal is an int32 of the emitter's own where its
       // steps are literals: a copy for its steps inside expressions would change
       // nothing; a loop of literal trips unrolls or proves its own ends at emission,
-      // where a guard per entry would only stand between its taps)
-      const wide = !global && !entry && !literalDecl(c) && literalTrips(trips) == null
+      // where a guard per entry would only stand between its taps. A while's trips
+      // the budget alone bounds are the plan's: the emitter holds no cursor of it)
+      const budgeted = loop[0] === 'while' && counterBound?.trip != null
+      const wide = !global && literalTrips(trips) == null && (budgeted || (!entry && !literalDecl(c)))
       const terms = perIteration(loop[loop[0] === 'for' ? 4 : 2], c, null, 0, true, null, wide)
       const budget = trips && terms?.length ? true : false, r = budget ? null : ring(c)
       if (!budget && !r) continue
@@ -1522,9 +1554,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       place(p, i, v.asWritten)
       return false
     } })
-    // the copy steps each cursor's word
-    if (cursors.size) {
-      const words = new Set([...cursors.keys()].map(c => own.get(c)))
+    // the copy steps each cursor's word, and a while's counter's: the guard holds its
+    // bound below the word's top by the loop's advance, so no step of it wraps
+    if (cursors.size || (loop[0] === 'while' && counters.length)) {
+      const words = new Set([...cursors.keys(), ...(loop[0] === 'while' ? counters : [])].map(c => own.get(c)))
       // (a statement stepping a word: by a literal, by an expression, a conditional of such)
       const stepped = (st) => {
         const n = st[0] === 'postfix' ? st[1] : st
@@ -1535,18 +1568,25 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         if (n[0] === '=' && delta(n[2], n[1]) != null) return ['=', n[1], ['|', n[2], [null, 0]]]
         return null
       }
-      // (a literal step inside a statement's expression: its value there, the step after)
+      // (the literal steps of one word inside a statement's expression, in evaluation
+      // order: each occurrence reads the word plus the steps before it, a postfix the
+      // value before its own, and one step of their sum follows the statement)
       const hoisted = (st) => {
-        let found = null
+        const found = []
         walkAst(st, { enter: (n, p, i) => {
           if (n[0] === '=>') return false
-          if (n[0] === 'postfix' && Array.isArray(n[1]) && words.has(n[1][1]) && litStep(n[1], n[1][1]) != null) { found = [p, i, n[1][1], litStep(n[1], n[1][1]), n[1][1]]; return false }
-          if (MUTATE_OPS.has(n[0]) && words.has(n[1]) && litStep(n, n[1]) != null && p !== undefined) found = [p, i, n[1], litStep(n, n[1]), ['+', n[1], [null, litStep(n, n[1])]]]
+          if (n[0] === 'postfix' && Array.isArray(n[1]) && words.has(n[1][1]) && litStep(n[1], n[1][1]) != null) { found.push([p, i, n[1][1], litStep(n[1], n[1][1]), true]); return false }
+          if (MUTATE_OPS.has(n[0]) && words.has(n[1]) && litStep(n, n[1]) != null && p !== undefined) found.push([p, i, n[1], litStep(n, n[1]), false])
         } })
-        if (!found) return null
-        const [p, i, w, k, value] = found
-        p[i] = value
-        return ['=', w, ['|', ['+', w, [null, k]], [null, 0]]]
+        if (!found.length || found.some(f => f[2] !== found[0][2])) return null
+        const w = found[0][2]
+        let off = 0
+        for (const [p, i, , k, post] of found) {
+          const at = post ? off : off + k
+          p[i] = at ? ['+', w, [null, at]] : w
+          off += k
+        }
+        return ['=', w, ['|', ['+', w, [null, off]], [null, 0]]]
       }
       // (a statement of a list, an arm of an `if`, the body of a loop; in a list, a step inside a statement moves after it)
       walkAst(copy, { enter: (n) => {

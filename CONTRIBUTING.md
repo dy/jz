@@ -3426,6 +3426,14 @@ in a local: the fact holds from its write until it or `x` is written, ends at
 a loop's head and after any construct a branch may leave, and each arm of an
 `if` starts from what held after the condition.
 
+A loop's advance budget (`src/type/canonical-bounds.js`, `maxAdvanceBudget`)
+bounds how far a counter rises over one round, so a copy may hold it to a word
+under a guard on its bound: a nested counted loop counts trips times its body's
+rise, a down-counting inner loop over a byte read at most the byte's top,
+a step by a value of bounded range the range's top. A glyph parser's flag
+scan, stepping `p` inside an index and again in a repeat run, runs its copy
+over integer words this way.
+
 A Number's canonical-NaN step only arithmetic reads is its value
 (`src/optimize/nan-canon.js`): the emitter folds the NaN a negation, a root or
 a sum may produce to the one pattern `===` and `typeof` read as a number, and

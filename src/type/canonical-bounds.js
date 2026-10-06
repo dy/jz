@@ -345,7 +345,15 @@ const NO_LIT_BOUNDS = new Map()
  *   `while (x </<= B)` where x starts at a literal (its declaration in `root`,
  *   written nowhere but inside the loop) and every write in the loop is `x++`
  *   or `x += e` with e a literal ≥ 1 or a loop-declared counter that starts
- *   ≥ 1 and only grows — each iteration advances x by at least 1.
+ *   ≥ 1 and only grows — each iteration advances x by at least 1;
+ *   `while (x >/>= L)` where x is a `let`/`const` of the body or of an arm in
+ *   it with an initializer of a bounded range (a byte read, `let rep =
+ *   stream[r++]`) and every write in the loop lowers it by at least 1 — at
+ *   most its entry's most above L iterations.
+ * A step by a value of a known nonnegative range (`p += run` over a run read
+ * from bytes) rises by at most the range's top; a `let`/`const` of the body
+ * or of an arm in it stands for its initializer there too, since a read of it
+ * runs after the initializer or throws.
  * An abrupt edge out of a nested loop keeps the bound (fewer trips, never
  * more). Both the interval prover (advanceBudget) and the analysis-time
  * co-induction stamp state their cursor budgets through this one walk.
@@ -376,9 +384,29 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
   // A body decl written nowhere else stands for its initializer, transitively
   // (`np` → `20 + t % 101` → `20 + (s >>> 0) % 101`), so the range evaluator
   // sees the shapes it knows (`>>>`, masks, moduli) instead of provisional names.
-  const stable = (nm) => bodyDecls.has(nm) && !closureWrites.has(nm) && !isReassigned(root, nm)
+  // (the declarations of the body and of the arms of its `if`s, each name declared once; not a loop's or a closure's)
+  let blocks = null
+  const blockDecls = () => {
+    if (blocks) return blocks
+    blocks = new Map()
+    const twice = new Set()
+    const walk = (y) => {
+      if (!Array.isArray(y)) return
+      if (y[0] === ';' || y[0] === '{}') { for (let k = 1; k < y.length; k++) walk(y[k]); return }
+      if (y[0] === 'if') { for (let k = 2; k < y.length; k++) walk(y[k]); return }
+      if (y[0] === 'let' || y[0] === 'const') {
+        const here = new Map(); collectDecls(y, here)
+        for (const [nm, e] of here) { if (blocks.has(nm) || twice.has(nm)) { blocks.delete(nm); twice.add(nm) } else blocks.set(nm, e) }
+      }
+    }
+    for (const st of stmts) walk(st)
+    return blocks
+  }
+  // (a `let`/`const` of the body or of an arm in it: a read of it runs after its
+  // initializer, or throws, so the initializer's range is the read's)
+  const stable = (nm) => blockDecls().has(nm) && !closureWrites.has(nm) && !isReassigned(root, nm)
   const subst = (e, depth = 0) => {
-    if (typeof e === 'string') return stable(e) && depth < 8 ? subst(bodyDecls.get(e), depth + 1) : e
+    if (typeof e === 'string') return stable(e) && depth < 8 ? subst(blockDecls().get(e), depth + 1) : e
     if (!Array.isArray(e) || e[0] === '=>' || e[0] === '()' ) return e
     return e.map((c, i) => i === 0 ? c : subst(c, depth))
   }
@@ -416,9 +444,9 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
       if (A == null || c == null || c <= 0 || H == null || isReassigned(lb, iv) || closureWrites.has(iv)) return null
       return Math.max(0, Math.ceil((H - A) / c))
     }
-    if (n[0] === 'while' && n.length === 3) {
+    if (n[0] === 'while' && n.length === 3 && Array.isArray(n[1]) && (n[1][0] === '<' || n[1][0] === '<=')) {
       const [, cond, lb] = n
-      const x = Array.isArray(cond) ? cond[1] : null
+      const x = cond[1]
       if (typeof x !== 'string' || !bodyDecls.has(x) || closureWrites.has(x)) return null
       const A = constInt(bodyDecls.get(x)), H = boundHi(cond, x)
       if (A == null || H == null) return null
@@ -438,6 +466,24 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
       const ok = ws.length > 0 && ws.every(y => y[0] === '++' || (y[0] === '+=' && grows(y[2])))
       if (!ok || countWrites(root, x) !== ws.length) return null
       return Math.max(0, H - A)
+    }
+    // `while (x > L)` / `while (x >= L)` over a declaration of the body or of a
+    // block in it whose initializer has a bounded range (a byte read, `let rep =
+    // stream[r++]`), written nowhere but inside the loop, every write a decrement
+    // by at least 1: each iteration lowers x by at least 1, so the trips are at
+    // most its entry's most above L.
+    if (n[0] === 'while' && n.length === 3 && Array.isArray(n[1]) && (n[1][0] === '>' || n[1][0] === '>=')) {
+      const [, cond, lb] = n
+      const x = cond[1]
+      const init = typeof x === 'string' && !closureWrites.has(x) ? blockDecls().get(x) : null
+      if (init == null) return null
+      const E = evRange(init), L = constInt(cond[2])
+      if (!E || !Number.isFinite(E[1]) || L == null) return null
+      const ws = writesTo(lb, x)
+      const ok = ws.length > 0 && ws.every(y => y[0] === '--' || (y[0] === '-=' && constInt(y[2]) >= 1) ||
+        (y[0] === '=' && Array.isArray(y[2]) && y[2][0] === '-' && y[2][1] === x && constInt(y[2][2]) >= 1))
+      if (!ok || countWrites(root, x) !== ws.length) return null
+      return Math.max(0, E[1] - L + (cond[0] === '>=' ? 1 : 0))
     }
     return null
   }
@@ -462,11 +508,11 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
         ? Math.max(Math.abs(r[0]), Math.abs(r[1])) : null
     }
     if (n[0] === '++') return 1
-    if (n[0] === '+=') { const d = constInt(n[2]); return d != null && d > 0 ? d : null }
-    if (n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '+') {
-      const d = n[2][1] === name ? constInt(n[2][2]) : n[2][2] === name ? constInt(n[2][1]) : null
-      return d != null && d > 0 ? d : null
-    }
+    // (a step by a value of a known nonnegative range, `p += run` over a byte
+    // read's run, rises by at most the range's top)
+    const rise = (v) => { const d = constInt(v); if (d != null) return d > 0 ? d : null; const r = evIn(v); return r && Number.isFinite(r[1]) && r[0] >= 0 && !refsName(v, name, REFS_THROUGH_ARROWS) ? (minimum ? r[0] : r[1]) : null }
+    if (n[0] === '+=') return rise(n[2])
+    if (n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '+') return n[2][1] === name ? rise(n[2][2]) : n[2][2] === name ? rise(n[2][1]) : null
     if (!upperOnly) return null
     if (n[0] === '--') return 0
     if (n[0] === '-=') { const d = constInt(n[2]); return d != null && d >= 0 ? 0 : null }
@@ -475,6 +521,7 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     }
     return null
   }
+  const leavesRound = (n) => { let out = false; const walk = (y) => { if (out || !Array.isArray(y)) return; if (y[0] === '=>') return; if (((y[0] === 'break' || y[0] === 'continue') && typeof y[1] === 'string') || y[0] === 'return' || y[0] === 'throw') { out = true; return } for (let i = 1; i < y.length; i++) walk(y[i]) }; walk(n); return out }
   const seq = (xs) => { let n = 0; for (const x of xs) { const d = eff(x); if (d == null) return null; n += d } return n }
   const eff = (n) => {
     if (!Array.isArray(n)) return 0
@@ -482,9 +529,17 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     if (op === '=>') return closureWrites.has(name) ? null : 0
     if (absolute && (op === 'for' || op === 'while' || op === 'do' || op === 'switch' || op === 'catch' || op === 'finally'))
       return isReassigned(n, name) ? null : 0
-    if (minimum && (op === 'for' || op === 'while' || op === 'do' || op === 'switch' ||
+    // (a nested loop writing nothing of the counter advances it by nothing, and
+    // leaves the round only through its own breaks: a labeled jump, a return or
+    // a throw leaves the round's advance uncounted)
+    if (minimum && (op === 'for' || op === 'while' || op === 'do'))
+      return isReassigned(n, name) || leavesRound(n) ? null : 0
+    // (a path that leaves the function, by a return or a throw, completes no
+    // round: it bounds no round's advance)
+    if (minimum && (op === 'return' || op === 'throw')) return Infinity
+    if (minimum && (op === 'switch' ||
         op === 'try' || op === 'catch' || op === 'finally' || op === 'break' ||
-        op === 'continue' || op === 'return' || op === 'throw')) return null
+        op === 'continue')) return null
     // Optional operands may not run, even when their receiver does.
     if (minimum && hasOptionalChain(n))
       return isReassigned(n, name) ? null : 0
