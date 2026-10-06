@@ -3426,6 +3426,15 @@ in a local: the fact holds from its write until it or `x` is written, ends at
 a loop's head and after any construct a branch may leave, and each arm of an
 `if` starts from what held after the condition.
 
+A module binding made by a factory run once (`export const rotationTo = (() =>
+{ const tmp = create(); …; return (out, a, b) => { … } })()`, gl-matrix's idiom)
+held a closure: every call rode the closure ABI with boxed arguments, and the
+arrow's parameters, and the library's beneath it, kept no kind. The front end
+(`src/prepare/lift-iife.js`, `unwrapFactories`) puts the factory's statements in
+place as module statements under names of their own and binds the name to the
+arrow itself, a function with its calls' kinds; a program's imported modules take
+the IIFE lift as the entry does (`src/prepare/handlers.js`, `parseModule`).
+
 A loop's advance budget (`src/type/canonical-bounds.js`, `maxAdvanceBudget`)
 bounds how far a counter rises over one round, so a copy may hold it to a word
 under a guard on its bound: a nested counted loop counts trips times its body's

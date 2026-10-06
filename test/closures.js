@@ -1521,6 +1521,47 @@ test('IIFE lift: a mutated capture bails to the closure path, stays correct', ()
   is(runHost('export let f = (a) => { let x = a; let y = (() => { x = x + 10.0; return x * 2.0 })(); return x + y }').f(5), 45, 'mutated-capture IIFE: x=15, y=30 → 45')
 })
 
+// A module binding made by a factory run once (gl-matrix's `export const rotationTo =
+// (() => { const tmp = create(); …; return (out, a, b) => { … } })()`) held a closure:
+// every call rode the closure ABI with boxed arguments, and the arrow's parameters,
+// and the library's beneath it, kept no kind. The factory's statements go in place as
+// module statements under names of their own, and the binding holds the arrow: a
+// function with its calls' kinds, in a program's entry and in its modules alike.
+test('once-run factory: a module binding takes the returned arrow, its declarations the module', () => {
+  const src = `const make = () => [1, 2, 3]
+    export const f = (() => { const a = make(); let n = 0; return (o, x) => { n++; o[0] = a[0] + x; return o[0] + n } })()
+    export const g = (x) => { const o = [0]; return f(o, x) + f(o, x) }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const x of [1, 2.5, 7]) is(m.g(x), js.g(x), `g(${x}) at ${optimize}`)
+  }
+  if (!onKernel() && !belowOpt(2)) ok(!/call_indirect/.test(wat(src)), 'the binding is a function: no closure call')
+  // (a factory returning the arrow among other statements, with a parameter, or with an argument stays a closure, and right)
+  for (const keep of [
+    `export const f = (() => { let n = 0; if (n) return () => 1; return (x) => x + (++n) })()`,
+    `export const f = ((k) => { return (x) => x + k })(3)`,
+    `export const f = (() => { const x = 2; return (x) => x * 2 })()`,
+  ]) {
+    const src2 = keep + '\nexport const g = (v) => f(v) + f(v)'
+    const js2 = oracle(src2)
+    for (const optimize of levels(0, 2, 'speed')) is(jz(src2, { optimize }).exports.g(5), js2.g(5), `${optimize}: ${keep.slice(17, 50)}`)
+  }
+})
+
+test('once-run factory: a program\'s module takes the lift the entry takes', () => {
+  const quat = `export const create = () => [0, 0, 0, 1]
+    export const rotationTo = (() => { const tmp = create(); let calls = 0; return (out, a, b) => { calls++; tmp[0] = a[0] * b[1] - a[1] * b[0]; out[0] = tmp[0]; out[1] = calls; return out } })()`
+  const src = `import { create, rotationTo } from './quat.js'
+    export const g = (x) => { const o = create(), a = [x, 2, 3, 1], b = [4, x, 6, 1]; rotationTo(o, a, b); rotationTo(o, b, a); return o[0] * 100 + o[1] }`
+  const js = oracle(quat + '\n' + src.replace(/import[^\n]*\n/, ''))
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize, modules: { './quat.js': quat } }).exports
+    for (const x of [1, 2.5]) is(m.g(x), js.g(x), `g(${x}) at ${optimize}`)
+  }
+  if (!onKernel() && !belowOpt(2)) ok(!/call_indirect/.test(wat(src, { modules: { './quat.js': quat } })), 'the module binding is a function: no closure call')
+})
+
 // Identifiers named like Object.prototype members must resolve as ordinary variables.
 // The compiler keyed several resolution dictionaries (CONSTANTS, F64_CONSTANTS,
 // REJECT_IDENTS, GLOBALS, the scope chain) on the identifier name with PLAIN objects.

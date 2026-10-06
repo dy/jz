@@ -29,6 +29,7 @@
  */
 import { T, extractParams, classifyParam, collectParamName, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, walkAst } from '../ast.js'
 import { findFreeVars, findMutations } from '../compile/analyze-scans.js'
+import { cloneWithSubst } from '../type/clone.js'
 
 // Build a comma-list operand node (the parser's shape) from an array of nodes.
 const commaList = (items) =>
@@ -38,6 +39,51 @@ const commaList = (items) =>
 const unwrapParens = (n) => {
   while (Array.isArray(n) && n[0] === '()' && n.length === 2) n = n[1]
   return n
+}
+
+// A module binding made by a factory run once — gl-matrix's
+//   export const rotationTo = (() => { const tmp = vec3.create(); …; return (out, a, b) => { … } })()
+// — would hold a closure: every call of it goes through the closure ABI with its
+// arguments boxed, and the arrow's parameters, and so the library's beneath it, keep
+// no kind. The factory's statements run once, at the binding's place in module
+// evaluation, and the arrow closes over its declarations alone: the statements go in
+// place as module statements, each declaration under a name of its own, and the
+// binding holds the arrow itself, a function with its calls' kinds. Only a factory
+// of no parameters and no arguments whose body returns the arrow last, with no other
+// return and no name the arrow declares again, unwraps; one declared through a
+// pattern, or in any nested position, stays a closure.
+const returnedArrow = (st) => Array.isArray(st) && st[0] === 'return' && Array.isArray(st[1]) && st[1][0] === '=>' ? st[1] : null
+function unwrapFactories(list) {
+  let uid = 0
+  for (let i = 1; i < list.length; i++) {
+    let st = list[i], exported = false
+    if (Array.isArray(st) && st[0] === 'export' && st.length === 2) { st = st[1]; exported = true }
+    if (!Array.isArray(st) || (st[0] !== 'let' && st[0] !== 'const') || st.length !== 2) continue
+    const d = st[1]
+    if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+    const call = d[2], arrow = iifeArrow(call)
+    if (!arrow || call[2] != null || extractParams(arrow[1]).length) continue
+    const body = arrow[2]
+    const stmts = Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : null
+    if (!stmts || !stmts.length) continue
+    const made = returnedArrow(stmts[stmts.length - 1])
+    if (!made) continue
+    const head = stmts.slice(0, -1)
+    // (a return among the statements, or a function declaration, keeps the factory)
+    let plain = true
+    for (const h of head) walkAst(h, { enter: n => { if (n[0] === '=>') return false; if (n[0] === 'return' || n[0] === 'function' || n[0] === 'yield' || n[0] === 'await') plain = false } })
+    if (!plain) continue
+    const names = functionLocals([], ['{}', [';', ...head]])
+    const own = functionLocals(extractParams(made[1]), made[2])
+    if ([...names].some(n => own.has(n))) continue
+    // (a plain suffix: a module name holding the separator is a temporary of the start function, start-fn.js)
+    const ren = new Map([...names].map(n => [n, `${n}$once${uid}`]))
+    uid++
+    const sub = (n) => cloneWithSubst(n, new Map(), ren, true)
+    const decl = [st[0], ['=', d[1], sub(made)]]
+    list.splice(i, 1, ...head.map(sub), exported ? ['export', decl] : decl)
+    i += head.length
+  }
 }
 
 // `['()', callee, args]` (length 3) whose callee unwraps to an arrow literal → that arrow.
@@ -82,6 +128,7 @@ export function liftIIFEs(ast) {
   if (!Array.isArray(ast)) return ast
   const lifted = []        // hoisted `['let', ['=', name, arrow]]` decls
   let uid = 0
+  if (ast[0] === ';') unwrapFactories(ast)
 
   // Copy non-index node metadata (parser `.loc`, etc.) onto a rebuilt node so error
   // source-locations survive the transform.

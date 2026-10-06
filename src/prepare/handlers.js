@@ -29,6 +29,7 @@ import { NO_VALUE, staticObjectProps, staticPropertyKey, staticValue } from '../
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { hasFunc, isFuncValueLocal, isUnresolvableBareIdent, renameFunc, shadowsBuiltin } from './closure-lift.js'
+import { liftIIFEs } from './lift-iife.js'
 import { STD_HOST_EXPORTS } from '../std/index.js'
 import { MUTATING_ARRAY_METHODS, alwaysFalsy, alwaysTruthy, dropDeadPostfix, foldConstIf, stringValue, stripBoolNot, truncateUnreachable } from './const-fold.js'
 import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternItems, substPattern } from './destructure.js'
@@ -2949,8 +2950,12 @@ export function programModuleAsts(ast) {
  *  line. The compiler's own `jz:` modules keep none: a fault inside one names
  *  the program's construct that brought it in. */
 const parseModule = (spec, source) => {
-  const ast = ctx.transform.parse(source, 'jz', spec.startsWith('jz:') ? null : addSource(spec, source))
+  const own = spec.startsWith('jz:')
+  let ast = ctx.transform.parse(source, 'jz', own ? null : addSource(spec, source))
   if (ctx.transform.sourceMap) markSource(ast)
+  // (a program's module takes the lift the entry takes, front.js: its immediately
+  // invoked arrows direct calls, its once-run factories module statements)
+  if (!own) ast = liftIIFEs(ast)
   return ast
 }
 /** The mangled name an import of `name` from an already prepared `spec` binds;
