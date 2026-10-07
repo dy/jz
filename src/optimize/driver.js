@@ -75,11 +75,6 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   if (!cfg || cfg.foldStaticArrReads !== false) foldStaticConstArrayReads(fn)
   // Before the lifts read the sums: a canon only arithmetic reads is its value.
   if (!cfg || cfg.nanCanon !== false) stripDeadCanons(fn)
-  // Recursion-unrolling runs first in 'pre': self-calls are still clean `call`
-  // nodes (watr's inliner hasn't reshaped them) and the freshly-inlined body then
-  // rides every pass below (LICM, fold, sort). Speed-tier only; 'pre' only (so the
-  // post-watr re-optimize doesn't unroll a second time).
-  if (cfg && cfg.recursionUnroll === true) recursionUnroll(fn)
   if (!cfg || cfg.hoistPtrType !== false) hoistPtrType(fn)
   if (!cfg || cfg.hoistInvariantPtrOffset !== false) { hoistInvariantPtrOffset(fn); hoistPtrOffset(fn) }
   // Before LICM: the snapped i32 bound is itself a hoistable hard-op subtree, so
@@ -173,6 +168,12 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // hide both the vector loop scaffold and checked-access i32 certificates.
   if (cfg && cfg.wideAccumulator === true) wideAccumulator(fn)
   if (!cfg || cfg.narrowFloat32 !== false) narrowFloat32(fn)
+  // Recursion-unrolling clones the body the passes above leave: integer registers
+  // for the integer values, so its size gate reads the body as it will be emitted
+  // (nqueens' `avail` is an f64 with its conversions before the narrowing, 112
+  // nodes against a gate of 110; 90 after). Self-calls are still clean `call`
+  // nodes: watr's inliner runs after this driver. Speed-tier only.
+  if (cfg && cfg.recursionUnroll === true) recursionUnroll(fn)
   // Helper calls are the form every pass above reasons about: LICM hoists an invariant
   // `$__ptr_offset`, unswitch and devirt recognize it. Its inline fast path is lowering
   // (speed tier), so it runs last. Value numbering and statement scheduling are watr's

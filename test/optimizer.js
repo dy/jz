@@ -22,6 +22,10 @@ import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import { unrollRecurrence } from '../src/compile/loop-recurrence.js'
+import { compileJzAt } from '../bench/_lib/compile.js'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '../src/optimize/licm.js'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
@@ -4329,6 +4333,14 @@ test('loop-SR: escaped reads and callee writes keep the original counter domain'
 // it must not transform (non-unit step, an aliasing index, a call in the body); a break
 // in the body leaves the pair loop as it leaves the loop.
 const recOn = (src) => run(src, { optimize: 'speed' }).f
+// The unroller's size gate reads the body after the integer narrowing: nqueens' `avail`
+// is a Number with its conversions before it (112 nodes against the gate of 110; 90 after).
+test('recursion unroll: the size gate reads the narrowed body', () => {
+  // The specimen as the harness compiles it: the solver's arguments come from the
+  // kernel's Int32Array of sizes, so its parameters are words and the unroll is due.
+  const wat = compileJzAt({ id: 'nqueens', js: join(ROOT, 'bench/nqueens/nqueens.js') }, { level: 'speed' }, (code, opts) => compile(code, { ...opts, wat: true }))
+  ok(/_ru2/.test(wat), 'two levels of the call are unrolled into the solver')
+})
 // (a helper whose one `if` a sweep decided leaves `[';', null]`: the stdlib's iterator
 // callback check under a known callback, in webaudio)
 test('rec-unroll: an empty statement in a body is no loop', () => {
