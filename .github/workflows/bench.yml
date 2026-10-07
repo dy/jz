@@ -280,7 +280,7 @@ jobs:
           else
             set -o pipefail
             log="${RUNNER_TEMP:-$(mktemp -d)}/publish.log"
-            if ! node bench/bench.mjs --contenders --json=bench/results-ci.json --merge --verify-anchors 2>&1 | tee "$log"; then
+            if ! node bench/bench.mjs --targets=jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,porf-native,v8,deno,bun,jsc,perry,jz-w2c --contenders --json=bench/results-ci.json --merge --verify-anchors 2>&1 | tee "$log"; then
               grep -q '^\[anchors\] DRIFT' "$log" && { echo 'runner drifted from the stored rows: snapshot not refreshed'; exit 0; }
               exit 1
             fi

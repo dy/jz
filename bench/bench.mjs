@@ -1303,10 +1303,12 @@ const PREV = JSON_EXISTS ? loadJson(JSON_PATH) : null
 const CANONICAL = loadJson(CANONICAL_RESULTS)
 const ANCHOR_BASE = PREV || CANONICAL
 // The lanes measured for a case: every selected one, or under --contenders those
-// the stored evidence ranks as able to contest it.
-const caseTargets = cid => {
+// the stored evidence ranks as able to contest it, among the lanes available here
+// (a rival without its toolchain or source yields its place to the next).
+const caseTargets = c => {
   if (!CONTENDERS) return selectedTargets
-  const picked = contenders(ANCHOR_BASE?.cases?.[cid], CONTENDERS, selectedTargets).filter(tid => selectedTargets.includes(tid))
+  const here = selectedTargets.filter(tid => targets[tid].available(c))
+  const picked = contenders(ANCHOR_BASE?.cases?.[c.id], CONTENDERS, here)
   return picked.length > 1 ? picked : selectedTargets
 }
 
@@ -1384,7 +1386,7 @@ for (const cid of selectedCases) {
     if (!failures.some(f => f.id === id)) failures.push({ id, reason })
   }
   let pairedInfo = null   // per-pair {ratios, median} when --paired (persisted into cases[id].paired)
-  const lanes = caseTargets(cid)
+  const lanes = caseTargets(c)
   if (CONTENDERS) console.log(`[contenders] ${lanes.join(' ')}`)
   if (PAIRED) {
     // Order-aware paired rounds (see --paired above): reverse the target order

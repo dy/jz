@@ -22,12 +22,16 @@ export const CLAIM_CLASSES = [
   ['jsc', JSC_FAMILY_RIVALS, TIGHT_INT_LOOP_CASES],
 ]
 
-/** The lanes that can contest a case: jz, the `n` fastest rivals of each claim class by
- *  the stored evidence, and Porffor, among the `lanes` selected (every lane by default).
- *  A rival with no timed row for the case cannot be ranked and waits for a full refresh. */
+/** The lanes measured for a case under --contenders: jz, the `n` fastest rivals of each
+ *  claim class by the stored evidence, Porffor, and every selected lane no claim ranks
+ *  (jz's own native lanes, the reference C). A rival with no timed row for the case
+ *  cannot be ranked and waits for a full refresh. `lanes` is the selection (every lane
+ *  when null), so a rival absent from it is not ranked either. */
+const RANKED = new Set([...CLAIM_RIVALS, ...JIT_RIVALS, 'porf-native'])
 export const contenders = (caseEvidence, n, lanes = null) => {
   const rows = caseEvidence?.targets ?? {}
   const fastest = rivals => rivals.filter(r => (!lanes || lanes.includes(r)) && timedBenchmarkRow(rows[r]))
     .sort((a, b) => rows[a].medianUs - rows[b].medianUs).slice(0, n)
-  return ['jz', ...CLAIM_CLASSES.flatMap(([, rivals]) => fastest(rivals)), ...fastest(['porf-native'])]
+  return ['jz', ...CLAIM_CLASSES.flatMap(([, rivals]) => fastest(rivals)), ...fastest(['porf-native']),
+    ...(lanes ?? []).filter(l => l !== 'jz' && !RANKED.has(l))]
 }

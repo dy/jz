@@ -21,6 +21,7 @@ import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import parseWat from 'watr/parse'
+import { unrollRecurrence } from '../src/compile/loop-recurrence.js'
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '../src/optimize/licm.js'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
@@ -4328,6 +4329,12 @@ test('loop-SR: escaped reads and callee writes keep the original counter domain'
 // it must not transform (non-unit step, an aliasing index, a call in the body); a break
 // in the body leaves the pair loop as it leaves the loop.
 const recOn = (src) => run(src, { optimize: 'speed' }).f
+// (a helper whose one `if` a sweep decided leaves `[';', null]`: the stdlib's iterator
+// callback check under a known callback, in webaudio)
+test('rec-unroll: an empty statement in a body is no loop', () => {
+  const body = [';', null]
+  is(unrollRecurrence(body, new Set()), body, 'the body stays as it is')
+})
 const recOff = (src) => run(src, { optimize: { level: 'speed', unrollRecurrence: false } }).f
 
 test('rec-unroll: DP recurrence (arr[j-1]→arr[j]) bit-exact ON vs OFF across trip counts', () => {

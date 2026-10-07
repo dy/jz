@@ -90,8 +90,8 @@ function scalarReplace(stmts, arr, iv, left, storeVal) {
 }
 
 function tryUnroll(stmt, cm) {
-  // (a loop a version left as written runs cold: no pair of it)
-  if (stmt.cold) return null
+  // (an empty statement is no loop; a loop a version left as written runs cold: no pair of it)
+  if (!isArr(stmt) || stmt.cold) return null
   const L = normalizeLoop(stmt)
   if (!L || L.kind !== 'for') return null
   const body = L.body

@@ -831,7 +831,7 @@ esac
     is(success.calls.filter(c => c === 'push').length, 1, 'one successful push finishes publication')
     is(success.calls.filter(c => c.startsWith('add ')), ['add bench/results-ci.json'], 'only CI evidence is staged')
     is(readFileSync(join(dir, 'bench/results.json'), 'utf8'), '{"reference":"unchanged"}', 'reference evidence is preserved')
-    is(success.args, '--contenders --json=bench/results-ci.json --merge --verify-anchors', 'a main push refreshes the contenders into the stored rows, anchored')
+    ok(/^--targets=jz,.*,perry,.* --contenders --json=bench\/results-ci\.json --merge --verify-anchors$/.test(success.args), 'a main push refreshes the contenders and Perry into the stored rows, anchored: ' + success.args)
     const weekly = run(good, { GITHUB_EVENT_NAME: 'schedule' })
     is(weekly.status, 0, weekly.stderr)
     ok(weekly.args.startsWith('--targets=nat,') && weekly.args.includes(',perry,') && !weekly.args.includes('--merge'), 'the weekly run measures every lane afresh')

@@ -330,18 +330,22 @@ test('claims: contenders are the fastest stored rivals of each class, with jz an
   is(contenders(c, 2).join(','), 'jz,as,c-wasm,deno,v8,bun,porf-native', 'two per class, ranked by the stored median; a failed lane is unranked')
   is(contenders(c, 1).join(','), 'jz,as,deno,bun,porf-native', 'one per class')
   is(contenders(c, 2, ['jz', 'c-wasm', 'rust-wasm', 'v8']).join(','), 'jz,c-wasm,rust-wasm,v8', 'ranked among the selected lanes')
+  is(contenders(c, 1, ['jz', 'jz-w2c', 'nat', 'as', 'tinygo']).join(','), 'jz,as,jz-w2c,nat', 'a selected lane no claim ranks is measured as selected')
   is(contenders(undefined, 2).join(','), 'jz', 'a case without evidence ranks no rival')
 })
 
 // A --contenders refresh measures the nearest rivals of each class per case: the
-// claim class is contested on a case when any of its lanes has a timed row there.
+// claim class is contested on a case when any of its lanes has a timed row there,
+// over the cases the claims cover (the pending ones have no rival at all).
 test('claims: every named rival is contested (coverage ≥ floor of the corpus)', () => {
   const total = Object.keys(cases).length
   const need = Math.ceil(total * COVERAGE_FLOOR)
   if (res.meta?.contenders) {
+    const covered = Object.entries(cases).filter(([id]) => !PENDING_CASES.has(id)).map(([, c]) => c)
+    const needCovered = Math.ceil(covered.length * COVERAGE_FLOOR)
     for (const [label, rivals] of [...CLAIM_CLASSES, ['porffor', ['porf-native']]]) {
-      const rows = Object.values(cases).filter(c => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
-      ok(rows >= need, `claim class '${label}' is contested on ${rows}/${total} cases (floor ${need}) under --contenders=${res.meta.contenders}`)
+      const rows = covered.filter(c => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
+      ok(rows >= needCovered, `claim class '${label}' is contested on ${rows}/${covered.length} cases (floor ${needCovered}) under --contenders=${res.meta.contenders}`)
     }
     return
   }
