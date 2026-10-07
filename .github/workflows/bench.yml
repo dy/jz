@@ -19,6 +19,10 @@ on:
         description: Rivals measured per claim class and case (the nearest by stored evidence); 0 measures every lane
         type: string
         default: '2'
+      cases:
+        description: Cases to measure, comma-separated (empty measures the corpus)
+        type: string
+        default: ''
   # The full matrix re-ranks every lane weekly; a main push refreshes only the contenders.
   schedule:
     - cron: '0 3 * * 1'
@@ -203,8 +207,10 @@ jobs:
         shell: bash
         env:
           CONTENDERS: ${{ inputs.contenders }}
+          CASES: ${{ inputs.cases }}
         run: |
           flag=""; [ "${CONTENDERS:-2}" != "0" ] && flag="--contenders=${CONTENDERS:-2}"
+          [ -n "$CASES" ] && flag="$flag --cases=$CASES"
           node bench/bench.mjs --targets=jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,porf-native,v8,deno,bun,jsc,jz-w2c $flag --paired=6 --json="$RUNNER_TEMP/reference.json" 2>&1 | tee "$RUNNER_TEMP/reference.log"
       - name: enforce release claims
         if: ${{ inputs.reference }}
