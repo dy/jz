@@ -67,6 +67,17 @@
  * that, the copy's counter is a word stepped as wraps, and the stream cursor
  * beside it a word with its budget over the rounds.
  *
+ * A cursor stepped inside a nested loop is the copy's whatever its entry and the
+ * trips (the emitter's own cursor proofs read the loop's body alone): a loop
+ * entered under the round's own test (`for (b < 8 && ip < n)` under `while (ip <
+ * n)`) runs at least once, so a rise of at least one in it is the round's, and
+ * the while has its trips; a guard `x >= K` floors a step by `x` at K. A nested
+ * loop's trips a name of the loop's cannot give (`for (k < len)` over a round's
+ * own `len`) come from the round's advance budget, which reads the count off the
+ * round's declarations (a code's field, `(code & 15) + 3`) and an inner version
+ * as its loop as written. LZ's compressor and inflater step their output
+ * cursors so; the copies run them in words.
+ *
  * A derived integer the loop declares once from the counter and from names the
  * guard holds to int32s (`rowC = y * w`, `c = rowC + x`, `xW = x === 0 ? w - 1 :
  * x - 1`), reaching an element index, is a word of the copy where its hull over
@@ -626,23 +637,28 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // A while counter has an observable entry outside the loop. Capture its
     // word only behind the same exact-entry guard, then reserve room for every
     // positive step before the next comparison (including the final landing).
+    // (an element of an integer typed array ranges over its type, and a sum, difference or
+    // literal product of such over theirs: a byte read bounds a down-counting inner loop's
+    // trips, a run of a byte plus one a counter's step)
+    const elementRange = (e) => {
+      const r = intExprRange(e)
+      if (r) return r
+      if (!Array.isArray(e)) return null
+      if (e[0] === '[]' && e.length === 3 && typeof e[1] === 'string' && intArray(e[1])) return ELEMENT_RANGES[ctorOf(e[1])] ?? null
+      if ((e[0] === '+' || e[0] === '-') && e.length === 3) { const a = elementRange(e[1]), b = elementRange(e[2]); return a && b ? (e[0] === '+' ? [a[0] + b[0], a[1] + b[1]] : [a[0] - b[1], a[1] - b[0]]) : null }
+      if (e[0] === '*' && e.length === 3) { const k = constIntExpr(e[1]) ?? constIntExpr(e[2]); const a = k != null ? elementRange(constIntExpr(e[1]) != null ? e[2] : e[1]) : null; return a && k != null ? (k >= 0 ? [a[0] * k, a[1] * k] : [a[1] * k, a[0] * k]) : null }
+      // (a mask, an unsigned shift, a conditional of such: a code's field, `(code & 15) + 3`)
+      if (e[0] === '&' && e.length === 3) { const m = constIntExpr(e[1]) ?? constIntExpr(e[2]); return m != null && m >= 0 && m <= 0x7fffffff ? [0, m] : null }
+      if (e[0] === '>>>' && e.length === 3) { const k = constIntExpr(e[2]); return k != null && (k & 31) >= 1 ? [0, 2 ** (32 - (k & 31)) - 1] : null }
+      if (e[0] === '?:' && e.length === 4) { const a = elementRange(e[2]), b = elementRange(e[3]); return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null }
+      return null
+    }
+    // (the round's own test: a nested loop entered under it runs at least once, canonical-bounds.js)
+    const budget = { constInt: constIntExpr, evRange: elementRange, stepRange: elementRange, closureWrites: captured, MUTATE_OPS, roundTest: loop[0] === 'while' ? loop[1] : loop[0] === 'for' ? loop[2] : null }
     if (loop[0] === 'while' && (loop[1]?.[0] === '<' || loop[1]?.[0] === '<=')) {
       const counter = loop[1][1], n = loop[1][2], inclusive = loop[1][0] === '<='
       const terms = stableTerms(n)
       if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n) && !(typeof n === 'string' && int32Held(n))) {
-        // (an element of an integer typed array ranges over its type, and a sum, difference or
-        // literal product of such over theirs: a byte read bounds a down-counting inner loop's
-        // trips, a run of a byte plus one a counter's step)
-        const elementRange = (e) => {
-          const r = intExprRange(e)
-          if (r) return r
-          if (!Array.isArray(e)) return null
-          if (e[0] === '[]' && e.length === 3 && typeof e[1] === 'string' && intArray(e[1])) return ELEMENT_RANGES[ctorOf(e[1])] ?? null
-          if ((e[0] === '+' || e[0] === '-') && e.length === 3) { const a = elementRange(e[1]), b = elementRange(e[2]); return a && b ? (e[0] === '+' ? [a[0] + b[0], a[1] + b[1]] : [a[0] - b[1], a[1] - b[0]]) : null }
-          if (e[0] === '*' && e.length === 3) { const k = constIntExpr(e[1]) ?? constIntExpr(e[2]); const a = k != null ? elementRange(constIntExpr(e[1]) != null ? e[2] : e[1]) : null; return a && k != null ? (k >= 0 ? [a[0] * k, a[1] * k] : [a[1] * k, a[0] * k]) : null }
-          return null
-        }
-        const budget = { constInt: constIntExpr, evRange: elementRange, stepRange: elementRange, closureWrites: captured, MUTATE_OPS }
         const advance = maxAdvanceBudget(loop[2], counter, budget)
         if (advance > 0 && advance <= 2147483647) {
           const rounded = ['()', inclusive ? 'math.floor' : 'math.ceil', n]
@@ -657,8 +673,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       }
     }
     // State/presence copies belong to leaf loops. A surrounding scan may
-    // still need a bounded counter even when its work contains another loop.
-    if (!counterBound && some(loop, n => n !== loop && LOOPS.has(n[0]))) continue
+    // still need a bounded counter, or its cursors' words, even when its work
+    // contains another loop (the trips decide below).
+    const nested = some(loop, n => n !== loop && LOOPS.has(n[0]))
     // a module binding the loop cannot change reads as a local would: the copy snapshots it
     // (one the program already holds to an integer range, a constant, needs no copy)
     const stableGlobal = (n) => !outerOk(n) && !inner.has(n) && !locals.has(n) && ctx.scope.globals.has(n) && !intExprRange(n) && stableBound(n)
@@ -730,17 +747,22 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const tripOfLoop = (node, p, i) => {
       if (node[0] === 'while' && (node[1]?.[0] === '<' || node[1]?.[0] === '<=') && typeof node[1][1] === 'string') {
         const c = node[1][1], entry = already(c) ? literalEntry(p, i, c) : null
-        return entry != null && !captured.has(c) && unitStep(node[2], c)
+        // (a unit step every time round: literal steps, or a rise of at least one by the budget, through a nested loop that runs)
+        return entry != null && !captured.has(c) && (unitStep(node[2], c) || (minAdvanceBudget(node[2], c, { ...budget, roundTest: node[1] }) ?? 0) >= 1)
           ? { n: node[1][2], adj: node[1][0] === '<=' ? 1 : 0, entry, counter: c } : null
       }
+      // (a conjunction runs at most as often as its conjunct on the counter allows: `b < 8 && ip < n`)
+      const counterTest = (cond, iv) => Array.isArray(cond) && cond[0] === '&&' && cond.length === 3 ? counterTest(cond[1], iv) ?? counterTest(cond[2], iv)
+        : Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && cond[1] === iv ? cond : null
+      const test = node[0] === 'for' && node[1]?.[0] === 'let' && Array.isArray(node[1][1]) && typeof node[1][1][1] === 'string' ? counterTest(node[2], node[1][1][1]) : null
       if (node[0] === 'for' && node.length === 5 && node[1]?.[0] === 'let' && node[1].length === 2 && node[1][1]?.[0] === '=' &&
           typeof node[1][1][1] === 'string' && (node[1][1][2]?.[0] == null && Number.isInteger(node[1][1][2][1]) || stableEntry(node[1][1][2])) &&
-          (node[2]?.[0] === '<' || node[2]?.[0] === '<=') && node[2][1] === node[1][1][1] && !writesIn(node[4]).has(node[1][1][1])) {
+          test && !writesIn(node[4]).has(node[1][1][1])) {
         const step = node[3]?.[0] === 'postfix' ? node[3][1] : node[3]
         const init = node[1][1][2]
         // (an entry of stable names is the trips' expression: `for (let k = -r; k <= r; k++)` runs 2r + 1 times)
         return (step?.[0] === '++' || step?.[0] === '+1' || step?.[0] === '+=' && step[2]?.[0] == null && step[2][1] === 1) && step[1] === node[1][1][1]
-          ? { n: node[2][2], adj: node[2][0] === '<=' ? 1 : 0, entry: init[0] == null ? init[1] : init, counter: node[1][1][1] } : null
+          ? { n: test[2], adj: test[0] === '<=' ? 1 : 0, entry: init[0] == null ? init[1] : init, counter: node[1][1][1] } : null
       }
       return null
     }
@@ -793,7 +815,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         if (refsName(node[node[0] === 'for' ? 2 : 1], c) || node[0] === 'for' && refsName(node[3], c)) return null
         const t = tripsOf(tripOfLoop(node, p, i))
         if (!t) return refsName(node, c) ? null : []
-        const inner = perIteration(node[node[0] === 'for' ? 4 : 2], c, null, 0, true, null, wide)
+        const lb = node[node[0] === 'for' ? 4 : 2], single = Array.isArray(lb) && lb[0] !== ';' && lb[0] !== '{}'
+        const inner = perIteration(lb, c, null, 0, true, single ? lb : null, wide)
         if (!inner) return null
         return inner.length ? [['*', t, sum(inner)]] : []
       }
@@ -808,7 +831,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const list = node[0] === ';' || node[0] === '{}'
       const out = []
       for (let k = 1; k < node.length; k++) {
-        const terms = perIteration(node[k], c, node, k, list, list ? node[k] : host, wide)
+        // (an arm of an `if` that is one statement hosts a step inside it, which moves after it, for a wide cursor)
+        const arm = node[0] === 'if' && k >= 2
+        const terms = perIteration(node[k], c, node, k, list || wide && arm, list || arm ? node[k] : host, wide)
         if (!terms) return null
         out.push(...terms)
       }
@@ -822,6 +847,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // trips: an inner copy's, which recorded them, or a loop as written.
     // (a loop under a literal bound counts its trips too: its cursors need no guard of the bound)
     const ownTrip = counterBound?.trip ?? tripOfLoop(loop, parent, idx)
+    if (!counterBound && nested && !ownTrip) continue
     // whether `c` is declared from an integer literal anywhere in the body
     const literalDecl = (c) => some(body, n => (n[0] === 'let' || n[0] === 'var') && n.slice(1).some(d => Array.isArray(d) && d[0] === '=' && d[1] === c && Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])))
     // the trips as a number where their names are module constants (`for (kx < K)` under `const K = 3`)
@@ -926,10 +952,27 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       // where a guard per entry would only stand between its taps. A while's trips
       // the budget alone bounds are the plan's: the emitter holds no cursor of it)
       const budgeted = loop[0] === 'while' && counterBound?.trip != null
-      const wide = !global && literalTrips(trips) == null && (budgeted || (!entry && !literalDecl(c)))
-      const terms = perIteration(loop[loop[0] === 'for' ? 4 : 2], c, null, 0, true, null, wide)
-      const budget = trips && terms?.length ? true : false, r = budget ? null : ring(c)
-      if (!budget && !r) continue
+      // (a cursor stepped inside a nested loop, or inside an expression there, is the plan's whatever its entry and the
+      // trips: the emitter's own cursor proofs read the loop's body alone)
+      const nestedStep = some(loop, n => n !== loop && ALL_LOOPS.has(n[0]) && isReassigned(n, c))
+      const wide = !global && (literalTrips(trips) == null || nestedStep) && (budgeted || (!entry && !literalDecl(c)) || nestedStep)
+      // (a step in a nested loop whose trips no name of the loop's gives, `for (k < len)` over a round's
+      // own `len`: the round's advance by the budget, which reads the trips off the round's declarations;
+      // an inner version stands as its loop as written for the reading)
+      // (a step by a bare element read keeps the walk's path, which tests the element present: absent, the
+      // sum is NaN as written and a zero in the word; a read under a mask or a shift is an int32 either way)
+      const masked = (e) => Array.isArray(e) && e[0] === '[]' ? null : elementRange(e)
+      const rounds = () => {
+        if (!wide || global) return null
+        const swaps = []
+        walkAst(loop, { enter: (n, p, i) => { if (n[0] === '=>') return false; const v = versions.get(n); if (v && p) { swaps.push([p, i, n]); p[i] = v.loop; return false } } })
+        const a = maxAdvanceBudget(loop[loop[0] === 'for' ? 4 : 2], c, { ...budget, evRange: masked, stepRange: masked })
+        for (const [p, i, n] of swaps.reverse()) p[i] = n
+        return a != null && a <= 2147483647 ? a ? [[null, a]] : [] : null
+      }
+      const terms = perIteration(loop[loop[0] === 'for' ? 4 : 2], c, null, 0, true, null, wide) ?? rounds()
+      const budgeted2 = trips && terms?.length ? true : false, r = budgeted2 ? null : ring(c)
+      if (!budgeted2 && !r) continue
       if (refsName(loop[loop[0] === 'for' ? 2 : 1], c) || loop[0] === 'for' && refsName(loop[3], c)) continue
       const floor = resets.length ? Math.max(...resets) : null
       if (entry && entry[0] === entry[1]) cursorEntry.set(c, entry[0])
@@ -1362,9 +1405,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     if (trips) for (const c of locals) {
       if (!loopWrites.has(c) || !outerOk(c) || c === own_ || names.includes(c) || cursors.has(c) || !mayBeNumber(c) || !already(c)) continue
       if (refsName(loop[loop[0] === 'for' ? 2 : 1], c) || loop[0] === 'for' && refsName(loop[3], c)) continue
-      // (literal trips from a literal entry: the emitter unrolls the loop or proves the ends itself, a guard
-      // per entry would only stand between the taps of an unrolled nest; from an entry of a range, the copy's word)
-      if (literalTrips(trips) != null && (literalTrips(trips) <= MAX_SMALL_FOR_UNROLL || entryHull(parent, idx, c) != null)) continue
+      // (literal trips from a literal entry, stepped in the loop's own body: the emitter unrolls the loop or
+      // proves the ends itself, a guard per entry would only stand between the taps of an unrolled nest; from
+      // an entry of a range, or stepped inside a nested loop, the copy's word)
+      const steppedNested = some(loop, n => n !== loop && ALL_LOOPS.has(n[0]) && isReassigned(n, c))
+      if (literalTrips(trips) != null && (literalTrips(trips) <= MAX_SMALL_FOR_UNROLL || entryHull(parent, idx, c) != null && !steppedNested)) continue
       stepCands.set(c, { lo: 0, hi: 0 })
       for (const v of loopWrites.get(c)) if (v != null) walkAst(v, { enter: (n) => { if (n[0] === '=>') return false; for (const x of n) if (typeof x === 'string' && inner.has(x)) stepFeeds.add(x) } })
     }
@@ -1404,7 +1449,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const bails = []   // { list, at, pre: statements before `list[at]`, swaps: [node, i, name, as written] }
     const siteSums = new Set()
     let slot = null, prefixImpure = false, bailFlag = null, bailSave = null
-    const counterName = loop[0] === 'for' && loop[1]?.[0] === 'let' ? loop[1][1]?.[1] : null
+    const counterName = loop[0] === 'for' && loop[1]?.[0] === 'let' && Array.isArray(loop[1][1]) ? loop[1][1][1] : null
     const bailable = loop[0] === 'while' || loop[0] === 'for' && (loop[1] == null || MUTATE_OPS.has(loop[1]?.[0]) ||
       typeof counterName === 'string' && loop[1].length === 2 && loop[1][1][0] === '=' && !writesIn(loop[4]).has(counterName))
     const impure = (st, target = null) => some(st, n => n[0] === '=>' || n[0] === 'new' || n[0] === '?.()' || n[0] === 'yield' || n[0] === 'await' || n[0] === 'delete' ||
@@ -1608,6 +1653,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (entry && atTop != null && atBottom != null) cursorHulls.set(c, [atBottom, atTop])
       cursors.set(c, RING)   // (no terms for a loop around: its ends are the tests' alone)
     }
+    // (a loop around others takes a copy for a bound or for its cursors' words alone)
+    if (!counterBound && nested && !cursors.size) continue
     for (const n of used) names.push(n)
     const presenceTests = needPresence ? presentGlobals.filter(n => !present.includes(n)).map(n => ['!=', n, [null, null]]) : []
     const wordTests = [], seenTests = new Set()
@@ -1742,7 +1789,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         }
         return ['=', w, ['|', ['+', w, [null, off]], [null, 0]]]
       }
-      // (a statement of a list, an arm of an `if`, the body of a loop; in a list, a step inside a statement moves after it)
+      // (a statement of a list, an arm of an `if`, the body of a loop; in a list, a step inside a statement moves
+      // after it; an arm or a body that is one such statement becomes a block of the statement and the step)
       walkAst(copy, { enter: (n) => {
         if (n[0] === '=>') return false
         const slots = n[0] === ';' || n[0] === '{}' ? null : n[0] === 'if' ? [2, 3] : n[0] === 'for' ? [4] : n[0] === 'while' ? [2] : []
@@ -1751,9 +1799,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           if (!Array.isArray(st)) continue
           const r = stepped(st)
           if (r) { n[i] = r; continue }
-          if (slots || st[0] === ';' || st[0] === '{}' || st[0] === 'if' || ALL_LOOPS.has(st[0]) || LEAVES.has(st[0]) || st[0] === 'label') continue
+          if (st[0] === ';' || st[0] === '{}' || st[0] === 'if' || ALL_LOOPS.has(st[0]) || LEAVES.has(st[0]) || st[0] === 'label') continue
           const after = hoisted(st)
-          if (after) n.splice(++k, 0, after)
+          if (!after) continue
+          if (slots) n[i] = ['{}', [';', st, after]]
+          else n.splice(++k, 0, after)
         }
       } })
     }

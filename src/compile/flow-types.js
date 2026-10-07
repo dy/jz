@@ -19,7 +19,7 @@
 
 import { ctx, getFactStore } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { isReassigned, TYPEOF, typeofPredicate, isNumberGuard, walkAst } from '../ast.js'
+import { isReassigned, TYPEOF, typeofPredicate, isNumberGuard, walkAst, MUTATE_OPS } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 
@@ -36,6 +36,8 @@ const TYPEOF_CODE_TO_VAL = { [TYPEOF.number]: VAL.NUMBER, [TYPEOF.string]: VAL.S
 /** Walk a boolean condition gathering refinements implied for the `sense` branch
  *  (sense=true = then-branch, sense=false = else-branch). `out` is a Map mutated
  *  in place; returns the same Map for chaining. */
+// a call, a construction, a closure or a write inside a condition
+const effectful = (n) => Array.isArray(n) && (n[0] === '()' || n[0] === '?.()' || n[0] === 'new' || n[0] === '=>' || MUTATE_OPS.has(n[0]) || n.slice(1).some(effectful))
 export function extractRefinements(cond, out, sense = true) {
   if (!Array.isArray(cond)) return out
   const op = cond[0]
@@ -53,9 +55,11 @@ export function extractRefinements(cond, out, sense = true) {
     if (rejected) mergeRefinement(out, rejected.name, { excludedNumberRange: rejected.range })
     return out
   }
-  // (an eager conjunction or disjunction of comparisons, plan/inline.js: the same truth, both sides evaluated)
-  if ((op === '&&' || op === '__eager&&') && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
-  if ((op === '||' || op === '__eager||') && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
+  // (an eager conjunction or disjunction of comparisons, plan/inline.js: the same truth, both sides
+  // evaluated; one with an effect in it refines nothing, as a named guard with an effect proves nothing)
+  const eager = (op === '__eager&&' || op === '__eager||') && !effectful(cond)
+  if ((op === '&&' || eager && op === '__eager&&') && sense)  { extractRefinements(cond[1], out, true);  extractRefinements(cond[2], out, true);  return out }
+  if ((op === '||' || eager && op === '__eager||') && !sense) { extractRefinements(cond[1], out, false); extractRefinements(cond[2], out, false); return out }
   // typeof x == 'number' | 'string' | 'function' — sense must be positive for "==", negative for "!="
   // Ordered int compares refine a name's closed integer hull for the guarded
   // arm (`x >= 0 && x < W` → x ∈ [0, W-1] inside the chain — the int twin of

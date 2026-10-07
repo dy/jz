@@ -53,7 +53,11 @@ What this implies for HOW we optimize:
   battery runs it alone after native checks. Subprocess logs are disk-backed.
 - `npm run test:self` — standalone self-compile gate: builds a fresh compiler in a temporary
   directory and round-trips real
-  programs through the wasm-hosted compiler. Codegen changes can break the bootstrap.
+  programs through the wasm-hosted compiler. Codegen changes can break the bootstrap;
+  so does compiler source outside the self-compilable subset: hosted, an index into a
+  Number reads it as a pointer (a walker asks `Array.isArray` before indexing a child),
+  and nothing is freed within a compile (a walker shares what it can, a chain of links
+  rather than a copy per node).
   The build has 20 minutes; on a loaded machine `JZ_SELF_BUILD_TIMEOUT=3600000` gives it
   an hour (a `SIGTERM` build exit is the limit, not a failure).
 - `npm run test:262` / `test:262:builtins` — conformance subset.

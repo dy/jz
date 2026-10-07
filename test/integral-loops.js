@@ -646,6 +646,14 @@ const loopFloats = (text) => {
   }
   return k
 }
+// the Number arithmetic in the innermost loops of a module's text
+const leafFloats = (text) => {
+  let k = 0
+  const inner = (n) => Array.isArray(n) && (n[0] === 'loop' || n.some(inner))
+  const walk = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'loop' && !n.some(inner)) { k += (JSON.stringify(n).match(/"f64\.(?:add|sub|mul)"/g) || []).length; return } for (const c of n) walk(c) }
+  walk(parseWat(text))
+  return k
+}
 // the wide (i64) arithmetic and comparisons in the innermost loops of a module's text
 // (a loop around a version tests the version's guard, in i64 where the budget's ends may pass the word)
 const loopWide = (text) => {
@@ -1568,4 +1576,116 @@ test('forward conditions: a boolean declared once for the `if` right after it is
   is(decl(f, 'twice'), 1, 'a boolean read again stays')
   is(decl(g, 'late'), 1, 'a let stays')
   is(decl(g, 'apart'), 1, 'a boolean tested later stays')
+})
+
+test('integral loops: an output cursor stepped inside nested loops and expressions takes the copy\'s word under a count the round\'s own test gives', () => {
+  // LZ's compressor: `op` steps by `op++` inside an initializer, by `op += 2` in an
+  // arm and by `out[op++] = …` in the other, inside `for (b < 8 && ip < n)` under
+  // `while (ip < n)`. The round's test entered again makes the inner loop run at
+  // least once, its `if (bestLen >= 3)` floors `ip += bestLen` at 3, so `ip` rises
+  // by at least one a round: the while has its trips, `op` its budget (at most
+  // 1 + 8 × 2 a round), and the copy steps the word, the step of a one-statement
+  // arm hoisted into a block after it.
+  const src = `const WINDOW = 64, MIN_MATCH = 3, MAX_MATCH = 18
+    const compress = (src, n, out) => {
+      let op = 0, ip = 0
+      while (ip < n) {
+        const ctrlPos = op++
+        let ctrl = 0
+        for (let b = 0; b < 8 && ip < n; b++) {
+          let start = ip - WINDOW
+          if (start < 0) start = 0
+          let maxLen = n - ip
+          if (maxLen > MAX_MATCH) maxLen = MAX_MATCH
+          let bestLen = 0, bestDist = 0
+          for (let j = ip - 1; j >= start; j--) {
+            let len = 0
+            while (len < maxLen && src[j + len] === src[ip + len]) len++
+            if (len > bestLen) { bestLen = len; bestDist = ip - j; if (len >= maxLen) break }
+          }
+          if (bestLen >= MIN_MATCH) {
+            ctrl |= (1 << b)
+            const code = ((bestDist - 1) << 4) | (bestLen - MIN_MATCH)
+            out[op] = (code >>> 8) & 0xff
+            out[op + 1] = code & 0xff
+            op += 2
+            ip += bestLen
+          } else out[op++] = src[ip++]
+        }
+        out[ctrlPos] = ctrl
+      }
+      return op
+    }
+    const N = 512
+    export let main = (iters) => {
+      const src = new Uint8Array(N), out = new Uint8Array(N * 2 + 64)
+      let x = 0x12345678 | 0
+      for (let i = 0; i < N; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; src[i] = i > 64 && (x & 0x70) === 0 ? src[i - 1 - ((x >>> 8) & 63)] : (x >>> 16) & 0xff }
+      let h = 0
+      for (let it = 0; it < iters; it++) {
+        const clen = compress(src, N, out)
+        h = Math.imul(h ^ clen, 16777619)
+        for (let i = 0; i < clen; i++) h = Math.imul(h ^ out[i], 16777619)
+        src[it % N] = (src[it % N] + 1) & 0xff
+      }
+      return h
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const iters of [0, 1, 3]) is(m.main(iters), js.main(iters), `${iters} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  // (the innermost loops compute in words: the output cursor and the match scan alike; a
+  // version's guard around them reads its count as a Number once a round)
+  const text = wat(src, { optimize: { level: 3, coldTrap: true } })
+  is(leafFloats(text), 0, 'no Number arithmetic in the copies\' innermost loops')
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  for (const iters of [1, 3]) is(m.main(iters), js.main(iters), `the copies compress ${iters} times`)
+})
+
+test('integral loops: a cursor stepped in a nested loop over a round\'s own count takes the copy\'s word by the round\'s budget', () => {
+  // LZ's inflater: `op` steps by `op++` inside `for (k < len)`, `len` a code's field
+  // of the round (`(code & 15) + 3`), and by `dst[op++] = …` in the other arm. No
+  // name of the loop's gives the inner trips, so the round's advance comes from the
+  // budget, which reads the field's range off the round's declarations and the inner
+  // version as its loop as written: at most 1 + 8 × 18 a round, under the count of
+  // the while's own cursor.
+  const src = `const MIN_MATCH = 3
+    const inflate = (inp, clen, dst) => {
+      let ip = 0, op = 0
+      while (ip < clen) {
+        const ctrl = inp[ip++]
+        for (let b = 0; b < 8 && ip < clen; b++) {
+          if (ctrl & (1 << b)) {
+            const code = (inp[ip] << 8) | inp[ip + 1]
+            ip += 2
+            const dist = (code >>> 4) + 1
+            const len = (code & 0x0f) + MIN_MATCH
+            for (let k = 0; k < len; k++) { dst[op] = dst[op - dist]; op++ }
+          } else dst[op++] = inp[ip++]
+        }
+      }
+      return op
+    }
+    export let main = (clen) => {
+      const inp = new Uint8Array(1024), dst = new Uint8Array(8192)
+      let x = 0x2545f491 | 0
+      for (let i = 0; i < 1024; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; inp[i] = (x >>> 16) & 0xff }
+      const n = inflate(inp, clen, dst) | 0
+      let h = n
+      for (let i = 0; i < n; i++) h = Math.imul(h ^ dst[i], 16777619)
+      return h
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const clen of [0, 1, 9, 100, 300]) is(m.main(clen), js.main(clen), `${clen} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  // (the innermost loops: a version's guard around them reads the count as a Number once a round)
+  const text = wat(src, { optimize: { level: 3, coldTrap: true } })
+  is(leafFloats(text), 0, 'no Number arithmetic in the copies\' innermost loops')
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  for (const clen of [9, 300]) is(m.main(clen), js.main(clen), `the copies inflate ${clen}`)
 })

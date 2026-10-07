@@ -291,13 +291,25 @@ export function foldWrappedWords(module) {
  *  comparisons; a read elsewhere converts the word. A read before every write on its
  *  path keeps the local (zero is the same number either way, but the rule is one). */
 const FLAG_CMP = { 'f64.eq': 'i32.eq', 'f64.ne': 'i32.ne', 'f64.lt': 'i32.lt_s', 'f64.le': 'i32.le_s', 'f64.gt': 'i32.gt_s', 'f64.ge': 'i32.ge_s' }
+// The arms around a node, a chain up to the root (null), one link per arm entered and shared
+// by everything under it (the hosted compiler frees nothing within a compile: no copies).
+// A write's arms are a prefix of a read's when the write's link is on the read's chain.
+const ARMS = new Set(['then', 'else', 'loop', 'block'])
+const armsOf = (n, arms) => Array.isArray(n) && ARMS.has(n[0]) ? { up: arms } : arms
+const under = (w, arms) => { for (let a = arms; a; a = a.up) if (a === w) return true; return !w }
+const note = (written, l, arms) => { const ws = written.get(l); if (!ws) written.set(l, [arms]); else if (!ws.some(w => under(w, arms))) ws.push(arms) }
+const writtenBefore = (written, l, arms) => { const ws = written.get(l); return !!ws && ws.some(w => under(w, arms)) }
+const f64Decls = (fn, decls, params) => {
+  let any = false
+  for (const d of fn) if (Array.isArray(d) && (d[0] === 'local' || d[0] === 'param') && typeof d[1] === 'string') { decls.set(d[1], d); if (d[0] === 'param') params.add(d[1]); if (d[2] === 'f64') any = true }
+  return any
+}
 const smallLit = (n) => n?.[0] === 'f64.const' && Number.isInteger(Number(n[1])) && Math.abs(Number(n[1])) <= 0x7fffffff && !Object.is(Number(n[1]), -0) ? Number(n[1]) : null
 export function narrowFlagLocals(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return false
   const decls = new Map(), params = new Set()
-  for (const d of fn) if (Array.isArray(d) && (d[0] === 'local' || d[0] === 'param') && typeof d[1] === 'string') { decls.set(d[1], d); if (d[0] === 'param') params.add(d[1]) }
+  if (!f64Decls(fn, decls, params)) return false
   const flags = new Set(), bad = new Set(), written = new Map()
-  const prefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i])
   // (a read in arithmetic would convert the word: every read is a comparison against a literal)
   const compared = (parent) => parent && FLAG_CMP[parent[0]] && parent.length === 3 && (smallLit(parent[1]) != null || smallLit(parent[2]) != null)
   const census = (n, arms, parent) => {
@@ -307,13 +319,13 @@ export function narrowFlagLocals(fn) {
       // (the value first: a write inside it is a write too)
       census(n[2], arms, n)
       if (smallLit(n[2]) == null || params.has(l) || op === 'local.tee') bad.add(l); else flags.add(l)
-      if (!written.has(l) || !written.get(l).some(w => prefix(w, arms))) (written.get(l) ?? written.set(l, []).get(l)).push(arms)
+      note(written, l, arms)
       return
     }
-    if (op === 'local.get' && typeof l === 'string' && decls.get(l)?.[2] === 'f64' && (!compared(parent) || !(written.get(l) ?? []).some(w => prefix(w, arms)))) bad.add(l)
-    for (let i = 1; i < n.length; i++) census(n[i], ARMS.has(n[i]?.[0]) ? [...arms, n[i]] : arms, n)
+    if (op === 'local.get' && typeof l === 'string' && decls.get(l)?.[2] === 'f64' && (!compared(parent) || !writtenBefore(written, l, arms))) bad.add(l)
+    for (let i = 1; i < n.length; i++) census(n[i], armsOf(n[i], arms), n)
   }
-  census(fn, [], null)
+  census(fn, null, null)
   const chosen = new Set([...flags].filter(l => !bad.has(l)))
   if (!chosen.size) return false
   const rw = (n) => {
@@ -350,14 +362,12 @@ const boxed = (n) => {
   if (b?.[0] === 'i64.const' && a?.[0] === 'i64.extend_i32_u') return [String(b[1]), a[1]]
   return null
 }
-const ARMS = new Set(['then', 'else', 'loop', 'block'])
 export function narrowBoxedLocals(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return false
   const decls = new Map(), params = new Set()
-  for (const d of fn) if (Array.isArray(d) && (d[0] === 'local' || d[0] === 'param') && typeof d[1] === 'string') { decls.set(d[1], d); if (d[0] === 'param') params.add(d[1]) }
+  if (!f64Decls(fn, decls, params)) return false
   // every write a box of one tag; every read after a write on its path (the arms around the write a prefix of the read's)
   const tags = new Map(), bad = new Set(), written = new Map()
-  const prefix = (a, b) => a.length <= b.length && a.every((x, i) => x === b[i])
   // (a read as a Number, boxed again, would cost what the unboxes save: every read is an unbox or a tag test)
   const census = (n, arms, parent) => {
     if (!Array.isArray(n)) return
@@ -366,13 +376,13 @@ export function narrowBoxedLocals(fn) {
       census(n[2], arms, n)
       const b = boxed(n[2])
       if (!b || params.has(l) || (tags.has(l) && tags.get(l) !== b[0]) || (op === 'local.tee' && parent?.[0] !== 'i64.reinterpret_f64')) bad.add(l); else tags.set(l, b[0])
-      if (!written.has(l) || !written.get(l).some(w => prefix(w, arms))) (written.get(l) ?? written.set(l, []).get(l)).push(arms)
+      note(written, l, arms)
       return
     }
-    if (op === 'local.get' && typeof l === 'string' && decls.get(l)?.[2] === 'f64' && (parent?.[0] !== 'i64.reinterpret_f64' || !(written.get(l) ?? []).some(w => prefix(w, arms)))) bad.add(l)
-    for (let i = 1; i < n.length; i++) census(n[i], ARMS.has(n[i]?.[0]) ? [...arms, n[i]] : arms, n)
+    if (op === 'local.get' && typeof l === 'string' && decls.get(l)?.[2] === 'f64' && (parent?.[0] !== 'i64.reinterpret_f64' || !writtenBefore(written, l, arms))) bad.add(l)
+    for (let i = 1; i < n.length; i++) census(n[i], armsOf(n[i], arms), n)
   }
-  census(fn, [], null)
+  census(fn, null, null)
   const chosen = new Set([...tags.keys()].filter(l => !bad.has(l)))
   // (the bits: every read of the local is through `i64.reinterpret_f64`, its writes any Number)
   const reads = new Map(), bits = new Set()

@@ -208,6 +208,8 @@ export const unrollRecurrences = () => {
 //   let i = LO; while (i < HI-1) { body; body[i+1]; i += 2 } ; if (i </<= HI) body
 // Each copy is a verbatim iteration (checked reads and all), so values are
 // exact for every input incl. OOB — only the iteration grouping changes.
+// (the chain's tail copy of the body stands after the loop: a `break` there has no loop to leave)
+const hasBreak = (n) => some(n, node => node[0] === 'break')
 function tryUnrollScalarChain(stmt, cm) {
   const DBG = typeof process !== 'undefined' && process.env?.JZ_DBG_USC
   const L = normalizeLoop(stmt)
@@ -224,7 +226,7 @@ function tryUnrollScalarChain(stmt, cm) {
   if (!(isArr(L.cond) && (L.cond[0] === '<=' || L.cond[0] === '<') && L.cond[1] === iv)) { if (DBG) console.error('[usc] cond-shape'); return null }
   const cmpOp = L.cond[0], HI = L.cond[2]
   if (!(typeof HI === 'string' || loopLitVal(HI) != null)) { if (DBG) console.error('[usc] hi', JSON.stringify(HI)); return null }
-  if (hasUnsafe(body)) { if (DBG) console.error('[usc] unsafe'); return null }
+  if (hasUnsafe(body) || hasBreak(body)) { if (DBG) console.error('[usc] unsafe'); return null }
   const stmts = body.slice(1)
 
   // no element/property stores anywhere — the class is a pure scan

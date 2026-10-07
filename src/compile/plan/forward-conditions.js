@@ -6,7 +6,7 @@
  * been written there, and the test short-circuits as written. The statements
  * are adjacent, so the condition reads the same values at the test. A
  * condition that calls stays named: the proofs around a named guard fail
- * closed on an effect, and the forwarding keeps that.
+ * closed on an effect, and the forwarding keeps that; so does one that writes.
  *
  * @module compile/plan/forward-conditions
  */
@@ -35,8 +35,8 @@ const forwardIn = (body) => {
       if (!Array.isArray(d) || d[0] !== 'const' || d.length !== 2 || !Array.isArray(d[1]) || d[1][0] !== '=' || typeof d[1][1] !== 'string') continue
       if (!Array.isArray(next) || next[0] !== 'if' || next[1] !== d[1][1]) continue
       if (reads(body, d[1][1]) !== 1) continue
-      // (a condition that calls stays named: the proofs around a named guard fail closed on an effect)
-      if (some(d[1][2], n => n[0] === '()' || n[0] === '?.()' || n[0] === 'new' || n[0] === '=>')) continue
+      // (a condition that calls or writes stays named: the proofs around a named guard fail closed on an effect)
+      if (some(d[1][2], n => n[0] === '()' || n[0] === '?.()' || n[0] === 'new' || n[0] === '=>' || MUTATE_OPS.has(n[0]))) continue
       next[1] = d[1][2]
       n.splice(i, 1)
       changed = true

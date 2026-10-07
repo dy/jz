@@ -535,13 +535,21 @@ const hasTypedBoundsTemp = wat => /\$[^\s)]*(?:tb[in]|ixv)\d*/.test(wat)
 // can sit between the unsigned bounds test and its load or store. Wide keys
 // compare their full i64 value before narrowing the memory address.
 const someWat = (n, test) => Array.isArray(n) && (test(n) || n.some(c => someWat(c, test)))
-const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || parseWat(wat).some(f =>
-  Array.isArray(f) && f[0] === 'func' && /^\$(?!__)/.test(f[1]) && someWat(f, n => {
+// A test shared by two accesses is held in a flag local (`local.tee $f (i64.lt_u …)`): an
+// access under `(if (local.get $f) …)` is as checked as one under the test itself.
+const isBoundsTest = n => n?.[0] === 'i32.lt_u' || n?.[0] === 'i64.lt_u'
+const hasCheckedTypedAccess = wat => hasTypedBoundsTemp(wat) || parseWat(wat).some(f => {
+  if (!Array.isArray(f) || f[0] !== 'func' || !/^\$(?!__)/.test(f[1])) return false
+  const flags = new Set()
+  someWat(f, n => { if ((n[0] === 'local.tee' || n[0] === 'local.set') && isBoundsTest(n[2])) flags.add(n[1]); return false })
+  return someWat(f, n => {
     if (n[0] !== 'if') return false
     const at = n[1]?.[0] === 'result' ? 2 : 1
-    return (n[at]?.[0] === 'i32.lt_u' || n[at]?.[0] === 'i64.lt_u') && n[at + 1]?.[0] === 'then' &&
+    const cond = n[at]
+    return (isBoundsTest(cond) || cond?.[0] === 'local.get' && flags.has(cond[1])) && n[at + 1]?.[0] === 'then' &&
       someWat(n[at + 1], x => /^(?:f32|f64|i32|i64)\.(?:load|store)/.test(x[0]))
-  }))
+  })
+})
 
 test('interval proof: control-flow joins retain unknown and out-of-bounds paths', () => {
   for (const branch of [

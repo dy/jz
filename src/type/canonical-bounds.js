@@ -378,8 +378,17 @@ export const minAdvanceBudget = (root, name, options) => advanceBudget(root, nam
 // whole-loop ranges, never entry-only facts about a changing operand.
 export const maxMovementBudget = (root, name, options) => advanceBudget(root, name, options, false, true)
 
-function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false, stepRange = null }, minimum, absolute = false) {
+function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS, upperOnly = false, stepRange = null, roundTest = null }, minimum, absolute = false) {
   if (minimum && upperOnly) return null
+  // The round's own test (the loop's, `ip < n`): a nested loop entered under the same test, with
+  // nothing of the test's names written before it in the round, runs at least once, so its
+  // body's least advance counts once (`for (let b = 0; b < 8 && ip < n; b++) { … ip += len }`
+  // under `while (ip < n)`); a guard `x >= K` floors a step's rise by `x` in its arm.
+  const testNames = new Set()
+  if (minimum && roundTest) { const walk = (y) => { if (!Array.isArray(y)) return; for (let i = 1; i < y.length; i++) if (typeof y[i] === 'string') testNames.add(y[i]); else walk(y[i]) }; walk(roundTest) }
+  let testWrites = [...testNames].some(x => closureWrites.has(x)) ? 1 : 0
+  const sameTest = (c) => roundTest != null && JSON.stringify(c) === JSON.stringify(roundTest)
+  const floors = new Map()
   const stmts = Array.isArray(root) && (root[0] === ';' || root[0] === '{}') ? root.slice(1) : [root]
   const bodyDecls = new Map()
   for (const st of stmts) collectDecls(st, bodyDecls)
@@ -401,9 +410,33 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
   }
   const evIn = (e) => evRange(subst(e))
   const boundHi = (cond, iv) => {
+    // (a conjunction runs at most as often as its conjunct on the counter allows)
+    if (Array.isArray(cond) && cond[0] === '&&' && cond.length === 3) return boundHi(cond[1], iv) ?? boundHi(cond[2], iv)
     if (!Array.isArray(cond) || cond.length !== 3 || (cond[0] !== '<' && cond[0] !== '<=') || cond[1] !== iv) return null
     const B = evIn(cond[2])
     return B ? B[1] + (cond[0] === '<=' ? 1 : 0) : null
+  }
+  // whether the nested loop `n` runs at least once where it stands: entered under the round's own
+  // test, intact so far, from a literal start below a literal bound (a `for`), or under that test alone (a `while`)
+  const runsOnce = (n) => {
+    if (testWrites) return false
+    if (n[0] === 'while' && n.length === 3) return sameTest(n[1])
+    if (n[0] !== 'for' || n.length !== 5) return false
+    const [, init, cond] = n
+    const decls = new Map(); collectDecls(init, decls)
+    if (decls.size !== 1) return false
+    const [iv, initE] = [...decls][0], A = constInt(initE)
+    if (A == null) return false
+    let own = null, rest = true
+    const conj = (c) => {
+      if (Array.isArray(c) && c[0] === '&&' && c.length === 3) { conj(c[1]); conj(c[2]); return }
+      if (Array.isArray(c) && c.length === 3 && (c[0] === '<' || c[0] === '<=') && c[1] === iv && own == null) { own = c; return }
+      if (!sameTest(c)) rest = false
+    }
+    conj(cond)
+    if (!own || !rest) return false
+    const B = constInt(own[2])
+    return B != null && (own[0] === '<' ? A < B : A <= B)
   }
   // writes to `nm` in `r`, each as a node — a declarator's `=` is a binding, not a write
   const writesTo = (r, nm) => {
@@ -504,6 +537,8 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
       const d = constInt(v)
       if (d != null) return d > 0 ? d : null
       const r = stepRange ? stepRange(subst(v)) : null
+      // (the least rise: the floor a guard holds the step's name above, where it is higher)
+      if (minimum && typeof v === 'string' && floors.has(v) && !refsName(v, name, REFS_THROUGH_ARROWS)) return Math.max(floors.get(v), r?.[0] ?? -Infinity)
       return r && Number.isFinite(r[1]) && r[0] >= 0 && !refsName(v, name, REFS_THROUGH_ARROWS) ? (minimum ? r[0] : r[1]) : null
     }
     if (n[0] === '+=') return rise(n[2])
@@ -542,8 +577,16 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     // (a nested loop writing nothing of the counter advances it by nothing, and
     // leaves the round only through its own breaks: a labeled jump, a return or
     // a throw leaves the round's advance uncounted)
-    if (minimum && (op === 'for' || op === 'while' || op === 'do'))
-      return isReassigned(n, name) || leavesRound(n) ? null : 0
+    if (minimum && (op === 'for' || op === 'while' || op === 'do')) {
+      if (leavesRound(n)) return null
+      if (!isReassigned(n, name)) { if ([...testNames].some(x => isReassigned(n, x))) testWrites++; return 0 }
+      // (a nested loop that runs at least once advances by at least one iteration's least; the test's names may be written in it)
+      if (op === 'do' || !runsOnce(n)) { testWrites++; return null }
+      const head = op === 'for' ? eff(n[1]) : 0
+      const per = op === 'for' ? seq([n[2], n[3], n[4]]) : seq([n[1], n[2]])
+      testWrites++
+      return head == null || per == null ? null : head + per
+    }
     // (a path that leaves the function, by a return or a throw, completes no
     // round: it bounds no round's advance)
     if (minimum && (op === 'return' || op === 'throw')) return Infinity
@@ -553,9 +596,17 @@ function advanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OP
     // Optional operands may not run, even when their receiver does.
     if (minimum && hasOptionalChain(n))
       return isReassigned(n, name) ? null : 0
-    if (MUTATE_OPS.has(op) && n[1] === name) return delta(n)
+    if (minimum && MUTATE_OPS.has(op) && typeof n[1] === 'string' && testNames.has(n[1]) && n[1] !== name) testWrites++
+    if (MUTATE_OPS.has(op) && n[1] === name) { if (minimum && testNames.has(name)) testWrites++; return delta(n) }
     if (op === 'if') {
-      const c = eff(n[1]), a = eff(n[2]), b = n.length > 3 ? eff(n[3]) : 0
+      const c = eff(n[1])
+      // (`if (x >= K)`: the arm holds x at K or above, a floor for a step's rise by x, where the arm writes x nowhere)
+      const t = n[1], floor = minimum && Array.isArray(t) && t.length === 3 && (t[0] === '>=' || t[0] === '>') && typeof t[1] === 'string' && !isReassigned(n[2], t[1]) ? constInt(t[2]) : null
+      const had = floor != null ? floors.get(t[1]) : undefined
+      if (floor != null) floors.set(t[1], Math.max(had ?? -Infinity, t[0] === '>' ? floor + 1 : floor))
+      const a = eff(n[2])
+      if (floor != null) { if (had === undefined) floors.delete(t[1]); else floors.set(t[1], had) }
+      const b = n.length > 3 ? eff(n[3]) : 0
       return c == null || a == null || b == null ? null : c + (minimum ? Math.min(a, b) : Math.max(a, b))
     }
     if (op === '?:') {
