@@ -124,6 +124,22 @@ bound.
 node bench/bench.mjs --targets=jz,jz-w2c --json --merge --verify-anchors
 ```
 
+A claim is decided per case by the best rival of each class, so a verdict needs
+only the lanes that could lead. `--contenders[=N]` (default 2) measures, per
+case, jz plus the N fastest rivals of each claim class by the stored evidence
+(wasm producers, V8-family engines, bun/jsc; `bench/claims.mjs contenders`) and
+Porffor; the rest keep their stored rows under `--merge`, or are simply absent
+from a fresh `--json` file. A case with no stored evidence measures every
+selected lane, so a new case is ranked in full once. The gate then counts
+coverage by claim class rather than by lane (`meta.contenders`). This is the
+release protocol CI runs (`bench.yml` reference) and the one to run by hand:
+
+```sh
+# release verdict: jz + the two nearest rivals per class, paired, ~1/3 of a full run
+node bench/bench.mjs --contenders --paired=6 --json=/tmp/reference.json
+JZ_BENCH_RESULTS=/tmp/reference.json node test/bench-claims.js
+```
+
 Rival prep artifacts are cached only while the case source, generated flat
 input, `bench.mjs`, and `bench/_lib/` are unchanged. Porffor also stamps its
 exact git HEAD; dirty checkouts bypass the cache. `JZ_BENCH_REBUILD=1` forces

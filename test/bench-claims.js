@@ -28,7 +28,7 @@ import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
-import { CLAIM_RIVALS, JIT_RIVALS, JSC_EXCEPTION_BAND_TOL, JSC_FAMILY_RIVALS, TIGHT_INT_LOOP_CASES, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { CLAIM_CLASSES, CLAIM_RIVALS, contenders, JIT_RIVALS, JSC_EXCEPTION_BAND_TOL, JSC_FAMILY_RIVALS, TIGHT_INT_LOOP_CASES, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The named rivals of the claim. Unlike test/bench.js's availability-filtered
@@ -323,9 +323,28 @@ const parityRows = rival => {
   return rows
 }
 
+test('claims: contenders are the fastest stored rivals of each class, with jz and Porffor', () => {
+  const row = medianUs => ({ medianUs, parity: 'ok' })
+  const c = { targets: { jz: row(100), 'c-wasm': row(120), as: row(110), 'rust-wasm': row(300), tinygo: { status: 'fail', reason: 'no build' },
+    v8: row(200), deno: row(190), bun: row(150), 'porf-native': row(900) } }
+  is(contenders(c, 2).join(','), 'jz,as,c-wasm,deno,v8,bun,porf-native', 'two per class, ranked by the stored median; a failed lane is unranked')
+  is(contenders(c, 1).join(','), 'jz,as,deno,bun,porf-native', 'one per class')
+  is(contenders(c, 2, ['jz', 'c-wasm', 'rust-wasm', 'v8']).join(','), 'jz,c-wasm,rust-wasm,v8', 'ranked among the selected lanes')
+  is(contenders(undefined, 2).join(','), 'jz', 'a case without evidence ranks no rival')
+})
+
+// A --contenders refresh measures the nearest rivals of each class per case: the
+// claim class is contested on a case when any of its lanes has a timed row there.
 test('claims: every named rival is contested (coverage ≥ floor of the corpus)', () => {
   const total = Object.keys(cases).length
   const need = Math.ceil(total * COVERAGE_FLOOR)
+  if (res.meta?.contenders) {
+    for (const [label, rivals] of [...CLAIM_CLASSES, ['porffor', ['porf-native']]]) {
+      const rows = Object.values(cases).filter(c => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
+      ok(rows >= need, `claim class '${label}' is contested on ${rows}/${total} cases (floor ${need}) under --contenders=${res.meta.contenders}`)
+    }
+    return
+  }
   for (const rival of [...CLAIM_RIVALS, ...JIT_RIVALS, 'porf-native']) {
     const rows = parityRows(rival)
     ok(rows >= need, `rival '${rival}' has ${rows}/${total} parity-valid rows (floor ${need}) — the claim is uncontested against it`)

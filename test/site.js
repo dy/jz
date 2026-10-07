@@ -803,6 +803,8 @@ test('site: benchmark publication requires Perry evidence and a successful push'
     writeFileSync(join(dir, 'bench/results.json'), '{"reference":"unchanged"}')
     copyFileSync(join(root, 'assets/headline.js'), join(dir, 'assets/headline.js'))
     writeFileSync(join(dir, 'bench/bench.mjs'), `import { writeFileSync } from 'node:fs'
+writeFileSync(process.env.ARGS_LOG, process.argv.slice(2).join(' '))
+if (process.env.BENCH_FAIL) { console.error(process.env.BENCH_FAIL); process.exit(1) }
 writeFileSync('bench/results-ci.json', process.env.SNAPSHOT)
 `)
     // Execute the real publication shell with a local git fixture, never a remote.
@@ -816,19 +818,29 @@ esac
 `, { mode: 0o755 })
     const good = { cases: { alpha: { targets: { perry: { medianUs: 1, parity: 'ok' } } } } }
     const run = (snapshot = good, extra = {}) => {
-      const log = join(dir, 'git.log')
-      writeFileSync(log, '')
+      const log = join(dir, 'git.log'), args = join(dir, 'bench.args')
+      writeFileSync(log, ''); writeFileSync(args, '')
       const result = spawnSync('bash', ['-e', '-c', script], { cwd: dir, encoding: 'utf8',
-        env: { ...process.env, PATH: join(dir, 'bin') + ':' + process.env.PATH,
-          GIT_LOG: log, GITHUB_SHA: 'source', INPUTS_SAME: '1', HISTORY_OK: '1', PUSH_OK: '1', SNAPSHOT: JSON.stringify(snapshot), ...extra },
+        env: { ...process.env, PATH: join(dir, 'bin') + ':' + process.env.PATH, RUNNER_TEMP: dir,
+          GIT_LOG: log, ARGS_LOG: args, GITHUB_SHA: 'source', INPUTS_SAME: '1', HISTORY_OK: '1', PUSH_OK: '1', SNAPSHOT: JSON.stringify(snapshot), ...extra },
       })
-      return { ...result, calls: readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) }
+      return { ...result, calls: readFileSync(log, 'utf8').trim().split('\n').filter(Boolean), args: readFileSync(args, 'utf8') }
     }
     const success = run()
     is(success.status, 0, success.stderr)
     is(success.calls.filter(c => c === 'push').length, 1, 'one successful push finishes publication')
     is(success.calls.filter(c => c.startsWith('add ')), ['add bench/results-ci.json'], 'only CI evidence is staged')
     is(readFileSync(join(dir, 'bench/results.json'), 'utf8'), '{"reference":"unchanged"}', 'reference evidence is preserved')
+    is(success.args, '--contenders --json=bench/results-ci.json --merge --verify-anchors', 'a main push refreshes the contenders into the stored rows, anchored')
+    const weekly = run(good, { GITHUB_EVENT_NAME: 'schedule' })
+    is(weekly.status, 0, weekly.stderr)
+    ok(weekly.args.startsWith('--targets=nat,') && weekly.args.includes(',perry,') && !weekly.args.includes('--merge'), 'the weekly run measures every lane afresh')
+    const drifted = run(good, { BENCH_FAIL: '[anchors] DRIFT DETECTED — stored evidence no longer matches this machine' })
+    is(drifted.status, 0, 'a drifted runner skips the refresh')
+    is(drifted.calls, [], 'a skipped refresh never reaches git')
+    const broken = run(good, { BENCH_FAIL: 'measurement failed' })
+    is(broken.status, 1, 'any other failed measurement fails CI')
+    is(broken.calls, [], 'a failed measurement never reaches git')
     for (const perry of [undefined, { status: 'fail' }, { medianUs: 1, parity: 'DIFF' }, { medianUs: 0, parity: 'ok' }]) {
       const rejected = run({ cases: { alpha: { targets: { perry } } } })
       is(rejected.status, 1, 'missing, failed, wrong, or zero-time Perry evidence blocks publication')

@@ -11,6 +11,7 @@ import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { completeBenchSvgRun, renderBenchSvg } from '../scripts/bench-svg.mjs'
 import { classifyBenchmarkChecksum, LAB, timedBenchmarkRow } from '../assets/headline.js'
+import { contenders } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
@@ -1245,6 +1246,13 @@ let VERIFY_ANCHORS = 0
 // PREV.meta.anchors) backs it. The a9269390 manual restore proved this hole:
 // a narrow --merge with neither flag can drop/stale anchors silently.
 let ALLOW_UNANCHORED = false
+// --contenders[=N]: measure what can contest a case — jz, the N fastest rivals of
+// each claim class by the stored evidence (bench/claims.mjs contenders) and
+// Porffor — instead of every lane. A far slower rival keeps its stored row (with
+// --merge) or is simply absent; the per-case verdict needs only the lanes that
+// could lead. A case with no stored evidence measures every selected lane.
+// Default 2: the two nearest rivals per class. --targets narrows further.
+let CONTENDERS = 0
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
   else if (arg === '--paired') PAIRED = 4
@@ -1260,6 +1268,8 @@ for (const arg of process.argv.slice(2)) {
   else if (arg === '--verify-anchors') VERIFY_ANCHORS = 3
   else if (arg.startsWith('--verify-anchors=')) VERIFY_ANCHORS = Math.max(1, +arg.slice(17) || 3)
   else if (arg === '--allow-unanchored') ALLOW_UNANCHORED = true
+  else if (arg === '--contenders') CONTENDERS = 2
+  else if (arg.startsWith('--contenders=')) CONTENDERS = Math.max(1, +arg.slice(13) || 2)
   // Bare args are CASES first (the documented `bench.mjs mat4` form): `jz` is
   // both a case (the self-compile compiler workload) and a target — the case
   // wins; select the target via --targets=jz.
@@ -1292,6 +1302,13 @@ const JSON_EXISTS = !!(JSON_PATH && existsSync(JSON_PATH))
 const PREV = JSON_EXISTS ? loadJson(JSON_PATH) : null
 const CANONICAL = loadJson(CANONICAL_RESULTS)
 const ANCHOR_BASE = PREV || CANONICAL
+// The lanes measured for a case: every selected one, or under --contenders those
+// the stored evidence ranks as able to contest it.
+const caseTargets = cid => {
+  if (!CONTENDERS) return selectedTargets
+  const picked = contenders(ANCHOR_BASE?.cases?.[cid], CONTENDERS, selectedTargets).filter(tid => selectedTargets.includes(tid))
+  return picked.length > 1 ? picked : selectedTargets
+}
 
 // --merge shrink-guard (audit-#12 item 4): an agent's naive `--merge` once
 // silently degraded to a plain full-file overwrite when PREV failed to load
@@ -1367,11 +1384,13 @@ for (const cid of selectedCases) {
     if (!failures.some(f => f.id === id)) failures.push({ id, reason })
   }
   let pairedInfo = null   // per-pair {ratios, median} when --paired (persisted into cases[id].paired)
+  const lanes = caseTargets(cid)
+  if (CONTENDERS) console.log(`[contenders] ${lanes.join(' ')}`)
   if (PAIRED) {
     // Order-aware paired rounds (see --paired above): reverse the target order
     // every round, verdict = median of per-round ratios vs the first target.
-    const avail = selectedTargets.filter(tid => targets[tid].available(c))
-    for (const tid of selectedTargets) if (!avail.includes(tid))
+    const avail = lanes.filter(tid => targets[tid].available(c))
+    for (const tid of lanes) if (!avail.includes(tid))
       console.log(`[skip] ${tid.padEnd(targetIdWidth)} ${targets[tid].name}`)
     const rounds = []   // Array<Map<tid, result>> — round-aligned so ratios pair same-round runs
     // WARM round (uncounted): builds every artifact (tryRun memoizes the prep)
@@ -1446,7 +1465,7 @@ for (const cid of selectedCases) {
       ;(pairedInfo ??= {})[`${base}/${tid}`] = { ratios: ratios.map(r => +r.toFixed(4)), median: +med.toFixed(4) }
     }
   } else
-  for (const tid of selectedTargets) {
+  for (const tid of lanes) {
     const t = targets[tid]
     if (!t.available(c)) {
       console.log(`[skip] ${tid.padEnd(targetIdWidth)} ${t.name}`)
@@ -1741,6 +1760,9 @@ if (JSON_PATH) {
     // the validity CONTEXT test/bench-claims.js's VALIDITY row checks against a
     // sane bound. See bench/machine-state.mjs for the WARM/MEMORY-FLOOR provenance.
     machineState: machineState(),
+    // --contenders: the lanes measured per case are the stored evidence's nearest
+    // rivals of each claim class; test/bench-claims.js reads coverage by class.
+    ...(CONTENDERS && { contenders: CONTENDERS }),
     // --verify-anchors verdict (design Piece 2) — independent of --merge:
     // compares against ANCHOR_BASE, the file's content from BEFORE this run
     // (or the canonical committed evidence), so it's a real machine-state

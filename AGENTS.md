@@ -24,6 +24,11 @@ These are the product's promises. They are CI-gated (`test/bench.js`), not aspir
    held to a 1.5× sanity band instead of a leadership bar — a regression tripwire, not a
    claim.
 
+Evidence comes from the lean reference protocol, not a full matrix: `bench.yml`'s
+manual reference run (and `node bench/bench.mjs --contenders --paired=6 --json=…`)
+measures jz against the nearest rivals of each claim class per case; a full
+rerun re-ranks the rivals weekly.
+
 What this implies for HOW we optimize:
 
 - **General techniques, never per-bench tweaks.** The other wasm producers win where they

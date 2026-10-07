@@ -15,6 +15,13 @@ on:
         description: Measure fresh release evidence and enforce speed, size and memory claims
         type: boolean
         default: true
+      contenders:
+        description: Rivals measured per claim class and case (the nearest by stored evidence); 0 measures every lane
+        type: string
+        default: '2'
+  # The full matrix re-ranks every lane weekly; a main push refreshes only the contenders.
+  schedule:
+    - cron: '0 3 * * 1'
   push:
     paths-ignore:
       - '**/*.md'
@@ -186,14 +193,19 @@ jobs:
           echo "$RUNNER_TEMP/wabt-1.0.41/bin" >> "$GITHUB_PATH"
           echo "WABT_W2C_DIR=$RUNNER_TEMP/wabt-1.0.41/share/wabt/wasm2c" >> "$GITHUB_ENV"
       - run: npm run test:bench
-        if: ${{ !inputs.reference }}
+        if: ${{ !inputs.reference && github.event_name != 'schedule' }}
       # Same-machine, alternating paired rounds. The strict claims gate reads
       # these fresh files; CI does not turn a timing loss into an informational row.
+      # A verdict needs only the lanes that could lead: --contenders measures jz
+      # against the nearest rivals of each claim class per case (bench/README.md).
       - name: measure release reference
         if: ${{ inputs.reference }}
         shell: bash
+        env:
+          CONTENDERS: ${{ inputs.contenders }}
         run: |
-          node bench/bench.mjs --targets=jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,porf-native,v8,deno,bun,jsc,jz-w2c --paired=6 --json="$RUNNER_TEMP/reference.json" 2>&1 | tee "$RUNNER_TEMP/reference.log"
+          flag=""; [ "${CONTENDERS:-2}" != "0" ] && flag="--contenders=${CONTENDERS:-2}"
+          node bench/bench.mjs --targets=jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,porf-native,v8,deno,bun,jsc,jz-w2c $flag --paired=6 --json="$RUNNER_TEMP/reference.json" 2>&1 | tee "$RUNNER_TEMP/reference.log"
       - name: enforce release claims
         if: ${{ inputs.reference }}
         shell: bash
@@ -217,7 +229,7 @@ jobs:
       # opcode-0x12 defect) would trip. nqueens is that exact repro case, kept
       # in the smoke set as a permanent regression guard for it.
       - name: install w2c2 (build from source — no prebuilt/package exists)
-        if: ${{ !inputs.reference }}
+        if: ${{ !inputs.reference && github.event_name != 'schedule' }}
         run: |
           mkdir "$RUNNER_TEMP/w2c2"
           curl -fsSL https://codeload.github.com/turbolent/w2c2/tar.gz/700f556539ea7c7995e6645b9b80e3edf9c9b271 | tar xz --strip-components=1 -C "$RUNNER_TEMP/w2c2"
@@ -225,7 +237,7 @@ jobs:
           cmake --build "$RUNNER_TEMP/w2c2/w2c2/build" --target w2c2 -j
           "$RUNNER_TEMP/w2c2/w2c2/build/w2c2" -h
       - name: native-lane smoke (jz-w2c + jz-w2c2, checksum-verified)
-        if: ${{ !inputs.reference }}
+        if: ${{ !inputs.reference && github.event_name != 'schedule' }}
         env:
           WABT_W2C_DIR: ${{ runner.temp }}/wabt-1.0.41/share/wabt/wasm2c
           W2C2_DIR: ${{ runner.temp }}/w2c2/w2c2
@@ -253,15 +265,26 @@ jobs:
             console.log("native-lane smoke OK — both translators match checksums; WABT also passes multi-value returns");
           '
       # Refresh the runner dataset on main; pages.yml redeploys on completion.
-      # Every available target is measured on this one machine. Browser-runner
-      # artifacts (bench/web/*.wasm) are rebuilt separately by pages.yml.
+      # Weekly, every available target is measured on this one machine; a main
+      # push refreshes jz and the contenders of each case into the stored rows,
+      # certified by the anchors (a drifted runner skips the publish). Browser-
+      # runner artifacts (bench/web/*.wasm) are rebuilt separately by pages.yml.
       - name: publish bench snapshot
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'
         run: |
-          # Seed the checksum oracle from current reference evidence, not old CI
-          # results. This is a full refresh: all timings below come from this runner.
-          cp bench/results.json bench/results-ci.json
-          node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,scriptc,tslang,jz,jz-wasmtime,jz-w2c,wat,numpy --json=bench/results-ci.json || exit 1
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            # Seed the checksum oracle from current reference evidence, not old CI
+            # results. This is a full refresh: all timings below come from this runner.
+            cp bench/results.json bench/results-ci.json
+            node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,scriptc,tslang,jz,jz-wasmtime,jz-w2c,wat,numpy --json=bench/results-ci.json || exit 1
+          else
+            set -o pipefail
+            log="${RUNNER_TEMP:-$(mktemp -d)}/publish.log"
+            if ! node bench/bench.mjs --contenders --json=bench/results-ci.json --merge --verify-anchors 2>&1 | tee "$log"; then
+              grep -q '^\[anchors\] DRIFT' "$log" && { echo 'runner drifted from the stored rows: snapshot not refreshed'; exit 0; }
+              exit 1
+            fi
+          fi
           # A missing/failed Perry lane must not silently disappear from the page.
           node --input-type=module <<'JS'
           import { readFileSync } from 'node:fs'
