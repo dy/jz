@@ -70,7 +70,7 @@ import { viewGuardedTyped } from './guard-views.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
-import { guardConstants, canonicalizeCountedLoops } from './counted-loops.js'
+import { guardConstants, canonicalizeCountedLoops, adoptLoopCounters } from './counted-loops.js'
 import { scalarizeModuleScratch } from './scratch.js'
 import { resolveAliases, splitSplicedBindings } from './alias.js'
 import { propagateConstants } from './constants.js'
@@ -148,6 +148,8 @@ export default function plan(ast, profiler, summarize) {
   sweep('declareWrittenKeys', () => declareWrittenKeys(ast))
   // A name that holds a method of `Object.prototype` is the method where it is called.
   sweep('resolveHeldMethods', () => resolveHeldMethods(ast))
+  // A loop's counter declared outside it and read nowhere else: the loop's own, from here on.
+  sweep('adoptLoopCounters', adoptLoopCounters)
   // A key stored on objects nothing asks for their keys becomes a declared
   // slot of their literals too, the literals their values join sharing one layout.
   ctx.summary = summarize()

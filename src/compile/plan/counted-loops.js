@@ -38,6 +38,7 @@ import { ctx } from '../../ctx.js'
 import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
+import { cloneWithSubst } from '../../type.js'
 import { optimizing } from './common.js'
 import { intLevelMap } from '../../type.js'
 import { K, NUMBER, core, tagOf } from '../../summary/kind.js'
@@ -417,6 +418,45 @@ const leaves = (n) => {
   if (n[0] === ';') return leaves(n[n.length - 1])
   if (n[0] === 'if') return n.length > 3 && leaves(n[2]) && leaves(n[3])
   return false
+}
+
+// A counter declared outside the loop and assigned by its init (`let i; for (i = 0; …)`),
+// read nowhere outside the loop and never captured: the loop declares a counter of its
+// own, starting where the init starts it, the form every later reading takes; the outer
+// name stays as it was, unread.
+function adoptCounter(node, parent, idx, root, captured) {
+  const init = node[1]
+  if (!Array.isArray(init) || init[0] !== '=' || typeof init[1] !== 'string') return false
+  const name = init[1]
+  if (captured.has(name) || occursOutside(root, node, name)) return false
+  const own = fresh(name)
+  const copy = cloneWithSubst(node, new Map(), new Map([[name, own]]))
+  copy[1] = ['let', ['=', own, copy[1][2]]]
+  parent[idx] = copy
+  return true
+}
+
+/** Plan sweep, before the summary: every `for` adopts a counter declared outside it. */
+export const adoptLoopCounters = () => {
+  let changed = false
+  for (const func of ctx.funcs.list) {
+    if (func.raw || !func.body) continue
+    const captured = new Set()
+    walkAst(func.body, { enter: node => {
+      if (node[0] === '=>') { walkAst(node, { enter: m => { for (let j = 1; j < m.length; j++) if (typeof m[j] === 'string') captured.add(m[j]) } }); return false }
+    } })
+    // (innermost first: an outer loop's copy then carries its inner loop as adopted)
+    const fors = []
+    walkAst(func.body, { enter: (node, parent, idx) => {
+      if (node[0] === '=>') return false
+      if (node[0] === 'for' && node.length === 5 && parent) fors.push([node, parent, idx])
+    } })
+    for (let n = fors.length - 1; n >= 0; n--) {
+      const [node, parent, idx] = fors[n]
+      if (parent[idx] === node && adoptCounter(node, parent, idx, func.body, captured)) changed = true
+    }
+  }
+  return changed
 }
 
 export const canonicalizeCountedLoops = () => {

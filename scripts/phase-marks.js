@@ -34,7 +34,7 @@ export const PHASE_NAMES = [
   'plan:classifyHashDictGlobals', 'plan:flattenFuncNamespaces', 'plan:declareWrittenKeys', 'plan:declareUnseenKeys', 'plan:devirtGlobalCalls', 'plan:devirtClassCalls', 'plan:indexArrayPatterns', 'plan:viewGuardedTyped',
   'plan:bindNestedRowLengths', 'plan:peelClampedStencil', 'plan:unrollRowLenPadLoops', 'plan:unrollRecurrences', 'plan:callChosenFunctions', 'plan:specializeCalledArgs', 'plan:inlineHotInternalCalls', 'plan:inlineLocalLambdas',
   'plan:specializeFixedRestCalls', 'plan:splitMapPairs', 'plan:hoistObjectReads', 'plan:promoteLoopFields', 'plan:guardConstants', 'plan:canonicalizeCountedLoops', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeModuleScratch', 'plan:resolveAliases', 'plan:splitSplicedBindings', 'plan:propagateConstants', 'plan:resolveHeldMethods', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
-  'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:forwardConditions', 'plan:unswitchLoops', 'plan:splitLoopKinds', 'plan:versionIntegralLoops', 'plan:synthesizeComputedDispatchCallSites',
+  'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:adoptLoopCounters', 'plan:forwardConditions', 'plan:unswitchLoops', 'plan:splitLoopKinds', 'plan:versionIntegralLoops', 'plan:synthesizeComputedDispatchCallSites',
   'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex', 'plan:dropUnreadGlobals',
   'plan:materializeAutoBoxSchemas', 'plan:resolveClosureWidth', 'plan:applyExportTypedArrayAbi', 'plan:splitByListKinds',
   'plan:collectSlotConstants', 'plan:narrowSignatures', 'plan:analyzeParamDistinctness', 'plan:analyzeFreshTypedGlobals', 'plan:refineSlotWriteHazards',

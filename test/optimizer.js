@@ -4333,6 +4333,18 @@ test('loop-SR: escaped reads and callee writes keep the original counter domain'
 // it must not transform (non-unit step, an aliasing index, a call in the body); a break
 // in the body leaves the pair loop as it leaves the loop.
 const recOn = (src) => run(src, { optimize: 'speed' }).f
+// A counter declared outside the `for` and assigned by its init, read nowhere else, is the
+// loop's own (plan/counted-loops.js adoptLoopCounters): the same loop as `for (let i …)`.
+test('counted loops: a counter declared outside the for is the loop\'s own', () => {
+  const inside = 'export let f = (n) => { let a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = a[i] * 2 + 1; return a[n - 1] }'
+  const outside = 'export let f = (n) => { let a = new Float64Array(n); let i = 0; for (i = 0; i < n; i++) a[i] = a[i] * 2 + 1; return a[n - 1] }'
+  const after = 'export let f = (n) => { let a = new Float64Array(n); let i = 0; for (i = 0; i < n; i++) a[i] = a[i] * 2 + 1; return a[n - 1] + i }'
+  for (const optimize of [2, 3]) {
+    ok(/v128/.test(compile(outside, { optimize, wat: true })), 'O' + optimize + ': the loop vectorizes as the one declaring its counter does')
+    is(run(outside, { optimize }).f(7), run(inside, { optimize }).f(7), 'O' + optimize + ': the same result')
+    is(run(after, { optimize }).f(7), 8, 'O' + optimize + ': a counter read after the loop stays outside: ' + 8)
+  }
+})
 // The unroller's size gate reads the body after the integer narrowing: nqueens' `avail`
 // is a Number with its conversions before it (112 nodes against the gate of 110; 90 after).
 test('recursion unroll: the size gate reads the narrowed body', () => {
