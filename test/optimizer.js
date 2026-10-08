@@ -3795,6 +3795,30 @@ test('splitCharScan: main loop narrows the char carrier to i32', () => {
   ok(/f64\.min|call \$math\.min/.test(wat), 'main bound is min(N, s.length)')
 })
 
+// The main loop's bound, `Math.min(n, s.length)`, has no hull below (n is any Number) but
+// rises no further than a string's length, an i32 field: the counter is a word, and the
+// char it reads is a raw word too (static.js topOf; lost between 8a84ee53 and 9b2826b7,
+// when tokenizer ran its scan on a Number counter with the NaN arm per char).
+test('splitCharScan: the main loop counts in a word and reads a raw char', () => {
+  const wat = jz.compile(`
+    const count = (s, n) => {
+      let hits = 0
+      for (let i = 0; i < n; i++) {
+        const c = s.charCodeAt(i)
+        if (c >= 48 && c <= 57) hits++
+      }
+      return hits
+    }
+    export let main = (k) => count('a1b22c333', 9 - (k & 3))
+  `, { wat: true, optimize: 'speed' })
+  const fn = /\(func \$count[\s\S]*?\n  \)/.exec(wat)?.[0] ?? ''
+  const first = fn.slice(fn.indexOf('(loop '), fn.indexOf('(loop ', fn.indexOf('(loop ') + 1))
+  ok(/\(local \$i i32\)/.test(fn), 'the counter is a word')
+  ok(first.length > 0 && !/nan:0x7FF8/.test(first), 'the main loop reads its char without the out-of-range arm')
+  ok(/\(i32\.const 48\)/.test(first) && !/f64\.const 48/.test(first), 'the char is classified as a word')
+  is(run(`export let main = (k) => { const s = 'a1b22c333'; let hits = 0; for (let i = 0; i < 9 - (k & 3); i++) { const c = s.charCodeAt(i); if (c >= 48 && c <= 57) hits++ } return hits }`, { optimize: 'speed' }).main(2), 4, 'the digits counted')
+})
+
 test('splitCharScan: integral / fractional / NaN / negative bounds match JS', () => {
   const src = `export let scan = (s, n) => {
     let h = 0

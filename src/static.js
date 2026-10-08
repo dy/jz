@@ -5,6 +5,7 @@
 import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned } from './ast.js'
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
+import { STRING } from './summary/kind.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
 import { typedCtorName } from './typed-provenance.js'
 
@@ -442,6 +443,46 @@ export function counterInit(init, name) {
   return initExpr
 }
 
+// A string's length is an i32 field (abi/string.js): below 2^31 by construction.
+const STRING_LENGTH_TOP = 0x7fffffff
+const isStringName = (name) => repOf(name)?.val === VAL.STRING || ctx.summary?.at?.(ctx.func?.current)?.kindOfExpr?.(name) === STRING
+const operands = (args) => Array.isArray(args) && args[0] === ',' ? args.slice(1) : [args]
+/** The top of an expression's hull where the hull has no finite bottom: the least top
+ *  of a minimum's operands, a string's length, a conditional's larger arm. */
+export const topOf = (e, rangeOf = intExprRange) => {
+  const r = rangeOf(e)
+  if (r) return r[1]
+  if (!Array.isArray(e)) return null
+  if (e[0] === '()' && e[1] === 'math.min' && e.length === 3) {
+    const tops = operands(e[2]).map(a => topOf(a, rangeOf)).filter(t => t != null)
+    return tops.length ? Math.min(...tops) : null
+  }
+  if (e[0] === '()' && e[1] === 'math.max' && e.length === 3) {
+    const tops = operands(e[2]).map(a => topOf(a, rangeOf))
+    return tops.every(t => t != null) ? Math.max(...tops) : null
+  }
+  if (e[0] === '?:' && e.length === 4) { const a = topOf(e[2], rangeOf), b = topOf(e[3], rangeOf); return a != null && b != null ? Math.max(a, b) : null }
+  if (e[0] === '.' && e.length === 3 && e[2] === 'length' && typeof e[1] === 'string' && isStringName(e[1])) return STRING_LENGTH_TOP
+  return null
+}
+/** The bottom of an expression's hull where the hull has no finite top: the mirror of `topOf`. */
+export const bottomOf = (e, rangeOf = intExprRange) => {
+  const r = rangeOf(e)
+  if (r) return r[0]
+  if (!Array.isArray(e)) return null
+  if (e[0] === '()' && e[1] === 'math.max' && e.length === 3) {
+    const bottoms = operands(e[2]).map(a => bottomOf(a, rangeOf)).filter(t => t != null)
+    return bottoms.length ? Math.max(...bottoms) : null
+  }
+  if (e[0] === '()' && e[1] === 'math.min' && e.length === 3) {
+    const bottoms = operands(e[2]).map(a => bottomOf(a, rangeOf))
+    return bottoms.every(t => t != null) ? Math.min(...bottoms) : null
+  }
+  if (e[0] === '?:' && e.length === 4) { const a = bottomOf(e[2], rangeOf), b = bottomOf(e[3], rangeOf); return a != null && b != null ? Math.min(a, b) : null }
+  if (e[0] === '.' && e.length === 3 && e[2] === 'length' && typeof e[1] === 'string' && isStringName(e[1])) return 0
+  return null
+}
+
 export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) {
   return forCounterBoundsIn(init, cond, step, name, rangeOf, false)
 }
@@ -501,7 +542,15 @@ function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep) {
     } else if (isReassigned(s, name)) return null
   }
   if (stepOK == null) return null
-  const initRange = rangeOf(initExpr), boundRange0 = rangeOf(cond[2])
+  const initRange = rangeOf(initExpr)
+  // A bound no hull closes on both sides still closes the counter on the side it
+  // runs toward: `i < Math.min(len, s.length)` rises below a string's length.
+  let boundRange0 = rangeOf(cond[2])
+  if (!boundRange0) {
+    const bound = (typeof cond[2] === 'string' ? counterInit(init, cond[2]) : null) ?? cond[2]
+    const side = increasing ? topOf(bound, rangeOf) : bottomOf(bound, rangeOf)
+    if (side != null) boundRange0 = increasing ? [-Infinity, side] : [side, Infinity]
+  }
   if (!initRange || !boundRange0) return null
   const boundRange = [boundRange0[0] - shift, boundRange0[1] - shift]
   const lo = increasing ? initRange[0] : boundRange[0] + (cond[0] === '>' ? 1 : 0)
