@@ -167,6 +167,14 @@ const enteredLoopOps = (tree, calls) => {
 // and also cap the existing overall proxy at 1349. Inputs cover no work, positive integer
 // and fractional bounds; fallback presence cannot dilute the fast-path bar.
 const INT_CALLS = [[0, 3, 5, 7], [4, 3, 5, 7], [3.5, -1, 0, 7]]
+// The float, mixed and cond programs take the same (n, p0, p1, p2) and got the
+// same guarded copy for their Number counters (2026-10-01, `prove counter
+// widths and preserve full Number loop bounds`; the wide accumulator's clones
+// are evaluated per carrier since the same day). With those calls the entered
+// loops count what the whole corpus did before: float 784, mixed 1137 against
+// 1148, cond 581; the retained fallbacks are the rest of the total, which keeps
+// its own cap. A category that takes arrays is counted whole, as before.
+const NUMERIC_CALLS = { int: INT_CALLS, float: INT_CALLS, mixed: INT_CALLS, cond: INT_CALLS }
 
 // Specialized loops (2026-09-29): a loop whose reads may miss, or whose
 // numbers are integers the emitter could not prove, runs in a copy that tests
@@ -288,10 +296,10 @@ const measure = (categories = Object.keys(CATEGORIES)) => {
       try {
         const tree = parseWat(jz.compile(genProgram(cat, s), { optimize: 2, wat: true }))
         sum += loopBodyOps(tree)
-        if (cat === 'int') entered += enteredLoopOps(tree, INT_CALLS)
+        if (NUMERIC_CALLS[cat]) entered += enteredLoopOps(tree, NUMERIC_CALLS[cat])
       } catch (cause) { throw new Error(`perf corpus ${cat}, seed ${s} failed to compile or execute`, { cause }) }
     }
-    totals[cat] = cat === 'int' ? { total: sum, entered } : sum
+    totals[cat] = NUMERIC_CALLS[cat] ? { total: sum, entered } : sum
   }
   return totals
 }
