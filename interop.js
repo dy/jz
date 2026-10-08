@@ -1807,6 +1807,8 @@ const prepareInterop = (opts) => {
     const prop = state.mem.read(propBig)
     const obj = extRecv(objBig, prop, 'property read')
     const value = obj[prop]
+    // (a method reference the receiver lacks: the invoke that follows names it)
+    if (raw && typeof value !== 'function') state.methodMiss = { obj, prop }
     if (raw || !legacy && typeof value === 'function') return bits(hostValue(state, value))
     // An explicitly-external BigInt64Array/BigUint64Array still carries exact
     // runtime BigInt evidence (ordinary host values use the typed-memory codec).
@@ -1878,7 +1880,10 @@ const prepareInterop = (opts) => {
   // bind functions: that changes identity/this and observes name/length.
   opts._interp.__ext_method = (objBig, propBig) => readProperty(objBig, propBig, false, true)
   const invoke = (fn, obj, args) => {
-    if (typeof fn !== 'function') throw new TypeError('Host value is not callable')
+    if (typeof fn !== 'function') {
+      const miss = state.methodMiss
+      throw new TypeError(miss && miss.obj === obj ? `${String(miss.prop)} is not a function on the host receiver` : 'Host value is not callable')
+    }
     const value = Reflect.apply(fn, obj, args)
     const bigTyped = typeof value === 'bigint' &&
       (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
