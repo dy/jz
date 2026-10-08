@@ -1609,6 +1609,44 @@ test('a small typed-index loop unrolls around a closure that writes a binding of
   is(jz(src, { optimize: { level: 'speed' } }).exports.main(), 5, 'the copy reads what the closure wrote')
 })
 
+test('a leaf called only from a method a dispatcher reaches still splices', () => {
+  if (belowOpt(3) || onKernel()) return
+  // The inliner counts sites in the functions that run. A class method reached
+  // through a member access the census cannot name (two classes answer
+  // `valueAt`: a dispatcher tests each) is one of them, as the program index's
+  // call graph seeds it; the liveness the inliner read seeded only from direct
+  // calls, so every leaf such a method called kept its call (the Web Audio
+  // render's automation guards, 3.4× slower than the inlined render).
+  const src = `
+    const isRamp = (e) => e.kind === 'ramp'
+    const isStep = (e) => e.kind === 'step'
+    class Steps {
+      constructor() { this.events = [{ kind: 'step', t: 0, v: 1 }, { kind: 'ramp', t: 1, v: 3 }] }
+      valueAt(t) {
+        let v = 0
+        for (let i = 0; i < this.events.length; i++) {
+          const e = this.events[i]
+          if (isStep(e) && e.t <= t) v = e.v
+          else if (isRamp(e) && e.t <= t) v = v + (e.v - v) * 0.5
+        }
+        return v
+      }
+    }
+    class Flat {
+      constructor(v) { this.v = v }
+      valueAt(t) { return this.v + t }
+    }
+    export let main = (n) => {
+      const tracks = [new Steps(), new Flat(2), new Steps()]
+      let s = 0
+      for (let k = 0; k < n; k++) s += tracks[k % 3].valueAt(k & 1)
+      return s
+    }`
+  const wat = compile(src, { optimize: { level: 'speed', watr: false }, wat: true })
+  is((wat.match(/call \$is(?:Ramp|Step)\b/g) || []).length, 0, 'the guards splice into the method')
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(1000), 1833, 'the dispatched method answers')
+})
+
 test('unrolled scalar scratch includes lowered temporaries without changing their lifetime', () => {
   if (onKernel()) return
   const scratch = '$\uE000ul0'
