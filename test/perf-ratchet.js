@@ -18,6 +18,7 @@ import { ok, is } from 'tst/assert.js'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import jz from '../index.js'
+import { instantiate } from '../interop.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { CATEGORIES, genProgram } from '../scripts/perf-corpus.mjs'
@@ -154,10 +155,15 @@ const enteredLoopOps = (tree, calls) => {
   let binary
   try { binary = encodeWat(tree) }
   finally { tree.splice(1, 1); for (const [loop, body] of loops) loop.splice(body, 1) }
-  const { exports } = new WebAssembly.Instance(new WebAssembly.Module(binary), {
-    ratchet: { enter: id => entered.add(loops[id][0]) }
-  })
-  for (const args of calls) exports.f(...args)
+  const imports = { ratchet: { enter: id => entered.add(loops[id][0]) } }
+  // numbers cross a raw instance; arrays go through the host bridge
+  if (calls.some(args => args.some(a => typeof a === 'object'))) {
+    const { exports, memory } = instantiate(new WebAssembly.Module(binary), { imports })
+    for (const args of calls) { exports.f(...args); memory?.reset?.() }
+  } else {
+    const { exports } = new WebAssembly.Instance(new WebAssembly.Module(binary), imports)
+    for (const args of calls) exports.f(...args)
+  }
   return loopBodyOps(tree, entered)
 }
 
@@ -175,6 +181,29 @@ const INT_CALLS = [[0, 3, 5, 7], [4, 3, 5, 7], [3.5, -1, 0, 7]]
 // 1148, cond 581; the retained fallbacks are the rest of the total, which keeps
 // its own cap. A category that takes arrays is counted whole, as before.
 const NUMERIC_CALLS = { int: INT_CALLS, float: INT_CALLS, mixed: INT_CALLS, cond: INT_CALLS }
+// The array programs take the same guarded copies, and their totals count the
+// runtime's loops too (the reach walk, the reset's heal loops, the string
+// helpers), so the loops the calls enter are a small share of each: Float64Array,
+// Float32Array and plain arrays run each element-kind variant, no work and a
+// fractional bound run the guards. Against the restored baselines' tree
+// (88f5f193), entered: buf 3715 -> 2830, nest 1878 -> 2034, slice 25910 -> 26128,
+// ring 4720 -> 4720, condref 10565 -> 7587, fgather 6840 -> 5920; the totals'
+// growth (buf 17288 -> 23668, nest 3571 -> 5595, slice 121648 -> 153420, ring
+// 18720 -> 30720, condref 85265 -> 139181, fgather 14400 -> 18800) is the
+// retained Number loops beside the guarded copies, as int's was. nest's four and
+// slice's five more nodes a program sit in the versioned outer loops' bound
+// snaps; the inner loops are what they were.
+const f64 = (n) => { const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = (i * 7 % 11) + 0.25; return a }
+const f32 = (n) => new Float32Array(f64(n))
+const arr = (n) => Array.from(f64(n))
+const ARRAY_CALLS = {
+  buf: () => [[f64(64), 8], [f32(64), 8], [arr(64), 8], [f64(64), 0], [f64(64), 3.5]],
+  nest: () => [[f64(64), 8], [f32(64), 8], [arr(64), 8], [f64(64), 0]],
+  slice: () => [[f64(128), f64(4), 3, 8], [f32(128), f64(4), 3, 8], [arr(128), arr(4), 3, 8], [f64(128), f64(4), 0, 8]],
+  ring: () => [[f64(8192), f64(64), 8], [f32(8192), f32(64), 8], [arr(8192), arr(64), 8], [f64(8192), f64(64), 0]],
+  condref: () => [[f64(64), f64(64), 1, 8], [f64(64), f64(64), 2, 8], [f32(64), f32(64), 1, 8], [arr(64), arr(64), 1, 8], [f64(64), f64(64), 1, 0]],
+  fgather: () => [[f64(64), f64(64), 8], [f32(64), f32(64), 8], [arr(64), arr(64), 8], [f64(64), f64(64), 0]],
+}
 
 // Specialized loops (2026-09-29): a loop whose reads may miss, or whose
 // numbers are integers the emitter could not prove, runs in a copy that tests
@@ -286,6 +315,12 @@ const NUMERIC_CALLS = { int: INT_CALLS, float: INT_CALLS, mixed: INT_CALLS, cond
 // The consolidated slice (121648) and fgather (14400) still exceed these
 // limits. Keep them red: slice inlines more generic store work, and fgather
 // pays the full-range index check on idx+1. Do not hide those remaining costs.
+// Counter widths (2026-10-01, `prove counter widths and preserve full Number
+// loop bounds`): every category's total took the retained Number loop beside
+// the guarded copy, and the entered caps above now hold the per-iteration
+// cost those two notes kept visible: fgather's entered loops 6840 -> 5920
+// (the idx+1 check is gone from the loops the calls run), slice's 25910 ->
+// 26128. The totals count both arms from here on.
 
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
@@ -296,10 +331,11 @@ const measure = (categories = Object.keys(CATEGORIES)) => {
       try {
         const tree = parseWat(jz.compile(genProgram(cat, s), { optimize: 2, wat: true }))
         sum += loopBodyOps(tree)
-        if (NUMERIC_CALLS[cat]) entered += enteredLoopOps(tree, NUMERIC_CALLS[cat])
+        const calls = NUMERIC_CALLS[cat] ?? ARRAY_CALLS[cat]?.()
+        if (calls) entered += enteredLoopOps(tree, calls)
       } catch (cause) { throw new Error(`perf corpus ${cat}, seed ${s} failed to compile or execute`, { cause }) }
     }
-    totals[cat] = NUMERIC_CALLS[cat] ? { total: sum, entered } : sum
+    totals[cat] = NUMERIC_CALLS[cat] || ARRAY_CALLS[cat] ? { total: sum, entered } : sum
   }
   return totals
 }
