@@ -1576,6 +1576,39 @@ test('unrolled scalar scratch keeps per-copy SSA and hoists invariant compounds'
   for (const n of [0, 1, 7, 64]) is(on(n), off(n), `SSA-LICM on===off at n=${n}`)
 })
 
+test('a small typed-index loop unrolls around a closure that writes a binding of its body', () => {
+  if (belowOpt(3) || onKernel()) return
+  // The unroller names each copy's block-scoped bindings anew so the per-copy
+  // scratch stays single-def (splitScratch). A closure of the body is cloned as
+  // it is, so a binding it captures keeps its name: renamed, the closure wrote
+  // a binding of its own and the copy read the initializer (the Web Audio
+  // render's `complete` listener, spliced into the bench's timing loop).
+  const src = `
+    class Ctx {
+      #ls
+      constructor() { this.#ls = [] }
+      on(f) { this.#ls.push(f) }
+      make() { const buf = { len: 4, data: new Float64Array(4) }; for (let i = 0; i < 4; i++) buf.data[i] = i * 0.5; return buf }
+      go() { const buf = this.make(); const ls = this.#ls; for (let i = 0; i < ls.length; i++) ls[i]({ buf }) }
+    }
+    const render = () => {
+      const ctx = new Ctx()
+      let out = null
+      ctx.on((e) => { out = e.buf })
+      ctx.go()
+      return out
+    }
+    const sum = (b) => { let h = 0; for (let i = 0; i < b.len; i++) h += b.data[i]; return h }
+    const run = () => {
+      let out
+      const samples = new Float64Array(3)
+      for (let i = 0; i < 3; i++) { out = render(); samples[i] = i }
+      return sum(out) + samples[2]
+    }
+    export let main = () => run()`
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(), 5, 'the copy reads what the closure wrote')
+})
+
 test('unrolled scalar scratch includes lowered temporaries without changing their lifetime', () => {
   if (onKernel()) return
   const scratch = '$\uE000ul0'

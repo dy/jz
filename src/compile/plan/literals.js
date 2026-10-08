@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  callbackReadsArray, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, hasControlTransfer, callArgs,
+  callbackReadsArray, collectBareRefs, some, walkAst, rewriteChildren, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, ACCESSOR_GET, ACCESSOR_SET, isReassigned, hasControlTransfer, callArgs,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -585,7 +585,19 @@ const unrollTypedArrayLoops = (node, names) => {
         !hasControlTransfer(node[4]) && !containsDeclOf(node[4], trip.name) && !isReassigned(node[4], trip.name)) {
       const out = [';']
       const bindings = new Set()
-      if (ctx.transform.optimize?.splitScratch === true) collectBindings(node[4], bindings)
+      if (ctx.transform.optimize?.splitScratch === true) {
+        collectBindings(node[4], bindings)
+        // A binding a closure of the body captures keeps its name: the capture
+        // is recorded under it, and the cell it names is fresh on every pass
+        // of the loop already (emitLoopFreshBoxed).
+        walkAst(node[4], { enter: n => {
+          if (n[0] !== '=>') return
+          const refs = new Set()
+          collectBareRefs(n[2], refs)
+          for (const r of refs) bindings.delete(r)
+          return false
+        } })
+      }
       for (let i = 0; i < trip.end; i++) {
         // A block-scoped let/const is a distinct binding on every source-loop
         // iteration. Keep that identity in the expanded AST so later IR LICM
