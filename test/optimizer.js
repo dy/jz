@@ -1577,7 +1577,7 @@ test('unrolled scalar scratch keeps per-copy SSA and hoists invariant compounds'
 })
 
 test('a small typed-index loop unrolls around a closure that writes a binding of its body', () => {
-  if (belowOpt(3) || onKernel()) return
+  if (onKernel()) return
   // The unroller names each copy's block-scoped bindings anew so the per-copy
   // scratch stays single-def (splitScratch). A closure of the body is cloned as
   // it is, so a binding it captures keeps its name: renamed, the closure wrote
@@ -1610,7 +1610,7 @@ test('a small typed-index loop unrolls around a closure that writes a binding of
 })
 
 test('a leaf called only from a method a dispatcher reaches still splices', () => {
-  if (belowOpt(3) || onKernel()) return
+  if (onKernel()) return
   // The inliner counts sites in the functions that run. A class method reached
   // through a member access the census cannot name (two classes answer
   // `valueAt`: a dispatcher tests each) is one of them, as the program index's
@@ -6965,4 +6965,67 @@ test('a flag of literals: a write nested in another write\'s value is a write of
   const src = `const mk = (ops, fn = (a) => { for (let i = 0, d; (d = ops[i++]); ) { if (d === a) return i } return 0 }) => fn
     export let main = () => mk([3, 4, 5])(4)`
   for (const optimize of levels(0, 2, 'speed')) is(run(src, { optimize }).main(), 2, `at ${optimize}`)
+})
+
+test('a call carried into a spliced closure reads its arguments as the caller binds them', () => {
+  // `sweep` is a local lambda the plan splices after the call inside it was
+  // spliced; that call's argument seams (`const a = x`) were made while `x` was
+  // a capture, and stay names for `x` in the caller: a typed array the lane
+  // vectorizer reads, not a box.
+  if (onKernel()) return
+  const src = `function dot(N, x, y) { let s = 0; for (let i = 0; i < N; i++) s += x[i] * y[i]; return s }
+    const fn = dot
+    export let main = (n) => {
+      const x = new Float64Array(n), y = new Float64Array(n)
+      for (let i = 0; i < n; i++) { x[i] = i; y[i] = n - i }
+      const out = new Float64Array(64)
+      const sweep = () => { for (let i = 0; i < 64; i++) out[i] = fn(n - (i & 7), x, y) }
+      for (let r = 0; r < 3; r++) sweep()
+      return out[5]
+    }`
+  ok(/f64x2/.test(compile(src, { wat: true, optimize: { level: 'speed' } })), 'the spliced dot product vectorizes')
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(100), oracle(src).main(100))
+})
+
+test('an unrolled strided kernel spliced through a closure takes its canonical counted form', () => {
+  // stdlib's ddot shape (an offset helper, a remainder loop, a main loop
+  // unrolled by a module constant) spliced into a closure that is itself
+  // spliced: the fresh names are summarized before the counted-loop rewrite
+  // reads them, so the main loop rerolls and its reduction vectorizes.
+  if (onKernel()) return
+  const src = `function offset(N, stride) {
+      if (stride > 0) return 0
+      return (1 - N) * stride
+    }
+    var M = 5
+    function dot(N, x, sx, ox, y, sy, oy) {
+      var s = 0, ix = ox, iy = oy, m, i
+      if (N <= 0) return s
+      if (sx === 1 && sy === 1) {
+        m = N % M
+        if (m > 0) for (i = 0; i < m; i++) { s += x[ix] * y[iy]; ix += 1; iy += 1 }
+        if (N < M) return s
+        for (i = m; i < N; i += M) { s += x[ix] * y[iy] + x[ix + 1] * y[iy + 1] + x[ix + 2] * y[iy + 2] + x[ix + 3] * y[iy + 3] + x[ix + 4] * y[iy + 4]; ix += M; iy += M }
+        return s
+      }
+      for (i = 0; i < N; i++) { s += x[ix] * y[iy]; ix += sx; iy += sy }
+      return s
+    }
+    function dot2(N, x, sx, y, sy) {
+      if (N <= 0) return 0
+      return dot(N, x, sx, offset(N, sx), y, sy, offset(N, sy))
+    }
+    export let main = (n) => {
+      const x = new Float64Array(n), y = new Float64Array(n)
+      for (let i = 0; i < n; i++) { x[i] = i % 7; y[i] = (n - i) % 5 }
+      const out = new Float64Array(64)
+      const sweep = () => { for (let i = 0; i < 64; i++) out[i] = dot2(n - (i & 7), x, 1, y, 1) }
+      sweep(); sweep()
+      let t = 0
+      for (let i = 0; i < 64; i++) t += out[i]
+      return t
+    }`
+  const wat = compile(src, { wat: true, optimize: { level: 'speed' } })
+  ok((wat.match(/\(loop \$__simd_loop/g) || []).length >= 2, 'the main loops vectorize, not only a remainder loop')
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(1000), oracle(src).main(1000))
 })
