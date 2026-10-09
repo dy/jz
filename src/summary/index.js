@@ -3118,10 +3118,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const assign = (op, target, value) => {
     const logical = op === '||=' || op === '&&=' || op === '??='
     let v
-    // A name assigned a `{}` holds it as a declaration would (`literalInto`): a
-    // binding the plan declares by its writes (a class's static field flattened
-    // to a module global) is a dictionary where its computed-key stores say so.
-    if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) ?? literalInto(target, value) : null) ?? expr(value)
+    // A global the plan declares by its writes (a class's static field
+    // flattened to a module global) has no declaration for `literalInto`: the
+    // `{}` assigned to it is a dictionary where its computed-key stores say so.
+    if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) ?? dictLiteral(target, value) : null) ?? expr(value)
     else if (op === '+=') v = plus(expr(target), expr(value))
     // `a ??= b` leaves a nullish `a` replaced: the binding holds the old value only when it is not nullish.
     else if (logical) v = merge(op === '??=' ? core(expr(target)) : expr(target), expr(value))
@@ -3357,6 +3357,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const literalShapes = new Map()   // `{}` node → its static shape, or null, read once
   const literalShapeOf = (n) => { let shape = literalShapes.get(n); if (shape === undefined) literalShapes.set(n, shape = literalShape(n)); return shape }
   const coversShape = (props, shape) => { for (const p of shape.props) if (!props.includes(p)) return false; return true }
+  const dictLiteral = (name, value) => {
+    if (!Array.isArray(value) || value[0] !== '{}' || value.length !== 1) return null
+    const key = keyOf(name)
+    if (!writtenGlobals.has(key) || !dictKeys.has(key)) return null
+    const bound = boundSchema(name)
+    return bound == null || !schemas[bound].length ? cellOf(value, K.HASH, K.NONE) : null
+  }
   const literalInto = (name, value) => {
     const shape = Array.isArray(value) && value[0] === '{}' ? literalShapeOf(value) : null
     if (!shape) return expr(value)
@@ -3514,11 +3521,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // is a module binding named by its writes: undefined until the first one,
   // unless a top-level statement assigns it unconditionally (`initWrites`).
   // Every seeding of the kinds starts it so (`seed`, below).
-  const undeclaredGlobals = []
+  const undeclaredGlobals = [], writtenGlobals = new Set()
   for (let i = 0; i < writes.length; i += 5) {
     const scope = writes[i], name = writes[i + 1]
     if (moduleGlobals.has(name) && keyOf(name, scope) === null) {
       const key = declareIn(MODULE, name)
+      writtenGlobals.add(key)
       if (!initWrites.has(name)) undeclaredGlobals.push(key)
     }
   }
