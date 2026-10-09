@@ -408,9 +408,9 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // JSC tight-integer-loop exception out of the general bun/jsc claim.
 // Cases the claims do not yet cover: a library's own code added to the corpus
 // (bench/stdlib-*, the pmndrs/math cases polytri, worley, fabrik and quatmul,
-// the web-audio-api render webaudio: 3.6× V8 on its first correct run, the
-// time spread over getter dispatch, dynamic property reads and string compares
-// per sample; AGENTS.md's "tracked as todo in the gate until jz takes the lead
+// the web-audio-api render webaudio: ~1.2× V8 once its node outputs and
+// private registries kept their kinds, the rest in the automation list's
+// per-sample getValue (dynamic event reads, number-to-string keys); AGENTS.md's "tracked as todo in the gate until jz takes the lead
 // — never silently accepted"). Excluded from the strict and band tests and
 // from the corpus-coverage test until the todo below flips; a case leaves this
 // set the commit it leads.

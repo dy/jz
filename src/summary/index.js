@@ -434,7 +434,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // may be array indices, which enumerate ahead of every string.
   const indexedSchemas = new Set()
   const indexSchema = sid => { if (!indexedSchemas.has(sid)) { indexedSchemas.add(sid); changed = true; forFolded(sid, indexSchema) } }
-  const raiseAllSlots = (sid, k) => { openSchema(sid); const a = slots(sid); for (let i = 0; i < a.length; i++) raiseSlot(sid, i, k) }
+  // A private name (`#x`) is hermetic: no computed key, foreign object or
+  // host reaches it, and the only store is the class body's own `this.#x = v`,
+  // which the walk sees by name (`poisonProp` through an unknown receiver).
+  // A store under every name, or by code the summary cannot see, leaves it.
+  const isPrivate = (prop) => prop.charCodeAt(0) === 35
+  const raiseAllSlots = (sid, k) => { openSchema(sid); const a = slots(sid), props = schemas[sid]; for (let i = 0; i < a.length; i++) if (!isPrivate(props[i])) raiseSlot(sid, i, k) }
+  /** The join of the slots a computed key can read: every one but the private names. */
+  const keyedSlots = (sid) => { let k = K.NONE; const a = slots(sid), props = schemas[sid]; for (let i = 0; i < a.length; i++) if (!isPrivate(props[i])) k = merge(k, a[i]); return k }
   const poisonSchema = (sid) => raiseAllSlots(sid, ANY)
   // A store through a receiver of unknown shape reaches an object only after
   // the summary lost that object's schema: at a join (`opaqueSchemas`) or to
@@ -1095,7 +1102,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // reaches the summary; a name that read cannot answer precisely (a foreign
   // object may hold it, a class member or a dynamic store bears it) hides the
   // stores, and its value escapes with the shape.
-  const lostReadPrecise = (prop) => !(foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop) || membersByName.has(prop) || membersByName.has(getterOf(prop)))
+  const lostReadPrecise = (prop) => !(!isPrivate(prop) && (foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop)) || membersByName.has(prop) || membersByName.has(getterOf(prop)))
   const loseShape = (sid) => {
     if (opaqueSchemas.has(sid)) return
     if (onLose) onLose(layouts[sid], losing ?? 'escaped', current, site)
@@ -2123,6 +2130,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     builtinReceiverTag(t) && ((builtinOwnProps.get(prop) ?? 0) & bitOf(t)) !== 0
   /** The class member's result, or ANY when an own property may shadow it. */
   const memberResult = (recv, name, r) => memberMayBeOwn(name) ? ANY : r
+  // A member read through a shape with a slot of its name: the slot's value
+  // where one was stored (a closure of its own), the bound member where none.
+  const shadowedBy = (own, bound) => tagOf(core(own)) === K.NONE ? bound : knownClosure(core(own)) ? merge(own, bound) : ANY
   const unknownReceiver = (recv) => { const t = tagOf(recv); return t === K.ANY || (t === K.OBJECT && paramOf(recv) === UNKNOWN) }
   // The class members by name (a receiver the summary cannot name calls each class's).
   const membersByName = new Map()   // member name → the class functions bearing it
@@ -2333,7 +2343,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A member access on a nullish receiver throws before the call: the
     // function's receiver is the class alone.
     const classFn = classMember(recv, name)
-    if (classFn) { const r = callWith(classFn, core(recv), base, n); if (memberMayBeOwn(name)) escapeArgs(base, n); return memberResult(recv, name, r) }
+    if (classFn) {
+      const r = callWith(classFn, core(recv), base, n)
+      if (!memberMayBeOwn(name)) return r
+      // The name is a field of some class too (`this._tick = fn` on a disposed
+      // node): this shape's own slot says whether the member is shadowed here.
+      const i = schemas[sidOf(recv)].indexOf(name), own = i >= 0 ? slots(sidOf(recv))[i] : K.NONE
+      if (tagOf(core(own)) === K.NONE) return r
+      if (knownClosure(core(own))) return merge(r, callClosure(paramOf(own), base, n, node, recv))
+      escapeArgs(base, n)
+      return ANY
+    }
     const candidates = callCandidates(recv, name, base, n)
     // A shape beside primitives (`merge`'s mixed cell: a factory's object in a
     // promise's value beside the numbers other promises settle with) calls the
@@ -2770,7 +2790,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // under the name. A class member or accessor of the name, or a shape the
   // registry never named, keeps the read unknown.
   const lostObjectRead = (prop, members = true) => {
-    if (foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop) || (members && (membersByName.has(prop) || membersByName.has(getterOf(prop))))) return ANY
+    if (!isPrivate(prop) && (foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop)) || (members && (membersByName.has(prop) || membersByName.has(getterOf(prop))))) return ANY
     let k = merge(ABSENT, merge(wildProps.get(prop) ?? K.NONE, sideByProp.get(prop) ?? K.NONE))
     if (pendingAll) k = merge(k, wildValues)
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) k = merge(k, slots(sid)[i])
@@ -2780,6 +2800,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // shape holds under the name is used where the summary cannot see (the
   // escape `loseShape` spares a name `lostObjectRead` answers).
   const escapeLostReads = (prop) => {
+    if (isPrivate(prop)) return
     for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) escape(slots(sid)[i])
     escape(sideByProp.get(prop) ?? K.NONE)
   }
@@ -2803,7 +2824,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const i = schemas[paramOf(recv)].indexOf(prop)
       // a slot under a member's name reads as its value, or as the member bound where it holds none
       const shadowed = i >= 0 ? classMember(recv, prop) : null
-      if (shadowed) { callWith(binderOf(shadowed), core(recv)); return optionalResult(op, recv, ANY) }
+      if (shadowed) return optionalResult(op, recv, shadowedBy(slots(paramOf(recv))[i], callWith(binderOf(shadowed), core(recv))))
       if (i >= 0) return optionalResult(op, recv, slots(paramOf(recv))[i])
       const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
       if (gi >= 0) {
@@ -2942,12 +2963,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // A string's character, or nothing past its end.
       if (t === K.STRING) return orAbsent(STRING)
       // A computed key on a known shape reads one of its slots (a dispatch table's member), or misses.
-      if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(recv))) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) } return orAbsent(k) }
+      if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) { let k = K.NONE; for (const sid of shapesOf(paramOf(recv))) k = merge(k, merge(keyedSlots(sid), anySideOf(sid))); return orAbsent(k) }
       if (dictOrObject(recv)) {
         const c = cell(paramOf(recv))
         if (cellLostObject.has(c)) { escapeLostFields(ik === NUMBER); return ANY }
         let k = elemOf(recv)
-        for (const sid of shapesInCell(c)) { for (const s of slots(sid)) k = merge(k, s); k = merge(k, anySideOf(sid)) }
+        for (const sid of shapesInCell(c)) k = merge(k, merge(keyedSlots(sid), anySideOf(sid)))
         return orAbsent(k)
       }
       if (hasTag(recv, K.OBJECT)) escapeLostFields(ik === NUMBER)
@@ -3097,7 +3118,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const assign = (op, target, value) => {
     const logical = op === '||=' || op === '&&=' || op === '??='
     let v
-    if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) : null) ?? expr(value)
+    // A name assigned a `{}` holds it as a declaration would (`literalInto`): a
+    // binding the plan declares by its writes (a class's static field flattened
+    // to a module global) is a dictionary where its computed-key stores say so.
+    if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) ?? literalInto(target, value) : null) ?? expr(value)
     else if (op === '+=') v = plus(expr(target), expr(value))
     // `a ??= b` leaves a nullish `a` replaced: the binding holds the old value only when it is not nullish.
     else if (logical) v = merge(op === '??=' ? core(expr(target)) : expr(target), expr(value))
@@ -3485,8 +3509,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
 
   let current = null  // the scope (and result key) of the function being walked; null at module scope
-  for (let i = 0; i < dictUses.length; i += 2) { const scope = dictUses[i]; current = scope === MODULE ? null : scope; const key = keyOf(dictUses[i + 1]); if (key !== null) dictKeys.add(key) }
-  current = null
   // A global the plan declared without a declaration statement (a function
   // property flattened to a module global, plan/scope.js flattenFuncNamespaces)
   // is a module binding named by its writes: undefined until the first one,
@@ -3500,6 +3522,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (!initWrites.has(name)) undeclaredGlobals.push(key)
     }
   }
+  // Resolved once every binding is declared: a global named by its writes is
+  // a dictionary too when a computed key stores into it.
+  for (let i = 0; i < dictUses.length; i += 2) { const scope = dictUses[i]; current = scope === MODULE ? null : scope; const key = keyOf(dictUses[i + 1]); if (key !== null) dictKeys.add(key) }
   current = null
   const storeBits = []               // dense binding id → the bits of its stores by syntax
   for (const key of paramKeys) storeBits[key] = 2

@@ -1440,3 +1440,52 @@ test('summary: a counter bounded by a fixed list\'s length reads its elements pr
   summarize(src)
   ok(!hasTag(kindOf('run', 'data'), K.ABSENT), 'the element read is present')
 })
+
+test('summary: a class static `{}` under computed keys is a dictionary of its own, not every empty literal\'s shape', () => {
+  // `static cache = {}` is a module global the plan declares by its writes; its
+  // computed-key typed stores must not reach `opts || {}` elsewhere.
+  const src = `class Table {
+      static cache = {}
+      static get(type, n) {
+        if (Table.cache[type]) return Table.cache[type]
+        const t = new Float32Array(n)
+        for (let i = 0; i < n; i++) t[i] = i / n
+        Table.cache[type] = t
+        return t
+      }
+    }
+    function use(opts) { const o = opts || {}; return o.gain ?? 1 }
+    export function main(n) { return Table.get('saw', n)[n - 1] * use() }`
+  summarize(src)
+  const get = ctx.funcs.list.find(f => f.name === 'Table$get')
+  const names = new Set(); const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }; walk(get.body)
+  const cache = [...names].find(n => /^Table[\uE000-\uE00F]cache$/.test(n))
+  is(tagOf(ctx.summary.at('Table$get').kindOf(cache)), K.HASH, 'the static field is a dictionary')
+  is(tagOf(ctx.summary.resultOf('use')), K.NUMBER, 'the default is a number, not the dictionary\'s typed values')
+  is(jz(src).exports.main(8), 7 / 8)
+})
+
+test('summary: a private field keeps its kind through an escape of its instance and a computed-key store', () => {
+  // `#events` is hermetic: no computed key, foreign object or unseen callee
+  // can store into it, so an instance handed to `fn.call(this, e)` or indexed
+  // by an unknown key leaves the Map, and the Sets it holds, known.
+  const src = `class Em {
+      #events = new Map()
+      on(type, fn) { let s = this.#events.get(type); if (!s) this.#events.set(type, s = new Set()); s.add(fn) }
+      fire(type, e) { const s = this.#events.get(type); if (s) for (const fn of s) fn.call(this, e) }
+      count(type) { return this.#events.get(type)?.size ?? 0 }
+    }
+    function poke(o, k) { o[k] = 1 }
+    export function main(n) {
+      const em = new Em()
+      let hits = 0
+      em.on('tick', (e) => { hits += e })
+      poke(em, n > 2 ? 'x' : 'y')
+      for (let i = 0; i < n; i++) em.fire('tick', i)
+      return hits + em.count('tick')
+    }`
+  summarize(src)
+  const on = `Emon`
+  is(tagOf(kindOf(on, 's')), K.SET, 'the listener set read from the private Map keeps its kind')
+  is(jz(src).exports.main(4), 7)
+})
