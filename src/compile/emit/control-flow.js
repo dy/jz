@@ -18,7 +18,7 @@ import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit, mulRangesKeepZeroSign, nameShift } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
-  MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
+  MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, sumsTypedElements, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
 } from '../../type.js'
 import { withControlFrame, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
@@ -233,6 +233,10 @@ function unrollSmallConstFor(init, cond, step, body) {
     if (Array.isArray(step) && step[0] === '++' && step[1] === name) delta = 1
     else if (Array.isArray(step) && step[0] === '+=' && step[1] === name) delta = constIntExpr(step[2])
     if (end == null || delta == null || delta <= 0 || start >= end) return null
+    // A walk summing typed elements into outer accumulators (a box filter's
+    // `sr += src[p]` over `k = -r … r`) stays a loop: the vectorizer lifts
+    // that reduction (optimize/vectorize/blur-channel.js), copies hide it.
+    if (sumsTypedElements(body)) return null
     values = []
     for (let v = start; v < end && values.length <= MAX_SMALL_FOR_UNROLL; v += delta) values.push(v)
     if (!values.length || values.length > MAX_SMALL_FOR_UNROLL) return null
