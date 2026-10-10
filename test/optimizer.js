@@ -7042,3 +7042,78 @@ test('a neighborhood walk over literals unrolls like a count from zero', () => {
   const a = new Float64Array([1, 2, 3, 4, 5, 6, 7, 8])
   for (const level of [0, 2, 'speed']) is(jz(src, { optimize: { level } }).exports.f(a, 3), 2, `O${level}`)
 })
+
+test('a grown array read from a slot is rebound there', () => {
+  // `o.xs.push(v)` that outgrows its storage moves the array; the field is
+  // rebound to the moved header, as a named receiver is, so its reads skip the
+  // forwarding chase. So is a field a cached read holds (`o.xs.length` tested
+  // first), and an element of a known array at a variable index.
+  if (onKernel()) return
+  const srcs = {
+    field: `const o = { xs: [], n: 0 }
+export let fill = (k) => { for (let i = 0; i < k; i++) o.xs.push(i) }
+export let at = (i) => o.xs[i] + o.xs.length`,
+    cached: `const o = { xs: [], n: 0 }
+export let fill = (k) => { for (let i = 0; i < k; i++) { if (o.xs.length === 0) o.n = 1; o.xs.push(i) } }
+export let at = (i) => o.xs[i] + o.xs.length`,
+    element: `const rows = [[], [], []]
+export let fill = (k) => { for (let i = 0; i < k; i++) for (let j = 0; j < 3; j++) rows[j].push(i) }
+export let at = (i) => rows[1][i] + rows[1].length`,
+  }
+  const grow = m => m[0] === 'call' && /^\$__arr_grow/.test(m[1])
+  const has = (n, pred) => { let f = false; walk(n, m => { if (pred(m)) f = true }); return f }
+  for (const [name, src] of Object.entries(srcs)) {
+    const fn = findFunc(parse(src, { level: 'speed' }), '$fill')
+    // the innermost arms that grow: each stores the moved pointer back
+    const arms = []
+    walk(fn, n => { if (n[0] === 'then' && has(n, grow) && !n.slice(1).some(c => Array.isArray(c) && has(c, m => m[0] === 'then' && has(m, grow)))) arms.push(n) })
+    ok(arms.length > 0, `${name}: the push grows in an arm of its own`)
+    ok(arms.every(a => has(a, m => m[0] === 'f64.store' || m[0] === 'i64.store')), `${name}: the grow rebinds its slot`)
+    for (const level of [0, 2, 'speed']) {
+      const e = jz(src, { optimize: { level } }).exports
+      e.fill(100)
+      is(e.at(57), 157, `${name} O${level}`)
+    }
+  }
+})
+
+test('a field a loop only reads is read once, before it', () => {
+  // `c.xs[i]` through a spliced `at(chain, i)`: nothing in the loop writes an
+  // `xs` or a `ys`, so each field is read before the loop and the arrays'
+  // forwarding and length words hoist with it.
+  if (onKernel()) return
+  const src = `const chain = { xs: [], ys: [] }
+for (let i = 0; i < 6; i++) { chain.xs.push(i); chain.ys.push(i * 2) }
+const at = (c, i) => c.xs[i] + c.ys[i]
+export let f = (n) => { let s = 0; for (let k = 0; k < n; k++) for (let i = 0; i < 6; i++) s += at(chain, i); return s }
+export let g = (n) => { let s = 0; for (let k = 0; k < n; k++) { s += chain.xs[k % 6]; chain.xs = chain.ys } return s }`
+  const header = n => n[0] === 'i32.load' && Array.isArray(n[n.length - 1]) && n[n.length - 1][0] === 'i32.sub'
+  is(loopCount(findFunc(parse(src, { level: 'speed' }), '$f'), header), 0, 'no header word is read in the loop')
+  // a loop that stores the field reads it each time
+  for (const level of [0, 2, 'speed']) {
+    const e = jz(src, { optimize: { level } }).exports
+    is(e.f(3), 135, `O${level}`)
+    is(e.g(3), 0 + 2 + 4, `the stored field O${level}`)
+  }
+})
+
+test('a holey cell read as a number is tested once', () => {
+  // A hole reads undefined and undefined converts to NaN: both are NaNs, so a
+  // numeric read keeps the cell as stored and tests it once for NaN, hit arm
+  // of a bounds check included; what it yields is NaN, never the box.
+  if (onKernel()) return
+  const src = `const o = { s: [0, 1, 2, 3, 4, 5] }
+export let grow = (m) => { o.s.length = m }
+export let f = (n) => { const s = o.s; let t = 0; for (let k = 0; k < n; k++) t += s[1] * s[2] - s[k]; return t }
+export let g = (k) => { const s = o.s; return s[k] * 2 }`
+  const tomb = n => n[0] === 'i64.const' && /^0x7FF87FFFFFFFFFFF$/i.test(String(n[1]))
+  is(count(findFunc(parse(src, { level: 'speed' }), '$f'), tomb), 0, 'no hole test before the number test')
+  for (const level of [0, 2, 'speed']) {
+    const e = jz(src, { optimize: { level } }).exports
+    e.grow(10)
+    is(e.f(3), 3, `in bounds O${level}`)
+    ok(Number.isNaN(e.f(8)), `a hole reads NaN O${level}`)
+    ok(Number.isNaN(e.g(7)), `a hole doubles to NaN O${level}`)
+    ok(Number.isNaN(e.g(20)), `past the end O${level}`)
+  }
+})

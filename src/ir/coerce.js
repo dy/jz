@@ -180,11 +180,25 @@ const mayMissValue = (node, v, byKind = true) => {
 }
 
 /** `v` with the undefined box taken to NaN: one compare and a select. */
+// A cell read as stored, alone or as a bounds-checked read's hit arm.
+const asStored = (v) => {
+  if (v.holeRead) return v.holeRead
+  const hit = v[0] === 'if' && v.length === 5 && v[3]?.[0] === 'then' && v[3].length === 2 && v[4]?.[0] === 'else' ? v[3][1] : null
+  return hit?.holeRead ? typed([...v.slice(0, 3), ['then', hit.holeRead], v[4]], 'f64') : v
+}
+
+// ToNumber of a Number that may be undefined: every NaN it may hold, undefined's
+// among them, converts to NaN. An array cell read as stored (ir/arrays.js
+// arrayValue `holeRead`) skips the test that maps its hole to undefined: the
+// hole is a NaN as well. The result is canonical. The test keeps the value
+// where it equals itself: a conversion out of the boxed space, not the
+// Number canonicalization optimize/nan-canon.js drops before arithmetic.
 export const missToNaN = (v) => {
-  const t = temp('miss')
-  return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(v)],
-    ['select', ['f64.const', 'nan'], ['local.get', `$${t}`],
-      ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', UNDEF_NAN]]]], 'f64')
+  const t = temp('miss'), get = ['local.get', `$${t}`]
+  const out = typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(asStored(v))],
+    ['select', get, ['f64.const', 'nan'], ['f64.eq', get, get]]], 'f64')
+  out.numberCanonical = true
+  return out
 }
 
 /** ToNumber for a runtime value that is a Number or an atom (a closure's

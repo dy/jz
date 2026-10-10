@@ -42,6 +42,7 @@ export function createActiveFunction({
     boxed: new Map(),
     cellTypes: null,
     flatObjects: null,
+    fieldCaches: null,   // cse temp → the field read it holds (compile/cse-load.js); a push rebinds the field
     sliceViews: null,
     arrayViews: null,
     restView: null,

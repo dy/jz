@@ -147,6 +147,15 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
 // through its own name with every grow written back, so the local always holds
 // the live pointer and reads through it need no forwarding follow.
 const currentBinding = (name) => ctx.func.localReps?.get(name)?.ownCurrent === true
+// Whether `obj.key` has a home of fixed layout a store reaches without the
+// dynamic property table: a flattened object's local, or a schema slot by the
+// binding, its pointer, or the summary (emit-assign.js emitPropertyAssign).
+const fixedField = (obj, key) => {
+  if (ctx.func.flatObjects?.get(obj)?.names.includes(key) || ctx.schema.slotOf?.(obj, key) >= 0) return true
+  const p = emit(obj)
+  const sid = p?.ptrKind === VAL.OBJECT && p.ptrAux != null ? p.ptrAux : ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
+  return sid != null && ctx.schema.list[sid]?.includes(key) === true
+}
 
 export default (ctx) => {
   // Slice 4c/4e (RepresentationPlan v2): ONE plan-driven representation
@@ -594,14 +603,20 @@ export default (ctx) => {
   // mistyped `.length =` cannot corrupt object/collection headers. Returns the
   // (possibly relocated) pointer; the assignment's value is N (computed at the call site).
   ctx.core.stdlib['__arr_set_length'] = `(func $__arr_set_length (param $ptr i64) (param $value i64) (result f64)
-    (local $base i32) (local $p f64) (local $oldLen i32) (local $cap i32) (local $k i32) (local $n i32)
+    (local $base i32) (local $p f64) (local $f f64) (local $oldLen i32) (local $cap i32) (local $k i32) (local $n i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY}))
       (then (return (local.get $p))))
     ;; ArraySetLength performs two conversions, in order: observable valueOf
     ;; calls may give different values. The assignment still yields $value.
-    (local.set $n (call $__to_int32 (call $__to_num (local.get $value))))
-    (if (f64.ne (f64.convert_i32_u (local.get $n)) (call $__to_num (local.get $value)))
+    ;; A Number converts to itself, both times, without a call.
+    (local.set $f (f64.reinterpret_i64 (local.get $value)))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (local.set $n (call $__to_int32 (local.get $f))))
+      (else
+        (local.set $n (call $__to_int32 (call $__to_num (local.get $value))))
+        (local.set $f (call $__to_num (local.get $value)))))
+    (if (f64.ne (f64.convert_i32_u (local.get $n)) (local.get $f))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)})))
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)}))))
     ;; A dense eight-byte-slot array cannot fit this many elements in wasm32.
@@ -1514,7 +1529,7 @@ export default (ctx) => {
     // Out-of-line fast path: single value, named known-ARRAY receiver. One call +
     // var update instead of ~30 inlined instructions — the dominant size cost of
     // push-heavy code (e.g. watr's WASM emitter).
-    if (!reserved && vals.length === 1 && typeof arr === 'string' && lookupValType(arr) === VAL.ARRAY) {
+    if (!reserved && vals.length === 1 && typeof arr === 'string' && lookupValType(arr) === VAL.ARRAY && !ctx.func.fieldCaches?.has(arr)) {
       inc('__arr_push1')
       const box = ctx.func.boxed?.get(arr)
       const isGlobal = !box && ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr)
@@ -1540,6 +1555,25 @@ export default (ctx) => {
         body.push(['global.set', `$${arr}`, ['local.get', `$${t}`]])
       else
         body.push(['local.set', `$${arr}`, ['local.get', `$${t}`]])
+    }
+    // A receiver read from a slot — a field of fixed layout (`o.xs`), an
+    // element of a known array at a variable or literal index (`rows[i]`) —
+    // is rebound there when a grow moves it, as a named one is: `o.xs = o.xs`,
+    // identity kept (the old header forwards), and every later read of the
+    // slot skips the forwarding chase. Nothing runs between the receiver's
+    // read and the grow, so the slot named is the one read. So is a temp a
+    // field read was cached in (compile/cse-load.js): the cache holds only
+    // while neither the receiver nor the field changed since. The cold grow
+    // path alone pays the store.
+    const rebindSlot = () => {
+      const slot = typeof arr === 'string' ? ctx.func.fieldCaches?.get(arr) : arr
+      if (!Array.isArray(slot) || typeof slot[1] !== 'string' || ctx.types.anyDelete) return []
+      const [op, obj, key] = slot
+      const fixed = op === '.' ? typeof key === 'string' && key !== 'length' && !ctx.transform.accessorNames?.has(key) && fixedField(obj, key)
+        : op === '[]' && lookupValType(obj) === VAL.ARRAY && (typeof key === 'string' || intLiteralValue(key) != null)
+      if (!fixed) return []
+      const ir = emit(['=', slot, t], 'void')
+      return [ir?.type && ir.type !== 'void' ? ['drop', ir] : ir]
     }
 
     // Known ARRAY → inline len as `i32.load(off - 8)` (ARRAY branch of __len). Saves a
@@ -1617,7 +1651,8 @@ export default (ctx) => {
           ['then',
             ['local.set', `$${t}`, ['call', `$${grow}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]],
               ['i32.add', ['local.get', `$${len}`], ['i32.const', pushCells]]]],
-            ['local.set', `$${pushBase}`, baseOf()]]],
+            ['local.set', `$${pushBase}`, baseOf()],
+            ...rebindSlot()]],
       )
     } else {
       body.push(
