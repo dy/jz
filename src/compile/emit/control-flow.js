@@ -233,9 +233,10 @@ function unrollSmallConstFor(init, cond, step, body) {
     if (Array.isArray(step) && step[0] === '++' && step[1] === name) delta = 1
     else if (Array.isArray(step) && step[0] === '+=' && step[1] === name) delta = constIntExpr(step[2])
     if (end == null || delta == null || delta <= 0 || start >= end) return null
-    // A walk summing typed elements into outer accumulators (a box filter's
-    // `sr += src[p]` over `k = -r … r`) stays a loop: the vectorizer lifts
-    // that reduction (optimize/vectorize/blur-channel.js), copies hide it.
+    // A walk summing typed elements into several outer accumulators (a box
+    // filter's `sr += src[p]; sg += src[p + 1] …` over `k = -r … r`) stays a
+    // loop: the vectorizer lifts those channels together
+    // (optimize/vectorize/blur-channel.js), copies hide them.
     if (sumsTypedElements(body)) return null
     values = []
     for (let v = start; v < end && values.length <= MAX_SMALL_FOR_UNROLL; v += delta) values.push(v)
