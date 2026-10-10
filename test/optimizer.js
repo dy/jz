@@ -6847,7 +6847,8 @@ test('unknown-receiver element reads: inline array arm at speed, the helper at s
   // Pin JZ's array-arm choice before watr can inline unrelated dictionary arms.
   const speed = funcWat(compile(src, { optimize: preWatr('speed'), wat: true }), 'at')
   const size = funcWat(compile(src, { optimize: preWatr('size'), wat: true }), 'at')
-  ok(/__ptr_offset_fwd/.test(speed) && /f64\.load/.test(speed) && /i32\.lt_u/.test(speed), 'speed: the array arm inline')
+  // (the slot read as bits: the hole test compares them, so the load may be i64)
+  ok(/__ptr_offset_fwd/.test(speed) && /[fi]64\.load/.test(speed) && /i32\.lt_u/.test(speed) && !/call \$__arr_value/.test(speed), 'speed: the array arm inline')
   ok(!/f64\.load/.test(size) && !/i32\.lt_u/.test(size) && /call \$__typed_idx/.test(size), 'size: the helper alone')
   is(run(src).at([5, 6, 7], 1), 6)
   is(run(src, { optimize: 'size' }).at([5, 6, 7], 2), 7)
@@ -7028,4 +7029,16 @@ test('an unrolled strided kernel spliced through a closure takes its canonical c
   const wat = compile(src, { wat: true, optimize: { level: 'speed' } })
   ok((wat.match(/\(loop \$__simd_loop/g) || []).length >= 2, 'the main loops vectorize, not only a remainder loop')
   is(jz(src, { optimize: { level: 'speed' } }).exports.main(1000), oracle(src).main(1000))
+})
+
+test('a neighborhood walk over literals unrolls like a count from zero', () => {
+  // `for (g = -1; g <= 1; g++)` (a 3×3 stencil, a cell's neighbors) counts
+  // three trips: each copy reads its literal, negative or not, and the loop
+  // and its counter are gone.
+  if (onKernel()) return
+  const src = `export let f = (a, i) => { let s = 0; for (let g = -1; g <= 1; g++) s += a[(i + g) & 7] * g; return s }`
+  const wat = funcWat(compile(src, { wat: true, optimize: { level: 'speed' } }), 'f')
+  ok(!/\(loop/.test(wat), 'the walk unrolls')
+  const a = new Float64Array([1, 2, 3, 4, 5, 6, 7, 8])
+  for (const level of [0, 2, 'speed']) is(jz(src, { optimize: { level } }).exports.f(a, 3), 2, `O${level}`)
 })

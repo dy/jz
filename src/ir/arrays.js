@@ -15,10 +15,17 @@ import { isPureIR } from './classify.js'
 import { UNDEF_NAN, TOMB_NAN } from './sentinels.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../static-data.js'
 
-/** Read a boxed array cell as a value: an absent cell answers undefined. */
+/** Read a boxed array cell as a value: an absent cell answers undefined.
+ *  The speed tier (the one that inlines functions) tests in place: a holey
+ *  array's every read pays the call otherwise, which the engine keeps. */
 export function arrayValue(value) {
-  inc('__arr_value')
-  return typed(['call', '$__arr_value', value], 'f64')
+  if (!ctx.transform.optimize?.inlineFns) {
+    inc('__arr_value')
+    return typed(['call', '$__arr_value', value], 'f64')
+  }
+  const t = temp('av')
+  return typed(['select', ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], ['local.tee', `$${t}`, value],
+    ['i64.eq', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', TOMB_NAN]]], 'f64')
 }
 
 /** Slot address: element `idx` off `baseLocal`. Constant idx folds the `*8`. */
