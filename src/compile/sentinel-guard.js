@@ -14,6 +14,18 @@
  *       while (C) B   →   while (G && C′) B′; if (!G) while (C) B
  *     The fast loop runs while the cursor stays in range; when it leaves the
  *     range at a test, the original loop finishes from that same state.
+ *     Where the body reads further than the test (the pop's `v[k - 1]` past
+ *     the test's `z[k]`) and the test has no effect, each is guarded where it
+ *     reads: G_c, what the test's reads need, before C′, and G_b, what the
+ *     body's add, after it:
+ *       let left = 0
+ *       while (G_c && C′) { if (!G_b) { left = 1; break } B′ }
+ *       if (left || !G_c) while (C) B
+ *     A pass whose test fails where only the body would miss (the hull's
+ *     bottom, `k = 0`) ends in the fast loop; one the body guard stops runs C
+ *     again in the original, which reads what C′ read. Where G_b and the body's
+ *     constant steps keep the cursor within G_c, G_c is tested once, before the
+ *     loop (`if (G_c) while (C′) … else left = 1; if (left) while (C) B`).
  *   - the rest of a block, after the statement that moves the cursor:
  *       S   →   if (G) S′ else S
  * G tests only the bounds a read's proof lacked (the interval proof's hull
@@ -46,6 +58,7 @@ import { freshId } from '../ir.js'
 import { intLiteralValue } from '../static.js'
 import { cloneWithSubst } from '../type/clone.js'
 import { intervalMisses } from '../type/interval-proof.js'
+import { runsAccessor, runsConversion } from '../evaluation-effects.js'
 import { invalidateRewrittenBody } from './analyze/body-facts.js'
 import { withBodyTypedFacts } from './flow-state.js'
 
@@ -87,6 +100,11 @@ const writes = (n, c) => isReassigned(n, c) || collectAllBoundNames(n).has(c)
 /** Whether `n` moves `c`, by constant steps only. */
 const stepsOnly = (n, c) => isReassigned(n, c) && !collectAllBoundNames(n).has(c)
   && !some(n, x => MUTATE_OPS.has(x[0]) && x[1] === c && stepOf(x, c) == null)
+
+/** Whether evaluating `n` writes nothing and runs no code of the program's (a call, a
+ *  getter, a valueOf): a second evaluation reads what the first read. */
+const pure = (n, view) => !some(n, x => MUTATE_OPS.has(x[0]) || x[0] === '()' || x[0] === '?.()' || x[0] === 'new' || x[0] === '=>'
+  || runsAccessor(view, x) || runsConversion(view, x), { skipArrow: false })
 
 /** The `&&` conjuncts of a test. */
 const conjuncts = (c) => isArr(c) && c[0] === '&&' ? c.slice(1).flatMap(conjuncts) : [c]
@@ -156,6 +174,24 @@ export function guardSentinels(body, facts = null) {
     }
     return any && (lo == null || hi == null || lo <= hi) ? [lo, hi] : null
   }
+  // The test's bounds and the bounds the body's reads add to them, each tested
+  // where it reads; null where the body adds none. `once`: G_b and the body's
+  // constant steps keep the cursor within G_c at every later test.
+  const split = (cond, loopBody, c, offset) => {
+    const inCond = new Set(accessesIn(cond, false))
+    const needC = needs([...inCond], c, () => 0)
+    const needB = needs([...offset.keys()].filter(a => !inCond.has(a)), c, a => offset.get(a))
+    if (!needB) return null
+    const lo = needB[0] != null && (needC?.[0] == null || needB[0] > needC[0]) ? needB[0] : null
+    const hi = needB[1] != null && (needC?.[1] == null || needB[1] < needC[1]) ? needB[1] : null
+    if (lo == null && hi == null) return null
+    let D = 0
+    for (const s of stmtList(loopBody)) if (writes(s, c)) { const k = stepOf(s, c); if (k == null) { D = null; break } D += k }
+    const once = needC != null && D != null
+      && (needC[0] == null || Math.max(needC[0], lo ?? -Infinity) + D >= needC[0])
+      && (needC[1] == null || Math.min(needC[1], hi ?? Infinity) + D <= needC[1])
+    return { needC, lo, hi, once }
+  }
   const plans = []
   // Planned regions: an original loop kept as the slow path (its reads stay
   // checked) and a suffix about to be copied are not planned again.
@@ -187,7 +223,7 @@ export function guardSentinels(body, facts = null) {
         collect(c)
         const need = needs([...offset.keys()], c, a => offset.get(a))
         if (!need) continue
-        plans.push({ kind: 'loop', node: n, parent, c, need })
+        plans.push({ kind: 'loop', node: n, parent, c, need, split: pure(cond, ctx.summary?.at(ctx.func.current)) ? split(cond, loopBody, c, offset) : null })
         planned.add(n)
         return false
       }
@@ -219,10 +255,22 @@ export function guardSentinels(body, facts = null) {
     if (pl.kind === 'loop') {
       const [, cond, loopBody] = pl.node
       const [c2, b2] = copyFresh([cond, loopBody])
-      const fast = ['while', ['&&', G, c2], b2]
-      const rest = ['if', ['!', guardOf(pl.c, pl.need[0], pl.need[1])], pl.node]
       const i = pl.parent.indexOf(pl.node)
-      pl.parent[i] = ['{}', [';', fast, rest]]
+      const sp = pl.split
+      if (!sp) {
+        const fast = ['while', ['&&', G, c2], b2]
+        const rest = ['if', ['!', guardOf(pl.c, pl.need[0], pl.need[1])], pl.node]
+        pl.parent[i] = ['{}', [';', fast, rest]]
+        continue
+      }
+      const left = `${T}sg${freshId(ctx)}_left`, leave = ['{}', [';', ['=', left, num(1)], ['break']]]
+      const body = [...(sp.lo != null ? [['if', ['<', pl.c, num(sp.lo)], leave]] : []),
+        ...(sp.hi != null ? [['if', ['>', pl.c, num(sp.hi)], leave]] : []), ...stmtList(b2)]
+      const Gc = () => sp.needC && guardOf(pl.c, sp.needC[0], sp.needC[1])
+      const loop = ['while', sp.needC && !sp.once ? ['&&', Gc(), c2] : c2, ['{}', [';', ...body]]]
+      const fast = sp.once ? ['if', Gc(), loop, ['=', left, num(1)]] : loop
+      const rest = ['if', sp.needC && !sp.once ? ['||', left, ['!', Gc()]] : left, pl.node]
+      pl.parent[i] = ['{}', [';', ['let', ['=', left, num(0)]], fast, rest]]
     } else {
       const { node: stmts, p } = pl
       const rest = stmts.slice(p)

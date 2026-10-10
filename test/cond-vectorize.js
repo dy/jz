@@ -65,3 +65,34 @@ test('cond-vectorize: nested ternary chain → i32x4 bitselect', () => {
     for (let i = 0; i < 64; i++) a[i] = ((3 < a[i]) ? (2 & a[i]) : ((7 < a[i]) ? a[i] : 1)) | 0
     let s = 0; for (let i = 0; i < 64; i++) s = (s + a[i]) | 0; return s }`, { bitselect: true })
 })
+
+// An integer comparison choosing between float64 values (a bitmap seeding a
+// distance field: `d[i] = bmp[i] === 1 ? 0 : INF`): the two lanes' integers
+// compare in i32x4 lanes and each answer widens to its 64-bit lane, the mask
+// of an f64x2 bitselect. Signed and unsigned elements, an invariant operand,
+// and lengths that leave a scalar tail agree with the host at every level.
+test('cond-vectorize: an integer comparison selects float64 lanes', () => {
+  const src = (T, cond) => `const seed = (a, d, n, k) => { for (let i = 0; i < n; i++) d[i] = ${cond} ? 0.25 : 1e20 }
+  export let run = (n, k) => {
+    const a = new ${T}(n), d = new Float64Array(n)
+    let s = 7
+    for (let i = 0; i < n; i++) { s = (s * 1103515245 + 12345) | 0; a[i] = (s >> 8) % 300 }
+    seed(a, d, n, k | 0)
+    let h = 0
+    for (let i = 0; i < n; i++) h = (h * 31 + (d[i] === 1e20 ? 7 : 3)) % 1000000007
+    return h }`
+  // (`mask`: the scalar test compares integers; a u16 against `k` compares as float64 there)
+  for (const [T, cond, mask] of [['Uint8Array', 'a[i] === 1', true], ['Int8Array', 'a[i] < -3', true], ['Uint16Array', 'a[i] >= k', false], ['Int32Array', 'a[i] !== k', true]]) {
+    const s = src(T, cond)
+    const w = jz.compile(s, { wat: true, optimize: { level: 'speed' } })
+    const f = w.slice(w.indexOf('(func $run'), w.indexOf('\n  (func ', w.indexOf('(func $run') + 8))
+    ok(/v128\.bitselect/.test(f), `${T} ${cond}: the map runs in f64x2 lanes`)
+    if (mask) ok(/i64x2\.extend_low_i32x4_s/.test(f), `${T} ${cond}: its mask is the integer comparison widened`)
+    const host = new Function(s.replace('export let run =', 'return'))()
+    for (const o of [0, { level: 'speed', noSimd: true }, { level: 'speed' }]) {
+      const run = jz(s, { optimize: o }).exports.run
+      for (const n of [0, 1, 2, 5, 64, 67]) for (const k of [1, 120, -2])
+        is(run(n, k), host(n, k), `${T} ${cond}, ${JSON.stringify(o)}: n=${n} k=${k}`)
+    }
+  }
+})

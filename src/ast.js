@@ -771,6 +771,16 @@ export const alwaysReturns = (n) => {
   return false
 }
 
+/** Whether `n` never completes normally: it ends in a return, throw, break or continue. */
+export const alwaysLeaves = (n) => {
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op === 'break' || op === 'continue') return true
+  if (op === '{}' || op === ';') return alwaysLeaves(n[n.length - 1])
+  if (op === 'if') return n.length >= 4 && alwaysLeaves(n[2]) && alwaysLeaves(n[3])
+  return alwaysReturns(n)
+}
+
 export const hasBareReturn = (n) => {
   if (!Array.isArray(n)) return false
   if (n[0] === '=>') return false
