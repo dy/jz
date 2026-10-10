@@ -7108,6 +7108,21 @@ export let f = (n) => { const s = o.s; let t = 0; for (let k = 0; k < n; k++) t 
 export let g = (k) => { const s = o.s; return s[k] * 2 }`
   const tomb = n => n[0] === 'i64.const' && /^0x7FF87FFFFFFFFFFF$/i.test(String(n[1]))
   is(count(findFunc(parse(src, { level: 'speed' }), '$f'), tomb), 0, 'no hole test before the number test')
+  // a typed array has no holes: its reads keep the undefined test the optimizer clears (heapsort's sift)
+  const typed = `const sift = (a, n) => {
+  let i = 0, child = 1, c = 0
+  while (child < n) {
+    if (child + 1 < n && a[child] < a[child + 1]) child++
+    if (a[i] >= a[child]) break
+    const t = a[i]; a[i] = a[child]; a[child] = t
+    i = child; child = 2 * i + 1; c++
+  }
+  return c
+}
+export let h = (n) => { const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = (i * 7919) % 13; return sift(a, a.length) }`
+  const nanTest = n => n[0] === 'select' && Array.isArray(n[2]) && n[2][0] === 'f64.const' && n[2][1] === 'nan'
+  is(count(parse(typed, { level: 'speed' }), nanTest), 0, 'a typed read takes no hole-fused test')
+  is(jz(typed, { optimize: { level: 'speed' } }).exports.h(64), (() => { const a = new Float64Array(64); for (let i = 0; i < 64; i++) a[i] = (i * 7919) % 13; let i = 0, child = 1, c = 0; while (child < 64) { if (child + 1 < 64 && a[child] < a[child + 1]) child++; if (a[i] >= a[child]) break; const t = a[i]; a[i] = a[child]; a[child] = t; i = child; child = 2 * i + 1; c++ } return c })(), 'sift')
   for (const level of [0, 2, 'speed']) {
     const e = jz(src, { optimize: { level } }).exports
     e.grow(10)
