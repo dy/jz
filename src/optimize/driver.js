@@ -18,16 +18,17 @@ import { forwardStores } from './forward-store.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistPtrOffset, hoistAddrBase } from './cse-address.js'
 import {
-  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails,
+  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails, refoldMemargs,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
+import { reuseLoads, narrowByteLoads } from './reuse-loads.js'
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { foldGuardedUpdates } from './guarded-update.js'
 import { hoistTypedDecode } from './typed-decode.js'
 import { foldShiftRemainder } from './shift-remainder.js'
 import { narrowFloat32 } from './float32.js'
-import { narrowInts } from './int-narrow.js'
+import { narrowInts, narrowWrappedWords } from './int-narrow.js'
 import { specializeLoops } from './specialize.js'
 import { combineGuards } from './guards.js'
 import { wideAccumulator } from './wide-accumulator.js'
@@ -161,6 +162,9 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   if (!cfg || cfg.intNarrow !== false) {
     const copies = cfg && cfg.specializeLoops === true ? specializeLoops(fn) : null
     narrowInts(fn, copies, cfg?.inlineToNum !== false, cfg?.wordTruncation ?? 'wide')
+    // A wide integer read only for its low word (an element offset) is that word;
+    // the addresses it indexes take their constant parts into the memarg again.
+    if (cfg?.wrappedWords !== false && narrowWrappedWords(fn)) refoldMemargs(fn)
     // Over the integers: the guards of the copies, where one test decides many.
     if (copies && cfg.combineGuards !== false) combineGuards(fn)
   }
@@ -178,6 +182,9 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // `$__ptr_offset`, unswitch and devirt recognize it. Its inline fast path is lowering
   // (speed tier), so it runs last. Value numbering and statement scheduling are watr's
   // (optimize/watr-tail.js).
+  // After every pass that places loads: a load an earlier one read, nothing stored between;
+  // then a part of a word read alone, the narrow load of it.
+  if (cfg && cfg.reuseLoads === true) { reuseLoads(fn); narrowByteLoads(fn) }
   // After the lane vectorizer, whose recognizers read float arithmetic in its double form.
   if (cfg && cfg.inlinePtrOffsetFast === true) inlinePtrOffsetFastPass(fn)
   // The fold, loop rotation, the condition chains and the boolean

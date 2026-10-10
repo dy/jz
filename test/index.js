@@ -199,7 +199,7 @@ const TESTS = [
   'guard-views',
   'inline-pure-leaf',
   'lean-dict',
-  'int-narrow',
+  'int-narrow', 'reuse-loads',
   'specialize', 'guards', 'inline-args',
   'store-int32',
   'present-number',

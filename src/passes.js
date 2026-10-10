@@ -29,6 +29,7 @@ export const PASS_NAMES = [
   'narrowLoopBound',          // f64 loop bound → hoisted i32 (unblocks the lane-vectorizer)
   'wideAccumulator',          // f64 integer accumulator carried as i64 under a runtime magnitude guard (versioned loop)
   'intNarrow',                // integer-valued f64 locals and arithmetic in i32/i64 where the interval proves them exact (optimize/int-narrow.js)
+  'wrappedWords',             // an i64 local read only for its low word: an i32 local, its addresses refolded (int-narrow.js narrowWrappedWords)
   'specializeLoops',          // a copy of a loop for reads that hit and integers that are integers, beside the loop as written (optimize/specialize.js)
   'combineGuards',            // the guards of a specialized loop: one test ahead of the loop or of a run of reads decides many (optimize/guards.js)
   'splitCharScan',            // charCodeAt scan loops: split at min(N, s.length) → i32 char carrier (plan-level)
@@ -65,6 +66,7 @@ export const PASS_NAMES = [
   'hoistAddrBase',
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',
+  'reuseLoads',               // a load an earlier one read with no store between: its local (optimize/reuse-loads.js)
   'forwardStores',            // straight-line store-to-load forwarding + dead-store elimination
   'staticScratch',            // a static typed array only constant indices reach: stores forward to loads of any width, unread stores go (optimize/static-scratch.js)
   'moduleScratch',            // a module array of numbers only constant indices reach is locals of each function that uses it (plan/scratch.js)

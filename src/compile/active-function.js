@@ -43,6 +43,7 @@ export function createActiveFunction({
     cellTypes: null,
     flatObjects: null,
     fieldCaches: null,   // cse temp → the field read it holds (compile/cse-load.js); a push rebinds the field
+    projectedCursors: null, // raw cursors present because their next statement projects them (analyze/ptr-eligibility.js)
     sliceViews: null,
     arrayViews: null,
     restView: null,

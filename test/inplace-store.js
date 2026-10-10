@@ -105,6 +105,36 @@ test('inplace-store: loop-invariant array base hoists out of the step loop', () 
     'inner loop body re-resolves no array base (hoisted to preheader)')
 })
 
+test('inplace-store: a cursor its next statement projects stays a raw cell address', () => {
+  // `const p = ps[i]` then `p.x…`: the element read throws for absence itself,
+  // so p holds the packed cell's address, not a box, and the replace store
+  // derives the array base from it — no per-iteration receiver dispatch.
+  for (const optimize of [PRE_WATR, { level: 2, watr: false }]) {
+    const wat = jz.compile(KERNEL, { wat: true, optimize })
+    const stepBody = wat.split(/\(func /).find(c => /^\$step\b/.test(c)) || ''
+    const innerLoop = stepBody.slice(stepBody.lastIndexOf('(loop '))
+    ok(innerLoop, 'step loop present')
+    ok(!/result f64/.test(innerLoop), `the integer loop builds no box (${JSON.stringify(optimize)})`)
+    ok(!/call \$__ptr_offset\b/.test(innerLoop), `store reuses the cursor's base (${JSON.stringify(optimize)})`)
+  }
+})
+
+test('inplace-store: a projected cursor past the end throws, as in JS', () => {
+  const src = `
+  const init = n => { const ps = []; for (let i = 0; i < n; i++) ps.push({ x: i, y: 2 * i }); return ps }
+  const step = (ps, m) => {
+    let s = 0
+    for (let i = 0; i < m; i++) { const p = ps[i]; s = (s + p.x + p.y) | 0; ps[i] = { x: p.y, y: p.x } }
+    return s
+  }
+  export let main = (n, m) => { try { return step(init(n), m) } catch (e) { return e instanceof TypeError ? -1 : -2 } }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { main } = run(src, { optimize })
+    for (const [n, m] of [[4, 4], [4, 5], [0, 1], [3, 0], [5, 2]]) is(main(n, m), js.main(n, m), `n=${n} m=${m} O${optimize}`)
+  }
+})
+
 test('inplace-store: alias read AFTER the store keeps fresh-object semantics', () => {
   // `p` is read after ps[i] is replaced: with a fresh object p.x is the OLD x;
   // in-place would show the NEW x. The sweep must reject this site.

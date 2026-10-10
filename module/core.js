@@ -2408,11 +2408,13 @@ export default (ctx) => {
       let receiver
       try { receiver = emit(obj) } finally { ctx.func.throwAbsent = prevThrow }
       // An admitted inline cell is a raw address, with its own packed layout.
-      // It cannot pass through the boxed receiver path without losing that layout.
-      if (receiver.ptrKind == null) {
+      // It cannot pass through the boxed receiver path without losing that layout,
+      // unless the read itself threw for absence: it carries the layout along.
+      const present = receiver.presentRead === true
+      if (receiver.ptrKind == null || absentOnly && present) {
         const value = asF64(receiver)
         const t = temp()
-        if (absentOnly && value.presentRead === true)
+        if (absentOnly && (present || value.presentRead === true))
           return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, value], asF64(readHoistedProp(obj, prop, t, raw, receiver))], 'f64')
         // The block emitter holds a name checked here present past this statement.
         if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)

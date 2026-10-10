@@ -1197,13 +1197,17 @@ export default (ctx) => {
         // a projection requires an object; merely saving an OOB cursor is valid.
         const len = fixedLen != null ? ['i32.const', fixedLen]
           : ['i32.div_u', ['i32.shl', ['i32.load', ['i32.sub', base, ['i32.const', 8]]], ['i32.const', 3]], ['i32.const', strideB]]
-        const throwing = node != null && node === ctx.func.throwAbsent
+        // A read whose absence throws (`throwAbsent`) yields the cell itself:
+        // a raw cursor stores it, a boxed one boxes it as any cell.
+        if (node != null && node === ctx.func.throwAbsent)
+          return Object.assign(typed(['block', ['result', 'i32'], ...pre,
+            ['if', ['i32.ge_u', ['local.get', `$${idxI32}`], len], ['then', ['drop', throwTypeErrorIR()]]], cell], 'i32'),
+            { ptrKind: cell.ptrKind, ptrAux: cell.ptrAux, cellI32: cell.cellI32, unionKey: cell.unionKey, presentRead: true })
         const rd = typed(['block', ['result', 'f64'], ...pre,
           ['if', ['result', 'f64'], ['i32.lt_u', ['local.get', `$${idxI32}`], len],
-            ['then', asF64(cell)], ['else', throwing ? throwTypeErrorIR() : undefExpr()]]], 'f64')
+            ['then', asF64(cell)], ['else', undefExpr()]]], 'f64')
         if (packed) rd.cellI32 = true
         if (u) rd.unionKey = u.key
-        if (throwing) rd.presentRead = true
         return rd
       }
       // Known-ARRAY → __arr_idx (single forwarding follow + inline bounds check),

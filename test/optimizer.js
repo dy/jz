@@ -5993,7 +5993,8 @@ test('small strided outer control loop specializes nested typed kernels', () => 
   const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const pw = wat.split('(func $pass')[1]?.split('(func ')[0] || ''
   ok(!/local\.get \$shift/.test(pw), 'outer induction is fully specialized')
-  ok((pw.match(/i32\.shr_u/g) || []).length >= 3, 'four radix/lane variants remain as constant shifts')
+  // each variant fixes its byte: a constant shift, or the byte's own load (narrowByteLoads)
+  ok((pw.match(/i32\.shr_u|i32\.load8_u offset=[123]\b/g) || []).length >= 3, 'four radix/lane variants remain as constant shifts')
   is(run(src, { optimize: 'speed' }).f(), 0x12, 'last specialized pass stays exact')
 })
 
@@ -7130,5 +7131,25 @@ export let h = (n) => { const a = new Float64Array(n); for (let i = 0; i < n; i+
     ok(Number.isNaN(e.f(8)), `a hole reads NaN O${level}`)
     ok(Number.isNaN(e.g(7)), `a hole doubles to NaN O${level}`)
     ok(Number.isNaN(e.g(20)), `past the end O${level}`)
+  }
+})
+
+test('peephole: a word tested against zero and a constant bound is one unsigned test', () => {
+  // `x >= 0 && x < W && y >= 0 && y < H`, the tests in any order, both spellings
+  const conds = [
+    '(i32.and (i32.and (i32.and (i32.ge_s (local.get $x) (i32.const 0)) (i32.lt_s (local.get $x) (i32.const 512))) (i32.ge_s (local.get $y) (i32.const 0))) (i32.lt_s (local.get $y) (i32.const 300)))',
+    '(i32.and (i32.and (i32.gt_s (local.get $x) (i32.const -1)) (i32.gt_s (local.get $y) (i32.const -1))) (i32.and (i32.le_s (local.get $x) (i32.const 511)) (i32.gt_s (i32.const 300) (local.get $y))))',
+    '(i32.and (i32.ge_s (local.get $x) (i32.const 0)) (i32.lt_s (local.get $y) (i32.const 300)))',
+  ]
+  for (const [k, cond] of conds.entries()) {
+    const fn = parseWat(`(func $f (export "f") (param $x i32) (param $y i32) (result i32) ${cond})`)
+    const instantiate = f => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', f]))).exports.f
+    const before = instantiate(fn)
+    fusedRewrite(fn)
+    const after = instantiate(fn)
+    const text = JSON.stringify(fn)
+    is((text.match(/i32\.lt_u/g) || []).length, k < 2 ? 2 : 0, `condition ${k}: a pair per word folds, a lone test stays`)
+    for (const x of [-2147483648, -1, 0, 1, 299, 300, 511, 512, 2147483647]) for (const y of [-1, 0, 299, 300])
+      is(after(x, y), before(x, y), `condition ${k}: x=${x} y=${y}`)
   }
 })
