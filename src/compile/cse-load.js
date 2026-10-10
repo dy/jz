@@ -469,3 +469,103 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
   walkAst(body, { enter: n => { if (n[0] === ';') runSeq(n) } })
   return eliminated
 }
+
+/**
+ * A field a loop reads and nothing in it can write is read once, before it.
+ *
+ * `for (…) s += at(chain, i)` with `at` spliced in reads `chain.bones` every
+ * iteration: a load, then the array's forwarding and length words, all of it
+ * on the path to the element. Read once before the loop the array is a local,
+ * and the words it guards hoist with it (optimize/licm.js).
+ *
+ * The read is the one `cseLoads` caches: a slot of every layout the summary
+ * lists for its receiver, no accessor (`fieldOf`). It holds through the loop
+ * on the same terms a cached read holds through a statement list: the loop
+ * (its head and step with its body) stores no field of that name into an
+ * object that may share a construction site with the receiver, stores
+ * through no computed key into what may be an object, reassigns no part of
+ * the read, calls nothing that may write storage older than the call, runs
+ * no user conversion, and deletes, suspends and constructs nothing. Read
+ * ahead, the field is read even where the loop would not run or would not
+ * reach the read: a read of a slot runs no code, and the receiver must be
+ * present (a missing one throws where the loop first reads it).
+ *
+ * Inner loops go first, so a read hoisted out of one is again a read of the
+ * loop around it.
+ *
+ * @param body        function-body AST (mutated in place)
+ * @param freshName   (read) => string — a fresh local for the read's value
+ * @param fieldOf, isReadonlyCall, runsUserCode, mayStoreField, objectsDisjoint — as for `cseLoads`
+ * @param present     (name) => boolean: the binding never holds null or undefined
+ * @returns number of reads hoisted
+ */
+export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCall = null, runsUserCode = null, mayStoreField = null, objectsDisjoint = null) {
+  if (!isArr(body) || !fieldOf) return 0
+  const loops = []   // [statement list, loop], outer loops before the loops they hold
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === ';') for (let i = 1; i < n.length; i++) if (isArr(n[i]) && (n[i][0] === 'for' || n[i][0] === 'do')) loops.push([n, n[i]])
+  } })
+  let hoisted = 0
+  for (let k = loops.length - 1; k >= 0; k--) {
+    const [seq, loop] = loops[k]
+    const at = seq.indexOf(loop)
+    if (at < 0) continue
+    const reads = new Map()     // `recv.field` → occurrences [{ parent, idx }]
+    const written = new Set()   // names the loop declares or assigns
+    const stores = []           // [receiver, field name | null for any]: field stores of the loop
+    let opaque = false
+    const scan = (n, parent, pi) => {
+      if (opaque || !isArr(n) || n[0] == null || n[0] === 'str') return
+      const op = n[0]
+      if (op === '=>') return
+      if (op === 'yield' || op === 'await' || op === 'delete' || op === 'new' || op === 'for-in' || op === 'for-of') { opaque = true; return }
+      if (op === 'let' || op === 'const') {
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i]
+          if (isName(d)) written.add(d)
+          else if (isArr(d) && d[0] === '=' && isName(d[1])) { written.add(d[1]); scan(d[2], d, 2) }
+          else { opaque = true; return }
+        }
+        return
+      }
+      if (ASSIGN.has(op)) {
+        const lhs = n[1]
+        if (isName(lhs)) written.add(lhs)
+        else if (isArr(lhs) && (lhs[0] === '.' || lhs[0] === '?.') && isName(lhs[2])) { stores.push([lhs[1], lhs[2]]); scan(lhs[1], lhs, 1) }
+        else if (isArr(lhs) && lhs[0] === '[]') {
+          scan(lhs[1], lhs, 1); scan(lhs[2], lhs, 2)
+          if (!mayStoreField || mayStoreField(lhs[1])) stores.push([lhs[1], isArr(lhs[2]) && lhs[2][0] === 'str' ? lhs[2][1] : null])
+        }
+        else { opaque = true; return }
+        if (runsUserCode?.(n) || isArr(lhs) && runsUserCode?.(lhs)) { opaque = true; return }
+        for (let i = 2; i < n.length; i++) scan(n[i], n, i)
+        return
+      }
+      if (op === '.' && isName(n[1]) && isName(n[2]) && !((parent[0] === '()' || parent[0] === '?.()') && pi === 1) && fieldOf(n)) {
+        const key = `${n[1]}.${n[2]}`
+        const occ = reads.get(key) ?? []
+        occ.push({ parent, idx: pi })
+        reads.set(key, occ)
+        return
+      }
+      for (let i = 1; i < n.length; i++) scan(n[i], n, i)
+      if ((op === '()' || op === '?.()' || op === 'call') && !isReadonlyCall?.(n)) opaque = true
+      else if (runsUserCode?.(n)) opaque = true
+    }
+    for (let i = 1; i < loop.length; i++) scan(loop[i], loop, i)
+    if (opaque || !reads.size) continue
+    const decls = []
+    for (const [key, occ] of reads) {
+      const dot = key.indexOf('.'), recv = key.slice(0, dot), field = key.slice(dot + 1)
+      if (written.has(recv) || !present(recv)) continue
+      if (stores.some(([r, f]) => (f == null || f === field) && !objectsDisjoint?.(recv, r))) continue
+      const read = ['.', recv, field], temp = freshName(read)
+      decls.push(['const', ['=', temp, read]])
+      for (const o of occ) o.parent[o.idx] = temp
+      hoisted += occ.length
+    }
+    if (decls.length) seq.splice(at, 0, ...decls)
+  }
+  return hoisted
+}

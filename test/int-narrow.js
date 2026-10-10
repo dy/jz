@@ -9,7 +9,7 @@ import { agree, oracle, run, wat } from './util.js'
 import { belowOpt } from './_matrix.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
-import { narrowInts } from '../src/optimize/int-narrow.js'
+import { narrowInts, narrowWrappedWords } from '../src/optimize/int-narrow.js'
 import { intRanges } from '../src/optimize/int-range.js'
 import { guardDefinitions } from '../src/optimize/guard-defs.js'
 
@@ -809,4 +809,49 @@ test('int-narrow: a saved select condition can be negative or zero', () => {
   const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
   for (const n of [0, 1, -1]) for (const v of [-2147483648, -1, 0, 9, 10, 20, 2147483647])
     is(after(n, v), before(n, v), `n=${n}, v=${v}`)
+})
+
+
+test('int-narrow: a wide integer read only for its low word is that word', () => {
+  // An interpreter's instruction offset `o = pc * 3`, its counter loaded from an
+  // element (a range the intervals leave past i32): its reads all index memory,
+  // so the word arithmetic is the product's own and each field reads off one base.
+  const src = `const run = (code, reg) => {
+    let pc = 0
+    while (pc < 4) {
+      const o = pc * 3
+      const op = code[o], a = code[o + 1], b = code[o + 2]
+      if (op === 1) { reg[a & 3] = Math.imul(reg[a & 3] + 1, b); pc = pc + 1 }
+      else if (op === 2) { if (reg[a & 3] !== 0) { reg[a & 3] = (reg[a & 3] - 1) | 0; pc = b } else pc = pc + 1 }
+      else pc = 4
+    }
+    return reg[0]
+  }
+  export let main = (n) => {
+    const code = new Int32Array(12), reg = new Int32Array(4)
+    const p = [1, 0, 1103515245, 1, 1, 7, 2, 1, 2, 0, 0, 0]
+    for (let i = 0; i < 12; i++) code[i] = p[i] | 0
+    code[5] = n & 1023
+    return run(code, reg)
+  }`
+  for (const n of [0, 1, 2, 5, 1023]) agree(src, 'main', [n])
+  shapes(src, text => {
+    is(count(text, 'i64.mul'), 0, 'the offset multiplies in a word')
+    ok(/i32\.load offset=4/.test(text) && /i32\.load offset=8/.test(text), 'the fields read at offsets of one base')
+  })
+  // The low word of each operation, a wide literal's included; a read of the
+  // whole i64 keeps it.
+  const ir = parseWat(`(module (func $f (export "f") (param $a i32) (result i32)
+    (local $o i64) (local $k i64) (local $w i64)
+    (local.set $o (i64.mul (i64.extend_i32_s (local.get $a)) (i64.const 0x100000003)))
+    (local.set $k (i64.add (local.get $o) (i64.const -5)))
+    (local.set $w (i64.extend_i32_u (local.get $a)))
+    (i32.add (i32.add (i32.wrap_i64 (local.get $o)) (i32.wrap_i64 (i64.shl (local.get $k) (i64.const 2))))
+      (i32.wrap_i64 (i64.shr_u (i64.shl (local.get $w) (i64.const 40)) (i64.const 33))))))`)
+  const fn = ir[1]
+  const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  ok(narrowWrappedWords(fn), 'the low-word locals narrow')
+  is(fn.filter(n => n[0] === 'local').map(n => n[2]).join(), 'i32,i32,i64', 'a shifted-down read keeps the wide local')
+  const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  for (const a of [0, 1, -1, 7, 123456789, -2147483648, 2147483647]) is(after(a), before(a), `a=${a}`)
 })

@@ -6,7 +6,7 @@
 // __iter_arr's unknown-receiver arm (module/collection.js).
 import test, { is } from 'tst'
 import { throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { run, oracle } from './util.js'
 import { levels, onWasi } from './_matrix.js'
 
@@ -770,4 +770,28 @@ test('inactive collection readers add no runtime error or BigInt demand', () => 
     const got=jz(active,{optimize}).exports,want=oracle(active)
     for(const mode of [0,0,1,2,3,4,5,6,7,8,9,10,0])is(got.f(mode),want.f(mode),`active native brand O${optimize}, ${mode}`)
   }
+})
+
+test('an empty collection constructor keeps its own allocation beside custom iteration', () => {
+  // `new Map()` consumes nothing: routed through the iterator-protocol helper
+  // (as `new Map(iterable)` is once a program iterates by protocol) every
+  // empty collection would share the helper's one result cell, and a class's
+  // private registry would read as whatever any other collection held.
+  const src = `const pairs = (n) => ({ [Symbol.iterator]() { let i = 0; return { next: () => i < n ? { done: false, value: [i, i++ * 2] } : { done: true } } } })
+    class Bus {
+      #events = new Map()
+      on(type, fn) { let s = this.#events.get(type); if (!s) this.#events.set(type, s = new Set()); s.add(fn) }
+      fire(type, v) { const s = this.#events.get(type); if (s) for (const fn of s) fn(v) }
+    }
+    export function main(n) {
+      const bus = new Bus(); let total = 0
+      bus.on('x', v => { total += v })
+      const m = new Map(pairs(n))
+      for (const [k, v] of m) bus.fire('x', k + v)
+      return total + m.size
+    }`
+  const wat = compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false, inlineFns: false, watr: false } })
+  is((wat.match(/call \$jz_iter\$__it_map\b/g) || []).length, 1, 'only the constructor given an iterable consumes by protocol')
+  is((wat.match(/call \$jz_iter\$__it_set\b/g) || []).length, 0, 'an empty Set is its own allocation')
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.main(4), oracle(src).main(4), `O${optimize}`)
 })

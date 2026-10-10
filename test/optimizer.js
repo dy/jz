@@ -1576,6 +1576,77 @@ test('unrolled scalar scratch keeps per-copy SSA and hoists invariant compounds'
   for (const n of [0, 1, 7, 64]) is(on(n), off(n), `SSA-LICM on===off at n=${n}`)
 })
 
+test('a small typed-index loop unrolls around a closure that writes a binding of its body', () => {
+  if (onKernel()) return
+  // The unroller names each copy's block-scoped bindings anew so the per-copy
+  // scratch stays single-def (splitScratch). A closure of the body is cloned as
+  // it is, so a binding it captures keeps its name: renamed, the closure wrote
+  // a binding of its own and the copy read the initializer (the Web Audio
+  // render's `complete` listener, spliced into the bench's timing loop).
+  const src = `
+    class Ctx {
+      #ls
+      constructor() { this.#ls = [] }
+      on(f) { this.#ls.push(f) }
+      make() { const buf = { len: 4, data: new Float64Array(4) }; for (let i = 0; i < 4; i++) buf.data[i] = i * 0.5; return buf }
+      go() { const buf = this.make(); const ls = this.#ls; for (let i = 0; i < ls.length; i++) ls[i]({ buf }) }
+    }
+    const render = () => {
+      const ctx = new Ctx()
+      let out = null
+      ctx.on((e) => { out = e.buf })
+      ctx.go()
+      return out
+    }
+    const sum = (b) => { let h = 0; for (let i = 0; i < b.len; i++) h += b.data[i]; return h }
+    const run = () => {
+      let out
+      const samples = new Float64Array(3)
+      for (let i = 0; i < 3; i++) { out = render(); samples[i] = i }
+      return sum(out) + samples[2]
+    }
+    export let main = () => run()`
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(), 5, 'the copy reads what the closure wrote')
+})
+
+test('a leaf called only from a method a dispatcher reaches still splices', () => {
+  if (onKernel()) return
+  // The inliner counts sites in the functions that run. A class method reached
+  // through a member access the census cannot name (two classes answer
+  // `valueAt`: a dispatcher tests each) is one of them, as the program index's
+  // call graph seeds it; the liveness the inliner read seeded only from direct
+  // calls, so every leaf such a method called kept its call (the Web Audio
+  // render's automation guards, 3.4× slower than the inlined render).
+  const src = `
+    const isRamp = (e) => e.kind === 'ramp'
+    const isStep = (e) => e.kind === 'step'
+    class Steps {
+      constructor() { this.events = [{ kind: 'step', t: 0, v: 1 }, { kind: 'ramp', t: 1, v: 3 }] }
+      valueAt(t) {
+        let v = 0
+        for (let i = 0; i < this.events.length; i++) {
+          const e = this.events[i]
+          if (isStep(e) && e.t <= t) v = e.v
+          else if (isRamp(e) && e.t <= t) v = v + (e.v - v) * 0.5
+        }
+        return v
+      }
+    }
+    class Flat {
+      constructor(v) { this.v = v }
+      valueAt(t) { return this.v + t }
+    }
+    export let main = (n) => {
+      const tracks = [new Steps(), new Flat(2), new Steps()]
+      let s = 0
+      for (let k = 0; k < n; k++) s += tracks[k % 3].valueAt(k & 1)
+      return s
+    }`
+  const wat = compile(src, { optimize: { level: 'speed', watr: false }, wat: true })
+  is((wat.match(/call \$is(?:Ramp|Step)\b/g) || []).length, 0, 'the guards splice into the method')
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(1000), 1833, 'the dispatched method answers')
+})
+
 test('unrolled scalar scratch includes lowered temporaries without changing their lifetime', () => {
   if (onKernel()) return
   const scratch = '$\uE000ul0'
@@ -5922,7 +5993,8 @@ test('small strided outer control loop specializes nested typed kernels', () => 
   const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const pw = wat.split('(func $pass')[1]?.split('(func ')[0] || ''
   ok(!/local\.get \$shift/.test(pw), 'outer induction is fully specialized')
-  ok((pw.match(/i32\.shr_u/g) || []).length >= 3, 'four radix/lane variants remain as constant shifts')
+  // each variant fixes its byte: a constant shift, or the byte's own load (narrowByteLoads)
+  ok((pw.match(/i32\.shr_u|i32\.load8_u offset=[123]\b/g) || []).length >= 3, 'four radix/lane variants remain as constant shifts')
   is(run(src, { optimize: 'speed' }).f(), 0x12, 'last specialized pass stays exact')
 })
 
@@ -6776,7 +6848,8 @@ test('unknown-receiver element reads: inline array arm at speed, the helper at s
   // Pin JZ's array-arm choice before watr can inline unrelated dictionary arms.
   const speed = funcWat(compile(src, { optimize: preWatr('speed'), wat: true }), 'at')
   const size = funcWat(compile(src, { optimize: preWatr('size'), wat: true }), 'at')
-  ok(/__ptr_offset_fwd/.test(speed) && /f64\.load/.test(speed) && /i32\.lt_u/.test(speed), 'speed: the array arm inline')
+  // (the slot read as bits: the hole test compares them, so the load may be i64)
+  ok(/__ptr_offset_fwd/.test(speed) && /[fi]64\.load/.test(speed) && /i32\.lt_u/.test(speed) && !/call \$__arr_value/.test(speed), 'speed: the array arm inline')
   ok(!/f64\.load/.test(size) && !/i32\.lt_u/.test(size) && /call \$__typed_idx/.test(size), 'size: the helper alone')
   is(run(src).at([5, 6, 7], 1), 6)
   is(run(src, { optimize: 'size' }).at([5, 6, 7], 2), 7)
@@ -6894,4 +6967,189 @@ test('a flag of literals: a write nested in another write\'s value is a write of
   const src = `const mk = (ops, fn = (a) => { for (let i = 0, d; (d = ops[i++]); ) { if (d === a) return i } return 0 }) => fn
     export let main = () => mk([3, 4, 5])(4)`
   for (const optimize of levels(0, 2, 'speed')) is(run(src, { optimize }).main(), 2, `at ${optimize}`)
+})
+
+test('a call carried into a spliced closure reads its arguments as the caller binds them', () => {
+  // `sweep` is a local lambda the plan splices after the call inside it was
+  // spliced; that call's argument seams (`const a = x`) were made while `x` was
+  // a capture, and stay names for `x` in the caller: a typed array the lane
+  // vectorizer reads, not a box.
+  if (onKernel()) return
+  const src = `function dot(N, x, y) { let s = 0; for (let i = 0; i < N; i++) s += x[i] * y[i]; return s }
+    const fn = dot
+    export let main = (n) => {
+      const x = new Float64Array(n), y = new Float64Array(n)
+      for (let i = 0; i < n; i++) { x[i] = i; y[i] = n - i }
+      const out = new Float64Array(64)
+      const sweep = () => { for (let i = 0; i < 64; i++) out[i] = fn(n - (i & 7), x, y) }
+      for (let r = 0; r < 3; r++) sweep()
+      return out[5]
+    }`
+  ok(/f64x2/.test(compile(src, { wat: true, optimize: { level: 'speed' } })), 'the spliced dot product vectorizes')
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(100), oracle(src).main(100))
+})
+
+test('an unrolled strided kernel spliced through a closure takes its canonical counted form', () => {
+  // stdlib's ddot shape (an offset helper, a remainder loop, a main loop
+  // unrolled by a module constant) spliced into a closure that is itself
+  // spliced: the fresh names are summarized before the counted-loop rewrite
+  // reads them, so the main loop rerolls and its reduction vectorizes.
+  if (onKernel()) return
+  const src = `function offset(N, stride) {
+      if (stride > 0) return 0
+      return (1 - N) * stride
+    }
+    var M = 5
+    function dot(N, x, sx, ox, y, sy, oy) {
+      var s = 0, ix = ox, iy = oy, m, i
+      if (N <= 0) return s
+      if (sx === 1 && sy === 1) {
+        m = N % M
+        if (m > 0) for (i = 0; i < m; i++) { s += x[ix] * y[iy]; ix += 1; iy += 1 }
+        if (N < M) return s
+        for (i = m; i < N; i += M) { s += x[ix] * y[iy] + x[ix + 1] * y[iy + 1] + x[ix + 2] * y[iy + 2] + x[ix + 3] * y[iy + 3] + x[ix + 4] * y[iy + 4]; ix += M; iy += M }
+        return s
+      }
+      for (i = 0; i < N; i++) { s += x[ix] * y[iy]; ix += sx; iy += sy }
+      return s
+    }
+    function dot2(N, x, sx, y, sy) {
+      if (N <= 0) return 0
+      return dot(N, x, sx, offset(N, sx), y, sy, offset(N, sy))
+    }
+    export let main = (n) => {
+      const x = new Float64Array(n), y = new Float64Array(n)
+      for (let i = 0; i < n; i++) { x[i] = i % 7; y[i] = (n - i) % 5 }
+      const out = new Float64Array(64)
+      const sweep = () => { for (let i = 0; i < 64; i++) out[i] = dot2(n - (i & 7), x, 1, y, 1) }
+      sweep(); sweep()
+      let t = 0
+      for (let i = 0; i < 64; i++) t += out[i]
+      return t
+    }`
+  const wat = compile(src, { wat: true, optimize: { level: 'speed' } })
+  ok((wat.match(/\(loop \$__simd_loop/g) || []).length >= 2, 'the main loops vectorize, not only a remainder loop')
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(1000), oracle(src).main(1000))
+})
+
+test('a neighborhood walk over literals unrolls like a count from zero', () => {
+  // `for (g = -1; g <= 1; g++)` (a 3×3 stencil, a cell's neighbors) counts
+  // three trips: each copy reads its literal, negative or not, and the loop
+  // and its counter are gone.
+  if (onKernel()) return
+  const src = `export let f = (a, i) => { let s = 0; for (let g = -1; g <= 1; g++) s += a[(i + g) & 7] * g; return s }`
+  const wat = funcWat(compile(src, { wat: true, optimize: { level: 'speed' } }), 'f')
+  ok(!/\(loop/.test(wat), 'the walk unrolls')
+  const a = new Float64Array([1, 2, 3, 4, 5, 6, 7, 8])
+  for (const level of [0, 2, 'speed']) is(jz(src, { optimize: { level } }).exports.f(a, 3), 2, `O${level}`)
+})
+
+test('a grown array read from a slot is rebound there', () => {
+  // `o.xs.push(v)` that outgrows its storage moves the array; the field is
+  // rebound to the moved header, as a named receiver is, so its reads skip the
+  // forwarding chase. So is a field a cached read holds (`o.xs.length` tested
+  // first), and an element of a known array at a variable index.
+  if (onKernel()) return
+  const srcs = {
+    field: `const o = { xs: [], n: 0 }
+export let fill = (k) => { for (let i = 0; i < k; i++) o.xs.push(i) }
+export let at = (i) => o.xs[i] + o.xs.length`,
+    cached: `const o = { xs: [], n: 0 }
+export let fill = (k) => { for (let i = 0; i < k; i++) { if (o.xs.length === 0) o.n = 1; o.xs.push(i) } }
+export let at = (i) => o.xs[i] + o.xs.length`,
+    element: `const rows = [[], [], []]
+export let fill = (k) => { for (let i = 0; i < k; i++) for (let j = 0; j < 3; j++) rows[j].push(i) }
+export let at = (i) => rows[1][i] + rows[1].length`,
+  }
+  const grow = m => m[0] === 'call' && /^\$__arr_grow/.test(m[1])
+  const has = (n, pred) => { let f = false; walk(n, m => { if (pred(m)) f = true }); return f }
+  for (const [name, src] of Object.entries(srcs)) {
+    const fn = findFunc(parse(src, { level: 'speed' }), '$fill')
+    // the innermost arms that grow: each stores the moved pointer back
+    const arms = []
+    walk(fn, n => { if (n[0] === 'then' && has(n, grow) && !n.slice(1).some(c => Array.isArray(c) && has(c, m => m[0] === 'then' && has(m, grow)))) arms.push(n) })
+    ok(arms.length > 0, `${name}: the push grows in an arm of its own`)
+    ok(arms.every(a => has(a, m => m[0] === 'f64.store' || m[0] === 'i64.store')), `${name}: the grow rebinds its slot`)
+    for (const level of [0, 2, 'speed']) {
+      const e = jz(src, { optimize: { level } }).exports
+      e.fill(100)
+      is(e.at(57), 157, `${name} O${level}`)
+    }
+  }
+})
+
+test('a field a loop only reads is read once, before it', () => {
+  // `c.xs[i]` through a spliced `at(chain, i)`: nothing in the loop writes an
+  // `xs` or a `ys`, so each field is read before the loop and the arrays'
+  // forwarding and length words hoist with it.
+  if (onKernel()) return
+  const src = `const chain = { xs: [], ys: [] }
+for (let i = 0; i < 6; i++) { chain.xs.push(i); chain.ys.push(i * 2) }
+const at = (c, i) => c.xs[i] + c.ys[i]
+export let f = (n) => { let s = 0; for (let k = 0; k < n; k++) for (let i = 0; i < 6; i++) s += at(chain, i); return s }
+export let g = (n) => { let s = 0; for (let k = 0; k < n; k++) { s += chain.xs[k % 6]; chain.xs = chain.ys } return s }`
+  const header = n => n[0] === 'i32.load' && Array.isArray(n[n.length - 1]) && n[n.length - 1][0] === 'i32.sub'
+  is(loopCount(findFunc(parse(src, { level: 'speed' }), '$f'), header), 0, 'no header word is read in the loop')
+  // a loop that stores the field reads it each time
+  for (const level of [0, 2, 'speed']) {
+    const e = jz(src, { optimize: { level } }).exports
+    is(e.f(3), 135, `O${level}`)
+    is(e.g(3), 0 + 2 + 4, `the stored field O${level}`)
+  }
+})
+
+test('a holey cell read as a number is tested once', () => {
+  // A hole reads undefined and undefined converts to NaN: both are NaNs, so a
+  // numeric read keeps the cell as stored and tests it once for NaN, hit arm
+  // of a bounds check included; what it yields is NaN, never the box.
+  if (onKernel()) return
+  const src = `const o = { s: [0, 1, 2, 3, 4, 5] }
+export let grow = (m) => { o.s.length = m }
+export let f = (n) => { const s = o.s; let t = 0; for (let k = 0; k < n; k++) t += s[1] * s[2] - s[k]; return t }
+export let g = (k) => { const s = o.s; return s[k] * 2 }`
+  const tomb = n => n[0] === 'i64.const' && /^0x7FF87FFFFFFFFFFF$/i.test(String(n[1]))
+  is(count(findFunc(parse(src, { level: 'speed' }), '$f'), tomb), 0, 'no hole test before the number test')
+  // a typed array has no holes: its reads keep the undefined test the optimizer clears (heapsort's sift)
+  const typed = `const sift = (a, n) => {
+  let i = 0, child = 1, c = 0
+  while (child < n) {
+    if (child + 1 < n && a[child] < a[child + 1]) child++
+    if (a[i] >= a[child]) break
+    const t = a[i]; a[i] = a[child]; a[child] = t
+    i = child; child = 2 * i + 1; c++
+  }
+  return c
+}
+export let h = (n) => { const a = new Float64Array(n); for (let i = 0; i < n; i++) a[i] = (i * 7919) % 13; return sift(a, a.length) }`
+  const nanTest = n => n[0] === 'select' && Array.isArray(n[2]) && n[2][0] === 'f64.const' && n[2][1] === 'nan'
+  is(count(parse(typed, { level: 'speed' }), nanTest), 0, 'a typed read takes no hole-fused test')
+  is(jz(typed, { optimize: { level: 'speed' } }).exports.h(64), (() => { const a = new Float64Array(64); for (let i = 0; i < 64; i++) a[i] = (i * 7919) % 13; let i = 0, child = 1, c = 0; while (child < 64) { if (child + 1 < 64 && a[child] < a[child + 1]) child++; if (a[i] >= a[child]) break; const t = a[i]; a[i] = a[child]; a[child] = t; i = child; child = 2 * i + 1; c++ } return c })(), 'sift')
+  for (const level of [0, 2, 'speed']) {
+    const e = jz(src, { optimize: { level } }).exports
+    e.grow(10)
+    is(e.f(3), 3, `in bounds O${level}`)
+    ok(Number.isNaN(e.f(8)), `a hole reads NaN O${level}`)
+    ok(Number.isNaN(e.g(7)), `a hole doubles to NaN O${level}`)
+    ok(Number.isNaN(e.g(20)), `past the end O${level}`)
+  }
+})
+
+test('peephole: a word tested against zero and a constant bound is one unsigned test', () => {
+  // `x >= 0 && x < W && y >= 0 && y < H`, the tests in any order, both spellings
+  const conds = [
+    '(i32.and (i32.and (i32.and (i32.ge_s (local.get $x) (i32.const 0)) (i32.lt_s (local.get $x) (i32.const 512))) (i32.ge_s (local.get $y) (i32.const 0))) (i32.lt_s (local.get $y) (i32.const 300)))',
+    '(i32.and (i32.and (i32.gt_s (local.get $x) (i32.const -1)) (i32.gt_s (local.get $y) (i32.const -1))) (i32.and (i32.le_s (local.get $x) (i32.const 511)) (i32.gt_s (i32.const 300) (local.get $y))))',
+    '(i32.and (i32.ge_s (local.get $x) (i32.const 0)) (i32.lt_s (local.get $y) (i32.const 300)))',
+  ]
+  for (const [k, cond] of conds.entries()) {
+    const fn = parseWat(`(func $f (export "f") (param $x i32) (param $y i32) (result i32) ${cond})`)
+    const instantiate = f => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', f]))).exports.f
+    const before = instantiate(fn)
+    fusedRewrite(fn)
+    const after = instantiate(fn)
+    const text = JSON.stringify(fn)
+    is((text.match(/i32\.lt_u/g) || []).length, k < 2 ? 2 : 0, `condition ${k}: a pair per word folds, a lone test stays`)
+    for (const x of [-2147483648, -1, 0, 1, 299, 300, 511, 512, 2147483647]) for (const y of [-1, 0, 299, 300])
+      is(after(x, y), before(x, y), `condition ${k}: x=${x} y=${y}`)
+  }
 })

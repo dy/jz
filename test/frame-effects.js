@@ -1299,3 +1299,16 @@ test('frame effects: inactive native readers do not manufacture source effects',
   is(ctx.runtime.userThrows,false,'runtime brand guards are not user-authored throws')
   is(representationProgramHasBigint(ctx),false,'runtime tag predicates are not source typeof probes')
 })
+
+test('frame effects: a call that never returns does not make its frame allocate', () => {
+  // `s.charCodeAt(i)` on a value that may be nullish throws an error the
+  // runtime builds: allocation only on the path the exception leaves by. A
+  // scan that allocates nothing else keeps no rewind protocol on every call.
+  if (onKernel()) return
+  const src = `let cur, idx = 0
+    export function f() { let c; while ((c = cur.charCodeAt(idx)) <= 32) idx++; return c }
+    export function g(s) { cur = s; idx = 0; return f() }`
+  ok(!rewinds(src), 'the scan pays no rewind')
+  ok(/__throw/.test(compile(src, { wat: true, ...TAPE })), 'the nullish path still throws')
+  is(jz(src).exports.g('   x'), 120)
+})

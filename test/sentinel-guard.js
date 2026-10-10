@@ -117,6 +117,61 @@ test('sentinel guard: the pop, the scan and the read after the scan run unchecke
   ok(missArms(plain) > 0, 'the unguarded kernel checks its cursor reads')
 })
 
+// The pop's test reads z[k] (in range for k >= 0), its body v[k - 1] (k >= 1):
+// each bound is tested where its read runs. A pass that stops at the hull's
+// bottom (k = 0, z[0] the -INF sentinel) ends in the fast loop; the checked loop
+// runs only on the flag the body's guard sets.
+test('sentinel guard: the pop leaves its fast loop only where the body would read past the hull', () => {
+  if (onKernel()) return
+  const ir = parseWat(kernelOf(compile(ENVELOPE, { optimize: 'speed', wat: true })))
+  const isK = (n, op, c) => n?.[0] === op && n[1]?.[0] === 'local.get' && /k$/.test(n[1][1]) && n[2]?.[0] === 'i32.const' && Number(n[2][1]) === c
+  const flag = (n) => typeof n === 'string' && /left$/.test(n)
+  let entry = null, bodyGuard = null, checked = null, headExit = false
+  walk(ir, n => {
+    if (n[0] === 'if' && isK(n[1], 'i32.ge_s', 0)) entry = n
+    if (n[0] === 'if' && isK(n[1], 'i32.lt_s', 1)) bodyGuard = n
+    if (n[0] === 'if' && n[1]?.[0] === 'local.get' && flag(n[1][1])) checked = n
+    if (n[0] === 'br_if' && isK(n[2], 'i32.lt_s', 1)) headExit = true
+  })
+  ok(entry, 'a pass tests k >= 0 once, ahead of the pop')
+  ok(bodyGuard && count(bodyGuard, n => n[0] === 'local.set' && flag(n[1])) > 0, 'the body tests k >= 1 before v[k - 1] and flags the checked loop')
+  ok(!headExit, 'no pass leaves on k < 1 ahead of its test')
+  ok(checked && count(checked, n => n[0] === 'loop') > 0, 'the checked pop runs on the flag')
+})
+
+// The body's guard where the test's own guard needs retesting (a step of 2 can
+// cross the test's range), and a test with an effect or a getter (run once, so
+// the original cannot take over after it): each computes the host's result.
+test('sentinel guard: a split guard retested per pass and an effectful test agree with the host', () => {
+  const cases = {
+    stride: `export function f(n, seed) {
+      const z = new Float64Array(16), v = new Int32Array(16)
+      for (let t = 0; t < 16; t++) { z[t] = ((t * 7 + seed) % 11) - 5; v[t] = t * 3 - seed }
+      let k = 15, s = n, acc = 0
+      while (s <= z[k]) { k -= 2; s = s + v[k + 1] * 0.5; acc += s }
+      return acc * 100 + k }`,
+    effect: `export function f(n, seed) {
+      const z = new Float64Array(16), v = new Int32Array(16)
+      for (let t = 0; t < 16; t++) { z[t] = ((t * 5 + seed) % 13) - 6; v[t] = t - seed }
+      let k = 15, s = n, tests = 0
+      while ((tests += 1) && s <= z[k]) { k--; s = s + v[k] }
+      return tests * 1000 + k }`,
+    getter: `export function f(n, seed) {
+      const z = new Float64Array(16), v = new Int32Array(16)
+      for (let t = 0; t < 16; t++) { z[t] = ((t * 5 + seed) % 13) - 6; v[t] = t - seed }
+      let reads = 0
+      const o = { get w() { reads++; return 1 } }
+      let k = 15, s = n
+      while (s <= z[k] * o.w) { k--; s = s + v[k] }
+      return reads * 1000 + k }`,
+  }
+  for (const optimize of [...levels(0, 2, 3, 'size'), GUARDS_OFF]) for (const [name, src] of Object.entries(cases)) {
+    const native = oracle(src).f, wasm = jz(src, { optimize }).exports.f
+    for (const n of [-40, -10, -3, 0, 2, 7, 20, -Infinity, NaN]) for (const seed of [0, 3, 8])
+      is(wasm(n, seed), native(n, seed), `${name}(${n}, ${seed}), ${JSON.stringify(optimize)}`)
+  }
+})
+
 test('sentinel guard: a suffix past the cursor boundary keeps both missing numeric reads', () => {
   const src = `export function probe(start, limit) {
     const z = new Float64Array([0, 1, 2, Infinity])

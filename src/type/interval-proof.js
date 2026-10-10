@@ -8,7 +8,7 @@
  */
 import {
   I32_MIN, I32_MAX, isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS,
-  walkAst, some, someDeep, REFS_THROUGH_ARROWS, callArgs, alwaysReturns,
+  walkAst, some, someDeep, REFS_THROUGH_ARROWS, callArgs, alwaysLeaves,
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
@@ -1287,9 +1287,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (rE && !closureWrites.has(rE[0])) env.set(rE[0], rE[1])
       if (elseB !== undefined && !elseDead) visit(elseB)
       // Only normally completing arms reach the following statement. A base
-      // case's return/throw must not erase the recursive step's live guard.
-      if (thenDead || alwaysReturns(thenB)) return
-      if (elseDead || alwaysReturns(elseB)) { env = afterThen; return }
+      // case's return/throw must not erase the recursive step's live guard, and
+      // an arm that breaks or continues leaves its state where it jumps
+      // (`if (k < 1) { …; break }` holds k >= 1 after it).
+      if (thenDead || alwaysLeaves(thenB)) return
+      if (elseDead || alwaysLeaves(elseB)) { env = afterThen; return }
       // join: both arms merge (min lo, max hi); known-in-one-arm-only joins unknown
       hullInto(afterThen)
       return

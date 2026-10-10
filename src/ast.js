@@ -152,6 +152,33 @@ export const LABEL_BODY_OPS = new Set([':', ';', 'if', 'for', 'while', 'do', 'sw
 export const isBlockBody = (body) =>
   Array.isArray(body) && body[0] === '{}' && (body.length === 1 || STMT_OPS.has(body[1]?.[0]))
 
+// The operation a statement runs first: the leftmost one its operands reach
+// through reads and operators (a name or a literal runs nothing), or the
+// statement itself where it calls, stores or branches.
+const IN_ORDER = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '<', '<=', '>', '>=',
+  '==', '!=', '===', '!==', 'u-', 'u+', '!', '~', '.', '[]'])
+const runsNothing = (e) => !Array.isArray(e) || e[0] == null || e[0] === 'str'
+const firstOp = (e) => {
+  if (runsNothing(e)) return null
+  const op = e[0]
+  if (op === 'let' || op === 'const') return Array.isArray(e[1]) && e[1][0] === '=' ? firstOp(e[1][2]) : null
+  if (op === '=' && typeof e[1] === 'string') return firstOp(e[2])
+  if (!IN_ORDER.has(op)) return e
+  for (let i = 1; i < e.length; i++) { const r = firstOp(e[i]); if (r) return r }
+  return e
+}
+
+/** `const p = a[i]` followed by a statement that first reads a field of `p`:
+ *  the element read `a[i]`, whose absence that field read reports before
+ *  anything else runs (the emitter throws from the element read itself). */
+export const projectedElementInit = (s, next) => {
+  if (!Array.isArray(s) || (s[0] !== 'const' && s[0] !== 'let') || s.length !== 2) return null
+  const d = s[1], init = Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[2] : null
+  if (!Array.isArray(init) || init[0] !== '[]' || init.length !== 3) return null
+  const first = firstOp(next)
+  return Array.isArray(first) && first[0] === '.' && first[1] === d[1] && typeof first[2] === 'string' ? init : null
+}
+
 // === AST node classifiers ===
 
 export const isLiteralStr = idx => Array.isArray(idx) && idx[0] === 'str' && typeof idx[1] === 'string'
@@ -742,6 +769,16 @@ export const alwaysReturns = (n) => {
   if (op === '{}' || op === ';') return alwaysReturns(n[n.length - 1])
   if (op === 'if') return n.length >= 4 && alwaysReturns(n[2]) && alwaysReturns(n[3])
   return false
+}
+
+/** Whether `n` never completes normally: it ends in a return, throw, break or continue. */
+export const alwaysLeaves = (n) => {
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (op === 'break' || op === 'continue') return true
+  if (op === '{}' || op === ';') return alwaysLeaves(n[n.length - 1])
+  if (op === 'if') return n.length >= 4 && alwaysLeaves(n[2]) && alwaysLeaves(n[3])
+  return alwaysReturns(n)
 }
 
 export const hasBareReturn = (n) => {

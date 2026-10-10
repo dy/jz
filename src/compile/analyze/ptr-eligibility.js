@@ -10,7 +10,7 @@
  *
  * @module compile/analyze/ptr-eligibility
  */
-import { MUTATE_OPS, isI32, walkAst } from '../../ast.js'
+import { MUTATE_OPS, isI32, projectedElementInit, walkAst } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 import { VAL, repOfGlobal, updateRep } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
@@ -367,18 +367,47 @@ export function cseSafeLoadBases(body, locals, localReps) {
 
 /** Settle an admitted cursor's storage on its published plan: a local
  *  `const o = rows[i]` the inline registry admitted holds a packed-cell
- *  address. Only proven-present cursors take raw i32 storage; an unbounded
- *  read must retain the boxed undefined value until a projection checks it. */
+ *  address. Only present cursors take raw i32 storage; an unbounded read
+ *  must retain the boxed undefined value until a projection checks it. A
+ *  cursor the next statement projects first is present: its element read
+ *  throws for absence itself (emit/dispatch.js `throwAbsent`). */
 export function unboxAdmittedCursors(ctx, plan, func, cursors) {
   const data = ctx.plans.functionData.get(plan)
   if (!data) return
   const params = new Set((func.sig?.params || []).map(p => p.name))
+  const view = ctx.summary?.at(func.sig)
+  let projected = null
   for (const name of cursors.keys()) {
     if (params.has(name) || data.boxed?.has(name) || data.locals.get(name) !== 'f64') continue
     const rep = data.localReps?.get(name)
-    if (rep?.val !== VAL.OBJECT || rep.ptrKind != null ||
-        ctx.summary?.at(func.sig).mayBeNullishExpr(name) !== false) continue
+    if (rep?.val !== VAL.OBJECT || rep.ptrKind != null) continue
+    if (view?.mayBeNullishExpr(name) !== false) {
+      projected ??= projectedCursors(func.body)
+      const init = projected.get(name), k = init && view?.kindOfExpr(init)
+      if (k == null || hasTag(k, K.NULLISH)) continue
+      ;(data.projectedCursors ??= new Set()).add(name)
+    }
     data.locals.set(name, 'i32')
     rep.ptrKind = VAL.OBJECT
   }
+}
+
+/** The `const p = a[i]` bindings of a body whose next statement reads a field
+ *  of `p` first (ast.js projectedElementInit), each with its element read.
+ *  A name declared more than once is left out. */
+function projectedCursors(body) {
+  const out = new Map(), decls = new Map()
+  walkAst(body, { enter: node => {
+    if (node[0] === '=>') return false
+    if (node[0] === 'let' || node[0] === 'const')
+      for (let i = 1; i < node.length; i++)
+        if (Array.isArray(node[i]) && node[i][0] === '=' && typeof node[i][1] === 'string')
+          decls.set(node[i][1], (decls.get(node[i][1]) ?? 0) + 1)
+    if (node[0] === ';') for (let i = 1; i + 1 < node.length; i++) {
+      const init = projectedElementInit(node[i], node[i + 1])
+      if (init) out.set(node[i][1][1], init)
+    }
+  } })
+  for (const name of out.keys()) if (decls.get(name) !== 1) out.delete(name)
+  return out
 }
