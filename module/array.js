@@ -603,20 +603,14 @@ export default (ctx) => {
   // mistyped `.length =` cannot corrupt object/collection headers. Returns the
   // (possibly relocated) pointer; the assignment's value is N (computed at the call site).
   ctx.core.stdlib['__arr_set_length'] = `(func $__arr_set_length (param $ptr i64) (param $value i64) (result f64)
-    (local $base i32) (local $p f64) (local $f f64) (local $oldLen i32) (local $cap i32) (local $k i32) (local $n i32)
+    (local $base i32) (local $p f64) (local $oldLen i32) (local $cap i32) (local $k i32) (local $n i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY}))
       (then (return (local.get $p))))
     ;; ArraySetLength performs two conversions, in order: observable valueOf
     ;; calls may give different values. The assignment still yields $value.
-    ;; A Number converts to itself, both times, without a call.
-    (local.set $f (f64.reinterpret_i64 (local.get $value)))
-    (if (f64.eq (local.get $f) (local.get $f))
-      (then (local.set $n (call $__to_int32 (local.get $f))))
-      (else
-        (local.set $n (call $__to_int32 (call $__to_num (local.get $value))))
-        (local.set $f (call $__to_num (local.get $value)))))
-    (if (f64.ne (f64.convert_i32_u (local.get $n)) (local.get $f))
+    (local.set $n (call $__to_int32 (call $__to_num (local.get $value))))
+    (if (f64.ne (f64.convert_i32_u (local.get $n)) (call $__to_num (local.get $value)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)})))
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)}))))
     ;; A dense eight-byte-slot array cannot fit this many elements in wasm32.
