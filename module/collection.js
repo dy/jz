@@ -2204,9 +2204,10 @@ export default (ctx) => {
     (if (f64.eq (f64.reinterpret_i64 (local.get $obj)) (f64.reinterpret_i64 (local.get $obj)))
       (then (return (i64.const ${UNDEF_NAN}))))
     ${prehashed ? '' : `;; Nonnegative integer ARRAY keys address elements, before ToPropertyKey.
-    ;; Any other Number names a property only a props table can hold: with
-    ;; none, its own (the word at -16) or the global one, it answers undefined
-    ;; without the key's string (\`events[i]\` past a findIndex miss, i = -1).
+    ;; Any other Number names a property only a props table can hold: an array
+    ;; whose word at -16 is zero has none, here or in the global table (the
+    ;; lookup below skips it then too), so it answers undefined without the
+    ;; key's string (\`events[i]\` past a findIndex miss, i = -1).
     (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
       (then
         (local.set $f (f64.reinterpret_i64 (local.get $key)))
@@ -2220,9 +2221,8 @@ export default (ctx) => {
                 (if (i32.lt_u (local.get $idx) (i32.load (i32.sub (local.get $base) (i32.const 8))))
                   (then (return (i64.reinterpret_f64 (call $__arr_value (f64.load (i32.add (local.get $base) (i32.shl (local.get $idx) (i32.const 3)))))))))
                 (return (i64.const ${UNDEF_NAN}))))
-            (if (i32.and (f64.eq (global.get $__dyn_props) (f64.const 0))
-                  (i32.and (i32.ge_u (local.get $base) (i32.const 16))
-                    (i64.eqz (i64.load (i32.sub (local.get $base) (i32.const 16))))))
+            (if (i32.and (i32.ge_u (local.get $base) (i32.const 16))
+                  (i64.eqz (i64.load (i32.sub (local.get $base) (i32.const 16)))))
               (then (return (i64.const ${UNDEF_NAN}))))))))`}
     ;; Dictionaries have no sidecar; their lookup owns the key's hash.
     (if (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
