@@ -369,7 +369,13 @@ const WASMOPT_SLACK_MIN = 0.90
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
-  entity: 1900,
+  // entity 1900 → 2300: fbf2bcec (absent packed elements preserved through a
+  // field projection) measured 1754 → 2298 B. `ps[i].x` under a bound the
+  // callee's length does not prove tests presence and throws the branded
+  // TypeError (one shared thrower), and main's frame takes the escape-tracking
+  // rewind for the boxed cursors it now holds. Soundness, not bloat; ratchet
+  // down when a result's length proof reaches its caller's loop bound.
+  entity: 2300,
   // watr 245000 → 298000: the old budget was calibrated at 9228c5d1, BEFORE BigInt
   // literals existed at all. Checkpoint attribution (perf/size-regressions, fixed
   // watr@5.9.1 specimen bytes at every jz checkpoint): 262,482 B pre-campaign →
@@ -388,7 +394,13 @@ const SIZE_BUDGET = {
   // its helper again (module/array.js, -14 KB: 318 KB measured), the rest is
   // the inlined nullish tests, strict compares and boolean selects the kernel
   // rules keep at every tier. Ratchet down as those find a size-tier form.
-  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 320000,
+  // watr 320000 → 332000: the October 1 soundness work (e36aab3b..de50e8dc)
+  // measured 311701 → 332956 B. 77e45ad0 (noniterables rejected) alone was
+  // 319895 → 327748, the inline `not iterable` throw at 230 spread sites; a
+  // constant error now has one shared thrower (328068 B measured, CI's runner
+  // reads ~35 B above a local build). The rest is diffuse across the same
+  // day's fixes. Ratchet down as the kernel rules find size-tier forms.
+  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 332000,
   // wav 2050 → 2250, base64 2300 → 2400: Root F checked reads/versioning in
   // the runtime-length codec loops (+100/+55 measured). Ratchet down with the
   // binding-narrowing round.
