@@ -1,8 +1,7 @@
 /** Project settled value and presence facts; derive physical storage constraints. */
-import { DBG_INVARIANTS } from '../../debug.js'
 import { OPTF, ctx } from '../../ctx.js'
 import { ASSIGN_OPS, MUTATE_OPS, refsName, REFS_IN_EXPR } from '../../ast.js'
-import { VAL, repOf, updateRep } from '../../reps.js'
+import { VAL, meetRange, updateRep } from '../../reps.js'
 import { valTypeOf, shapeOf, boolTagged } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
 import { isCondExpr, intCertainMaps } from '../../type.js'
@@ -332,18 +331,14 @@ export function analyzeValTypes(body) {
         setVal(a[1])
         // A single initializer bounds its binding for the whole body. Unrolling
         // can copy a declaration under one name; no individual copy owns its
-        // range. Share the same lifetime proof with the early body walk.
+        // range. Share the same lifetime proof with the early body walk: the
+        // body walk proved the binding under its loop tests (`let v = i` where
+        // `i < 5` holds), the initializer's range reads the durable hulls
+        // alone (`i` over its whole life), and installed typed lengths refine
+        // the early width-based hull. The proofs meet; none widens another.
         const declRange = intExprRange(a[2])
-        if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && hasSingleInitializer(body, a[1])) {
-          if (DBG_INVARIANTS) {
-            const prior = repOf(a[1])?.range
-            // Installed typed lengths can refine the early width-based hull.
-            // Widening would invalidate proofs that already consumed it.
-            if (prior && (declRange[0] < prior[0] || declRange[1] > prior[1]))
-              throw new Error(`analyzeValTypes: declRange restamp for '${a[1]}' widens analyzeValueFacts's early stamp — prior=[${prior}] new=[${declRange}]`)
-          }
-          updateRep(a[1], { range: declRange })
-        }
+        if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && hasSingleInitializer(body, a[1]))
+          meetRange(a[1], declRange)
         if (vt === VAL.REGEX) trackRegex(a[1], a[2])
         // VAL gate covers definite-typed RHS; `?:`/`&&`/`||` slip through valTypeOf
         // returning null but may still need ctor unification (or poisoning when

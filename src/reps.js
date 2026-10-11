@@ -128,6 +128,17 @@ const assertRepFields = (name, fields) => {
 /** @returns {ValueRep|undefined} */
 export const repOf = name => ctx.func.localReps?.get(name)
 
+/** Two proofs of one binding's integer hull meet: the tighter of each side.
+ * A disjoint pair is a bug in one of the provers. */
+export const meetRange = (name, range) => {
+  const prev = repOf(name)?.range
+  if (prev && prev[0] >= range[0] && prev[1] <= range[1]) return
+  const met = prev ? [Math.max(prev[0], range[0]), Math.min(prev[1], range[1])] : range
+  if (DBG_INVARIANTS && met[0] > met[1])
+    throw new Error(`meetRange('${name}'): [${range}] is disjoint from the stamped [${prev}]`)
+  updateRep(name, { range: met })
+}
+
 export const updateRep = (name, fields) => {
   if (DBG_INVARIANTS) {
     assertRepFields(name, fields)
