@@ -37,12 +37,15 @@ cause of its own; four are closed here, each at its root and pinned:
   try_table (canThrow had no rule for a spread's runtime throw) and a number
   reached the host uncaught, where `for (x of v)` was caught. Fixed, pinned.
 
-Gates on this tree: import lint, file audit, simd and invariants (325 tests),
-errors and iteration (170 tests) pass; the examples build and the WAT of the
-rfft example are unchanged in shape by the branch. The full core suite is
-running at this writing (2,476 tests, 52,389 assertions, no failure so far;
-the earlier three known failures of October 2 were against watr 5.11.8, and
-the lock now carries 5.11.9). Its result replaces this sentence.
+Gates on this tree: import lint, file audit, the examples build and the
+default core leg pass. The core suite ran here as four file chunks (this
+host's Node 22 is slower than CI's runner): 6,390 tests, 306,109 assertions,
+6,383 pass; the 7 failures are the host oracle, not the compiler. Six are
+`Float16Array is not defined` (Node 22 has none; CI pins Node 24) and one is
+the oracle's own argument-conversion order in `TypedArray.prototype.with`
+(V8 in Node 22, identical on main). The three failures of October 2 were
+against watr 5.11.8; the lock carries 5.11.9. The O0, O3 and WASI legs and
+the extended matrix were not rerun here.
 
 Still open, in the order release needs them:
 
