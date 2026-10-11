@@ -4,6 +4,7 @@ import { onWasi, onKernel, levels } from './_matrix.js'
 import jz from '../index.js'
 import { compile } from '../index.js'
 import { run, cases, oracle } from './util.js'
+import { instantiate } from '../interop.js'
 
 
 const throws = (code, match, msg, opts) => {
@@ -1422,3 +1423,29 @@ test('runtime Array errors: callback pipelines preserve typed catches and siblin
     is(wasm.caught(1),js.caught(1),'valid pipeline after the sibling error')
   }
 })
+
+test('runtime throws: a constant error is thrown by one shared helper, every site a call', () => {
+  // watr's 230 `[...x]` sites each carried the allocation, two stores and two
+  // literals of `value is not iterable` (bench size backstop); a constant error
+  // has one thrower, as the nullish-property and not-callable throws do.
+  const src = `
+    export const a = (v) => [...v].length
+    export const b = (v) => { let n = 0; for (const x of v) n += x; return n }
+    export const c = (v, w) => [...v, ...w].length`
+  for (const optimize of [0, 2, { level: 'size' }]) {
+    const wat = jz.compile(src, { optimize, wat: true })
+    const defs = (wat.match(/\(func \$__throw_TypeError_value_is_not_iterable\b/g) || []).length
+    const calls = (wat.match(/\(call \$__throw_TypeError_value_is_not_iterable\)/g) || []).length
+    is(defs, 1, `${JSON.stringify(optimize)}: one thrower`)
+    ok(calls >= 3, `${JSON.stringify(optimize)}: every site calls it (${calls})`)
+    const { exports } = instantiate(jz.compile(src, { optimize }))
+    is(exports.a([1, 2, 3]), 3)
+    is(exports.c([1], [2, 3]), 3)
+    for (const f of ['a', 'b', 'c']) {
+      let caught = null
+      try { exports[f](5, [1]) } catch (e) { caught = e }
+      ok(caught instanceof TypeError && caught.message === 'value is not iterable', `${JSON.stringify(optimize)}: ${f}(5) throws the branded TypeError (${caught?.message})`)
+    }
+  }
+})
+

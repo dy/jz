@@ -29,7 +29,7 @@ import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH
 import { hasDurableReset } from './collection/durable.js'
 import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
-import { registerErrorClasses, throwErrorWat, requireReceiverWat } from './core/error-object.js'
+import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
 import { registerReach, reachOn, REACH_DEPS } from './core/reach.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
@@ -2241,6 +2241,7 @@ export default (ctx) => {
     '__throw_property_nullish', 'TypeError', 'Cannot read properties of undefined')
   ctx.core.stdlib['__throw_not_callable'] = () => throwErrorWat(ctx,
     '__throw_not_callable', 'TypeError', 'is not a function')
+  ctx.core.throwHelper = (className, message) => throwHelperName(ctx, className, message)
 
   const rawLengthPropArm = () => lengthNeedsDynArm()
     ? `(f64.reinterpret_i64 (call $${ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'} (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`

@@ -65,6 +65,15 @@ export function throwErrorWat(ctx, name, className, message) {
     (throw $__jz_err (local.get $e)))`
 }
 
+/** The shared thrower of one constant error, registered on first use: every
+ *  site calls it, and the allocation, the stores and the two literals live
+ *  once (watr's 230 `[...x]` sites each carried their own `not iterable`). */
+export function throwHelperName(ctx, className, message) {
+  const name = `__throw_${className}_${message.replace(/[^A-Za-z0-9]+/g, '_')}`
+  if (!ctx.core.stdlib[name]) ctx.core.stdlib[name] = () => throwErrorWat(ctx, name, className, message)
+  return name
+}
+
 export const registerErrorClasses = () => {
   // Object-literal AST shape with NO 'toString'/'valueOf' key: a DEFINITIVE
   // (not merely unproven) empty OrdinaryToPrimitive method chain — a spread

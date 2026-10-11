@@ -436,6 +436,14 @@ export function materializeErrorIR(value) {
 export function throwErrorIR(className, message) {
   ctx.runtime.throws = true
   ctx.module.include('string')
+  // A constant error is thrown by one shared helper, as throwTypeErrorIR's are:
+  // the site is a call, the error's allocation and literals live once.
+  if (!ctx.memory.shared && ctx.core.throwHelper) {
+    const helper = ctx.core.throwHelper(className, message)
+    ctx.schema.errorSid(className)
+    inc(helper)
+    return typed(['block', ['result', 'f64'], ['call', '$' + helper], ['unreachable']], 'f64')
+  }
   const t = temp('err')
   const value = ctx.core.emit[className](['str', message])
   return typed(['block', ['result', 'f64'],
