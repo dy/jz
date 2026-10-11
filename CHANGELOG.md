@@ -40,6 +40,10 @@
 - Handle Unicode identifiers, whitespace and line terminators without changing literal contents.
 - Preserve element shapes through custom iterator protocols and report valid layout names in diagnostics.
 - Expand regression coverage for library workloads and the Wasm-hosted compiler.
+- Keep a per-pixel loop body that leaves its loop out of the vectorizer's copies.
+- Meet a binding's two integer-hull proofs instead of asserting their order.
+- Throw each constant runtime error from one shared helper.
+- Keep the catch around a spread of a value that may not iterate.
 
 Release validation is still in progress. This is not a released v1, and the
 standing performance claims still require fresh reference measurements.
