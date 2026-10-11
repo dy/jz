@@ -10,6 +10,7 @@ import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
 import { simdBound, matchBlockLoop } from '../src/optimize/vectorize/scaffold.js'
+import { matchOuterPixelLoop } from '../src/optimize/vectorize/outer-scaffold.js'
 import { tryGatherMap } from '../src/optimize/vectorize/gather-map.js'
 import { tryVectorize } from '../src/optimize/vectorize/map.js'
 import { tryToneMap } from '../src/optimize/vectorize/tone-map.js'
@@ -4841,4 +4842,28 @@ export let last = (n) => { const a = new Float64Array(n), out = new Float64Array
       if (n > 0) is(ex.last(n), js.last(n), `O${optimize}: live-out last n=${n}`)
     }
   }
+})
+
+test('per-pixel scaffold: a body that leaves its loop is not per-pixel work', () => {
+  // Every outer-pixel consumer copies the body ahead of the block its exit
+  // names (the SIMD strip, the per-lane epilogue), so a `break` in it (an
+  // overflow bail, a found pixel) would branch to a label that no longer
+  // encloses the copy: watr rejected the ocean example's sea loop so.
+  const pixelLoop = (inBody) => {
+    const tree = parseWat(`(module (memory 1)
+      (func $f (param $w i32) (param $t f64) (local $x i32) (local $v f64) (local $c i32)
+        (block $o (loop $l
+          (br_if $o (i32.eqz (i32.lt_s (local.get $x) (local.get $w))))
+          (local.set $v (f64.mul (f64.sqrt (f64.add (f64.convert_i32_s (local.get $x)) (local.get $t))) (f64.const 127)))
+          ${inBody}
+          (local.set $c (i32.trunc_sat_f64_s (local.get $v)))
+          (i32.store (i32.shl (local.get $x) (i32.const 2)) (i32.or (i32.const 0xff000000) (local.get $c)))
+          (local.set $x (i32.add (local.get $x) (i32.const 1))) (br $l)))))`)
+    return matchOuterPixelLoop(tree.find(n => n[0] === 'func').at(-1))
+  }
+  ok(pixelLoop(''), 'a straight-line body matches')
+  ok(pixelLoop('(block $inner (br_if $inner (f64.gt (local.get $v) (f64.const 100))) (local.set $v (f64.const 100)))'), 'a branch to a label the body declares is the body\'s own')
+  is(pixelLoop('(if (f64.gt (local.get $v) (f64.const 100)) (then (br $o)))'), null, 'a break leaves the loop: not per-pixel')
+  is(pixelLoop('(br_if $o (f64.gt (local.get $v) (f64.const 100)))'), null, 'a conditional break leaves the loop: not per-pixel')
+  is(pixelLoop('(if (f64.gt (local.get $v) (f64.const 100)) (then (br $l)))'), null, 'a continue skips the pixel step: not per-pixel')
 })
