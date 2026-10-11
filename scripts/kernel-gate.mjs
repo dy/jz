@@ -403,6 +403,13 @@ for (const [g, v] of Object.entries(manifest.gates)) {
   console.log(`${pad(g, 11)} ${pad(v.status.toUpperCase(), 10)} ${v.why || ''}${v.stderr ? ': ' + (v.stderr.split('\n').find(l => /Error|error/.test(l)) || v.stderr.split('\n').pop()) : ''}`)
   for (const c of v.cases || []) console.log(`  ${pad(c.status?.toUpperCase(), 10)} ${pad(c.name, 28)} ${c.bytes != null ? pad(c.bytes + ' B', 10) : pad('', 10)} ${c.native ? (c.native.identical ? 'native-identical' : 'DIFFERS from native') : ''} ${c.results ? c.results.filter(x => !x.ok).map(x => `${x.call} → ${JSON.stringify(x.got)} (expected ${JSON.stringify(x.expected)})`).join('; ') : ''} ${c.error ? `${c.failurePhase ? `[${c.failurePhase}] ` : ''}${c.error.split('\n')[0].slice(0, 100)}` : ''} ${c.why || ''} ${c.ratio ? `${c.baselineMs} → ${c.candidateMs} ms (${c.ratio}x)` : ''}`)
   for (const r of v.over || []) console.log(`  OVER       ${pad(r.case, 28)} ${r.metric} ${r.current} vs baseline ${r.baseline}`)
+  // A compile that ran out of its arena names what filled it: the phases by allocation.
+  for (const c of v.cases || []) if (c.status === 'red' && c.error && c.phases?.length) {
+    const mb = n => (n / 1048576).toFixed(0) + ' MB'
+    let prev = c.stages?.front ?? 0
+    const deltas = c.phases.map(p => { const d = { name: p.name, bytes: p.heap - prev }; prev = p.heap; return d })
+    console.log(`  HEAP       ${pad(c.name, 28)} front ${mb(c.stages?.front ?? 0)}, then ${deltas.sort((a, b) => b.bytes - a.bytes).slice(0, 8).map(d => `${d.name} ${mb(d.bytes)}`).join(', ')}`)
+  }
 }
 console.log(`certified: ${manifest.certified}`)
 finish(Object.values(manifest.status).some(s => s === 'red') ? 1 : Object.values(manifest.status).some(s => s === 'incomplete') ? 3 : 0)
