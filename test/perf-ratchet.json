@@ -1,12 +1,12 @@
 {
   "int": { "total": 1349, "entered": 647 },
-  "float": 784,
-  "mixed": 1148,
-  "cond": 581,
-  "buf": 17288,
-  "nest": 3571,
-  "slice": 116552,
-  "ring": 18720,
-  "condref": 85265,
-  "fgather": 12560
+  "float": { "total": 1548, "entered": 784 },
+  "mixed": { "total": 2341, "entered": 1137 },
+  "cond": { "total": 1211, "entered": 581 },
+  "buf": { "total": 23668, "entered": 2830 },
+  "nest": { "total": 5595, "entered": 2034 },
+  "slice": { "total": 153420, "entered": 26128 },
+  "ring": { "total": 30720, "entered": 4720 },
+  "condref": { "total": 139181, "entered": 7587 },
+  "fgather": { "total": 18800, "entered": 5920 }
 }

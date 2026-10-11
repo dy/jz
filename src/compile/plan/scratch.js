@@ -34,6 +34,7 @@ import { constNumExpr } from '../../static.js'
 import { definitelyAssigned } from '../../summary/definite.js'
 import { setFuncBody } from '../analyze/body-facts.js'
 import { isExported } from '../func-exports.js'
+import { classRootNames } from '../emit/class-dispatch.js'
 
 const isArr = Array.isArray
 const numLit = (e) => isArr(e) && e[0] == null && typeof e[1] === 'number'
@@ -41,14 +42,20 @@ const numLit = (e) => isArr(e) && e[0] == null && typeof e[1] === 'number'
 const inertValue = (e) => typeof e === 'string' || e == null || (isArr(e) && (e[0] == null || e[0] === 'str' || e[0] === 'bool' ||
   ((e[0] === '{}' || e[0] === '[') && e.slice(1).every(p => isArr(p) && p[0] === ':' ? typeof p[1] === 'string' && inertValue(p[2]) : isArr(p) && p[0] === ',' ? p.slice(1).every(inertValue) : inertValue(p)))))
 
-/** The functions that run: the host holds them, a value names them, a statement of the module calls them, or one that runs does. */
+/** The functions that run: the host holds them, a value names them, a statement of the module calls them,
+ *  a member access reaches them (the program index's call graph: a class function, a dispatcher, a
+ *  member a receiver the census cannot name resolves), or one that runs does. */
 export const liveFunctions = (programFacts) => {
   const callees = new Map(), live = new Set()
   for (const cs of programFacts.callSites) {
     if (cs.callerFunc == null) live.add(cs.callee)
     else { let l = callees.get(cs.callerFunc.name); if (!l) callees.set(cs.callerFunc.name, l = []); l.push(cs.callee) }
   }
-  for (const f of ctx.funcs.list) if (isExported(f) || programFacts.addressTakenNames.has(f.name) || f.raw) live.add(f.name)
+  // The inliner runs before the program index is built (plan/index.js): the
+  // class roots are the same seed the index takes for its call graph.
+  const reached = (programFacts.programIndex ?? ctx.plans?.programIndex)?.reachableForLowering
+  for (const f of ctx.funcs.list) if (isExported(f) || programFacts.addressTakenNames.has(f.name) || f.raw || reached?.(f)) live.add(f.name)
+  if (!reached) for (const name of classRootNames()) if (ctx.funcs.names.has(name)) live.add(name)
   for (const work = [...live]; work.length;) for (const c of callees.get(work.pop()) ?? []) if (!live.has(c)) { live.add(c); work.push(c) }
   return { live, callees }
 }

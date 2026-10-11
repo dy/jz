@@ -408,6 +408,8 @@ export function reset(proto, globals, bridge) {
                                     // names ('toString', 'constructor', …) — emit is already
                                     // prototype-less via derive(), this matches it.
     stdlibDeps: {},   // populated per-module at init time
+    throwHelper: null, // (className, message) → the name of the shared thrower of that
+                       // constant error (module/core/error-object.js); sentinels' throwErrorIR
     includes: new Set(),
     extImports: new Set(),  // __ext_* helpers actually emitted as env imports —
                             // pullStdlib() removes them from `includes` after wiring,

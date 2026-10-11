@@ -389,7 +389,8 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
   const version = res.meta?.versions?.porffor || ''
   ok(porfforEvidenceMatches(version), `Porffor evidence ${version || 'missing'}; required ${PORFFOR_RELEASE} ${PORFFOR_REV.slice(0, 7)}`)
   const { speed, size, speedLosses, sizeLosses, speedGeomean, sizeGeomean } = porfforFloor(cases)
-  const need = Math.ceil(Object.keys(cases).length * COVERAGE_FLOOR)
+  // Over the cases the claims cover: Porffor ports none of the pending library cases.
+  const need = Math.ceil(Object.keys(cases).filter(id => !PENDING_CASES.has(id)).length * COVERAGE_FLOOR)
   ok(speed.length >= need, `${speed.length} comparable Porffor speed rows (need ${need})`)
   ok(size.length >= need, `${size.length} comparable Porffor size rows (need ${need})`)
   ok(speedLosses.length === 0, speedLosses.length
@@ -406,12 +407,14 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // (optional Set) restricts which cases are considered — used to carve the
 // JSC tight-integer-loop exception out of the general bun/jsc claim.
 // Cases the claims do not yet cover: a library's own code added to the corpus
-// (bench/stdlib-*, the pmndrs/math cases polytri, worley, fabrik and quatmul;
-// AGENTS.md's "tracked as todo in the gate until jz takes the lead — never
-// silently accepted"). Excluded from the strict and band tests and from the
-// corpus-coverage test until the todo below flips; a case leaves this set the
-// commit it leads.
-const PENDING_CASES = new Set(['stdlib-special', 'stdlib-dists', 'stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot', 'polytri', 'worley', 'fabrik', 'quatmul'])
+// (bench/stdlib-*, the pmndrs/math cases polytri, worley, fabrik and quatmul,
+// the web-audio-api render webaudio: ~1.2× V8 once its node outputs and
+// private registries kept their kinds, the rest in the automation list's
+// per-sample getValue (dynamic event reads, number-to-string keys); AGENTS.md's "tracked as todo in the gate until jz takes the lead
+// — never silently accepted"). Excluded from the strict and band tests and
+// from the corpus-coverage test until the todo below flips; a case leaves this
+// set the commit it leads.
+const PENDING_CASES = new Set(['stdlib-special', 'stdlib-dists', 'stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot', 'polytri', 'worley', 'fabrik', 'quatmul', 'webaudio'])
 const caseRatios = (rivals, ids = null) => {
   const out = []
   for (const [id, c] of Object.entries(cases)) {

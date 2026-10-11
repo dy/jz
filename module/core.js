@@ -29,7 +29,7 @@ import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH
 import { hasDurableReset } from './collection/durable.js'
 import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
-import { registerErrorClasses, throwErrorWat, requireReceiverWat } from './core/error-object.js'
+import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
 import { registerReach, reachOn, REACH_DEPS } from './core/reach.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
@@ -2241,6 +2241,7 @@ export default (ctx) => {
     '__throw_property_nullish', 'TypeError', 'Cannot read properties of undefined')
   ctx.core.stdlib['__throw_not_callable'] = () => throwErrorWat(ctx,
     '__throw_not_callable', 'TypeError', 'is not a function')
+  ctx.core.throwHelper = (className, message) => throwHelperName(ctx, className, message)
 
   const rawLengthPropArm = () => lengthNeedsDynArm()
     ? `(f64.reinterpret_i64 (call $${ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'} (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`
@@ -2408,11 +2409,13 @@ export default (ctx) => {
       let receiver
       try { receiver = emit(obj) } finally { ctx.func.throwAbsent = prevThrow }
       // An admitted inline cell is a raw address, with its own packed layout.
-      // It cannot pass through the boxed receiver path without losing that layout.
-      if (receiver.ptrKind == null) {
+      // It cannot pass through the boxed receiver path without losing that layout,
+      // unless the read itself threw for absence: it carries the layout along.
+      const present = receiver.presentRead === true
+      if (receiver.ptrKind == null || absentOnly && present) {
         const value = asF64(receiver)
         const t = temp()
-        if (absentOnly && value.presentRead === true)
+        if (absentOnly && (present || value.presentRead === true))
           return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, value], asF64(readHoistedProp(obj, prop, t, raw, receiver))], 'f64')
         // The block emitter holds a name checked here present past this statement.
         if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)

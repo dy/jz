@@ -18,7 +18,7 @@ import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit, mulRangesKeepZeroSign, nameShift } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
-  MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
+  MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, sumsTypedElements, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
 } from '../../type.js'
 import { withControlFrame, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
@@ -224,13 +224,20 @@ function unrollSmallConstFor(init, cond, step, body) {
     if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 ||
         !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return null
     name = init[1][1]
+    // A neighborhood walk (`for (g = -1; g <= 1; g++)`) is as countable as a
+    // trip from zero: each copy reads its literal, negative or not.
     const start = constIntExpr(init[1][2])
-    if (start == null || !Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
-    const end = constIntExpr(cond[2])
+    if (start == null || !Array.isArray(cond) || (cond[0] !== '<' && cond[0] !== '<=') || cond[1] !== name) return null
+    const bound = constIntExpr(cond[2]), end = bound == null ? null : cond[0] === '<=' ? bound + 1 : bound
     let delta = null
     if (Array.isArray(step) && step[0] === '++' && step[1] === name) delta = 1
     else if (Array.isArray(step) && step[0] === '+=' && step[1] === name) delta = constIntExpr(step[2])
-    if (end == null || delta == null || delta <= 0 || start < 0 || start >= end) return null
+    if (end == null || delta == null || delta <= 0 || start >= end) return null
+    // A walk summing typed elements into several outer accumulators (a box
+    // filter's `sr += src[p]; sg += src[p + 1] …` over `k = -r … r`) stays a
+    // loop: the vectorizer lifts those channels together
+    // (optimize/vectorize/blur-channel.js), copies hide them.
+    if (sumsTypedElements(body)) return null
     values = []
     for (let v = start; v < end && values.length <= MAX_SMALL_FOR_UNROLL; v += delta) values.push(v)
     if (!values.length || values.length > MAX_SMALL_FOR_UNROLL) return null

@@ -53,6 +53,14 @@ export function containsKnownTypedArrayIndex(body) {
   return some(body, n => n[0] === '[]' && typeof n[1] === 'string' && ctx.func.typedElem?.has(n[1]))
 }
 
+/** Whether `body` sums typed elements into several names declared outside it
+ *  (`sr += src[p]; sg += src[p + 1]`): one reduction per channel. */
+export function sumsTypedElements(body) {
+  const sums = new Set()
+  some(body, n => { if (n[0] === '+=' && typeof n[1] === 'string' && !containsDeclOf(body, n[1]) && containsKnownTypedArrayIndex(n[2])) sums.add(n[1]); return false })
+  return sums.size > 1
+}
+
 /** Trip count for `for (let i=0; i<N; i++)` when structurally obvious, else null. */
 export function smallConstForTripCount(init, cond, step, maxEnd = MAX_SMALL_FOR_UNROLL) {
   if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null

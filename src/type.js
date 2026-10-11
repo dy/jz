@@ -57,7 +57,7 @@ export {
 } from './type/canonical-bounds.js'
 export {
   MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL, containsNestedClosure, containsNestedLoop,
-  nestedSmallLoopBudget, containsDeclOf, containsKnownTypedArrayIndex, smallConstForTripCount,
+  nestedSmallLoopBudget, containsDeclOf, containsKnownTypedArrayIndex, sumsTypedElements, smallConstForTripCount,
   isTerminator,
 } from './type/loop-unroll.js'
 export { intLevelMap, intCertainMaps, intLevelChecker } from './type/int-certain.js'

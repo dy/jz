@@ -200,10 +200,12 @@ const wasmtimeHasEH = (() => {
 // Verified per NEEDS_EH case (bench task, live measurement — not derived from
 // source alone, since a case can be catch-clause-free in JS yet still need
 // the tag via a try/finally, as jessie does):
-//   watr   — SAFE, wired below. Its jz-w2c-reachable graph (watr-compile.js →
-//            node_modules/watr/src/{compile,encode,const,parse,util}.js) has
-//            zero `try`/`catch`/`finally` anywhere (grep-verified); the flag
-//            drops the tag section and wasm2c/w2c2 translate clean.
+//   watr   — UNSAFE since the iterator runtime's for-of pull catches to close
+//            the iterator (`jz_iter$__it_pull` under a `try_table (catch
+//            $__jz_err)`): watr 5.11's graph has no `try` of its own, yet its
+//            for-of loops keep 63 try_tables under the flag (2026-10: wasm2c
+//            "invalid section code: 13" on every reference run). Gated until
+//            that close lowers without a catch.
 //   jessie — UNSAFE, stays gated. subscript's switch-statement PARSE feature
 //            (feature/switch.js, reachable from `parse`) wraps its body in a
 //            bare `try { … } finally { inSwitch-- }` (zero `catch` clauses —
@@ -236,7 +238,7 @@ const wasmtimeHasEH = (() => {
 //            reference inside the self-compile graph needs an env import `js`
 //            host provides). That gap is the same one Part 3 of this task
 //            documents for the `jz`×`jz` row; revisit both together.
-const EH_ABORT_VARIANT = new Set(['watr'])
+const EH_ABORT_VARIANT = new Set()
 
 const has = cmd => cmd.includes('/') ? existsSync(cmd) : spawnSync('which', [cmd], { stdio: 'ignore' }).status === 0
 const versionText = cmd => {
@@ -1348,7 +1350,15 @@ const FMA_CHECKSUMS = {
 }
 // New cases need an independent oracle before their first measured snapshot.
 // entity agrees across native C, Node, JZ, Go-Wasm and Porffor (2026-09-24).
-const REFERENCE_CHECKSUMS = { entity: 1275530752 }
+// A case's oracle before its first stored row: V8's checksum of the case (valid
+// jz is valid JS). The library cases (bench/README.md "pending") are pinned here
+// until a reference refresh stores them.
+const REFERENCE_CHECKSUMS = {
+  entity: 1275530752,
+  'stdlib-exp': 4129678277, 'stdlib-gamma': 2961059269, 'stdlib-erf': 2529385925, 'stdlib-pow': 1170594757,
+  'stdlib-ddot': 187360325, 'stdlib-special': 2131273638, 'stdlib-dists': 2524697909,
+  polytri: 84696351, worley: 4117862664, fabrik: 2711562489, quatmul: 3862405384,
+}
 // The engines in bench/bench.svg — the corpus headline: jz vs the WASM field
 // (Rust/Go/C/Zig compiled to wasm, AssemblyScript — all run in node's V8,
 // apples-to-apples with jz), V8 (plain JS), and Porffor (the 2026 rewrite:

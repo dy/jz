@@ -768,3 +768,72 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide') {
   if (temps.length) fn.splice(bodyStart, 0, ...temps)
   return true
 }
+
+/** An i64 local every read of which keeps only its low word holds that word
+ *  in an i32. A read keeps only the low word under `i32.wrap_i64`, and under
+ *  a sum, difference, product, bitwise operation or constant left shift whose
+ *  own low word is all that is read: the low word of each is the word
+ *  operation of the operands' low words. An element offset `o = pc * 3` whose
+ *  range the intervals left open (`pc` from an element) is such a local: its
+ *  reads all index memory through a wrap. Returns whether a local narrowed. */
+const LOW_WORD_OPS = new Map([['i64.add', 'i32.add'], ['i64.sub', 'i32.sub'], ['i64.mul', 'i32.mul'],
+  ['i64.and', 'i32.and'], ['i64.or', 'i32.or'], ['i64.xor', 'i32.xor']])
+const lowShift = n => n?.[0] === 'i64.const' && /^\d+$/.test(String(n[1])) && Number(n[1]) < 32 ? Number(n[1]) : null
+// The low word of an i64 literal: a safe integer's, or a hex literal's last eight digits.
+const lowConst = c => {
+  if (typeof c === 'number') return Number.isSafeInteger(c) ? c | 0 : null
+  const s = String(c), neg = s[0] === '-', m = /^0x([0-9a-f]+)$/i.exec(neg ? s.slice(1) : s)
+  if (m) { const w = parseInt(m[1].slice(-8), 16); return neg ? -w | 0 : w | 0 }
+  const n = Number(s)
+  return Number.isSafeInteger(n) ? n | 0 : null
+}
+export function narrowWrappedWords(fn) {
+  if (!isArr(fn) || fn[0] !== 'func') return false
+  const decls = new Map()
+  let bodyStart = 2
+  for (; bodyStart < fn.length; bodyStart++) {
+    const d = fn[bodyStart]
+    if (!isArr(d) || (d[0] !== 'param' && d[0] !== 'local' && d[0] !== 'result' && d[0] !== 'export' && d[0] !== 'type')) break
+    if (d[0] === 'local' && typeof d[1] === 'string' && d[2] === 'i64') decls.set(d[1], d)
+  }
+  if (!decls.size) return false
+  const words = new Set(decls.keys())
+  let changed = true
+  const scan = (n, low) => {
+    if (!isArr(n)) return
+    const op = n[0]
+    if (op === 'local.get' || op === 'local.tee') {
+      if (!low && words.delete(n[1])) changed = true
+      if (op === 'local.tee') scan(n[2], words.has(n[1]))
+      return
+    }
+    if (op === 'local.set') return scan(n[2], words.has(n[1]))
+    if (op === 'i32.wrap_i64') return scan(n[1], true)
+    if (LOW_WORD_OPS.has(op) && n.length === 3) { scan(n[1], low); scan(n[2], low); return }
+    if (op === 'i64.shl' && n.length === 3 && lowShift(n[2]) != null) return scan(n[1], low)
+    for (let i = 1; i < n.length; i++) scan(n[i], false)
+  }
+  while (changed && words.size) { changed = false; for (let i = bodyStart; i < fn.length; i++) scan(fn[i], false) }
+  if (!words.size) return false
+  // The low word of `e`, an i64 expression whose low word alone is read.
+  const low = e => {
+    const op = e?.[0]
+    if ((op === 'local.get' || op === 'local.tee') && words.has(e[1])) return op === 'local.get' ? e : ['local.tee', e[1], low(e[2])]
+    if (op === 'i64.extend_i32_s' || op === 'i64.extend_i32_u') return rewrite(e[1])
+    if (op === 'i64.const' && lowConst(e[1]) != null) return ['i32.const', lowConst(e[1])]
+    if (LOW_WORD_OPS.has(op) && e.length === 3) return [LOW_WORD_OPS.get(op), low(e[1]), low(e[2])]
+    if (op === 'i64.shl' && e.length === 3 && lowShift(e[2]) != null) return ['i32.shl', low(e[1]), ['i32.const', lowShift(e[2])]]
+    return ['i32.wrap_i64', rewrite(e)]
+  }
+  const rewrite = n => {
+    if (!isArr(n)) return n
+    if (n[0] === 'i32.wrap_i64') return low(n[1])
+    if (n[0] === 'local.set' && words.has(n[1])) return ['local.set', n[1], low(n[2])]
+    const out = copy(n)
+    for (let i = 1; i < out.length; i++) out[i] = rewrite(out[i])
+    return out
+  }
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = rewrite(fn[i])
+  for (const name of words) decls.get(name)[2] = 'i32'
+  return true
+}

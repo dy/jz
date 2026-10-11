@@ -89,6 +89,49 @@ export function boolConvertToSelect(fn) {
   rewrite(fn)
 }
 
+// The scalar addresses a pass after fusedRewrite reshapes (a word narrowed from an
+// i64, optimize/int-narrow.js narrowWrappedWords): the constant part of each index
+// moves into the memarg, as fusedRewrite's walk does — `(x + K) << S` is
+// `(x << S) + (K << S)` modulo 2^32, the constant lifts out of the sums, and the
+// access reads `offset=` it from the rest. The rest is then the same subtree for
+// every field of one record (`code[o]`, `code[o + 1]`), which value numbering shares.
+const ADDR_AT = (n) => typeof n[1] === 'string' && n[1].startsWith('offset=') ? 2 : typeof n[1] === 'string' && n[1].startsWith('align=') ? 2 : 1
+const isConst = (n) => Array.isArray(n) && n[0] === 'i32.const' && typeof n[1] === 'number'
+const liftConst = (n) => {
+  if (!Array.isArray(n)) return n
+  if (n[0] === 'i32.shl' && n.length === 3 && isConst(n[2]) && n[2][1] >= 0 && n[2][1] < 32) {
+    const a = liftConst(n[1])
+    if (Array.isArray(a) && a[0] === 'i32.add' && a.length === 3 && isConst(a[2]))
+      return ['i32.add', ['i32.shl', a[1], n[2]], ['i32.const', (a[2][1] * 2 ** n[2][1]) | 0]]
+    return a === n[1] ? n : ['i32.shl', a, n[2]]
+  }
+  if (n[0] === 'i32.add' && n.length === 3) {
+    let a = liftConst(n[1]), b = liftConst(n[2])
+    if (isConst(a)) [a, b] = [b, a]
+    const ka = Array.isArray(a) && a[0] === 'i32.add' && isConst(a[2]) ? a[2][1] : 0
+    const kb = isConst(b) ? b[1] : Array.isArray(b) && b[0] === 'i32.add' && isConst(b[2]) ? b[2][1] : 0
+    if (!ka && !kb) return a === n[1] && b === n[2] ? n : ['i32.add', a, b]
+    const ra = ka ? a[1] : a, rb = isConst(b) ? null : kb ? b[1] : b
+    return ['i32.add', rb ? ['i32.add', ra, rb] : ra, ['i32.const', (ka + kb) | 0]]
+  }
+  return n
+}
+export function refoldMemargs(node) {
+  walkAst(node, { exit: n => {
+    if (typeof n[0] !== 'string' || !MEMOP.test(n[0])) return
+    let at = ADDR_AT(n)
+    if (at === 2 && n[1].startsWith('align=')) return
+    const addr = liftConst(n[at])
+    n[at] = addr
+    if (!Array.isArray(addr) || addr[0] !== 'i32.add' || addr.length !== 3 || !isConst(addr[2]) || addr[2][1] <= 0) return
+    const offset = (at === 2 ? Number(n[1].slice(7)) : 0) + addr[2][1]
+    if (offset >= 0x100000000) return
+    if (at === 2) n[1] = `offset=${offset}`
+    else { n.splice(1, 0, `offset=${offset}`); at = 2 }
+    n[at] = addr[1]
+  } })
+}
+
 // Fold `(v128.load/store (i32.add base K) …)` → `(… offset=K base …)`. Same logic as
 // walkRewrite's scalar foldMemargOffsets (MEMOP path), but for the v128 loads/stores the
 // lane vectorizer creates AFTER fusedRewrite has already run — so they'd otherwise keep a
@@ -552,6 +595,51 @@ function mergeByteStores(list, start, reads) {
   }
 }
 
+// Two tests of one word against a range starting at zero, in one conjunction:
+// `x >= 0 & x < C` (C >= 0) is `x <u C` — a negative word is past every such C
+// unsigned. The tests may sit anywhere in a chain of `i32.and`s (the conjunction
+// of a bounds check `x >= 0 && x < W && y >= 0 && y < H`): the pair becomes one
+// test where its first stood. Null when no pair is found.
+const constI32 = (n) => Array.isArray(n) && n[0] === 'i32.const' && Number.isInteger(Number(n[1])) ? Number(n[1]) | 0 : null
+const sameWord = (a, b) => Array.isArray(a) && Array.isArray(b) && a[0] === 'local.get' && b[0] === 'local.get' && a[1] === b[1] && a.length === 2 && b.length === 2
+/** `x >= 0` (as x >= 0, x > -1, 0 <= x, -1 < x): x, or null. */
+const atLeastZero = (t) => {
+  if (!Array.isArray(t) || t.length !== 3) return null
+  if ((t[0] === 'i32.ge_s' && constI32(t[2]) === 0) || (t[0] === 'i32.gt_s' && constI32(t[2]) === -1)) return t[1]
+  if ((t[0] === 'i32.le_s' && constI32(t[1]) === 0) || (t[0] === 'i32.lt_s' && constI32(t[1]) === -1)) return t[2]
+  return null
+}
+/** `x < C` with C >= 0 (as x < C, x <= C-1, C > x, C-1 >= x): [x, C], or null. */
+const belowConst = (t) => {
+  if (!Array.isArray(t) || t.length !== 3) return null
+  const c1 = constI32(t[1]), c2 = constI32(t[2])
+  if (t[0] === 'i32.lt_s' && c2 != null && c2 >= 0) return [t[1], c2]
+  if (t[0] === 'i32.le_s' && c2 != null && c2 >= 0 && c2 < 0x7fffffff) return [t[1], c2 + 1]
+  if (t[0] === 'i32.gt_s' && c1 != null && c1 >= 0) return [t[2], c1]
+  if (t[0] === 'i32.ge_s' && c1 != null && c1 >= 0 && c1 < 0x7fffffff) return [t[2], c1 + 1]
+  return null
+}
+function foldRangeChecks(node) {
+  const terms = []
+  const flat = (n) => { if (Array.isArray(n) && n[0] === 'i32.and' && n.length === 3) { flat(n[1]); flat(n[2]) } else terms.push(n) }
+  flat(node)
+  let did = false
+  for (let i = 0; i < terms.length; i++) {
+    const x = atLeastZero(terms[i])
+    if (!x) continue
+    for (let j = 0; j < terms.length; j++) {
+      const b = j !== i && belowConst(terms[j])
+      if (!b || !sameWord(x, b[0])) continue
+      terms[i] = ['i32.lt_u', x, ['i32.const', b[1]]]
+      terms.splice(j, 1)
+      if (j < i) i--
+      did = true
+      break
+    }
+  }
+  return did ? terms.reduce((a, b) => ['i32.and', a, b]) : null
+}
+
 function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTruthy) {
   if (!Array.isArray(node)) return node
   for (let i = 0; i < node.length; i++) {
@@ -813,6 +901,8 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
     const cmp = foldIntCompare(op.slice(4), node[1], node[2])
     if (cmp) return cmp
   }
+
+  if (op === 'i32.and' && node.length === 3) { const r = foldRangeChecks(node); if (r) return r }
 
   // Canonical word scales expose the byte stride before lane recognition.
   if (op === 'i32.mul' && node.length === 3) {

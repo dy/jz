@@ -11,7 +11,7 @@ import { ctx, getFactStore } from '../../ctx.js'
 import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
-import { VAL, updateRep } from '../../reps.js'
+import { VAL, meetRange, updateRep } from '../../reps.js'
 import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId, unsignedShiftFitsI32 } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
@@ -120,9 +120,7 @@ const publishBindingHulls = hulls => {
     if (!range) continue
     // Independent whole-binding proofs meet. A fractional recurrence may
     // bound its word projection more tightly than the integer interpreter.
-    const prev = ctx.func.localReps?.get(name)?.range
-    if (prev && prev[0] >= range[0] && prev[1] <= range[1]) continue
-    updateRep(name, { range: prev ? [Math.max(prev[0], range[0]), Math.min(prev[1], range[1])] : range })
+    meetRange(name, range)
   }
 }
 

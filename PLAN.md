@@ -6,6 +6,71 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Release status, October 11
+
+`claude/epic-gates-f8ghed` (19 commits of rival-wasm and library-case work on
+`de50e8dc`) is continued on `claude/fervent-wright-cuna00`. Every workflow but
+test262 and examples-perf was red on main before that branch, each red with a
+cause of its own; four are closed here, each at its root and pinned:
+
+- `build:examples` (the test job, the Pages deploy): the ocean example's sea
+  loop took the overflow bail of `v0 + 1` (an `if … break` the integral-loop
+  plan adds), and the per-pixel color vectorizer copied that body ahead of the
+  block the break names; watr rejected `br $__inl10L_brk95`. A body that
+  leaves its loop is not per-pixel work; the scaffold declines it
+  (`outer-scaffold.js`). The whole gallery builds.
+- fuzz (20 of 5,000 programs at opt 2 and 3): `let v = i` under
+  `while (i < 5)` carries two sound hulls, the body walk's [0, 4] and the
+  declaration's [0, 7] from `i`'s whole life, and the debug invariant took the
+  second for a widening. The two proofs meet (`meetRange`, reps.js). 1,200
+  programs under `JZ_DEBUG_INVARIANTS` (every seed CI named) find nothing.
+- bench size backstops: entity 2253 B against 1900, watr 333005 B against
+  320000, both red since October 1. entity bisects to fbf2bcec (absent packed
+  elements preserved through a field projection, 1754 → 2298 B: the presence
+  tests a callee's length does not prove away, and the frame's escape-tracking
+  rewind). watr bisects to 77e45ad0 (noniterables rejected, 319895 → 327748 B):
+  the inline `not iterable` throw at 230 spread sites. A constant error now
+  has one shared thrower at every site (328068 B); the budgets are
+  re-baselined at 2300 and 332000, each note naming the proof that ratchets
+  it back down.
+- A miscompile the size work exposed: `try { [...v] } catch {}` lost its
+  try_table (canThrow had no rule for a spread's runtime throw) and a number
+  reached the host uncaught, where `for (x of v)` was caught. Fixed, pinned.
+
+Gates on this tree: import lint, file audit, the examples build and the
+default core leg pass. The core suite ran here as four file chunks (this
+host's Node 22 is slower than CI's runner): 6,390 tests, 306,109 assertions,
+6,383 pass; the 7 failures are the host oracle, not the compiler. Six are
+`Float16Array is not defined` (Node 22 has none; CI pins Node 24) and one is
+the oracle's own argument-conversion order in `TypedArray.prototype.with`
+(V8 in Node 22, identical on main). The three failures of October 2 were
+against watr 5.11.8; the lock carries 5.11.9. The O0, O3 and WASI legs and
+the extended matrix were not rerun here.
+
+Still open, in the order release needs them:
+
+1. **Self-compile.** A fresh kernel (28,776,932 B) reproduces CI: the
+   recursive jz × jz compile exhausts the 4 GiB wasm32 heap in compileAst after
+   publishParameterAbi (`Out of memory: the heap cannot grow`), on main as
+   here. Nothing is freed within a compile; the compiler's own graph has
+   outgrown the address space. The hosted suite fails 3 of 5,481 on CI with the
+   names only in the runner's temp log; a local `test:bootstrap -- --full` is
+   the next step for both.
+2. **Reference evidence.** `bench/results.json` is 57 rows at e36aab3b, 900
+   compiler commits stale and measured above the 4096 MB swap bound; the
+   claims gate fails on freshness, validity and the rows themselves (16
+   wasm-rival ties or losses, jessie and watr behind V8, 8 size losses to
+   AssemblyScript). The branch's interleaved local measurements close sdf,
+   immutable, vm, radixsort and the library cases; only a reference run on
+   quiet hardware is evidence.
+3. **examples corpus gate** (bench.yml): rfft 0.41×, lenia 0.87×, ulam 0.89×
+   against V8 on the CI runner. rfft's code is the same shape on main and the
+   branch (87 v128 ops, 32 functions, 46 bytes apart): an N=2048 kernel at
+   21 µs, where the harness is the measurement. Needs a quiet paired reading
+   before any codegen work.
+4. Everything under [Remaining release work](#remaining-release-work): Jessie
+   and watr memory, the VST follow-up, independent review.
+
 ## Consolidation, October 2
 
 Every agent branch and worktree is consolidated on local main. `v1-blockers`

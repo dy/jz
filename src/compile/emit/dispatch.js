@@ -8,7 +8,7 @@ import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
-import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
   keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -1069,6 +1069,11 @@ export function emitDecl(...inits) {
       if (ptrKind === VAL.CLOSURE && val.closureFuncIdx != null && repOf(name)?.ptrAux == null &&
           !ctx.func.closureAux?.has(name))
         (ctx.func.closureAux ??= new Map()).set(name, val.closureFuncIdx)
+      // A cursor the plan made raw because its next statement projects it
+      // relies on this read throwing for absence (`throwAbsent`); a read that
+      // may yield undefined would store that box's bits as an address.
+      if (ctx.func.projectedCursors?.has(name) && val.ptrKind !== ptrKind && val.presentRead !== true)
+        err(`raw cursor '${name}' was planned present by projection, but its element read may be absent`)
       coerced = val.ptrKind === ptrKind ? val
         : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(val)]], 'i32')
     } else {
@@ -1256,29 +1261,11 @@ export const provedPresent = (s, checked) => {
   return out
 }
 
-// The operation a statement runs first: the leftmost one its operands reach
-// through reads and operators (a name or a literal runs nothing), or the
-// statement itself where it calls, stores or branches.
-const IN_ORDER = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', '<', '<=', '>', '>=',
-  '==', '!=', '===', '!==', 'u-', 'u+', '!', '~', '.', '[]'])
-const runsNothing = (e) => !Array.isArray(e) || e[0] == null || e[0] === 'str'
-const firstOp = (e) => {
-  if (runsNothing(e)) return null
-  const op = e[0]
-  if (op === 'let' || op === 'const') return Array.isArray(e[1]) && e[1][0] === '=' ? firstOp(e[1][2]) : null
-  if (op === '=' && typeof e[1] === 'string') return firstOp(e[2])
-  if (!IN_ORDER.has(op)) return e
-  for (let i = 1; i < e.length; i++) { const r = firstOp(e[i]); if (r) return r }
-  return e
-}
-// `const p = a[i]` followed by a statement that first reads a field of `p`:
-// the element read, whose only missing value is absence.
+// The element read whose only missing value is absence, projected next
+// (ast.js projectedElementInit; the plan's cursor storage reads the same).
 const projectedNext = (s, next) => {
-  if (!Array.isArray(s) || (s[0] !== 'const' && s[0] !== 'let') || s.length !== 2) return null
-  const d = s[1], init = Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? d[2] : null
-  if (!Array.isArray(init) || init[0] !== '[]' || init.length !== 3) return null
-  const first = firstOp(next)
-  if (!Array.isArray(first) || first[0] !== '.' || first[1] !== d[1] || typeof first[2] !== 'string') return null
+  const init = projectedElementInit(s, next)
+  if (!init) return null
   const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(init)
   return k == null || hasTag(k, K.NULLISH) ? null : init
 }

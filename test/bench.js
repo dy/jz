@@ -54,16 +54,16 @@ const SPEED = {
   // glyfparse (the last also edges native C), ties bezfit AND (since the scalar
   // range-facts wave) delayline — paired 1.020× vs rust-wasm, cs exact: the q16 chain
   // stays i32 end-to-end, /65536 strength-reduces to shr_u, the fraction split to an
-  // exact reciprocal multiply (pinned in test/optimizer.js). TRAILS rust-wasm on sdf
-  // (1.22×, AS also ahead: edt1d f[v[k]] gather — needs value hulls THROUGH memory) and
-  // trace (1.40×: checked reads are GONE via compare-range refinements; residual is
-  // LLVM's hot-path fall-through branch layout). The matching shape-classes
+  // exact reciprocal multiply (pinned in test/optimizer.js). It leads AS and rust-wasm on
+  // sdf and ties c-wasm (sentinel guards tested where each read runs, the seed map in
+  // f64x2 lanes), and TRAILS on trace (1.40×: checked reads are GONE via compare-range
+  // refinements; residual is LLVM's hot-path fall-through branch layout). The matching shape-classes
   // (ring/fgather/slice/condref) are ratcheted in test/perf-ratchet.js so progress is
   // machine-independently pinned.
   slices:         { v8: 'win',  as: 'win' },
   trace:          { v8: 'win',  as: 'tie' },
   bezfit:         { v8: 'win',  as: 'win' },
-  sdf:            { v8: 'win',  as: 'todo' },
+  sdf:            { v8: 'win',  as: 'win' },
   resample:       { v8: 'todo', as: 'win' },
   delayline:      { v8: 'tie',  as: 'tie' },
   glyfparse:      { v8: 'win',  as: 'win' },
@@ -369,7 +369,13 @@ const WASMOPT_SLACK_MIN = 0.90
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
-  entity: 1900,
+  // entity 1900 → 2300: fbf2bcec (absent packed elements preserved through a
+  // field projection) measured 1754 → 2298 B. `ps[i].x` under a bound the
+  // callee's length does not prove tests presence and throws the branded
+  // TypeError (one shared thrower), and main's frame takes the escape-tracking
+  // rewind for the boxed cursors it now holds. Soundness, not bloat; ratchet
+  // down when a result's length proof reaches its caller's loop bound.
+  entity: 2300,
   // watr 245000 → 298000: the old budget was calibrated at 9228c5d1, BEFORE BigInt
   // literals existed at all. Checkpoint attribution (perf/size-regressions, fixed
   // watr@5.9.1 specimen bytes at every jz checkpoint): 262,482 B pre-campaign →
@@ -388,7 +394,13 @@ const SIZE_BUDGET = {
   // its helper again (module/array.js, -14 KB: 318 KB measured), the rest is
   // the inlined nullish tests, strict compares and boolean selects the kernel
   // rules keep at every tier. Ratchet down as those find a size-tier form.
-  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 320000,
+  // watr 320000 → 332000: the October 1 soundness work (e36aab3b..de50e8dc)
+  // measured 311701 → 332956 B. 77e45ad0 (noniterables rejected) alone was
+  // 319895 → 327748, the inline `not iterable` throw at 230 spread sites; a
+  // constant error now has one shared thrower (328068 B measured, CI's runner
+  // reads ~35 B above a local build). The rest is diffuse across the same
+  // day's fixes. Ratchet down as the kernel rules find size-tier forms.
+  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 332000,
   // wav 2050 → 2250, base64 2300 → 2400: Root F checked reads/versioning in
   // the runtime-length codec loops (+100/+55 measured). Ratchet down with the
   // binding-narrowing round.
@@ -422,7 +434,7 @@ const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as
 // genuinely-hard tail; each needs a new vectorizer pass or has no jz-side fix. Don't re-chase the
 // disproven hypotheses.
 const WASM_TODO = {
-  sdf:      "jz ~6.5 ms vs c-wasm ~5.5 ms paired (1.19×; 1.41× before sentinel guards). Every fast path is check-free: the hull pop, the scan and the post-scan reads run under one range test per pass (compile/sentinel-guard.js), and the checked originals run only when the cursor leaves its range. The old kernel with every check dropped by hand measured ~0.75× of its time against the guarded ~0.83×: the per-pass guards and the versioned layout. The rest is loop-carried reuse: clang keeps v[k] and z[k] in registers across the pop, jz reloads them each pass.",
+  sdf:      "jz 0.98–1.01× c-wasm across local interleaved runs (best: min 14.57 vs 14.64 ms, median 14.91 vs 15.13): a tie within jitter; delete this entry once the CI reference run shows the lead (1.12× before the pop's guards split, 1.41× before sentinel guards). Every fast path is check-free (compile/sentinel-guard.js), and the pop tests each bound where its read runs: z[k] needs k >= 0, tested once a round, v[k - 1] needs k >= 1, tested in the body, so a pass that stops at the hull's bottom (k = 0, 17% of rounds) no longer runs the checked loop. The seed map `bmp[i] === 1 ? 0 : INF` runs in f64x2 lanes over the widened i32x4 comparison (vectorize/lift.js liftIntMask), where clang's build is scalar. Carrying z[k] across rounds in a register, as clang does, measured within noise; so did strength-reducing and unrolling the column copies.",
   trace:    'jz 1.445× c-wasm. narrowMutatedParams landed the fixable ~45% (1.86→1.47, monotone-cursor i32 representation); the residual is the ledgered branch-layout hard tail (data-dependent if(inside) with no conditional store in wasm — V8-neutral surgeries confirmed). Next honest lever is machine-code profiling, not WAT shape.',
   lz:       'jz 1.107× zig-wasm (f1e877b8 — NEWLY outside the band; the prior snapshot read 1.051 band-edge). UNDISSECTED at this ratio: needs the standard dissection (WAT surgery + ABBA retimes) before any lever is named. LZSS greedy match + inflate — branchy byte twiddling, likely the scalar-codegen-race class (qoi/sort/dict family), but that is a guess until measured.',
   synth:    'focused runs: jz 2.70ms vs asc 2.43ms = 1.11× on V8 — while jz-wasmtime (2.10ms) BEATS asc outright, placing the residual in the V8-tier scheduling class (shapes/sort/dict/qoi family), not jz codegen. Open lever: machine-code profiling.',

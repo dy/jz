@@ -7,8 +7,8 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
-import { agree } from './util.js'
+import jz, { compile } from '../index.js'
+import { agree, funcWat } from './util.js'
 
 // Each row is [label, program]; the program's export `f` takes no argument.
 const agrees = (rows) => { for (const [label, src] of rows) agree(src, 'f', [], undefined, label) }
@@ -184,3 +184,32 @@ test('class members: `constructor` is the instance\'s class', () => agrees([
   ['in a class declared inside a function', `export const f = () => { class V { constructor(x = 0) { this.x = x } clone() { return new this.constructor(this.x + 1) } } return new V(2).clone().x }`],
   ['in a derived class declared inside a function', `export const f = () => { class B { clone() { return new this.constructor() } kind() { return 1 } } class D extends B { kind() { return 2 } } return new D().clone().kind() * 10 + new B().clone().kind() }`],
 ]))
+
+test('class members: an own closure over a method shadows it only on the shapes that store one', () => {
+  // `this.tick = fn` on a disposed node (web-audio-api AudioNode.dispose): a
+  // call through a shape whose slot never holds a closure is the method's,
+  // with its result; a shape that stores one calls the closure too.
+  const src = `class Node {
+      constructor(n) { this.buf = new Float32Array(n); this.gain = 0.5 }
+      tick() { const b = this.buf; for (let i = 0; i < b.length; i++) b[i] = i * this.gain; return b }
+      dispose() { this.tick = () => { throw new Error('disposed') } }
+    }
+    class Pure {
+      constructor(n) { this.buf = new Float32Array(n) }
+      tick() { const b = this.buf; for (let i = 0; i < b.length; i++) b[i] = i; return b }
+    }
+    export function f() {
+      const node = new Node(8), pure = new Pure(8)
+      let s = 0
+      for (let r = 0; r < 4; r++) {
+        if (r === 2) node.dispose()
+        try { s += node.tick()[7] } catch (e) { s -= 1 }
+        s += pure.tick()[7]
+      }
+      return s
+    }`
+  agree(src, 'f', [], undefined, 'a disposed node throws through its own closure, a live one ticks')
+  const wat = compile(src, { wat: true, optimize: { sourceInline: false, inlineFns: false, watr: false } })
+  const body = funcWat(wat, 'f')
+  ok(!/__dyn_call|__to_num/.test(body), 'the calls resolve statically and the typed results stay numeric')
+})

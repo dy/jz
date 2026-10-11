@@ -4,6 +4,7 @@ import { onWasi, onKernel, levels } from './_matrix.js'
 import jz from '../index.js'
 import { compile } from '../index.js'
 import { run, cases, oracle } from './util.js'
+import { instantiate } from '../interop.js'
 
 
 const throws = (code, match, msg, opts) => {
@@ -1420,5 +1421,53 @@ test('runtime Array errors: callback pipelines preserve typed catches and siblin
     for(const n of [0,0,-1,1,2.5,NaN,4,0,-1,1]) is(wasm.caught(n),js.caught(n),`typed catch ${n}, ${optimize}`)
     is(wasm.emptyReduce(),js.emptyReduce(),'an empty reduce retains its distinct TypeError brand')
     is(wasm.caught(1),js.caught(1),'valid pipeline after the sibling error')
+  }
+})
+
+test('runtime throws: a constant error is thrown by one shared helper, every site a call', () => {
+  // watr's 230 `[...x]` sites each carried the allocation, two stores and two
+  // literals of `value is not iterable` (bench size backstop); a constant error
+  // has one thrower, as the nullish-property and not-callable throws do.
+  const src = `
+    export const a = (v) => [...v].length
+    export const b = (v) => { let n = 0; for (const x of v) n += x; return n }
+    export const c = (v, w) => [...v, ...w].length`
+  for (const optimize of [0, 2, { level: 'size' }]) {
+    const wat = jz.compile(src, { optimize, wat: true })
+    const defs = (wat.match(/\(func \$__throw_TypeError_value_is_not_iterable\b/g) || []).length
+    const calls = (wat.match(/\(call \$__throw_TypeError_value_is_not_iterable\)/g) || []).length
+    is(defs, 1, `${JSON.stringify(optimize)}: one thrower`)
+    ok(calls >= 3, `${JSON.stringify(optimize)}: every site calls it (${calls})`)
+    const { exports } = instantiate(jz.compile(src, { optimize }))
+    is(exports.a([1, 2, 3]), 3)
+    is(exports.c([1], [2, 3]), 3)
+    for (const f of ['a', 'b', 'c']) {
+      let caught = null
+      try { exports[f](5, [1]) } catch (e) { caught = e }
+      ok(caught instanceof TypeError && caught.message === 'value is not iterable', `${JSON.stringify(optimize)}: ${f}(5) throws the branded TypeError (${caught?.message})`)
+    }
+  }
+})
+
+test('catch: a spread of a value that may not iterate keeps its try', () => {
+  // The catch emitter drops a try whose body it proves cannot throw; a spread
+  // throws through the runtime's iterable normalization, with no call or
+  // throw in the source. `[...v]` lost its catch; `for (x of v)` kept it.
+  const src = `
+    export const lit = (v) => { let r = 0; try { const a = [...v]; r = a.length } catch (e) { r = 7 } return r }
+    const len = (...xs) => xs.length
+    export const call = (v) => { let r = 0; try { r = len(...v) } catch (e) { r = 7 } return r }
+    export const obj = (v) => { let r = 0; try { r = Object.keys({ ...v }).length } catch (e) { r = 7 } return r }
+    export const known = (v) => { let r = 0; try { const a = [...[v, v]]; r = a.length } catch (e) { r = 7 } return r }`
+  for (const optimize of [0, 2]) {
+    const wat = jz.compile(src, { optimize, wat: true })
+    const { exports } = instantiate(jz.compile(src, { optimize }))
+    is(exports.lit(5), 7, `${optimize}: a spread of a number is caught`)
+    is(exports.lit([1, 2, 3]), 3)
+    is(exports.call(5), 7, `${optimize}: a call spread of a number is caught`)
+    is(exports.call([1, 2]), 2)
+    is(exports.obj(5), 0, `${optimize}: an object spread of a number does not throw`)
+    is(exports.known(5), 2)
+    ok((wat.match(/try_table/g) || []).length >= 2, `${optimize}: the catches stay`)
   }
 })

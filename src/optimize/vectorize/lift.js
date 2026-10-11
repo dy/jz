@@ -357,6 +357,42 @@ export function liftStmt(stmt, ctx) {
 // fit the 53-bit mantissa), so it lifts straight to i32x4.add/sub on the raw i32 operands — no
 // i32.mul equivalent exists (its exact product can exceed the mantissa). Returns the lifted v128
 // node or null (does NOT set ctx.fail — a non-matching shape is a normal decline, not an error).
+/** The two elements an f64-lane step reads of an integer typed array, widened into
+ *  the low i32x4 lanes. Reads exactly two elements, including the final vector chunk. */
+function intPairLanes(ld) {
+  const w = INT_WIDEN_F32[ld[0]], ty = LOAD_OPS[ld[0]]
+  const load = ty === 'i32' ? 'v128.load64_zero' : ty === 'i16' ? 'v128.load32_zero' : 'i32.load16_u'
+  let v = [load, ...ld.slice(1)]
+  if (ty === 'i8') v = ['i32x4.splat', v]
+  for (const step of w.steps) v = [step, v]
+  return v
+}
+
+const INT_LANE_COMPARE = {
+  'i32.eq': 'i32x4.eq', 'i32.ne': 'i32x4.ne', 'i32.lt_s': 'i32x4.lt_s', 'i32.lt_u': 'i32x4.lt_u',
+  'i32.gt_s': 'i32x4.gt_s', 'i32.gt_u': 'i32x4.gt_u', 'i32.le_s': 'i32x4.le_s', 'i32.le_u': 'i32x4.le_u',
+  'i32.ge_s': 'i32x4.ge_s', 'i32.ge_u': 'i32x4.ge_u',
+}
+/** An integer comparison choosing between f64 lanes (`f[i] = bmp[i] === 1 ? 0 : INF`): the
+ *  two lanes' integers compare in the low i32x4 lanes, and each 32-bit answer, all ones or
+ *  none, sign-extends to its 64-bit lane. Operands: an integer typed element, a constant,
+ *  an invariant integer local. Null for any other condition. */
+function liftIntMask(cond, ctx) {
+  if (ctx.laneType !== 'f64' || !isArr(cond)) return null
+  let op = cond[0], a = cond[1], b = cond[2]
+  if (op === 'i32.eqz' && cond.length === 2) { op = 'i32.eq'; b = ['i32.const', 0] }
+  else if (cond.length !== 3) return null
+  const simd = INT_LANE_COMPARE[op]
+  if (!simd) return null
+  const pair = (e) => !isArr(e) ? null
+    : INT_WIDEN_F32[e[0]] ? intPairLanes(e)
+    : e[0] === 'i32.const' ? ['i32x4.splat', e]
+    : e[0] === 'local.get' && typeof e[1] === 'string' && ctx.localKind.get(e[1]) === 'invariant' && ctx.fnLocals?.get(e[1]) === 'i32' ? ['i32x4.splat', e]
+    : null
+  const av = pair(a), bv = pair(b)
+  return av && bv ? ['i64x2.extend_low_i32x4_s', [simd, av, bv]] : null
+}
+
 function liftAddSubOfConverts(v, ctx) {
   if (!isArr(v) || (v[0] !== 'f64.add' && v[0] !== 'f64.sub') || v.length !== 3) return null
   const unconv = (n) => isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n.length === 2 ? n[1] : null
@@ -395,13 +431,7 @@ export function liftExprV(expr, ctx) {
   }
   if (ctx.laneType === 'f64' && (op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u')
       && isArr(expr[1]) && INT_WIDEN_F32[expr[1][0]]) {
-    const ld = expr[1], w = INT_WIDEN_F32[ld[0]], ty = LOAD_OPS[ld[0]]
-    // Read exactly two source elements, including the final vector chunk.
-    const load = ty === 'i32' ? 'v128.load64_zero' : ty === 'i16' ? 'v128.load32_zero' : 'i32.load16_u'
-    let v = [load, ...ld.slice(1)]
-    if (ty === 'i8') v = ['i32x4.splat', v]
-    for (const step of w.steps) v = [step, v]
-    return [op === 'f64.convert_i32_u' ? 'f64x2.convert_low_i32x4_u' : 'f64x2.convert_low_i32x4_s', v]
+    return [op === 'f64.convert_i32_u' ? 'f64x2.convert_low_i32x4_u' : 'f64x2.convert_low_i32x4_s', intPairLanes(expr[1])]
   }
 
   // f32-lane: jz computes Float32Array arithmetic in f64, wrapping the f32 load in
@@ -577,9 +607,11 @@ export function liftExprV(expr, ctx) {
       const cond = expr[3]
       const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
       const cmpSimd = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
-      if (!cmpSimd) return liftFail(ctx, `select condition ${isArr(cond) ? cond[0] : '?'} not a lane comparison`)
+      const intMask = cmpSimd ? null : liftIntMask(cond, ctx)
+      if (!cmpSimd && !intMask) return liftFail(ctx, `select condition ${isArr(cond) ? cond[0] : '?'} not a lane comparison`)
       const x = liftExprV(expr[1], ctx); if (ctx.fail) return null
       const y = liftExprV(expr[2], ctx); if (ctx.fail) return null
+      if (intMask) return ['v128.bitselect', x, y, intMask]
       const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
       const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
       return ['v128.bitselect', x, y, [cmpSimd, ca, cb]]
@@ -637,9 +669,10 @@ export function liftExprV(expr, ctx) {
     // (operands are exact f32→f64 promotions, so the lane comparison is unchanged).
     const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
     const cmpSimd = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
-    if (!cmpSimd) return liftFail(ctx, `${isArr(cond) ? cond[0] : 'condition'}: not a lane-vectorizable comparison`)
-    const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null
-    const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null
+    const intMask = cmpSimd ? null : liftIntMask(cond, ctx)
+    if (!cmpSimd && !intMask) return liftFail(ctx, `${isArr(cond) ? cond[0] : 'condition'}: not a lane-vectorizable comparison`)
+    const ca = intMask ? null : liftExprV(cond[1], ctx); if (ctx.fail) return null
+    const cb = intMask ? null : liftExprV(cond[2], ctx); if (ctx.fail) return null
     // Lift a branch: its prelude sets, then its tail value snapshotted into `outTmp`.
     const liftArm = (arm, outTmp) => {
       const out = []
@@ -656,7 +689,7 @@ export function liftExprV(expr, ctx) {
     ctx.extraLocals.push(['local', tv, 'v128'], ['local', ev, 'v128'], ['local', mtmp, 'v128'])
     // Mask FIRST: COND may carry an address `local.tee` the branch values read, so it must run
     // before them (matching scalar order — COND evaluates before the taken branch).
-    const maskSet = ['local.set', mtmp, [cmpSimd, ca, cb]]
+    const maskSet = ['local.set', mtmp, intMask ?? [cmpSimd, ca, cb]]
     const thenSeq = liftArm(thenN, tv); if (ctx.fail) return null
     const elseSeq = liftArm(elseN, ev); if (ctx.fail) return null
     return ['block', ['result', 'v128'],

@@ -89,6 +89,8 @@ export function installFunctionPlan(ctx, plan) {
   ctx.func.boxed = data.boxed
   ctx.func.cellTypes = data.cellTypes
   ctx.func.flatObjects = data.flatObjects
+  ctx.func.fieldCaches = data.fieldCaches
+  ctx.func.projectedCursors = data.projectedCursors ?? null
   ctx.func.sliceViews = data.sliceViews
   ctx.func.arrayViews = data.arrayViews
   ctx.func.localReps = data.localReps

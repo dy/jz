@@ -202,7 +202,15 @@ export default function plan(ast, profiler, summarize) {
   if (aliases) { sweep('splitSplicedBindings', splitSplicedBindings); sweep('resolveAliases', resolveAliases) }
   sweep('bindNestedRowLengths', bindNestedRowLengths)
   sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
-  sweep('inlineLocalLambdas', inlineLocalLambdas)
+  // A spliced lambda carries the seams of the calls spliced into its body while
+  // it was a closure, whose arguments could not read through the names it
+  // captured: in its caller those are names for one value too.
+  let lambdas = false
+  sweep('inlineLocalLambdas', () => (lambdas = inlineLocalLambdas()))
+  if (lambdas) {
+    if (optimizing() && ctx.transform.optimize.constants === true) sweep('propagateConstants', propagateConstants)
+    if (aliases) { sweep('splitSplicedBindings', splitSplicedBindings); sweep('resolveAliases', resolveAliases) }
+  }
   sweep('specializeFixedRestCalls', () => specializeFixedRestCalls(facts()))
   // Private entry pairs lower to column snapshots, like array patterns lower
   // to indexed reads. No observable pair identity is removed.
@@ -217,6 +225,10 @@ export default function plan(ast, profiler, summarize) {
     // carried in a scalar, two cells a pass; the loop passes below read the pairs.
     // After inlining, so a stride passed as a literal is one: the loops then
     // read over their trip number, the form every later pass takes.
+    // A spliced body's names are fresh: the summary taken before the splice has
+    // no kind for them, and a cursor the canonical form needs proved a Number is
+    // one it cannot read.
+    if (spliced || lambdas) ctx.summary = summarize()
     sweep('guardConstants', guardConstants)
     sweep('canonicalizeCountedLoops', canonicalizeCountedLoops)
     sweep('splitCharScan', splitCharScanLoops)

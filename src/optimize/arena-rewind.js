@@ -197,6 +197,14 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   const callsTable = (op) => op === CALL_INDIRECT || op === RETURN_CALL_INDIRECT
   const callsRef = (op) => op === CALL_REF || op === RETURN_CALL_REF
   const LOCAL = intern('local'), LOCAL_SET = intern('local.set'), LOCAL_GET = intern('local.get'), LOCAL_TEE = intern('local.tee'), BLOCK = intern('block'), RESULT = intern('result'), DROP = intern('drop')
+  const UNREACHABLE = intern('unreachable')
+  // `(call $f)` followed by `unreachable`, bare or dropped, or a runtime throw helper.
+  const neverReturns = (callee, id) => {
+    if (callee.startsWith('$__throw')) return true
+    const n = T.next[id]
+    if (n === NONE) return false
+    return T.op[n] === UNREACHABLE || (T.op[n] === DROP && T.a[n] !== NONE && T.op[T.a[n]] === UNREACHABLE)
+  }
   const IF = intern('if'), THEN = intern('then'), ELSE = intern('else')
   const decl = new Set(DECLS.map(intern))
   // The header: declarations, and the comment atoms a template carries between them.
@@ -427,7 +435,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     if (name === null) continue
     const verdict = unsafe.has(name)
     const rec = { unsafe: verdict, why: verdict ? 'escape' : null, keeps: keeps.has(name), entry: entry.has(name), tapeUnsafe: false, tapeWhy: null, calls: new Set(), every: new Map(),
-      allocs: false, indirect: false, refs: false, lowers: false, f, up: null, censused: censused.has(name), flagAt: [], flagWhy: null, indirectAt: [], ownFlag: false }
+      allocs: false, allocCalls: new Set(), indirect: false, refs: false, lowers: false, f, up: null, censused: censused.has(name), flagAt: [], flagWhy: null, indirectAt: [], ownFlag: false }
     eachBody(f, (id) => {
       const op = T.op[id]
       if (op === GLOBAL_GET && text(T.a[id]) === ESC_LOW) folds = true
@@ -454,6 +462,11 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         // keep whatever it is handed.
         if (imports.has(callee)) { if (T.next[T.a[id]] !== NONE && !EXT_READS.has(callee) && !keepsNothing.has(callee)) escapeAt(rec, id, 'calls ' + callee.slice(1) + ", the host's"); return }
         rec.calls.add(callee)
+        // A call that never returns (a throw helper, or one the code marks
+        // unreachable after) allocates only on a path that leaves the frame
+        // by an exception: the epilogue a rewind adds never runs there. Its
+        // escapes still reach whoever catches it (`calls`).
+        if (!neverReturns(callee, id)) rec.allocCalls.add(callee)
       }
     })
     if (name.startsWith('$__') && !CENSUS_GUARDED.test(name) && !LOWERS.has(name) && !LENDS.has(name) && !REACH.test(name)) for (const id of storesOutside(f)) escapeAt(rec, id, 'stores outside')
@@ -546,7 +559,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     for (const [, rec] of info) {
       if (rec.allocs) continue
       if (rec.indirect && !rec.resolved && tableAllocs) { rec.allocs = true; changed = true; continue }
-      for (const c of rec.resolved ? [...rec.calls, ...rec.targets] : rec.calls) if (info.get(c)?.allocs) { rec.allocs = true; changed = true; break }
+      for (const c of rec.resolved ? [...rec.allocCalls, ...rec.targets] : rec.allocCalls) if (info.get(c)?.allocs) { rec.allocs = true; changed = true; break }
     }
   }
 

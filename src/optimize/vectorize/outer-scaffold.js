@@ -84,6 +84,16 @@ export const matchNumericInc1 = (stmt) => {
   if (v[0] === 'f64.add' && isArr(v[2]) && v[2][0] === 'f64.const' && Number(v[2][1]) === 1) return { name: x, type: 'f64' }
   return null
 }
+// Whether `n` holds a branch naming `label` (its own nested blocks aside: a
+// label the body declares is the body's own).
+const branchesTo = (n, label) => {
+  let hit = false
+  walkAst(n, { enter: x => {
+    if (hit) return false
+    if ((x[0] === 'br' || x[0] === 'br_if') && x[1] === label || x[0] === 'br_table' && x.includes(label)) hit = true
+  } })
+  return hit
+}
 const matchPixelExit = (stmt, label) => {
   if (!isArr(stmt) || stmt[0] !== 'br_if' || stmt[1] !== label) return null
   const cond = stmt[2]
@@ -135,6 +145,10 @@ export function matchOuterPixelLoop(blockNode) {
     if (writesName(loopNode, widthBound[1])) return null
   } else return null
   const obody = loopNode.slice(3, pivStart)     // between exit guard and the pixel-IV bumps
+  // A body that leaves its loop early (a `break`: an overflow bail, a found
+  // pixel) is not per-pixel work: every consumer copies the body ahead of the
+  // block its exit names, and the scalar tail cannot know what the copy skipped.
+  if (obody.some(s => branchesTo(s, oLabel) || branchesTo(s, bl.loopLabel))) return null
   // Inner block-loop census — every outer-pixel consumer re-derived this scan
   // (exactly-one / none / at-least-one gates); one authoritative list here.
   const innerIdxs = []

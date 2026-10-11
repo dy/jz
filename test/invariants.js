@@ -1625,3 +1625,20 @@ test('invariant: IR clones retain nested schema liveness without sharing occurre
   }
   is(cloneIR(null), null, 'empty child')
 })
+
+test('invariant: two proofs of a binding\'s integer hull meet, neither widens the other', async () => {
+  // The body walk proves `v` under its loop test (`i < 5`: [0, 4]); the
+  // initializer's range reads `i`'s durable whole-life hull ([0, 7]). fuzz
+  // seed 174 tripped a restamp assertion between the two at opt 2.
+  const { spawnSync } = await import('node:child_process')
+  const root = new URL('..', import.meta.url).pathname
+  const script = `
+    import { compile } from './index.js'
+    const src = 'export let f = (p0) => { let i0 = 0; while (i0 < 5) { if (i0) { let v1 = i0; } i0 = (i0 + 1); } return 0; }'
+    for (const optimize of [2, 3]) compile(src, { optimize })
+    console.log('ok')
+  `
+  const { JZ_DEBUG_INVARIANTS, ...envWithoutFlag } = process.env
+  const armed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env: { ...envWithoutFlag, JZ_DEBUG_INVARIANTS: '1' } })
+  is(armed.status, 0, `JZ_DEBUG_INVARIANTS=1: the meet holds (stderr: ${armed.stderr.toString().slice(0, 300)})`)
+})

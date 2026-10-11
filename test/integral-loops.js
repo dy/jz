@@ -322,8 +322,9 @@ test('integral loops: where the state holds Numbers the loop adds them', () => {
     do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
     loops.push(text.slice(at, end))
   }
-  // the filter loop: five coefficient reads, a sample in and out, no string test
-  ok(loops.some(l => (l.match(/f64\.load/g) || []).length >= 5 && /f32\.store/.test(l) && !/call \$__(is_str_key|add_slow|to_num)/.test(l)), 'a copy of the filter loop adds Numbers')
+  // the filter loop: five coefficient products (the coefficients read before
+  // it, nothing in it writing them), a sample in and out, no string test
+  ok(loops.some(l => (l.match(/f64\.mul/g) || []).length >= 5 && /f32\.store/.test(l) && !/call \$__(is_str_key|add_slow|to_num)/.test(l)), 'a copy of the filter loop adds Numbers')
 })
 
 // A callback a factory returns keeps its state on a record, fields added on

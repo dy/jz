@@ -23,7 +23,7 @@ import { BIGINT_REP_BOXED, BIGINT_REP_RAW, mintRepresentationPlan, representatio
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
-import { cseLoads, UNTYPED, ARRAY } from './cse-load.js'
+import { cseLoads, hoistLoopFields, UNTYPED, ARRAY } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
@@ -306,18 +306,28 @@ export function analyzeFuncForEmit(func, programFacts) {
     }
     return UNTYPED_KINDS.has(vt) ? UNTYPED : null
   }
-  if (_o && _o.loadCSE !== false && block && (typedLoads || fieldRead) && !(func.frame ? func.frame.runsAccessor : viewsOn())
-      && cseLoads(body, loadStorage, read => {
-        const name = freshCseName()
-        summary?.alias(name, read, false)
-        if (read[0] === '[]') cseReads.push([name, read])
-        return name
-      }, n => valTypeOf(n) === VAL.NUMBER,
-        n => n[0] === '()' && typeof n[1] === 'string' && (ctx.funcs.map.get(n[1])?.frame?.writesOuter === false ||
-          n[1].startsWith('math.') && callArgs(n).every(a => valTypeOf(a) === VAL.NUMBER)),
-        n => runsConversion(summary, n), fieldRead,
-        recv => { const vt = valTypeOf(recv); return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING },
-        summary ? (a, b) => { const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b); return ca != null && cb != null && ca !== cb } : null, summary?.objectsDisjoint) > 0)
+  const loadsCached = _o && _o.loadCSE !== false && block && !(func.frame ? func.frame.runsAccessor : viewsOn())
+  // A temp holding a field's pointer names the field it was read from: a push
+  // that moves the array rebinds the field too (module/array.js `.push`).
+  const fieldCaches = ctx.func.fieldCaches = new Map()
+  const cacheName = read => {
+    const name = freshCseName()
+    summary?.alias(name, read, false)
+    if (read[0] === '[]') cseReads.push([name, read])
+    else fieldCaches.set(name, read)
+    return name
+  }
+  const readonlyCall = n => n[0] === '()' && typeof n[1] === 'string' && (ctx.funcs.map.get(n[1])?.frame?.writesOuter === false ||
+    n[1].startsWith('math.') && callArgs(n).every(a => valTypeOf(a) === VAL.NUMBER))
+  const userCode = n => runsConversion(summary, n)
+  const fieldStore = recv => { const vt = valTypeOf(recv); return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING }
+  // A loop's invariant field reads move before it first: a read hoisted there
+  // is then one the straight-line cache below can share.
+  const hoistedFields = loadsCached && fieldRead
+    ? hoistLoopFields(body, cacheName, fieldRead, n => summary.mayBeNullishExpr(n) === false, readonlyCall, userCode, fieldStore, summary.objectsDisjoint) : 0
+  if ((loadsCached && (typedLoads || fieldRead)
+      && cseLoads(body, loadStorage, cacheName, n => valTypeOf(n) === VAL.NUMBER, readonlyCall, userCode, fieldRead, fieldStore,
+        summary ? (a, b) => { const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b); return ca != null && cb != null && ca !== cb } : null, summary?.objectsDisjoint) > 0) || hoistedFields > 0)
     invalidateLocalsCache(body)
 
   if (block) {
@@ -507,6 +517,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     boxed: ctx.func.boxed,
     cellTypes,
     flatObjects: ctx.func.flatObjects,
+    fieldCaches: ctx.func.fieldCaches,
     sliceViews: ctx.func.sliceViews,
     arrayViews: ctx.func.arrayViews,
     cseLoadBases,

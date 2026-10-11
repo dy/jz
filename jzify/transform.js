@@ -393,7 +393,11 @@ export function createTransform(opts) {
       }
       // Constructors consume protocol values one entry at a time: entry errors
       // close the iterator before its next step. The runtime retains native copies.
-      if (_gen?.iterProto?.on && !_gen.iterProto.std && (callee === 'Map' || callee === 'Set') && !shadowsBuiltin(callee))
+      // An empty constructor (`new Map()`, the parser's lone null) consumes
+      // nothing and keeps its own allocation: the helper's result is one cell
+      // every call shares, and a program's every empty collection in it would
+      // read as one.
+      if (_gen?.iterProto?.on && !_gen.iterProto.std && (callee === 'Map' || callee === 'Set') && !shadowsBuiltin(callee) && rest.some(a => a != null))
         return transform(['()', callee === 'Map' ? '__it_map' : '__it_set', ...rest])
       // Terminal iterator helper (toArray/reduce/forEach/some/every/find) on a
       // chain rooted at a known generator call → fused IIFE loop.
