@@ -1449,3 +1449,25 @@ test('runtime throws: a constant error is thrown by one shared helper, every sit
   }
 })
 
+test('catch: a spread of a value that may not iterate keeps its try', () => {
+  // The catch emitter drops a try whose body it proves cannot throw; a spread
+  // throws through the runtime's iterable normalization, with no call or
+  // throw in the source. `[...v]` lost its catch; `for (x of v)` kept it.
+  const src = `
+    export const lit = (v) => { let r = 0; try { const a = [...v]; r = a.length } catch (e) { r = 7 } return r }
+    const len = (...xs) => xs.length
+    export const call = (v) => { let r = 0; try { r = len(...v) } catch (e) { r = 7 } return r }
+    export const obj = (v) => { let r = 0; try { r = Object.keys({ ...v }).length } catch (e) { r = 7 } return r }
+    export const known = (v) => { let r = 0; try { const a = [...[v, v]]; r = a.length } catch (e) { r = 7 } return r }`
+  for (const optimize of [0, 2]) {
+    const wat = jz.compile(src, { optimize, wat: true })
+    const { exports } = instantiate(jz.compile(src, { optimize }))
+    is(exports.lit(5), 7, `${optimize}: a spread of a number is caught`)
+    is(exports.lit([1, 2, 3]), 3)
+    is(exports.call(5), 7, `${optimize}: a call spread of a number is caught`)
+    is(exports.call([1, 2]), 2)
+    is(exports.obj(5), 0, `${optimize}: an object spread of a number does not throw`)
+    is(exports.known(5), 2)
+    ok((wat.match(/try_table/g) || []).length >= 2, `${optimize}: the catches stay`)
+  }
+})

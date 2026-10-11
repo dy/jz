@@ -29,6 +29,17 @@ const mayBePrimitive = (recv, view) => {
   const k = view?.kindOfExpr(recv)
   return k == null || tagOf(k) === K.ANY || (tagsOf(k) & PRIMITIVE_TAGS) !== 0
 }
+// A spread normalizes its source (collection.js __iter_arr): a value not
+// proven an array, typed array, string, set or map throws without a call.
+const ITERABLE_TAGS = bitOf(K.ARRAY) | bitOf(K.TYPED) | bitOf(K.STRING) | bitOf(K.SET) | bitOf(K.MAP)
+const spreadsMayThrow = (items, view) => {
+  const list = Array.isArray(items) && items[0] === ',' ? items.slice(1) : [items]
+  return list.some(e => {
+    if (!Array.isArray(e) || e[0] !== '...') return false
+    const k = view?.kindOfExpr(e[1])
+    return k == null || tagOf(k) === K.ANY || (tagsOf(k) & ~ITERABLE_TAGS) !== 0
+  })
+}
 function canThrow(body, seen = new Set(), view = ctx.summary?.at(ctx.func.current)) {
   if (!Array.isArray(body)) return false
   const op = body[0]
@@ -69,8 +80,10 @@ function canThrow(body, seen = new Set(), view = ctx.summary?.at(ctx.func.curren
   if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && Array.isArray(body[1]) &&
       (body[1][0] === '.' || body[1][0] === '[]') && mayBePrimitive(body[1][1], view)) return true
   if (op === '=>') return false
+  if (op === '[' && spreadsMayThrow(body[1], view)) return true
   if (op === '()') {
     const callee = body[1]
+    if (spreadsMayThrow(body[2], view)) return true
     // A call can throw unless we can see the whole callee and prove it can't:
     // only direct calls into a resolvable, non-raw function body are traceable.
     // Indirect/method/builtin calls (callee not a plain name, or a name we can't
