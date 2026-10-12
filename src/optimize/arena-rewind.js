@@ -535,8 +535,60 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     }
   }
   // Whether what `from` runs may run `name` again: by a call, a tail call, a
-  // closure a resolved call runs, or the table.
-  const runsAgain = (from, name) => {
+  // closure a resolved call runs, or the table. A search from every tail call's
+  // callee over the whole call graph ran the compiler's own link a third of its
+  // time (12k functions); the graph's strong components are taken once instead,
+  // with each component's reach of a function whose reference escapes, which
+  // may run anything. The callee of a tail call runs its caller again exactly
+  // when the two share a component (the caller calls the callee) or the callee
+  // reaches such a function; a callee its caller's census does not call (a
+  // runtime helper the census leaves out) takes the search as written.
+  const edges = (n) => {
+    const r = info.get(n)
+    if (!r) return []
+    const out = [...r.calls]
+    if (r.refs || r.indirect && !r.resolved) out.push(...table)
+    else if (r.indirect) out.push(...r.targets)
+    return out
+  }
+  const comp = new Map(), reachesRefs = []   // function → component; component → may run a function whose reference escapes
+  {
+    const index = new Map(), low = new Map(), onStack = new Set(), stack = []
+    let next = 0
+    const nodes = new Set([...info.keys(), ...table])
+    for (const [, r] of info) { for (const c of r.calls) nodes.add(c); if (r.targets) for (const t of r.targets) nodes.add(t) }
+    for (const start of nodes) {
+      if (index.has(start)) continue
+      // Tarjan's components, iteratively: the stack holds a frame per node with its edge list.
+      const frames = [{ n: start, es: edges(start), i: 0 }]
+      index.set(start, next); low.set(start, next); next++; stack.push(start); onStack.add(start)
+      while (frames.length) {
+        const fr = frames[frames.length - 1]
+        if (fr.i < fr.es.length) {
+          const m = fr.es[fr.i++]
+          if (!index.has(m)) {
+            index.set(m, next); low.set(m, next); next++; stack.push(m); onStack.add(m)
+            frames.push({ n: m, es: edges(m), i: 0 })
+          } else if (onStack.has(m)) low.set(fr.n, Math.min(low.get(fr.n), index.get(m)))
+          continue
+        }
+        frames.pop()
+        if (frames.length) { const up = frames[frames.length - 1].n; low.set(up, Math.min(low.get(up), low.get(fr.n))) }
+        if (low.get(fr.n) !== index.get(fr.n)) continue
+        // a component complete: every component it reaches is complete already
+        const c = reachesRefs.length
+        let refs = false
+        const members = []
+        for (;;) { const m = stack.pop(); onStack.delete(m); comp.set(m, c); members.push(m); if (m === fr.n) break }
+        for (const m of members) {
+          if (info.get(m)?.refs) refs = true
+          for (const e of edges(m)) { const ce = comp.get(e); if (ce !== undefined && ce !== c && reachesRefs[ce]) refs = true }
+        }
+        reachesRefs.push(refs)
+      }
+    }
+  }
+  const searchesAgain = (from, name) => {
     const seen = new Set(), work = [from]
     while (work.length) {
       const n = work.pop()
@@ -550,6 +602,12 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       else if (r.indirect) for (const t of r.targets) work.push(t)
     }
     return false
+  }
+  const runsAgain = (from, name) => {
+    if (from === name) return true
+    if (!info.get(name)?.calls.has(from)) return searchesAgain(from, name)
+    const cf = comp.get(from)
+    return cf !== undefined && (reachesRefs[cf] || cf === comp.get(name))
   }
   // Allocation is transitive: a string concatenation allocates inside its
   // kernel, and an indirect call allocates when a function the table holds does.
