@@ -1,4 +1,4 @@
-import { DBG_INVARIANTS, assertCtxInvariants } from '../debug.js'
+import { DBG_INVARIANTS, assertCtxInvariants, phaseCheckpointEmulation } from '../debug.js'
 import { jsonShapeStrings } from '../kind/shape.js'
 import { warn, OPTF } from '../ctx.js'
 import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
@@ -173,8 +173,14 @@ export function assemble(ast, profiler) {
     for (const names of layouts) ctx.schema.register(names)
     return ctx.schema.list.length !== named
   }
+  // The kernel keeps a solve's data alone and releases the solver's arena
+  // (ctx.transform.phaseCheckpoint, scripts/self.js); the debug build copies the
+  // data the same way natively, so a reader that kept the solver's objects fails
+  // here. Warnings keep the solve in place: their sinks write outside it.
+  const phaseCheckpoint = () => ctx.warnings ? null : ctx.transform.phaseCheckpoint ?? (DBG_INVARIANTS ? phaseCheckpointEmulation([ast, ctx]) : null)
   const summaryOf = (discover = true, losses = ctx.warnings ? [] : null) => {
     const summary = summarize(ast, {
+      checkpoint: phaseCheckpoint(),
       inits: ctx.module.moduleInits, funcs: ctx.funcs.list, schemas: ctx.schema.list, brandOf: ctx.schema.brandOf, classes: ctx.transform.classes, accessors: ctx.transform.literalAccessorNames, hidden: ctx.schema.hidden, exported: isExported,
       registerLayouts: discover ? registerLayouts : null,
       boundSchema: (name) => ctx.schema.poisoned?.has(name) ? undefined : ctx.schema.vars.get(name),   // the binding's schema a declared literal is allocated with (module/object.js `{}`)

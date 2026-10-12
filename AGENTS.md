@@ -61,7 +61,8 @@ What this implies for HOW we optimize:
   programs through the wasm-hosted compiler. Codegen changes can break the bootstrap;
   so does compiler source outside the self-compilable subset: hosted, an index into a
   Number reads it as a pointer (a walker asks `Array.isArray` before indexing a child),
-  and nothing is freed within a compile (a walker shares what it can, a chain of links
+  and nothing is freed within a compile but a summary solve's arena, which its phase
+  checkpoint releases (a walker shares what it can, a chain of links
   rather than a copy per node).
   The build has 20 minutes; on a loaded machine `JZ_SELF_BUILD_TIMEOUT=3600000` gives it
   an hour (a `SIGTERM` build exit is the limit, not a failure).

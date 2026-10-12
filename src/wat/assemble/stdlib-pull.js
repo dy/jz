@@ -445,15 +445,18 @@ export function pullStdlib(sec) {
       // shared list and rebuild once, so whichever runs second doesn't clobber the
       // other's addition (a program can need both: dyn-props AND durable-growth
       // relocation both reach here independent of each other).
-      const resets = []
+      // The caches first: a phase's rewind (`__park_rewind_to`, module/core.js)
+      // resets them too, and only them, since a phase's release lies above the
+      // mark it keeps; the heals and the global restores below undo a round.
+      const caches = [], resets = []
       if ((ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own'))) {
         // The table and its membership filter return to what `__start` left
         // (the snapshot sweep above): a property a function was given at
         // init has no header to live in, so the table built there is its
         // home, below the watermark; what a round inserts into it is logged
         // and healed like any durable hash's entries.
-        if (ctx.scope.globals.has('__dyn_get_cache_off')) resets.push(`(global.set $__dyn_get_cache_off (i32.const ${DYN_CACHE_EMPTY}))`)
-        if (ctx.scope.globals.has('__dyn_get_cache_props')) resets.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
+        if (ctx.scope.globals.has('__dyn_get_cache_off')) caches.push(`(global.set $__dyn_get_cache_off (i32.const ${DYN_CACHE_EMPTY}))`)
+        if (ctx.scope.globals.has('__dyn_get_cache_props')) caches.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
       }
       // for-in enum cache (core.js __hash_keys_ro / object.js ro-enumeration):
       // the cache keys a boxed array by table offset — both live in the arena
@@ -462,7 +465,7 @@ export function pullStdlib(sec) {
       // __dyn_get_cache_off above). Gated on enumcConsumed, not reachability:
       // the OBJECT-arm fill sites are inline IR (no named helper to count).
       if (ctx.runtime.enumcConsumed)
-        resets.push(`(global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))`)
+        caches.push(`(global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))`)
       // Durable relocation heal (collection.js's durableFwdLogIR / core.js's
       // __durable_fwd_log/__durable_fwd_heal): only reachable when some growable
       // ARRAY/HASH/SET/MAP relocation site actually logged a durable→ephemeral
@@ -512,12 +515,16 @@ export function pullStdlib(sec) {
       // Global-snapshot restores (see the sweep above) join the same rebuilt body.
       // Order is free — restores touch only globals + the durable slab, which the
       // rewind never moves — but bookkeeping-then-rewind-then-restore reads naturally.
-      if (resets.length || globalRestores.length) {
+      if (caches.length || resets.length || globalRestores.length) {
         const clear = ctx.core.stdlib['__clear']
         // Preserve the allocator's rewind operation: shared heaps keep their
         // pointer in linear memory and have neither owned-heap global.
         ctx.core.stdlib['__clear'] = clear.slice(0, clear.lastIndexOf(')')) +
-          '\n' + [...resets, ...globalRestores].join('\n') + ')'
+          '\n' + [...caches, ...resets, ...globalRestores].join('\n') + ')'
+      }
+      if (caches.length && ctx.core.includes.has('__park_rewind_to')) {
+        const rewind = ctx.core.stdlib['__park_rewind_to'], at = rewind.lastIndexOf('(f64.const')
+        ctx.core.stdlib['__park_rewind_to'] = rewind.slice(0, at) + caches.join('\n') + '\n      ' + rewind.slice(at)
       }
     }
     // Initial pages must cover the static data segment (it loads at instantiation), not

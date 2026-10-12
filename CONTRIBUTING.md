@@ -706,6 +706,22 @@ Lengths, intern indexes and integer payloads use unsigned LEB128; string headers
 retain their fixed UTF-16 length. Serializer or decoder allocation into unread
 data traps. These helpers are reachable only from checkpoint users.
 
+A phase checkpoint (`scripts/self.js` checkpointPhase, through
+`ctx.transform.phaseCheckpoint`) keeps one phase's result past its arena growth:
+the summary solve returns data (its facts, the discovered layouts, the contracts'
+inputs) and `summarize` publishes the readers over it after the solve. The kernel
+parks that data above the heap, rewinds the arena to the mark taken at the solve's
+start and reads the data back; a value from before the mark (an AST node, a
+function record, a signature) is kept by its bits, never copied. The rewind
+resets the dynamic-property and enumeration caches, nothing else of `__clear`:
+the durable heals and the global restores undo a round. The released memory is
+filled with 0xFF, and a durable log that grew during the phase refuses the rewind.
+A solve must therefore write nothing it allocated into memory from before it, and
+its result is data alone: the debug build (`JZ_DEBUG_INVARIANTS=1`) copies every
+solve's result the way the park lane carries it (`src/debug.js`
+phaseCheckpointEmulation), so a reader that kept the solver's objects fails
+natively. A solve below the threshold (16 MB of growth) keeps its result in place.
+
 Captured locals receive their cells independently, before a use that dominates
 all references. Allocation enters a conditional arm only when every reference
 is inside it. Shared cells stay before the branch, and loop capture handling

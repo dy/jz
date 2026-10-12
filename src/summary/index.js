@@ -97,6 +97,8 @@ export const answeredAtCall = (name) => AT_CALL.test(name)
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
+// Closure sets and shape sets: a set's id is interned above SET_BASE; `membersOf` reads either form.
+const SET_BASE = 1 << 15
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
 const RANGE_BINARY = new Set(['+', '-', '*', '/'])
 const memberBefore = (a, b) => typeof a === typeof b ? a < b : typeof a === 'number'
@@ -113,15 +115,45 @@ export const hasModeledResult = name => MODELED_RESULT.test(name)
  *  can store only a number through its f64 export, which a number global takes and no other
  *  kind could take; a closure the host can reach through it may be called with anything.
  *  `registerLayouts`, when supplied, can name discovered layouts after kinds converge:
- *  returning true requests a restart, and summarize returns null instead of publishing. */
+ *  returning true requests a restart, and summarize returns null instead of publishing.
+ *  `checkpoint`, when supplied, runs the solve and keeps its result alone: the solve
+ *  returns data (the facts, the discovered layouts, the contracts' inputs), which
+ *  `publish` reads after it. The kernel's phase checkpoint parks that data and
+ *  releases the solver's arena (scripts/self.js checkpointPhase). */
 export function summarize(ast, options) {
-  const summary = solveSummary(ast, options)
-  // A registry may decline discovery. Re-run without provisional identities;
-  // no discarded solve can donate local layout IDs to a published reader.
-  return summary === false ? solveSummary(ast, { ...options, registerLayouts: null }) : summary
+  const { registerLayouts = null, checkpoint = null } = options
+  const solve = discover => {
+    const run = () => solveSummary(ast, { ...options, discover })
+    return checkpoint ? checkpoint(run) : run()
+  }
+  let solved = solve(typeof registerLayouts === 'function')
+  // Discovery names layouts outside the solve: the registry is the compile's. A
+  // registry that adds none declines the discovery, and the solve runs again
+  // without provisional identities: no discarded solve donates local layout IDs
+  // to a published reader.
+  if (solved.discovered) {
+    if (registerLayouts(solved.discovered)) return null
+    solved = solve(false)
+  }
+  return publish(solved)
 }
 
-function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, registerLayouts = null, liftedProp = () => null, guardedClone = () => null }) {
+/** The readers over a solve's data: the queries (query.js) and the result
+ *  contracts (contract.js) from its settled results. */
+function publish({ facts, unnamedLayouts, contract }) {
+  const published = summaryQueries(facts)
+  published.unnamedLayouts = unnamedLayouts
+  const { keys, funcs, closureCount, certain, returns, exportedNames, dispatcher } = contract
+  const { closureSets, closureSetIds, escaped } = facts
+  facts.contracts = buildResultContracts({
+    results: new Map(keys.map(key => [key, published.resultOf(key)])), funcs, closureCount, closureSets, setBase: SET_BASE,
+    membersOf: id => id >= SET_BASE ? closureSets[id - SET_BASE] : [id], certain, returns,
+    direct: name => !exportedNames.has(name) && !escaped.has(name) && !closureSetIds.has(name) && !dispatcher.has(name),
+  })
+  return published
+}
+
+function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, discover = false, liftedProp = () => null, guardedClone = () => null }) {
   // Numeric entry contracts restart the kind solve. Report its final losses,
   // not the discarded unknown-parameter solve's intermediate escapes.
   const reportLose = onLose, losses = onLose ? [] : null
@@ -216,7 +248,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // set's id is interned above SET_BASE; `membersOf` reads either form. A
   // set past CLOSURE_SET_MAX members escapes them all instead (a wrapper's
   // callback parameter collects every callback the program passes it).
-  const SET_BASE = 1 << 15, SET_MAX = 64, CLOSURE_SET_MAX = 1024
+  const SET_MAX = 64, CLOSURE_SET_MAX = 1024
   const closureSets = [], closureSetIds = new Map(), closureSetNext = []
   const singles = []             // closure id → [id], the one-member list, allocated once
   const membersOf = (id) => id >= SET_BASE ? closureSets[id - SET_BASE] : singles[id] ?? (singles[id] = [id])
@@ -2579,7 +2611,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const NO_SID = -1, DYNAMIC_LITERAL = -2
   const literalSids = new Map()   // `{}` node → sid, NO_SID (its own shape, unregistered) or DYNAMIC_LITERAL
   const unnamed = new Map()       // schema key → the names of a spread's layout no literal registers
-  let provisional = false          // private discovery IDs require a canonical restart
   const literalSid = (n) => {
     let sid = literalSids.get(n)
     if (sid === undefined) {
@@ -2733,7 +2764,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     let layout = sidByKey.get(key)
     if (layout === undefined && !brand) {
       unnamed.set(key, names)
-      if (registerLayouts && schemas.length < SET_BASE) {
+      if (discover && schemas.length < SET_BASE) {
         // This attempt only discovers names. Private IDs may sit after other
         // construction sites; only the next solve uses registry layout IDs.
         const props = canonicalKeyOrder(names)
@@ -2744,7 +2775,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           if (!entries) byProp.set(props[i], entries = [])
           entries.push([layout, i])
         }
-        provisional = true; changed = true
+        changed = true
       }
     }
     const sid = layout === undefined ? -1 : objectSite(n, layout)
@@ -4511,10 +4542,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // Batch every layout the kind fixpoint discovers before restarting. A
   // restart in the middle can discover only one layer of a call chain at a
   // time, rebuilding the whole program once per layer.
-  if (unnamed.size && registerLayouts) {
-    if (registerLayouts([...unnamed.values()])) return null
-    if (provisional) return false
-  }
+  if (unnamed.size && discover) return { discovered: [...unnamed.values()] }
   // The demand pass, then the kinds again with the demanded and compatible
   // exported parameters NUMBER. A numeric-demanded parameter is read only
   // where a string would be converted anyway, so the f64 boundary is the
@@ -4548,10 +4576,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
-    if (unnamed.size && registerLayouts) {
-      if (registerLayouts([...unnamed.values()])) return null
-      if (provisional) return false
-    }
+    if (unnamed.size && discover) return { discovered: [...unnamed.values()] }
   }
 
   // Resolve union-find roots once before publishing. Readers never compress
@@ -4628,12 +4653,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   queryFacts.typedLengths = typedLengths
   queryFacts.scalarValues = scalarValues
   queryFacts.scalarFields = scalarFields
-  const published = summaryQueries(queryFacts)
-  published.unnamedLayouts = [...unnamed.values()]
-  queryFacts.contracts = buildResultContracts({
-    results: new Map([...results.keys()].map(key => [key, published.resultOf(key)])), funcs, closureCount: closureBodies.length, closureSets, setBase: SET_BASE, membersOf, certain, returns,
-    direct: name => !exportedNames.has(name) && !escaped.has(name) && !closureSetIds.has(name) && !dispatcher.has(name),
-  })
   if (reportLose) for (const loss of losses) reportLose(...loss)
-  return published
+  // Data alone, nothing of the solver: `publish` builds the readers over it.
+  return {
+    facts: queryFacts, unnamedLayouts: [...unnamed.values()],
+    contract: { keys: [...results.keys()], funcs: funcs.map(f => [f.name, f.sig]), closureCount: closureBodies.length, certain, returns, exportedNames, dispatcher },
+  }
 }

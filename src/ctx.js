@@ -745,6 +745,7 @@ export function reset(proto, globals, bridge) {
                         // instead of pulling in dynamic-dispatch stdlib. See ProgramFacts walk.
     alloc: true,        // when false, omit raw allocator exports like _alloc/_clear from wasm output.
     whyNotRewind: null, // opts.whyNotRewind: (name, reason) => void, why an arena-rewind candidate was declined (optimize/arena-rewind.js)
+    phaseCheckpoint: null, // run => result: the kernel's phase checkpoint (scripts/self.js), a phase's result alone kept past its arena growth
     optimize: null,     // resolved {watr, hoistPtrType, ...} config — set in index.js via resolveOptimize().
                         // Read by optimizeModule() (compile.js) and the post-watr pass (index.js).
                         // null is treated as level 2 (all on) for back-compat with internal callers.

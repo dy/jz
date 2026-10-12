@@ -56,12 +56,12 @@ export const readContract = f => {
 export const NONE_CONTRACT = readContract(NONE_FROZEN)
 
 /** The frozen half of one contract per function name, closure id and
- *  closure-set id. `certain` holds the keys with a BigInt-naming return;
+ *  closure-set id. `funcs` lists [name, sig]; `certain` holds the keys with a BigInt-naming return;
  *  `direct` answers whether a function's callers are all enumerable (not
  *  exported, not escaped, not a dispatcher). */
 export function buildResultContracts({ results, funcs, closureCount, closureSets, setBase, membersOf, certain, returns, direct }) {
   const contracts = new Map()
-  for (const f of funcs) contracts.set(f.name, frozen(results.get(f.name) ?? K.NONE, bigintLane(results.get(f.name) ?? K.NONE, false, direct(f.name), certain.has(f.name)), f.sig, false, returns.get(f.name)?.length === 0))
+  for (const [name, sig] of funcs) contracts.set(name, frozen(results.get(name) ?? K.NONE, bigintLane(results.get(name) ?? K.NONE, false, direct(name), certain.has(name)), sig, false, returns.get(name)?.length === 0))
   const closureKind = ids => { let k = K.NONE; for (const id of ids) k = join(k, results.get(id) ?? K.NONE); return k }
   for (let id = 0; id < closureCount; id++) contracts.set(id, frozen(results.get(id) ?? K.NONE, bigintLane(results.get(id) ?? K.NONE, true, false, certain.has(id)), null, true, returns.get(id)?.length === 0))
   for (let i = 0; i < closureSets.length; i++) {

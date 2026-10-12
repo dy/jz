@@ -53,11 +53,11 @@ export const STAGE_FRONT = 0, STAGE_EMIT = 1, STAGE_OPTIMIZE = 2, STAGE_CHECKPOI
 const stages = new Float64Array(4)
 // The tape after link: its node count and the column capacity it grew to.
 const tape = new Float64Array(2)
-// The count of phases recorded and the capacity: [done, capacity]
-const counts = new Float64Array(2)
+// The count of phases recorded, the capacity and the phase checkpoints taken: [done, capacity, checkpoints]
+const counts = new Float64Array(3)
 counts[1] = PHASE_RECORDS
 
-export const resetMarks = () => { counts[0] = 0; for (let i = 0; i < 4; i++) stages[i] = 0; tape[0] = 0; tape[1] = 0 }
+export const resetMarks = () => { counts[0] = 0; counts[2] = 0; for (let i = 0; i < 4; i++) stages[i] = 0; tape[0] = 0; tape[1] = 0 }
 export const recordPhase = (name) => {
   const done = counts[0]
   if (done < counts[1] && done < PHASE_RECORDS) { ids[done] = PHASE_IDS.get(name) ?? 0; heaps[done] = __heap_mark() >>> 0 }
@@ -73,6 +73,9 @@ export const setPhaseCapacity = (n) => {
 }
 export const phaseCapacity = () => counts[1]
 export const phasesDone = () => counts[0]
+/** A phase checkpoint taken (scripts/self.js checkpointPhase): the phase's result parked, the arena rewound to the phase's mark. */
+export const countCheckpoint = () => { counts[2] = counts[2] + 1 }
+export const phaseCheckpoints = () => counts[2]
 const recorded = () => counts[0] < counts[1] ? counts[0] : counts[1]
 export const phaseNameAt = (i) => i >= 0 && i < recorded() && i === Math.floor(i) ? PHASE_NAMES[ids[i]] : ''
 export const phaseHeapAt = (i) => i >= 0 && i < recorded() && i === Math.floor(i) ? heaps[i] : 0

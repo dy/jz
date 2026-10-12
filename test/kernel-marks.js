@@ -18,8 +18,8 @@ const RECORDER = readFileSync(new URL('../scripts/phase-marks.js', import.meta.u
 // heap around what it drives. `grow` allocates and keeps it (a call that
 // keeps nothing releases what it made), so the program has an arena that grows.
 const DRIVER = `
-import { recordPhase, resetMarks, markStage, markTape, phasesDone, phaseCapacity, setPhaseCapacity, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity } from './phase-marks.js'
-export { resetMarks, phasesDone, phaseCapacity, setPhaseCapacity, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity }
+import { recordPhase, resetMarks, markStage, markTape, phasesDone, phaseCapacity, setPhaseCapacity, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, countCheckpoint, phaseCheckpoints } from './phase-marks.js'
+export { resetMarks, phasesDone, phaseCapacity, setPhaseCapacity, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, countCheckpoint, phaseCheckpoints }
 const NAMES = ['summary', 'plan:collectFacts', 'link', 'not-a-phase']
 export let record = (k, cycle) => { const h0 = __heap_mark(); for (let i = 0; i < k; i++) recordPhase(NAMES[i % cycle]); return __heap_mark() - h0 }
 export let stage = (s) => { const h0 = __heap_mark(); markStage(s); markTape(11, 16); return __heap_mark() - h0 }
@@ -108,7 +108,7 @@ test('kernel marks: stale or malformed reader state fails explicitly', () => {
   const fake = {
     exports: {phasesDone:()=>0, phaseCapacity:()=>256,
       phaseNameAt:()=>{throw Error('unexpected record read')}, phaseHeapAt:()=>0,
-      stageHeap:()=>0, tapeNodes:()=>0, tapeCapacity:()=>0},
+      stageHeap:()=>0, tapeNodes:()=>0, tapeCapacity:()=>0, phaseCheckpoints:()=>0},
     memory: {read:v=>v},
   }
   for (const [done, capacity] of [[NaN,256], [-1,256], [1.5,256], [0,NaN], [0,Infinity], [0,257], [0,1.5], [0,-1]]) {

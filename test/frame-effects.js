@@ -606,7 +606,7 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
     '__ptr_is', '__throw_method_receiver', '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
-    ...['u8', 'u32', 'f64', 'i64', 'str'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
+    '__park_mark', '__heap_since', '__park_rewind_to', ...['u8', 'u32', 'f64', 'i64', 'str', 'ref'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
   const names = Object.keys(ctx.core.emit).filter(k => !k.includes(':') && /^[A-Za-z_$]/.test(k) && !SYNTAX.has(k))
   ok(names.length > 200, `the runtime's names are read: ${names.length}`)
   is(names.filter(n => !listedBuiltin(n) && !KEEPS.has(n)).join(' '), '', 'every name is listed, or kept on purpose')

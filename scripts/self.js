@@ -24,7 +24,7 @@ import { configureFixedMemory, verifyFixedScratch, verifyFixedMemory } from '../
 import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
 import { T } from '../src/ir/tape.js'
-import { resetMarks, recordPhase, markStage, markTape, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
+import { resetMarks, recordPhase, markStage, markTape, countCheckpoint, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
 import jzify from '../jzify/index.js'
 
 // Final-optimizer tail shared with the host pipeline: its inputs are the
@@ -60,6 +60,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   })
   ctx.transform.jzify = jzify
   ctx.transform.parse = parse    // module bundling (prepareModule) parses imported sources — same injection native does
+  ctx.transform.phaseCheckpoint = checkpointPhase   // a phase's result alone kept past its arena growth (below)
   // Bundled-module sources (the native opts.modules channel): one JSON dict
   // over the wasm ABI — prepare's import resolution reads importSources the
   // same way native does.
@@ -110,6 +111,7 @@ const PARK_MAP = 9
 const PARK_SET = 10
 const PARK_STRREF = 11
 const PARK_INT = 12
+const PARK_REF = 13
 
 // A string is written once, the first time; every later occurrence is its
 // index in the order of first writes (an IR's op names and local names
@@ -121,6 +123,12 @@ function parkString(text) {
   parkStrings.set(text, parkStrings.size)
   __park_write_u8(PARK_STRING); __park_write_str(text)
 }
+
+// A heap value a phase did not allocate lies below the phase's mark: it is kept
+// by its bits, never copied (an AST node, a function record, a signature the
+// narrowing writes onto). The mark is 0 outside a phase checkpoint.
+let parkMark = 0
+const parked = value => parkMark !== 0 && (__ptr_offset(value) >>> 0) < parkMark
 
 function parkValue(value) {
   if (value === null) { __park_write_u8(PARK_NULL); return }
@@ -134,6 +142,7 @@ function parkValue(value) {
   if (typeof value === 'string') { parkString(value); return }
   if (typeof value === 'bigint') { __park_write_u8(PARK_BIGINT); __park_write_i64(value); return }
   if (Array.isArray(value)) {
+    if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     // A WAT string literal watr parsed (the stdlib's and the boundary wrappers'
     // text) is a byte array whose valueOf() is its quoted source text
     // (watr/src/util.js `str`); the bytes alone lose it. Park the text: watr's
@@ -146,18 +155,21 @@ function parkValue(value) {
     return
   }
   if (value instanceof Map) {
+    if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     __park_write_u8(PARK_MAP)
     __park_write_u32(value.size)
     for (const [k, v] of value) { parkValue(k); parkValue(v) }
     return
   }
   if (value instanceof Set) {
+    if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     __park_write_u8(PARK_SET)
     __park_write_u32(value.size)
     for (const v of value) parkValue(v)
     return
   }
   if (value != null && typeof value === 'object') {
+    if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     const keys = Object.keys(value)
     __park_write_u8(PARK_OBJECT)
     __park_write_u32(keys.length)
@@ -182,6 +194,7 @@ function unparkValue() {
   if (tag === PARK_STRING) { const text = __park_read_str(); unparkStrings.push(text); return text }
   if (tag === PARK_STRREF) return unparkStrings[__park_read_u32() >>> 0]
   if (tag === PARK_BIGINT) return __park_read_i64()
+  if (tag === PARK_REF) return __park_read_ref()
   if (tag === PARK_ARRAY) {
     const len = __park_read_u32() >>> 0
     const out = new Array(len)
@@ -209,6 +222,20 @@ function unparkValue() {
   throw new TypeError(`Invalid parked WAT IR tag ${tag}`)
 }
 
+function park(value) {
+  __park_begin()
+  parkStrings = new Map()
+  parkValue(value)
+  parkStrings = null
+  __park_finish()
+}
+function unpark() {
+  unparkStrings = []
+  const out = unparkValue()
+  unparkStrings = null
+  return out
+}
+
 /**
  * Park a value (arrays, records, strings, numbers, Maps, Sets) in the binary
  * lane, rewind the arena to its post-init mark and read the value back: what
@@ -216,22 +243,38 @@ function unparkValue() {
  * reader after a checkpoint takes its inputs from the value: `ctx` is stale.
  */
 function checkpoint(value) {
-  __park_begin()
-  parkStrings = new Map()
-  parkValue(value)
-  parkStrings = null
-  __park_finish()
+  park(value)
   __park_rewind()
-  unparkStrings = []
-  const out = unparkValue()
-  unparkStrings = null
-  return out
+  return unpark()
 }
 const checkpointIR = checkpoint
 
+/**
+ * A phase checkpoint (ctx.transform.phaseCheckpoint; src/summary/index.js
+ * summarize takes one per solve): run the phase and, if it grew the arena past
+ * PHASE_MIN, park its result with every value from before the phase kept by
+ * reference, rewind the arena to the phase's mark and read the result back.
+ * The phase's own allocations are gone; the result alone remains above the
+ * mark. A phase's result holds data only, nothing that names the phase's
+ * memory after it (src/debug.js phaseCheckpointEmulation checks that natively).
+ * A phase that grew less keeps its result in place: parking costs the result's size.
+ */
+const PHASE_MIN = 16 * 1024 * 1024
+function checkpointPhase(run) {
+  const mark = __park_mark()
+  const out = run()
+  if (__heap_since(mark) < PHASE_MIN) return out
+  parkMark = mark >>> 0
+  park(out)
+  parkMark = 0
+  __park_rewind_to(mark)
+  countCheckpoint()
+  return unpark()
+}
+
 // Heap diagnostics: scripts/phase-marks.js records them, scripts/kernel-marks.mjs
 // reads them through these exports, after a trap or a thrown compile error too.
-export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity } from './phase-marks.js'
+export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, phaseCheckpoints } from './phase-marks.js'
 const stageMarks = { time(name, fn) { const out = fn(); recordPhase(name); return out } }
 
 /**

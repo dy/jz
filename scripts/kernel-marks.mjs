@@ -1,6 +1,6 @@
 import { PHASE_RECORDS } from './phase-marks.js'
 
-const READERS = ['phasesDone', 'phaseCapacity', 'phaseNameAt', 'phaseHeapAt', 'stageHeap', 'tapeNodes', 'tapeCapacity']
+const READERS = ['phasesDone', 'phaseCapacity', 'phaseNameAt', 'phaseHeapAt', 'stageHeap', 'tapeNodes', 'tapeCapacity', 'phaseCheckpoints']
 
 /**
  * The kernel's heap diagnostics (scripts/phase-marks.js) as one record, read
@@ -8,7 +8,8 @@ const READERS = ['phasesDone', 'phaseCapacity', 'phaseNameAt', 'phaseHeapAt', 's
  * the heap pointer after the front, after emit and link, after watr and after
  * the checkpoint; every phase compileAst timed, by name, with the heap after it;
  * the phases the kernel counted past its record capacity (`setPhaseCapacity`
- * lowers it); the tape's node count and column capacity. A mark of 0 is a stage
+ * lowers it); the tape's node count and column capacity; the phase checkpoints
+ * taken (a phase's result parked and the arena rewound to the phase's mark). A mark of 0 is a stage
  * that did not complete. Every read is a call into the kernel that allocates
  * nothing there; the strings come back through the interop's memory reader.
  * @param {{ exports: object, memory: { read(v: any): any } }} self - an `instantiate` result
@@ -28,6 +29,7 @@ export function readMarks(self) {
     heapFront: ex.stageHeap(0), heapEmit: ex.stageHeap(1), heapOptimize: ex.stageHeap(2), heapCheckpoint: ex.stageHeap(3),
     phases, phasesDone, phasesDropped: phasesDone - recorded,
     tapeNodes: ex.tapeNodes(), tapeCapacity: ex.tapeCapacity(),
+    checkpoints: ex.phaseCheckpoints(),
   }
 }
 

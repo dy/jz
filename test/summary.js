@@ -4,9 +4,10 @@
 // unlocks: a record with a typed-array field read through a parameter, a
 // factory result, a class instance, a method closure over the instance.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile, _compileInProcess } from '../index.js'
 import { ctx } from '../src/ctx.js'
+import { phaseCheckpointEmulation } from '../src/debug.js'
 import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
 import { onKernel, OPT_LEVEL, levels, belowOpt } from './_matrix.js'
@@ -1488,4 +1489,25 @@ test('summary: a private field keeps its kind through an escape of its instance 
   const on = `Emon`
   is(tagOf(kindOf(on, 's')), K.SET, 'the listener set read from the private Map keeps its kind')
   is(jz(src).exports.main(4), 7)
+})
+
+// The kernel keeps a solve's result alone and releases the solver's arena
+// (scripts/self.js checkpointPhase); the debug build copies the result the same
+// way natively, every value from before the solve by reference.
+test('phase checkpoint, natively: a solve\'s result is data, and what predates the solve is kept by reference', () => {
+  const node = ['()', 'f'], sig = { params: [] }
+  const run = phaseCheckpointEmulation([node, { sig }])
+  const out = run(() => ({ facts: new Map([[node, [1, 'a']]]), set: new Set([sig]), pair: [node, sig], n: -0, big: 2n, none: undefined }))
+  ok(out.facts.has(node), 'a node from before the solve is the same node')
+  ok(out.set.has(sig), 'a signature too')
+  is(out.pair[0], node); is(out.pair[1], sig)
+  is(out.facts.get(node), [1, 'a']); ok(Object.is(out.n, -0)); is(out.big, 2n); ok('none' in out && out.none === undefined)
+  const fresh = [1]
+  ok(run(() => [fresh])[0] !== fresh, 'what the solve allocated is copied')
+  throws(() => run(() => ({ f: () => 1 })), /holds a function/)
+  throws(() => run(() => new Int32Array(2)), /holds a Int32Array object/)
+  const cyc = []; cyc.push(cyc)
+  throws(() => run(() => cyc), /holds a cycle/)
+  class C {}
+  throws(() => run(() => new C()), /holds a C object/)
 })

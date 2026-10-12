@@ -4,7 +4,9 @@
 // rewind the arena, unpark) on small programs, through a private kernel whose
 // differences from the fresh self build are test overlays
 // (test/_self-overlay-build.mjs): both branches made unconditional (the
-// shipping threshold, `__heap_large`, is untouched), test-only
+// shipping threshold, `__heap_large`, is untouched), the phase checkpoint's
+// threshold (PHASE_MIN: every summary solve parks its data, rewinds to the
+// solve's mark and reads it back), test-only
 // entries beside compileSelf (WAT text through the same checkpointIR, the
 // recorder's writers, a census of the IR's literal forms) and one labeled
 // failure inside watr's encoder for a program exporting `__fail_after_unpark`.
@@ -68,6 +70,7 @@ const FORCED = selfBuildWith({
     // the one behavioral change: both checkpoints run on every compile instead of past 1 GB of growth
     ['if (__heap_large(heapMark)) { const kept = checkpoint([assembled, cfg, facts]);', 'if (1) { const kept = checkpoint([assembled, cfg, facts]);'],
     ['__heap_large(heapMark) ? checkpoint(optimized) : optimized', 'checkpoint(optimized)'],
+    ['const PHASE_MIN = 16 * 1024 * 1024', 'const PHASE_MIN = 0'],
     ["import watrPrint from '", `import watrParse from '${watrSrc('parse.js')}'\nimport { str as watrStr } from '${watrSrc('util.js')}'\nimport watrPrint from '`],
     ['export default function compileSelf(', TEST_ENTRIES + 'export default function compileSelf('],
   ],
@@ -143,6 +146,8 @@ test('checkpoint: the forced kernel parks, rewinds, unparks and encodes; its out
   ok(mn.heapCheckpoint >= mn.heapOptimize && mn.heapCheckpoint > 0, `the fresh kernel takes no checkpoint on a small program (${mn.heapOptimize} → ${mn.heapCheckpoint})`)
   ok(mf.heapCheckpoint > 0 && mf.heapCheckpoint < mf.heapOptimize, `the forced kernel rewound: heap after watr ${mf.heapOptimize}, after the checkpoint ${mf.heapCheckpoint}`)
   ok(mf.heapCheckpoint < mf.heapFront, 'the rewind returned below the front\'s mark (the post-init mark), the unparked IR above it')
+  is(mn.checkpoints, 0, 'the fresh kernel takes no phase checkpoint on a small program')
+  ok(mf.checkpoints > 0, `the forced kernel checkpointed every summary solve (${mf.checkpoints}): parked, rewound to the solve's mark, read back`)
   // (the kernel is shared across the tests of this file: an earlier compile may have parked already, and the lane's end is where it stays)
   ok(memoryBytes(forced) >= PARK_END - 0xFFFF && (memBefore >= PARK_END - 0xFFFF || memoryBytes(forced) > memBefore), `the park lane holds the instance's memory, its address space, at the lane's end (${memoryBytes(forced)} bytes; from ${memBefore})`)
   ok(same(fromForced, fromNormal), `the output through park → rewind → unpark → encode is the direct output, ${fromNormal.length} bytes`)

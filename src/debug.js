@@ -73,3 +73,37 @@ export function assertCtxInvariants(ctx, phase) {
     }
   }
 }
+
+/** The kernel's phase checkpoint, natively (scripts/self.js checkpointPhase): the
+ *  phase's result as the park lane carries it. A value reachable from `inputs`
+ *  predates the phase and is kept by reference; every other array, record, Map or
+ *  Set is copied, and any other object (a function, a typed array, a class
+ *  instance) or a cycle is a result the kernel cannot park. A reader that kept the
+ *  solver's objects or closures fails under the copy, natively. */
+export const phaseCheckpointEmulation = (inputs) => (run) => {
+  const old = new Set(), pending = [inputs]
+  while (pending.length) {
+    const v = pending.pop()
+    if (v === null || typeof v !== 'object' || old.has(v)) continue
+    old.add(v)
+    if (v instanceof Map) { for (const [k, x] of v) { pending.push(k); pending.push(x) } }
+    else if (v instanceof Set || Array.isArray(v)) { for (const x of v) pending.push(x) }
+    else if (!ArrayBuffer.isView(v)) for (const k of Object.keys(v)) pending.push(v[k])
+  }
+  const copying = new Set()
+  const copy = v => {
+    if (typeof v === 'function') throw new Error('[phase checkpoint] the result holds a function')
+    if (v === null || typeof v !== 'object' || old.has(v)) return v
+    if (copying.has(v)) throw new Error('[phase checkpoint] the result holds a cycle')
+    copying.add(v)
+    let out
+    if (Array.isArray(v)) { out = new Array(v.length); for (let i = 0; i < v.length; i++) out[i] = copy(v[i]) }
+    else if (v instanceof Map) { out = new Map(); for (const [k, x] of v) out.set(copy(k), copy(x)) }
+    else if (v instanceof Set) { out = new Set(); for (const x of v) out.add(copy(x)) }
+    else if (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null) { out = {}; for (const k of Object.keys(v)) out[k] = copy(v[k]) }
+    else throw new Error(`[phase checkpoint] the result holds a ${v.constructor?.name ?? 'non-plain'} object`)
+    copying.delete(v)
+    return out
+  }
+  return copy(run())
+}
