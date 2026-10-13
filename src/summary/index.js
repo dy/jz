@@ -66,7 +66,7 @@ import {
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind, outsideKind, emptySpreadKind,
-} from './kind.js'
+  continuesOptional } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
 // Builtins that read their arguments and never write a field of them; any
@@ -2206,6 +2206,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op !== '?.' || !hasTag(recv, K.NULLISH) && !hasTag(recv, K.ABSENT)) return result
     return tagOf(core(recv)) === K.NONE ? NULLISH : join(result, NULLISH)
   }
+  // The access that continues an optional chain (`a?.b.c`, `a?.b[i]`, `a?.b()`)
+  // short-circuits with it: where the optional's receiver may be nullish the
+  // whole chain answers undefined, as the optional access itself does.
+  const chainOp = (op, recv) => op === '?.' || continuesOptional(recv) ? '?.' : op
   /** `callee(k0, k1, k2, k3)` in a frame of its own. */
   const call4 = (param, k0, k1, k2, k3) => {
     const b = sp
@@ -2962,15 +2966,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return arr
     }
     if (op === '.' || op === '?.') {
-      const recv = receiver(n[1]), prop = n[2]
-      if (op === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
-      if (typeof prop !== 'string') { expr(prop); return optionalResult(op, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
-      const k = member(op, recv, prop), pk = op === '.' && pathDepth ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
+      const recv = receiver(n[1]), prop = n[2], cop = chainOp(op, n[1])
+      if (cop === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
+      if (typeof prop !== 'string') { expr(prop); return optionalResult(cop, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
+      const k = member(cop, recv, prop), pk = op === '.' && pathDepth ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
       return pmask === undefined ? k : refine(k, pmask)
     }
     if (op === '[]') {
-      const recv = receiver(n[1]), idx = n[2], t = tagOf(recv)
-      if (literalKeyOf(idx) !== null) return member('.', recv, literalKeyOf(idx))
+      const recv = receiver(n[1]), cop = chainOp(op, n[1])
+      return optionalResult(cop, recv, (() => {
+      const idx = n[2], t = tagOf(recv)
+      if (literalKeyOf(idx) !== null) return member(cop === '?.' ? '?.' : '.', recv, literalKeyOf(idx))
       // `o[1]` on an object is the property "1" (ToPropertyKey of a number literal)
       if (t === K.OBJECT && (typeof idx === 'number' || Array.isArray(idx) && idx[0] == null && typeof idx[1] === 'number'))
         return member('.', recv, String(typeof idx === 'number' ? idx : idx[1]))
@@ -3004,6 +3010,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       }
       if (hasTag(recv, K.OBJECT)) escapeLostFields(ik === NUMBER)
       return ANY
+      })())
     }
     if (op === '(') return expr(n[1])
     if (op === '()' || op === '?.()') {
@@ -3024,7 +3031,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (tagOf(optional) === K.NONE) { sp = base; return K.NONE }
       }
       if (memberCall) {
-        r = optionalResult(callee[0], recv, method(recv, callee[2], base, count, n))
+        r = optionalResult(chainOp(callee[0], callee[1]), recv, method(recv, callee[2], base, count, n))
       }
       else if (callee === 'new.Map') r = mapOf(n, base, count)
       else if (callee === 'new.Set') r = setOf(n, base, count)

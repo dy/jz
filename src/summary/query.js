@@ -11,7 +11,7 @@ import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, valBesidePresence, kindOfVal, core, UNKNOWN,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind,
-  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind, emptySpreadKind } from './kind.js'
+  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind, emptySpreadKind, continuesOptional } from './kind.js'
 // Names every object has from its prototype: a read of one is never undefined.
 const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf',
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
@@ -122,6 +122,8 @@ export function summaryQueries(facts, internal = false) {
     ['some', () => BOOL], ['every', () => BOOL],
   ])
   const optionalResult = (op, recv, result) => op !== '?.' || !hasTag(recv, K.NULLISH) && !hasTag(recv, K.ABSENT) ? result : tagOf(core(recv)) === K.NONE ? NULLISH : join(result, NULLISH)
+  // An access continuing an optional chain short-circuits with it (the solver's chainOp).
+  const chainOp = (op, recv) => op === '?.' || continuesOptional(recv) ? '?.' : op
   const literalKind = v => v == null ? NULLISH : typeof v === 'number' ? NUMBER : typeof v === 'string' ? STRING : typeof v === 'boolean' ? BOOL : typeof v === 'bigint' ? BIGINT : ANY
   const args = a => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   const builtinResult = name => {
@@ -288,13 +290,15 @@ export function summaryQueries(facts, internal = false) {
       if (op === '{}' && n.length > 1 && n.slice(1).every(p => typeof p === 'string' || Array.isArray(p) && (p[0] === ':' || p[0] === '...'))) return literalKindOf(n)
       if (op === '(' || op === '()' && n.length === 2) return kindOfExpr(n[1])
       if (op === '.' || op === '?.') {
-        const r = kindOfExpr(n[1])
-        if (op === '?.' && tagOf(core(r)) === K.NONE) return NULLISH
-        if (typeof n[2] !== 'string') return optionalResult(op, r, ANY)
-        return optionalResult(op, r, memberOf(r, n[2]))
+        const r = kindOfExpr(n[1]), cop = chainOp(op, n[1])
+        if (cop === '?.' && tagOf(core(r)) === K.NONE) return NULLISH
+        if (typeof n[2] !== 'string') return optionalResult(cop, r, ANY)
+        return optionalResult(cop, r, memberOf(r, n[2]))
       }
       if (op === '[]') {
-        const r = kindOfExpr(n[1]), t = tagOf(r)
+        const r = kindOfExpr(n[1])
+        return optionalResult(chainOp(op, n[1]), r, (() => {
+        const t = tagOf(r)
         if (Array.isArray(n[2]) && (n[2][0] == null || n[2][0] === 'str') && typeof n[2][1] === 'string') return kindOfExpr(['.', n[1], n[2][1]])
         // `o[1]` on an object is the property "1"
         if (t === K.OBJECT && (typeof n[2] === 'number' || Array.isArray(n[2]) && n[2][0] == null && typeof n[2][1] === 'number'))
@@ -311,6 +315,7 @@ export function summaryQueries(facts, internal = false) {
         if (t === K.TYPED) return !typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) ? core(kindOfExpr(n[2])) === NUMBER ? orAbsent(merge(typedElemKind(r), typedPropsOf(r))) : ANY
           : typedReadPresent(scope, n, keyOf) || presentReads.has(n) ? typedElemKind(r) : orAbsent(typedElemKind(r))
         return t === K.HASH ? orAbsent(elemOf(r)) : t === K.ARRAY ? orAbsent(entryOf(r, kindOfExpr(n[2]))) : t === K.STRING ? orAbsent(STRING) : ANY
+        })())
       }
       if (op === '()' && typeof n[1] === 'string') {
         if (n[1].startsWith('new.') && TYPED_CTOR.test(n[1])) return builtinResult(n[1])
@@ -334,7 +339,7 @@ export function summaryQueries(facts, internal = false) {
       }
       if (op === '()' && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string') {
         const r = kindOfExpr(n[1][1])
-        return optionalResult(n[1][0], r, methodResult(r, n[1][2], n))
+        return optionalResult(chainOp(n[1][0], n[1][1]), r, methodResult(r, n[1][2], n))
       }
       // A call through any other callee expression (`TABLE[k](…)`, a call's
       // result called): the join of the closure set's results (the solver's call).

@@ -2184,6 +2184,21 @@ test('optional chain boolean continuation carries its atom', () => {
   is(str(), [true, false, 'boolean'])
 })
 
+// The summary's kind of a continuation (`o?.sites.length`, `o?.a[0]`, `o?.f()`)
+// joins the optional's undefined arm too: a `??` after it must stay, where
+// the NUMBER kind of `.length` alone folded it away. Reference: ECMA-262
+// 13.3.9.1 OptionalChain (the whole chain short-circuits to undefined).
+test('optional chain continuation keeps the nullish operator after it', () => {
+  const src = `
+    const m = new Map([[1, { sites: [1, 2, 3], f: () => 7 }]])
+    export let len = (k) => m.get(k)?.sites.length ?? -1
+    export let idx = (k) => m.get(k)?.sites[0] ?? -1
+    export let call = (k) => m.get(k)?.f() ?? -1
+    export let named = (k) => { const o = k ? { sites: [1, 2] } : null; const n = o?.sites.length; return n ?? -1 }`
+  const want = oracle(src), got = run(src)
+  for (const name of ['len', 'idx', 'call', 'named']) for (const k of [1, 2, 0]) is(got[name](k), want[name](k), `${name}(${k})`)
+})
+
 // Plain-object fields sharing a name with a TypedArray accessor misresolve when
 // the receiver arrives through a call arg — the whole name class, one per symptom:
 // `buffer` reads NaN/garbage (missing-field read is NOT undefined, so the lazy-init

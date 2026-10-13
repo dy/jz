@@ -156,3 +156,16 @@ export const selectKind = (k, mask) => {
   if (!(mask & 3)) bits &= NULL_BITS
   return bits ? bits | (k & UNKNOWN) : K.NONE
 }
+
+/** Whether an access continues an optional chain: its receiver node is an
+ *  optional access (`a?.b`, `a?.[i]`, `a?.()`) or a plain access that continues
+ *  one. A grouping ends the chain. Such an access short-circuits with the
+ *  optional's receiver, answering undefined where it is nullish. */
+export const continuesOptional = (node) => {
+  for (let c = node; Array.isArray(c); c = c[1]) {
+    const op = c[0]
+    if (op === '?.' || op === '?.[]' || op === '?.()') return true
+    if (op !== '.' && op !== '[]' && (op !== '()' || c.length === 2)) return false
+  }
+  return false
+}
