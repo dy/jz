@@ -745,7 +745,7 @@ test('self-compile: heap marks on empty work, an early failure, the other entry 
 
 test('kernel marks: the reader reports the phases past the record capacity, not silently', () => {
   const fake = {
-    exports: { phasesDone: () => 300, phaseCapacity: () => 256, phaseNameAt: (i) => 'p' + i, phaseHeapAt: (i) => 10 + i, stageHeap: (i) => i === 0 ? 10 : 0, tapeNodes: () => 0, tapeCapacity: () => 0 },
+    exports: { phasesDone: () => 300, phaseCapacity: () => 256, phaseNameAt: (i) => 'p' + i, phaseHeapAt: (i) => 10 + i, stageHeap: (i) => i === 0 ? 10 : 0, tapeNodes: () => 0, tapeCapacity: () => 0, phaseCheckpoints: () => 0, phaseDeclines: () => 0, phaseCheckpoints: () => 0, phaseDeclines: () => 0 },
     memory: { read: (v) => v },
   }
   const m = readMarks(fake)

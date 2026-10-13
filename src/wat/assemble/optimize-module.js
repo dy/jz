@@ -11,7 +11,7 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, declGlobal } from '../../ctx.js'
+import { ctx, checkpointed, declGlobal } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import {
   optimizeFunc, collectReachableGlobalWrites, collectReachableMemoryWrites,
@@ -27,7 +27,7 @@ import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
  * Phase: whole-module + per-function optimization passes.
  */
 export function optimizeModule(sec, profiler) {
-  const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, fn) : (_, fn) => fn()
+  const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, () => checkpointed(fn)) : (_, fn) => checkpointed(fn)
   const cfg = ctx.transform.optimize
   // First: it reads the accesses as emitted, before a pass stages their bases in locals.
   if (!cfg || cfg.staticScratch !== false) t('staticScratch', () =>

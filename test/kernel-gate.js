@@ -27,7 +27,7 @@ const run = (args, env = {}) => {
   const r = spawnSync(process.execPath, [RUNNER, ...args], { cwd: ROOT, encoding: 'utf8', timeout: 300_000, env: { ...process.env, ...env } })
   return { status: r.status, out: (r.stdout || '') + (r.stderr || '') }
 }
-const READERS = "export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, phaseCheckpoints } from './phase-marks.js'\n"
+const READERS = "export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, phaseCheckpoints, phaseDeclines } from './phase-marks.js'\n"
 const marks = readFileSync(join(ROOT, 'scripts/phase-marks.js'), 'utf8')
 const fixture = (body, readers = true) => compile((readers ? READERS : '') + `export default (source, strict, optJSON) => { ${body} }`, { modules: { './phase-marks.js': marks }, optimize: 1 })
 const GARBAGE = 'return new Uint8Array([1, 2, 3])'

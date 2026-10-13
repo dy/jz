@@ -26,7 +26,7 @@
  * @module plan
  */
 
-import { ctx, getFactStore } from '../../ctx.js'
+import { ctx, checkpointed, getFactStore } from '../../ctx.js'
 import { collectMemberUses, definesToPrimitive } from '../../member-uses.js'
 import { clearBodyFacts } from '../analyze.js'
 import {
@@ -64,6 +64,7 @@ import { splitLoopKinds } from './kind-split.js'
 import { callChosenFunctions } from './chosen-calls.js'
 import { specializeCalledArgs } from './called-args.js'
 import { hoistObjectReads } from './object-reads.js'
+import { hoistSiteReceivers } from './site-receivers.js'
 import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
 import { foldKindTests } from './fold-kind-tests.js'
 import { viewGuardedTyped } from './guard-views.js'
@@ -88,7 +89,7 @@ export default function plan(ast, profiler, summarize) {
   // Per-pass timing under `plan:` — the plan stage is the compile pipeline's
   // multi-pass hot spot (each mutating pass triggers a whole-program fact
   // refresh), so the profile must show WHICH pass and refresh dominate.
-  const t = profiler?.time ? (name, fn) => profiler.time(`plan:${name}`, fn) : (_, fn) => fn()
+  const t = profiler?.time ? (name, fn) => profiler.time(`plan:${name}`, () => checkpointed(fn)) : (_, fn) => checkpointed(fn)
   // AST-mutating pass: run timed; on change, re-sweep program facts (timed
   // separately — the refreshes are usually the cost, not the passes).
   // Fact freshness is OWNED HERE (stage-2 solver slice 1): mutating passes
@@ -217,6 +218,8 @@ export default function plan(ast, profiler, summarize) {
   sweep('splitMapPairs', splitMapPairs)
   // A key a loop reads of an object the function made and only reads: read once where it is made.
   sweep('hoistObjectReads', hoistObjectReads)
+  // A store's receiver the census cannot read again is read once into a local before the statement: the site then names it.
+  sweep('hoistSiteReceivers', hoistSiteReceivers)
   if (optimizing()) {
     // A field a loop reads and writes through one receiver, in a local for the
     // loop; the loops inlining left name what it spliced, so the summary looks again.

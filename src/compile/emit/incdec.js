@@ -13,7 +13,7 @@ import { VAL } from '../../reps.js'
 import { typedIdxProven } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationProgramHasBigint, representationUnaryUpdateAction } from '../representation-plan.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
-import { emit } from './dispatch.js'
+import { emit, markInstrumented, siteFlag, whereNew } from './dispatch.js'
 import { numericStep, hasBigintDomain, bigintResult } from './bigint.js'
 import { throughReference, putReference } from './assignment.js'
 import { K, hasTag } from '../../summary/kind.js'
@@ -68,12 +68,22 @@ export const incdecOps = {
       ctx.plans.compoundOf.set(value, ref)
       return value
     }
+    // The update is the census's site (compile/analyze/frame-effects.js): it
+    // is emitted here through its reference or as a node of its own, never
+    // through `emit`, so it is marked and flagged here as emitSite would
+    // (emit/dispatch.js). The step stores a number unless the program has
+    // BigInts: only then may the value it stored carry heap, and the receiver
+    // is flagged where the value does (`whereNew`).
+    const site = ctx.plans.escapeFlag && ctx.plans.escapeSites?.has(update) ? update : null
+    if (site) markInstrumented(site)
+    const flag = site && representationProgramHasBigint(ctx) ? siteFlag(site) : null
     const next = update[0] === '='
       ? typeof update[1] === 'string'
         ? emit(['=', update[1], step(update[1])])
         : throughReference(update[1], update[2], ref => putReference(ref, step(ref)))
       : emit([update[0], update[1], old])
-    const result = typed(['block', ['result', 'f64'], ['drop', asF64(next)], ['local.get', `$${old}`]], 'f64')
+    const stored = flag ? whereNew(asF64(next), flag) : next
+    const result = typed(['block', ['result', 'f64'], ['drop', asF64(stored)], ['local.get', `$${old}`]], 'f64')
     if (valTypeOf(update) === VAL.BIGINT) return bigintResult(asI64(result), self)
     return representationProgramHasBigint(ctx) ? deferBigintBox(result, () => result) : result
   },

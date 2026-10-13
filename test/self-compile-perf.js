@@ -32,11 +32,11 @@ import { compile } from '../index.js'
 import compileSelf from '../scripts/self.js'
 import { selfBytes } from './_self-build.js'
 
-// compileSelf's heap diagnostics are kernel intrinsics (module/core.js
-// __heap_mark, __heap_large); the V8 side of the paired timing runs the same
-// entry natively, where the arena has no mark and nothing is ever large.
-globalThis.__heap_mark ??= () => 0
-globalThis.__heap_large ??= () => false
+// compileSelf's arena intrinsics (module/core.js); the V8 side of the paired
+// timing runs the same entry natively, where the arena has no mark, nothing is
+// ever large and no phase is parked (scripts/native-arena.js, the one list).
+import { installNativeArena } from '../scripts/native-arena.js'
+installNativeArena()
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BENCH = join(ROOT, 'bench')

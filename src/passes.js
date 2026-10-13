@@ -105,6 +105,7 @@ export const PASS_NAMES = [
   'callChosenFunctions',      // a local holding one of several functions and only called: the choice of direct calls (plan/chosen-calls.js)
   'specializeCalledArgs',     // a parameter only called, given a named function: a copy calling it by name (plan/called-args.js)
   'hoistObjectReads',         // a key a loop reads of an object the function made and only reads: one read where it is made (plan/object-reads.js)
+  'hoistSiteReceivers',       // a store's unreadable receiver at a statement's head is read into a local the site then names (plan/site-receivers.js)
   'versionIntegralLoops',     // a loop indexing by numbers of unknown integrality: a copy over their int32s where they are ones (plan/integral-loops.js), speed-for-size
   'adoptLoopCounters',        // a `for` adopts a counter declared outside it and read nowhere else (plan/counted-loops.js)
   'forwardConditions',        // a boolean declared once from a condition for the `if` right after it: the `if` tests the condition (plan/forward-conditions.js)

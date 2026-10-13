@@ -157,10 +157,18 @@ export default (ctx) => {
     __park_read_str: ['__park_take', '__alloc', '__mkptr', '__sso_norm'],
     __park_rewind: ['__clear'],
     __park_mark: [],
+    __durable_state: [],
+    __park_enter: [],
+    __park_low_enter: [],
+    __park_base_enter: [],
+    __park_safe: [],
+    __esc_get: [],
+    __park_worth: [],
+    __park_end: [],
     __heap_since: [],
     __park_write_ref: ['__park_room'],
     __park_read_ref: ['__park_take'],
-    __park_rewind_to: [],
+    __park_rewind_to: ['__durable_state'],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -1027,8 +1035,24 @@ export default (ctx) => {
       (global.set $__park_read (local.get $base))
       (f64.const nan:${UNDEF_NAN}))`
     // A phase checkpoint (scripts/self.js checkpointPhase): the mark at a
-    // phase's start, the growth since it, a heap value kept by reference
-    // (its bits), and the rewind to the mark once the phase's result is parked.
+    // phase's start, the growth since it, whether the phase kept its memory
+    // to itself, a heap value kept by reference (its bits), and the rewind to
+    // the mark once the phase's result is parked. Phases nest: what a mark
+    // saves goes back to the caller's locals, never to a global.
+    // The phase reads the escape flag as a rewound frame does
+    // (optimize/arena-rewind.js): `__park_enter` saves the flag, hands it to
+    // the lowest and clears it; `__park_low_enter` saves the lowest and starts
+    // it afresh, as the outermost frame does, so a handler inside the phase
+    // takes the lowest since the mark; `__park_base_enter` saves the base and
+    // enters the mark as it, so that every censused store of a value made
+    // since the mark into storage from before it lowers the flag below the
+    // mark. An exception that leaves the phase skips `__park_end`, as it skips
+    // a frame's epilogue: the compile it ends resets the globals.
+    // `__park_safe` is the flag at or above the mark: the phase wrote into
+    // nothing older than itself, and what it allocated goes with it.
+    // `__park_end` hands the lower of the flag and the saved one, and of the
+    // lowest and the saved one, to the frame around, and gives the base back. `__park_worth`: the parked bytes are
+    // under half the growth, so the rewind frees more than the copy costs.
     // The rewind keeps everything below the mark. `__clear`'s durable heals
     // and global restores undo a round, not a phase: a phase's rewind resets
     // only the caches that may name memory above the mark (the dynamic-property
@@ -1036,16 +1060,44 @@ export default (ctx) => {
     // src/wat/assemble/stdlib-pull.js). The released memory is filled with
     // 0xFF, so a pointer into it that something kept traps at its first use
     // instead of reading the next phase's allocations. A durable log that grew
-    // during the phase names the phase's memory and its heal at `__clear`
-    // would read the release: the rewind refuses it.
-    declGlobal('__park_fwd_n', 'i32', 0)
-    declGlobal('__park_arr_log', 'i32', 0)
-    declGlobal('__park_slot_n', 'i32', 0)
+    // during the phase (`__durable_state`, the logs' counts and head) names the
+    // phase's memory and its heal at `__clear` would read the release: the
+    // rewind refuses it.
     ctx.core.stdlib['__park_mark'] = `(func $__park_mark (result i32)
-      (global.set $__park_fwd_n (global.get $__durable_fwd_n))
-      (global.set $__park_arr_log (global.get $__durable_arr_log))
-      (global.set $__park_slot_n (global.get $__durable_slot_n))
       (global.get $__heap))`
+    ctx.core.stdlib['__durable_state'] = `(func $__durable_state (result i64)
+      (i64.or (i64.extend_i32_u (global.get $__durable_arr_log))
+        (i64.or (i64.shl (i64.extend_i32_u (global.get $__durable_fwd_n)) (i64.const 32))
+          (i64.shl (i64.extend_i32_u (global.get $__durable_slot_n)) (i64.const 44)))))`
+    ctx.core.stdlib['__park_enter'] = `(func $__park_enter (result i32)
+      (local $esave i32)
+      (local.set $esave (global.get $__esc))
+      (if (i32.lt_u (local.get $esave) (global.get $__esc_low)) (then (global.set $__esc_low (local.get $esave))))
+      (global.set $__esc (i32.const -1))
+      (local.get $esave))`
+    ctx.core.stdlib['__park_low_enter'] = `(func $__park_low_enter (result i32)
+      (local $lsave i32)
+      (local.set $lsave (global.get $__esc_low))
+      (global.set $__esc_low (i32.const -1))
+      (local.get $lsave))`
+    ctx.core.stdlib['__park_base_enter'] = `(func $__park_base_enter (param $mark i32) (result i32)
+      (local $bsave i32)
+      (local.set $bsave (global.get $__base))
+      (global.set $__base (select (local.get $mark) (local.get $bsave) (i32.lt_u (local.get $mark) (local.get $bsave))))
+      (local.get $bsave))`
+    ctx.core.stdlib['__park_safe'] = `(func $__park_safe (param $mark i32) (result i32)
+      (i32.ge_u (global.get $__esc) (local.get $mark)))`
+    // The flag as it stands, for a diagnostic host.
+    ctx.core.stdlib['__esc_get'] = `(func $__esc_get (result i32)
+      (global.get $__esc))`
+    ctx.core.stdlib['__park_worth'] = `(func $__park_worth (param $mark i32) (result i32)
+      (i32.lt_u (i32.shl (i32.sub (global.get $__park_cursor) (global.get $__park_base)) (i32.const 1))
+        (i32.sub (global.get $__heap) (local.get $mark))))`
+    ctx.core.stdlib['__park_end'] = `(func $__park_end (param $esave i32) (param $bsave i32) (param $lsave i32) (result f64)
+      (if (i32.lt_u (local.get $esave) (global.get $__esc)) (then (global.set $__esc (local.get $esave))))
+      (if (i32.lt_u (local.get $lsave) (global.get $__esc_low)) (then (global.set $__esc_low (local.get $lsave))))
+      (global.set $__base (local.get $bsave))
+      (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__heap_since'] = `(func $__heap_since (param $mark i32) (result f64)
       (f64.convert_i32_u (i32.sub (global.get $__heap) (local.get $mark))))`
     ctx.core.stdlib['__park_write_ref'] = `(func $__park_write_ref (param $v f64) (result f64)
@@ -1055,17 +1107,12 @@ export default (ctx) => {
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_read_ref'] = `(func $__park_read_ref (result f64)
       (f64.load (call $__park_take (i64.const 8))))`
-    ctx.core.stdlib['__park_rewind_to'] = `(func $__park_rewind_to (param $mark i32) (result f64)
+    ctx.core.stdlib['__park_rewind_to'] = `(func $__park_rewind_to (param $mark i32) (param $state i64) (result f64)
       (if (i32.or
             (i32.lt_u (local.get $mark) (global.get $__heap_reset))
             (i32.gt_u (local.get $mark) (global.get $__heap)))
         (then (unreachable)))
-      (if (i32.or
-            (i32.ne (global.get $__park_fwd_n) (global.get $__durable_fwd_n))
-            (i32.or
-              (i32.ne (global.get $__park_arr_log) (global.get $__durable_arr_log))
-              (i32.ne (global.get $__park_slot_n) (global.get $__durable_slot_n))))
-        (then (unreachable)))
+      (if (i64.ne (local.get $state) (call $__durable_state)) (then (unreachable)))
       (memory.fill (local.get $mark) (i32.const 255) (i32.sub (global.get $__heap) (local.get $mark)))
       (global.set $__heap (local.get $mark))
       (global.set $__heap_end (i32.sub (global.get $__park_base) (i32.const 8)))
@@ -2967,10 +3014,18 @@ export default (ctx) => {
   ctx.core.emit['__park_read_str'] = () => (inc('__park_read_str'), typed(['call', '$__park_read_str'], 'f64'))
   ctx.core.emit['__park_rewind'] = () => (inc('__park_rewind'), typed(['call', '$__park_rewind'], 'f64'))
   ctx.core.emit['__park_mark'] = () => (inc('__park_mark'), typed(['call', '$__park_mark'], 'i32'))
+  ctx.core.emit['__durable_state'] = () => (inc('__durable_state'), typed(['call', '$__durable_state'], 'i64'))
+  ctx.core.emit['__park_enter'] = () => (inc('__park_enter'), typed(['call', '$__park_enter'], 'i32'))
+  ctx.core.emit['__park_low_enter'] = () => (inc('__park_low_enter'), typed(['call', '$__park_low_enter'], 'i32'))
+  ctx.core.emit['__park_base_enter'] = (mark) => (inc('__park_base_enter'), typed(['call', '$__park_base_enter', asI32(emit(mark))], 'i32'))
+  ctx.core.emit['__park_safe'] = (mark) => (inc('__park_safe'), typed(['call', '$__park_safe', asI32(emit(mark))], 'i32'))
+  ctx.core.emit['__esc_get'] = () => (inc('__esc_get'), typed(['call', '$__esc_get'], 'i32'))
+  ctx.core.emit['__park_worth'] = (mark) => (inc('__park_worth'), typed(['call', '$__park_worth', asI32(emit(mark))], 'i32'))
+  ctx.core.emit['__park_end'] = (esave, bsave, lsave) => (inc('__park_end'), typed(['call', '$__park_end', asI32(emit(esave)), asI32(emit(bsave)), asI32(emit(lsave))], 'f64'))
   ctx.core.emit['__heap_since'] = (mark) => (inc('__heap_since'), typed(['call', '$__heap_since', asI32(emit(mark))], 'f64'))
   ctx.core.emit['__park_write_ref'] = (v) => (inc('__park_write_ref'), typed(['call', '$__park_write_ref', asF64(emit(v))], 'f64'))
   ctx.core.emit['__park_read_ref'] = () => (inc('__park_read_ref'), typed(['call', '$__park_read_ref'], 'f64'))
-  ctx.core.emit['__park_rewind_to'] = (mark) => (inc('__park_rewind_to'), typed(['call', '$__park_rewind_to', asI32(emit(mark))], 'f64'))
+  ctx.core.emit['__park_rewind_to'] = (mark, state) => (inc('__park_rewind_to'), typed(['call', '$__park_rewind_to', asI32(emit(mark)), asI64(emit(state))], 'f64'))
 
   registerErrorClasses()
 }

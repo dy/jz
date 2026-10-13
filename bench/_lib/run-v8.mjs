@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url'
 
-// The self-compiler uses heap diagnostics in Wasm. JS hosts own their memory
-// and need no arena checkpoint (same adapter as test/self-compile-perf.js).
-globalThis.__heap_mark ??= () => 0
-globalThis.__heap_large ??= () => false
+// The self-compiler reads the arena through kernel intrinsics; a JS host owns
+// its memory and takes no checkpoint (scripts/native-arena.js, the one list).
+import { installNativeArena } from '../../scripts/native-arena.js'
+installNativeArena()
 
 const file = process.argv[2]
 if (!file) { console.error('usage: run-v8.mjs <case.js>'); process.exit(2) }

@@ -30,7 +30,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * @module compile
  */
 
-import { ctx, err, PTR, HEAP, getFactStore, declGlobal, inc } from '../ctx.js'
+import { ctx, checkpointed, err, PTR, HEAP, getFactStore, declGlobal, inc } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD } from '../../layout.js'
@@ -87,6 +87,11 @@ import { analyzeClosureBodyForEmit, emitClosureBody } from './closure-emit.js'
 
 // Optional profiling; pass behavior is identical without a profiler.
 const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, fn) : fn()
+// An assemble phase: timed, and run through the kernel's phase checkpoint
+// (ctx.js checkpointed), which keeps its result alone where the phase wrote
+// into nothing older than itself. Link runs after the kernel's first
+// checkpoint, where `ctx` is stale: its phase stays on `timePhase`.
+const phase = (profiler, name, fn) => timePhase(profiler, name, () => checkpointed(fn))
 
 /** Compile a prepared AST into the assembled WAT IR consumed by watr: assemble, then link. */
 export default function compile(ast, profiler) {
@@ -214,7 +219,7 @@ export function assemble(ast, profiler) {
     const key = summaryKey()
     if (built?.key !== key) {
       let summary = null
-      for (let round = 0; summary === null; round++) summary = timePhase(profiler, 'summary', () => summaryOf(round < 64))
+      for (let round = 0; summary === null; round++) summary = phase(profiler, 'summary', () => summaryOf(round < 64))
       built = { key: summaryKey(), summary, inputs: nodeIds && summaryInputs(ast, nodeIds) }
     }
     else if (nodeIds) {
@@ -272,9 +277,9 @@ export function assemble(ast, profiler) {
   // Whole-program constant fold of module-scope aggregate literals — `var x=[1,2,3];
   // y=x[0]` → `y=1`, dropping the array (no data segment, no __arr_idx_known) when
   // every reference is a static read. The scalar analog of the constInts fold above.
-  timePhase(profiler, 'foldAggregates', () => foldStaticConstAggregates(ast))
+  phase(profiler, 'foldAggregates', () => foldStaticConstAggregates(ast))
 
-  const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, summarizeProgram))
+  const programFacts = phase(profiler, 'plan', () => plan(ast, profiler, summarizeProgram))
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = summarizeProgram()
@@ -358,7 +363,7 @@ export function assemble(ast, profiler) {
   }
   // Load CSE and canonical bounds read function effects. Rewind proofs need
   // the rewritten loops and are computed by the final census below.
-  timePhase(profiler, 'frameEffects', () => censusFrames(false))
+  phase(profiler, 'frameEffects', () => censusFrames(false))
 
   // Closure-table planning is post-plan so every scan sees the final AST.
   // Same-body indirect devirt (dyn-closure-tables.js): which module globals are
@@ -409,7 +414,7 @@ export function assemble(ast, profiler) {
   // does not reach is neither analyzed nor emitted. Unsupported syntax in
   // such a body still rejects, at prepare, before any of this runs.
   const { reachableForLowering } = programFacts.programIndex
-  timePhase(profiler, 'analyzeFuncs', () => {
+  phase(profiler, 'analyzeFuncs', () => {
     for (const func of ctx.funcs.list) {
       if (func.raw || !reachableForLowering(func)) continue
       const facts = analyzeFuncForEmit(func, programFacts)
@@ -422,16 +427,16 @@ export function assemble(ast, profiler) {
   // Runs once the per-function reps have settled (they are codegen truth) and
   // before any function is emitted.
   if (structInline)
-    timePhase(profiler, 'structInline', () => structInline.finish())
+    phase(profiler, 'structInline', () => structInline.finish())
   if (ctx.transform.optimize?.unionInline !== false) {
-    if (unionInline) timePhase(profiler, 'unionInline', () => unionInline.finish())
+    if (unionInline) phase(profiler, 'unionInline', () => unionInline.finish())
     // Carrier-specialized clones (after the registry settles): verified
     // cursor-param functions get a raw-i32 `$union` sibling; sanctioned
     // callsites rewrite to it — no NaN-box crosses the call.
     // The clone's facts must derive under ITS sig (the pointer-ABI param
     // registration + reps seeding live in analyzeFuncForEmit) — re-run it
     // per clone rather than sharing the original's f64-sig facts.
-    timePhase(profiler, 'unionClones', () => {
+    phase(profiler, 'unionClones', () => {
       for (const clone of specializeUnionCursorParams(programFacts)) {
         if (!reachableForLowering(clone)) continue
         const facts = analyzeFuncForEmit(clone, programFacts)
@@ -453,7 +458,7 @@ export function assemble(ast, profiler) {
   // Every specialization producer has now run, including union-cursor clones.
   // Close the disjoint variant ID space before emission and prove each variant's
   // signature, parameter facts, and FunctionPlan were derived rather than shared.
-  timePhase(profiler, 'finalizeVariantIdentities', () =>
+  phase(profiler, 'finalizeVariantIdentities', () =>
     programFacts.programIndex.finalizeVariantIdentities(
       programFacts.paramReps, func => ctx.plans.functions.get(func)))
   // Concrete Wasm function IDs: one assignment of the final emission order,
@@ -461,13 +466,13 @@ export function assemble(ast, profiler) {
   // Emission and assembly ordering below read this order, not the registry.
   // Specialization added variants with their own records: refresh the census
   // while every body is still present (emission may release them).
-  timePhase(profiler, 'frameEffectsRefresh', censusFrames)
-  timePhase(profiler, 'finalizeConcreteFunctionIds', () =>
+  phase(profiler, 'frameEffectsRefresh', censusFrames)
+  phase(profiler, 'finalizeConcreteFunctionIds', () =>
     programFacts.programIndex.finalizeConcreteFunctionIds())
   // Parameter-ABI ownership transfer: the lattice's settled rows move to
   // concrete-ID slots and the name-keyed key dies here, so no later reader
   // can consult the analysis index.
-  timePhase(profiler, 'publishParameterAbi', () => {
+  phase(profiler, 'publishParameterAbi', () => {
     programFacts.programIndex.publishParameterAbi(programFacts.paramReps)
     const retiredParamRepsKey = 'paramReps'
     delete programFacts[retiredParamRepsKey]
@@ -489,7 +494,7 @@ export function assemble(ast, profiler) {
   // isReassigned memo window: emission is a pure projection of the frozen
   // post-analyze AST, so per-subtree assigned-name sets stay valid for the
   // whole stage (see the memo doc in ast.js).
-  const funcs = timePhase(profiler, 'emitFuncs', () => {
+  const funcs = phase(profiler, 'emitFuncs', () => {
     const out = []
     const arrayGlobals = presentArrayGlobals()
     beginAssignedMemo()
@@ -511,7 +516,7 @@ export function assemble(ast, profiler) {
 
   const closureFuncs = []
   let compiledBodyCount = 0
-  const compilePendingClosures = () => timePhase(profiler, 'emitClosures', () => {
+  const compilePendingClosures = () => phase(profiler, 'emitClosures', () => {
     // Emitting a body may discover nested closures. Process stable batches:
     // every body known at batch entry is fully planned before any body in that
     // batch emits; newly discovered bodies become the next batch.
@@ -519,7 +524,7 @@ export function assemble(ast, profiler) {
     // only the pure emit half is bracketed.
     while (compiledBodyCount < (ctx.closure.bodies?.length || 0)) {
       const batchEnd = ctx.closure.bodies.length
-      timePhase(profiler, 'analyzeClosures', () => {
+      phase(profiler, 'analyzeClosures', () => {
         for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(ctx.closure.bodies[i])
       })
       beginAssignedMemo()
@@ -640,7 +645,7 @@ export function assemble(ast, profiler) {
   if (ctx.closure.table?.length)
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
-  timePhase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
+  phase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
   // Only emitted closures can reach the host. Prepared but inactive readers
   // may have escaped summary IDs without materializing any callable value.
   // Module initialization can mint the first closure, so decide after it emits.
@@ -650,7 +655,7 @@ export function assemble(ast, profiler) {
   // callSites/paramClosureDefaults/directReturnClosures are complete — resolve
   // each candidate table's write family and (if monomorphic) hand it to
   // devirtConstFnArrayCalls via ctx.scope.constFnArrays, same as a const array.
-  if ((ctx.transform.optFlags & OPTF.devirtClosureTables)) timePhase(profiler, 'resolveDynFnTables', () => resolveDynFnTables(programFacts))
+  if ((ctx.transform.optFlags & OPTF.devirtClosureTables)) phase(profiler, 'resolveDynFnTables', () => resolveDynFnTables(programFacts))
 
   // Host globals (globalThis/process/WebAssembly/…) referenced as values are
   // recorded in ctx.core.hostGlobals during emit; register them as env imports
@@ -761,7 +766,7 @@ export function assemble(ast, profiler) {
     errorSidEntries: [...ctx.schema.errorSidEntries()],
   }
 
-  timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
+  phase(profiler, 'pullStdlib', () => pullStdlib(sec))
   // The host last-error channel follows the source: a `throw` in a function
   // that reachability never lowered still declares and exports it.
   if (programFacts.hasThrow) ctx.runtime.throws = ctx.runtime.userThrows = true
@@ -770,7 +775,7 @@ export function assemble(ast, profiler) {
 
   stripStaticDataPrefix(sec)
 
-  timePhase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler))
+  phase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler))
   if (ctx.transform.helperCallsites) instrumentHelperCallsites([...sec.funcs, ...sec.stdlib, ...sec.start])
 
   // Fold constant `__start` global inits into immutable inline decls (drops the
@@ -1003,7 +1008,10 @@ export function assemble(ast, profiler) {
   const rewindable = new Map(), numberResult = new Set(), asked = new Set(), unsafe = new Set(), keeps = new Map(), conditional = new Map(), entry = new Set()
   const unflagged = (sites) => sites != null && [...sites].some(n => !ctx.plans.instrumented?.has(n))
   for (const [name, id] of ctx.closure.summaryId ?? [])
-    if (id === undefined || !ctx.plans.closureSites?.has(id) || ctx.plans.closureUnsited?.has(id) || unflagged(ctx.plans.closureSites.get(id))) { unsafe.add(`$${name}`); entry.add(`$${name}`) }
+    if (id === undefined || !ctx.plans.closureSites?.has(id) || ctx.plans.closureUnsited?.has(id) || unflagged(ctx.plans.closureSites.get(id))) {
+      unsafe.add(`$${name}`); entry.add(`$${name}`)
+      ctx.transform.whyNotRewind?.(`$${name}`, 'escape at entry: ' + (id === undefined ? 'no summary id' : !ctx.plans.closureSites?.has(id) ? 'no census' : ctx.plans.closureUnsited?.has(id) ? 'an escape at no node' : 'a site left unflagged: ' + JSON.stringify([...ctx.plans.closureSites.get(id)].find(n => !ctx.plans.instrumented?.has(n)) ?? null).slice(0, 160)))
+    }
   // A function the frozen graph does not reach is neither analyzed nor
   // emitted (one spliced into its every caller): no frame, and no report.
   for (const f of ctx.funcs.list) {
@@ -1011,7 +1019,7 @@ export function assemble(ast, profiler) {
     const frame = f.frame
     if (frame == null || frame.unsited || unflagged(frame.sites)) {
       unsafe.add(`$${f.name}`); entry.add(`$${f.name}`)
-      ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + (frame == null ? 'no census' : frame.unsited ? frame.why : 'a site left unflagged'))
+      ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + (frame == null ? 'no census' : frame.unsited ? frame.why : 'a site left unflagged: ' + JSON.stringify([...frame.sites].find(n => !ctx.plans.instrumented?.has(n)) ?? null).slice(0, 160)))
       continue
     }
     if (frame.arenaUnsafe) { unsafe.add(`$${f.name}`); ctx.transform.whyNotRewind?.(`$${f.name}`, 'escape: ' + frame.why); continue }

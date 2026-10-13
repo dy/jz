@@ -596,6 +596,97 @@ test('frame effects: a stored value no running call made lowers nothing', () => 
   }
 })
 
+// The for-in enumeration caches are validated by an epoch; a frame that fills
+// one, or reaches a callee that does, moves the epoch as it restores, so the
+// cache never answers from memory the frame gave back (optimize/arena-rewind.js
+// ENUMC). With two layouts at one site and the object at the same address on
+// every call, a cache kept across the rewind would answer the other layout's count.
+test('arena rewind: a frame that reaches a for-in cache fill restores its heap and moves the enumeration epoch', () => {
+  const src = `const mk = (i) => i & 1 ? { a: 1, b: 2, c: 3 } : { a: 1, b: 2 }
+    const g = (i) => { const o = mk(i); let n = 0; for (const k in o) n++; return n }
+    export let f = (i) => g(i) + 0
+    export let main = () => { let s = ''; for (let i = 0; i < 12; i++) s += f(i); return s }`
+  for (const optimize of levels(1, 2, 3)) {
+    is(jz(src, { optimize }).exports.main(), oracle(src).main(), `O${optimize}: the count alternates with the layout`)
+    const wat = compile(src, { wat: true, optimize })
+    // every function: whether it fills a cache, moves the epoch, restores its heap, and whom it calls
+    const funcs = new Map()
+    for (const m of wat.matchAll(/\(func (\$[^ )]+)/g)) {
+      const j = wat.indexOf('\n  (func', m.index + 1), body = wat.slice(m.index, j < 0 ? undefined : j)
+      funcs.set(m[1], { fill: /global\.set \$__enumc_(off|arr)/.test(body), bump: /global\.set \$__enumc_epoch/.test(body), restore: /global\.set \$__heap /.test(body), calls: [...body.matchAll(/\(call (\$[^ )]+)/g)].map(c => c[1]) })
+    }
+    // a frame reaches a fill through its calls (the fixpoint the pass runs)
+    const reaches = new Set([...funcs].filter(([, f]) => f.fill).map(([n]) => n))
+    for (let grew = true; grew;) { grew = false; for (const [n, f] of funcs) if (!reaches.has(n) && f.calls.some(c => reaches.has(c))) { reaches.add(n); grew = true } }
+    const user = [...funcs.keys()].filter(n => /^\$(f|g|main)/.test(n))
+    is(user.filter(n => funcs.get(n).restore && reaches.has(n) && !funcs.get(n).bump).join(' '), '', `O${optimize}: a frame that restores and reaches a fill moves the epoch`)
+    is(user.filter(n => funcs.get(n).bump && !funcs.get(n).restore).join(' '), '', `O${optimize}: the epoch moves only where a frame restores`)
+    if (optimize >= 2) ok(user.some(n => funcs.get(n).restore && reaches.has(n) && funcs.get(n).bump), `O${optimize}: a frame that reaches the fill is rewound, with the epoch moved`)
+  }
+})
+
+// The phase checkpoint's verdict (module/core.js `__park_mark` to `__park_end`,
+// scripts/self.js checkpointPhase): the escape flag read over a phase as a
+// rewound frame reads it over a call. A phase that allocates only for its own
+// result is safe; one that files a value into older storage is not, nor is a
+// phase around it; the protocol's own calls are no escape.
+test('phase checkpoint: the escape flag says whether a phase wrote into nothing older than itself', () => {
+  const src = `const keep = []
+    const pure = (n) => { const m = new Map(); for (let i = 0; i < n; i++) m.set('k' + i, [i, i + 1]); return m.size }
+    const keyed = (n) => { let len = 0; for (let i = 0; i < n; i++) len += JSON.stringify([i, [i + 1]]).length; return len }
+    const sorted = (n) => { const lists = new Map(); let t = 0; for (let i = 0; i < n; i++) { lists.set(i & 3, [i, n - i]); (lists.get(i & 3) ?? []).push(i); t += [n - i, i].slice().sort((a, b) => a - b)[0] } return t }
+    const files = (n) => { const a = [n, n + 1]; keep.push(a); return a.length }
+    const guarded = (n) => { let s = 0; try { s = pure(n) } finally { s += 1 } return s }
+    const over = (run, n) => { const mark = __park_mark(), esave = __park_enter(), lsave = __park_low_enter(), bsave = __park_base_enter(mark); const r = run(n); const safe = __park_safe(mark); __park_end(esave, bsave, lsave); return safe * 10 + (r > 0 ? 1 : 0) }
+    export let verdictPure = (n) => over(pure, n)
+    export let verdictFiles = (n) => over(files, n)
+    export let verdictGuarded = (n) => over(guarded, n)
+    export let verdictKeyed = (n) => over(keyed, n)
+    export let verdictSorted = (n) => over(sorted, n)
+    export let nested = (n) => { const mark = __park_mark(), esave = __park_enter(), lsave = __park_low_enter(), bsave = __park_base_enter(mark); const inner = over(files, n); const safe = __park_safe(mark); __park_end(esave, bsave, lsave); return safe * 100 + inner }`
+  for (const optimize of levels(1, 2, 3)) {
+    const ex = jz(src, { optimize }).exports
+    is(ex.verdictPure(50), 11, `O${optimize}: a phase allocating for its result alone is safe`)
+    is(ex.verdictFiles(5), 1, `O${optimize}: a phase filing a value into older storage is not`)
+    is(ex.nested(5), 1, `O${optimize}: nor is the phase around it`)
+    is(ex.verdictPure(50), 11, `O${optimize}: and the flag is handed back: a safe phase after an unsafe one`)
+    is(ex.verdictGuarded(50), 11, `O${optimize}: a handler inside the phase takes the lowest since the mark, not the lows before it`)
+    is(ex.verdictKeyed(20), 11, `O${optimize}: the JSON writer's buffers are the call's own: stringifying is no escape`)
+    is(ex.verdictSorted(20), 11, `O${optimize}: a store into a receiver read once into a local names the receiver (plan/site-receivers.js)`)
+  }
+})
+
+// A postfix update of a member or an outer binding is the census's site, and
+// the emitter steps it through its reference, not through `emit`: the site is
+// marked and flagged there (emit/incdec.js), never left for the pass to zero
+// the flag at the frame's entry.
+test('frame effects: a postfix member update is a flagged site, not an escape at the frame\'s entry', () => {
+  const shapes = {
+    'a computed index': 'const serial = [0, 0]\nexport const mint = (name) => name + serial[serial.length - 1]++\nexport const main = () => mint("a").length',
+    'a nested member': 'const ctx = { names: { prepare: 0 } }\nexport const fresh = () => ctx.names.prepare++\nexport const main = () => fresh() + fresh()',
+    'an outer binding in an expression': 'let idx = 0\nexport const step = (s) => s.charCodeAt(idx++)\nexport const main = () => step("ab") + step("ab")',
+    'a member beside BigInts': 'const o = { n: 0 }\nlet big = 1n\nexport const fresh = () => o.n++\nexport const main = () => { big = big + 1n; return fresh() + fresh() }',
+  }
+  for (const [what, src] of Object.entries(shapes)) for (const optimize of levels(1, 2)) {
+    const why = []
+    is(jz(src, { optimize, whyNotRewind: (name, reason) => why.push(name + ': ' + reason) }).exports.main(), oracle(src).main(), `O${optimize}: ${what} steps as JS does`)
+    is(why.filter(w => /left unflagged|at entry/.test(w)).join('; '), '', `O${optimize}: ${what} leaves no site unflagged`)
+  }
+})
+
+// The sweep keeps a statement's meaning: an optional chain short-circuits as a
+// whole, a receiver read once is the one the statement would have evaluated.
+test('plan/site-receivers: a hoisted receiver keeps the statement\'s meaning, and an optional chain stays whole', () => {
+  const src = `const readers = new Map([['a', { sites: [] }]])
+    const readerFor = (p) => readers.get(p)
+    export let note = (p, n) => { readerFor(p)?.sites.push(n); const r = readerFor(p); return r ? r.sites.length : -1 }
+    const lists = new Map()
+    export let add = (k, v) => { (lists.get(k) ?? lists.set(k, []).get(k)).push(v); return lists.get(k).length }
+    export let last = (xs) => { xs[xs.length - 1].n = (xs[xs.length - 1].n ?? 0) + 1; return xs[xs.length - 1].n }
+    export let main = () => note('a', 1) * 100 + note('b', 2) * 10 + add('k', 1) + add('k', 2) + last([{ n: 0 }, { n: 4 }])`
+  for (const optimize of levels(1, 2, 3)) is(jz(src, { optimize }).exports.main(), oracle(src).main(), `O${optimize}`)
+})
+
 test('frame effects: a builtin called by name is listed by what it keeps', () => {
   // One the census does not list is an escape with no address at every call of it: the calls it sits in keep their memory.
   _compileInProcess('export let f = () => 1')
@@ -606,7 +697,7 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
     '__ptr_is', '__throw_method_receiver', '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
-    '__park_mark', '__heap_since', '__park_rewind_to', ...['u8', 'u32', 'f64', 'i64', 'str', 'ref'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
+    '__park_rewind_to', ...['u8', 'u32', 'f64', 'i64', 'str', 'ref'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
   const names = Object.keys(ctx.core.emit).filter(k => !k.includes(':') && /^[A-Za-z_$]/.test(k) && !SYNTAX.has(k))
   ok(names.length > 200, `the runtime's names are read: ${names.length}`)
   is(names.filter(n => !listedBuiltin(n) && !KEEPS.has(n)).join(' '), '', 'every name is listed, or kept on purpose')

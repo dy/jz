@@ -114,13 +114,17 @@ const DECLS = ['export', 'import', 'type', 'param', 'result', 'local']
 // random generator's state, a regex's last index and its groups' bounds.
 const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__heap_start', '$__heap_reset', '$__jz_last_err_bits', '$__seq',
   '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base', '$__esc_low',
-  '$__jbuf', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
+  '$__jbuf', '$__jstack', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
   '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end',
   // the reset's log of an object (module/core/durable-log.js `__durable_obj_snap`), which lowers the flag itself
   '$__durable_arr_seen', '$__durable_arr_log'])
 const IC_SITE = /^\$__ic_(hi|slot)\d+$/, REGEX_STATE = /^\$__re_(lastIndex_\d+|g\d+_(start|end))$/
-const heapScratch = (name) => HEAP_GLOBALS.has(name) || IC_SITE.test(name) || REGEX_STATE.test(name)
+// The for-in enumeration caches (module/object.js, core.js `__hash_keys_ro`):
+// every read of one asks the epoch first, and a frame that filled one moves
+// the epoch as it restores (`bump`), as `__clear` and a phase's rewind do.
+const ENUMC = /^\$__enumc_(off|len|ep|arr)\d*$/
+const heapScratch = (name) => HEAP_GLOBALS.has(name) || IC_SITE.test(name) || REGEX_STATE.test(name) || ENUMC.test(name)
 const NO_NAMES = new Set()
 // The durable-heap log (module/core/durable-log.js) allocates its buffers and
 // records entries only when a durable (pre-init) array or slot is grown,
@@ -149,6 +153,10 @@ const SURVIVE = '$__survive', ROOTN = '$__rootn', ROOTS = '$__roots', ROOT_RESET
 const ESC_LOW = '$__esc_low'
 // What asks of a stored value whether a running call made it: no lowering itself.
 const ASKS = '$__esc_new'
+/** A phase checkpoint's read of the flag (module/core.js, scripts/self.js checkpointPhase): the frame that calls it is a reader. */
+const PARK_SAFE = '$__park_safe'
+/** The checkpoint's other helpers before its verdict, and the heap's marks: they read and set the protocol's globals, no escape. */
+const PARK_CALLS = /^\$__(park_(mark|enter|low_enter|base_enter|worth|end)|durable_state|heap_since|heap_mark|heap_large|esc_get)$/
 // What asks of a frame's result whether the frame made it (module/core.js).
 const MADE = '$__made'
 const ESC_MARK = 'esch'
@@ -233,13 +241,18 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   const ALLOCATES = new Set(['$__alloc', '$__alloc_hdr', '$__alloc_hdr_n'])
   // Growth returns its receiver or fresh storage; its capacity is no address.
   const GROWS = new Set(['$__arr_grow', '$__arr_grow_known'])
+  // The JSON writer's output buffer and cycle stack: allocated afresh by the
+  // call that writes them (module/json.js `__stringify`), so a store into
+  // them is a store into the call's own memory, and nothing reads them after
+  // the call. A global that names scratch of one call derives no table.
+  const CALL_SCRATCH = new Set(['$__jbuf', '$__jstack'])
   const reaches = (id, tainted) => {
     if (id === NONE) return true   // an operand left on the stack (flat WAT): unknown, so tainted
     let hit = false
     walk(id, (n) => {
       if (hit) return false
       const s = opText(n)
-      if (s === 'global.get') { if (!constants.has(text(T.a[n]))) hit = true }
+      if (s === 'global.get') { if (!constants.has(text(T.a[n])) && !CALL_SCRATCH.has(text(T.a[n]))) hit = true }
       else if (s === 'local.get') { if (tainted.has(text(T.a[n]))) hit = true }
       else if (s === 'call') {
         const c = text(T.a[n])
@@ -443,6 +456,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         const g = text(T.a[id])
         // the emitter's own lowering (a census site, a catch handler)
         if (g === '$__esc') { rec.lowers = true; if (rec.censused) rec.ownFlag = true }
+        else if (ENUMC.test(g)) rec.enumc = true
         else if (!strandsNothing(g) && !(censused.has(name) && userGlobals.has(g?.slice(1)))) escapeAt(rec, id, 'global.set ' + g)
       }
       else if (callsTable(op)) { rec.indirect = true; rec.indirectAt.push(id) }
@@ -452,6 +466,8 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         if (callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n') rec.allocs = true
         if (LOWERS.has(callee)) { if (!LOWERS.has(name)) { rec.lowers = true; if (rec.censused) rec.ownFlag = true } return }
         if (callee !== null && REACH.test(callee)) return
+        // the checkpoint's helpers write the flag: reached from their caller, a reader, so their writes stay
+        if (callee === PARK_SAFE || PARK_CALLS.test(callee)) { if (callee === PARK_SAFE) rec.reader = true; rec.calls.add(callee); return }
         if (callee === null || callee === ASKS || callee === MADE || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
         // jz's own interop imports (`$__ext_*`, interop.js) that read hand the
         // host nothing; one that calls the host or sets a property of its
@@ -525,9 +541,12 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   for (let changed = true; changed;) {
     changed = false
     const tableFlag = [...table].find(n => info.get(n)?.tapeFlag), tableOwn = [...table].some(n => info.get(n)?.ownFlag)
+    const tableEnumc = [...table].some(n => info.get(n)?.enumc)
     for (const [, rec] of info) {
       const viaTable = rec.indirect && !rec.resolved, reached = rec.resolved ? [...rec.calls, ...rec.targets] : [...rec.calls]
       if (!rec.ownFlag && (reached.some(c => info.get(c)?.ownFlag) || viaTable && tableOwn)) { rec.ownFlag = true; changed = true }
+      // a frame that reaches a fill of an enumeration cache frees what the cache names as it restores: it moves the epoch too
+      if (!rec.enumc && (reached.some(c => info.get(c)?.enumc) || viaTable && tableEnumc)) { rec.enumc = true; changed = true }
       if (rec.tapeFlag) continue
       let via = reached.find(c => info.get(c)?.tapeFlag)
       if (via === undefined && viaTable && tableFlag !== undefined) via = tableFlag
@@ -743,6 +762,13 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     return fill
   }
   const back = (save) => DBG_POISON ? [poison(save), heapSet(localGet(save))] : [heapSet(localGet(save))]
+  // A frame that filled an enumeration cache moves the epoch: what the cache
+  // names may lie in the memory the frame gives back.
+  const epochBump = () => {
+    const s = node(GLOBAL_SET); push(s, str('$__enumc_epoch'))
+    const add = push(s, node(intern('i32.add'))); const g = push(add, node(intern('global.get'))); push(g, str('$__enumc_epoch')); push(add, i32c(1))
+    return s
+  }
   // The return of a rewound frame: the heap back, or for a conditional frame
   // back only when no escape wrote below the frame's mark, the lower of the
   // flag and the saved one then standing for the caller.
@@ -779,8 +805,9 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     for (const n of nodes) push(not, n)
     return [iff]
   }
-  const restore = (save, esave, bsave, ask = null) => {
-    if (esave == null) return unlessMade(ask, save, back(save))
+  const restore = (save, esave, bsave, ask = null, bump = false) => {
+    const bumped = bump ? [epochBump()] : []
+    if (esave == null) return [...unlessMade(ask, save, back(save)), ...bumped]
     const test = node(intern('i32.ge_u')); push(test, escGet()); push(test, localGet(save))
     const iff = node(intern('if')); push(iff, test)
     const then = node(intern('then')); for (const n of back(save)) push(then, n); push(iff, then)
@@ -793,7 +820,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     const lower = node(intern('i32.lt_u')); push(lower, localGet(esave)); push(lower, escGet())
     const join = node(intern('if')); push(join, lower)
     const joined = node(intern('then')); push(joined, escSet(localGet(esave))); push(join, joined)
-    return [...unlessMade(ask, save, [iff]), join, baseSet(localGet(bsave))]
+    return [...unlessMade(ask, save, [iff]), ...bumped, join, baseSet(localGet(bsave))]
   }
   // The log starts empty with the outermost frame, and the lowest flag clear.
   const lowSet = (value) => { const s = node(GLOBAL_SET); push(s, str(ESC_LOW)); push(s, value); return s }
@@ -832,6 +859,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     const types = Array.isArray(resultType) ? resultType : [resultType]
     const rec = info.get(name)
     if (rec == null) continue
+    const bump = rec.enumc === true && globals.has('$__enumc_epoch')
     // a tagged result is asked by a kernel the module has to hold
     if (asked.has(name) && types.some(t => t !== 'i32') && !info.has(MADE)) { if (rewrite) report?.(name, 'result: may hold a heap value'); continue }
     if (rec.unsafe) { if (rewrite) report?.(name, rec.why); continue }
@@ -900,7 +928,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       if (T.op[id] !== RETURN || T.a[id] === NONE) return
       if (types.length > 1) {
         for (const n of taken()) push(id, n)
-        for (const n of restore(save, esave, bsave, ask)) push(id, n)
+        for (const n of restore(save, esave, bsave, ask, bump)) push(id, n)
         for (const r of rets) push(id, localGet(r))
         return
       }
@@ -909,7 +937,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       push(push(block, node(RESULT)), str(resultType))
       T.next[value] = NONE
       push(block, localSet(ret, value))
-      for (const n of restore(save, esave, bsave, ask)) push(block, n)
+      for (const n of restore(save, esave, bsave, ask, bump)) push(block, n)
       for (const r of rets) push(block, localGet(r))
       T.a[id] = block
     })
@@ -920,7 +948,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         T.next[last] = NONE
         push(f, localSet(ret, last))
       } else for (const n of taken()) push(f, n)
-      for (const n of restore(save, esave, bsave, ask)) push(f, n)
+      for (const n of restore(save, esave, bsave, ask, bump)) push(f, n)
       for (const r of rets) push(f, localGet(r))
     }
     // Declarations and the save at the top of the body.
@@ -935,9 +963,10 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     rewound.add(name)
     if (esave != null) { flagged.add(name); readers.add(name); report?.(name, 'kept on a call that runs an escape: ' + (conditional.get?.(name) ?? rec.tapeFlagWhy)) }
   }
-  // The flag is read by the conditional frames rewound here and, through the
-  // host, by the conditional exports it releases (`readers`): every function
-  // they can reach keeps its writes; elsewhere they go.
+  // The flag is read by the conditional frames rewound here, through the
+  // host by the conditional exports it releases, and by a phase checkpoint
+  // (`readers`): every function they can reach keeps its writes; elsewhere they go.
+  for (const [name, rec] of info) if (rec.reader) readers.add(name)
   const reached = new Set(), work = heapless ? [] : [...readers]
   let viaTable = false
   while (work.length) {

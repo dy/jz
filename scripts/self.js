@@ -24,7 +24,7 @@ import { configureFixedMemory, verifyFixedScratch, verifyFixedMemory } from '../
 import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
 import { T } from '../src/ir/tape.js'
-import { resetMarks, recordPhase, markStage, markTape, countCheckpoint, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
+import { resetMarks, recordPhase, markStage, markTape, countCheckpoint, countDecline, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
 import jzify from '../jzify/index.js'
 
 // Final-optimizer tail shared with the host pipeline: its inputs are the
@@ -129,6 +129,9 @@ function parkString(text) {
 // narrowing writes onto). The mark is 0 outside a phase checkpoint.
 let parkMark = 0
 const parked = value => parkMark !== 0 && (__ptr_offset(value) >>> 0) < parkMark
+// A value the lane cannot carry (a function, a typed array): the park fails
+// as a whole, and the lane is abandoned.
+let parkFailed = false
 
 function parkValue(value) {
   if (value === null) { __park_write_u8(PARK_NULL); return }
@@ -151,21 +154,21 @@ function parkValue(value) {
     if (typeof text === 'string') { parkString(text); return }
     __park_write_u8(PARK_ARRAY)
     __park_write_u32(value.length)
-    for (let i = 0; i < value.length; i++) parkValue(value[i])
+    for (let i = 0; i < value.length && !parkFailed; i++) parkValue(value[i])
     return
   }
   if (value instanceof Map) {
     if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     __park_write_u8(PARK_MAP)
     __park_write_u32(value.size)
-    for (const [k, v] of value) { parkValue(k); parkValue(v) }
+    for (const [k, v] of value) { if (parkFailed) return; parkValue(k); parkValue(v) }
     return
   }
   if (value instanceof Set) {
     if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     __park_write_u8(PARK_SET)
     __park_write_u32(value.size)
-    for (const v of value) parkValue(v)
+    for (const v of value) { if (parkFailed) return; parkValue(v) }
     return
   }
   if (value != null && typeof value === 'object') {
@@ -173,13 +176,13 @@ function parkValue(value) {
     const keys = Object.keys(value)
     __park_write_u8(PARK_OBJECT)
     __park_write_u32(keys.length)
-    for (let i = 0; i < keys.length; i++) {
+    for (let i = 0; i < keys.length && !parkFailed; i++) {
       __park_write_str(keys[i])
       parkValue(value[keys[i]])
     }
     return
   }
-  throw new TypeError(`Cannot checkpoint WAT IR value of type ${typeof value}`)
+  parkFailed = true
 }
 
 let unparkStrings = null
@@ -225,9 +228,12 @@ function unparkValue() {
 function park(value) {
   __park_begin()
   parkStrings = new Map()
+  parkFailed = false
   parkValue(value)
   parkStrings = null
+  if (parkFailed) return false
   __park_finish()
+  return true
 }
 function unpark() {
   unparkStrings = []
@@ -243,7 +249,7 @@ function unpark() {
  * reader after a checkpoint takes its inputs from the value: `ctx` is stale.
  */
 function checkpoint(value) {
-  park(value)
+  if (!park(value)) throw new TypeError('Cannot checkpoint a WAT IR value: a function or a typed array in it')
   __park_rewind()
   return unpark()
 }
@@ -255,26 +261,43 @@ const checkpointIR = checkpoint
  * PHASE_MIN, park its result with every value from before the phase kept by
  * reference, rewind the arena to the phase's mark and read the result back.
  * The phase's own allocations are gone; the result alone remains above the
- * mark. A phase's result holds data only, nothing that names the phase's
- * memory after it (src/debug.js phaseCheckpointEmulation checks that natively).
- * A phase that grew less keeps its result in place: parking costs the result's size.
+ * mark. The rewind runs only where the escape flag says the phase wrote into
+ * nothing older than itself (`__park_safe`, the flag of optimize/arena-rewind.js
+ * read over the phase as a rewound frame reads it over a call) and the result
+ * is data the lane carries worth less than half the growth; otherwise the
+ * phase keeps its memory, as a frame that ran an escape keeps its own. A phase
+ * that grew less keeps its result in place: parking costs the result's size.
+ * Phases nest (compile/index.js `phase`, plan's sweeps, the solve inside them):
+ * what a mark saves lives in this frame's locals.
  */
 const PHASE_MIN = 16 * 1024 * 1024
 function checkpointPhase(run) {
-  const mark = __park_mark()
+  const mark = __park_mark(), state = __durable_state()
+  const esave = __park_enter(), lsave = __park_low_enter(), bsave = __park_base_enter(mark)
   const out = run()
-  if (__heap_since(mark) < PHASE_MIN) return out
-  parkMark = mark >>> 0
-  park(out)
-  parkMark = 0
-  __park_rewind_to(mark)
-  countCheckpoint()
-  return unpark()
+  let kept = out
+  if (__heap_since(mark) >= PHASE_MIN) {
+    // Safe: no escape below the mark, and no durable log grew (a durable
+    // collection first touched inside the phase is written into storage from
+    // before every mark). The verdict is recorded for the diagnostics before
+    // the phase's own record.
+    let verdict = 'checkpoint:unsafe'
+    if (__park_safe(mark) && __durable_state() === state) {
+      parkMark = mark >>> 0
+      verdict = !park(out) ? 'checkpoint:unparkable' : !__park_worth(mark) ? 'checkpoint:unworthy' : 'checkpoint:taken'
+      parkMark = 0
+    }
+    if (verdict === 'checkpoint:taken') { __park_rewind_to(mark, state); kept = unpark(); countCheckpoint() }
+    else countDecline()
+    recordPhase(verdict)
+  }
+  __park_end(esave, bsave, lsave)
+  return kept
 }
 
 // Heap diagnostics: scripts/phase-marks.js records them, scripts/kernel-marks.mjs
 // reads them through these exports, after a trap or a thrown compile error too.
-export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, phaseCheckpoints } from './phase-marks.js'
+export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, phaseCheckpoints, phaseDeclines } from './phase-marks.js'
 const stageMarks = { time(name, fn) { const out = fn(); recordPhase(name); return out } }
 
 /**

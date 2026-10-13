@@ -33,7 +33,7 @@ export const PHASE_NAMES = [
   'plan:moduleGlobalKinds', 'plan:unboxConstTypedGlobals', 'plan:inferModuleIntGlobals', 'plan:strictBoundaryTypeCheck', 'plan:foldKindTests', 'plan:collectFacts',
   'plan:classifyHashDictGlobals', 'plan:flattenFuncNamespaces', 'plan:declareWrittenKeys', 'plan:declareUnseenKeys', 'plan:devirtGlobalCalls', 'plan:devirtClassCalls', 'plan:indexArrayPatterns', 'plan:viewGuardedTyped',
   'plan:bindNestedRowLengths', 'plan:peelClampedStencil', 'plan:unrollRowLenPadLoops', 'plan:unrollRecurrences', 'plan:callChosenFunctions', 'plan:specializeCalledArgs', 'plan:inlineHotInternalCalls', 'plan:inlineLocalLambdas',
-  'plan:specializeFixedRestCalls', 'plan:splitMapPairs', 'plan:hoistObjectReads', 'plan:promoteLoopFields', 'plan:guardConstants', 'plan:canonicalizeCountedLoops', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeModuleScratch', 'plan:resolveAliases', 'plan:splitSplicedBindings', 'plan:propagateConstants', 'plan:resolveHeldMethods', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
+  'plan:specializeFixedRestCalls', 'plan:splitMapPairs', 'plan:hoistObjectReads', 'plan:hoistSiteReceivers', 'plan:promoteLoopFields', 'plan:guardConstants', 'plan:canonicalizeCountedLoops', 'plan:splitCharScan', 'plan:laneRecordParams', 'plan:scalarizeModuleScratch', 'plan:resolveAliases', 'plan:splitSplicedBindings', 'plan:propagateConstants', 'plan:resolveHeldMethods', 'plan:scalarizeArrayLiterals', 'plan:scalarizeObjectLiterals',
   'plan:promoteIntArrayLiterals', 'plan:scalarizeTypedArrays', 'plan:adoptLoopCounters', 'plan:forwardConditions', 'plan:unswitchLoops', 'plan:splitLoopKinds', 'plan:versionIntegralLoops', 'plan:synthesizeComputedDispatchCallSites',
   'plan:synthesizeMemberDispatchCallSites', 'plan:releaseLiftedAddressTakenNames', 'plan:buildProgramIndex', 'plan:dropUnreadGlobals',
   'plan:materializeAutoBoxSchemas', 'plan:resolveClosureWidth', 'plan:applyExportTypedArrayAbi', 'plan:splitByListKinds',
@@ -43,6 +43,8 @@ export const PHASE_NAMES = [
   'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:reachableWrites', 'optMod:hoistGlobalPtr',
   'optMod:hoistLoopGlobalPtr', 'optMod:inlinePureFns', 'optMod:optimizeFuncs', 'optMod:hoistGlobalConstLoads', 'optMod:appendLateStdlib',
   'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:staticScratch', 'analyzeClosures', 'shareSplitSlots', 'guardToInt32',
+  // a phase checkpoint's verdict (scripts/self.js checkpointPhase), recorded before the phase's own record
+  'checkpoint:taken', 'checkpoint:unsafe', 'checkpoint:unparkable', 'checkpoint:unworthy',
 ]
 const PHASE_IDS = new Map(PHASE_NAMES.map((name, id) => [name, id]))
 export const PHASE_RECORDS = 256
@@ -53,11 +55,11 @@ export const STAGE_FRONT = 0, STAGE_EMIT = 1, STAGE_OPTIMIZE = 2, STAGE_CHECKPOI
 const stages = new Float64Array(4)
 // The tape after link: its node count and the column capacity it grew to.
 const tape = new Float64Array(2)
-// The count of phases recorded, the capacity and the phase checkpoints taken: [done, capacity, checkpoints]
-const counts = new Float64Array(3)
+// The count of phases recorded, the capacity, the phase checkpoints taken and the ones declined: [done, capacity, checkpoints, declines]
+const counts = new Float64Array(4)
 counts[1] = PHASE_RECORDS
 
-export const resetMarks = () => { counts[0] = 0; counts[2] = 0; for (let i = 0; i < 4; i++) stages[i] = 0; tape[0] = 0; tape[1] = 0 }
+export const resetMarks = () => { counts[0] = 0; counts[2] = 0; counts[3] = 0; for (let i = 0; i < 4; i++) stages[i] = 0; tape[0] = 0; tape[1] = 0 }
 export const recordPhase = (name) => {
   const done = counts[0]
   if (done < counts[1] && done < PHASE_RECORDS) { ids[done] = PHASE_IDS.get(name) ?? 0; heaps[done] = __heap_mark() >>> 0 }
@@ -73,9 +75,12 @@ export const setPhaseCapacity = (n) => {
 }
 export const phaseCapacity = () => counts[1]
 export const phasesDone = () => counts[0]
-/** A phase checkpoint taken (scripts/self.js checkpointPhase): the phase's result parked, the arena rewound to the phase's mark. */
+/** A phase checkpoint taken (scripts/self.js checkpointPhase): the phase's result parked, the arena rewound to the phase's mark;
+ *  or declined: the phase grew past the threshold but wrote into older storage, or its result cannot be parked. */
 export const countCheckpoint = () => { counts[2] = counts[2] + 1 }
+export const countDecline = () => { counts[3] = counts[3] + 1 }
 export const phaseCheckpoints = () => counts[2]
+export const phaseDeclines = () => counts[3]
 const recorded = () => counts[0] < counts[1] ? counts[0] : counts[1]
 export const phaseNameAt = (i) => i >= 0 && i < recorded() && i === Math.floor(i) ? PHASE_NAMES[ids[i]] : ''
 export const phaseHeapAt = (i) => i >= 0 && i < recorded() && i === Math.floor(i) ? heaps[i] : 0

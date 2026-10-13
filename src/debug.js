@@ -100,8 +100,8 @@ export const phaseCheckpointEmulation = (inputs) => (run) => {
     if (Array.isArray(v)) { out = new Array(v.length); for (let i = 0; i < v.length; i++) out[i] = copy(v[i]) }
     else if (v instanceof Map) { out = new Map(); for (const [k, x] of v) out.set(copy(k), copy(x)) }
     else if (v instanceof Set) { out = new Set(); for (const x of v) out.add(copy(x)) }
-    else if (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null) { out = {}; for (const k of Object.keys(v)) out[k] = copy(v[k]) }
-    else throw new Error(`[phase checkpoint] the result holds a ${v.constructor?.name ?? 'non-plain'} object`)
+    else if (typeof v.constructor !== 'function' || v.constructor.name === 'Object') { out = {}; for (const k of Object.keys(v)) out[k] = copy(v[k]) }
+    else throw new Error(`[phase checkpoint] the result holds a ${v.constructor.name} object`)
     copying.delete(v)
     return out
   }

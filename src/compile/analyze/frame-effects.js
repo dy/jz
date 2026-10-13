@@ -273,8 +273,11 @@ const COPY_METHODS = new Set(['slice', 'concat', 'map', 'filter', 'flat', 'flatM
 const SHRINK_METHODS = new Set(['delete', 'clear', 'pop', 'shift'])
 // The runtime's own readers of a value's bits, which its library calls by
 // name, and the mark a class's constructor puts on a member it just stored
-// (jzify/classes.js): a bit of the entry, no value.
-const READS_POINTER = /^__(ptr_offset|ptr_type|ptr_aux|mkptr|box_bigint|unbox_bigint|object_toString|heap_mark|heap_large|hide_member)$/
+// (jzify/classes.js): a bit of the entry, no value. The heap's marks and the
+// phase checkpoint's protocol before its verdict (module/core.js `__park_mark`
+// to `__park_end`, scripts/self.js) read and set the arena's own globals,
+// and keep nothing.
+const READS_POINTER = /^__(ptr_offset|ptr_type|ptr_aux|mkptr|box_bigint|unbox_bigint|object_toString|heap_mark|heap_large|heap_since|hide_member|park_(mark|enter|low_enter|base_enter|safe|worth|end)|durable_state|esc_get)$/
 // A builtin's namespace: a call under it the census lists nowhere may do anything with its arguments.
 const STATICS = /^(Object|Reflect|Atomics|Array\.prototype|Function|Promise)\./
 // Builtins that write into their first argument.

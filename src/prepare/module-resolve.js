@@ -299,7 +299,7 @@ export const INTRINSIC_CALLEES = new Set([
   '__iter_arr', '__keys_ro', '__object_rest', '__heap_mark', '__heap_large', '__park_begin', '__park_rewind',
   '__park_write_u8', '__park_write_u32', '__park_write_f64', '__park_write_i64', '__park_write_str', '__park_finish',
   '__park_read_u8', '__park_read_u32', '__park_read_f64', '__park_read_i64', '__park_read_str',
-  '__park_mark', '__heap_since', '__park_write_ref', '__park_read_ref', '__park_rewind_to',
+  '__park_mark', '__durable_state', '__park_enter', '__park_low_enter', '__park_base_enter', '__park_safe', '__esc_get', '__park_worth', '__park_end', '__heap_since', '__park_write_ref', '__park_read_ref', '__park_rewind_to',
 ])
 
 // Resolve a member-receiver to a builtin module name, honoring FUNCTION-SCOPED

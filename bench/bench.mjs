@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { NATIVE_ARENA_SHIM, NATIVE_ARENA_RE } from '../scripts/native-arena.js'
 import { compileJzAt, compileJzSelf, watrModuleSources } from './_lib/compile.js'
 import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -627,8 +628,7 @@ if (typeof TextEncoder === 'undefined') {
     body += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
   }
   // Native compilers with their own Web globals need no shell polyfills.
-  const heapShim = /\b__heap_(?:mark|large)\b/.test(body)
-    ? 'var __heap_mark = () => 0, __heap_large = () => false\n' : ''
+  const heapShim = NATIVE_ARENA_RE.test(body) ? NATIVE_ARENA_SHIM : ''
   const contents = (nativeGlobals ? '' : out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '')) + heapShim + body
   if (!existsSync(path) || readFileSync(path, 'utf8') !== contents) writeFileSync(path, contents)
   flatInputs.add(path)

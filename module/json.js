@@ -829,8 +829,11 @@ export default (ctx) => {
     (local.set $val (call $__json_to (local.get $val) (i64.const ${extractF64Bits(mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0))})))` : ''}
     ;; Top-level undefined / function serializes to nothing → return undefined.
     (if (call $__json_omit (local.get $val)) (then (return ${UNDEF_WAT})))
-    ;; Reset output buffer + cycle stack
+    ;; Reset output buffer + cycle stack: both the call's own fresh memory
+    ;; (optimize/arena-rewind.js CALL_SCRATCH: a store into them is no escape,
+    ;; and a rewind past this call frees nothing the next call reads).
     (global.set $__jsp (i32.const 0))
+    (global.set $__jstack (call $__alloc (i32.const 2048)))
     (global.set $__jbuf (call $__alloc (i32.const 512)))
     (global.set $__jpos (i32.const 0))
     (global.set $__jcap (i32.const 256))

@@ -707,20 +707,39 @@ retain their fixed UTF-16 length. Serializer or decoder allocation into unread
 data traps. These helpers are reachable only from checkpoint users.
 
 A phase checkpoint (`scripts/self.js` checkpointPhase, through
-`ctx.transform.phaseCheckpoint`) keeps one phase's result past its arena growth:
-the summary solve returns data (its facts, the discovered layouts, the contracts'
-inputs) and `summarize` publishes the readers over it after the solve. The kernel
-parks that data above the heap, rewinds the arena to the mark taken at the solve's
-start and reads the data back; a value from before the mark (an AST node, a
-function record, a signature) is kept by its bits, never copied. The rewind
-resets the dynamic-property and enumeration caches, nothing else of `__clear`:
-the durable heals and the global restores undo a round. The released memory is
-filled with 0xFF, and a durable log that grew during the phase refuses the rewind.
-A solve must therefore write nothing it allocated into memory from before it, and
-its result is data alone: the debug build (`JZ_DEBUG_INVARIANTS=1`) copies every
-solve's result the way the park lane carries it (`src/debug.js`
-phaseCheckpointEmulation), so a reader that kept the solver's objects fails
-natively. A solve below the threshold (16 MB of growth) keeps its result in place.
+`ctx.transform.phaseCheckpoint`) keeps one phase's result past its arena growth.
+Every assemble phase, plan sweep and module-optimizer step runs through it
+(`ctx.js` checkpointed; `src/compile/index.js` phase, plan's `t`), and so does the
+summary solve, which returns data (its facts, the discovered layouts, the
+contracts' inputs) that `summarize` publishes the readers over after the solve;
+phases nest. The kernel parks a phase's result above the heap, rewinds the arena
+to the mark taken at the phase's start and reads the result back; a value from
+before the mark (an AST node, a function record, a signature) is kept by its bits,
+never copied. The rewind runs only where the escape flag of the arena rewind says
+the phase wrote into nothing older than itself: the mark reads the flag over the
+phase as a rewound frame reads it over a call (saves it, clears it, starts the
+lowest afresh so a handler inside the phase takes the lows since the mark, enters
+its base), every censused store of a value made since the mark into older storage
+lowers it below the mark, and `__park_safe` is the flag at or above the mark. A
+phase that wrote into older storage, or whose result the lane cannot carry (a
+function, a typed array) or would cost more to copy than half the growth, keeps
+its memory, as a frame that ran an escape keeps its own; the marks count the
+checkpoints taken and declined (`checkpoint:taken`, `checkpoint:unsafe`,
+`checkpoint:unparkable`, `checkpoint:unworthy` among the phase records, each
+before the record of the phase it judged; `__esc_get` reads the flag as it
+stands, for a diagnostic host). The pass keeps the flag's writes in every
+function a checkpoint can reach, and the census lists the protocol's own calls
+as keeping nothing. A write of a for-in enumeration cache is no escape either:
+every read of one asks the epoch, and a frame that fills one, or reaches a
+callee that does, moves the epoch as it restores (`optimize/arena-rewind.js`
+ENUMC), as the round's clear and a phase's rewind do. The rewind resets the dynamic-property and
+enumeration caches, nothing else of `__clear`: the durable heals and the global
+restores undo a round. The released memory is filled with 0xFF, and a durable log
+that grew during the phase refuses the rewind. A solve's result is data alone:
+the debug build (`JZ_DEBUG_INVARIANTS=1`) copies every solve's result the way the
+park lane carries it (`src/debug.js` phaseCheckpointEmulation), so a reader that
+kept the solver's objects fails natively. A phase below the threshold (16 MB of
+growth) keeps its result in place.
 
 Captured locals receive their cells independently, before a use that dominates
 all references. Allocation enters a conditional arm only when every reference
@@ -2468,6 +2487,7 @@ src/
                 plan/chosen-calls.js: a local holding one of several named functions and only called, the choice of direct calls
                 plan/called-args.js: a function whose parameter is only called or tested against strings, a copy for each named function or string literal a call passes there
                 plan/object-reads.js: a key a loop reads of an object the function made and only reads, read once where the object is made
+                plan/site-receivers.js: a store's receiver the frame census cannot read again (`map.get(k).push(v)`, `(seen ??= new Set()).add(k)`), read once into a local before the statement, so the escape flag lowers to its address instead of zero
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
                 arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)

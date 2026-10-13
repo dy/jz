@@ -1063,6 +1063,10 @@ export function locate(loc) {
  *  (`jz:` modules, their signatures marked in prepare): a kind the summary
  *  sharpens may route a runtime function through a path strict mode rejects. */
 export const strictCode = () => ctx.transform.strict && !ctx.func.current?.std
+/** A phase run through the kernel's phase checkpoint where one is installed (scripts/self.js
+ *  checkpointPhase): its result alone is kept where the phase wrote into nothing older than
+ *  itself. Natively the phase runs as it is. */
+export const checkpointed = (fn) => ctx.transform.phaseCheckpoint ? ctx.transform.phaseCheckpoint(fn) : fn()
 
 // A minted name reads as written: a local's (`rf64` + T + `f61_9`,
 // prepare/ident-purity.js), a bundled module's binding (`m0_util$clamp`,
