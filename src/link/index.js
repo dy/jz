@@ -16,7 +16,7 @@
  * @module link
  */
 import { DBG_INVARIANTS } from '../debug.js'
-import { resetTape, fromWat, toWat, verify } from '../ir/tape.js'
+import { resetTape, fromWat, toWat, verify, T, NONE, intern, text, remove } from '../ir/tape.js'
 import { treeshake } from './treeshake.js'
 import { schemaSections, releaseSection } from './sections.js'
 import { pruneUnusedThrowRuntime, reduceThrowHelpers } from './throw-runtime.js'
@@ -33,6 +33,15 @@ import { sortLocalsByUse } from '../optimize/sort-locals.js'
 const check = (root, when) => {
   const bad = verify(root)
   if (bad) throw new Error(`[link] module invalid ${when}: ${bad}`)
+}
+
+/** Remove the inline exports named in `names` (quoted) from the functions and globals that carry them. */
+function dropExports(root, names) {
+  const FUNC = intern('func'), GLOBAL = intern('global'), EXPORT = intern('export')
+  for (let c = T.a[root]; c !== NONE; c = T.next[c]) {
+    if (T.op[c] !== FUNC && T.op[c] !== GLOBAL) continue
+    for (let e = T.a[c]; e !== NONE; e = T.next[e]) if (T.op[e] === EXPORT && names.has(text(T.a[e]))) { remove(c, e); break }
+  }
 }
 
 export function link(module, facts) {
@@ -54,6 +63,11 @@ export function link(module, facts) {
   // argument copies reads it); the rewrite only where the rewind is on.
   const rewind = !cfg || cfg.arenaRewind !== false
   const arena = arenaRewind(root, { ...facts, rewrite: rewind })
+  // Compaction (module/core/compact.js) serves a module some call of which may
+  // keep memory: one whose every export keeps nothing it made or was handed
+  // (a result the host copies is released once copied) drops it.
+  if (facts.compact && facts.exportInner && ![...facts.exportInner.values()].some(inner => !arena.releasable.has(inner) || arena.flagged.has(inner)))
+    dropExports(root, new Set(['"__compact"']))
   // Which exports keep memory per call: the advisory reads the verdict itself.
   if (rewind) facts.adviseKept?.(arena)
   const callCount = treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })

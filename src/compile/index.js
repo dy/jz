@@ -83,6 +83,7 @@ import { analyzeFuncForEmit } from './analyze-for-emit.js'
 import { emitFunc, presentArrayGlobals } from './emit-func.js'
 import { transitiveFrameEffects, SITE } from './analyze/frame-effects.js'
 import { reachOn } from '../../module/core/reach.js'
+import { compactOn } from '../../module/core/compact.js'
 import { analyzeClosureBodyForEmit, emitClosureBody } from './closure-emit.js'
 
 // Optional profiling; pass behavior is identical without a profiler.
@@ -1112,6 +1113,8 @@ export function assemble(ast, profiler) {
     censused: new Set([...ctx.funcs.list.filter(f => f.frame).map(f => `$${f.name}`),
       ...[...ctx.closure.summaryId ?? []].filter(([, id]) => id !== undefined && ctx.plans.closureSites?.has(id)).map(([name]) => `$${name}`)]),
     report: ctx.transform.whyNotRewind ?? null,
+    // Compaction of kept memory (module/core/compact.js): link drops it where no export keeps memory.
+    compact: compactOn(),
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(), regexSids: [...ctx.schema.regexSids],
     viewSids: ctx.schema.list.flatMap((names, sid) => enumView(names) ? [sid] : []),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,

@@ -212,9 +212,19 @@ what it allocated (`heap-return` in the `warnings` sink). A call that does keep 
 and whatever it allocated before it: the heap goes back to the end of the
 highest block kept, so state made first and temporaries after it cost the
 state alone (at `optimize: 'size'` such a call keeps all it allocated).
-State replaced on every call (`buf = new Float64Array(n)` each block) costs
-an array a call, and the arrays it replaced are never freed. Keep such state
-in storage made once and written in place. What a call keeps stays until `memory.reset()`.
+State replaced call after call (`state = { ...state, x }`, `buf = new
+Float64Array(n)` each block, `log = log + line`) leaves what it replaced
+behind, which the module compacts: as an outermost call returns, once the
+kept memory holds twice what the last compaction kept (and a page besides),
+the live values slide down over the dead ones and every pointer to them is
+rewritten, so a program keeps what it reaches and no more. Nothing the host
+holds moves: its own allocations (`memory.Array` and the other constructors)
+and every value a call handed it (a closure, a typed array's view, an
+argument of a host import) pin the heap below them, so make those before
+the state that churns. `optimize: { compact: false }` turns compaction off,
+as `optimize: 'size'` does (`{ level: 'size', compact: true }` keeps it);
+imported or shared memory never compacts. What a call keeps stays until
+`memory.reset()`.
 For owned memory, reset returns the module to its state after instantiation and invalidates every
 earlier pointer: a binding, an array, a collection and an object the module
 made as it started read as they started (an object's field that holds a number
@@ -353,6 +363,7 @@ JavaScript's bounds checks.
 - **[scriptc](https://github.com/vercel-labs/scriptc)** also AOT-compiles typed JS/TS without an engine (TS annotations → LLVM), embedding QuickJS only as an opt-in fallback for dynamic code. It is native-first with WASI as a target; JZ is WASM-first, infers types from idiomatic untyped JS, and keeps dynamic fallbacks inside the WASM module.
 - **[TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler)** (`tslang`) compiles TypeScript through LLVM/MLIR to native executables or WebAssembly. Our native benchmark lane feeds it the unchanged JavaScript corpus saved as `.ts`, with its default library and garbage collector.
 - **[Perry](https://perryts.com/)** compiles JS/TS through LLVM to native executables with a linked runtime and garbage collector. Our [benchmarks](bench/README.md) cover its native output on the unchanged JS corpus.
+- **[Tov](https://github.com/richiemcilroy/Tov)** is a TypeScript-shaped language compiled through C to native binaries. It rejects untyped JS (no `any`, typed arrays or `Math.imul`), so the benchmarks run it like AssemblyScript, on hand-ported cases.
 - **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** produces lean WASM, but is not directly executable JavaScript.
 - **Rust, C, Zig, Go, and MoonBit** compiled to wasm run behind JZ by geomean on
   the corpus: rustc, clang and zig about 2×, Go and MoonBit over 4×. As native

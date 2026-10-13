@@ -87,7 +87,7 @@ const makeJsAllocator = (mem, heapGlobal) => {
   // The heap top and the post-init base: `memory.used` is their distance, and a
   // call that may release its argument copies rewinds the top to a mark.
   return { alloc, reset, initHeapPtr, top: getPtr, setTop: setPtr,
-    used: () => getPtr() - base,
+    used: () => getPtr() - base, base: () => base,
     // Owned modules may initialize after the host adapter is ready. Cell-backed
     // memories keep their fixed reset target (HEAP.START).
     markBase: () => { if (heapGlobal) base = getPtr() },
@@ -438,12 +438,16 @@ export const memory = (src) => {
 
   // Allocator scaffold: bumps the exported `$__heap` global (or memory[1020] for
   // shared memory). Wasm `_alloc` takes over when exported; `_clear`/jsReset rewinds.
-  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, markBase } = makeJsAllocator(mem, wasmExports?.__heap)
+  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, base, markBase } = makeJsAllocator(mem, wasmExports?.__heap)
   // `_alloc`'s i32 result crosses the wasm→JS boundary SIGNED (same ToInt32 rule as any
   // other i32 — see makeJsAllocator's comment); `>>> 0` restores the true unsigned address
   // once the heap grows past 2 GiB, matching jsAlloc's own already-unsigned return.
   const wasmAlloc = wasmExports?._alloc && (bytes => wasmExports._alloc(bytes) >>> 0)
-  let alloc = wasmAlloc || jsAlloc
+  // No call of the module runs while the host allocates for itself (`_busy`,
+  // kept by the call wrappers below): that storage a compaction never moves,
+  // its address being the host's to hold, so the pin keeps the floor above it.
+  const pinned = (allocate) => (bytes) => { const p = allocate(bytes); if (!mem._busy) mem._pin = top(); return p }
+  let alloc = pinned(wasmAlloc || jsAlloc)
   const reset = wasmExports?._clear || jsReset
   initHeapPtr()
 
@@ -471,8 +475,8 @@ export const memory = (src) => {
 
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
-    if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
-    mem.reset = () => { mem._views = new WeakMap(); reset() }
+    if (wasmAlloc) { alloc = pinned(wasmAlloc); mem.alloc = alloc }
+    mem.reset = () => { mem._views = new WeakMap(); mem._pin = 0; mem._live = 0; reset() }
     if (extMap) mem._extMap = extMap
     return mem
   }
@@ -489,6 +493,16 @@ export const memory = (src) => {
   mem._held = false
   mem._top = top
   mem._setTop = setTop
+  mem._base = base
+  // Compaction (module/core/compact.js): the floor nothing below moves, raised
+  // over what the host made or was handed, and the bytes the last compaction
+  // kept, which the next waits to see doubled.
+  mem._pin = 0
+  mem._live = 0
+  mem._calls = 0
+  mem._busy = false
+  mem._pinAt = 0     // the end of the highest block a decode handed the host as a view or a closure
+  mem._fns = 0       // closures decoded, so an object read with its methods is known to carry some
 
   mem.Array = (data) => {
     const n = data.length, off = hdr(n, n, n * 8), source = Object(data)
@@ -761,7 +775,7 @@ export const memory = (src) => {
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
     if (t === 10 && fnOf) {
-      if (off >= mem._above) mem._held = true
+      if (off >= mem._above) { mem._held = true; mem._fns++; if (off >= 16) mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true)) }
       return fnOf(p)
     }
     if (t === 1) {  // ARRAY
@@ -775,8 +789,9 @@ export const memory = (src) => {
     if (t === 3) {  // TYPED
       // A view of the module's memory: the bytes it shows stay while the host
       // holds it (`held`, for the call that returned it, interop `settled`).
-      const held = (at) => { if (at >= mem._above) mem._held = true; return at }
-      if (a & DATA_VIEW_FLAG) return new DataView(mem.buffer, held(m.getInt32(off + 4, true)), m.getInt32(off, true))
+      // The host holds the bytes shown: the heap below their end never moves (`_pinAt`, `settle`).
+      const held = (at, bytes) => { if (at >= mem._above) { mem._held = true; mem._pinAt = Math.max(mem._pinAt, at + bytes) } return at }
+      if (a & DATA_VIEW_FLAG) return new DataView(mem.buffer, held(m.getInt32(off + 4, true), m.getInt32(off, true)), m.getInt32(off, true))
       const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
       const Ctor = (a & 16) ? BigInt64Array
@@ -786,10 +801,10 @@ export const memory = (src) => {
           : [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
       if (a & 8) {
         const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
-        return new Ctor(mem.buffer, held(dataOff), byteLen / stride)
+        return new Ctor(mem.buffer, held(dataOff, byteLen), byteLen / stride)
       }
       const byteLen = m.getInt32(off - 8, true)
-      return new Ctor(mem.buffer, held(off), byteLen / stride)
+      return new Ctor(mem.buffer, held(off, byteLen), byteLen / stride)
     }
     if (t === 2) {  // BUFFER
       const byteLen = m.getInt32(off - 8, true)
@@ -815,7 +830,7 @@ export const memory = (src) => {
       // copies such an object's data into a dictionary, decoded below.
       // Error transport reads its stored message before constructing the host Error.
       if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a) && !mem.regexOfSid?.has(a)) return mem.read(mem.viewData(p), fnOf)
-      const keys = mem.schemas[a]
+      const keys = mem.schemas[a], fns = mem._fns
       if (!keys) { if (off >= mem._above) mem._held = true; return p }
       const re = mem.regexOfSid?.get(a), obj = re ? new RegExp(re[0], re[1]) : {}
       // A deleted slot keeps undefined and a bit of the mask (layout.js
@@ -838,6 +853,7 @@ export const memory = (src) => {
         if (d) for (const [key, value] of hashEntries(d, fnOf)) obj[key] = value
       }
       fnOf?.owners.set(obj, p)
+      if (fnOf && mem._fns !== fns && off >= mem._above) mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true))
       return obj
     }
     if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.
@@ -903,7 +919,7 @@ export const memory = (src) => {
   // state healing. A JS-only memory has no runtime state and just rewinds. The
   // views the module left on host objects (`__ext_set`) name storage a reset frees.
   mem._views = new WeakMap()
-  mem.reset = () => { mem._views = new WeakMap(); reset() }
+  mem.reset = () => { mem._views = new WeakMap(); mem._pin = 0; mem._live = 0; reset() }
 
   // TypedArray constructors: memory.Float64Array(data), etc.
   // Bulk-copy path: when input is a TypedArray whose element type matches
@@ -1033,6 +1049,7 @@ export const wrap = (memSrc, inst, state) => {
     } catch { /* ignore */ }
   }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
+  const compact = realInst.exports.__compact
   const hostAbiExp = new Map()
   const hostAbiBytes = customSection(mod, 'jz:hostabi')
   if (hostAbiBytes) {
@@ -1513,12 +1530,36 @@ export const wrap = (memSrc, inst, state) => {
   // this call (a host function it called calls back), or all ones.
   const NO_MARK = -1 >>> 0
   let depth = 0
-  const running = () => depth === 0 && (depth = 1) === 1
-  const ran = (threw) => { depth = 0; if (threw && setBase) setBase(-1) }
+  // As the outermost call returns, the module keeps what its roots reach and
+  // no more (`__compact`, module/core/compact.js): the memory above the floor
+  // is compacted once it holds twice what the last compaction kept, and a
+  // page besides. The floor stands above the host's own allocations and
+  // above every closure and view of the module's memory a call handed the
+  // host (`held`), which the host may hold by address.
+  // The heap is measured every sixteenth call (a global read a call would tax
+  // the cheapest exports). A call that handed the host a view of the module's
+  // memory, a closure, or an object with methods (`held`: the decode of a
+  // result, of a host import's argument, of a value stored into a host object
+  // marks it and notes the block's end, `_pinAt`) pins the heap below that
+  // end, above whatever the host may now hold by address.
+  const COMPACT_MIN = 65536
+  const settle = (returned, held) => {
+    if (!compact || mem.scalar) return
+    if (held) { mem._pin = Math.max(mem._pin, mem._pinAt); mem._pinAt = 0 }
+    if (!returned || asyncMod || (mem._calls = (mem._calls + 1) & 15) !== 0) return
+    const floor = Math.max(mem._base(), mem._pin), at = mem._top()
+    if (at - floor <= 2 * mem._live + COMPACT_MIN) return
+    const to = compact(floor | 0) >>> 0
+    mem._live = to - floor
+  }
+  const running = () => depth === 0 && (depth = 1) === 1 && (mem._busy = true) && ((mem._above = 0), (mem._held = false), true)
+  const ran = (threw) => { depth = 0; mem._busy = false; if (threw && setBase) setBase(-1); const handed = mem._held; mem._above = Infinity; mem._held = false; settle(!threw, handed) }
   const enter = (flag) => {
     // no frame of the module runs around the first call: a mark a call that threw left behind goes
     if (setBase && depth === 0) setBase(-1)
+    if (depth === 0) { mem._above = 0; mem._held = false }   // any view or closure decoded during the call counts
     depth++
+    mem._busy = true
     const mark = { top: mem._top(), kept: mem._kept, esc: flag && esc ? esc.value >>> 0 : 0, base: null }
     mem._kept = false
     if (flag && esc) esc.value = -1
@@ -1555,6 +1596,7 @@ export const wrap = (memSrc, inst, state) => {
     if (setBase && mark.base !== null) setBase(mark.base | 0)
     // a call that threw left the frames of the module without their epilogues: no mark stays past the outermost
     if (--depth === 0 && !returned && setBase) setBase(-1)
+    if (depth === 0) { mem._busy = false; const handed = held || mem._held; mem._above = Infinity; mem._held = false; settle(returned, handed) }
   }
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling

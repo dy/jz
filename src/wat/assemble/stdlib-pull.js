@@ -19,6 +19,7 @@ import { MEM_OPS, findBodyStart } from '../../ir.js'
 import { DYN_CACHE_EMPTY } from '../../../layout.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 import { ROOT_LOG_BYTES } from '../../../module/core/reach.js'
+import { compactOn, gcTableBytes } from '../../../module/core/compact.js'
 
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
 // are parsed only when absent from the assembled module. Generated templates
@@ -199,6 +200,18 @@ export function pullStdlib(sec) {
     reachable.has('__ptr_type') ||
     [...reachable].some(n => MEM_OPS.test(realize(n))) ||
     sec.funcs.some(hasMemOp) || sec.start.some(hasMemOp)
+  // Compaction of what the module keeps (module/core/compact.js): the host
+  // calls it as the outermost call returns. Pulled where the frame census
+  // (compile/analyze/frame-effects.js) found a site, or an emitted frame that
+  // keeps or may keep what it allocates; link drops it where no export keeps
+  // memory (optimize/arena-rewind.js). Where nothing can be kept the kernel
+  // lays out no table, so the data segment's dead tail still goes.
+  const mayKeep = () => {
+    if (ctx.plans.hasSites || ctx.plans.closureUnsited?.size) return true
+    const emitted = new Set(sec.funcs.filter(n => Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string').map(n => n[1].slice(1)))
+    return ctx.funcs.list.some(f => !f.raw && emitted.has(f.name) && (f.frame == null || f.frame.unsited || f.frame.arenaUnsafe || f.frame.keeps || f.frame.flagged))
+  }
+  const pullCompact = () => needsAlloc && compactOn() && ctx.core.stdlib['__compact'] != null && mayKeep()
   // Emit only what's reachable: drop every eagerly-`inc`'d *internal* helper the program
   // never calls. This is what lets a const-array / static-string / atom module shed the
   // allocator, pointer dispatchers, and length helpers that an array/object module load
@@ -215,6 +228,7 @@ export function pullStdlib(sec) {
   // link gives it: there for a module that allocates, dropped by link where
   // no frame asks.
   if (needsAlloc && ctx.transform.optimize?.arenaRewind !== false && ctx.core.stdlib['__made'] != null) inc('__made')
+  if (pullCompact()) { inc('__compact'); resolveIncludes() }
   if (ctx.core.includes.has('__root')) {
     inc('__survive', '__root_reset'); resolveIncludes()
     // Its log is made first thing as the module starts, below every mark a
@@ -258,6 +272,10 @@ export function pullStdlib(sec) {
     return true
   }
   // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
+  // The compaction's table (module/core/compact.js gcTableBytes): a lazy table
+  // like the others, gone with the kernel where link drops it; the interned
+  // spans before it stay reclaimable past it (static-data.js).
+  if (ctx.core.includes.has('__compact')) injectTable('__compact', '__gc_tbl', gcTableBytes())
   if (injectTable('__schema_value', '__schema_number', ctx.runtime.schemaNumberTable)) ctx.runtime.schemaNumberTable = null
   if (injectTable('__dec_to_f64', '__el_tbl', ctx.runtime.elTable)) ctx.runtime.elTable = null
   if (injectTable('__ryu_pow5', '__ryu_tbl', ctx.runtime.ryuTable)) ctx.runtime.ryuTable = null
@@ -347,6 +365,8 @@ export function pullStdlib(sec) {
           let src = ctx.core.stdlib[name]
           if (typeof src === 'function') ctx.core.stdlib[name] = src = src()
           if (typeof src !== 'string') continue
+          // the compaction's root function rewrites a global only where the program wrote it (module/core/compact.js)
+          if (name === '__gc_roots') continue
           for (const m of src.matchAll(/\(global\.set \$([A-Za-z0-9_.$]+)/g)) runtimeWritten.add(m[1])
         }
         // Self-compile divergence diagnostics (see resolveIncludes' twin block).

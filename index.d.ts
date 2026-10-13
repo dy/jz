@@ -52,6 +52,8 @@ export interface OptimizeOptions {
   tailCall?: boolean
   exceptions?: boolean
   alloc?: boolean
+  /** Compact what the module keeps as each outermost call returns (owned memory). Default on. */
+  compact?: boolean
   stencil?: boolean
   outerStrip?: boolean
   toneMap?: boolean

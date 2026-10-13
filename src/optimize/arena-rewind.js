@@ -214,6 +214,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     return T.op[n] === UNREACHABLE || (T.op[n] === DROP && T.a[n] !== NONE && T.op[T.a[n]] === UNREACHABLE)
   }
   const IF = intern('if'), THEN = intern('then'), ELSE = intern('else')
+  const SEQUENCE = new Set([FUNC, BLOCK, intern('loop'), THEN, ELSE, intern('try_table')])
   const decl = new Set(DECLS.map(intern))
   // The header: declarations, and the comment atoms a template carries between them.
   const isHeader = (c) => T.op[c] < 0 || decl.has(T.op[c])
@@ -1005,7 +1006,6 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // The flag lowered as the statement before the one that runs an escape: every
   // operand of a statement runs when it does, and each instruction keeps its
   // arity (a pass reading a `global.set`'s value takes its one operand).
-  const SEQUENCE = new Set([FUNC, BLOCK, intern('loop'), THEN, ELSE, intern('try_table')])
   const noted = (f, why) => {
     const note = node(CALL), id = ++escNotes
     push(note, str('$__esc_note')); push(note, i32c(id))

@@ -32,6 +32,7 @@ import { registerF16 } from './core/f16.js'
 import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
 import { registerReach, reachOn, REACH_DEPS } from './core/reach.js'
+import { registerCompact, COMPACT_DEPS } from './core/compact.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -91,6 +92,7 @@ export default (ctx) => {
     __esc_val: () => ['__esc_at', ...(reachOn() ? ['__root'] : [])],
     __esc_elem: () => ['__esc_at', ...(reachOn() ? ['__root'] : [])],
     ...REACH_DEPS,
+    ...COMPACT_DEPS,
     __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
     __is_truthy: () => representationProgramHasBigint(ctx) ? ['__ptr_type', '__ptr_offset'] : [],
@@ -897,6 +899,7 @@ export default (ctx) => {
       (global.set $__heap (global.get $__heap_reset)))`
 
     registerDurableLog()
+    registerCompact()
 
     // Compiler-only one-shot checkpoint. A large self-hosted compile writes
     // its final WAT tree into a compact binary lane above the low heap, rewinds

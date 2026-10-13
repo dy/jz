@@ -2067,6 +2067,38 @@ makes every site tell the host which one lowered the flag
 (`env.__esc_note(id)`, the ids listed on stderr), to find what keeps a
 call's memory.
 
+**Compaction of kept memory** (module/core/compact.js). What the rewind and
+the walk cannot free is what a call stored into module state: a value that
+replaces one an earlier call stored leaves the old one behind, and a program
+that replaces its state call after call grows without bound. As the outermost
+call returns, the host (interop.js `settle`) asks the module to keep only what
+its roots reach, once the memory above the floor holds twice what the last
+compaction kept and a page besides: `__compact(floor)` marks the blocks
+reachable from the module's globals (`__gc_roots`, laid out per program from
+`ctx.scope.globals`: every mutable f64 global but the caches and the scalar
+bindings, raw i32 globals by their representation, the JSON parser's runtime
+layouts, the reset log's buffers and records), rewrites every pointer word of
+every block that holds one, and slides the live words down to the floor in
+their order, so the heap ends where the live data does. The walk is precise,
+not conservative as the release walk is: a block is read by its kind, an
+object's slots and a closure environment's cells by tables the compiler lays
+out (`__gc_tbl`: the slots that may hold a pointer, the environment slots that
+hold a cell or raw bits), and every other word of a generic container is a
+normalized value. An address forwards through a bitmap of live words to the
+floor plus the live words below it, its low bits kept, so a string slice and
+a typed view's data (interior pointers) forward as any address does. A
+pointer to a growth stub above the floor is collapsed to the block; one to a
+stub below the floor stays (a durable receiver's address is what the program
+holds), the stub's forward rewritten once every pointer is forwarded. A Set
+or Map keyed by identity is rebuilt from its entries. Nothing below the
+floor moves: the floor stands at the reset mark, raised by the host over its
+own allocations and to the heap's top after any call during which it decoded
+a view of the module's memory or a closure (a result, a host import's
+argument, a value stored into a host object: `mem.read` marks `_held`). Shared and imported memory, fixed-memory modules, the size tier
+(`compact: false`, memory-for-size as `arenaReach`) and hosts other than the
+JS one do not compact; a walk that finds no room for its
+scratch above the heap leaves the heap as it was.
+
 An exported parameter used as a numeric array (paramNumericArrayLike) is
 Float64Array in the export and has kind variants under hidden export names
 (narrow/param-abi.js): Float32Array at every typed slot, and Float32Array at

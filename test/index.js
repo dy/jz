@@ -141,6 +141,7 @@ const TESTS = [
   'variant-result',
   'call-boundary',
   'call-release',
+  'compact',
   'typed-payload',
   'typed-decode',
   'typed-store',

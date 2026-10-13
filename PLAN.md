@@ -6,6 +6,49 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Memory, October 13
+
+The consumer's memory blowup was per-call state churn: every pattern that
+replaces module state as a call returns (`state = { ...state, x }`,
+`particles = particles.map(…)`, `buf = new Float64Array(n)`, `log = log +
+line`, a history array pushed and shifted, `m.set(k, { t })`) leaked the
+replaced value for the life of the module, linearly per call and
+quadratically for a growing string: 100,000 calls of `log = log + 'x'` ran out
+of the 4 GiB heap, a 64-float buffer replaced per call reached 58 MB. Probes
+of in-call allocation (temporaries in loops, nested allocation, recursion
+building trees, tokenizers) were already bounded by the rewind.
+
+Landed: compaction of kept memory (module/core/compact.js, CONTRIBUTING
+"Compaction of kept memory"). As the outermost call returns, once the memory
+above the reset mark holds twice what the last compaction kept plus a page,
+the host asks the module to keep only what its roots reach: a precise
+mark-and-slide over the kept region, kinds read from the runtime layout and
+from two tables the compiler lays out (an object layout's pointer slots, a
+closure environment's cell and raw slots), interior pointers (slices, views)
+forwarded through a live-word bitmap, identity-keyed Sets and Maps rebuilt,
+durable growth stubs and shifted arrays' base records rewritten once every
+pointer is forwarded. Nothing the host holds moves: its own allocations and
+every view or closure it decoded pin the heap below their end. The same
+probes now hold 22–64 KB after 100,000 calls, the string log 444 KB (its
+200 KB plus at most as much garbage), results identical to Node under
+`JZ_DEBUG_POISON=1` at every tier. Cost: the kernel (~4 KB) lands only in a
+module some export of which may keep memory, the size tier keeps it off as
+it keeps `arenaReach` off, and the host measures the heap every sixteenth
+call. `test/compact.js` pins the patterns, every value kind, the host's pins
+and a reset after compactions.
+
+Still open on memory, in order:
+
+1. Loop-carried allocation within one call: `s = x + s` and `a = a.concat(b)`
+   over a long loop inside a single call still grow quadratically (100,000
+   iterations exhaust the heap), `cur = f(cur)` linearly. The same kernels
+   serve it once the emitter names the loop's carried pointer locals as roots
+   at the back edge (the frame census already proves which bindings the
+   iteration escapes into); every other live pointer local of the function
+   must be named too, which is the proof to write.
+2. The recursive jz × jz compile (one 4 GiB call) and the Jessie and watr RSS
+   gaps, unchanged by this work.
+
 ## Release status, October 11
 
 `claude/epic-gates-f8ghed` (19 commits of rival-wasm and library-case work on

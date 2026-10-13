@@ -64,30 +64,35 @@ export function stripDeadLazyTables(sec) {
   // Rebuild the tail (the spans are the last data appends, in order): truncate
   // to the first span's pre-pad start, re-append live tables, re-point their
   // base globals — both the scope entry and the already-pushed sec.globals IR.
-  const setInit = (name, off) => {
-    const g = ctx.scope.globals.get(name)
-    if (g) g.init = off
-    for (const node of sec.globals) if (Array.isArray(node) && node[1] === '$' + name) {
-      const c = node[node.length - 1]
-      if (Array.isArray(c) && c[0] === 'i32.const') c[1] = off
-    }
-  }
   // spans[0].start is ALREADY the exact byte length of the kept prefix — it was
   // captured by injectTable's dataLen() read at insertion.
   dataReset(dataBytes().slice(0, spans[0].start))
-  const survivors = []
+  for (const s of spans) if (!spanLive(s)) setInit(sec, s.global, 0)
+  // Shared memory needs this list for start-time rebasing; active memory keeps it
+  // until watr's final graph has had one more chance to prove an owner dead.
+  ctx.runtime.lazySpans = appendLazy(sec, spans.filter(spanLive))
+}
+
+/** Re-point a table's base global, the scope entry and the pushed IR alike. */
+function setInit(sec, name, off) {
+  const g = ctx.scope.globals.get(name)
+  if (g) g.init = off
+  for (const node of sec.globals) if (Array.isArray(node) && node[1] === '$' + name) {
+    const c = node[node.length - 1]
+    if (Array.isArray(c) && c[0] === 'i32.const') c[1] = off
+  }
+}
+
+/** Append the lazy tables at the data segment's tail, each re-pointed; answers them. */
+function appendLazy(sec, spans) {
   for (const s of spans) {
-    if (!spanLive(s)) { setInit(s.global, 0); continue }
     dataAlign(8)
     s.start = dataLen()
     s.base = s.start
-    setInit(s.global, s.base)
+    setInit(sec, s.global, s.base)
     dataPush(s.bytes)
-    survivors.push(s)
   }
-  // Shared memory needs this list for start-time rebasing; active memory keeps it
-  // until watr's final graph has had one more chance to prove an owner dead.
-  ctx.runtime.lazySpans = survivors
+  return spans
 }
 
 /**
@@ -154,14 +159,19 @@ export function stripDeadInternedSpans(sec) {
     for (const c of n) { if (typeof c === 'string' && c[0] === '$') mark(c); else scan(c) }
   }
   while (work.length) scan(byName.get(work.pop()))
-  let cut = dataLen()
+  // The lazy tables (stripDeadLazyTables) are the last appends, each
+  // re-pointed through its global: a dead run before them is the tail too,
+  // and they are appended again past the cut.
+  const lazy = ctx.runtime.lazySpans || []
+  const tail = lazy.length ? Math.min(...lazy.map(s => s.start)) : dataLen()
+  let cut = tail
   for (let i = spans.length - 1; i >= 0; i--) {
     const s = spans[i]
-    if (s.end !== cut) break   // not contiguous with the true tail — something else already lives past it
+    if (s.end > cut || cut - s.end >= 8) break   // not contiguous with the tail (past the alignment pad) — something else already lives past it
     if (s.fn ? live.has(s.fn) : liveGlobals.has(s.global)) break
     cut = s.start
   }
-  if (cut < dataLen()) dataReset(dataBytes().slice(0, cut))
+  if (cut < tail) { dataReset(dataBytes().slice(0, cut)); if (lazy.length) ctx.runtime.lazySpans = appendLazy(sec, lazy) }
   ctx.runtime.reclaimSpans = []
 }
 

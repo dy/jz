@@ -456,8 +456,9 @@ const run = (i) => f(-1)`), 'an early return')
 }
 const f = mk(10)
 const run = (i) => f(i)`)
-  // one cell for \`count\`, two closure environments (bump: count; read: base, scope, count)
-  for (const level in out) is(out[level] <= 8 + 8 + 24, true, `the mutated capture's cell and the closures alone (${out[level]} bytes at O${level})`)
+  // one cell for \`count\`, two closure environments (bump: count; read: base, scope, count),
+  // each under the 16-byte header the compaction and reach walks read its count from
+  for (const level in out) is(out[level] <= 8 + (16 + 8) + (16 + 24), true, `the mutated capture's cell and the closures alone (${out[level]} bytes at O${level})`)
 })
 
 test('allocation: a push loop grows its array in place at the heap top', () => {

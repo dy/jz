@@ -63,11 +63,16 @@ export function treeshake(root, { removeDead, userFuncs, userGlobals }) {
   }
 
   const isUserGlobal = (name) => userGlobals ? userGlobals.has(name.slice(1)) : !name.startsWith('$__')
+  // The compaction's root function (module/core/compact.js `__gc_roots`) reads
+  // every global that holds a value: its reads keep none alive, and an entry
+  // whose global went goes with it.
+  const gcRoots = funcByName.get('$__gc_roots')
   let changed = true
   while (changed) {
     changed = false
     const refd = new Set()
     walk(root, (id) => {
+      if (id === gcRoots) return false
       const op = T.op[id]
       if (op === GLOBAL_GET || op === GLOBAL_SET) { const name = text(T.a[id]); if (name !== null) refd.add(name) }
       else if (op === EXPORT) { const target = T.next[T.a[id]]; if (target !== NONE && T.op[target] === GLOBAL) { const name = text(T.a[target]); if (name !== null) refd.add(name) } }
@@ -81,6 +86,18 @@ export function treeshake(root, { removeDead, userFuncs, userGlobals }) {
       for (let e = T.next[T.a[c]]; e !== NONE; e = T.next[e]) if (T.op[e] === EXPORT) { exported = true; break }
       if (exported) continue
       if (removeDead || !isUserGlobal(name)) { remove(root, c); changed = true }
+    }
+  }
+  if (gcRoots !== undefined && reachable.has('$__gc_roots')) {
+    const declared = new Set()
+    for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === GLOBAL) { const name = text(T.a[c]); if (name !== null) declared.add(name) }
+    const HEADER = new Set(['param', 'result', 'local', 'export'].map(intern))
+    for (let c = T.next[T.a[gcRoots]], next; c !== NONE; c = next) {
+      next = T.next[c]
+      if (T.op[c] < 0 || HEADER.has(T.op[c])) continue
+      let gone = false
+      walk(c, (id) => { if ((T.op[id] === GLOBAL_GET || T.op[id] === GLOBAL_SET) && !declared.has(text(T.a[id]))) gone = true })
+      if (gone) remove(gcRoots, c)
     }
   }
   return callCount

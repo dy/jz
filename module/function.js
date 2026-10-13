@@ -20,6 +20,7 @@ import { T } from '../src/ast.js'
 import { lookupValType, repOf } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, registerGetter } from '../src/ctx.js'
 import { reachOn } from './core/reach.js'
+import { compactOn } from './core/compact.js'
 import { functionLength } from '../src/function.js'
 import { dataLen, dataPush } from '../src/static-data.js'
 
@@ -255,7 +256,7 @@ export default (ctx) => {
     // reads there how many slots a closure it met holds, and a cell's address
     // fills its slot whole, the high word zero, so what the memory held
     // before reads as no value.
-    const walked = !!ctx.plans.hasSites && reachOn()
+    const walked = (!!ctx.plans.hasSites && reachOn()) || compactOn()
     const env = walked
       ? (inc('__alloc_hdr'), ['call', '$__alloc_hdr', ['i32.const', envCaptures.length], ['i32.const', envCaptures.length]])
       : ['call', '$__alloc', ['i32.const', envCaptures.length * 8]]
