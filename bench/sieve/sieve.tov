@@ -1,0 +1,38 @@
+// sieve.tov: Tov port of sieve.js (same limit, same passes, same checksum over
+// the composite bitmap). The bitmap is a value array, so sieve takes it inout.
+
+import { checksumU8, medianUs, printResult } from "../_lib/bench"
+
+const LIMIT = 1 << 20
+const N_ITERS = 6
+const N_RUNS = 21
+const N_WARMUP = 5
+
+function sieve(inout comp: u8[]) {
+  for (let i = 0; i < LIMIT; i++) comp[i] = 0
+  comp[0] = 1
+  comp[1] = 1
+  for (let i = 2; i * i < LIMIT; i++) {
+    if (comp[i]! === 0) {
+      for (let j = i * i; j < LIMIT; j += i) comp[j] = 1
+    }
+  }
+}
+
+function runKernel(inout comp: u8[]) {
+  for (let it = 0; it < N_ITERS; it++) sieve(&comp)
+}
+
+function main() {
+  let comp: u8[] = []
+  for (let i = 0; i < LIMIT; i++) comp.push(0)
+  for (let i = 0; i < N_WARMUP; i++) runKernel(&comp)
+
+  let samples: f64[] = []
+  for (let i = 0; i < N_RUNS; i++) {
+    const t0 = performance.now()
+    runKernel(&comp)
+    samples.push(performance.now() - t0)
+  }
+  printResult(medianUs(&samples), checksumU8(comp), LIMIT * N_ITERS, 1, N_RUNS)
+}

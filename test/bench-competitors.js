@@ -125,3 +125,54 @@ fs.chmodSync(out, 0o755)
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('tov bench: ported source only, checkout identity, parity and failures', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz tov '))
+  try {
+    const bin = join(dir, 'tov'), mode = join(dir, 'mode'), json = join(dir, 'results.json')
+    const checkout = join(dir, 'src')
+    const git = (...args) => execFileSync('git', ['-C', checkout, ...args], { encoding: 'utf8' }).trim()
+    execFileSync('git', ['init', '-q', checkout])
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'tov')
+    writeFileSync(mode, 'ok')
+    // Stand-in compiler: accepts only the case's own port, emits a binary that
+    // prints mandelbrot's oracle checksum (or a failure, per mode).
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs'), args = process.argv.slice(2)
+if (args[0] === '--version') { console.log('tov 0.0.1'); process.exit(0) }
+if (args[0] !== 'build' || args[1] !== ${JSON.stringify(join(ROOT, 'bench/mandelbrot/mandelbrot.tov'))}) process.exit(2)
+const mode = fs.readFileSync(${JSON.stringify(mode)}, 'utf8')
+if (mode === 'fail') { console.error('error[T0301] fixture'); process.exit(3) }
+const cs = mode === 'wrong' ? 1 : 3520419621
+const out = args[args.indexOf('-o') + 1]
+fs.writeFileSync(out, '#!/bin/sh\\necho median_us=10 checksum=' + cs + ' samples=65536 stages=256 runs=21\\n')
+fs.chmodSync(out, 0o755)
+`)
+    chmodSync(bin, 0o755)
+    const run = (compiler = bin, src = checkout) => execFileSync(process.execPath, [
+      join(ROOT, 'bench/bench.mjs'), '--targets=tov', '--cases=mandelbrot,alpha', '--no-web', `--json=${json}`,
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, TOV_BIN: compiler, TOV_DIR: src,
+      JZ_BENCH_BUILD_DIR: join(dir, 'build'), JZ_BENCH_WEB_DIR: join(dir, 'web') } })
+    const read = () => JSON.parse(readFileSync(json, 'utf8'))
+    ok(run().includes('[skip] tov'), 'a case without a .tov port is skipped')
+    const r = read()
+    is(r.cases.mandelbrot.targets.tov.parity, 'ok', 'port checksum matches the corpus oracle')
+    ok(r.cases.mandelbrot.targets.tov.bytes > 0, 'artifact size is recorded')
+    is(r.cases.alpha?.targets.tov, undefined, 'unported case has no row')
+    is(r.meta.versions.tov, `tov 0.0.1 [git ${git('log', '-1', '--format=%h %cs')}]`, 'version names the checkout commit')
+    ok(r.meta.invocations.tov.startsWith('tov build <case>.tov'), 'invocation is recorded')
+    run(bin, join(dir, 'no-checkout'))
+    is(read().meta.versions.tov, 'tov 0.0.1', 'without a checkout the version text stands alone')
+    writeFileSync(mode, 'wrong')
+    run()
+    is(read().cases.mandelbrot.targets.tov.parity, 'DIFF', 'wrong answer is labeled')
+    writeFileSync(mode, 'fail')
+    run()
+    const failed = read().cases.mandelbrot.targets.tov
+    is(failed.status, 'fail', 'rejected port records a failure')
+    ok(/T0301/.test(failed.reason), 'the compiler diagnostic is kept: ' + failed.reason)
+    ok(run(join(dir, 'missing')).includes('[skip] tov'), 'missing compiler skips')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

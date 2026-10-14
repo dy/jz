@@ -10,6 +10,7 @@ bench/<case>/<case>.rs      optional Rust baseline
 bench/<case>/<case>.go      optional Go baseline
 bench/<case>/<case>.zig     optional Zig baseline
 bench/<case>/<case>.as.ts   optional AssemblyScript baseline
+bench/<case>/<case>.tov     optional Tov baseline
 bench/<case>/<case>.npy.py  optional NumPy baseline
 bench/<case>/<case>.wat     optional hand-written WAT baseline
 ```
@@ -366,6 +367,13 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `javy` | Javy (`javy compile`, JS in embedded QuickJS) when installed; fenced interpreter reference, never in the headline geomean |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
 | `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run on `moonrun` (MoonBit's V8 wasm runner, which supplies the monotonic clock) — a wasm-first-language rival, when `moon`/`moonrun` are installed |
+| `tov` | [Tov](https://github.com/richiemcilroy/Tov): a TypeScript-shaped language compiled through C to a native binary. `tov build <case>.tov -o <bin>` at its default (`-O3`, checked integer overflow), when a matching `.tov` port exists. A ported language like `rust` or `as`, not a JS host: it rejects the unchanged corpus (untyped parameters, no typed arrays, no `Math.imul`). Set `TOV_BIN` to override. |
+
+Install Tov with `curl -fsSL https://tov.sh/install.sh | sh` (needs Rust and a C
+compiler). It builds from a git checkout at `~/.tov/src` (`TOV_DIR`), whose
+commit the run records beside `tov version`: the version string stays `0.0.1`
+while the compiler changes daily. Ports share `_lib/bench.tov`; its FNV mix runs
+in 64-bit `int` and masks to 32 bits, since Tov traps on integer overflow.
 
 Install the pinned Perry compiler with `npm install -g @perryts/perry@0.5.1520`,
 then run `node bench/bench.mjs --targets=perry`. CI uses the same package.

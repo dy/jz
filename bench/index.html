@@ -232,6 +232,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
         <tr><th scope="row"><a href="https://github.com/bytecodealliance/javy" target="_blank" rel="noopener">Javy</a></th><td>JavaScript → WASI</td><td>Embedded QuickJS</td><td>Broad JS support; engine bundled or shared</td></tr>
         <tr><th scope="row"><a href="https://github.com/bytecodealliance/ComponentizeJS" target="_blank" rel="noopener">ComponentizeJS</a></th><td>JS + WIT → WASM component</td><td>SpiderMonkey, optional AOT</td><td>Component interfaces, Web APIs; embedded engine</td></tr>
         <tr><th scope="row"><a href="https://perryts.com/" target="_blank" rel="noopener">Perry</a></th><td>TypeScript → native, WASM</td><td>LLVM ahead-of-time</td><td>Native UI; linked runtime and GC</td></tr>
+        <tr><th scope="row"><a href="https://github.com/richiemcilroy/Tov" target="_blank" rel="noopener">Tov</a></th><td>TypeScript-like → C → native</td><td>Ahead-of-time, explicit types</td><td>Value semantics, checked overflow; existing JS needs porting</td></tr>
         <tr><th scope="row"><a href="https://emscripten.org/docs/introducing_emscripten/about_emscripten.html" target="_blank" rel="noopener">Emscripten</a></th><td>C/C++ → WASM</td><td>LLVM ahead-of-time</td><td>C/C++ libraries, browser bindings; rewrite JS</td></tr>
       </tbody>
     </table>
@@ -340,6 +341,7 @@ const TARGETS = {
   scriptc: { label: 'scriptc', sub: 'native', band: 'native', hatch: true },
   tslang: { label: 'TypeScriptCompiler', sub: 'native', band: 'native', hatch: true },
   perry: { label: 'Perry', sub: 'native', band: 'native', hatch: true },
+  tov:   { label: 'Tov', sub: 'native', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
 }
 // One-line engine descriptions — surfaced as the per-row label tooltip so the chart
@@ -374,6 +376,7 @@ const DESC = {
   scriptc: 'scriptc (vercel-labs) – JavaScript compiled to a native executable through the TypeScript checker and LLVM, with its static runtime.',
   tslang: 'TypeScriptCompiler (tslang) – TypeScript compiled to a native executable through LLVM/MLIR, with its default library and garbage collector.',
   perry: 'Perry – JavaScript compiled through LLVM to a native executable with its runtime and garbage collector.',
+  tov: 'Tov – a TypeScript-shaped language compiled through C to a native binary (a hand port: it rejects untyped JS).',
   numpy: 'NumPy – vectorized C kernels driven from Python.',
 }
 // Per-target source file — each row links to the exact implementation it measured, so you
@@ -383,7 +386,7 @@ const REPO = 'https://github.com/dy/jz/blob/main/bench'
 // limitation to fix, so the row links to a search of that project's issues for the error (find the
 // existing report, or file one from there). jz's own targets point back at jz.
 const REPOS = {
-  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', tslang: 'ASDAlexander77/TypeScriptCompiler', perry: 'PerryTS/perry', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
+  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', tslang: 'ASDAlexander77/TypeScriptCompiler', perry: 'PerryTS/perry', tov: 'richiemcilroy/Tov', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
   moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
   'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
   graaljs: 'oracle/graal', spidermonkey: 'mozilla/gecko-dev', shermes: 'facebook/hermes', jawsm: 'wasmerio/wasmer',
@@ -392,7 +395,7 @@ const REPOS = {
 const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
   'porf-native': '.js', scriptc: '.js', tslang: '.js', perry: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
-  as: '.as.ts', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
+  as: '.as.ts', tov: '.tov', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
   'go-wasm': '.go', go: '.go', tinygo: '.go', 'zig-wasm': '.zig', zig: '.zig',
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',
 }

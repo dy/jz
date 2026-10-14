@@ -1,0 +1,43 @@
+// Shared timing + checksum + print for the .tov bench kernels: the Tov sibling
+// of _lib/bench.h / bench.zig / bench.mbt. Kernels import what they use
+// (`import { checksumU32, medianUs, printResult } from "../_lib/bench"`). Output
+// is the one `median_us=…` line bench.mjs parses.
+//
+// Tov integers are 64-bit and overflow traps, so the 32-bit FNV multiply runs
+// in `int` and masks: h < 2^32 and the prime < 2^25 keep the product < 2^57.
+
+export function mix(h: int, x: int): int {
+  return ((h ^ (x & 0xffffffff)) * 0x01000193) & 0xffffffff
+}
+
+// FNV-style hash over every 128th element (the u32 checksum of benchlib.js).
+export function checksumU32(xs: int[]): int {
+  let h = 0x811c9dc5
+  for (let i = 0; i < xs.length; i += 128) h = mix(h, xs[i]!)
+  return h
+}
+
+// FNV-style hash over every byte (benchlib.js checksumU8).
+export function checksumU8(xs: u8[]): int {
+  let h = 0x811c9dc5
+  for (const b of xs) h = mix(h, int(b))
+  return h
+}
+
+// Middle sample in microseconds, truncated (benchlib.js medianUs).
+export function medianUs(inout samples: f64[]): int {
+  for (let i = 1; i < samples.length; i++) {
+    const v = samples[i]!
+    let j = i - 1
+    while (j >= 0 && samples[j]! > v) {
+      samples[j + 1] = samples[j]!
+      j--
+    }
+    samples[j + 1] = v
+  }
+  return Math.trunc(samples[(samples.length - 1) >> 1]! * 1000)
+}
+
+export function printResult(median: int, checksum: int, samples: int, stages: int, runs: int) {
+  console.log(`median_us=${median} checksum=${checksum} samples=${samples} stages=${stages} runs=${runs}`)
+}

@@ -74,6 +74,11 @@ const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
 const TSLANG_BIN = process.env.TSLANG_BIN || 'tslang'
 const PERRY_BIN = process.env.PERRY_BIN || 'perry'
+// Tov (richiemcilroy/Tov): TypeScript-shaped language → C → native. Its
+// installer (`curl -fsSL https://tov.sh/install.sh | sh`) builds from a git
+// checkout at TOV_DIR (default ~/.tov/src); `tov version` alone names no commit.
+const TOV_BIN = process.env.TOV_BIN || 'tov'
+const TOV_DIR = process.env.TOV_DIR || join(homedir(), '.tov/src')
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
@@ -283,6 +288,16 @@ const porfIdentity = () => {
     return (_porfIdentity = version)
   }
 }
+// Tov identity: its version text plus the installer checkout's commit, the
+// only thing that tells one day's 0.0.1 from the next.
+const tovIdentity = () => {
+  const version = versionText(TOV_BIN).trim().split('\n')[0] || null
+  try {
+    const head = execFileSync('git', ['-C', TOV_DIR, 'log', '-1', '--format=%h %cs'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return `${version} [git ${head}]`
+  } catch { return version }
+}
 const canRun = cmd => {
   try { return spawnSync(cmd, ['--help'], { stdio: 'ignore' }).status === 0 }
   catch { return false }
@@ -319,6 +334,7 @@ const discoverCases = () => readdirSync(BENCH_DIR, { withFileTypes: true })
       zig: existsSync(join(dir, `${d.name}.zig`)) ? join(dir, `${d.name}.zig`) : null,
       mbt: existsSync(join(dir, `${d.name}.mbt`)) ? join(dir, `${d.name}.mbt`) : null,
       as: existsSync(join(dir, `${d.name}.as.ts`)) ? join(dir, `${d.name}.as.ts`) : null,
+      tov: existsSync(join(dir, `${d.name}.tov`)) ? join(dir, `${d.name}.tov`) : null,
       npy: existsSync(join(dir, `${d.name}.npy.py`)) ? join(dir, `${d.name}.npy.py`) : null,
       wat: existsSync(join(dir, `${d.name}.wat`)) ? join(dir, `${d.name}.wat`) : null,
       watRun: existsSync(join(dir, 'run-wat.mjs')) ? join(dir, 'run-wat.mjs') : null,
@@ -412,7 +428,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       const stamp = join(caseBuild(c), `.prep-${id}`)
       const identity = id === 'porf-native' ? porfIdentity() : ''
       const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
-        !['perry', 'scriptc', 'tslang'].includes(id) &&
+        !['perry', 'scriptc', 'tslang', 'tov'].includes(id) &&
         !(id === 'porf-native' && _porfCheckoutDirty)
       const artifact = targets[id]?.bin?.(c)
       let fresh = false
@@ -457,6 +473,7 @@ const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const porfNatPath = c => join(caseBuild(c), `${c.id}-porfnat`)
 const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
 const tslangBinPath = c => join(caseBuild(c), `${c.id}-tslang`)
+const tovBinPath = c => join(caseBuild(c), `${c.id}-tov`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
@@ -961,6 +978,21 @@ const targets = {
       })
     }, { nativeGlobals: true, timeout: 60_000 }),
   },
+  // Tov is a ported language, like Rust/Go/AssemblyScript, not a JS host: it
+  // rejects the unchanged corpus outright (untyped parameters, no typed arrays,
+  // no Math.imul; every case fails in benchlib.js before its kernel). Cases
+  // with a `<case>.tov` port (shared _lib/bench.tov) build at Tov's default:
+  // -O3, checked integer overflow.
+  tov: {
+    name: 'Tov → native (C)',
+    available: c => !!c.tov && has(TOV_BIN),
+    bin: tovBinPath,
+    run: c => tryRun('tov', c, () => {
+      execFileSync(TOV_BIN, ['build', c.tov, '-o', tovBinPath(c)], {
+        cwd: BENCH_DIR, stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL',
+      })
+    }, [tovBinPath(c)]),
+  },
   graaljs: {
     name: 'GraalJS',
     available: () => !!graalJsBin(),
@@ -1166,6 +1198,7 @@ const TARGET_CMDS = {
   scriptc: 'scriptc build <case>-native-flat.js -o <case>-scriptc (default release optimization, static runtime) → run binary',
   tslang: 'tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>-tslang.ts -o <case>-tslang (unchanged JS saved as .ts; clock_gettime host timer) → run binary',
   perry: 'perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary',
+  tov: 'tov build <case>.tov -o <case>-tov (default -O3, checked integer overflow; C via clang -ffp-contract=off) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   'jz-base': 'the same builds by the compiler at JZ_BASE_ROOT (meta.base) → node (V8 wasm)',
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
@@ -1190,7 +1223,7 @@ const TARGET_VERSIONS = {
   'jz-w2c': ['jz', 'watr', 'clang'], 'jz-w2c2': ['jz', 'watr', 'clang'],
   'c-wasm': ['node'], 'rust-wasm': ['node'], 'go-wasm': ['node'], 'zig-wasm': ['node'],
   wat: ['node'], jawsm: ['node'], javy: ['node'], tinygo: ['node'],
-  tslang: ['tslang', 'clang'],
+  tslang: ['tslang', 'clang'], tov: ['tov', 'clang'],
 }
 
 const allCases = discoverCases()
@@ -1759,6 +1792,7 @@ if (JSON_PATH) {
       scriptc: has(SCRIPTC_BIN) && ver(SCRIPTC_BIN),
       tslang: has(TSLANG_BIN) && (versionText(TSLANG_BIN).match(/tslang version[^\n]*/)?.[0] || ver(TSLANG_BIN)),
       perry: has(PERRY_BIN) && ver(PERRY_BIN),
+      tov: has(TOV_BIN) && tovIdentity(),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),
       clang: has('clang') && ver('clang'),
