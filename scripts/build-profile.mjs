@@ -99,7 +99,7 @@ export function resolveSelfCompileBuild({
   arrayLiteralMinCap = 2,
   hashSmallInitCap = 2,
   collectionInitCap = 2,
-  compactStubs = 1 << 16,
+  compactStubs = 1 << 20,
   memory = 1024,
   compactCollections = process.env.JZ_SELF_COMPILE_COMPACT_COLLECTIONS !== '0',
   helperCounters = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '') || !!helperSites(),

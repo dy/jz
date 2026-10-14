@@ -115,14 +115,19 @@ export const registerDurableLog = () => {
   // record that owns them.
   declGlobal('__durable_arr_seen', 'i32')
   declGlobal('__durable_arr_log', 'i32')
+  // the stub log's table (module/core/stub-log.js), made first as the module
+  // starts: no durable array lies in it, so the bitmaps skip its addresses
+  // (`__durable_skip` bytes from `__durable_lo` down; both 0 without one)
+  declGlobal('__durable_lo', 'i32')
+  declGlobal('__durable_skip', 'i32')
   ctx.core.stdlib['__durable_arr_snap'] = `(func $__durable_arr_snap (param $off i32)
     (local $cell i32) (local $bit i32) (local $len i32) (local $rec i32)
     (if (i32.eqz (global.get $__durable_arr_seen))
       (then
-        (local.set $len (i32.add (i32.shr_u (global.get $__heap_reset) (i32.const 6)) (i32.const 1)))
+        (local.set $len (i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1)))
         (global.set $__durable_arr_seen (call $__alloc (local.get $len)))
         (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $len))))
-    (local.set $cell (i32.add (global.get $__durable_arr_seen) (i32.shr_u (local.get $off) (i32.const 6))))
+    (local.set $cell (i32.add (global.get $__durable_arr_seen) (i32.shr_u (i32.sub (local.get $off) (select (global.get $__durable_skip) (i32.const 0) (i32.ge_u (local.get $off) (global.get $__durable_lo)))) (i32.const 6))))
     (local.set $bit (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $off) (i32.const 3)) (i32.const 7))))
     (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return)))
     (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))
@@ -143,10 +148,10 @@ export const registerDurableLog = () => {
     (local $cell i32) (local $bit i32) (local $size i32) (local $rec i32)
     (if (i32.eqz (global.get $__durable_arr_seen))
       (then
-        (local.set $size (i32.add (i32.shr_u (global.get $__heap_reset) (i32.const 6)) (i32.const 1)))
+        (local.set $size (i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1)))
         (global.set $__durable_arr_seen (call $__alloc (local.get $size)))
         (memory.fill (global.get $__durable_arr_seen) (i32.const 0) (local.get $size))))
-    (local.set $cell (i32.add (global.get $__durable_arr_seen) (i32.shr_u (local.get $off) (i32.const 6))))
+    (local.set $cell (i32.add (global.get $__durable_arr_seen) (i32.shr_u (i32.sub (local.get $off) (select (global.get $__durable_skip) (i32.const 0) (i32.ge_u (local.get $off) (global.get $__durable_lo)))) (i32.const 6))))
     (local.set $bit (i32.shl (i32.const 1) (i32.and (i32.shr_u (local.get $off) (i32.const 3)) (i32.const 7))))
     (if (i32.and (i32.load8_u (local.get $cell)) (local.get $bit)) (then (return)))
     (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))

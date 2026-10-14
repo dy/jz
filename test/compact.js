@@ -257,7 +257,7 @@ test('compact: a stub log too small for the call declines compaction, never corr
   const src = `const g = (log, m, n) => { let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 500 == 0) { log.push({ i }); m.set('k' + i, i) } } return s.length }
     export const f = n => { const log = [], m = new Map(); const r = g(log, m, n); let t = 0; for (const e of log) t += e.i; for (const [k, v] of m) t += v + k.length; return r + t + log.length + m.size }`
   const want = oracle(src)
-  const small = jz(src, { optimize: { compactStubs: 1 } }), wide = jz(src)
+  const small = jz(src, { optimize: { compactStubs: 1 } }), wide = jz(src, { optimize: { compactStubs: 1024 } })
   for (const n of [7, 20000]) { is(small.exports.f(n), want.f(n), `compactStubs 1: f(${n})`); is(wide.exports.f(n), want.f(n), `default log: f(${n})`) }
   ok(small.memory.buffer.byteLength >= wide.memory.buffer.byteLength, `the declined loop kept more (${small.memory.buffer.byteLength >> 20} vs ${wide.memory.buffer.byteLength >> 20} MB)`)
 })
@@ -271,6 +271,23 @@ test('compact: a loop compacts before the memory\'s cap, not only at its amortiz
   const want = oracle(src), { exports, memory } = jz(src, { memory: { initial: 2, maximum: 1024 } })
   is(exports.f(40000), want.f(40000), 'f(40000) under a 64 MB cap')
   ok(memory.buffer.byteLength <= 64 * 1024 * 1024, `the memory stayed within its cap (${memory.buffer.byteLength >> 20} MB)`)
+})
+
+test('compact: durable arrays below and above the stub log\'s table heal at a reset', () => {
+  if (onWasi() || !counted()) return
+  // the stub log's table is the first thing the start makes: a static
+  // literal lies below it, an array the start builds above; the durable
+  // bitmaps skip the table's addresses, so both log their first write of a
+  // round and reset to what they held
+  const src = `const lit = [3, 5]; const built = []; for (let i = 0; i < 4; i++) built.push(i * 10)
+    export const write = (i) => { lit[0] = i; built[1] = i; let s = ''; for (let k = 0; k < 2000; k++) s = (k % 10) + s; return lit[0] + built[1] + s.length }
+    export const read = () => lit[0] + lit[1] + built[0] + built[1] + built.length`
+  const want = oracle(src), { exports, memory } = jz(src)
+  is(exports.read(), want.read(), 'as started')
+  for (const i of [7, 9]) is(exports.write(i), want.write(i), `write(${i})`)
+  is(exports.read(), 9 + 5 + 0 + 9 + 4, 'after the writes')
+  memory.reset()
+  is(exports.read(), 3 + 5 + 0 + 10 + 4, 'a reset heals both durable arrays')
 })
 
 test('compact: a reset after compactions returns the module to its start', () => {

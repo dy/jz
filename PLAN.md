@@ -58,6 +58,11 @@ on a static object literal (`const cfg = { a: 1 }; cfg['p' + (i % 5)] =
 undefined" past a few hundred calls at O0 and O1. `test/compact.js` now
 pins the shape at every level over three thousand calls.
 
+Bootstrap at c7678141: round-trip, kernel parity and checkpoint pass; the
+hosted suite fails 1 of 5,505 (the array-holes program exhausting the hosted
+compiler's 4 GiB, below); the recursive compile exhausts 4 GiB in compileAst
+after finalizeVariantIdentities.
+
 Still open on memory: the recursive jz × jz compile (one 4 GiB call). The
 self-compiler is built at O1, which keeps the rewind and compaction off, so
 a compile frees nothing: the kernel's counters show the array-holes test's

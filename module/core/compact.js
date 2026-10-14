@@ -712,7 +712,7 @@ export const registerCompact = () => {
           (br $word)))))`)
     if (has('__durable_fwd_buf')) bytes('__durable_fwd_buf', '(i32.const 3072)')
     if (has('__durable_slot_buf')) bytes('__durable_slot_buf', '(i32.const 8192)')
-    if (has('__durable_arr_seen')) bytes('__durable_arr_seen', '(i32.add (i32.shr_u (global.get $__heap_reset) (i32.const 6)) (i32.const 1))')
+    if (has('__durable_arr_seen')) bytes('__durable_arr_seen', '(i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1))')
     if (has('__durable_arr_log')) lines.push(`(if (local.get $fwd)
       (then (global.set $__durable_arr_log (call $__gc_fwd_raw (global.get $__durable_arr_log))))
       (else (if (global.get $__durable_arr_log) (then (call $__gc_rec (global.get $__durable_arr_log))))))`)

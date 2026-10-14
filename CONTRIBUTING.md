@@ -2135,8 +2135,15 @@ The stub log keeps such stubs right: a growth helper logs the stub it leaves
 when the block is older than the highest mark a compacting loop took in this
 call (`__lmark`, raised at each site's loop entry, cleared with the log as an
 outermost call starts: link/sections.js `__base$set`), as [stub address, box
-of the new block] in a table of 1024 entries made as the module starts
-(`__stubs`, `__stubn`). `__gc_begin` keeps what each logged stub below the
+of the new block] in a table made as the module starts (`__stubs`,
+`__stubn`; `optimize.compactStubs` entries, 65,536 by default: a megabyte of
+address space of which only the written pages are resident, since a parser's
+run logs some thousands and a compiler's a million; a declared maximum bounds
+it to a sixteenth of the memory). The table is the first thing the start
+makes, so the durable bitmaps (module/core/durable-log.js, one bit per
+durable word on the first durable write of a round) skip its addresses
+(`__durable_lo`, `__durable_skip`) rather than grow by a sixteen-thousandth
+of it. `__gc_begin` keeps what each logged stub below the
 floor names and lists the stub for its forward to be rewritten, checking
 first that the address still holds a stub forwarding where logged (a rewind
 may have reused it); `__gc_move` forwards the logged boxes while the chains

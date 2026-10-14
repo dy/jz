@@ -235,7 +235,8 @@ export function pullStdlib(sec) {
     // the stub log's table, made as the module starts, below every mark (module/core/compact.js)
     let start = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
     if (!start) sec.start.push(start = ['func', '$__start'], ['start', '$__start'])
-    start.splice(findBodyStart(start), 0, ['global.set', '$__stubs', ['call', '$__alloc', ['i32.const', stubLogBytes()]]])
+    start.splice(findBodyStart(start), 0, ['global.set', '$__stubs', ['call', '$__alloc', ['i32.const', stubLogBytes()]]],
+      ...(ctx.scope.globals.has('__durable_lo') ? [['global.set', '$__durable_lo', ['global.get', '$__heap']], ['global.set', '$__durable_skip', ['i32.const', stubLogBytes()]]] : []))
   }
   if (ctx.core.includes.has('__root')) {
     inc('__survive', '__root_reset'); resolveIncludes()

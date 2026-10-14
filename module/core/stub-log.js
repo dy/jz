@@ -17,9 +17,15 @@ export const sitesOn = () => compactOn() && !!ctx.plans.compactLoopLabels?.size
 /** The stub log: a block older than the innermost compacting loop that grew
  *  left a stub forwarding to its new block, which a caller's local may still
  *  name; entries of [stub address, box of the new block], 16 bytes each.
- *  `optimize.compactStubs` sets how many (a compiler's phases grow thousands
- *  of older blocks; a kernel a handful). */
-export const stubEntries = () => ctx.transform.optimize?.compactStubs ?? 1024
+ *  `optimize.compactStubs` sets how many: 65,536 (1 MB of address space, a
+ *  page of it resident per 4,096 entries written) holds a parser's run ten
+ *  times over; a compiler's phases take a million. */
+export const stubEntries = () => {
+  const asked = ctx.transform.optimize?.compactStubs ?? 65536
+  // a declared maximum bounds the table to a sixteenth of the memory
+  const max = ctx.memory.max > 0 ? ctx.memory.max * 65536 : 0
+  return max ? Math.max(16, Math.min(asked, max >> 8)) : asked
+}
 export const stubLogBytes = () => stubEntries() * 16
 /** The globals of a module whose loops compact: the stub log's table and
  *  count (all ones once it overflowed: no loop compacts until the next
