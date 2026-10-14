@@ -14,12 +14,13 @@ export const compactOn = () => ctx.transform.host === 'js' && !ctx.memory.shared
 /** Whether loops compact in place (optimize/loop-compact.js): the growth
  *  helpers then log the stubs a compaction must rewrite (`stubLogIR`). */
 export const sitesOn = () => compactOn() && !!ctx.plans.compactLoopLabels?.size
-/** The stub log: a block older than the innermost compacting loop that grew
- *  left a stub forwarding to its new block, which a caller's local may still
- *  name; entries of [stub address, box of the new block], 16 bytes each.
+/** The stub log: a block that grew left a stub forwarding to its new block,
+ *  which a caller's local may still name across a loop's compaction;
+ *  entries of [stub address, box of the new block], 16 bytes each.
  *  `optimize.compactStubs` sets how many: 65,536 (1 MB of address space, a
- *  page of it resident per 4,096 entries written) holds a parser's run ten
- *  times over; a compiler's phases take a million. */
+ *  page of it resident per 4,096 entries written) holds a parser's run (5
+ *  thousand) or an assembler's (14 thousand) several times over; a
+ *  compiler's phases take a million. */
 export const stubEntries = () => {
   const asked = ctx.transform.optimize?.compactStubs ?? 65536
   // a declared maximum bounds the table to a sixteenth of the memory
@@ -29,7 +30,7 @@ export const stubEntries = () => {
 export const stubLogBytes = () => stubEntries() * 16
 /** The globals of a module whose loops compact: the stub log's table and
  *  count (all ones once it overflowed: no loop compacts until the next
- *  outermost call), and the highest mark a compacting loop took in this call. */
+ *  outermost call). */
 /** The host's pin, declared with the kernels (wat/assemble/stdlib-pull.js): the
  *  end of the highest block the host holds by address (a view of the module's
  *  memory, a closure, storage it made). No compaction moves memory below it;
@@ -52,7 +53,7 @@ export const declareSites = () => {
   declarePin()
   if (ctx.scope.globals.has('__stubn')) return
   const dbg = typeof process !== 'undefined' && process.env?.JZ_DEBUG_GC === '1'
-  for (const g of ['__stubs', '__stubn', '__lmark']) declGlobal(g, 'i32', 0, dbg ? { export: g } : undefined)
+  for (const g of ['__stubs', '__stubn']) declGlobal(g, 'i32', 0, dbg ? { export: g } : undefined)
 }
 /** A growth helper's log of the stub it leaves at `off`, forwarding to `newOff`. */
 export const stubLogIR = (off, newOff, tag) => sitesOn()

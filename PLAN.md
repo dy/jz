@@ -68,15 +68,23 @@ self-compiler is built at O1, which keeps the rewind and compaction off, so
 a compile frees nothing: the kernel's counters show the array-holes test's
 program allocating 4 GB through it with no compaction asked. Built with
 `JZ_SELF_COMPILE_OPT='{"level":1,"arenaRewind":true,"compact":true}'`, the
-hosted compiler now compacts (closure loops have sites, the stub log keeps
-callers' aliases right, `compactStubs` sizes the log for a compiler), and
-the same compile faults in `__gc_mark` during the first walk from a site in
-`intRanges`' closures: a root or a walked slot holding a word that is not a
-pointer, in a shape the compact suite, poisoning, and a stress of closures
-over Maps of Sets, recursive closures, grown Sets, dynamic keys and stored
-thunks do not reproduce. Reproduce with scratch `build-named.mjs` (a kernel
-with names, 160 s) and `holes-named.mjs 2`. Until it is found the default
-self-build stays as it is. The Jessie and watr process peaks with compaction
+hosted compiler compacts: closure loops have sites, the stub log keeps
+callers' aliases right and `compactStubs` sizes it for a compiler, the
+kernel compacts beside a parked checkpoint lane, and its header reads wait
+for their bounds tests (a stale pointer into memory a checkpoint rewind
+filled with ones named a stub of ones). What remains: the walk from a site
+in watr's `driveList` (optimize.js, a closure over `driveNode`) meets 55
+pointers whose headers cannot be headers, the first a Set-tagged word in a
+slot of a `{ list, i, k, env }` continuation record the walk had accepted
+(`JZ_DEBUG_GC=1` exports `__g_bad_*` with the first, and `__g_last*` with
+the record before it), and the Set/Map rehash after the move faults on one.
+A stale pointer reaches the walk through a chain from one of the site's
+roots (`$__env`, `list`, `i`, `k`, `env`, `catches`) or the globals; which,
+and what freed its memory, is not known. The compact suite, poisoning, and a
+stress of closures over Maps of Sets, recursive closures, grown Sets,
+dynamic keys and stored thunks do not reproduce it. Reproduce with scratch
+`build-named.mjs` (a kernel with names, 160 s) and `holes-named.mjs 2`. Until
+it is found the default self-build stays as it is. The Jessie and watr process peaks with compaction
 on are below the off build's (95 vs 114 MB, 132 vs 139 MB); V8's own
 baseline for watr is 71 MB, the rest is the module's memory and V8's compile
 of it.

@@ -132,13 +132,13 @@ export function releaseSection(root, { releasable, flagged: conditional, rewound
     push(f, set('local.set', '$was', get('global.get', '$__base')))
     if (declared.has('$__root_reset') || declared.has('$__esc_low') || declared.has('$__stubn')) {
       // no frame read the flag: the log of what the escapes write into starts empty, the lowest flag clear,
-      // the stub log empty and no compacting loop's mark taken (module/core/compact.js)
+      // the stub log empty (module/core/compact.js)
       const none = node(intern('i32.eq')); push(none, get('local.get', '$was')); push(push(none, node(intern('i32.const'))), num(-1))
       const iff = push(f, node(intern('if'))); push(iff, none)
       const then = push(iff, node(intern('then')))
       if (declared.has('$__root_reset')) push(then, get('call', '$__root_reset'))
       if (declared.has('$__esc_low')) { const clear = node(intern('i32.const')); push(clear, num(-1)); push(then, set('global.set', '$__esc_low', clear)) }
-      for (const g of ['$__stubn', '$__lmark']) if (declared.has(g)) { const zero = node(intern('i32.const')); push(zero, num(0)); push(then, set('global.set', g, zero)) }
+      if (declared.has('$__stubn')) { const zero = node(intern('i32.const')); push(zero, num(0)); push(then, set('global.set', '$__stubn', zero)) }
     }
     push(f, set('global.set', '$__base', get('local.get', '$mark')))
     push(f, get('local.get', '$was'))

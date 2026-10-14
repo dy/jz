@@ -2109,10 +2109,22 @@ the memory above the loop's mark holds twice what the last compaction
 walked and sixteen megabytes besides, the site calls `__gc_begin` with the
 loop's mark (the module's globals marked), marks its roots, calls
 `__gc_walk`, forwards every root while the chains still stand, and calls
-`__gc_move`. The roots are the f64 parameters and locals live at the loop's
-top, and the locals among them holding a raw address by its kind
-(active-function.js publishLoopRewinds, from the representation plan; a raw
-local of unknown layout declines the function's loops). Live by a backward
+`__gc_move`. The site stands outside the loop's body: the loop's top leaves
+for it past the threshold (`br_if` out of a block around the loop) and a
+loop around both re-enters the loop at the same iteration after, so the
+body carries one comparison and no call (a call in a loop's body keeps every
+load in it from leaving the loop; the body's calls cost a parser five
+percent, a store to a global at the loop's entry as much again). The roots
+are the f64 parameters and locals live at the loop's top, the i64 locals
+live there (a box the optimizer narrowed or an error's message; a number
+among them the kernel leaves, `__gc_box`), the f64 locals a live i32 or i64
+local derives from (a closure's environment address from its `$__env`, a
+hoisted data address from the array's local: the walk would otherwise take
+the block for garbage), and the locals among them holding a raw address by
+its kind (active-function.js publishLoopRewinds, from the representation
+plan; a raw local of unknown layout declines the function's loops). Every
+parameter counts as written, whatever its type: a Map that comes in as a
+raw address is a root like one in a local. Live by a backward
 pass over the function's structured code, expressions included (a
 `local.set` kills, a read brings in, a branch what is live past its target,
 a loop its own live-in as a fixed point, a handler what a throw anywhere in
@@ -2132,25 +2144,30 @@ the call), which never moves, and reaches memory above it only through a
 block that grew during the loop: a forwarding stub (module/array.js
 relocateWat, the collections' growth) whose forward names the new block.
 The stub log keeps such stubs right: a growth helper logs the stub it leaves
-when the block is older than the highest mark a compacting loop took in this
-call (`__lmark`, raised at each site's loop entry, cleared with the log as an
-outermost call starts: link/sections.js `__base$set`), as [stub address, box
-of the new block] in a table made as the module starts (`__stubs`,
-`__stubn`; `optimize.compactStubs` entries, 65,536 by default: a megabyte of
-address space of which only the written pages are resident, since a parser's
-run logs some thousands and a compiler's a million; a declared maximum bounds
-it to a sixteenth of the memory). The table is the first thing the start
-makes, so the durable bitmaps (module/core/durable-log.js, one bit per
-durable word on the first durable write of a round) skip its addresses
-(`__durable_lo`, `__durable_skip`) rather than grow by a sixteen-thousandth
-of it. `__gc_begin` keeps what each logged stub below the
-floor names and lists the stub for its forward to be rewritten, checking
-first that the address still holds a stub forwarding where logged (a rewind
-may have reused it); `__gc_move` forwards the logged boxes while the chains
+(every one, once a loop of the module compacts: a store to a global at each
+loop's entry, to log only what is older than the loop, cost a parser five
+percent) as [stub address, box of the new block] in a table made as the
+module starts (`__stubs`, `__stubn`, the count cleared as an outermost call
+starts: link/sections.js `__base$set`; `optimize.compactStubs` entries,
+65,536 by default: a megabyte of address space of which only the written
+pages are resident, since a parser's run logs five thousand, an assembler's
+fourteen and a compiler's a million; a declared maximum bounds it to a
+sixteenth of the memory). The table is the first thing the start makes, so
+the durable bitmaps (module/core/durable-log.js, one bit per durable word on
+the first durable write of a round) skip its addresses (`__durable_lo`,
+`__durable_skip`) rather than grow by a sixteen-thousandth of it. The log
+is weak: once the walk has marked, `__gc_walk` lists each logged stub below
+the floor that still holds a stub forwarding where logged (a rewind may have
+reused the address) and whose chain ends in a block the walk reached, for
+its forward to be rewritten (KIND_STUB); one whose chain ends in a block
+nothing reached names garbage and is left, where keeping it would hold every
+container that grew and died until the call returned (a parser's run at 196
+MB instead of 128). `__gc_move` forwards the logged boxes while the chains
 stand. A log that overflowed declines every loop compaction until the next
 outermost call; the host's compaction, with no frame suspended, empties it.
-`test/compact.js` runs the caller's array, Map and object-field aliases
-through a callee's compacting loop under poisoning. A pointer to a relocation stub resolves
+`test/compact.js` runs the caller's array, Map and object-field aliases and
+a closure's captured array through a callee's compacting loop under
+poisoning, and an overflowing log beside a wide one. A pointer to a relocation stub resolves
 to the handle the array kernels keep, a shifted array's base record, never
 to the live header, whose words the next slide reuses. The host's pin
 (`__pin`) holds inside a call too: `mem.read` raises it as it hands out a
@@ -2176,7 +2193,11 @@ then compacts often rather than failing to grow; `test/compact.js` runs 20 MB
 of kept arrays beside a loop under a 64 MB cap. The kernel folds both rules
 into one heap address per compaction (`__gc_thresh`, from the mark, the
 cost and the cap), so an iteration pays one comparison; `test/perf-ratchet.js`
-counts that test and not the cold block past it.
+counts that test and not the cold block past it. A phase checkpoint's lane
+(module/core.js `__park_base`, parked data above the heap for the rest of a
+self-hosted compile) caps the heap where it starts: the kernel's scratch
+ends there instead of at the memory's end, `__gc_thresh` takes it as the
+cap, and a walk that would not fit before it is declined.
 
 An exported parameter used as a numeric array (paramNumericArrayLike) is
 Float64Array in the export and has kind variants under hidden export names

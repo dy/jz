@@ -39,6 +39,8 @@ test('unswitch loops: the stereo copy adds numbers', () => {
     for (let at = f.indexOf('(loop'); at >= 0; at = f.indexOf('(loop', at + 1)) {
       let depth = 0, end = at
       do { const c = f[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < f.length)
+      // the loop a compaction site puts around a loop (optimize/loop-compact.js) is no loop of the program
+      if (/^\(loop \$\S*lrc\d+again/.test(f.slice(at, end))) continue
       out.push(f.slice(at, end))
     }
     return out.map(l => (l.match(/call \$__add_slow/g) || []).length)

@@ -58,7 +58,11 @@ import { K, bitOf, tagsOf, hasTag, NULL_BITS } from '../../src/summary/kind.js'
 // JZ_DEBUG_POISON=1: what a compaction frees is overwritten with all ones.
 const DBG_POISON = typeof process !== 'undefined' && process.env?.JZ_DEBUG_POISON === '1'
 // JZ_DEBUG_GC=1: the module exports counters of the compactions asked for
-// (`__g_asks`), run (`__g_runs`) and the words they walked (`__g_walked`).
+// (`__g_asks`), run (`__g_runs`) and the words they walked (`__g_walked`),
+// why the others were declined (`__g_no_floor`, `__g_no_stub`,
+// `__g_no_room`), the region of the last (`__g_floor`, `__g_top`, `__g_lo`,
+// `__g_fail`), the stub log's count (`__stubn`), and the first pointer whose
+// header could not be one (`__g_bad_*`, with the block listed before it).
 const DBG_GC = typeof process !== 'undefined' && process.env?.JZ_DEBUG_GC === '1'
 
 /** Whether the module compacts what it keeps: the JS host (which calls it),
@@ -117,7 +121,8 @@ export function gcTableBytes() {
 
 export const registerCompact = () => {
   for (const g of ['__g_floor', '__g_top', '__g_lo', '__g_vis', '__g_live', '__g_pre', '__g_list', '__g_ln', '__g_sp', '__g_lim', '__g_fail', '__g_nl']) declGlobal(g, 'i32', 0)
-  if (DBG_GC) for (const g of ['__g_asks', '__g_runs', '__g_walked']) declGlobal(g, 'i32', 0, { export: g })
+  if (DBG_GC) for (const g of ['__g_asks', '__g_runs', '__g_walked', '__g_no_floor', '__g_no_stub', '__g_no_room', '__g_bad_n', '__g_bad_off', '__g_bad_hi', '__g_bad_cap', '__g_bad_len', '__g_walking', '__g_last', '__g_last_hi', '__g_bad_walking', '__g_bad_last', '__g_bad_last_hi']) declGlobal(g, 'i32', 0, { export: g })
+  if (DBG_GC) for (const g of ['__g_floor', '__g_top', '__g_lo', '__g_fail']) ctx.scope.globals.get(g).export = g
 
   const tagOf = (b) => `(i32.wrap_i64 (i64.and (i64.shr_u ${b} (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
   const auxOf = (b) => `(i32.wrap_i64 (i64.and (i64.shr_u ${b} (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))`
@@ -162,18 +167,23 @@ export const registerCompact = () => {
       (br_if $done (i32.gt_u (local.get $off) (global.get $__g_top)))
       (br_if $done (i32.ne (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1)))
       (local.set $to (i32.load (i32.sub (local.get $off) (i32.const 8))))
-      ;; the target a live, shifted header: this stub is its base record, the handle
-      (if (i32.and (i32.and (i32.ge_u (local.get $to) (i32.const 16)) (i32.le_u (local.get $to) (global.get $__g_top)))
-                   (i32.and (i32.ne (i32.load (i32.sub (local.get $to) (i32.const 4))) (i32.const -1))
-                            (i32.eq (i32.load (i32.sub (local.get $to) (i32.const 12))) (i32.const -1))))
-        (then (br $done)))
+      ;; the target a live, shifted header: this stub is its base record, the handle.
+      ;; Its words are read only once it lies in the heap: a stale pointer into
+      ;; memory a rewind released names a stub of ones, whose forward is anything.
+      (if (i32.and (i32.ge_u (local.get $to) (i32.const 16)) (i32.le_u (local.get $to) (global.get $__g_top)))
+        (then (if (i32.and (i32.ne (i32.load (i32.sub (local.get $to) (i32.const 4))) (i32.const -1))
+                           (i32.eq (i32.load (i32.sub (local.get $to) (i32.const 12))) (i32.const -1)))
+          (then (br $done)))))
       (local.set $off (local.get $to))
       (br $hop)))
     (local.get $off))`
 
   // Memory up to `need` bytes, grown where the engine allows; the heap's top stays.
-  ctx.core.stdlib['__gc_room'] = `(func $__gc_room (param $need i32) (result i32)
+  ctx.core.stdlib['__gc_room'] = () => `(func $__gc_room (param $need i32) (result i32)
     (local $have i64) (local $pages i32)
+    ${has('__park_base') ? `;; a phase checkpoint holds parked data in a lane above the heap (module/core.js): the scratch ends where the lane starts
+    (if (global.get $__park_base) (then
+      (if (i32.gt_u (local.get $need) (i32.sub (global.get $__park_base) (i32.const 8))) (then (return (i32.const 0))))))` : ''}
     (local.set $have (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16)))
     (if (i64.gt_u (i64.extend_i32_u (local.get $need)) (local.get $have))
       (then
@@ -183,6 +193,8 @@ export const registerCompact = () => {
         (global.set $__heap_end (i32.wrap_i64 (local.get $have)))
         (global.set $__heap_end64 (local.get $have))))
     (global.set $__g_lim (select (i32.const -8) (i32.wrap_i64 (local.get $have)) (i64.gt_u (local.get $have) (i64.const 0xFFFFFFF8))))
+    ${has('__park_base') ? `(if (global.get $__park_base) (then (if (i32.gt_u (global.get $__g_lim) (i32.sub (global.get $__park_base) (i32.const 8)))
+      (then (global.set $__g_lim (i32.sub (global.get $__park_base) (i32.const 8)))))))` : ''}
     (i32.const 1))`
 
   // Room for one more entry of the list and the stack, which grow towards
@@ -236,6 +248,12 @@ export const registerCompact = () => {
     (i32.store8 (local.get $cell) (i32.or (i32.load8_u (local.get $cell)) (local.get $bit)))
     (i32.const 0))`
 
+  // Whether the walk visited the block at `off` (`__gc_seen` without marking).
+  ctx.core.stdlib['__gc_was'] = `(func $__gc_was (param $off i32) (result i32)
+    (local $i i32)
+    (local.set $i (i32.shr_u (i32.sub (local.get $off) (global.get $__g_lo)) (i32.const 3)))
+    (i32.and (i32.load8_u (i32.add (global.get $__g_vis) (i32.shr_u (local.get $i) (i32.const 3)))) (i32.shl (i32.const 1) (i32.and (local.get $i) (i32.const 7)))))`
+
   // A count read off a header, held to what the memory below the top has room for.
   ctx.core.stdlib['__gc_fit'] = `(func $__gc_fit (param $p i32) (param $n i32) (param $stride i32) (result i32)
     (local $room i32)
@@ -244,13 +262,12 @@ export const registerCompact = () => {
     (select (local.get $room) (local.get $n) (i32.gt_u (local.get $n) (local.get $room))))`
 
   // A stub a block left as it grew (module/array.js relocateWat, the
-  // collections' growth): logged where the block is older than the innermost
-  // compacting loop, whose compaction rewrites the stub's forward and keeps
-  // what it names, for the caller's local that may still name the stub. The
+  // collections' growth): logged for a loop's compaction, which rewrites the
+  // forward of one below its floor and keeps what it names, for the caller's
+  // local that may still name the stub; one above the floor it skips. The
   // log overflowing declines every compaction until the next outermost call.
   ctx.core.stdlib['__gc_stub'] = `(func $__gc_stub (param $off i32) (param $box i64)
     (local $n i32) (local $at i32)
-    (if (i32.ge_u (local.get $off) (global.get $__lmark)) (then (return)))
     (local.set $n (global.get $__stubn))
     (if (i32.lt_s (local.get $n) (i32.const 0)) (then (return)))
     (if (i32.ge_u (local.get $n) (i32.const ${stubEntries()})) (then (global.set $__stubn (i32.const -1)) (return)))
@@ -268,6 +285,8 @@ export const registerCompact = () => {
   ctx.core.stdlib['__gc_thresh'] = `(func $__gc_thresh (param $mark i32) (param $cost i32) (param $cap1 i32) (result i32)
     (local $need i64) (local $low i64) (local $m i64) (local $room i64) (local $p i64) (local $t i64)
     (local.set $m (i64.extend_i32_u (local.get $mark)))
+    ${has('__park_base') ? `;; a parked lane caps the heap where it starts
+    (if (global.get $__park_base) (then (local.set $cap1 (i32.sub (global.get $__park_base) (i32.const 9)))))` : ''}
     (local.set $need (i64.add (i64.shl (i64.extend_i32_u (local.get $cost)) (i64.const 1)) (i64.const ${SLACK})))
     (local.set $low (i64.add (i64.shr_u (i64.extend_i32_u (local.get $cost)) (i64.const 3)) (i64.const ${SLACK})))
     ;; 8 · (cap − 1 − mark − margin − need), the heap past which the pressure rule holds
@@ -358,8 +377,9 @@ export const registerCompact = () => {
     (if (i32.and (i32.ne (local.get $p) (local.get $off)) (i32.lt_u (local.get $off) (global.get $__g_floor)))
       (then (if (i32.eqz (call $__gc_seen (local.get $off))) (then (call $__gc_list (i32.const ${KIND_STUB << 16}) (local.get $off))))))
     ;; past a base record to the live header it forwards to
-    (if (i32.and (i32.and (i32.ge_u (local.get $p) (i32.const 16)) (i32.le_u (local.get $p) (global.get $__g_top))) (i32.eq (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const -1)))
-      (then (local.set $p (i32.load (i32.sub (local.get $p) (i32.const 8))))))
+    (if (i32.and (i32.ge_u (local.get $p) (i32.const 16)) (i32.le_u (local.get $p) (global.get $__g_top)))
+      (then (if (i32.eq (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const -1))
+        (then (local.set $p (i32.load (i32.sub (local.get $p) (i32.const 8))))))))
     (local.set $off (local.get $p))
     (if (i32.or (i32.lt_u (local.get $off) (global.get $__g_lo)) (i32.gt_u (local.get $off) (global.get $__g_top))) (then (return)))
     ;; a slice names bytes inside another string: kept, nothing to walk
@@ -369,6 +389,26 @@ export const registerCompact = () => {
         (return)))
     (if (call $__gc_seen (local.get $off)) (then (return)))
     (local.set $p (local.get $off))
+    ${DBG_GC ? `;; debug: a header that cannot be one (a negative capacity, a length past it, storage past the top): the first noted
+    (if (i32.and (i32.ne (local.get $t) (i32.const ${PTR.TYPED})) (i32.ne (local.get $t) (i32.const ${PTR.STRING})))
+      (then
+        (if (i32.or (i32.or (i32.lt_s (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 0))
+                            (i32.gt_u (i32.load (i32.sub (local.get $p) (i32.const 8))) (i32.load (i32.sub (local.get $p) (i32.const 4)))))
+                    (i32.gt_u (i32.add (local.get $p) (i32.shl (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 3))) (global.get $__g_top)))
+          (then
+            (if (i32.eqz (global.get $__g_bad_n))
+              (then
+                (global.set $__g_bad_off (local.get $p))
+                (global.set $__g_bad_hi (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))))
+                (global.set $__g_bad_cap (i32.load (i32.sub (local.get $p) (i32.const 4))))
+                (global.set $__g_bad_len (i32.load (i32.sub (local.get $p) (i32.const 8))))
+                (global.set $__g_bad_walking (global.get $__g_walking))
+                (global.set $__g_bad_last (global.get $__g_last))
+                (global.set $__g_bad_last_hi (global.get $__g_last_hi))))
+            (global.set $__g_bad_n (i32.add (global.get $__g_bad_n) (i32.const 1))))
+          (else
+            (global.set $__g_last (local.get $p))
+            (global.set $__g_last_hi (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))))))))` : ''}
     (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
       (then
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 8)))
@@ -734,14 +774,12 @@ export const registerCompact = () => {
     (local.set $top (global.get $__heap))
     (global.set $__g_fail (i32.const 1))
     ${DBG_GC ? '(global.set $__g_asks (i32.add (global.get $__g_asks) (i32.const 1)))' : ''}
-    ${has('__park_base') ? `;; a phase checkpoint holds parked data above the heap (module/core.js): the heap stays
-    (if (global.get $__park_base) (then (return (i32.const 0))))` : ''}
     (if (i32.lt_u (local.get $floor) (global.get $__heap_reset)) (then (local.set $floor (global.get $__heap_reset))))
     (if (i32.lt_u (local.get $floor) (global.get $__pin)) (then (local.set $floor (global.get $__pin))))
     (local.set $floor (i32.and (i32.add (local.get $floor) (i32.const 7)) (i32.const -8)))
-    (if (i32.ge_u (local.get $floor) (local.get $top)) (then (return (i32.const 0))))
+    (if (i32.ge_u (local.get $floor) (local.get $top)) (then ${DBG_GC ? '(global.set $__g_no_floor (i32.add (global.get $__g_no_floor) (i32.const 1)))' : ''} (return (i32.const 0))))
     ${has('__stubn') ? `;; a stub log that overflowed: a caller's local may name a stub this compaction would not rewrite
-    (if (i32.lt_s (global.get $__stubn) (i32.const 0)) (then (return (i32.const 0))))` : ''}
+    (if (i32.lt_s (global.get $__stubn) (i32.const 0)) (then ${DBG_GC ? '(global.set $__g_no_stub (i32.add (global.get $__g_no_stub) (i32.const 1)))' : ''} (return (i32.const 0))))` : ''}
     (global.set $__g_floor (local.get $floor))
     (global.set $__g_top (local.get $top))
     ;; the static data's end, which the heap starts past (HEAP.START where the data is shorter)
@@ -752,6 +790,11 @@ export const registerCompact = () => {
     (local.set $s (i32.and (i32.add (local.get $top) (i32.const 7)) (i32.const -8)))
     (local.set $nv (i32.shl (i32.shr_u (i32.add (i32.shr_u (i32.sub (local.get $top) (global.get $__g_lo)) (i32.const 3)) (i32.const 64)) (i32.const 6)) (i32.const 3)))
     (local.set $nl (i32.shl (i32.shr_u (i32.add (i32.shr_u (i32.sub (local.get $top) (local.get $floor)) (i32.const 3)) (i32.const 64)) (i32.const 6)) (i32.const 3)))
+    ;; the scratch must end before the address space does: a heap near the top of wasm32 declines
+    (if (i64.gt_u (i64.add (i64.add (i64.extend_i32_u (local.get $s)) (i64.extend_i32_u (local.get $nv)))
+                           (i64.add (i64.add (i64.extend_i32_u (local.get $nl)) (i64.extend_i32_u (i32.shr_u (local.get $nl) (i32.const 1)))) (i64.const ${8 + 65536})))
+                  (i64.const 0xFFFFFFF8))
+      (then ${DBG_GC ? '(global.set $__g_no_room (i32.add (global.get $__g_no_room) (i32.const 1)))' : ''} (return (i32.const 0))))
     (global.set $__g_nl (local.get $nl))
     (global.set $__g_vis (local.get $s))
     (global.set $__g_live (i32.add (local.get $s) (local.get $nv)))
@@ -759,26 +802,13 @@ export const registerCompact = () => {
     (global.set $__g_list (i32.add (global.get $__g_pre) (i32.add (i32.shr_u (local.get $nl) (i32.const 1)) (i32.const 8))))
     (global.set $__g_ln (i32.const 0))
     (global.set $__g_cost (i32.const 0))
-    (if (i32.eqz (call $__gc_room (i32.add (global.get $__g_list) (i32.const 65536)))) (then (return (i32.const 0))))
+    (if (i32.eqz (call $__gc_room (i32.add (global.get $__g_list) (i32.const 65536)))) (then ${DBG_GC ? '(global.set $__g_no_room (i32.add (global.get $__g_no_room) (i32.const 1)))' : ''} (return (i32.const 0))))
     (global.set $__g_sp (global.get $__g_lim))
     (memory.fill (local.get $s) (i32.const 0) (i32.sub (global.get $__g_list) (local.get $s)))
     (global.set $__g_fail (i32.const 0))
     ${DBG_GC ? '(global.set $__g_runs (i32.add (global.get $__g_runs) (i32.const 1))) (global.set $__g_walked (i32.add (global.get $__g_walked) (i32.shr_u (i32.sub (local.get $top) (local.get $floor)) (i32.const 3))))' : ''}
     ;; 1. the module's roots, marked; what they reach waits on the stack
     (call $__gc_roots (i32.const 0))
-    ${has('__stubn') ? `;; the logged stubs below the floor, still stubs forwarding where logged: what they name kept, their forwards rewritten (KIND_STUB)
-    (local.set $s (i32.const 0))
-    (block $done (loop $stub
-      (br_if $done (i32.ge_s (local.get $s) (global.get $__stubn)))
-      (local.set $nv (i32.add (global.get $__stubs) (i32.shl (local.get $s) (i32.const 4))))
-      (local.set $s (i32.add (local.get $s) (i32.const 1)))
-      (local.set $nl (i32.load (local.get $nv)))
-      (br_if $stub (i32.or (i32.lt_u (local.get $nl) (i32.add (global.get $__g_lo) (i32.const 16))) (i32.ge_u (local.get $nl) (local.get $floor))))
-      (br_if $stub (i32.ne (i32.load (i32.sub (local.get $nl) (i32.const 4))) (i32.const -1)))
-      (br_if $stub (i32.ne (i32.load (i32.sub (local.get $nl) (i32.const 8))) (i32.wrap_i64 (i64.load offset=8 (local.get $nv)))))
-      (call $__gc_mark (i64.load offset=8 (local.get $nv)))
-      (if (i32.eqz (call $__gc_seen (local.get $nl))) (then (call $__gc_list (i32.const ${KIND_STUB << 16}) (local.get $nl))))
-      (br $stub)))` : ''}
     (i32.const 1))`
 
   const endParts = () => {
@@ -817,6 +847,7 @@ export const registerCompact = () => {
     (local.set $top (global.get $__g_top))
     (local.set $nl (global.get $__g_nl))
     (if (global.get $__g_fail) (then (return)))
+    ${DBG_GC ? '(global.set $__g_walking (i32.const 1))' : ''}
     ;; 1. the walk, depth first
     (block $marked (loop $walk
       (br_if $marked (i32.ge_u (global.get $__g_sp) (global.get $__g_lim)))
@@ -825,6 +856,21 @@ export const registerCompact = () => {
       (call $__gc_mark (local.get $bits))
       (br $walk)))
     (if (global.get $__g_fail) (then (return)))
+    ${has('__stubn') ? `;; the logged stubs below the floor, still stubs forwarding where logged, whose chains end in a block the walk
+    ;; reached: listed for their forwards (KIND_STUB), for the caller's local that names the stub alone. One whose chain
+    ;; ends in a block nothing reached names garbage, and is left: nothing live leads to it.
+    (local.set $i (i32.const 0))
+    (block $logged (loop $stub
+      (br_if $logged (i32.ge_s (local.get $i) (global.get $__stubn)))
+      (local.set $at (i32.add (global.get $__stubs) (i32.shl (local.get $i) (i32.const 4))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $cnt (i32.load (local.get $at)))
+      (br_if $stub (i32.or (i32.lt_u (local.get $cnt) (i32.add (global.get $__g_lo) (i32.const 16))) (i32.ge_u (local.get $cnt) (global.get $__g_floor))))
+      (br_if $stub (i32.ne (i32.load (i32.sub (local.get $cnt) (i32.const 4))) (i32.const -1)))
+      (br_if $stub (i32.ne (i32.load (i32.sub (local.get $cnt) (i32.const 8))) (i32.wrap_i64 (i64.load offset=8 (local.get $at)))))
+      (br_if $stub (i32.eqz (call $__gc_was (call $__gc_canon (local.get $cnt) (i32.const ${PTR.ARRAY})))))
+      (if (i32.eqz (call $__gc_seen (local.get $cnt))) (then (call $__gc_list (i32.const ${KIND_STUB << 16}) (local.get $cnt))))
+      (br $stub)))` : ''}
     ;; 2. the live words below each group of 64
     (local.set $i (i32.const 0))
     (local.set $cnt (i32.const 0))
@@ -844,6 +890,7 @@ export const registerCompact = () => {
       (i32.store (local.get $at) (call $__gc_fwd_raw (i32.load (local.get $at))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))
+    ${DBG_GC ? '(global.set $__g_walking (i32.const 0))' : ''}
     (call $__gc_roots (i32.const 1)))`
   }
 
@@ -943,7 +990,8 @@ export const COMPACT_DEPS = {
   __gc_rehash: ['__gc_box', '__gc_room', '__map_hash'],
   __gc_roots: () => ['__gc_mark', '__gc_fwd', '__gc_fwd_raw', '__gc_keep', '__gc_rec', '__gc_push', '__mkptr'],
   __gc_begin: ['__gc_room', '__gc_roots'],
-  __gc_walk: ['__gc_mark', '__gc_update', '__gc_fwd_raw', '__gc_roots'],
+  __gc_walk: ['__gc_mark', '__gc_update', '__gc_fwd_raw', '__gc_roots', '__gc_was', '__gc_canon', '__gc_seen', '__gc_list'],
+  __gc_was: [],
   __gc_move: () => ['__gc_fwd', ...(ctx.linkDemand.set || ctx.linkDemand.map ? ['__gc_rehash'] : [])],
   __compact: ['__gc_begin', '__gc_walk', '__gc_move'],
 }

@@ -48,7 +48,7 @@
  */
 import { ctx } from '../ctx.js'
 import { T as MARK } from '../ast.js'
-import { SLACK, MARGIN } from '../../module/core/stub-log.js'
+import { SLACK } from '../../module/core/stub-log.js'
 
 const HEADER = new Set(['export', 'param', 'result', 'local'])
 const written = (label) => typeof label === 'string' ? label.replace(/(?:\.f\d+)+$/, '') : label
@@ -164,27 +164,60 @@ export function insertLoopCompacts(funcs, owners) {
     const rawKind = new Map(own.raw.map(([name, tag, aux]) => [name, [tag, aux]]))
     const raws = []
     for (const h of fn) if (Array.isArray(h) && (h[0] === 'local' || h[0] === 'param') && h[2] === 'i32' && rawKind.has(written(h[1]))) raws.push([h[1], ...rawKind.get(written(h[1]))])
-    const writes = new Set(params)
-    const noteWrites = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'local.set' || n[0] === 'local.tee') writes.add(n[1]); for (let i = 1; i < n.length; i++) noteWrites(n[i]) }
+    // written: every parameter, whatever its type (a raw address or a box
+    // comes in as one), and every local some instruction sets
+    const writes = new Set(), i64Locals = []
+    for (let i = 1; i < fn.length; i++) { const h = fn[i]; if (!Array.isArray(h)) continue; if (h[0] === 'param') writes.add(h[1]); if ((h[0] === 'local' || h[0] === 'param') && h[2] === 'i64') i64Locals.push(h[1]) }
+    // what each i32 and i64 local derives from: the f64 locals read in its
+    // definitions, and what the i32 and i64 locals read there derive from
+    // (a closure's environment address from its `$__env`, a hoisted data
+    // address from the array's local): a site roots the source of a live one,
+    // whose block it would otherwise take for garbage
+    const sources = new Map(), f64Set = new Set([...params, ...f64Locals])
+    const defs = []
+    const noteWrites = (n) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === 'local.set' || n[0] === 'local.tee') { writes.add(n[1]); if (!f64Set.has(n[1])) defs.push(n) }
+      for (let i = 1; i < n.length; i++) noteWrites(n[i])
+    }
     noteWrites(fn)
-    const site = (mark, thresh, read) => {
+    const reads = (n, into) => { if (!Array.isArray(n)) return into; if (n[0] === 'local.get' || n[0] === 'local.tee') into.add(n[1]); for (let i = 1; i < n.length; i++) reads(n[i], into); return into }
+    for (const d of defs) for (const r of reads(d[2], new Set())) (sources.get(d[1]) ?? sources.set(d[1], new Set()).get(d[1])).add(r)
+    for (let changed = true; changed;) {
+      changed = false
+      for (const [, set] of sources) for (const r of [...set]) if (!f64Set.has(r)) for (const s of sources.get(r) ?? []) if (!set.has(s)) { set.add(s); changed = true }
+    }
+    // what a compaction does, outside the loop: the loop's top tests the
+    // heap against the threshold and leaves for it, and re-enters after
+    const compaction = (mark, thresh, read) => {
       const marks = [], fwds = []
-      const root = (n) => read.has(n) && writes.has(n)
-      const f64 = [...params.filter(n => read.has(n)), ...f64Locals.filter(root)]
+      const derived = new Set()
+      for (const n of read) for (const s of sources.get(n) ?? []) if (f64Set.has(s)) derived.add(s)
+      const root = (n) => (read.has(n) || derived.has(n)) && writes.has(n)
+      const f64 = [...params.filter(n => read.has(n) || derived.has(n)), ...f64Locals.filter(root)]
+      // a box an i64 local holds (a value the optimizer narrowed, an error's
+      // message): marked and forwarded as one, a number left alone (__gc_box)
+      const i64 = i64Locals.filter(root)
       const raw = raws.filter(([name]) => read.has(name) && writes.has(name))
       for (const name of f64) {
         marks.push(['call', '$__gc_mark', ['i64.reinterpret_f64', ['local.get', name]]])
         fwds.push(['local.set', name, ['f64.reinterpret_i64', ['call', '$__gc_fwd', ['i64.reinterpret_f64', ['local.get', name]]]]])
       }
+      for (const name of i64) {
+        marks.push(['call', '$__gc_mark', ['local.get', name]])
+        fwds.push(['local.set', name, ['call', '$__gc_fwd', ['local.get', name]]])
+      }
       for (const [name, tag, aux] of raw) {
         marks.push(['call', '$__gc_mark', ['i64.reinterpret_f64', ['call', '$__mkptr', ['i32.const', tag], ['i32.const', aux], ['local.get', name]]]])
         fwds.push(['local.set', name, ['call', '$__gc_fwd_raw', ['local.get', name]]])
       }
-      // past the threshold the kernel set from the mark and the last walk's cost
-      return ['if', ['i32.gt_u', ['global.get', '$__heap'], ['local.get', thresh]],
-        ['then', ['if', ['call', '$__gc_begin', ['local.get', mark]],
-          ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']],
-            ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1]]]]]]]
+      // declined (the kernel has no room, a checkpoint holds parked data, the
+      // stub log overflowed): asked again a slack later, or never past the end
+      const later = ['i32.add', ['global.get', '$__heap'], ['i32.const', SLACK]]
+      return ['if', ['call', '$__gc_begin', ['local.get', mark]],
+        ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']],
+          ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1]]]],
+        ['else', ['local.set', thresh, ['select', later, ['i32.const', -1], ['i32.gt_u', later, ['global.get', '$__heap']]]]]]
     }
     const locals = [], done = new Set()
     // the locals live at each site loop's top, before any site reads them
@@ -202,15 +235,29 @@ export function insertLoopCompacts(funcs, owners) {
           : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && own.labels.has(written(n[2][1])) ? n[2] : null
         if (loopNode !== null && !done.has(loopNode)) {
           done.add(loopNode)
-          const mark = `$${MARK}lrc${id}`, thresh = `$${MARK}lrc${id}th`
+          const mark = `$${MARK}lrc${id}`, thresh = `$${MARK}lrc${id}th`, out = `$${MARK}lrc${id}out`, again = `$${MARK}lrc${id}again`, exit = `$${MARK}lrc${id}exit`
           id++
           locals.push(['local', mark, 'i32'], ['local', thresh, 'i32'])
-          loopNode.splice(2, 0, site(mark, thresh, liveAt.get(loopNode) ?? all))
-          // the highest mark a compacting loop took in this call: a block older
-          // than it that grows logs its stub (module/core/compact.js __gc_stub)
+          // The loop keeps no call of the kernel in its body (a call in a loop
+          // keeps every load in it from leaving the loop): its top leaves for
+          // the compaction past the threshold, and the loop around re-enters
+          // it at the same iteration after. Its own label stays inside and its
+          // break block, with whatever follows the loop in it, around.
+          //   block $exit
+          //     loop $again
+          //       block $out  loop $L  (br_if $out past?) body…  end  (br $exit)  end
+          //       compaction  (br $again)
+          loopNode.splice(2, 0, ['br_if', out, ['i32.gt_u', ['global.get', '$__heap'], ['local.get', thresh]]])
+          const around = ['block', exit, ['loop', again, ['block', out, loopNode, ['br', exit]], compaction(mark, thresh, liveAt.get(loopNode) ?? all), ['br', again]]]
+          if (n === loopNode) list[i] = around
+          else n.splice(n.indexOf(loopNode), 1, around)
+          // The entry: the mark, and the threshold a slack past it, which is
+          // what the kernel's rule gives before a walk (the pressure rule's
+          // own floor is the same; a wrapped sum only asks a compaction early,
+          // which sets the threshold properly). Nothing else: a store to a
+          // global here cost a parser five percent.
           list.splice(i, 0, ['local.set', mark, ['global.get', '$__heap']],
-            ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['i32.const', 0], ['i32.const', cap - 1]]],
-            ['if', ['i32.gt_u', ['local.get', mark], ['global.get', '$__lmark']], ['then', ['global.set', '$__lmark', ['local.get', mark]]]])
+            ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', SLACK]]])
           i += 3
         }
         visit(n, 1)

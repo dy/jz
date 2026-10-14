@@ -111,6 +111,10 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // modules compiled with `compact: false`; the one program body that moved is
 // slice's f$exp (+488), the threshold test of a loop's own compaction site,
 // one comparison per iteration. The site's cold block is not counted (below).
+// The site then moved out of the loop's body (2026-10-14): the loop's top
+// leaves for the compaction past the threshold and a loop around re-enters it
+// after, a block, a loop and three branches per site beside the test: slice
+// +4816 over its 40 modules, the only category whose loops carry sites.
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
 // A wide-accumulator versioning (src/optimize/wide-accumulator.js) keeps the
 // original loop as the cold fallback, the last child of its `$__wa…d` block:

@@ -178,7 +178,7 @@ test('compact: a site roots the locals live at the loop, not every pointer the f
   const sites = wat.split('call $__gc_begin').slice(1).map(site => (site.slice(0, site.indexOf('call $__gc_walk')).match(/call \$__gc_mark/g) ?? []).length)
   ok(sites.length > 0, 'the loop has a compaction site')
   ok(/\(global\.get \$__g_cost\)/.test(wat), 'a site takes what the compaction walked as the next trigger')
-  for (const marks of sites) ok(marks >= 1 && marks <= 4, `a site marks its live roots only (${sites.join(' ')})`)
+  for (const marks of sites) ok(marks >= 1 && marks <= 6, `a site marks its live roots only (${sites.join(' ')})`)
 })
 
 // A pointer a loop's top still leads to is a root wherever its reads are:
@@ -188,6 +188,8 @@ test('compact: a site roots the locals live at the loop, not every pointer the f
 const LIVE = {
   after: `export const f = n => { const a = [n, n + 1]; let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length + a[1] }`,
   broken: `export const f = n => { const a = { v: n }; let s = ''; for (let i = 0; ; i++) { s = (i % 10) + s; if (i == n - 1) break } return s.length + a.v }`,
+  // a labeled break out of a compacting inner loop, a continue of its outer, and work after the inner loop in the outer's body
+  labeled: `export const f = n => { const a = [n]; let s = '', t = 0; outer: for (let r = 0; r < 4; r++) { for (let i = 0; ; i++) { s = (i % 10) + s; if (i == n - 1) break outer; if (i % 1000 == 999) continue outer } t += 1 } for (let r = 0; r < 3; r++) { let k = 0; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i == n - 1) break; k++ } t += k; s = s.slice(0, 10) } return s.length + a[0] + t }`,
   written: `export const f = n => { let last = [0]; let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 1000 == 0) last = [i] } return s.length + last[0] }`,
   caught: `export const f = n => { const a = [n]; let s = '', c = 0; for (let i = 0; i < n; i++) { try { s = (i % 10) + s; if (i % 5000 == 4999) throw new Error('x') } catch (e) { c += a[0] } } return s.length + c }`,
   outer: `export const f = n => { let s = '', t = 0; for (let r = 0; r < 3; r++) { const b = [r + 1]; for (let i = 0; i < n; i++) s = (i % 10) + s; t += b[0]; s = s.slice(0, 100) } return s.length + t }`,
@@ -198,6 +200,9 @@ const LIVE = {
   // an array reached through an object's field the callee read once
   mapAlias: `const g = (m, n) => { let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 100 == 0) m.set('k' + i, { i }) } return s.length }; export const f = n => { const m = new Map(); const r = g(m, n); let t = 0; for (const [k, v] of m) t += v.i + k.length; return r + t + m.size }`,
   fieldAlias: `const g = (o, n) => { const l = o.list; let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 500 == 0) l.push({ i }) } return s.length }; export const f = n => { const o = { list: [] }; const r = g(o, n); let t = 0; for (const e of o.list) t += e.i; return r + t + o.list.length }`,
+  // a container a closure captures and grows in its loop, reached through
+  // the environment address the closure took at its entry
+  captured: `export const f = n => { const log = []; const g = () => { let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 500 == 0) log.push({ i, s: s.length }) } return s.length }; const r = g(); let t = 0; for (const e of log) t += e.i + e.s; return r + t }`,
 }
 
 test('compact: every pointer a loop still leads to survives its compactions', () => {

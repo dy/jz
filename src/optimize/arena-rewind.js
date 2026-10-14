@@ -121,7 +121,7 @@ const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__hea
   '$__durable_arr_seen', '$__durable_arr_log'])
 const IC_SITE = /^\$__ic_(hi|slot)\d+$/, REGEX_STATE = /^\$__re_(lastIndex_\d+|g\d+_(start|end))$/
 // The compaction's own state and the host's pin (module/core/compact.js): no value of the program's.
-const GC_STATE = /^\$__(g_\w+|pin|gc_tbl|stubs|stubn|lmark)$/
+const GC_STATE = /^\$__(g_\w+|pin|gc_tbl|stubs|stubn)$/
 // The for-in enumeration caches (module/object.js, core.js `__hash_keys_ro`):
 // every read of one asks the epoch first, and a frame that filled one moves
 // the epoch as it restores (`bump`), as `__clear` and a phase's rewind do.
