@@ -217,7 +217,10 @@ Float64Array(n)` each block, `log = log + line`) leaves what it replaced
 behind, which the module compacts: as an outermost call returns, once the
 kept memory holds twice what the last compaction kept (and a page besides),
 the live values slide down over the dead ones and every pointer to them is
-rewritten, so a program keeps what it reaches and no more. Nothing the host
+rewritten, so a program keeps what it reaches and no more. A loop whose
+iteration allocates and keeps some of it does the same within a call, with
+the function's locals as roots, so `s = x + s` or `a = a.concat(b)` over a
+long loop holds the live value, not every one it replaced. Nothing the host
 holds moves: its own allocations (`memory.Array` and the other constructors)
 and every value a call handed it (a closure, a typed array's view, an
 argument of a host import) pin the heap below them, so make those before

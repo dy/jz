@@ -8,7 +8,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { levels, onWasi } from './_matrix.js'
+import { levels, onWasi, belowOpt } from './_matrix.js'
 import { oracle } from './util.js'
 
 // Calls `step(i)` on both the module and the oracle, comparing each result;
@@ -37,10 +37,15 @@ const STATE = {
   history: `const hist = []; export const step = (i) => { hist.push({ t: i, v: i * 2 }); if (hist.length > 100) hist.shift(); let s = 0; for (let k = 0; k < hist.length; k += 10) s += hist[k].v; return s }`,
 }
 
+// The O0 leg compiles without the rewind, and without it nothing compacts:
+// the programs still agree with the host there, the counts are not asserted.
+const counted = () => !belowOpt(1)
+
 test('compact: state replaced call after call stays bounded', () => {
   if (onWasi()) return
   for (const [name, src] of Object.entries(STATE)) {
     const { memory, compactions, peak } = drive(src, 4000, undefined, name)
+    if (!counted()) continue
     ok(compactions >= 1, `${name}: compacted (${compactions})`)
     ok(peak < 300 * 1024, `${name}: peak ${peak} bytes stays under 300 KB`)
     ok(memory.used < 120 * 1024, `${name}: ${memory.used} bytes kept after 4000 calls`)
@@ -84,7 +89,7 @@ test('compact: every kind of value survives the move', () => {
   if (onWasi()) return
   for (const [name, src] of Object.entries(KINDS)) {
     const { compactions } = drive(src, 3000, undefined, name)
-    if (!IN_PLACE.has(name)) ok(compactions >= 1, `${name}: compacted (${compactions})`)
+    if (!IN_PLACE.has(name) && counted()) ok(compactions >= 1, `${name}: compacted (${compactions})`)
   }
 })
 
@@ -106,14 +111,59 @@ test('compact: what the host holds does not move', () => {
   const buf = memory.Float64Array(data)
   let last = 0, compactions = 0
   for (let i = 0; i < 3000; i++) { exports.churn(i); if (memory.used < last) compactions++; last = memory.used }
-  ok(compactions >= 1, `compacted (${compactions})`)
+  if (counted()) ok(compactions >= 1, `compacted (${compactions})`)
   is(exports.sum(buf), data.reduce((a, b) => a + b, 0), 'the host\'s buffer reads as made')
-  // a view the host received pins the heap below it
+  // a view the host received pins the heap below it (without compaction the
+  // heap grows past the buffer and the view detaches, as documented)
+  if (!counted()) return
   const v = exports.view()
   const before = Array.from(v)
   for (let i = 0; i < 3000; i++) exports.churn(i)
   is(Array.from(v), before, 'the returned view still reads its values')
   is(exports.sum(buf), data.reduce((a, b) => a + b, 0), 'and the buffer too')
+})
+
+// Within one call, a loop whose iteration allocates and keeps some of it
+// compacts what it keeps in place (optimize/loop-compact.js): the carried
+// string, array or object stays, and every one it replaced goes.
+const LOOPS = {
+  prefix: `export const f = n => { let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length * 7 + s.charCodeAt(0) + s.charCodeAt(s.length - 1) }`,
+  concat: `export const f = n => { let a = []; for (let i = 0; i < n; i++) { a = a.concat([i]); if (a.length > 50) a = a.slice(25) } return a.length + a[0] + a[a.length - 1] }`,
+  object: `export const f = n => { let cur = { x: 0, tag: 'a', list: [1] }; for (let i = 0; i < n; i++) { cur = { x: cur.x + i, tag: cur.tag + (i % 3), list: [...cur.list, i].slice(-4) }; if (cur.tag.length > 20) cur = { ...cur, tag: 'z' } } return cur.x + cur.tag.length + cur.list[0] + cur.list.length }`,
+  map: `export const f = n => { let a = [1, 2, 3, 4]; for (let i = 0; i < n; i++) a = a.map(x => x + i); return a[0] + a[3] }`,
+  shifted: `export const f = n => { let a = []; for (let i = 0; i < 40; i++) a.push({ i: -i }); for (let i = 0; i < n; i++) { a.push({ i }); a.shift() } let s = 0; for (const o of a) s += o.i; return s + a.length }`,
+  mapKeys: `export const f = n => { const m = new Map(); let keys = []; for (let i = 0; i < n; i++) { const k = { id: i }; keys.push(k); m.set(k, i * 3); if (keys.length > 50) m.delete(keys.shift()) } let s = 0; for (const k of keys) s += m.get(k); return s + m.size }`,
+  closures: `export const f = n => { let fs = []; for (let i = 0; i < n; i++) { let c = i; fs.push(() => ++c); if (fs.length > 30) fs = fs.slice(10) } let s = 0; for (const g of fs) s += g() + g(); return s }`,
+  views: `export const f = n => { let views = []; for (let i = 0; i < n; i++) { const buf = new Float32Array(16); for (let k = 0; k < 16; k++) buf[k] = i + k; views.push(buf.subarray(4, 12)); if (views.length > 10) views = views.slice(5) } let s = 0; for (const v of views) s += v[0] + v.length; return s }`,
+  typed: `export const f = n => { let a = new Float64Array(32); for (let i = 0; i < n; i++) { const b = new Float64Array(32); for (let k = 0; k < 32; k++) b[k] = a[k] + k; a = b } return a[3] + a[31] }`,
+  json: `export const f = n => { let st = { a: 1, b: [1, 2], c: 'x' }; for (let i = 0; i < n; i++) { st = JSON.parse(JSON.stringify({ a: st.a + i, b: st.b.concat([i]).slice(-4), c: st.c + (i % 3) })); if (st.c.length > 10) st.c = 'x' } return st.a + st.b.length + st.c.length }`,
+  tokens: `export const f = n => { let out = []; const src = 'let x = 10 + y * (3 - z);'; for (let r = 0; r < n; r++) { const toks = []; let i = 0; while (i < src.length) { const ch = src[i]; if (ch == ' ') { i++; continue } let j = i; while (j < src.length && src[j] != ' ') j++; toks.push(src.slice(i, j)); i = j } out.push(toks.join('|')); if (out.length > 10) out = out.slice(5) } return out.join('').length }`,
+  param: `const fill = (bag, i) => { bag.items.push({ i }); if (bag.items.length > 40) bag.items = bag.items.slice(20) }; export const f = n => { const bag = { items: [] }; for (let i = 0; i < n; i++) fill(bag, i); let s = 0; for (const it of bag.items) s += it.i; return s }`,
+  numbers: `export const f = n => { let st = { a: 0.5, b: 1e300, c: -0 }; for (let i = 0; i < n; i++) st = { a: st.a * 1.0001 + i, b: st.b / 2 || i, c: st.c - i }; return st.a + st.b + st.c }`,
+  forIn: `export const f = n => { let o = {}; for (let i = 0; i < n; i++) { o['k' + (i % 31)] = { v: i }; if (i % 200 == 199) o = {} } let s = 0; for (const k in o) s += o[k].v; return s }`,
+}
+
+test('compact: a loop keeps what it carries and no more', () => {
+  if (onWasi()) return
+  for (const [name, src] of Object.entries(LOOPS)) {
+    const want = oracle(src), { exports, memory } = jz(src)
+    for (const n of [7, 250, 4000]) is(exports.f(n), want.f(n), `${name} f(${n})`)
+    if ((name === 'prefix' || name === 'concat') && counted()) {
+      // unbounded, the prefix string alone would reach 3.6 GB; a loop compacts
+      // past 16 MB of slack, and wasm memory grows by doubling
+      exports.f(60000)
+      ok(memory.buffer.byteLength <= 64 * 1024 * 1024, `${name}: 60000 iterations stay within 64 MB (${memory.buffer.byteLength >> 10} KB)`)
+    }
+  }
+})
+
+test('compact: loops at every level', () => {
+  if (onWasi()) return
+  for (const level of levels(0, 1, 3, 'size'))
+    for (const name of ['prefix', 'shifted', 'closures', 'json']) {
+      const src = LOOPS[name], want = oracle(src), { exports } = jz(src, { optimize: { level } })
+      for (const n of [7, 3000]) is(exports.f(n), want.f(n), `${name} O${level} f(${n})`)
+    }
 })
 
 test('compact: a reset after compactions returns the module to its start', () => {
@@ -123,7 +173,7 @@ test('compact: a reset after compactions returns the module to its start', () =>
   const want = oracle(src), { exports, memory } = jz(src)
   let last = 0, compactions = 0
   for (let i = 0; i < 2500; i++) { is(exports.step(i), want.step(i), `step(${i})`); if (memory.used < last) compactions++; last = memory.used }
-  ok(compactions >= 1, `compacted (${compactions})`)
+  if (counted()) ok(compactions >= 1, `compacted (${compactions})`)
   memory.reset()
   is(memory.used, 0, 'nothing kept after a reset')
   const fresh = oracle(src)

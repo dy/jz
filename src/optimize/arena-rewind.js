@@ -120,11 +120,13 @@ const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__hea
   // the reset's log of an object (module/core/durable-log.js `__durable_obj_snap`), which lowers the flag itself
   '$__durable_arr_seen', '$__durable_arr_log'])
 const IC_SITE = /^\$__ic_(hi|slot)\d+$/, REGEX_STATE = /^\$__re_(lastIndex_\d+|g\d+_(start|end))$/
+// The compaction's own state and the host's pin (module/core/compact.js): no value of the program's.
+const GC_STATE = /^\$__(g_\w+|pin|gc_tbl)$/
 // The for-in enumeration caches (module/object.js, core.js `__hash_keys_ro`):
 // every read of one asks the epoch first, and a frame that filled one moves
 // the epoch as it restores (`bump`), as `__clear` and a phase's rewind do.
 const ENUMC = /^\$__enumc_(off|len|ep|arr)\d*$/
-const heapScratch = (name) => HEAP_GLOBALS.has(name) || IC_SITE.test(name) || REGEX_STATE.test(name) || ENUMC.test(name)
+const heapScratch = (name) => HEAP_GLOBALS.has(name) || IC_SITE.test(name) || REGEX_STATE.test(name) || ENUMC.test(name) || GC_STATE.test(name)
 const NO_NAMES = new Set()
 // The durable-heap log (module/core/durable-log.js) allocates its buffers and
 // records entries only when a durable (pre-init) array or slot is grown,
@@ -146,7 +148,7 @@ const LOWERS = new Set(['$__esc_at', '$__esc_val', '$__esc_elem', '$__esc_cell',
 // The log of what the escapes wrote into and the walk from it as a frame
 // returns (module/core/reach.js): kernels of the protocol itself, whose
 // stores go into the log and into scratch above the heap.
-const REACH = /^\$__(root|root_reset|survive|reach_\w+)$/
+const REACH = /^\$__(root|root_reset|survive|reach_\w+|gc_\w+|compact)$/
 const SURVIVE = '$__survive', ROOTN = '$__rootn', ROOTS = '$__roots', ROOT_RESET = '$__root_reset'
 // The lowest the flag stood at since the outermost reading frame was entered:
 // a handler's flag (compile/emit/statements.js).

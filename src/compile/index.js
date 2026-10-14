@@ -300,6 +300,9 @@ export function assemble(ast, profiler) {
   const censusFrames = (iterations = true) => {
     const loops = ctx.plans.rewindLoops = new WeakSet()
     ctx.plans.rewindLoopLabels = null
+    const compacts = ctx.plans.compactLoops = new WeakSet()
+    ctx.plans.compactLoopLabels = null
+    ctx.plans.hasCompactLoops = false
     const facts = transitiveFrameEffects(ctx.funcs.list, [ast, ...(ctx.module.moduleInits ?? [])], iterations)
     ctx.plans.closureCalls = facts.closureCalls
     ctx.plans.closureSites = facts.closureSites
@@ -333,6 +336,7 @@ export function assemble(ast, profiler) {
       if (!f) continue
       f.frame = frame
       for (const body of frame.loops) loops.add(body)
+      for (const body of frame.allocLoops ?? []) compacts.add(body)
       join(frame)
     }
     for (const o of facts.closureSiteFacts.values()) join(o)
@@ -1113,8 +1117,9 @@ export function assemble(ast, profiler) {
     censused: new Set([...ctx.funcs.list.filter(f => f.frame).map(f => `$${f.name}`),
       ...[...ctx.closure.summaryId ?? []].filter(([, id]) => id !== undefined && ctx.plans.closureSites?.has(id)).map(([name]) => `$${name}`)]),
     report: ctx.transform.whyNotRewind ?? null,
-    // Compaction of kept memory (module/core/compact.js): link drops it where no export keeps memory.
-    compact: compactOn(),
+    // Compaction of kept memory (module/core/compact.js): link drops it where no export keeps memory,
+    // with the host's pin where no loop compacts either.
+    compact: compactOn(), compactLoops: !!ctx.plans.hasCompactLoops,
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(), regexSids: [...ctx.schema.regexSids],
     viewSids: ctx.schema.list.flatMap((names, sid) => enumView(names) ? [sid] : []),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,

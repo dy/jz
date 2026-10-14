@@ -37,17 +37,25 @@ it keeps `arenaReach` off, and the host measures the heap every sixteenth
 call. `test/compact.js` pins the patterns, every value kind, the host's pins
 and a reset after compactions.
 
-Still open on memory, in order:
+Landed next: compaction within a call (optimize/loop-compact.js, CONTRIBUTING
+"Compaction within a call"): a loop whose iteration allocates and keeps some
+of it compacts in place with the function's locals as roots. `s = x + s` and
+`a = a.concat(b)` over 100,000 iterations, which exhausted the heap, hold
+768 KB and 4 MB; `cur = f(cur)` holds 256 KB. Cost at the speed tier: the
+kernel in every module with such a loop (+4.3 KB on tokenizer, wordcount,
+entity, immutable), a trigger test per iteration.
 
-1. Loop-carried allocation within one call: `s = x + s` and `a = a.concat(b)`
-   over a long loop inside a single call still grow quadratically (100,000
-   iterations exhaust the heap), `cur = f(cur)` linearly. The same kernels
-   serve it once the emitter names the loop's carried pointer locals as roots
-   at the back edge (the frame census already proves which bindings the
-   iteration escapes into); every other live pointer local of the function
-   must be named too, which is the proof to write.
-2. The recursive jz × jz compile (one 4 GiB call) and the Jessie and watr RSS
-   gaps, unchanged by this work.
+Found beside it, not fixed: at O0 and O1, a dynamic property written in a
+loop on a static object literal (`const cfg = { a: 1 }; for (…)
+cfg['p' + (i % 5)] = [i]`) then read through `for…in` throws "Cannot read
+properties of undefined" past a few hundred iterations; O2 and O3 agree
+with Node. Independent of compaction (`compact: false`, `arenaRewind: false`
+alike).
+
+Still open on memory: the recursive jz × jz compile (one 4 GiB call, now with
+compacting loops inside it: the next bootstrap reading says whether that
+moved) and the Jessie and watr RSS gaps (110.6 vs 94.8 MB, 130.3 vs 70.9 MB
+measured here before loop compaction).
 
 ## Release status, October 11
 

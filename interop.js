@@ -446,7 +446,7 @@ export const memory = (src) => {
   // No call of the module runs while the host allocates for itself (`_busy`,
   // kept by the call wrappers below): that storage a compaction never moves,
   // its address being the host's to hold, so the pin keeps the floor above it.
-  const pinned = (allocate) => (bytes) => { const p = allocate(bytes); if (!mem._busy) mem._pin = top(); return p }
+  const pinned = (allocate) => (bytes) => { const p = allocate(bytes); if (!mem._busy) { mem._pin = top(); mem._pinSet?.(mem._pin) } return p }
   let alloc = pinned(wasmAlloc || jsAlloc)
   const reset = wasmExports?._clear || jsReset
   initHeapPtr()
@@ -476,7 +476,7 @@ export const memory = (src) => {
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
     if (wasmAlloc) { alloc = pinned(wasmAlloc); mem.alloc = alloc }
-    mem.reset = () => { mem._views = new WeakMap(); mem._pin = 0; mem._live = 0; reset() }
+    mem.reset = () => { mem._views = new WeakMap(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
     if (extMap) mem._extMap = extMap
     return mem
   }
@@ -775,7 +775,7 @@ export const memory = (src) => {
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
     if (t === 10 && fnOf) {
-      if (off >= mem._above) { mem._held = true; mem._fns++; if (off >= 16) mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true)) }
+      if (off >= mem._above) { mem._held = true; mem._fns++; if (off >= 16) { mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true)); mem._pinSet?.(mem._pinAt) } }
       return fnOf(p)
     }
     if (t === 1) {  // ARRAY
@@ -790,7 +790,7 @@ export const memory = (src) => {
       // A view of the module's memory: the bytes it shows stay while the host
       // holds it (`held`, for the call that returned it, interop `settled`).
       // The host holds the bytes shown: the heap below their end never moves (`_pinAt`, `settle`).
-      const held = (at, bytes) => { if (at >= mem._above) { mem._held = true; mem._pinAt = Math.max(mem._pinAt, at + bytes) } return at }
+      const held = (at, bytes) => { if (at >= mem._above) { mem._held = true; mem._pinAt = Math.max(mem._pinAt, at + bytes); mem._pinSet?.(mem._pinAt) } return at }
       if (a & DATA_VIEW_FLAG) return new DataView(mem.buffer, held(m.getInt32(off + 4, true), m.getInt32(off, true)), m.getInt32(off, true))
       const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
@@ -853,7 +853,7 @@ export const memory = (src) => {
         if (d) for (const [key, value] of hashEntries(d, fnOf)) obj[key] = value
       }
       fnOf?.owners.set(obj, p)
-      if (fnOf && mem._fns !== fns && off >= mem._above) mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true))
+      if (fnOf && mem._fns !== fns && off >= mem._above) { mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true)); mem._pinSet?.(mem._pinAt) }
       return obj
     }
     if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.
@@ -919,7 +919,7 @@ export const memory = (src) => {
   // state healing. A JS-only memory has no runtime state and just rewinds. The
   // views the module left on host objects (`__ext_set`) name storage a reset frees.
   mem._views = new WeakMap()
-  mem.reset = () => { mem._views = new WeakMap(); mem._pin = 0; mem._live = 0; reset() }
+  mem.reset = () => { mem._views = new WeakMap(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
 
   // TypedArray constructors: memory.Float64Array(data), etc.
   // Bulk-copy path: when input is a TypedArray whose element type matches
@@ -1049,7 +1049,7 @@ export const wrap = (memSrc, inst, state) => {
     } catch { /* ignore */ }
   }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
-  const compact = realInst.exports.__compact
+  const compact = realInst.exports.__compact, pinGlobal = realInst.exports.__pin
   const hostAbiExp = new Map()
   const hostAbiBytes = customSection(mod, 'jz:hostabi')
   if (hostAbiBytes) {
@@ -1059,6 +1059,10 @@ export const wrap = (memSrc, inst, state) => {
     } catch { /* ignore */ }
   }
   const mem = memory(memSrc)
+  // The module's pin (module/core/compact.js `__pin`): the heap below the
+  // highest block the host holds by address never moves, in a compaction the
+  // host asks for or one a loop runs inside a call. Raised as values decode.
+  if (pinGlobal && mem) { mem._pinSet = (at) => { if (at > (pinGlobal.value >>> 0)) pinGlobal.value = at | 0 }; mem._pinReset = () => { pinGlobal.value = 0 } }
   // Async boundary: a program with async source anywhere in its graph exports
   // __mt_drain / __p_state / __p_value (the `jz:async` std module's contract,
   // re-exported by prepare). Every export call ends
@@ -1545,7 +1549,7 @@ export const wrap = (memSrc, inst, state) => {
   const COMPACT_MIN = 65536
   const settle = (returned, held) => {
     if (!compact || mem.scalar) return
-    if (held) { mem._pin = Math.max(mem._pin, mem._pinAt); mem._pinAt = 0 }
+    if (held) { mem._pin = Math.max(mem._pin, mem._pinAt); mem._pinAt = 0; mem._pinSet?.(mem._pin) }
     if (!returned || asyncMod || (mem._calls = (mem._calls + 1) & 15) !== 0) return
     const floor = Math.max(mem._base(), mem._pin), at = mem._top()
     if (at - floor <= 2 * mem._live + COMPACT_MIN) return

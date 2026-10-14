@@ -1049,6 +1049,8 @@ function arrowsIn(n, found) {
  * call edges, `allocates` whether the function or a callee
  * allocates, `flagged` whether code the frame runs may lower the escape flag,
  * `unsited` whether an escape of it has no node the emitter could flag,
+ * `allocLoops` the body nodes of the loops whose iteration allocates but lets
+ * something escape, candidates for an in-place compaction;
  * `loops` the body nodes of the loops whose iteration lets no allocation
  * escape and that allocate, themselves or through a callee, `closures` the
  * closures its own resolved calls run. With `roots` (the module's own code,
@@ -1083,7 +1085,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const nodes = [...own, ...closureOwn]
   const facts = new Map()
   for (const [name, o] of nodes) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, keeps: o.keeps, flagged: o.flagged, unsited: o.unsited, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates,
-    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), freshObjects: o.freshObjects ?? null })
+    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), allocLoops: new Set(), freshObjects: o.freshObjects ?? null })
   const spell = (c) => typeof c === 'number' ? 'closure' + c : c
   // The arena facts of a callee (a function by name, a closure by its key),
   // `every`: reached on every call of the caller. A host's function is
@@ -1141,8 +1143,13 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   for (const [name, o] of own) {
     const f = facts.get(name)
     const clean = (c) => { const g = facts.get(c); return g != null && !g.arenaUnsafe && !g.keeps && !g.flagged }
-    for (const { body, own: l } of o.loops)
-      if (!l.arenaUnsafe && !l.closures?.size && (l.allocates || [...l.callees].some(c => facts.get(c)?.allocates)) && [...l.callees].every(clean)) f.loops.add(body)
+    for (const { body, own: l } of o.loops) {
+      if (!(l.allocates || [...l.callees].some(c => facts.get(c)?.allocates))) continue
+      if (!l.arenaUnsafe && !l.closures?.size && [...l.callees].every(clean)) f.loops.add(body)
+      // an iteration that allocates and lets something escape: what it keeps is
+      // compacted in place when it piles up (optimize/loop-compact.js)
+      else f.allocLoops.add(body)
+    }
   }
   return facts
 }

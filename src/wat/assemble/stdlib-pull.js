@@ -19,7 +19,7 @@ import { MEM_OPS, findBodyStart } from '../../ir.js'
 import { DYN_CACHE_EMPTY } from '../../../layout.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 import { ROOT_LOG_BYTES } from '../../../module/core/reach.js'
-import { compactOn, gcTableBytes } from '../../../module/core/compact.js'
+import { compactOn, gcTableBytes, declarePin } from '../../../module/core/compact.js'
 
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
 // are parsed only when absent from the assembled module. Generated templates
@@ -228,7 +228,9 @@ export function pullStdlib(sec) {
   // link gives it: there for a module that allocates, dropped by link where
   // no frame asks.
   if (needsAlloc && ctx.transform.optimize?.arenaRewind !== false && ctx.core.stdlib['__made'] != null) inc('__made')
-  if (pullCompact()) { inc('__compact'); resolveIncludes() }
+  if (pullCompact()) { declarePin(); inc('__compact'); resolveIncludes() }
+  // A loop that compacts what it keeps (optimize/loop-compact.js) calls the kernel's halves itself.
+  if (needsAlloc && compactOn() && ctx.plans.compactLoopLabels?.size && ctx.core.stdlib['__gc_begin'] != null) { declarePin(); inc('__gc_begin', '__gc_walk', '__gc_move', '__gc_mark', '__gc_fwd', '__gc_fwd_raw', '__mkptr'); resolveIncludes() }
   if (ctx.core.includes.has('__root')) {
     inc('__survive', '__root_reset'); resolveIncludes()
     // Its log is made first thing as the module starts, below every mark a
@@ -275,7 +277,7 @@ export function pullStdlib(sec) {
   // The compaction's table (module/core/compact.js gcTableBytes): a lazy table
   // like the others, gone with the kernel where link drops it; the interned
   // spans before it stay reclaimable past it (static-data.js).
-  if (ctx.core.includes.has('__compact')) injectTable('__compact', '__gc_tbl', gcTableBytes())
+  if (ctx.core.includes.has('__gc_begin')) injectTable('__gc_begin', '__gc_tbl', gcTableBytes())
   if (injectTable('__schema_value', '__schema_number', ctx.runtime.schemaNumberTable)) ctx.runtime.schemaNumberTable = null
   if (injectTable('__dec_to_f64', '__el_tbl', ctx.runtime.elTable)) ctx.runtime.elTable = null
   if (injectTable('__ryu_pow5', '__ryu_tbl', ctx.runtime.ryuTable)) ctx.runtime.ryuTable = null

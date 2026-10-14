@@ -2099,6 +2099,28 @@ argument, a value stored into a host object: `mem.read` marks `_held`). Shared a
 JS one do not compact; a walk that finds no room for its
 scratch above the heap leaves the heap as it was.
 
+**Compaction within a call** (optimize/loop-compact.js). A loop whose
+iteration allocates and lets some of it escape (the frame census's
+`allocLoops`: into a binding of the function, a container older than the
+loop) cannot restore the heap pointer at its start as a rewind loop does.
+Such a loop compacts what it keeps in place: at the top of an iteration, once
+the memory above the loop's mark holds twice what the last compaction kept
+and a page besides, the site calls `__gc_begin` with the loop's mark (the
+module's globals marked), marks every f64 local and parameter of the
+function and every local holding a raw address by its kind
+(active-function.js publishLoopRewinds, from the representation plan; a raw
+local of unknown layout declines the function's loops), calls `__gc_walk`,
+forwards every one of those locals while the chains still stand, and calls
+`__gc_move`. Every local that can hold a pointer is a root, live or not: one
+the previous compaction did not forward would name moved memory, and a dead
+local's block stays one round more. A pointer to a relocation stub resolves
+to the handle the array kernels keep, a shifted array's base record, never
+to the live header, whose words the next slide reuses. The host's pin
+(`__pin`) holds inside a call too: `mem.read` raises it as it hands out a
+view or a closure during a host import. The kernels are the protocol's own
+to the rewind pass; the site's marker locals (`$<mark>lrcN`) hold the mark and
+what the last compaction kept.
+
 An exported parameter used as a numeric array (paramNumericArrayLike) is
 Float64Array in the export and has kind variants under hidden export names
 (narrow/param-abi.js): Float32Array at every typed slot, and Float32Array at

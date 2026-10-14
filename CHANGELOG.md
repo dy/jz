@@ -45,6 +45,7 @@
 - Throw each constant runtime error from one shared helper.
 - Keep the catch around a spread of a value that may not iterate.
 - Compact what the module keeps as an outermost call returns, so state replaced call after call stays bounded.
+- Compact what a loop keeps in place within a call, so a value replaced iteration after iteration stays bounded.
 - Keep the undefined arm of an optional chain through its continuation, so `o?.a.b ?? x` answers `x`.
 
 Release validation is still in progress. This is not a released v1, and the
