@@ -3964,7 +3964,10 @@ pins the shapes, the joins and the bails.
 
 An assignment that is a statement of a function's own list declares its value as a binding of
 its own (`src/prepare/split-bindings.js`, last in prepare, at every level; `splitBindings: false` opts out): `x -= n; xx =
-x * x` reads as `let x1 = x - n; xx = x1 * x1`. The list runs once, top to bottom, so what
+x * x` reads as `let x1 = x - n; xx = x1 * x1`. An arrow whose body is a sequence with an
+assignment among its steps is that list with a return of its value (subscript's `parse = s =>
+(cur = s, s = expr(), s || '')`: `cur` holds the string, the tree is a binding apart; through
+it the operator table's reads resolve to slots). The list runs once, top to bottom, so what
 precedes the assignment read the old value and what follows reads the new. Each binding then
 holds one value and has its kind: an integer assigned after a float is an i32, a parameter of
 any kind reassigned from arithmetic is a number from there on, and a parameter only the list

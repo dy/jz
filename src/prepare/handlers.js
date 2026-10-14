@@ -1188,6 +1188,12 @@ const handlers = {
       if (typeof preppedArgs[0] === 'string') (ctx.runtime.frozenVars ??= new Set()).add(preppedArgs[0])
       return preppedArgs[0]
     }
+    // `Object.create(null)` is an empty object with no prototype: the empty
+    // literal, which the runtime allocates the same way (module/object.js).
+    // As a literal it is what the analyses read a dictionary from (`NCLS[k] = …`
+    // on it is a keyed store, not a call result they cannot see through).
+    if (callee === 'Object.create' && preppedArgs.length === 1 && Array.isArray(preppedArgs[0]) && preppedArgs[0][0] == null && preppedArgs[0][1] == null)
+      return withLoc(['{}'], preppedArgs[0])
 
     const result = preppedArgs.length ? ['()', callee, ...preppedArgs] : ['()', callee, null]
 

@@ -3,6 +3,7 @@
 ## Unreleased — v1 preparation
 
 - Add `jz/strict`, with a separate browser bundle and TypeScript definitions.
+- Type a parameter's earlier reads apart from its reassignment in a sequence body, and `Object.create(null)` as an empty literal; subscript's parser dispatch reads its operator table by slot.
 - Add source maps for unoptimized builds through the JavaScript API and CLI.
 - Run Floatbeat audio in an AudioWorklet, with saved formulas and compressed sharing.
 - Preserve retained values across calls while reclaiming temporary allocations where safe.

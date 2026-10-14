@@ -79,8 +79,8 @@ const mentions = (n, name) => {
  * it before it reads it.
  */
 export function splitReassigned(fn, nested = false) {
-  const body = fn.body
-  if (!Array.isArray(body) || body[0] !== '{}' || body.length !== 2 || !Array.isArray(body[1])) return body
+  const body = sequenceBody(fn.body)
+  if (!Array.isArray(body) || body[0] !== '{}' || body.length !== 2 || !Array.isArray(body[1])) return fn.body
   // a body of one statement (a loop alone) is a list of it: the lists inside it split
   const top = body[1][0] === ';' ? body[1] : nested ? [';', body[1]] : null
   if (top === null) return body
@@ -154,5 +154,20 @@ export function splitReassigned(fn, nested = false) {
     return out
   }
   const list = split(top, (name) => own.has(name))
-  return list === top ? body : ['{}', list]
+  return list === top ? fn.body : ['{}', list]
+}
+
+/**
+ * An expression body that is a sequence with an assignment among its steps
+ * (`s => (cur = s, s = expr(), s || '')`) is the list of those steps and a
+ * return of its value: the sequence runs once, top to bottom, as a list does,
+ * so each assignment can declare its value. Any other body stays as written.
+ */
+const sequenceBody = (body) => {
+  if (!Array.isArray(body) || body[0] !== ',' || body.length < 3) return body
+  let assigns = false
+  for (let i = 1; i < body.length - 1; i++) if (isAssign(body[i])) assigns = true
+  if (!assigns) return body
+  const last = body[body.length - 1]
+  return noted(body, ['{}', noted(body, [';', ...body.slice(1, -1), noted(last, ['return', last])])])
 }

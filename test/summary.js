@@ -180,6 +180,37 @@ test('summary: imported constant initializers are folded before analysis', () =>
   is(jz(source, { modules }).exports.probe(2), 2 * Math.PI + Number.EPSILON)
 })
 
+test('summary: a sequence body that reassigns a parameter declares the new value apart', () => {
+  // subscript's `parse = s => (cur = s, s = expr(), …)`: the string the caller passed
+  // and the tree the parser built are two bindings, so `cur` keeps the string.
+  summarize(`let cur = '', idx = 0
+    const lookup = []
+    const expr = () => { const fn = lookup[cur.charCodeAt(idx)]; return fn ? fn(idx) : null }
+    const parse = s => (idx = 0, cur = s, s = expr(), cur[idx] ? 0 : s || '')
+    lookup[49] = (at) => (idx = 3, [cur.slice(at), at])
+    export const run = () => parse('1+2').length`)
+  is(tagOf(ctx.summary.at('').kindOf('cur')), K.STRING, 'the module string holds what the caller passed')
+  is(tagOf(ctx.summary.at('').kindOf('idx')), K.NUMBER)
+  is(tagOf(kindOf('parse', 's')), K.STRING, 'the parameter is the string')
+  is(jz(`let cur = '', idx = 0
+    const lookup = []
+    const expr = () => { const fn = lookup[cur.charCodeAt(idx)]; return fn ? fn(idx) : null }
+    const parse = s => (idx = 0, cur = s, s = expr(), cur[idx] ? 0 : s || '')
+    lookup[49] = (at) => (idx = 3, [cur.slice(at), at])
+    export const run = () => parse('1+2').length`).exports.run(), 2)
+})
+
+test('summary: Object.create(null) is an empty literal, so keyed stores on it make a dictionary', () => {
+  // watr's opcode class table: `NCLS[k] = n` under a loop, read per token.
+  const src = `const CLS = Object.create(null)
+    for (const k of ['block', 'loop', 'if']) CLS[k] = k.length
+    export const run = (op) => CLS[op] ?? 0`
+  summarize(src)
+  is(tagOf(ctx.summary.at('').kindOf('CLS')), K.HASH, 'a keyed dictionary, not a call result')
+  const m = jz(src)
+  is(m.exports.run('loop'), 4); is(m.exports.run('end'), 0)
+})
+
 test('summary: kinds flow through calls, fields and results; the host boundary is ANY', () => {
   summarize(`const mk = (n, g) => ({ buf: new Float32Array(n), gain: g })
     const proc = (o) => { const b = o.buf, k = o.gain; return b[0] * k }
@@ -688,7 +719,7 @@ test('summary: a parameter read before its reassignment has its incoming kind', 
   const src = `let cur = ''; const parse = (s) => (cur = s, s = [1, 2], s.length); export const f = () => parse('abc') + cur.length`
   summarize(src)
   is(ctx.scope.globalValTypes.get('cur'), 'string')
-  is(tagOf(kindOf('parse', 's')), K.ANY, 'the parameter itself joins its reassignment')
+  is(tagOf(kindOf('parse', 's')), K.STRING, 'the parameter is the string: the sequence declares its reassignment apart (prepare/split-bindings.js)')
   is(jz(src).exports.f(), 5, 'the optimized call preserves the incoming string before reassignment')
   // A loop that assigns the parameter, and a closure that does, end the region.
   const loop = jz(`const h = (p) => { let a = p; for (let i = 0; i < 2; i++) { a = a + p; p = 'x' } return a }; export const f = () => h(1)`)

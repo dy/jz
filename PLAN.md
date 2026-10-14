@@ -6,6 +6,35 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Speed, October 14
+
+The parser cases stand behind V8 (jessie 1.33×, watr 1.9×). Jessie's
+cost was one join: subscript's `parse = s => (cur = s, s = expr(), …)`
+reassigns its parameter with the tree, the summary's flow-insensitive
+binding made `cur` ANY, so `cur.charCodeAt(idx)` was ANY, the operator
+lookup `lookup[cc]` was a wide read (a wide key may name a method), the
+dispatcher closure escaped through it, and every descriptor read (`d.kw`,
+`d.op`, `d.l`, `d.map`) was a hash probe behind a schema guard. Landed: an
+arrow body that is a sequence with an assignment is a statement list to the
+binding split (prepare/split-bindings.js), so the parameter keeps the
+caller's string and the tree is a binding apart; `Object.create(null)` is
+the empty literal, so a keyed table built on it (watr's NCLS) is a
+dictionary. Jessie: 58 → 48 ms per run here, 1.33× → 1.09× V8 in the
+bench, module 205 → 189 KB. Watr: unchanged within noise.
+
+What remains, by profile. Jessie (1.09×): the Pratt loop's layers
+(`parse.step`, `parse.asi`, three `parse.space` wrappers) each pay the frame
+protocol per call at 13k calls a run; `idx` is an f64 module global converted
+at every character read; the ASI layer copies arrays per statement. Watr
+(1.9×): `ctx` is an array with named properties (`ctx.type`, `ctx.code`, …):
+209 reads and 32 writes go through the sidecar hash, 16% of the run
+(`__dyn_get_t_h`, `__dyn_set`); `for (const [type, data] of meta)`
+destructures ANY elements through the iterator protocol; the opcode tables
+are dictionaries probed per token. A record laid out for an array's named
+properties (the summary's `cellProps` names them per cell) is the one change
+that would move watr; it touches the array header, enumeration, `__dyn_set`
+and the durable logs.
+
 ## Memory, October 13
 
 The consumer's memory blowup was per-call state churn: every pattern that
