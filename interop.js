@@ -1049,7 +1049,7 @@ export const wrap = (memSrc, inst, state) => {
     } catch { /* ignore */ }
   }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
-  const compact = realInst.exports.__compact, pinGlobal = realInst.exports.__pin
+  const compact = realInst.exports.__compact, pinGlobal = realInst.exports.__pin, cost = realInst.exports.__g_cost
   const hostAbiExp = new Map()
   const hostAbiBytes = customSection(mod, 'jz:hostabi')
   if (hostAbiBytes) {
@@ -1536,8 +1536,9 @@ export const wrap = (memSrc, inst, state) => {
   let depth = 0
   // As the outermost call returns, the module keeps what its roots reach and
   // no more (`__compact`, module/core/compact.js): the memory above the floor
-  // is compacted once it holds twice what the last compaction kept, and a
-  // page besides. The floor stands above the host's own allocations and
+  // is compacted once it holds twice what the last compaction walked (what it
+  // kept above the floor, and what the module keeps below that it reached:
+  // `__g_cost`), and a page besides. The floor stands above the host's own allocations and
   // above every closure and view of the module's memory a call handed the
   // host (`held`), which the host may hold by address.
   // The heap is measured every sixteenth call (a global read a call would tax
@@ -1554,7 +1555,7 @@ export const wrap = (memSrc, inst, state) => {
     const floor = Math.max(mem._base(), mem._pin), at = mem._top()
     if (at - floor <= 2 * mem._live + COMPACT_MIN) return
     const to = compact(floor | 0) >>> 0
-    mem._live = to - floor
+    mem._live = Math.max(to - floor, cost ? cost.value >>> 0 : 0)
   }
   const running = () => depth === 0 && (depth = 1) === 1 && (mem._busy = true) && ((mem._above = 0), (mem._held = false), true)
   const ran = (threw) => { depth = 0; mem._busy = false; if (threw && setBase) setBase(-1); const handed = mem._held; mem._above = Infinity; mem._held = false; settle(!threw, handed) }

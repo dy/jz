@@ -99,6 +99,51 @@ jz kernel.js --source-map   # debug build + kernel.wasm.map, with source content
 
 See [all examples](https://jz.js.org/examples/).
 
+## Memory
+
+A heap module owns its linear memory and allocates by moving a pointer: no
+free list, no collector thread, no finalizers. Three rules say when memory
+comes back.
+
+1. **A call's temporaries go at its return.** What a call allocated and did
+   not store into something older than itself (a module binding, state an
+   earlier call made, an argument) is gone when it returns: closures, objects
+   and growing buffers included. A loop whose iterations keep nothing does
+   the same per iteration. This costs one pointer restore.
+2. **Kept state is compacted.** What a call stores into module state stays.
+   State replaced later (`state = { ...state, x }`, `buf = new
+   Float64Array(n)` each block, `log = log + line`) leaves the replaced value
+   behind until a compaction: as the outermost call returns (the heap is
+   measured every sixteenth), once the kept memory holds twice what the last
+   compaction walked and a page besides, live values slide down over dead
+   ones and every pointer is rewritten.
+   Within a call, a loop that keeps what it allocates compacts the same way
+   from the function's locals, once the memory above the loop's entry holds
+   twice what the last compaction walked and 16 MB besides. A compaction
+   walks everything the module reaches, at about a gigabyte a second on a
+   laptop, and comes no more often than once per twice that much allocation.
+3. **Nothing the host holds moves.** The host's own allocations
+   (`memory.Array` and the other constructors) and every value a call handed
+   it (a closure, a typed array's view, an argument of a host import) pin the
+   heap below them. Make those before the state that churns; drop them to
+   let the memory go. `memory.reset()` returns the module to its start.
+
+What a program holds, at `optimize: 3`:
+
+| program | memory held |
+|---|---|
+| a kernel reading and writing preallocated typed arrays | its buffers; it allocates nothing and never compacts |
+| temporaries in a call or a loop iteration | what one call or iteration allocates, freed at its end |
+| state replaced call after call | live state, at most twice over plus a page between compactions |
+| a loop carrying a growing value | the live value, at most twice over plus 16 MB |
+| a large kept structure beside churn | the structure, plus churn up to twice its size between compactions |
+
+A real-time callback follows the first row: allocate buffers once at module
+level, write into them, return numbers or views of them. `optimize: {
+compact: false }` turns compaction off, as `optimize: 'size'` does
+(`{ level: 'size', compact: true }` keeps it); imported or shared memory never
+compacts. `memory.used` reads what the module keeps.
+
 ## FAQ
 
 <details>
@@ -215,7 +260,7 @@ state alone (at `optimize: 'size'` such a call keeps all it allocated).
 State replaced call after call (`state = { ...state, x }`, `buf = new
 Float64Array(n)` each block, `log = log + line`) leaves what it replaced
 behind, which the module compacts: as an outermost call returns, once the
-kept memory holds twice what the last compaction kept (and a page besides),
+kept memory holds twice what the last compaction walked (and a page besides),
 the live values slide down over the dead ones and every pointer to them is
 rewritten, so a program keeps what it reaches and no more. A loop whose
 iteration allocates and keeps some of it does the same within a call, with

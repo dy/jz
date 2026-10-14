@@ -67,7 +67,7 @@ export function link(module, facts) {
   // keep memory: one whose every export keeps nothing it made or was handed
   // (a result the host copies is released once copied) drops it.
   if (facts.compact && facts.exportInner && ![...facts.exportInner.values()].some(inner => !arena.releasable.has(inner) || arena.flagged.has(inner)))
-    dropExports(root, new Set(facts.compactLoops ? ['"__compact"'] : ['"__compact"', '"__pin"']))
+    dropExports(root, new Set(facts.compactLoops ? ['"__compact"', '"__g_cost"'] : ['"__compact"', '"__g_cost"', '"__pin"']))
   // Which exports keep memory per call: the advisory reads the verdict itself.
   if (rewind) facts.adviseKept?.(arena)
   const callCount = treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })

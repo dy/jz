@@ -2073,7 +2073,7 @@ replaces one an earlier call stored leaves the old one behind, and a program
 that replaces its state call after call grows without bound. As the outermost
 call returns, the host (interop.js `settle`) asks the module to keep only what
 its roots reach, once the memory above the floor holds twice what the last
-compaction kept and a page besides: `__compact(floor)` marks the blocks
+compaction walked and a page besides: `__compact(floor)` marks the blocks
 reachable from the module's globals (`__gc_roots`, laid out per program from
 `ctx.scope.globals`: every mutable f64 global but the caches and the scalar
 bindings, raw i32 globals by their representation, the JSON parser's runtime
@@ -2104,22 +2104,39 @@ iteration allocates and lets some of it escape (the frame census's
 `allocLoops`: into a binding of the function, a container older than the
 loop) cannot restore the heap pointer at its start as a rewind loop does.
 Such a loop compacts what it keeps in place: at the top of an iteration, once
-the memory above the loop's mark holds twice what the last compaction kept
-and a page besides, the site calls `__gc_begin` with the loop's mark (the
-module's globals marked), marks every f64 local and parameter of the
-function and every local holding a raw address by its kind
+the memory above the loop's mark holds twice what the last compaction
+walked and sixteen megabytes besides, the site calls `__gc_begin` with the
+loop's mark (the module's globals marked), marks its roots, calls
+`__gc_walk`, forwards every root while the chains still stand, and calls
+`__gc_move`. The roots are the f64 parameters and locals live at the loop's
+top, and the locals among them holding a raw address by its kind
 (active-function.js publishLoopRewinds, from the representation plan; a raw
-local of unknown layout declines the function's loops), calls `__gc_walk`,
-forwards every one of those locals while the chains still stand, and calls
-`__gc_move`. Every local that can hold a pointer is a root, live or not: one
-the previous compaction did not forward would name moved memory, and a dead
-local's block stays one round more. A pointer to a relocation stub resolves
+local of unknown layout declines the function's loops). Live by a backward
+pass over the function's structured code, expressions included (a
+`local.set` kills, a read brings in, a branch what is live past its target,
+a loop its own live-in as a fixed point), among the bindings in scope at the
+loop that are written at all: a local nothing reads past the loop's top may
+hold a stale address, which nothing reads, while a root's reads at the site
+keep it live across the loop, in registers and in code (a function of
+hundreds of locals and a dozen loops would otherwise carry thousands of root
+reads, and its compiled size and V8's compile memory with them). Every root
+is forwarded at every compaction, so no root holds an address of moved
+memory; a dead root's block stays one round more. A pointer to a relocation stub resolves
 to the handle the array kernels keep, a shifted array's base record, never
 to the live header, whose words the next slide reuses. The host's pin
 (`__pin`) holds inside a call too: `mem.read` raises it as it hands out a
 view or a closure during a host import. The kernels are the protocol's own
 to the rewind pass; the site's marker locals (`$<mark>lrcN`) hold the mark and
-what the last compaction kept.
+what the last compaction walked.
+
+A walk reaches the memory below the floor as well: an old container may name
+a new value, and nothing records the store (no write barrier), so the roots'
+reach is walked whole, below the floor kept in place. Its cost is what it
+reached (`__g_cost`, the bytes of every block `__gc_keep` was handed), and
+that cost sets the next trigger, for the host's `settle` and for a loop's
+site alike: a module holding a million objects compacts a loop's churn once
+per several times their size, not once per sixteen megabytes, and the walks
+stay a bounded share of the allocation they reclaim.
 
 An exported parameter used as a numeric array (paramNumericArrayLike) is
 Float64Array in the export and has kind variants under hidden export names

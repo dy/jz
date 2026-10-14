@@ -1,6 +1,6 @@
 // Compaction of what the module keeps (module/core/compact.js): as the
 // outermost call returns, once the kept memory holds twice what the last
-// compaction kept and a page besides, the host asks the module to keep only
+// compaction walked and a page besides, the host asks the module to keep only
 // what its roots reach. State replaced call after call stays bounded, every
 // kind of value survives the move with its identity (Map keys, closures'
 // cells, slices, views), the host's own storage never moves, and
@@ -164,6 +164,65 @@ test('compact: loops at every level', () => {
       const src = LOOPS[name], want = oracle(src), { exports } = jz(src, { optimize: { level } })
       for (const n of [7, 3000]) is(exports.f(n), want.f(n), `${name} O${level} f(${n})`)
     }
+})
+
+test('compact: a site roots the locals live at the loop, not every pointer the function holds', () => {
+  if (onWasi() || !counted()) return
+  // a, b, c are read before the loop only: dead at its top, not roots; the
+  // carried s is one, with n as the parameter the loop reads. The function
+  // holds a dozen pointer-capable locals; a site marks the few live ones.
+  const src = `export const f = n => { const a = [n], b = 'x' + n, c = { v: n }; let t = a.length + b.length + c.v; let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length + t }`
+  const want = oracle(src), { exports } = jz(src)
+  for (const n of [5, 3000]) is(exports.f(n), want.f(n), `f(${n})`)
+  const wat = jz.compile(src, { wat: true })
+  const sites = wat.split('call $__gc_begin').slice(1).map(site => (site.slice(0, site.indexOf('call $__gc_walk')).match(/call \$__gc_mark/g) ?? []).length)
+  ok(sites.length > 0, 'the loop has a compaction site')
+  ok(/\(global\.get \$__g_cost\)/.test(wat), 'a site takes what the compaction walked as the next trigger')
+  for (const marks of sites) ok(marks >= 1 && marks <= 4, `a site marks its live roots only (${sites.join(' ')})`)
+})
+
+// A pointer a loop's top still leads to is a root wherever its reads are:
+// past the loop, past a break, in a handler, in an enclosing loop's next
+// round, or written in the loop and read after it. Each runs the loop long
+// enough to compact several times; a missed root would read moved memory.
+const LIVE = {
+  after: `export const f = n => { const a = [n, n + 1]; let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length + a[1] }`,
+  broken: `export const f = n => { const a = { v: n }; let s = ''; for (let i = 0; ; i++) { s = (i % 10) + s; if (i == n - 1) break } return s.length + a.v }`,
+  written: `export const f = n => { let last = [0]; let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 1000 == 0) last = [i] } return s.length + last[0] }`,
+  caught: `export const f = n => { const a = [n]; let s = '', c = 0; for (let i = 0; i < n; i++) { try { s = (i % 10) + s; if (i % 5000 == 4999) throw new Error('x') } catch (e) { c += a[0] } } return s.length + c }`,
+  outer: `export const f = n => { let s = '', t = 0; for (let r = 0; r < 3; r++) { const b = [r + 1]; for (let i = 0; i < n; i++) s = (i % 10) + s; t += b[0]; s = s.slice(0, 100) } return s.length + t }`,
+}
+
+test('compact: every pointer a loop still leads to survives its compactions', () => {
+  if (onWasi() || !counted()) return
+  for (const [name, src] of Object.entries(LIVE)) {
+    const want = oracle(src), { exports } = jz(src)
+    for (const n of [7, 60000]) is(exports.f(n), want.f(n), `${name} f(${n})`)
+  }
+})
+
+test('compact: compactions amortize what they walk, not only what they keep above the floor', () => {
+  if (onWasi() || !counted()) return
+  // a module holding a large structure below the floor: every compaction
+  // walks it (an old container may name a new value), so a compaction
+  // comes once per twice its size of churn, not once per page
+  const src = `let keep = []; for (let i = 0; i < 20000; i++) keep.push({ v: i, w: [i] })
+    let st = { n: 0, tags: ['a'] }
+    export const step = (i) => { st = { n: st.n + i, tags: [...st.tags, 't' + i].slice(-6) }; return st.n + st.tags.length + keep.length }`
+  const want = oracle(src), { exports, memory } = jz(src)
+  let last = 0, compactions = 0
+  for (let i = 0; i < 4000; i++) { is(exports.step(i), want.step(i), `step(${i})`); if (memory.used < last) compactions++; last = memory.used }
+  ok(compactions >= 1 && compactions <= 3, `4000 small steps beside 20000 kept objects compact a few times, not every page (${compactions})`)
+})
+
+test('compact: dynamic properties on a static literal, replaced call after call, at every level', () => {
+  if (onWasi()) return
+  const src = `const cfg = { a: 1 }; export const step = (i) => { cfg['p' + (i % 5)] = [i]; let s = 0; for (const k in cfg) s += cfg[k].length ?? cfg[k]; return s }`
+  for (const level of levels(0, 1, 2, 3)) {
+    const want = oracle(src), { exports } = jz(src, { optimize: { level } })
+    for (let i = 0; i < 3000; i++) { const got = exports.step(i), ref = want.step(i); if (got !== ref) { is(got, ref, `O${level} step(${i})`); break } }
+    ok(true, `O${level}: 3000 steps agree`)
+  }
 })
 
 test('compact: a reset after compactions returns the module to its start', () => {

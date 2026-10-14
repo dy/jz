@@ -119,7 +119,14 @@ export function gcTableBytes() {
  *  end of the highest block the host holds by address (a view of the module's
  *  memory, a closure, storage it made). No compaction moves memory below it;
  *  the host raises it as it decodes (interop.js). */
-export const declarePin = () => { if (!ctx.scope.globals.has('__pin')) declGlobal('__pin', 'i32', 0, { export: '__pin' }) }
+export const declarePin = () => {
+  if (ctx.scope.globals.has('__pin')) return
+  declGlobal('__pin', 'i32', 0, { export: '__pin' })
+  // what the last compaction walked, in bytes of the blocks it reached above
+  // the floor and below: what the next one costs, which its trigger amortizes
+  // (the host's `settle`, interop.js; a loop's site, optimize/loop-compact.js)
+  declGlobal('__g_cost', 'i32', 0, { export: '__g_cost' })
+}
 
 export const registerCompact = () => {
   for (const g of ['__g_floor', '__g_top', '__g_lo', '__g_vis', '__g_live', '__g_pre', '__g_list', '__g_ln', '__g_sp', '__g_lim', '__g_fail', '__g_nl']) declGlobal(g, 'i32', 0)
@@ -249,9 +256,11 @@ export const registerCompact = () => {
     (local.set $room (i32.div_u (i32.sub (global.get $__g_top) (local.get $p)) (local.get $stride)))
     (select (local.get $room) (local.get $n) (i32.gt_u (local.get $n) (local.get $room))))`
 
-  // The words of [start, end) stay: live where they lie above the floor.
+  // The words of [start, end) stay: live where they lie above the floor,
+  // walked wherever they lie.
   ctx.core.stdlib['__gc_keep'] = `(func $__gc_keep (param $start i32) (param $end i32)
     (local $i i32) (local $e i32) (local $cell i32)
+    (global.set $__g_cost (i32.add (global.get $__g_cost) (i32.sub (local.get $end) (local.get $start))))
     (if (i32.lt_u (local.get $start) (global.get $__g_floor)) (then (local.set $start (global.get $__g_floor))))
     (if (i32.gt_u (local.get $end) (global.get $__g_top)) (then (local.set $end (global.get $__g_top))))
     (if (i32.ge_u (local.get $start) (local.get $end)) (then (return)))
@@ -723,6 +732,7 @@ export const registerCompact = () => {
     (global.set $__g_pre (i32.add (global.get $__g_live) (local.get $nl)))
     (global.set $__g_list (i32.add (global.get $__g_pre) (i32.add (i32.shr_u (local.get $nl) (i32.const 1)) (i32.const 8))))
     (global.set $__g_ln (i32.const 0))
+    (global.set $__g_cost (i32.const 0))
     (if (i32.eqz (call $__gc_room (i32.add (global.get $__g_list) (i32.const 65536)))) (then (return (i32.const 0))))
     (global.set $__g_sp (global.get $__g_lim))
     (memory.fill (local.get $s) (i32.const 0) (i32.sub (global.get $__g_list) (local.get $s)))

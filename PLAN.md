@@ -20,7 +20,7 @@ building trees, tokenizers) were already bounded by the rewind.
 
 Landed: compaction of kept memory (module/core/compact.js, CONTRIBUTING
 "Compaction of kept memory"). As the outermost call returns, once the memory
-above the reset mark holds twice what the last compaction kept plus a page,
+above the reset mark holds twice what the last compaction walked plus a page,
 the host asks the module to keep only what its roots reach: a precise
 mark-and-slide over the kept region, kinds read from the runtime layout and
 from two tables the compiler lays out (an object layout's pointer slots, a
@@ -43,19 +43,26 @@ of it compacts in place with the function's locals as roots. `s = x + s` and
 `a = a.concat(b)` over 100,000 iterations, which exhausted the heap, hold
 768 KB and 4 MB; `cur = f(cur)` holds 256 KB. Cost at the speed tier: the
 kernel in every module with such a loop (+4.3 KB on tokenizer, wordcount,
-entity, immutable), a trigger test per iteration.
+entity, immutable), a trigger test per iteration. A site's roots are the
+locals live at the loop by a backward liveness over the emitted code: with
+every pointer-capable local of the function as a root instead, watr's
+largest function grew from 50 to 90 KB of wasm (280 root reads at each of a
+dozen sites) and V8's compile of it raised the process's peak by 45 MB;
+with the live roots the module is 9 KB larger than without compaction and
+the process no larger.
 
-Found beside it, not fixed: at O0 and O1, a dynamic property written in a
-loop on a static object literal (`const cfg = { a: 1 }; for (…)
-cfg['p' + (i % 5)] = [i]`) then read through `for…in` throws "Cannot read
-properties of undefined" past a few hundred iterations; O2 and O3 agree
-with Node. Independent of compaction (`compact: false`, `arenaRewind: false`
-alike).
+Seen beside it on October 12 and no longer reproducible on the 13th, at any
+level, with or without compaction or poisoning: a dynamic property written
+on a static object literal (`const cfg = { a: 1 }; cfg['p' + (i % 5)] =
+[i]`) then read through `for…in` threw "Cannot read properties of
+undefined" past a few hundred calls at O0 and O1. `test/compact.js` now
+pins the shape at every level over three thousand calls.
 
 Still open on memory: the recursive jz × jz compile (one 4 GiB call, now with
 compacting loops inside it: the next bootstrap reading says whether that
-moved) and the Jessie and watr RSS gaps (110.6 vs 94.8 MB, 130.3 vs 70.9 MB
-measured here before loop compaction).
+moved). The Jessie and watr process peaks with compaction on are now below
+the off build's (95 vs 114 MB, 132 vs 139 MB); V8's own baseline for watr
+is 71 MB, the rest is the module's memory and V8's compile of it.
 
 ## Release status, October 11
 
