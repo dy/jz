@@ -103,6 +103,14 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // export wrapper's inlined body (`global.set $__heap (local.get $lrw)`):
 // nest 16625 -> 16691, slice 69312 -> 69760, ring 53800 -> 54040. The loops
 // run in constant memory for that store; timing/size/memory caps do not move.
+// Compaction (2026-10-14, module/core/compact.js): a module an export of
+// which may keep memory now links the kernel, whose walk and slide are
+// runtime loops: buf +4830, slice +39896, condref +38640 over the 40 seeds,
+// all of it in __compact, __gc_mark, __gc_walk, __gc_roots, __gc_keep,
+// __gc_canon and __gc_move by a per-function comparison against the same
+// modules compiled with `compact: false`; the one program body that moved is
+// slice's f$exp (+488), the threshold test of a loop's own compaction site,
+// one comparison per iteration. The site's cold block is not counted (below).
 // Count instruction nodes (every S-expr array) lexically inside any `(loop …)`.
 // A wide-accumulator versioning (src/optimize/wide-accumulator.js) keeps the
 // original loop as the cold fallback, the last child of its `$__wa…d` block:
@@ -112,11 +120,16 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 // the same way: the last child of its `$__sp.f<n>d` block, or of the block
 // that block holds (the loop's own exit). The copy's guards and the tests
 // ahead of it are counted.
+// A loop's compaction site (src/optimize/loop-compact.js) tests the heap
+// against a threshold each iteration, which is counted, and past it runs the
+// kernel once per megabytes allocated: that block, `(if (call $__gc_begin …)
+// (then …))`, is cold and not counted.
 const isLoop = (n) => Array.isArray(n) && n[0] === 'loop'
+const isSite = (n) => n[0] === 'if' && Array.isArray(n[1]) && n[1][0] === 'call' && n[1][1] === '$__gc_begin'
 const loopBodyOps = (tree, entered) => {
   let count = 0
   const walk = (n, inLoop) => {
-    if (!Array.isArray(n) || n[0] === 'loop' && entered && !entered.has(n)) return
+    if (!Array.isArray(n) || n[0] === 'loop' && entered && !entered.has(n) || isSite(n)) return
     const here = inLoop || n[0] === 'loop'
     if (here && typeof n[0] === 'string') count++
     let end = n[0] === 'block' && /^\$__wa\d+d$/.test(n[1]) ? n.length - 1 : n.length

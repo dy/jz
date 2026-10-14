@@ -1150,10 +1150,11 @@ test('summary: decided arms share the namespace rewrite rebuild', () => {
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     let retained
     for (const value of [4, 4, 9, 4]) {
-      const src = source.replace('value = 4', `value = ${value}`), profile = {}
+      // the hosted compiler exposes no profile (test/kernel-target.js)
+      const src = source.replace('value = 4', `value = ${value}`), profile = onKernel() ? undefined : {}
       const actual = jz(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false }, profile }).exports.f
       const expected = oracle(src).f
-      if (!onKernel()) is(profile.entries.filter(e => e.name === 'summary').length, 2, 'the fold and namespace lowering share one fresh summary')
+      if (profile) is(profile.entries.filter(e => e.name === 'summary').length, 2, 'the fold and namespace lowering share one fresh summary')
       for (const n of [0, -0, 1, 1.5, NaN, Infinity]) is(actual(n), expected(n), `O${optimize}: ${value}/${n}`)
       retained ??= actual
       is(retained(2), 6, 'a later changed program preserves the earlier instance')

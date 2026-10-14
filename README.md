@@ -121,7 +121,11 @@ comes back.
    from the function's locals, once the memory above the loop's entry holds
    twice what the last compaction walked and 16 MB besides. A compaction
    walks everything the module reaches, at about a gigabyte a second on a
-   laptop, and comes no more often than once per twice that much allocation.
+   laptop, and comes no more often than once per twice that much allocation,
+   except as the heap nears its cap (`memory: { maximum }` in pages, else the
+   4 GB address space): then it comes once per eighth of the walk, so a
+   program whose live data is a large share of the cap keeps running where
+   it would otherwise fail to grow.
 3. **Nothing the host holds moves.** The host's own allocations
    (`memory.Array` and the other constructors) and every value a call handed
    it (a closure, a typed array's view, an argument of a host import) pin the
@@ -137,6 +141,7 @@ What a program holds, at `optimize: 3`:
 | state replaced call after call | live state, at most twice over plus a page between compactions |
 | a loop carrying a growing value | the live value, at most twice over plus 16 MB |
 | a large kept structure beside churn | the structure, plus churn up to twice its size between compactions |
+| any program under `memory: { maximum }` | within the cap while the live data leaves an eighth of it and 64 MB free |
 
 A real-time callback follows the first row: allocate buffers once at module
 level, write into them, return numbers or views of them. `optimize: {

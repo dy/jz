@@ -1397,7 +1397,7 @@ export default (ctx) => {
     (local $slot i32)
     (local.set $slot (call $__hash_lookup_slot (local.get $props) (local.get $key)))
     (if (local.get $slot) (then (i32.store offset=4 (local.get $slot) (i32.const ${HIDDEN_PROPERTY_SEQ})))))`
-  ctx.core.stdlib['__hash_slot_eph'] = genEphemeralSlotUpsert('__hash_slot_eph', MAP_ENTRY)
+  ctx.core.stdlib['__hash_slot_eph'] = () => genEphemeralSlotUpsert('__hash_slot_eph', MAP_ENTRY)
   ctx.core.stdlib['__hash_slot_eph_fixed'] = genEphemeralFixedSlot('__hash_slot_eph_fixed', MAP_ENTRY)
   // The RMW fusion's value update — the store plus the durable-heal protocol
   // (mirrors durableSlotLogIR exactly; kept in the kernel so heal logic has one home).

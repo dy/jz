@@ -48,6 +48,8 @@ import { ctx, PTR, LAYOUT, HEAP, FORWARDING_MASK, declGlobal } from '../../src/c
 import { TOMB_NAN } from '../../src/ir.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, STR_HCACHE_BIT } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
+import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP, SLACK, MARGIN } from './stub-log.js'
+export { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP }
 import { valKindToPtr } from '../../src/ir/pointers.js'
 import { BIGINT_REP_RAW } from '../../src/compile/representation-plan.js'
 import { ROOT_LOG_BYTES } from './reach.js'
@@ -61,9 +63,6 @@ const DBG_GC = typeof process !== 'undefined' && process.env?.JZ_DEBUG_GC === '1
 
 /** Whether the module compacts what it keeps: the JS host (which calls it),
  *  an owned memory, the rewind on, no fixed-memory contract, and the option not off. */
-export const compactOn = () => ctx.transform.host === 'js' && !ctx.memory.shared && !ctx.memory.atomic && ctx.transform.optimize?.compact !== false
-  && ctx.transform.optimize?.arenaRewind !== false && !ctx.memory.fixed?.length
-
 const HEAP_TAGS = 0x7FF & ~((1 << PTR.ATOM) | (1 << PTR.EXTERNAL))
 const SET_ENTRY = 16, MAP_ENTRY = 24
 /** Kinds beside a pointer's tags in the block list: a captured binding's cell,
@@ -115,18 +114,6 @@ export function gcTableBytes() {
   return bytes
 }
 
-/** The host's pin, declared with the kernels (wat/assemble/stdlib-pull.js): the
- *  end of the highest block the host holds by address (a view of the module's
- *  memory, a closure, storage it made). No compaction moves memory below it;
- *  the host raises it as it decodes (interop.js). */
-export const declarePin = () => {
-  if (ctx.scope.globals.has('__pin')) return
-  declGlobal('__pin', 'i32', 0, { export: '__pin' })
-  // what the last compaction walked, in bytes of the blocks it reached above
-  // the floor and below: what the next one costs, which its trigger amortizes
-  // (the host's `settle`, interop.js; a loop's site, optimize/loop-compact.js)
-  declGlobal('__g_cost', 'i32', 0, { export: '__g_cost' })
-}
 
 export const registerCompact = () => {
   for (const g of ['__g_floor', '__g_top', '__g_lo', '__g_vis', '__g_live', '__g_pre', '__g_list', '__g_ln', '__g_sp', '__g_lim', '__g_fail', '__g_nl']) declGlobal(g, 'i32', 0)
@@ -256,11 +243,48 @@ export const registerCompact = () => {
     (local.set $room (i32.div_u (i32.sub (global.get $__g_top) (local.get $p)) (local.get $stride)))
     (select (local.get $room) (local.get $n) (i32.gt_u (local.get $n) (local.get $room))))`
 
+  // A stub a block left as it grew (module/array.js relocateWat, the
+  // collections' growth): logged where the block is older than the innermost
+  // compacting loop, whose compaction rewrites the stub's forward and keeps
+  // what it names, for the caller's local that may still name the stub. The
+  // log overflowing declines every compaction until the next outermost call.
+  ctx.core.stdlib['__gc_stub'] = `(func $__gc_stub (param $off i32) (param $box i64)
+    (local $n i32) (local $at i32)
+    (if (i32.ge_u (local.get $off) (global.get $__lmark)) (then (return)))
+    (local.set $n (global.get $__stubn))
+    (if (i32.lt_s (local.get $n) (i32.const 0)) (then (return)))
+    (if (i32.ge_u (local.get $n) (i32.const ${stubEntries()})) (then (global.set $__stubn (i32.const -1)) (return)))
+    (local.set $at (i32.add (global.get $__stubs) (i32.shl (local.get $n) (i32.const 4))))
+    (i32.store (local.get $at) (local.get $off))
+    (i64.store offset=8 (local.get $at) (local.get $box))
+    (global.set $__stubn (i32.add (local.get $n) (i32.const 1))))`
+
+  // A loop site's threshold (optimize/loop-compact.js): the heap address past
+  // which the loop compacts, from its mark, what the last compaction walked
+  // (\`cost\`, 0 before one) and the memory's cap less one. The amortizing
+  // rule fires past mark + 2·cost + slack; the pressure rule, once the room
+  // to the cap less an eighth of the heap and a margin is short of that,
+  // past mark + cost/8 + slack: heap > min(mark + need, max(8·room, mark + low)).
+  ctx.core.stdlib['__gc_thresh'] = `(func $__gc_thresh (param $mark i32) (param $cost i32) (param $cap1 i32) (result i32)
+    (local $need i64) (local $low i64) (local $m i64) (local $room i64) (local $p i64) (local $t i64)
+    (local.set $m (i64.extend_i32_u (local.get $mark)))
+    (local.set $need (i64.add (i64.shl (i64.extend_i32_u (local.get $cost)) (i64.const 1)) (i64.const ${SLACK})))
+    (local.set $low (i64.add (i64.shr_u (i64.extend_i32_u (local.get $cost)) (i64.const 3)) (i64.const ${SLACK})))
+    ;; 8 · (cap − 1 − mark − margin − need), the heap past which the pressure rule holds
+    (local.set $room (i64.sub (i64.sub (i64.sub (i64.extend_i32_u (local.get $cap1)) (local.get $m)) (i64.const ${MARGIN})) (local.get $need)))
+    (local.set $p (select (i64.add (i64.shl (local.get $room) (i64.const 3)) (i64.const 7)) (i64.const 0) (i64.gt_s (local.get $room) (i64.const 0))))
+    (if (i64.lt_u (local.get $p) (i64.add (local.get $m) (local.get $low))) (then (local.set $p (i64.add (local.get $m) (local.get $low)))))
+    (local.set $t (i64.add (local.get $m) (local.get $need)))
+    (if (i64.gt_u (local.get $t) (local.get $p)) (then (local.set $t (local.get $p))))
+    (if (i64.gt_u (local.get $t) (i64.const 0xFFFFFFFF)) (then (local.set $t (i64.const 0xFFFFFFFF))))
+    (i32.wrap_i64 (local.get $t)))`
+
   // The words of [start, end) stay: live where they lie above the floor,
   // walked wherever they lie.
   ctx.core.stdlib['__gc_keep'] = `(func $__gc_keep (param $start i32) (param $end i32)
     (local $i i32) (local $e i32) (local $cell i32)
     (global.set $__g_cost (i32.add (global.get $__g_cost) (i32.sub (local.get $end) (local.get $start))))
+    (if (i32.gt_u (global.get $__g_cost) (i32.const ${COST_CAP})) (then (global.set $__g_cost (i32.const ${COST_CAP}))))
     (if (i32.lt_u (local.get $start) (global.get $__g_floor)) (then (local.set $start (global.get $__g_floor))))
     (if (i32.gt_u (local.get $end) (global.get $__g_top)) (then (local.set $end (global.get $__g_top))))
     (if (i32.ge_u (local.get $start) (local.get $end)) (then (return)))
@@ -716,6 +740,8 @@ export const registerCompact = () => {
     (if (i32.lt_u (local.get $floor) (global.get $__pin)) (then (local.set $floor (global.get $__pin))))
     (local.set $floor (i32.and (i32.add (local.get $floor) (i32.const 7)) (i32.const -8)))
     (if (i32.ge_u (local.get $floor) (local.get $top)) (then (return (i32.const 0))))
+    ${has('__stubn') ? `;; a stub log that overflowed: a caller's local may name a stub this compaction would not rewrite
+    (if (i32.lt_s (global.get $__stubn) (i32.const 0)) (then (return (i32.const 0))))` : ''}
     (global.set $__g_floor (local.get $floor))
     (global.set $__g_top (local.get $top))
     ;; the static data's end, which the heap starts past (HEAP.START where the data is shorter)
@@ -740,6 +766,19 @@ export const registerCompact = () => {
     ${DBG_GC ? '(global.set $__g_runs (i32.add (global.get $__g_runs) (i32.const 1))) (global.set $__g_walked (i32.add (global.get $__g_walked) (i32.shr_u (i32.sub (local.get $top) (local.get $floor)) (i32.const 3))))' : ''}
     ;; 1. the module's roots, marked; what they reach waits on the stack
     (call $__gc_roots (i32.const 0))
+    ${has('__stubn') ? `;; the logged stubs below the floor, still stubs forwarding where logged: what they name kept, their forwards rewritten (KIND_STUB)
+    (local.set $s (i32.const 0))
+    (block $done (loop $stub
+      (br_if $done (i32.ge_s (local.get $s) (global.get $__stubn)))
+      (local.set $nv (i32.add (global.get $__stubs) (i32.shl (local.get $s) (i32.const 4))))
+      (local.set $s (i32.add (local.get $s) (i32.const 1)))
+      (local.set $nl (i32.load (local.get $nv)))
+      (br_if $stub (i32.or (i32.lt_u (local.get $nl) (i32.add (global.get $__g_lo) (i32.const 16))) (i32.ge_u (local.get $nl) (local.get $floor))))
+      (br_if $stub (i32.ne (i32.load (i32.sub (local.get $nl) (i32.const 4))) (i32.const -1)))
+      (br_if $stub (i32.ne (i32.load (i32.sub (local.get $nl) (i32.const 8))) (i32.wrap_i64 (i64.load offset=8 (local.get $nv)))))
+      (call $__gc_mark (i64.load offset=8 (local.get $nv)))
+      (if (i32.eqz (call $__gc_seen (local.get $nl))) (then (call $__gc_list (i32.const ${KIND_STUB << 16}) (local.get $nl))))
+      (br $stub)))` : ''}
     (i32.const 1))`
 
   const endParts = () => {
@@ -819,6 +858,14 @@ export const registerCompact = () => {
     (local.set $top (global.get $__g_top))
     (local.set $floor (global.get $__g_floor))
     (if (global.get $__g_fail) (then (return (local.get $top))))
+    ${has('__stubn') ? `;; the stub log's boxes, forwarded while the chains still stand
+    (local.set $i (i32.const 0))
+    (block $logged (loop $entry
+      (br_if $logged (i32.ge_s (local.get $i) (global.get $__stubn)))
+      (local.set $at (i32.add (global.get $__stubs) (i32.shl (local.get $i) (i32.const 4))))
+      (i64.store offset=8 (local.get $at) (call $__gc_fwd (i64.load offset=8 (local.get $at))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $entry)))` : ''}
     ;; the stubs' forwards, each once, now that every pointer forwarded through the chains as they stood
     (block $written (loop $pair
       (br_if $written (i32.ge_u (global.get $__g_sp) (global.get $__g_lim)))
@@ -864,7 +911,8 @@ export const registerCompact = () => {
   }
 
   // The host's compaction, as the outermost call returns: no roots but the module's.
-  ctx.core.stdlib['__compact'] = `(func $__compact (export "__compact") (param $floor i32) (result i32)
+  ctx.core.stdlib['__compact'] = () => `(func $__compact (export "__compact") (param $floor i32) (result i32)
+    ${has('__stubn') ? '(global.set $__stubn (i32.const 0))' : ''}
     (if (i32.eqz (call $__gc_begin (local.get $floor))) (then (return (global.get $__heap))))
     (call $__gc_walk)
     (call $__gc_move))`
@@ -880,6 +928,8 @@ export const COMPACT_DEPS = {
   __gc_push: ['__gc_box', '__gc_more'],
   __gc_list: ['__gc_more'],
   __gc_seen: [],
+  __gc_stub: [],
+  __gc_thresh: [],
   __gc_keep: [],
   __gc_row: [],
   __gc_fit: [],
@@ -894,6 +944,6 @@ export const COMPACT_DEPS = {
   __gc_roots: () => ['__gc_mark', '__gc_fwd', '__gc_fwd_raw', '__gc_keep', '__gc_rec', '__gc_push', '__mkptr'],
   __gc_begin: ['__gc_room', '__gc_roots'],
   __gc_walk: ['__gc_mark', '__gc_update', '__gc_fwd_raw', '__gc_roots'],
-  __gc_move: () => [...(ctx.linkDemand.set || ctx.linkDemand.map ? ['__gc_rehash'] : [])],
+  __gc_move: () => ['__gc_fwd', ...(ctx.linkDemand.set || ctx.linkDemand.map ? ['__gc_rehash'] : [])],
   __compact: ['__gc_begin', '__gc_walk', '__gc_move'],
 }

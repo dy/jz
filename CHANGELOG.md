@@ -48,6 +48,8 @@
 - Compact what a loop keeps in place within a call, so a value replaced iteration after iteration stays bounded.
 - Trigger a compaction by what the last one walked, so a module holding a large structure compacts churn beside it once per twice its size, not once per page.
 - Root a loop's compaction in the locals live at it, so a function of hundreds of locals stays its size.
+- Compact as the heap nears `memory.maximum` or the address space, once per eighth of the live data, instead of failing to grow.
+- Compact the loops of closures, and keep a caller's alias of a container its callee's loop grew.
 - Keep the undefined arm of an optional chain through its continuation, so `o?.a.b ?? x` answers `x`.
 
 Release validation is still in progress. This is not a released v1, and the

@@ -16,6 +16,7 @@ import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey, 
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
+import { stubLogIR } from './core/stub-log.js'
 import { ctx, inc, err, strictCode, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
@@ -392,6 +393,7 @@ export default (ctx) => {
     ${durableArrSnapIR('off')}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+    ${stubLogIR('off', 'newOff', PTR.ARRAY)}
     (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
   const arrGrow = (name, defensive) => {
     const slack = needsHeadSlack()

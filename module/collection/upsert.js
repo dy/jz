@@ -21,6 +21,7 @@ import { TOMB_NAN, UNDEF_NAN } from '../../src/ir.js'
 import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
 import { STR_HCACHE_BIT, HIDDEN_PROPERTY_SEQ } from '../../layout.js'
 import { durableFwdLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, durableSlotRelogIR } from './durable.js'
+import { stubLogIR } from '../core/stub-log.js'
 
 // Normal outputs keep the cache-dense HASH LANE introduced for wordcount
 // (+7.2% measured). The self-compile artifact's compact profile drops only that
@@ -320,6 +321,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+        ${stubLogIR('off', 'newptr', expectedType)}
         (local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))
     (local.set $zb (i32.const 0))
@@ -553,6 +555,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
           ? `${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+        ${stubLogIR('off', 'newptr', typeConst)}
         (local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))`
           // Remint: hand back a fresh boxed pointer. Only safe when a single owner
@@ -678,6 +681,7 @@ function genEphemeralSlotUpsert(name, entrySize) {
         (i32.store (i32.sub (local.get $newptr) (i32.const 8)) (local.get $size))
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+        ${stubLogIR('off', 'newptr', PTR.HASH)}
         (local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))
     (br $retry)))

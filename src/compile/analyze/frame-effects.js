@@ -1020,7 +1020,12 @@ function closureEffectsOf(id) {
     else if (isArr(p) && (p[0] === '...' || p[0] === '=') && isName(p[1])) { params.add(p[1]); if (p[0] === '=') (defaults ??= {})[p[1]] = p[2] }
     else for (const nm of patternNames(p)) params.add(nm)
   }
-  return census(ctx.summary.at(body), frameRoots({ body, defaults }), [body], params, NO_NAMES, true)
+  const view = ctx.summary.at(body)
+  const out = census(view, frameRoots({ body, defaults }), [body], params, NO_NAMES, true)
+  // its loops as a function's (frameEffectsOf): a compaction site in one
+  // roots the closure's live locals as it would a function's
+  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, NO_NAMES) }))
+  return out
 }
 
 function patternNames(p, out = []) {
@@ -1050,7 +1055,8 @@ function arrowsIn(n, found) {
  * allocates, `flagged` whether code the frame runs may lower the escape flag,
  * `unsited` whether an escape of it has no node the emitter could flag,
  * `allocLoops` the body nodes of the loops whose iteration allocates but lets
- * something escape, candidates for an in-place compaction;
+ * something escape, candidates for an in-place compaction (the map's
+ * `closureAllocLoops` those of every closure);
  * `loops` the body nodes of the loops whose iteration lets no allocation
  * escape and that allocate, themselves or through a callee, `closures` the
  * closures its own resolved calls run. With `roots` (the module's own code,
@@ -1077,7 +1083,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
     for (const a of arrows) want(ctx.summary?.closureIdOfBody?.(a[2]))
   }
   for (const o of own.values()) { need(o); for (const l of o.loops ?? []) need(l.own) }
-  while (pending.length) { const id = pending.pop(), o = closureEffectsOf(id); closureOwn.set(id, o); need(o) }
+  while (pending.length) { const id = pending.pop(), o = closureEffectsOf(id); closureOwn.set(id, o); need(o); for (const l of o.loops ?? []) need(l.own) }
   // Function names are strings, closure identities are numbers. Keep those
   // disjoint keys through the fixpoint; spelling an edge allocates on every visit.
   // This graph is only traversed. Snapshot its rows once, without another hash
@@ -1140,17 +1146,23 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   // what a closure's sites write into, as a function's: `{ siteKinds, siteGrows, siteGrown, siteAsked, siteNames }`
   facts.closureSiteFacts = new Map([...closureOwn].filter(([id]) => !called(id)).map(([id, o]) => [id, o]))
   facts.closureUnsited = new Set([...closureOwn].filter(([id, o]) => o.unsited && !called(id)).map(([id]) => id))
+  const clean = (c) => { const g = facts.get(c); return g != null && !g.arenaUnsafe && !g.keeps && !g.flagged }
+  const allocating = (l) => l.allocates || [...l.callees].some(c => facts.get(c)?.allocates)
+  const rewindable = (l) => !l.arenaUnsafe && !l.closures?.size && [...l.callees].every(clean)
   for (const [name, o] of own) {
     const f = facts.get(name)
-    const clean = (c) => { const g = facts.get(c); return g != null && !g.arenaUnsafe && !g.keeps && !g.flagged }
     for (const { body, own: l } of o.loops) {
-      if (!(l.allocates || [...l.callees].some(c => facts.get(c)?.allocates))) continue
-      if (!l.arenaUnsafe && !l.closures?.size && [...l.callees].every(clean)) f.loops.add(body)
+      if (!allocating(l)) continue
+      if (rewindable(l)) f.loops.add(body)
       // an iteration that allocates and lets something escape: what it keeps is
       // compacted in place when it piles up (optimize/loop-compact.js)
       else f.allocLoops.add(body)
     }
   }
+  // a closure's loops likewise, the compacting ones: a pipeline's phases and
+  // passes run in callbacks, and their loops are where a compile's memory goes
+  facts.closureAllocLoops = new Set()
+  for (const o of closureOwn.values()) for (const { body, own: l } of o.loops ?? []) if (allocating(l) && !rewindable(l)) facts.closureAllocLoops.add(body)
   return facts
 }
 

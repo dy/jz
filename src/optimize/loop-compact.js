@@ -22,8 +22,7 @@
  * kind (active-function.js publishLoopRewinds). Live by a backward pass over
  * the function's structured code, expressions included (a `local.set` kills,
  * a read brings in, a branch brings in what is live past its target, a loop
- * its own live-in as a fixed point), among the bindings in scope at the loop
- * (a binding the body declares is dead at its top) that are written at all.
+ * its own live-in as a fixed point), among the locals written at all.
  * A local nothing reads past the loop's top is left alone whatever it holds:
  * a stale address in it harms nothing, and a site's reads keep their locals
  * live across the loop, which the engine pays for in registers and the
@@ -39,23 +38,30 @@
  *
  * Placed like the per-iteration rewind: after the lane vectorizer and the
  * loop passes, the loop found in its own function by its label. The marker
- * locals (`$<mark>lrcN`, `$<mark>lrcNlive`) carry the mark and what the last
- * compaction walked; link treats the kernels as the protocol's own
- * (optimize/arena-rewind.js).
+ * locals (`$<mark>lrcN`, `$<mark>lrcNth`) carry the mark and the threshold;
+ * link treats the kernels as the protocol's own
+ * (optimize/arena-rewind.js). A caller's local across a spliced site names
+ * memory below the floor, and reaches above it only through a logged stub.
+
  *
  * @module optimize/loop-compact
  */
 import { ctx } from '../ctx.js'
 import { T as MARK } from '../ast.js'
+import { SLACK, MARGIN } from '../../module/core/stub-log.js'
 
 const HEADER = new Set(['export', 'param', 'result', 'local'])
 const written = (label) => typeof label === 'string' ? label.replace(/(?:\.f\d+)+$/, '') : label
-/** A compaction pays off once the kept memory holds this much beyond twice
- *  what the last one walked: a walk costs what it reaches, so the slack
- *  is megabytes, not a page, and a loop whose iterations keep a growing value
+/** A compaction pays off once the kept memory holds `SLACK` beyond twice
+ *  what the last one walked: a walk costs what it reaches, so the slack is
+ *  megabytes, not a page, and a loop whose iterations keep a growing value
  *  pays a few walks per hundred megabytes allocated, one whose live data is
- *  large pays one per several times that. */
-const SLACK = 16 << 20
+ *  large pays one per several times that. Under pressure, as the memory's
+ *  cap nears (less an eighth of the heap and `MARGIN` for the kernel's
+ *  scratch), a compaction waits for the slack beyond an eighth of the walk
+ *  instead: a walk per eighth of the live data, not per page. The kernel
+ *  folds both rules into one heap address per compaction (`__gc_thresh`),
+ *  so an iteration pays one comparison. */
 const BR = new Set(['br', 'br_if', 'br_table'])
 const HEAD = new Set(['result', 'param', 'type'])
 const NONE = new Set()
@@ -67,7 +73,12 @@ const union = (a, b) => { for (const x of b) a.add(x); return a }
  * its local, a read brings it in, a branch brings in what is live past its
  * target, a loop's own label the loop's live-in (its least fixed point), a
  * handler's what a throw anywhere in its body could reach; the children of
- * anything else run in order, so each sees what the next needs.
+ * anything else run in order, so each sees what the next needs. Liveness is
+ * the whole rule: a binding the body declares is written before it is read
+ * in every iteration, so it is dead at the top, and a caller's local across
+ * an inlined loop, or a specialized path's copy of one, is live where its
+ * reads say so.
+
  * `at` receives the live set before each loop the caller asked about.
  */
 const liveIn = (n, out, env, at) => {
@@ -133,6 +144,8 @@ const liveSeq = (n, out, env, at) => {
  */
 export function insertLoopCompacts(funcs, owners) {
   if (!owners?.size || ctx.memory.shared || !ctx.scope.globals.has('__heap')) return
+  // the memory's cap in bytes, as an i32: its declared maximum, else the address space
+  const cap = (ctx.memory.max > 0 && ctx.memory.max < 65536 ? ctx.memory.max * 65536 : 2 ** 32) | 0
   let id = 0
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func') continue
@@ -154,10 +167,9 @@ export function insertLoopCompacts(funcs, owners) {
     const writes = new Set(params)
     const noteWrites = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'local.set' || n[0] === 'local.tee') writes.add(n[1]); for (let i = 1; i < n.length; i++) noteWrites(n[i]) }
     noteWrites(fn)
-    const site = (mark, live, outer, read) => {
+    const site = (mark, thresh, read) => {
       const marks = [], fwds = []
-      // a specialized path's copy of a local is in scope where the local is
-      const root = (n) => read.has(n) && writes.has(n) && (!outer || outer.has(written(n)))
+      const root = (n) => read.has(n) && writes.has(n)
       const f64 = [...params.filter(n => read.has(n)), ...f64Locals.filter(root)]
       const raw = raws.filter(([name]) => read.has(name) && writes.has(name))
       for (const name of f64) {
@@ -168,10 +180,11 @@ export function insertLoopCompacts(funcs, owners) {
         marks.push(['call', '$__gc_mark', ['i64.reinterpret_f64', ['call', '$__mkptr', ['i32.const', tag], ['i32.const', aux], ['local.get', name]]]])
         fwds.push(['local.set', name, ['call', '$__gc_fwd_raw', ['local.get', name]]])
       }
-      return ['if',
-        ['i32.gt_u', ['i32.sub', ['global.get', '$__heap'], ['local.get', mark]], ['i32.add', ['i32.shl', ['local.get', live], ['i32.const', 1]], ['i32.const', SLACK]]],
+      // past the threshold the kernel set from the mark and the last walk's cost
+      return ['if', ['i32.gt_u', ['global.get', '$__heap'], ['local.get', thresh]],
         ['then', ['if', ['call', '$__gc_begin', ['local.get', mark]],
-          ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']], ['local.set', live, ['global.get', '$__g_cost']]]]]]
+          ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']],
+            ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1]]]]]]]
     }
     const locals = [], done = new Set()
     // the locals live at each site loop's top, before any site reads them
@@ -189,12 +202,16 @@ export function insertLoopCompacts(funcs, owners) {
           : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && own.labels.has(written(n[2][1])) ? n[2] : null
         if (loopNode !== null && !done.has(loopNode)) {
           done.add(loopNode)
-          const mark = `$${MARK}lrc${id}`, live = `$${MARK}lrc${id}live`
+          const mark = `$${MARK}lrc${id}`, thresh = `$${MARK}lrc${id}th`
           id++
-          locals.push(['local', mark, 'i32'], ['local', live, 'i32'])
-          loopNode.splice(2, 0, site(mark, live, own.outer?.get(written(loopNode[1])) ?? null, liveAt.get(loopNode) ?? all))
-          list.splice(i, 0, ['local.set', mark, ['global.get', '$__heap']], ['local.set', live, ['i32.const', 0]])
-          i += 2
+          locals.push(['local', mark, 'i32'], ['local', thresh, 'i32'])
+          loopNode.splice(2, 0, site(mark, thresh, liveAt.get(loopNode) ?? all))
+          // the highest mark a compacting loop took in this call: a block older
+          // than it that grows logs its stub (module/core/compact.js __gc_stub)
+          list.splice(i, 0, ['local.set', mark, ['global.get', '$__heap']],
+            ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['i32.const', 0], ['i32.const', cap - 1]]],
+            ['if', ['i32.gt_u', ['local.get', mark], ['global.get', '$__lmark']], ['then', ['global.set', '$__lmark', ['local.get', mark]]]])
+          i += 3
         }
         visit(n, 1)
       }

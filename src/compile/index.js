@@ -340,6 +340,7 @@ export function assemble(ast, profiler) {
       join(frame)
     }
     for (const o of facts.closureSiteFacts.values()) join(o)
+    for (const body of facts.closureAllocLoops ?? []) compacts.add(body)
     // The escape flag, the lowest address an escape wrote into (all ones while
     // none ran): census sites lower it, and link lowers it where its own vetoes
     // run (optimize/arena-rewind.js), so it is declared for every program;

@@ -2101,8 +2101,9 @@ scratch above the heap leaves the heap as it was.
 
 **Compaction within a call** (optimize/loop-compact.js). A loop whose
 iteration allocates and lets some of it escape (the frame census's
-`allocLoops`: into a binding of the function, a container older than the
-loop) cannot restore the heap pointer at its start as a rewind loop does.
+`allocLoops`, and `closureAllocLoops` for the loops of closures: into a
+binding of the function, a container older than the loop) cannot restore the
+heap pointer at its start as a rewind loop does.
 Such a loop compacts what it keeps in place: at the top of an iteration, once
 the memory above the loop's mark holds twice what the last compaction
 walked and sixteen megabytes besides, the site calls `__gc_begin` with the
@@ -2114,14 +2115,35 @@ top, and the locals among them holding a raw address by its kind
 local of unknown layout declines the function's loops). Live by a backward
 pass over the function's structured code, expressions included (a
 `local.set` kills, a read brings in, a branch what is live past its target,
-a loop its own live-in as a fixed point), among the bindings in scope at the
-loop that are written at all: a local nothing reads past the loop's top may
-hold a stale address, which nothing reads, while a root's reads at the site
-keep it live across the loop, in registers and in code (a function of
-hundreds of locals and a dozen loops would otherwise carry thousands of root
-reads, and its compiled size and V8's compile memory with them). Every root
-is forwarded at every compaction, so no root holds an address of moved
-memory; a dead root's block stays one round more. A pointer to a relocation stub resolves
+a loop its own live-in as a fixed point, a handler what a throw anywhere in
+its body could reach), among the locals written at all: a local nothing
+reads past the loop's top may hold a stale address, which nothing reads,
+while a root's reads at the site keep it live across the loop, in registers
+and in code (a function of hundreds of locals and a dozen loops would
+otherwise carry thousands of root reads, and its compiled size and V8's
+compile memory with them). Liveness is the whole rule: a binding the body
+declares is written before it is read in every iteration, so it is dead at
+the top; a specialized path's copy of a local (`$x.f0`) is live where its
+reads say. Every root is forwarded at every compaction, so no root holds an
+address of moved memory; a dead root's block stays one round more.
+
+A suspended frame's local names memory below the floor (allocated before
+the call), which never moves, and reaches memory above it only through a
+block that grew during the loop: a forwarding stub (module/array.js
+relocateWat, the collections' growth) whose forward names the new block.
+The stub log keeps such stubs right: a growth helper logs the stub it leaves
+when the block is older than the highest mark a compacting loop took in this
+call (`__lmark`, raised at each site's loop entry, cleared with the log as an
+outermost call starts: link/sections.js `__base$set`), as [stub address, box
+of the new block] in a table of 1024 entries made as the module starts
+(`__stubs`, `__stubn`). `__gc_begin` keeps what each logged stub below the
+floor names and lists the stub for its forward to be rewritten, checking
+first that the address still holds a stub forwarding where logged (a rewind
+may have reused it); `__gc_move` forwards the logged boxes while the chains
+stand. A log that overflowed declines every loop compaction until the next
+outermost call; the host's compaction, with no frame suspended, empties it.
+`test/compact.js` runs the caller's array, Map and object-field aliases
+through a callee's compacting loop under poisoning. A pointer to a relocation stub resolves
 to the handle the array kernels keep, a shifted array's base record, never
 to the live header, whose words the next slide reuses. The host's pin
 (`__pin`) holds inside a call too: `mem.read` raises it as it hands out a
@@ -2136,7 +2158,18 @@ reached (`__g_cost`, the bytes of every block `__gc_keep` was handed), and
 that cost sets the next trigger, for the host's `settle` and for a loop's
 site alike: a module holding a million objects compacts a loop's churn once
 per several times their size, not once per sixteen megabytes, and the walks
-stay a bounded share of the allocation they reclaim.
+stay a bounded share of the allocation they reclaim. The cost saturates at a
+gibibyte (`COST_CAP`), so twice it fits an i32. A second rule serves the
+memory's cap (`ctx.memory.max` in pages, else the address space; the host
+takes the address space): when the room left, less an eighth of the heap and
+64 MB for the kernel's scratch, is short of what the first rule still waits
+for, a compaction comes once the memory above the mark holds an eighth of the
+cost and the slack. A program whose live data is a large share of its cap
+then compacts often rather than failing to grow; `test/compact.js` runs 20 MB
+of kept arrays beside a loop under a 64 MB cap. The kernel folds both rules
+into one heap address per compaction (`__gc_thresh`, from the mark, the
+cost and the cap), so an iteration pays one comparison; `test/perf-ratchet.js`
+counts that test and not the cold block past it.
 
 An exported parameter used as a numeric array (paramNumericArrayLike) is
 Float64Array in the export and has kind variants under hidden export names

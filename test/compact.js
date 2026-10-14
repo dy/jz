@@ -191,6 +191,13 @@ const LIVE = {
   written: `export const f = n => { let last = [0]; let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 1000 == 0) last = [i] } return s.length + last[0] }`,
   caught: `export const f = n => { const a = [n]; let s = '', c = 0; for (let i = 0; i < n; i++) { try { s = (i % 10) + s; if (i % 5000 == 4999) throw new Error('x') } catch (e) { c += a[0] } } return s.length + c }`,
   outer: `export const f = n => { let s = '', t = 0; for (let r = 0; r < 3; r++) { const b = [r + 1]; for (let i = 0; i < n; i++) s = (i % 10) + s; t += b[0]; s = s.slice(0, 100) } return s.length + t }`,
+  // the caller's binding of an array the inlined callee grows: live across
+  // the inlined loop, it names the array's old block, a stub once it grew
+  inlined: `const g = (log, n) => { let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 500 == 0) log.push({ i, s: s.length }) } return s.length }; export const f = n => { const log = []; const r = g(log, n); let t = 0; for (const e of log) t += e.i + e.s; return r + t }`,
+  // the caller's binding of a container the callee's loop grows: a Map, and
+  // an array reached through an object's field the callee read once
+  mapAlias: `const g = (m, n) => { let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 100 == 0) m.set('k' + i, { i }) } return s.length }; export const f = n => { const m = new Map(); const r = g(m, n); let t = 0; for (const [k, v] of m) t += v.i + k.length; return r + t + m.size }`,
+  fieldAlias: `const g = (o, n) => { const l = o.list; let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 500 == 0) l.push({ i }) } return s.length }; export const f = n => { const o = { list: [] }; const r = g(o, n); let t = 0; for (const e of o.list) t += e.i; return r + t + o.list.length }`,
 }
 
 test('compact: every pointer a loop still leads to survives its compactions', () => {
@@ -223,6 +230,47 @@ test('compact: dynamic properties on a static literal, replaced call after call,
     for (let i = 0; i < 3000; i++) { const got = exports.step(i), ref = want.step(i); if (got !== ref) { is(got, ref, `O${level} step(${i})`); break } }
     ok(true, `O${level}: 3000 steps agree`)
   }
+})
+
+// A closure's loops compact as a function's do: a pipeline runs its phases
+// and passes in callbacks, and their loops are where a compile's memory goes.
+const CLOSURE_LOOPS = {
+  thunk: `const t = (name, fn) => fn(); export const f = n => { let out = 0; t('a', () => { let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; out += s.length }); return out }`,
+  module: `let out = 0; const t = (name, fn) => fn(); const run = (n) => t('a', () => { const arr = []; for (let i = 0; i < n; i++) { arr.push([i]); out += arr.length } }); export const f = n => { run(n); return out }`,
+  direct: `export const f = n => { let out = 0; const g = k => { let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; out += s.length * k }; g(1); g(2); return out }`,
+}
+
+test('compact: a loop in a closure compacts what it keeps', () => {
+  if (onWasi() || !counted()) return
+  for (const [name, src] of Object.entries(CLOSURE_LOOPS)) {
+    ok((jz.compile(src, { wat: true }).match(/call \$__gc_begin/g) ?? []).length > 0, `${name}: the closure's loop has a site`)
+    const want = oracle(src), { exports, memory } = jz(src)
+    for (const n of [7, 60000]) is(exports.f(n), want.f(n), `${name} f(${n})`)
+    ok(memory.buffer.byteLength <= 64 * 1024 * 1024, `${name}: 60000 iterations stay within 64 MB (${memory.buffer.byteLength >> 10} KB)`)
+  }
+})
+
+test('compact: a stub log too small for the call declines compaction, never corrupts', () => {
+  if (onWasi() || !counted()) return
+  // two containers older than the loop grow past a one-entry log: the loop
+  // stops compacting for the call and the caller's aliases stay right
+  const src = `const g = (log, m, n) => { let s = ''; for (let i = 0; i < n; i++) { s = (i % 10) + s; if (i % 500 == 0) { log.push({ i }); m.set('k' + i, i) } } return s.length }
+    export const f = n => { const log = [], m = new Map(); const r = g(log, m, n); let t = 0; for (const e of log) t += e.i; for (const [k, v] of m) t += v + k.length; return r + t + log.length + m.size }`
+  const want = oracle(src)
+  const small = jz(src, { optimize: { compactStubs: 1 } }), wide = jz(src)
+  for (const n of [7, 20000]) { is(small.exports.f(n), want.f(n), `compactStubs 1: f(${n})`); is(wide.exports.f(n), want.f(n), `default log: f(${n})`) }
+  ok(small.memory.buffer.byteLength >= wide.memory.buffer.byteLength, `the declined loop kept more (${small.memory.buffer.byteLength >> 20} vs ${wide.memory.buffer.byteLength >> 20} MB)`)
+})
+
+test('compact: a loop compacts before the memory\'s cap, not only at its amortized trigger', () => {
+  if (onWasi() || !counted()) return
+  // 20 MB kept beside the loop: the amortizing trigger (twice the walk plus
+  // 16 MB above the mark) would land past a 64 MB cap; under pressure the
+  // loop compacts once an eighth of the walk and the slack have gone by
+  const src = `export const f = n => { const keep = []; for (let i = 0; i < 500000; i++) keep.push([i]); let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length + keep.length }`
+  const want = oracle(src), { exports, memory } = jz(src, { memory: { initial: 2, maximum: 1024 } })
+  is(exports.f(40000), want.f(40000), 'f(40000) under a 64 MB cap')
+  ok(memory.buffer.byteLength <= 64 * 1024 * 1024, `the memory stayed within its cap (${memory.buffer.byteLength >> 20} MB)`)
 })
 
 test('compact: a reset after compactions returns the module to its start', () => {

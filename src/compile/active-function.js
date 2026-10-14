@@ -30,7 +30,7 @@ export function createActiveFunction({
   return {
     current: sig,
     loopRewinds: null,    // labels of this function's loops granted a per-iteration rewind (emit/control-flow.js), published under its WAT name once emitted (publishLoopRewinds)
-    loopCompacts: null,   // its loops that compact what they keep in place, label → the locals in scope at the loop (optimize/loop-compact.js), published beside
+    loopCompacts: null,   // the labels of its loops that compact what they keep in place (optimize/loop-compact.js), published beside
     body,
     exported: !!exported,
     atModuleScope: !!moduleScope,
@@ -191,6 +191,5 @@ export function publishLoopRewinds(ctx, name) {
     if (tag == null || aux == null) return
     raw.push([`$${nm}`, tag, aux])
   }
-  // per loop, the bindings in scope at it (emit/control-flow.js): its roots beside the parameters
-  ;(ctx.plans.compactLoopLabels ??= new Map()).set(`$${name}`, { labels: new Set(compacts.keys()), outer: compacts, raw })
+  ;(ctx.plans.compactLoopLabels ??= new Map()).set(`$${name}`, { labels: new Set(compacts), raw })
 }

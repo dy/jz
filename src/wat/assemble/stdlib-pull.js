@@ -19,7 +19,7 @@ import { MEM_OPS, findBodyStart } from '../../ir.js'
 import { DYN_CACHE_EMPTY } from '../../../layout.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 import { ROOT_LOG_BYTES } from '../../../module/core/reach.js'
-import { compactOn, gcTableBytes, declarePin } from '../../../module/core/compact.js'
+import { compactOn, gcTableBytes, declarePin, declareSites, stubLogBytes } from '../../../module/core/compact.js'
 
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
 // are parsed only when absent from the assembled module. Generated templates
@@ -230,7 +230,13 @@ export function pullStdlib(sec) {
   if (needsAlloc && ctx.transform.optimize?.arenaRewind !== false && ctx.core.stdlib['__made'] != null) inc('__made')
   if (pullCompact()) { declarePin(); inc('__compact'); resolveIncludes() }
   // A loop that compacts what it keeps (optimize/loop-compact.js) calls the kernel's halves itself.
-  if (needsAlloc && compactOn() && ctx.plans.compactLoopLabels?.size && ctx.core.stdlib['__gc_begin'] != null) { declarePin(); inc('__gc_begin', '__gc_walk', '__gc_move', '__gc_mark', '__gc_fwd', '__gc_fwd_raw', '__mkptr'); resolveIncludes() }
+  if (needsAlloc && compactOn() && ctx.plans.compactLoopLabels?.size && ctx.core.stdlib['__gc_begin'] != null) {
+    declareSites(); inc('__gc_begin', '__gc_walk', '__gc_move', '__gc_mark', '__gc_fwd', '__gc_fwd_raw', '__mkptr', '__gc_stub', '__gc_thresh'); resolveIncludes()
+    // the stub log's table, made as the module starts, below every mark (module/core/compact.js)
+    let start = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
+    if (!start) sec.start.push(start = ['func', '$__start'], ['start', '$__start'])
+    start.splice(findBodyStart(start), 0, ['global.set', '$__stubs', ['call', '$__alloc', ['i32.const', stubLogBytes()]]])
+  }
   if (ctx.core.includes.has('__root')) {
     inc('__survive', '__root_reset'); resolveIncludes()
     // Its log is made first thing as the module starts, below every mark a

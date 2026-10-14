@@ -54,6 +54,8 @@ export interface OptimizeOptions {
   alloc?: boolean
   /** Compact what the module keeps as each outermost call returns (owned memory). Default on. */
   compact?: boolean
+  /** Entries of the stub log a loop's compaction reads: the blocks older than the loop that grew (default 1024). */
+  compactStubs?: number
   stencil?: boolean
   outerStrip?: boolean
   toneMap?: boolean

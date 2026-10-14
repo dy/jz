@@ -99,6 +99,7 @@ export function resolveSelfCompileBuild({
   arrayLiteralMinCap = 2,
   hashSmallInitCap = 2,
   collectionInitCap = 2,
+  compactStubs = 1 << 16,
   memory = 1024,
   compactCollections = process.env.JZ_SELF_COMPILE_COMPACT_COLLECTIONS !== '0',
   helperCounters = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '') || !!helperSites(),
@@ -169,6 +170,7 @@ export function resolveSelfCompileBuild({
     arrayLiteralMinCap: typeof optimize === 'object' && optimize.arrayLiteralMinCap != null ? optimize.arrayLiteralMinCap : arrayLiteralMinCap,
     hashSmallInitCap: typeof optimize === 'object' && optimize.hashSmallInitCap != null ? optimize.hashSmallInitCap : hashSmallInitCap,
     collectionInitCap: typeof optimize === 'object' && optimize.collectionInitCap != null ? optimize.collectionInitCap : collectionInitCap,
+    compactStubs: typeof optimize === 'object' && optimize.compactStubs != null ? optimize.compactStubs : compactStubs,
   }
 
   return {

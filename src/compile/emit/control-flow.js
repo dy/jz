@@ -1200,10 +1200,6 @@ export const controlFlowOps = {
     }
     const id = freshId(ctx)
     const brk = `$brk${id}`, loop = `$loop${id}`
-    // The locals declared before the body is emitted: the bindings in scope at
-    // the loop, the roots of its compaction site (optimize/loop-compact.js);
-    // a binding the body declares is dead at the loop's top.
-    const outerLocals = ctx.plans.compactLoops?.has(bodyNode0) ? new Set([...ctx.func.locals.keys()].map(n => `$${n}`)) : null
     // The cont wrapper is only needed if the body has a `continue` AND there is a step
     // expression — `continue` must jump to before the step. Without a step, `continue`
     // can target the loop label directly, saving a redundant `block`.
@@ -1314,7 +1310,7 @@ export const controlFlowOps = {
     // it keeps in place once that piles up (optimize/loop-compact.js), the
     // function's locals its roots (active-function.js publishLoopRewinds).
     else if (ctx.plans.compactLoops?.has(bodyNode0) && compactOn())
-      (ctx.func.loopCompacts ??= new Map()).set(loop, outerLocals)
+      (ctx.func.loopCompacts ??= new Set()).add(loop)
     // The lowering link hands this loop's facts to the optimizer (src/ir/control.js):
     // `plan` the facts, `lowering` the WAT names of its counter and guard, which a rename
     // of this block's locals keeps current (freshenUnrolledScalarBindings).

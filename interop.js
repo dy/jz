@@ -1547,13 +1547,18 @@ export const wrap = (memSrc, inst, state) => {
   // result, of a host import's argument, of a value stored into a host object
   // marks it and notes the block's end, `_pinAt`) pins the heap below that
   // end, above whatever the host may now hold by address.
-  const COMPACT_MIN = 65536
+  // Compact once the memory above the floor holds twice what the last walk
+  // reached and a page besides; or, as the heap nears the address space (less
+  // an eighth of itself and 64 MB for the kernel's scratch), once it holds an
+  // eighth of that and a page, when the first rule would land past the end.
+  const COMPACT_MIN = 65536, CAP = 2 ** 32, MARGIN = 64 << 20
   const settle = (returned, held) => {
     if (!compact || mem.scalar) return
     if (held) { mem._pin = Math.max(mem._pin, mem._pinAt); mem._pinAt = 0; mem._pinSet?.(mem._pin) }
     if (!returned || asyncMod || (mem._calls = (mem._calls + 1) & 15) !== 0) return
     const floor = Math.max(mem._base(), mem._pin), at = mem._top()
-    if (at - floor <= 2 * mem._live + COMPACT_MIN) return
+    const since = at - floor, need = 2 * mem._live + COMPACT_MIN
+    if (since <= need && !(CAP - at < at / 8 + MARGIN + need - since && since > mem._live / 8 + COMPACT_MIN)) return
     const to = compact(floor | 0) >>> 0
     mem._live = Math.max(to - floor, cost ? cost.value >>> 0 : 0)
   }
