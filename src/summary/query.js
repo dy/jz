@@ -20,7 +20,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -472,6 +472,10 @@ export function summaryQueries(facts, internal = false) {
     if (internal) return { kindOfExpr, calleeOf, keyOfName: keyOf }
     return {
       kindOf: name => pub(readKind(name)), kindOfExpr: e => pub(kindOfExpr(e)), calleeOf, keyOfName: keyOf,
+      // a binding that mixes a primitive with an array (the solver's lazy join): a loop reading it versions on the array
+      isMixed: name => { const key = keyOf(name); return key !== null && mixed?.has(key) === true },
+      // the kind the conditional `node` leaves `name` with for the reads after it, or null where it assigns no such name
+      exitKindAt: (node, name) => { const key = keyOf(name), rec = exitJoins?.get(node); if (key === null || !rec) return null; for (let i = 0; i < rec.length; i += 2) if (rec[i] === key) return pub(rec[i + 1]); return null },
       // An emission temp holding the value of `e` (see `aliases`), present
       // (an optional chain's head past its guard) or as `e` reads (a
       // callback's element parameter), for the span of its continuation: temp

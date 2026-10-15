@@ -324,6 +324,7 @@ is a new case, not a smaller claim:
 | hashing / dictionaries | — | — | `wordcount` (shaping caches) | `dict` `hashjoin` |
 | interpreter dispatch | — | `bytebeat` | `vm` (hinting VMs) | `dispatch` |
 | matrix / geometry batches | `colorconv` (3×3) | — | `mat4` (transforms) | `matmul` `nbody` `particle` |
+| library idioms: state bags, record arrays, ratio parameters, dtype tables | — | `sosfilter` `movavg` `upfirdn` `pcmconvert` | — | — |
 
 Beyond named cases, the **shape-class fuzzers** guard whole families the cases
 sample: `scripts/perf-corpus.mjs` generates seeded programs per class — including

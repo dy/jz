@@ -968,6 +968,33 @@ Flow-sensitive assignment and refinement facts use those same IDs in sparse
 collections, reset per function; branch rollback stores IDs as well. Dense
 arrays for these sparse facts increased allocation without improving throughput.
 
+The straight-line facts follow a function's statements in order: a declaration
+or assignment of the function's own body gives the reads after it that kind
+alone, a conditional leaves each name its arms assign with the join of the arms'
+exits (an arm that assigns leaves what it assigned, one that does not leaves
+what its condition proved, an arm that leaves reaches nothing), and a loop
+leaves what it held at entry or what an iteration assigned. A join keeps the
+arms' kinds as a few candidates rather than one packed kind, since a kind holds
+one cell: `if (!mem) mem = 8` leaves a number beside the array it was, and the
+later `typeof mem === 'number'` keeps the array with its cell. A binding, a
+field or a side property that mixes a primitive with an array joins lazily: it
+records the arrays, and only a read that retains the joined kind unrefined
+escapes them (a test retains nothing, an argument of a keeping builtin such as
+`Array.isArray` retains nothing, a declaration reading it takes the candidates,
+an element or member read through it reads each array's and the primitive's).
+The statements after the declaration of such a binding, when a loop among them
+reads the array, run twice (prepare/split-bindings.js, the plan's nested pass):
+under `Array.isArray` with the array as a binding of its own, whose reads the
+summary types, and as written otherwise; the copy's own declarations are
+bindings of their own, and plan/alias.js keeps the guarded declaration (not an
+alias). A loop bounded by a name declared as an array's length and never
+reassigned is bounded by that array. The solve revisits
+every statement each round and the hosted compiler frees a solve's allocations
+only as a whole, so a visit allocates nothing: the keys a conditional or loop
+assigns are listed once per node, the entry state and the arms' exits live on
+shared stacks, a candidate list is allocated only where the fact changes
+(`test/summary.js`, the state-bag case; `test/self-compile.js`, the guard budget).
+
 Object fields follow construction sites, independently of the physical schema.
 Aliases share facts; unrelated objects with the same keys do not. Joined objects
 retain at most 32 sites. Publication projects those facts to
@@ -3968,7 +3995,9 @@ x * x` reads as `let x1 = x - n; xx = x1 * x1`. An arrow whose body is a sequenc
 assignment among its steps is that list with a return of its value (subscript's `parse = s =>
 (cur = s, s = expr(), s || '')`: `cur` holds the string, the tree is a binding apart; through
 it the operator table's reads resolve to slots). The list runs once, top to bottom, so what
-precedes the assignment read the old value and what follows reads the new. Each binding then
+precedes the assignment read the old value and what follows reads the new. A conditional whose
+arm assigns a binding of the list declares the join after it (`if (ptr == null) ptr = 0` then
+`let ptr1 = ptr`), which the summary types from the arms' exits. Each binding then
 holds one value and has its kind: an integer assigned after a float is an i32, a parameter of
 any kind reassigned from arithmetic is a number from there on, and a parameter only the list
 assigned is never written, so its constant argument reads as the constant. A write nested in

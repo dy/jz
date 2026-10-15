@@ -198,7 +198,9 @@ const substitute = (n, to) => {
 const aliasesIn = (f) => {
   const body = f.body
   const params = new Set(f.sig.params.map(p => p.name))
-  const declared = new Set(), defs = new Map(), bare = new Set(), written = new Set(), captured = new Set()
+  // a binding declared from a name under a guard that narrows it (a loop versioned on
+  // `Array.isArray(x)`, prepare/split-bindings.js) reads a kind of its own: not an alias
+  const declared = new Set(), defs = new Map(), bare = new Set(), written = new Set(), captured = new Set(), guarded = new Set()
   const def = (name, v) => { let l = defs.get(name); if (!l) defs.set(name, l = []); l.push(v) }
   const scan = (n, inArrow) => {
     if (typeof n === 'string') { if (inArrow) captured.add(n); return }
@@ -212,7 +214,7 @@ const aliasesIn = (f) => {
         const d = n[i]
         if (typeof d === 'string') { if (inArrow) captured.add(d); else { declared.add(d); bare.add(d) } }
         else if (isArr(d) && d[0] === '=' && typeof d[1] === 'string') {
-          if (inArrow) captured.add(d[1]); else { declared.add(d[1]); def(d[1], d[2]) }
+          if (inArrow) captured.add(d[1]); else { declared.add(d[1]); def(d[1], d[2]); if (d.guarded) guarded.add(d[1]) }
           scan(d[2], inArrow)
         } else scan(d, inArrow)
       }
@@ -240,7 +242,7 @@ const aliasesIn = (f) => {
   const sourceOf = v => isArr(v) && v[0] === '??' && typeof v[1] === 'string' &&
     stable(v[1]) && !captured.has(v[1]) && defs.get(v[1])?.[0]?.[0] === '{}' ? v[1] : v
   for (const b of declared) {
-    if (captured.has(b) || written.has(b) || params.has(b)) continue
+    if (captured.has(b) || written.has(b) || params.has(b) || guarded.has(b)) continue
     const l = defs.get(b)
     if (!l?.length) continue
     const a = sourceOf(l[0])

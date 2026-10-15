@@ -22,6 +22,31 @@ the empty literal, so a keyed table built on it (watr's NCLS) is a
 dictionary. Jessie: 58 → 48 ms per run here, 1.33× → 1.09× V8 in the
 bench, module 205 → 189 KB. Watr: unchanged within noise.
 
+DSP coverage, same day. The library audit (digital-filter's kernels under jz
+and Node) found the shapes real DSP code takes and the corpus did not pin:
+a state bag whose properties are absent on the first call (`params.ptr`,
+`params.state`), a history that is a number or an array in the bag, filter
+coefficients as an array of records with state as an array of pairs, ratio
+parameters a gcd division made, dtype tables choosing a typed array's width.
+Landed: the summary follows a conditional's and a loop's exit (candidates
+rather than one packed kind, a lazy join of a primitive with an array for
+bindings, fields and side properties, a loop versioned on `Array.isArray`), a
+loop bounded by `n = arr.length` is bounded by the array, a proven array reads
+its element without the tag test. Four cases pin the holes with native C
+references: `sosfilter`, `movavg`, `upfirdn`, `pcmconvert`. Paired readings
+here (`bench.mjs --paired=4`, October 15; the tree before this work in
+parentheses), jz against native C and V8: movavg 7.1× C, 2.07× V8 (11.4×,
+3.33×); sosfilter 3.7× C, 1.21× V8 (4.3×, 1.36×); upfirdn 4.2× C, 1.65× V8
+(unchanged); pcmconvert 8.1× C, 0.79× V8 (unchanged); jessie 1.09× V8 and
+watr 2.4× V8 either way on this machine (the stored evidence has watr at
+1.31×: a quiet reference run decides). What would close them: integer
+speculation for a number a division or a modulus made (upfirdn's `up`,
+`down`; movavg's write index, `(ptr + 1) % m`, whose store still takes the
+key test: a clone under `x === (x | 0)` guards, as narrow/specialize.js does
+for typed arrays), SIMD lowering of float-to-int16 conversion and strided
+deinterleave (pcmconvert; C vectorizes both), and hoisting the forwarding
+test out of a loop that cannot grow the array (sosfilter, movavg).
+
 What remains, by profile. Jessie (1.09×): the Pratt loop's layers
 (`parse.step`, `parse.asi`, three `parse.space` wrappers) each pay the frame
 protocol per call at 13k calls a run; `idx` is an f64 module global converted

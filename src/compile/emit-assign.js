@@ -753,6 +753,17 @@ function emitElementStore(arr, idx, val, node) {
     return typed(storeNumeric(keyExpr), 'f64')
   }
 
+  // 6b. A receiver that is an array where it is present (`params.memory`,
+  //     held or not yet) with a proven index: a nullish one throws as the
+  //     store would, a present one stores as a known array.
+  if (typeof arr === 'string' && valTypeOf(arr) == null && numericKey && ctx.func.localReps?.get(arr)?.presentVal === VAL.ARRAY && !ctx.func.boxed?.has(arr) && !ctx.transform.optimize?.leanRuntime) {
+    const held = ctx.func.refinements?.get(arr), recv = temp('pr')
+    const ptr = typed(['local.get', `$${recv}`], 'f64')
+    return block64(
+      ['local.set', `$${recv}`, asF64(emit(arr))],
+      ...(held?.notNullish ? [] : [['if', isNullish(ptr), ['then', ['drop', throwTypeErrorIR()]]]]),
+      storeArrayPayload(ptr, keyExpr, valueExpr, persistBinding(arr)))
+  }
   // 7. Known-ARRAY receiver, generic key.
   if (typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {
     const persist = persistBinding(arr)

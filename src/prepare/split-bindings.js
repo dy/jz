@@ -22,6 +22,8 @@
  * @module prepare/split-bindings
  */
 import { T, noted, copyNode } from '../ast.js'
+import { ctx } from '../ctx.js'
+import { tagsOf, paramOf, UNKNOWN } from '../summary/kind.js'
 
 const COMPOUND = new Map([['+=', '+'], ['-=', '-'], ['*=', '*'], ['/=', '/'], ['%=', '%'], ['**=', '**'],
   ['&=', '&'], ['|=', '|'], ['^=', '^'], ['<<=', '<<'], ['>>=', '>>'], ['>>>=', '>>>']])
@@ -121,11 +123,110 @@ export function splitReassigned(fn, nested = false) {
         declared.add(next); own.add(next); roots.set(next, root)
         continue
       }
-      if (!nested) continue
-      const c = inner(s)
-      if (c !== s) { if (!out) out = copyNode(list); out[k] = c }
+      // A conditional that assigns a binding on some path leaves the join of
+      // its arms: the statements after it read that as a binding of its own
+      // (`if (ptr == null) ptr = 0`: a number from here on), which the
+      // summary's exit join of the conditional types.
+      if (nested) {
+        const c = inner(s)
+        if (c !== s) { if (!out) out = copyNode(list); out[k] = c }
+        // The statements after a declaration of a binding that mixes a
+        // primitive with an array (the summary's lazy join: `mem` a number
+        // before the history replaces it), when a loop among them reads the
+        // array, run twice: under `Array.isArray` with the array as a binding
+        // of its own, whose reads the summary types, and as written otherwise.
+        const v = versionRest(out ?? list, k, names)
+        if (v) { out = v; break }
+      }
+      if (s[0] !== 'if' || !view) continue
+      // the join is declared apart only where it is narrower than the binding's own kind
+      const assigned = assignedIn(s), joined = []
+      for (const name of assigned) if (!captured.has(name) && mine(name, declared, out ?? list, k) && !joined.includes(name) && narrower(view.exitKindAt(s, name), view.kindOf(name))) joined.push(name)
+      // the mix the statements after read may be one the conditional made (above)
+      if (!joined.length) { const v = versionRest(out ?? list, k, names, assigned); if (v) { out = v; break } continue }
+      if (!out) out = copyNode(list)
+      const decls = []
+      for (const name of joined) {
+        const root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
+        decls.push(noted(s, ['=', next, name]))
+        names.set(root, next); declared.add(next); own.add(next); roots.set(next, root)
+      }
+      out.splice(k + 1, 0, noted(s, ['let', ...decls]))
+      list = out
+      k++
+      // the join declared here, or a name the conditional assigned and did not
+      // join, may be the mix the statements after read (above)
+      for (const name of declaredBy(out[k])) assigned.add(name)
+      { const v = versionRest(out, k, names, assigned); if (v) { out = v; break } }
     }
     return out ?? list
+  }
+  const view = nested ? ctx.summary?.at(fn.name) : null
+  // the names a loop reads as an element receiver (`x[i]`, `x.length`) and never assigns
+  const elementReceivers = (loop) => {
+    const reads = new Set(), writes = assignedIn(loop)
+    const walk = (n) => {
+      if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
+      if ((n[0] === '[]' || n[0] === '.' && n[2] === 'length') && typeof n[1] === 'string') reads.add(n[1])
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(loop)
+    const out = []
+    // a binding this pass declared continues one the summary knows
+    for (const name of reads) if (!writes.has(name) && !captured.has(name) && own.has(name) && view?.isMixed(roots.get(name) ?? name)) out.push(name)
+    return out
+  }
+  // the names declared anywhere in a statement, closures aside
+  const declaresIn = (n, out) => {
+    if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') out.add(d); else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') out.add(d[1]) }
+    for (let i = 1; i < n.length; i++) declaresIn(n[i], out)
+  }
+  // the names a declaration statement declares
+  const declaredBy = (s) => { const out = []; if (Array.isArray(s) && (s[0] === 'let' || s[0] === 'const')) for (let i = 1; i < s.length; i++) { const d = s[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') out.push(d[1]) } return out }
+  const hasLoop = (n) => Array.isArray(n) && n[0] !== '=>' && (n[0] === 'for' || n[0] === 'while' || n.some((c, i) => i > 0 && hasLoop(c)))
+  // a kind with fewer tags, or the same tags and a parameter the other lacks
+  const narrower = (a, b) => a != null && b != null && a !== b && (tagsOf(a) !== tagsOf(b) ? (tagsOf(a) & ~tagsOf(b)) === 0 : paramOf(a) !== UNKNOWN && paramOf(b) === UNKNOWN)
+  const versionRest = (list, k, names, candidates = null) => {
+    if (!view || k + 1 >= list.length) return null
+    const rest = list.slice(k + 1).map(s => names.size ? rename(s, names) : s)   // the later statements read the names declared so far
+    if (!rest.some(hasLoop)) return null
+    const restNode = [';', ...rest], assigned = assignedIn(restNode)
+    const picked = []
+    for (const name of candidates ?? declaredBy(list[k])) if (!assigned.has(name) && view.isMixed(roots.get(name) ?? name) && elementReceivers(restNode).includes(name)) picked.push(name)
+    if (!picked.length) return null
+    const to = new Map(), decls = []
+    for (const name of picked) {
+      const next = `${name}${T}s${serial++}`
+      to.set(name, next); own.add(next); roots.set(next, name)
+      const decl = noted(list[k], ['=', next, name]); decl.guarded = true   // read under the guard: not an alias (plan/alias.js)
+      decls.push(decl)
+    }
+    // the copy's own declarations are bindings of their own: each arm's kinds stay apart
+    const inner = new Set(); for (const s of rest) declaresIn(s, inner)
+    for (const name of inner) if (!captured.has(name)) { const next = `${name}${T}s${serial++}`; to.set(name, next); own.add(next); roots.set(next, roots.get(name) ?? name) }
+    let test = null
+    for (const name of picked) { const t = ['()', 'Array.isArray', name]; test = test ? ['&&', test, t] : t }
+    const at = list[k]
+    const fast = noted(at, ['{}', noted(at, [';', noted(at, ['let', ...decls]), ...rest.map(s => rename(s, to))])])
+    const slow = noted(at, ['{}', noted(at, [';', ...rest])])
+    const out = copyNode(list)
+    out.length = k + 1
+    out.push(noted(at, ['if', test, fast, slow]))
+    return out
+  }
+  // the names a statement's arms assign (closures aside: their assignments are the cell's)
+  const assignedIn = (n, out = new Set()) => {
+    if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return out
+    // a declaration names a binding of its own block, not one of the list's
+    if (n[0] === 'let' || n[0] === 'const') {
+      for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && d[2] != null) assignedIn(d[2], out) }
+      return out
+    }
+    if (isAssign(n)) out.add(n[1])
+    if (n[0] === '++' || n[0] === '--') { if (typeof n[1] === 'string') out.add(n[1]) }
+    for (let i = 1; i < n.length; i++) assignedIn(n[i], out)
+    return out
   }
   // the names the body declares with no value
   const bare = new Set()

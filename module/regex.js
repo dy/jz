@@ -1171,7 +1171,10 @@ export default (ctx) => {
   const sidTest = sid => `(i64.eq (i64.and (local.get $obj) (i64.const ${OBJECT_SCHEMA_HI_MASK})) (i64.const ${objectSchemaGuardHex(sid)}))`
   deps({ __regex_prop: ['__str_eq', '__is_str_key'], __regex_string: [], __throw_regex_readonly: ['__alloc_hdr', '__mkptr'] })
   ctx.core.stdlib.__throw_regex_readonly = () => throwErrorWat(ctx, '__throw_regex_readonly', 'TypeError', 'Cannot set a getter-only RegExp property')
+  // Every dynamic store and missed read asks; a receiver of another layout
+  // (the common one) answers by its tag and schema bits before the key is read.
   ctx.core.stdlib.__regex_prop = () => `(func $__regex_prop (param $obj i64) (param $key i64) (result i64)
+    (if (i32.eqz ${[...ctx.schema.regexSids.keys()].map(sidTest).reduce((a, b) => `(i32.or ${a} ${b})`)}) (then (return (i64.const ${TOMB_NAN}))))
     (if (i32.eqz (call $__is_str_key (local.get $key))) (then (return (i64.const ${TOMB_NAN}))))
     ${[...ctx.schema.regexSids].map(([sid, [pattern, flags]]) => `(if ${sidTest(sid)} (then
       ${[['source', sourceString(pattern)], ['flags', flagString(flags)], ...flagProps.map(([key, flag]) => [key, flags.includes(flag)])].map(([key, value]) =>

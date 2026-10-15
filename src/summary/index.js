@@ -413,8 +413,46 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // and so cannot say it: the emitter keeps its Booleans as atoms (the kind of
   // a union of named tags says so itself).
   const boolKeys = new Set()
+  // A binding that holds a primitive on one path and an array on another
+  // (`if (!mem) mem = 8` before `mem = new Array(mem)`, a parameter taking
+  // a count or a list): one kind holds one cell, so the join cannot name the
+  // array's, and a store through the joined kind would miss it. The join is
+  // lazy: the binding records the arrays it mixes, and only a read that
+  // retains the joined kind, unrefined, escapes them (readName). A test, or a
+  // read a `typeof` refines to one of them, keeps the elements precise.
+  // The same holds of an object's field (`{ memory: 16 }` then `o.memory =
+  // history`) and of a property stored beside the layout.
+  const mixed = new Map()        // binding id → the array kinds it mixes with primitives
+  const mixedSlots = new Map()   // `sid:slot` → the same, for a layout's field
+  const mixedSides = new Map()   // `sid:prop` → the same, for a property beside a layout
+  const PRIMITIVE_BITS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS
+  const primitiveOnly = (k) => (k & TAGS) !== 0 && (k & TAGS & ~PRIMITIVE_BITS) === 0
+  const mixedArray = (k) => tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN && !hasTag(k, K.HASH)
+  // the join of primitives with an array whose cell a record names (a mixed binding's own kind)
+  const primArrayJoin = (k) => hasTag(k, K.ARRAY) && paramOf(k) === UNKNOWN && (k & TAGS & ~(PRIMITIVE_BITS | bitOf(K.ARRAY))) === 0
+  const mixedJoinIn = (table, key, old, k) => {
+    let arrays = table.get(key)
+    if (arrays) {
+      if (mixedArray(k)) { if (!arrays.includes(k)) arrays.push(k); return true }
+      if (primitiveOnly(k) || primArrayJoin(k) || (k & TAGS) === 0) return true
+      // a value of another kind joins: the binding is no longer the mix the reads above follow
+      table.delete(key)
+      for (const a of arrays) losingAs('joined with a value of another kind', escape, a)
+      return false
+    }
+    if (!(mixedArray(old) && (primitiveOnly(k) || primArrayJoin(k)) || mixedArray(k) && (primitiveOnly(old) || primArrayJoin(old)))) return false
+    table.set(key, [mixedArray(old) ? old : k]); changed = true
+    return true
+  }
+  const mixedJoin = (key, old, k) => mixedJoinIn(mixed, key, old, k)
+  // the arrays a layout's fields and side properties mix, escaped where the
+  // layout's values leave through a path the reads above do not guard
+  const escapeMixedOf = (sid) => {
+    for (const [key, arrays] of mixedSlots) if (key.startsWith(sid + ':')) for (const a of arrays) escape(a)
+    for (const [key, arrays] of mixedSides) if (key.startsWith(sid + ':')) for (const a of arrays) escape(a)
+  }
   const raise = (values, key, k, quiet = false) => {
-    const old = values[key] ?? K.NONE; let nk = merge(old, k, quiet)
+    const old = values[key] ?? K.NONE; let nk = values === kinds && mixedJoin(key, old, k) ? join(old, k) : merge(old, k, quiet)
     if ((values[key] ?? K.NONE) !== old) nk = merge(values[key], nk, true)   // the join raised the binding itself (an escaped closure's parameter)
     if (nk !== (values[key] ?? K.NONE)) { values[key] = nk; changed = true }
     if (values === kinds && hasTag(k, K.BIGINT) && !unbounded(k)) certainKeys.add(key)
@@ -433,7 +471,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, nk)) } }
+  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinIn(mixedSlots, sid + ':' + i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k)) } }
   // A layout with more construction sites than a shape set holds is one shape:
   // its sites fold into it, and a fact raised on any of them reaches them all.
   const foldedLayouts = new Set()
@@ -518,7 +556,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const raiseSide = (sid, prop, k) => {
     sideLost(sid, k)
     let m = sideProps.get(sid); if (!m) sideProps.set(sid, m = new Map())
-    const old = m.get(prop) ?? K.NONE, nk = merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true; forFolded(sid, s => raiseSide(s, prop, nk)) }
+    const old = m.get(prop) ?? K.NONE, nk = mixedJoinIn(mixedSides, sid + ':' + prop, old, k) ? join(old, k) : merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true; forFolded(sid, s => raiseSide(s, prop, k)) }
     const oldAll = sideByProp.get(prop) ?? K.NONE, nkAll = merge(oldAll, k); if (nkAll !== oldAll) { sideByProp.set(prop, nkAll); changed = true }
   }
   const raiseSideWild = (sid, k) => { sideLost(sid, k); const old = sideWild.get(sid) ?? K.NONE, nk = merge(old, k); if (nk !== old) { sideWild.set(sid, nk); changed = true; forFolded(sid, s => raiseSideWild(s, nk)) } }
@@ -845,10 +883,22 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   /** A loop `for (let i = a; i < x.length; i += c)`, `a` at least 0, whose body leaves
    *  `i` and `x` alone: the counter and the array whose count bounds it. */
+  // A bound that is a name declared as an array's length and never reassigned
+  // (`const n = coefs.length` then `j < n`) bounds the loop by that array.
+  const lengthAliases = new Map()   // binding id → the array binding whose length it holds
+  const lengthAliasOf = (name) => { const key = keyOf(name); return key === null ? null : lengthAliases.get(key) ?? null }
+  const noteLengthAlias = (name, value) => {
+    const key = keyOf(name)
+    if (key === null) return
+    let v = value
+    if (Array.isArray(v) && v[0] === '|' && Array.isArray(v[2]) && v[2][0] == null && v[2][1] === 0) v = v[1]
+    if (Array.isArray(v) && v[0] === '.' && v[2] === 'length' && typeof v[1] === 'string') lengthAliases.set(key, v[1]); else lengthAliases.delete(key)
+  }
   const lengthBoundedLoop = (n) => {
     const c = loopCounter(n)
     let b = c?.test[2]
     if (Array.isArray(b) && b[0] === '|' && Array.isArray(b[2]) && b[2][0] == null && b[2][1] === 0) b = b[1]   // prepare's `x.length | 0`
+    if (typeof b === 'string' && c && lengthAliasOf(b) !== null && !assignedIn(n[4]).includes(b)) b = ['.', lengthAliasOf(b), 'length']
     if (!c || c.from[0] < 0 || c.test[0] !== '<' || !Array.isArray(b) || b[0] !== '.' || b[2] !== 'length' || typeof b[1] !== 'string') return null
     return assignedIn(n[4]).includes(b[1]) ? null : [c.name, b[1]]
   }
@@ -1140,6 +1190,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (onLose) onLose(layouts[sid], losing ?? 'escaped', current, site)
     opaqueSchemas.add(sid); changed = true
     poisonLost(sid)
+    escapeMixedOf(sid)
     schemas[sid].forEach((p, i) => { if (!lostReadPrecise(p)) escape(slots(sid)[i]) })
     for (const [p, k] of sideProps.get(sid) ?? []) if (!lostReadPrecise(p)) escape(k)
     escape(sideWild.get(sid) ?? K.NONE)
@@ -2637,6 +2688,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // hidden slot is none (ast.js layoutView).
   const viewOf = (sid) => layoutView(schemas[sid], accessors, hidden?.get(schemas[sid]))
   const ownEntries = (sid) => {
+    escapeMixedOf(sid)   // its values leave through a copy the reads above do not guard
     // Flat key/kind pairs keep the complete value snapshot without allocating
     // a tuple and a flatMap wrapper for every field on every solver round.
     const entries = [], view = viewOf(sid)
@@ -2828,7 +2880,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!isPrivate(prop) && (foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop)) || (members && (membersByName.has(prop) || membersByName.has(getterOf(prop))))) return ANY
     let k = merge(ABSENT, merge(wildProps.get(prop) ?? K.NONE, sideByProp.get(prop) ?? K.NONE))
     if (pendingAll) k = merge(k, wildValues)
-    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) k = merge(k, slots(sid)[i])
+    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) { k = merge(k, slots(sid)[i]); for (const a of mixedSlots.get(sid + ':' + i) ?? []) escape(a) }
+    for (const [key, arrays] of mixedSides) if (key.endsWith(':' + prop)) for (const a of arrays) escape(a)
     return k
   }
   // A read that answers with no kind a later use can follow: the value a lost
@@ -2836,7 +2889,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // escape `loseShape` spares a name `lostObjectRead` answers).
   const escapeLostReads = (prop) => {
     if (isPrivate(prop)) return
-    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) escape(slots(sid)[i])
+    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) { escape(slots(sid)[i]); for (const a of mixedSlots.get(sid + ':' + i) ?? []) escape(a) }
+    for (const [key, arrays] of mixedSides) if (key.endsWith(':' + prop)) for (const a of arrays) escape(a)
     escape(sideByProp.get(prop) ?? K.NONE)
   }
   // Number keys expose only canonical Number property names (including NaN
@@ -2860,7 +2914,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // a slot under a member's name reads as its value, or as the member bound where it holds none
       const shadowed = i >= 0 ? classMember(recv, prop) : null
       if (shadowed) return optionalResult(op, recv, shadowedBy(slots(paramOf(recv))[i], callWith(binderOf(shadowed), core(recv))))
-      if (i >= 0) return optionalResult(op, recv, slots(paramOf(recv))[i])
+      if (i >= 0) return optionalResult(op, recv, mixedReadIn(mixedSlots, paramOf(recv) + ':' + i, slots(paramOf(recv))[i]))
       const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
       if (gi >= 0) {
         const g = slots(paramOf(recv))[gi]
@@ -2879,7 +2933,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // stored beside them through this shape: a receiver of unknown shape is
       // an instance of a lost shape or a foreign object, never of this one. A
       // lost shape may hold anything of the name.
-      if (!lostSchema(paramOf(recv))) return optionalResult(op, recv, merge(NULLISH, sideOf(paramOf(recv), prop)))
+      if (!lostSchema(paramOf(recv))) return optionalResult(op, recv, merge(NULLISH, mixedReadIn(mixedSides, paramOf(recv) + ':' + prop, sideOf(paramOf(recv), prop))))
       return optionalResult(op, recv, memberMayBeOwn(prop) ? ANY : NULLISH)
     }
     if (unknownReceiver(recv)) {
@@ -2907,6 +2961,43 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (t === K.CLOSURE && closureOwn(recv) && !FUNCTION_PROTO.has(prop)) return optionalResult(op, recv, orAbsent(closurePropOf(recv, prop)))
     return optionalResult(op, recv, ANY)
   }
+  // The joined kind of a mixed binding, read where its value is retained:
+  // the arrays it mixes escape (a store through the join reaches them). A
+  // test of the binding (mask 0, below) retains nothing.
+  // A declaration or assignment reading a mixed field (`let mem = p.memory`)
+  // takes the field's candidates as the binding's straight-line fact instead
+  // (a later test refines them); the binding is then mixed itself.
+  let testing = 0, memberNode = null, mixedTarget = null, mixedFound = null, mixedCopy = null
+  const mixedReadIn = (table, key, k) => {
+    if (testing || hasTag(k, K.ARRAY) && paramOf(k) !== UNKNOWN || !hasTag(k, K.ARRAY)) return k
+    const arrays = table.get(key)
+    if (!arrays) return k
+    if (memberNode !== null && memberNode === mixedTarget) { mixedFound = arrays; return k }
+    for (const a of arrays) losingAs('joined with a primitive value', escape, a)
+    return k
+  }
+  // the value of a declaration or assignment, its mixed candidates noted
+  const mixedValue = (value) => { mixedTarget = value; mixedFound = null; mixedCopy = null; const k = expr(value); mixedTarget = null; return k }
+  const bindMixed = (name, k) => {
+    const arrays = mixedFound, copy = mixedCopy; mixedFound = null; mixedCopy = null
+    const key = keyOf(name)
+    if (key === null) return
+    if (copy) {
+      let m = mixed.get(key)
+      for (const c of copy) if (mixedArray(core(c))) { if (!m) mixed.set(key, m = []); if (!m.includes(c)) m.push(c) }
+      if (flowPath === 0 && current !== null && post.get(key) !== copy) post.set(key, copy)
+      return
+    }
+    if (!arrays) return
+    let m = mixed.get(key); if (!m) mixed.set(key, m = [])
+    for (const a of arrays) if (!m.includes(a)) m.push(a)
+    if (flowPath !== 0 || current === null) return
+    cands.length = 0
+    const prim = refine(k, TAGS & ~bitOf(K.ARRAY) | UNKNOWN); if (prim !== 0) cands.push(prim)
+    for (const a of arrays) cands.push(hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) ? a | (k & NULL_BITS) : a)
+    if (!sameCands(post.get(key))) post.set(key, cands.length === 1 ? cands[0] : cands.slice())
+  }
+  const mixedRead = (key, k) => mixedReadIn(mixed, key, k)
   /** The kind of an expression, with its effects: calls bind parameters, stores raise slots. */
   const expr = n => selectedExpr(n, 7)
   // Mask zero visits effects without retaining the value. Conditions and
@@ -2921,6 +3012,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         : Array.isArray(key) && (key[0] == null || key[0] === 'str') ? key[1] : null
       if (dataProperty(prop)) { selectedExpr(n[1], 0); return K.NONE }
     }
+    if (typeof n === 'string' && mask === 0) { testing++; try { return selectKind(expr(n), 0) } finally { testing-- } }
     if (mask !== 7 && !logical && n?.[0] !== '?' && n?.[0] !== '?:' && n?.[0] !== ',') return selectKind(expr(n), mask)
     if (n == null) return NULLISH
     if (typeof n === 'number') return NUMBER
@@ -2936,12 +3028,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (isInit(bindingScope[key])) joinContexts(bindingScope[key])
       }
       // A binding this walk models is bottom until the fixpoint reaches its assignments.
-      const k = (post.get(key) ?? (pre.has(key) ? incoming[key] : kinds[key])) ?? K.NONE
+      const p = post.get(key), mask = refined.get(key)
+      if (p !== undefined && !funcByName.has(n)) {
+        // a declaration copying a binding's candidates takes them (bindMixed)
+        if (Array.isArray(p) && n === mixedTarget && mask === undefined) { mixedCopy = p; return postRead(p, mask) }
+        return mixedRead(key, postRead(p, mask))
+      }
+      const k = (pre.has(key) ? incoming[key] : kinds[key]) ?? K.NONE
       // A top-level `let f = (…) => …` is the function `f` (prepare registers
       // it): the binding reads as that function until an assignment rebinds it.
       if (funcByName.has(n) && (tagOf(k) === K.NONE || (tagOf(k) === K.CLOSURE && paramOf(k) === UNKNOWN))) return kind(K.CLOSURE, namedClosure(n))
-      const mask = refined.get(key)
-      return mask === undefined ? k : refine(k, mask)
+      return mixedRead(key, mask === undefined ? k : refine(k, mask))
     }
     if (!Array.isArray(n)) return ANY
     if (op == null) return literalKind(n[1])
@@ -2966,13 +3063,36 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return arr
     }
     if (op === '.' || op === '?.') {
-      const recv = receiver(n[1]), prop = n[2], cop = chainOp(op, n[1])
+      const prop = n[2], cop = chainOp(op, n[1])
+      // a read through a binding that mixes a primitive with arrays reads each
+      // array's member and the primitive's; the join itself retains nothing
+      const mixedArrays = typeof n[1] === 'string' && mixed.size && typeof prop === 'string' ? mixed.get(keyOf(n[1])) : undefined
+      if (mixedArrays) {
+        testing++; const r = receiver(n[1]); testing--
+        let k = member(cop, refine(r, PRIMITIVE_BITS | UNKNOWN), prop)
+        for (const a of mixedArrays) k = merge(k, member(cop, a, prop))
+        return optionalResult(cop, r, k)
+      }
+      const recv = receiver(n[1])
       if (cop === '?.' && tagOf(core(recv)) === K.NONE) return NULLISH
       if (typeof prop !== 'string') { expr(prop); return optionalResult(cop, recv, tagOf(recv) === K.NONE ? K.NONE : ANY) }
+      const outerMember = memberNode; memberNode = n
       const k = member(cop, recv, prop), pk = op === '.' && pathDepth ? pathKey(n) : null, pmask = pk === null ? undefined : refined.get(pk)
+      memberNode = outerMember
       return pmask === undefined ? k : refine(k, pmask)
     }
     if (op === '[]') {
+      // An element read through a binding that mixes a primitive with arrays
+      // reads the arrays' elements (a number indexed reads undefined, a string
+      // a character); the join itself retains nothing here.
+      const mixedArrays = typeof n[1] === 'string' && mixed.size ? mixed.get(keyOf(n[1])) : undefined
+      if (mixedArrays && literalKeyOf(n[2]) === null) {
+        testing++; const recv = receiver(n[1]); testing--
+        const ik = expr(n[2])
+        let k = hasTag(recv, K.STRING) ? join(STRING, ABSENT) : ABSENT
+        for (const a of mixedArrays) k = merge(k, orAbsent(entryOf(a, ik)))
+        return optionalResult(chainOp(op, n[1]), recv, k)
+      }
       const recv = receiver(n[1]), cop = chainOp(op, n[1])
       return optionalResult(cop, recv, (() => {
       const idx = n[2], t = tagOf(recv)
@@ -3019,7 +3139,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // The receiver is evaluated before arguments can reassign its binding.
       const memberCall = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string'
       const recv = memberCall ? receiver(callee[1]) : null
+      // a keeping builtin (`Array.isArray(x)`) retains nothing of its arguments: a mixed binding's join stays unread
+      const keeping = typeof callee === 'string' && KEEPING_BUILTINS.test(callee)
+      if (keeping) testing++
       const base = pushArgs(op === '?.()' ? [',', ...n.slice(2)] : n[2]), count = sp - base
+      if (keeping) testing--
       if (KEY_READERS.has(callee)) for (let i = KEY_TARGETS.has(callee) ? 1 : 0; i < count; i++) seeKeys(ks[base + i])
       if (callee === 'Object.assign') for (let i = 0; i < count; i++) copyFields(ks[base + i])
       if (callee === 'structuredClone' && count) cloneReads(ks[base], new Set())
@@ -3088,12 +3212,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     if (logical) {
       const a = selectedExpr(n[1], mask & logical)
-      branch++
+      branch++; flowPath++
       const mark = rtop
       proves(n[1], op === '&&')
       const b = selectedExpr(n[2], mask)
       unwind(mark)
-      branch--
+      branch--; flowPath--
       return merge(a, b)
     }
     if (op === '?' || op === '?:') {
@@ -3101,7 +3225,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const truth = decided(n[1])
       decide(n, truth)
       if (truth === 'pending') return K.NONE
-      branch++
+      branch++; flowPath++
       const mark = rtop
       pathProofs = still(n[2]); proves(n[1], true); pathProofs = false
       const a = truth === false ? K.NONE : selectedExpr(n[2], mask)
@@ -3109,7 +3233,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       pathProofs = still(n[3]); proves(n[1], false); pathProofs = false
       const b = truth === true ? K.NONE : selectedExpr(n[3], mask)
       unwind(mark)
-      branch--
+      branch--; flowPath--
       return merge(a, b)
     }
     if (op === ',') { let k = NULLISH; for (let i = 1; i < n.length; i++) k = selectedExpr(n[i], i === n.length - 1 ? mask : 0); return k }
@@ -3146,10 +3270,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const assignName = (name, v) => {
     const key = keyOf(name)
     if (key !== null) {
-      pre.delete(key); refined.delete(key)
+      pre.delete(key); refined.delete(key); lengthAliases.delete(key)
       // A straight-line assignment is the value the reads after it see; one on a path is not.
-      if (branch === 0 && current !== null) post.set(key, v); else post.delete(key)
+      if (flowPath === 0 && current !== null) post.set(key, v); else { post.delete(key); loopNote(key, v) }
       raise(kinds, key, v)
+      bindMixed(name, v)
     }
     return v
   }
@@ -3159,7 +3284,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A global the plan declares by its writes (a class's static field
     // flattened to a module global) has no declaration for `literalInto`: the
     // `{}` assigned to it is a dictionary where its computed-key stores say so.
-    if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) ?? dictLiteral(target, value) : null) ?? expr(value)
+    if (op === '=') v = (typeof target === 'string' ? cursorOpen(target, value) ?? dictLiteral(target, value) : null) ?? (typeof target === 'string' && (Array.isArray(value) && value[0] === '.' || typeof value === 'string') ? mixedValue(value) : expr(value))
     else if (op === '+=') v = plus(expr(target), expr(value))
     // `a ??= b` leaves a nullish `a` replaced: the binding holds the old value only when it is not nullish.
     else if (logical) v = merge(op === '??=' ? core(expr(target)) : expr(target), expr(value))
@@ -3189,6 +3314,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return v
     }
     if (Array.isArray(target) && target[0] === '[]') {
+      // a store through a mixed binding (above) reaches each of its arrays
+      const mixedArrays = typeof target[1] === 'string' && mixed.size && literalKeyOf(target[2]) === null ? mixed.get(keyOf(target[1])) : undefined
+      if (mixedArrays) {
+        testing++; receiver(target[1]); testing--
+        const ik = expr(target[2])
+        for (const a of mixedArrays) { storeAt(a, target[2]); raiseEntry(a, ik, v, target[2]) }
+        return v
+      }
       const recv = receiver(target[1]), idx = target[2], t = tagOf(recv)
       if (literalKeyOf(idx) !== null) return assign(op, ['.', target[1], literalKeyOf(idx)], value)
       const ik = expr(idx)
@@ -3319,7 +3452,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (assigned.size) definite.set(lit, assigned)
   }
 
-  const declare = (name, k) => { const key = keyOf(name); if (key !== null) raise(kinds, key, k) }
+  // A declaration with a value is a straight-line assignment of it: the reads
+  // after it see that kind alone, as after `x = v` (assignName), until a path assigns the name.
+  const declare = (name, k) => {
+    const key = keyOf(name)
+    if (key === null) return
+    if (flowPath === 0 && current !== null) post.set(key, k); else { post.delete(key); loopNote(key, k) }
+    raise(kinds, key, k)
+  }
   // A declaration without a value is absent until assigned (`let buf; export
   // const setup = () => buf = new Float64Array(n)`: a read before `setup` is one
   // the program does not mean to make), unless its function assigns it before
@@ -3384,7 +3524,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           if (r) constRanges.set(key, r)
           else constRanges.delete(key)
         }
-        declare(d[1], cursorOpen(d[1], d[2]) ?? literalInto(d[1], d[2]))
+        { const dk = cursorOpen(d[1], d[2]) ?? (Array.isArray(d[2]) && d[2][0] === '.' || typeof d[2] === 'string' ? mixedValue(d[2]) : literalInto(d[1], d[2])); declare(d[1], dk); bindMixed(d[1], dk); noteLengthAlias(d[1], d[2]) }
       }
     }
   }
@@ -3768,7 +3908,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     // A loop's test guards its body the way an `if` guards its branch.
     if (op === 'for') {
-      loopAssigns(n); stmt(n[1]); branch++; selectedExpr(n[2], 0)
+      stmt(n[1]); const loop = loopEnter(n); loopAssigns(n); branch++; flowPath++; selectedExpr(n[2], 0)
       const mark = rtop, counted = countedLoop(n), bounded = counted ? null : lengthBoundedLoop(n)
       if (n[2] != null) proves(n[2], true)
       if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); countedDepth++ }
@@ -3776,7 +3916,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       stmt(n[4])
       if (counted) { spans.delete(counted[0]); trips.pop(); countedDepth-- }
       if (bounded) lenBounds.delete(bounded[0])
-      unwind(mark); selectedExpr(n[3], 0); branch--
+      unwind(mark); selectedExpr(n[3], 0); branch--; flowPath--
+      loopExit(loop)
       return
     }
     if (op === 'if') {
@@ -3784,17 +3925,28 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const truth = decided(n[1])
       decide(n, truth)
       if (truth === 'pending') return
+      // The names the arms assign: each arm leaves one with what it assigned,
+      // or with what its condition proved where it did not, and the statements
+      // after the conditional read the join of the arms that reach them
+      // (`if (ptr == null) ptr = 0` leaves a number; `if (typeof m === 'number')
+      // m = new Array(m)` leaves an array). An arm that leaves reaches nothing.
+      const keys = armKeys(n), entry = keys ? flowEntry(keys) : -1
       branch++
       const mark = rtop
-      proves(n[1], true); if (truth !== false) stmt(n[2]); unwind(mark)
-      proves(n[1], false); if (truth !== true) stmt(n[3]); unwind(mark)
+      proves(n[1], true)
+      const a = truth === false ? -1 : armExit(n[2], keys)
+      unwind(mark); if (keys) flowRestore(keys, entry)
+      proves(n[1], false)
+      const b = truth === true ? -1 : armExit(n[3], keys)
+      unwind(mark); if (keys) flowRestore(keys, entry)
       branch--
+      if (keys) { joinArms(keys, a, b); noteExits(n, keys); exitStack.length = Math.min(a < 0 ? exitStack.length : a, b < 0 ? exitStack.length : b); flowStack.length = entry }
       return
     }
-    if (op === 'while') { loopAssigns(n); branch++; selectedExpr(n[1], 0); const mark = rtop; proves(n[1], true); stmt(n[2]); unwind(mark); branch--; return }
+    if (op === 'while') { const loop = loopEnter(n); loopAssigns(n); branch++; flowPath++; selectedExpr(n[1], 0); const mark = rtop; proves(n[1], true); stmt(n[2]); unwind(mark); branch--; flowPath--; loopExit(loop); return }
     // Prepared try statements: `['catch', tryBody, param?, handler]`, `['finally', inner, cleanup]`.
-    if (op === 'catch') { branch++; stmt(n[1]); if (typeof n[2] === 'string') declare(n[2], ANY); stmt(n[3]); branch--; return }
-    if (op === 'finally') { branch++; stmt(n[1]); stmt(n[2]); branch--; return }
+    if (op === 'catch') { branch++; flowPath++; stmt(n[1]); if (typeof n[2] === 'string') declare(n[2], ANY); stmt(n[3]); branch--; flowPath--; return }
+    if (op === 'finally') { branch++; flowPath++; stmt(n[1]); stmt(n[2]); branch--; flowPath--; return }
     if (op === 'throw') { escape(expr(n[1])); return }
     if (op === 'delete') {
       // Prepared as `['delete', receiver, key]`. A static key on a fixed shape
@@ -3835,6 +3987,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // the region, as does a loop that assigns the name, at its head.
   const post = new Map()    // binding id → straight-line assigned kind
   let branch = 0            // the depth of paths (branches, loop bodies, arms) the walk is in
+  // The depth of paths whose assignments the straight-line state cannot
+  // follow: loops (an iteration's read may see the last one's store), handlers,
+  // expression arms and defaults. A conditional statement's arms are followed
+  // (the `if` statement's exit join).
+  let flowPath = 0
   // The names a subtree assigns (`x = …`, `x += …`, a `let x = …`): structural, listed once per node.
   const assignsIn = (n, out) => {
     if (!Array.isArray(n)) return
@@ -4057,6 +4214,134 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op === 'finally') return exits(st[2]) || exits(st[1])
     return false
   }
+  // A conditional's exit join (the `if` statement above): the keys its arms
+  // assign, a name's kind as the walk reads it here, an arm's exit kinds (null
+  // when the arm leaves), the flow state at the conditional's entry restored
+  // between the arms, and the join the statements after it read.
+  // The keys a conditional's arms assign, listed once per node (the solve
+  // revisits every statement each round, and the hosted compiler frees a
+  // solve's allocations only as a whole: a visit must not allocate).
+  const armKeysOf = new Map()   // if statement → the keys its arms assign, or null
+  const armKeys = (n) => {
+    let keys = armKeysOf.get(n)
+    if (keys !== undefined) return keys
+    keys = null
+    for (const name of assignedIn(n)) { const key = keyOf(name); if (key === null) continue; if (!keys) keys = [key]; else if (!keys.includes(key)) keys.push(key) }
+    armKeysOf.set(n, keys)
+    return keys
+  }
+  // The flow state at a conditional's entry (a key's straight-line fact and
+  // its incoming-read mark), and the arms' exits, on shared stacks.
+  const flowStack = [], exitStack = []
+  // A straight-line fact is one kind, or the few kinds a conditional's arms
+  // left (`if (!m) m = 8` leaves a number beside the array it was): a later
+  // test keeps the candidates it admits before they join, so `typeof m ===
+  // 'number'` leaves the array with its cell (one kind holds one cell).
+  const POST_CANDIDATES = 4
+  const postRead = (p, mask) => {
+    if (!Array.isArray(p)) return mask === undefined ? p : refine(p, mask)
+    let out
+    for (const k of p) { const r = mask === undefined ? k : refine(k, mask); if (r !== 0) out = out === undefined ? r : merge(out, r, true) }
+    return out ?? K.NONE
+  }
+  const readKey = (key) => {
+    const p = post.get(key), mask = refined.get(key)
+    if (p !== undefined) return postRead(p, mask)
+    const k = (pre.has(key) ? incoming[key] : kinds[key]) ?? K.NONE
+    return mask === undefined ? k : refine(k, mask)
+  }
+  // an arm's exit: the candidates it leaves, as the read above but unjoined
+  const exitOf = (key) => {
+    const p = post.get(key), mask = refined.get(key)
+    if (p === undefined || !Array.isArray(p)) return readKey(key)
+    const out = []
+    for (const k of p) { const r = mask === undefined ? k : refine(k, mask); if (r !== 0 && !out.includes(r)) out.push(r) }
+    return out.length === 1 ? out[0] : out.length ? out : K.NONE
+  }
+  const flowEntry = (keys) => { const base = flowStack.length; for (const key of keys) flowStack.push(post.get(key), pre.has(key)); return base }
+  const flowRestore = (keys, base) => {
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i], p = flowStack[base + 2 * i], inPre = flowStack[base + 2 * i + 1]
+      if (p === undefined) post.delete(key); else post.set(key, p)
+      if (inPre) pre.add(key); else pre.delete(key)
+    }
+  }
+  // an arm's exits for `keys` pushed on the exit stack: their base, or -1 when the arm leaves
+  const armExit = (arm, keys) => { stmt(arm); if (!keys || exits(arm)) return -1; const base = exitStack.length; for (const key of keys) exitStack.push(exitOf(key)); return base }
+  // A loop's exit: a name it assigns holds what it held at the loop's entry
+  // (no iteration) or what an iteration assigned; the statements after the
+  // loop read that join. Assignments on a loop path note their kinds in the
+  // innermost loop's record (assignName, declare).
+  const loopKeysOf = new Map()   // loop → the keys it assigns, or null
+  const loopKeys = (n) => {
+    let keys = loopKeysOf.get(n)
+    if (keys !== undefined) return keys
+    keys = null
+    for (const name of assignedIn(n)) { const key = keyOf(name); if (key === null) continue; if (!keys) keys = [key]; else if (!keys.includes(key)) keys.push(key) }
+    loopKeysOf.set(n, keys)
+    return keys
+  }
+  // Notes of the loops the walk is in, key and kind pairs on one stack; each
+  // loop's segment starts at its base. The outermost loop's base is 0.
+  const loopNotes = [], loopBases = []
+  const loopNote = (key, k) => {
+    if (!loopBases.length) return
+    for (let i = loopBases[loopBases.length - 1]; i < loopNotes.length; i += 2) if (loopNotes[i] === key) { loopNotes[i + 1] = merge(loopNotes[i + 1], k, true); return }
+    loopNotes.push(key, k)
+  }
+  const loopEnter = (n) => {
+    const keys = loopKeys(n), entry = keys ? flowEntry(keys) : -1
+    if (keys) for (let i = 0; i < keys.length; i++) flowStack[entry + 2 * i] = readKey(keys[i])   // the entry kind in the fact's slot
+    loopBases.push(loopNotes.length)
+    return { keys, entry }
+  }
+  const loopExit = ({ keys, entry }) => {
+    let base = loopBases.pop()
+    if (keys) for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
+      let k
+      for (let j = base; j < loopNotes.length; j += 2) if (loopNotes[j] === key) { k = loopNotes[j + 1]; break }
+      if (k === undefined || flowPath !== 0 || current === null) post.delete(key)
+      else { post.set(key, merge(flowStack[entry + 2 * i], k, true)); pre.delete(key) }
+    }
+    // an enclosing loop sees this one's stores as its own
+    const outer = loopBases.length ? loopBases[loopBases.length - 1] : -1
+    for (let j = base; j < loopNotes.length; j += 2) {
+      let seen = false
+      if (outer >= 0) for (let i = outer; i < base; i += 2) if (loopNotes[i] === loopNotes[j]) { loopNotes[i + 1] = merge(loopNotes[i + 1], loopNotes[j + 1], true); seen = true; break }
+      if (outer >= 0 && !seen) { loopNotes[base] = loopNotes[j]; loopNotes[base + 1] = loopNotes[j + 1]; base += 2 }
+    }
+    loopNotes.length = outer >= 0 ? base : 0
+    if (keys) flowStack.length = entry
+  }
+  // The join of the arms' exits: one kind, or the candidates both leave. A
+  // candidate list is allocated only where the fact changes.
+  const cands = []
+  const addCands = (v) => { if (Array.isArray(v)) { for (const k of v) if (k !== K.NONE && !cands.includes(k)) cands.push(k) } else if (v !== K.NONE && !cands.includes(v)) cands.push(v) }
+  const sameCands = (p) => { if (!Array.isArray(p) || p.length !== cands.length) return false; for (let i = 0; i < p.length; i++) if (p[i] !== cands[i]) return false; return true }
+  // The join each conditional leaves per key it assigns, as the next read
+  // sees it, kept per node (one record per node, written each visit) for the
+  // plan's binding split: a join declared apart only where it is narrower
+  // than the binding's own kind.
+  const exitJoins = new Map()   // if statement → [key, kind, key, kind, …]
+  const noteExits = (n, keys) => {
+    let rec = exitJoins.get(n)
+    if (!rec) exitJoins.set(n, rec = new Array(keys.length * 2).fill(0))
+    for (let i = 0; i < keys.length; i++) { rec[2 * i] = keys[i]; rec[2 * i + 1] = post.has(keys[i]) ? postRead(post.get(keys[i]), undefined) : (kinds[keys[i]] ?? K.NONE) }
+  }
+  const joinArms = (keys, a, b) => {
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
+      cands.length = 0
+      if (a >= 0) addCands(exitStack[a + i])
+      if (b >= 0) addCands(exitStack[b + i])
+      if (!cands.length || flowPath !== 0 || current === null) { post.delete(key); continue }
+      pre.delete(key)
+      if (cands.length === 1) { post.set(key, cands[0]); continue }
+      if (cands.length > POST_CANDIDATES) { let k = cands[0]; for (let j = 1; j < cands.length; j++) k = merge(k, cands[j], true); post.set(key, k); continue }
+      if (!sameCands(post.get(key))) post.set(key, cands.slice())
+    }
+  }
   // The parameters a body reassigns somewhere: structural, listed once per body.
   const reassigned = new Map()   // body → the parameter names assigned in it
   // a parameter default runs in the frame: its assignments count (they are
@@ -4075,14 +4360,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const defaultNames = new Map()   // a defaults record → its parameter names, listed once
   const defaultNamesOf = (defaults) => { let l = defaultNames.get(defaults); if (!l) defaultNames.set(defaults, l = Object.keys(defaults)); return l }
-  const reset = () => { pre.clear(); refined.clear(); post.clear(); constRanges.clear(); branch = 0; rtop = 0; pathDepth = 0 }
+  const reset = () => { pre.clear(); refined.clear(); post.clear(); constRanges.clear(); lengthAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()
     scanForwards(key, body, params, defaults)
     // a default runs only where its argument is missing: its writes are on a
     // path, and its value reaches the parameter where some call lets it run
-    if (defaults) { branch++; for (const p of defaultNamesOf(defaults)) { const pk = paramKey(key, p), dk = expr(defaults[p]); if (defaultRuns.has(pk)) bindParam(pk, dk) } branch-- }
+    if (defaults) { branch++; flowPath++; for (const p of defaultNamesOf(defaults)) { const pk = paramKey(key, p), dk = expr(defaults[p]); if (defaultRuns.has(pk)) bindParam(pk, dk) } branch--; flowPath-- }
     if (params) for (const p of reassignedIn(body, params, defaults)) { const id = paramKey(key, p); if (id !== null) pre.add(id) }
     if (isBlock(body)) {
       stmt(body)
@@ -4136,7 +4421,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
-    funcNames: new Set(funcByName.keys()), imports: new Map(imports),
+    funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins,
     numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     held,

@@ -211,6 +211,85 @@ test('summary: Object.create(null) is an empty literal, so keyed stores on it ma
   is(m.exports.run('loop'), 4); is(m.exports.run('end'), 0)
 })
 
+test('summary: a conditional leaves the join of its arms, a test keeps the candidate it admits', () => {
+  // The state-bag idiom of a DSP library (digital-filter's movingAverage): the
+  // history is a number or an array in the bag, defaulted and converted on the
+  // first call, then read as an array in the per-sample loop.
+  summarize(`const avg = (data, p) => {
+      let ptr = p.ptr, mem = p.memory
+      if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }
+      const hist = mem, at = ptr, m = hist.length
+      let s = p._sum
+      if (s == null) { s = 0; for (let j = 0; j < m; j++) s += hist[j] }
+      const total = s
+      for (let i = 0; i < data.length; i++) { s += data[i] - hist[at]; hist[at] = data[i] }
+      p._sum = s
+      return total
+    }
+    export const run = () => { const p = { size: 4 }; const d = new Float64Array(8); return avg(d, p) + avg(d, p) }`)
+  is(tagOf(kindOf('avg', 'at')), K.NUMBER, 'the defaulted index is a number after the conditional'); ok(!isNullable(kindOf('avg', 'at')))
+  const hist = kindOf('avg', 'hist')
+  is(tagOf(hist), K.ARRAY, 'the history is the array the conditional leaves'); ok(paramOf(hist) !== UNKNOWN, 'with its cell: the number it mixed with was kept apart')
+  is(tagOf(kindOf('avg', 'm')), K.NUMBER)
+  is(tagOf(kindOf('avg', 'total')), K.NUMBER, 'the running sum is a number after its default, through a loop'); ok(!isNullable(kindOf('avg', 'total')))
+  is(jz(`const avg = (data, p) => {
+      let ptr = p.ptr, mem = p.memory
+      if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }
+      let s = p._sum
+      if (s == null) { s = 0; for (let j = 0; j < mem.length; j++) s += mem[j] }
+      for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % mem.length; data[i] = s / mem.length }
+      p.ptr = ptr; p._sum = s
+      return data[data.length - 1]
+    }
+    export const run = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`).exports.run(), (() => {
+      const avg = (data, p) => { let ptr = p.ptr, mem = p.memory; if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }; let s = p._sum; if (s == null) { s = 0; for (let j = 0; j < mem.length; j++) s += mem[j] }; for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % mem.length; data[i] = s / mem.length }; p.ptr = ptr; p._sum = s; return data[data.length - 1] }
+      const p = { memory: 4 }, d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p)
+    })(), 'the field that held a number and then the array computes as JS does')
+})
+
+test('summary: a conditional joining one binding keeps another it assigned as the mix a loop versions', () => {
+  // movavg's bag given its window as a number (`{ memory: 4 }`): the conditional
+  // joins `ptr` (a number past it) and leaves `mem` the mix of that number with
+  // the history; the sample loop runs over the history under `Array.isArray`.
+  const src = `const avg = (data, p) => {
+      let ptr = p.ptr, mem = p.memory
+      if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }
+      const m = mem.length
+      let s = 0
+      for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }
+      p.ptr = ptr
+      return data[data.length - 1]
+    }
+    export const run = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`
+  summarize(src)
+  ok(ctx.summary.at('avg').isMixed(binding('avg', 'mem')), 'the window mixes the number it was given with the history')
+  // the loop's version is the alias pass's (plan/alias.js), off under summarize
+  _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
+  const f = ctx.funcs.list.find(f => f.name === 'avg'), names = new Set()
+  const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
+  walk(f.body)
+  const versioned = [...names].filter(n => n.startsWith('mem' + MARK) && n.includes(MARK + 's'))
+  is(versioned.length, 1, 'the loop runs over the history as a binding of its own')
+  const k = ctx.summary.at('avg').kindOf(versioned[0])
+  is(tagOf(k), K.ARRAY, 'an array'); ok(paramOf(k) !== UNKNOWN, 'with its cell')
+  is(jz(src).exports.run(), (() => {
+    const avg = (data, p) => { let ptr = p.ptr, mem = p.memory; if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }; const m = mem.length; let s = 0; for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }; p.ptr = ptr; return data[data.length - 1] }
+    const p = { memory: 4 }, d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p)
+  })(), 'computes as JS does')
+})
+
+test('summary: a declaration copying a conditional\'s candidates mixes nothing when none is an array', () => {
+  // `const o = c` where `c` left an if as one shape or another: the member read
+  // through `o` reads both shapes (an empty mix once shadowed it with nothing).
+  const src = `class M { constructor() { this.e = [] } set(a) { this.e[0] = a; return this } }
+    class V { constructor() { this.x = 0 } set(x) { this.x = x; return this } }
+    export const f = (k) => { const o = k ? new M() : new V(), s = o.set; return k ? s(1).e[0] : s(5).x }`
+  summarize(src)
+  is(tagOf(kindOf('f', 's')), K.CLOSURE, 'the method read through the joined object is a closure')
+  ok(!ctx.summary.at('f').isMixed(binding('f', 'o')), 'two shapes mix no array')
+  is(jz(src, { optimize: 3 }).exports.f(1), 1); is(jz(src, { optimize: 3 }).exports.f(0), 5)
+})
+
 test('summary: kinds flow through calls, fields and results; the host boundary is ANY', () => {
   summarize(`const mk = (n, g) => ({ buf: new Float32Array(n), gain: g })
     const proc = (o) => { const b = o.buf, k = o.gain; return b[0] * k }

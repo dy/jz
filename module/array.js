@@ -23,7 +23,7 @@ import { hasDurableReset } from './collection/durable.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat, requireObjectWat } from './core/error-object.js'
 import { runsAccessor, runsConversion } from '../src/evaluation-effects.js'
-import { DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
+import { DATA_VIEW_FLAG, nanPrefixHex, ATOM, atomNanHex } from '../layout.js'
 
 const NAN_BITS = nanPrefixHex()
 import { withRefinements } from '../src/compile/flow-types.js'
@@ -1015,9 +1015,27 @@ export default (ctx) => {
     // walk and its call frame were the price of every element read there.
     // `ptrExpr` is a plain read (the receiver was hoisted above); the index
     // lands in a temp once.
-    const arrayFast = (slow, index = vi, receiver = ptrExpr) => {
+    // A receiver proven an array that is present (its binding's kind names the
+    // tag alone) is a heap address: the tag test and the other kinds' arm are
+    // dead, the read is the forwarding hop, the bounds test and the load.
+    const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) : null
+    const provenArray = vt === VAL.ARRAY && rep != null && !rep.nullable && !rep.mayBeUndefined && !(typeof arr === 'string' && ctx.func.boxed?.has(arr))
+    // A receiver that is an array where it is present (`params.state`, held
+    // or not yet): a nullish one throws as the read would, a present one
+    // reads as a proven array.
+    const presentArray = vt == null && rep?.presentVal === VAL.ARRAY && numericKey && !ctx.func.boxed?.has(arr) && !ctx.transform.optimize?.leanRuntime
+    const arrayFast = (slow, index = vi, receiver = ptrExpr, proven = provenArray) => {
       const off = tempI32('ao'), ix = tempI32('ax')
       inc('__ptr_offset_fwd')
+      if (proven) return ['block', ['result', 'f64'],
+        ['local.set', `$${ix}`, index],
+        ['local.set', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', receiver]]],
+        ['if', ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]],
+          ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
+        ['if', ['result', 'f64'],
+          ['i32.lt_u', ['local.get', `$${ix}`], ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
+          ['then', arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]))],
+          ['else', undefExpr()]]]
       return ['block', ['result', 'f64'],
         ['local.set', `$${ix}`, index],
         ['if', ['result', 'f64'],
@@ -1048,6 +1066,16 @@ export default (ctx) => {
     }
     if (vt === VAL.ARRAY && keyType !== VAL.STRING && numericProps)
       return typed(arrayPropertyLoad(storedValue(idx)), 'f64')
+    if (presentArray) {
+      inc('__throw_property_nullish')
+      const held = ctx.func.refinements?.get(arr)
+      return typed(['block', ['result', 'f64'],
+        ...(held?.notNullish ? [] : [['if', ['i32.or',
+          ['i64.eq', ['i64.reinterpret_f64', ptrExpr], ['i64.const', atomNanHex(ATOM.NULL)]],
+          ['i64.eq', ['i64.reinterpret_f64', ptrExpr], ['i64.const', atomNanHex(ATOM.UNDEFINED)]]],
+          ['then', ['call', '$__throw_property_nullish'], ['unreachable']]]]),
+        arrayFast(null, vi, ptrExpr, true)], 'f64')
+    }
     // The size tier keeps the helper's own dispatch (`leanRuntime`, the tier
     // that links the runtime lean): the inline arm is ~50 ops per site, 14 KB of
     // watr's size build for a walker's reads the speed build alone is timed on.
