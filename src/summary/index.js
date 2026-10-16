@@ -100,7 +100,7 @@ const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
 // Closure sets and shape sets: a set's id is interned above SET_BASE; `membersOf` reads either form.
 const SET_BASE = 1 << 15
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
-const RANGE_BINARY = new Set(['+', '-', '*', '/'])
+const RANGE_BINARY = new Set(['+', '-', '*', '/', '%'])
 const memberBefore = (a, b) => typeof a === typeof b ? a < b : typeof a === 'number'
 
 // These helpers carry call-site result facts; keep their call boundary through planning.
@@ -711,6 +711,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   // `scope`: the function the expression is read in; the counters are the
   // walk's own, so another scope's expression reads its hull alone.
+  const ARRAY_COUNT = [0, 0x1fffffff]
   const spanOf = (e, scope = current, integral = false) => {
     if (typeof e === 'number') return Number.isInteger(e) ? pointRange(e) : null
     if (typeof e === 'string') {
@@ -718,6 +719,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (v !== undefined) return pointRange(v)
       const span = scope === current ? spans.get(e) : undefined
       if (span) return span
+      const noted = hulls.get(e)
+      if (noted) return noted
       // A parameter's hull, the round before's (`out[offset + stride]` in an
       // out-buffer callee every call passes literals to): integral bounds only.
       // An integer-ended hull can contain fractional arguments; an element-key
@@ -746,6 +749,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const op = e[0]
     if (op == null) return typeof e[1] === 'number' && Number.isFinite(e[1]) ? pointRange(e[1]) : null
     if ((op === '(' || op === '()' && e.length === 2)) return rangeOf(e[1])
+    // an array holds fewer than 2^29 elements (eight bytes each in 2^32): a hull for arithmetic on its length, not a count (spanOf)
+    if (op === '.' && e.length === 3 && e[2] === 'length') {
+      const s = spanOf(e)
+      if (s || typeof e[1] !== 'string') return s
+      const key = keyOf(e[1]), k = key === null ? null : readKey(key)
+      return k != null && tagOf(k) === K.ARRAY ? ARRAY_COUNT : null
+    }
     if (op === 'u-' && e.length === 2) { const a = rangeOf(e[1]); return a && [-a[1], -a[0]] }
     if (op === '?:' && e.length === 4) { const a = rangeOf(e[2]), b = rangeOf(e[3]); return a && b && [Math.min(a[0], b[0]), Math.max(a[1], b[1])] }
     if (op === '()' && typeof e[1] === 'string' && e[1].startsWith('Math.')) {
@@ -775,6 +785,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     else if (op === '-') { lo = a[0] - b[1]; hi = a[1] - b[0] }
     else if (op === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
     else if (op === '/' && (b[0] > 0 || b[1] < 0)) { const p = [a[0] / b[0], a[0] / b[1], a[1] / b[0], a[1] / b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
+    // a remainder takes the dividend's sign and stays below the divisor's magnitude; a divisor that may be zero gives NaN
+    else if (op === '%' && (b[0] > 0 || b[1] < 0)) { const m = Math.max(-b[0], b[1]), top = Number.isInteger(m) && Number.isInteger(a[0]) && Number.isInteger(a[1]) ? m - 1 : m; lo = a[0] >= 0 ? 0 : Math.max(a[0], -top); hi = a[1] <= 0 ? 0 : Math.min(a[1], top) }
     else return null
     return Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null
   }
@@ -885,6 +897,44 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
    *  `i` and `x` alone: the counter and the array whose count bounds it. */
   // A bound that is a name declared as an array's length and never reassigned
   // (`const n = coefs.length` then `j < n`) bounds the loop by that array.
+  // A declaration the plan versions under a guard (prepare/split-bindings.js
+  // versionRest) notes the lower bound the guard proves (`decl.lo`): the
+  // binding's hull is that bound to the int32 top, kept while every later
+  // assignment stays inside it (`ptr = (ptr + 1) % m` under `m > 0`), lost
+  // for good by one the walk cannot bound.
+  const HULL_TOP = 0x7fffffff
+  // a hull joins what every visit of the declaration gives it (a counted loop's
+  // body is walked once per count): the solve settles on the union
+  const widenHull = (name, lo, hi) => {
+    const old = hulls.get(name), nlo = old ? Math.min(old[0], lo) : lo, nhi = old ? Math.max(old[1], hi) : hi
+    if (old && old[0] === nlo && old[1] === nhi) return
+    hulls.set(name, [nlo, nhi]); changed = true
+  }
+  const hulls = new Map(), hullLost = new Set()   // name → [lo, hi]; the names whose hull an assignment lost
+  // An index the guard proves below an array's length (`decl.bound`): the
+  // binding stays below it while each assignment is a remainder by that
+  // array's length of a non-negative dividend (`ptr = (ptr + 1) % m`).
+  const indexBounds = new Map(), boundLost = new Set()   // name → the array binding it indexes within
+  const noteHull = (d) => {
+    const name = d[1]
+    if (d.lo == null || hullLost.has(name)) return
+    const r = rangeOf(d[2]), lo = r ? Math.max(d.lo, r[0]) : d.lo, hi = Math.min(d.hi ?? HULL_TOP, r ? r[1] : HULL_TOP)
+    if (!(lo <= hi)) { hullLost.add(name); hulls.delete(name); return }
+    widenHull(name, lo, hi)
+    if (d.bound != null && !boundLost.has(name) && indexBounds.get(name) !== d.bound) { indexBounds.set(name, d.bound); changed = true }
+  }
+  const keepHull = (name, op, value) => {
+    const bound = indexBounds.get(name)
+    if (bound !== undefined) {
+      const below = op === '=' && Array.isArray(value) && value[0] === '%' && value.length === 3 && typeof value[2] === 'string' && lengthAliasOf(value[2]) === bound && (rangeOf(value[1])?.[0] ?? -1) >= 0
+      if (!below) { boundLost.add(name); indexBounds.delete(name); changed = true }
+    }
+    const hull = hulls.get(name)
+    if (!hull) return
+    const r = op === '=' ? rangeOf(value) : op === '++' || op === '--' ? rangeOf([op === '++' ? '+' : '-', name, 1]) : op === '+=' || op === '-=' || op === '*=' ? rangeOf([op[0], name, value]) : null
+    if (r && r[0] >= hull[0] && r[1] <= hull[1]) return
+    hullLost.add(name); hulls.delete(name); changed = true
+  }
   const lengthAliases = new Map()   // binding id → the array binding whose length it holds
   const lengthAliasOf = (name) => { const key = keyOf(name); return key === null ? null : lengthAliases.get(key) ?? null }
   const noteLengthAlias = (name, value) => {
@@ -900,8 +950,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (Array.isArray(b) && b[0] === '|' && Array.isArray(b[2]) && b[2][0] == null && b[2][1] === 0) b = b[1]   // prepare's `x.length | 0`
     if (typeof b === 'string' && c && lengthAliasOf(b) !== null && !assignedIn(n[4]).includes(b)) b = ['.', lengthAliasOf(b), 'length']
     if (!c || c.from[0] < 0 || c.test[0] !== '<' || !Array.isArray(b) || b[0] !== '.' || b[2] !== 'length' || typeof b[1] !== 'string') return null
-    return assignedIn(n[4]).includes(b[1]) ? null : [c.name, b[1]]
+    return assignedIn(n[4]).includes(b[1]) ? null : [c.name, b[1], c.from[0]]
   }
+  // An array holds fewer than 2^32 elements: a counter its length bounds is an index.
+  const LENGTH_BOUND = 0xfffffffe
   /** A store at `idx`: an index the count holds leaves the length alone; any other may extend it. */
   const storeAt = (arr, idx) => {
     const c = lenCell(arr)
@@ -3289,7 +3341,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // `a ??= b` leaves a nullish `a` replaced: the binding holds the old value only when it is not nullish.
     else if (logical) v = merge(op === '??=' ? core(expr(target)) : expr(target), expr(value))
     else { const a = expr(target); v = value == null ? arith(op, a) : arith(op, a, expr(value)) }
-    if (typeof target === 'string') return assignName(target, v)
+    if (typeof target === 'string') { if (hulls.size || indexBounds.size) keepHull(target, op, value); return assignName(target, v) }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
       // A store through a nullish receiver throws before storing.
@@ -3524,6 +3576,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           if (r) constRanges.set(key, r)
           else constRanges.delete(key)
         }
+        if (d.lo != null) noteHull(d)
+        else if (n[0] === 'let' && !hullLost.has(d[1])) { const r = rangeOf(d[2]); if (r) widenHull(d[1], r[0], r[1]); else if (hulls.has(d[1])) { hulls.delete(d[1]); hullLost.add(d[1]) } }
         { const dk = cursorOpen(d[1], d[2]) ?? (Array.isArray(d[2]) && d[2][0] === '.' || typeof d[2] === 'string' ? mixedValue(d[2]) : literalInto(d[1], d[2])); declare(d[1], dk); bindMixed(d[1], dk); noteLengthAlias(d[1], d[2]) }
       }
     }
@@ -3912,10 +3966,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const mark = rtop, counted = countedLoop(n), bounded = counted ? null : lengthBoundedLoop(n)
       if (n[2] != null) proves(n[2], true)
       if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); countedDepth++ }
-      if (bounded) lenBounds.set(bounded[0], keyOf(bounded[1]))
+      if (bounded) { lenBounds.set(bounded[0], keyOf(bounded[1])); spans.set(bounded[0], [bounded[2], LENGTH_BOUND]) }
       stmt(n[4])
       if (counted) { spans.delete(counted[0]); trips.pop(); countedDepth-- }
-      if (bounded) lenBounds.delete(bounded[0])
+      if (bounded) { lenBounds.delete(bounded[0]); spans.delete(bounded[0]) }
       unwind(mark); selectedExpr(n[3], 0); branch--; flowPath--
       loopExit(loop)
       return
@@ -4421,7 +4475,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
-    funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins,
+    funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     held,

@@ -278,6 +278,71 @@ test('summary: a conditional joining one binding keeps another it assigned as th
   })(), 'computes as JS does')
 })
 
+test('summary: a counter an array\'s length bounds stores elements, not numeric properties', () => {
+  // `for (let i = 0; i < n; i++) p.state[i] = …` with `n = coefs.length`: the
+  // counter is an index (an array holds fewer than 2^32 elements), so the
+  // stores are element stores and a later `state[j]` reads elements alone.
+  const src = `const fill = (p) => { const coefs = p.coefs, n = coefs.length
+      if (!p.state) { p.state = new Array(n); for (let i = 0; i < n; i++) p.state[i] = [0, 0] }
+      const state = p.state
+      let s = 0
+      for (let j = 0; j < n; j++) s += state[j][0] + coefs[j]
+      return s }
+    export const run = () => { const p = { coefs: [1, 2, 3] }; fill(p); return fill(p) }`
+  summarize(src)
+  const view = ctx.summary.at('fill')
+  ok(view.arrayNumericPropertiesAbsent(binding('fill', 'state')), 'the state array has no numeric property')
+  ok(view.arrayNumericPropertiesAbsent(binding('fill', 'coefs')), 'nor the coefficients')
+  is(jz(src).exports.run(), 6)
+})
+
+test('summary: a ring cursor versioned as an index keeps its hull below the array it indexes', () => {
+  // movavg's write index: a number from the bag, stepped by `(ptr + 1) % m`
+  // under `m = mem.length`. The plan runs the loop under `Object.is(ptr, ptr |
+  // 0) && ptr >= 0 && ptr < mem.length && mem.length > 0`; the summary keeps
+  // the copy's cursor in [0, 2^29) and below the array's length, so the loop
+  // reads and stores the element without a key test, growth or a call for `%`.
+  const src = `const avg = (data, p) => {
+      let ptr = p.ptr, mem = p.memory
+      if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }
+      const m = mem.length
+      let s = 0
+      for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }
+      p.ptr = ptr
+      return data[data.length - 1]
+    }
+    export const run = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`
+  _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
+  const f = ctx.funcs.list.find(f => f.name === 'avg'), names = new Set(), view = ctx.summary.at('avg')
+  const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
+  walk(f.body)
+  const cursor = [...names].find(n => n.startsWith('ptr' + MARK) && view.hullOf(n))
+  ok(cursor, 'the copy\'s cursor has a hull')
+  const hull = view.hullOf(cursor)
+  is(hull[0], 0, 'from zero'); ok(hull[1] < 2 ** 29, 'below the count an array can hold')
+  const bound = view.indexBoundOf(cursor)
+  ok(bound && bound.startsWith('mem' + MARK), 'kept below the history\'s length')
+  const text = compile(src, { optimize: OPT_LEVEL, wat: true }), body = funcWat(text, 'avg') || funcWat(text, 'run')
+  ok(/i32\.rem_[su]/.test(body), 'the step is a hardware remainder')
+  is(jz(src).exports.run(), (() => {
+    const avg = (data, p) => { let ptr = p.ptr, mem = p.memory; if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }; const m = mem.length; let s = 0; for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }; p.ptr = ptr; return data[data.length - 1] }
+    const p = { memory: 4 }, d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p)
+  })(), 'computes as JS does')
+})
+
+test('summary: a let declared in a counted loop\'s body keeps the union of its hulls, and the solve settles', () => {
+  // The body of `for (let s = 0; s < 8; s++)` is walked once per count: `let c
+  // = s * 5` takes a point hull each time, joined to [0, 35] rather than
+  // replaced (a replacement changed every round and the solve never settled).
+  const src = `export const run = (coeffs) => { let acc = 0
+      for (let s = 0; s < 8; s++) { let c = s * 5, sb = s * 4; acc += coeffs[c] + coeffs[c + 1] - sb }
+      return acc }`
+  summarize(src)
+  const hull = ctx.summary.at('run').hullOf(binding('run', 'c'))
+  is(hull, [0, 35], 'the union over the counts')
+  is(jz(src).exports.run(new Float64Array(40).fill(1)), 16 - 112)
+})
+
 test('summary: a declaration copying a conditional\'s candidates mixes nothing when none is an array', () => {
   // `const o = c` where `c` left an if as one shape or another: the member read
   // through `o` reads both shapes (an empty mix once shadowed it with nothing).

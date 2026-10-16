@@ -160,6 +160,9 @@ export function intExprRange(n, nameRange = null) {
   if (op === '.' && n.length === 3 && n[2] === 'length' && typeof n[1] === 'string') {
     const len = ctx.func?.typedLen?.get(n[1]) ?? repOf(n[1])?.arrayLen
     if (len != null) return [len, len]
+    // An array's elements are eight bytes each in the same 2^32-byte memory:
+    // its count is below 2^29, whatever it grows to.
+    if (repOf(n[1])?.val === VAL.ARRAY) return [0, 0x1fffffff]
     const raw = typedCtorRawOf(n[1])
     if (raw != null) {
       const bare = typedCtorName(raw)
@@ -245,6 +248,13 @@ export function intExprRange(n, nameRange = null) {
     // i32 hull) is non-negative by construction: `rnd() % 101` is [0, 100]
     if (k != null && k > 0 && !a && ((Array.isArray(n[1]) && n[1][0] === '>>>' && n[1].length === 3)
         || (typeof n[1] === 'string' && repOf(n[1])?.unsigned === true))) return [0, k - 1]
+    // a runtime divisor whose hull is positive: the same bounds at its top
+    const b = k == null ? intExprRange(n[2], nameRange) : null
+    if (b && b[0] > 0 && a) {
+      if (a[0] >= 0) return [0, Math.min(a[1], b[1] - 1)]
+      if (a[1] <= 0) return [Math.max(a[0], 1 - b[1]), 0]
+      return [Math.max(a[0], 1 - b[1]), Math.min(a[1], b[1] - 1)]
+    }
   }
   // Postfix yields the operand's old numeric value; prefix yields the update.
   if (op === 'postfix' && Array.isArray(n[1]) &&

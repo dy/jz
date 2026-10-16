@@ -10,7 +10,7 @@
  */
 import { walkAst, takeScratchMap, releaseScratchMap } from '../ast.js'
 import { ctx } from '../ctx.js'
-import { VAL, lookupValType } from '../reps.js'
+import { VAL, lookupValType, repOf } from '../reps.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
 import { NO_VALUE, staticValue, unsignedShiftFitsI32 } from '../static.js'
 import { typedStorageNameCtor } from '../typed-context.js'
@@ -37,6 +37,22 @@ const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'
 // accepts for the boxing decision itself: at worst this forgoes the i32 cell
 // fast path (falls back to the always-safe f64 cell), it can never mis-widen
 // an actually-non-integer write to i32.
+// A quotient under a test of its remainder (`if (srcIdx % up === 0) { const xi
+// = srcIdx / up }`): the division is exact, an integer of integer operands.
+const exactDivs = new WeakSet()
+const sameNode = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b)
+const noteExactDivs = (test, arm) => {
+  const conjuncts = []
+  const split = (t) => { if (Array.isArray(t) && t[0] === '&&' && t.length === 3) { split(t[1]); split(t[2]) } else conjuncts.push(t) }
+  split(test)
+  for (const t of conjuncts) {
+    if (!Array.isArray(t) || (t[0] !== '===' && t[0] !== '==') || t.length !== 3) continue
+    const rem = Array.isArray(t[1]) && t[1][0] === '%' ? t[1] : Array.isArray(t[2]) && t[2][0] === '%' ? t[2] : null
+    const zero = rem === t[1] ? t[2] : t[1]
+    if (!rem || rem.length !== 3 || !(Array.isArray(zero) && zero[0] == null && zero[1] === 0)) continue
+    walkAst(arm, { enter: n => { if (n[0] === '=>') return false; if (n[0] === '/' && n.length === 3 && sameNode(n[1], rem[1]) && sameNode(n[2], rem[2])) exactDivs.add(n) } })
+  }
+}
 function collectIntDefs(body, capturedNames, defs) {
   const pushDef = (name, rhs, inArrow) => {
     if (inArrow && !capturedNames.has(name)) return
@@ -50,6 +66,7 @@ function collectIntDefs(body, capturedNames, defs) {
       return false
     }
     const op = n[0]
+    if (op === 'if' && n.length >= 3) noteExactDivs(n[1], n[2])
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const decl = n[i]
@@ -126,8 +143,13 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
     // Never strict: `-5 % 5` is -0.
     if (op === '%') {
       const bv = staticValue(expr[2])
-      return bv !== NO_VALUE && typeof bv === 'number' && bv !== 0 && Number.isInteger(bv) && levelOf(expr[1]) ? 1 : 0
+      if (bv !== NO_VALUE && typeof bv === 'number' && bv !== 0 && Number.isInteger(bv) && levelOf(expr[1])) return 1
+      // A divisor name whose hull excludes zero (an array's length a guard
+      // proves positive, body-facts.js's declRange): the remainder of integers.
+      const r = typeof expr[2] === 'string' ? repOf(expr[2])?.range : null
+      return r && (r[0] > 0 || r[1] < 0) && levelOf(expr[2]) && levelOf(expr[1]) ? 1 : 0
     }
+    if (op === '/' && exactDivs.has(expr)) return levelOf(expr[1]) && levelOf(expr[2]) ? 1 : 0
     if (op === 'u-') return levelOf(expr[1]) ? 1 : 0 // -(0) is -0; -(-2^31) exceeds int32
     if (op === 'u+') return levelOf(expr[1])         // ToNumber identity on an int
     // prepare's `++o.k` / `o.k++` step (`o.k = +1 o.k`): the sum with 1, integral-closed, range-open

@@ -299,6 +299,21 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     return presentNodes.has(e) || presentKeys.has(e) || presentKeys.has(idxKey(e[1], e[2])) || getFactStore().guardProven.has(e)
   }
 
+  // A name the loop versions declare alike (`const srcIdx = upIdx - k` in each
+  // copy of the loop): one initializer in every declaration and no assignment,
+  // so its hull is the initializer's wherever it is read.
+  const declInits = new Map()
+  const sameInitializers = (body, name) => {
+    if (isReassigned(body, name)) return false
+    if (!declInits.size) walkAst(body, { enter: n => {
+      if (n[0] === '=>') return false
+      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { let l = declInits.get(d[1]); if (!l) declInits.set(d[1], l = []); l.push(d[2]) } }
+    } })
+    const inits = declInits.get(name)
+    if (!inits || inits.length < 2) return false
+    const first = JSON.stringify(inits[0])
+    return inits.every(i => JSON.stringify(i) === first)
+  }
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
     // wasm type (locals slice). A `>>> 0` result is an unsigned uint32 that doesn't fit a
@@ -329,8 +344,14 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     // starts life as f64 storage — permanently, since widenLocalTypes only
     // ever DEMOTES i32→f64, never promotes the other way. Confirmed via a
     // minimal repro isolating the exact mechanism (not guessed).
-    const declRange = intExprRange(rhs)
-    if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && hasSingleInitializer(body, name))
+    // A versioned declaration's hull (summary/index.js noteHull): the guard's
+    // lower bound, kept by every assignment the binding takes after it; it
+    // meets the initializer's own hull where there is one.
+    let declRange = intExprRange(rhs)
+    const hull = summary?.hullOf?.(name)
+    if (hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]))
+      declRange = declRange ? [Math.max(declRange[0], hull[0]), Math.min(declRange[1], hull[1])] : hull
+    if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && declRange[0] <= declRange[1] && (hull || hasSingleInitializer(body, name) || sameInitializers(body, name)))
       updateRep(name, { range: declRange })
 
     // val type (valTypes slice)

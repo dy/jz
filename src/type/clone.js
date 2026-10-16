@@ -19,6 +19,7 @@ export function cloneWithSubst(node, subst, rename = null, closures = false) {
     if (node[0] === '=>') return node
     const out = node.map(x => cloneWithSubst(x, name, value))
     stampClonedIdxProof(node, out)
+    carryNotes(node, out, b => b === name && typeof value === 'string' ? value : b)
     return carrySite(node, out)
   }
   const ren = rename instanceof Map ? rename : new Map()
@@ -38,7 +39,17 @@ export function cloneWithSubst(node, subst, rename = null, closures = false) {
   stampClonedIdxProof(node, out)
   // (a peeled interior's theorems about its names hold of the copy's names for them)
   if (node._rangeFacts) out._rangeFacts = node._rangeFacts.map(([a, b]) => [ren.get(a) ?? a, typeof b === 'string' ? ren.get(b) ?? b : b])
+  carryNotes(node, out, b => ren.get(b) ?? b)
   return carrySite(node, out)
+}
+// A versioned declaration's notes (prepare/split-bindings.js versionRest): the
+// guard it reads under, the hull its guard proves, the array its index stays
+// below, named anew with the clone's bindings.
+function carryNotes(node, out, renamed) {
+  if (node.guarded) out.guarded = true
+  if (node.lo != null) out.lo = node.lo
+  if (node.hi != null) out.hi = node.hi
+  if (node.bound != null) out.bound = renamed(node.bound)
 }
 
 /** A clone keeps its source site for diagnostics. An escape site's clone is

@@ -987,8 +987,25 @@ reads the array, run twice (prepare/split-bindings.js, the plan's nested pass):
 under `Array.isArray` with the array as a binding of its own, whose reads the
 summary types, and as written otherwise; the copy's own declarations are
 bindings of their own, and plan/alias.js keeps the guarded declaration (not an
-alias). A loop bounded by a name declared as an array's length and never
-reassigned is bounded by that array. The solve revisits
+alias). A number the loops after a declaration index by or divide by, not
+integral by its syntax (a bag's write index, a ratio a division made), is
+versioned the same way: the guard tests `Object.is(x, x | 0)` with `x >= 0`
+for an index (`x > 0` for a divisor, `x < arr.length` for the array it
+indexes, `arr.length > 0` for a divisor declared as a picked array's length),
+the copy declares `x = x | 0` noted with the bound the guard proved (`decl.lo`,
+`decl.hi`, `decl.bound`), and the summary keeps that hull while every later
+assignment stays inside it (`ptr = (ptr + 1) % m` under `m > 0` stays below
+`m`, and below the array `m` is the length of): compile/analyze/body-facts.js
+stamps the hull as the binding's range, int-certain.js takes a remainder by a
+divisor of positive hull as integral, and the element paths read and store a
+proven index without a length test or growth. The copies cover the statements
+through the last loop reading a cursor or an array; a cursor assigned there is
+written back after; the point is the last straight-line one that declares or
+assigns a cursor the loops use, so the loops are copied once for all of them,
+and an arm is never versioned again. A loop bounded by a name declared as an
+array's length and never reassigned is bounded by that array, and its counter
+is an index (below 2^32): a store through it is an element store, never a
+numeric property. The solve revisits
 every statement each round and the hosted compiler frees a solve's allocations
 only as a whole, so a visit allocates nothing: the keys a conditional or loop
 assigns are listed once per node, the entry state and the arms' exits live on

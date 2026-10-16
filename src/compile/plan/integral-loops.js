@@ -510,6 +510,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   let rewrote = false
   for (const [loop, parent, idx, enclosing] of loops) {
     if (parent[idx] !== loop) continue
+    // (a loop a version left as written, here or in prepare/split-bindings.js: not copied again)
+    if (loop.cold === true) continue
     let size = nodeSize(loop)
     walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; const v = versions.get(n); if (v) { size -= nodeSize(n) - nodeSize(v.asWritten); return false } } })
     if (size > MAX_SIZE) continue
@@ -755,14 +757,22 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const counterTest = (cond, iv) => Array.isArray(cond) && cond[0] === '&&' && cond.length === 3 ? counterTest(cond[1], iv) ?? counterTest(cond[2], iv)
         : Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && cond[1] === iv ? cond : null
       const test = node[0] === 'for' && node[1]?.[0] === 'let' && Array.isArray(node[1][1]) && typeof node[1][1][1] === 'string' ? counterTest(node[2], node[1][1][1]) : null
-      if (node[0] === 'for' && node.length === 5 && node[1]?.[0] === 'let' && node[1].length === 2 && node[1][1]?.[0] === '=' &&
+      // (a bound the head declares beside the counter, `for (let i = 0, l = data.length; i < l; i++)`: the trips read its value)
+      const headBound = (bound) => {
+        if (typeof bound !== 'string') return bound
+        for (let k = 2; k < node[1].length; k++) { const d = node[1][k]; if (Array.isArray(d) && d[0] === '=' && d[1] === bound && !writesIn(node[4]).has(bound)) return d[2] }
+        return bound
+      }
+      if (node[0] === 'for' && node.length === 5 && node[1]?.[0] === 'let' && node[1].length >= 2 && node[1][1]?.[0] === '=' &&
           typeof node[1][1][1] === 'string' && (node[1][1][2]?.[0] == null && Number.isInteger(node[1][1][2][1]) || stableEntry(node[1][1][2])) &&
-          test && !writesIn(node[4]).has(node[1][1][1])) {
+          test && !writesIn(node[4]).has(node[1][1][1]) &&
+          // (a declaration beside the counter that reads it, `saved = i--`, moves its entry: no trips)
+          node[1].slice(2).every(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && !writesIn(node[4]).has(d[1]) && !refsName(d[2], node[1][1][1], REFS_THROUGH_ARROWS))) {
         const step = node[3]?.[0] === 'postfix' ? node[3][1] : node[3]
-        const init = node[1][1][2]
+        const init = node[1][1][2], bound = headBound(test[2])
         // (an entry of stable names is the trips' expression: `for (let k = -r; k <= r; k++)` runs 2r + 1 times)
-        return (step?.[0] === '++' || step?.[0] === '+1' || step?.[0] === '+=' && step[2]?.[0] == null && step[2][1] === 1) && step[1] === node[1][1][1]
-          ? { n: test[2], adj: test[0] === '<=' ? 1 : 0, entry: init[0] == null ? init[1] : init, counter: node[1][1][1] } : null
+        return (step?.[0] === '++' || step?.[0] === '+1' || step?.[0] === '+=' && step[2]?.[0] == null && step[2][1] === 1) && step[1] === node[1][1][1] && (typeof bound !== 'string' || !node[1].slice(2).some(d => d[1] === bound))
+          ? { n: bound, adj: test[0] === '<=' ? 1 : 0, entry: init[0] == null ? init[1] : init, counter: node[1][1][1] } : null
       }
       return null
     }
@@ -1653,8 +1663,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (entry && atTop != null && atBottom != null) cursorHulls.set(c, [atBottom, atTop])
       cursors.set(c, RING)   // (no terms for a loop around: its ends are the tests' alone)
     }
-    // (a loop around others takes a copy for a bound or for its cursors' words alone)
-    if (!counterBound && nested && !cursors.size) continue
+    // (a loop around others takes a copy for a bound, for its cursors' words, or
+    // for names the loops inside leave alone: a ring cursor the round steps
+    // between them, `ptr = (ptr + 1) % m` under a refresh loop)
+    const innerLoops = []; walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; if (n !== loop && LOOPS.has(n[0])) innerLoops.push(n) } })
+    if (!counterBound && nested && !cursors.size && !(names.length && names.every(n => innerLoops.every(l => !refsName(l, n, REFS_THROUGH_ARROWS))))) continue
     for (const n of used) names.push(n)
     const presenceTests = needPresence ? presentGlobals.filter(n => !present.includes(n)).map(n => ['!=', n, [null, null]]) : []
     const wordTests = [], seenTests = new Set()

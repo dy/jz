@@ -33,19 +33,39 @@ rather than one packed kind, a lazy join of a primitive with an array for
 bindings, fields and side properties, a loop versioned on `Array.isArray`), a
 loop bounded by `n = arr.length` is bounded by the array, a proven array reads
 its element without the tag test. Four cases pin the holes with native C
-references: `sosfilter`, `movavg`, `upfirdn`, `pcmconvert`. Paired readings
-here (`bench.mjs --paired=4`, October 15; the tree before this work in
-parentheses), jz against native C and V8: movavg 7.1× C, 2.07× V8 (11.4×,
-3.33×); sosfilter 3.7× C, 1.21× V8 (4.3×, 1.36×); upfirdn 4.2× C, 1.65× V8
-(unchanged); pcmconvert 8.1× C, 0.79× V8 (unchanged); jessie 1.09× V8 and
-watr 2.4× V8 either way on this machine (the stored evidence has watr at
-1.31×: a quiet reference run decides). What would close them: integer
-speculation for a number a division or a modulus made (upfirdn's `up`,
-`down`; movavg's write index, `(ptr + 1) % m`, whose store still takes the
-key test: a clone under `x === (x | 0)` guards, as narrow/specialize.js does
-for typed arrays), SIMD lowering of float-to-int16 conversion and strided
-deinterleave (pcmconvert; C vectorizes both), and hoisting the forwarding
-test out of a loop that cannot grow the array (sosfilter, movavg).
+references: `sosfilter`, `movavg`, `upfirdn`, `pcmconvert`.
+
+October 16: the ring cursor. movavg's write index is versioned with its
+history (`Object.is`-exact int32, non-negative, below the array's length, the
+length positive), the summary keeps the copy's cursor below the array through
+`(ptr + 1) % m`, and the loop reads and stores the element in place with a
+hardware remainder: one forwarding test and the durable snapshot test are
+what remains per sample. A counter an array's length bounds is an index, so
+sosfilter's lazily made state array has no numeric property and its stage
+loop lost the dynamic arm; the forwarding tests hoisted. Paired readings here
+(`bench.mjs --paired=4`, a loaded machine: Figma, a headless Chromium and a
+Python job beside the runs, so the C and V8 rounds vary 3× and only the
+per-round ratios mean anything), jz against native C and V8, October 15 in
+parentheses: movavg 4.2× C, 0.70× V8 (7.1×, 2.07×); sosfilter 2.5× C, 0.73×
+V8 (3.7×, 1.21×); upfirdn 4.7× C, 1.67× V8 (unchanged); pcmconvert 8.8× C,
+0.84× V8 (unchanged); jessie 0.98× V8; watr 2.25× V8. A quiet reference run
+decides the claims gate. Compile time did not rise and the modules did not
+grow (sosfilter's is 14% smaller): the arm as written is cold to the
+loop-copying passes, a version copies at most 2400 nodes, and the cursors
+ride only with an array the guard picks (a loop over numbers alone is the
+integral-loop plan's, which now reads a bound declared in the loop head and
+copies a nest whose inner loops leave its names alone).
+
+Open: upfirdn's `srcIdx % up` by the versioned ratio still calls `__rem`: the
+remainder has an i64 lowering for an integral dividend of bounded magnitude
+by a positive divisor, but the dividend's magnitude (`n * down - k`) is not
+proved at the site, the counters' hulls being installed as emit-time
+refinements the inner version does not carry; and `srcIdx / up` under the
+`% === 0` test is integral (int-certain.js) but the typed index still
+converts. pcmconvert: SIMD lowering of float-to-int16 conversion and strided
+deinterleave (C vectorizes both). sosfilter, movavg against C: the nullish
+tests of a proven element, the durable snapshot test per store, the NaN
+canonicalization of every stored result.
 
 What remains, by profile. Jessie (1.09×): the Pratt loop's layers
 (`parse.step`, `parse.asi`, three `parse.space` wrappers) each pay the frame

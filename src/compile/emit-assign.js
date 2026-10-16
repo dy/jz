@@ -86,7 +86,7 @@ const persistBinding = name => ptr => persistBindingPtr(name, ptr)
  *  In the speed tiers an index inside the length stores in place first: the
  *  header is left alone and the pointer stays, so the call is only for an index
  *  at or past the end (`out[dst++] = v` filling an array it grew last round). */
-function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
+function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = false) {
   const arrTmp = `${T}asi${freshId(ctx)}`
   const idxTmp = `${T}asj${freshId(ctx)}`
   const valTmp = `${T}asv${freshId(ctx)}`
@@ -106,12 +106,15 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist) {
     const base = tempI32('asb'), baseG = ['local.get', `$${base}`]
     const saved = hasDurableReset() ? [durableArrSnapNode(base)] : []
     if (saved.length) inc('__durable_arr_snap')
-    body.push(['local.set', `$${base}`, fwdOffsetIR(typed(arrG, 'f64'))],
-      ['if', ['i32.lt_u', idxG, ['i32.load', ['i32.sub', baseG, ['i32.const', 8]]]],
+    body.push(['local.set', `$${base}`, fwdOffsetIR(typed(arrG, 'f64'))])
+    // An index proven inside the length (type/canonical-bounds.js
+    // inBoundsArrIdx) stores in place alone: the header stays, nothing grows.
+    if (inBounds) body.push(...saved, ctx.abi.array.ops.store(baseG, idxG, valG))
+    else body.push(['if', ['i32.lt_u', idxG, ['i32.load', ['i32.sub', baseG, ['i32.const', 8]]]],
         ['then', ...saved, ctx.abi.array.ops.store(baseG, idxG, valG)],
         ['else', helper]])
   }
-  if (persist) body.push(persist(['local.get', `$${arrTmp}`]))
+  if (persist && !inBounds) body.push(persist(['local.get', `$${arrTmp}`]))
   body.push(['local.get', `$${valTmp}`])
   return block64(...body)
 }
@@ -771,7 +774,7 @@ function emitElementStore(arr, idx, val, node) {
       return dispatchByKeyKind(arr, keyExpr, valueExpr, (keyNode, receiver) =>
         storeArrayPayload(receiver, keyNode, valueExpr, ptr =>
           ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(receiver)], ['then', persist(ptr)]]))
-    return storeArrayPayload(asF64(emit(arr)), keyExpr, valueExpr, persist)
+    return storeArrayPayload(asF64(emit(arr)), keyExpr, valueExpr, persist, boundedArray)
   }
 
   // A local the dictionary census classified (lean or i32-lean) is a HASH whatever

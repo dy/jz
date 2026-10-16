@@ -6,12 +6,33 @@
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
 import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, tempI32, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
-import { MUTATE_OPS, some } from '../../ast.js'
+import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
-import { intExprRange, negRangeFitsI32 } from '../../static.js'
+import { intExprRange, negRangeFitsI32, forCounterRange } from '../../static.js'
 import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN } from '../../summary/kind.js'
-import { exprType, inBoundsArrIdx } from '../../type.js'
+import { exprType, inBoundsArrIdx, wholeKey } from '../../type.js'
+import { scanBindingUses, BINDING_USE_INIT } from '../analyze-scans.js'
+import { intLevelMap } from '../../type/int-certain.js'
+const strictInts = new WeakMap()   // a body → its names' integer levels (int-certain.js), read by the remainder's magnitude bound
+// a body → the hull of each `for` counter under its bound (static.js forCounterRange), where the bound hulls
+const counterHulls = new WeakMap()
+const counterRanges = (body) => {
+  let m = counterHulls.get(body)
+  if (m) return m
+  counterHulls.set(body, m = new Map())
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] !== 'for' || n.length !== 5 || !Array.isArray(n[1]) || n[1][0] !== 'let') return
+    for (let i = 1; i < n[1].length; i++) {
+      const d = n[1][i]
+      if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || isReassigned(n[4], d[1])) continue
+      const r = forCounterRange(n[1], n[2], n[3], d[1])
+      if (r) m.set(d[1], [r[0], r[1]])
+    }
+  } })
+  return m
+}
 import { storedValue } from '../../bridge.js'
 import {
   bigIntDivIR, bigIntDomainsCanMix, bigIntJointDispatch, bigIntOperand, bigIntUnary, bigintMixReject, bigintResult, computedBoxOf, hasBigintDomain,
@@ -571,6 +592,28 @@ export const arithmeticOps = {
     return typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '%': (a, b, self) => {
+    // the magnitude an expression of int32 words and literals stays below, by their widths alone
+    const i32Magnitude = (e, depth = 0) => {
+      if (typeof e === 'number') return Math.abs(e)
+      if (typeof e === 'string') {
+        const body = ctx.func.body
+        if (!Array.isArray(body)) return null
+        // a hull the range solver holds (a counter under its bound, a stamped declaration)
+        const r = intExprRange(e) ?? counterRanges(body).get(e)
+        if (r) return Math.max(-r[0], r[1])
+        // an int32 word, or a name every write of which is a strict int32 (a counter)
+        if (ctx.func.locals?.get(e) === 'i32' || (strictInts.get(body) ?? strictInts.set(body, intLevelMap(body)).get(body)).get(e) === 2) return 2 ** 31
+        // a name only its declaration writes, from such an expression (`srcIdx = upIdx - k`), is bounded as it is
+        if (depth >= 4 || isReassigned(body, e)) return null
+        const init = scanBindingUses(body).get(e)?.[BINDING_USE_INIT]
+        return init != null ? i32Magnitude(init, depth + 1) : null
+      }
+      if (!Array.isArray(e)) return null
+      if (e[0] == null) return typeof e[1] === 'number' ? Math.abs(e[1]) : null
+      if ((e[0] === '+' || e[0] === '-' || e[0] === '*') && e.length === 3) { const x = i32Magnitude(e[1], depth), y = i32Magnitude(e[2], depth); return x == null || y == null ? null : e[0] === '*' ? x * y : x + y }
+      if (e[0] === 'u-' && e.length === 2) return i32Magnitude(e[1], depth)
+      return null
+    }
     // §14 point 4: joint runtime-domain dispatch — see '-'s identical comment
     // above. Number-domain branch reuses `f64rem` (the SAME `$__rem` call the
     // fully generic '%' path below already uses — exact NaN/±Inf/0 edges).
@@ -645,6 +688,17 @@ export const arithmeticOps = {
           ['f64.convert_i32_s', ['i32.rem_s', ['local.tee', t, pa], pb]],
           ['f64.convert_i32_s', ['local.get', t]]], 'f64')
       }
+    }
+    // An integral dividend of a bounded hull with no i32 view (a product the
+    // word cannot hold, `n * down - k`) by a positive i32 divisor: the i64
+    // remainder of the exact integers, exact below 2^63, an i32 below the
+    // divisor; a non-negative dividend leaves no sign to keep.
+    const magnitude = range ? Math.max(-range[0], range[1]) : i32Magnitude(a)
+    if (!isLit(vb) && divisorRange && divisorRange[0] > 0 && divisorRange[1] <= 0x7fffffff && !vb.unsigned && magnitude != null && magnitude < 2 ** 63 && wholeKey(a)) {
+      const pb = peelI32(vb)
+      if (pb && range && range[0] >= 0) return typed(['i32.wrap_i64', ['i64.rem_s', ['i64.trunc_sat_f64_s', toNumF64(a, va)], ['i64.extend_i32_s', pb]]], 'i32')
+      // (a negative dividend's exact zero remainder is -0: the dividend's sign, once)
+      if (pb) return withTemp(toNumF64(a, va), t => typed(['f64.copysign', ['f64.convert_i64_s', ['i64.rem_s', ['i64.trunc_sat_f64_s', ['local.get', `$${t}`]], ['i64.extend_i32_s', pb]]], ['local.get', `$${t}`]], 'f64'), 'rem')
     }
     // Two faithful i32 views with a divisor that may be zero: the hardware
     // remainder behind a test of the divisor (NaN there, as JS answers), the

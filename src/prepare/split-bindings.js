@@ -23,7 +23,10 @@
  */
 import { T, noted, copyNode } from '../ast.js'
 import { ctx } from '../ctx.js'
-import { tagsOf, paramOf, UNKNOWN } from '../summary/kind.js'
+import { tagsOf, paramOf, UNKNOWN, NUMBER as NUMBER_KIND, K, kind as kindOfTag, isNullable as isNullableKind } from '../summary/kind.js'
+import { nodeSize } from '../compile/plan/common.js'
+const ARRAY_KIND = kindOfTag(K.ARRAY)
+const MAX_VERSION_SIZE = 2400   // nodes a version copies at most (three of plan/integral-loops.js's loop budget)
 
 const COMPOUND = new Map([['+=', '+'], ['-=', '-'], ['*=', '*'], ['/=', '/'], ['%=', '%'], ['**=', '**'],
   ['&=', '&'], ['|=', '|'], ['^=', '^'], ['<<=', '<<'], ['>>=', '>>'], ['>>>=', '>>>']])
@@ -90,6 +93,7 @@ export function splitReassigned(fn, nested = false) {
   const has = (n) => {
     if (any || !Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
     if (n[0] === ';') for (let k = 1; k < n.length; k++) if (isAssign(n[k])) any = true
+    if (nested && isAssign(n)) any = true   // an arm of its own (`if (!up) up = 1`)
     if (nested) for (let k = 1; k < n.length; k++) has(n[k])
   }
   has(top)
@@ -103,6 +107,7 @@ export function splitReassigned(fn, nested = false) {
   const made = new RegExp(`${T}s(\\d+)$`)
   for (const name of own) { const m = made.exec(name); if (m) serial = Math.max(serial, +m[1] + 1) }
   const roots = new Map()   // a binding this pass declared → the source binding it continues
+  const joinKinds = new Map()   // a join this pass declared → the kind the conditional leaves it (the summary knows the source alone)
 
   // `list` split over the bindings `mine(name)` admits
   const split = (list, mine) => {
@@ -115,7 +120,9 @@ export function splitReassigned(fn, nested = false) {
       if (isAssign(s) && !captured.has(s[1]) && mine(s[1], declared, out ?? list, k)) {
         const name = s[1], root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
         if (!out) out = copyNode(list)
-        out[k] = noted(s, ['let', noted(s, ['=', next, s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]])])
+        const value = s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]
+        out[k] = noted(s, ['let', noted(s, ['=', next, value])])
+        if (view) joinKinds.set(next, view.kindOfExpr(value))
         // The RHS above still reads the previous name. Later statements read
         // the new one when reached, so each is renamed once instead of once
         // for every earlier assignment in its list.
@@ -135,7 +142,7 @@ export function splitReassigned(fn, nested = false) {
         // before the history replaces it), when a loop among them reads the
         // array, run twice: under `Array.isArray` with the array as a binding
         // of its own, whose reads the summary types, and as written otherwise.
-        const v = versionRest(out ?? list, k, names)
+        const v = versionRest(out ?? list, k, names, null, name => mine(name, declared, out ?? list, k))
         if (v) { out = v; break }
       }
       if (s[0] !== 'if' || !view) continue
@@ -143,13 +150,13 @@ export function splitReassigned(fn, nested = false) {
       const assigned = assignedIn(s), joined = []
       for (const name of assigned) if (!captured.has(name) && mine(name, declared, out ?? list, k) && !joined.includes(name) && narrower(view.exitKindAt(s, name), view.kindOf(name))) joined.push(name)
       // the mix the statements after read may be one the conditional made (above)
-      if (!joined.length) { const v = versionRest(out ?? list, k, names, assigned); if (v) { out = v; break } continue }
+      if (!joined.length) { const v = versionRest(out ?? list, k, names, assigned, name => mine(name, declared, out ?? list, k)); if (v) { out = v; break } continue }
       if (!out) out = copyNode(list)
       const decls = []
       for (const name of joined) {
         const root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
         decls.push(noted(s, ['=', next, name]))
-        names.set(root, next); declared.add(next); own.add(next); roots.set(next, root)
+        names.set(root, next); declared.add(next); own.add(next); roots.set(next, root); joinKinds.set(next, view.exitKindAt(s, name))
       }
       out.splice(k + 1, 0, noted(s, ['let', ...decls]))
       list = out
@@ -157,7 +164,7 @@ export function splitReassigned(fn, nested = false) {
       // the join declared here, or a name the conditional assigned and did not
       // join, may be the mix the statements after read (above)
       for (const name of declaredBy(out[k])) assigned.add(name)
-      { const v = versionRest(out, k, names, assigned); if (v) { out = v; break } }
+      { const v = versionRest(out, k, names, assigned, name => mine(name, declared, out, k)); if (v) { out = v; break } }
     }
     return out ?? list
   }
@@ -187,14 +194,106 @@ export function splitReassigned(fn, nested = false) {
   const hasLoop = (n) => Array.isArray(n) && n[0] !== '=>' && (n[0] === 'for' || n[0] === 'while' || n.some((c, i) => i > 0 && hasLoop(c)))
   // a kind with fewer tags, or the same tags and a parameter the other lacks
   const narrower = (a, b) => a != null && b != null && a !== b && (tagsOf(a) !== tagsOf(b) ? (tagsOf(a) & ~tagsOf(b)) === 0 : paramOf(a) !== UNKNOWN && paramOf(b) === UNKNOWN)
-  const versionRest = (list, k, names, candidates = null) => {
-    if (!view || k + 1 >= list.length) return null
+  // The number bindings the loops of `rest` read as an element index, or as
+  // an operand of a division or remainder, directly or through the
+  // declarations the index is made of (`srcIdx = upIdx - k`, `upIdx = n * down`):
+  // each with the uses it has, index or divisor.
+  const cursorUses = (rest) => {
+    const inits = new Map(), index = new Set(), divisor = new Set(), straight = new Set()
+    const mention = (n, out) => { if (typeof n === 'string') out.add(n); else if (Array.isArray(n) && n[0] !== '=>' && n[0] !== 'str') for (let i = 1; i < n.length; i++) mention(n[i], out) }
+    const walk = (n, inLoop) => {
+      if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
+      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { inits.set(d[1], d[2]); if (!inLoop) straight.add(d[1]) } }
+      const loop = inLoop || n[0] === 'for' || n[0] === 'while'
+      if (loop && n[0] === '[]' && n.length === 3) mention(n[2], index)
+      if (loop && (n[0] === '%' || n[0] === '/') && n.length === 3) { mention(n[1], index); mention(n[2], divisor) }
+      for (let i = 1; i < n.length; i++) walk(n[i], loop)
+    }
+    for (const s of rest) walk(s, false)
+    // through the rest's own declarations, to the names they are made of; a
+    // straight-line declaration that is not integral by its syntax is a
+    // cursor of its own (`p = p / g`), versioned where it is declared
+    for (const set of [index, divisor]) for (let grown = true; grown;) { grown = false; for (const name of set) { const init = inits.get(name); if (init == null || straight.has(name) && typeof init !== 'string' && !integral(init, inits)) continue; const before = set.size; mention(init, set); if (set.size !== before) grown = true } }
+    return { index, divisor }
+  }
+  // a name the summary proves an array that is present
+  const isArrayName = (name) => { const k = view.kindOf(name); return k != null && tagsOf(k) === tagsOf(ARRAY_KIND) && !isNullableKind(k) }
+  // a value integral by its syntax needs no guard: a literal, a bit operation, a length, a rounding
+  const INT_MATH = new Set(['Math.floor', 'Math.ceil', 'Math.round', 'Math.trunc', 'Math.imul', 'Math.clz32'])
+  const integral = (init, inits, depth = 0, param = null) => {
+    if (typeof init === 'number') return Number.isInteger(init)
+    if (typeof init === 'string') return depth < 4 && (inits.has(init) ? integral(inits.get(init), inits, depth + 1, param) : counters.has(init) || !!param?.(init))
+    if (!Array.isArray(init)) return false
+    const op = init[0]
+    if (op == null) return typeof init[1] === 'number' && Number.isInteger(init[1])
+    if (op === '|' || op === '&' || op === '^' || op === '<<' || op === '>>' || op === '>>>' || op === '~') return true
+    if (op === '.' && init[2] === 'length') return true
+    if (op === '()' && typeof init[1] === 'string' && INT_MATH.has(init[1])) return true
+    // sums, differences and products of integers (`win = 2 * r + 1`)
+    if ((op === '+' || op === '-' || op === '*') && init.length === 3) return integral(init[1], inits, depth + 1, param) && integral(init[2], inits, depth + 1, param)
+    if (op === 'u-' && init.length === 2) return integral(init[1], inits, depth + 1, param)
+    return false
+  }
+  // An arm a version made is split as a list of its own, not versioned again:
+  // the cursors it declares were the guard's, and a copy of a copy doubles the code.
+  let armDepth = 0
+  const versionRest = (list, k, names, candidates = null, mine = null) => {
+    if (!view || armDepth || k + 1 >= list.length) return null
     const rest = list.slice(k + 1).map(s => names.size ? rename(s, names) : s)   // the later statements read the names declared so far
     if (!rest.some(hasLoop)) return null
     const restNode = [';', ...rest], assigned = assignedIn(restNode)
-    const picked = []
+    const picked = [], cursors = []
     for (const name of candidates ?? declaredBy(list[k])) if (!assigned.has(name) && view.isMixed(roots.get(name) ?? name) && elementReceivers(restNode).includes(name)) picked.push(name)
+    // A number the loops index or divide by, declared before this point and
+    // not integral by its syntax (a bag's write index, a ratio a division
+    // made): the arm runs it as an int32 the guard proves, non-negative as an
+    // index, positive as a divisor. One a later statement outside a loop
+    // still assigns (`if (!down) down = 1`) waits for that statement's own
+    // versioning, so the loops are copied once for all of them.
+    const uses = cursorUses(rest), inits = new Map(), declaredInRest = new Set()
+    const initsOf = (st) => { if (Array.isArray(st) && (st[0] === 'let' || st[0] === 'const')) for (let j = 1; j < st.length; j++) { const d = st[j]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') inits.set(d[1], d[2]) } }
+    for (let i = 1; i <= k; i++) initsOf(list[i])
+    for (const s of rest) declaresIn(s, declaredInRest)
+    // the straight-line statements ahead of the first loop: a cursor one of
+    // them assigns or declares is versioned there, with the ones before it
+    const prefix = []; for (const st of rest) { if (hasLoop(st)) break; prefix.push(st); initsOf(st) }
+    const later = new Set(); for (const st of prefix) { assignedIn(st, later); for (const name of declaredBy(st)) later.add(name) }
+    // (a parameter every call passes one integer, `hblur(img, out, W, H, R)` under `const W = 64`, is an integer already)
+    const paramHulls = view.paramRangesOf?.(fn.name) ?? null
+    const integerParam = (name) => { const at = fn.sig.params.findIndex(p => p.name === name); const r = at < 0 ? null : paramHulls?.[at]; return !!r && r[0] === r[1] && Number.isInteger(r[0]) }
+    const cursor = (name) => {
+      if (captured.has(name) || (mine && !mine(name)) || integral(inits.get(name) ?? null, inits, 0, integerParam) || integerParam(name)) return false
+      const kind = joinKinds.get(name) ?? view.kindOf(name)
+      return kind != null && tagsOf(kind) === tagsOf(NUMBER_KIND) && !isNullableKind(kind)
+    }
+    // (a loop over numbers alone is the integral-loop plan's, plan/integral-loops.js:
+    // the cursors here ride with an array the guard picks, the state-bag's index with its history)
+    if (picked.length) for (const name of new Set([...uses.index, ...uses.divisor])) {
+      if (!cursor(name)) continue
+      if (later.has(name)) continue
+      if (!declaredInRest.has(name)) cursors.push(name)
+    }
     if (!picked.length) return null
+    // The arms cover the statements through the last loop reading a cursor or
+    // an array, then any later statement reading a name declared among them;
+    // a cursor assigned in the arms is written back to its binding after.
+    const watched = new Set([...picked, ...cursors]), mentionsAny = (n, set) => { if (typeof n === 'string') return set.has(n); if (!Array.isArray(n) || n[0] === 'str') return false; for (let i = 1; i < n.length; i++) if (mentionsAny(n[i], set)) return true; return false }
+    // a loop reads a cursor through the declarations made of it (`up = p`)
+    const restInits = new Map(); for (const st of rest) { if (Array.isArray(st) && (st[0] === 'let' || st[0] === 'const')) for (let j = 1; j < st.length; j++) { const d = st[j]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') restInits.set(d[1], d[2]) } }
+    for (let grown = true; grown;) { grown = false; for (const [name, init] of restInits) if (!watched.has(name) && mentionsAny(init, watched)) { watched.add(name); grown = true } }
+    let end = -1
+    for (let i = 0; i < rest.length; i++) if (hasLoop(rest[i]) && mentionsAny(rest[i], watched)) end = i
+    if (end < 0) return null
+    for (let grown = true; grown;) {
+      grown = false
+      const declaredIn = new Set(); for (let i = 0; i <= end; i++) declaresIn(rest[i], declaredIn)
+      for (let i = end + 1; i < rest.length; i++) if (mentionsAny(rest[i], declaredIn)) { end = i; grown = true; break }
+    }
+    const after = rest.slice(end + 1); rest.length = end + 1
+    // the arms double the statements they cover: a tail too large to copy stays as written
+    if (rest.reduce((n, s) => n + nodeSize(s), 0) > MAX_VERSION_SIZE) return null
+    declaredInRest.clear(); for (const s of rest) declaresIn(s, declaredInRest)
+    const written = assignedIn([';', ...rest]), writeBack = cursors.filter(name => written.has(name))
     const to = new Map(), decls = []
     for (const name of picked) {
       const next = `${name}${T}s${serial++}`
@@ -202,17 +301,54 @@ export function splitReassigned(fn, nested = false) {
       const decl = noted(list[k], ['=', next, name]); decl.guarded = true   // read under the guard: not an alias (plan/alias.js)
       decls.push(decl)
     }
-    // the copy's own declarations are bindings of their own: each arm's kinds stay apart
-    const inner = new Set(); for (const s of rest) declaresIn(s, inner)
-    for (const name of inner) if (!captured.has(name)) { const next = `${name}${T}s${serial++}`; to.set(name, next); own.add(next); roots.set(next, roots.get(name) ?? name) }
     let test = null
-    for (const name of picked) { const t = ['()', 'Array.isArray', name]; test = test ? ['&&', test, t] : t }
+    const and = (t) => { test = test ? ['&&', test, t] : t }
+    for (const name of picked) and(['()', 'Array.isArray', name])
+    const cursorDecls = new Map()
+    for (const name of cursors) {
+      const next = `${name}${T}s${serial++}`, lo = uses.divisor.has(name) ? 1 : 0
+      to.set(name, next); own.add(next); roots.set(next, name)
+      const decl = noted(list[k], ['=', next, ['|', name, [null, 0]]]); decl.lo = lo   // the summary's hull (index.js noteHull)
+      decls.push(decl); cursorDecls.set(name, decl)
+      // an int32 that is not -0 (the word would read it as 0): equal to its own word, and positive where zero
+      and(['===', name, ['|', name, [null, 0]]])
+      and(lo ? ['>', name, [null, 0]] : ['&&', ['>=', name, [null, 0]], ['||', ['!==', name, [null, 0]], ['>', ['/', [null, 1], name], [null, 0]]]])
+    }
+    // An index below the length of the array it indexes: the guard tests it,
+    // the arm's binding is bounded by that array (its hull by the element
+    // count any array can hold), kept while each assignment stays below.
+    const ARRAY_TOP = 0x1ffffffe
+    for (const name of cursors) {
+      const arrays = new Set()
+      const scan = (n) => { if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return; if (n[0] === '[]' && n[2] === name && typeof n[1] === 'string' && (picked.includes(n[1]) || isArrayName(n[1]))) arrays.add(n[1]); for (let i = 1; i < n.length; i++) scan(n[i]) }
+      for (const st of rest) scan(st)
+      const decl = cursorDecls.get(name)
+      for (const a of arrays) { and(['<', name, ['.', a, 'length']]); decl.hi = ARRAY_TOP; if (decl.bound == null) decl.bound = a }
+    }
+    // a divisor declared as a picked array's length is positive under the guard
+    const positiveLengths = []
+    for (const st of rest) if (Array.isArray(st) && st[0] === 'const') for (let j = 1; j < st.length; j++) {
+      const d = st[j]
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && uses.divisor.has(d[1]) && Array.isArray(d[2]) && d[2][0] === '.' && d[2][2] === 'length' && picked.includes(d[2][1])) { positiveLengths.push(d[1]); and(['>', ['.', d[2][1], 'length'], [null, 0]]) }
+    }
+    // the copy's own declarations are bindings of their own: each arm's kinds stay apart
+    for (const name of declaredInRest) if (!captured.has(name)) { const next = `${name}${T}s${serial++}`; to.set(name, next); own.add(next); roots.set(next, roots.get(name) ?? name) }
     const at = list[k]
-    const fast = noted(at, ['{}', noted(at, [';', noted(at, ['let', ...decls]), ...rest.map(s => rename(s, to))])])
-    const slow = noted(at, ['{}', noted(at, [';', ...rest])])
+    for (const decl of cursorDecls.values()) if (decl.bound != null) decl.bound = to.get(decl.bound) ?? decl.bound
+    const copy = rest.map(s => rename(s, to))
+    for (const name of positiveLengths) { const next = to.get(name); for (const st of copy) if (Array.isArray(st) && st[0] === 'const') for (let j = 1; j < st.length; j++) if (Array.isArray(st[j]) && st[j][1] === next) st[j].lo = 1 }
+    // each arm is a list of its own: a cursor declared inside it versions its loops in turn
+    armDepth++
+    const fast = noted(at, ['{}', inner(noted(at, [';', noted(at, ['let', ...decls]), ...copy, ...writeBack.map(name => noted(at, ['=', name, to.get(name)]))]))])
+    const slow = noted(at, ['{}', inner(noted(at, [';', ...rest]))])
+    armDepth--
+    // the arm as written runs where the guard fails: its loops are cold to the
+    // passes that copy loops (plan/integral-loops.js, the vectorizers, twin-locals.js)
+    const chill = (n) => { if (!Array.isArray(n) || n[0] === '=>') return; if (n[0] === 'for' || n[0] === 'while' || n[0] === 'do') n.cold = true; for (let i = 1; i < n.length; i++) chill(n[i]) }
+    chill(slow)
     const out = copyNode(list)
     out.length = k + 1
-    out.push(noted(at, ['if', test, fast, slow]))
+    out.push(noted(at, ['if', test, fast, slow]), ...after)
     return out
   }
   // the names a statement's arms assign (closures aside: their assignments are the cell's)
@@ -247,11 +383,19 @@ export function splitReassigned(fn, nested = false) {
     for (let j = 1; j < k; j++) if (mentions(list[j], name) !== 0) return false
     return true
   }
+  // the counters of the loops around a list: integers by their literal start and unit step
+  const counters = new Set()
+  const counterOf = (n) => n[0] === 'for' && n.length === 5 && Array.isArray(n[1]) && n[1][0] === 'let' && Array.isArray(n[1][1]) && n[1][1][0] === '=' &&
+    typeof n[1][1][1] === 'string' && Array.isArray(n[1][1][2]) && n[1][1][2][0] == null && Number.isInteger(n[1][1][2][1]) &&
+    Array.isArray(n[3]) && (n[3][0] === '++' || n[3][0] === '--') && n[3][1] === n[1][1][1] ? n[1][1][1] : null
   const inner = (n) => {
     if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return n
     if (n[0] === ';') return split(n, within)
+    const counter = counterOf(n)
+    if (counter) counters.add(counter)
     let out = n
     for (let i = 1; i < n.length; i++) { const c = inner(n[i]); if (c !== n[i]) { if (out === n) out = copyNode(n); out[i] = c } }
+    if (counter) counters.delete(counter)
     return out
   }
   const list = split(top, (name) => own.has(name))

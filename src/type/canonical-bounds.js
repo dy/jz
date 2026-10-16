@@ -319,6 +319,9 @@ export function inBoundsArrIdx(ctx) {
   const set = new Set()
   const litSet = new Map()
   scanBoundedArrIdx(body, set, litSet)
+  // a versioned index the summary keeps below its array's length (summary/index.js noteHull)
+  const bounds = ctx.summary?.at(ctx.func.current)?.indexBounds?.()
+  if (bounds) for (const [idx, recv] of bounds) set.add(recv + '\x00' + idx)
   cache.set(body, set)
   getFactStore().aiLitBounds.set(body, litSet)
   return set
