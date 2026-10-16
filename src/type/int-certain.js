@@ -40,6 +40,9 @@ const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'
 // A quotient under a test of its remainder (`if (srcIdx % up === 0) { const xi
 // = srcIdx / up }`): the division is exact, an integer of integer operands.
 const exactDivs = new WeakSet()
+export const isExactDivision = (n) => exactDivs.has(n)
+/** Mark every quotient of a body under a test of its remainder (plan/integral-loops.js reads them ahead of the analysis). */
+export const markExactDivisions = (body) => walkAst(body, { enter: n => { if (n[0] === '=>') return false; if (n[0] === 'if' && n.length >= 3) noteExactDivs(n[1], n[2]) } })
 const sameNode = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b)
 const noteExactDivs = (test, arm) => {
   const conjuncts = []

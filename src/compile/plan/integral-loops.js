@@ -154,6 +154,7 @@ import { collectBindings, nodeSize } from './common.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
 import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
+import { isExactDivision, markExactDivisions } from '../../type/int-certain.js'
 import { MAX_SMALL_FOR_UNROLL } from '../../type/loop-unroll.js'
 import { maxAdvanceBudget, minAdvanceBudget } from '../../type/canonical-bounds.js'
 import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
@@ -181,6 +182,8 @@ const integral = (e, out, intArray = NO_ARRAY) => {
   if (op === '[]' && e.length === 3 && intArray(e[1])) return true
   if (op === '()' && e.length === 2) return integral(e[1], out, intArray)
   if (op === '?:') { const a = integral(e[2], out, intArray), b = integral(e[3], out, intArray); return a && b }
+  // a quotient under a test of its remainder (`if (srcIdx % up === 0) xi = srcIdx / up`) is exact: an integer of integers
+  if (op === '/' && e.length === 3 && isExactDivision(e)) { const a = integral(e[1], out, intArray), b = integral(e[2], out, intArray); return a && b }
   if (!CLOSED.has(op)) return false
   let all = true
   for (let i = 1; i < e.length; i++) if (!integral(e[i], out, intArray)) all = false
@@ -439,6 +442,7 @@ const presentNames = (loop, writes, kindOf, outerOk) => {
  *  the function whose calls bind them, null for a closure): whether any was
  *  rewritten. A closure inside the body is a body of its own. */
 const versionBody = (body, params, view, func, programFacts, frame = func ? frameNode(func) : body) => {
+  markExactDivisions(body)
   // A closure created by a default or the body can read or write where the
   // copy cannot see. Both belong to this function's capture census.
   const captured = new Set()

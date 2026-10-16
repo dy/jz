@@ -56,16 +56,18 @@ ride only with an array the guard picks (a loop over numbers alone is the
 integral-loop plan's, which now reads a bound declared in the loop head and
 copies a nest whose inner loops leave its names alone).
 
-Open: upfirdn's `srcIdx % up` by the versioned ratio still calls `__rem`: the
-remainder has an i64 lowering for an integral dividend of bounded magnitude
-by a positive divisor, but the dividend's magnitude (`n * down - k`) is not
-proved at the site, the counters' hulls being installed as emit-time
-refinements the inner version does not carry; and `srcIdx / up` under the
-`% === 0` test is integral (int-certain.js) but the typed index still
-converts. pcmconvert: SIMD lowering of float-to-int16 conversion and strided
-deinterleave (C vectorizes both). sosfilter, movavg against C: the nullish
-tests of a proven element, the durable snapshot test per store, the NaN
-canonicalization of every stored result.
+Same day, upfirdn: the integral-loop plan now holds the ratio words and the
+exact quotient, and `srcIdx % up` is the i64 remainder behind a zero test
+(the dividend's magnitude read off the `imul` word and the unrolled
+counter): the hot versions make no call. Paired on the same loaded machine
+(the ratios alone mean anything): upfirdn 2.15× C, 0.88× V8, 1.9× C-wasm
+(4.7×, 1.67×, 3.1× the day before); in the same run movavg 3.4× C, 0.98×
+V8; sosfilter 2.5× C, 0.83× V8; pcmconvert 8.1× C, 0.78× V8. Every one of
+the four is under V8 now; none is under clang's wasm yet (1.8× to 2.4×).
+Open: pcmconvert, SIMD lowering of float-to-int16
+conversion and strided deinterleave (C vectorizes both). sosfilter, movavg
+against C: the nullish tests of a proven element, the durable snapshot test
+per store, the NaN canonicalization of every stored result.
 
 What remains, by profile. Jessie (1.09×): the Pratt loop's layers
 (`parse.step`, `parse.asi`, three `parse.space` wrappers) each pay the frame

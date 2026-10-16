@@ -1005,7 +1005,15 @@ assigns a cursor the loops use, so the loops are copied once for all of them,
 and an arm is never versioned again. A loop bounded by a name declared as an
 array's length and never reassigned is bounded by that array, and its counter
 is an index (below 2^32): a store through it is an element store, never a
-numeric property. The solve revisits
+numeric property. A remainder whose dividend is integral and bounded below
+2^63 (compile/emit/arithmetic.js reads the magnitude off the words, counters
+and literals the dividend is made of, a `for` counter under its bound or a
+`while` counter declared before its loop and stepped by literals) by a divisor
+word is the i64 remainder, behind a zero test where the word may be zero, and
+an i32 where the divisor's hull is positive and the dividend non-negative; a
+quotient under a test of its remainder (`if (a % b === 0) x = a / b`) is an
+integer (type/int-certain.js, read by plan/integral-loops.js too), so a
+polyphase resampler's stride test and source index run in words. The solve revisits
 every statement each round and the hosted compiler frees a solve's allocations
 only as a whole, so a visit allocates nothing: the keys a conditional or loop
 assigns are listed once per node, the entry state and the arms' exits live on

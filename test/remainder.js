@@ -188,3 +188,40 @@ test('remainder: integer operands agree with the host at every magnitude', () =>
   }
   is(bad, 0, 'no integer pair disagrees')
 })
+
+// A polyphase resampler's test of a stride (`srcIdx % up === 0` under `srcIdx =
+// n * down - k`): the dividend is an integer the loop's words bound below 2^63
+// and the divisor a word of the integral copy, so the remainder is the i64
+// hardware's behind a zero test, never a call; the quotient under the test is
+// exact, an index of words.
+test('remainder: an integral dividend of bounded magnitude by a word takes the i64 remainder', () => {
+  const src = `const data = new Float64Array(64), h = new Float64Array(9)
+    for (let i = 0; i < 64; i++) data[i] = ((i * 37) % 11) / 7 - 0.5
+    for (let k = 0; k < 9; k++) h[k] = 1 / (1 + k)
+    const poly = (x, taps, up, down) => {
+      if (!up) up = 1
+      if (!down) down = 1
+      const xLen = x.length, hLen = taps.length
+      const outLen = Math.floor(((xLen - 1) * up + hLen + down - 1) / down)
+      let acc = 0
+      for (let n = 0; n < outLen; n++) {
+        let sum = 0
+        const upIdx = n * down
+        for (let k = 0; k < hLen; k++) {
+          const srcIdx = upIdx - k
+          if (srcIdx >= 0 && srcIdx % up === 0) { const xi = srcIdx / up; if (xi < xLen) sum += taps[k] * x[xi] }
+        }
+        acc += sum * (n & 1 ? 1 : -1)
+      }
+      return acc
+    }
+    export let run = (u, d) => poly(data, h, +u, +d)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(src, { optimize })
+    for (const [u, d] of [[3, 2], [1, 1], [0, 2], [2, 0], [2.5, 2], [3, -1], [NaN, 1], [6, 4]]) is(m.run(u, d), js.run(u, d), `up ${u}, down ${d} at ${optimize}`)
+  }
+  if (belowOpt(3)) return
+  const text = wat(src, { optimize: 3 })
+  ok(/i64\.rem_s/.test(text), 'the stride test is an i64 remainder')
+})

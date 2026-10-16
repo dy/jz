@@ -21,13 +21,49 @@ const counterRanges = (body) => {
   let m = counterHulls.get(body)
   if (m) return m
   counterHulls.set(body, m = new Map())
-  walkAst(body, { enter: n => {
+  // the declaration of `name` among the statements before index `at` of `list`, with no loop, arm or write of it between
+  const hoistedInit = (list, at, name) => {
+    if (!Array.isArray(list)) return null
+    for (let k = at - 1; k >= 1; k--) {
+      const prev = list[k]
+      if (!Array.isArray(prev) || prev[0] === 'for' || prev[0] === 'while' || prev[0] === 'do' || prev[0] === 'if' || prev[0] === '{}') return null
+      if (prev[0] === 'let' && prev.length === 2 && Array.isArray(prev[1]) && prev[1][0] === '=' && prev[1][1] === name) return prev
+      if (isReassigned(prev, name)) return null
+    }
+    return null
+  }
+  walkAst(body, { enter: (n, parent, index) => {
     if (n[0] === '=>') return false
-    if (n[0] !== 'for' || n.length !== 5 || !Array.isArray(n[1]) || n[1][0] !== 'let') return
-    for (let i = 1; i < n[1].length; i++) {
-      const d = n[1][i]
+    // A while over a counter declared before it and stepped up inside by literals
+    // (the unroller's `let k = 0; while (k < n - 1) { …; k += 2 }`): from its start
+    // to the bound plus the largest step, where the bound hulls.
+    if (n[0] === 'while' && n.length === 3 && Array.isArray(n[1]) && (n[1][0] === '<' || n[1][0] === '<=') && typeof n[1][1] === 'string') {
+      const name = n[1][1], init = hoistedInit(parent, index, name), bound = intExprRange(n[1][2])
+      const startNode = init?.[1][2], start = typeof startNode === 'number' ? (Number.isInteger(startNode) ? startNode : null) : Array.isArray(startNode) && startNode[0] == null && Number.isInteger(startNode[1]) ? startNode[1] : null
+      if (start == null || !bound || !Number.isFinite(bound[1])) return
+      let step = 0, ok = true
+      walkAst(n[2], { enter: (w) => {
+        if (w[0] === '=>') { if (isReassigned(w, name)) ok = false; return false }
+        if (!MUTATE_OPS.has(w[0]) || w[1] !== name) return
+        // `k++`, `k += c`, `k = k + c`, `k = (k + c) | 0`: a step up by a literal
+        const lit = (e) => typeof e === 'number' ? (Number.isInteger(e) && e > 0 ? e : null) : Array.isArray(e) && e[0] == null && Number.isInteger(e[1]) && e[1] > 0 ? e[1] : null
+        let rhs = w[0] === '=' ? w[2] : null
+        if (Array.isArray(rhs) && rhs[0] === '|' && rhs.length === 3 && lit(rhs[2]) === null && Array.isArray(rhs[2]) && rhs[2][0] == null && rhs[2][1] === 0) rhs = rhs[1]
+        const k = w[0] === '++' ? 1 : w[0] === '+=' ? lit(w[2]) : Array.isArray(rhs) && rhs[0] === '+' && rhs.length === 3 && rhs[1] === name ? lit(rhs[2]) : null
+        if (k == null) ok = false; else step = Math.max(step, k)
+      } })
+      if (ok && step > 0) m.set(name, [start, Math.max(start, bound[1] + step)])
+      return
+    }
+    if (n[0] !== 'for' || n.length !== 5) return
+    // (a counter declared by the statement before its loop, the plan's hoisted head: `let k = 0; for (; k < n; k++)`)
+    let init = n[1]
+    if (init == null && typeof n[2]?.[1] === 'string') init = hoistedInit(parent, index, n[2][1])
+    if (!Array.isArray(init) || init[0] !== 'let') return
+    for (let i = 1; i < init.length; i++) {
+      const d = init[i]
       if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || isReassigned(n[4], d[1])) continue
-      const r = forCounterRange(n[1], n[2], n[3], d[1])
+      const r = forCounterRange(init, n[2], n[3], d[1])
       if (r) m.set(d[1], [r[0], r[1]])
     }
   } })
@@ -694,11 +730,21 @@ export const arithmeticOps = {
     // remainder of the exact integers, exact below 2^63, an i32 below the
     // divisor; a non-negative dividend leaves no sign to keep.
     const magnitude = range ? Math.max(-range[0], range[1]) : i32Magnitude(a)
-    if (!isLit(vb) && divisorRange && divisorRange[0] > 0 && divisorRange[1] <= 0x7fffffff && !vb.unsigned && magnitude != null && magnitude < 2 ** 63 && wholeKey(a)) {
-      const pb = peelI32(vb)
-      if (pb && range && range[0] >= 0) return typed(['i32.wrap_i64', ['i64.rem_s', ['i64.trunc_sat_f64_s', toNumF64(a, va)], ['i64.extend_i32_s', pb]]], 'i32')
+    // (a dividend with an i32 view of its own takes the hardware remainder of words below)
+    if (!isLit(vb) && !vb.unsigned && !va.unsigned && !peelI32(va) && magnitude != null && magnitude < 2 ** 63 && wholeKey(a) && (!divisorRange || divisorRange[1] <= 0x7fffffff)) {
+      const pb = peelI32(vb), positive = divisorRange && divisorRange[0] > 0
+      if (pb && positive && range && range[0] >= 0) return typed(['i32.wrap_i64', ['i64.rem_s', ['i64.trunc_sat_f64_s', toNumF64(a, va)], ['i64.extend_i32_s', pb]]], 'i32')
       // (a negative dividend's exact zero remainder is -0: the dividend's sign, once)
-      if (pb) return withTemp(toNumF64(a, va), t => typed(['f64.copysign', ['f64.convert_i64_s', ['i64.rem_s', ['i64.trunc_sat_f64_s', ['local.get', `$${t}`]], ['i64.extend_i32_s', pb]]], ['local.get', `$${t}`]], 'f64'), 'rem')
+      if (pb && positive) return withTemp(toNumF64(a, va), t => typed(['f64.copysign', ['f64.convert_i64_s', ['i64.rem_s', ['i64.trunc_sat_f64_s', ['local.get', `$${t}`]], ['i64.extend_i32_s', pb]]], ['local.get', `$${t}`]], 'f64'), 'rem')
+      // a divisor word that may be zero: NaN there, as JS answers, the remainder otherwise; both operands run once, in order
+      if (pb) {
+        const ta = `$${temp('rem')}`, tb = `$${tempI32('rem')}`
+        return typed(['block', ['result', 'f64'],
+          ['local.set', ta, toNumF64(a, va)], ['local.set', tb, pb],
+          ['if', ['result', 'f64'], ['i32.eqz', ['local.get', tb]],
+            ['then', ['f64.const', 'nan']],
+            ['else', ['f64.copysign', ['f64.convert_i64_s', ['i64.rem_s', ['i64.trunc_sat_f64_s', ['local.get', ta]], ['i64.extend_i32_s', ['local.get', tb]]]], ['local.get', ta]]]]], 'f64')
+      }
     }
     // Two faithful i32 views with a divisor that may be zero: the hardware
     // remainder behind a test of the divisor (NaN there, as JS answers), the
