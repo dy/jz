@@ -1022,7 +1022,14 @@ forwarding hop, which the loop's hoist then lifts: the ring buffer's loop makes
 no call. `new Array(n).fill(v)` marks its construction filled (the cell has no
 hole of its own), a store an index bound keeps inside the count raises no hole
 and opens no length, and an element read of a cell free of holes skips the
-tomb test (ir/arrays.js arrayValue). A counter the loop bounds by the array's
+tomb test (ir/arrays.js arrayValue). A construction of a literal count has
+that length; one of a count a name holds (`state = new Array(n)`) records the
+name (`cellLenAlias`): a counter the loop bounds by the length the name
+aliases (`for (j < n)`, `n = coefs.length`) stays inside the cell, so a store
+through it opens nothing and a read through it is present where the loop
+leaves the cell's length alone; and the loop right after the construction
+that stores every index (`for (let i = 0; i < n; i++) state[i] = v`, the store
+its only statement) fills the cell before any read, as `fill` does. A counter the loop bounds by the array's
 own length reads present elements where the loop leaves the length alone (no
 call reaches the array, no store to its length: `lenStable`), the binding
 reassigned elsewhere or not, since the alias of its length survived every

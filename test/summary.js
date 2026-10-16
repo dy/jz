@@ -389,6 +389,31 @@ test('summary: a construction filled whole has no hole, a store the guard bounds
   const elem = ctx.summary.at('run').elemKindOf(binding('run', 'h'))
   ok(elem != null && !hasTag(elem, K.ABSENT), 'a filled construction has no hole')
   is(jz(filled).exports.run(3), 18)
+  // sosfilter's state: `new Array(n)` under `n = coefs.length`, every cell
+  // stored by the loop right after it, read under `j < n` by the stage loop:
+  // filled, and inside its count where the loop leaves its length alone
+  const covered = `const stage = (data, params) => {
+      const coefs = params.coefs, n = coefs.length
+      if (!params.state) { params.state = new Array(n); for (let i = 0; i < n; i++) params.state[i] = [0, 0] }
+      const state = params.state
+      let acc = 0
+      for (let i = 0; i < data.length; i++) for (let j = 0; j < n; j++) { const s = state[j]; s[0] = s[0] + coefs[j].b0 * data[i]; acc += s[0] }
+      return acc
+    }
+    const design = (k) => { const sos = []; for (let i = 0; i < k; i++) sos.push({ b0: 1 + i }); return sos }
+    export const run = () => { const d = new Float64Array([1, 2, 3]), p = { coefs: design(2) }; stage(d, p); return stage(d, p) }`
+  summarize(covered)
+  const stage = ctx.summary.at('stage'), stateElem = stage.elemKindOf(binding('stage', 'state'))
+  ok(stateElem != null && !hasTag(stateElem, K.ABSENT), 'the state array the loop after its construction fills has no hole')
+  const stateReads = []
+  const findState = (n) => { if (!Array.isArray(n)) return; if (n[0] === '[]' && typeof n[1] === 'string' && n[1].startsWith('state' + MARK) && typeof n[2] === 'string' && n[2].startsWith('j' + MARK)) stateReads.push(n); n.forEach(findState) }
+  findState(ctx.funcs.list.find(f => f.name === 'stage').body)
+  ok(stateReads.length > 0 && stateReads.every(n => !hasTag(stage.kindOfExpr(n), K.ABSENT)), 'a state pair read inside the count is present')
+  is(jz(covered).exports.run(), (() => {
+    const stage = (data, params) => { const coefs = params.coefs, n = coefs.length; if (!params.state) { params.state = new Array(n); for (let i = 0; i < n; i++) params.state[i] = [0, 0] }; const state = params.state; let acc = 0; for (let i = 0; i < data.length; i++) for (let j = 0; j < n; j++) { const s = state[j]; s[0] = s[0] + coefs[j].b0 * data[i]; acc += s[0] }; return acc }
+    const design = (k) => { const sos = []; for (let i = 0; i < k; i++) sos.push({ b0: 1 + i }); return sos }
+    const d = new Float64Array([1, 2, 3]), p = { coefs: design(2) }; stage(d, p); return stage(d, p)
+  })(), 'computes as JS does')
 })
 
 test('summary: a declaration copying a conditional\'s candidates mixes nothing when none is an array', () => {

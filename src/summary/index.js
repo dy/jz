@@ -960,6 +960,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (c < 0) return
     // (an index the guard keeps below this array's length, index.js keepHull: inside the count, no hole, no growth)
     if (recvName !== null && typeof idx === 'string' && indexBounds.get(idx) === recvName) return
+    // (a counter the loop bounds by the length the cell's count aliases: `new Array(n)` under `i < n`, `n = coefs.length`)
+    if (typeof idx === 'string' && countBounds(c, idx)) return
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
@@ -2386,10 +2388,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // any read sees them, so the cell has no hole of its own (the fill marks the
   // cell; the round it marks it in clears what the construction raised)
   const filledCells = new Set()
+  // a cell constructed with a count a name holds (`new Array(n)`): a counter under
+  // `i < n` stays inside it, and a loop over it that stores every index fills it
+  const cellLenAlias = new Map()   // cell id → the name of its count
   const arrayCtor = (node, base, n) => {
     const arr = arrayOf(node, K.NONE)
     if (n === 1) {
       const k = ks[base]
+      if (typeof node?.[2] === 'string' && celled(arr)) cellLenAlias.set(cell(paramOf(arr)), node[2])
       if (hasTag(k, K.NUMBER) && !(celled(arr) && filledCells.has(cell(paramOf(arr))))) raiseElem(arr, ABSENT)
       if ((k & TAGS & ~bitOf(K.NUMBER)) !== 0 || kspread[base]) raiseElem(arr, kspread[base] ? k : k & ~bitOf(K.NUMBER))
     } else for (let i = 0; i < n; i++) raiseElem(arr, ks[base + i])
@@ -3189,6 +3195,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         // the length fixed or left alone by the loop (lenStable: no call reaches the array, no store to its length).
         // (a binding reassigned elsewhere still bounds the loop that reads it: the alias of its length survived every assignment before the loop)
         if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx) === keyOf(n[1]) && (fixedLen(recv) >= 0 && stable(n[1], current ?? MODULE) || lenStable.has(idx))) { presentReads.add(n); return elemOf(recv) }
+        // (a cell constructed with the count the loop's bound aliases, `state = new Array(n)` read under `i < n`: inside it, where the loop leaves its length alone)
+        if (typeof idx === 'string' && typeof n[1] === 'string' && countBounds(cell(paramOf(recv)), idx) && loopBodies.has(idx) && !lengthMayChange(loopBodies.get(idx), n[1])) { presentReads.add(n); return elemOf(recv) }
         presentReads.delete(n)
         return orAbsent(entryOf(recv, ik))
       }
@@ -3945,7 +3953,36 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
   }
   // The counters of the loops being walked that their array's own length bounds (`i < x.length`) → the array's key.
+  // `target = new Array(count)` followed at once by `for (let i = 0; i < count;
+  // i++) target[i] = v`, the store the loop's only statement: every cell is
+  // written before any read, so the cell is filled (as `fill` fills it).
+  const coveringLoop = (prev, loop) => {
+    if (!Array.isArray(prev) || !Array.isArray(loop) || loop.length !== 5) return
+    const decl = prev[0] === '=' ? prev : (prev[0] === 'let' || prev[0] === 'const') && prev.length === 2 && Array.isArray(prev[1]) && prev[1][0] === '=' ? prev[1] : null
+    if (!decl) return
+    const target = decl[1], made = decl[2]
+    if (!Array.isArray(made) || made[0] !== '()' || (made[1] !== 'new.Array' && made[1] !== 'Array') || made.length !== 3 || typeof made[2] !== 'string') return
+    const [, init, test, step, body] = loop
+    if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return
+    const i = init[1][1], from = init[1][2]
+    if (!(Array.isArray(from) && from[0] == null && from[1] === 0) || !Array.isArray(test) || test[0] !== '<' || test[1] !== i || test[2] !== made[2]) return
+    if (!Array.isArray(step) || step[0] !== '++' || step[1] !== i) return
+    const only = Array.isArray(body) && body[0] === '{}' ? (Array.isArray(body[1]) && body[1][0] === ';' && body[1].length === 2 ? body[1][1] : body[1]) : body
+    if (!Array.isArray(only) || only[0] !== '=' || !Array.isArray(only[1]) || only[1][0] !== '[]' || only[1][2] !== i || JSON.stringify(only[1][1]) !== JSON.stringify(target)) return
+    const k = typeof target === 'string' ? readKey(keyOf(target)) : selectedExpr(target, 7)
+    if (k == null || !celled(k)) return
+    const c = cell(paramOf(k))
+    if (!filledCells.has(c)) { filledCells.add(c); elems[c] = elems[c] & ~bitOf(K.ABSENT) }
+  }
   const lenBounds = new Map()
+  const loopBodies = new Map()      // counter → the body of the loop it counts
+  // whether the counter `idx` (bounded by an array's length, lenBounds) stays inside cell `c`'s count
+  const countBounds = (c, idx) => {
+    const count = cellLenAlias.get(c)
+    if (count === undefined || unknown.has(c) || !lenBounds.has(idx)) return false
+    const by = lengthAliasOf(count)
+    return by !== null && lenBounds.get(idx) === keyOf(by)
+  }
   // the counters whose loop leaves the bounding array's length alone: no call
   // the array reaches (a method of its own, an argument), no store to its length
   const lenStable = new Set()
@@ -3992,6 +4029,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       for (let i = 1; i < n.length; i++) {
         noteDefinite(n, i); stmt(n[i])
         const st = n[i]
+        if (i > 1 && Array.isArray(st) && st[0] === 'for') coveringLoop(n[i - 1], st)
         if (exits(st)) break
         if (Array.isArray(st) && st[0] === 'if' && st[3] == null && exits(st[2])) proves(st[1], false)
       }
@@ -4004,10 +4042,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const mark = rtop, counted = countedLoop(n), bounded = counted ? null : lengthBoundedLoop(n)
       if (n[2] != null) proves(n[2], true)
       if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); countedDepth++ }
-      if (bounded) { lenBounds.set(bounded[0], keyOf(bounded[1])); spans.set(bounded[0], [bounded[2], LENGTH_BOUND]); if (!lengthMayChange(n[4], bounded[1])) lenStable.add(bounded[0]) }
+      if (bounded) { lenBounds.set(bounded[0], keyOf(bounded[1])); spans.set(bounded[0], [bounded[2], LENGTH_BOUND]); loopBodies.set(bounded[0], n[4]); if (!lengthMayChange(n[4], bounded[1])) lenStable.add(bounded[0]) }
       stmt(n[4])
       if (counted) { spans.delete(counted[0]); trips.pop(); countedDepth-- }
-      if (bounded) { lenBounds.delete(bounded[0]); spans.delete(bounded[0]); lenStable.delete(bounded[0]) }
+      if (bounded) { lenBounds.delete(bounded[0]); spans.delete(bounded[0]); loopBodies.delete(bounded[0]); lenStable.delete(bounded[0]) }
       unwind(mark); selectedExpr(n[3], 0); branch--; flowPath--
       loopExit(loop)
       return

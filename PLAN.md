@@ -75,10 +75,11 @@ the `__to_int32` call its integer store makes per element. sosfilter, movavg
 against C: movavg's loop now makes no call (the history saved once before the
 loop, its hop hoisted, the cursor's store in place) and keeps the hole test
 (the loop as written may have grown the shared history in an earlier call)
-and the NaN canonicalization of what it stores; sosfilter's stage keeps the
-state pair's hole and nullish tests (`new Array(n)` filled by a loop the
-summary does not yet prove covers it), the durable test per pair (a different
-array each stage) and the canonicalization.
+and the NaN canonicalization of what it stores; sosfilter's stage lost the
+state pair's hole and nullish tests too (`new Array(n)` filled by the loop
+right after it is covered, and `j < n` stays inside the count): what it keeps
+is the durable test per pair (a different array each stage) and the
+canonicalization.
 
 What remains, by profile. Jessie (1.09×): the Pratt loop's layers
 (`parse.step`, `parse.asi`, three `parse.space` wrappers) each pay the frame
