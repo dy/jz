@@ -420,3 +420,18 @@ test('async: class async and async generator methods, instance and static', asyn
     }`).exports
   is(await main(), 24)
 })
+
+// `new Promise()` without an executor throws a TypeError, at the call and through an await.
+test('async: a promise without an executor is a TypeError', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `let sync = 0, awaited = 0
+    try { new Promise() } catch (e) { sync = e instanceof TypeError ? 1 : 2 }
+    async function foo() { await new Promise(5) }
+    export let start = () => foo().catch((e) => { awaited = e instanceof TypeError ? 1 : 2 })
+    export let check = () => sync * 10 + awaited`
+  for (const optimize of [0, 2]) {
+    const m = jz(src, { optimize }).exports
+    await m.start()
+    is(m.check(), 11, `O${optimize}: both the call and the await reject with a TypeError`)
+  }
+})

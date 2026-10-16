@@ -100,7 +100,7 @@ export let __async_run = (it) => {
   return p
 }
 export let __p_exec = (fn) => {
-  if (fn == null || typeof fn !== 'function') throw 'Promise executor is not callable'
+  if (fn == null || typeof fn !== 'function') throw new TypeError('Promise executor is not callable')
   let p = __p_new()
   let done = 0
   try {
