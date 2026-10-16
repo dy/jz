@@ -125,3 +125,32 @@ export function funcWat(text, name) {
   }
   return text.slice(m.index)
 }
+
+/** The saturating lane truncations of a WAT text that no word test guards. A
+ *  saturating `i32x4.trunc_sat_*` is the exact integer conversion only where every
+ *  lane lies strictly inside ±2³¹: the vectorizer emits it in the `then` arm of an
+ *  `if` testing `all_true(abs(x) < bound)` (vectorize/lift.js narrowStore), with
+ *  the lane-by-lane conversion in the `else`. Any other occurrence saturates a
+ *  value the scalar program wraps. */
+export function unguardedSaturations(text) {
+  const tree = parseWat(text)
+  const SAT = /^i32x4\.trunc_sat_f(64x2|32x4)_s/
+  const has = (n, test) => Array.isArray(n) && (test(n) || n.some(c => has(c, test)))
+  const wordTest = (cond) => has(cond, n => n[0] === 'i32x4.all_true' && has(n, m => /^f(64x2|32x4)\.lt$/.test(m[0]) && has(m, a => /^f(64x2|32x4)\.abs$/.test(a[0]))))
+  let count = 0
+  const walk = (n, guarded) => {
+    if (!Array.isArray(n)) return
+    if (typeof n[0] === 'string' && SAT.test(n[0]) && !guarded) count++
+    if (n[0] === 'if') {
+      let i = 1
+      while (typeof n[i] === 'string' || (Array.isArray(n[i]) && (n[i][0] === 'result' || n[i][0] === 'param'))) i++
+      const cond = n[i], inWord = wordTest(cond)
+      walk(cond, guarded)
+      for (let j = i + 1; j < n.length; j++) walk(n[j], guarded || (inWord && Array.isArray(n[j]) && n[j][0] === 'then'))
+      return
+    }
+    for (const c of n) walk(c, guarded)
+  }
+  walk(tree, false)
+  return count
+}

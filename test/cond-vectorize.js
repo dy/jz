@@ -96,3 +96,111 @@ test('cond-vectorize: an integer comparison selects float64 lanes', () => {
     }
   }
 })
+
+// The speed build's WAT of function `name` (the kernels inline into `go`: WASI reserves `run` for its void command entry), and the module run
+// at every level beside the host.
+const funcWatOf = (src, name, extra = {}) => {
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', ...extra } })
+  const i = w.indexOf(`(func $${name}`)
+  return i < 0 ? '' : w.slice(i, w.indexOf('\n  (func ', i + 8))
+}
+const LEVELS = [0, { level: 'speed', noSimd: true }, { level: 'speed' }]
+const agree = (label, src, argSets, extra = {}) => {
+  const host = new Function(src.replace('export let go =', 'return'))()
+  for (const o of LEVELS) {
+    const run = jz(src, { optimize: o && { ...o, ...extra } }).exports.go
+    for (const args of argSets) is(run(...args), host(...args), `${label}, ${JSON.stringify(o)}: ${JSON.stringify(args)}`)
+  }
+}
+
+// A local one path of a conditional writes and another leaves alone keeps the
+// previous iteration's value there: it is carried, not lane data, and the loop
+// stays scalar. Written on both paths it is lane data again.
+test('cond-vectorize: a conditional write some path skips is loop-carried', () => {
+  // (a constant count: the loop a run-time count bounds is not vectorized to begin with)
+  const carried = (T, mix, n) => `export let go = () => {
+    const a = new ${T}(${n}), o = new ${T}(${n})
+    for (let i = 0; i < ${n}; i++) a[i] = ((i * 37) % 11) - 5
+    let t = 1
+    for (let i = 0; i < ${n}; i++) { const x = a[i]; if (x > 0) t = x; o[i] = ${mix} }
+    let s = 0; for (let i = 0; i < ${n}; i++) s = (s * 3 + o[i]) % 1000003; return s }`
+  for (const [T, mix] of [['Float64Array', 't'], ['Int32Array', 't + x'], ['Float32Array', 't * 2']])
+    for (const n of [7, 64, 67]) agree(`${T} carried, ${n} elements`, carried(T, mix, n), [[]])
+  const both = `const f = (a, o, n) => { for (let i = 0; i < n; i++) { const x = a[i]; let t = 0; if (x > 0) t = x; else t = -x; o[i] = t } }
+  export let go = (n) => {
+    const a = new Float64Array(n), o = new Float64Array(n)
+    for (let i = 0; i < n; i++) a[i] = ((i * 37) % 11) - 5.5
+    f(a, o, n)
+    let s = 0; for (let i = 0; i < n; i++) s = s * 3 + o[i]; return s }`
+  ok(/v128\.bitselect/.test(funcWatOf(both, 'go')), 'written on both paths: f64x2 lanes')
+  agree('both paths', both, [[0], [3], [64], [65]])
+})
+
+// Several assignments under a mask (a rounding step behind a run-time flag, which
+// lowers to three statements, and else arms that assign more than one local): each
+// arm runs on every lane and every assignment keeps the old value where the mask is off.
+test('cond-vectorize: several assignments per arm run under the arm\'s mask', () => {
+  // (unswitching off: it copies the loop per answer of a flag it can name, and the
+  // lift is what remains where it does not, a flag of record fields in pcmconvert)
+  const flagged = `const conv = (src, dst, n, scale, lo, hi) => {
+    const round = hi - lo > 2
+    for (let i = 0; i < n; i++) {
+      let v = src[i] * scale
+      if (round) v = Math.round(v)
+      dst[i] = v < lo ? lo : v > hi ? hi : v
+    }
+  }
+  export let go = (n, lo, hi) => {
+    const src = new Float32Array(n), dst = new Float64Array(n)
+    for (let i = 0; i < n; i++) src[i] = Math.fround(((i * 37) % 23) / 9 - 1.2 + (i % 4) * 0.125)
+    conv(src, dst, n, 100.5, lo, hi)
+    let s = 0; for (let i = 0; i < n; i++) s = s * 1.0001 + dst[i]; return s }`
+  const noUnswitch = { unswitchLoops: false }
+  const f = funcWatOf(flagged, 'go', noUnswitch)
+  ok(/f64x2\.nearest/.test(f) && /v128\.bitselect/.test(f), 'the flagged rounding runs in f64x2 lanes')
+  agree('flagged rounding', flagged, [[0, -100, 100], [5, -100, 100], [64, -50, 70], [67, -1, 1], [33, -1e9, 1e9]], noUnswitch)
+
+  const ladder = `const f = (a, o, n) => {
+    for (let i = 0; i < n; i++) {
+      let v = a[i], w = v * 2
+      if (v > 0.5) { w = v - 1; v = w * w }
+      else if (v < -0.5) { w = v + 1; v = -w }
+      else { v = v * 3; w = w + v }
+      o[i] = v + w
+    }
+  }
+  export let go = (n) => {
+    const a = new Float64Array(n), o = new Float64Array(n)
+    for (let i = 0; i < n; i++) a[i] = ((i * 29) % 17) / 5.5 - 1.5
+    f(a, o, n)
+    let s = 0; for (let i = 0; i < n; i++) s = s * 1.0001 + o[i]; return s }`
+  ok(/v128\.bitselect/.test(funcWatOf(ladder, 'go')), 'the multi-assignment else-if ladder runs in f64x2 lanes')
+  agree('assignment ladder', ladder, [[0], [1], [2], [9], [64], [67]])
+})
+
+// An integer element stored from float arithmetic whose range the program decides at
+// run time (clamp bounds passed in): the vector truncation where every lane lies inside
+// ±2³¹, the exact conversion lane by lane otherwise (NaN, the infinities, wrapping
+// magnitudes), each agreeing with the host.
+test('cond-vectorize: an exact integer store truncates in lanes inside a word', () => {
+  const VALUES = [0, -0, 0.5, -0.5, 1.75, -1.75, 32767.9, -32768.9, 65535.5, 2147483647.5, -2147483648.5,
+    2147483648, -2147483649, 4294967296.25, -1e12, 1e15, 2 ** 53, NaN, Infinity, -Infinity, 123.456, -98765.4321]
+  const src = (T) => `const enc = (x, out, n, lo, hi) => {
+    for (let i = 0; i < n; i++) { const v = x[i] * 1.5; out[i] = v < lo ? lo : v > hi ? hi : v }
+  }
+  export let go = (n, lo, hi, seed) => {
+    const x = new Float64Array(n), out = new ${T}(n)
+    const vals = [${VALUES.map(v => Object.is(v, -0) ? '-0' : String(v)).join(', ')}]
+    for (let i = 0; i < n; i++) x[i] = vals[(i * 7 + seed) % vals.length]
+    enc(x, out, n, lo, hi)
+    let h = 0; for (let i = 0; i < n; i++) h = (h * 31 + out[i]) % 1000000007; return h }`
+  for (const T of ['Int16Array', 'Int32Array', 'Uint8Array']) {
+    const s = src(T)
+    const f = funcWatOf(s, 'go')
+    ok(/i32x4\.all_true/.test(f) && /i32x4\.trunc_sat_f64x2_s_zero/.test(f), `${T}: the store truncates in lanes behind the word test`)
+    const args = []
+    for (const [lo, hi] of [[-40000, 40000], [-1e300, 1e300], [-Infinity, Infinity], [-3, 3]])
+      for (const [n, seed] of [[0, 0], [1, 3], [2, 17], [44, 0], [45, 5]]) args.push([n, lo, hi, seed])
+    agree(T, s, args)
+  }
+})

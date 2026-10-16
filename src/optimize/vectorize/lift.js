@@ -1,5 +1,5 @@
 import { registerResetHook } from '../../ctx.js'
-import { cloneNode, isLeaf, nodeEqual } from '../../ast.js'
+import { cloneNode, isLeaf, nodeEqual, walkAst } from '../../ast.js'
 import { guardedInt32Operand } from '../../ir/numeric.js'
 import { hasBranchOrReturn, hasSideEffect, isI32Const, matchMirrorAddr } from './addr-model.js'
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
@@ -94,6 +94,18 @@ export const liftFail = (ctx, reason) => {
   return null
 }
 
+// An arm's statements, through a single wrapping block.
+function armBody(arm) {
+  let body = arm.slice(1)
+  if (body.length === 1 && isArr(body[0]) && body[0][0] === 'block') {
+    const b = body[0]; let i = 1
+    if (typeof b[i] === 'string' && b[i].startsWith('$')) i++
+    if (isArr(b[i]) && b[i][0] === 'result') i++
+    body = b.slice(i)
+  }
+  return body
+}
+
 /** Lift a statement. Returns lifted stmt, or null to skip, or ['__seq__', ...] for multiple. */
 // Conditional lane-local assignment in a stencil/map body — the sibling of the
 // if-STORE path below, but the destination is a 'lane' LOCAL, not memory:
@@ -107,16 +119,6 @@ export const liftFail = (ctx, reason) => {
 // not a lane-assignment if (so the if-STORE path can try). Sets ctx.fail only once
 // committed (a lane-if shape that cannot be lifted).
 function tryLiftLaneIf(stmt, ctx) {
-  const armBody = (arm) => {
-    let body = arm.slice(1)
-    if (body.length === 1 && isArr(body[0]) && body[0][0] === 'block') {
-      const b = body[0]; let i = 1
-      if (typeof b[i] === 'string' && b[i].startsWith('$')) i++
-      if (isArr(b[i]) && b[i][0] === 'result') i++
-      body = b.slice(i)
-    }
-    return body
-  }
   // The lane being assigned: the innermost then-arm's single local.set target.
   const laneOf = (node) => {
     if (!isArr(node)) return null
@@ -129,6 +131,24 @@ function tryLiftLaneIf(stmt, ctx) {
   }
   const lane = laneOf(stmt)
   if (!lane) return null
+  // The chain this lift takes: single-statement arms assigning `lane`, each test a
+  // lane comparison. Any other conditional is the predicated lift's (below).
+  const fits = (node) => {
+    if (isArr(node) && node[0] === 'local.set' && node[1] === lane) return true
+    if (!isArr(node) || node[0] !== 'if' || !isArr(node[2]) || node[2][0] !== 'then') return false
+    const thenBody = armBody(node[2])
+    if (thenBody.length !== 1 || !fits(thenBody[0])) return false
+    let cond = node[1]
+    if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
+    if (!(isArr(cond) && cond.length === 3 && LANE_COMPARE[ctx.laneType]?.[cond[0]])) return false
+    if (node.length > 3) {
+      if (!isArr(node[3]) || node[3][0] !== 'else') return false
+      const elseBody = armBody(node[3])
+      if (elseBody.length !== 1 || !fits(elseBody[0])) return false
+    }
+    return true
+  }
+  if (!fits(stmt)) return null
   // Recurse the if-chain into nested bitselects; each `local.set L = V` is a leaf value.
   const buildVal = (node) => {
     if (isArr(node) && node[0] === 'local.set' && node[1] === lane) return liftExprV(node[2], ctx)
@@ -157,6 +177,103 @@ function tryLiftLaneIf(stmt, ctx) {
   const val = buildVal(stmt)
   if (ctx.fail || val == null) return null
   return ['local.set', getOrAllocLanedLocal(lane, ctx.newLanedLocals), val]
+}
+
+// A conditional over lane locals alone, `if (C) { L = A; M = f(L); … } [else { … }]`
+// with nested conditionals of the same kind (a rounding step behind a flag, a clamp
+// ladder, a branch of several assignments): every arm runs on every lane, and each
+// assignment keeps its old value in the lanes the arm's mask leaves out,
+//   L = bitselect(A, L, mask)
+// so a lane sees exactly the assignments its own path makes. The masks are taken
+// before the arm that may change what they read (then = outer & C, else = outer &
+// ~C). Lane ops are trap-free, so the arms run speculatively. A lane local
+// read after the conditional is written before it or on both paths: the lane
+// classification declines a read some path leaves unwritten (laneAccess).
+// Returns null, without failing, for a conditional with any other statement
+// (a store is the if-store lift's).
+// (a value that writes a local, a global or memory would write it on every lane)
+const writesState = (n) => {
+  let found = false
+  walkAst(n, { enter: x => {
+    if (found) return false
+    const op = x[0]
+    if (op === 'global.set' || op === 'local.set' || op === 'local.tee' || (typeof op === 'string' && (op.includes('.store') || op.startsWith('memory.')))) { found = true; return false }
+  } })
+  return found
+}
+function predicable(n, ctx) {
+  if (!isArr(n) || n[0] !== 'if' || !isArr(n[2]) || n[2][0] !== 'then') return false
+  if (n.length > 4 || (n.length === 4 && !(isArr(n[3]) && n[3][0] === 'else'))) return false
+  const assigns = (s) => predicable(s, ctx) || (isArr(s) && s[0] === 'local.set' && s.length === 3 && typeof s[1] === 'string'
+    && s[1] !== ctx.incVar && s[1] !== ctx.rampVar && (ctx.localKind.get(s[1]) === 'lane' || ctx.localKind.get(s[1]) === undefined)
+    && !writesState(s[2]))
+  const thenBody = armBody(n[2])
+  return thenBody.length > 0 && thenBody.every(assigns) && (n.length === 3 || armBody(n[3]).every(assigns))
+}
+
+// A loop-invariant scalar condition: constants, globals and invariant locals under
+// pure operators, no memory, no lane value.
+function invariantScalar(n, ctx) {
+  let ok = true
+  walkAst(n, { enter: x => {
+    if (!ok) return false
+    const op = x[0]
+    if (op === 'local.get') { if (ctx.localKind.get(x[1]) !== 'invariant') ok = false; return }
+    if (op === 'call' || op === 'call_indirect' || op === 'local.set' || op === 'local.tee' || op === 'global.set' || LOAD_OPS[op] || STORE_OPS[op] || op === 'if' || op === 'block') ok = false
+  } })
+  return ok
+}
+
+// The all-ones/all-zeros lane mask of an `if` condition, or null (failed).
+function condMask(cond, ctx) {
+  if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
+  const cmpOp = isArr(cond) && ctx.laneType === 'f32' && typeof cond[0] === 'string' && cond[0].startsWith('f64.') ? 'f32.' + cond[0].slice(4) : (isArr(cond) ? cond[0] : null)
+  const cmp = cmpOp && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cmpOp] : null
+  if (cmp) {
+    const a = liftExprV(cond[1], ctx); if (ctx.fail) return null
+    const b = liftExprV(cond[2], ctx); if (ctx.fail) return null
+    return [cmp, a, b]
+  }
+  const intMask = liftIntMask(cond, ctx)
+  if (intMask) return intMask
+  // the same truth in every lane: 0 - (C != 0) is all ones or none in each word
+  if (invariantScalar(cond, ctx)) return ['i32x4.splat', ['i32.sub', ['i32.const', 0], ['i32.ne', cond, ['i32.const', 0]]]]
+  if (ctx.laneType === 'i32') {
+    const v = liftExprV(cond, ctx); if (ctx.fail) return null
+    return ['i32x4.ne', v, ['i32x4.splat', ['i32.const', 0]]]
+  }
+  return liftFail(ctx, `predicated if: ${isArr(cond) ? cond[0] : 'condition'} is not a lane mask`)
+}
+
+function liftPredicated(stmt, ctx, outer = null) {
+  if (!predicable(stmt, ctx)) return null
+  const m = condMask(stmt[1], ctx); if (ctx.fail) return null
+  const id = ctx.freshIdRef.next++
+  const thenMask = `$__pm${id}`
+  ctx.extraLocals.push(['local', thenMask, 'v128'])
+  const out = ['__seq__', ['local.set', thenMask, outer ? ['v128.and', ['local.get', outer], m] : m]]
+  let elseMask = null
+  if (stmt.length === 4) {
+    elseMask = `$__pn${id}`
+    ctx.extraLocals.push(['local', elseMask, 'v128'])
+    out.push(['local.set', elseMask, outer ? ['v128.andnot', ['local.get', outer], ['local.get', thenMask]] : ['v128.not', ['local.get', thenMask]]])
+  }
+  const arm = (body, mask) => {
+    for (const s of body) {
+      if (s[0] === 'if') {
+        const r = liftPredicated(s, ctx, mask); if (ctx.fail || !r) return liftFail(ctx, 'predicated if: nested arm')
+        out.push(...r.slice(1))
+        continue
+      }
+      const v = liftExprV(s[2], ctx); if (ctx.fail) return null
+      const lane = getOrAllocLanedLocal(s[1], ctx.newLanedLocals)
+      out.push(['local.set', lane, ['v128.bitselect', v, ['local.get', lane], ['local.get', mask]]])
+    }
+    return true
+  }
+  if (!arm(armBody(stmt[2]), thenMask)) return null
+  if (elseMask && !arm(armBody(stmt[3]), elseMask)) return null
+  return out
 }
 
 export function liftStmt(stmt, ctx) {
@@ -291,14 +408,12 @@ export function liftStmt(stmt, ctx) {
     const laneLifted = tryLiftLaneIf(stmt, ctx)
     if (ctx.fail) return null
     if (laneLifted) return laneLifted
+    // Then: assignments under a mask, several per arm, nested, any lane-mask condition.
+    const predicated = liftPredicated(stmt, ctx)
+    if (ctx.fail) return null
+    if (predicated) return predicated
     const armOf = (arm) => {
-      let body = arm.slice(1)
-      if (body.length === 1 && isArr(body[0]) && body[0][0] === 'block') {   // unwrap a single block arm
-        const b = body[0]; let i = 1
-        if (typeof b[i] === 'string' && b[i].startsWith('$')) i++
-        if (isArr(b[i]) && b[i][0] === 'result') i++
-        body = b.slice(i)
-      }
+      const body = armBody(arm)
       const last = body[body.length - 1]
       if (!isArr(last) || !STORE_OPS[last[0]] || last.length !== 3) return null
       return { inter: body.slice(0, -1), addr: last[1], val: last[2], store: last[0] }
@@ -858,8 +973,16 @@ function narrowStore(addr, val, laneType, sty, ctx, conversion) {
         return conversion === 'select'
           ? ['select', ['i32.const', 0], word, ['f64.eq', x, ['f64.const', 'inf']]] : word
       }
-      pre = ['i32x4.splat', convert(0)]
-      for (let i = 1; i < lanes; i++) pre = ['i32x4.replace_lane', i, pre, convert(i)]
+      let exact = ['i32x4.splat', convert(0)]
+      for (let i = 1; i < lanes; i++) exact = ['i32x4.replace_lane', i, exact, convert(i)]
+      // Every lane strictly inside ±2³¹: truncation lands in a word, so the
+      // saturating lane truncation is each of the exact forms (ToInt32, the
+      // Infinity-guarded word, the word of the i64 truncation). NaN and the
+      // infinities fail the test and take the lane-by-lane conversion.
+      const shape = `${laneType}x${lanes}`
+      const inWord = ['i32x4.all_true', [`${shape}.lt`, [`${shape}.abs`, ['local.get', vt]], [`${shape}.splat`, [`${laneType}.const`, 2147483648]]]]
+      const trunc = [`i32x4.trunc_sat_${shape}_s${laneType === 'f64' ? '_zero' : ''}`, ['local.get', vt]]
+      pre = ['if', ['result', 'v128'], inWord, ['then', trunc], ['else', exact]]
     }
     lane8 = sty === 'i32' ? g : sh(sty === 'i16' ? PACK_I32_TO_I16 : PACK_I32_TO_I8)
     const bytes = lanes * (sty === 'i32' ? 4 : sty === 'i16' ? 2 : 1)

@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Vectorize a conditional of several assignments per arm, nested or behind a loop-invariant flag, each assignment kept where the arm's mask is off; store an integer element from float lanes with one vector truncation where every lane lies inside a word, the exact conversion lane by lane otherwise; a local one path of a conditional leaves unwritten is carried, not lane data (it miscompiled under SIMD).
 - Add `jz/strict`, with a separate browser bundle and TypeScript definitions.
 - Type a parameter's earlier reads apart from its reassignment in a sequence body, and `Object.create(null)` as an empty literal; subscript's parser dispatch reads its operator table by slot.
 - Follow a conditional's and a loop's exit in the summary: a defaulted bag property (`if (ptr == null) ptr = 0`, `if (typeof mem === 'number') mem = new Array(mem)`) keeps its number or array through the per-sample loop, a field that held a number before the array keeps the array's cell, and the loop over such a history runs under an `Array.isArray` guard as a typed loop. Read a proven array's element without the tag test. Add the library-idiom bench cases `sosfilter`, `movavg`, `upfirdn`, `pcmconvert` with native C references.

@@ -6,7 +6,7 @@ import { is, ok } from 'tst/assert.js'
 import encodeWat from 'watr/compile'
 import { fusedRewrite } from '../src/optimize/peephole.js'
 import { levels } from './_matrix.js'
-import { agree, funcWat, wat } from './util.js'
+import { agree, funcWat, wat, unguardedSaturations } from './util.js'
 
 const body = src => { const text = wat(src, { optimize: 3 }); return funcWat(text, 'f') || funcWat(text, 'f$exp') }
 const check = (src, args, name) => {
@@ -117,7 +117,7 @@ test('quantize: an unclamped or widely clamped lane keeps the wrapping conversio
   for (let i = 0; i < n; i++) o[i] = (s[i] * 1e6) | 0
   ${digest('o', 200)}
 }`
-  ok(!/i32x4\.trunc_sat_f64x2_s_zero/.test(body(unclamped)), 'no saturating lane conversion without a bound')
+  is(unguardedSaturations(body(unclamped)), 0, 'no saturating lane conversion without a bound, but behind the word test')
   for (const n of [0, 1, 19, 200]) check(unclamped, [n], `unclamped(${n})`)
   const wide = `export let f = (n) => {
   const s = new Float64Array(200), o = new Int32Array(200)
@@ -130,7 +130,7 @@ test('quantize: an unclamped or widely clamped lane keeps the wrapping conversio
   }
   ${digest('o', 200)}
 }`
-  ok(!/i32x4\.trunc_sat_f64x2_s_zero/.test(body(wide)), 'a clamp past i32 proves nothing')
+  is(unguardedSaturations(body(wide)), 0, 'a clamp past i32 proves nothing: saturation only behind the word test')
   for (const n of [0, 1, 19, 200]) check(wide, [n], `wide(${n})`)
 })
 

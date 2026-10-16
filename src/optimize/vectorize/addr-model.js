@@ -83,7 +83,34 @@ export function collectWrites(node, out) {
 export function laneAccess(body, name, outsideReads) {
   let kind = null
   for (const s of body) { const k = firstAccess(s, name); if (k) { kind = k; break } }
+  // A write on one arm of a conditional leaves the previous iteration's value on
+  // the other: a read the write does not reach on every path is loop-carried.
+  if (kind === 'write' && readsBeforeWrite(body, name)) kind = 'read'
   return kind === 'write' && outsideReads?.has(name) ? 'liveout' : kind
+}
+
+/** Whether some path through one iteration of `body` reads `name` before
+ *  writing it. Operands evaluate in order, a set's value before its write; past
+ *  an `if` the name is written when both arms write it. */
+export function readsBeforeWrite(body, name) {
+  let carried = false
+  const seq = (list, from, def) => { for (let i = from; i < list.length && !carried; i++) def = walk(list[i], def); return def }
+  const walk = (n, def) => {
+    if (carried || !isArr(n)) return def
+    const op = n[0]
+    if (op === 'local.get') { if (n[1] === name && !def) carried = true; return def }
+    if (op === 'local.set' || op === 'local.tee') return seq(n, 2, def) || n[1] === name
+    if (op === 'if') {
+      let i = 1
+      while (typeof n[i] === 'string' || (isArr(n[i]) && (n[i][0] === 'result' || n[i][0] === 'param'))) i++
+      def = walk(n[i], def)
+      const arm = (a) => isArr(a) && (a[0] === 'then' || a[0] === 'else') ? seq(a, 1, def) : def
+      return arm(n[i + 1]) && arm(n[i + 2])
+    }
+    return seq(n, 1, def)
+  }
+  seq(body, 0, false)
+  return carried
 }
 
 function firstAccess(node, name) {

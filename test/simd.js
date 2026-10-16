@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { belowOpt, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
-import { run, wat, oracle, funcWat } from './util.js'
+import { run, wat, oracle, funcWat, unguardedSaturations } from './util.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
@@ -792,7 +792,7 @@ test('SIMD narrowing - f64→i32 retains the scalar word conversion', () => {
   for (const opt of [SPEED, SIMD_OPT]) {
     const w = wat(src, opt)
     ok(hasV128(w), 'the arithmetic remains vectorized')
-    ok(!/i32x4\.trunc_sat_f64x2_s_zero/.test(w), 'unbounded word conversion does not become saturation')
+    is(unguardedSaturations(w), 0, 'unbounded word conversion saturates only where every lane lies inside a word')
   }
 })
 
