@@ -64,8 +64,14 @@ counter): the hot versions make no call. Paired on the same loaded machine
 (4.7×, 1.67×, 3.1× the day before); in the same run movavg 3.4× C, 0.98×
 V8; sosfilter 2.5× C, 0.83× V8; pcmconvert 8.1× C, 0.78× V8. Every one of
 the four is under V8 now; none is under clang's wasm yet (1.8× to 2.4×).
-Open: pcmconvert, SIMD lowering of float-to-int16
-conversion and strided deinterleave (C vectorizes both). sosfilter, movavg
+pcmconvert's planar index `(i % seg) * ch + ~~(i / seg)` takes the same
+i64 remainder (the divisor an integral f64 of no word): 8.9 ms against
+Node's 12.8 ms on the loaded machine, where it was 11.0. Open: pcmconvert's
+conversion loop against clang's wasm (2.4×): SIMD lowering of float-to-int16
+conversion and strided deinterleave (C vectorizes both; the lane vectorizer
+declines the loop for its per-iteration `let v` reassigned by the rounding,
+which it reads as loop-carried, and for the clamp's conditional stores), and
+the `__to_int32` call its integer store makes per element. sosfilter, movavg
 against C: the nullish tests of a proven element, the durable snapshot test
 per store, the NaN canonicalization of every stored result.
 

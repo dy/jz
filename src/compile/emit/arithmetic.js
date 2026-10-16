@@ -5,7 +5,7 @@
  */
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, tempI32, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
+import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
@@ -15,8 +15,37 @@ import { exprType, inBoundsArrIdx, wholeKey } from '../../type.js'
 import { scanBindingUses, BINDING_USE_INIT } from '../analyze-scans.js'
 import { intLevelMap } from '../../type/int-certain.js'
 const strictInts = new WeakMap()   // a body → its names' integer levels (int-certain.js), read by the remainder's magnitude bound
+// the magnitude an expression of int32 words and literals stays below, by their widths alone
+const i32Magnitude = (e, depth = 0) => {
+  if (typeof e === 'number') return Math.abs(e)
+  if (typeof e === 'string') {
+    const body = ctx.func.body
+    if (!Array.isArray(body)) return null
+    // a hull the range solver holds (a counter under its bound, a stamped declaration)
+    const r = intExprRange(e) ?? counterRanges(body).get(e)
+    if (r) return Math.max(-r[0], r[1])
+    // an int32 word, or a name every write of which is a strict int32 (a counter)
+    if (ctx.func.locals?.get(e) === 'i32' || (strictInts.get(body) ?? strictInts.set(body, intLevelMap(body)).get(body)).get(e) === 2) return 2 ** 31
+    // a name only its declaration writes, from such an expression (`srcIdx = upIdx - k`), is bounded as it is
+    if (depth >= 4 || isReassigned(body, e)) return null
+    const init = scanBindingUses(body).get(e)?.[BINDING_USE_INIT]
+    return init != null ? i32Magnitude(init, depth + 1) : null
+  }
+  if (!Array.isArray(e)) return null
+  if (e[0] == null) return typeof e[1] === 'number' ? Math.abs(e[1]) : null
+  if ((e[0] === '+' || e[0] === '-' || e[0] === '*') && e.length === 3) { const x = i32Magnitude(e[1], depth), y = i32Magnitude(e[2], depth); return x == null || y == null ? null : e[0] === '*' ? x * y : x + y }
+  if (e[0] === 'u-' && e.length === 2) return i32Magnitude(e[1], depth)
+  // a quotient stays below its dividend's magnitude where the divisor is at least one in magnitude... or NaN, which no integral name holds
+  if (e[0] === '/' && e.length === 3) return i32Magnitude(e[1], depth)
+  // a rounding moves a value by less than one; a length is below 2^32
+  if (e[0] === '()' && e.length === 3 && typeof e[1] === 'string' && /^math\.(floor|ceil|round|trunc)$/.test(e[1])) { const x = i32Magnitude(e[2], depth); return x == null ? null : x + 1 }
+  if (e[0] === '.' && e.length === 3 && e[2] === 'length') return 2 ** 32
+  return null
+}
 // a body → the hull of each `for` counter under its bound (static.js forCounterRange), where the bound hulls
 const counterHulls = new WeakMap()
+// the hull a bound of known magnitude keeps a counter below (plus the step that ends the loop)
+const boundBelow = (e) => { const m = i32Magnitude(e); return m == null || !Number.isFinite(m) ? null : [-m, m + 1] }
 const counterRanges = (body) => {
   let m = counterHulls.get(body)
   if (m) return m
@@ -38,7 +67,7 @@ const counterRanges = (body) => {
     // (the unroller's `let k = 0; while (k < n - 1) { …; k += 2 }`): from its start
     // to the bound plus the largest step, where the bound hulls.
     if (n[0] === 'while' && n.length === 3 && Array.isArray(n[1]) && (n[1][0] === '<' || n[1][0] === '<=') && typeof n[1][1] === 'string') {
-      const name = n[1][1], init = hoistedInit(parent, index, name), bound = intExprRange(n[1][2])
+      const name = n[1][1], init = hoistedInit(parent, index, name), bound = intExprRange(n[1][2]) ?? boundBelow(n[1][2])
       const startNode = init?.[1][2], start = typeof startNode === 'number' ? (Number.isInteger(startNode) ? startNode : null) : Array.isArray(startNode) && startNode[0] == null && Number.isInteger(startNode[1]) ? startNode[1] : null
       if (start == null || !bound || !Number.isFinite(bound[1])) return
       let step = 0, ok = true
@@ -64,7 +93,12 @@ const counterRanges = (body) => {
       const d = init[i]
       if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || isReassigned(n[4], d[1])) continue
       const r = forCounterRange(init, n[2], n[3], d[1])
-      if (r) m.set(d[1], [r[0], r[1]])
+      if (r) { m.set(d[1], [r[0], r[1]]); continue }
+      // (a bound of no hull but a known magnitude, `i < len` under `len = samples.length`: the counter stays below it, stepped up by one)
+      const startNode = d[2], start = Array.isArray(startNode) && startNode[0] == null && Number.isInteger(startNode[1]) ? startNode[1] : typeof startNode === 'number' && Number.isInteger(startNode) ? startNode : null
+      const below = Array.isArray(n[2]) && (n[2][0] === '<' || n[2][0] === '<=') && n[2][1] === d[1] ? boundBelow(n[2][2]) : null
+      const unit = Array.isArray(n[3]) && (n[3][0] === '++' || n[3][0] === '+=' && (n[3][2] === 1 || Array.isArray(n[3][2]) && n[3][2][0] == null && n[3][2][1] === 1)) && n[3][1] === d[1]
+      if (start != null && below && unit) m.set(d[1], [start, Math.max(start, below[1])])
     }
   } })
   return m
@@ -628,28 +662,6 @@ export const arithmeticOps = {
     return typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
   },
   '%': (a, b, self) => {
-    // the magnitude an expression of int32 words and literals stays below, by their widths alone
-    const i32Magnitude = (e, depth = 0) => {
-      if (typeof e === 'number') return Math.abs(e)
-      if (typeof e === 'string') {
-        const body = ctx.func.body
-        if (!Array.isArray(body)) return null
-        // a hull the range solver holds (a counter under its bound, a stamped declaration)
-        const r = intExprRange(e) ?? counterRanges(body).get(e)
-        if (r) return Math.max(-r[0], r[1])
-        // an int32 word, or a name every write of which is a strict int32 (a counter)
-        if (ctx.func.locals?.get(e) === 'i32' || (strictInts.get(body) ?? strictInts.set(body, intLevelMap(body)).get(body)).get(e) === 2) return 2 ** 31
-        // a name only its declaration writes, from such an expression (`srcIdx = upIdx - k`), is bounded as it is
-        if (depth >= 4 || isReassigned(body, e)) return null
-        const init = scanBindingUses(body).get(e)?.[BINDING_USE_INIT]
-        return init != null ? i32Magnitude(init, depth + 1) : null
-      }
-      if (!Array.isArray(e)) return null
-      if (e[0] == null) return typeof e[1] === 'number' ? Math.abs(e[1]) : null
-      if ((e[0] === '+' || e[0] === '-' || e[0] === '*') && e.length === 3) { const x = i32Magnitude(e[1], depth), y = i32Magnitude(e[2], depth); return x == null || y == null ? null : e[0] === '*' ? x * y : x + y }
-      if (e[0] === 'u-' && e.length === 2) return i32Magnitude(e[1], depth)
-      return null
-    }
     // §14 point 4: joint runtime-domain dispatch — see '-'s identical comment
     // above. Number-domain branch reuses `f64rem` (the SAME `$__rem` call the
     // fully generic '%' path below already uses — exact NaN/±Inf/0 edges).
@@ -732,18 +744,21 @@ export const arithmeticOps = {
     const magnitude = range ? Math.max(-range[0], range[1]) : i32Magnitude(a)
     // (a dividend with an i32 view of its own takes the hardware remainder of words below)
     if (!isLit(vb) && !vb.unsigned && !va.unsigned && !peelI32(va) && magnitude != null && magnitude < 2 ** 63 && wholeKey(a) && (!divisorRange || divisorRange[1] <= 0x7fffffff)) {
-      const pb = peelI32(vb), positive = divisorRange && divisorRange[0] > 0
-      if (pb && positive && range && range[0] >= 0) return typed(['i32.wrap_i64', ['i64.rem_s', ['i64.trunc_sat_f64_s', toNumF64(a, va)], ['i64.extend_i32_s', pb]]], 'i32')
+      // (a divisor integral with no i32 view, `seg = Math.floor(len / ch)`, is an i64 where its magnitude fits one)
+      const divisorMagnitude = divisorRange ? Math.max(-divisorRange[0], divisorRange[1]) : i32Magnitude(b)
+      const pb = peelI32(vb), pb64 = pb ? ['i64.extend_i32_s', pb] : wholeKey(b) && divisorMagnitude != null && divisorMagnitude < 2 ** 63 ? ['i64.trunc_sat_f64_s', toNumF64(b, vb)] : null
+      const positive = divisorRange && divisorRange[0] > 0
+      if (pb && positive && range && range[0] >= 0) return typed(['i32.wrap_i64', ['i64.rem_s', ['i64.trunc_sat_f64_s', toNumF64(a, va)], pb64]], 'i32')
       // (a negative dividend's exact zero remainder is -0: the dividend's sign, once)
-      if (pb && positive) return withTemp(toNumF64(a, va), t => typed(['f64.copysign', ['f64.convert_i64_s', ['i64.rem_s', ['i64.trunc_sat_f64_s', ['local.get', `$${t}`]], ['i64.extend_i32_s', pb]]], ['local.get', `$${t}`]], 'f64'), 'rem')
-      // a divisor word that may be zero: NaN there, as JS answers, the remainder otherwise; both operands run once, in order
-      if (pb) {
-        const ta = `$${temp('rem')}`, tb = `$${tempI32('rem')}`
+      if (pb64 && positive) return withTemp(toNumF64(a, va), t => typed(['f64.copysign', ['f64.convert_i64_s', ['i64.rem_s', ['i64.trunc_sat_f64_s', ['local.get', `$${t}`]], pb64]], ['local.get', `$${t}`]], 'f64'), 'rem')
+      // a divisor that may be zero: NaN there, as JS answers, the remainder otherwise; both operands run once, in order
+      if (pb64) {
+        const ta = `$${temp('rem')}`, tb = `$${tempI64('rem')}`
         return typed(['block', ['result', 'f64'],
-          ['local.set', ta, toNumF64(a, va)], ['local.set', tb, pb],
-          ['if', ['result', 'f64'], ['i32.eqz', ['local.get', tb]],
+          ['local.set', ta, toNumF64(a, va)], ['local.set', tb, pb64],
+          ['if', ['result', 'f64'], ['i64.eqz', ['local.get', tb]],
             ['then', ['f64.const', 'nan']],
-            ['else', ['f64.copysign', ['f64.convert_i64_s', ['i64.rem_s', ['i64.trunc_sat_f64_s', ['local.get', ta]], ['i64.extend_i32_s', ['local.get', tb]]]], ['local.get', ta]]]]], 'f64')
+            ['else', ['f64.copysign', ['f64.convert_i64_s', ['i64.rem_s', ['i64.trunc_sat_f64_s', ['local.get', ta]], ['local.get', tb]]], ['local.get', ta]]]]], 'f64')
       }
     }
     // Two faithful i32 views with a divisor that may be zero: the hardware

@@ -225,3 +225,23 @@ test('remainder: an integral dividend of bounded magnitude by a word takes the i
   const text = wat(src, { optimize: 3 })
   ok(/i64\.rem_s/.test(text), 'the stride test is an i64 remainder')
 })
+
+// A planar deinterleave's source index, `(i % seg) * ch + ~~(i / seg)` under
+// `seg = Math.floor(len / ch)`: the divisor is an integer of no i32 view, the
+// dividend a counter below a length. The remainder is the i64 hardware's behind
+// a zero test (`seg` is 0 for a short input, where JS reads NaN), never a call.
+test('remainder: an integral divisor of no word, a rounding of a quotient, takes the i64 remainder', () => {
+  const src = `const deinterleave = (samples, ch) => {
+      const len = samples.length, seg = Math.floor(len / ch), out = new Float32Array(len)
+      for (let i = 0; i < len; i++) { const si = (i % seg) * ch + ~~(i / seg); out[i] = samples[si] }
+      return out
+    }
+    export let run = (n, ch) => { const x = new Float32Array(n); for (let i = 0; i < n; i++) x[i] = i * 0.25; const o = deinterleave(x, +ch); let s = 0; for (let i = 0; i < n; i++) s += o[i] * (i + 1); return s }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(src, { optimize })
+    for (const [n, ch] of [[12, 2], [12, 3], [7, 2], [1, 2], [0, 2], [6, 1], [6, 7], [6, 0], [6, 2.5]]) is(m.run(n, ch), js.run(n, ch), `n ${n}, ch ${ch} at ${optimize}`)
+  }
+  if (belowOpt(3)) return
+  ok(/i64\.rem_s/.test(wat(src, { optimize: 3 })), 'the segment index is an i64 remainder')
+})
