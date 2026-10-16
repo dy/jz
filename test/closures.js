@@ -2698,3 +2698,25 @@ test('closures: protected block shadows stay separate through errors and finaliz
     for(const mode of [0,0,1,1,0])is(got.f(mode),want.f(mode),`protected lexical identity O${optimize}, ${mode}`)
   }
 })
+
+// A name a closure assigns may change at any call once the closure exists. A
+// hoisted function declaration exists from the body's head, before the `let` it
+// writes is declared, so the declaration's absent value is not what later reads
+// see (test262 async-function/evaluation-body: `assert(called)` after `foo()`);
+// a test of the name proves nothing past a call either.
+test('closures: a binding a closure assigns keeps no straight-line value or proof across calls', () => {
+  const srcs = {
+    hoisted: `export function f(k){var check=(c)=>{if(!c)return 0;return 1};let called;function foo(){called=k}foo();return check(called)}`,
+    hoistedAsync: `export function f(k){var check=(c)=>c?1:0;let called;async function foo(){called=k;await 0}foo();return check(called)}`,
+    reassigned: `export function f(k){let x;const set=()=>{x=k};x=0;set();return x}`,
+    proofAcrossCall: `export function f(k){let x=k;const clear=()=>{x=null};if(x!=null){clear();return x==null?7:x}return 3}`,
+    paramAcrossCall: `export function f(k){const bump=()=>{k=k+1};const before=k;bump();return k-before}`,
+  }
+  for (const [name, src] of Object.entries(srcs)) {
+    const want = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const k of [1, 0, 5, -3]) is(got.f(k), want.f(k), `${name} O${optimize}, k=${k}`)
+    }
+  }
+})

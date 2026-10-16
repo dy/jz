@@ -99,6 +99,9 @@ const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', '
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
 // Closure sets and shape sets: a set's id is interned above SET_BASE; `membersOf` reads either form.
 const SET_BASE = 1 << 15
+// The operators that convert their operands to primitives (and answer one):
+// arithmetic, comparison, concatenation and their compound assignments.
+const CONVERTING_RESULTS = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '<', '>', '<=', '>=', '==', '!=', 'strcat', '`'])
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
 const RANGE_BINARY = new Set(['+', '-', '*', '/', '%'])
 const memberBefore = (a, b) => typeof a === typeof b ? a < b : typeof a === 'number'
@@ -153,7 +156,7 @@ function publish({ facts, unnamedLayouts, contract }) {
   return published
 }
 
-function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, discover = false, liftedProp = () => null, guardedClone = () => null }) {
+function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, discover = false, liftedProp = () => null, guardedClone = () => null, conversions = true }) {
   // Numeric entry contracts restart the kind solve. Report its final losses,
   // not the discarded unknown-parameter solve's intermediate escapes.
   const reportLose = onLose, losses = onLose ? [] : null
@@ -3064,13 +3067,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (copy) {
       let m = mixed.get(key)
       for (const c of copy) if (mixedArray(core(c))) { if (!m) mixed.set(key, m = []); if (!m.includes(c)) m.push(c) }
-      if (flowPath === 0 && current !== null && post.get(key) !== copy) post.set(key, copy)
+      if (followed(key) && post.get(key) !== copy) post.set(key, copy)
       return
     }
     if (!arrays) return
     let m = mixed.get(key); if (!m) mixed.set(key, m = [])
     for (const a of arrays) if (!m.includes(a)) m.push(a)
-    if (flowPath !== 0 || current === null) return
+    if (!followed(key)) return
     cands.length = 0
     const prim = refine(k, TAGS & ~bitOf(K.ARRAY) | UNKNOWN); if (prim !== 0) cands.push(prim)
     for (const a of arrays) cands.push(hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) ? a | (k & NULL_BITS) : a)
@@ -3128,7 +3131,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op === 'bigint') return BIGINT
     if (op === '//') return kind(K.REGEX)
     if (op === '`' || op === 'strcat') { for (let i = 1; i < n.length; i++) expr(n[i]); return STRING }
-    if (op === '=>') { loopAssigns(n); const id = closureId(n); if (id >= UNKNOWN) { escapeId(id); return kind(K.CLOSURE) } return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
+    if (op === '=>') { loopAssigns(n); for (const name of assignedIn(n)) { const key = keyOf(name); if (key !== null) closureAssigned.add(key) } const id = closureId(n); if (id >= UNKNOWN) { escapeId(id); return kind(K.CLOSURE) } return kind(K.CLOSURE, id) }  // a closure assigning a parameter may run any time after this
     if (op === '{}') { const sid = literalSid(n); return sid === DYNAMIC_LITERAL ? dynamicLiteral(n) : staticLiteral(n, sid) }
     if (op === '[') {
       const arr = arrayOf(n, K.NONE), id = paramOf(arr)
@@ -3195,8 +3198,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         // the length fixed or left alone by the loop (lenStable: no call reaches the array, no store to its length).
         // (a binding reassigned elsewhere still bounds the loop that reads it: the alias of its length survived every assignment before the loop)
         if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx) === keyOf(n[1]) && (fixedLen(recv) >= 0 && stable(n[1], current ?? MODULE) || lenStable.has(idx))) { presentReads.add(n); return elemOf(recv) }
-        // (a cell constructed with the count the loop's bound aliases, `state = new Array(n)` read under `i < n`: inside it, where the loop leaves its length alone)
-        if (typeof idx === 'string' && typeof n[1] === 'string' && countBounds(cell(paramOf(recv)), idx) && loopBodies.has(idx) && !lengthMayChange(loopBodies.get(idx), n[1])) { presentReads.add(n); return elemOf(recv) }
+        // (a cell constructed with the count the loop's bound aliases, `state = new Array(n)` read under `i < n`: inside it, where the loop leaves its length alone;
+        // a receiver of no cell has no count: `cell` of an unknown parameter would write past the table)
+        if (typeof idx === 'string' && typeof n[1] === 'string' && loopBodies.has(idx) && celled(recv) && countBounds(cell(paramOf(recv)), idx) && !lengthMayChange(loopBodies.get(idx), n[1])) { presentReads.add(n); return elemOf(recv) }
         presentReads.delete(n)
         return orAbsent(entryOf(recv, ik))
       }
@@ -3355,7 +3359,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (key !== null) {
       pre.delete(key); refined.delete(key); lengthAliases.delete(key)
       // A straight-line assignment is the value the reads after it see; one on a path is not.
-      if (flowPath === 0 && current !== null) post.set(key, v); else { post.delete(key); loopNote(key, v) }
+      if (followed(key)) post.set(key, v); else { post.delete(key); loopNote(key, v) }
       raise(kinds, key, v)
       bindMixed(name, v)
     }
@@ -3540,7 +3544,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const declare = (name, k) => {
     const key = keyOf(name)
     if (key === null) return
-    if (flowPath === 0 && current !== null) post.set(key, k); else { post.delete(key); loopNote(key, k) }
+    if (followed(key)) post.set(key, k); else { post.delete(key); loopNote(key, k) }
     raise(kinds, key, k)
   }
   // A declaration without a value is absent until assigned (`let buf; export
@@ -3984,14 +3988,51 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return by !== null && lenBounds.get(idx) === keyOf(by)
   }
   // the counters whose loop leaves the bounding array's length alone: no call
-  // the array reaches (a method of its own, an argument), no store to its length
+  // the array reaches (a method of its own, an argument), no store to its length,
+  // and no call at all where a closure or a function may rebind the name
+  // (`function cut() { b = [] }` called in the loop: `b[i]` reads the new array)
   const lenStable = new Set()
+  // A program that may define `valueOf`/`toString` (`conversions`: compile/plan's census)
+  // runs one where an operator or a call converts an operand that may be an
+  // object, and that method may hold the array (`+o` with `o.valueOf` truncating it).
+  // An operand is primitive where it is a literal, a binding of primitive kinds,
+  // an operator's result, or an element of a typed array.
+  const PRIMITIVE_BITS_ONLY = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS
+  const primitiveKindBits = (k) => k != null && (k & TAGS) !== 0 && (k & TAGS & ~PRIMITIVE_BITS_ONLY) === 0
+  const primitiveOperand = (x) => {
+    if (x == null || typeof x === 'number') return true
+    if (typeof x === 'string') { const key = keyOf(x); return key !== null && primitiveKindBits(kinds[key]) }
+    if (!Array.isArray(x)) return false
+    if (x[0] == null || x[0] === 'str' || x[0] === 'bool') return true
+    if (CONVERTING_RESULTS.has(x[0])) return true
+    if (x[0] === '[]' && typeof x[1] === 'string') { const key = keyOf(x[1]); return key !== null && tagOf(kinds[key] ?? K.NONE) === K.TYPED }
+    return false
+  }
+  // The module bindings some function assigns: a call may rebind one wherever it is read.
+  let functionAssigned = null
+  const assignedByFunction = (key) => {
+    if (functionAssigned === null) {
+      functionAssigned = new Set()
+      const names = new Set()
+      for (const f of funcs) assignsIn(f.body, names)
+      for (const name of names) { const k = keyIn(MODULE, name); if (k !== undefined) functionAssigned.add(k) }
+    }
+    return functionAssigned.has(key)
+  }
+  // whether a call the loop makes may rebind the name: a closure assigns it, or a function a module binding
+  const reboundByCall = (name) => {
+    const key = keyOf(name)
+    return key !== null && (closureAssigned.has(key) || bindingScope[key] === MODULE && assignedByFunction(key))
+  }
   const lengthMayChange = (body, arr) => {
     let may = false
+    const rebound = typeof arr === 'string' && reboundByCall(arr)
+    const converts = conversions
     const walk = (m) => {
       if (may || !Array.isArray(m)) return
       if (m[0] === '=>') { may = true; return }
-      if ((m[0] === '()' || m[0] === '?.()' || m[0] === 'new') && JSON.stringify(m).includes(JSON.stringify(arr))) { may = true; return }
+      if (converts && (CONVERTING_RESULTS.has(m[0]) || m[0] === '()' || m[0] === 'new') && !m.slice(m[0] === '()' || m[0] === 'new' ? 2 : 1).every(primitiveOperand)) { may = true; return }
+      if ((m[0] === '()' || m[0] === '?.()' || m[0] === 'new') && (rebound || JSON.stringify(m).includes(JSON.stringify(arr)))) { may = true; return }
       if (m[0] === '=' && Array.isArray(m[1]) && m[1][0] === '.' && m[1][1] === arr && m[1][2] === 'length') { may = true; return }
       for (let i = 1; i < m.length; i++) walk(m[i])
     }
@@ -4116,6 +4157,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // kind alone. An assignment on a path (a branch, a loop body, an arm) ends
   // the region, as does a loop that assigns the name, at its head.
   const post = new Map()    // binding id → straight-line assigned kind
+  // The bindings a closure made so far in this walk assigns. It may run at any
+  // call from then on, so no straight-line fact, parameter region or proof holds
+  // for them: a hoisted function declaration is made at the body's head, ahead of
+  // the declarations of the names it assigns (`let called; function foo() {
+  // called = true } foo()` reads `called` as the join, not as absent).
+  const closureAssigned = new Set()
+  // Whether the straight-line state follows a binding here.
+  const followed = (key) => flowPath === 0 && current !== null && !closureAssigned.has(key)
   let branch = 0            // the depth of paths (branches, loop bodies, arms) the walk is in
   // The depth of paths whose assignments the straight-line state cannot
   // follow: loops (an iteration's read may see the last one's store), handlers,
@@ -4150,7 +4199,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   let rtop = 0, pathDepth = 0
   const refineName = (name, mask) => refineKey(keyOf(name), mask)
   const refineKey = (key, mask) => {
-    if (key === null) return
+    if (key === null || closureAssigned.has(key)) return
     const prior = refined.get(key)
     if (rtop === rKeys.length) { rKeys.push(key); rPriors.push(prior) } else { rKeys[rtop] = key; rPriors[rtop] = prior }
     rtop++
@@ -4392,8 +4441,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const flowRestore = (keys, base) => {
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i], p = flowStack[base + 2 * i], inPre = flowStack[base + 2 * i + 1]
-      if (p === undefined) post.delete(key); else post.set(key, p)
-      if (inPre) pre.add(key); else pre.delete(key)
+      if (p === undefined || closureAssigned.has(key)) post.delete(key); else post.set(key, p)
+      if (inPre && !closureAssigned.has(key)) pre.add(key); else pre.delete(key)
     }
   }
   // an arm's exits for `keys` pushed on the exit stack: their base, or -1 when the arm leaves
@@ -4431,7 +4480,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const key = keys[i]
       let k
       for (let j = base; j < loopNotes.length; j += 2) if (loopNotes[j] === key) { k = loopNotes[j + 1]; break }
-      if (k === undefined || flowPath !== 0 || current === null) post.delete(key)
+      if (k === undefined || !followed(key)) post.delete(key)
       else { post.set(key, merge(flowStack[entry + 2 * i], k, true)); pre.delete(key) }
     }
     // an enclosing loop sees this one's stores as its own
@@ -4465,7 +4514,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       cands.length = 0
       if (a >= 0) addCands(exitStack[a + i])
       if (b >= 0) addCands(exitStack[b + i])
-      if (!cands.length || flowPath !== 0 || current === null) { post.delete(key); continue }
+      if (!cands.length || !followed(key)) { post.delete(key); continue }
       pre.delete(key)
       if (cands.length === 1) { post.set(key, cands[0]); continue }
       if (cands.length > POST_CANDIDATES) { let k = cands[0]; for (let j = 1; j < cands.length; j++) k = merge(k, cands[j], true); post.set(key, k); continue }
@@ -4490,7 +4539,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const defaultNames = new Map()   // a defaults record → its parameter names, listed once
   const defaultNamesOf = (defaults) => { let l = defaultNames.get(defaults); if (!l) defaultNames.set(defaults, l = Object.keys(defaults)); return l }
-  const reset = () => { pre.clear(); refined.clear(); post.clear(); constRanges.clear(); lengthAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
+  const reset = () => { pre.clear(); refined.clear(); post.clear(); closureAssigned.clear(); constRanges.clear(); lengthAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()

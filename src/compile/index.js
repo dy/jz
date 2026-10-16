@@ -196,6 +196,8 @@ export function assemble(ast, profiler) {
       liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
       // a function's typed-guard clone, which its direct calls reach at run time (narrow/specialize.js)
       guardedClone: (fn) => ctx.types.specFns?.get(fn) ?? null,
+      // whether the source may define a `valueOf`/`toString` an operator can run (plan's census; unknown before it)
+      conversions: ctx.transform.userConversions !== false,
       // `losses`: the first cause the summary loses each object shape by (its reads and stores are dynamic from then on)
       onLose: losses && ((...loss) => losses.push(loss)),
       // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by

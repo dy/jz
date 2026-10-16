@@ -6781,6 +6781,27 @@ test('array bounds: aliases, calls, coercions and later initializers cannot keep
   }
 })
 
+// A module array a function's loop reads under its own length is truncated by a
+// conversion the loop runs (`+o` with `o.valueOf` holding the array), or by a
+// call that rebinds it: neither leaves a present read behind.
+test('array bounds: a module array keeps no stale length proof across conversions and rebinding calls', () => {
+  const cases = {
+    conversion: `let arr = []; const o = { valueOf() { arr.length = 0; return 0 } }
+      export function f(flag) { arr = []; if (flag) arr.push({x:3}); let reads = 0
+        try { for (let i = 0; i < arr.length; i++) { reads += +o + 1; return arr[i].x }; return 'none:' + reads } catch (e) { return e.name + ':' + reads } }`,
+    rebound: `let arr = []; function cut() { arr = [] }
+      export function f(flag) { arr = []; if (flag) arr.push({x:3}); let reads = 0
+        try { for (let i = 0; i < arr.length; i++) { cut(); reads++; return arr[i].x }; return 'none:' + reads } catch (e) { return e.name + ':' + reads } }`,
+  }
+  for (const [name, src] of Object.entries(cases)) {
+    const expected = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = run(src, { optimize: { level: optimize, sourceInline: false } })
+      for (const flag of [0, 1, 1, 0, 1]) is(actual.f(flag), expected.f(flag), `${name}, O${optimize}, flag=${flag}`)
+    }
+  }
+})
+
 test('string bounds: a callee cannot change the receiver or a captured index under the proof', () => {
   const cases = [
     `let s=input; function cut(){s=''}; for(let i=0;i<s.length;i++){cut();return s.charCodeAt(i)}`,
