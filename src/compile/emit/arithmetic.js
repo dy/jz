@@ -10,11 +10,49 @@ import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
 import { intExprRange, negRangeFitsI32, forCounterRange } from '../../static.js'
-import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN } from '../../summary/kind.js'
+import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, typedAux } from '../../summary/kind.js'
+import { ctorFromElemAux } from '../../../layout.js'
 import { exprType, inBoundsArrIdx, wholeKey } from '../../type.js'
 import { scanBindingUses, BINDING_USE_INIT } from '../analyze-scans.js'
 import { intLevelMap } from '../../type/int-certain.js'
 const strictInts = new WeakMap()   // a body → its names' integer levels (int-certain.js), read by the remainder's magnitude bound
+// whether an expression is at least one in magnitude: a literal, or a name or expression the range solver holds off (-1, 1)
+const atLeastOne = (e) => {
+  if (Array.isArray(e) && e[0] == null) return typeof e[1] === 'number' && Math.abs(e[1]) >= 1
+  if (typeof e === 'number') return Math.abs(e) >= 1
+  const body = ctx.func.body
+  const r = intExprRange(e) ?? (typeof e === 'string' && Array.isArray(body) ? counterRanges(body).get(e) : null)
+  return !!r && (r[0] >= 1 || r[1] <= -1)
+}
+// An element of an integer typed array stays within its element type (a read
+// past the end is NaN, which no magnitude test needs to catch).
+const INT_ELEM_MAGNITUDE = { Int8Array: 128, Uint8Array: 255, Uint8ClampedArray: 255, Int16Array: 32768, Uint16Array: 65535, Int32Array: 2 ** 31, Uint32Array: 2 ** 32 - 1 }
+const typedElemMagnitude = (recv) => {
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(recv)
+  if (k == null || tagOf(k) !== K.TYPED) return null
+  const ctor = ctorFromElemAux(typedAux(k))
+  return typeof ctor === 'string' ? INT_ELEM_MAGNITUDE[ctor.split('.')[1]] ?? null : null
+}
+// The values a body assigns `name`: each declaration's initializer and each plain
+// assignment's value, or null where another write (`+=`, `++`, a destructuring) moves it.
+const plainWrites = (body, name) => {
+  const out = []
+  let other = false
+  walkAst(body, { enter: (n) => {
+    if (other) return false
+    if ((n[0] === 'let' || n[0] === 'const' || n[0] === 'var')) {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (d === name) out.push(undefined)
+        else if (Array.isArray(d) && d[0] === '=' && d[1] === name) out.push(d[2])
+      }
+      return
+    }
+    if (n[0] === '=' && n[1] === name) { out.push(n[2]); return }
+    if (MUTATE_OPS.has(n[0]) && n[1] === name) other = true
+  } })
+  return other ? null : out
+}
 // the magnitude an expression of int32 words and literals stays below, by their widths alone
 const i32Magnitude = (e, depth = 0) => {
   if (typeof e === 'number') return Math.abs(e)
@@ -26,8 +64,17 @@ const i32Magnitude = (e, depth = 0) => {
     if (r) return Math.max(-r[0], r[1])
     // an int32 word, or a name every write of which is a strict int32 (a counter)
     if (ctx.func.locals?.get(e) === 'i32' || (strictInts.get(body) ?? strictInts.set(body, intLevelMap(body)).get(body)).get(e) === 2) return 2 ** 31
-    // a name only its declaration writes, from such an expression (`srcIdx = upIdx - k`), is bounded as it is
-    if (depth >= 4 || isReassigned(body, e)) return null
+    // a name only its declaration writes, from such an expression (`srcIdx = upIdx - k`), is bounded as it is;
+    // one every write of which is a plain assignment of such an expression by the largest of them
+    if (depth >= 4) return null
+    if (isReassigned(body, e)) {
+      const writes = plainWrites(body, e)
+      if (writes === null || !writes.length) return null
+      let m = 0
+      // (a declaration without a value holds undefined, NaN to arithmetic: no magnitude to bound)
+      for (const w of writes) { if (w === undefined) continue; const x = i32Magnitude(w, depth + 1); if (x == null) return null; if (x > m) m = x }
+      return m
+    }
     const init = scanBindingUses(body).get(e)?.[BINDING_USE_INIT]
     return init != null ? i32Magnitude(init, depth + 1) : null
   }
@@ -35,11 +82,16 @@ const i32Magnitude = (e, depth = 0) => {
   if (e[0] == null) return typeof e[1] === 'number' ? Math.abs(e[1]) : null
   if ((e[0] === '+' || e[0] === '-' || e[0] === '*') && e.length === 3) { const x = i32Magnitude(e[1], depth), y = i32Magnitude(e[2], depth); return x == null || y == null ? null : e[0] === '*' ? x * y : x + y }
   if (e[0] === 'u-' && e.length === 2) return i32Magnitude(e[1], depth)
-  // a quotient stays below its dividend's magnitude where the divisor is at least one in magnitude... or NaN, which no integral name holds
-  if (e[0] === '/' && e.length === 3) return i32Magnitude(e[1], depth)
+  // a quotient stays below its dividend's magnitude where the divisor is at least one in magnitude
+  // (`len / d` with `d` 1e-20 is 1e23: a bound read off the dividend alone would let its
+  // rounding take a word's remainder)
+  if (e[0] === '/' && e.length === 3) return atLeastOne(e[2]) ? i32Magnitude(e[1], depth) : null
   // a rounding moves a value by less than one; a length is below 2^32
   if (e[0] === '()' && e.length === 3 && typeof e[1] === 'string' && /^math\.(floor|ceil|round|trunc)$/.test(e[1])) { const x = i32Magnitude(e[2], depth); return x == null ? null : x + 1 }
   if (e[0] === '.' && e.length === 3 && e[2] === 'length') return 2 ** 32
+  if ((e[0] === '[]' || e[0] === '?.[]') && e.length === 3) return typedElemMagnitude(e[1])
+  // a remainder by a literal stays below it (or is NaN, where its dividend is not finite)
+  if (e[0] === '%' && e.length === 3 && Array.isArray(e[2]) && e[2][0] == null && typeof e[2][1] === 'number' && e[2][1] !== 0) return Math.abs(e[2][1])
   return null
 }
 // a body → the hull of each `for` counter under its bound (static.js forCounterRange), where the bound hulls
@@ -742,11 +794,13 @@ export const arithmeticOps = {
     // remainder of the exact integers, exact below 2^63, an i32 below the
     // divisor; a non-negative dividend leaves no sign to keep.
     const magnitude = range ? Math.max(-range[0], range[1]) : i32Magnitude(a)
-    // (a dividend with an i32 view of its own takes the hardware remainder of words below)
-    if (!isLit(vb) && !vb.unsigned && !va.unsigned && !peelI32(va) && magnitude != null && magnitude < 2 ** 63 && wholeKey(a) && (!divisorRange || divisorRange[1] <= 0x7fffffff)) {
-      // (a divisor integral with no i32 view, `seg = Math.floor(len / ch)`, is an i64 where its magnitude fits one)
-      const divisorMagnitude = divisorRange ? Math.max(-divisorRange[0], divisorRange[1]) : i32Magnitude(b)
-      const pb = peelI32(vb), pb64 = pb ? ['i64.extend_i32_s', pb] : wholeKey(b) && divisorMagnitude != null && divisorMagnitude < 2 ** 63 ? ['i64.trunc_sat_f64_s', toNumF64(b, vb)] : null
+    // (dividend and divisor both with i32 views take the hardware remainder of words below)
+    if (!isLit(vb) && !vb.unsigned && !va.unsigned && !(peelI32(va) && peelI32(vb)) && magnitude != null && magnitude < 2 ** 63 && wholeKey(a) && (!divisorRange || divisorRange[1] <= 0x7fffffff)) {
+      // A divisor integral with no i32 view (`seg = Math.floor(len / ch)`) is its saturating
+      // i64, whatever its magnitude: past 2^63 or infinite it leaves every dividend below 2^63
+      // as the remainder, as the saturated word does, and NaN truncates to the zero the test
+      // below answers with NaN.
+      const pb = peelI32(vb), pb64 = pb ? ['i64.extend_i32_s', pb] : wholeKey(b) ? ['i64.trunc_sat_f64_s', toNumF64(b, vb)] : null
       const positive = divisorRange && divisorRange[0] > 0
       if (pb && positive && range && range[0] >= 0) return typed(['i32.wrap_i64', ['i64.rem_s', ['i64.trunc_sat_f64_s', toNumF64(a, va)], pb64]], 'i32')
       // (a negative dividend's exact zero remainder is -0: the dividend's sign, once)
@@ -776,16 +830,20 @@ export const arithmeticOps = {
             ['else', ['f64.copysign', ['f64.convert_i32_s', ['i32.rem_s', ['local.get', ta], ['local.get', tb]]], ['f64.convert_i32_s', ['local.get', ta]]]]]], 'f64')
       }
     }
-    // Fast path: positive literal divisor → inline a - trunc(a/b) * b, signed
-    // like the dividend: `%` gives a zero remainder the dividend's sign
-    // (`-4 % 2` is -0), which the subtraction alone loses.
-    // Exact when |a| < 2^53 × |b| (all practical audio/control-range values).
-    // The full __rem handles NaN/±Inf/0 edges exactly; this avoids the call overhead.
-    if (isLit(vb) && litVal(vb) > 0) {
+    // Fast path: a positive integer literal divisor → inline a - trunc(a/b) * b,
+    // signed like the dividend: `%` gives a zero remainder the dividend's sign
+    // (`-4 % 2` is -0), which the subtraction alone loses. Exact where |a| < 2^53:
+    // the quotient's rounding cannot reach the next integer and the product of
+    // two integers below a is exact. Past it, or a divisor with a fraction (its
+    // product rounds: `9007199254740994 % 3.7`, `1e23 % 7`), the exact __rem
+    // answers, as it does NaN and ±Inf; a dividend of known magnitude below 2^53
+    // needs no test.
+    if (isLit(vb) && litVal(vb) > 0 && Number.isInteger(litVal(vb)) && litVal(vb) < 2 ** 53) {
       const fa = toNumF64(a, va), fb = toNumF64(b, vb)
       const rem = ta => typed(['f64.copysign', ['f64.sub', ta, ['f64.mul', ['f64.trunc', ['f64.div', ta, fb]], fb]], ta], 'f64')
-      if (isPureIR(fa)) return rem(fa)
-      return withTemp(fa, t => rem(['local.get', `$${t}`]), 'rem')
+      if (magnitude != null && magnitude < 2 ** 53) return isPureIR(fa) ? rem(fa) : withTemp(fa, t => rem(['local.get', `$${t}`]), 'rem')
+      return withTemp(fa, t => typed(['if', ['result', 'f64'], ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2 ** 53]],
+        ['then', rem(['local.get', `$${t}`])], ['else', f64rem(['local.get', `$${t}`], fb)]], 'f64'), 'rem')
     }
     return f64rem(toNumF64(a, va), toNumF64(b, vb))
   },

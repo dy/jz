@@ -245,3 +245,45 @@ test('remainder: an integral divisor of no word, a rounding of a quotient, takes
   if (belowOpt(3)) return
   ok(/i64\.rem_s/.test(wat(src, { optimize: 3 })), 'the segment index is an i64 remainder')
 })
+
+// `a % b` is the exact binary fmod. `a - trunc(a/b) * b` matches it only for an
+// integer divisor where |a| < 2^53; past it the quotient's rounding reaches the
+// next integer, and a divisor with a fraction rounds its product even below it.
+test('remainder: a literal divisor stays exact past 2^53 and with a fraction', () => {
+  const xs = [1e23, -1e23, 2 ** 53 + 2, 27021597764222976, 1e300, -1e300, 123456789012345680000, 9007199254740993, 1e16 + 2, 5.5, -5.5, 0, -0, 7, -7, 2 ** 52 + 0.5, NaN, Infinity, -Infinity]
+  for (const d of ['7', '3.7', '1', '0.1', '1e300', '65536']) {
+    const src = `export let f = (x) => x % ${d}`
+    const js = oracle(src)
+    for (const optimize of levels(0, 2, 3)) {
+      const m = run(src, { optimize })
+      for (const x of xs) is(m.f(x), js.f(x), `${x} % ${d} at ${optimize}`)
+    }
+  }
+})
+
+// A quotient's magnitude is its dividend's only where the divisor is at least one in
+// magnitude: `Math.floor(len / d)` with d tiny is far past the length, and its
+// remainder by a literal is not a word's.
+test('remainder: a quotient by a divisor below one keeps no bound of its dividend', () => {
+  const src = `export let f = (n, d) => { const a = new Float64Array(n); const len = a.length; const q = Math.floor(len / d); return q % 7 }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(src, { optimize })
+    for (const [n, d] of [[1000, 1e-20], [1000, 0.5], [1000, 3], [7, 1e-300], [5, -1e-18], [0, 2], [9, 0]]) is(m.f(n, d), js.f(n, d), `n ${n}, d ${d} at ${optimize}`)
+  }
+})
+
+// The i64 remainder by an integral divisor of no word takes any magnitude: a divisor
+// past 2^63 or infinite saturates to a word that leaves every smaller dividend as the
+// remainder, NaN truncates to the zero the test answers with NaN.
+test('remainder: an integral divisor of any magnitude takes the i64 remainder', () => {
+  const src = `const pick = (n, ch) => { const seg = Math.floor(n / ch); let s = 0; for (let i = 0; i < n; i++) s += (i % seg) * 3 + (i % seg === i ? 1 : 0); return s }
+    export let f = (n, ch) => pick(n, +ch)`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(src, { optimize })
+    for (const [n, ch] of [[12, 2], [12, 1e-300], [12, -1e-300], [12, 0], [12, -0], [12, NaN], [12, -2], [12, 1e30], [0, 1], [5, Infinity], [5, -Infinity]]) is(m.f(n, ch), js.f(n, ch), `n ${n}, ch ${ch} at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  ok(/i64\.rem_s/.test(wat(src, { optimize: 2 })), 'the counter takes the i64 remainder by the divisor of no word')
+})
