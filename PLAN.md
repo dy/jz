@@ -6,6 +6,54 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Release status, October 16
+
+CI on 77554488 was red in four places; each is closed at its root here and
+pinned, run on the default, O0, O3 and WASI legs:
+
+- test262 `async-function/evaluation-body.js` was a miscompile, not async:
+  a hoisted function declaration is made at the body's head, before the `let`
+  it writes, so the summary's straight-line fact for the `let` (absent) outlived
+  every call. A binding a closure assigns keeps no straight-line fact, parameter
+  region or proof from the closure's creation on (`closureAssigned`).
+- The stable-length read of ef027c38 read an element present where a call
+  rebinds the array (a closure or a function assigns its binding) or an operator
+  runs a user `valueOf` that truncates it: both now count as a change of length.
+  The covered-construction read of the sosfilter commit called `cell` on a
+  receiver of no cell, which wrote past the union-find table and lost an
+  unrelated array's kind (data.js DictKindIndex at O0).
+- `x % k` by a literal was wrong past 2^53 and for a fractional `k` at every
+  level (`1e23 % 7` gave 0): the inline form now runs only where it is exact.
+  The quotient rule of the magnitude bound assumed a divisor of at least one;
+  it now asks for one. The O3 remainder pin's own program now takes the i64
+  remainder: a word dividend by an integral divisor of no word, of any
+  magnitude.
+- The O0 and WASI summary failures were the tests': speed-tier pins without a
+  `belowOpt` guard, and a value-returning `run` that WASI legalizes to its void
+  command entry.
+
+Step 1 of the speed plan landed as 078a0cac: a conditional of several
+assignments vectorizes by predication, an exact integer store truncates in
+lanes behind a word test, and a local one path of a conditional leaves
+unwritten is carried (it miscompiled under SIMD). pcmconvert's conversion loop
+vectorizes (0.657x of the previous time, interleaved runs, checksum unchanged);
+its deinterleave loop keeps an f64 counter (`i % seg`, `i / seg`), the next
+step.
+
+Open, in the order release needs them:
+
+1. **Self-compile.** The recursive jz x jz compile still exhausts 4 GiB: every
+   summary solve's phase checkpoint is declined as unsafe (the solve stores into
+   storage older than its mark), so each keeps its ~370 MB. A `JZ_DEBUG_ESC`
+   kernel names the escaping stores; the fix is to keep the solve's writes
+   inside it.
+2. **Reference evidence.** The claims gate needs a fresh reference run of the
+   pushed tree (bench.yml `reference: true`), then the losses it reports.
+3. Deferred: an exported parameter a closure mutates crosses as a boxed
+   `Array+` slot (param-numeric.js) while the summary types it a number:
+   `export function f(k){const bump=()=>{k=k+1};bump();return k-1}` gives
+   `true` for `f(true)` at O0 and O1.
+
 ## Speed, October 14
 
 The parser cases stand behind V8 (jessie 1.33×, watr 1.9×). Jessie's
