@@ -1308,7 +1308,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const escapeToHost = (k, seen) => {
     const t = tagOf(k)
     if (paramOf(k) === UNKNOWN || t !== K.CLOSURE && t !== K.OBJECT && !celled(k)) return
-    losingAs('handed to the host', escapeHostValue, k, seen ?? new Set())
+    losingAs('handed to the host', escapeHostValue, k, seen ?? hostSeen)
   }
   const escapeHostValue = (k, seen) => {
     const t = tagOf(k), p = paramOf(k)
@@ -1351,10 +1351,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // Returning a fresh local array cannot change its earlier reads. Only a
   // retained alias (or an import, which may mutate during the call) opens its
   // element proof. Walk aggregate edges too; arrays have no host element ABI.
+  // The walks share one record of what each reached this round: a container
+  // reached again is walked once, and what it gains after that raises
+  // `changed`, so the next round, with a fresh record, walks it again; the round
+  // that changes nothing walks the settled graph whole. (A fresh record per call
+  // walked the graph once per store into a retained or host-held object: in the
+  // self-hosted compiler, which frees nothing within a compile, a set per call.)
+  const retainSeen = new Set(), hostSeen = new Set()
   const retain = (k, seen) => {
     const t = tagOf(k), p = paramOf(k)
     if (p === UNKNOWN || t !== K.CLOSURE && t !== K.OBJECT && !celled(k)) return
-    seen ??= new Set()
+    seen ??= retainSeen
     if (t === K.CLOSURE) {
       for (const id of membersOf(p)) {
         const body = typeof id === 'string' ? funcByName.get(id).body : closureBodies[id]
@@ -4986,6 +4993,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const fixpoint = () => rounds(() => {
     changed = false
     grown.clear()   // the init pushes are counted afresh by every round's walk
+    retainSeen.clear(); hostSeen.clear()   // the walks' records, afresh each round (retain)
     spreadSources.clear() // join the source kinds from this round's reachable contexts
     for (const f of funcs) {
       if (exportedNames.has(f.name) || hostClosures.has(f.name) || escaped.has(f.name) || f.sig.dispatcher) reach(f.name)   // a dispatcher is called by emitted code
