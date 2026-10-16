@@ -343,6 +343,54 @@ test('summary: a let declared in a counted loop\'s body keeps the union of its h
   is(jz(src).exports.run(new Float64Array(40).fill(1)), 16 - 112)
 })
 
+test('summary: a construction filled whole has no hole, a store the guard bounds opens none, a stable-length loop reads present', () => {
+  // movavg's history, `new Array(n).fill(0)` stored at the versioned cursor:
+  // the fill marks the construction, the bounded store neither grows the cell
+  // nor skips one; sosfilter's coefficients, an array of open length (pushed),
+  // read present under `j < n` where the loop leaves the length alone.
+  const src = `const avg = (data, p) => {
+      let ptr = p.ptr, mem = p.memory
+      if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }
+      const m = mem.length
+      let s = 0
+      for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }
+      p.ptr = ptr
+      return data[data.length - 1]
+    }
+    const design = (k) => { const sos = []; for (let i = 0; i < k; i++) sos.push({ b0: 1 + i }); return sos }
+    const filter = (data, params) => {
+      const coefs = params.coefs, n = coefs.length
+      let acc = 0
+      for (let i = 0; i < data.length; i++) for (let j = 0; j < n; j++) acc += coefs[j].b0 * data[i]
+      return acc
+    }
+    export const run = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p)
+      return avg(d, p) + filter(d, { coefs: design(2) }) + filter(d, { coefs: design(3) }) }`
+  summarize(src)
+  // (the history's cell keeps its hole: the loop as written, where the guard
+  // fails, stores at an index past the count and may grow it in an earlier call)
+  // (presence is the read's own: the summary keeps the nodes it proved inside the count)
+  const filter = ctx.summary.at('filter'), reads = []
+  const find = (n) => { if (!Array.isArray(n)) return; if (n[0] === '[]' && typeof n[1] === 'string' && n[1].startsWith('coefs' + MARK) && typeof n[2] === 'string' && n[2].startsWith('j' + MARK)) reads.push(n); n.forEach(find) }
+  find(ctx.funcs.list.find(f => f.name === 'filter').body)
+  ok(reads.length > 0 && reads.some(n => !hasTag(filter.kindOfExpr(n), K.ABSENT)), 'a coefficient read under the stable length is present')
+  is(jz(src).exports.run(), (() => {
+    const avg = (data, p) => { let ptr = p.ptr, mem = p.memory; if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }; const m = mem.length; let s = 0; for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }; p.ptr = ptr; return data[data.length - 1] }
+    const design = (k) => { const sos = []; for (let i = 0; i < k; i++) sos.push({ b0: 1 + i }); return sos }
+    const filter = (data, params) => { const coefs = params.coefs, n = coefs.length; let acc = 0; for (let i = 0; i < data.length; i++) for (let j = 0; j < n; j++) acc += coefs[j].b0 * data[i]; return acc }
+    const p = { memory: 4 }, d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) + filter(d, { coefs: design(2) }) + filter(d, { coefs: design(3) })
+  })(), 'computes as JS does')
+  // a construction filled whole, stored only inside its count: no hole, so its reads skip the tomb test
+  const filled = `export const run = (n) => { const h = new Array(4).fill(0); let s = 0
+      for (let i = 0; i < 4; i++) h[i] = i * n
+      for (let i = 0; i < 4; i++) s += h[i]
+      return s }`
+  summarize(filled)
+  const elem = ctx.summary.at('run').elemKindOf(binding('run', 'h'))
+  ok(elem != null && !hasTag(elem, K.ABSENT), 'a filled construction has no hole')
+  is(jz(filled).exports.run(3), 18)
+})
+
 test('summary: a declaration copying a conditional\'s candidates mixes nothing when none is an array', () => {
   // `const o = c` where `c` left an if as one shape or another: the member read
   // through `o` reads both shapes (an empty mix once shadowed it with nothing).

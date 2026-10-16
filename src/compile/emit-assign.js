@@ -86,7 +86,7 @@ const persistBinding = name => ptr => persistBindingPtr(name, ptr)
  *  In the speed tiers an index inside the length stores in place first: the
  *  header is left alone and the pointer stays, so the call is only for an index
  *  at or past the end (`out[dst++] = v` filling an array it grew last round). */
-function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = false) {
+function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = false, arrName = null) {
   const arrTmp = `${T}asi${freshId(ctx)}`
   const idxTmp = `${T}asj${freshId(ctx)}`
   const valTmp = `${T}asv${freshId(ctx)}`
@@ -96,17 +96,22 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = fals
   inc('__arr_set_idx_ptr')
   const arrG = ['local.get', `$${arrTmp}`], idxG = ['local.get', `$${idxTmp}`], valG = ['local.get', `$${valTmp}`]
   const helper = ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', arrG], idxG, valG]]
+  // (an in-bounds store of a named binding reads the binding for its hop: no
+  // temp, so a loop's hoist (optimize/licm.js presentPtr) can lift the hop)
+  const direct = inBounds && arrName != null && !ctx.transform.optimize?.leanRuntime
   const body = [
-    ['local.set', `$${arrTmp}`, arrExpr],
+    ...(direct ? [] : [['local.set', `$${arrTmp}`, arrExpr]]),
     ['local.set', `$${idxTmp}`, keyIndex(typed(idxNode, 'f64'))],
     ['local.set', `$${valTmp}`, valueExpr],
   ]
   if (ctx.transform.optimize?.leanRuntime) body.push(helper)
   else {
     const base = tempI32('asb'), baseG = ['local.get', `$${base}`]
-    const saved = hasDurableReset() ? [durableArrSnapNode(base)] : []
+    // (a binding the loop around saved for the reset ahead of it needs no snapshot test here: control-flow.js durableLoopArrays)
+    const held = arrName != null ? ctx.func.refinements?.get(arrName) : null
+    const saved = hasDurableReset() && !held?.saved ? [durableArrSnapNode(base)] : []
     if (saved.length) inc('__durable_arr_snap')
-    body.push(['local.set', `$${base}`, fwdOffsetIR(typed(arrG, 'f64'))])
+    body.push(['local.set', `$${base}`, fwdOffsetIR(typed(direct ? arrExpr : arrG, 'f64'))])
     // An index proven inside the length (type/canonical-bounds.js
     // inBoundsArrIdx) stores in place alone: the header stays, nothing grows.
     if (inBounds) body.push(...saved, ctx.abi.array.ops.store(baseG, idxG, valG))
@@ -774,7 +779,7 @@ function emitElementStore(arr, idx, val, node) {
       return dispatchByKeyKind(arr, keyExpr, valueExpr, (keyNode, receiver) =>
         storeArrayPayload(receiver, keyNode, valueExpr, ptr =>
           ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(receiver)], ['then', persist(ptr)]]))
-    return storeArrayPayload(asF64(emit(arr)), keyExpr, valueExpr, persist, boundedArray)
+    return storeArrayPayload(asF64(emit(arr)), keyExpr, valueExpr, persist, boundedArray, arr)
   }
 
   // A local the dictionary census classified (lean or i32-lean) is a HASH whatever

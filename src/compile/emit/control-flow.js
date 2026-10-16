@@ -19,8 +19,7 @@ import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit, mulRangesKeepZeroSign, nameShift } from '../../static.js'
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
-  MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, sumsTypedElements, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest,
-} from '../../type.js'
+  MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, sumsTypedElements, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest, inBoundsArrIdx } from '../../type.js'
 import { withControlFrame, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
@@ -527,13 +526,20 @@ function emitLoopFreshBoxed(body, frame) {
 // part of the loop reassigns, boxes or lets be missing: a module `const` or a
 // binding of the frame. Their snapshot for the reset moves before the loop.
 function durableLoopArrays(init, cond, step, body) {
-  const names = new Set()
+  const names = new Set(), stores = new Map(), touched = new Set()   // name → every index it is stored at; the names a call or a member reaches
   const walk = (n) => {
     if (!Array.isArray(n) || n[0] === '=>') return
-    if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') names.add(n[1][1])
+    if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && n[1].length === 3 && typeof n[1][1] === 'string') { names.add(n[1][1]); (stores.get(n[1][1]) ?? stores.set(n[1][1], []).get(n[1][1])).push(n[1][2]) }
+    // (a member of the array, or the array as a call's argument: its length may change)
+    if ((n[0] === '.' || n[0] === '?.') && typeof n[1] === 'string') touched.add(n[1])
+    if ((n[0] === '()' || n[0] === '?.()' || n[0] === 'new') && n.length > 2) walkAst(n[2], { enter: m => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') touched.add(m[i]) } })
     for (let i = 1; i < n.length; i++) walk(n[i])
   }
   walk(body)
+  // An array of no fixed length whose every store in the body is at an index
+  // proven inside its length (type/canonical-bounds.js inBoundsArrIdx), the
+  // body reaching it no other way: nothing in the loop grows or relocates it.
+  const inBounds = (name) => !touched.has(name) && stores.get(name).every(idx => typeof idx === 'string' && inBoundsArrIdx(ctx).has(name + '\x00' + idx))
   const view = ctx.summary?.at(ctx.func.current)
   const out = []
   for (const name of names) {
@@ -543,7 +549,7 @@ function durableLoopArrays(init, cond, step, body) {
         isReassigned(body, name) || (init != null && isReassigned(init, name)) ||
         (cond != null && isReassigned(cond, name)) || (step != null && isReassigned(step, name))) continue
     if (isGlobal(name) && !ctx.scope.consts?.has(name)) continue
-    if (!view || view.fixedLenOf(name) == null || isNullable(view.kindOfExpr(name))) continue
+    if (!view || (view.fixedLenOf(name) == null && !(lookupValType(name) === VAL.ARRAY && inBounds(name))) || isNullable(view.kindOfExpr(name))) continue
     if (ctx.func.refinements?.get(name)?.saved) continue
     out.push(name)
   }

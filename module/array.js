@@ -1026,6 +1026,9 @@ export default (ctx) => {
     const presentArray = vt == null && rep?.presentVal === VAL.ARRAY && numericKey && !ctx.func.boxed?.has(arr) && !ctx.transform.optimize?.leanRuntime
     // an index proven inside the length (type/canonical-bounds.js inBoundsArrIdx) reads the cell alone
     const inBounds = typeof arr === 'string' && typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
+    // a cell the summary holds free of holes (no construction of a count left unfilled, no store past the count) reads without the tomb test
+    const elemKind = typeof arr === 'string' ? ctx.summary?.at(ctx.func.current)?.elemKindOf(arr) : null
+    const holeFree = elemKind != null && elemKind !== 0 && !hasTag(elemKind, K.ABSENT)
     const arrayFast = (slow, index = vi, receiver = ptrExpr, proven = provenArray) => {
       const off = tempI32('ao'), ix = tempI32('ax')
       inc('__ptr_offset_fwd')
@@ -1034,10 +1037,10 @@ export default (ctx) => {
         ['local.set', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', receiver]]],
         ['if', ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]],
           ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
-        inBounds ? arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]))
+        inBounds ? arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), holeFree)
         : ['if', ['result', 'f64'],
           ['i32.lt_u', ['local.get', `$${ix}`], ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
-          ['then', arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]))],
+          ['then', arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), holeFree)],
           ['else', undefExpr()]]]
       return ['block', ['result', 'f64'],
         ['local.set', `$${ix}`, index],

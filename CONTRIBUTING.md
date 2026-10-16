@@ -1013,7 +1013,20 @@ word is the i64 remainder, behind a zero test where the word may be zero, and
 an i32 where the divisor's hull is positive and the dividend non-negative; a
 quotient under a test of its remainder (`if (a % b === 0) x = a / b`) is an
 integer (type/int-certain.js, read by plan/integral-loops.js too), so a
-polyphase resampler's stride test and source index run in words. The solve revisits
+polyphase resampler's stride test and source index run in words. A loop
+whose body stores into an array only at indices proven inside its length,
+reaching it no other way, saves the array for the reset once ahead of the
+loop (compile/emit/control-flow.js durableLoopArrays, as it does a
+fixed-length one), and the in-bounds store reads the binding itself for its
+forwarding hop, which the loop's hoist then lifts: the ring buffer's loop makes
+no call. `new Array(n).fill(v)` marks its construction filled (the cell has no
+hole of its own), a store an index bound keeps inside the count raises no hole
+and opens no length, and an element read of a cell free of holes skips the
+tomb test (ir/arrays.js arrayValue). A counter the loop bounds by the array's
+own length reads present elements where the loop leaves the length alone (no
+call reaches the array, no store to its length: `lenStable`), the binding
+reassigned elsewhere or not, since the alias of its length survived every
+assignment before the loop. The solve revisits
 every statement each round and the hosted compiler frees a solve's allocations
 only as a whole, so a visit allocates nothing: the keys a conditional or loop
 assigns are listed once per node, the entry state and the arms' exits live on

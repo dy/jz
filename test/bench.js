@@ -75,6 +75,19 @@ const SPEED = {
   // serial sum V8/AS/native run — by a wide margin (jz/v8 ~0.07×, jz/as ~0.03×).
   dotprod:        { v8: 'win',  as: 'win' },
   biquad:         { v8: 'win',  as: 'win' },
+  // ── library idioms (bench/README "kernel classes"): a state bag whose fields
+  // are absent on the first call, a history that is a number or an array, an
+  // array of records with state as pairs, ratio parameters a gcd division made,
+  // a dtype table choosing a typed array's width. Paired 2026-10-16 on a loaded
+  // M-series host (ratios only): sosfilter 0.83× V8, upfirdn 0.88×, pcmconvert
+  // 0.78×, movavg 0.98× (a tie band, not a lead: the loop still pays a
+  // forwarding test and the durable snapshot test per sample). No AS port.
+  sosfilter:      { v8: 'win',  as: 'na' },
+  // (movavg reads 0.70×, 0.98× and 1.12× V8 across three loaded runs: a `near`
+  // band keeps the pin honest without flaking; its loop makes no call now)
+  movavg:         { v8: 'near', as: 'na' },
+  upfirdn:        { v8: 'win',  as: 'na' },
+  pcmconvert:     { v8: 'win',  as: 'na' },
   mandelbrot:     { v8: 'tie',  as: 'tie' },
   bitwise:        { v8: 'win',  as: 'win' },
   tokenizer:      { v8: 'win',  as: 'diff' },
@@ -238,6 +251,10 @@ const NATIVE = {
   // hashjoin: the i32 probe loop is native-grade since the polymorphic-+ fix —
   // jz/C ≈ 0.9× (clean) / parity under load; sits in the native-parity geomean.
   hashjoin: 'tie',
+  // the library idioms trail clang -O3 (2.2× to 8×: the generic array's element
+  // tests, the durable snapshot per store, no SIMD for the conversion): none
+  // claims native parity, so they sit out the NATIVE geomean.
+  sosfilter: 'na', movavg: 'na', upfirdn: 'na', pcmconvert: 'na',
   // jz beats `clang -O3 -ffp-contract=off` ~10× here: the multi-accumulator SIMD
   // reassociation extracts ILP the strict-fp serial sum can't. A genuine win (not
   // host-noise) — the margin dwarfs cross-substrate variance.
@@ -260,6 +277,10 @@ const NATIVE_GEOMEAN_MAX = 1.05
 // attribution — no single dominant lever on the bench-kernel corpus, mostly
 // diffuse and concentrated in the largest/most-complex specimens).
 const SIZE = {
+  sosfilter:      { as: 'na' },
+  movavg:         { as: 'na' },
+  upfirdn:        { as: 'na' },
+  pcmconvert:     { as: 'na' },
   slices:         { as: 'todo' },
   trace:          { as: 'todo' },
   bezfit:         { as: 'todo' },
@@ -434,6 +455,19 @@ const WASM_RIVALS = ['c-wasm', 'rust-wasm', 'go-wasm', 'tinygo', 'zig-wasm', 'as
 // genuinely-hard tail; each needs a new vectorizer pass or has no jz-side fix. Don't re-chase the
 // disproven hypotheses.
 const WASM_TODO = {
+  // the library idioms (bench/README "kernel classes"), against clang's wasm on a
+  // loaded host, 2026-10-16. The hot loops make no call; what remains is the
+  // generic array's price against a C array: a tomb test per element read where
+  // the cell may hold a hole, a NaN canonicalization per stored result, a
+  // durable snapshot test per store into a pair the stage picks anew, two
+  // nullish tests of elements the summary cannot yet prove present. General
+  // levers: coverage proofs (a loop over the array's own count fills it: no
+  // hole), a canonical-NaN contract for values a typed read produced, and SIMD
+  // lowering of the float-to-int conversion (pcmconvert's clamp and round).
+  sosfilter: 'jz 1.98× c-wasm: per stage two bounds tests, a tomb test, a nullish test and the durable test per state pair, three NaN canonicalizations.',
+  movavg:    'jz 1.78× c-wasm: the tomb test (the loop as written may have grown the shared history), NaN canonicalization of the stored sample, the undefined-to-NaN select of the read.',
+  upfirdn:   'jz 1.90× c-wasm: the stride test and quotient run as i64/f64 integers, not i32 words (the product n * down does not fit a word by hull); the typed index converts.',
+  pcmconvert: 'jz 2.43× c-wasm: no SIMD for the clamp-and-round conversion (the vectorizer reads the per-iteration `let v` as loop-carried) and a `__to_int32` call per integer store.',
   sdf:      "jz 0.98–1.01× c-wasm across local interleaved runs (best: min 14.57 vs 14.64 ms, median 14.91 vs 15.13): a tie within jitter; delete this entry once the CI reference run shows the lead (1.12× before the pop's guards split, 1.41× before sentinel guards). Every fast path is check-free (compile/sentinel-guard.js), and the pop tests each bound where its read runs: z[k] needs k >= 0, tested once a round, v[k - 1] needs k >= 1, tested in the body, so a pass that stops at the hull's bottom (k = 0, 17% of rounds) no longer runs the checked loop. The seed map `bmp[i] === 1 ? 0 : INF` runs in f64x2 lanes over the widened i32x4 comparison (vectorize/lift.js liftIntMask), where clang's build is scalar. Carrying z[k] across rounds in a register, as clang does, measured within noise; so did strength-reducing and unrolling the column copies.",
   trace:    'jz 1.445× c-wasm. narrowMutatedParams landed the fixable ~45% (1.86→1.47, monotone-cursor i32 representation); the residual is the ledgered branch-layout hard tail (data-dependent if(inside) with no conditional store in wasm — V8-neutral surgeries confirmed). Next honest lever is machine-code profiling, not WAT shape.',
   lz:       'jz 1.107× zig-wasm (f1e877b8 — NEWLY outside the band; the prior snapshot read 1.051 band-edge). UNDISSECTED at this ratio: needs the standard dissection (WAT surgery + ABBA retimes) before any lever is named. LZSS greedy match + inflate — branchy byte twiddling, likely the scalar-codegen-race class (qoi/sort/dict family), but that is a guess until measured.',

@@ -20,8 +20,10 @@ import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../static-data.js
  *  array's every read pays the call otherwise, which the engine keeps. The
  *  cell as stored rides along (`holeRead`): a numeric read tests it once for
  *  NaN (ir/coerce.js missToNaN), the hole being a NaN like undefined. */
-export function arrayValue(value) {
+export function arrayValue(value, holeFree = false) {
   let out
+  // (a cell the summary holds free of holes: the value as stored)
+  if (holeFree) return typed(value, 'f64')
   if (!ctx.transform.optimize?.inlineFns) {
     inc('__arr_value')
     out = typed(['call', '$__arr_value', value], 'f64')

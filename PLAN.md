@@ -72,8 +72,13 @@ conversion and strided deinterleave (C vectorizes both; the lane vectorizer
 declines the loop for its per-iteration `let v` reassigned by the rounding,
 which it reads as loop-carried, and for the clamp's conditional stores), and
 the `__to_int32` call its integer store makes per element. sosfilter, movavg
-against C: the nullish tests of a proven element, the durable snapshot test
-per store, the NaN canonicalization of every stored result.
+against C: movavg's loop now makes no call (the history saved once before the
+loop, its hop hoisted, the cursor's store in place) and keeps the hole test
+(the loop as written may have grown the shared history in an earlier call)
+and the NaN canonicalization of what it stores; sosfilter's stage keeps the
+state pair's hole and nullish tests (`new Array(n)` filled by a loop the
+summary does not yet prove covers it), the durable test per pair (a different
+array each stage) and the canonicalization.
 
 What remains, by profile. Jessie (1.09×): the Pratt loop's layers
 (`parse.step`, `parse.asi`, three `parse.space` wrappers) each pay the frame
