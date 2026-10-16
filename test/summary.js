@@ -188,7 +188,7 @@ test('summary: a sequence body that reassigns a parameter declares the new value
     const expr = () => { const fn = lookup[cur.charCodeAt(idx)]; return fn ? fn(idx) : null }
     const parse = s => (idx = 0, cur = s, s = expr(), cur[idx] ? 0 : s || '')
     lookup[49] = (at) => (idx = 3, [cur.slice(at), at])
-    export const run = () => parse('1+2').length`)
+    export const go = () => parse('1+2').length`)
   is(tagOf(ctx.summary.at('').kindOf('cur')), K.STRING, 'the module string holds what the caller passed')
   is(tagOf(ctx.summary.at('').kindOf('idx')), K.NUMBER)
   is(tagOf(kindOf('parse', 's')), K.STRING, 'the parameter is the string')
@@ -197,7 +197,7 @@ test('summary: a sequence body that reassigns a parameter declares the new value
     const expr = () => { const fn = lookup[cur.charCodeAt(idx)]; return fn ? fn(idx) : null }
     const parse = s => (idx = 0, cur = s, s = expr(), cur[idx] ? 0 : s || '')
     lookup[49] = (at) => (idx = 3, [cur.slice(at), at])
-    export const run = () => parse('1+2').length`).exports.run(), 2)
+    export const go = () => parse('1+2').length`).exports.go(), 2)
 })
 
 test('summary: Object.create(null) is an empty literal, so keyed stores on it make a dictionary', () => {
@@ -226,7 +226,7 @@ test('summary: a conditional leaves the join of its arms, a test keeps the candi
       p._sum = s
       return total
     }
-    export const run = () => { const p = { size: 4 }; const d = new Float64Array(8); return avg(d, p) + avg(d, p) }`)
+    export const go = () => { const p = { size: 4 }; const d = new Float64Array(8); return avg(d, p) + avg(d, p) }`)
   is(tagOf(kindOf('avg', 'at')), K.NUMBER, 'the defaulted index is a number after the conditional'); ok(!isNullable(kindOf('avg', 'at')))
   const hist = kindOf('avg', 'hist')
   is(tagOf(hist), K.ARRAY, 'the history is the array the conditional leaves'); ok(paramOf(hist) !== UNKNOWN, 'with its cell: the number it mixed with was kept apart')
@@ -241,7 +241,7 @@ test('summary: a conditional leaves the join of its arms, a test keeps the candi
       p.ptr = ptr; p._sum = s
       return data[data.length - 1]
     }
-    export const run = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`).exports.run(), (() => {
+    export const go = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`).exports.go(), (() => {
       const avg = (data, p) => { let ptr = p.ptr, mem = p.memory; if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }; let s = p._sum; if (s == null) { s = 0; for (let j = 0; j < mem.length; j++) s += mem[j] }; for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % mem.length; data[i] = s / mem.length }; p.ptr = ptr; p._sum = s; return data[data.length - 1] }
       const p = { memory: 4 }, d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p)
     })(), 'the field that held a number and then the array computes as JS does')
@@ -260,19 +260,22 @@ test('summary: a conditional joining one binding keeps another it assigned as th
       p.ptr = ptr
       return data[data.length - 1]
     }
-    export const run = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`
+    export const go = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`
   summarize(src)
   ok(ctx.summary.at('avg').isMixed(binding('avg', 'mem')), 'the window mixes the number it was given with the history')
   // the loop's version is the alias pass's (plan/alias.js), off under summarize
-  _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
-  const f = ctx.funcs.list.find(f => f.name === 'avg'), names = new Set()
-  const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
-  walk(f.body)
-  const versioned = [...names].filter(n => n.startsWith('mem' + MARK) && n.includes(MARK + 's'))
-  is(versioned.length, 1, 'the loop runs over the history as a binding of its own')
-  const k = ctx.summary.at('avg').kindOf(versioned[0])
-  is(tagOf(k), K.ARRAY, 'an array'); ok(paramOf(k) !== UNKNOWN, 'with its cell')
-  is(jz(src).exports.run(), (() => {
+  // and below the speed tiers
+  if (!belowOpt(2)) {
+    _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
+    const f = ctx.funcs.list.find(f => f.name === 'avg'), names = new Set()
+    const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
+    walk(f.body)
+    const versioned = [...names].filter(n => n.startsWith('mem' + MARK) && n.includes(MARK + 's'))
+    is(versioned.length, 1, 'the loop runs over the history as a binding of its own')
+    const k = ctx.summary.at('avg').kindOf(versioned[0])
+    is(tagOf(k), K.ARRAY, 'an array'); ok(paramOf(k) !== UNKNOWN, 'with its cell')
+  }
+  is(jz(src).exports.go(), (() => {
     const avg = (data, p) => { let ptr = p.ptr, mem = p.memory; if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }; const m = mem.length; let s = 0; for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }; p.ptr = ptr; return data[data.length - 1] }
     const p = { memory: 4 }, d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p)
   })(), 'computes as JS does')
@@ -288,12 +291,12 @@ test('summary: a counter an array\'s length bounds stores elements, not numeric 
       let s = 0
       for (let j = 0; j < n; j++) s += state[j][0] + coefs[j]
       return s }
-    export const run = () => { const p = { coefs: [1, 2, 3] }; fill(p); return fill(p) }`
+    export const go = () => { const p = { coefs: [1, 2, 3] }; fill(p); return fill(p) }`
   summarize(src)
   const view = ctx.summary.at('fill')
   ok(view.arrayNumericPropertiesAbsent(binding('fill', 'state')), 'the state array has no numeric property')
   ok(view.arrayNumericPropertiesAbsent(binding('fill', 'coefs')), 'nor the coefficients')
-  is(jz(src).exports.run(), 6)
+  is(jz(src).exports.go(), 6)
 })
 
 test('summary: a ring cursor versioned as an index keeps its hull below the array it indexes', () => {
@@ -311,20 +314,23 @@ test('summary: a ring cursor versioned as an index keeps its hull below the arra
       p.ptr = ptr
       return data[data.length - 1]
     }
-    export const run = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`
-  _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
-  const f = ctx.funcs.list.find(f => f.name === 'avg'), names = new Set(), view = ctx.summary.at('avg')
-  const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
-  walk(f.body)
-  const cursor = [...names].find(n => n.startsWith('ptr' + MARK) && view.hullOf(n))
-  ok(cursor, 'the copy\'s cursor has a hull')
-  const hull = view.hullOf(cursor)
-  is(hull[0], 0, 'from zero'); ok(hull[1] < 2 ** 29, 'below the count an array can hold')
-  const bound = view.indexBoundOf(cursor)
-  ok(bound && bound.startsWith('mem' + MARK), 'kept below the history\'s length')
-  const text = compile(src, { optimize: OPT_LEVEL, wat: true }), body = funcWat(text, 'avg') || funcWat(text, 'run')
-  ok(/i32\.rem_[su]/.test(body), 'the step is a hardware remainder')
-  is(jz(src).exports.run(), (() => {
+    export const go = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`
+  // (the version is the integral-loop plan's, a speed tier's)
+  if (!belowOpt(2)) {
+    _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
+    const f = ctx.funcs.list.find(f => f.name === 'avg'), names = new Set(), view = ctx.summary.at('avg')
+    const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
+    walk(f.body)
+    const cursor = [...names].find(n => n.startsWith('ptr' + MARK) && view.hullOf(n))
+    ok(cursor, 'the copy\'s cursor has a hull')
+    const hull = view.hullOf(cursor)
+    is(hull[0], 0, 'from zero'); ok(hull[1] < 2 ** 29, 'below the count an array can hold')
+    const bound = view.indexBoundOf(cursor)
+    ok(bound && bound.startsWith('mem' + MARK), 'kept below the history\'s length')
+    const text = compile(src, { optimize: OPT_LEVEL, wat: true }), body = funcWat(text, 'avg') || funcWat(text, 'go')
+    ok(/i32\.rem_[su]/.test(body), 'the step is a hardware remainder')
+  }
+  is(jz(src).exports.go(), (() => {
     const avg = (data, p) => { let ptr = p.ptr, mem = p.memory; if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }; const m = mem.length; let s = 0; for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }; p.ptr = ptr; return data[data.length - 1] }
     const p = { memory: 4 }, d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p)
   })(), 'computes as JS does')
@@ -364,7 +370,7 @@ test('summary: a construction filled whole has no hole, a store the guard bounds
       for (let i = 0; i < data.length; i++) for (let j = 0; j < n; j++) acc += coefs[j].b0 * data[i]
       return acc
     }
-    export const run = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p)
+    export const go = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p)
       return avg(d, p) + filter(d, { coefs: design(2) }) + filter(d, { coefs: design(3) }) }`
   summarize(src)
   // (the history's cell keeps its hole: the loop as written, where the guard
@@ -374,7 +380,7 @@ test('summary: a construction filled whole has no hole, a store the guard bounds
   const find = (n) => { if (!Array.isArray(n)) return; if (n[0] === '[]' && typeof n[1] === 'string' && n[1].startsWith('coefs' + MARK) && typeof n[2] === 'string' && n[2].startsWith('j' + MARK)) reads.push(n); n.forEach(find) }
   find(ctx.funcs.list.find(f => f.name === 'filter').body)
   ok(reads.length > 0 && reads.some(n => !hasTag(filter.kindOfExpr(n), K.ABSENT)), 'a coefficient read under the stable length is present')
-  is(jz(src).exports.run(), (() => {
+  is(jz(src).exports.go(), (() => {
     const avg = (data, p) => { let ptr = p.ptr, mem = p.memory; if (ptr == null) { if (!mem) mem = 8; if (typeof mem === 'number') mem = new Array(mem).fill(0); ptr = p.ptr = 0; p.memory = mem }; const m = mem.length; let s = 0; for (let i = 0; i < data.length; i++) { s += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = s / m }; p.ptr = ptr; return data[data.length - 1] }
     const design = (k) => { const sos = []; for (let i = 0; i < k; i++) sos.push({ b0: 1 + i }); return sos }
     const filter = (data, params) => { const coefs = params.coefs, n = coefs.length; let acc = 0; for (let i = 0; i < data.length; i++) for (let j = 0; j < n; j++) acc += coefs[j].b0 * data[i]; return acc }
@@ -401,7 +407,7 @@ test('summary: a construction filled whole has no hole, a store the guard bounds
       return acc
     }
     const design = (k) => { const sos = []; for (let i = 0; i < k; i++) sos.push({ b0: 1 + i }); return sos }
-    export const run = () => { const d = new Float64Array([1, 2, 3]), p = { coefs: design(2) }; stage(d, p); return stage(d, p) }`
+    export const go = () => { const d = new Float64Array([1, 2, 3]), p = { coefs: design(2) }; stage(d, p); return stage(d, p) }`
   summarize(covered)
   const stage = ctx.summary.at('stage'), stateElem = stage.elemKindOf(binding('stage', 'state'))
   ok(stateElem != null && !hasTag(stateElem, K.ABSENT), 'the state array the loop after its construction fills has no hole')
@@ -409,7 +415,7 @@ test('summary: a construction filled whole has no hole, a store the guard bounds
   const findState = (n) => { if (!Array.isArray(n)) return; if (n[0] === '[]' && typeof n[1] === 'string' && n[1].startsWith('state' + MARK) && typeof n[2] === 'string' && n[2].startsWith('j' + MARK)) stateReads.push(n); n.forEach(findState) }
   findState(ctx.funcs.list.find(f => f.name === 'stage').body)
   ok(stateReads.length > 0 && stateReads.every(n => !hasTag(stage.kindOfExpr(n), K.ABSENT)), 'a state pair read inside the count is present')
-  is(jz(covered).exports.run(), (() => {
+  is(jz(covered).exports.go(), (() => {
     const stage = (data, params) => { const coefs = params.coefs, n = coefs.length; if (!params.state) { params.state = new Array(n); for (let i = 0; i < n; i++) params.state[i] = [0, 0] }; const state = params.state; let acc = 0; for (let i = 0; i < data.length; i++) for (let j = 0; j < n; j++) { const s = state[j]; s[0] = s[0] + coefs[j].b0 * data[i]; acc += s[0] }; return acc }
     const design = (k) => { const sos = []; for (let i = 0; i < k; i++) sos.push({ b0: 1 + i }); return sos }
     const d = new Float64Array([1, 2, 3]), p = { coefs: design(2) }; stage(d, p); return stage(d, p)
