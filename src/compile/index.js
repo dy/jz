@@ -30,6 +30,7 @@ import { dataLen, dataBytes, strPoolLen, strPoolBytes } from '../static-data.js'
  * @module compile
  */
 
+import { collectMemberUses, definesToPrimitive } from '../member-uses.js'
 import { ctx, checkpointed, err, PTR, HEAP, getFactStore, declGlobal, inc } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
@@ -196,7 +197,7 @@ export function assemble(ast, profiler) {
       liftedProp: (fn, prop) => { const lifted = `${fn}$${prop}`; return ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) ? lifted : null },
       // a function's typed-guard clone, which its direct calls reach at run time (narrow/specialize.js)
       guardedClone: (fn) => ctx.types.specFns?.get(fn) ?? null,
-      // whether the source may define a `valueOf`/`toString` an operator can run (plan's census; unknown before it)
+      // whether the source may define a `valueOf`/`toString` an operator can run (the census above)
       conversions: ctx.transform.userConversions !== false,
       // `losses`: the first cause the summary loses each object shape by (its reads and stores are dynamic from then on)
       onLose: losses && ((...loss) => losses.push(loss)),
@@ -232,6 +233,10 @@ export function assemble(ast, profiler) {
     }
     return built.summary
   }
+  // Whether an operator over a value of unknown kind may run user code (a
+  // `valueOf`): the source defines one, or none does. Taken before the first
+  // summary, which reads it, and before any pass rewrites a body; no pass defines a method.
+  ctx.transform.userConversions = definesToPrimitive(collectMemberUses())
   ctx.summary = summarizeProgram()
   // A syntactic method name alone does not make its native value reachable.
   // Root the prepared reader only when a receiver's settled kind admits it.

@@ -16,9 +16,21 @@ pinned, run on the default, O0, O3 and WASI legs:
   it writes, so the summary's straight-line fact for the `let` (absent) outlived
   every call. A binding a closure assigns keeps no straight-line fact, parameter
   region or proof from the closure's creation on (`closureAssigned`).
-- The stable-length read of ef027c38 read an element present where a call
-  rebinds the array (a closure or a function assigns its binding) or an operator
-  runs a user `valueOf` that truncates it: both now count as a change of length.
+- The stable-length read of ef027c38 read an element present where the loop
+  ran code of the program's that changes the array's length: a call that
+  rebinds it or shrinks it through a captured closure (`cut(){ a.splice(0) }`),
+  a getter's read, an operator running a user `valueOf`. A loop reads present
+  only where its body runs none of the program's code (`loopPure`): no call or
+  construction but `Math.*` of pure operands, no read of a member a getter of
+  its name may serve, and, where the program defines a `valueOf`/`toString`,
+  no operator converting an operand that may be an object. The census of
+  those definitions is taken ahead of the first summary solve: taken at the
+  plan's start, it reached only a re-solve, and a program the plan rewrites
+  nothing of kept the first solve, which read every such operand as converting.
+  Open: a call in the body is harmless where the array's cell no operation of
+  the program resizes but a count (`unknown` holds it otherwise) and no closure
+  or function assigns the name; that reads present under a loop of helper
+  calls (`out += dist(pts[i], q)`), which the body rule reads checked.
   The covered-construction read of the sosfilter commit called `cell` on a
   receiver of no cell, which wrote past the union-find table and lost an
   unrelated array's kind (data.js DictKindIndex at O0).

@@ -6802,6 +6802,28 @@ test('array bounds: a module array keeps no stale length proof across conversion
   }
 })
 
+// A local array a closure captures is truncated by the call that runs it: by a
+// store to its length, by a method of its own (`splice`), or through another
+// name (`cut(h.a)`). A getter's read runs code too (`o.value` truncating the
+// array), whether an operator or `Math.imul` reads it. None leaves a present read.
+test('array bounds: a captured array keeps no stale length proof across calls and getter reads', () => {
+  const loops = {
+    closureLen: 'function cut() { a.length = 0 } for (let i = 0; i < a.length; i++) { cut(); reads++; return a[i].x }',
+    closureSplice: 'function cut() { a.splice(0) } for (let i = 0; i < a.length; i++) { cut(); reads++; return a[i].x }',
+    passedLen: 'function cut(z) { z.length = 0 } const h = { a }; for (let i = 0; i < a.length; i++) { cut(h.a); reads++; return a[i].x }',
+    accessor: 'const o = { get value() { a.length = 0; return 0 } }; for (let i = 0; i < a.length; i++) { reads += o.value + 1; return a[i].x }',
+    mathAccessor: 'const o = { get value() { a.length = 0; return 1 } }; for (let i = 0; i < a.length; i++) { reads += Math.imul(o.value, 1); return a[i].x }',
+  }
+  for (const [name, loop] of Object.entries(loops)) {
+    const src = `export function f(flag) { const a = []; if (flag) a.push({x:3}); let reads = 0; try { ${loop}; return 'none:' + reads } catch (e) { return e.name + ':' + reads } }`
+    const expected = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const actual = run(src, { optimize: { level: optimize, sourceInline: false } })
+      for (const flag of [0, 1, 1, 0, 1]) is(actual.f(flag), expected.f(flag), `${name}, O${optimize}, flag=${flag}`)
+    }
+  }
+})
+
 test('string bounds: a callee cannot change the receiver or a captured index under the proof', () => {
   const cases = [
     `let s=input; function cut(){s=''}; for(let i=0;i<s.length;i++){cut();return s.charCodeAt(i)}`,

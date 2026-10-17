@@ -3200,7 +3200,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (typeof idx === 'string' && typeof n[1] === 'string' && lenBounds.get(idx) === keyOf(n[1]) && (fixedLen(recv) >= 0 && stable(n[1], current ?? MODULE) || lenStable.has(idx))) { presentReads.add(n); return elemOf(recv) }
         // (a cell constructed with the count the loop's bound aliases, `state = new Array(n)` read under `i < n`: inside it, where the loop leaves its length alone;
         // a receiver of no cell has no count: `cell` of an unknown parameter would write past the table)
-        if (typeof idx === 'string' && typeof n[1] === 'string' && loopBodies.has(idx) && celled(recv) && countBounds(cell(paramOf(recv)), idx) && !lengthMayChange(loopBodies.get(idx), n[1])) { presentReads.add(n); return elemOf(recv) }
+        if (typeof idx === 'string' && typeof n[1] === 'string' && loopBodies.has(idx) && celled(recv) && countBounds(cell(paramOf(recv)), idx) && !lengthMayChange(idx, loopBodies.get(idx), n[1])) { presentReads.add(n); return elemOf(recv) }
         presentReads.delete(n)
         return orAbsent(entryOf(recv, ik))
       }
@@ -3987,58 +3987,83 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const by = lengthAliasOf(count)
     return by !== null && lenBounds.get(idx) === keyOf(by)
   }
-  // the counters whose loop leaves the bounding array's length alone: no call
-  // the array reaches (a method of its own, an argument), no store to its length,
-  // and no call at all where a closure or a function may rebind the name
-  // (`function cut() { b = [] }` called in the loop: `b[i]` reads the new array)
+  // the counters whose loop leaves the bounding array's length alone: no code
+  // of the program's runs in its body, and no statement stores to the length
   const lenStable = new Set()
-  // A program that may define `valueOf`/`toString` (`conversions`: compile/plan's census)
-  // runs one where an operator or a call converts an operand that may be an
-  // object, and that method may hold the array (`+o` with `o.valueOf` truncating it).
-  // An operand is primitive where it is a literal, a binding of primitive kinds,
-  // an operator's result, or an element of a typed array.
-  const PRIMITIVE_BITS_ONLY = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS
-  const primitiveKindBits = (k) => k != null && (k & TAGS) !== 0 && (k & TAGS & ~PRIMITIVE_BITS_ONLY) === 0
-  const primitiveOperand = (x) => {
-    if (x == null || typeof x === 'number') return true
-    if (typeof x === 'string') { const key = keyOf(x); return key !== null && primitiveKindBits(kinds[key]) }
-    if (!Array.isArray(x)) return false
-    if (x[0] == null || x[0] === 'str' || x[0] === 'bool') return true
-    if (CONVERTING_RESULTS.has(x[0])) return true
-    if (x[0] === '[]' && typeof x[1] === 'string') { const key = keyOf(x[1]); return key !== null && tagOf(kinds[key] ?? K.NONE) === K.TYPED }
-    return false
-  }
-  // The module bindings some function assigns: a call may rebind one wherever it is read.
-  let functionAssigned = null
-  const assignedByFunction = (key) => {
-    if (functionAssigned === null) {
-      functionAssigned = new Set()
-      const names = new Set()
-      for (const f of funcs) assignsIn(f.body, names)
-      for (const name of names) { const k = keyIn(MODULE, name); if (k !== undefined) functionAssigned.add(k) }
+  // A loop body that runs no code of the program's but its own statements: no
+  // call or construction (a closure may rebind what it captured, a method may
+  // shrink its receiver; `Math.*` of pure operands runs none), no read of a
+  // member a getter of its name may serve (a computed key, any getter), and,
+  // in a program that may define `valueOf`/`toString` (`conversions`: the
+  // compile's census), no operator converting an operand that may be an
+  // object (`+o` runs valueOf). An operand is primitive where it is a literal,
+  // a name or a slot of primitive kinds, a converting operator's result, an
+  // element of a typed array or of an array of primitive elements, or a length.
+  // Decided once per loop each round from the kinds of that round (a body
+  // impure under wider kinds stays impure, so the last round's answer is the
+  // emitter's); the stores to a name's length are the loop's syntax, read once.
+  const primitiveKinds = (k) => k != null && (k & TAGS) !== 0 && (k & TAGS & ~PRIMITIVE_BITS) === 0
+  const nameKind = (e) => { const key = typeof e === 'string' ? keyOf(e) : null; return key === null ? null : kinds[key] ?? K.NONE }
+  const sequenceTag = (t) => t === K.ARRAY || t === K.TYPED || t === K.STRING
+  let anyGetter = null   // whether the program defines a getter at all (a computed key may read it)
+  const hasGetter = (prop) => membersByName.has(getterOf(prop)) || byProp.has(getterOf(prop))
+  const getterAnywhere = () => anyGetter ??= [...membersByName.keys(), ...byProp.keys()].some(name => typeof name === 'string' && name.endsWith(ACCESSOR_GET))
+  const mathCall = (m) => m[0] === '()' && typeof m[1] === 'string' && m[1].startsWith('math.') && argList(m[2]).every(pureOperand)
+  const pureOperand = (e) => {
+    if (typeof e === 'number' || e == null) return true
+    if (typeof e === 'string') return !conversions || primitiveKinds(nameKind(e))
+    if (!Array.isArray(e)) return false
+    if (e[0] == null || e[0] === 'str' || e[0] === 'bool' || e[0] === '!' || e[0] === 'typeof') return true
+    if (e[0] === '[]' && e.length === 3) {
+      const r = nameKind(e[1]), t = r === null ? K.NONE : tagOf(core(r))
+      if (!pureOperand(e[2])) return false
+      if (t === K.TYPED || t === K.STRING) return true
+      if (t === K.ARRAY) return !conversions || paramOf(r) !== UNKNOWN && primitiveKinds(elems[cell(paramOf(r))])
+      return !getterAnywhere() && !conversions && (typeof e[1] === 'string' || pureOperand(e[1]))
     }
-    return functionAssigned.has(key)
+    if ((e[0] === '.' || e[0] === '?.') && e.length === 3) {
+      if (typeof e[2] !== 'string' || hasGetter(e[2]) || !(typeof e[1] === 'string' || pureOperand(e[1]))) return false
+      const r = nameKind(e[1]), t = r === null ? K.NONE : tagOf(core(r))
+      if (e[2] === 'length' && sequenceTag(t)) return true
+      if (!conversions) return true
+      return t === K.OBJECT && paramOf(r) !== UNKNOWN && slotKeyList(paramOf(r), e[2]).every(key => primitiveKinds(kinds[key]))
+    }
+    if (CONVERTING_RESULTS.has(e[0]) || e[0] === '?:' || e[0] === '&&' || e[0] === '||' || e[0] === '??' || e[0] === ',') { for (let i = 1; i < e.length; i++) if (!pureOperand(e[i])) return false; return true }
+    return mathCall(e)
   }
-  // whether a call the loop makes may rebind the name: a closure assigns it, or a function a module binding
-  const reboundByCall = (name) => {
-    const key = keyOf(name)
-    return key !== null && (closureAssigned.has(key) || bindingScope[key] === MODULE && assignedByFunction(key))
-  }
-  const lengthMayChange = (body, arr) => {
-    let may = false
-    const rebound = typeof arr === 'string' && reboundByCall(arr)
-    const converts = conversions
+  const loopPure = new Map()   // counter → whether its loop's body runs no code of the program's, this round
+  const bodyRunsCode = (body) => {
+    let runs = false
     const walk = (m) => {
-      if (may || !Array.isArray(m)) return
-      if (m[0] === '=>') { may = true; return }
-      if (converts && (CONVERTING_RESULTS.has(m[0]) || m[0] === '()' || m[0] === 'new') && !m.slice(m[0] === '()' || m[0] === 'new' ? 2 : 1).every(primitiveOperand)) { may = true; return }
-      if ((m[0] === '()' || m[0] === '?.()' || m[0] === 'new') && (rebound || JSON.stringify(m).includes(JSON.stringify(arr)))) { may = true; return }
-      if (m[0] === '=' && Array.isArray(m[1]) && m[1][0] === '.' && m[1][1] === arr && m[1][2] === 'length') { may = true; return }
+      if (runs || !Array.isArray(m)) return
+      if (m[0] === '=>' || m[0] === 'new' || m[0] === '?.()') { runs = true; return }
+      if (m[0] === '()') { if (!mathCall(m)) runs = true; return }
+      if (CONVERTING_RESULTS.has(m[0]) && conversions) { for (let i = 1; i < m.length; i++) if (!pureOperand(m[i])) { runs = true; return } }
+      if ((m[0] === '.' || m[0] === '?.') && m.length === 3 && (typeof m[2] !== 'string' || hasGetter(m[2]))) { runs = true; return }
+      if (m[0] === '[]' && m.length === 3 && getterAnywhere()) { const r = nameKind(m[1]); if (r === null || !sequenceTag(tagOf(core(r)))) { runs = true; return } }
       for (let i = 1; i < m.length; i++) walk(m[i])
     }
     walk(body)
+    return runs
+  }
+  const lengthStores = new WeakMap()   // body → arr → whether a statement stores to its length (a syntactic fact)
+  const storesLength = (body, arr) => {
+    let byArr = lengthStores.get(body)
+    if (!byArr) lengthStores.set(body, byArr = new Map())
+    const known = byArr.get(arr)
+    if (known !== undefined) return known
+    let may = false
+    const walk = (m) => {
+      if (may || !Array.isArray(m)) return
+      // a store to `.length`, or under a computed key that may be `'length'`
+      if (MUTATE_OPS.has(m[0]) && Array.isArray(m[1]) && ((m[1][0] === '.' || m[1][0] === '?.') && m[1][1] === arr && m[1][2] === 'length' || m[1][0] === '[]' && m[1][1] === arr && literalKeyOf(m[1][2]) === null && !(Array.isArray(m[1][2]) && m[1][2][0] == null && typeof m[1][2][1] === 'number'))) { may = true; return }
+      for (let i = 1; i < m.length; i++) walk(m[i])
+    }
+    walk(body)
+    byArr.set(arr, may)
     return may
   }
+  const lengthMayChange = (counter, body, arr) => !Array.isArray(body) || loopPure.get(counter) !== true || storesLength(body, arr)
   // A typed element read inside the count: the index's span within the length
   // the walk knows, or a counter the loop bounds by that array's length.
   // The walk's verdict for a read is kept by node (`presentReads`): a counter's
@@ -4083,10 +4108,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const mark = rtop, counted = countedLoop(n), bounded = counted ? null : lengthBoundedLoop(n)
       if (n[2] != null) proves(n[2], true)
       if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); countedDepth++ }
-      if (bounded) { lenBounds.set(bounded[0], keyOf(bounded[1])); spans.set(bounded[0], [bounded[2], LENGTH_BOUND]); loopBodies.set(bounded[0], n[4]); if (!lengthMayChange(n[4], bounded[1])) lenStable.add(bounded[0]) }
+      if (bounded) { lenBounds.set(bounded[0], keyOf(bounded[1])); spans.set(bounded[0], [bounded[2], LENGTH_BOUND]); loopBodies.set(bounded[0], n[4]); loopPure.set(bounded[0], !bodyRunsCode(n[4])); if (!lengthMayChange(bounded[0], n[4], bounded[1])) lenStable.add(bounded[0]) }
       stmt(n[4])
       if (counted) { spans.delete(counted[0]); trips.pop(); countedDepth-- }
-      if (bounded) { lenBounds.delete(bounded[0]); spans.delete(bounded[0]); loopBodies.delete(bounded[0]); lenStable.delete(bounded[0]) }
+      if (bounded) { lenBounds.delete(bounded[0]); spans.delete(bounded[0]); loopBodies.delete(bounded[0]); loopPure.delete(bounded[0]); lenStable.delete(bounded[0]) }
       unwind(mark); selectedExpr(n[3], 0); branch--; flowPath--
       loopExit(loop)
       return

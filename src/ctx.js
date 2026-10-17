@@ -774,8 +774,8 @@ export function reset(proto, globals, bridge) {
                             // back to the compiled function that calls them.
     classes: null,      // Map brand → class entry (jzify/classes.js lowerStruct): the classes lowered to schemas
     memberUses: null,   // the member names the program calls, reads and stores (src/member-uses.js memberUses)
-    userConversions: null, // whether the source defines a `toString`/`valueOf` (src/member-uses.js definesToPrimitive): the plan's
-                         // census, before any conversion helper is synthesized; null until the plan takes it
+    userConversions: null, // whether the source defines a `toString`/`valueOf` (src/member-uses.js definesToPrimitive): assemble's
+                         // census ahead of the first summary, before any conversion helper is synthesized; null until then
     accessorNames: null, // Set of property names some class or object literal defines an accessor
     dynamicAccessorNames: null, // the subset a derived class installs dynamically (jzify/classes.js recordAccessor)
     classMembers: null,  // a class kept as closures: its instance brand → the member slots enumeration hides (jzify/classes.js)

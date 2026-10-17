@@ -1030,8 +1030,11 @@ through it opens nothing and a read through it is present where the loop
 leaves the cell's length alone; and the loop right after the construction
 that stores every index (`for (let i = 0; i < n; i++) state[i] = v`, the store
 its only statement) fills the cell before any read, as `fill` does. A counter the loop bounds by the array's
-own length reads present elements where the loop leaves the length alone (no
-call reaches the array, no store to its length: `lenStable`), the binding
+own length reads present elements where the loop leaves the length alone (its
+body runs no code of the program's: no call or construction but `Math.*` of
+pure operands, no read a getter may serve, no conversion of a possible object
+where the program defines a `valueOf`/`toString`; and no store to its length:
+`lenStable`), the binding
 reassigned elsewhere or not, since the alias of its length survived every
 assignment before the loop. The solve revisits
 every statement each round and the hosted compiler frees a solve's allocations

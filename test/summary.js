@@ -539,6 +539,32 @@ test('summary: array demand preserves identity, escapes, defaults and assignment
   }
 })
 
+// The stable length asks that the loop's body run none of the program's code.
+// `Math.imul` of pure operands and a field read of an element run none: the
+// element read is present. A program that defines a `toString` runs it where an
+// operator converts an operand the summary cannot call primitive (`p.tag`, a
+// slot of a number or an object): the read stays checked.
+test('summary: a stable-length loop reads present where its body runs no code of the program\'s', () => {
+  const elementReads = (fn, arr, idx) => {
+    const reads = [], find = (n) => { if (!Array.isArray(n)) return; if (n[0] === '[]' && typeof n[1] === 'string' && n[1].startsWith(arr + MARK) && typeof n[2] === 'string' && n[2].startsWith(idx + MARK)) reads.push(n); n.forEach(find) }
+    find(ctx.funcs.list.find(f => f.name === fn).body)
+    return reads
+  }
+  const pure = `const sum = (pts, k) => { let s = 0; for (let i = 0; i < pts.length; i++) { const p = pts[i]; s += Math.imul(p.x, k) + p.y } return s }
+    export const go = (k) => { const pts = []; for (let i = 0; i < 3; i++) pts.push({ x: i, y: i * 2 }); return sum(pts, k) }`
+  summarize(pure)
+  let reads = elementReads('sum', 'pts', 'i')
+  ok(reads.length > 0 && reads.every(n => !hasTag(ctx.summary.at('sum').kindOfExpr(n), K.ABSENT)), 'a loop of a Math call and field reads reads its elements present')
+  is(jz(pure).exports.go(3), 0 * 3 + 0 + 3 + 2 + 6 + 4)
+  const converting = `class V { constructor(x) { this.x = x } toString() { return 'v' + this.x } }
+    const sum = (pts) => { let s = ''; for (let i = 0; i < pts.length; i++) { const p = pts[i]; s += p.tag + 1 } return s }
+    export const go = (k) => { const pts = []; for (let i = 0; i < 3; i++) pts.push({ tag: i % 2 ? new V(i) : i }); return sum(pts) + String(new V(k)) }`
+  summarize(converting)
+  reads = elementReads('sum', 'pts', 'i')
+  ok(reads.length > 0 && reads.every(n => hasTag(ctx.summary.at('sum').kindOfExpr(n), K.ABSENT)), 'an operator converting a possible object, where the program defines a toString, keeps the read checked')
+  is(jz(converting).exports.go(7), '1v113v7')
+})
+
 test('summary: result kinds keep payload, presence, typed elements, and resolved method producers separate', () => {
   summarize(`
     function sub(a, b) { return a - b }
