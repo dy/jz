@@ -869,7 +869,7 @@ export function emitDecl(...inits) {
     // receiver — param types are settled only by emit time — and on plain-local
     // carriers (boxed/global escape); any miss falls back to the copying slice.
     let viewInit = null
-    const scratch = ctx.memory.fixed && ctx.memory.scratch.get(ctx.func.current)?.get(init)
+    const scratch = ctx.memory.scratch.get(ctx.func.current)?.get(init)
     if (scratch) viewInit = ctx.core.emit['#fixedTyped'](init[1].slice(4), scratch)
     if (ctx.func.sliceViews?.has(name) && !ctx.func.boxed.has(name) && !isGlobal(name)
         && Array.isArray(init) && init[0] === '()'

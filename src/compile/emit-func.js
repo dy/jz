@@ -9,7 +9,7 @@ import { i64Hex, typedElemAux, TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 import { STRIDE } from '../../module/typedarray/elem-tables.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, nullableBoolBoxIR, ptrTypeEq, undefExpr,
-  isUndef, isGlobal, boxedAddr, dollar, tcoTailRewrite, applyBigintRepresentationAction, numberCarrierIR,
+  isUndef, isGlobal, boxedAddr, dollar, tcoTailRewrite, applyBigintRepresentationAction, numberCarrierIR, writeVar,
 } from '../ir.js'
 import { core, isNullable, K, tagOf } from '../summary/kind.js'
 import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
@@ -183,6 +183,9 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   // detached install snapshot above. Watr ignores these non-index expandos.
   if (plannedCseLoadBases) fn.cseLoadBases = plannedCseLoadBases
   if (plannedDistinctParams) fn.distinctParams = plannedDistinctParams
+  // (the entry write of a static parameter keeps its allocation: the vectorizer's distinctness)
+  const fixedParams = ctx.memory.staticParams.get(ctx.func.current)
+  if (fixedParams) fn.staticParams = new Set([...fixedParams.keys()].map(dollar))
   if (plannedStableHeaderNames) fn.stableHeaderNames = plannedStableHeaderNames
   if (presentArrays.size) fn.presentArrays = presentArrays
   if (presentTyped.size) fn.presentTyped = presentTyped
@@ -302,6 +305,10 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
           ['else', undefExpr()]]],
         ['local.set', `$${ph.is}`, ptrTypeEq(['local.get', `$${ph.ovr}`], PTR.CLOSURE)])
     }
+    // A parameter every call passes one placed array (compile/fixed-memory.js
+    // planStaticLocals) takes its static address at entry: the engine reads
+    // the constant, the passes that reason about parameters the parameter.
+    if (fixedParams) for (const [p, slot] of fixedParams) inits.push(writeVar(p, ctx.core.emit['#fixedTypedPtr'](slot), true))
     for (const p of sig.params) {
       const di = defaultInits.get(p.name)
       if (di) inits.push(di)

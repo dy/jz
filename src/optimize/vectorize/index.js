@@ -121,10 +121,11 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // so the loop-scan recognizers see the branch form they were tuned against.
   canonicalizeIfBr(fn)
 
-  // A distinct parameter retains its allocation identity only while unwritten.
+  // A distinct parameter retains its allocation identity only while unwritten
+  // (a static one's entry write is the address every call passes, compile/emit-func.js).
   const distinctParams = fn.distinctParams ? new Set(fn.distinctParams) : null
   if (distinctParams) walkAst(fn, { enter: n => {
-    if (n[0] === 'local.set' || n[0] === 'local.tee') distinctParams.delete(n[1])
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && !fn.staticParams?.has(n[1])) distinctParams.delete(n[1])
   } })
 
   // Build local-name → wasm-type map.

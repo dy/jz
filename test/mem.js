@@ -1300,6 +1300,10 @@ test('host memory: boolean tags survive structured construction and writes', () 
 // pointer at the top of the loop (the marker local's name is the link's).
 const rewoundLoops = wat => [...wat.matchAll(/\(loop (\$[^\s()]+)\n\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)\)/g)].map(m => m[1])
 const loopRestores = wat => rewoundLoops(wat).length
+// A literal-length block a function keeps to itself is static storage
+// (test/static-locals.js), which allocates nothing to rewind: the rewind
+// fixtures below that make one take the heap path.
+const REWOUND = { level: 'speed', staticLocals: false }
 
 test('arena: a per-iteration rewind holds a render loop flat', () => {
   const src = `export function render(out, blocks) {
@@ -1313,11 +1317,11 @@ test('arena: a per-iteration rewind holds a render loop flat', () => {
     return acc
   }`
   const warnings = { entries: [] }
-  const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings })
+  const wat = compile(src, { optimize: REWOUND, wat: true, why: true, warnings })
   is(warnings.entries.filter(e => e.code === 'rewind-why-not').map(e => e.message), [], 'the loop and the function rewind')
   ok(loopRestores(wat) > 0, 'the loop restores the heap pointer per iteration')
   ok(!/global\.set \$__heap \(local\.get \$[^\s()]+\)\)\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)/.test(wat), 'a loop met through its block restores once')
-  const inst = jz(src, { optimize: 'speed' })
+  const inst = jz(src, { optimize: REWOUND })
   const out = new Float64Array(128)
   const before = inst.memory.buffer.byteLength
   const acc = inst.exports.render(out, 20000)
@@ -1325,6 +1329,10 @@ test('arena: a per-iteration rewind holds a render loop flat', () => {
   let expect = 0
   for (let b = 0; b < 20000; b++) expect += Math.sin(7 * 0.01 + b)
   almost(acc, expect, 1e-6)
+  const placed = jz(src, { optimize: 'speed' }), at = placed.memory.buffer.byteLength
+  almost(placed.exports.render(out, 20000), expect, 1e-6)
+  is(placed.memory.buffer.byteLength, at, 'by default the block is static storage: nothing grows either')
+  ok(!funcWat(compile(src, { optimize: 'speed', wat: true }), 'render').includes('__alloc'), 'and nothing is allocated')
 })
 
 // Loop labels count from zero in every function, so a rewind is registered
@@ -1355,7 +1363,7 @@ test('arena: a per-iteration rewind stays with the function whose loop proved it
     return s
   }`
   for (const src of [render + '\n' + keep, keep + '\n' + render]) {
-    const wat = compile(src, { optimize: 'speed', wat: true })
+    const wat = compile(src, { optimize: REWOUND, wat: true })
     const fn = name => funcWat(wat, name) || funcWat(wat, name + '$exp')
     // Both Number bounds gain guarded counter versions; pin a collision
     // with an actually rewound loop, including complete labels.
@@ -1363,7 +1371,7 @@ test('arena: a per-iteration rewind stays with the function whose loop proved it
     ok(rewoundLoops(fn('render')).some(label => keptLabels.includes(label)), 'a rewound and a retaining loop carry one label')
     ok(loopRestores(fn('render')) > 0, 'the render loop rewinds')
     is(loopRestores(fn('keep')), 0, 'the retaining loop does not')
-    const inst = jz(src, { optimize: 'speed' })
+    const inst = jz(src, { optimize: REWOUND })
     const out = new Float64Array(128), before = inst.memory.buffer.byteLength
     is(inst.exports.render(out, 0), 0, 'zero blocks do no work')
     is(inst.exports.keep(0), 0, 'zero retained blocks start empty')
@@ -1446,7 +1454,7 @@ test('arena: a loop marker dropped at link reports the loop\'s reason', () => {
       let s = 0
       for (let i = 0; i < n; i++) { const b = new Float64Array(128); for (let k = 0; k < 128; k++) b[k] = i + k; s += b[1] + tick() }
       return s
-    }`, { optimize: 'speed', why: true, warnings })
+    }`, { optimize: REWOUND, why: true, warnings })
   const loop = warnings.entries.filter(e => e.code === 'rewind-why-not' && /\$each: loop:/.test(e.message)).map(e => e.message)
   ok(loop.length > 0 && loop.every(m => /loop: tape: .*global\.set/.test(m)), 'the loop\'s tape is the reason: ' + loop.join(' | '))
 })

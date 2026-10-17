@@ -728,6 +728,7 @@ export function reset(proto, globals, bridge) {
     fixed: null,    // selected exports whose final code must use fixed storage
     fixedFuncs: null, // their named callees, from the settled frame census
     scratch: new Map(), // function signature → constructor node → fixed-storage slot
+    staticParams: new Map(), // function signature → parameter → the slot every call passes there
   }
 
   ctx.error = {

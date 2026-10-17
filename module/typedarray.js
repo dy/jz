@@ -312,7 +312,16 @@ export default (ctx) => {
     // Distinct IR nodes per use: the static-prefix pass rebases each pointer
     // in place, so sharing one subtree would shift later slots twice.
     return typed(['block', ['result', 'f64'],
-      ['memory.fill', ptrOffsetIR(ptr()), ['i32.const', 0], ['i32.const', bytes]], ptr()], 'f64')
+      ['memory.fill', ptrOffsetIR(ptr(), VAL.TYPED), ['i32.const', 0], ['i32.const', bytes]], ptr()], 'f64')
+  }
+
+  // A parameter every call passes one placed array (compile/fixed-memory.js
+  // planStaticLocals) reads the array's static address.
+  ctx.core.emit['#fixedTypedPtr'] = (slot) => {
+    setLinkDemand('typedarray')
+    if (slot.ctor === 'Float16Array') setLinkDemand('f16')
+    if (slot.ctor === 'Uint8ClampedArray') setLinkDemand('clamped')
+    return staticStoragePtr(typedAux(slot.ctor), slot.bytes, slot)
   }
 
   // Constructor: new Float64Array(len) | new F64Array(arr) | new F64Array(buf) | new F64Array(buf, off, len)

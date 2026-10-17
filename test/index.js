@@ -169,6 +169,7 @@ const TESTS = [
   'fn-alias',
   'forward-store',
   'static-scratch',
+  'static-locals',
   'held-number',
   'split-bindings',
   'module-scratch',

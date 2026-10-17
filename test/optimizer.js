@@ -1864,7 +1864,8 @@ test('escaping integer typed array keeps its allocation (no unsound mirror)', ()
       return a[0] + a[1] + a[2] + a[3]
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+  // (static placement, test/static-locals.js, would make it a static block: the heap path is pinned here)
+  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false, staticLocals: false } })
   ok(/\$__alloc_hdr_n\b/.test(wat), 'escaping integer typed array must stay heap-allocated')
   is(run(src).main(), 6)
 })
@@ -5747,7 +5748,8 @@ export let main = () => {
   code[6] = 2; code[7] = 0; code[8] = 0
   return exec(code, reg)
 }`
-  const wat = jz.compile(src, { wat: true, optimize: preWatr('speed') })
+  // the tables' heap path: static placement gives them constant bases (test/static-locals.js)
+  const wat = jz.compile(src, { wat: true, optimize: preWatr({ level: 'speed', staticLocals: false }) })
   const execWat = wat.split('(func ').find(c => /^\$exec\b/.test(c)) || ''
   ok(execWat.length > 0, 'inspect the fetch worker before backend inlining')
   ok(!/\$[^ )]*tbg/.test(execWat), 'known length and pc hull retire the fetch guard entirely')
@@ -5756,7 +5758,7 @@ export let main = () => {
   'adjacent fetches share one raw base address')
   is(run(src, { optimize: 'speed' }).main(), 37, 'interpreter result exact')
   const tooShort = src.replace('new Int32Array(9)', 'new Int32Array(8)')
-  ok(!/\$[^ )]*tbg/.test(jz.compile(tooShort, { wat: true, optimize: 'speed' })), 'undersized code table stays independently checked')
+  ok(!/\$[^ )]*tbg/.test(jz.compile(tooShort, { wat: true, optimize: { level: 'speed', staticLocals: false } })), 'undersized code table stays independently checked')
 })
 
 test('typedLen: static length flows through param hops and inline aliases', () => {
@@ -5990,7 +5992,8 @@ test('a checked typed read used as an index carries its miss outward', () => {
 test('small strided outer control loop specializes nested typed kernels', () => {
   const src = `const pass=(a,out)=>{for(let shift=0;shift<32;shift+=8){for(let i=0;i<16;i++)out[i]=(a[i]>>>shift)&255}}
     export let f=()=>{const a=new Uint32Array(16),out=new Uint32Array(16);a[0]=0x12345678;pass(a,out);return out[0]}`
-  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  // the arrays' heap path: static placement folds their bases into the byte loads' offsets
+  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, staticLocals: false } })
   const pw = wat.split('(func $pass')[1]?.split('(func ')[0] || ''
   ok(!/local\.get \$shift/.test(pw), 'outer induction is fully specialized')
   // each variant fixes its byte: a constant shift, or the byte's own load (narrowByteLoads)

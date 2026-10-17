@@ -78,7 +78,7 @@ import { paramValueOnly } from './param-numeric.js'
 import { ensureThrowRuntime } from './throw-runtime.js'
 import { buildInternTable } from './intern-table.js'
 import { captureFuncInspect } from './func-inspect.js'
-import { fixedMemoryFacts } from './fixed-memory.js'
+import { fixedMemoryFacts, planStaticLocals } from './fixed-memory.js'
 import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.js'
 import { analyzeFuncForEmit } from './analyze-for-emit.js'
 import { emitFunc, presentArrayGlobals } from './emit-func.js'
@@ -509,6 +509,9 @@ export function assemble(ast, profiler) {
   // isReassigned memo window: emission is a pure projection of the frozen
   // post-analyze AST, so per-subtree assigned-name sets stay valid for the
   // whole stage (see the memo doc in ast.js).
+  // Static locals (compile/fixed-memory.js): every owner's placements and the
+  // parameters that hold them, settled before any function is emitted.
+  planStaticLocals()
   const funcs = phase(profiler, 'emitFuncs', () => {
     const out = []
     const arrayGlobals = presentArrayGlobals()
