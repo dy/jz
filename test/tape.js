@@ -16,7 +16,6 @@ import { stripLocalRenameSuffixes } from '../src/link/rename-locals.js'
 import { schemaSections } from '../src/link/sections.js'
 import { arenaRewind } from '../src/optimize/arena-rewind.js'
 import { sortLocalsByUse } from '../src/optimize/sort-locals.js'
-import { foldLowWordMasks } from '../src/optimize/low-word-mask.js'
 import { fold } from '../src/optimize/fold.js'
 import { rotateLoops } from '../src/optimize/rotate-loops.js'
 import { funcs } from '../src/optimize/fn.js'
@@ -323,16 +322,6 @@ test('locals sort on the tape: by type under 128 declarations, the hottest in th
   const names = big[1].slice(3, 133).map(l => l[1]), types = big[1].slice(3, 133).map(l => l[2])
   ok(names.indexOf('$l129') < 128 && names.indexOf('$l7') < 128 && names.indexOf('$l0') < 128, 'the used locals take one-byte indices')
   ok(types.slice(0, 128).join('').match(/^(i32)+(f64)+$/) && types.slice(128).join('').match(/^(i32)+(f64)+$|^(i32)+$|^(f64)+$/), 'each side of the boundary groups by type')
-})
-
-test('low-word mask fold on the tape', () => {
-  const m = ['module', ['func', '$f', ['result', 'i32'],
-    ['i32.add', ['i32.wrap_i64', ['i64.and', ['local.get', '$x'], ['i64.const', 0xFFFFFFFF]]],
-      ['i32.wrap_i64', ['i64.and', ['local.get', '$y'], ['i64.const', '0xFFFFFFFF']]]],
-    ['drop', ['i32.wrap_i64', ['i64.and', ['local.get', '$z'], ['i64.const', 0xFFFF]]]]]]
-  const [out] = onTape(m, root => foldLowWordMasks(root))
-  ok(same(out[1][3], ['i32.add', ['i32.wrap_i64', ['local.get', '$x']], ['i32.wrap_i64', ['local.get', '$y']]]), 'a full mask under wrap goes, number or text')
-  ok(same(out[1][4], m[1][4]), 'a narrower mask stays')
 })
 
 // The remaining body passes on the tape (fold and loop rotation) rewrite functions in place.

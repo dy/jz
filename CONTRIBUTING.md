@@ -2696,7 +2696,7 @@ src/
                 plan/object-reads.js: a key a loop reads of an object the function made and only reads, read once where the object is made
                 plan/site-receivers.js: a store's receiver the frame census cannot read again (`map.get(k).push(v)`, `(seen ??= new Set()).add(k)`), read once into a local before the statement, so the escape flag lowers to its address instead of zero
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
-                arena-rewind, sort-locals, low-word-mask are tape passes run by link
+                arena-rewind, sort-locals are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
   summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint refreshed after source rewrites
   ir/           tape.js, the IR tape (parallel typed arrays); the WAT-array helpers until emit builds the tape

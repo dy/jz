@@ -501,26 +501,6 @@ export function watrTail(module, cfg, {
   // then reads the function the source wrote.
   if (cfg.splitBindings !== false) time('shareSplitSlots', () => { for (const n of legalized) shareSplitSlots(n) })
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
-  // watr 5.11.8's stripmut counts only Wasm writes. Exported mutable globals
-  // are also writable by the host (heap/escape marks in particular), so its
-  // proof is unavailable for a module with that boundary.
-  if (watrOpts) {
-    const exports = new Set(legalized.filter(n => n?.[0] === 'export' && n[2]?.[0] === 'global').map(n => n[2][1]))
-    if (legalized.some(n => n?.[0] === 'global' && n[2]?.[0] === 'mut' && (exports.has(n[1]) || n.some(c => c?.[0] === 'export')))) {
-      watrOpts.stripmut = false
-      // Keep constant propagation for private, unwritten globals. The host
-      // boundary counts as a possible write, exactly like a global.set.
-      const written = new Set(exports)
-      const scan = n => {
-        if (!Array.isArray(n)) return
-        if (n[0] === 'global.set' || n[0] === 'global' && n.some(c => c?.[0] === 'export')) written.add(n[1])
-        for (let i = 0; i < n.length; i++) scan(n[i])
-      }
-      scan(legalized)
-      for (const n of legalized)
-        if (n?.[0] === 'global' && n[2]?.[0] === 'mut' && !written.has(n[1])) n[2] = n[2][1]
-    }
-  }
   // The math runtime depends only on its operands and cannot trap (its loads read constant
   // tables, its truncations are guarded): value numbering and scheduling treat its calls
   // like arithmetic.

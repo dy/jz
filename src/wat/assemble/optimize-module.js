@@ -132,8 +132,6 @@ export function optimizeModule(sec, profiler) {
       if (masked.has(s)) guardMaskedVectorSuffix(s, memoryWrites)
     }
   })
-  // Redundant low-word masks under `i32.wrap_i64` go last: the global-base
-  // hoists above recognize the masked form.
   // The lane vectorizer can inject f64x2 stdlib mirrors ($math.log_v, $math.cos2, …)
   // absent from the already-pulled+treeshaken module. Append any now-referenced mirror
   // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.

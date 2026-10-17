@@ -1,10 +1,10 @@
 /**
  * Link: the assembled module goes onto the IR tape, the body and
  * whole-module passes run, and the module comes back as WAT arrays for
- * watr. Bodies first: the fold and loop rotation, then the low-word mask fold and the arena
- * rewind. Then the module's shape: dead functions and globals go
- * (treeshake), the custom sections the interop layer reads describe what
- * survived, the throw runtime goes when nothing can catch. Then the
+ * watr. Bodies first: the fold and loop rotation, then the arena rewind.
+ * Then the module's shape: dead functions and globals go (treeshake), the
+ * custom sections the interop layer reads describe what survived, the
+ * throw runtime goes when nothing can catch. Then the
  * encoding: locals order by use when watr does not follow to order them,
  * functions by call count, local names lose their scope suffixes.
  *
@@ -25,7 +25,6 @@ import { stripLocalRenameSuffixes } from './rename-locals.js'
 import { funcs } from '../optimize/fn.js'
 import { rotateLoops } from '../optimize/rotate-loops.js'
 import { fold } from '../optimize/fold.js'
-import { foldLowWordMasks } from '../optimize/low-word-mask.js'
 import { arenaRewind } from '../optimize/arena-rewind.js'
 import { sortLocalsByUse } from '../optimize/sort-locals.js'
 
@@ -55,7 +54,6 @@ export function link(module, facts) {
     if (cfg && cfg.rotateLoops === true) rotateLoops(f)
   }
   if (DBG_INVARIANTS) check(root, 'after the body passes')
-  if (!cfg || cfg.fusedRewrite !== false) foldLowWordMasks(root)
   // A throw nothing can observe allocates nothing: its helpers reduce before the
   // rewind's proof and the treeshake read their calls.
   reduceThrowHelpers(root, facts)

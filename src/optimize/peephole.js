@@ -763,7 +763,7 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
   if (cast) return cast
   // Rep-specific folds (NaN-box layout-aware reinterpret/wrap simplifications under
   // the nanbox preset). Each rep owns the rules depending on its carrier layout.
-  if (op === 'i64.reinterpret_f64' || op === 'f64.reinterpret_i64' || op === 'i32.wrap_i64') {
+  if (op === 'i32.wrap_i64') {
     const repFold = nanboxF64.peephole(node)
     if (repFold != null) return repFold
   }

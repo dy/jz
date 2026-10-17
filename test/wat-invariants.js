@@ -81,7 +81,7 @@ test('ablation: hoistGlobalPtrOffset lifts the global NaN-box base decode out of
 // the equivalent `call $__ptr_offset` form (module-global STRING/TYPED/OBJECT/
 // BUFFER/CLOSURE pointees never forward, so both compute the same offset).
 // the raw base of a global: `wrap(reinterpret(global.get))`, with or without the
-// low-word mask (foldLowWordMasks strips it), or the forwarding follow
+// low-word mask (watr's identity strips it), or the forwarding follow
 const STRING_BASE_DECODE = (n) =>
   (n[0] === 'i32.wrap_i64' && Array.isArray(n[1]) && (
     (n[1][0] === 'i64.and' && Array.isArray(n[1][1]) && n[1][1][0] === 'i64.reinterpret_f64'
