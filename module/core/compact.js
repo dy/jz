@@ -819,6 +819,8 @@ export const registerCompact = () => {
     if (has('__rootn') && has('__roots')) resets.push(`(if (global.get $__roots) (then (memory.fill (global.get $__roots) (i32.const 0) (i32.const ${ROOT_LOG_BYTES}))))
     (global.set $__rootn (i32.const 0))`)
     if (has('__rootl')) resets.push(`(global.set $__rootl (i64.const 0))`)
+    // a loop releasing its iterations walks from a mark the move left behind (module/core/reach.js `__iter_release`)
+    if (has('__gc_epoch')) resets.push(`(global.set $__gc_epoch (i32.add (global.get $__gc_epoch) (i32.const 1)))`)
     if (has('__jbuf')) resets.push(`(global.set $__jbuf (i32.const 0)) (global.set $__jcap (i32.const 0))`)
     if (has('__jstack')) resets.push(`(global.set $__jstack (i32.const 0))`)
     if (has('__closure_spill')) resets.push(`(global.set $__closure_spill (i32.const 0))`)

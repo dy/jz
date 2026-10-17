@@ -170,6 +170,7 @@ const TESTS = [
   'forward-store',
   'static-scratch',
   'static-locals',
+  'iteration-release',
   'held-number',
   'split-bindings',
   'module-scratch',

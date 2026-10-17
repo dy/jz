@@ -10,7 +10,7 @@ import { enumKeys } from '../../../module/schema.js'
 import {
   T, MUTATE_OPS, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, collectBareRefs, some, walkAst,
 isArrayIndexKey, RELATIONAL_OPS } from '../../ast.js'
-import { LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
+import { HEAP, LAYOUT, PTR, ctx, err, inc, getFactStore } from '../../ctx.js'
 import {
   asF64, asI32, freshId, isBoundName, isGlobal, isLit, isNullish, litVal, readVar, temp, tempI32, tempI64, truthyIR, typed, undefExpr,
 } from '../../ir.js'
@@ -20,7 +20,7 @@ import { constIntExpr, constNumExpr, intExprRange, intLiteralValue, counterInit,
 import { loopFacts, counterRefinements, testRefinements } from '../loop-model.js'
 import {
   MAX_NESTED_FOR_UNROLL, MAX_SMALL_FOR_UNROLL, SLOT_OPS, cloneWithSubst, containsDeclOf, containsKnownTypedArrayIndex, sumsTypedElements, containsNestedClosure, containsNestedLoop, exprType, idxKey, nestedSmallLoopBudget, smallConstForTripCount, versionableTypedNest, inBoundsArrIdx } from '../../type.js'
-import { withControlFrame, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
+import { withControlFrame, withFinallyStack, withPendingLabel, withSchemaSpeculation } from '../flow-state.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit, emitVoid, markDropped, provedPresent, toBool } from './dispatch.js'
@@ -556,6 +556,40 @@ function durableLoopArrays(init, cond, step, body) {
   return out
 }
 
+/**
+ * The release of a loop's iterations by the escape flag (compile/analyze/
+ * frame-effects.js `releasable`, module/core/reach.js `__iter_release`). The
+ * heap's top as the loop begins is the first iteration's mark; while the
+ * loop runs a receiver below the mark is logged as one older than every frame
+ * reading the flag is; each iteration's start gives back what the one before
+ * it made and no escape reached, once the iterations since the mark made
+ * more than RELEASE_BYTES (a walk costs its log and a bit per word: an
+ * iteration of a few objects pays one comparison). A compaction moves what a
+ * mark names and empties the log (`$__gc_epoch` counts them): the iteration
+ * after one keeps all and starts a mark of its own. The loop's end, and a
+ * return or a branch out of it, put the log's floor back.
+ */
+const RELEASE_BYTES = 65536   // the iterations a release takes back together: a walk per 64 KiB they made, at most
+const iterationRelease = () => {
+  inc('__iter_release')
+  const mark = tempI32('irm'), was = tempI32('irb'), epoch = tempI32('ire')
+  const top = () => ctx.memory.shared ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]] : ['global.get', '$__heap']
+  const raise = () => ['if', ['i32.gt_u', ['local.get', `$${mark}`], ['global.get', '$__ibase']], ['then', ['global.set', '$__ibase', ['local.get', `$${mark}`]]]]
+  return {
+    pre: [['local.set', `$${mark}`, top()], ['local.set', `$${was}`, ['global.get', '$__ibase']], raise(),
+      ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']]].map(releasing),
+    top: releasing(['if', ['i32.ne', ['local.get', `$${epoch}`], ['global.get', '$__gc_epoch']],
+      ['then', ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']], ['local.set', `$${mark}`, top()], raise()],
+      ['else', ['if', ['i32.gt_u', ['i32.sub', top(), ['local.get', `$${mark}`]], ['i32.const', RELEASE_BYTES]],
+        ['then', ['local.set', `$${mark}`, ['call', '$__iter_release', ['local.get', `$${mark}`]]]]]]]),
+    post: releasing(['global.set', '$__ibase', ['local.get', `$${was}`]]),
+    cleanup: ['#logFloor', was],
+  }
+}
+/** A statement of the release protocol: a program that allocates nothing has
+ *  no heap to release, and the stdlib's pull takes them out (wat/assemble/stdlib-pull.js). */
+export const releasing = (n) => (n.iterRelease = true, n)
+
 export const controlFlowOps = {
   // === Control flow ===
 
@@ -673,8 +707,10 @@ export const controlFlowOps = {
     // loops reads it again.
     const cold = body?.cold === true
     // Don't unroll a loop that is the target of a `continue <label>` — unrolling would lose the
-    // continue edge. (Plain loops with no labeled-continue still unroll.)
-    if (!entered && !labeledContinue && !cold && (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false)) {
+    // continue edge. (Plain loops with no labeled-continue still unroll.) Nor
+    // one whose iterations are released (iterationRelease): each copy would
+    // keep what the one before it made.
+    if (!entered && !labeledContinue && !cold && !ctx.plans.releaseLoops?.has(body) && (!ctx.transform.optimize || ctx.transform.optimize.smallConstForUnroll !== false)) {
       const unrolled = unrollSmallConstFor(init, cond, step, body)
       if (unrolled) return unrolled
     }
@@ -1280,7 +1316,11 @@ export const controlFlowOps = {
     const bodyRefs = counterRefinements(facts)
     if (condForLoop) extractRefinements(condForLoop, bodyRefs, true)
     for (const [name, fact] of initRefs) bodyRefs.set(name, bodyRefs.has(name) ? { ...bodyRefs.get(name), ...fact } : fact)
-    const emitLoopBody = () => withRefinements(bodyRefs, body, () => withRefinements(savedRefs, body, () => emitVoid(body)))
+    // An iteration released by the escape flag: a return or a branch out of
+    // the loop puts the log's floor back, as the loop's end does.
+    const release = ctx.plans.releaseLoops?.has(bodyNode0) && !ctx.memory.atomic ? iterationRelease() : null
+    const bodyOf = () => withRefinements(bodyRefs, body, () => withRefinements(savedRefs, body, () => emitVoid(body)))
+    const emitLoopBody = release ? () => withFinallyStack((ctx.func.finallyStack || []).concat([{ cleanup: release.cleanup, depth: ctx.func.stack.length - 1 }]), bodyOf) : bodyOf
     const loopBody = []
     if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz',
       withRefinements(initRefs, condForLoop, () => withRefinements(testRefinements(facts), condForLoop, () => toBool(condForLoop)))]])
@@ -1293,6 +1333,7 @@ export const controlFlowOps = {
     }
     if (step) loopBody.push(...withRefinements(initRefs, step, () => emitVoid(step)))
     loopBody.push(['br', loop])
+    if (release) { loopBody.unshift(release.top); result.push(...release.pre) }
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
     // (`cold` on the IR too: the vectorizer leaves a cold loop; `checkedTwin` is specialize's mark)
     if (cold) { loopBlockNode.checkedTwin = true; walkAst(loopBlockNode, { enter: n => { if (n[0] === 'loop') { n.checkedTwin = true; n.cold = true } } }) }
@@ -1322,11 +1363,14 @@ export const controlFlowOps = {
     // of this block's locals keeps current (freshenUnrolledScalarBindings).
     ctx.plans.loweringLinks.set(loopBlockNode, { plan: facts, lowering: { ivName: counterName, guardName } })
     result.push(loopBlockNode)
+    if (release) result.push(release.post)
     return result.length === 1 ? result[0] : result
     })
   },
 
   'while': (cond, body) => controlFlowOps['for'](null, cond, null, body),
+  // a released loop's floor put back where a return or a branch leaves it (iterationRelease)
+  '#logFloor': (was) => releasing(typed(['global.set', '$__ibase', ['local.get', `$${was}`]], 'void')),
   'label': (name, body) => {
     const brk = `$label${freshId(ctx)}`
     return withControlFrame({ label: name, brk }, () =>

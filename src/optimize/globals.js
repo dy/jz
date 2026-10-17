@@ -23,9 +23,11 @@ import { isMemWrite } from 'watr/optimize'
  * Unknown callees (imports — absent from the module's func list) write nothing:
  * wasm imports cannot touch module globals. `call_indirect`/`call_ref` targets
  * are unknown wasm functions — treat as writing every global any function
- * writes (the sound over-approximation).
+ * writes (the sound over-approximation). `later`: callees a pass still to run
+ * puts in a function (name → names): a loop's compaction kernels
+ * (optimize/loop-compact.js), which bump the epochs and empty the logs.
  */
-export function collectReachableGlobalWrites(funcs) {
+export function collectReachableGlobalWrites(funcs, later = null) {
   const writes = new Map(), callees = new Map(), indirect = new Set(), all = new Set()
   const EMPTY = new Set()
   let w = null, c = null, fnName = null
@@ -47,6 +49,8 @@ export function collectReachableGlobalWrites(funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
     w = null; c = null; fnName = fn[1]
     walkAst(fn, walkOptions)
+    const more = later?.get(fnName)
+    if (more) { if (!c) c = new Set(); for (const m of more) c.add(m) }
     if (w || c || indirect.has(fnName)) writes.set(fnName, w || new Set())
     if (c) callees.set(fnName, c)
   }

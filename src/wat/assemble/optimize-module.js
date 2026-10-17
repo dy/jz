@@ -24,6 +24,7 @@ import { appendLateStdlib } from './stdlib-pull.js'
 import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
 import { insertLoopCompacts } from '../../optimize/loop-compact.js'
 import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
+const COMPACT_KERNELS = ['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thresh']
 /**
  * Phase: whole-module + per-function optimization passes.
  */
@@ -45,7 +46,9 @@ export function optimizeModule(sec, profiler) {
   // Build the shared proof only if a global-load optimization consumes it.
   // Its precise call graph also subsumes the old coarse volatility census.
   let reachableWrites
-  const globalWrites = () => reachableWrites ??= t('reachableWrites', () => collectReachableGlobalWrites(allFuncs))
+  // A loop's compaction goes in after the passes that read this (loopCompacts, below).
+  const compacting = ctx.plans.compactLoopLabels?.size ? new Map([...ctx.plans.compactLoopLabels.keys()].map(name => [name, COMPACT_KERNELS])) : null
+  const globalWrites = () => reachableWrites ??= t('reachableWrites', () => collectReachableGlobalWrites(allFuncs, compacting))
   // Share function-entry snapshots with the loop-scoped complement. Both use
   // the same write proof and run before promoteGlobals hides global.get.
   if (!cfg || cfg.hoistGlobalPtrOffset !== false || cfg.hoistLoopGlobalPtrOffset !== false) t('hoistGlobalPtr', () => {

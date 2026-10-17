@@ -116,7 +116,7 @@ const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__hea
   '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base', '$__esc_low',
   '$__jbuf', '$__jstack', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
-  '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end',
+  '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch',
   // the reset's log of an object (module/core/durable-log.js `__durable_obj_snap`), which lowers the flag itself
   '$__durable_arr_seen', '$__durable_arr_log'])
 const IC_SITE = /^\$__ic_(hi|slot)\d+$/, REGEX_STATE = /^\$__re_(lastIndex_\d+|g\d+_(start|end))$/
@@ -148,15 +148,19 @@ const LOWERS = new Set(['$__esc_at', '$__esc_val', '$__esc_elem', '$__esc_cell',
 // The log of what the escapes wrote into and the walk from it as a frame
 // returns (module/core/reach.js): kernels of the protocol itself, whose
 // stores go into the log and into scratch above the heap.
-const REACH = /^\$__(root|root_reset|survive|reach_\w+|gc_\w+|compact)$/
+const REACH = /^\$__(root|root_reset|survive|reach_\w+|gc_\w+|compact|iter_release)$/
 const SURVIVE = '$__survive', ROOTN = '$__rootn', ROOTS = '$__roots', ROOT_RESET = '$__root_reset'
 // The lowest the flag stood at since the outermost reading frame was entered:
 // a handler's flag (compile/emit/statements.js).
 const ESC_LOW = '$__esc_low'
+// Below it a receiver is logged too while a loop releases its iterations (module/core/reach.js `__iter_release`).
+const IBASE = '$__ibase'
 // What asks of a stored value whether a running call made it: no lowering itself.
 const ASKS = '$__esc_new'
 /** A phase checkpoint's read of the flag (module/core.js, scripts/self.js checkpointPhase): the frame that calls it is a reader. */
 const PARK_SAFE = '$__park_safe'
+/** A loop's release of an iteration (module/core/reach.js, emit/control-flow.js iterationRelease): its frame reads the flag too. */
+const ITER_RELEASE = '$__iter_release'
 /** The checkpoint's other helpers before its verdict, and the heap's marks: they read and set the protocol's globals, no escape. */
 const PARK_CALLS = /^\$__(park_(mark|enter|low_enter|base_enter|worth|end)|durable_state|heap_since|heap_mark|heap_large|esc_get)$/
 // What asks of a frame's result whether the frame made it (module/core.js).
@@ -470,7 +474,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         if (LOWERS.has(callee)) { if (!LOWERS.has(name)) { rec.lowers = true; if (rec.censused) rec.ownFlag = true } return }
         if (callee !== null && REACH.test(callee)) return
         // the checkpoint's helpers write the flag: reached from their caller, a reader, so their writes stay
-        if (callee === PARK_SAFE || PARK_CALLS.test(callee)) { if (callee === PARK_SAFE) rec.reader = true; rec.calls.add(callee); return }
+        if (callee === PARK_SAFE || callee === ITER_RELEASE || PARK_CALLS.test(callee)) { if (callee === PARK_SAFE || callee === ITER_RELEASE) rec.reader = true; rec.calls.add(callee); return }
         if (callee === null || callee === ASKS || callee === MADE || ARENA_SAFE.includes(callee) || CENSUS_GUARDED.test(callee)) return
         // jz's own interop imports (`$__ext_*`, interop.js) that read hand the
         // host nothing; one that calls the host or sets a property of its
@@ -833,6 +837,8 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     const then = push(iff, node(intern('then')))
     if (reach) { const empty = node(CALL); push(empty, str(ROOT_RESET)); push(then, empty) }
     if (folds) push(then, lowSet(i32c(-1)))
+    // a loop an exception or a return left raised no receiver past it
+    if (globals.has(IBASE)) { const s = node(GLOBAL_SET); push(s, str(IBASE)); push(s, i32c(0)); push(then, s) }
     return iff
   }
   // A frame that clears the flag hands what it held to the lowest: a handler

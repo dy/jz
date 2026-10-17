@@ -39,6 +39,14 @@ const DBG_POISON = typeof process !== 'undefined' && process.env?.JZ_DEBUG_POISO
  *  pass is on, and so is the rewind it refines. */
 export const reachOn = () => ctx.transform.optimize?.arenaReach === true && ctx.transform.optimize.arenaRewind !== false
 
+/** Whether a receiver at `a` is older than every frame reading the flag
+ *  (below `$__base`), or, while a loop releases its iterations, older than
+ *  the iteration (below `$__ibase`, emit/control-flow.js iterationRelease):
+ *  a way in the log must name. */
+export const belowLog = (a) => ctx.scope.globals.has('__ibase')
+  ? `(i32.or (i32.lt_u ${a} (global.get $__base)) (i32.lt_u ${a} (global.get $__ibase)))`
+  : `(i32.lt_u ${a} (global.get $__base))`
+
 /** Receivers the log holds: past them the frame keeps all. Its slots are
  *  twice as many, a table an entry is found in by its address. */
 const ROOTS = 128, SLOTS = 2 * ROOTS
@@ -93,9 +101,9 @@ export const registerReach = () => {
 
   // The cell of a captured binding took a value: the flag goes down to the
   // cell, and a cell older than every reading frame is a way in.
-  ctx.core.stdlib['__esc_cell'] = `(func $__esc_cell (param $a i32)
+  ctx.core.stdlib['__esc_cell'] = () => `(func $__esc_cell (param $a i32)
     (call $__esc_at (local.get $a))
-    (if (i32.lt_u (local.get $a) (global.get $__base))
+    (if ${belowLog('(local.get $a)')}
       (then (if (i32.ne (global.get $__base) (i32.const -1)) (then (call $__root (i64.extend_i32_u (local.get $a))))))))`
 
   // A module binding took the value: one a running call made is a way in by
@@ -378,6 +386,28 @@ export const registerReach = () => {
   }
 }
 
+/** A loop's release of the iteration that ran, at the next one's start
+ *  (emit/control-flow.js iterationRelease): the mark is the heap's top as the
+ *  iteration began. Where the flag stands at or above it, every escape since
+ *  wrote into memory the iteration made, which goes with it; else the walk
+ *  from the log keeps what the escapes reached, as an outermost frame's
+ *  does, and the next iteration starts above it, its receivers logged.
+ *  With no frame reading the flag no escape was told: the iteration keeps
+ *  all. Returns the next iteration's mark. */
+export const registerIterRelease = () => {
+  const heap = ctx.memory.shared ? `(i32.load (i32.const ${HEAP.PTR_ADDR}))` : '(global.get $__heap)'
+  const setHeap = (v) => ctx.memory.shared ? `(i32.store (i32.const ${HEAP.PTR_ADDR}) ${v})` : `(global.set $__heap ${v})`
+  ctx.core.stdlib['__iter_release'] = `(func $__iter_release (param $mark i32) (result i32)
+    (local $top i32)
+    (if (i32.eq (global.get $__base) (i32.const -1)) (then (return ${heap})))
+    (if (i32.ge_u (global.get $__esc) (local.get $mark))
+      (then ${DBG_POISON ? `(memory.fill (local.get $mark) (i32.const 255) (i32.sub ${heap} (local.get $mark)))` : ''} ${setHeap('(local.get $mark)')} (return (local.get $mark))))
+    (local.set $top (call $__survive (local.get $mark)))
+    ${setHeap('(local.get $top)')}
+    (if (i32.gt_u (local.get $top) (global.get $__ibase)) (then (global.set $__ibase (local.get $top))))
+    (local.get $top))`
+}
+
 /** Whether the program keeps properties in the runtime's table by address
  *  (module/collection.js): `__dyn_set` alone writes it. */
 const keyedProps = () => ctx.scope.globals.has('__dyn_props') && ctx.core.includes.has('__dyn_set') && ctx.core.stdlib['__ihash_get_local'] != null
@@ -393,4 +423,5 @@ export const REACH_DEPS = {
   __reach_props: ['__reach_see', '__reach_in'],
   __reach_in: () => ['__reach_new', '__reach_end', '__reach_fit', '__reach_cells', '__reach_see', '__reach_props', ...(keyedProps() ? ['__ihash_get_local'] : [])],
   __survive: ['__reach_room', '__reach_end', '__reach_fit', '__reach_see', '__reach_in'],
+  __iter_release: ['__survive'],
 }

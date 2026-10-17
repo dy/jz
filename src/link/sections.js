@@ -130,15 +130,16 @@ export function releaseSection(root, { releasable, flagged: conditional, rewound
     push(push(f, node(intern('result'))), str('i32'))
     const l = push(f, node(intern('local'))); push(l, str('$was')); push(l, str('i32'))
     push(f, set('local.set', '$was', get('global.get', '$__base')))
-    if (declared.has('$__root_reset') || declared.has('$__esc_low') || declared.has('$__stubn')) {
+    if (declared.has('$__root_reset') || declared.has('$__esc_low') || declared.has('$__stubn') || declared.has('$__ibase')) {
       // no frame read the flag: the log of what the escapes write into starts empty, the lowest flag clear,
-      // the stub log empty (module/core/compact.js)
+      // the stub log empty (module/core/compact.js), no loop's floor raised (module/core/reach.js `__iter_release`)
       const none = node(intern('i32.eq')); push(none, get('local.get', '$was')); push(push(none, node(intern('i32.const'))), num(-1))
       const iff = push(f, node(intern('if'))); push(iff, none)
       const then = push(iff, node(intern('then')))
       if (declared.has('$__root_reset')) push(then, get('call', '$__root_reset'))
       if (declared.has('$__esc_low')) { const clear = node(intern('i32.const')); push(clear, num(-1)); push(then, set('global.set', '$__esc_low', clear)) }
       if (declared.has('$__stubn')) { const zero = node(intern('i32.const')); push(zero, num(0)); push(then, set('global.set', '$__stubn', zero)) }
+      if (declared.has('$__ibase')) { const zero = node(intern('i32.const')); push(zero, num(0)); push(then, set('global.set', '$__ibase', zero)) }
     }
     push(f, set('global.set', '$__base', get('local.get', '$mark')))
     push(f, get('local.get', '$was'))

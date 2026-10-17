@@ -1018,8 +1018,10 @@ function frameEffectsOf(func, loops) {
   // it, though the census counts no site there: the frame restores nothing.
   if (SCRATCH.has(func.name) && !out.keeps) { out.keeps = true; out.keepsWhy = 'lends what it made to a record' }
   // a loop's scope declares nothing of the function's: its parameters are
-  // outer storage there (a block kept in one outlives the iteration)
-  out.loops = loops ? loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams) })) : []
+  // outer storage there (a block kept in one outlives the iteration);
+  // `iteration` the same census judged by the escape flag, as a frame's is
+  out.loops = loops ? loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams),
+    iteration: () => census(view, roots, [loopBody], NO_NAMES, typedParams, true) })) : []
   return out
 }
 
@@ -1089,6 +1091,22 @@ function arrowsIn(n, found) {
  * the closures with an escape at no node. `loops` requests per-iteration
  * rewind proofs; planning and pre-rewrite analysis need only function facts.
  */
+/** Whether a loop's iterations may be released by the escape flag
+ *  (emit/control-flow.js iterationRelease): judged as a frame is, every
+ *  escape of its own is a site of the function's, flagged where it runs. A
+ *  store into a binding of the function declared outside the loop, or into
+ *  what such a binding holds, is no escape of the frame's, so no flag would
+ *  name it; a suspension hands what the iteration made to code outside it.
+ *  Callees are frames of their own, flagged where they run. */
+function releasable(o, iteration, body) {
+  if (suspends(body)) return false
+  const l = iteration()
+  if (l.unsited) return false
+  for (const n of l.sites) if (!o.sites.has(n)) return false
+  return true
+}
+const suspends = (n) => isArr(n) && !isFunctionNode(n) && (n[0] === 'yield' || n[0] === 'await' || n.some((c, i) => i > 0 && suspends(c)))
+
 export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const own = new Map()
   for (const f of funcs) if (!f.raw && f.body != null) own.set(f.name, frameEffectsOf(f, loops))
@@ -1111,7 +1129,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const nodes = [...own, ...closureOwn]
   const facts = new Map()
   for (const [name, o] of nodes) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, keeps: o.keeps, flagged: o.flagged, unsited: o.unsited, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates,
-    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), allocLoops: new Set(), freshObjects: o.freshObjects ?? null })
+    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), allocLoops: new Set(), releaseLoops: new Set(), freshObjects: o.freshObjects ?? null })
   const spell = (c) => typeof c === 'number' ? 'closure' + c : c
   // The arena facts of a callee (a function by name, a closure by its key),
   // `every`: reached on every call of the caller. A host's function is
@@ -1171,12 +1189,16 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const rewindable = (l) => !l.arenaUnsafe && !l.closures?.size && [...l.callees].every(clean)
   for (const [name, o] of own) {
     const f = facts.get(name)
-    for (const { body, own: l } of o.loops) {
+    for (const { body, own: l, iteration } of o.loops) {
       if (!allocating(l)) continue
-      if (rewindable(l)) f.loops.add(body)
+      if (rewindable(l)) { f.loops.add(body); continue }
       // an iteration that allocates and lets something escape: what it keeps is
       // compacted in place when it piles up (optimize/loop-compact.js)
-      else f.allocLoops.add(body)
+      f.allocLoops.add(body)
+      // and released at the next one's start by the escape flag where every
+      // escape the iteration can run is one of the frame's sites, flagged
+      // where it runs (emit/control-flow.js iterationRelease)
+      if (releasable(o, iteration, body)) f.releaseLoops.add(body)
     }
   }
   // a closure's loops likewise, the compacting ones: a pipeline's phases and

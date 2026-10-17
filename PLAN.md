@@ -983,6 +983,16 @@ Diagnoses, no change made:
   escape, with a per-parameter escape fact for callees; a closure value the
   summary resolves (`view.calleeOf`) is a known callee; a zero-argument host
   import receives no pointer. Each needs its own soundness pins.
+  Measured on October 17 they were not the lever: the escape flag already
+  sees through all four as the loop runs (the host import hands nothing, the
+  method and the closures run code whose own sites lower the flag, and the
+  source string lies below any mark the loop takes). The loop lacked a
+  release by that flag: an iteration is now judged as a frame is
+  (emit/control-flow.js `iterationRelease`, module/core/reach.js
+  `__iter_release`). On the M-series machine, loaded, the jessie case's Wasm
+  memory falls from 34 MB to 8.5 MB and its peak RSS from 90 MB to 63 MB,
+  against 99 MB for V8 on the same machine; the checksum is unchanged, also
+  with freed memory poisoned (`JZ_DEBUG_POISON=1`).
 - **fft.** jz's vector butterfly is about 28 x64 instructions against clang's
   25, with 8 spill reloads; the reloads of `re[a]` and `im[a]` are what the
   loop-step fix removes. TinyGo does not build locally (Go 1.26 against its

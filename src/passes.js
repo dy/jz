@@ -94,6 +94,7 @@ export const PASS_NAMES = [
   'recursionUnroll',          // inline a single non-tail self-call to depth N (tree-recursion call-overhead)
   'arenaRewind',              // per-call heap rewind for functions whose allocations stay in the frame
   'arenaReach',               // a call that ran an escape keeps what the escape reaches, not all it allocated (links the walk, ~2 KB)
+  'iterationRelease',         // a loop whose escapes the frame flags gives back each iteration's memory by the flag and the walk (needs arenaReach)
   'compact',                  // the host compacts what the module keeps as the outermost call returns (module/core/compact.js, ~3 KB)
   'treeshake',
   'jsstring',                 // boundary opt-in: flip exported string params to externref

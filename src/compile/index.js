@@ -309,6 +309,10 @@ export function assemble(ast, profiler) {
     ctx.plans.rewindLoopLabels = null
     const compacts = ctx.plans.compactLoops = new WeakSet()
     ctx.plans.compactLoopLabels = null
+    // Loops whose iterations are released by the escape flag and the walk
+    // from its log (emit/control-flow.js iterationRelease): where the walk runs.
+    const releases = ctx.plans.releaseLoops = reachOn() && !ctx.memory.shared && ctx.transform.optimize?.iterationRelease !== false ? new WeakSet() : null
+    let released = false
     ctx.plans.hasCompactLoops = false
     const facts = transitiveFrameEffects(ctx.funcs.list, [ast, ...(ctx.module.moduleInits ?? [])], iterations)
     ctx.plans.closureCalls = facts.closureCalls
@@ -346,6 +350,7 @@ export function assemble(ast, profiler) {
       f.frame = frame
       for (const body of frame.loops) loops.add(body)
       for (const body of frame.allocLoops ?? []) compacts.add(body)
+      if (releases) for (const body of frame.releaseLoops ?? []) { releases.add(body); released = true }
       join(frame)
     }
     for (const o of facts.closureSiteFacts.values()) join(o)
@@ -372,6 +377,11 @@ export function assemble(ast, profiler) {
     // end, the highest end reached.
     for (const g of ['__roots', '__rootn', '__r_mark', '__r_top', '__r_bits', '__r_sp', '__r_lim', '__r_end']) declGlobal(g, 'i32', 0)
     declGlobal('__rootl', 'i64', 0)
+    // Below it, while a loop releases its iterations, a receiver is logged
+    // too: the walk from a loop's mark needs every way into what the
+    // iteration made. And the count of compactions, which move what a mark
+    // names and empty the log (module/core/compact.js).
+    if (released) { declGlobal('__ibase', 'i32', 0); declGlobal('__gc_epoch', 'i32', 0) }
     ctx.plans.escapeFlag = true
     ctx.plans.hasSites = any
     ctx.plans.instrumented = new WeakSet()
@@ -1122,8 +1132,9 @@ export function assemble(ast, profiler) {
     optimize: ctx.transform.optimize,
     userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
     rewindable, numberResult, asked, unsafe, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null, exportInner: lateFacts.exportInner, copiedArgs: lateFacts.copiedArgs,
-    // Module bindings that never hold a heap value: a write to one strands nothing.
-    scalarGlobals: new Set([...(ctx.scope.userGlobals ?? [])].filter(g => holdsNoHeap(ctx.summary?.kindOfExpr(g))).map(g => `$${g}`)),
+    // Module bindings that never hold a heap value, a function namespace's
+    // flattened property among them (plan/scope.js): a write to one strands nothing.
+    scalarGlobals: new Set([...ctx.scope.globals.keys()].filter(g => holdsNoHeap(ctx.summary?.kindOfExpr(g))).map(g => `$${g}`)),
     adviseKept: ctx.warnings && ctx.transform.alloc !== false ? adviseKept(rewindable, lateFacts.copiedArgs) : null,
     closureTargets, closureNames, conditional, keeps, entry, keepsNothing: ctx.module.keepsNothing,
     exported: new Set(ctx.funcs.list.filter(f => isExported(f)).map(f => `$${f.name}`)),

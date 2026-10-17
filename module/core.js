@@ -31,7 +31,7 @@ import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
 import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
-import { registerReach, reachOn, REACH_DEPS } from './core/reach.js'
+import { registerReach, registerIterRelease, reachOn, belowLog, REACH_DEPS } from './core/reach.js'
 import { registerCompact, COMPACT_DEPS } from './core/compact.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -575,7 +575,7 @@ export default (ctx) => {
     (local.set $a (i32.wrap_i64 (local.get $b)))
     (call $__esc_at (local.get $a))${reachOn() ? `
     (if (i64.ne (local.get $b) (global.get $__rootl))
-      (then (if (i32.lt_u (local.get $a) (global.get $__base))
+      (then (if ${belowLog('(local.get $a)')}
         (then (if (i32.ne (global.get $__base) (i32.const -1)) (then (call $__root (local.get $b))))))))` : ''})`
   const HOLDS_NONE = (1 << PTR.ATOM) | (1 << PTR.STRING) | (1 << PTR.BIGINT)
   ctx.core.stdlib['__esc_val'] = escOf('__esc_val', HOLDS_NONE)
@@ -610,6 +610,7 @@ export default (ctx) => {
       (then (return (i32.const 0))))
     (i32.ge_u (i32.wrap_i64 (local.get $b)) (local.get $mark)))`
   registerReach()
+  registerIterRelease()
 
   // True iff a NaN-boxed value is a non-primitive (heap object) — tag is neither
   // ATOM (null/undefined/boolean/symbol), STRING or BIGINT. A genuine f64 Number is

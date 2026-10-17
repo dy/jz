@@ -161,7 +161,7 @@ export function pullStdlib(sec) {
   // the actual call sites in the emitted funcs + __start (+ elem table) and close
   // transitively over the stdlib call graph. An eagerly-included helper that nothing
   // calls never enters this set — so allocator, memory, and exports reflect real use.
-  const reachable = reachableStdlib(sec)
+  let reachable = reachableStdlib(sec)
   const realize = (n) => { const v = ctx.core.stdlib[n]; try { return typeof v === 'function' ? v() : v } catch { return '' } }
 
   // Two distinct needs, kept separate:
@@ -185,6 +185,14 @@ export function pullStdlib(sec) {
   let needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
     // shared memory memory.init's the static region into __alloc'd space at start
     !!(ctx.memory.shared && dataLen() > 0)
+  // A loop's release of its iterations (emit/control-flow.js iterationRelease)
+  // in a program that allocates nothing: no heap, nothing to release.
+  if (!needsAlloc && reachable.has('__iter_release')) {
+    const strip = (node) => { for (let i = node.length - 1; i > 0; i--) { const c = node[i]; if (!Array.isArray(c)) continue; if (c.iterRelease) node.splice(i, 1); else strip(c) } }
+    for (const f of sec.funcs) strip(f)
+    ctx.core.includes.delete('__iter_release')
+    reachable = reachableStdlib(sec)
+  }
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
   // loads without calling a stdlib helper), so scan the emitted bodies too.
   const hasMemOp = (node) => some(node, n => typeof n[0] === 'string' && MEM_OPS.test(n[0]), { skipArrow: false })
