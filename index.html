@@ -93,8 +93,8 @@
         }
       }
 
-      /* dark theme only: the grid carries a live current — assets/grid-current.js compiled in-page by jz.
-   Automatic current stays in the header; click bursts have their own shared JS layer. */
+      /* dark theme only: the grid carries a live current — assets/grid-current.js, compiled by jz at build time.
+   The current and its click bursts stay in the header. */
       .grid-current {
         display: none;
         position: absolute;
@@ -819,7 +819,7 @@
 
   <body>
 
-    <!-- dark theme only: the grid's live current (assets/grid-current.js), compiled in-page by jz -->
+    <!-- dark theme only: the grid's live current (assets/grid-current.js), compiled by jz at build time -->
     <canvas class="grid-current" id="grid-current" aria-hidden="true"></canvas>
     <details class="grid-info" id="grid-info">
       <summary aria-label="About the grid animation" title="About the grid animation">
@@ -1230,8 +1230,8 @@ exports.square(7) // 49</code></pre>
       }
 
       // ── Dark theme: the blueprint grid carries a live current — assets/grid-current.js, a real jz program
-      //    compiled HERE in the page (the compiler loads only when the page goes dark). Its grid shares the
-      //    page's origin. This canvas owns only the automatic header current. ──
+      //    compiled at build time (assets/grid-current.wasm), loaded only when the page goes dark. Its grid
+      //    shares the page's origin. A click in the header sends a burst along it. ──
       const cv = $('grid-current'), ctx = cv.getContext('2d')
       const info = $('grid-info'), picker = $('grid-engine'), stats = $('grid-stats')
       const pop = info.querySelector('.grid-pop')
@@ -1282,23 +1282,29 @@ exports.square(7) // 49</code></pre>
         info.querySelector('summary').title = mode === 'wasm' ? 'This header animation runs WebAssembly compiled by JZ.' : 'This header animation runs the same JavaScript source.'
         info.querySelector('p').textContent = mode === 'wasm' ? 'This header animation runs WebAssembly compiled by JZ.' : 'This header animation runs the same JavaScript source.'
       }
+      // The same source two ways: as JS, and as the WASM jz compiled from it at build time (scripts/build-dist.mjs).
+      // Either one runs the header; the switch needs both.
       const boot = () => booting ??= (async () => {
         try {
           if (!ctx) throw new Error('Canvas unavailable')
-          const response = await fetch('assets/grid-current.js')
-          if (!response.ok) throw new Error('Grid source unavailable')
-          const src = await response.text()
-          const u = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }))
-          try { engines.js = await import(u) } finally { URL.revokeObjectURL(u) }
-          try {
-            const { compile, instantiate } = await import('./dist/jz.js')
-            engines.wasm = instantiate(compile(src, { optimize: 3 })).exports
-            choose('wasm')
-          } catch {
-            // Some engines cannot return the compiler's boxed typed array; use the same source as JS.
-            delete engines.wasm; choose('js')
+          const [js, wasm] = await Promise.allSettled([
+            import('./assets/grid-current.js'),
+            Promise.all([fetch('assets/grid-current.wasm'), import('./dist/interop.js')]).then(async ([response, { instantiate }]) => {
+              if (!response.ok) throw new Error('Grid module unavailable')
+              return instantiate(await response.arrayBuffer()).exports
+            }),
+          ])
+          if (js.status === 'fulfilled') engines.js = js.value
+          if (wasm.status === 'fulfilled') engines.wasm = wasm.value
+          try { choose(engines.wasm ? 'wasm' : 'js') }
+          catch {
+            // Some engines cannot return the module's boxed typed array; use the same source as JS.
+            delete engines.wasm
+            if (!engines.js) throw new Error('Grid unavailable')
+            choose('js')
           }
-          picker.disabled = !engines.wasm
+          if (!eng) throw new Error('Grid unavailable')
+          picker.disabled = !(engines.wasm && engines.js)
         } catch {
           eng = null; stats.textContent = 'Grid unavailable'
         }
@@ -1322,6 +1328,14 @@ exports.square(7) // 49</code></pre>
         await boot()
         if (eng && active() && !raf) raf = requestAnimationFrame(loop)
       }
+      // A click on the header's grid fires a four-way burst from the nearest crossing, drawn by the same engine.
+      addEventListener('click', e => {
+        if (!eng || !active() || !W || !H || e.button !== 0 || e.target.closest('a, button, iframe, input, summary, select, textarea, .grid-info')) return
+        if (document.getSelection()?.isCollapsed === false) return
+        const r = cv.getBoundingClientRect()
+        if (e.clientY - r.top >= r.height) return
+        try { eng.spawn((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height) } catch { }
+      })
       new MutationObserver(sync).observe(root, { attributes: true, attributeFilter: ['data-theme'] })
       document.addEventListener('visibilitychange', sync)
       new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; sync() }).observe(cv)

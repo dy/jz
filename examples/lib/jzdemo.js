@@ -149,8 +149,8 @@ const addEdgeNav = (name) => {
       <span class="chip">${chev('M9 5l7 7-7 7')}</span><span class="label">${label(next)}</span>
     </a>
     <style>
-      /* No chrome — big white chevrons + label, with a soft dark outline (drop-shadow /
-         text-shadow) so they stay legible on dark, light AND mid-gray frames alike. */
+      /* No chrome — big chevrons with a soft outline (drop-shadow), so they stay legible on dark, light
+         AND mid-gray frames alike. */
       html.jz-code-open .jz-edge { display: none; }   /* open code = focused single view — no neighbours */
       .jz-edge a {
         position: fixed; top: 50%; transform: translateY(-50%); z-index: 150;
@@ -158,29 +158,31 @@ const addEdgeNav = (name) => {
         -webkit-tap-highlight-color: transparent; color: light-dark(#000, #fff);   /* black on the light (gray) frame, white on the dark */
         font-family: Futura, 'Futura PT', 'Avant Garde', Jost, 'Helvetica Neue', sans-serif;
       }
-      .jz-edge-next { flex-direction: row-reverse; }
+      .jz-edge-prev { flex-direction: row-reverse; }   /* each label opens outward, into the margin beside its chevron */
       .jz-edge .chip {
         flex: none; display: flex; align-items: center; justify-content: center;
         filter: drop-shadow(0 0 1px light-dark(rgba(255,255,255,.9), rgba(0,0,0,.9))) drop-shadow(0 1px 3px light-dark(rgba(255,255,255,.55), rgba(0,0,0,.6)));   /* halo flips with the theme so the chevron stays legible over the canvas too */
         transition: transform .2s;
       }
+      /* the label: the menu's caps, on the paper outside the column, never over the demo; only where the
+         margin holds it (big screens), else the chevron alone */
       .jz-edge .label {
-        max-width: 0; overflow: hidden; white-space: nowrap; box-sizing: border-box;
-        font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .14em;
-        opacity: 0; color: #fff; text-shadow: 0 0 2px rgba(0,0,0,.9), 0 1px 2px rgba(0,0,0,.7), 0 0 4px rgba(0,0,0,.4);   /* it opens over the demo, whatever the theme: white in a dark halo */
-        transition: max-width .34s cubic-bezier(.22,.6,.36,1), opacity .26s, padding .34s;
+        display: none; max-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; box-sizing: border-box;
+        font-size: var(--fs-caps); font-weight: 500; text-transform: uppercase; letter-spacing: var(--ls-caps);
+        opacity: 0; color: var(--soft);
+        transition: max-width .34s cubic-bezier(.22,.6,.36,1), opacity .26s;
       }
       .jz-edge a:hover .chip { transform: scale(1.15); }
-      .jz-edge a:hover .label { max-width: 220px; opacity: 1; }
-      .jz-edge-prev:hover .label { padding-left: 8px; }
-      .jz-edge-next:hover .label { padding-right: 8px; }
+      .jz-edge a:is(:hover, :focus-visible) .label { max-width: calc(var(--gx-pad) - var(--u2) - var(--u)); opacity: 1; }
+      .jz-edge-prev .label { padding-right: 8px; }
+      .jz-edge-next .label { padding-left: 8px; }
+      @media (min-width: 1360px) and (hover: hover) { .jz-edge .label { display: block; } }
       /* on the grid: each chevron takes the cell just outside its ruler, level with the demo's middle */
-      .jz-edge-prev { left: calc(var(--gx-pad) - var(--u2)); }
-      .jz-edge-next { right: calc(100vw - var(--gx-pad) - var(--cw) - var(--u2)); }
+      .jz-edge-prev { right: calc(100% - var(--gx-pad)); }
+      .jz-edge-next { left: calc(var(--gx-pad) + var(--cw)); }
       @supports (top: round(down, 1px, 1px)) {
         .jz-edge a { top: calc(var(--jz-top) + round(down, (var(--jz-h) - var(--u2)) / 2, var(--u2))); transform: none; }
       }
-      @media (hover: none) { .jz-edge .label { display: none; } }
       @media (prefers-reduced-motion: reduce) { .jz-edge .chip, .jz-edge .label { transition: none; } }
     </style>`
   document.body.appendChild(wrap)

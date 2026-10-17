@@ -77,9 +77,8 @@ html, body {
   letter-spacing: -.01em;
   color: var(--link);
   text-decoration: underline 1px color-mix(in srgb, currentColor 18%, transparent);
-  text-underline-offset: .25em;
+  text-underline-offset: .25em;   /* glint.js draws it as the site's lit line */
 }
-.cell:hover .name { text-decoration-color: currentColor; }
 
 .cell .desc {
   display: block;

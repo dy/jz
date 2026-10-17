@@ -11,6 +11,8 @@
  *   assets/sprae.js — minified bundle of sprae (a WEB asset, not compiler dist):
  *                  the landing binds its live bench figures with sprae `:text`
  *                  directives. Resolved from the npm package or a sibling dy/sprae.
+ *   assets/grid-current.wasm — the landing's header animation, assets/grid-current.js
+ *                  compiled by dist/jz.js, so the page loads a module, not the compiler.
  *   dist/jz.wasm — the jz compiler compiled to wasm by jz (full self-compile). Its
  *                  default export is `compileSelf(source) → wasm bytes`: the whole
  *                  pipeline (parse → jzify → prepare → compile → watr-encode) runs
@@ -135,6 +137,15 @@ if (spraeEntry) {
   console.log('wrote assets/sprae.js', kb(spraeOut))
 } else {
   throw new Error('sprae not found — install dependencies before building browser assets')
+}
+
+// ── assets/grid-current.wasm — the landing's header current, compiled here so the page only instantiates it.
+// The bundle compiles it (byte-identical to the source compiler, gated above, and several times faster).
+{
+  const gridOut = resolve(ASSETS, 'grid-current.wasm')
+  const { compile: distCompile } = await import(jsOut)
+  writeFileSync(gridOut, distCompile(readFileSync(resolve(ASSETS, 'grid-current.js'), 'utf8'), { optimize: 3 }))
+  console.log('wrote assets/grid-current.wasm', kb(gridOut))
 }
 
 // Pages serves browser assets, never the self-compiled compiler.

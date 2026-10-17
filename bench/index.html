@@ -94,6 +94,7 @@ button:disabled:hover { background: var(--paper); color: var(--ink); }
 .theme-toggle:hover { background: none; color: inherit; }   /* icon-only toggle: no inverted-block hover (it's not an action button) */
 button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 #honest { margin-top: 0; padding: var(--U) 0 var(--U); text-align: center; }   /* the question hangs from a major line */
+#honest + section { margin-top: 0; }   /* the CTA's own bottom unit is the gap */
 #honest p { max-width: none; }   /* full-width so the centered text lands on the column centre, aligned with the button */
 /* .report (the CTA chip) is the shared component in assets/site.css, reused verbatim by the landing's sponsor call */
 .runall { margin: 0; display: flex; gap: 12px; align-items: center; font-size: var(--fs-small); flex-wrap: wrap; }
@@ -217,28 +218,6 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
   <p class="dim" id="outro">loading…</p>
 </div>
 
-<section class="alternatives" id="alternatives">
-  <div class="table-wrap" role="region" aria-label="Compilers" tabindex="0">
-    <table>
-      <thead>
-        <tr><td></td><th scope="col">Input → output</th><th scope="col">Method</th><th scope="col">Features &amp; limits</th></tr>
-      </thead>
-      <tbody>
-        <tr><th scope="row">JZ</th><td>JavaScript → WASM</td><td>Ahead-of-time, inferred types</td><td>SIMD, no GC; JavaScript subset</td></tr>
-        <tr><th scope="row"><a href="https://github.com/vercel-labs/scriptc" target="_blank" rel="noopener">scriptc</a></th><td>JS/TS → native, WASI</td><td>LLVM ahead-of-time</td><td>Node API subset; opt-in QuickJS fallback</td></tr>
-        <tr><th scope="row"><a href="https://github.com/ASDAlexander77/TypeScriptCompiler" target="_blank" rel="noopener">TypeScriptCompiler</a></th><td>TypeScript → native, WASM</td><td>LLVM/MLIR ahead-of-time or JIT</td><td>Default library, GC; typed subset</td></tr>
-        <tr><th scope="row"><a href="https://github.com/CanadaHonk/porffor" target="_blank" rel="noopener">Porffor</a></th><td>JavaScript → C → native</td><td>Ahead-of-time</td><td>Compiled JS engine; experimental</td></tr>
-        <tr><th scope="row"><a href="https://www.assemblyscript.org/concepts.html" target="_blank" rel="noopener">AssemblyScript</a></th><td>TypeScript-like → WASM</td><td>Ahead-of-time, explicit types</td><td>Managed memory; existing JS needs porting</td></tr>
-        <tr><th scope="row"><a href="https://github.com/bytecodealliance/javy" target="_blank" rel="noopener">Javy</a></th><td>JavaScript → WASI</td><td>Embedded QuickJS</td><td>Broad JS support; engine bundled or shared</td></tr>
-        <tr><th scope="row"><a href="https://github.com/bytecodealliance/ComponentizeJS" target="_blank" rel="noopener">ComponentizeJS</a></th><td>JS + WIT → WASM component</td><td>SpiderMonkey, optional AOT</td><td>Component interfaces, Web APIs; embedded engine</td></tr>
-        <tr><th scope="row"><a href="https://perryts.com/" target="_blank" rel="noopener">Perry</a></th><td>TypeScript → native, WASM</td><td>LLVM ahead-of-time</td><td>Native UI; linked runtime and GC</td></tr>
-        <tr><th scope="row"><a href="https://github.com/richiemcilroy/Tov" target="_blank" rel="noopener">Tov</a></th><td>TypeScript-like → C → native</td><td>Ahead-of-time, explicit types</td><td>Value semantics, checked overflow; existing JS needs porting</td></tr>
-        <tr><th scope="row"><a href="https://emscripten.org/docs/introducing_emscripten/about_emscripten.html" target="_blank" rel="noopener">Emscripten</a></th><td>C/C++ → WASM</td><td>LLVM ahead-of-time</td><td>C/C++ libraries, browser bindings; rewrite JS</td></tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
 <section id="speed">
   <div class="shead">
     <h2>Corpus</h2>
@@ -261,6 +240,29 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <section id="honest">
   <p>Slower than your JS?</p>
   <a class="report" href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">Report a slow case</a>
+</section>
+
+<section class="alternatives" id="alternatives">
+  <div class="shead"><h2>Contenders</h2></div>
+  <div class="table-wrap" role="region" aria-label="Contenders" tabindex="0">
+    <table>
+      <thead>
+        <tr><td></td><th scope="col">Input → output</th><th scope="col">Method</th><th scope="col">Features &amp; limits</th></tr>
+      </thead>
+      <tbody>
+        <tr><th scope="row">JZ</th><td>JavaScript → WASM</td><td>Ahead-of-time, inferred types</td><td>SIMD, no GC; JavaScript subset</td></tr>
+        <tr><th scope="row"><a href="https://github.com/vercel-labs/scriptc" target="_blank" rel="noopener">scriptc</a></th><td>JS/TS → native, WASI</td><td>LLVM ahead-of-time</td><td>Node API subset; opt-in QuickJS fallback</td></tr>
+        <tr><th scope="row"><a href="https://github.com/ASDAlexander77/TypeScriptCompiler" target="_blank" rel="noopener">TypeScriptCompiler</a></th><td>TypeScript → native, WASM</td><td>LLVM/MLIR ahead-of-time or JIT</td><td>Default library, GC; typed subset</td></tr>
+        <tr><th scope="row"><a href="https://github.com/CanadaHonk/porffor" target="_blank" rel="noopener">Porffor</a></th><td>JavaScript → C → native</td><td>Ahead-of-time</td><td>Compiled JS engine; experimental</td></tr>
+        <tr><th scope="row"><a href="https://www.assemblyscript.org/concepts.html" target="_blank" rel="noopener">AssemblyScript</a></th><td>TypeScript-like → WASM</td><td>Ahead-of-time, explicit types</td><td>Managed memory; existing JS needs porting</td></tr>
+        <tr><th scope="row"><a href="https://github.com/bytecodealliance/javy" target="_blank" rel="noopener">Javy</a></th><td>JavaScript → WASI</td><td>Embedded QuickJS</td><td>Broad JS support; engine bundled or shared</td></tr>
+        <tr><th scope="row"><a href="https://github.com/bytecodealliance/ComponentizeJS" target="_blank" rel="noopener">ComponentizeJS</a></th><td>JS + WIT → WASM component</td><td>SpiderMonkey, optional AOT</td><td>Component interfaces, Web APIs; embedded engine</td></tr>
+        <tr><th scope="row"><a href="https://perryts.com/" target="_blank" rel="noopener">Perry</a></th><td>TypeScript → native, WASM</td><td>LLVM ahead-of-time</td><td>Native UI; linked runtime and GC</td></tr>
+        <tr><th scope="row"><a href="https://github.com/richiemcilroy/Tov" target="_blank" rel="noopener">Tov</a></th><td>TypeScript-like → C → native</td><td>Ahead-of-time, explicit types</td><td>Value semantics, checked overflow; existing JS needs porting</td></tr>
+        <tr><th scope="row"><a href="https://emscripten.org/docs/introducing_emscripten/about_emscripten.html" target="_blank" rel="noopener">Emscripten</a></th><td>C/C++ → WASM</td><td>LLVM ahead-of-time</td><td>C/C++ libraries, browser bindings; rewrite JS</td></tr>
+      </tbody>
+    </table>
+  </div>
 </section>
 
 </main>

@@ -13,8 +13,8 @@ const build = (...args) => spawnSync(process.execPath, [join(root, 'scripts/buil
 
 // Exercise the shipped pointer controller with a deterministic frame clock. SVG rendering
 // is browser-checked; these ports record its paint attributes without a DOM dependency.
-async function glint({ count = 1, reduced = false, fine = true, failure = 'http', paper = false, textNodes = [], scroll = 0 } = {}) {
-  const events = new Map(), frames = new Map(), requests = [], clicks = [], mounted = [], selection = { isCollapsed: true }
+async function glint({ count = 1, reduced = false, fine = true, failure = 'http', paper = false, textNodes = [], links = [], scroll = 0 } = {}) {
+  const events = new Map(), frames = new Map(), requests = [], mounted = [], selection = { isCollapsed: true }
   const listen = (name, fn) => events.set(name, fn)
   const node = () => ({ attrs: {}, children: [], style: { setProperty(k, v) { this[k] = v } },
     setAttribute(k, v) { this.attrs[k] = String(v) }, append(el) { this.children.push(el) },
@@ -33,23 +33,21 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
   const ruler = { ...node(), querySelector: name => ({ path, defs }[name] || gradient) }
   const sides = { left: '20px', width: '161px' }
   const rules = [{ left: 0, right: 1000, top: 320, width: 1000 }], tables = [], controls = []
-  let id = 0, measurements = 0, clickLoads = 0
+  let id = 0, measurements = 0
   const src = readFileSync(join(root, 'assets/glint.js'), 'utf8')
     .replace("import { metal, logoMetal } from './title-metal.js'", 'const metal = () => {}, logoMetal = () => {}')
     .replace('import.meta.url', JSON.stringify('https://jz.test/assets/glint.js'))
-    .replace("import('./grid-click.js')", 'loadClicks()')
   const { light } = await runInNewContext(`(async () => {${src}\nreturn { light }})()`, {
     document: { querySelector: () => paper ? doc : null, addEventListener: listen, getSelection: () => selection,
-      querySelectorAll: selector => selector === '.logo, footer .wordmark' ? els : selector.startsWith('.report') ? controls :
+      querySelectorAll: selector => selector === '.logo, footer .wordmark' ? els : selector === 'a, .lnk' ? links : selector.startsWith('.report') ? controls :
         selector.startsWith('.ruled') ? [...rules.map(rect => ({ getBoundingClientRect: () => rect })), ...(selector.includes('table') ? tables : [])] :
         selector.includes('table') ? tables : selector.startsWith('h1') ? textNodes.filter(el => el.matches(selector)) : [],
-      createElement: node, createElementNS: (_, tag) => tag === 'svg' ? ruler : node(), documentElement: doc,
+      createElement: node, createTreeWalker: el => { const texts = el.texts(); let i = 0; return { nextNode() { return this.currentNode = texts[i++] } } }, createElementNS: (_, tag) => tag === 'svg' ? ruler : node(), documentElement: doc,
       createRange: () => { let fill; return { selectNodeContents(el) { fill = el }, getBoundingClientRect: () => { measurements++; return fill.getBoundingClientRect() } } },
       body: { append(el) { mounted.push(el) }, getBoundingClientRect: () => ({ left: 0 }) } },
     matchMedia: query => query.includes('reduced-motion') ? motion : mouse,
-    addEventListener: listen, innerWidth: 1000, innerHeight: 800, scrollY: scroll, URL,
-    loadClicks: async () => { clickLoads++; return { spark: (x, y) => clicks.push([x, y]) } },
-    getComputedStyle: () => { measurements++; return sides },
+    addEventListener: listen, innerWidth: 1000, innerHeight: 800, scrollY: scroll, URL, NodeFilter: { SHOW_TEXT: 4 },
+    getComputedStyle: el => { measurements++; return el?.computed || sides },
     ResizeObserver: class { constructor(fn) { listen('layout', fn) } observe() {} },
     MutationObserver: class { constructor(fn) { this.fn = fn } observe(target) { listen(target === doc ? 'theme' : 'mutate', this.fn) } },
     requestAnimationFrame: fn => { frames.set(++id, fn); return id },
@@ -71,7 +69,7 @@ async function glint({ count = 1, reduced = false, fine = true, failure = 'http'
     return n
   }
   return { els, frames, requests, motion, mouse, light, node, drain, doc, classes, ruler, gradient, path, sides, rules, tables, controls, defs,
-    clicks, mounted, selection, clickLoads: () => clickLoads,
+    mounted, selection,
     measurements: () => measurements,
     emit: (name, event) => events.get(name)?.(event),
     move: (x, y, pointerType = 'mouse') => events.get('pointermove')({ clientX: x, clientY: y, pointerType }),
@@ -194,6 +192,53 @@ test('site: ruler reflection follows the pointer and remeasures only after layou
   is(g.mounted, [g.ruler], 'pointer movement and theme changes never mount a grid light')
 })
 
+// A link: elements with their own text-decoration, text nodes that wrap into spans in place.
+const link = tree => {
+  const element = (spec, parent) => {
+    const classes = new Set(), el = { parentElement: parent, kids: [], computed: { textDecorationLine: spec.underline ? 'underline' : 'none' },
+      classList: { add: (...n) => n.forEach(c => classes.add(c)), contains: c => classes.has(c) }, classes,
+      matches: () => false, closest: () => null }
+    el.kids = spec.kids.map(k => typeof k === 'string' ? text(k, el) : element(k, el))
+    return el
+  }
+  const text = (data, parent) => ({ data, parentElement: parent, get textContent() { return this.data },
+    replaceWith(span) { parent.kids[parent.kids.indexOf(this)] = span; span.parentElement = parent; span.kids = [] },
+    splitText(at) { const tail = text(this.data.slice(at), parent); this.data = this.data.slice(0, at); parent.kids.splice(parent.kids.indexOf(this) + 1, 0, tail); return tail } })
+  const root = element(tree, null)
+  const texts = el => el.kids.flatMap(k => 'data' in k ? [k] : k.kids ? texts(k) : [])
+  root.texts = () => texts(root)
+  return root
+}
+const inks = el => el.kids.flatMap(k => k.className ? [[k.className, k.children.map(t => t.data).join('')]] : k.kids ? inks(k) : [])
+
+test('site: links take the lit underline on the part that owns it, once, ending before a trailing arrow', async () => {
+  const card = link({ kids: [{ underline: true, kids: ['nbody'] }, { kids: ['three bodies'] }] })
+  const more = link({ underline: true, kids: ['Guide →'] })
+  const menu = link({ kids: ['bench'] })
+  const empty = link({ underline: true, kids: ['  '] })
+  const g = await glint({ count: 0, paper: true, links: [card, more, menu, empty] }); g.drain()
+  is([card.classes.has('glare-ul'), card.kids[0].classes.has('glare-ul'), card.kids[1].classes.has('glare-ul')], [false, true, false],
+    'a card is lit but only its underlined name takes the line')
+  is(inks(card), [['glare-ink', 'nbody'], ['glare-ink', 'three bodies']], 'every word of the card takes the wipe')
+  is([more.classes.has('glare-ul'), inks(more)], [true, [['glare-ink', 'Guide'], ['glare-ink glare-tail', ' →']]], 'an underlined link stops its line before the arrow')
+  is([menu.classes.has('glare-link'), menu.classes.has('glare-ul')], [true, false], 'a menu link has the wipe without a line')
+  is([empty.classes.has('glare-link'), empty.classes.has('glare-ul')], [false, false], 'a link without text is left alone')
+  g.emit('resize'); g.drain()
+  is(inks(card), [['glare-ink', 'nbody'], ['glare-ink', 'three bodies']], 'relayout never wraps a link twice')
+})
+
+test('site: changed text alone never remeasures; added elements and attributes do', async () => {
+  const g = await glint({ count: 0, paper: true }); g.drain()
+  const measured = g.measurements(), text = { nodeType: 3 }
+  g.emit('mutate', [{ type: 'childList', addedNodes: [text], removedNodes: [text] }, { type: 'characterData', addedNodes: [], removedNodes: [] }]); g.drain()
+  is(g.measurements(), measured, 'a ticking figure costs no layout')
+  g.emit('mutate', [{ type: 'childList', addedNodes: [text, { nodeType: 1 }], removedNodes: [] }]); g.drain()
+  ok(g.measurements() > measured, 'a new element is measured')
+  const after = g.measurements()
+  g.emit('mutate', [{ type: 'attributes', addedNodes: [], removedNodes: [] }]); g.drain()
+  ok(g.measurements() > after, 'a changed attribute (hidden, disabled) is measured')
+})
+
 test('site: buttons use the logo bevel and tables remain matte', async () => {
   const g = await glint({ paper: true })
   const rect = { left: 20, top: 40, right: 180, bottom: 200, width: 160, height: 160 }
@@ -205,7 +250,7 @@ test('site: buttons use the logo bevel and tables remain matte', async () => {
   is(button.children[0].style.background, g.paint(), 'same position gives button and logo the exact same bevel')
   ok(!g.path.attrs.d.includes('600.5'), 'tables contribute no reflected path')
   ok(!g.path.attrs.d.includes('Z'), 'button bevel is its own masked ring, not a ruler rectangle')
-  button.disabled = true; g.emit('mutate'); g.drain()
+  button.disabled = true; g.emit('mutate', [{ type: 'attributes', addedNodes: [], removedNodes: [] }]); g.drain()
   is(button.children[0].style.visibility, 'hidden', 'disabled controls have no bright reflection')
   button.disabled = false; rect.width = 0; g.emit('toggle'); g.drain()
   is(button.children[0].style.visibility, 'hidden', 'collapsed controls have no reflection')
@@ -262,7 +307,7 @@ test('site: brushed title rims share the cursor light without filters or stat ef
   for (const el of [stat, faq, logo])
     is(Object.keys(el.style), ['setProperty'], 'unrelated glyphs receive no paint updates')
   for (const value of ['2.36×', '2.36×', '1.04×']) {
-    stat.textContent = value; g.emit('mutate'); g.drain()
+    stat.textContent = value; g.emit('mutate', [{ type: 'childList', addedNodes: [{ nodeType: 3 }], removedNodes: [{ nodeType: 3 }] }]); g.drain()
     is(g.defs.children.length, 0, 'text updates never allocate SVG blur filters')
   }
   g.emit('pointerleave'); g.drain()
@@ -410,119 +455,16 @@ test('site: selection outlines merge inline fragments, follow scroll, clear, and
   events.get('selectionchange')(); flush(); is(path.attrs.d, '', 'missing selection leaves no overlay')
 })
 
-test('site: sparkles require a completed background click', async () => {
-  const g = await glint({ count: 0, paper: true, scroll: 800 })
-  const click = { button: 0, clientX: 101, clientY: 203, target: { closest: () => null } }
-  g.emit('pointerdown', click); await Promise.resolve()
-  is(g.clickLoads(), 0, 'beginning a press or touch scroll does not even load the click layer')
-  for (const tag of ['a', 'button', 'iframe', 'input', 'summary', 'select', 'textarea', '.grid-info'])
-    g.emit('click', { ...click, target: { closest: selector => selector.split(', ').includes(tag) ? {} : null } })
-  g.emit('click', { ...click, button: 2 }); await Promise.resolve()
-  g.selection.isCollapsed = false; g.emit('click', click); await Promise.resolve()
-  g.selection.isCollapsed = true
-  is(g.clickLoads(), 0, 'controls and secondary clicks never load the click layer')
-  g.emit('click', click); await Promise.resolve()
-  g.emit('click', click); await Promise.resolve()
-  g.emit('click', { ...click, clientX: 280, clientY: 320 }); await Promise.resolve()
-  is(g.clicks, [[101, 1003], [101, 1003], [280, 1120]], 'completed clicks preserve repeated and changed document positions')
-  g.doc.dataset.theme = 'light'; g.emit('click', click); await Promise.resolve()
-  is(g.clickLoads(), 3, 'light mode does not request sparkles')
-  const plain = await glint({ count: 0 }); plain.emit('click', click); await Promise.resolve()
-  is(plain.clickLoads(), 0, 'pages without the grid do not request sparkles')
-})
-
-function clickGrid({ canvas = true, width = 800, height = 600, left = 0, top = 0, dpr = 1 } = {}) {
-  const events = new Map(), frames = new Map(), mounted = [], segments = []
-  let clock = 1000, id = 0, start
-  const transforms = [], rect = { width, height, left, top }
-  const doc = { dataset: { theme: 'dark' }, classList: { contains: () => false } }
-  const context = {
-    setTransform(...v) { transforms.push(v) }, clearRect() { segments.length = 0 }, beginPath() {}, stroke() {},
-    moveTo(x, y) { start = [x, y] }, lineTo(x, y) { segments.push([...start, x, y]) },
-    createLinearGradient() { return { addColorStop() {} } },
-  }
-  const env = { document: { documentElement: doc, hidden: false,
-    addEventListener: (name, fn) => events.set(name, fn), body: { append: el => mounted.push(el) },
-    createElement: () => ({ getContext: () => canvas ? context : null, setAttribute() {}, getBoundingClientRect: () => rect }) },
-    addEventListener: (name, fn) => events.set(name, fn), innerWidth: 800, innerHeight: 600, devicePixelRatio: dpr, scrollY: 0,
-    performance: { now: () => clock }, getComputedStyle: () => ({ backgroundPositionX: '20px' }),
-    requestAnimationFrame: fn => { frames.set(++id, fn); return id }, cancelAnimationFrame: n => frames.delete(n),
-    MutationObserver: class { constructor(fn) { events.set('theme', fn) } observe() {} },
-  }
-  const source = readFileSync(join(root, 'assets/grid-click.js'), 'utf8').replace('export const spark', 'const spark')
-  const spark = runInNewContext(`(() => {${source}\nreturn spark})()`, env)
-  return { env, doc, frames, mounted, segments, transforms, rect, spark, emit: name => events.get(name)?.(),
-    tick: delta => { clock += delta; const batch = [...frames.values()]; frames.clear(); batch.forEach(fn => fn(clock)) },
-  }
-}
-
-test('site: click bursts are lazy, grid-aligned, bounded and attached to the document', () => {
-  const g = clickGrid()
-  is(g.mounted.length, 0, 'no canvas before a click')
-  is(g.frames.size, 0, 'no automatic click-layer loop')
-  g.spark(NaN, 0); g.spark(0, Infinity)
-  is(g.frames.size, 0, 'invalid coordinates do not start work')
-  g.env.scrollY = 800; g.spark(101, 1003); g.tick(100)
-  is(g.mounted.length, 1, 'a click below the header creates one viewport layer')
-  is(g.segments[0], [100.5, 200.5, 117.3, 200.5], 'right ray leaves the nearest document grid junction')
-  g.env.scrollY = 813; g.tick(0)
-  is(g.segments[0], [100.5, 187.5, 117.3, 187.5], 'scroll moves the same burst with its document crossing')
-  for (let i = 0; i < 20; i++) g.spark(101, 1003)
-  is(g.frames.size, 1, 'repeated clicks share one frame loop')
-  g.tick(100)
-  is(g.segments.length, 16 * 4, 'at most sixteen four-arm bursts remain live')
-  g.tick(10_000)
-  is(g.segments.length, 0, 'expired bursts clear the layer')
-  is(g.frames.size, 0, 'the loop stops after the final burst')
-})
-
-test('site: click canvas preserves grid coordinates at the right edge with scrollbars and fractional scaling', () => {
-  for (const dpr of [1, 1.25, 2]) {
-    const g = clickGrid({ width: 785, height: 599.5, left: 3, top: 2, dpr })
-    g.spark(780, 200); g.tick(0)
-    const [sx, , , sy] = g.transforms[0]
-    is([g.mounted[0].width, g.mounted[0].height], [Math.round(785 * dpr), Math.round(599.5 * dpr)], 'backing store uses the displayed canvas, excluding the scrollbar')
-    const [x, y] = g.segments[0].slice(2)
-    ok(Math.abs(x * sx * 785 / g.mounted[0].width + 3 - 780.5) < 1e-10, `DPR ${dpr}: right ray aligns at the same CSS grid crossing`)
-    ok(Math.abs(y * sy * 599.5 / g.mounted[0].height + 2 - 200.5) < 1e-10, `DPR ${dpr}: vertical coordinates survive backing-store rounding`)
-  }
-  const hidden = clickGrid({ width: 0 }); hidden.spark(10, 20)
-  is(hidden.frames.size, 0, 'zero-size canvas does not animate')
-})
-
-test('site: click bursts clear on light mode or a hidden tab, then resume only on a new click', () => {
-  const g = clickGrid()
-  g.spark(100, 200); g.tick(100)
-  g.doc.dataset.theme = 'light'; g.emit('theme')
-  is(g.frames.size, 0, 'light mode stops the loop')
-  is(g.segments.length, 0, 'light mode clears existing rays')
-  g.spark(100, 200)
-  is(g.frames.size, 0, 'light mode cannot create black sparkles')
-  g.doc.dataset.theme = 'dark'; g.emit('theme')
-  is(g.frames.size, 0, 'returning to dark does not restart old bursts')
-  g.spark(100, 200); g.tick(100)
-  is(g.segments.length, 4, 'a fresh click draws fresh rays')
-  g.env.document.hidden = true; g.emit('visibilitychange')
-  is(g.frames.size, 0, 'hidden tabs stop the loop')
-  is(g.segments.length, 0, 'hidden tabs clear rays')
-  g.env.document.hidden = false; g.spark(100, 200); g.tick(100); g.emit('resize')
-  is(g.frames.size, 0, 'resize retires bursts rather than moving them off the new grid')
-  is(g.segments.length, 0, 'resize clears the old crossing positions')
-  const missing = clickGrid({ canvas: false }); missing.spark(100, 200)
-  is(missing.frames.size, 0, 'unavailable canvas creates no loop')
-  is(missing.mounted.length, 0, 'unavailable canvas leaves no empty overlay')
-})
-
 // Run the page's grid controller, mocking only browser/engine boundaries. The numeric
 // simulation's JS/WASM parity is covered by grid-current.js; these tests pin its lifecycle.
 function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 160, height = 240, dpr = 1, viewport = 1280, wordRight = 300, wordTop = 260 } = {}) {
-  const events = new Map(), frames = new Map(), sizes = [], draws = []
+  const events = new Map(), frames = new Map(), sizes = [], draws = [], spawns = []
   const listen = (name, fn) => events.set(name, [...events.get(name) || [], fn])
   const emit = (name, event) => events.get(name)?.forEach(fn => fn(event))
   const rect = { width, height, left: 0, top: 0 }
   const engine = mode => ({
     resize(w, h) { sizes.push([mode, w, h]); this.px = new Uint32Array(w * h); return failure === 'boxed' && mode === 'wasm' ? NaN : this.px },
-    configure() {}, frame() {
+    configure() {}, spawn(x, y) { spawns.push([mode, x, y]) }, frame() {
       if (failure === 'frame' && mode === 'wasm') throw new Error('trap')
       this.px.fill(mode === 'wasm' ? 11 : 22)
     },
@@ -530,7 +472,7 @@ function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 1
   const wasm = engine('wasm'), js = engine('js'), summary = { focus() { this.focused = true },
     getBoundingClientRect: () => ({ left: parseFloat(info.style.left), right: parseFloat(info.style.left) + 24,
       top: parseFloat(info.style.top) - ctx.scrollY, bottom: parseFloat(info.style.top) - ctx.scrollY + 24 }) }, description = {}
-  const picker = { disabled: true, value: 'wasm', setAttribute(k, v) { this[k] = String(v) }, addEventListener: listen }, stats = { textContent: 'Loading…' }
+  const picker = { disabled: true, value: 'wasm', setAttribute(k, v) { this[k] = String(v) }, addEventListener: (_, fn) => listen('pick', fn) }, stats = { textContent: 'Loading…' }
   const pop = { style: {}, get offsetWidth() { return Math.min(240, ctx.root.clientWidth - 32) },
     get offsetHeight() { return Math.min(180, ctx.root.clientHeight - 32) },
     getBoundingClientRect() { return { width: this.offsetWidth, height: this.offsetHeight } } }
@@ -543,7 +485,7 @@ function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 1
   let id = 0
   const ctx = {
     $: key => nodes[key], root: { dataset: { theme: 'dark' }, clientWidth: viewport, clientHeight: 800 },
-    document: { hidden, addEventListener: listen, querySelector: () => ({ getBoundingClientRect: () => ({ bottom: rect.height - ctx.scrollY }) }) }, addEventListener: listen,
+    document: { hidden, addEventListener: listen, getSelection: () => null, querySelector: () => ({ getBoundingClientRect: () => ({ bottom: rect.height - ctx.scrollY }) }) }, addEventListener: listen,
     performance: { now: () => 1 }, devicePixelRatio: dpr, scrollY: 0,
     getComputedStyle: () => ({ backgroundPositionX: '160px' }),
     Uint32Array, ArrayBuffer, Blob, URL: { createObjectURL: () => 'blob:grid', revokeObjectURL() {} },
@@ -552,21 +494,18 @@ function gridDemo({ failure, gate = Promise.resolve(), hidden = false, width = 1
     MutationObserver: class { constructor(fn) { listen('theme', fn) } observe() {} },
     IntersectionObserver: class { constructor(fn) { listen('visible', fn) } observe() {} },
     ResizeObserver: class { constructor(fn) { listen('layout', fn) } observe() {} },
-    fetch: async () => {
-      await gate
-      if (failure === 'network') throw new Error('offline')
-      return { ok: failure !== 'source', text: async () => '' }
-    },
-    loadJS: async () => js,
-    loadWasm: async () => { if (failure === 'wasm') throw new Error('unavailable'); return { compile() {}, instantiate: () => ({ exports: wasm }) } },
+    // the two engines: the source imported as JS, and the prebuilt module fetched with the runtime beside it
+    loadJS: async () => { await gate; if (failure === 'source' || failure === 'network') throw new Error('offline'); return js },
+    loadWasm: async () => { if (failure === 'network') throw new Error('offline')
+      return [{ ok: failure !== 'wasm', arrayBuffer: async () => new ArrayBuffer(8) }, { instantiate: () => ({ exports: wasm }) }] },
   }
   const html = readFileSync(join(root, 'index.html'), 'utf8')
   const source = html.slice(html.indexOf("const cv = $('grid-current')"), html.indexOf('// ── dev tuning panel'))
-    .replace('await import(u)', 'await loadJS()').replace("await import('./dist/jz.js')", 'await loadWasm()')
+    .replace("import('./assets/grid-current.js')", 'loadJS()').replace("Promise.all([fetch('assets/grid-current.wasm'), import('./dist/interop.js')])", 'loadWasm()')
   const api = runInNewContext(`(() => {${source}\nreturn { boot, sync }})()`, ctx)
-  return { ...api, ctx, picker, stats, info, pop, summary, description, canvas, rect, sizes, draws, frames, emit,
+  return { ...api, ctx, picker, stats, info, pop, summary, description, canvas, rect, sizes, draws, spawns, frames, emit,
     tick: (now = 1000) => { const batch = [...frames.values()]; frames.clear(); batch.forEach(fn => fn(now)) },
-    select: mode => { if (picker.value !== mode) emit('click') },
+    select: mode => { if (picker.value !== mode) emit('pick') },
   }
 }
 
@@ -649,10 +588,24 @@ test('site: JS/JZ switch reports its engine and separates frame stats with a com
   is([g.picker.disabled, g.picker['aria-checked']], [false, 'true'], 'ready switch starts on JZ')
   g.tick(1000); g.tick(1600)
   is(g.stats.textContent, '0.00 ms/frame, 3 fps', 'readout uses a comma between values')
-  g.emit('click'); g.tick()
+  g.emit('pick'); g.tick()
   is([g.picker.value, g.picker['aria-checked'], g.draws.at(-1)], ['js', 'false', 22], 'click selects JS in the UI and renderer')
-  g.emit('click'); g.tick()
+  g.emit('pick'); g.tick()
   is([g.picker.value, g.picker['aria-checked'], g.draws.at(-1)], ['wasm', 'true', 11], 'next click restores JZ')
+})
+
+test('site: header clicks burst through the running engine; controls, selections, light mode and the page below stay still', async () => {
+  const g = gridDemo(); await g.boot(); g.tick()
+  const click = (x, y, over = {}) => g.emit('click', { button: 0, clientX: x, clientY: y, target: { closest: () => null }, ...over })
+  click(80, 60)
+  is(g.spawns, [['wasm', .5, .25]], 'a header click bursts from its own point, as a fraction of the canvas')
+  click(80, 240); click(80, 60, { target: { closest: () => ({}) } }); click(80, 60, { button: 2 })
+  g.ctx.document.getSelection = () => ({ isCollapsed: false }); click(80, 60); g.ctx.document.getSelection = () => null
+  is(g.spawns.length, 1, 'below the header, on controls, secondary buttons and finished selections: no burst')
+  g.select('js'); g.tick(); click(40, 120)
+  is(g.spawns.at(-1), ['js', .25, .5], 'the selected engine draws the burst')
+  g.ctx.root.dataset.theme = 'light'; g.emit('theme'); click(80, 60)
+  is(g.spawns.length, 2, 'light mode has no current to burst')
 })
 
 test('site: grid backing store stays on an integer grid at low and high display scales', async () => {
@@ -663,7 +616,7 @@ test('site: grid backing store stays on an integer grid at low and high display 
   }
 })
 
-test('site: grid boot races, missing source, missing canvas and unsupported WASM have honest states', async () => {
+test('site: grid boot races, a missing source or module, missing canvas and unsupported WASM have honest states', async () => {
   let release
   const gate = new Promise(resolve => { release = resolve })
   const slow = gridDemo({ gate })
@@ -678,6 +631,9 @@ test('site: grid boot races, missing source, missing canvas and unsupported WASM
       is(g.draws, [22], `${failure}: the JS buffer reaches the canvas`)
       is([g.picker.disabled, g.picker['aria-checked']], [true, 'false'], `${failure}: switch stays on JS when WASM is unavailable`)
       is(g.description.textContent, 'This header animation runs the same JavaScript source.', `${failure}: no false WASM claim`)
+    } else if (failure === 'source') {
+      is([g.picker.value, g.draws], ['wasm', [11]], 'source: the prebuilt module runs without its JS twin')
+      is(g.picker.disabled, true, 'source: nothing to switch to')
     } else {
       is(g.stats.textContent, 'Grid unavailable', `${failure}: failure is visible`)
       is(g.picker.disabled, true, `${failure}: unavailable engines cannot be selected`)

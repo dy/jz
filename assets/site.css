@@ -152,7 +152,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .reflect-title:focus-visible > .metal-face { opacity: 1; mask-image: none; }
 .title-metal { position: absolute; pointer-events: none; user-select: none; }
 .title-metal i {
-  position: absolute; display: block; mask-size: 100% 100%; mask-repeat: no-repeat;
+  position: absolute; display: block; mask: var(--atlas, none) 0 0 / 100% 100% no-repeat;   /* a title's glyphs share one atlas (title-metal.js) */
   --metal-angle: atan2(calc(var(--light-x, 0px) - var(--gx)), calc(var(--gy) - var(--light-y, -160px)));
   background: repeating-linear-gradient(0deg, #ffffff26 0 .5px, #0000001a .5px 1px, transparent 1px 2.5px),
     conic-gradient(from var(--metal-angle) at var(--cx) var(--cy),
@@ -187,7 +187,7 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .metrics .stat:is(:hover, :focus-visible) .lab { background-position: 0% 0; }
 /* Content-link underline: a 1px layer of the same ink, lit by the ruler's cursor light (--lx/--ly, glint.js)
    and takes the same wipe on hover, so the line is covered by the text's gradient instead of a native decoration. */
-.glare-ul { text-decoration-line: none; --ul-y: calc(100% - .2em); }
+.glare-ul { text-decoration-line: none !important; --ul-y: calc(100% - .2em); }   /* over any page's own underline: the lit line replaces it */
 .glare-ul > .glare-ink {
   background-image:
     radial-gradient(circle 320px at var(--lx, -999px) var(--ly, -999px), color-mix(in srgb, light-dark(#000, #fff) 65%, transparent),
@@ -200,7 +200,9 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
   background-clip: border-box, border-box, text; -webkit-background-clip: border-box, border-box, text;
 }
 .glare-ul > .glare-tail { background-size: 0 0, 0 0, 230% 100%; }   /* the arrow keeps the wipe, not the line */
-.glare-ul:is(:hover, :focus-visible, [aria-expanded="true"]) > .glare-ink { background-position: 0 var(--ul-y), 0% var(--ul-y), 0% 0; }
+/* the underlined part may sit inside the link (a card's name), lit with the whole link's hover */
+.glare-ul:is(:hover, :focus-visible, [aria-expanded="true"]) > .glare-ink,
+.glare-link:is(:hover, :focus-visible) .glare-ul > .glare-ink { background-position: 0 var(--ul-y), 0% var(--ul-y), 0% 0; }
 @media (prefers-reduced-motion: reduce) {
   .glare-ink, .metrics .lab, .glare-icon::before { transition: none; }
 }
@@ -292,7 +294,7 @@ a, .lnk { text-decoration-color: color-mix(in srgb, currentColor 18%, transparen
 s { text-decoration-color: color-mix(in srgb, currentColor 60%, transparent); text-decoration-thickness: 1px; }   /* a strike carries meaning; fainter than this vanishes into the grid */
 a, .lnk { color: var(--link); cursor: pointer; text-decoration-line: underline; text-underline-offset: .25em; }
 a:hover, .lnk:hover { text-decoration-color: currentColor; }
-nav a, footer a { text-decoration: none; }
+.site-nav a, footer .wordmark { text-decoration: none; }
 
 /* Shared reading style: FAQ answers and the getting-started guide. */
 .prose { max-width: 720px; font-size: var(--fs-body); line-height: 24px; color: var(--soft); }

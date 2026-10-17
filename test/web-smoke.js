@@ -52,7 +52,7 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grid with no Node gl
   // Fresh browser bundle — the artifact under test is what ships, not the source tree.
   const built = spawnSync(process.execPath, [join(ROOT, 'scripts/build-dist.mjs'), '--js-only'], { cwd: ROOT, timeout: 120_000, encoding: 'utf8' })
   is(built.status, 0, `dist build: ${built.stderr}`)
-  for (const file of ['dist/jz.js', 'dist/interop.js', 'assets/sprae.js'])
+  for (const file of ['dist/jz.js', 'dist/interop.js', 'assets/sprae.js', 'assets/grid-current.wasm'])
     ok(built.stdout.includes(`wrote ${file}`), `${file} freshly built for Pages`)
   ok(!built.stdout.includes('wrote dist/jz.wasm'), 'browser build omits self-compilation')
   const bundle = readFileSync(join(ROOT, 'dist/jz.js'), 'utf8')
@@ -66,6 +66,7 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grid with no Node gl
       repl: { src: introMatch[1], opt: 3 },                                                 // repl/index.html default (optimize radio: speed)
       gridCurrent: { src: readFileSync(join(ROOT, 'assets/grid-current.js'), 'utf8'), opt: 3 },  // index.html hero, dark theme
     }))})
+    const gridBytes = (await import('node:fs')).readFileSync(${JSON.stringify(join(ROOT, 'assets/grid-current.wasm'))})
     delete globalThis.process
     delete globalThis.Buffer
     const { default: jz, compile } = await import(${JSON.stringify('file://' + join(ROOT, 'dist/jz.js'))})
@@ -81,9 +82,16 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grid with no Node gl
     const x = Number(r.exports.orbit(1000))
     if (!Number.isFinite(x) || x === 0) throw new Error('orbit(1000) computed ' + x)
     console.log('ok orbit', x)
+    // the landing loads the prebuilt header module through the runtime alone, and it draws what its source draws
+    const { instantiate } = await import(${JSON.stringify('file://' + join(ROOT, 'dist/interop.js'))})
+    const engines = [instantiate(gridBytes).exports, await import(${JSON.stringify('file://' + join(ROOT, 'assets/grid-current.js'))})]
+    const [wasm, js] = engines.map(g => { const px = g.resize(96, 64); g.configure(8, 1); g.spawn(.5, .5); g.frame(12.5); g.frame(12.75); return [...px] })
+    if (!wasm.some(Boolean)) throw new Error('grid-current.wasm drew nothing')
+    if (wasm.some((v, i) => v !== js[i])) throw new Error('grid-current.wasm and its JS source draw different pixels')
+    console.log('ok gridModule')
   `
   const run = spawnSync(process.execPath, ['--input-type=module'], { input: driver, cwd: ROOT, timeout: 120_000, encoding: 'utf8' })
   is(run.status, 0, `browser-sim compile failed:\n${run.stderr || run.stdout}`)
-  for (const name of ['repl', 'gridCurrent', 'orbit'])
+  for (const name of ['repl', 'gridCurrent', 'orbit', 'gridModule'])
     ok(run.stdout.includes(`ok ${name}`), `${name} compiled + ran in browser condition`)
 })

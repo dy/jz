@@ -56,11 +56,6 @@ h2 code { font-size: .9em; background: none; padding: 0; }
 .prose td code { white-space: normal; overflow-wrap: anywhere; }
 .prose .cover td:first-child { width: 50%; color: var(--soft); }
 @supports (text-box: trim-both cap alphabetic) { .prose th, .prose td { text-box: trim-both cap alphabetic; } }
-
-/* where to go next: the menu's caps, in a row */
-.next { display: flex; flex-wrap: wrap; gap: 8px 32px; margin-top: 40px; }
-.next a { font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); }
-.next a::after { content: ' →'; color: var(--dim); }
 @supports (text-box: trim-both cap alphabetic) { h2 { text-box: trim-both cap alphabetic; } .terminal { text-box: trim-both cap alphabetic; } }
 /* code: 24px lines, the first baseline 24px into the box, the box's edge drawn inside (no border height) */
 .terminal { margin: 24px 0; padding: calc(24px - 1cap) 24px 16px; background: var(--code-bg); color: #e6e6e6; box-shadow: inset 0 0 0 1px var(--code-rule); overflow: auto hidden; font: var(--fs-mono)/24px var(--font-mono); color-scheme: dark; }   /* hidden on y: the trimmed line space under the last baseline is not overflow */
@@ -129,12 +124,10 @@ h2 code { font-size: .9em; background: none; padding: 0; }
     <li class="step">
       <h2>Install</h2>
       <pre class="terminal" tabindex="0" aria-label="Install JZ"><code>npm install jz</code></pre>
-      <p class="cap">Or try it first in the <a href="../repl/">playground</a>, nothing to install.</p>
     </li>
 
     <li class="step">
       <h2>Compile a function</h2>
-      <p class="cap">No annotations: types are read off the arithmetic.</p>
       <pre class="terminal" tabindex="0" aria-label="JavaScript: compile and call a function"><code id="tag-run" class="language-javascript">import jz from 'jz'
 
 const { exports } = jz`
@@ -147,7 +140,6 @@ console.log(exports.dist(3, 4)) // 5</code></pre>
 
     <li class="step">
       <h2>Pass whole arrays</h2>
-      <p class="cap">Each crossing into WASM costs; hand it a batch, not one number.</p>
       <pre class="terminal" tabindex="0" aria-label="JavaScript: pass a typed array"><code id="array-run" class="language-javascript">import jz from 'jz'
 
 const { exports, memory } = jz`
@@ -162,25 +154,24 @@ const values = new Float64Array([1, 2, 3])
 console.log(exports.sum(values)) // 6
 memory.reset()</code></pre>
       <table>
-        <thead><tr><th>Value</th><th>Crosses the boundary</th></tr></thead>
+        <thead><tr><th>Value</th><th>Crosses</th></tr></thead>
         <tbody>
           <tr><td>number</td><td>directly</td></tr>
-          <tr><td>string, array, typed array</td><td>copied in, decoded out; numeric writes copied back</td></tr>
-          <tr><td>plain object</td><td>by reference, through the host</td></tr>
-          <tr><td><code>memory.Float64Array(n)</code></td><td>shared storage, no copy</td></tr>
-          <tr><td>heap allocations</td><td>released on return by a call that stored nothing it made into older storage, else kept until <code>memory.reset()</code>, which invalidates earlier pointers</td></tr>
+          <tr><td>string, array, typed array</td><td>copied</td></tr>
+          <tr><td>plain object</td><td>by reference</td></tr>
+          <tr><td><code>memory.Float64Array(n)</code></td><td>shared, no copy</td></tr>
+          <tr><td>heap allocations</td><td>freed on return or by <code>memory.reset()</code></td></tr>
         </tbody>
       </table>
     </li>
 
     <li class="step">
       <h2>Ship the <code>.wasm</code></h2>
-      <p class="cap">The compiler stays in the build; the page loads a 13 KB runtime.</p>
       <pre class="terminal" tabindex="0" aria-label="Compile from the command line"><code>npx jz kernel.js               # → kernel.wasm
 npx jz kernel.js -O3           # fastest; -Os smallest
 npx jz kernel.js --host wasi   # standalone WASI module
 npx jz kernel.js --why         # what kept a loop scalar</code></pre>
-      <pre class="terminal" tabindex="0" aria-label="JavaScript: load a prebuilt module"><code class="language-javascript">import { instantiate } from 'jz/interop'
+      <pre class="terminal" tabindex="0" aria-label="JavaScript: load a prebuilt module"><code class="language-javascript">import { instantiate } from 'jz/interop' // 19 kB gzip
 
 const wasm = await fetch('kernel.wasm').then(r =&gt; r.arrayBuffer())
 const { exports } = instantiate(wasm)</code></pre>
@@ -209,13 +200,6 @@ const { exports } = instantiate(wasm)</code></pre>
     </tbody>
   </table>
   <p class="cap">No GC, ASCII case, UTC dates: <a href="https://github.com/dy/jz#faq">where it differs from JS</a>.</p>
-
-  <nav class="next" aria-label="Next">
-    <a href="../examples/">Examples</a>
-    <a href="../bench/">Benchmarks</a>
-    <a href="../repl/">Playground</a>
-    <a href="https://github.com/dy/jz#usage">API reference</a>
-  </nav>
 </article>
 </main>
 <footer>

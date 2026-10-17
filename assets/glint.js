@@ -59,19 +59,26 @@ const glare = el => {
     el.classList.add('glare-link', 'glare-icon')
     return
   }
-  const underlined = getComputedStyle(el).textDecorationLine.includes('underline')
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = []
   while (walker.nextNode()) if (walker.currentNode.textContent.trim() && !walker.currentNode.parentElement.closest('svg'))
     nodes.push(walker.currentNode)
+  // The underline's owner: the link itself, or the part of it that is underlined (a card's name). Its native
+  // line gives way to the lit one, which a text-clipped paint would otherwise turn solid.
+  const owners = new Map(), owner = node => {
+    for (let p = node.parentElement; p; p = p === el ? null : p.parentElement) {
+      if (!owners.has(p)) owners.set(p, getComputedStyle(p).textDecorationLine.includes('underline'))
+      if (owners.get(p)) return p
+    }
+  }
   // A trailing arrow (→) is its own ink, so the underline ends with the words.
-  const last = nodes.at(-1), arrow = underlined && last?.data.search(/\s*[\u2190-\u21ff]\s*$/)
+  const last = nodes.at(-1), arrow = last && owner(last) && last.data.search(/\s*[\u2190-\u21ff]\s*$/)
   if (arrow > 0) nodes.push(last.splitText(arrow))
   for (const node of nodes) {
-    const span = document.createElement('span')
+    const span = document.createElement('span'), line = owner(node)
     span.className = arrow > 0 && node === nodes.at(-1) ? 'glare-ink glare-tail' : 'glare-ink'
     node.replaceWith(span); span.append(node)
     el.classList.add('glare-link')
-    if (underlined) el.classList.add('glare-ul')
+    line?.classList.add('glare-ul')
   }
 }
 const layout = () => {
@@ -182,12 +189,6 @@ addEventListener('pointermove', e => {
   if (!mouse.matches || motion.matches || e.pointerType === 'touch') return
   pointer = { x: e.clientX, y: e.clientY }; schedule()
 }, { passive: true })
-addEventListener('click', e => {
-  if (!ruler || root.dataset.theme !== 'dark' || e.button !== 0 || e.target.closest('a, button, iframe, input, summary, select, textarea, .grid-info')) return
-  if (document.getSelection()?.isCollapsed === false) return
-  const x = e.clientX, y = e.clientY + scrollY
-  import('./grid-click.js').then(({ spark }) => spark(x, y)).catch(() => {})
-}, { passive: true })
 document.addEventListener('selectionchange', () => { import('./selection.js').catch(() => {}) }, { once: true })
 root.addEventListener('pointerleave', reset)
 addEventListener('blur', reset)
@@ -200,7 +201,9 @@ mouse.addEventListener('change', reset)
 if (ruler) {
   new ResizeObserver(invalidate).observe(document.body)
   new MutationObserver(invalidate).observe(root, { attributes: true, attributeFilter: ['data-theme', 'class'] })
-  new MutationObserver(invalidate).observe(document.body, {
+  // a changed text (a ticking figure) moves nothing measured here; elements and attributes can
+  const moved = records => records.some(r => r.type === 'attributes' || [...r.addedNodes, ...r.removedNodes].some(n => n.nodeType === 1))
+  new MutationObserver(records => { if (moved(records)) invalidate() }).observe(document.body, {
     childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'hidden'],
   })
 }

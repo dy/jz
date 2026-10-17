@@ -391,10 +391,11 @@ html.embed #stat { margin-right: 8px; }
 <script type="module">
 import { highlight, highlightWat } from '../assets/highlight.js'
 import { CLS_ICO } from '../assets/headline.js'
-// The whole point: the compiler runs HERE, in the page — parse, type inference,
-// WASM emit, instantiate. No server, no build step. (dist/jz.js is the
-// standalone bundle — `npm run build` regenerates it.)
-import jz, { compile } from '../dist/jz.js'
+// The whole point: the compiler runs HERE, in the browser — parse, type inference,
+// WASM emit, instantiate. No server, no build step. It compiles in a worker
+// (assets/compile.js over dist/jz.js), so typing and the embedding page never wait on it.
+import { compile } from '../assets/compile.js'
+import { instantiate } from '../dist/interop.js'
 
 const $ = id => document.getElementById(id)
 const editor = $('editor'), out = $('out'), watEl = $('wat'), stat = $('stat'), expr = $('expr')
@@ -562,16 +563,15 @@ const fmtB = n =>
              +(n / 1e6).toFixed(2) + ' MB'
 
 let buildId = 0
-const build = () => {
+const build = async () => {
   const src = editor.value
   const id = ++buildId
   try {
     const o = opts()
-    const t0 = performance.now()
-    const bytes = compile(src, o)
-    const ms = performance.now() - t0
+    const { out: bytes, ms } = await compile(src, o)
+    if (id !== buildId) return                      // a newer edit is compiling
     const logs = capture(() => {
-      const { exports, memory } = jz(src, o)        // instantiate — top-level runs
+      const { exports, memory } = instantiate(bytes)   // instantiate — top-level runs
       state.exports = exports; state.memory = memory
     })
     state.src = src; state.bytes = bytes; state.ok = true; state.wat = ''
@@ -586,19 +586,17 @@ const build = () => {
       const first = fnExports()[0]
       if (first) expr.placeholder = `${first}(…)`
     }
-    // WAT (third compile) is always shown in the top split — compute it off the
-    // keystroke path so typing stays snappy, then paint it in
-    setTimeout(() => {
-      if (id !== buildId) return
-      try {
-        state.wat = compile(src, { ...o, wat: true })
-        if (state.wat.includes('v128')) stat.insertAdjacentHTML('beforeend', '<span class="badge">v128</span>')
-        renderWat(state.wat)
-      } catch {}
-    }, 0)
     setHash(src)
     paint()                                  // clear a previous error squiggle
+    // WAT (a second compile) is always shown in the top split — it follows the module, never delays it
+    compile(src, { ...o, wat: true }).then(({ out: wat }) => {
+      if (id !== buildId) return
+      state.wat = wat
+      if (wat.includes('v128')) stat.insertAdjacentHTML('beforeend', '<span class="badge">v128</span>')
+      renderWat(wat)
+    }, () => {})
   } catch (e) {
+    if (id !== buildId) return
     state.ok = false
     const msg = String(e.message || e)
     stat.innerHTML = '<span class="err">✗</span>'   // bar: compact fail marker (full text on hover)
@@ -827,7 +825,7 @@ codePane.addEventListener('drop', async (e) => {
   e.preventDefault(); dragDepth = 0; codePane.classList.remove('drag')
   const f = e.dataTransfer?.files?.[0]
   if (!f) return
-  try { setSource(autoJzify(await f.text())); build() } catch {}
+  try { setSource(await f.text()); build() } catch {}
 })
 
 // ── url hash: #<base64url(source)> ──────────────────────────────────────────
@@ -851,9 +849,9 @@ const showTab = (name) => {
   mainEl.dataset.tab = name
   for (const t of tabs) { const on = t.dataset.tab === name; t.setAttribute('aria-selected', on); t.tabIndex = on ? 0 : -1 }
 }
-const run = () => {
+const run = async () => {
   showTab('run')
-  build()
+  await build()
   if (!expr.value && /^\w+\([^…]*\)$/.test(expr.placeholder)) expr.value = expr.placeholder
   if (state.ok) runExpr()
   expr.focus()

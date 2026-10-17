@@ -96,6 +96,8 @@ dist/*
 # assets/ holds web assets: site.css + fonts are committed; sprae.js is a build
 # artifact (bundled by build-dist.mjs from the sprae package), so it's ignored.
 assets/sprae.js
+# The landing's header animation, compiled from assets/grid-current.js by build-dist.mjs.
+assets/grid-current.wasm
 
 # Gatsby files
 .cache/
