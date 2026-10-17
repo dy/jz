@@ -102,6 +102,9 @@ const SET_BASE = 1 << 15
 // The operators that convert their operands to primitives (and answer one):
 // arithmetic, comparison, concatenation and their compound assignments.
 const CONVERTING_RESULTS = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '<', '>', '<=', '>=', '==', '!=', 'strcat', '`'])
+// A property name a Number answers to (`String(+p) === p`): a canonical number
+// starts with a digit, a minus, `I`nfinity or `N`aN, and only those convert.
+const canonicalNumeric = (p) => { const c = p.charCodeAt(0); return (c >= 48 && c <= 57 || c === 45 || c === 73 || c === 78) && String(+p) === p }
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
 const RANGE_BINARY = new Set(['+', '-', '*', '/', '%'])
 const memberBefore = (a, b) => typeof a === typeof b ? a < b : typeof a === 'number'
@@ -426,14 +429,20 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // The same holds of an object's field (`{ memory: 16 }` then `o.memory =
   // history`) and of a property stored beside the layout.
   const mixed = new Map()        // binding id → the array kinds it mixes with primitives
-  const mixedSlots = new Map()   // `sid:slot` → the same, for a layout's field
-  const mixedSides = new Map()   // `sid:prop` → the same, for a property beside a layout
+  // A layout's tables: sid → (slot → the same) for its fields, sid → (prop → the
+  // same) for the properties beside it. (Keyed by the pair, never by a string the
+  // pair makes: a key a slot raise or a member read builds is an allocation the
+  // self-hosted compiler keeps.)
+  const mixedSlots = new Map()
+  const mixedSides = new Map()
+  const NO_MIX = new Map(), NO_ARRAYS = []   // (read-only: a miss iterates these, never allocates)
   const PRIMITIVE_BITS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS
   const primitiveOnly = (k) => (k & TAGS) !== 0 && (k & TAGS & ~PRIMITIVE_BITS) === 0
   const mixedArray = (k) => tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN && !hasTag(k, K.HASH)
   // the join of primitives with an array whose cell a record names (a mixed binding's own kind)
   const primArrayJoin = (k) => hasTag(k, K.ARRAY) && paramOf(k) === UNKNOWN && (k & TAGS & ~(PRIMITIVE_BITS | bitOf(K.ARRAY))) === 0
-  const mixedJoinIn = (table, key, old, k) => {
+  // (`outer`, `sid`: a layout's table, made where its first mix starts)
+  const mixedJoinIn = (table, key, old, k, outer = null, sid = 0) => {
     let arrays = table.get(key)
     if (arrays) {
       if (mixedArray(k)) { if (!arrays.includes(k)) arrays.push(k); return true }
@@ -444,15 +453,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return false
     }
     if (!(mixedArray(old) && (primitiveOnly(k) || primArrayJoin(k)) || mixedArray(k) && (primitiveOnly(old) || primArrayJoin(old)))) return false
+    if (table === NO_MIX) outer.set(sid, table = new Map())
     table.set(key, [mixedArray(old) ? old : k]); changed = true
     return true
   }
+  const mixedJoinAt = (outer, sid, key, old, k) => mixedJoinIn(outer.get(sid) ?? NO_MIX, key, old, k, outer, sid)
   const mixedJoin = (key, old, k) => mixedJoinIn(mixed, key, old, k)
   // the arrays a layout's fields and side properties mix, escaped where the
   // layout's values leave through a path the reads above do not guard
   const escapeMixedOf = (sid) => {
-    for (const [key, arrays] of mixedSlots) if (key.startsWith(sid + ':')) for (const a of arrays) escape(a)
-    for (const [key, arrays] of mixedSides) if (key.startsWith(sid + ':')) for (const a of arrays) escape(a)
+    for (const arrays of (mixedSlots.get(sid) ?? NO_MIX).values()) for (const a of arrays) escape(a)
+    for (const arrays of (mixedSides.get(sid) ?? NO_MIX).values()) for (const a of arrays) escape(a)
   }
   const raise = (values, key, k, quiet = false) => {
     const old = values[key] ?? K.NONE; let nk = values === kinds && mixedJoin(key, old, k) ? join(old, k) : merge(old, k, quiet)
@@ -474,7 +485,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinIn(mixedSlots, sid + ':' + i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k)) } }
+  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinAt(mixedSlots, sid, i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k)) } }
   // A layout with more construction sites than a shape set holds is one shape:
   // its sites fold into it, and a fact raised on any of them reaches them all.
   const foldedLayouts = new Set()
@@ -559,7 +570,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const raiseSide = (sid, prop, k) => {
     sideLost(sid, k)
     let m = sideProps.get(sid); if (!m) sideProps.set(sid, m = new Map())
-    const old = m.get(prop) ?? K.NONE, nk = mixedJoinIn(mixedSides, sid + ':' + prop, old, k) ? join(old, k) : merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true; forFolded(sid, s => raiseSide(s, prop, k)) }
+    const old = m.get(prop) ?? K.NONE, nk = mixedJoinAt(mixedSides, sid, prop, old, k) ? join(old, k) : merge(old, k); if (nk !== old) { m.set(prop, nk); changed = true; forFolded(sid, s => raiseSide(s, prop, k)) }
     const oldAll = sideByProp.get(prop) ?? K.NONE, nkAll = merge(oldAll, k); if (nkAll !== oldAll) { sideByProp.set(prop, nkAll); changed = true }
   }
   const raiseSideWild = (sid, k) => { sideLost(sid, k); const old = sideWild.get(sid) ?? K.NONE, nk = merge(old, k); if (nk !== old) { sideWild.set(sid, nk); changed = true; forFolded(sid, s => raiseSideWild(s, nk)) } }
@@ -1161,8 +1172,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const keyedCells = new Set()
   const raiseWildCell = (c, k) => { const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
   const hashPropOf = (h, prop) => { const c = cell(paramOf(h)); if (!keyedCells.has(c)) return elemOf(h); return join(cellProps.get(c)?.get(prop) ?? K.NONE, cellWild.get(c) ?? K.NONE) }
-  const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return merge(merge(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, String(+prop) === prop ? cellNumeric.get(c) ?? K.NONE : K.NONE), cellWild.get(c) ?? K.NONE) }
-  const numericPropsOf = arr => { const c = cell(paramOf(arr)); if (hostArrays.has(c) && retainedArrays.has(c)) return ANY; let k = merge(cellNumeric.get(c) ?? K.NONE, cellWild.get(c) ?? K.NONE); for (const [name, pk] of cellProps.get(c) ?? []) if (String(+name) === name) k = merge(k, pk); return k }
+  const propOf = (arr, prop) => { const c = cell(paramOf(arr)); return merge(merge(isArrayIndexKey(prop) ? elemOf(arr) : cellProps.get(c)?.get(prop) ?? K.NONE, canonicalNumeric(prop) ? cellNumeric.get(c) ?? K.NONE : K.NONE), cellWild.get(c) ?? K.NONE) }
+  const numericPropsOf = arr => { const c = cell(paramOf(arr)); if (hostArrays.has(c) && retainedArrays.has(c)) return ANY; let k = merge(cellNumeric.get(c) ?? K.NONE, cellWild.get(c) ?? K.NONE); for (const [name, pk] of cellProps.get(c) ?? []) if (canonicalNumeric(name)) k = merge(k, pk); return k }
   const anyPropOf = (arr) => { const c = cell(paramOf(arr)); let k = merge(merge(elemOf(arr), cellNumeric.get(c) ?? K.NONE), cellWild.get(c) ?? K.NONE); for (const pk of cellProps.get(c)?.values() ?? []) k = merge(k, pk); return k }
   const raiseProp = (arr, prop, k) => {
     const t = tagOf(arr)
@@ -2969,8 +2980,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!isPrivate(prop) && (foreignObjects || foreignProps.has(prop) || memberMayBeOwn(prop)) || (members && (membersByName.has(prop) || membersByName.has(getterOf(prop))))) return ANY
     let k = merge(ABSENT, merge(wildProps.get(prop) ?? K.NONE, sideByProp.get(prop) ?? K.NONE))
     if (pendingAll) k = merge(k, wildValues)
-    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) { k = merge(k, slots(sid)[i]); for (const a of mixedSlots.get(sid + ':' + i) ?? []) escape(a) }
-    for (const [key, arrays] of mixedSides) if (key.endsWith(':' + prop)) for (const a of arrays) escape(a)
+    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) { k = merge(k, slots(sid)[i]); for (const a of (mixedSlots.get(sid) ?? NO_MIX).get(i) ?? NO_ARRAYS) escape(a) }
+    for (const sides of mixedSides.values()) for (const a of sides.get(prop) ?? NO_ARRAYS) escape(a)
     return k
   }
   // A read that answers with no kind a later use can follow: the value a lost
@@ -2978,8 +2989,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // escape `loseShape` spares a name `lostObjectRead` answers).
   const escapeLostReads = (prop) => {
     if (isPrivate(prop)) return
-    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) { escape(slots(sid)[i]); for (const a of mixedSlots.get(sid + ':' + i) ?? []) escape(a) }
-    for (const [key, arrays] of mixedSides) if (key.endsWith(':' + prop)) for (const a of arrays) escape(a)
+    for (const [sid, i] of byProp.get(prop) ?? NO_SLOTS) if (lostSchema(sid)) { escape(slots(sid)[i]); for (const a of (mixedSlots.get(sid) ?? NO_MIX).get(i) ?? NO_ARRAYS) escape(a) }
+    for (const sides of mixedSides.values()) for (const a of sides.get(prop) ?? NO_ARRAYS) escape(a)
     escape(sideByProp.get(prop) ?? K.NONE)
   }
   // Number keys expose only canonical Number property names (including NaN
@@ -3003,7 +3014,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // a slot under a member's name reads as its value, or as the member bound where it holds none
       const shadowed = i >= 0 ? classMember(recv, prop) : null
       if (shadowed) return optionalResult(op, recv, shadowedBy(slots(paramOf(recv))[i], callWith(binderOf(shadowed), core(recv))))
-      if (i >= 0) return optionalResult(op, recv, mixedReadIn(mixedSlots, paramOf(recv) + ':' + i, slots(paramOf(recv))[i]))
+      if (i >= 0) return optionalResult(op, recv, mixedReadIn(mixedSlots.get(paramOf(recv)) ?? NO_MIX, i, slots(paramOf(recv))[i]))
       const gi = schemas[paramOf(recv)].indexOf(getterOf(prop))
       if (gi >= 0) {
         const g = slots(paramOf(recv))[gi]
@@ -3022,7 +3033,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // stored beside them through this shape: a receiver of unknown shape is
       // an instance of a lost shape or a foreign object, never of this one. A
       // lost shape may hold anything of the name.
-      if (!lostSchema(paramOf(recv))) return optionalResult(op, recv, merge(NULLISH, mixedReadIn(mixedSides, paramOf(recv) + ':' + prop, sideOf(paramOf(recv), prop))))
+      if (!lostSchema(paramOf(recv))) return optionalResult(op, recv, merge(NULLISH, mixedReadIn(mixedSides.get(paramOf(recv)) ?? NO_MIX, prop, sideOf(paramOf(recv), prop))))
       return optionalResult(op, recv, memberMayBeOwn(prop) ? ANY : NULLISH)
     }
     if (unknownReceiver(recv)) {
@@ -3445,7 +3456,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (l !== undefined) return l
     const props = schemas[sid]
     l = []
-    for (let i = 0; i < props.length; i++) if (String(+props[i]) === props[i]) l.push(i)
+    for (let i = 0; i < props.length; i++) if (canonicalNumeric(props[i])) l.push(i)
     return indexSlots[sid] = l
   }
   const poisonIndexed = (sid) => { openSchema(sid); indexSchema(sid); for (const i of indexSlotsOf(sid)) raiseSlot(sid, i, ANY) }
@@ -5028,7 +5039,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         const base = prop.slice(0, -ACCESSOR_GET.length)
         if (accessors.has(base)) name = base
       }
-      if (lostFieldsRead & 2 || String(+name) === name) escapeLostReads(prop)
+      if (lostFieldsRead & 2 || canonicalNumeric(name)) escapeLostReads(prop)
     }
     settleArgs()
     return changed
