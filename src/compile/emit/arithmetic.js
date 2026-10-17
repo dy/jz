@@ -711,7 +711,12 @@ export const arithmeticOps = {
       if (Number.isInteger(k) && Number.isFinite(d) && d !== 0 && Math.abs(k) <= 1000)
         return typed(['f64.mul', stripCanon(toNumF64(a, va)), ['f64.const', 1 / d]], 'f64')
     }
-    return typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
+    // the hulls a truncation of the quotient reads (ir/numeric.js wordQuotient)
+    const out = typed(['f64.div', stripCanon(toNumF64(a, va)), stripCanon(toNumF64(b, vb))], 'f64')
+    const divisorRange = intExprRange(b), dividendRange = intExprRange(a)
+    if (divisorRange) out.divisorRange = divisorRange
+    if (dividendRange) out.dividendRange = dividendRange
+    return out
   },
   '%': (a, b, self) => {
     // §14 point 4: joint runtime-domain dispatch — see '-'s identical comment

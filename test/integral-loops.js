@@ -7,7 +7,7 @@ import parseWat from 'watr/parse'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { _compileInProcess } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat, funcWat } from './util.js'
+import { oracle, wat, funcWat, run } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { T, TYPEOF, walkAst } from '../src/ast.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
@@ -1689,4 +1689,27 @@ test('integral loops: a cursor stepped in a nested loop over a round\'s own coun
   is(leafFloats(text), 0, 'no Number arithmetic in the copies\' innermost loops')
   const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
   for (const clen of [9, 300]) is(m.main(clen), js.main(clen), `the copies inflate ${clen}`)
+})
+
+// A divisor of an index's remainder or truncated quotient (a deinterleave's
+// `buf[(i % seg) * 2 + ~~(i / seg)]`, the segment a typed length's half) is a
+// word above zero in the copy: the hardware divides there, and a segment of
+// zero runs the loop as written, whose indexes are NaN.
+test('integral loops: an index divided by a segment length divides in words, a zero segment runs as written', () => {
+  const src = `const fill = (n) => { const a = new Int16Array(n); for (let i = 0; i < n; i++) a[i] = i * 7 - 3; return a }
+    const deint = (a) => {
+      const len = a.length, seg = Math.floor(len / 2)
+      let s = 0
+      for (let i = 0; i < len; i++) s += a[(i % seg) * 2 + ~~(i / seg)]
+      return s
+    }
+    export let go = (n) => deint(fill(n))`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = run(src, { optimize })
+    for (const n of [0, 1, 2, 3, 10, 101]) ok(Object.is(m.go(n), host.go(n)), `O${optimize}: go(${n})`)
+  }
+  if (belowOpt(2)) return
+  const body = funcWat(wat(src, { optimize: 2 }), 'go')
+  ok(body.includes('i32.div_s') && body.includes('i32.rem_s'), 'the copy divides in words')
 })

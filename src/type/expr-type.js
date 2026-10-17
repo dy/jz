@@ -17,7 +17,7 @@ import {
   hasAmbiguousBoolMerge, censusShapedNode,
 } from '../kind.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
-import { NO_VALUE, staticValue, intExprRange, constIntExpr, mulRangeFitsI32, negRangeFitsI32, unsignedShiftFitsI32 } from '../static.js'
+import { NO_VALUE, staticValue, intExprRange, constIntExpr, mulRangeFitsI32, negRangeFitsI32, unsignedShiftFitsI32, roundedQuotient } from '../static.js'
 import { typedElemAux } from '../../layout.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { isPresentNumber } from '../kind.js'
@@ -38,7 +38,7 @@ const typedElemCtorOf = (name, locals) => typedStorageNameCtor(ctx, name, locals
 // `>>>`, an unsigned-result call, or a Uint32Array read (aux 5 — the only typed array whose
 // element can exceed signed-i32 range). The +/-/*/% rules widen these to f64 so `U[i] + 1`
 // near 2^32 doesn't wrap; bitwise/store consumers are ToInt32-exact and keep the i32 bits.
-const isUnsignedI32Expr = (e, locals) => typeof e === 'string' ? !!repOf(e)?.unsigned : Array.isArray(e) && (
+export const isUnsignedI32Expr = (e, locals) => typeof e === 'string' ? !!repOf(e)?.unsigned : Array.isArray(e) && (
   ((e[0] === '(' || e[0] === ',') && isUnsignedI32Expr(e[e.length - 1], locals)) ||
   e[0] === '>>>' ||
   (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true) ||
@@ -266,6 +266,8 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
   // through, instead of widening the local to f64 because exprType defaulted.
   if (op === '()') {
     if (expr[1] === 'math.imul' || expr[1] === 'math.clz32') return 'i32'
+    // a rounding of a word by a positive literal one word holds (`Math.floor(len / 2)`)
+    if (roundedQuotient(expr, x => exprType(x, locals, valTypes, strict, bodyRoot, readPresent) === 'i32' && !isUnsignedI32Expr(x, locals))) return 'i32'
     // SIMD intrinsics → v128 lane vector, except lane-extract / reductions which
     // hand a scalar back (i32x4.lane / v128.anyTrue / v128.allTrue → i32;
     // f32x4.lane → f64). See module/simd.js.

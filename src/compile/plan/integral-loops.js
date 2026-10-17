@@ -356,6 +356,25 @@ const indexNames = (loop, writes, intArray) => {
   return names
 }
 
+/** The names a remainder or a truncated quotient reaching an element index
+ *  divides by (`buf[(i % w) * ch + ~~(i / w)]`, through a name the loop writes
+ *  as well): above zero in the copy, a word's division there is the
+ *  hardware's, with no zero to test and no float to round. */
+const TRUNCATING = new Set(['~', '|', '&', '^', '<<', '>>', '>>>'])
+const divisorNames = (loop, writes, reaching) => {
+  const out = new Set()
+  const visit = (e, trunc) => {
+    if (!Array.isArray(e) || e[0] === '=>') return
+    const op = e[0]
+    if (e.length === 3 && typeof e[2] === 'string' && (op === '%' || op === '/' && trunc)) out.add(e[2])
+    const t = TRUNCATING.has(op) || op === '()' && (e[1] === 'math.floor' || e[1] === 'math.trunc')
+    for (let i = 1; i < e.length; i++) visit(e[i], t)
+  }
+  walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; if (n[0] === '[]' && n.length === 3) visit(n[2], false) } })
+  for (const name of reaching) for (const v of writes.get(name) ?? NO_WRITES) visit(v, false)
+  return out
+}
+
 const ARITH = new Set(['-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>'])
 const OPERATED = new Set([...ARITH, '+', 'u-', 'u+', '~', '!', '<', '>', '<=', '>=', '==', '===', '!=', '!==', 'typeof'])
 const OPERANDS = new Set([...ARITH, '+', '<', '>', '<=', '>=', 'u-', 'u+', '~'])
@@ -698,7 +717,13 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // counter's bound of unknown integrality: an index made of names the loop only reads
     // or counts, under a bound that is an integer, is affine over its counters, which the
     // typed-bounds versioning already proves; nor is such an index a Number to copy for
-    const names = bounds.length || indexed.some(n => loopWrites.has(n) && !counted(loop, n)) ? [...new Set([...indexed, ...bounds])] : []
+    // a divisor of an index's remainder or truncated quotient the program does not hold above zero
+    const allDivisors = [...divisorNames(loop, loopWrites, reaching)].filter(n => (outerOk(n) || stableGlobal(n)) && !loopWrites.has(n) && !inner.has(n) && mayBeNumber(n) &&
+      !(intExprRange(n)?.[0] >= 1) && !(view?.hullOf?.(n)?.[0] >= 1) && !(func && isExported(func) && params.has(n)))
+    // (one an int32 by construction, a length, needs no word of its own: the copy tests it above zero as it is,
+    // and keeps what an enclosing guard proved of it)
+    const divisors = allDivisors.filter(n => !int32Held(n)), heldDivisors = allDivisors.filter(n => int32Held(n))
+    const names = bounds.length || allDivisors.length || indexed.some(n => loopWrites.has(n) && !counted(loop, n)) ? [...new Set([...indexed, ...bounds, ...divisors])] : []
     // A walk over links: `while (c >= 0)` over a local the loop writes only as an
     // element of one int32 array (`j = gnext[j]`, a cell's chain of next
     // pointers), last in its round, declared before the loop and dead after it.
@@ -1340,7 +1365,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         if (!h?.[0] || !int32Now(t.n)) return
         if (!(span(h[0])[0] >= 0)) extra.push(['>=', h[0], lit(0)])
       }
-      for (const t of v.conj.boundPosTests) {
+      // a bound and a divisor the inner copy holds above zero: this guard holds them so
+      for (const t of [...v.conj.boundPosTests, ...v.conj.divisorTests]) {
         const h = hullOf(t.n)
         if (!h?.[0] || !int32Now(t.n)) return
         if (!(span(h[0])[0] > 0)) extra.push(['>', h[0], lit(0)])
@@ -1680,7 +1706,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const k = JSON.stringify(t)
       if (!seenTests.has(k)) { seenTests.add(k); wordTests.push(t) }
     }
-    if (!names.length && !numbers.length && !present.length && !counterBound && !cursors.size && !wraps.length) continue
+    if (!names.length && !heldDivisors.length && !numbers.length && !present.length && !counterBound && !cursors.size && !wraps.length) continue
     // A Number the copy writes gets a name of its own too: a local has one
     // representation, and the original loop keeps the float values the copy
     // does not. The copy's own declarations also get fresh names. Fixed
@@ -1849,10 +1875,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       nameTests: names.map(n => ({ n, alias: own.get(n), test: ['&&', ['&&', numberGuard(n), ['===', n, ['=', own.get(n), ['|', n, [null, 0]]]]], ['||', ['!==', n, [null, 0]], ['>', ['/', [null, 1], n], [null, 0]]]] })),
       movingTests: moving.map(n => ({ n, alias: own.get(n), test: ['>=', own.get(n), [null, 0]] })),
       boundPosTests: moving.length ? bounds.map(n => ({ n, alias: own.get(n), test: ['>', own.get(n), [null, 0]] })) : [],
+      divisorTests: [...divisors.map(n => ({ n, alias: own.get(n), test: ['>', own.get(n), [null, 0]] })), ...heldDivisors.map(n => ({ n, test: ['>', n, [null, 0]] }))],
       numberTests: numbers.map(n => ({ n, test: ['===', ['typeof', n], [null, TYPEOF.number]] })),
       rest: [...boundTest, ...present.map(n => ['!=', n, [null, null]]), ...presenceTests, ...innerTests, ...cursorTests, ...wordTests],
     }
-    const tests = [...conj.typeTests.map(t => t.test), ...boundTest, ...conj.nameTests.map(t => t.test), ...conj.movingTests.map(t => t.test), ...conj.boundPosTests.map(t => t.test),
+    const tests = [...conj.typeTests.map(t => t.test), ...boundTest, ...conj.nameTests.map(t => t.test), ...conj.movingTests.map(t => t.test), ...conj.boundPosTests.map(t => t.test), ...conj.divisorTests.map(t => t.test),
       ...conj.numberTests.map(t => t.test), ...present.map(n => ['!=', n, [null, null]]), ...presenceTests, ...innerTests, ...cursorTests, ...wordTests]
     const test = tests.length ? tests.reduce((a, b) => ['&&', a, b]) : null
     // (a counter enters as its literal; a cursor as its word, an int32 by the guard)

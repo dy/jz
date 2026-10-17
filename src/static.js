@@ -5,8 +5,8 @@
 import { I32_MIN, I32_MAX, RELATIONAL_OPS, isBrand, isReassigned } from './ast.js'
 import { ctx } from './ctx.js'
 import { repOf, VAL } from './reps.js'
-import { STRING } from './summary/kind.js'
-import { TYPED_ELEM_CODE } from '../layout.js'
+import { STRING, K, tagOf, paramOf, typedAux, UNKNOWN } from './summary/kind.js'
+import { TYPED_ELEM_CODE, DATA_VIEW_FLAG } from '../layout.js'
 import { typedCtorName } from './typed-provenance.js'
 
 // A loop guard's relational operators.
@@ -119,6 +119,7 @@ export function constIntExpr(node) {
  *  evaluator — narrow's typed-value-range walk and emit's i32-provability
  *  (product safety, power-of-two division strength reduction) share it.
  *  `nameRange` supplies a caller's bounds when a binding has no stored hull. */
+const ROUNDINGS = { 'math.floor': Math.floor, 'math.ceil': Math.ceil, 'math.trunc': Math.trunc, 'math.round': Math.round }
 export function intExprRange(n, nameRange = null) {
   const c = constIntExpr(n)
   if (c != null && Number.isInteger(c)) return [c, c]
@@ -149,14 +150,13 @@ export function intExprRange(n, nameRange = null) {
   // A typed array's `.length` (element count) is bounded by wasm32's own hard
   // linear-memory ceiling: a SINGLE allocation can span at most the whole
   // address space, 2^32 BYTES (WebAssembly core spec, memory32 limit — 65536
-  // pages × 64 KiB), and elemCount = byteLength / elementByteWidth exactly (no
-  // rounding — layout.js's SHIFT/stride convention). This is universal and
-  // unconditional (no allocator-size-class assumption, no `--memory` flag
-  // assumption) — it holds even for a receiver that later grows to fill all of
-  // memory. Only useful (≤ i32 range) for element widths ≥ 4 bytes: a 1-byte
-  // element's ceiling is 2^32 itself (not < 2^31), a 2-byte element's is
-  // exactly 2^31 (still not STRICTLY under 0x7fffffff) — both left unbounded
-  // here rather than admitting a boundary-adjacent hull.
+  // pages × 64 KiB), less the 8-byte length word before its data and the
+  // word at address 0 no allocation takes, and elemCount = byteLength /
+  // elementByteWidth exactly (no rounding — layout.js's SHIFT/stride
+  // convention). This is universal and unconditional (no allocator-size-class
+  // assumption, no `--memory` flag assumption) — it holds even for a receiver
+  // that later grows to fill all of memory. Useful (≤ i32 range) for element
+  // widths ≥ 2 bytes: a 1-byte element's ceiling is near 2^32, left unbounded.
   if (op === '.' && n.length === 3 && n[2] === 'length' && typeof n[1] === 'string') {
     const len = ctx.func?.typedLen?.get(n[1]) ?? repOf(n[1])?.arrayLen
     if (len != null) return [len, len]
@@ -169,10 +169,14 @@ export function intExprRange(n, nameRange = null) {
       const code = TYPED_ELEM_CODE[bare]
       const width = code != null ? TYPED_ELEM_BYTE_WIDTH[code] : null
       if (width != null) {
-        const cap = Math.floor(0x100000000 / width)
+        const cap = Math.floor((0x100000000 - 16) / width)
         if (cap <= 0x7fffffff) return [0, cap]
       }
     }
+    // A typed array of a width the program does not name (a constructor a
+    // table picks) reads its length as the signed word of its byte count's
+    // shift (module/core.js `__len`): a word, whatever the count.
+    if (typedElements(n[1])) return [I32_MIN, I32_MAX]
   }
   if (op === '?:' && n.length === 4) {
     const a = intExprRange(n[2], nameRange), b = intExprRange(n[3], nameRange)
@@ -256,6 +260,18 @@ export function intExprRange(n, nameRange = null) {
       return [Math.max(a[0], 1 - b[1]), Math.min(a[1], b[1] - 1)]
     }
   }
+  // A rounding is monotone: of a hull, the rounded ends; of a quotient by a
+  // literal (`Math.floor(len / 2)`), the quotient's ends rounded.
+  if (op === '()' && n.length === 3 && ROUNDINGS[n[1]] && !(Array.isArray(n[2]) && n[2][0] === ',')) {
+    const x = n[2]
+    let a
+    if (Array.isArray(x) && x[0] === '/' && x.length === 3) {
+      const v = intExprRange(x[1], nameRange), d = constNumExpr(x[2])
+      if (!v || !Number.isFinite(d) || d === 0) return null
+      a = [Math.min(v[0] / d, v[1] / d), Math.max(v[0] / d, v[1] / d)]
+    } else a = intExprRange(x, nameRange)
+    return a ? [ROUNDINGS[n[1]](a[0]), ROUNDINGS[n[1]](a[1])] : null
+  }
   // Postfix yields the operand's old numeric value; prefix yields the update.
   if (op === 'postfix' && Array.isArray(n[1]) &&
       (n[1][0] === '++' || n[1][0] === '--') && typeof n[1][1] === 'string')
@@ -282,6 +298,26 @@ export function intExprRange(n, nameRange = null) {
     return [Math.min(...p), Math.max(...p)]
   }
   return null
+}
+
+/** A rounding of a word by a positive literal that one word holds
+ *  (`Math.floor(len / 2)`): `{ op, x, d }`, `x` the dividend `isWord` answers
+ *  for, where the result's hull fits i32 and no -0 comes out: a floor keeps a
+ *  word's zero positive under a positive divisor, a ceiling or a truncation
+ *  needs a dividend that is no negative. Storage (type/expr-type.js) and
+ *  emission (module/math.js) read the same answer. */
+const WORD_ROUNDINGS = { 'math.floor': 'f64.floor', 'math.ceil': 'f64.ceil', 'math.trunc': 'f64.trunc' }
+export function roundedQuotient(e, isWord) {
+  if (!Array.isArray(e) || e[0] !== '()' || e.length !== 3 || !WORD_ROUNDINGS[e[1]]) return null
+  const q = e[2]
+  if (!Array.isArray(q) || q[0] !== '/' || q.length !== 3) return null
+  const d = constNumExpr(q[2])
+  if (!Number.isFinite(d) || d <= 0 || !isWord(q[1])) return null
+  const r = intExprRange(e)
+  if (!r || r[0] < I32_MIN || r[1] > I32_MAX) return null
+  const a = intExprRange(q[1])
+  if (e[1] !== 'math.floor' && (!a || a[0] < 0)) return null
+  return { op: WORD_ROUNDINGS[e[1]], x: q[1], d, nonNegative: !!a && a[0] >= 0 }
 }
 
 /** Multiplying integer carriers cannot produce -0 when no zero-valued
@@ -455,6 +491,14 @@ export function counterInit(init, name) {
 
 // A string's length is an i32 field (abi/string.js): below 2^31 by construction.
 const STRING_LENGTH_TOP = 0x7fffffff
+/** A typed array of elements, as the summary names it: no DataView, whose
+ *  `length` is undefined (summary/kind.js isCount: an element aux proves it). */
+const typedElements = (name) => {
+  const k = ctx.summary?.at?.(ctx.func?.current)?.kindOfExpr?.(name)
+  if (k == null || tagOf(k) !== K.TYPED || paramOf(k) === UNKNOWN) return false
+  const aux = typedAux(k)
+  return aux === UNKNOWN || !(aux & DATA_VIEW_FLAG)
+}
 const isStringName = (name) => repOf(name)?.val === VAL.STRING || ctx.summary?.at?.(ctx.func?.current)?.kindOfExpr?.(name) === STRING
 const operands = (args) => Array.isArray(args) && args[0] === ',' ? args.slice(1) : [args]
 /** The top of an expression's hull where the hull has no finite bottom: the least top

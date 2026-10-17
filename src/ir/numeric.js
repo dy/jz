@@ -644,6 +644,30 @@ export const i32Word = n => {
   return n.checkedNumRead && Array.isArray(n) ? i32CheckedRead(n, true) : null
 }
 
+/** ToInt32 of a quotient of two signed words (`~~(i / w)`, `(a / b) | 0`): the
+ *  integer division, exact (a dividend below 2^53 keeps the quotient's
+ *  rounding off the next integer), a zero divisor taking it to 0 (±Infinity
+ *  and NaN convert to 0) and -1 to the negation (INT_MIN / -1 is 2^31, whose
+ *  word is INT_MIN). The divisor's and dividend's hulls (`divisorRange`,
+ *  `dividendRange`, the `/` emitter's) drop the tests they rule out. */
+const wordQuotient = n => {
+  if (!Array.isArray(n) || n[0] !== 'f64.div' || n.length !== 3) return null
+  const o = ctx.transform.optimize
+  if (!o || o.intDivLower === false) return null
+  const word = v => Array.isArray(v) && v[0] === 'f64.convert_i32_s' && !v[1]?.unsigned ? (Array.isArray(v[1]) ? typed(v[1], 'i32') : v[1]) : null
+  const a = word(n[1]), b = word(n[2])
+  if (a == null || b == null) return null
+  const dr = n.divisorRange, ar = n.dividendRange
+  const zero = !(dr && (dr[0] > 0 || dr[1] < 0))
+  const minusOne = !(dr && (dr[0] > -1 || dr[1] < -1)) && !(ar && ar[0] > I32_MIN)
+  if (!zero && !minusOne) return typed(['i32.div_s', a, b], 'i32')
+  const ta = `$${tempI32('qa')}`, tb = `$${tempI32('qb')}`
+  let div = ['i32.div_s', ['local.get', ta], ['local.get', tb]]
+  if (minusOne) div = ['if', ['result', 'i32'], ['i32.eq', ['local.get', tb], ['i32.const', -1]], ['then', ['i32.sub', ['i32.const', 0], ['local.get', ta]]], ['else', div]]
+  if (zero) div = ['if', ['result', 'i32'], ['i32.eqz', ['local.get', tb]], ['then', ['i32.const', 0]], ['else', div]]
+  return typed(['block', ['result', 'i32'], ['local.set', ta, a], ['local.set', tb, b], div], 'i32')
+}
+
 /** Coerce node to i32 with wrapping (JS `|0` semantics: values > 2^31 wrap to negative).
  *  Per ECMAScript ToInt32, NaN and ±∞ map to 0. `i64.trunc_sat_f64_s` handles NaN
  *  and -∞ correctly, but +∞ saturates to i64_max which wraps to -1 — guard +∞ via
@@ -652,6 +676,8 @@ export const i32Word = n => {
 export const toI32 = n => {
   const narrowed = i32Narrowed(n)
   if (narrowed) return narrowed
+  const quotient = wordQuotient(n)
+  if (quotient) return quotient
   // Leaf nodes are cheap to duplicate; for everything else, evaluate once via local.tee.
   // `i32.wrap_i64(i64.trunc_sat_f64_s x)` is exact ToInt32 for |x| < 2^63 (the
   // overwhelming common range), maps NaN/−∞→0, and +∞ is guarded to 0 by the

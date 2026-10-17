@@ -1118,3 +1118,25 @@ test('Math: every function called with its arguments left out agrees with JS', (
     ok(Object.is(got, new Function('y', 'return ' + call)(2)), `${call}: ${got}`)
   }
 })
+
+// A floor of a word by a positive literal is a word (a shift for a power of
+// two, a division of a dividend that is no negative), held there by the
+// quotient's hull; a ceiling or a truncation of a dividend that may be
+// negative stays a Number, whose -0 the word could not hold.
+test('Math: a rounding of a word by a positive literal is a word where no -0 can come out', () => {
+  const source = `export let half = (n) => { const a = new Int16Array(n), len = a.length; return Math.floor(len / 2) * 1000 + Math.floor(len / 3) }
+    export let fl = (x) => Math.floor(((x & 1023) - 512) / 4)
+    export let tr = (x) => Math.trunc(((x & 1023) - 512) / 4)
+    export let ce = (x) => Math.ceil((x & 1023) / 7)`
+  const host = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = run(source, { optimize })
+    for (const n of [0, 1, 2, 3, 7, 1000]) is(m.half(n), host.half(n), `O${optimize}: half(${n})`)
+    for (const x of [-9, -5, -4, -1, 0, 1, 4, 5, 6, 9, 13, 509, 510, 511, 512, 513, 2147483647, -2147483648, 1023, 1024])
+      for (const name of ['fl', 'tr', 'ce']) ok(Object.is(m[name](x), host[name](x)), `O${optimize}: ${name}(${x})`)
+  }
+  const text = compile(source, { wat: true, optimize: 0 })
+  ok(funcWat(text, 'half').includes('i32.shr_s') && funcWat(text, 'half').includes('i32.div_s'), 'a power of two shifts, another divisor divides')
+  ok(!funcWat(text, 'half').includes('f64.floor'), 'no float rounding of the words')
+  ok(funcWat(text, 'fl').includes('i32.shr_s'), 'a floor shifts a negative dividend too')
+})

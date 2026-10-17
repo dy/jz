@@ -48,9 +48,13 @@ Step 1 of the speed plan landed as 078a0cac: a conditional of several
 assignments vectorizes by predication, an exact integer store truncates in
 lanes behind a word test, and a local one path of a conditional leaves
 unwritten is carried (it miscompiled under SIMD). pcmconvert's conversion loop
-vectorizes (0.657x of the previous time, interleaved runs, checksum unchanged);
-its deinterleave loop keeps an f64 counter (`i % seg`, `i / seg`), the next
-step.
+vectorizes (0.657x of the previous time, interleaved runs, checksum unchanged).
+Its deinterleave loop now indexes in words: the segment `Math.floor(len / 2)`
+is a word, the integral-loop copy holds it above zero, and `i % seg`,
+`~~(i / seg)` are the hardware's remainder and division (0.708x of the
+previous whole case, eight interleaved rounds, checksum unchanged). clang's
+wasm still leads: it folds the constant length, so its index needs no
+division at all.
 
 Open, in the order release needs them:
 

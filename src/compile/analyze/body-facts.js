@@ -139,6 +139,7 @@ function refineStorageFacts(body, facts, cache) {
     const locals = new Map(pending.locals)
     stampLoopCounterRanges(body)
     stampBodyRanges(body, facts.readPresent, facts.typedLens)
+    stampLoopCounterRanges(body)
     publishBindingHulls(hulls)
     const [unsignedLocals, wordLocals] = finalizeLocals(body, locals, facts.valTypes, facts.readPresent)
     result = { ...facts, locals, unsignedLocals, wordLocals, __storagePending: null }
@@ -573,6 +574,9 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     // Prove accumulator bounds and join every write to mutable scalars before
     // widening: an observed local needs its complete hull, not just its init.
     stampBodyRanges(body, presentNodes, typedLens)
+    // a counter bounded by a length the walk typed (`i < a.length` over a typed
+    // local) has its hull once the declarations it reads have theirs
+    stampLoopCounterRanges(body)
     publishBindingHulls(bindingHulls)
     if (deferredHulls) {
       const ranges = new Map()

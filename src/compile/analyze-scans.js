@@ -1434,10 +1434,13 @@ export function stampLoopCounterRanges(body) {
     if (node[0] !== 'for' || node.length !== 5) return
     const [, init, cond, step, loopBody] = node
     const name = guardCounterName(cond)
-    // declared by this loop's own `let`: scoped to the loop, so no later write
+    if (!name) return
+    // declared by this loop's own `let`: scoped to the loop, so no later write;
+    // or declared once ahead of it, every write of it the loop's step (a
+    // version's copy declares its counter before the loop, compile/plan/integral-loops.js)
     const lets = Array.isArray(init) && init[0] === ';' ? init.slice(1) : [init]
-    if (!name || !lets.some(d => Array.isArray(d) && d[0] === 'let' &&
-        d.some(x => x === name || Array.isArray(x) && x[0] === '=' && x[1] === name))) return
+    const own = lets.some(d => Array.isArray(d) && d[0] === 'let' &&
+        d.some(x => x === name || Array.isArray(x) && x[0] === '=' && x[1] === name))
     if (!decls) {
       decls = new Map()
       walkAst(body, { enter: n => {
@@ -1449,11 +1452,13 @@ export function stampLoopCounterRanges(body) {
       } })
     }
     if (decls.get(name) !== 1 || isReassigned(loopBody, name) || isReassigned(cond, name) || closureWrites(body, name)) return
+    const entry = own ? null : !isReassigned(init, name) && !writesOutsideLoop(body, new Set([node]), name) ? dominatingLoopInit(body, node, name) : null
+    if (!own && entry == null) return
     const rangeOf = e => intExprRange(e, n => {
       const binding = scanBindingUses(body).get(n)
       return hasSingleInitializer(body, n) ? intExprRange(binding[BINDING_USE_INIT]) : null
     })
-    const range = forCounterBounds(init, cond, step, name, rangeOf)
+    const range = forCounterBounds(own ? init : ['let', ['=', name, entry]], cond, step, name, rangeOf)
     if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
     updateRep(name, { range: range.test })
     // Other loop-local counters move at the same bounded number of step

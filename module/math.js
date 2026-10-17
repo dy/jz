@@ -17,6 +17,8 @@ import { emit, emitter, reg, deps, tag, wat as watRaw } from '../src/bridge.js'
 import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
+import { roundedQuotient } from '../src/static.js'
+import { exprType, isUnsignedI32Expr } from '../src/type/expr-type.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
 import { powFold, powLog } from '../src/prepare/math-kernel.js'
 import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from './math/trig-tables.js'
@@ -162,9 +164,24 @@ export default (ctx) => {
   // back to the canonical pattern. abs/floor/ceil/trunc never produce a new NaN.
   ctx.core.emit['math.sqrt'] = a => sqrtIR(a)
   ctx.core.emit['math.abs'] = a => f('f64.abs', a)
-  ctx.core.emit['math.floor'] = a => fInt('f64.floor', a)
-  ctx.core.emit['math.ceil'] = a => fInt('f64.ceil', a)
-  ctx.core.emit['math.trunc'] = a => fInt('f64.trunc', a)
+  // A rounding of a word by a positive literal one word holds (static.js
+  // roundedQuotient) is that word's: a shift for a power of two under a floor
+  // (or a dividend that is no negative), a division for an integer divisor of
+  // a dividend that is no negative, the rounded float quotient otherwise.
+  const wordExpr = x => exprType(x, ctx.func.locals) === 'i32' && !isUnsignedI32Expr(x, ctx.func.locals)
+  const wordRounding = (name, a) => {
+    const rq = roundedQuotient(['()', name, a], wordExpr)
+    if (!rq) return null
+    const { op, x, d, nonNegative } = rq, k = Math.log2(d), vx = emit(x)
+    // (an integral word exprType names, emitted as a float: its exact word)
+    const w = vx.type === 'i32' ? vx : typed(['i32.trunc_sat_f64_s', toNumF64(x, vx)], 'i32')
+    if (Number.isInteger(k) && k >= 0 && k < 31 && (op === 'f64.floor' || nonNegative)) return k === 0 ? w : typed(['i32.shr_s', w, ['i32.const', k]], 'i32')
+    if (Number.isInteger(d) && d < 2 ** 31 && nonNegative && op !== 'f64.ceil') return typed(['i32.div_s', w, ['i32.const', d]], 'i32')
+    return typed(['i32.trunc_sat_f64_s', [op, ['f64.div', ['f64.convert_i32_s', w], ['f64.const', d]]]], 'i32')
+  }
+  const WORD_ROUNDING_OPS = { 'math.floor': 'f64.floor', 'math.ceil': 'f64.ceil', 'math.trunc': 'f64.trunc' }
+  for (const name of ['math.floor', 'math.ceil', 'math.trunc'])
+    ctx.core.emit[name] = a => wordRounding(name, a) ?? fInt(WORD_ROUNDING_OPS[name], a)
   // Math.min/max fold their operands with a wasm op. f64.min/max PROPAGATE a
   // NaN but never MINT one, so `canon` is needed only when an operand could
   // itself be NaN. An operand provably never is when it's an intCertain local/

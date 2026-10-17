@@ -287,3 +287,26 @@ test('remainder: an integral divisor of any magnitude takes the i64 remainder', 
   if (belowOpt(2)) return
   ok(/i64\.rem_s/.test(wat(src, { optimize: 2 })), 'the counter takes the i64 remainder by the divisor of no word')
 })
+
+// ToInt32 of a quotient of two words is their integer division: a zero
+// divisor gives 0 (±Infinity and NaN convert so), -1 the negation (INT_MIN / -1
+// is 2^31, whose word is INT_MIN); a divisor above zero needs neither test.
+test('remainder: a truncated quotient of words divides in words, a zero divisor 0 and -1 the negation', () => {
+  const source = `export let q = (a, b) => ((a | 0) / (b | 0)) | 0
+    export let qn = (a, b) => ~~((a | 0) / ((b & 255) + 1))`
+  const host = oracle(source)
+  const xs = [0, 1, -1, 7, -7, 100, 2147483647, -2147483648]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = run(source, { optimize })
+    for (const a of xs) for (const b of [...xs, 0, 2, -2, 3]) {
+      is(m.q(a, b), host.q(a, b), `O${optimize}: q(${a}, ${b})`)
+      is(m.qn(a, b), host.qn(a, b), `O${optimize}: qn(${a}, ${b})`)
+    }
+  }
+  // the lowering is intDivLower's (src/ir/numeric.js wordQuotient): an optimizing tier's
+  const text = wat(source, { optimize: 2 })
+  for (const name of ['q', 'qn']) {
+    ok(funcWat(text, name).includes('i32.div_s'), `${name}: the hardware division`)
+    ok(!funcWat(text, name).includes('f64.div'), `${name}: no float quotient`)
+  }
+})
