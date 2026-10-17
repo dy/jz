@@ -101,7 +101,8 @@ test('invariant: WAT token parsing uses source-sized storage', () => {
     is(r.exports.locations(' (x (y))', false), [undefined, undefined], 'generated WAT omits node offsets')
     const generated = '(module ' + '(func (result i32) (i32.const 3))'.repeat(100) + ')'
     const allocations = []
-    for (const fn of [r.exports.default, r.exports.generated]) {
+    // The raw exports: the host releases a wrapped call's memory once it has read the result out.
+    for (const fn of [r.instance.exports.default, r.instance.exports.generated]) {
       const input = r.memory.String(generated), before = r.instance.exports.__heap.value >>> 0
       const output = fn(input)
       allocations.push((r.instance.exports.__heap.value >>> 0) - before)

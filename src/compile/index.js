@@ -320,16 +320,18 @@ export function assemble(ast, profiler) {
     // it escapes only where its store allocates (`siteGrown`).
     const sites = ctx.plans.escapeSites = new WeakSet(), kinds = ctx.plans.siteKinds = new WeakMap()
     const grown = ctx.plans.siteGrown = new WeakSet(), names = ctx.plans.siteNames = new WeakMap(), whys = ctx.plans.siteWhys = new WeakMap()
-    const grows = ctx.plans.siteGrows = new WeakSet(), asked = ctx.plans.siteAsked = new WeakSet()
+    const grows = ctx.plans.siteGrows = new WeakSet(), asked = ctx.plans.siteAsked = new WeakSet(), kept = ctx.plans.siteKept = new WeakSet()
     let any = false
     // A site two censuses name (a named arrow's body, also a closure's): read
     // differently it has no one address and lowers the flag to zero; it waits
-    // for an allocation, or asks its value, only where both do.
+    // for an allocation, or asks its value, only where both do; it keeps its
+    // receiver as it is evaluated where either does, as a receiver read again may be.
     const join = (o) => {
       for (const n of o.sites ?? []) {
         const seen = sites.has(n), k = o.siteKinds.get(n), prev = kinds.get(n)
         if (o.siteGrown.has(n) ? !seen : true) { if (o.siteGrown.has(n)) grown.add(n); else grown.delete(n) }
         if (o.siteGrows.has(n)) grows.add(n)
+        if (o.siteKept.has(n)) kept.add(n)
         if (!o.siteGrown.has(n)) { if (o.siteAsked.has(n) && (!seen || asked.has(n) || grown.has(n))) asked.add(n); else asked.delete(n) }
         if (k !== undefined) kinds.set(n, prev === undefined || prev === k ? k : SITE.ZERO)
         if (!whys.has(n)) whys.set(n, o.siteWhys.get(n))

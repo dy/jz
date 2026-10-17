@@ -687,6 +687,39 @@ test('plan/site-receivers: a hoisted receiver keeps the statement\'s meaning, an
   for (const optimize of levels(1, 2, 3)) is(jz(src, { optimize }).exports.main(), oracle(src).main(), `O${optimize}`)
 })
 
+// A receiver the emitter cannot read again (an element a collection hands
+// out, an element at a computed index, a call's result) is kept as the site
+// evaluates it, and the flag goes down to the storage it named: a frame
+// restores where that storage was its own, and keeps what it stored where it
+// was older. An initialization `(t ??= [])` is read through its binding.
+test('frame effects: a receiver the emitter cannot read again is kept as it is evaluated', () => {
+  const src = `const store = { lists: [[], []] }
+    const table = new Map([['k', []]])
+    const fresh = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }
+    export let older = (n) => { n >= 0 && store.lists[n % 2].push({ v: n }); return store.lists[n % 2].length }
+    export let elem = (n) => { n >= 0 && table.get('k').push({ v: n }); return table.get('k').length }
+    export let ownCall = (n) => { n >= 0 && fresh(n).push({ v: n }); return n }
+    export let ownElem = (n) => { const m = new Map(); m.set('k', []); for (let i = 0; i < n; i++) m.get('k').push({ v: i }); return m.get('k').length }
+    export let init = (n) => { let idx = null; for (let i = 0; i < n; i++) if (i % 3) (idx ??= []).push({ v: i }); return idx ? idx.length : 0 }
+    export let sum = () => { let s = 0; for (const o of store.lists[0]) s += o.v; for (const o of store.lists[1]) s += o.v; for (const o of table.get('k')) s += o.v; return s }`
+  const calls = ['older', 'elem', 'ownCall', 'ownElem', 'init']
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }), js = oracle(src)
+    for (let i = 0; i < 40; i++) for (const f of calls) is(m.exports[f](i), js[f](i), `O${optimize}: ${f}(${i})`)
+    is(m.exports.sum(), js.sum(), `O${optimize}: what the calls stored into older receivers they evaluated stays`)
+    if (!optimize) continue
+    const heap = () => m.instance.exports.__heap?.value ?? 0
+    for (const f of ['ownCall', 'ownElem', 'init']) {
+      m.exports[f](20)
+      const before = heap()
+      for (let i = 0; i < 20; i++) m.exports[f](20)
+      is(heap(), before, `O${optimize}: ${f} restores the heap, its receivers its own`)
+    }
+  }
+  const wat = compile(src, { wat: true, ...TAPE })
+  for (const name of calls) ok(!/\(global\.set \$__esc \(i32\.const 0\)\)/.test(bodyOf(wat, name)), `${name}: no store lowers the flag to zero`)
+})
+
 test('frame effects: a builtin called by name is listed by what it keeps', () => {
   // One the census does not list is an escape with no address at every call of it: the calls it sits in keep their memory.
   _compileInProcess('export let f = () => 1')

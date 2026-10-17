@@ -1712,26 +1712,38 @@ export function emit(node, expect) {
 }
 function emitSite(node, expect) {
   if (remarking > 0 && Array.isArray(node)) { const mark = REMARKS.get(node); if (mark !== undefined) return remarked(node, expect, mark) }
+  if (keeping > 0 && Array.isArray(node)) { const cell = KEPT.get(node); if (cell !== undefined) return keptReceiver(node, expect, cell) }
   if (!ctx.plans.escapeFlag || !Array.isArray(node) || !ctx.plans.escapeSites?.has(node) || LOGICAL_ASSIGN.has(node[0])) return emitNode(node, expect)
   markInstrumented(node)
   const origin = ctx.plans.siteOrigin?.get(node) ?? node
   const heap = ctx.memory.shared || ctx.scope.globals.has('__heap')
   if (reachOn() && moduleBinding(node)) return rooted(emitNode(node, expect), node[1], node)
-  if (ctx.plans.siteGrown?.has(origin) && heap) return whereGrown(node, origin, expect)
+  const recv = keptAt(node, origin)
+  if (ctx.plans.siteGrown?.has(origin) && heap) return whereGrown(node, origin, expect, recv)
   // an assignment yields what it stored: the flag goes down only for a value a
   // running call made, or where the store allocated
   if (ctx.plans.siteAsked?.has(origin) && heap && (ASSIGN_OPS.has(node[0]) || node[0] === '++' || node[0] === '--')) {
-    const held = { pre: [] }, flag = siteFlag(node, undefined, held)
+    const held = { pre: [] }
+    let flag = recv === null ? siteFlag(node, undefined, held) : undefined
     if (flag === null) return emitNode(node, expect)
     const mark = ctx.plans.siteGrows?.has(origin) ? escLocal('i32', ESC_MARK) : null
     if (mark !== null) held.pre.push(['local.set', mark, heapTop()])
-    const ir = mark === null ? emitNode(node, null) : pastOperands(node, mark, () => emitNode(node, null)), t = Array.isArray(ir) ? ir.type : undefined
+    const run = () => mark === null ? emitNode(node, null) : pastOperands(node, mark, () => emitNode(node, null))
+    let ir
+    if (recv === null) ir = run()
+    else { const k = keep(node, recv, run); ir = k.ir; flag = k.flag }
+    const t = Array.isArray(ir) ? ir.type : undefined
     if (ir?.inPlace) return expect === 'void' && t !== 'void' ? typed(['drop', ir], 'void') : ir
     if (t === 'f64' || t === 'i32') {
       const out = whereNew(ir, flag, held.pre, mark)
       return expect === 'void' ? typed(['drop', out], 'void') : out
     }
-    return withEscapeFlag(ir, ['block', ...held.pre, flag])
+    return recv === null ? withEscapeFlag(ir, ['block', ...held.pre, flag]) : around(ir, held.pre, [flag])
+  }
+  // a kept receiver is known once the node ran
+  if (recv !== null) {
+    const k = keep(node, recv, () => emitNode(node, expect))
+    return k.ir?.inPlace ? k.ir : around(k.ir, [], [k.flag])
   }
   // the address is read before the node runs
   const flag = siteFlag(node), ir = emitNode(node, expect)
@@ -1847,40 +1859,106 @@ function holderFlag(target, kind, held = null) {
  *  names): its receiver, its first argument, the binding it assigns
  *  (`target`, where the caller names it). */
 export function siteFlag(node, target = undefined, held = null) {
-  const kind = ctx.plans.siteKinds?.get(ctx.plans.siteOrigin?.get(node) ?? node) ?? SITE.ZERO
+  const origin = ctx.plans.siteOrigin?.get(node) ?? node, kind = ctx.plans.siteKinds?.get(origin) ?? SITE.ZERO
   const name = target ?? node[1]
   if (reachOn() && typeof name === 'string' && moduleBinding([node[0], name])) return ROOT
   if (kind === SITE.CELL) return noted(holderFlag(name, kind), node)
-  if (kind === SITE.ARG) { const a = node[2]; target = a == null ? null : Array.isArray(a) && a[0] === ',' ? a[1] : a }
-  else if (kind !== SITE.ZERO) {
-    let t = node[1]
-    while (Array.isArray(t) && t[0] === '(') t = t[1]
-    target = Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') ? t[1] : null
-  }
+  if (kind !== SITE.ZERO) target = initialized(receiverNode(node, kind))
+  // a receiver the site keeps is not read again: where the caller keeps none, the flag goes to zero
+  if (Array.isArray(target) && ctx.plans.siteKept?.has(origin)) target = null
   return noted(holderFlag(target, kind, held), node)
+}
+/** What the site `node` writes into, by its kind: its first argument (`SITE.ARG`),
+ *  else the receiver of the member it calls or assigns through. */
+function receiverNode(node, kind) {
+  if (kind === SITE.ARG) { const a = node[2]; return a == null ? null : Array.isArray(a) && a[0] === ',' ? a[1] : a }
+  let t = node[1]
+  while (Array.isArray(t) && t[0] === '(') t = t[1]
+  return Array.isArray(t) && (t[0] === '.' || t[0] === '?.' || t[0] === '[]') ? t[1] : null
+}
+/** The binding an initialization `(t ??= fresh)` assigns, which the census reads
+ *  for the receiver it yields (frame-effects.js receiverOf): an initialization
+ *  it read otherwise is a receiver the site keeps. */
+const initialized = (e) => {
+  while (Array.isArray(e) && (e[0] === '??=' || e[0] === '||=')) e = e[1]
+  return e
+}
+// A receiver the census cannot read again (frame-effects.js `kept`: a call's
+// result, an element a collection hands out) is kept as it is evaluated: its
+// node, emitted inside the site, tees its value into a local of the site's
+// own, and the flag goes down to that value after the node ran, as to a
+// receiver read before it (`__esc_val` names the storage the pointer first
+// named). Where the node is never emitted whole (an emitter that takes the
+// receiver apart) or is emitted twice in two representations, the flag goes
+// down to zero.
+const KEPT = new WeakMap(), ESC_KEPT = 'esck'
+let keeping = 0
+/** The receiver node the site keeps, or null where it reads it again. */
+function keptAt(node, origin) {
+  if (!ctx.plans.siteKept?.has(origin)) return null
+  const kind = ctx.plans.siteKinds?.get(origin) ?? SITE.ZERO
+  if (kind === SITE.ZERO || kind === SITE.CELL) return null
+  const recv = receiverNode(node, kind)
+  return Array.isArray(recv) ? recv : null
+}
+/** `run()`, the site's emission with `recv` kept, and the flag lowered to what it held. */
+function keep(node, recv, run) {
+  const cell = { local: null, type: null, facts: null, bad: false }
+  KEPT.set(recv, cell)
+  keeping++
+  let ir
+  try { ir = run() } finally { keeping--; KEPT.delete(recv) }
+  const kind = ctx.plans.siteKinds?.get(ctx.plans.siteOrigin?.get(node) ?? node)
+  if (cell.local === null || cell.bad) return { ir, flag: noted(flagToZero(), node) }
+  const fn = kind === SITE.ELEM ? '__esc_elem' : '__esc_val'
+  inc(fn)
+  const value = typed(['local.get', cell.local], cell.type)
+  for (const k of REP_FACTS) if (cell.facts[k] !== undefined) value[k] = cell.facts[k]
+  return { ir, flag: noted(['call', '$' + fn, asF64(value)], node) }
+}
+/** The kept receiver `node` emitted, its value teed into the site's local. */
+function keptReceiver(node, expect, cell) {
+  KEPT.delete(node)
+  let ir
+  try { ir = emit(node, expect) } finally { KEPT.set(node, cell) }
+  const t = Array.isArray(ir) ? ir.type : undefined
+  // an offset is a pointer only by its facts
+  if (t !== 'f64' && (t !== 'i32' || ir.ptrKind == null)) { cell.bad = true; return ir }
+  if (cell.local === null) { cell.local = escLocal(t, ESC_KEPT); cell.type = t; cell.facts = ir }
+  else if (cell.type !== t || REP_FACTS.some(k => cell.facts[k] !== ir[k])) { cell.bad = true; return ir }
+  const out = typed(['local.tee', cell.local, ir], t)
+  for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
+  return out
+}
+/** `ir` with the statements `before` run ahead of it and `after` behind it, its value and the facts of its bits kept. */
+function around(ir, before, after) {
+  if (ir == null) return typed(['block', ...before, ...after], 'void')
+  const t = Array.isArray(ir) ? ir.type : undefined
+  if (!t || t === 'void') return typed(['block', ...before, ...flat(ir), ...after], 'void')
+  const value = t === 'i32' ? asF64(ir) : ir, vt = t === 'i32' ? 'f64' : t
+  const kept = escLocal(vt, ESC_VALUE)
+  const out = typed(['block', ['result', vt], ...before, ['local.set', kept, value], ...after, ['local.get', kept]], vt)
+  if (t !== 'i32') for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
+  return out
 }
 const heapTop = () => typed(ctx.memory.shared ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]] : ['global.get', '$__heap'], 'i32')
 /** The node of a site that escapes only where it allocates, with the flag
  *  lowered after it when the heap moved while it ran: to what the node
  *  writes into, or, for a loop, to each receiver its stores may grow
  *  (`siteNames`), as each stood before the node ran. */
-function whereGrown(node, origin, expect) {
-  const names = ctx.plans.siteNames?.get(origin), held = { pre: [] }
-  const flags = (names ? [...names].map(([name, kind]) => noted(holderFlag(name, kind, held), node)) : [siteFlag(node, undefined, held)]).filter(f => f !== null)
-  if (!flags.length) return emitNode(node, expect)
+function whereGrown(node, origin, expect, recv = null) {
+  const names = ctx.plans.siteNames?.get(origin), held = { pre: [] }, kept = !names && recv !== null
+  const flags = kept ? null : (names ? [...names].map(([name, kind]) => noted(holderFlag(name, kind, held), node)) : [siteFlag(node, undefined, held)]).filter(f => f !== null)
+  if (!kept && !flags.length) return emitNode(node, expect)
   const mark = escLocal('i32', ESC_MARK)
-  const save = [...held.pre, ['local.set', mark, heapTop()]]
-  const check = ['if', ['i32.ne', heapTop(), ['local.get', mark]], ['then', ...flags]]
+  const save = [...held.pre, ['local.set', mark, heapTop()]], moved = ['i32.ne', heapTop(), ['local.get', mark]]
+  // a kept receiver: the check lowers the flag to what the node evaluated it to
+  if (kept) {
+    const k = keep(node, recv, () => pastOperands(node, mark, () => emitNode(node, expect)))
+    return k.ir?.inPlace ? k.ir : around(k.ir, save, [['if', moved, ['then', k.flag]]])
+  }
   const ir = names ? emitNode(node, expect) : pastOperands(node, mark, () => emitNode(node, expect))
-  if (ir?.inPlace) return ir
-  if (ir == null) return typed(['block', ...save, check], 'void')
-  const t = Array.isArray(ir) ? ir.type : undefined
-  if (!t || t === 'void') return typed(['block', ...save, ...flat(ir), check], 'void')
-  const value = t === 'i32' ? asF64(ir) : ir, vt = t === 'i32' ? 'f64' : t
-  const kept = escLocal(vt, ESC_VALUE)
-  const out = typed(['block', ['result', vt], ...save, ['local.set', kept, value], check, ['local.get', kept]], vt)
-  if (t !== 'i32') for (const k of REP_FACTS) if (ir[k] !== undefined) out[k] = ir[k]
-  return out
+  return ir?.inPlace ? ir : around(ir, save, [['if', moved, ['then', ...flags]]])
 }
 // The mark of a site that waits for an allocation stands past its operands:
 // what a store's value or a call's argument allocates as it is evaluated (a

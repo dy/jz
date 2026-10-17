@@ -57,7 +57,9 @@
  * runs, the emitter lowers the escape flag to the address written into
  * (emit/dispatch.js; `siteKinds` says what the node writes into: its
  * receiver, the binding it assigns, its first argument, or nothing the
- * emitter can read, which lowers the flag to zero), and a frame restores the
+ * emitter can name, which lowers the flag to zero; a receiver the emitter
+ * cannot read again, a call's result or an element a collection hands out,
+ * it keeps as the node evaluates it, `siteKept`), and a frame restores the
  * heap at return when the flag stands at or above its own mark (optimize/
  * arena-rewind.js). A store of a value that holds no heap pointer escapes
  * only where it makes its receiver grow (a relocation, a property's first
@@ -417,10 +419,22 @@ const freshInit = (e) => {
   const op = e[0]
   if (isObjectLiteral(e) || op === '[') return true   // an object literal, an array literal (prepared spelling: `[` builds, `[]` indexes)
   if (op === '?:') return freshInit(e[2]) && freshInit(e[3])   // a choice between fresh values
+  if (op === '=') return freshInit(e[2])   // an assignment yields the value it stores
   if (op === 'new' && isArr(e[1]) && e[1][0] === '()') return isName(e[1][1]) && (FRESH_CTORS.test(e[1][1]) || knownFunc(e[1][1]))
   if (op === '()' && isName(e[1])) { const c = ctorOf(e[1]); return e[1] === 'Array' || (c !== null && (FRESH_CTORS.test(c) || knownFunc(c))) }
   return false
 }
+
+/** What a store writes into, read off its receiver: an initialization
+ *  `(t ??= fresh)` or `(t ||= fresh)` yields what `t` held or the fresh value,
+ *  so `t`, read before the store, names every storage older than the frame
+ *  the store may write. */
+const receiverOf = (e) => {
+  while (isArr(e) && (e[0] === '??=' || e[0] === '||=') && freshInit(e[2])) e = e[1]
+  return e
+}
+/** A literal of no storage (a number, a string, a boolean, null): a store into it writes none. */
+const holdsNone = (e) => isArr(e) && (e[0] == null || e[0] === 'str' || e[0] === 'bool')
 
 // `{}` spells both a block statement (its child a statement list) and an object
 // literal (properties `[':', k, v]`, shorthand names, spreads); only the literal allocates.
@@ -449,9 +463,10 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // `siteGrows`: the sites whose store may make its receiver grow, `siteGrown`
   // those that escape no other way; `siteNames`: per loop that is one, the
   // receivers its stores may grow; `siteAsked`: the assignments that ask
-  // their value whether a running call made it.
+  // their value whether a running call made it; `siteKept`: the sites whose
+  // receiver the emitter keeps as it is evaluated, where it cannot read it again.
   const out = { writesOuter: false, arenaUnsafe: false, keeps: false, flagged: false, unsited: false, allocates: false, callsUnknown: false, runsAccessor: false, why: null, keepsWhy: null,
-    callees: new Set(), unguarded: new Set(), closures: new Set(), closureCalls: [], sites: new Set(), siteWhy: null, siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), freshObjects: null }
+    callees: new Set(), unguarded: new Set(), closures: new Set(), closureCalls: [], sites: new Set(), siteWhy: null, siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), freshObjects: null }
   // The node the walk stands on: an escape found there is a site of it.
   let at = null
   // Branches and early returns around it: nonzero where it may not run on a call.
@@ -464,13 +479,14 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   const loops = [], opaque = { node: null, pending: null }
   let noise = 0
   // A growth's check: around `best`, a loop, or after the store itself.
-  const settle = ({ name, kind, at, why, best }) => {
+  const settle = ({ name, kind, at, why, best, kept }) => {
     if (best !== null) {
       const names = out.siteNames.get(best) ?? out.siteNames.set(best, new Map()).get(best)
       names.set(name, names.has(name) && names.get(name) !== kind ? SITE.RECV : kind)
       if (!out.sites.has(best)) { out.sites.add(best); out.siteGrown.add(best); out.siteWhys.set(best, why) }
     } else {
       out.siteGrows.add(at)
+      if (kept) out.siteKept.add(at)
       if (out.sites.has(at)) return
       out.sites.add(at); out.siteGrown.add(at); out.siteKinds.set(at, kind); out.siteWhys.set(at, why)
     }
@@ -512,7 +528,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     else if (init !== undefined && !isObjectLiteral(init)) out.freshObjects?.delete(name)
     if (declared && cur == null && isArr(init) && (init[0] === '.' || init[0] === '[]') && init.length === 3) reads.set(name, init); else reads.delete(name)
     if (init === undefined) { if (cur == null) decl.set(name, 'fresh'); return }   // bare `let x`
-    const fresh = freshInit(init)
+    const fresh = freshInit(init) || holdsNone(init)
     decl.set(name, cur === 'other' || !fresh ? 'other' : 'fresh')
     if (isArr(init) && init[0] === '=>') { if (arrows.has(name) || cur != null) arrows.delete(name); else arrows.set(name, init) } else arrows.delete(name)
   }
@@ -531,7 +547,8 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       return
     }
     if (ASSIGN_OPS.has(op)) {
-      if (isName(n[1])) note(n[1], op === '=' ? n[2] : null, nested, false)
+      // a logical assignment stores its value where it stores
+      if (isName(n[1])) note(n[1], op === '=' || op === '??=' || op === '||=' || op === '&&=' ? n[2] : null, nested, false)
       // an element store (`[]` indexes in the prepared spelling) writes no binding
       else if (isArr(n[1]) && n[1][0] === '{}') for (const nm of patternNames(n[1])) note(nm, null, nested, false)
     }
@@ -563,7 +580,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // into storage older than the frame (`older`), none of this function's does
   // (`keeps`). A growth (`grows`) is a site of no node: the runtime lowers the
   // flag where the storage relocates, and only then.
-  const escape = (why, kind = SITE.ZERO, { older = false, suspends = false, grows = null, asked = false } = {}) => {
+  const escape = (why, kind = SITE.ZERO, { older = false, suspends = false, grows = null, asked = false, kept = false } = {}) => {
     out.writesOuter = true
     if (!conditional) return verdict(why)
     out.flagged = true
@@ -571,7 +588,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     if (suspends) verdict(why)
     if (at === null) { out.unsited = true; return verdict(why) }
     if (grows !== null) {
-      const g = { name: grows, kind, at, why, best: null }, loop = loops[loops.length - 1]
+      const g = { name: grows, kind, at, why, best: null, kept }, loop = loops[loops.length - 1]
       if (isName(grows) && loop !== undefined && loop !== opaque) loop.pending.push(g); else settle(g)
       return
     }
@@ -582,6 +599,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     out.sites.add(at)
     out.siteGrown.delete(at)
     out.siteKinds.set(at, kind)
+    if (kept) out.siteKept.add(at)
     out.siteWhys.set(at, why)
     if (guarded > 0 || suspends || asked) return
     if (kind === SITE.ZERO) verdict(why)
@@ -649,14 +667,16 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // method of it); a named property of one is a store like any other. `arg`:
   // the receiver is the call's first argument.
   // `asked`: the site asks the stored value whether a running call made it.
+  // A receiver the emitter cannot read again it keeps as it is evaluated (`kept`, emit/dispatch.js).
   const store = (recv, heap, grows, numeric = false, arg = false, asked = false) => {
+    recv = receiverOf(recv)
     if (freshLocal(recv) || freshInit(recv) || madeHere(recv)) return
     outer()
     // a typed array takes numbers in place: nothing grows, nothing is held
     if (numeric && typedRecv(recv)) return
-    const kind = !readable(recv) ? SITE.ZERO : arg ? SITE.ARG : numeric ? SITE.ELEM : SITE.RECV
-    if (grows) escape('grows ' + spell(recv), kind, { grows: arg ? false : recv })
-    if (heap) escape('heap value into ' + spell(recv), kind, { asked, older: olderName(recv) && !(numeric && mayBeTyped(view, recv)) })
+    const kind = arg ? SITE.ARG : numeric ? SITE.ELEM : SITE.RECV, kept = !readable(recv)
+    if (grows) escape('grows ' + spell(recv), kind, { grows: arg ? false : recv, kept })
+    if (heap) escape('heap value into ' + spell(recv), kind, { asked, kept, older: olderName(recv) && !(numeric && mayBeTyped(view, recv)) })
   }
   const anyHeap = (list) => list.some(v => mayCarryFreshHeap(view, v))
   // A value the receiver of the store `n` held already, read off it by the
@@ -988,7 +1008,7 @@ function frameEffectsOf(func, loops) {
   const body = func.body
   // the function's own view (keyed by its signature, as the emitter's), not the module's
   const view = ctx.summary?.at(func.sig ?? func.body)
-  if (body == null) return { ...UNKNOWN_FRAME, why: 'no body', callees: new Set(), closures: new Set(), sites: new Set(), siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), loops: [] }
+  if (body == null) return { ...UNKNOWN_FRAME, why: 'no body', callees: new Set(), closures: new Set(), sites: new Set(), siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), loops: [] }
   const params = new Set(), typedParams = new Set()
   for (const p of func.sig?.params ?? []) if (p?.name) { params.add(p.name); if (p.boundaryTyped) typedParams.add(p.name) }
   if (func.rest) params.add(func.rest)
@@ -1012,7 +1032,7 @@ const UNKNOWN_FRAME = { writesOuter: true, arenaUnsafe: true, keeps: false, flag
  *  outer bindings. Unknown when the summary has no arrow for it. */
 function closureEffectsOf(id) {
   const arrow = ctx.summary?.closureArrow?.(id)
-  if (!isArr(arrow) || arrow[0] !== '=>') return { ...UNKNOWN_FRAME, why: 'closure ' + id + ' unknown', callees: new Set(), closures: new Set(), sites: new Set(), siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set() }
+  if (!isArr(arrow) || arrow[0] !== '=>') return { ...UNKNOWN_FRAME, why: 'closure ' + id + ' unknown', callees: new Set(), closures: new Set(), sites: new Set(), siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set() }
   const body = arrow[2], params = new Set()
   let defaults = null
   for (const p of extractParams(arrow[1])) {
@@ -1140,10 +1160,10 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   for (const [, o] of nodes) { for (const a of o.inline ?? []) inline.add(a); for (const l of o.loops ?? []) for (const a of l.own.inline ?? []) inline.add(a) }
   const called = (id) => inline.has(ctx.summary?.closureArrow?.(id))
   for (const key of closureOwn.keys()) facts.delete(key)
-  for (const [name, o] of own) { const f = facts.get(name); f.closures = o.closures; f.sites = o.sites; f.siteKinds = o.siteKinds; f.siteGrows = o.siteGrows; f.siteGrown = o.siteGrown; f.siteAsked = o.siteAsked; f.siteNames = o.siteNames; f.siteWhys = o.siteWhys }
+  for (const [name, o] of own) { const f = facts.get(name); f.closures = o.closures; f.sites = o.sites; f.siteKinds = o.siteKinds; f.siteGrows = o.siteGrows; f.siteGrown = o.siteGrown; f.siteAsked = o.siteAsked; f.siteKept = o.siteKept; f.siteNames = o.siteNames; f.siteWhys = o.siteWhys }
   facts.closureCalls = new Map([...closureOwn].map(([id, o]) => [id, o.closures]))
   facts.closureSites = new Map([...closureOwn].map(([id, o]) => [id, called(id) ? new Set() : o.sites]))
-  // what a closure's sites write into, as a function's: `{ siteKinds, siteGrows, siteGrown, siteAsked, siteNames }`
+  // what a closure's sites write into, as a function's: `{ siteKinds, siteGrows, siteGrown, siteAsked, siteKept, siteNames }`
   facts.closureSiteFacts = new Map([...closureOwn].filter(([id]) => !called(id)).map(([id, o]) => [id, o]))
   facts.closureUnsited = new Set([...closureOwn].filter(([id, o]) => o.unsited && !called(id)).map(([id]) => id))
   const clean = (c) => { const g = facts.get(c); return g != null && !g.arenaUnsafe && !g.keeps && !g.flagged }

@@ -1,14 +1,13 @@
 /**
- * A store into a receiver the census cannot read again is a store the flag
- * cannot name: `map.get(k).push(v)`, `(seen ??= new Set()).add(k)`,
- * `list.slice().sort(cmp)`. The frame census (compile/analyze/frame-effects.js)
- * flags such a site with no address, zero, and every frame around it keeps
- * its memory: the arena rewind and the kernel's phase checkpoint read the
- * flag against their marks. Where the receiver is the first thing the
+ * A store into a receiver the census cannot read again (`map.get(k).push(v)`,
+ * `list.slice().sort(cmp)`) keeps the receiver as the site evaluates it, and
+ * lowers the flag to it after the store (compile/analyze/frame-effects.js
+ * `kept`, emit/dispatch.js). Where the receiver is the first thing the
  * statement evaluates, it is read once into a local of its own, before the
- * statement, and the site writes into a binding: a named receiver the census
- * reads, and the emitter lowers the flag to its address. The statement's
- * order is kept: the receiver was evaluated first already.
+ * statement, and the site writes into a binding: a named receiver, which the
+ * emitter's named paths take (a push rebinds it in place) and the flag reads
+ * before the store. The statement's order is kept: the receiver was
+ * evaluated first already.
  *
  * @module compile/plan/site-receivers
  */

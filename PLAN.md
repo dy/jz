@@ -54,11 +54,18 @@ step.
 
 Open, in the order release needs them:
 
-1. **Self-compile.** The recursive jz x jz compile still exhausts 4 GiB: every
-   summary solve's phase checkpoint is declined as unsafe (the solve stores into
-   storage older than its mark), so each keeps its ~370 MB. A `JZ_DEBUG_ESC`
-   kernel names the escaping stores; the fix is to keep the solve's writes
-   inside it.
+1. **Self-compile.** The recursive jz x jz compile still exhausts 4 GiB, now in
+   emission. Every summary solve's checkpoint is taken (a store into a receiver
+   the census cannot read again keeps the receiver it evaluated), each keeping
+   its 60 MB result, and the compile reaches `analyzeClosures` at 3.9 GB. What
+   remains is volume in phases that write compile state older than themselves:
+   `emitFuncs` 735 MB, `narrowSignatures` 415, `analyzeFuncs` 314,
+   `analyzeClosures` 233, the front 798. The September 25 kernel peaked at
+   3.57 GB the same way: the compiler outgrew the ceiling, no single
+   regression. A kernel built with `arenaRewind` keeps a front of 478 MB and
+   reaches `pullStdlib` before the ceiling; with `compact` too it traps in its
+   first seconds (below). `dist/jz.wasm` is never published, but
+   `prepublishOnly` runs this gate.
 2. **Reference evidence.** The claims gate needs a fresh reference run of the
    pushed tree (bench.yml `reference: true`), then the losses it reports.
 3. Deferred: an exported parameter a closure mutates crosses as a boxed
