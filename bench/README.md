@@ -56,8 +56,9 @@ TinyGo and Zig-Wasm ports agree exactly with JavaScript.
 A case whose `**`, `Math.pow` or `Math.hypot` results differ in their last bits
 per engine checks its output with `checksumF64Near` (`_lib/benchlib.js`): each
 value hashed at single precision, a relative tolerance of 2^-24. Engines a few
-ulp apart agree; a wrong result does not. `munsell` is checked so (319975139:
-V8, Deno, bun and JZ agree, where their exact bits give three checksums).
+ulp apart agree; a wrong result does not. color-space's kernels are checked so
+(munsell, hsl, hwb, jzazbz, jzczhz, cam16, hct, a98rgb, ipt: V8, Deno, bun and
+JZ agree on each, where munsell's exact bits gave three checksums).
 
 ## Run
 

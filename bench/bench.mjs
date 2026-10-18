@@ -115,6 +115,9 @@ const CASE_NAMES = {
   upfirdn: 'rational resampler, library idiom',
   pcmconvert: 'PCM format conversion',
   munsell: 'xyY to Munsell, library kernel',
+  hsl: 'rgb to HSL, library kernel', hwb: 'rgb to HWB, library kernel', jzazbz: 'rgb to Jzazbz, library kernel',
+  jzczhz: 'rgb to JzCzhz, library kernel', cam16: 'rgb to CAM16, library kernel', hct: 'rgb to HCT, library kernel',
+  a98rgb: 'rgb to Adobe RGB, library kernel', ipt: 'rgb to IPT, library kernel',
   mat4: 'mat4 multiply',
   poly: 'polymorphic reduce',
   bitwise: 'bitwise mix',
@@ -1400,8 +1403,9 @@ const REFERENCE_CHECKSUMS = {
   polytri: 84696351, worley: 4117862664, fabrik: 2711562489, quatmul: 3862405384,
   // (native C, V8 and jz agree: clang -O3, node 25, jz e93a9cd3)
   sosfilter: 3613342271, movavg: 4274945053, upfirdn: 2901183035, pcmconvert: 1465809949,
-  // (checksumF64Near, single precision: V8, Deno, bun and jz agree; their exact bits differ)
-  munsell: 319975139,
+  // color-space's kernels (checksumF64Near, single precision): V8, Deno, bun and jz agree
+  munsell: 319975139, hsl: 782821123, hwb: 2131370600, jzazbz: 2539556348, jzczhz: 3569912359,
+  cam16: 3498772996, hct: 2742489630, a98rgb: 4116453917, ipt: 3620802574,
 }
 // The engines in bench/bench.svg — the corpus headline: jz vs the WASM field
 // (Rust/Go/C/Zig compiled to wasm, AssemblyScript — all run in node's V8,
