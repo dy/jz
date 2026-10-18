@@ -16,7 +16,7 @@ import { typedElemAux } from '../../layout.js'
 import { STRIDE } from '../../module/typedarray/elem-tables.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { typedCtorBase } from '../typed-provenance.js'
-import { intLiteralValue } from '../static.js'
+import { intLiteralValue, intExprRange } from '../static.js'
 import { idxKey, redeclaresName, lengthRecv } from './canonical-bounds.js'
 import { intervalIdxRanges } from './interval-proof.js'
 import { containsNestedClosure } from './loop-unroll.js'
@@ -99,7 +99,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   }
   const walkLoop = (i2, c2, s2, b2, hint, isTop) => {
     const spec = versionableTypedFor(i2, c2, s2, b2, locals, hint) ?? rangeOnly(c2, b2)
-    if (spec) { spec.top = isTop; spec.bodyNode = b2; levels.push(spec) }
+    if (spec) { spec.top = isTop; spec.bodyNode = b2; spec.init = i2; levels.push(spec) }
     scanStmts(b2)
   }
   const scanStmts = (n) => {
@@ -150,12 +150,18 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   const topExtent = (() => {
     if (topIv == null || !Array.isArray(cond) || cond[1] !== topIv) return null
     const up = cond[0] === '<' || cond[0] === '<=', down = cond[0] === '>' || cond[0] === '>='
-    const k = step.length === 3 ? intLiteralValue(step[2]) : 1
-    if (!(k > 0)) return null
+    // (any positive step: the counter's values lie between its entry and the bound)
+    const by = step.length === 3 ? intLiteralValue(step[2]) ?? intExprRange(step[2])?.[0] : 1
+    if (!(by > 0)) return null
     const stepUp = step[0] === '++' || step[0] === '+=', stepDown = step[0] === '--' || step[0] === '-='
     if (!(up && stepUp) && !(down && stepDown)) return null
     const kind = (e) => exprType(e, locals) === 'i32' ? 'i32' : 'f64'
-    return { iv: topIv, ivKind: kind(topIv), up, bound: cond[2], boundKind: kind(cond[2]), incl: cond[0] === '<=' || cond[0] === '>=' }
+    // (a stride past one: the last value the counter takes stops short of the bound by up to a
+    // stride, read at the nest's entry, so the loop must not change it)
+    const stride = by === 1 && intLiteralValue(step[2]) === 1 || step.length !== 3 ? null : step[2]
+    if (stride != null && someDeep(stride, n => typeof n === 'string' && !stableTop(n))) return null
+    return { iv: topIv, ivKind: kind(topIv), up, bound: cond[2], boundKind: kind(cond[2]), incl: cond[0] === '<=' || cond[0] === '>=',
+      stride, strideKind: stride == null ? null : kind(stride) }
   })()
   const exprNames = (e, out) => someDeep(e, n => { if (typeof n === 'string') out.push(n); return false })
   const keepPre = levels.filter((L) => {
@@ -199,7 +205,8 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       const read = [c.recv]
       if (c.presence) return stableTop(c.recv)
       if (c.range != null) { if (c.range.hiName != null) read.push(c.range.hiName) }
-      else if (c.ind != null) { read.push(c.ind); if (typeof c.slope === 'string') read.push(c.slope) }
+      // (an induction of a static entry is bounded from that entry and its slope, not read)
+      else if (c.ind != null) { if (c.entryC == null) read.push(c.ind); if (typeof c.slope === 'string') read.push(c.slope) }
       else if (c.cursor != null) read.push(c.cursor)
       else for (const t of c.slots) { if (typeof t.e === 'string') read.push(t.e); else exprNames(t.e, read) }
       return read.every(stableFor(c))

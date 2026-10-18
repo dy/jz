@@ -212,6 +212,46 @@ function proveGuardedWords(entries, proofs, defs, init, cond, step, body, slotRa
   return words
 }
 
+// The conjuncts of a version guard the ranges of its own operands decide: a
+// counter's hull, a word's sign, a length's. Each guard temporary is set
+// before the guard, in order (`stmts`), so its range is read off its settings.
+// What stays is what can fail; a guard of none passes.
+const I32_RANGE = [-2147483648, 2147483647]
+function undecidedConjuncts(conjs, stmts) {
+  const temps = new Map()
+  const word = n => {
+    if (Array.isArray(n) && n[0] === 'i32.const') return [n[1], n[1]]
+    if (!Array.isArray(n) || n[0] !== 'local.get' || typeof n[1] !== 'string') return I32_RANGE
+    const name = n[1].slice(1)
+    const r = ctx.func.locals.get(name) === 'i32' && lookupValType(name) === VAL.NUMBER && !repOf(name)?.unsigned ? intExprRange(name) : null
+    return r && r[0] >= I32_RANGE[0] && r[1] <= I32_RANGE[1] ? r : I32_RANGE
+  }
+  const range = n => {
+    if (!Array.isArray(n)) return null
+    const a = n.length > 1 ? n[1] : null, b = n.length > 2 ? n[2] : null
+    let r = null
+    if (n[0] === 'i64.const') { const v = typeof a === 'bigint' ? Number(a) : Number(a); r = [v, v] }
+    else if (n[0] === 'local.get') r = temps.get(a) ?? null
+    else if (n[0] === 'i64.extend_i32_s') r = word(a)
+    else if (n[0] === 'i64.extend_i32_u') r = [0, 4294967295]
+    else if (n[0] === 'i64.add' || n[0] === 'i64.sub' || n[0] === 'i64.mul') {
+      const x = range(a), y = range(b)
+      if (x && y) r = n[0] === 'i64.add' ? [x[0] + y[0], x[1] + y[1]] : n[0] === 'i64.sub' ? [x[0] - y[1], x[1] - y[0]]
+        : (p => [Math.min(...p), Math.max(...p)])([x[0] * y[0], x[0] * y[1], x[1] * y[0], x[1] * y[1]])
+    }
+    return r && r.every(Number.isSafeInteger) ? r : null
+  }
+  for (const st of stmts) if (Array.isArray(st) && st[0] === 'local.set') temps.set(st[1], range(st[2]))
+  const decided = c => {
+    if (!Array.isArray(c) || c.length !== 3) return false
+    const x = range(c[1]), y = range(c[2])
+    if (!x || !y) return false
+    return c[0] === 'i64.lt_s' ? x[1] < y[0] : c[0] === 'i64.le_s' ? x[1] <= y[0]
+      : c[0] === 'i64.gt_s' ? x[0] > y[1] : c[0] === 'i64.ge_s' ? x[0] >= y[1] : false
+  }
+  return conjs.filter(c => !decided(c))
+}
+
 function unrollSmallConstFor(init, cond, step, body) {
   // Keep the overwhelmingly-common `for(i=0;i<N;i++)` path allocation-free;
   // only strided/nonzero-start control loops pay for an explicit value list.
@@ -751,6 +791,7 @@ export const controlFlowOps = {
         const result = []
         const checkedFrom = ctx.func.checkedRecv?.length ?? 0
         if (init != null) result.push(...emitVoid(init))
+        const guardFrom = result.length
         const initRefs = init != null ? initPresent(checkedFrom) : new Map()
         if (levels.checkedOnly) {
           const checked = withRefinements(initRefs, body, () => withRefinements(topCounterRefs, body,
@@ -854,9 +895,16 @@ export const controlFlowOps = {
         // (versionableTypedNest's topExtent — the counter is exempt from the
         // stability check only when this substitution is possible).
         let topEnds
-        const topEndsOf = () => topEnds ??= (({ iv, ivKind, up, bound, boundKind, incl }) => {
+        const topEndsOf = () => topEnds ??= (({ iv, ivKind, up, bound, boundKind, incl, stride, strideKind }) => {
           const entry = slotI64(iv, ivKind)
-          const b = incl ? slotI64(bound, boundKind) : ['i64.add', slotI64(bound, boundKind), i64c(up ? -1 : 1)]
+          let b = incl ? slotI64(bound, boundKind) : ['i64.add', slotI64(bound, boundKind), i64c(up ? -1 : 1)]
+          // A strided counter's last value is entry ± ⌊|b − entry| / stride⌋·stride:
+          // the bound itself would put a butterfly's far access past the length.
+          if (stride != null) {
+            const s = slotI64(stride, strideKind), span = up ? ['i64.sub', b, entry] : ['i64.sub', entry, b]
+            const reach = ['i64.mul', ['i64.div_s', span, s], s]
+            b = up ? ['i64.add', entry, reach] : ['i64.sub', entry, reach]
+          }
           return up ? { min: entry, max: b } : { min: b, max: entry }
         })(levels.topExtent)
         const slotSum = (base, list, lo = false) => {
@@ -1117,7 +1165,7 @@ export const controlFlowOps = {
             conjs.push(['i64.lt_s', kE, len64])
             conjs.push(['i64.ge_s', ['local.get', `$${endT}`], i64c(0)])
             conjs.push(['i64.lt_s', ['local.get', `$${endT}`], len64Of(c.recv)])
-            const ownEntry = intLiteralValue(counterInit(init, c.ind))
+            const ownEntry = intLiteralValue(counterInit(vs.init ?? init, c.ind))
             if (wordLoop && wordLocal(c.ind) && ownEntry != null && ownEntry === c.entryC && !Object.is(ownEntry, -0)) {
               const landing = ['i64.add', ['local.get', `$${endT}`], slope64]
               wordProofs.set(c.ind, { range: [-2147483648, 2147483647], entry: kE, tests: [
@@ -1163,8 +1211,9 @@ export const controlFlowOps = {
         }
         const words = wordLoop ? proveGuardedWords(wordEntries, wordProofs, wordDefs, init, cond, step, body, e => slotRanges.get(slotKey(e)) ?? null) : null
         if (words) for (const proof of words.values()) conjs.push(...proof.tests)
-        let guard = conjs[0]
-        for (let k = 1; k < conjs.length; k++) guard = ['i32.and', guard, conjs[k]]
+        const tests = undecidedConjuncts(conjs, result.slice(guardFrom))
+        let guard = tests[0] ?? ['i32.const', 1]
+        for (let k = 1; k < tests.length; k++) guard = ['i32.and', guard, tests[k]]
         // arm-scoped assumption MAP key → OWNING loop body: an assumption is honored
         // only while its loop's frame is on the emission stack (typedIdxProven checks
         // frame.bodyNode) — a textual twin of an inner access OUTSIDE that loop (the

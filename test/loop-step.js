@@ -63,3 +63,56 @@ test('loop step: the butterfly reads each element once', () => {
   const on = wat(butterfly, { optimize: 2 }), off = wat(butterfly, { optimize: { level: 2, loadCSE: false } })
   ok(loads(on) < loads(off), `fewer loads with the cache (${loads(on)} against ${loads(off)})`)
 })
+
+// A counter that strides by a loop-invariant (`i += len`) takes values from its
+// entry to the last its stride reaches below the bound, so the inner butterfly's
+// extents lift to one guard ahead of it, its `k += step` counter a word there too
+// (type/loop-versioning-nest.js topExtent); twiddle tables too short for a pass
+// fail that guard into the checked nest.
+const strided = (twiddles) => `const N = 64
+const fft = (re, im, wre, wim, n) => {
+  for (let len = 2; len <= n; len <<= 1) {
+    const half = len >> 1
+    const step = (n / len) | 0
+    for (let i = 0; i < n; i += len) {
+      for (let j = 0, k = 0; j < half; j++, k += step) {
+        const wr = wre[k], wi = wim[k]
+        const a = i + j, b = a + half
+        const xr = re[b], xi = im[b]
+        const tr = wr * xr - wi * xi
+        const ti = wr * xi + wi * xr
+        re[b] = re[a] - tr
+        im[b] = im[a] - ti
+        re[a] = re[a] + tr
+        im[a] = im[a] + ti
+      }
+    }
+  }
+}
+export let f = (rounds) => {
+  const re = new Float64Array(N), im = new Float64Array(N), wre = new Float64Array(${twiddles}), wim = new Float64Array(${twiddles})
+  for (let i = 0; i < N; i++) { re[i] = ((i * 7919) % 101) / 50 - 1; im[i] = 0 }
+  for (let k = 0; k < wre.length; k++) { wre[k] = 1 - k * 0.003; wim[k] = k * 0.002 }
+  for (let r = 0; r < rounds; r++) fft(re, im, wre, wim, N)
+  let h = 0
+  for (let i = 0; i < N; i++) h = h * 1.000001 + re[i] - im[i] * 0.5
+  return h
+}`
+
+test('loop step: a strided counter lifts the butterfly guard and agrees with the host', () => {
+  for (const twiddles of ['N >> 1', 'N >> 2', '5']) {
+    const src = strided(twiddles), host = oracle(src).f
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const f = jz(src, { optimize }).exports.f
+      for (const n of [1, 2]) ok(Object.is(host(n), f(n)), `${twiddles} twiddles, f(${n}) at ${optimize}: ${f(n)} for ${host(n)}`)
+    }
+  }
+  if (belowOpt(2)) return
+  // the strided loop holding the vector butterfly tests no extent of its own
+  const fn = wat(strided('N >> 1'), { optimize: 'speed' })
+  const seg = (from) => { let d = 0, i = from; for (; i < fn.length; i++) { if (fn[i] === '(') d++; else if (fn[i] === ')' && --d === 0) break } return fn.slice(from, i + 1) }
+  const loops = []
+  for (let at = fn.indexOf('(loop'); at >= 0; at = fn.indexOf('(loop', at + 5)) loops.push(seg(at))
+  ok(loops.some(l => /v128\.store/.test(l) && (l.match(/\(loop/g) || []).length >= 3 && !/i64\.(lt|le|ge|gt)_s/.test(l)),
+    'a strided loop around the vector butterfly with no guard inside')
+})
