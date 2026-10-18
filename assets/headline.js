@@ -4,14 +4,12 @@
 // unclassified rows are not evidence for speed, size, or memory comparisons.
 // The LAB set — jz-internal probe cases: the self-compile compiler rows (jz/watr/
 // jessie compiling code) and the JS-only intrinsic probes (color* — pow/cbrt/
-// exp2/atan2 gap trackers with no cross-language ports, and munsell, color-space's
-// kernel, whose `**` and Math.hypot bits differ per engine: V8 and Deno agree, bun
-// and jz each differ). They answer jz-internal questions, not the cross-language
-// comparison, so every aggregate excludes them.
+// exp2/atan2 gap trackers with no cross-language ports). They answer jz-internal
+// questions, not the cross-language comparison, so every aggregate excludes them.
 // The ONE definition, shared by every consumer: bench/bench.mjs (geomean SVG +
 // web emit), bench/index.html (page corpus + `lab` chip), scripts/bench-readme.mjs
 // (README aggregate table), and figure below (the landing's bench row).
-export const LAB = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq', 'deltae', 'munsell'])
+export const LAB = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq', 'deltae'])
 
 export const classifyBenchmarkChecksum = (checksum, reference, fma) =>
   (Array.isArray(fma) ? fma.some(value => value != null && checksum === value) : fma != null && checksum === fma) ? 'fma'

@@ -1400,6 +1400,8 @@ const REFERENCE_CHECKSUMS = {
   polytri: 84696351, worley: 4117862664, fabrik: 2711562489, quatmul: 3862405384,
   // (native C, V8 and jz agree: clang -O3, node 25, jz e93a9cd3)
   sosfilter: 3613342271, movavg: 4274945053, upfirdn: 2901183035, pcmconvert: 1465809949,
+  // (checksumF64Near, single precision: V8, Deno, bun and jz agree; their exact bits differ)
+  munsell: 319975139,
 }
 // The engines in bench/bench.svg — the corpus headline: jz vs the WASM field
 // (Rust/Go/C/Zig compiled to wasm, AssemblyScript — all run in node's V8,

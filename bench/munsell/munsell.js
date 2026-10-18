@@ -14,7 +14,7 @@
 //
 // The source is a fixed specimen: it stays as the library ships it.
 
-import { checksumF64, medianUs, printResult } from '../_lib/benchlib.js'
+import { checksumF64Near, medianUs, printResult } from '../_lib/benchlib.js'
 
 const N_COLORS = 256
 const N_RUNS = 11
@@ -140,7 +140,7 @@ const run = () => {
     samples[i] = performance.now() - t0
   }
 
-  printResult(medianUs(samples), checksumF64(dst), N_COLORS, 1, N_RUNS)
+  printResult(medianUs(samples), checksumF64Near(dst), N_COLORS, 1, N_RUNS)
 }
 
 export let main = () => {

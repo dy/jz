@@ -18,6 +18,17 @@ export let checksumF64 = (out) => {
   return h >>> 0
 }
 
+// For a case whose `**`, pow or hypot bits differ per engine (each engine's libm
+// rounds its last bits its own way): every value is hashed at single precision,
+// a relative tolerance of 2^-24, so engines a few ulp apart agree and a wrong
+// result does not.
+export let checksumF64Near = (out) => {
+  const f = new Float32Array(1), u = new Uint32Array(f.buffer)
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < out.length; i++) { f[0] = out[i]; h = Math.imul(h ^ (u[0] | 0), 0x01000193) | 0 }
+  return h >>> 0
+}
+
 export let checksumU32 = (out) => {
   let h = 0x811c9dc5 | 0
   const stride = 128

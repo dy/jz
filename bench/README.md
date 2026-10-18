@@ -53,6 +53,12 @@ The same Go control restores the strict checksums for `gainclass` (1297017192),
 are 359062747, 3246044915 and 2056124083 respectively. Their Go-Wasm,
 TinyGo and Zig-Wasm ports agree exactly with JavaScript.
 
+A case whose `**`, `Math.pow` or `Math.hypot` results differ in their last bits
+per engine checks its output with `checksumF64Near` (`_lib/benchlib.js`): each
+value hashed at single precision, a relative tolerance of 2^-24. Engines a few
+ulp apart agree; a wrong result does not. `munsell` is checked so (319975139:
+V8, Deno, bun and JZ agree, where their exact bits give three checksums).
+
 ## Run
 
 For release evidence on CI, dispatch the `bench` workflow with `reference=true`.
