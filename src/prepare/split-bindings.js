@@ -108,13 +108,27 @@ export function splitReassigned(fn, nested = false) {
   for (const name of own) { const m = made.exec(name); if (m) serial = Math.max(serial, +m[1] + 1) }
   const roots = new Map()   // a binding this pass declared → the source binding it continues
   const joinKinds = new Map()   // a join this pass declared → the kind the conditional leaves it (the summary knows the source alone)
+  // A statement this pass renamed or copied (a later list's, an arm's) is the source statement the
+  // summary read, over the source bindings: what the conditional leaves its copy's bindings, its
+  // values being among the source's (an arm's under the guard narrower still), the source leaves its.
+  const origin = new WeakMap()
+  const renamed = (n, names) => { const r = rename(n, names); if (r !== n) origin.set(r, n); return r }
+  const sourceOf = (n) => { while (origin.has(n)) n = origin.get(n); return n }
+  const rootOf = (n) => { while (roots.has(n)) n = roots.get(n); return n }
+  const exitKind = (s, name) => view.exitKindAt(sourceOf(s), rootOf(name)) ?? view.exitKindAt(s, name)
 
+  // Later statements read `next` where they read the source binding or any name it went by:
+  // an arm's statements read the arm's binding (`sum$s4`), not the source it continues.
+  const rebind = (names, name, root, next) => {
+    for (const [k, v] of names) if (v === name) names.set(k, next)
+    names.set(root, next); names.set(name, next)
+  }
   // `list` split over the bindings `mine(name)` admits
   const split = (list, mine) => {
     let out = null
     const declared = new Set(), names = new Map()
     for (let k = 1; k < list.length; k++) {
-      const s = names.size ? rename(list[k], names) : list[k]
+      const s = names.size ? renamed(list[k], names) : list[k]
       if (s !== list[k]) { if (!out) out = copyNode(list); out[k] = s }
       declares(s, declared)
       if (isAssign(s) && !captured.has(s[1]) && mine(s[1], declared, out ?? list, k)) {
@@ -126,7 +140,7 @@ export function splitReassigned(fn, nested = false) {
         // The RHS above still reads the previous name. Later statements read
         // the new one when reached, so each is renamed once instead of once
         // for every earlier assignment in its list.
-        names.set(root, next)
+        rebind(names, name, root, next)
         declared.add(next); own.add(next); roots.set(next, root)
         continue
       }
@@ -148,7 +162,7 @@ export function splitReassigned(fn, nested = false) {
       if (s[0] !== 'if' || !view) continue
       // the join is declared apart only where it is narrower than the binding's own kind
       const assigned = assignedIn(s), joined = []
-      for (const name of assigned) if (!captured.has(name) && mine(name, declared, out ?? list, k) && !joined.includes(name) && narrower(view.exitKindAt(s, name), view.kindOf(name))) joined.push(name)
+      for (const name of assigned) if (!captured.has(name) && mine(name, declared, out ?? list, k) && !joined.includes(name) && narrower(exitKind(s, name), view.kindOf(rootOf(name)))) joined.push(name)
       // the mix the statements after read may be one the conditional made (above)
       if (!joined.length) { const v = versionRest(out ?? list, k, names, assigned, name => mine(name, declared, out ?? list, k)); if (v) { out = v; break } continue }
       if (!out) out = copyNode(list)
@@ -156,7 +170,7 @@ export function splitReassigned(fn, nested = false) {
       for (const name of joined) {
         const root = roots.get(name) ?? name, next = `${root}${T}s${serial++}`
         decls.push(noted(s, ['=', next, name]))
-        names.set(root, next); declared.add(next); own.add(next); roots.set(next, root); joinKinds.set(next, view.exitKindAt(s, name))
+        rebind(names, name, root, next); declared.add(next); own.add(next); roots.set(next, root); joinKinds.set(next, exitKind(s, name))
       }
       out.splice(k + 1, 0, noted(s, ['let', ...decls]))
       list = out
@@ -239,7 +253,7 @@ export function splitReassigned(fn, nested = false) {
   let armDepth = 0
   const versionRest = (list, k, names, candidates = null, mine = null) => {
     if (!view || armDepth || k + 1 >= list.length) return null
-    const rest = list.slice(k + 1).map(s => names.size ? rename(s, names) : s)   // the later statements read the names declared so far
+    const rest = list.slice(k + 1).map(s => names.size ? renamed(s, names) : s)   // the later statements read the names declared so far
     if (!rest.some(hasLoop)) return null
     const restNode = [';', ...rest], assigned = assignedIn(restNode)
     const picked = [], cursors = []
@@ -335,7 +349,7 @@ export function splitReassigned(fn, nested = false) {
     for (const name of declaredInRest) if (!captured.has(name)) { const next = `${name}${T}s${serial++}`; to.set(name, next); own.add(next); roots.set(next, roots.get(name) ?? name) }
     const at = list[k]
     for (const decl of cursorDecls.values()) if (decl.bound != null) decl.bound = to.get(decl.bound) ?? decl.bound
-    const copy = rest.map(s => rename(s, to))
+    const copy = rest.map(s => renamed(s, to))
     for (const name of positiveLengths) { const next = to.get(name); for (const st of copy) if (Array.isArray(st) && st[0] === 'const') for (let j = 1; j < st.length; j++) if (Array.isArray(st[j]) && st[j][1] === next) st[j].lo = 1 }
     // each arm is a list of its own: a cursor declared inside it versions its loops in turn
     armDepth++

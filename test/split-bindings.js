@@ -14,6 +14,7 @@ import { parse } from '../src/parse.js'
 import { belowOpt, levels } from './_matrix.js'
 import { compile } from '../index.js'
 import { foldWords, oracle, run, wat } from './util.js'
+import { parse as probeParse, walk as probeWalk } from '../scripts/wat-probe.mjs'
 
 const ARGS = [[1, 3], [5, 3], [-2, 3], [0.5, -7], [1e3, 0]]
 
@@ -332,4 +333,46 @@ test('split bindings: a rewritten statement keeps its source position', () => {
   is(list.slice(1).map(st => st.loc), before, 'every statement, the declaration too, at the position of the one it stands for')
   const positioned = (n) => !Array.isArray(n) || n[0] == null || (typeof n.loc === 'number' && n.slice(1).every(positioned))
   ok(list.slice(3).every(positioned), 'the statements renamed inside keep every node\'s position')
+})
+
+// A bag's sum defaulted on the first call (`let sum = params.sum; if (sum == null) sum = 0`)
+// inside the arm the `Array.isArray` version of its history makes: the join is the arm's
+// binding of its own, a Number, which the per-sample loop adds without normalizing it, and
+// every statement after it reads that binding (the arm's names, not the source's).
+test('split bindings: a default inside a version arm splits, its later reads renamed', () => {
+  const src = `const avg = (data, params) => {
+      let ptr = params.ptr, mem = params.memory
+      if (ptr == null) {
+        if (!mem) mem = 8
+        if (typeof mem === 'number') mem = new Array(mem).fill(0)
+        ptr = params.ptr = 0
+        params.memory = mem
+      }
+      const m = mem.length
+      let sum = params.sum
+      if (sum == null) { sum = 0; for (let j = 0; j < m; j++) sum += mem[j] }
+      for (let i = 0; i < data.length; i++) { sum += data[i] - mem[ptr]; mem[ptr] = data[i]; ptr = (ptr + 1) % m; data[i] = sum / m }
+      params.ptr = ptr; params.sum = sum
+      return data
+    }
+    export let f = (n, w) => { const d = new Float64Array(n); let s = 0, params
+      for (let r = 0; r < 3; r++) { if (r !== 1) params = { memory: 4 }; for (let i = 0; i < n; i++) d[i] = (i * 7 % 11) - 5 + w; avg(d, params); for (let i = 0; i < n; i++) s = s * 0.5 + d[i] }
+      return s + params.sum }`
+  const js = oracle(src).f
+  for (const optimize of levels(1, 2, 3, 'speed')) {
+    const f = run(src, { optimize }).f
+    for (const [n, w] of [[0, 4], [1, 1], [9, 4], [40, 16], [33, 5]]) is(f(n, w), js(n, w), `O${optimize}: n=${n} w=${w}`)
+  }
+  if (belowOpt(2)) return
+  // the per-sample loop (the one that divides) normalizes no sum it carries
+  const canonSum = (m) => m[0] === 'select' && m[1]?.[0] === 'f64.const' && m[1][1] === 'nan' && m[2]?.[0] === 'local.tee' && m[2][2]?.[0] === 'f64.add'
+  let perSample = 0, normalized = 0
+  probeWalk(probeParse(src, 'speed'), n => {
+    if (n[0] !== 'loop') return
+    let divides = false, c = 0
+    probeWalk(n, m => { if (m[0] === 'f64.div') divides = true; if (canonSum(m)) c++ })
+    if (divides) { perSample++; normalized += c }
+  })
+  ok(perSample > 0, 'the per-sample loop is there')
+  is(normalized, 0, 'its sum adds raw')
 })
