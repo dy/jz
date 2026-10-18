@@ -1171,14 +1171,17 @@ test('cursor guards take the exact extent of a read before the round\'s advance'
     const guard = src => funcWat(compile(src, { optimize: { level: 'speed', watr: false, coalesceLocals: false }, wat: true }), 'run')
     // Copy propagation may separate the bound/cursor definitions from the
     // comparison. Check the actual extent, not adjacency of their temporary tees.
+    // (the cursor itself, or the loop copy's word of it, which a literal entry declares without a conversion)
+    const readsCursor = v => { const t = JSON.stringify(v); return t.includes('["local.get","$k"]') || /\["local\.get","\$k[^"]*int\d+"\]/.test(t) }
+    // the cursor's snapshot, or its word read in place where the guard tests its sign no more
+    const isCursor = t => t?.[0] === 'local.get' && /tvm\d+$/.test(t[1]) || t?.[0] === 'i64.extend_i32_s' && readsCursor(t)
     for (const [src, advance] of [[pre, 0], [post, 1]]) {
       const ir = parseWat(guard(src)), definitions = new Map(), extents = []
       walkAst(ir, { enter: n => {
         if ((n[0] === 'local.set' || n[0] === 'local.tee') && /(?:tvq|tvm|tvt|bound)\d+$/.test(n[1])) {
           const values = definitions.get(n[1]) || []; values.push(n[2]); definitions.set(n[1], values)
         }
-        if (n[0] === 'i64.lt_s' && n[1]?.[0] === 'i64.add' &&
-            [n[1][1], n[1][2]].some(t => t?.[0] === 'local.get' && /tvm\d+$/.test(t[1]))) extents.push(n[1])
+        if (n[0] === 'i64.lt_s' && n[1]?.[0] === 'i64.add' && [n[1][1], n[1][2]].some(isCursor)) extents.push(n[1])
       } })
       ok(extents.length > 0, 'the cursor has a hoisted extent guard')
       // The rounds term, through the temporaries' definitions, is `ceil(n)` plus
@@ -1195,12 +1198,10 @@ test('cursor guards take the exact extent of a read before the round\'s advance'
         return JSON.stringify(t).includes('f64.ceil') || /i32\.(load|shr_u)/.test(t?.[0]) ? 0 : NaN
       }
       for (const extent of extents) {
-        const cursorFirst = extent[1]?.[0] === 'local.get' && /tvm\d+$/.test(extent[1][1])
+        const cursorFirst = isCursor(extent[1])
         const cursor = cursorFirst ? extent[1] : extent[2], rounds = cursorFirst ? extent[2] : extent[1]
         is(offset(rounds), advance - 1, advance ? 'a read after the advance: one round more' : 'a read before the advance: the rounds gone by (ceil(n) - 1)')
-        // (the cursor itself, or the loop copy's word of it, which a literal entry declares without a conversion)
-        const cursorDefs = definitions.get(cursor[1]) || []
-        const readsCursor = v => { const t = JSON.stringify(v); return t.includes('["local.get","$k"]') || /\["local\.get","\$k[^"]*int\d+"\]/.test(t) }
+        const cursorDefs = cursor[0] === 'local.get' ? definitions.get(cursor[1]) || [] : [cursor]
         ok(cursorDefs.length > 0 && cursorDefs.every(readsCursor), 'the extent starts at the original cursor')
       }
     }
