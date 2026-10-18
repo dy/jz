@@ -31,6 +31,7 @@ import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '..
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
+import { stripDeadCanons } from '../src/optimize/nan-canon.js'
 import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -4069,6 +4070,51 @@ test('nanCanon: a negation whose value escapes keeps its canon', () => {
   const canons = (opt) => (compile(src, { optimize: { poolFloats: false, ...opt }, wat: true }).match(/select\s*\(f64\.const nan/g) || []).length
   is(canons({ level: 'speed' }), canons({ level: 'speed', nanCanon: false }), 'the canon stays')
   ok(canons({ level: 'speed' }) >= 1, 'and there is one')
+})
+
+// A canon in a loop whose local the loop reads only by arithmetic, read by a store or a
+// return only after the loop, moves to those reads: the loop carries the raw sum.
+const canonLoop = (before, inLoop = '') => `(module (memory (export "memory") 1)
+  (func $f (export "f") (param $p i32) (param $n i32) (result f64)
+    (local $x f64) (local $t f64) (local $i i32)
+    ${before}
+    (block $b (loop $l
+      (local.set $x (block (result f64)
+        (local.set $t (f64.add (local.get $x) (f64.load (local.get $p))))
+        (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))
+      ${inLoop}
+      (br_if $l (i32.lt_s (local.tee $i (i32.add (local.get $i) (i32.const 1))) (local.get $n)))))
+    (f64.store offset=8 (local.get $p) (local.get $x))
+    (local.get $x)))`
+const loopCanons = (fn) => { let n = 0; walk(fn, x => { if (x[0] === 'loop') walk(x, y => { if (y[0] === 'select' && y[1]?.[0] === 'f64.const' && y[1][1] === 'nan') n++ }) }); return n }
+test('nanCanon: a loop\'s canon moves to the reads past the loop that need it, exact', () => {
+  const src = canonLoop('(local.set $x (f64.const 0))')
+  const tree = parseWat(src), fn = findFunc(tree, '$f')
+  ok(stripDeadCanons(fn), 'the pass rewrites')
+  is(loopCanons(fn), 0, 'the loop normalizes nothing')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  const before = inst(parseWat(src)), after = inst(tree)
+  for (const [x, n] of [[1.5, 3], [NaN, 2], [-0, 1]]) {
+    for (const i of [before, after]) new Float64Array(i.memory.buffer)[0] = x
+    ok(Object.is(after.f(0, n), before.f(0, n)), `${x} × ${n}: the same result`)
+  }
+  // a payload NaN summed in is stored past the loop as the one NaN, as the canon left it
+  const stored = (i) => { const w = new BigUint64Array(i.memory.buffer); w[0] = 0x7FF8000200000000n; i.f(0, 1); return w[1] }
+  is(stored(after), stored(before), 'the stored bits are the canon\'s')
+})
+test('nanCanon: a loop\'s canon stays where its local may hold a box or a read in the loop needs it', () => {
+  // a load before the loop may be a box (`let s = bag.sum`): normalizing reads would lose it
+  for (const src of [canonLoop('(local.set $x (f64.load offset=16 (local.get $p)))'),
+    canonLoop('(local.set $x (f64.const 0))', '(f64.store offset=24 (local.get $p) (local.get $x))')]) {
+    const tree = parseWat(src), fn = findFunc(tree, '$f')
+    stripDeadCanons(fn)
+    is(loopCanons(fn), 1, 'the canon stays in the loop')
+  }
+  // the bag's sum, absent on the first call: its null test reads the box
+  const bag = `const ma = (d, st) => { let s = st.sum; if (s == null) s = 0; for (let i = 0; i < d.length; i++) { s += d[i]; d[i] = s } st.sum = s; return d }
+    export let f = (n) => { const st = {}, d = new Float64Array(n); for (let i = 0; i < n; i++) d[i] = i; ma(d, st); ma(d, st); return st.sum }`
+  const js = oracle(bag).f
+  for (const optimize of levels(1, 2, 'speed')) { const f = run(bag, { optimize }).f; for (const n of [0, 1, 7]) is(f(n), js(n), `O${optimize} n=${n}`) }
 })
 
 test('narrowI32: const-divisor div/mod/mul loops run pure i32', () => {
