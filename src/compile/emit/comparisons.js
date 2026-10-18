@@ -191,12 +191,24 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
     idxRefIR = ['local.get', `$${idxTmp}`]
   }
 
+  // A unit read answers 0 past either end, which no other literal than NUL
+  // equals: the read is the whole test, inline (the charCodeAt lowering,
+  // without its NaN arm) or, at the size tier, one call.
   const ptr = temp('sc')
-  inc('__str_length', '__char_at')
-  const charEq = ['if', ['result', 'i32'],
-    ['i32.gt_u', ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], idxRefIR],
-    ['then', ['i32.eq', ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxRefIR], ['i32.const', lit.charCodeAt(0)]]],
-    ['else', ['i32.const', 0]]]
+  const code = lit.charCodeAt(0)
+  let charEq
+  if (code !== 0 && !ctx.transform.optimize?.leanRuntime) {
+    charEq = ['i32.eq', ctx.abi.string.ops.charCodeAt(['local.get', `$${ptr}`], idxRefIR, ctx, false), ['i32.const', code]]
+  } else if (code !== 0) {
+    inc('__char_at')
+    charEq = ['i32.eq', ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxRefIR], ['i32.const', code]]
+  } else {
+    inc('__str_length', '__char_at')
+    charEq = ['if', ['result', 'i32'],
+      ['i32.gt_u', ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]]], idxRefIR],
+      ['then', ['i32.eq', ['call', '$__char_at', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], idxRefIR], ['i32.const', code]]],
+      ['else', ['i32.const', 0]]]
+  }
 
   const prelude = idxBindIR ? [['local.set', `$${ptr}`, asF64(emit(obj))], idxBindIR] : [['local.set', `$${ptr}`, asF64(emit(obj))]]
 

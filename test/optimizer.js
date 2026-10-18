@@ -2943,7 +2943,7 @@ test('single-char string index equality skips materialized char string', () => {
   `, { wat: true, optimize: { watr: false } })
   const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
   ok(!/\(call \$__str_idx\b/.test(mainBody), 'char equality should compare string bytes directly')
-  ok(/\(call \$__char_at\b/.test(mainBody), 'expected direct char byte comparison')
+  ok(/i32.load16_u/.test(mainBody) && !/\(call \$__(?:char_at|str_length)\b/.test(mainBody), 'expected an inline unit read, no length or char call')
 })
 
 test('single-char string index equality keeps array fallback semantics', () => {
@@ -2970,7 +2970,29 @@ test('single-char index equality: non-literal int index (loop variable)', () => 
   `, { wat: true, optimize: { watr: false } })
   const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
   ok(!/\(call \$__str_idx\b/.test(mainBody), 'loop-variable char equality should skip __str_idx materialization')
-  ok(/\(call \$__char_at\b/.test(mainBody), 'expected direct char byte comparison')
+  ok(/i32.load16_u/.test(mainBody) && !/\(call \$__(?:char_at|str_length)\b/.test(mainBody), 'expected an inline unit read, no length or char call')
+})
+
+test('single-char index equality: the unit read answers alone, inline, for every string storage', () => {
+  // inline short strings, heap strings, empty, non-ASCII units, an embedded NUL,
+  // indices before, inside and past each one; NUL as the literal keeps its length test
+  const src = `
+    const words = ['$name', '"str"', ';; c', '$"q"', 'i32.add', '(; x ;)', 'local.get', '$x', '', 'é$', 'a\\u0000b', 'xxxxxxxxxxxxxxxx$']
+    const at = (w, i) => (w[i] === '$') + (w[i] === '"') * 2 + (w[i] !== ';') * 4 + (w[i] === '\\u0000') * 8
+    export const main = () => {
+      let s = 0
+      for (let k = 0; k < words.length; k++) for (let i = -1; i < 18; i++) s = (s * 31 + at(words[k], i)) | 0
+      return s
+    }`
+  is(run(src).main(), oracle(src).main())
+  // `at` inlines into main; no other code of the module reads a string
+  const body = jz.compile(src, { wat: true, optimize: { level: 2, watr: false } })
+  is((body.match(/call \$__char_at\b/g) || []).length, 1, 'only the NUL literal reads through __char_at')
+  is((body.match(/call \$__str_length\b/g) || []).length, 1, 'only the NUL literal tests the length')
+  const lean = jz.compile(src, { wat: true, optimize: { level: 'size', watr: false } })
+  is((lean.match(/call \$__char_at\b/g) || []).length, 4, 'the size tier reads each unit by one call')
+  is((lean.match(/call \$__str_length\b/g) || []).length, 1, 'the size tier tests a length for NUL alone')
+  is(run(src, { optimize: 'size' }).main(), oracle(src).main(), 'the size tier agrees')
 })
 
 test('single-char index equality: for-loop runtime correctness', () => {
