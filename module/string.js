@@ -211,6 +211,8 @@ export default (ctx) => {
     __str_cmp: ['__char_at', '__str_length'],
     __str_range_eq: ['__char_at', '__str_length'],
     __str_substring_eq: ['__str_length', '__str_range_eq'],
+    __str_substr: ['__str_length', '__str_slice'],
+    __str_substr_eq: ['__str_length', '__str_range_eq'],
     __str_slice_eq: ['__str_length', '__str_range_eq', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-compile auto-scan unreliable — test/self-compile-includes.js)
     __str_pad: ['__str_length', '__str_copy', '__alloc'],
     __str_join: () => ['__to_str', '__str_length', '__str_copy', '__len', '__alloc', '__mkptr', '__sso_norm', '__join_elem',
@@ -616,6 +618,21 @@ export default (ctx) => {
         (local.set $end (local.get $tmp))))
     (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`)
 
+  // .substr(start, length) (Annex B B.2.2.1): a negative start counts from the
+  // end, a negative length is empty, the end saturates at the length.
+  const substrRange = `
+    (local.set $len (call $__str_length (local.get $ptr)))
+    (if (i32.lt_s (local.get $start) (i32.const 0))
+      (then (local.set $start (i32.add (local.get $len) (local.get $start)))
+        (if (i32.lt_s (local.get $start) (i32.const 0)) (then (local.set $start (i32.const 0))))))
+    (if (i32.gt_s (local.get $start) (local.get $len)) (then (local.set $start (local.get $len))))
+    (if (i32.lt_s (local.get $n) (i32.const 0)) (then (local.set $n (i32.const 0))))
+    (local.set $end (select (local.get $len) (i32.add (local.get $start) (local.get $n))
+      (i32.gt_s (local.get $n) (i32.sub (local.get $len) (local.get $start)))))`
+  wat('__str_substr', `(func $__str_substr (param $ptr i64) (param $start i32) (param $n i32) (result f64)
+    (local $len i32) (local $end i32)${substrRange}
+    (call $__str_slice (local.get $ptr) (local.get $start) (local.get $end)))`)
+
   // === WAT: fused substring-equality ===
   //
   // `<str>.{substr,substring,slice}(...) === <other>` consumed only by the
@@ -672,6 +689,10 @@ export default (ctx) => {
         (local.set $tmp (local.get $start))
         (local.set $start (local.get $end))
         (local.set $end (local.get $tmp))))
+    (call $__str_range_eq (local.get $ptr) (local.get $start) (local.get $end) (local.get $other)))`)
+
+  wat('__str_substr_eq', `(func $__str_substr_eq (param $ptr i64) (param $start i32) (param $n i32) (param $other i64) (result i32)
+    (local $len i32) (local $end i32)${substrRange}
     (call $__str_range_eq (local.get $ptr) (local.get $start) (local.get $end) (local.get $other)))`)
 
   // Clamp mirrors __str_slice (negatives count from the end; __str_range_eq
@@ -1892,31 +1913,15 @@ export default (ctx) => {
 
   bind('.substring', sliceEmitter('__str_substring'))
 
-  // .substr(start, length) — Annex B / legacy. Equivalent to substring(start, start+length).
-  // __str_substring clamps start/end to the string length, so negative
-  // values are floored to 0 (matches v8 for length<0 → empty; for start<0 spec wants
-  // max(0, len+start), which we don't implement — rare in practice). `start`/`length`
-  // saturate (asI32Sat, see .substring above) — the one remaining gap is `start+length`
-  // itself overflowing plain i32 addition when BOTH individually saturate to INT32_MAX
-  // (e.g. `.substr(Infinity, Infinity)`, pre-existing and unchanged by this fix, not
-  // covered by any tracked test — __str_substring's clamp still floors/caps the result,
-  // just not necessarily to the spec-correct endpoint for that one degenerate input).
+  // .substr(start, length) — Annex B / legacy (B.2.2.1): __str_substr counts a
+  // negative start from the end, reads a negative length as empty and stops the
+  // end at the length (`start`/`length` saturate through asI32Sat, see
+  // .substring above, and their sum never overflows: the end is the length
+  // wherever the count reaches past it). An absent length is the rest.
   bind('.substr', (str, start, length) => {
-    inc('__str_substring')
-    if (length != null) {
-      const s = tempI32('substrS')
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${s}`, posIndex(start)],
-        ['call', '$__str_substring', asI64(emit(str)),
-          ['local.get', `$${s}`],
-          ['i32.add', ['local.get', `$${s}`], posIndex(length)]]
-      ], 'f64')
-    }
-    const t = temp('t')
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${t}`, asF64(emit(str))],
-      ['call', '$__str_substring', ['i64.reinterpret_f64', ['local.get', `$${t}`]], posIndex(start),
-        ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]], 'f64')
+    inc('__str_substr')
+    return typed(['call', '$__str_substr', asI64(emit(str)), posIndex(start),
+      length != null ? posIndex(length) : ['i32.const', 0x7FFFFFFF]], 'f64')
   })
 
   // Search args go through ToString per spec — coerce non-string-typed args

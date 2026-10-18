@@ -263,7 +263,7 @@ function emitSubstringEqCmp(a, b, negate = false) {
   if (vt && vt !== VAL.STRING) return null
   if (method === 'slice' && vt !== VAL.STRING) return null
 
-  const helper = method === 'slice' ? '__str_slice_eq' : '__str_substring_eq'
+  const helper = method === 'slice' ? '__str_slice_eq' : method === 'substr' ? '__str_substr_eq' : '__str_substring_eq'
   inc(helper)
 
   // Absent end → byteLen: pass i32 max — every clamp arm floors it to the length.
@@ -278,11 +278,10 @@ function emitSubstringEqCmp(a, b, negate = false) {
   const TO_END = ['i32.const', 0x7FFFFFFF]
   const positions = positionArgs(args)
   let startIR, endIR
-  if (method === 'substr' && args[1] != null) {
-    // substr's 2nd arg is a length: end = start + length, so start reads twice.
-    const s = tempI32('subS')
-    startIR = ['local.tee', `$${s}`, positions.index(0)]
-    endIR = ['i32.add', ['local.get', `$${s}`], positions.index(1, TO_END)]
+  if (method === 'substr') {
+    // substr's 2nd arg is a length, its helper counts a negative start from the end
+    startIR = positions.index(0)
+    endIR = positions.index(1, TO_END)
   } else {
     startIR = positions.index(0)
     endIR = positions.index(1, TO_END)

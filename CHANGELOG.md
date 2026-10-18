@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Count a negative `substr` start from the end, read a negative length as empty and stop the end at the length (Annex B B.2.2.1), materialized or compared in place: `'hello'.substr(-3, 2)` gave `''` and `s.substr(2, -1)` a swapped range.
 - Rewrite only the holes of a value copy (`[';', a, ...items]`, `Array.from`, a spread into a call): the pass after the block copy tests each slot and stores `undefined` where it finds a hole, no call per element and no store for a present one. subscript's ASI layer spreads the statements it has read into each new list, 166k elements per jessie parse, each of which went through `__arr_value`.
 - Add a sum whose operands the summary holds to numbers, booleans and missing values as numbers, each mixed side converted in line (true 1, false and null 0, undefined NaN): no ToPrimitive and no concatenation can come of it. subscript's `idx += l` (`l` a predicate's `true` or an escape's length) made 19k `__add_slow` calls per jessie parse, each with an object and a string test.
 - Pop a known array by storing the new length through the header its forwarding hop already resolved, not through `__set_len`, which read the tag and chased the forward again: one call less per `pop()` of a work stack.

@@ -1052,6 +1052,24 @@ test('SSO 7-bit: producers/consumers', () => {
   ])
 })
 
+// Annex B B.2.2.1: a negative start counts from the end, a negative length is
+// empty, the end stops at the length; the comparison a parser's keyword scan
+// fuses (`cur.substr(i, l) === w`) reads the same range.
+test('substr: a negative start counts from the end, materialized or compared in place', () => {
+  const src = `
+    const words = ['éa', 'll', 'he', 'lo', '', 'o']
+    const subjects = ['aéa éa', 'hello', 'a', '']
+    export const f = () => {
+      const out = []
+      for (const s of subjects) for (let i = -9; i <= 9; i += 2) for (const n of [-1, 0, 2, 1e9]) {
+        out.push(s.substr(i, n), s.substr(i))
+        for (const w of words) out.push(+(s.substr(i, n) === w), +(s.substr(i) === w))
+      }
+      return out.join(',')
+    }`
+  for (const optimize of levels(0, 2, 'size')) is(run(src, { optimize }).f(), oracle(src).f(), `O${optimize}`)
+})
+
 // === ≤6-ASCII⇒SSO producer invariant (module/string.js header) ===
 // Every producer must normalize a short ASCII result to SSO: `x === "shortLit"`
 // lowers to a bare i64.eq and __str_eq decides any one-SSO compare by bits, so a
