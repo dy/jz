@@ -4490,6 +4490,40 @@ test('rec-unroll: DP recurrence (arr[j-1]→arr[j]) bit-exact ON vs OFF across t
   ]) { const on = recOn(src), off = recOff(src); for (const n of [0, 1, 2, 3, 4, 5, 8, 13, 32, 60]) is(on(n), off(n), `n=${n}`) }
 })
 
+// The carry is what a read of the stored element returns: the store's conversion to the
+// element type (a Float32Array rounds, an Int32Array wraps), not the value stored.
+test('rec-unroll: the carry takes the element type\'s conversion', () => {
+  for (const src of [
+    `export let f=(n)=>{ const a=new Float32Array(70); a[0]=0.1; for(let j=1;j<=n;j++){ const t=a[j-1]*1.1; a[j]=t } let s=0; for(let k=0;k<70;k++)s=s+a[k]; return s }`,
+    `export let f=(n)=>{ const a=new Int32Array(70); a[0]=1000000000; for(let j=1;j<=n;j++){ const t=a[j-1]*1.5; a[j]=t } return a[n] }`,
+    `export let f=(n)=>{ const a=new Uint16Array(70); a[0]=1000; for(let j=1;j<=n;j++){ const t=a[j-1]*1.7+0.5; a[j]=t } return a[n] }`,
+    `export let f=(n)=>{ const a=new Int8Array(70); a[0]=3; for(let j=1;j<=n;j++){ const t=a[j-1]*2.5; a[j]=t } return a[n] }`,
+    // an element type whose conversion has no source form keeps its loop
+    `export let f=(n)=>{ const a=new Uint8ClampedArray(70); for(let j=1;j<=n;j++){ const t=a[j-1]+100.5; a[j]=t } let s=0; for(let k=0;k<70;k++)s=(s*31+a[k])|0; return s }`,
+  ]) {
+    const host = oracle(src).f
+    for (const optimize of ['speed', 2]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 2, 3, 10, 60]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  }
+})
+
+// A stored value other than a name (`a[i] = a[i - 1] + …`, a prefix sum or a one-pole filter),
+// a Math call in the body: the store's value is named, and the read of the previous cell carried.
+test('rec-unroll: a recurrence storing an expression carries it, a Math call notwithstanding', () => {
+  for (const src of [
+    `export let f=(n)=>{ const a=new Float64Array(70), x=new Float64Array(70); a[0]=0.5; for(let k=0;k<70;k++)x[k]=k*0.25; for(let j=1;j<=n;j++){ a[j]=a[j-1]*0.9+Math.sqrt(x[j]) } return a[n] }`,
+    `export let f=(n)=>{ const a=[]; for(let k=0;k<70;k++)a.push(k&3); for(let j=1;j<=n;j++){ a[j]=a[j-1]+j } return a[n] }`,
+  ]) {
+    const host = oracle(src).f, on = recOn(src), off = recOff(src)
+    for (const n of [0, 1, 2, 3, 4, 5, 8, 13, 60]) { is(on(n), host(n), `n=${n}`); is(on(n), off(n), `n=${n} on = off`) }
+  }
+  if (onKernel()) return
+  const src = `export let f=(n)=>{ const u=new Float64Array(70), x=new Float64Array(70); for(let k=0;k<70;k++)x[k]=k; for(let j=1;j<n;j++){ const d=x[j]-x[j-1]; u[j]=u[j-1]+Math.sqrt(d*d+1) } return u[n-1] }`
+  _compileInProcess(src, { optimize: 'speed' })
+  let carried = false
+  walkAst(ctx.funcs.list.find(f => f.name === 'f').body, { enter: n => { if ((n[0] === 'let' || n[0] === 'const') && n.slice(1).some(d => Array.isArray(d) && typeof d[1] === 'string' && d[1].startsWith('u' + T) && /rec\d+$/.test(d[1]))) carried = true } })
+  ok(carried, 'the previous cell is a carried local')
+})
+
 test('rec-unroll: bails (ON==OFF) on non-unit step / aliasing index / call in body, pairs a body with a break', () => {
   for (const src of [
     `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<=n;j+=2){ a[j]=a[j-1]+1 } return a[60]|0 }`,

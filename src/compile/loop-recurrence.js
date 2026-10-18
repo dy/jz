@@ -34,6 +34,7 @@ import { setFuncBody } from './analyze.js'
 import { frameNode } from '../function.js'
 import { cloneIR } from '../ir.js'
 import { walkAst, some, isBlockBody, T } from '../ast.js'
+import { K, core, tagOf } from '../summary/kind.js'
 
 const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-compile kernel rejects a builtin used as a first-class value
 const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[2], 1)   // (iv - 1)
@@ -44,6 +45,30 @@ const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[
 const REJECT = new Set(['for', 'while', 'continue', 'return',
   'throw', 'catch', 'finally', '=>', 'label'])
 const hasUnsafe = (n) => some(n, node => REJECT.has(node[0]) || (node[0] === '()' && typeof node[1] === 'string'))   // function call `f(args)`
+// The recurrence's cells: a `Math` function (prepare names it `math.<name>`) reaches no array.
+const hasUnsafeCell = (n) => some(n, node => REJECT.has(node[0]) || (node[0] === '()' && typeof node[1] === 'string' && !node[1].startsWith('math.')))
+
+// What a read of the element just stored returns, by the array's constructor: the store's
+// conversion to the element type. A plain array keeps the value as stored; an element type
+// whose conversion has no source form here (clamped, half-float, BigInt) keeps the loop.
+const lit = (v) => [null, v]
+const READBACK = {
+  Float64Array: e => e,
+  Float32Array: e => ['()', 'math.fround', e],
+  Int32Array: e => ['|', e, lit(0)],
+  Uint32Array: e => ['>>>', e, lit(0)],
+  Int16Array: e => ['>>', ['<<', e, lit(16)], lit(16)],
+  Uint16Array: e => ['&', e, lit(65535)],
+  Int8Array: e => ['>>', ['<<', e, lit(24)], lit(24)],
+  Uint8Array: e => ['&', e, lit(255)],
+}
+const readbackOf = (view, arr) => {
+  const k = view?.kindOfExpr(arr)
+  if (k == null) return null
+  if (tagOf(core(k)) === K.ARRAY) return e => e
+  const ctor = view.typedPayloadCtorOfExpr(arr)
+  return ctor ? READBACK[ctor.replace(/^new\./, '').replace(/\.(?:any)?view$/, '')] ?? null : null
+}
 
 // Substitute every value-reference of `iv` with `to`; leave the op slot and property keys.
 const subIv = (n, iv, to) => {
@@ -72,8 +97,8 @@ function renameDecls(stmts, suf) {
   return stmts.map(ren)
 }
 
-// Replace `arr[iv-1]` reads with `left`; keep the store; emit `left = storeVal` after each store.
-function scalarReplace(stmts, arr, iv, left, storeVal) {
+// Replace `arr[iv-1]` reads with `left`; keep the store; emit `left = <the stored element>` after each store.
+function scalarReplace(stmts, arr, iv, left, carried) {
   const repl = (n) => {
     if (!isArr(n)) return n
     if (n[0] === '[]' && n[1] === arr && isIvMinus1(n[2], iv)) return left
@@ -84,12 +109,12 @@ function scalarReplace(stmts, arr, iv, left, storeVal) {
   for (const s of stmts) {
     out.push(repl(s))
     if (isArr(s) && s[0] === '=' && isArr(s[1]) && s[1][0] === '[]' && s[1][1] === arr && s[1][2] === iv)
-      out.push(['=', left, storeVal])
+      out.push(['=', left, carried])
   }
   return out
 }
 
-function tryUnroll(stmt, cm) {
+function tryUnroll(stmt, cm, view) {
   // (an empty statement is no loop; a loop a version left as written runs cold: no pair of it)
   if (!isArr(stmt) || stmt.cold) return null
   const L = normalizeLoop(stmt)
@@ -109,18 +134,21 @@ function tryUnroll(stmt, cm) {
   const cmpOp = L.cond[0], HI = L.cond[2]
   if (!(typeof HI === 'string' || loopLitVal(HI) != null)) return null
 
-  if (hasUnsafe(body)) return null
+  if (hasUnsafeCell(body)) return null
   const stmts = body.slice(1)
 
-  // exactly one store `arr[iv] = <var>` — the recurrence array + carried value
+  // exactly one store `arr[iv] = <value>` — the recurrence array + carried value
+  // (a value other than a name, `a[i] = a[i - 1] + x[i]`, is named before the store)
   let arr = null, storeVal = null, nStore = 0
   for (const s of stmts)
     if (isArr(s) && s[0] === '=' && isArr(s[1]) && s[1][0] === '[]' && s[1][2] === iv) {
-      if (typeof s[2] !== 'string') return null
       arr = s[1][1]; storeVal = s[2]; nStore++
     }
   if (nStore !== 1 || typeof arr !== 'string') return null
   if (storeVal === iv || storeVal === arr) return null
+  // the carry holds what a read of the stored element returns
+  const readback = readbackOf(view, arr)
+  if (!readback) return null
 
   // every `arr[...]` is `arr[iv]` or `arr[iv-1]`, the only write is the store, ≥1 recurrence read,
   // and `arr` never appears bare (passed/aliased)
@@ -148,7 +176,13 @@ function tryUnroll(stmt, cm) {
   // --- transform ---
   const id = freshLoopId()
   const left = `${arr}${T}rec${id}`   // the array's carried cell (a declared name, not a temp: the narrowing passes type it)
-  const bodyS = scalarReplace(stmts, arr, iv, left, storeVal)
+  let named = stmts
+  if (typeof storeVal !== 'string') {
+    const v = `${arr}${T}rv${id}`
+    named = stmts.flatMap((s, k) => k !== storeIdx ? [s] : [['const', ['=', v, storeVal]], ['=', s[1], v]])
+    storeVal = v
+  }
+  const bodyS = scalarReplace(named, arr, iv, left, readback(storeVal))
   // Each copy declares its own names, the counter included (the else arm keeps
   // the loop as written): a name declared once per function is what every
   // later pass assumes.
@@ -169,8 +203,8 @@ function tryUnroll(stmt, cm) {
   return [['if', [cmpOp, cloneIR(LO), cloneIR(HI)], block, stmt]]
 }
 
-export function unrollRecurrence(body, cm) {
-  return rewriteBlocks(body, stmt => tryUnroll(stmt, cm))
+export function unrollRecurrence(body, cm, view) {
+  return rewriteBlocks(body, stmt => tryUnroll(stmt, cm, view))
 }
 
 /** Plan sweep: the recurrence loops of every function, its closures' included
@@ -181,7 +215,7 @@ export const unrollRecurrences = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !isBlockBody(func.body)) continue
-    const body = unrollRecurrence(func.body, closureMutatedVars(frameNode(func)))
+    const body = unrollRecurrence(func.body, closureMutatedVars(frameNode(func)), ctx.summary?.at(func.sig))
     if (body === func.body) continue
     setFuncBody(func, body)
     changed = true
