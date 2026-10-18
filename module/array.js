@@ -339,14 +339,18 @@ export default (ctx) => {
 
   // Value-copy consumers (spread, Array.from, change-by-copy methods) make
   // holes into own undefined slots; raw clones/slices preserve occupancy.
-  deps({ __arr_values: ['__arr_value'], __arr_dense: ['__arr_from', '__ptr_offset', '__arr_values'] })
+  // A copy holds a hole only where its source did: each slot is tested and
+  // only a hole is written (the copy of a dense array stores nothing more).
+  deps({ __arr_dense: ['__arr_from', '__ptr_offset', '__arr_values'] })
   ctx.core.stdlib['__arr_values'] = `(func $__arr_values (param $base i32) (param $n i32)
-    (local $i i32) (local $p i32)
+    (local $p i32) (local $end i32)
+    (local.set $p (local.get $base))
+    (local.set $end (i32.add (local.get $base) (i32.shl (local.get $n) (i32.const 3))))
     (block $done (loop $next
-      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
-      (local.set $p (i32.add (local.get $base) (i32.shl (local.get $i) (i32.const 3))))
-      (f64.store (local.get $p) (call $__arr_value (f64.load (local.get $p))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $next))))`
+      (br_if $done (i32.ge_u (local.get $p) (local.get $end)))
+      (if (i64.eq (i64.load (local.get $p)) (i64.const ${TOMB_NAN}))
+        (then (i64.store (local.get $p) (i64.const ${UNDEF_NAN}))))
+      (local.set $p (i32.add (local.get $p) (i32.const 8))) (br $next))))`
   ctx.core.stdlib['__arr_dense'] = `(func $__arr_dense (param $src i64) (result f64)
     (local $out f64) (local $base i32)
     (local.set $out (call $__arr_from (local.get $src)))

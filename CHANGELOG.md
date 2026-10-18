@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Rewrite only the holes of a value copy (`[';', a, ...items]`, `Array.from`, a spread into a call): the pass after the block copy tests each slot and stores `undefined` where it finds a hole, no call per element and no store for a present one. subscript's ASI layer spreads the statements it has read into each new list, 166k elements per jessie parse, each of which went through `__arr_value`.
 - Add a sum whose operands the summary holds to numbers, booleans and missing values as numbers, each mixed side converted in line (true 1, false and null 0, undefined NaN): no ToPrimitive and no concatenation can come of it. subscript's `idx += l` (`l` a predicate's `true` or an escape's length) made 19k `__add_slow` calls per jessie parse, each with an object and a string test.
 - Pop a known array by storing the new length through the header its forwarding hop already resolved, not through `__set_len`, which read the tag and chased the forward again: one call less per `pop()` of a work stack.
 - Read an array pattern over a value the summary admits an array among other kinds (`let [kind, ...node] = n` over a tree of strings and arrays, a parameter of every kind) by position behind `Array.isArray`, the protocol kept for every other value: the cursor opens only where the test fails, a rest is a copy. A kernel destructuring such values runs 1.35× Node where it ran 3.07× (interleaved); watr's run opens 8.8k cursors and collects 0.8k rests instead of 17.9k and 5.8k.

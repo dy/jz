@@ -84,6 +84,9 @@ test('array holes: raw copies preserve occupancy and value copies densify', () =
         a.join('|'), JSON.stringify(a)];
     }`
   runCases(src, [0, 0, 1, 0, 1].map(n => ['f', [n]]))
+  // a value copy rewrites its holes alone: each slot tested, nothing called
+  const pass = funcWat(compile(src, { wat: true }), '__arr_values')
+  ok(pass && !/\(call /.test(pass), 'the hole pass of a value copy calls nothing')
 })
 
 test('array holes: reads normalize absence before primitive use and recover from property errors', () => {
