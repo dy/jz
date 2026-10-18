@@ -487,11 +487,13 @@ export function analyzeFuncForEmit(func, programFacts) {
   // runs after they're torn down. A dynamic f64 param crosses as i64 (the carrier JSC can't
   // canonicalize) iff it can hold a NaN-box, i.e. it isn't proven numeric. Numeric (NUMBER /
   // BOOL → 0/1) params keep f64; pointer-ABI (ptrKind, type i32) and jsstring params are
-  // classified directly in the wrapper, so leave their flag false here.
+  // classified directly in the wrapper, so leave their flag false here. A parameter the
+  // summary reads as a number is one too: its arithmetic is emitted raw, so the host's
+  // ToNumber must reach it (a closure-captured parameter has no local rep to say so).
   if (isExported(func)) for (const p of sig.params) {
     if (p.jsstring || p.ptrKind != null || p.type !== 'f64') { p.boundaryI64 = false; continue }
     const rv = ctx.func.localReps?.get(p.name)?.val
-    p.boundaryI64 = rv !== VAL.NUMBER && rv !== VAL.BOOL
+    p.boundaryI64 = rv !== VAL.NUMBER && rv !== VAL.BOOL && summary?.valOf(p.name) !== VAL.NUMBER
   }
 
   seedSummaryLocals(summary)

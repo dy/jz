@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Cross an exported parameter a closure reassigns as the number the summary reads it as: the host converts it (`f(true)` with `k = k + 1` in a closure returned `true` at levels 0 and 1).
 - Load a string parameter's length at entry only where some `charCodeAt` tests it: a scan whose reads are all in bounds decodes the receiver without it (tokenizer 1577 → 1518 B at `'size'`).
 - Keep the size tier's typed arrays on the heap: a static block's header segment and wide address constants outweighed the allocator call it saved on every bench case it touched (lz 1946 → 1870 B, glyfparse 2424 → 2355 B).
 - Take watr 5.11.10, which keeps an exported global mutable (the host may write it), folds float constant comparisons and drops a low-word mask under a wrap; jz's own copies of those go.

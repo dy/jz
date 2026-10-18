@@ -183,6 +183,21 @@ test('call boundary: a slot that may be a written plain array takes any value an
   }
 })
 
+test('call boundary: a parameter a closure rebinds crosses as the number its arithmetic reads', () => {
+  // The closure leaves the parameter no local rep, but the summary reads it as a
+  // number and its arithmetic is emitted raw: the host's ToNumber has to reach it.
+  const code = `export function f(k){const bump=()=>{k=k+1};bump();return k-1}
+    export function g(a){let b=a;const w=()=>{a=[9]};w();b[0]=7;return a[0]}`
+  const want = oracle(code)
+  for (const optimize of [0, 1, 2, 'size']) {
+    const { f, g } = jz(code, { optimize }).exports
+    for (const x of [true, 1, '2', undefined, null]) is(f(x), want.f(+x), `O${optimize} f(${x})`)
+    const mine = [1], theirs = [1]
+    is(g(mine), want.g(theirs), `O${optimize} g: the rebound array`)
+    is(mine[0], theirs[0], `O${optimize} g: the element written through the alias comes back`)
+  }
+})
+
 test('call boundary: the variants stay hidden, their advisories speak once', () => {
   const warnings = []
   const { exports } = jz(src, { warnings: w => warnings.push(w) })
