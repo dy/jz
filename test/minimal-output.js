@@ -1057,3 +1057,23 @@ test('minimal: an own-name-current array reads without the forwarding follow', (
   ok(pre3.includes('call $__ptr_offset '), 'a captured array keeps the follow')
   for (const n of [0, 5, 40]) for (const O of levels(0, 'size', 3)) is(jz(captured, { optimize: O }).exports.f(n), jsFn(captured, 'f')(n), `captured O${O} n=${n}`)
 })
+
+test('minimal: an enumeration of a receiver no layout names is one function, whatever its sites', () => {
+  // (each Object.keys/values/entries site spliced the whole own-property walk:
+  // a helper inlined at fourteen sites made a 1.8 MB function that the hosted
+  // compiler ran out of memory compiling)
+  const src = `function sig(a) { return [a.length, Object.keys(a), Object.values(a), Object.entries(a)] }
+    export function f(mode) { const a = mode ? [, undefined, 3, , 1] : [], b = a.slice(), c = a.concat(a)
+      return [sig(a), sig(b), sig(c), sig(a.slice().reverse())] }`
+  const js = oracle(src)
+  for (const optimize of levels(1, 2, 3)) {
+    if (onKernel()) break
+    const wat = compile(src, { optimize, wat: true })
+    for (const mode of [0, 1, 2]) is((wat.match(new RegExp(`\\(func \\$__idx_enum_of${mode}\\b`, 'g')) || []).length, 1, `O${optimize}: one walk for mode ${mode}`)
+    ok((wat.match(/\(loop \$[^\s)]*owloop/g) || []).length <= 3, `O${optimize}: one property walk per kind, not per site`)
+  }
+  for (const optimize of levels(0, 2)) {
+    const { f } = jz(src, { optimize }).exports
+    for (const mode of [0, 1]) is(f(mode), js.f(mode), `O${optimize} f(${mode})`)
+  }
+})

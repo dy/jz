@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Enumerate a receiver no layout or dictionary names (`Object.keys`/`values`/`entries` of an array or an unknown value) through one stdlib function per kind instead of the whole property walk at each site: a fifteen-line program calling such a helper fourteen times compiles in 1.7 s to 30 KB at level 2, where it took 8 s and 76 KB (and exhausted the hosted compiler's memory).
 - Keep an element of one typed array past a store to another where every call passes each its own fresh array, sized by any primitive (`new Float64Array(N)` with `const N = 64`): the fft butterfly reads `im[a]` once.
 - Lift an inner loop's typed-bounds guard over a counter that strides by a loop invariant (`for (i = 0; i < n; i += len)`), bounded by the last value its stride reaches, the inner loop's own counters words there too; drop the conjuncts of a version guard its operands' ranges decide. fftplan 0.76×, provenance 0.77×, fft 0.93× of their previous time (interleaved runs, checksums unchanged).
 - Cross an exported parameter a closure reassigns as the number the summary reads it as: the host converts it (`f(true)` with `k = k + 1` in a closure returned `true` at levels 0 and 1).

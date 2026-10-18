@@ -1602,10 +1602,28 @@ function requireEnumReceiver(t) {
 // indices return an empty array. The empty-array
 // fallback is allocated in all arms for type uniformity at the if boundary.
 function emitRuntimeKeys(obj, ro, own = false) {
+  if (!ro && !own) return runtimeEnumCall('__keys_of', t => runtimeKeysFromTemp(t, 'rk', false), obj)
   const t = temp('rk')
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(obj))],
     ...(ro ? [] : [requireEnumReceiver(t)]), runtimeKeysFromTemp(t, 'rk', ro, false, own)], 'f64')
+}
+
+// A receiver no layout or dictionary names enumerates through one stdlib
+// function per kind, built once under its own local frame (as __copy_keys
+// is): each site calls it, where the walk spliced in whole is several hundred
+// instructions a site, and a helper called from many sites multiplied them.
+function runtimeEnumCall(name, build, obj, checked = true) {
+  if (!ctx.core.stdlib[name]) {
+    const previous = enterActiveFunction(ctx)
+    try {
+      const body = checked ? ['block', ['result', 'f64'], requireEnumReceiver('value'), build('value')] : build('value')
+      const locals = [...ctx.func.locals].map(([n, type]) => ['local', '$' + n, type])
+      ctx.core.stdlib[name] = print(['func', `$${name}`, ['param', '$value', 'f64'], ['result', 'f64'], ...locals, body])
+    } finally { restoreActiveFunction(ctx, previous) }
+  }
+  inc(name)
+  return typed(['call', `$${name}`, asF64(emit(obj))], 'f64')
 }
 
 // The clone walker needs the same key snapshot as source enumeration. Build
@@ -1672,21 +1690,15 @@ const idxEnum = (t, mode, symbols = false) => {
     ['else', own]]
 }
 
-function emitIndexed(obj, mode) {
-  const t = temp('ri')
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, asF64(emit(obj))], idxEnum(t, mode)], 'f64')
-}
+const emitIndexed = (obj, mode) => runtimeEnumCall(`__idx_enum_of${mode}`, t => idxEnum(t, mode), obj, false)
 
-function emitRuntimeValues(obj) {
+const emitRuntimeValues = (obj) => runtimeEnumCall('__values_of', t => {
   inc('__enum_type')
   if (!ctx.scope.globals.has('__schema_tbl'))
     declGlobal('__schema_tbl', 'i32')
   ctx.runtime.schemaTblConsumed = true
-  const t = temp('rv'), tt = tempI32('rvt')
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, asF64(emit(obj))],
-    requireEnumReceiver(t),
+  const tt = tempI32('rvt')
+  return ['block', ['result', 'f64'],
     ['local.set', `$${tt}`, ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
@@ -1694,8 +1706,8 @@ function emitRuntimeValues(obj) {
       ['else', ['if', ['result', 'f64'],
         ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
         ['then', objectValuesFromTemp(t)],
-        ['else', idxEnum(t, 1)]]]]], 'f64')
-}
+        ['else', idxEnum(t, 1)]]]]]
+}, obj)
 
 // The key list is a snapshot; the values are not. A target setter or earlier
 // source getter can replace/delete a later value or relocate its storage.
@@ -1723,22 +1735,22 @@ const copiedValue = (s, key) => {
 }
 
 function emitRuntimeEntries(obj) {
-  inc('__enum_type')
-  if (!ctx.scope.globals.has('__schema_tbl'))
-    declGlobal('__schema_tbl', 'i32')
-  ctx.runtime.schemaTblConsumed = true
-  const t = temp('re'), tt = tempI32('ret')
-  return typed(['block', ['result', 'f64'],
-    ['local.set', `$${t}`, asF64(emit(obj))],
-    requireEnumReceiver(t),
-    ['local.set', `$${tt}`, ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['if', ['result', 'f64'],
-      ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
-      ['then', hashEntriesFromTemp(t)],
-      ['else', ['if', ['result', 'f64'],
-        ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
-        ['then', objectEntriesFromTemp(t)],
-        ['else', idxEnum(t, 2)]]]]], 'f64')
+  return runtimeEnumCall('__entries_of', t => {
+    inc('__enum_type')
+    if (!ctx.scope.globals.has('__schema_tbl'))
+      declGlobal('__schema_tbl', 'i32')
+    ctx.runtime.schemaTblConsumed = true
+    const tt = tempI32('ret')
+    return ['block', ['result', 'f64'],
+      ['local.set', `$${tt}`, ['call', '$__enum_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+      ['if', ['result', 'f64'],
+        ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.HASH]],
+        ['then', hashEntriesFromTemp(t)],
+        ['else', ['if', ['result', 'f64'],
+          ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.OBJECT]],
+          ['then', objectEntriesFromTemp(t)],
+          ['else', idxEnum(t, 2)]]]]]
+  }, obj)
 }
 
 // Shared scaffold for Object.{keys,values,entries} on a runtime OBJECT.
