@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Pop a known array by storing the new length through the header its forwarding hop already resolved, not through `__set_len`, which read the tag and chased the forward again: one call less per `pop()` of a work stack.
 - Read an array pattern over a value the summary admits an array among other kinds (`let [kind, ...node] = n` over a tree of strings and arrays, a parameter of every kind) by position behind `Array.isArray`, the protocol kept for every other value: the cursor opens only where the test fails, a rest is a copy. A kernel destructuring such values runs 1.35× Node where it ran 3.07× (interleaved); watr's run opens 8.8k cursors and collects 0.8k rests instead of 17.9k and 5.8k.
 - Compare a string's unit with a one-character literal (`s[i] === '$'`) by one inline unit read: the read answers 0 past either end, which no literal but NUL equals, so the length call and the char call go (one call at the size tier). A kernel of such tests runs 1.3× Node where it ran 5.2× (interleaved, loaded machine); watr's run makes 20k `__char_at` and 118k `__str_length` calls instead of 203k and 301k.
 - Enumerate a receiver no layout or dictionary names (`Object.keys`/`values`/`entries` of an array or an unknown value) through one stdlib function per kind instead of the whole property walk at each site: a fifteen-line program calling such a helper fourteen times compiles in 1.7 s to 30 KB at level 2, where it took 8 s and 76 KB (and exhausted the hosted compiler's memory).

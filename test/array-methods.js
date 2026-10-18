@@ -104,12 +104,21 @@ test('.pop: empty, drained and refilled arrays preserve length and values', () =
     for (let i = 0; i < n + 2; i++) out.push(a.pop());
     out.push(a.length); a.push(41); out.push(a.pop()); out.push(a.length);
     return out;
-  }`
-  const js = oracle(src).f
-  for (const optimize of levels(0, 1, 2, 3, 'size')) {
-    const { f } = runHost(src, { optimize })
-    for (const n of [0, 1, 8, 0, 8]) is(f(n), js(n), `O${optimize}, n=${n}`)
   }
+  export function alias(n) {
+    const a = [0], b = a, out = [];
+    for (let i = 0; i < n; i++) a.push(i + 1);
+    out.push(b.pop(), b.pop(), b.length, a.length, a.pop());
+    return out;
+  }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f, alias } = runHost(src, { optimize })
+    for (const n of [0, 1, 8, 0, 8]) is(f(n), js.f(n), `O${optimize}, n=${n}`)
+    for (const n of [0, 3, 40]) is(alias(n), js.alias(n), `O${optimize}, a grown array popped through an older alias, n=${n}`)
+  }
+  // the length word is stored through the header the forwarding hop resolved
+  ok(!/call \$__set_len\b/.test(funcWat(compile(src, { wat: true }), 'f')), 'a known array pops without __set_len')
 })
 
 test('computed array writes refresh relocated storage without undoing a rebind', () => {

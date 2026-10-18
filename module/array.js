@@ -1774,6 +1774,7 @@ export default (ctx) => {
       // outlined); a shrink never relocates, so it serves the load too.
       const off = tempI32('pf')
       inc('__ptr_offset_fwd')
+      if (hasDurableReset()) inc('__durable_arr_snap')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, va],
         ['local.set', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
@@ -1786,7 +1787,11 @@ export default (ctx) => {
           ['then', undefExpr()],
           ['else',
             ['local.set', `$${len}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
-            ['call', '$__set_len', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['local.get', `$${len}`]],
+            // the length word of the header the hop above resolved (`__set_len`
+            // would read the tag and chase the forward again), a durable
+            // header saved first as `__set_len` saves it
+            durableArrSnapNode(off),
+            ['i32.store', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]], ['local.get', `$${len}`]],
             arrayValue(['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]])]]], 'f64')
     }
     const rawLen = ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
