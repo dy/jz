@@ -307,6 +307,7 @@ const { suite, list, files: argFilters } = suiteArgs(process.argv.slice(2), proc
 //   above is hang-bisection debt and leg-mismatch classes, not value bugs.)
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
   'runner', 'bench-build', 'source-map', 'strict', // JS entry/CLI options and debug metadata are outside the kernel ABI
+  'guide', // runs the guide's examples against the browser bundle web-smoke builds, not the kernel
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
