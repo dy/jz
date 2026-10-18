@@ -804,7 +804,8 @@ export function splitLoopPrivateScratch(fn) {
         const op = n[0]
         if (op === 'local.tee' && n[1] === name) { safe = false; return }
         if (op === 'local.set' && n[1] === name) {
-          if (depth > 0) { safe = false; return }
+          // (a set whose value an earlier instruction pushes, the flat form an inlined body may keep, moves with no value)
+          if (depth > 0 || n.length !== 3) { safe = false; return }
           if (first === null) first = 'w'
           defs.push(n[2])
           scan(n[2], depth)

@@ -1655,7 +1655,9 @@ test('unrolled scalar scratch includes lowered temporaries without changing thei
     ['loop-carried', '(local.set $tmp (i32.add (local.get $tmp) (local.get $x)))', '', false],
     ['conditional', '(if (i32.eqz (local.get $i)) (then (local.set $tmp (local.get $x))))', '', false],
     ['live after loop', '(local.set $tmp (local.get $x))', '(local.get $tmp)', false],
-    ['may trap', '(local.set $tmp (i32.div_s (i32.const 12) (local.get $x)))', '', false]
+    ['may trap', '(local.set $tmp (i32.div_s (i32.const 12) (local.get $x)))', '', false],
+    // (the flat form a multi-value result unpacks into: the value is pushed before the set)
+    ['flat set', '(local.get $x) (local.set $tmp)', '', false]
   ]
   for (const [name, init, afterLoop, moves] of cases) {
     const source = `(module (func $f (export "f") (param $n i32) (param $x i32) (result i32)

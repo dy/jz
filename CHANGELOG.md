@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Leave a loop's scratch whose value an earlier instruction pushes (a multi-value result unpacked into locals) where it is: the speed tier moved the set out of the loop without its value and emitted invalid WAT (color-space's munsell kernel failed to compile at `'speed'`).
 - Compact a loop's kept memory once it holds two megabytes beyond twice what the last walk reached, not sixteen (`optimize.compactSlack` sets it): the churn stays in the cache. On the x64 runner (paired, five rounds) json runs 0.66× its time (0.27 → 0.18 ms, 1.11× JavaScriptCore where it was 1.69×), watr's peak RSS falls from 144 to 128 MB and tokenizer's from 76 to 62 MB; a loop of fresh JSON or a growing string holds 4 MB of memory over 60,000 iterations where it held 34. Sieve, vm and the 77-case spread move within the runner's noise.
 - Compare a substring in place (`cur.substr(idx, l) === word`, a parser's keyword scan) with each side's storage decoded once, an inline string's units read off its payload and any other's at its offset, instead of two `__char_at` calls per unit: 442k such calls per jessie run go.
 - Count a negative `substr` start from the end, read a negative length as empty and stop the end at the length (Annex B B.2.2.1), materialized or compared in place: `'hello'.substr(-3, 2)` gave `''` and `s.substr(2, -1)` a swapped range.
