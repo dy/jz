@@ -63,9 +63,11 @@ export async function runTasks(tasks, {
       const result = { name: task.name, code: error || timedOut || signal || cancelled ? 1 : code ?? 1, signal, error, timedOut, log: path, ms: performance.now() - started }
       console.log(`${result.code ? 'FAIL' : 'PASS'} ${task.name} ${(result.ms / 1000).toFixed(1)}s${timedOut ? ' (timeout)' : ''}${error ? ': ' + error : ''}`)
       if (result.code) {
-        // the failed assertions by name, wherever they fell in the log (the tail only has the totals)
-        const failed = readFileSync(path, 'utf8').match(/^.*(\u2717|not ok \d).*$/gmu)
-        if (failed) console.error(failed.slice(0, 40).join('\n'))
+        // the failed assertions by name and their diagnostics, wherever they fell in the log (the tail only has the totals)
+        const lines = readFileSync(path, 'utf8').split('\n'), failed = []
+        for (let i = 0; i < lines.length && failed.length < 200; i++) if (/\u2717|^not ok \d/u.test(lines[i]))
+          for (let j = i; j < Math.min(lines.length, i + 8) && (j === i || /^\s/.test(lines[j])); j++) failed.push(lines[j])
+        if (failed.length) console.error(failed.join('\n'))
         const fd = openSync(path, 'r')
         try {
           const n = Math.min(4096, fstatSync(fd).size), tail = Buffer.alloc(n)
