@@ -4491,6 +4491,25 @@ test('loop-SR: a for loop with continue, a written divisor or a closure keeps it
   }
 })
 
+// A non-negative word's remainder by a positive runtime word divides only past twice the
+// divisor: a ring's `(p + 1) % m` is its dividend below m, or m itself at the wrap.
+test('remainder: a word by a positive runtime word tests before it divides, exact', () => {
+  const src = `export let f=(n,k)=>{ const m=(k&63)+1; let s=0; for(let i=0;i<n;i++) s=(s*7+(i&1023)%m)|0; return s }`
+  const js = oracle(src).f
+  for (const optimize of levels(1, 2, 3, 'speed')) {
+    const f = run(src, { optimize }).f
+    for (const k of [0, 1, 2, 15, 16, 63, 64, -1]) for (const n of [0, 1, 15, 16, 17, 100, 2100]) is(f(n, k), js(n, k), `O${optimize}: n=${n} k=${k}`)
+  }
+  if (onKernel()) return
+  const fn = parse(src, 'speed').find(n => n?.[0] === 'func' && n.some(x => x?.[0] === 'export' && x[1] === '"f"'))
+  let guarded = 0, bare = 0
+  walk(fn, n => {
+    if (n[0] === 'if' && n.some(c => c?.[0] === 'else' && JSON.stringify(c).includes('"i32.rem_'))) guarded++
+    if (n[0] === 'i32.rem_s' || n[0] === 'i32.rem_u') bare++
+  })
+  ok(guarded > 0 && bare > 0, 'the remainder sits in the arm past 2m, behind the tests')
+})
+
 // ── Array-recurrence unroll (arr[j-1]/arr[j] DP/scan → scalar carry + ×2 unroll) ──
 // src/compile/loop-recurrence.js. Must be bit-exact vs disabled across ALL trip counts
 // (empty range / 1 / odd / even — the guard + 1-cell tail), and bail (ON==OFF) on any shape

@@ -175,6 +175,23 @@ const peelI32 = (v) =>
       ? (Array.isArray(v[1]) ? typed(v[1], 'i32') : v[1])
       : null
 
+// The remainder of a non-negative word by a positive runtime word `m`: a dividend
+// below m is its own remainder, one below 2m its difference with m, and only
+// the others divide. A ring's step `(p + 1) % m` stays below m but at its wrap,
+// which is m itself; a counter `i % seg` over two segments stays below 2m. The
+// hardware division is 20 to 40 cycles on the loop's carried path; the tests are
+// a compare each, predicted. (Unsigned tests: a dividend at or past 2^31 is no
+// word of a non-negative value, and m is positive, so `t <u m` is `0 <= t < m`.)
+const belowDivisorRem = (op, pa, pb) => {
+  const t = `$${tempI32('rem')}`, m = Array.isArray(pb) && (pb[0] === 'local.get' || pb[0] === 'global.get' || pb[0] === 'i32.const') ? null : `$${tempI32('rem')}`
+  const mGet = m ? ['local.get', m] : pb, s = `$${tempI32('rem')}`
+  return typed(['if', ['result', 'i32'], ['i32.lt_u', ['local.tee', t, pa], m ? ['local.tee', m, pb] : pb],
+    ['then', ['local.get', t]],
+    ['else', ['if', ['result', 'i32'], ['i32.lt_u', ['local.tee', s, ['i32.sub', ['local.get', t], mGet]], mGet],
+      ['then', ['local.get', s]],
+      ['else', [op, ['local.get', t], mGet]]]]], 'i32')
+}
+
 // A source-inlined uint32 result may retain f64 storage. Its settled all-writes
 // fact still proves an exact unsigned word, provided the read is present.
 const unsignedWord = (a, v) =>
@@ -810,8 +827,7 @@ export const arithmeticOps = {
     if (!isLit(vb) && divisorRange && divisorRange[0] > 0 && divisorRange[1] <= 0x7fffffff) {
       const pu = unsignedWord(a, va), pa = pu || peelI32(va), pb = peelI32(vb)
       if (pa && pb) {
-        if (pu || range && range[0] >= 0)
-          return typed([pu ? 'i32.rem_u' : 'i32.rem_s', pa, pb], 'i32')
+        if (pu || range && range[0] >= 0) return belowDivisorRem(pu ? 'i32.rem_u' : 'i32.rem_s', pa, pb)
         const t = `$${tempI32('rem')}`
         return typed(['f64.copysign',
           ['f64.convert_i32_s', ['i32.rem_s', ['local.tee', t, pa], pb]],
