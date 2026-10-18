@@ -114,6 +114,7 @@ const CASE_NAMES = {
   movavg: 'moving average, library idiom',
   upfirdn: 'rational resampler, library idiom',
   pcmconvert: 'PCM format conversion',
+  munsell: 'xyY to Munsell, library kernel',
   mat4: 'mat4 multiply',
   poly: 'polymorphic reduce',
   bitwise: 'bitwise mix',
