@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Add a sum whose operands the summary holds to numbers, booleans and missing values as numbers, each mixed side converted in line (true 1, false and null 0, undefined NaN): no ToPrimitive and no concatenation can come of it. subscript's `idx += l` (`l` a predicate's `true` or an escape's length) made 19k `__add_slow` calls per jessie parse, each with an object and a string test.
 - Pop a known array by storing the new length through the header its forwarding hop already resolved, not through `__set_len`, which read the tag and chased the forward again: one call less per `pop()` of a work stack.
 - Read an array pattern over a value the summary admits an array among other kinds (`let [kind, ...node] = n` over a tree of strings and arrays, a parameter of every kind) by position behind `Array.isArray`, the protocol kept for every other value: the cursor opens only where the test fails, a rest is a copy. A kernel destructuring such values runs 1.35× Node where it ran 3.07× (interleaved); watr's run opens 8.8k cursors and collects 0.8k rests instead of 17.9k and 5.8k.
 - Compare a string's unit with a one-character literal (`s[i] === '$'`) by one inline unit read: the read answers 0 past either end, which no literal but NUL equals, so the length call and the char call go (one call at the size tier). A kernel of such tests runs 1.3× Node where it ran 5.2× (interleaved, loaded machine); watr's run makes 20k `__char_at` and 118k `__str_length` calls instead of 203k and 301k.

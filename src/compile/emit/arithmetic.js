@@ -5,12 +5,12 @@
  */
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
+import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
 import { intExprRange, negRangeFitsI32, forCounterRange } from '../../static.js'
-import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, typedAux } from '../../summary/kind.js'
+import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, typedAux, bitOf, TAGS, NULL_BITS } from '../../summary/kind.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { exprType, inBoundsArrIdx, wholeKey } from '../../type.js'
 import { scanBindingUses, BINDING_USE_INIT } from '../analyze-scans.js'
@@ -360,6 +360,17 @@ export const numberOrMissing = (node) => {
   return k != null && tagOf(core(k)) === K.NUMBER
 }
 
+// Whether the summary holds `node` to numbers, booleans and missing values:
+// a primitive whose ToNumber needs no ToPrimitive and that no `+` can
+// concatenate (`l = is(c)` of a predicate answering `true` or a length). A
+// call's result keeps the generic sum, as `numberOrMissing` reads it.
+const NUMERIC_PRIMITIVE = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
+const numericPrimitive = (node) => {
+  if (Array.isArray(node) && (node[0] === '()' || node[0] === '?.()')) return false
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
+  return k != null && (k & TAGS & ~NULL_BITS) !== 0 && (k & TAGS & ~NUMERIC_PRIMITIVE) === 0
+}
+
 // Whether a string operand may be missing: an index read the loop around it
 // does not bound, a binding the summary lets be absent, any other expression
 // whose kind carries a missing value.
@@ -516,6 +527,19 @@ export const arithmeticOps = {
         const t = temp('add'), get = () => typed(['local.get', `$${t}`], 'f64')
         return typed(['if', ['result', 'f64'], ['f64.eq', ['local.tee', `$${t}`, asF64(emit(n))], get()],
           ['then', get()], ['else', coerceNullishToNum(get())]], 'f64')
+      }
+      const x = side(vtA, a)
+      return typed(['f64.add', x, side(vtB, b)], 'f64')
+    }
+    // Numbers, booleans and missing values on both sides, one of them mixed:
+    // the sum is numeric, each mixed side its own number (true 1, false and
+    // null 0, undefined NaN) behind the self-compare every real number passes.
+    if ((vtA == null || vtB == null) && (vtA === VAL.NUMBER || vtA == null && numericPrimitive(a)) &&
+        (vtB === VAL.NUMBER || vtB == null && numericPrimitive(b))) {
+      const side = (vt, n) => {
+        if (vt === VAL.NUMBER) return toNumF64(n, emit(n))
+        const t = temp('add')
+        return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(emit(n))], coerceAtomsToNum(['local.get', `$${t}`])], 'f64')
       }
       const x = side(vtA, a)
       return typed(['f64.add', x, side(vtB, b)], 'f64')

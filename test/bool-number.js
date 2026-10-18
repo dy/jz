@@ -110,6 +110,27 @@ test('bool or number: a binding every read of which converts keeps the raw carri
   is(/nan:0x7FF800050/.test(wat) || /nan:0x7FF800040/.test(wat), false, 'no Boolean atom in a numeric-only binding')
 })
 
+// A sum of numbers, Booleans and missing values is numeric whatever mixes
+// them (a scanner's `idx += l`, `l` a predicate's true or an escape's length):
+// no string can come of it, so neither ToPrimitive nor the concatenation runs.
+test('bool or number: a sum of numbers, Booleans and missing values adds them as numbers', () => {
+  const src = `let idx = 0
+const id = c => (c >= 48 && c <= 57) || c == 36
+const esc = c => c === 92 ? 6 : 0
+const is = c => id(c) || c === 183 || esc(c)
+export let scan = (n) => { idx = 0; let l; for (let i = 0; i < n; i++) if (l = is(i & 127)) idx += l; return idx }
+const pick = i => i % 3 === 0 || (i % 5 === 0 ? null : i % 11 === 0 ? false : i & 3)
+export let mix = (n) => { let s = 0.5; for (let i = 1; i < n; i++) { const b = pick(i); s = b + s; s += b } return s }
+export let miss = (i) => { const b = i > 2 ? undefined : i > 1 ? null : i > 0; return [1 + b, b + 2.5] }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const want = oracle(src), got = run(src, { optimize })
+    for (const n of [0, 200]) is(got.scan(n), want.scan(n), `scan(${n}) at ${optimize}`)
+    is(got.mix(200), want.mix(200), `mix at ${optimize}`)
+    for (const i of [0, 1, 2, 3]) is(got.miss(i), want.miss(i), `miss(${i}) at ${optimize}`)
+  }
+  is(/__add_slow|__str_concat/.test(jz.compile(src, { wat: true, optimize: 'speed' })), false, 'no generic sum and no concatenation')
+})
+
 // @audio/encode-wav's header, reduced (bench/_audiojs/repro/bool-or-number.js):
 // `rf64` is false, or the number `junk`, in a closure an async factory returns.
 const WAV = `export default async function wav(opts) {
