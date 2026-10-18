@@ -17,7 +17,6 @@ import {
   boxedCaptures, reanalyzeBody,
 } from './analyze.js'
 import { inferLocals } from './infer.js'
-import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { closureMutatedVars } from './loop-model.js'
 import { BIGINT_REP_BOXED, BIGINT_REP_RAW, mintRepresentationPlan, representationParamRep, representationProgramHasBigint } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
@@ -63,7 +62,6 @@ export function analyzeFuncForEmit(func, programFacts) {
     // Existing closure writes survive these rewrites; generated locals are private.
     // Share the census, then let ordinary type analysis handle the new arithmetic.
     const cm = closureMutatedVars(frameNode(func))
-    if (_o.loopIVDivMod !== false) func.body = strengthReduceLoopDivMod(func.body, cm)
     if (_o.loopSquare !== false) func.body = narrowBoundedSquare(func.body, cm)
     if (_o.unrollScalarChain === true) func.body = unrollScalarChains(func.body, cm)
     if (_o.selectArmUpdates === true) func.body = selectArmUpdatesIn(func.body, cm)

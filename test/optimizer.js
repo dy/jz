@@ -4448,6 +4448,49 @@ test('loop-SR: escaped reads and callee writes keep the original counter domain'
   }
 })
 
+// A dividend affine in a `for` counter, ascending or descending, through a `const` the
+// body declares: its floored quotient and remainder step with the counter. A remainder
+// against zero reads `r === 0` whatever the sign, a quotient under that test is `q`,
+// `Math.floor` is `q`, `~~` and `%` are `q` and `r` where the dividend is not negative.
+const loopDivisions = (src, optimize) => {
+  const fn = parse(src, optimize).find(n => n?.[0] === 'func' && n.some(x => x?.[0] === 'export' && x[1] === '"f"'))
+  const loops = []
+  walk(fn, n => { if (n[0] === 'loop') loops.push(n) })
+  return loops.map(loop => count(loop, n => /^(?:f64|i32|i64)\.(?:div|rem)/.test(n[0]) || n[0] === 'call' && /__rem/.test(n[1])))
+}
+test('loop-SR: affine dividends of a for counter are bit-exact ON vs OFF and divide nowhere in the copy', () => {
+  const kernels = {
+    // a deinterleave's source index: `(i % seg) * ch + ~~(i / seg)`
+    deinterleave: `export let f=(n,w)=>{ let a=0; for(let i=0;i<n;i++){ const si=(i%w)*3+~~(i/w); a=(a*31+si)|0 } return a|0 }`,
+    // a polyphase gather: a descending dividend, its quotient exact under the remainder test
+    gather: `export let f=(n,w,base)=>{ let s=0; for(let k=0;k<n;k++){ const e=base-k; if(e>=0 && e%w===0){ const x=e/w; s=(s*31+x)|0 } } return s|0 }`,
+    // floors of a dividend crossing zero
+    floor: `export let f=(n,w,base)=>{ let s=0; for(let k=0;k<n;k++) s=(s*31+Math.floor((k-base)/w)+(((k-base)%w)===0?7:0))|0; return s|0 }`,
+  }
+  const off = { level: 'speed', loopIVDivMod: false }
+  for (const [name, src] of Object.entries(kernels)) {
+    const on = run(src, { optimize: 'speed' }).f, ref = run(src, { optimize: off }).f, js = oracle(src).f
+    for (const w of [1, 2, 3, 7, 16, 0, -3, 2.5, NaN]) for (const n of [0, 1, 5, 40]) for (const base of [0, 9, 31, -4]) {
+      is(on(n, w, base), js(n, w, base), `${name}: n=${n} w=${w} base=${base}`)
+      is(on(n, w, base), ref(n, w, base), `${name} ON==OFF: n=${n} w=${w} base=${base}`)
+    }
+    if (onKernel()) continue
+    ok(loopDivisions(src, 'speed').some(d => d === 0), `${name}: a loop of the copy divides nowhere`)
+    ok(loopDivisions(src, off).every(d => d > 0), `${name}: disabled, every loop divides`)
+  }
+})
+
+test('loop-SR: a for loop with continue, a written divisor or a closure keeps its divisions (ON==OFF)', () => {
+  for (const src of [
+    `export let f=(n,w)=>{ let a=0; for(let i=0;i<n;i++){ if((i&3)===1) continue; a=(a*31+i%w+~~(i/w))|0 } return a|0 }`,
+    `export let f=(n,w)=>{ let a=0; for(let i=0;i<n;i++){ a=(a*31+i%w)|0; if(i===3) w=w+1 } return a|0 }`,
+    `export let f=(n,w)=>{ let a=0; const bump=()=>{w++}; for(let i=0;i<n;i++){ a=(a*31+i%w)|0; if(i===2) bump() } return a|0 }`,
+  ]) {
+    const on = run(src, { optimize: 'speed' }).f, js = oracle(src).f
+    for (const w of [2, 3, 7, 0, -2]) for (const n of [0, 3, 9]) is(on(n, w), js(n, w), `n=${n} w=${w}`)
+  }
+})
+
 // ── Array-recurrence unroll (arr[j-1]/arr[j] DP/scan → scalar carry + ×2 unroll) ──
 // src/compile/loop-recurrence.js. Must be bit-exact vs disabled across ALL trip counts
 // (empty range / 1 / odd / even — the guard + 1-cell tail), and bail (ON==OFF) on any shape
