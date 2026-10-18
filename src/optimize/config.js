@@ -126,6 +126,7 @@ const LEVEL_PRESETS = Object.freeze({
     sourceInlineDup: false,   // shared/exported source bodies stay outlined; single-use internal bodies still inline
     arenaReach: false,        // the walk from what a call's escapes wrote into is ~2 KB of runtime: a call that ran an escape keeps all it allocated — memory-for-size
     compact: false,           // the compaction of kept memory is ~4 KB of runtime where a call may keep memory: the size tier keeps what it stored — memory-for-size
+    staticLocals: false,      // a static block's header segment and wide address constants outweigh the allocator call it saves (29 of the bench corpus larger, none smaller) — speed-for-size
     versionIntegralLoops: false, // an integral copy of a loop beside it: speed-for-size
     unswitchLoops: false,     // a copy of a loop for each answer of a test it reads: speed-for-size
     splitLoopKinds: false,    // a copy of a loop where a name of several kinds holds a typed array: speed-for-size

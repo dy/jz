@@ -330,12 +330,12 @@ numeric indexed accesses and length reads; escaping buffers retain their normal
 allocation and cannot pass the fixed-memory check. Storage belongs to one
 instance, so imported and shared memories are rejected.
 
-In module-owned memory, optimized builds (level 2 and up) place such arrays in
-any function, without a check: where nothing between an array's construction
-and its last use can enter the function again (a host import, a closure value,
-a callback, a suspension), the array is static storage, and a helper every
-call hands it to reads it at that address. Any other array stays a heap
-allocation.
+In module-owned memory, optimized builds (level 2 and up, not `'size'`) place
+such arrays in any function, without a check: where nothing between an array's
+construction and its last use can enter the function again (a host import, a
+closure value, a callback, a suspension), the array is static storage, and a
+helper every call hands it to reads it at that address. Any other array stays a
+heap allocation.
 
 Fixed mode disables `arenaReach` for the module. General mode can use that
 runtime walk to find how far an escaping call's heap can rewind. The fixed
