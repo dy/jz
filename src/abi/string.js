@@ -118,6 +118,7 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
   // the OOB arm is dead — drop the per-char `i >= len` compare. This is what turns
   // a split char-scan loop into a bare load (the `if(sso)` arm is loop-invariant and
   // V8-folds), matching AS/native on tokenizer-shape scans. Otherwise keep the guard.
+  if (!inBounds) dec.bounded = true   // (the prologue loads the length only for a read that tests it)
   const use = inBounds
     ? (oobNan ? ['f64.convert_i32_u', ccByte] : ccByte)
     : ['if', ['result', rt],
@@ -157,7 +158,8 @@ export function emitCharDecompPrologue(dec) {
   const ssoLen = ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ptr, ['i64.const', 42]], ['i64.const', 7]]]
   // Heap length is `i32.load(off - 4)`; guard against off<4 (corrupt/non-string
   // payload) so the load doesn't trap on a wrapped-negative address.
-  const heapLen = heapLength(ptr, off)
+  // (a body whose every read is proven in bounds tests no length: none is loaded)
+  const lenSet = len => dec.bounded ? [['local.set', `$${dec.len}`, len]] : []
   return [
     ['if',
       ssoTest,
@@ -165,14 +167,14 @@ export function emitCharDecompPrologue(dec) {
         ['local.set', `$${dec.sso}`, ['i32.const', 1]],
         ['local.set', `$${dec.base}`, off],
         ['local.set', `$${dec.ptr64}`, ptr],   // full payload: SSO chars are 7-bit, span into aux
-        ['local.set', `$${dec.len}`, ssoLen],
+        ...lenSet(ssoLen),
         // SSO: route every per-iter load to address 0 (always valid, byte
         // discarded by the outer select).
         ['local.set', `$${dec.loadbase}`, ['i32.const', 0]]],
       ['else',
         ['local.set', `$${dec.sso}`, ['i32.const', 0]],
         ['local.set', `$${dec.base}`, off],
-        ['local.set', `$${dec.len}`, heapLen],
+        ...lenSet(heapLength(ptr, off)),
         // Heap: per-iter loads use the real string-data base.
         ['local.set', `$${dec.loadbase}`, off]]],
   ]

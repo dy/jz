@@ -5968,6 +5968,19 @@ test('decomposed charCodeAt unswitches SSO vs heap outside leaf byte loops', () 
   is(ex.heap(), 3120, 'heap loop version stays exact')
 })
 
+test('decomposed charCodeAt loads no length where every read is in bounds', () => {
+  const src = `const make=()=>{let s='';for(let i=0;i<64;i++)s=s+'let a1 = b + 12;';return s}
+    const scan=(src,len)=>{let h=0;for(let i=0;i<len;i++){const c=src.charCodeAt(i);if(c>32)h=(h*31+c)|0}return h}
+    export let f=()=>{const src=make(),n=src.length;let h=scan(src,n);for(let i=0;i<8;i++)h=(h+scan(src,n-(i&7)))|0;return h}`
+  const sw = jz.compile(src, { wat: true, optimize: 'size' }).split('(func $scan')[1]?.split('\n  (func ')[0] || ''
+  ok(/\$src\$ccsso/.test(sw), 'the receiver is decomposed at entry')
+  ok(!/\(i32\.load\s/.test(sw), 'no read tests the length: none is loaded')
+  const checked = src.replace('src.charCodeAt(i)', 'src.charCodeAt(i+1)')
+  const cw = jz.compile(checked, { wat: true, optimize: 'size' }).split('(func $scan')[1]?.split('\n  (func ')[0] || ''
+  ok(/\(i32\.load\s/.test(cw), 'a read past the proven range keeps the heap length')
+  for (const s of [src, checked]) is(run(s, { optimize: 'size' }).f(), oracle(s).f(), 'reads stay exact')
+})
+
 test('checked typed reads preserve their index before a reused guard slot', () => {
   const src = `const a=new Float64Array([4,1,-0,NaN]), out=new Float64Array(1)
     export function f(i){if(a[i]>=3)return -1;return out[0]=a[i]}`
