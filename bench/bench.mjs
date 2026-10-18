@@ -33,8 +33,10 @@ const W2C_POSTPROCESS = join(ROOT, 'scripts', 'native', 'postprocess-watr.awk')
 // A/B baseline: the compiler of another checkout, measured beside this tree's
 // on one machine. Paired rounds alternate `jz` and `jz-base`, so their ratio is
 // the change's own effect whatever CPU the runner drew.
+// Its builds run in a process of their own (_lib/build-jz.mjs): two compilers in
+// one process share their dependencies' module state, and both parse wrong.
 const JZ_BASE_ROOT = process.env.JZ_BASE_ROOT ? resolve(process.env.JZ_BASE_ROOT) : null
-const compileBase = JZ_BASE_ROOT ? (await import(pathToFileURL(join(JZ_BASE_ROOT, 'index.js')).href)).compile : null
+const buildBase = (c, level, path) => execFileSync(process.execPath, [join(LIB, 'build-jz.mjs'), JZ_BASE_ROOT, c.id, c.js, level, path], { stdio: 'pipe' })
 const gitHead = cwd => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd, encoding: 'utf8' }).trim() } catch { return null } }
 // Native-speed profile. Guard-page mmap makes the hoisted memory base stable
 // across memory.grow and preserves OOB trapping after the postprocessor removes
@@ -1018,10 +1020,10 @@ const targets = {
   'jz-base': {
     name: 'jz at base → V8 wasm',
     // The self-compile cell stays with `jz`: its prep is a child process of this tree.
-    available: c => !!compileBase && c.id !== 'jz' && has('node'),
+    available: c => !!JZ_BASE_ROOT && c.id !== 'jz' && has('node'),
     bin: jzBaseSizeWasmPath,
     run: c => tryRun('jz-base', c,
-      () => { compileJzHost(c, compileBase, jzBaseWasmPath(c)); compileJzSize(c, compileBase, jzBaseSizeWasmPath(c)) },
+      () => { buildBase(c, 'speed', jzBaseWasmPath(c)); buildBase(c, 'size', jzBaseSizeWasmPath(c)) },
       ['node', join(LIB, 'run-jz-host.mjs'), jzBaseWasmPath(c)]),
   },
   as: {
