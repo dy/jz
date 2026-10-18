@@ -209,7 +209,7 @@ export default (ctx) => {
     __str_eq: lean || !ctx.features.sso ? ['__char_at', '__str_length'] : ['__str_eq_cold'],
     __str_eq_cold: [],
     __str_cmp: ['__char_at', '__str_length'],
-    __str_range_eq: ['__char_at', '__str_length'],
+    __str_range_eq: ['__str_length'],
     __str_substring_eq: ['__str_length', '__str_range_eq'],
     __str_substr: ['__str_length', '__str_slice'],
     __str_substr_eq: ['__str_length', '__str_range_eq'],
@@ -647,7 +647,7 @@ export default (ctx) => {
   // arm: a genuine number never equals a string, and a NaN-boxed non-STRING
   // never does either (jz `==` is strict).
   wat('__str_range_eq', `(func $__str_range_eq (param $ptr i64) (param $start i32) (param $end i32) (param $other i64) (result i32)
-    (local $n i32) (local $i i32) (local $fb f64)
+    (local $n i32) (local $i i32) (local $fb f64) (local $ps i32) (local $os i32) (local $pa i32) (local $oa i32)
     ;; A genuine number reinterprets to a non-NaN f64 (equals itself) — never a string.
     (local.set $fb (f64.reinterpret_i64 (local.get $other)))
     (if (f64.eq (local.get $fb) (local.get $fb))
@@ -662,11 +662,21 @@ export default (ctx) => {
       (then (local.set $n (i32.const 0))))
     (if (i32.ne (local.get $n) (call $__str_length (local.get $other)))
       (then (return (i32.const 0))))
+    ;; Each side decoded once: an inline string's units are its payload's
+    ;; 7-bit lanes, any other string's (a slice's too) are at its offset.
+    (local.set $ps (i64.ne (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64})) (i64.const 0)))
+    (local.set $os (i64.ne (i64.and (local.get $other) (i64.const ${SSO_BIT_I64})) (i64.const 0)))
+    (local.set $pa (i32.add (i32.wrap_i64 (local.get $ptr)) (i32.shl (local.get $start) (i32.const 1))))
+    (local.set $oa (i32.wrap_i64 (local.get $other)))
     (block $done (loop $next
       (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
       (if (i32.ne
-            (call $__char_at (local.get $ptr) (i32.add (local.get $start) (local.get $i)))
-            (call $__char_at (local.get $other) (local.get $i)))
+            (if (result i32) (local.get $ps)
+              (then ${ssoCharWat('(local.get $ptr)', '(i32.add (local.get $start) (local.get $i))')})
+              (else (i32.load16_u (i32.add (local.get $pa) (i32.shl (local.get $i) (i32.const 1))))))
+            (if (result i32) (local.get $os)
+              (then ${ssoCharWat('(local.get $other)', '(local.get $i)')})
+              (else (i32.load16_u (i32.add (local.get $oa) (i32.shl (local.get $i) (i32.const 1)))))))
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))

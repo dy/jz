@@ -1070,6 +1070,27 @@ test('substr: a negative start counts from the end, materialized or compared in 
   for (const optimize of levels(0, 2, 'size')) is(run(src, { optimize }).f(), oracle(src).f(), `O${optimize}`)
 })
 
+// `cur.substr(i, l) === w` compares the range in place (__str_range_eq): each
+// side's storage decoded once, an inline string's units read off its payload,
+// a heap string's or a slice's at its offset, by any clamp of the range.
+test('substring equality: a range compares in place against inline, heap and non-ASCII strings', () => {
+  const src = `
+    const words = ['let', 'const', 'abcdef', 'abcdefg', 'éa', 'aé', 'x', '', 'function', 'functio']
+    const subjects = ['let x = const y', 'abcdefghij', 'a', '', 'aéa éa', 'function f() {}', 'xx functio']
+    export const f = () => {
+      let h = 0
+      for (const s of subjects) for (const w of words) for (let i = -2; i <= s.length + 1; i++) {
+        const p = s.length > 6 ? s.slice(1) : s
+        const bits = (s.substr(i, w.length) === w) + 2 * (s.substring(i, i + w.length) === w) +
+          4 * (s.slice(i, i + w.length) === w) + 8 * (p.substr(i, w.length) === w) + 16 * (s.substr(i, 3) === 3)
+        h = (h * 33 + bits + i) | 0
+      }
+      return h
+    }`
+  for (const optimize of levels(0, 2, 'size')) is(run(src, { optimize }).f(), oracle(src).f(), `O${optimize}`)
+  is(/call \$__char_at\b/.test(funcWat(compile(src, { wat: true }), '__str_range_eq')), false, 'no call per unit')
+})
+
 // === ≤6-ASCII⇒SSO producer invariant (module/string.js header) ===
 // Every producer must normalize a short ASCII result to SSO: `x === "shortLit"`
 // lowers to a bare i64.eq and __str_eq decides any one-SSO compare by bits, so a
