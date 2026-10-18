@@ -197,6 +197,33 @@ test('destruct: let/var rest-pattern also keeps Array identity under promotion (
   is(f(), 11)
 })
 
+// A pattern over a value the summary admits an array among other kinds (a
+// tree of strings and arrays, a parameter of every kind) reads an array by
+// position behind `Array.isArray` and keeps the protocol for every other value.
+test('destruct: an array pattern over a value of several kinds reads an array by position', () => {
+  const src = `
+    function* gen() { yield 'g'; yield 'h'; yield 'i' }
+    const own = { [Symbol.iterator]() { let i = 0; return { next: () => i < 3 ? { done: false, value: i++ * 10 } : { done: true }, return() { closed++; return {} } } } }
+    let closed = 0
+    const values = () => [['func', '$a', ['param'], 7], 'x\\u{1F600}y', new Set([5, 6, 7]), new Map([['k', 1]]), [], ['solo'], [, 'hole', , 'end'], gen(), own, 'ab', null, 3]
+    const head = (n) => { let [k, ...rest] = n; return [k, rest] }
+    const pick = (n) => { const [, b, c = 'dflt'] = n; return [b, c] }
+    let a, b
+    const swap = (n) => { [a, b] = n; return [b, a] }
+    export const main = () => {
+      const out = []
+      for (const n of values()) for (const f of [head, pick, swap]) {
+        try { out.push(f(n)) } catch (e) { out.push(e.name) }
+      }
+      return JSON.stringify(out) + closed
+    }`
+  const want = oracle(src).main()
+  for (const optimize of levels(0, 1, 2, 3, 'size')) is(run(src, { optimize }).main(), want, `O${optimize}`)
+  const wat = compile(src, { wat: true, optimize: { level: 2, sourceInline: false, watr: false } })
+  const i = wat.indexOf('(func $head'), body = wat.slice(i, wat.indexOf('\n  (func', i + 5))
+  ok(/memory\.copy/.test(body) && /call \$jz_iter\$__it_rest\b/.test(body), 'an array rest is a copy; the protocol keeps every other kind')
+})
+
 test('destruct assign: [a = v] default', () => {
   const { f } = run(`export let f = () => {
     let a

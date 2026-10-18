@@ -99,9 +99,13 @@ const sliceMayBeOwn = () => ctx.summary?.memberMayBeOwnOn?.('slice', VAL.ARRAY) 
  *  in place: steps and rests to reads of `src` by position, skips away.
  *  Returns false when a pull is not one of the protocol's over this cursor,
  *  or runs code between two steps (the statements then stay as they are). */
-const indexPulls = (stmts, it, src, view) => {
+const indexPulls = (stmts, it, src, view, test = null) => {
   if (!stmts.slice(1).every(n => pureBinding(n, view))) return false
   const edits = [], skips = []
+  // Under a test (a source the summary does not prove an array), each pull
+  // reads by position where the test finds an array and takes the protocol's
+  // step otherwise.
+  const read = (value, pull) => test ? ['?:', test(), value, pull] : value
   let i = 0
   const pull = (n) => {
     if (!isArr(n)) return true
@@ -112,8 +116,8 @@ const indexPulls = (stmts, it, src, view) => {
     for (let j = 1; j < n.length; j++) {
       const c = n[j]
       if (isArr(c) && c[0] === '()' && c[2] === it && typeof c[1] === 'string') {
-        if (STEP.test(c[1])) edits.push([n, j, ['[]', src, [null, i++]]])
-        else if (REST.test(c[1])) { if (sliceMayBeOwn()) return false; edits.push([n, j, ['()', ['.', src, 'slice'], [null, i]]]) }
+        if (STEP.test(c[1])) edits.push([n, j, read(['[]', src, [null, i++]], c)])
+        else if (REST.test(c[1])) { if (sliceMayBeOwn()) return false; edits.push([n, j, read(['()', ['.', src, 'slice'], [null, i]], c)]) }
         else if (CLOSE.test(c[1]) || OPEN.test(c[1])) return false
       } else if (!pull(c)) return false
     }
@@ -126,7 +130,9 @@ const indexPulls = (stmts, it, src, view) => {
   }
   // Commit only after every pull qualifies: the caller's copy shares its children.
   for (const [node, at, value] of edits) node[at] = value
-  for (let s = skips.length - 1; s >= 0; s--) stmts.splice(skips[s], 1)
+  for (let s = skips.length - 1; s >= 0; s--)
+    if (test) stmts[skips[s]] = ['||', test(), stmts[skips[s]]]
+    else stmts.splice(skips[s], 1)
   return true
 }
 
@@ -138,12 +144,14 @@ const assigns = (n, name) => isArr(n) && (((n[0] === '=' || n[0] === 'let' || n[
 const indexPattern = (list, at, view, present) => {
   const open = list[at], init = isArr(open) && open[0] === 'let' && isArr(open[1]) && open[1][0] === '=' && typeof open[1][1] === 'string' ? open[1][2] : null
   const opener = calleeOf(init)
-  if (opener === null || !OPEN.test(opener) || (!provenArray(view, init[2], present) && !arrayOrMissing(view, init[2]))) return false
-  const it = open[1][1], src = init[2], missing = !provenArray(view, src, present)
+  if (opener === null || !OPEN.test(opener)) return false
+  const it = open[1][1], src = init[2]
   // the pulls guarded by the close on a throw: prepare's `catch` spelling of the lowering's `try`
   const guard = list[at + 1], pulls = isArr(guard) && guard[0] === 'catch' && isArr(guard[1]) && guard[1][0] === '{}' && isArr(guard[1][1]) && guard[1][1][0] === ';' ? guard[1][1] : null
   const closeAt = pulls ? at + 2 : at + 1, close = list[closeAt], closer = calleeOf(close)
   if (closer === null || !CLOSE.test(closer) || !isArr(close[2]) || close[2][1] !== it) return false
+  if (!provenArray(view, src, present) && !arrayOrMissing(view, src)) return versionPattern(list, at, view, guard, pulls, close)
+  const missing = !provenArray(view, src, present)
   // A source held in a name the pulls leave alone is read through that name:
   // the cursor would be one more name for it, which hides the array's uses.
   const own = typeof src === 'string' && !missing && !assigns(pulls, src)
@@ -158,6 +166,48 @@ const indexPattern = (list, at, view, present) => {
   // the summary narrows (a statement list can sit in an expression), only a
   // missing value reaches the protocol
   if (missing) list.splice(at + 1, 0, ['&&', ['==', it, [null, null]], ['()', opener, it]])
+  return true
+}
+
+/** Whether some array of the program may carry an iterator of its own, which the protocol would call. */
+const iteratorMayBeOwn = () => ctx.summary?.memberMayBeOwnOn?.('@@iterator', VAL.ARRAY) === true || ctx.summary?.memberMayBeOwn?.('@@iterator') === true
+
+/**
+ * An array pattern over a value the summary admits an array among others
+ * (an element of a tree of strings and arrays, a parameter of every kind)
+ * reads by position where `Array.isArray` finds one, and keeps the protocol
+ * for every other value: the cursor opens only where the test fails, each
+ * step and rest reads the array or pulls the cursor by the same test, the
+ * closes run only where it opened. The source is held once, in a name the
+ * pulls leave alone; the test narrows it to an array in the arm that reads.
+ */
+const versionPattern = (list, at, view, guard, pulls, close) => {
+  const open = list[at], it = open[1][1], src = open[1][2][2], opener = open[1][2][1]
+  let k
+  try { k = view.kindOfExpr(src) } catch { return false }
+  if (k == null || !hasTag(k, K.ARRAY) || iteratorMayBeOwn() || sliceMayBeOwn()) return false
+  const own = typeof src === 'string' && src !== it && !assigns(pulls, src)
+  const name = own ? src : `${T}ps${freshId(ctx)}`
+  const test = () => ['()', 'Array.isArray', name]
+  let copy = null
+  if (pulls) {
+    copy = pulls.slice()
+    if (!indexPulls(copy, it, name, view, test)) return false
+  }
+  // a close on a throw, in the handler, runs where the cursor opened
+  const guardClose = (n) => {
+    if (!isArr(n)) return
+    for (let j = 1; j < n.length; j++) {
+      const c = n[j], callee = calleeOf(c)
+      if (callee !== null && CLOSE.test(callee) && isArr(c[2]) && c[2][1] === it) n[j] = ['||', test(), c]
+      else guardClose(c)
+    }
+  }
+  if (pulls) { guard[1][1] = copy; guardClose(guard[3]) }
+  const closeAt = list.indexOf(close)
+  list[closeAt] = ['||', test(), close]
+  open[1][2] = ['?:', test(), [null, undefined], ['()', opener, name]]
+  if (!own) list.splice(at, 0, ['let', ['=', name, src]])
   return true
 }
 

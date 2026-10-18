@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Read an array pattern over a value the summary admits an array among other kinds (`let [kind, ...node] = n` over a tree of strings and arrays, a parameter of every kind) by position behind `Array.isArray`, the protocol kept for every other value: the cursor opens only where the test fails, a rest is a copy. A kernel destructuring such values runs 1.35× Node where it ran 3.07× (interleaved); watr's run opens 8.8k cursors and collects 0.8k rests instead of 17.9k and 5.8k.
 - Compare a string's unit with a one-character literal (`s[i] === '$'`) by one inline unit read: the read answers 0 past either end, which no literal but NUL equals, so the length call and the char call go (one call at the size tier). A kernel of such tests runs 1.3× Node where it ran 5.2× (interleaved, loaded machine); watr's run makes 20k `__char_at` and 118k `__str_length` calls instead of 203k and 301k.
 - Enumerate a receiver no layout or dictionary names (`Object.keys`/`values`/`entries` of an array or an unknown value) through one stdlib function per kind instead of the whole property walk at each site: a fifteen-line program calling such a helper fourteen times compiles in 1.7 s to 30 KB at level 2, where it took 8 s and 76 KB (and exhausted the hosted compiler's memory).
 - Keep an element of one typed array past a store to another where every call passes each its own fresh array, sized by any primitive (`new Float64Array(N)` with `const N = 64`): the fft butterfly reads `im[a]` once.
