@@ -48,7 +48,7 @@ import { ctx, PTR, LAYOUT, HEAP, FORWARDING_MASK, declGlobal } from '../../src/c
 import { TOMB_NAN } from '../../src/ir.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, STR_HCACHE_BIT } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
-import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP, SLACK, MARGIN } from './stub-log.js'
+import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP, compactSlack, PRESSURE_SLACK, MARGIN } from './stub-log.js'
 export { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP }
 import { valKindToPtr } from '../../src/ir/pointers.js'
 import { BIGINT_REP_RAW } from '../../src/compile/representation-plan.js'
@@ -287,8 +287,8 @@ export const registerCompact = () => {
     (local.set $m (i64.extend_i32_u (local.get $mark)))
     ${has('__park_base') ? `;; a parked lane caps the heap where it starts
     (if (global.get $__park_base) (then (local.set $cap1 (i32.sub (global.get $__park_base) (i32.const 9)))))` : ''}
-    (local.set $need (i64.add (i64.shl (i64.extend_i32_u (local.get $cost)) (i64.const 1)) (i64.const ${SLACK})))
-    (local.set $low (i64.add (i64.shr_u (i64.extend_i32_u (local.get $cost)) (i64.const 3)) (i64.const ${SLACK})))
+    (local.set $need (i64.add (i64.shl (i64.extend_i32_u (local.get $cost)) (i64.const 1)) (i64.const ${compactSlack()})))
+    (local.set $low (i64.add (i64.shr_u (i64.extend_i32_u (local.get $cost)) (i64.const 3)) (i64.const ${PRESSURE_SLACK})))
     ;; 8 · (cap − 1 − mark − margin − need), the heap past which the pressure rule holds
     (local.set $room (i64.sub (i64.sub (i64.sub (i64.extend_i32_u (local.get $cap1)) (local.get $m)) (i64.const ${MARGIN})) (local.get $need)))
     (local.set $p (select (i64.add (i64.shl (local.get $room) (i64.const 3)) (i64.const 7)) (i64.const 0) (i64.gt_s (local.get $room) (i64.const 0))))

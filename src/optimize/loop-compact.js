@@ -48,18 +48,18 @@
  */
 import { ctx } from '../ctx.js'
 import { T as MARK } from '../ast.js'
-import { SLACK } from '../../module/core/stub-log.js'
+import { compactSlack } from '../../module/core/stub-log.js'
 
 const HEADER = new Set(['export', 'param', 'result', 'local'])
 const written = (label) => typeof label === 'string' ? label.replace(/(?:\.f\d+)+$/, '') : label
-/** A compaction pays off once the kept memory holds `SLACK` beyond twice
- *  what the last one walked: a walk costs what it reaches, so the slack is
- *  megabytes, not a page, and a loop whose iterations keep a growing value
- *  pays a few walks per hundred megabytes allocated, one whose live data is
- *  large pays one per several times that. Under pressure, as the memory's
+/** A compaction pays off once the kept memory holds the slack (`SLACK`,
+ *  `optimize.compactSlack`) beyond twice what the last one walked: a walk
+ *  costs what it reaches, so the slack is megabytes, not a page, and a loop
+ *  whose iterations keep a growing value pays a walk per few megabytes
+ *  allocated, one whose live data is large pays one per several times that. Under pressure, as the memory's
  *  cap nears (less an eighth of the heap and `MARGIN` for the kernel's
- *  scratch), a compaction waits for the slack beyond an eighth of the walk
- *  instead: a walk per eighth of the live data, not per page. The kernel
+ *  scratch), a compaction waits for `PRESSURE_SLACK` beyond an eighth of the
+ *  walk instead: a walk per eighth of the live data, not per page. The kernel
  *  folds both rules into one heap address per compaction (`__gc_thresh`),
  *  so an iteration pays one comparison. */
 const BR = new Set(['br', 'br_if', 'br_table'])
@@ -213,7 +213,7 @@ export function insertLoopCompacts(funcs, owners) {
       }
       // declined (the kernel has no room, a checkpoint holds parked data, the
       // stub log overflowed): asked again a slack later, or never past the end
-      const later = ['i32.add', ['global.get', '$__heap'], ['i32.const', SLACK]]
+      const later = ['i32.add', ['global.get', '$__heap'], ['i32.const', compactSlack()]]
       return ['if', ['call', '$__gc_begin', ['local.get', mark]],
         ['then', ...marks, ['call', '$__gc_walk'], ...fwds, ['drop', ['call', '$__gc_move']],
           ['local.set', thresh, ['call', '$__gc_thresh', ['local.get', mark], ['global.get', '$__g_cost'], ['i32.const', cap - 1]]]],
@@ -257,7 +257,7 @@ export function insertLoopCompacts(funcs, owners) {
           // which sets the threshold properly). Nothing else: a store to a
           // global here cost a parser five percent.
           list.splice(i, 0, ['local.set', mark, ['global.get', '$__heap']],
-            ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', SLACK]]])
+            ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', compactSlack()]]])
           i += 3
         }
         visit(n, 1)

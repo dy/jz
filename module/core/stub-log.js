@@ -39,8 +39,17 @@ export const stubLogBytes = () => stubEntries() * 16
  *  past it the pressure rule, not the amortizing one, times compactions. */
 export const COST_CAP = 1 << 30
 /** A loop site's slack past twice the walked cost, and the margin it keeps
- *  from the memory's cap for the kernel's scratch (optimize/loop-compact.js). */
-export const SLACK = 16 << 20, MARGIN = 64 << 20
+ *  from the memory's cap for the kernel's scratch (optimize/loop-compact.js).
+ *  Two megabytes keep a loop's churn within the cache: a parse loop's fresh
+ *  objects at sixteen ran 1.6× its time (json on x64), the walks it saves
+ *  costing less than the cold memory it touched. */
+export const SLACK = 2 << 20, MARGIN = 64 << 20
+/** The pressure rule's slack past an eighth of the walk: near the cap a walk
+ *  still comes once per sixteen megabytes at most, not per two, so a large
+ *  live set is not walked several times for each megabyte it frees. */
+export const PRESSURE_SLACK = 16 << 20
+/** The slack a build asks for (`optimize.compactSlack`, bytes), SLACK unless set. */
+export const compactSlack = () => ctx.transform.optimize?.compactSlack ?? SLACK
 export const declarePin = () => {
   if (ctx.scope.globals.has('__pin')) return
   declGlobal('__pin', 'i32', 0, { export: '__pin' })

@@ -2181,7 +2181,9 @@ binding of the function, a container older than the loop) cannot restore the
 heap pointer at its start as a rewind loop does.
 Such a loop compacts what it keeps in place: at the top of an iteration, once
 the memory above the loop's mark holds twice what the last compaction
-walked and sixteen megabytes besides, the site calls `__gc_begin` with the
+walked and two megabytes besides (`optimize.compactSlack`; a loop's churn
+then stays in the cache, where at sixteen a parse loop of fresh objects ran
+1.6× its time), the site calls `__gc_begin` with the
 loop's mark (the module's globals marked), marks its roots, calls
 `__gc_walk`, forwards every root while the chains still stand, and calls
 `__gc_move`. The site stands outside the loop's body: the loop's top leaves
@@ -2256,14 +2258,15 @@ reach is walked whole, below the floor kept in place. Its cost is what it
 reached (`__g_cost`, the bytes of every block `__gc_keep` was handed), and
 that cost sets the next trigger, for the host's `settle` and for a loop's
 site alike: a module holding a million objects compacts a loop's churn once
-per several times their size, not once per sixteen megabytes, and the walks
+per several times their size, not once per two megabytes, and the walks
 stay a bounded share of the allocation they reclaim. The cost saturates at a
 gibibyte (`COST_CAP`), so twice it fits an i32. A second rule serves the
 memory's cap (`ctx.memory.max` in pages, else the address space; the host
 takes the address space): when the room left, less an eighth of the heap and
 64 MB for the kernel's scratch, is short of what the first rule still waits
 for, a compaction comes once the memory above the mark holds an eighth of the
-cost and the slack. A program whose live data is a large share of its cap
+cost and sixteen megabytes (`PRESSURE_SLACK`: at the loop's two, a large live
+set would be walked several times over for each megabyte it frees). A program whose live data is a large share of its cap
 then compacts often rather than failing to grow; `test/compact.js` runs 20 MB
 of kept arrays beside a loop under a 64 MB cap. The kernel folds both rules
 into one heap address per compaction (`__gc_thresh`, from the mark, the

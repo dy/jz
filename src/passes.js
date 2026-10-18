@@ -152,6 +152,7 @@ export const PASS_NAMES = [
 export const TUNING_KEYS = [
   'level', 'arrayMinCap', 'arrayLiteralMinCap', 'hashSmallInitCap', 'collectionInitCap', 'watrProfile', 'watrGuard', 'watrLicm',
   'compactStubs',             // entries of the stub log a loop's compaction reads (module/core/stub-log.js); default 65536
+  'compactSlack',             // bytes a loop's kept memory grows past twice the last walk before it compacts (module/core/stub-log.js)
   'wordTruncation',           // how a truncation keeps its word: 'wide' | 'narrow' | 'add' (optimize/int-narrow.js)
   'coldTrap',                 // diagnostic: a versioned loop's arm as written throws its version's number (plan/integral-loops.js)
   'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset',

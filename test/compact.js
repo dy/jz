@@ -148,11 +148,12 @@ test('compact: a loop keeps what it carries and no more', () => {
   for (const [name, src] of Object.entries(LOOPS)) {
     const want = oracle(src), { exports, memory } = jz(src)
     for (const n of [7, 250, 4000]) is(exports.f(n), want.f(n), `${name} f(${n})`)
-    if ((name === 'prefix' || name === 'concat') && counted()) {
+    if ((name === 'prefix' || name === 'concat' || name === 'json') && counted()) {
       // unbounded, the prefix string alone would reach 3.6 GB; a loop compacts
-      // past 16 MB of slack, and wasm memory grows by doubling
+      // past 2 MB of slack (34 MB of memory at the former 16), and wasm memory
+      // grows by doubling
       exports.f(60000)
-      ok(memory.buffer.byteLength <= 64 * 1024 * 1024, `${name}: 60000 iterations stay within 64 MB (${memory.buffer.byteLength >> 10} KB)`)
+      ok(memory.buffer.byteLength <= 8 * 1024 * 1024, `${name}: 60000 iterations stay within 8 MB (${memory.buffer.byteLength >> 10} KB)`)
     }
   }
 })
@@ -270,7 +271,7 @@ test('compact: a stub log too small for the call declines compaction, never corr
 test('compact: a loop compacts before the memory\'s cap, not only at its amortized trigger', () => {
   if (onWasi() || !counted()) return
   // 20 MB kept beside the loop: the amortizing trigger (twice the walk plus
-  // 16 MB above the mark) would land past a 64 MB cap; under pressure the
+  // the slack above the mark) would land at a 64 MB cap; under pressure the
   // loop compacts once an eighth of the walk and the slack have gone by
   const src = `export const f = n => { const keep = []; for (let i = 0; i < 500000; i++) keep.push([i]); let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length + keep.length }`
   const want = oracle(src), { exports, memory } = jz(src, { memory: { initial: 2, maximum: 1024 } })
