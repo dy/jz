@@ -104,6 +104,18 @@ export function findBodyStart(fn) {
   return fn.length
 }
 
+/** The locals a `(func …)` writes, a static parameter's entry write aside: its
+ *  first statement setting it, the address every call passes (compile/emit-func.js). */
+export function writtenLocals(fn) {
+  const out = new Set(), entry = new Set(fn.staticParams ?? [])
+  walkAst(fn, { enter: (n, parent) => {
+    if (n[0] !== 'local.set' && n[0] !== 'local.tee') return
+    if (parent === fn && n[0] === 'local.set' && entry.delete(n[1])) return
+    out.add(n[1])
+  } })
+  return out
+}
+
 /** Debug-mode structural check of a `(func …)` IR node. Catches the bug classes
  *  that otherwise surface as OPAQUE watr errors several phases later — `Duplicate
  *  local $x`, `Unknown local $x` — but here pinned to the exact name (and, via the

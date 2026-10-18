@@ -623,6 +623,7 @@ test('codegen: reassigned exported param is NOT coercion-hoisted', () => {
 })
 
 test('codegen: no-arg scalar allocator rewinds heap on return', () => {
+  // (an array a function keeps to itself takes static storage, compile/fixed-memory.js: the heap path is pinned)
   const src = `
     export let f = () => {
       let a = new Float64Array(4)
@@ -631,14 +632,14 @@ test('codegen: no-arg scalar allocator rewinds heap on return', () => {
       return a[i] | 0
     }
   `
-  const wat = compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false, staticLocals: false } })
   const body = wat.match(/\(func \$f[\s\S]*?\n  \)/)?.[0] || ''
   ok(/heap_save/.test(body), 'expected heap save local')
   ok(/global\.set \$__heap/.test(body), 'expected heap restore before return')
   // Runs on the kernel leg too: the bytes leg graduated to the native optimize
   // default once the kernel-L2 ratchet hit zero (the SIMD-vectorizer divergences
   // this guard once dodged are fixed).
-  const { instance } = jz(src, { optimize: { watr: false } })
+  const { instance } = jz(src, { optimize: { watr: false, staticLocals: false } })
   const before = instance.exports._alloc(0)
   for (let i = 0; i < 20; i++) is(instance.exports.f(), 7)
   const after = instance.exports._alloc(0)
@@ -2070,7 +2071,9 @@ const parserFixture = `export let f = (s) => {
 // packed-string mix and cell load to every copy watr inlines: 13234 -> 13907.
 // The scan loop runs in a specialized copy, the loop as written beside it
 // (optimize/specialize.js): 14343 -> 14721.
-golden('closure-heavy parser', parserFixture, 14721)
+// Each pass of the scan loop gives back what it allocated, by the escape flag
+// and the walk from its log (iterationRelease): 15233 -> 16876.
+golden('closure-heavy parser', parserFixture, 16876)
 test('closure-heavy parser: behavior behind the size pin', () => {
   const { f } = jz(parserFixture).exports
   for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])

@@ -11,7 +11,7 @@
  * @module optimize/licm
  */
 import { LAYOUT, ctx } from '../ctx.js'
-import { findBodyStart, buildRefcount, nextLocalId } from '../ir.js'
+import { findBodyStart, writtenLocals, buildRefcount, nextLocalId } from '../ir.js'
 import { T, walkAst } from '../ast.js'
 import { hoistInvariants, isMemWrite } from 'watr/optimize'
 import { pureKernel } from './pure-funcs.js'
@@ -495,8 +495,7 @@ const stableBase = (n, names, present) => {
 function fixedTypedLoad(fn) {
   const extents = fn.fixedTypedBytes
   if (!extents?.size) return null
-  const changed = new Set()
-  walkAst(fn, { enter: n => { if (n[0] === 'local.set' || n[0] === 'local.tee') changed.add(n[1]) } })
+  const changed = writtenLocals(fn)
   const constant = n => {
     if (!Array.isArray(n)) return null
     if (n[0] === 'i32.const') {

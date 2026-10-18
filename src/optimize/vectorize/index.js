@@ -46,7 +46,7 @@
 
 
 import { DBG_INVARIANTS } from '../../debug.js'
-import { findBodyStart, dollar } from '../../ir.js'
+import { findBodyStart, writtenLocals, dollar } from '../../ir.js'
 import { warn, ctx } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import { constNum, isI32Const } from './addr-model.js'
@@ -124,9 +124,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // A distinct parameter retains its allocation identity only while unwritten
   // (a static one's entry write is the address every call passes, compile/emit-func.js).
   const distinctParams = fn.distinctParams ? new Set(fn.distinctParams) : null
-  if (distinctParams) walkAst(fn, { enter: n => {
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && !fn.staticParams?.has(n[1])) distinctParams.delete(n[1])
-  } })
+  if (distinctParams) for (const n of writtenLocals(fn)) distinctParams.delete(n)
 
   // Build local-name → wasm-type map.
   const fnLocals = new Map()
