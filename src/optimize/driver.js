@@ -18,7 +18,7 @@ import { forwardStores } from './forward-store.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistPtrOffset, hoistAddrBase } from './cse-address.js'
 import {
-  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails, refoldMemargs,
+  boolConvertToSelect, foldV128Memargs, inlinePtrOffsetFastPass, fusedRewrite, lowerToInt32Tails, refoldMemargs, foldLoadCasts,
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 import { reuseLoads, narrowByteLoads } from './reuse-loads.js'
@@ -178,6 +178,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // nodes against a gate of 110; 90 after). Self-calls are still clean `call`
   // nodes: watr's inliner runs after this driver. Speed-tier only.
   if (cfg && cfg.recursionUnroll === true) recursionUnroll(fn)
+  // A load only its bits are read of is the load of the integer type (the specializer's copies read hit elements bare).
+  if (!cfg || cfg.fusedRewrite !== false) foldLoadCasts(fn)
   // Helper calls are the form every pass above reasons about: LICM hoists an invariant
   // `$__ptr_offset`, unswitch and devirt recognize it. Its inline fast path is lowering
   // (speed tier), so it runs last. Value numbering and statement scheduling are watr's

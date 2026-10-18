@@ -357,6 +357,72 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
+/** A reinterpreted load is the other type's load of the same eight bytes, and the
+ *  low word of an i64 load is the i32 load at its address (little-endian): a plain
+ *  array's pointer element (`coefs[j]`, `state[j]` of a filter cascade) loads into
+ *  an integer register, not through a float one and a move. After the loop
+ *  specializer, whose copies read a hit element bare. (Cast rules: watr's
+ *  simplifyCast is their home.) */
+export function foldLoadCasts(fn) {
+  if (!Array.isArray(fn) || fn[0] !== 'func') return
+  const bodyStart = findBodyStart(fn)
+  const memarg = (l) => l.slice(1).filter(x => !(typeof x === 'string' && x.startsWith('align=')))
+  // An f64 local every write of which is a load and every read of which takes its bits
+  // (`i64.reinterpret_f64`) holds them as an i64: each write loads the i64, each read is
+  // the local. (A local written from anything else keeps its float and its reads: the
+  // NaN-box tests that read `(i64.reinterpret_f64 (local.get $x))` fold in that form.)
+  const f64 = new Set(), bitsOnly = new Map()
+  for (let i = 2; i < bodyStart; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'local' && fn[i][2] === 'f64') f64.add(fn[i][1])
+  const loaded = (v) => Array.isArray(v) && (v[0] === 'f64.load' || v[0] === 'f64.reinterpret_i64' ||
+    v[0] === 'block' && Array.isArray(v[1]) && v[1][0] === 'result' && v.length > 2 && loaded(v[v.length - 1]))
+  let flat = false
+  const scan = (n, parent) => {
+    if (!Array.isArray(n)) { if (n === 'local.get' || n === 'local.set' || n === 'local.tee') flat = true; return }
+    // (a write of a value on the stack, a catch's payload: its type is the stack's)
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && n.length < 3) flat = true
+    if ((n[0] === 'local.get' || n[0] === 'local.tee') && f64.has(n[1])) bitsOnly.set(n[1], (bitsOnly.get(n[1]) ?? true) && parent?.[0] === 'i64.reinterpret_f64')
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && f64.has(n[1]) && !loaded(n[2])) bitsOnly.set(n[1], false)
+    if (n[0] === 'local.set' && f64.has(n[1]) && !bitsOnly.has(n[1])) bitsOnly.set(n[1], true)
+    for (let i = 1; i < n.length; i++) scan(n[i], n)
+  }
+  for (let i = bodyStart; i < fn.length; i++) scan(fn[i], null)
+  // (a flat local access is out of the walk's view: none is retyped then)
+  const retyped = new Set(flat ? [] : [...bitsOnly].filter(([, only]) => only).map(([name]) => name))
+  // a cast of a value: into a load, through a block's or an arm's result
+  const cast = (op, v) => {
+    if (!Array.isArray(v)) return [op, v]
+    if (op === 'i64.reinterpret_f64' && v[0] === 'f64.load') return ['i64.load', ...v.slice(1)]
+    if (op === 'f64.reinterpret_i64' && v[0] === 'i64.load') return ['f64.load', ...v.slice(1)]
+    if (op === 'i64.reinterpret_f64' && v[0] === 'f64.reinterpret_i64') return v[1]
+    if (op === 'i32.wrap_i64' && v[0] === 'i64.load') return ['i32.load', ...memarg(v)]
+    const type = op === 'i64.reinterpret_f64' ? 'i64' : op === 'f64.reinterpret_i64' ? 'f64' : 'i32'
+    if (v[0] === 'block' && Array.isArray(v[1]) && v[1][0] === 'result' && v.length > 2) return ['block', ['result', type], ...v.slice(2, -1), cast(op, v[v.length - 1])]
+    return [op, v]
+  }
+  // (a node two parents share is rewritten once: its parents read the one result)
+  const done = new WeakMap()
+  const walk = (n) => {
+    if (!Array.isArray(n)) return n
+    if (done.has(n)) return done.get(n)
+    for (let i = 1; i < n.length; i++) n[i] = walk(n[i])
+    const r = rewrite(n)
+    done.set(n, r); done.set(r, r)
+    return r
+  }
+  const rewrite = (n) => {
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && retyped.has(n[1])) return [n[0], n[1], cast('i64.reinterpret_f64', n[2])]
+    if (n.length !== 2) return n
+    if (n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && (n[1][0] === 'local.get' || n[1][0] === 'local.tee') && retyped.has(n[1][1])) return n[1]
+    if (n[0] === 'i64.reinterpret_f64' || n[0] === 'f64.reinterpret_i64' || n[0] === 'i32.wrap_i64') {
+      const c = cast(n[0], n[1])
+      return c[0] === n[0] && c[1] === n[1] ? n : c
+    }
+    return n
+  }
+  for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
+  for (let i = 2; i < bodyStart; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'local' && retyped.has(fn[i][1])) fn[i] = ['local', fn[i][1], 'i64']
+}
+
 /** The exact conversions no range proof folded (`call $__to_int32 X`, left by
  *  the walk above and read by the lane lift in that form) convert inline where
  *  the i64 truncation is exact, every finite |x| < 2^63 (NaN saturates to

@@ -14,7 +14,7 @@ import { almost, is, ok, throws } from 'tst/assert.js'
 import jz, { _compileInProcess } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
-import { fusedRewrite, lowerToInt32Tails } from '../src/optimize/peephole.js'
+import { fusedRewrite, lowerToInt32Tails, foldLoadCasts } from '../src/optimize/peephole.js'
 import { ctx } from '../src/ctx.js'
 import { T, walkAst } from '../src/ast.js'
 import { compile } from '../index.js'
@@ -4036,6 +4036,48 @@ test('wrapped words: `avail & -avail` negates in the word, exact at the int32 ex
   const w = compile(src, { optimize: 'speed', wat: true })
   // (an export's Number parameter still converts through the wide path, and an unbounded count widens; the negation itself is the word's)
   for (const f of ['lowbit', 'count']) ok(!/i64\.sub\s*\(i64\.const 0\)|i64\.extend_i32_s \(local\.get \$avail\)/.test(funcWat(w, f)), `${f}: no wide negation, the negation is the word's`)
+})
+
+// A plain array's pointer element read only for its bits loads as an integer: the
+// reinterpreted float load is the i64 load, its low word the i32 load, and a float
+// local read only through its bits holds them as an i64 (optimize/peephole.js).
+test('load casts: a pointer element loads into an integer register, exact', () => {
+  const src = `(module (memory (export "memory") 1)
+    (func $f (export "f") (param $p i32) (param $j i32) (result f64)
+      (local $s f64) (local $c i32)
+      (local.set $c (i32.wrap_i64 (i64.reinterpret_f64 (f64.load (i32.add (local.get $p) (i32.shl (local.get $j) (i32.const 3)))))))
+      (local.set $s (block (result f64) (local.set $j (i32.add (local.get $j) (i32.const 1))) (f64.load offset=64 (local.get $p))))
+      (f64.add (f64.load (local.get $c))
+        (f64.load offset=8 (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $s)) (i64.const 4294967295)))))))`
+  const tree = parseWat(src), fn = findFunc(tree, '$f')
+  foldLoadCasts(fn)
+  const text = JSON.stringify(fn)
+  ok(!text.includes('reinterpret_f64'), 'no float load is read for its bits')
+  ok(text.includes('"i32.load"') && text.includes('"i64.load"'), 'the pointer loads are integer loads')
+  ok(text.includes('["local","$s","i64"]'), 'a local read only for its bits holds an i64')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  const before = inst(parseWat(src)), after = inst(tree)
+  for (const m of [before, after]) {
+    const w = new BigUint64Array(m.memory.buffer), d = new Float64Array(m.memory.buffer)
+    w[0] = 0x7FFC000000000100n; w[8] = 0x7FFC000000000200n; d[32] = 1.5; d[65] = 2.25
+  }
+  is(after.f(0, 0), before.f(0, 0), 'the same sum')
+  is(after.f(0, 0), 3.75, 'of the two fields the pointers name')
+  // a write two parents share (the emitter reuses nodes) is rewritten once, and a write of
+  // a value on the stack (a catch's payload) keeps its local's type
+  const shared = `(module (memory (export "memory") 1)
+    (func $g (export "g") (param $p i32) (result i32)
+      (local $s f64)
+      (if (local.get $p) (then SET) (else SET))
+      (i32.wrap_i64 (i64.reinterpret_f64 (local.get $s)))))`
+  const t2 = parseWat(shared.replace(/SET/g, '(nop)')), g = findFunc(t2, '$g')
+  const set = ['block', ['local.set', '$s', ['f64.load', ['local.get', '$p']]]]
+  walk(g, n => { if (n[0] === 'then' || n[0] === 'else') n[1] = set })
+  foldLoadCasts(g)
+  ok(!JSON.stringify(g).includes('"i64.reinterpret_f64",["i64.reinterpret_f64"'), 'no write reinterprets twice')
+  const m2 = inst(t2), w2 = new BigUint64Array(m2.memory.buffer)
+  w2[1] = 0x7FFC0000000000ABn
+  is(m2.g(8), 0xAB, 'the shared write loads the word')
 })
 
 // ---- nanCanon: a canonical-NaN step only arithmetic reads is its value (optimize/nan-canon.js) ----
