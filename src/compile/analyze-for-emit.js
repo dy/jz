@@ -325,9 +325,18 @@ export function analyzeFuncForEmit(func, programFacts) {
   // is then one the straight-line cache below can share.
   const hoistedFields = loadsCached && fieldRead
     ? hoistLoopFields(body, cacheName, fieldRead, n => summary.mayBeNullishExpr(n) === false, readonlyCall, userCode, fieldStore, summary.objectsDisjoint) : 0
+  // Two parameters every call passes its own fresh typed array hold two buffers
+  // while the body keeps them (plan/literals.js analyzeParamDistinctness).
+  const distinct = func.distinctParams ? new Set([...func.distinctParams].filter(n => !isReassigned(frameNode(func), n))) : null
+  const disjointArrays = (a, b) => {
+    if (a !== b && distinct?.has(a) && distinct.has(b)) return true
+    if (!summary) return false
+    const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b)
+    return ca != null && cb != null && ca !== cb
+  }
   if ((loadsCached && (typedLoads || fieldRead)
       && cseLoads(body, loadStorage, cacheName, n => valTypeOf(n) === VAL.NUMBER, readonlyCall, userCode, fieldRead, fieldStore,
-        summary ? (a, b) => { const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b); return ca != null && cb != null && ca !== cb } : null, summary?.objectsDisjoint) > 0) || hoistedFields > 0)
+        disjointArrays, summary?.objectsDisjoint) > 0) || hoistedFields > 0)
     invalidateLocalsCache(body)
 
   if (block) {

@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Keep an element of one typed array past a store to another where every call passes each its own fresh array, sized by any primitive (`new Float64Array(N)` with `const N = 64`): the fft butterfly reads `im[a]` once.
 - Lift an inner loop's typed-bounds guard over a counter that strides by a loop invariant (`for (i = 0; i < n; i += len)`), bounded by the last value its stride reaches, the inner loop's own counters words there too; drop the conjuncts of a version guard its operands' ranges decide. fftplan 0.76×, provenance 0.77×, fft 0.93× of their previous time (interleaved runs, checksums unchanged).
 - Cross an exported parameter a closure reassigns as the number the summary reads it as: the host converts it (`f(true)` with `k = k + 1` in a closure returned `true` at levels 0 and 1).
 - Load a string parameter's length at entry only where some `charCodeAt` tests it: a scan whose reads are all in bounds decodes the receiver without it (tokenizer 1577 → 1518 B at `'size'`).

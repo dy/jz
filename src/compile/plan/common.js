@@ -131,23 +131,31 @@ export const fixedScalarTypedArray = (expr) => {
  *  `new Float64Array(N)` with N a compile-time integer? Excludes view ctors
  *  (`new Float64Array(someBuffer)` — the arg is a buffer ref, not an int), so the
  *  result provably aliases no other buffer. Used by param-distinctness. */
-const isFreshTypedArrayAlloc = (expr) => {
+// A length no buffer can be: a constant, an operator's result, a list literal
+// (copied), or a const of one. A bare name else may hold an ArrayBuffer, which
+// the array would view.
+const PRIMITIVE_LEN_OPS = new Set(['+', '-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>', '~', 'u-', 'u+'])
+const primitiveLen = (a, consts) => constIntExpr(a) != null || typeof a === 'string' && consts.has(a) ||
+  Array.isArray(a) && (a[0] == null || PRIMITIVE_LEN_OPS.has(a[0]) || a[0] === '[]' && a.length === 2)
+const isFreshTypedArrayAlloc = (expr, consts) => {
   if (typedElemCtor(expr) == null) return false
   const args = callArgs(expr)
-  return !!args && args.length === 1 && constIntExpr(args[0]) != null
+  return !!args && args.length === 1 && primitiveLen(args[0], consts)
 }
 
 /** Local names const-bound to a fresh typed-array allocation (each a unique buffer, distinct from
  *  every other such binding and from any pre-existing value). `const` only — an immutable binding
  *  always holds that fresh buffer. Element writes (`a[i]=…`) don't reassign `a`, so they're fine. */
 export const freshTypedArrayLocals = (body) => {
-  const fresh = new Set()
+  const fresh = new Set(), consts = new Set()
   walkAst(body, { enter: node => {
     if (node[0] === '=>') return false
     if (node[0] === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && isFreshTypedArrayAlloc(d[2])) fresh.add(d[1])
+        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+        if (isFreshTypedArrayAlloc(d[2], consts)) fresh.add(d[1])
+        else if (primitiveLen(d[2], consts)) consts.add(d[1])
       }
     }
   } })

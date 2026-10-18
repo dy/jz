@@ -57,6 +57,22 @@ test('loop step: programs agree with the host', () => {
   }
 })
 
+// Two arrays every call passes fresh are two buffers: `im[a]` survives the store
+// of `re[a]` (plan/literals.js analyzeParamDistinctness), where one array
+// passed twice keeps its second read.
+const aliased = butterfly.replace('pass(re, im, wre, wim, N)', 'pass(re, re, wre, wim, N)')
+
+test('loop step: a store to a distinct array keeps an element of another', () => {
+  const host = oracle(aliased).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const f = jz(aliased, { optimize }).exports.f
+    for (const n of [1, 3]) ok(Object.is(host(n), f(n)), `aliased f(${n}) at ${optimize}: ${f(n)} for ${host(n)}`)
+  }
+  if (belowOpt(2)) return
+  const loads = (text) => (text.match(/f64\.load|v128\.load/g) || []).length
+  ok(loads(wat(butterfly, { optimize: 2 })) < loads(wat(aliased, { optimize: 2 })), 'distinct arrays read im[a] once')
+})
+
 test('loop step: the butterfly reads each element once', () => {
   if (belowOpt(2)) return
   const loads = (text) => (text.match(/f64\.load|v128\.load/g) || []).length
