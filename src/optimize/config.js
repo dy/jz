@@ -64,7 +64,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
-const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
+const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
 const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false })
 
 const LEVEL_PRESETS = Object.freeze({
@@ -92,14 +92,12 @@ const LEVEL_PRESETS = Object.freeze({
   // or use their proven capacity. Named-property sidecars keep the common two-slot policy:
   // reserving eight slots for a single property retained 18 MB in jessie
   // without a repeatable runtime gain. Ordinary collection capacity is separate.
-  // L3/'speed' also turns hoistConstantPool OFF: pooling repeated `f64.const`
-  // into `(mut f64)` globals is a pure size win (~7 B/reuse) but a speed loss —
-  // a mutable global can't be constant-folded by V8 (any call may mutate it), so
-  // every use becomes a load, and promoteGlobals then snapshots the pool into
-  // `_pg` locals at each hot function's entry (register pressure in the big
-  // closures). Inline `f64.const` is the minimal lowering: V8 CSEs identical
-  // constants for free. Measured −3% on jessie parse for +14% binary — exactly
-  // the size↔speed trade 'speed' exists to make.
+  // L3/'speed' turns watr's size pool (hoistConstantPool) OFF: it pools every
+  // repeated literal by bytes saved, integers too, and a pooled integer is a
+  // load where x64 had an immediate. poolFloats instead takes each nonzero float
+  // literal from an immutable global, after every other pass
+  // (optimize/pool-floats.js): V8 rematerializes a float constant through an
+  // integer register at each use, where a global is one folded load.
   3: L3_PRESET,
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).

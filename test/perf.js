@@ -1432,7 +1432,8 @@ test('codegen: f64 threshold in a recurrence lowers to a branchless select at sp
     const f = w.match(/\(func \$sweep[\s\S]*?\n  \)/)?.[0] ?? w
     return firstLoopArm(f)
   }
-  const watSpeed = sweepArm(compile(src, { wat: true, optimize: 'speed' }))
+  // (the select is read by its literal, kept inline: the speed tier pools float literals otherwise)
+  const watSpeed = sweepArm(compile(src, { wat: true, optimize: { level: 'speed', poolFloats: false } }))
   const watDefault = sweepArm(compile(src, { wat: true, optimize: 2 }))  // pin level 2 (pass off) — JZ_TEST_OPTIMIZE must not flip the gated half of this codegen pin
   // The versioned twin shares the source-named $on, so the local has one comparison
   // definition per loop copy; every definition a comparison is the pass's proof.

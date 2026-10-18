@@ -108,7 +108,8 @@ test('split bindings: an integer assigned after a float is held as one', () => {
   const src = programs['a float, then its integer part, then a shift']
   // the float converts once; whole, the binding is a float and every integer crosses it
   const conversions = (text) => (text.match(/\(word\b/g) || []).length
-  const split = foldWords(wat(src, { optimize: 3 })), whole = foldWords(wat(src, { optimize: { level: 3, splitBindings: false } }))
+  // (foldWords reads a conversion by its literals, kept inline: the speed tier pools float literals otherwise)
+  const split = foldWords(wat(src, { optimize: { level: 3, poolFloats: false } })), whole = foldWords(wat(src, { optimize: { level: 3, splitBindings: false, poolFloats: false } }))
   is(conversions(split), 1, 'one conversion from the float')
   is((split.match(/f64\.convert_i32_[su]/g) || []).length, 1, 'only the export converts back to Number')
   ok(/\(f64\.convert_i32_[su]\s+\(i32\.shr_u/.test(split), 'the final shift stays integer through the export conversion')

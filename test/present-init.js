@@ -69,7 +69,8 @@ export let f = (n, size, reach) => {
 // (A specialized copy of the loop would hold the store a second time: the
 // count is the emitter's, with both source integral copies and IR copies off.)
 test('present init: the fast arm of a versioned swap stores its temp unconverted', () => {
-  is(conversions(wat(swap, { optimize: { level: 3, specializeLoops: false, versionIntegralLoops: false } })), 1, 'the temp converts once, at the store whose key may miss')
+  // (a conversion is read by its NaN literal, kept inline: the speed tier pools float literals otherwise)
+  is(conversions(wat(swap, { optimize: { level: 3, specializeLoops: false, versionIntegralLoops: false, poolFloats: false } })), 1, 'the temp converts once, at the store whose key may miss')
 })
 
 test('present init: swaps inside and past the arrays match the host', () => {

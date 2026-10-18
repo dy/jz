@@ -21,6 +21,7 @@ import {
 } from './index.js'
 import { pureKernel } from './pure-funcs.js'
 import { guardToInt32 } from './to-int32.js'
+import { poolFloatConstants } from './pool-floats.js'
 
 // A runtime helper's cold half, split off so the engine inlines the hot head
 // (module/core.js `__rem`, its long division `__rem_div`): the single-caller
@@ -535,5 +536,7 @@ export function watrTail(module, cfg, {
   foldWrappedWords(optimized)
   for (const n of optimized) narrowFlagLocals(n)
   stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
+  // (last: the float literals every pass above reads as constants)
+  if (cfg.poolFloats === true) time('poolFloatConstants', () => poolFloatConstants(optimized))
   return optimized
 }

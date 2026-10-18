@@ -1202,7 +1202,8 @@ test('interval proof: typed-store assignment values retain the original magnitud
 // its miss arm; the count of those arms is the count of checked reads (loop
 // rotation copies a loop test's read).
 const missArms = (wat) => (wat.match(/\(else \(f64\.const nan\b/g) || []).length
-const NO_GUARDS = { level: 'speed', sentinelGuards: false }
+// (a miss arm is read by its NaN literal, kept inline: the speed tier pools float literals otherwise)
+const NO_GUARDS = { level: 'speed', sentinelGuards: false, poolFloats: false }
 
 // A loop exits where its test failed. The exit state is the head invariant
 // (entry ∪ back edges) refined by the failed test, never the state the body

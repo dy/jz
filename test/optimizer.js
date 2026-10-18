@@ -4053,7 +4053,8 @@ test('nanCanon: a sign-select through a const local adds without its canon', () 
   const js = (n) => { let s = 0; for (let i = 0; i < n; i++) { const h = hs[i], x = xs[i], y = x * 0.5; s += ((h & 1) === 0 ? x : -x) + ((h & 2) === 0 ? y : -y) } return s }
   for (const n of [0, 3, 5, 6]) ok(Object.is(m.sum(n), js(n)), `${n}: ${m.sum(n)} vs ${js(n)}`)
   if (onKernel()) return
-  const canons = (opt) => (compile(SIGN_SELECT_SRC, { optimize: opt, wat: true }).match(/select\s*\(f64\.const nan/g) || []).length
+  // (a canon is read by its NaN literal, kept inline: the speed tier pools float literals otherwise)
+  const canons = (opt) => (compile(SIGN_SELECT_SRC, { optimize: { poolFloats: false, ...opt }, wat: true }).match(/select\s*\(f64\.const nan/g) || []).length
   const on = canons({ level: 'speed' }), off = canons({ level: 'speed', nanCanon: false })
   ok(on <= off - 4, `the four negations' canons are gone (${on} canons, ${off} without the pass)`)
 })
@@ -4065,7 +4066,7 @@ test('nanCanon: a negation whose value escapes keeps its canon', () => {
   const m = jz(src, { optimize: 'speed' }).exports
   for (const x of [1, -0, 0, NaN, Infinity]) ok(Object.is(m.neg(x), -x), `neg(${x})`)
   if (onKernel()) return
-  const canons = (opt) => (compile(src, { optimize: opt, wat: true }).match(/select\s*\(f64\.const nan/g) || []).length
+  const canons = (opt) => (compile(src, { optimize: { poolFloats: false, ...opt }, wat: true }).match(/select\s*\(f64\.const nan/g) || []).length
   is(canons({ level: 'speed' }), canons({ level: 'speed', nanCanon: false }), 'the canon stays')
   ok(canons({ level: 'speed' }) >= 1, 'and there is one')
 })
@@ -4475,6 +4476,32 @@ test('recursion unroll: the size gate reads the narrowed body', () => {
 })
 // (a helper whose one `if` a sweep decided leaves `[';', null]`: the stdlib's iterator
 // callback check under a known callback, in webaudio)
+// The speed tier reads each nonzero float literal from an immutable global: V8 rematerializes a
+// float constant through an integer register at each use (two instructions on x64), a global is
+// one load the engine folds into the arithmetic. Zero stays inline; a literal keeps its bits.
+test('poolFloats: nonzero float literals read immutable globals at speed, bit for bit', () => {
+  const src = `export let f = (n) => {
+    let x = 0.1, y = 0, z = 0, s = 0
+    for (let i = 0; i < n; i++) {
+      const dx = 10 * (y - x), dy = x * (28 - z) - y, dz = x * y - 2.6666666666666665 * z
+      x += 0.002 * dx; y += 0.002 * dy; z += 0.002 * dz
+      s += x * 0.041666666666666664 + y * 0.04166666666666667 + 1 / (z * -0 - 1)
+    }
+    return s + (n < 0 ? NaN : 0)
+  }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', 2, 'size']) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 100]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  if (onKernel()) return
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const body = wat.slice(wat.indexOf('(func $f'))
+  ok(/\(global \$__ff\d+ f64\s+\(f64\.const 28\)/.test(wat), 'a literal the loop reads is an immutable global')
+  is((body.match(/f64\.const (?!0\b|0\))/g) ?? []).length, 0, 'no nonzero float literal left in the function')
+  ok(/f64\.const 0\b/.test(body) || !/f64\.const/.test(body), 'zero stays inline')
+  // two doubles nine printed digits cannot tell apart stay two globals
+  ok(/f64\.const 0\.041666666666666664\)/.test(wat) && /f64\.const 0\.04166666666666667\)/.test(wat), 'neighbouring literals keep their own bits')
+  ok(!/\$__ff/.test(jz.compile(src, { wat: true, optimize: 'size' })), 'the size tier keeps its literals')
+})
+
 test('rec-unroll: an empty statement in a body is no loop', () => {
   const body = [';', null]
   is(unrollRecurrence(body, new Set()), body, 'the body stays as it is')
@@ -5653,7 +5680,8 @@ export let main = (g) => {
   }
   return s
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  // (the miss arm is read by its NaN literal, kept inline: the speed tier pools float literals otherwise)
+  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', poolFloats: false } })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
   // the miss arm folds to CANONICAL nan (toNumF64's checkedNumRead seam via
   // the += accumulator) — the checked arm itself must survive

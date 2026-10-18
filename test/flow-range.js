@@ -8,6 +8,8 @@ import parseWat from 'watr/parse'
 
 // The converted value lives in the loop. A separate guarded counter copy may
 // convert ceil(n) before entering it; that bound is not the clamp's result.
+// (a guard is read by its Infinity literal, kept inline: the speed tier pools float literals otherwise)
+const LITERAL_O3 = { optimize: { level: 3, poolFloats: false } }
 const guards = text => {
   let count = 0
   const visit = (node, inLoop = false) => {
@@ -43,7 +45,7 @@ const check = (src, name) => {
 
 test('flow range: a two-sided clamp retires the ToInt32 guard', () => {
   const src = program('if (v > 32767.0) v = 32767.0\n    else if (v < -32768.0) v = -32768.0')
-  const text = wat(src, { optimize: 3 })
+  const text = wat(src, LITERAL_O3)
   is(guards(text), 0, 'no ±∞ guard remains')
   ok(text.includes('(i64.trunc_sat_f64_s'), 'the conversion is the bare i64 wrap')
   check(src, 'if/else clamp')
@@ -51,25 +53,25 @@ test('flow range: a two-sided clamp retires the ToInt32 guard', () => {
 
 test('flow range: two guarded statements clamp as well as one if/else', () => {
   const src = program('if (v > 32767.0) v = 32767.0\n    if (v < -32768.0) v = -32768.0')
-  is(guards(wat(src, { optimize: 3 })), 0, 'two statements bound both sides')
+  is(guards(wat(src, LITERAL_O3)), 0, 'two statements bound both sides')
   check(src, 'two-statement clamp')
 })
 
 test('flow range: a ternary clamp is bounded through its select', () => {
   const src = program('v = v > 32767.0 ? 32767.0 : v < -32768.0 ? -32768.0 : v')
-  is(guards(wat(src, { optimize: 3 })), 0, 'the select arms carry the comparison facts')
+  is(guards(wat(src, LITERAL_O3)), 0, 'the select arms carry the comparison facts')
   check(src, 'ternary clamp')
 })
 
 test('flow range: a one-sided clamp keeps the guard', () => {
   const src = program('if (v > 32767.0) v = 32767.0')
-  ok(guards(wat(src, { optimize: 3 })) > 0, 'unbounded below: the guard stays')
+  ok(guards(wat(src, LITERAL_O3)) > 0, 'unbounded below: the guard stays')
   check(src, 'one-sided clamp')
 })
 
 test('flow range: a later write cancels the clamp', () => {
   const src = program('if (v > 32767.0) v = 32767.0\n    else if (v < -32768.0) v = -32768.0\n    v = s[i]')
-  ok(guards(wat(src, { optimize: 3 })) > 0, 'the read sees the unbounded write')
+  ok(guards(wat(src, LITERAL_O3)) > 0, 'the read sees the unbounded write')
   check(src, 'overwritten clamp')
 })
 
@@ -83,7 +85,7 @@ test('flow range: a fact does not survive a loop back-edge', () => {
     }
     return h
   }`
-  ok(guards(wat(src, { optimize: 3 })) > 0, 'the head value comes from the previous iteration')
+  ok(guards(wat(src, LITERAL_O3)) > 0, 'the head value comes from the previous iteration')
   check(src, 'loop-carried value')
 })
 
@@ -97,7 +99,7 @@ test('flow range: the arm that writes a local after its test gets no fact', () =
     }
     return h
   }`
-  ok(guards(wat(src, { optimize: 3 })) > 0, 'the rewritten local is bounded above only')
+  ok(guards(wat(src, LITERAL_O3)) > 0, 'the rewritten local is bounded above only')
   check(src, 'rewritten arm')
 })
 

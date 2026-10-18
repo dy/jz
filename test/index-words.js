@@ -58,7 +58,8 @@ test('index words: ToInt32 answers at every edge with its 32-bit test first', ()
   const src = `export let t = (x) => x | 0
     export let m = (x) => (x * 1.5) | 0
     export let pack = (r, g, b) => (255 << 24) | ((b | 0) << 16) | ((g | 0) << 8) | (r | 0)`
-  const guarded = wat(src, { optimize: 'speed' })
+  // (the test and the add are read by their literals, kept inline: the speed tier pools float literals otherwise)
+  const guarded = wat(src, { optimize: { level: 'speed', poolFloats: false } })
   ok(/f64\.abs[\s\S]*?2251799813685248[\s\S]*?6755399441055744/.test(guarded), 'the speed tier tests the magnitude, then adds')
   ok(!/f64\.abs/.test(wat(src, { optimize: 'size' })), 'the size tier keeps the single exact form')
   // (`|0` saturates past 2^63 by design, src/ir/numeric.js toI32: the edges below it)

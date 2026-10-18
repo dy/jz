@@ -8,7 +8,9 @@ import { agree, funcWat, wat } from './util.js'
 import parseWat from 'watr/parse'
 
 // How many times a literal only the loop body holds is emitted: copies × loop versions.
-const copies = (src, name, literal) => (funcWat(wat(src, { optimize: 3 }), name).match(new RegExp(`f64\\.const ${literal.replace('.', '\\.')}\\b`, 'g')) || []).length
+// (a copy is read by its literal, kept inline: the speed tier pools float literals otherwise)
+const LITERAL_O3 = { optimize: { level: 3, poolFloats: false } }
+const copies = (src, name, literal) => (funcWat(wat(src, LITERAL_O3), name).match(new RegExp(`f64\\.const ${literal.replace('.', '\\.')}\\b`, 'g')) || []).length
 
 // A cascade whose stage loop is addressing over the counter: eight copies of
 // the folded body fit the budget, the rolled body does not.
@@ -71,7 +73,7 @@ test('unroll cost: a large body the counter barely touches stays rolled', () => 
     if (n[0] === 'f64.const' && Number(n[1]) === 0.015625) depths.push(depth)
     for (const child of n) visit(child, depth)
   }
-  visit(parseWat(funcWat(wat(heavy, { optimize: 3 }), 'f')))
+  visit(parseWat(funcWat(wat(heavy, LITERAL_O3), 'f')))
   ok(depths.length > 0 && depths.every(depth => depth >= 2), 'every stage body stays in its inner loop')
   for (const optimize of levels(0, 2, 3, 'size')) agree(heavy, 'f', [16], { optimize }, `heavy at ${optimize}`)
 })

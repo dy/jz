@@ -55,7 +55,9 @@ export let run = (seed, mode) => {
   return h + '/' + hv + '/' + z[0]
 }`
 
-const GUARDS_OFF = { level: 'speed', sentinelGuards: false }
+// (a miss arm is read by its NaN literal, kept inline: the speed tier pools float literals otherwise)
+const LITERALS = { level: 'speed', poolFloats: false }
+const GUARDS_OFF = { ...LITERALS, sentinelGuards: false }
 /** Checked element reads: each yields undefined (or NaN, consumed by arithmetic) on its miss arm. */
 const missArms = (wat) => (wat.match(/\(else \(f64\.const nan\b/g) || []).length
 const kernelOf = (wat) => funcWat(wat, 'edt1d') || funcWat(wat, 'run') || funcWat(wat, 'run$exp')
@@ -92,7 +94,7 @@ test('sentinel guard: the lower envelope matches the host with and without its s
 
 test('sentinel guard: the pop, the scan and the read after the scan run unchecked on the fast path', () => {
   if (onKernel()) return
-  const guarded = kernelOf(compile(ENVELOPE, { optimize: 'speed', wat: true }))
+  const guarded = kernelOf(compile(ENVELOPE, { optimize: LITERALS, wat: true }))
   const plain = kernelOf(compile(ENVELOPE, { optimize: GUARDS_OFF, wat: true }))
   // the pop guard `k >= 1` (an exit branches on its negation, `k < 1`), the scan
   // guard `k <= N - 1`, the suffix guard after it
@@ -293,5 +295,5 @@ test('sentinel guard: a counted loop and a computed index keep loop-entry versio
         return s }`,
   }
   for (const [name, src] of Object.entries(cases))
-    is(compile(src, { optimize: 'speed', wat: true }), compile(src, { optimize: GUARDS_OFF, wat: true }), name)
+    is(compile(src, { optimize: LITERALS, wat: true }), compile(src, { optimize: GUARDS_OFF, wat: true }), name)
 })

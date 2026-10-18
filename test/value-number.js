@@ -102,8 +102,10 @@ test('value numbering: a pure user function called twice with one argument runs 
 const spoly = (a) => { const s = a < 0 ? -1 : 1, av = a < 0 ? -a : a; return s * poly(av) }
 export let q = (x) => (1 + 2 * spoly(x / 3)) / (1 + 3 * spoly(x / 3))`
   // One evaluation of the polynomial: a single call, or a single inlined copy once watr sees one caller.
+  // (a copy is counted by its literal, so the literals stay inline: the speed tier pools them otherwise)
   const evaluations = (w) => calls(w, 'spoly') + (w.match(/f64\.const 30\.5\b/g) || []).length
-  const on = funcWat(wat(src, ON), 'q'), off = funcWat(wat(src, OFF), 'q')
+  const inline = (cfg) => ({ optimize: { level: 'speed', ...(typeof cfg.optimize === 'object' ? cfg.optimize : {}), poolFloats: false } })
+  const on = funcWat(wat(src, inline(ON)), 'q'), off = funcWat(wat(src, inline(OFF)), 'q')
   ok(evaluations(off) >= 1 && evaluations(off) <= 2, `off ${evaluations(off)}`)
   is(evaluations(on), 1)
   for (const x of [-4.5, 0.25, 9]) ok(Object.is(run(src, ON).q(x), run(src, OFF).q(x)), `q(${x})`)

@@ -155,7 +155,7 @@ export const TUNING_KEYS = [
   'compactSlack',             // bytes a loop's kept memory grows past twice the last walk before it compacts (module/core/stub-log.js)
   'wordTruncation',           // how a truncation keeps its word: 'wide' | 'narrow' | 'add' (optimize/int-narrow.js)
   'coldTrap',                 // diagnostic: a versioned loop's arm as written throws its version's number (plan/integral-loops.js)
-  'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset',
+  'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats',
   'leanRuntime',              // size tier: runtime walks link their simplest correct body (no hot/cold
                               // split, no chunked scan, no per-site hash fast arms) — the -Os profile
                               // of the string equality/hash family
