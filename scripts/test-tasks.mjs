@@ -1,7 +1,7 @@
 // Bounded subprocess runner. Logs go to disk, not an ever-growing parent string.
 // A timeout or cancellation kills the process group, including nested builders.
 import { spawn } from 'node:child_process'
-import { openSync, closeSync, readSync, fstatSync, mkdtempSync } from 'node:fs'
+import { openSync, closeSync, readSync, fstatSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -63,6 +63,9 @@ export async function runTasks(tasks, {
       const result = { name: task.name, code: error || timedOut || signal || cancelled ? 1 : code ?? 1, signal, error, timedOut, log: path, ms: performance.now() - started }
       console.log(`${result.code ? 'FAIL' : 'PASS'} ${task.name} ${(result.ms / 1000).toFixed(1)}s${timedOut ? ' (timeout)' : ''}${error ? ': ' + error : ''}`)
       if (result.code) {
+        // the failed assertions by name, wherever they fell in the log (the tail only has the totals)
+        const failed = readFileSync(path, 'utf8').match(/^.*(\u2717|not ok \d).*$/gmu)
+        if (failed) console.error(failed.slice(0, 40).join('\n'))
         const fd = openSync(path, 'r')
         try {
           const n = Math.min(4096, fstatSync(fd).size), tail = Buffer.alloc(n)
