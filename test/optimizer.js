@@ -4502,6 +4502,40 @@ test('poolFloats: nonzero float literals read immutable globals at speed, bit fo
   ok(!/\$__ff/.test(jz.compile(src, { wat: true, optimize: 'size' })), 'the size tier keeps its literals')
 })
 
+// x64 V8 branches around a float select; a condition the data decides (a hash bit picking a
+// gradient's sign, a running minimum) mispredicts half the time. The speed tier picks between
+// the operands' bits instead, a conditional move; a clamp against a literal keeps its select.
+test('selectBits: a float select the data decides picks the operands\' bits at speed', () => {
+  const src = `export let f = (n) => {
+    const h = new Int32Array(64), v = new Float64Array(64)
+    let s = 0x9e3779b9 | 0
+    for (let i = 0; i < 64; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; h[i] = s; v[i] = (s & 1023) / 64 - 8 }
+    v[5] = -0; v[9] = NaN
+    let acc = 0, best = Infinity
+    for (let k = 0; k < n; k++) {
+      const i = k & 63, x = v[i], y = v[(i + 7) & 63]
+      const u = (h[i] & 1) === 0 ? x : -x
+      const w = (h[i] & 2) === 0 ? y : -y
+      const d = u * u + w * w
+      best = d < best ? d : best
+      const c = x > 1 ? 1 : x
+      acc += (u === u ? u : 0) + (w === w ? w : 0) + (c === c ? c : 0) + 1 / (u === 0 ? u : 1)
+    }
+    return acc + best
+  }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', 2]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 6, 64, 1000]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  if (onKernel()) return
+  const ast = parseWat(jz.compile(src, { wat: true, optimize: 'speed' }))
+  let bits = 0, plain = 0
+  walk(ast, n => {
+    if (n[0] === 'f64.reinterpret_i64' && Array.isArray(n[1]) && n[1][0] === 'select') bits++
+    else if (n[0] === 'select' && Array.isArray(n[n.length - 1]) && n[n.length - 1][0] === 'f64.gt') plain++
+  })
+  ok(bits >= 3, `the sign picks and the running minimum select bits (${bits})`)
+  ok(plain >= 1, 'the clamp against a literal keeps its float select')
+})
+
 test('rec-unroll: an empty statement in a body is no loop', () => {
   const body = [';', null]
   is(unrollRecurrence(body, new Set()), body, 'the body stays as it is')
