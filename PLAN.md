@@ -6,6 +6,47 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Release status, October 18
+
+Steps 2 to 5 of the speed plan are on main (word quotient, static locals,
+iteration release, watr 5.11.10 and the copies it retires), with the guard
+lift over a strided counter, guard conjuncts its operands decide, and the
+load cache across distinct fresh arrays. test262 passes; the core matrix
+fails only a cursor-guard test that read a temporary by name (fixed after).
+
+A fresh paired reference on the CI runner (39323bb1, `--contenders=2`, x64)
+reads:
+
+- **Size.** Every comparable case is smaller than AssemblyScript (18/18,
+  geomean 0.759).
+- **Wasm rivals.** Red: fft 1.118 (rust-wasm), bezfit 1.070 (rust-wasm),
+  shapes 1.075 (as), strbuild 1.069 (zig-wasm), biquad 1.058 (zig-wasm).
+  Ties: sdf 1.027, trace 1.030 (rust-wasm), noise 1.012 (as), vm 1.050
+  (c-wasm).
+- **V8 family.** watr 2.513 (v8), noise 1.110, jessie 1.080 (deno); ties
+  bezfit, delayline, lorenz, crc32.
+- **bun/jsc.** json 1.846, watr 2.538, jessie 1.586 (jsc), dispatch 1.542
+  (bun, whose JIT inlines the function table there; the probe runner's bun read
+  0.40), noise 1.099; ties bezfit, slices.
+- **Memory.** Peak RSS against V8: watr 1.918, webaudio 1.468.
+- **Native lane.** shapes through wasm2c takes 7.28 times jz's wasm time.
+- **Coverage.** Porffor is contested on 46 of 66 cases (floor 47) under two
+  contenders; the four library-idiom cases had no reference checksum (pinned
+  since: native C, V8 and jz agree), and they trail clang's wasm locally:
+  sosfilter 1.90, movavg 1.83, upfirdn 1.62, pcmconvert 1.38.
+
+The parser cases (watr, jessie, json) spread their time over dynamic property
+reads, array stores and allocation; no single site closes them. The
+library-idiom cases read records through array elements and keep plain arrays
+as state, each store canonicalizing its NaN.
+
+Self-compile: the recursive jz x jz compile still exhausts 4 GiB after
+`analyzeClosures`, every large phase declining its checkpoint as unsafe. The
+hosted suite fails two: `array holes: raw copies` runs out of memory compiling
+at level 2 (the JS-hosted compile of those fifteen lines takes 8 s and emits
+75 KB, against 0.3 s and 26 KB at level 1, on bd7d0506 as now), and the guide's
+spawned run, which passes locally.
+
 ## Release status, October 16
 
 CI on 77554488 was red in four places; each is closed at its root here and
