@@ -295,7 +295,8 @@ test('index words: a parameter every call passes an integral number keys typed a
       is(gotF.g(x, C), hostF.g(x, C), `O${optimize} g(${x}, ${C})`)
     }
   }
-  const word = /6755399441055744/
-  ok(!word.test(funcWat(wat(lib, { optimize: 'speed' }), 'corner')), 'the integral keys take one truncation')
-  ok(word.test(funcWat(wat(frac, { optimize: 'speed' }), 'corner')), 'a call passing a fraction keeps the full key test')
+  // (the full key test's magic constant inline, not read from the speed tier's float pool)
+  const word = /6755399441055744/, speed = { optimize: { level: 'speed', poolFloats: false } }
+  ok(!word.test(funcWat(wat(lib, speed), 'corner')), 'the integral keys take one truncation')
+  ok(word.test(funcWat(wat(frac, speed), 'corner')), 'a call passing a fraction keeps the full key test')
 })
