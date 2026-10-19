@@ -215,9 +215,19 @@ export function resolveOptimize(opt) {
     for (const k of Object.keys(opt)) {
       if (PASS_NAMES.includes(k)) continue
       if (!TUNING_KEYS.includes(k)) {
-        const dist = (a, b) => { if (Math.abs(a.length - b.length) > 2) return 9
-          let d = 0; for (let i = 0; i < Math.max(a.length, b.length); i++) if (a[i] !== b[i]) d++
-          return d }
+        // edit distance: a dropped, added or changed letter costs one (a dropped letter
+        // compared position by position shifted every later one)
+        const dist = (a, b) => {
+          let prev = []
+          for (let j = 0; j <= b.length; j++) prev.push(j)
+          for (let i = 1; i <= a.length; i++) {
+            const cur = [i]
+            for (let j = 1; j <= b.length; j++)
+              cur.push(Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)))
+            prev = cur
+          }
+          return prev[b.length]
+        }
         const all = [...PASS_NAMES, ...TUNING_KEYS]
         const near = all.reduce((m, n) => dist(k, n) < dist(k, m) ? n : m, all[0])
         throw new Error(`Unknown optimize key '${k}'${dist(k, near) <= 3 ? ` — did you mean '${near}'?` : ''} (registered passes: PASS_NAMES, tuning: TUNING_KEYS in src/optimize/index.js)`)
