@@ -22,6 +22,7 @@ import { NUMBER } from '../summary/kind.js'
 const INT_BIT_OPS = new Set(['|', '&', '^', '~', '<<', '>>', '>>>'])
 const INT_CLOSED_OPS = new Set(['+', '-', '*'])  // `%` handled separately — int only for nonzero divisor
 const INT_MATH_FNS = new Set(['imul', 'clz32', 'floor', 'ceil', 'round', 'trunc'])
+const INT_PICK_FNS = new Set(['min', 'max', 'abs'])
 
 // `capturedNames`, when given, additionally folds in defs found INSIDE nested
 // arrow bodies — but ONLY for names in that set, and only when found there;
@@ -155,6 +156,8 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
     if (op === '/' && exactDivs.has(expr)) return levelOf(expr[1]) && levelOf(expr[2]) ? 1 : 0
     if (op === 'u-') return levelOf(expr[1]) ? 1 : 0 // -(0) is -0; -(-2^31) exceeds int32
     if (op === 'u+') return levelOf(expr[1])         // ToNumber identity on an int
+    // an assignment's value is the value assigned (a shared subexpression's `cse = …` in place)
+    if (op === '=' && typeof expr[1] === 'string' && expr.length === 3) return levelOf(expr[2])
     // prepare's `++o.k` / `o.k++` step (`o.k = +1 o.k`): the sum with 1, integral-closed, range-open
     if (op === '+1' || op === '-1') return levelOf(expr[1]) ? 1 : 0
     if (op === '?:') return Math.min(levelOf(expr[2]), levelOf(expr[3]))
@@ -164,6 +167,12 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
       const fn = typeof c === 'string' && c.startsWith('math.') ? c.slice(5)
         : Array.isArray(c) && c[0] === '.' && c[1] === 'Math' ? c[2] : null
       if (fn && INT_MATH_FNS.has(fn)) return INT_MATH_FNS_I32.has(fn) ? 2 : 1
+      // the least, the greatest or the magnitude of integral operands is one of them (or NaN):
+      // integral, range-open (`Math.max(0, Math.min(8, Math.floor(v) - 1))`, a clamped cell)
+      if (fn && INT_PICK_FNS.has(fn)) {
+        const args = expr[2] == null ? [] : Array.isArray(expr[2]) && expr[2][0] === ',' ? expr[2].slice(1) : [expr[2]]
+        return args.length > 0 && args.every(a => levelOf(a) > 0) ? 1 : 0
+      }
     }
     return 0
   }
@@ -185,6 +194,9 @@ const _slotLevelAdapter = (slotIntOf) => slotIntOf
  *  `slotLevelOf(obj, prop)` → 0|1|2|null resolves `.prop` reads.
  *  `readPresent` supplies exact typed-read nodes whose absence is ruled out;
  *  their payloads ground the same lattice without bounding subsequent sums. */
+/** The level of one expression under a level map `intLevelMap` returned (a call's argument in its caller). */
+export const intLevelOf = (expr, levels, readPresent) => makeIntLevelExpr(levels, null, readPresent)(expr)
+
 export function intLevelMap(body, capturedNames, slotLevelOf, readPresent, params = ctx.func.current?.params) {
   const defs = takeScratchMap()
   try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params) } finally { releaseScratchMap(defs) }
@@ -212,6 +224,9 @@ function levelsOfDefs(defs, slotLevelOf, readPresent, params) {
     // `p += 1` into `const next = p + 1`; without this entry, next is level 0
     // and misses the level-1 magnitude check that keeps its storage lossless.
     if (p.type === 'i32' && p.ptrKind == null) levels.set(p.name, 2)
+    // every call passes an integral Number (compile/narrow/int-params.js): the entry
+    // value is integral, the body's own writes meet it
+    else if (p.intLevel) levels.set(p.name, p.intLevel)
     else if (levels.has(p.name)) levels.set(p.name, 0)
   }
   const levelOf = makeIntLevelExpr(levels, slotLevelOf, readPresent)

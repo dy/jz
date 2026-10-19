@@ -255,3 +255,47 @@ test('index words: clamped neighbours of a row-major cell read the elements JS n
     }
   }
 })
+
+// A key made of parameters every call passes an integral Number (a floor, a
+// remainder of one by a literal, a clamp of one by `Math.min`/`Math.max`, an
+// integer element or its miss) is integral in the helper: one truncation and a
+// NaN test where a key of unknown fraction runs the full test. One call
+// passing a fraction keeps the full test, and every key answers what JS names.
+test('index words: a parameter every call passes an integral number keys typed arrays as one', () => {
+  const lib = `const tbl = new Uint8Array(400), offs = new Int32Array(41)
+    for (let i = 0; i < 400; i++) tbl[i] = (i * 7) % 13
+    for (let i = 0; i < 41; i++) offs[i] = i * 9
+    const cell = (h, v, C) => {
+      const n = tbl[h * 9 + v]
+      if (C <= 0) return n
+      const c0 = Math.floor(C / 2 - 1)
+      if (c0 < 0) return tbl[offs[h] + v] * C
+      if (c0 >= n) return tbl[(offs[h] + n) * 2 % 400] + C
+      return tbl[(offs[h] + c0) * 2] + tbl[(offs[h] + c0) * 2 + 1] * (C - c0)
+    }
+    const corner = (h, v, C, alt) => {
+      const k = tbl[h * 9 + v] ? h : tbl[alt * 9 + v] ? alt : -1
+      if (k < 0) return 0.5
+      const a = cell(k, v, C), b = cell(k, Math.min(8, v + 1), C * 0.5)
+      return a * 3 + b
+    }
+    export let f = (x, C) => {
+      const h0 = ((Math.floor(x) % 40) + 40) % 40, h1 = (h0 + 1) % 40
+      const v0 = Math.max(0, Math.min(8, Math.floor(x / 5) - 1)), v1 = Math.min(8, v0 + 1)
+      return corner(h0, v0, C, h1) + corner(h1, v0, C, h0) + corner(h0, v1, C, h1) + corner(h1, v1, C, h0)
+    }`
+  const frac = lib + `
+    export let g = (x, C) => corner(x / 3, 1, C, 2) + corner(2, 1, C, x)`
+  const xs = [-1e9, -41, -3.5, -0, 0, 0.5, 1, 2.75, 5, 9, 39.999, 40, 77.5, 360, 2 ** 31, 2 ** 53, 1e300, Infinity, -Infinity, NaN]
+  for (const optimize of levels(0, 2, 'speed')) {
+    const got = jz(lib, { optimize }).exports, host = oracle(lib)
+    const gotF = jz(frac, { optimize }).exports, hostF = oracle(frac)
+    for (const x of xs) for (const C of [-1, 0, 1.5, 3, 7.25, 30, NaN]) {
+      is(got.f(x, C), host.f(x, C), `O${optimize} f(${x}, ${C})`)
+      is(gotF.g(x, C), hostF.g(x, C), `O${optimize} g(${x}, ${C})`)
+    }
+  }
+  const word = /6755399441055744/
+  ok(!word.test(funcWat(wat(lib, { optimize: 'speed' }), 'corner')), 'the integral keys take one truncation')
+  ok(word.test(funcWat(wat(frac, { optimize: 'speed' }), 'corner')), 'a call passing a fraction keeps the full key test')
+})

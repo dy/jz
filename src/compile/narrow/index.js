@@ -37,6 +37,7 @@ import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength
 import { proveElementBounds } from './element-bounds.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { isExported } from '../func-exports.js'
+import { inferIntegralParams } from './int-params.js'
 
 const NO_PRESENT_READS = new Set()
 
@@ -677,6 +678,8 @@ export default function narrowSignatures(programFacts, ast) {
   // emission sees is built anew (compile/index.js summarizeProgram).
   if (substituteIntConstParams(paramReps, addressTaken)) getFactStore().revision++
   proveElementBounds(programFacts)
+  // A parameter every direct call passes an integral Number keys typed arrays as one.
+  if (intervalRanges) inferIntegralParams(callSites, callerCtx, addressTaken)
 
   if (DBG_INVARIANTS) assertValKindConsistent(paramReps)
 }

@@ -316,5 +316,15 @@ export const wholeOrMissKey = (e) => {
   if (!Array.isArray(e) || e[0] == null) return wholeKey(e)
   if (e[0] === 'postfix') return wholeOrMissKey(e[1])
   if ((e[0] === '++' || e[0] === '--') && e.length === 2) return wholeOrMissKey(e[1])
-  return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeOrMissKey(e[1]) && wholeOrMissKey(e[2])
+  return WHOLE_OPS.has(e[0]) && e.length === 3 && missOperand(e[1]) && missOperand(e[2])
+}
+// An operand of a key's sum or product: what wholeOrMissKey admits, or an element of
+// an integer typed array read in place (`(offs[c] + k) * 2`), its integer or the miss.
+// A key that is one bare element keeps the read's own word path.
+const missOperand = (e) => {
+  if (Array.isArray(e) && e[0] === '[]' && e.length === 3 && typeof e[1] === 'string') {
+    const aux = typedElemAux(typedStorageNameCtor(ctx, e[1]))
+    return aux != null && (aux & 7) <= 5 && !(aux & 32)
+  }
+  return wholeOrMissKey(e)
 }
