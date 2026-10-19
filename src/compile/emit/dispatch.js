@@ -184,7 +184,9 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
   // An x past the i32 range names no element either: with |k| < 2^31 the sum
   // could come back only for an array of 2^31 elements.
   if (!whole && !missable && Array.isArray(index) && (index[0] === '+' || index[0] === '-') && index.length === 3) {
-    const [, l, r] = index, i32 = e => exprType(e, ctx.func.locals) === 'i32' || Array.isArray(e) && e[0] == null && (e[1] | 0) === e[1]
+    // (an element read typed i32 may miss: its NaN is no integer, the key's own test must see it)
+    const [, l, r] = index, i32 = e => exprType(e, ctx.func.locals) === 'i32' && !(Array.isArray(e) && (e[0] === '[]' || e[0] === '?.[]')) ||
+      Array.isArray(e) && e[0] == null && (e[1] | 0) === e[1]
     const x = i32(r) ? l : i32(l) && index[0] === '+' ? r : null
     if (typeof x === 'string') {
       const t = temp('ix'), ok = tempI32('ixv'), xs = asF64(emit(x)), get = ['local.get', `$${t}`]

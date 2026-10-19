@@ -300,3 +300,19 @@ test('index words: a parameter every call passes an integral number keys typed a
   ok(!word.test(funcWat(wat(lib, speed), 'corner')), 'the integral keys take one truncation')
   ok(word.test(funcWat(wat(frac, speed), 'corner')), 'a call passing a fraction keeps the full key test')
 })
+
+test('index words: a typed element in a key sum may miss, and its NaN keys no element', () => {
+  // (`offs[h] + v` with `v` an integer: the key is an integer only where `offs[h]` hits;
+  // a fractional `h` misses, NaN plus `v` names no element, not element 0)
+  const src = `const tbl = new Uint8Array(400), offs = new Int32Array(41)
+    for (let i = 0; i < 400; i++) tbl[i] = (i * 7) % 13 + 1
+    for (let i = 0; i < 41; i++) offs[i] = i * 9
+    const read = (h, v, C) => { const c0 = Math.floor(C / 2 - 1); if (c0 < 0) return tbl[offs[h] + v] * C; return 0 }
+    const pick = (h, v, C) => read(h, v, C) * 3 + read(h, Math.min(8, v + 1), C * 0.5)
+    export let g = (x, C) => pick(x / 3, 1, C)`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 'speed')) {
+    const { g } = jz(src, { optimize }).exports
+    for (const [x, C] of [[1, 1.5], [3, 1.5], [6, 1], [2, 0.5], [120, 1.5]]) ok(Object.is(g(x, C), host.g(x, C)), `O${optimize} g(${x}, ${C}): ${g(x, C)} for ${host.g(x, C)}`)
+  }
+})
