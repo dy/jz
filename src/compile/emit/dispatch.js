@@ -548,11 +548,11 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
     // BOOL renders through emitBoolStr(node); every other leaf emits its value once here.
     const v = vt === VAL.BOOL ? null : emit(n)
     // i32-PROVEN leaf (exactly toStrI64's __i32_to_str class): keep the raw value,
-    // not a temp string — __ilen joins the total and __itoa_s renders the digits
-    // directly at the cursor. Drops the per-number __i32_to_str (alloc+itoa+mkstr),
-    // __str_length and __str_copy — the whole temp-string round trip.
+    // not a temp string — __ilen joins the total and __itoa_sn renders the digits
+    // directly at the cursor in that width. Drops the per-number __i32_to_str
+    // (alloc+itoa+mkstr), __str_length and __str_copy — the whole temp-string round trip.
     if ((vt === VAL.NUMBER || vt == null) && v.type === 'i32' && v.ptrKind == null) {
-      inc('__ilen', '__itoa_s')
+      inc('__ilen', '__itoa_sn')
       nT[k] = tempI32('cn')
       seq.push(['local.set', `$${nT[k]}`, v])
       seq.push(['local.set', `$${lT[k]}`, ['call', '$__ilen', ['local.get', `$${nT[k]}`]]])
@@ -600,11 +600,10 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
       return
     }
     if (nT[k] != null) {
-      // digits render at the cursor; the returned byte count (== $lT) advances it
-      seq.push(k < leaves.length - 1
-        ? ['local.set', `$${curT}`, ['i32.add',
-            ['i32.shl', ['call', '$__itoa_s', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`]], ['i32.const', 1]], ['local.get', `$${curT}`]]]
-        : ['drop', ['call', '$__itoa_s', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`]]])
+      // digits render at the cursor in the width $lT took; that width advances it
+      seq.push(['call', '$__itoa_sn', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])
+      if (k < leaves.length - 1)
+        seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.shl', ['local.get', `$${lT[k]}`], ['i32.const', 1]]]])
       return
     }
     seq.push(['call', '$__str_copy', ['local.get', `$${bT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])

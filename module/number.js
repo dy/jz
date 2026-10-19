@@ -379,6 +379,8 @@ const DEC_TO_F64_WAT = `(func $__dec_to_f64
         (local.get $mant52))))`
 
 export default (ctx) => {
+  // The size tier renders a digit a step inside __itoa, as it always has.
+  const lean = !!ctx.transform.optimize?.leanRuntime
   deps({
     __mkstr: ['__alloc'],
     __mkstr_scratch: ['__mkstr', '__alloc', '__mkptr'],
@@ -402,6 +404,8 @@ export default (ctx) => {
     __ryu_pow5div: [],
     __i32_to_str: ['__itoa_s', '__mkstr_scratch'],
     __itoa_s: ['__itoa'],
+    __itoa: lean ? [] : ['__utoa_n'],
+    __itoa_sn: lean ? ['__itoa'] : ['__utoa_n'],
     __ilen: [],
     __radix_str: ['__mkstr_scratch'],
     __num_radix: ['__ftoa', '__mkstr_scratch'],
@@ -450,8 +454,32 @@ export default (ctx) => {
       (then (local.set $r (f64.mul (local.get $r) (f64.const 1e256)))))
     (local.get $r))`
 
+  // __utoa_n(val: u32, buf: i32, len: i32): the `len` decimal UTF-16 digits of val
+  // at buf, written backward from buf + 2·len two digits a step: one division by 100
+  // on the value's chain where a digit at a time takes one by 10 per digit, the
+  // pair's tens `r * 205 >> 11` (exact below 1029) and both units in one 32-bit
+  // store (two UTF-16 units). The size tier keeps the digit-a-step loop inside
+  // __itoa and does not link this.
+  const digitPair = r => `(i32.or
+          (i32.add (local.tee $t (i32.shr_u (i32.mul ${r} (i32.const 205)) (i32.const 11))) (i32.const 48))
+          (i32.shl (i32.add (i32.sub ${r} (i32.mul (local.get $t) (i32.const 10))) (i32.const 48)) (i32.const 16)))`
+  ctx.core.stdlib['__utoa_n'] = `(func $__utoa_n (param $val i32) (param $buf i32) (param $len i32)
+    (local $end i32) (local $q i32) (local $r i32) (local $t i32)
+    (local.set $end (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))))
+    (block $d (loop $l
+      (br_if $d (i32.lt_u (local.get $val) (i32.const 100)))
+      (local.set $q (i32.div_u (local.get $val) (i32.const 100)))
+      (local.set $r (i32.sub (local.get $val) (i32.mul (local.get $q) (i32.const 100))))
+      (i32.store (local.tee $end (i32.sub (local.get $end) (i32.const 4))) ${digitPair('(local.get $r)')})
+      (local.set $val (local.get $q))
+      (br $l)))
+    (if (i32.ge_u (local.get $val) (i32.const 10))
+      (then (i32.store (i32.sub (local.get $end) (i32.const 4)) ${digitPair('(local.get $val)')}))
+      (else (i32.store16 (i32.sub (local.get $end) (i32.const 2)) (i32.add (local.get $val) (i32.const 48))))))`
+
   // Write decimal UTF-16 digits directly into their final positions.
-  ctx.core.stdlib['__itoa'] = `(func $__itoa (param $val i32) (param $buf i32) (result i32)
+  ctx.core.stdlib['__itoa'] = lean
+    ? `(func $__itoa (param $val i32) (param $buf i32) (result i32)
     (local $len i32) (local $end i32)
     (local.set $len ${uintDigitsWat('(local.get $val)')})
     (local.set $end (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))))
@@ -461,6 +489,31 @@ export default (ctx) => {
       (local.set $val (i32.div_u (local.get $val) (i32.const 10)))
       (br_if $l (local.get $val)))
     (local.get $len))`
+    : `(func $__itoa (param $val i32) (param $buf i32) (result i32)
+    (local $len i32)
+    (local.set $len ${uintDigitsWat('(local.get $val)')})
+    (call $__utoa_n (local.get $val) (local.get $buf) (local.get $len))
+    (local.get $len))`
+
+  // __itoa_sn(val: i32, buf: i32, len: i32): the signed render at buf whose width
+  // `__ilen` already took (the fused concat sizes before it writes), so the digits
+  // need no second count; each sign renders through its own call (the size tier
+  // lets __itoa count them again rather than link a second writer).
+  ctx.core.stdlib['__itoa_sn'] = lean
+    ? `(func $__itoa_sn (param $val i32) (param $buf i32) (param $len i32)
+    (if (i32.lt_s (local.get $val) (i32.const 0))
+      (then
+        (i32.store16 (local.get $buf) (i32.const 45))   ;; '-'
+        (local.set $val (i32.sub (i32.const 0) (local.get $val)))
+        (local.set $buf (i32.add (local.get $buf) (i32.const 2)))))
+    (drop (call $__itoa (local.get $val) (local.get $buf))))`
+    : `(func $__itoa_sn (param $val i32) (param $buf i32) (param $len i32)
+    (if (i32.lt_s (local.get $val) (i32.const 0))
+      (then
+        (i32.store16 (local.get $buf) (i32.const 45))   ;; '-'
+        (call $__utoa_n (i32.sub (i32.const 0) (local.get $val)) (i32.add (local.get $buf) (i32.const 2)) (i32.sub (local.get $len) (i32.const 1)))
+        (return)))
+    (call $__utoa_n (local.get $val) (local.get $buf) (local.get $len)))`
 
   // Signed decimal width: sign plus the unsigned magnitude's digit count.
   // Negation leaves INT_MIN's magnitude in its unsigned i32 bit pattern.

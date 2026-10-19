@@ -117,29 +117,39 @@ test('number formatting: scratch reuse preserves retained strings and error reco
 // === toString ===
 
 test('integer formatting: exact UTF-16 writes at decimal and memory boundaries', () => {
-  const text = wat(`export let f = (i, v) => 'x' + (i|0) + ',' + (v|0) + '!'`,
-    { optimize: { level: 2, watr: false } })
-  // Isolate the actual helpers so a wrong width cannot hide in spare heap space.
-  const names = ['__itoa', '__itoa_s', '__ilen']
-  const { memory, __itoa, __itoa_s, __ilen } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(`(module
-    (memory (export "memory") 1)
-    ${names.map(name => funcWat(text, name) + `(export "${name}" (func $${name}))`).join('\n')}
-  )`))).exports
-  const units = new Uint16Array(memory.buffer)
-  const edges = [0, 0, 1, 2147483647, 2147483648, 4294967295]
-  for (let n = 10; n <= 1e9; n *= 10) edges.push(n - 1, n, n + 1)
-  edges.push(42, 42, 4294967295, 42)
-  for (const signed of [false, true]) for (const edge of edges) {
-    const value = signed ? edge | 0 : edge
-    const expected = String(value)
-    if (signed) is(__ilen(value), expected.length, `width of ${value}`)
-    for (const start of [8, units.length - expected.length]) {
-      units.fill(0xcafe)
-      const length = (signed ? __itoa_s : __itoa)(value, start * 2)
-      is(length, expected.length, `written length of ${value}`)
-      is(String.fromCharCode(...units.subarray(start, start + length)), expected, `digits of ${value}`)
-      is(units[start - 1], 0xcafe, 'prefix untouched')
-      if (start + length < units.length) is(units[start + length], 0xcafe, 'suffix untouched')
+  // The fused concat renders at a width __ilen took (__itoa_sn); a ToString renders
+  // through __itoa_s/__itoa, which count their own. Two digits a step outside the
+  // size tier, one within it: both writers, every width.
+  for (const level of [2, 'size']) {
+    const text = wat(`export let f = (i, v) => 'x' + (i|0) + ',' + (v|0) + '!'
+      export let g = (v) => 'y' + (v|0)`, { optimize: { level, watr: false } })
+    // Isolate the actual helpers so a wrong width cannot hide in spare heap space.
+    // (__utoa_n, the two-digit writer, is not linked at the size tier)
+    const names = ['__itoa', '__itoa_s', '__itoa_sn', '__ilen', '__utoa_n'].filter(name => new RegExp(`\\(func \\$${name}\\b`).test(text))
+    // (the size tier pools repeated constants into globals the helpers read)
+    const pooled = text.match(/\(global \$__f[cf]\d+[\s\S]*?\n  \)/g) || []
+    const { memory, __itoa, __itoa_s, __itoa_sn, __ilen } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(`(module
+      (memory (export "memory") 1)
+      ${pooled.join('\n')}
+      ${names.map(name => funcWat(text, name) + `(export "${name}" (func $${name}))`).join('\n')}
+    )`))).exports
+    const units = new Uint16Array(memory.buffer)
+    const edges = [0, 0, 1, 2147483647, 2147483648, 4294967295]
+    for (let n = 10; n <= 1e9; n *= 10) edges.push(n - 1, n, n + 1)
+    edges.push(42, 42, 4294967295, 42)
+    const writers = [[false, __itoa], [true, __itoa_s], [true, (v, at) => (__itoa_sn(v, at, __ilen(v)), __ilen(v))]]
+    for (const [signed, write] of writers) for (const edge of edges) {
+      const value = signed ? edge | 0 : edge
+      const expected = String(value)
+      if (signed) is(__ilen(value), expected.length, `width of ${value}`)
+      for (const start of [8, units.length - expected.length]) {
+        units.fill(0xcafe)
+        const length = write(value, start * 2)
+        is(length, expected.length, `${level}: written length of ${value}`)
+        is(String.fromCharCode(...units.subarray(start, start + length)), expected, `${level}: digits of ${value}`)
+        is(units[start - 1], 0xcafe, 'prefix untouched')
+        if (start + length < units.length) is(units[start + length], 0xcafe, 'suffix untouched')
+      }
     }
   }
 })

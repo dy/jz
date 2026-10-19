@@ -498,7 +498,7 @@ const WASM_TODO = {
   // rejected because its compiler cost destabilized the stricter self-compile gate.
   // strbuild: WON (876c9fd2 + f9d6b62b). Two fused-concat leaf classes killed the row cost:
   // literal ASCII parts store inline (-15.5%), then i32-proven parts render digits at the
-  // cursor — __ilen sizes the alloc, __itoa_s writes; no __i32_to_str temp string, no
+  // cursor — __ilen sizes the alloc, __itoa_sn writes; no __i32_to_str temp string, no
   // __str_byteLen, no __str_copy (another -51%, 1038→503µs, checksum exact). jz 0.46 ms now
   // leads every string-producing rival — rust-wasm/native-C ~3.1× behind, V8 ~3.7× — with only
   // zig-wasm's no-allocation stack-buffer formatter 1.09× ahead (it never builds a string value).

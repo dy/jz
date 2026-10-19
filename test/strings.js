@@ -552,9 +552,9 @@ test('fused concat: literal ASCII parts store inline — no per-separator copy o
 
 test('fused concat: i32-proven parts render digits at the cursor — no temp string, no copy', () => {
   // An i32-proven part (`n|0`, a loop counter) needs no ToString temp: __ilen joins
-  // the total, __itoa_s writes sign+digits at the cursor. __ilen and __itoa_s MUST
-  // agree in code units (the alloc is sized from __ilen; a one-unit disagreement is
-  // heap corruption) — pinned differentially over every digit-count boundary,
+  // the total, __itoa_sn writes sign+digits at the cursor in that width. The digits
+  // MUST fill exactly __ilen's units (the alloc is sized from it; a one-unit
+  // disagreement is heap corruption) — pinned differentially over every digit-count boundary,
   // INT_MIN (negates to itself, read unsigned), INT_MAX, and zero.
   const edges = [0, 1, -1, 9, 10, -9, -10, 99, 100, 999, 1000, 9999, 10000, 99999, 100000,
     999999, 1000000, 9999999, 10000000, 99999999, 100000000, 999999999, 1000000000,
@@ -567,7 +567,7 @@ test('fused concat: i32-proven parts render digits at the cursor — no temp str
   }
   const wat = compile(src, { wat: true, optimize: { level: 2, watr: false } })
   const fn = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 1))
-  is((fn.match(/call \$__itoa_s/g) || []).length, 2, 'both int parts render at the cursor')
+  is((fn.match(/call \$__itoa_sn/g) || []).length, 2, 'both int parts render at the cursor')
   is((fn.match(/call \$__str_copy/g) || []).length, 0, 'no copies — no dynamic string parts')
   is((fn.match(/call \$__i32_to_str/g) || []).length, 0, 'no temp-string ToString')
   // ≤6-ASCII totals must SSO-normalize (`1,2` — the module invariant); and the

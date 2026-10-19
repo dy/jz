@@ -2124,11 +2124,11 @@ export default (ctx) => {
       // check is an IR-shape test, so this alone fixes it, no extra guard.
       const v = vt === VAL.BOOL ? null : argIR(parts[i])
       // i32-PROVEN part (exactly toStrI64's __i32_to_str class): keep the raw value,
-      // not a temp string — __ilen joins the total and __itoa_s renders the digits
-      // directly at dst. Drops the per-number __i32_to_str (alloc+itoa+mkstr),
-      // __str_length and __str_copy — the whole temp-string round trip.
+      // not a temp string — __ilen joins the total and __itoa_sn renders the digits
+      // directly at dst in that width. Drops the per-number __i32_to_str
+      // (alloc+itoa+mkstr), __str_length and __str_copy — the whole temp-string round trip.
       if ((vt === VAL.NUMBER || vt == null) && v.type === 'i32' && v.ptrKind == null) {
-        inc('__ilen', '__itoa_s')
+        inc('__ilen', '__itoa_sn')
         nums[i] = tempI32('sn')
         ir.push(['local.set', `$${nums[i]}`, v])
         ir.push(['local.set', `$${lens[i]}`, ['call', '$__ilen', ['local.get', `$${nums[i]}`]]])
@@ -2171,9 +2171,9 @@ export default (ctx) => {
         continue
       }
       if (nums[i] != null) {
-        // digits render at dst; the returned byte count (== $lens[i]) advances it
-        alloc.push(['local.set', `$${dst}`, ['i32.add',
-          ['i32.shl', ['call', '$__itoa_s', ['local.get', `$${nums[i]}`], ['local.get', `$${dst}`]], ['i32.const', 1]], ['local.get', `$${dst}`]]])
+        // digits render at dst in the width $lens[i] took; that width advances it
+        alloc.push(['call', '$__itoa_sn', ['local.get', `$${nums[i]}`], ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]])
+        alloc.push(['local.set', `$${dst}`, ['i32.add', ['local.get', `$${dst}`], ['i32.shl', ['local.get', `$${lens[i]}`], ['i32.const', 1]]]])
         continue
       }
       alloc.push(['call', '$__str_copy', ['i64.reinterpret_f64', ['local.get', `$${vals[i]}`]], ['local.get', `$${dst}`], ['local.get', `$${lens[i]}`]])
