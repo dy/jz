@@ -19,7 +19,7 @@ import { ctx } from '../src/ctx.js'
 import { T, walkAst } from '../src/ast.js'
 import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
-import { optimize as watOptimize } from 'watr/optimize'
+import { optimize as watOptimize, OPTS as WATR_OPTS } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import { unrollRecurrence } from '../src/compile/loop-recurrence.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
@@ -377,6 +377,45 @@ test('LICM (watr): speed tier hoists post-inline invariants via watr licm', () =
   const on = jz(src, { optimize: 'speed' }).exports.f
   const off = jz(src, { optimize: { level: 'speed', watrLicm: false } }).exports.f
   for (const args of [[1.0, 4], [9.0, 4], [2.5, 3], [1.0, 0]]) is(on(...args), off(...args), `watr licm on===off ${JSON.stringify(args)}`)
+})
+
+test('LSR (watr): speed tier advances record and summed-index addresses as pointers', () => {
+  if (onKernel()) return  // kernel bundles its own watr at build time: host-codegen assertion only
+  // An address affine in the loop counter (a record at rows[i], `src[row + x + 1]`) becomes a
+  // pointer set before the loop and advanced with the counter: watr's lsr, enabled by
+  // cfg.watrLsr at speed. The record stride's multiply and the index sum leave the loop.
+  const rec = `export let f = (n) => {
+    const rows = []
+    for (let i = 0; i < n; i++) rows.push({ a: i, b: i * 2, c: (i * 3) | 0 })
+    let s = 0
+    for (let k = 0; k < 4; k++) for (let i = 0; i < rows.length; i++) s = (s + rows[i].a + rows[i].c) | 0
+    return s
+  }`
+  const rows = `export let f = (w, h) => {
+    const src = new Int32Array(w * h), dst = new Int32Array(w * h)
+    for (let i = 0; i < w * h; i++) src[i] = (i * 2654435761) >> 7
+    for (let y = 0; y < h; y++) {
+      const row = y * w
+      for (let x = 0; x < w - 2; x++) dst[row + x] = (src[row + x] ^ src[row + x + 1] ^ src[row + x + 2]) | 0
+    }
+    let s = 0
+    for (let i = 0; i < w * h; i++) s = (s * 31 + dst[i]) | 0
+    return s
+  }`
+  // the body is the export's own function, or inlined into its boundary wrapper
+  const body = tree => ['func', findFunc(tree, '$f') || [], findFunc(tree, '$f$exp') || []]
+  const pointers = fn => count(fn, n => n[0] === 'local' && /^\$__lsr\d/.test(n[1]))
+  const recFn = body(parse(rec, 'speed'))
+  if (WATR_OPTS.lsr === undefined) return  // a watr before the release carrying lsr: the option is inert
+  ok(pointers(recFn) > 0, 'the record loop reads through a pointer')
+  is(loopCount(recFn, n => n[0] === 'i32.mul' && n[2]?.[0] === 'i32.const' && +n[2][1] === 24), 0, 'no record-stride multiply in a loop')
+  ok(pointers(body(parse(rows, 'speed'))) > 0, 'the row stencil reads through pointers')
+  is(pointers(body(parse(rec, { level: 'speed', watrLsr: false }))), 0, 'watrLsr: false keeps the indices')
+  for (const [src, calls] of [[rec, [[100], [1], [0], [37]]], [rows, [[37, 9], [5, 3], [128, 64], [3, 1]]]]) {
+    const on = jz(src, { optimize: 'speed' }).exports.f
+    const off = jz(src, { optimize: { level: 'speed', watrLsr: false } }).exports.f
+    for (const args of calls) is(on(...args), off(...args), `lsr on===off ${JSON.stringify(args)}`)
+  }
 })
 
 test('LICM: checked-access length HEADER decode hoists once per function (neverGrown/TYPED pointer)', () => {

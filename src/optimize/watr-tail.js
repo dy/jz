@@ -109,6 +109,12 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
     if (watrOpts === true) watrOpts = { licm: true }
     else if (typeof watrOpts === 'object' && watrOpts.licm === undefined) watrOpts.licm = true
   }
+  // watr loop strength reduction (speed tier): an address affine in a loop counter becomes a
+  // pointer advanced with the counter. Generic Wasm; jz only enables it.
+  if (cfg.watrLsr) {
+    if (watrOpts === true) watrOpts = { lsr: true }
+    else if (typeof watrOpts === 'object' && watrOpts.lsr === undefined) watrOpts.lsr = true
+  }
   // guardRefine folds jz's NaN-box tag reads — default-off in watr (general WAT
   // never matches it), so jz always enables it explicitly.
   if (watrOpts === true) watrOpts = { guardRefine: true }

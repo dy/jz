@@ -30,6 +30,13 @@ evaluation, closing the watr size backstop. A clean install includes these rules
 The 5.11.6 follow-up preserves result-producing calls and memory growth at
 sequence boundaries and corrects local-slot lifetimes across nested control flow.
 
+The speed tier asks watr for loop strength reduction (`lsr`, `watrLsr` in the
+preset): an address affine in a loop counter becomes a pointer set before the
+loop and advanced with the counter, where that lowers the instructions an
+iteration executes without pushing integer values past the register file.
+watr 5.11.10 predates the pass and ignores the option; the release after it
+carries it, and `test/optimizer.js` pins the pointers only where it is present.
+
 Watr 5.11.5 also defers costly pure local initializers to the
 exclusive value arms that consume them. It runs before local reuse, replacing
 eager selects with typed branches where some path needs none of the work.
