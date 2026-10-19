@@ -720,12 +720,19 @@ function dropUnreadElements(fn, names) {
   const read = new Set()
   walkAst(fn, { enter: n => { if ((n[0] === 'local.get' || n[0] === 'local.tee') && names.has(n[1])) read.add(n[1]) } })
   const isLoad = n => Array.isArray(n) && (n[0] === 'f64.load' || n[0] === 'i64.load')
+  // one whose address writes nothing and calls nothing: dropping it drops no effect
+  const isPlainLoad = n => {
+    if (!isLoad(n)) return false
+    let effect = false
+    walkAst(n, { enter: m => { if (m[0] === 'local.tee' || m[0] === 'local.set' || m[0] === 'call' || m[0] === 'call_indirect') effect = true } })
+    return !effect
+  }
   walkAst(fn, { enter: (n, parent, idx) => {
     if (!parent || n[0] !== 'local.set' || !names.has(n[1]) || read.has(n[1])) return
     const v = n[2]
     // (if (result f64) (i32.lt_u (local.tee $k K) LEN) (then LOAD) (else CONST)) → its test
     if (Array.isArray(v) && v[0] === 'if' && v.length === 5 && Array.isArray(v[1]) && v[1][0] === 'result' &&
-        Array.isArray(v[3]) && v[3][0] === 'then' && v[3].length === 2 && isLoad(v[3][1]) &&
+        Array.isArray(v[3]) && v[3][0] === 'then' && v[3].length === 2 && isPlainLoad(v[3][1]) &&
         Array.isArray(v[4]) && v[4][0] === 'else' && v[4].length === 2 && Array.isArray(v[4][1]) && v[4][1][0] === 'f64.const')
       parent[idx] = ['drop', v[2]]
     // a read proven in bounds: its address
