@@ -1301,9 +1301,13 @@ export default (ctx) => {
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
         const baseI32 = tempI32('ab')
-        return typed(saTag(value(ctx.abi.array.ops.load(
+        const rd = typed(saTag(value(ctx.abi.array.ops.load(
           ['local.tee', `$${baseI32}`, arrBase()],
           vi))), 'f64')
+        // The local holding the key, for a call through the element: a table
+        // whose elements never change dispatches on it (optimize/devirt.js).
+        if (Array.isArray(vi) && vi[0] === 'local.get') rd.elemKey = vi[1]
+        return rd
       }
       // Known plain array, numeric key, NOT proven in-bounds → inline bounds-checked
       // load: `idx < len ? load : undefined`. Same semantics as __arr_idx_known but
@@ -1327,6 +1331,7 @@ export default (ctx) => {
           ['then', value(ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`]))],
           ['else', throwing ? throwTypeErrorIR() : undefExpr()]]), 'f64')
         if (throwing && dense) rd.presentRead = true
+        rd.elemKey = `$${idxI32}`
         // Same number|undefined contract as the typed checked read — but ONLY
         // when the elements are PROVEN numeric (arrayElemValType): a plain
         // array is heterogeneous, and tagging a string-element read would make

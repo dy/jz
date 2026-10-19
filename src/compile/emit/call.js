@@ -284,8 +284,10 @@ function tryDirectClosureCall(callee, parsed) {
  *  module-const array of capture-free arrows — is recorded when the DECL emits,
  *  which happens in buildStartFn AFTER function bodies emit; so emit only marks
  *  the site (receiver name), and the rewrite runs in optimizeFunc where the
- *  facts are complete. */
-export const tagFnArrayDispatch = (ir, arrName, open = true) => {
+ *  facts are complete. `key`: the local holding the element's index, where the
+ *  table's elements never change (the call dispatches on the index), with the
+ *  callability test around the call, whose miss arm the dispatch keeps. */
+export const tagFnArrayDispatch = (ir, arrName, open = true, key = null) => {
   let ci = null
   // closure.call evaluates the callee and arguments before its final call.
   // A checked call spills them first, so the first indirect call can belong
@@ -293,7 +295,12 @@ export const tagFnArrayDispatch = (ir, arrName, open = true) => {
   walkAst(ir, { exit: (n) => {
     if (n[0] === 'call_indirect') ci = n
   } })
-  if (ci) { ci.dvArr = arrName; ci.dvOpen = open }
+  if (!ci) return ir
+  ci.dvArr = arrName; ci.dvOpen = open
+  if (key) walkAst(ir, { enter: (n) => {
+    if (n[0] === 'if' && Array.isArray(n[3]) && n[3][0] === 'then' && n[3][1] === ci && n[3].length === 2 &&
+        Array.isArray(n[4]) && n[4][0] === 'else') { n.dvKeyed = ci; ci.dvKey = key; return false }
+  } })
   return ir
 }
 
@@ -333,11 +340,16 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
   while (Array.isArray(member) && member[0] === '(') member = member[1]
   const kind = ctx.summary.kindOfExpr(callee)
   const open = valTypeOf(callee) !== VAL.CLOSURE && tagOf(core(kind)) !== K.CLOSURE
+  // An element read past the end is undefined whatever the elements are, and a
+  // call of undefined throws: `ops[k](x)` tests what it read.
   const nullable = (member !== callee && hasOptionalChain(member)) || censusMaybeUndefined(callee) ||
-    (tagOf(core(kind)) === K.CLOSURE && isNullable(kind))
+    (tagOf(core(kind)) === K.CLOSURE && isNullable(kind)) || (Array.isArray(member) && member[0] === '[]')
   const arrName = !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
     ? callee[1] : null
   const dvName = (ctx.transform.optFlags & OPTF.devirtClosureTables) && arrName ? arrName : null
+  // A table only ever called by index (`const ops = [arrows]`, every use `ops[k](…)`)
+  // holds its literal's closures for good: element k is the k-th arrow.
+  const fixedTable = dvName && !open && ctx.scope.closureTableLatticeCandidates?.has(arrName)
   if (!open && arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
       ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
@@ -380,7 +392,7 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
           ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', receiver ?? undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
         ['else', ctx.closure.call(recv, args, parsed.hasSpread, true, receiver)]]], 'f64')
   }
-  return dvName ? tagFnArrayDispatch(ir, dvName, open) : ir
+  return dvName ? tagFnArrayDispatch(ir, dvName, open, fixedTable ? calleeIR.elemKey : null) : ir
 }
 
 /** Last-resort fallback: assume `(call $callee args)` against an import / unknown

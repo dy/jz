@@ -549,7 +549,14 @@ const foldImpossibleConvertGuards = (n) => {
  *  polymorphic inline cache. The untouched original call_indirect is the
  *  default arm, so any runtime divergence (an element overwritten through an
  *  alias, an out-of-range index yielding the UNDEF box) takes the generic path:
- *  semantics are bit-identical regardless of the candidate set. */
+ *  semantics are bit-identical regardless of the candidate set.
+ *
+ *  A table only ever called by index (`ops[k](…)` its every use, emit's
+ *  `fixedTable`) holds its literal's arrows for good, so element k IS the k-th
+ *  arrow: the switch reads the index the element read already holds
+ *  (`.dvKey`), not the box it loaded, and an index past the end takes the
+ *  callability test's miss arm, the TypeError a call of undefined throws. The
+ *  test and the generic call leave the dispatch. */
 export function devirtConstFnArrayCalls(fn, cfg) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const cfa = ctx.scope.constFnArrays
@@ -561,8 +568,9 @@ export function devirtConstFnArrayCalls(fn, cfg) {
   // a `uid` (a const-folded receiver spills nothing, leaving uid untouched), so a
   // per-site counter would mint the same `$__dvi{uid}_0` twice — duplicate local.
   const inlRef = { next: 0 }
-  const rewrite = (parent, i) => {
-    const node = parent[i]
+  // `guard`: the callability test whose then-arm is a keyed call (see above).
+  const rewrite = (parent, i, guard = null) => {
+    const node = guard ? guard.dvKeyed : parent[i]
     const cands = cfa.get(node.dvArr)
     if (!cands) return
     // shape (module/function.js closure.call inline path):
@@ -572,7 +580,8 @@ export function devirtConstFnArrayCalls(fn, cfg) {
     if (!Array.isArray(argc) || argc[0] !== 'i32.const') return
     const idxExtract = node[node.length - 1]
     const slots = node.slice(4, node.length - 1)
-    const lo = Math.min(...cands.map(c => c.idx)), hi = Math.max(...cands.map(c => c.idx))
+    const lo = guard ? 0 : Math.min(...cands.map(c => c.idx))
+    const hi = guard ? cands.length - 1 : Math.max(...cands.map(c => c.idx))
     if (hi - lo > 32) return
     if (uid === null) uid = nextLocalId(fn, '$__dv')
     // Spill env + every non-constant slot once; both the arms and the default read the spills.
@@ -597,11 +606,11 @@ export function devirtConstFnArrayCalls(fn, cfg) {
     const envG = spill(env, 'e')
     const slotGs = slots.map((sl, k) => spill(sl, 'a' + k))
     const out = `$__dvo${uid}`, dflt = `$__dvd${uid}`
-    const byOff = new Map(cands.map(c => [c.idx - lo, c]))
+    const byOff = new Map(guard ? cands.map((c, k) => [k, c]) : cands.map(c => [c.idx - lo, c]))
     const labels = Array.from({ length: hi - lo + 1 }, (_, k) => byOff.has(k) ? `$__dv${uid}_${k}` : dflt)
     // idxExtract reads the env box — after spilling, re-point its env reference:
     // the extraction shape is wrap(and(shr(reinterpret(ENV))...)); rebuild it on the spill.
-    const extract = ['i32.sub',
+    const extract = guard ? ['local.get', node.dvKey] : ['i32.sub',
       ['i32.wrap_i64', ['i64.and',
         ['i64.shr_u', ['i64.reinterpret_f64', envG], ['i64.const', LAYOUT.AUX_SHIFT]],
         ['i64.const', LAYOUT.AUX_MASK]]],
@@ -675,15 +684,52 @@ export function devirtConstFnArrayCalls(fn, cfg) {
       const nextLabel = k + 1 < armOffsets.length ? labels[armOffsets[k + 1]] : dflt
       inner = ['block', nextLabel, inner, arm]
     }
-    // default: the original call_indirect on the spilled operands
-    const generic = ['call_indirect', node[1], envG, argc, ...slotGs, node[node.length - 1]]
+    // default: the original call_indirect on the spilled operands, or, keyed,
+    // the callability test's miss arm (an index past the end reads undefined)
+    const miss = guard && (guard[4].length === 2 ? guard[4][1] : ['block', ['result', 'f64'], ...guard[4].slice(1)])
+    const generic = miss || ['call_indirect', node[1], envG, argc, ...slotGs, node[node.length - 1]]
     parent[i] = narrow
       ? ['f64.convert_i32_s', ['block', out, ['result', 'i32'], ...spills, inner, ['i32.trunc_sat_f64_s', generic]]]
       : ['block', out, ['result', 'f64'], ...spills, inner, generic]
+    if (guard && Array.isArray(env) && env[0] === 'local.get') keyedEnvs.add(env[1])
+    return true
   }
-  walkAst(fn, { exit: (n, parent, idx) => { if (parent && n[0] === 'call_indirect' && n.dvArr) rewrite(parent, idx) } })
+  const keyedEnvs = new Set()
+  // A keyed call is rewritten with its test, from the `if` (visited after the call).
+  const keyedTest = (n) => n[0] === 'if' && n.dvKeyed && Array.isArray(n[3]) && n[3][1] === n.dvKeyed && n[3].length === 2 &&
+    Array.isArray(n[4]) && n[4][0] === 'else' && n.length === 5
+  walkAst(fn, {
+    enter: (n) => { if (keyedTest(n)) n.dvKeyed.dvHeld = true },
+    exit: (n, parent, idx) => {
+      if (!parent) return
+      if (keyedTest(n)) { if (!rewrite(parent, idx, n)) rewrite(n[3], 1) }
+      else if (n[0] === 'call_indirect' && n.dvArr && !n.dvHeld) rewrite(parent, idx)
+    },
+  })
+  if (keyedEnvs.size) dropUnreadElements(fn, keyedEnvs)
   if (newDecls.length) {
     const at = findBodyStart(fn)
     fn.splice(at, 0, ...newDecls)
   }
+}
+
+/** The element a keyed call read, where inlined arms left nothing reading it:
+ *  the read keeps its index's write and drops its load. The load cannot trap,
+ *  being within the bounds the read tests or proves (module/array.js). */
+function dropUnreadElements(fn, names) {
+  const read = new Set()
+  walkAst(fn, { enter: n => { if ((n[0] === 'local.get' || n[0] === 'local.tee') && names.has(n[1])) read.add(n[1]) } })
+  const isLoad = n => Array.isArray(n) && (n[0] === 'f64.load' || n[0] === 'i64.load')
+  walkAst(fn, { enter: (n, parent, idx) => {
+    if (!parent || n[0] !== 'local.set' || !names.has(n[1]) || read.has(n[1])) return
+    const v = n[2]
+    // (if (result f64) (i32.lt_u (local.tee $k K) LEN) (then LOAD) (else CONST)) → its test
+    if (Array.isArray(v) && v[0] === 'if' && v.length === 5 && Array.isArray(v[1]) && v[1][0] === 'result' &&
+        Array.isArray(v[3]) && v[3][0] === 'then' && v[3].length === 2 && isLoad(v[3][1]) &&
+        Array.isArray(v[4]) && v[4][0] === 'else' && v[4].length === 2 && Array.isArray(v[4][1]) && v[4][1][0] === 'f64.const')
+      parent[idx] = ['drop', v[2]]
+    // a read proven in bounds: its address
+    else if (isLoad(v) && v.length === 2) parent[idx] = ['drop', v[1]]
+    return false
+  } })
 }

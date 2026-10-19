@@ -4,7 +4,7 @@ import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { oracle, run, wat } from './util.js'
+import { funcWat, oracle, run, wat } from './util.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { T } from '../src/ast.js'
 
@@ -1666,6 +1666,37 @@ test('const fn-table dispatch: devirt arms inline value-exact (all 8 ops, negati
   const jsOps = new Function(`${opsSrc}; return ops`)()
   const ref = (n) => { let x = 0x2545f491 | 0; for (let i = 0; i < n; i++) x = jsOps[i & 7](x, (i * 40503) | 0); return x }
   for (const n of [1, 8, 64, 1000]) is(f(n), ref(n), `n=${n}`)
+})
+
+test('fixed fn-table dispatch: keyed on the index, a missing element throws', () => {
+  // A table only ever called by index holds its literal's arrows for good, so
+  // the call switches on the index its element read holds (optimize/devirt.js),
+  // and an index the table lacks reads undefined, whose call throws TypeError.
+  // The undefined atom's aux bits (2) name table slot 2: an unchecked call of
+  // the loaded box ran closure 2 there instead, at every tier.
+  const src = `const ops = [(x, k) => (x + k) | 0, (x, k) => x ^ k, (x, k) => Math.imul(x, k | 1), (x, k) => (k - x) | 0]
+const fold = (code, ks, n) => { let x = 7; for (let i = 0; i < n; i++) x = ops[code[i]](x, ks[i]); return x }
+export let f = (bad) => {
+  const code = new Int32Array(16), ks = new Int32Array(16)
+  for (let i = 0; i < 16; i++) { code[i] = i & 3; ks[i] = i * 3 + 1 }
+  code[9] = bad
+  return fold(code, ks, 16)
+}`
+  const { f } = run(src)
+  const ref = new Function(src.replace('export let f', 'let f') + '; return f')()
+  is(f(1), ref(1))
+  is(f(3), ref(3))
+  for (const bad of [4, 9, -1, 2147483647]) {
+    let threw = null
+    try { f(bad) } catch (e) { threw = e }
+    ok(threw instanceof TypeError, `ops[${bad}](…) throws TypeError`)
+  }
+  if (belowOpt(2)) return
+  // The dispatch reads no closure box and makes no indirect call: the only
+  // call_indirect left is the host's closure entry.
+  const w = wat(src)
+  is(w.split('call_indirect').length - 1, (funcWat(w, '__call_closure').match(/call_indirect/g) || []).length,
+    'no indirect call outside the host closure entry')
 })
 
 test('static const array reads: base/len fold is strip-safe and mutation-gated', () => {
