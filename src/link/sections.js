@@ -116,9 +116,18 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
  *  exported by optimize/arena-rewind.js).
  *  `exportInner` maps each export name to the function its wrapper calls. */
 export function releaseSection(root, { releasable, flagged: conditional, rewound, allocates }, exportInner, asked, numberResult) {
-  const GLOBAL = intern('global'), FUNC = intern('func'), declared = new Set()
+  const GLOBAL = intern('global'), FUNC = intern('func'), GLOBAL_SET = intern('global.set'), declared = new Set()
   for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === GLOBAL || T.op[c] === FUNC) declared.add(text(T.a[c]))
+  // The mark leaves all ones only where a frame of the module saves its own or
+  // the host sets it around a flagged export's call: with neither, every read
+  // of it (the compaction's reset among them) reads all ones, and no setter
+  // keeps the global mutable for watr to fold.
+  let setsMark = false
   if (declared.has('$__base')) {
+    for (const [, inner] of exportInner) if (releasable.has(inner) && conditional?.has(inner)) { setsMark = true; break }
+    if (!setsMark) walk(root, id => { if (setsMark) return false; if (T.op[id] === GLOBAL_SET && text(T.a[id]) === '$__base') setsMark = true })
+  }
+  if (setsMark) {
     // (func (param $mark i32) (result i32) (local $was i32)
     //   was = base; [if was == -1: the log starts empty]; base = mark; was)
     const get = (kind, name) => { const g = node(intern(kind)); push(g, str(name)); return g }

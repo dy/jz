@@ -2077,7 +2077,9 @@ const parserFixture = `export let f = (s) => {
 // Each pass of the scan loop gives back what it allocated, by the escape flag
 // and the walk from its log (iterationRelease): 15233 -> 16876.
 // The two-digit integer writer and the 4 KiB block colouring: 16876 -> 17029.
-golden('closure-heavy parser', parserFixture, 17029)
+// No frame or export sets the outermost mark, so link exports no setter and
+// the escape tests against it fold away: 17124 -> 15567.
+golden('closure-heavy parser', parserFixture, 15567)
 test('closure-heavy parser: behavior behind the size pin', () => {
   const { f } = jz(parserFixture).exports
   for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])
