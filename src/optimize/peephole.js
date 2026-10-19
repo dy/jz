@@ -329,7 +329,8 @@ export function fusedRewrite(fn, bigint = false, inlineTruthy = true) {
         for (let i = 1; i < n.length; i++) scan(n[i], n, i, scope, loop)
       }
       scan(fn)
-      for (const [k, ws] of defs) if (ws.length === 1 && !params.has(k)) defVal.set(k, ws[0][2])
+      // A set the stack feeds (a multi-value result taken apart) names no defining value.
+      for (const [k, ws] of defs) if (ws.length === 1 && !params.has(k) && ws[0][2] !== undefined) defVal.set(k, ws[0][2])
     }
     if (defVal.has(name)) return defVal.get(name)
     if (!recurrence || numericLocals || !floatLocals.has(name)) return null
@@ -505,6 +506,8 @@ function boundedFloatLocal(name, writes, owners, params, range = null) {
   }
   for (const w of writes) {
     const v = w[2]
+    // a value the stack feeds (a multi-value result taken apart): unbounded here
+    if (v === undefined) return null
     if (v[0] === 'f64.const' && typeof v[1] === 'number' && Number.isFinite(v[1])) {
       lo = Math.min(lo, v[1]); hi = Math.max(hi, v[1]); continue
     }

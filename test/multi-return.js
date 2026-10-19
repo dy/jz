@@ -158,6 +158,81 @@ test('multi: incompatible conditional arrays retain array results', () => {
   }
 })
 
+// A pattern over a call to a tuple helper that stays a function (called from
+// several sites, too large to splice) takes the call's results into its names:
+// `const [x, y] = cell(…)` is the call and two sets, no array between, and a
+// frame that destructures that way allocates nothing to give back.
+test('multi: a pattern over a kept tuple call binds its results, no array', () => {
+  const src = `const tbl = new Float64Array(64)
+    for (let i = 0; i < 64; i++) tbl[i] = (i * 37 % 11) - 3.5
+    const cell = (h, v, C) => {
+      if (C <= 0) return [0.3, 0.4]
+      const c0 = Math.floor(C / 2 - 1)
+      if (c0 < 0) return [tbl[h * 9 + v] * C, tbl[h * 9 + v + 1] * C]
+      if (c0 > 5) return [tbl[h], tbl[v]]
+      return [tbl[h * 9 + v + c0] + C, tbl[h * 9 + v + c0 + 1] - C]
+    }
+    const corner = (h, v, C, alt) => {
+      const k = tbl[h * 9 + v] > 0 ? h : tbl[alt * 9 + v] > 0 ? alt : -1
+      if (k < 0) return [0.3, 0.4]
+      const [x, y] = cell(k, v, C)
+      return [x, y]
+    }
+    export let run = (H, V, C) => {
+      const [ax, ay] = corner(H, V, C, H + 1), [bx, by] = corner(H + 1, V, C, H)
+      const [cx, cy] = corner(H, V + 1, C, H + 1), [dx, dy] = corner(H + 1, V + 1, C, H)
+      return ax * bx + ay * by + cx * dx + cy * dy
+    }
+    export let parts = (H, V, C) => {
+      const [x] = cell(H, V, C), [, y] = cell(V, H, C)
+      let a = 0, b = 0, c = 0
+      ;[a, b] = cell(H, H, C)
+      ;[c, c] = cell(V, V, C)
+      return [x, y, a, b, c]
+    }`
+  const host = oracle(src)
+  const args = [[0, 0, 1], [1, 2, 3.5], [2, 1, 0], [3, 4, -1], [5, 5, 13], [0.5, 1, 2], [NaN, 1, 2], [1, 2, NaN], [6, 6, 7]]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const ex = run(src, { optimize })
+    for (const a of args) {
+      is(ex.run(...a), host.run(...a), `run(${a}) O${optimize}`)
+      is(ex.parts(...a), host.parts(...a), `parts(${a}) O${optimize}`)
+    }
+  }
+  // a loop's float accumulator one of whose writes takes a result off the stack:
+  // the speed tier's range folds read it as unbounded (it read the absent value node)
+  const acc = `const tbl = new Float64Array(16)
+    for (let i = 0; i < 16; i++) tbl[i] = i * 0.75 - 2
+    const two = (x, y) => {
+      if (x > 3) return [tbl[x & 15] - y, x + 1]
+      if (y > 8) return [y * 0.25, x - y]
+      return [x * 2.5, x / 2]
+    }
+    export let g = (x) => { const [p, q] = two(x, 1); return p - q }
+    export let f = (n) => {
+      let s = 0, a = 0.5, b = 0
+      for (let i = 0; i < n; i++) {
+        a = a + 0.25
+        if (i & 1) [a, b] = two(i, a)
+        s += tbl[a | 0 & 15] + (a | 0) + b
+      }
+      return s
+    }`
+  const accHost = oracle(acc)
+  for (const optimize of levels(0, 2, 3, 'speed')) {
+    const ex = run(acc, { optimize })
+    for (const n of [0, 1, 7, 40]) is(ex.f(n), accHost.f(n), `f(${n}) O${optimize}`)
+    is(ex.g(5), accHost.g(5), `g O${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: 'speed' })
+  ok(/\(func \$cell\b/.test(text) && /\(func \$corner\b/.test(text), 'both helpers stay functions')
+  for (const fn of ['corner', 'run']) {
+    const body = funcWat(text, fn)
+    ok(!/__alloc|__mkptr|__made|global\.set \$__heap/.test(body), `${fn} binds the results it destructures: no array, no frame to give back`)
+  }
+})
+
 // A small tuple helper spliced into a loop leaves no list behind: the pattern
 // that takes its first lane reads the lane's local, and a call whose result
 // is dropped keeps only what its elements run (plan/inline.js, literals.js).

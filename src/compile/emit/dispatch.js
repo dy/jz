@@ -8,7 +8,7 @@ import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
-import { ASSIGN_OPS, MUTATE_OPS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
 import {
   keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -720,6 +720,48 @@ const presentElement = v => Array.isArray(v) && !v.checkedNumRead && (
   ((v[0] === 'f64.promote_f32' || v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') &&
     Array.isArray(v[1]) && typeof v[1][0] === 'string' && /^(?:f32|i32)\.load/.test(v[1][0])))
 
+/**
+ * A pattern's temp bound to a multi-value call and read by position
+ * (`let t = f(), a = t[0], b = t[1]`, or the same pulls as the elements of a
+ * statement's sequence after `let t = f()`): the call's results go straight
+ * into the reading names, no array between. The pulls are the entries of
+ * `list` from `from` on that read the temp at distinct positions into
+ * distinct plain f64 locals; a result no pull reads is dropped. The temp is
+ * the pattern's own (T-prefixed, read by nothing past its pulls but the
+ * sequence's own value). Returns the IR and the count of pulls, or null.
+ */
+export function bindTuple(tmp, init, list, from) {
+  if (typeof tmp !== 'string' || !tmp.startsWith(T) || !Array.isArray(init) || init[0] !== '()' ||
+      typeof init[1] !== 'string' || !ctx.funcs.names?.has(init[1])) return null
+  const func = ctx.funcs.map.get(init[1]), n = func?.sig.results.length
+  if (!(n > 1) || func.rest) return null
+  const argList = commaList(init[2])
+  if (argList.some(a => Array.isArray(a) && a[0] === '...')) return null
+  const at = new Map(), names = new Set()
+  let j = from
+  for (; j < list.length; j++) {
+    const p = list[j]
+    if (!Array.isArray(p) || p[0] !== '=' || typeof p[1] !== 'string') break
+    const rhs = p[2], k = Array.isArray(rhs) && rhs[0] === '[]' && rhs[1] === tmp && Array.isArray(rhs[2]) && rhs[2][0] == null ? rhs[2][1] : null
+    if (k === null) break
+    const t = p[1]
+    if (!Number.isInteger(k) || k < 0 || k >= n || at.has(k) || names.has(t) || t === tmp ||
+        ctx.func.boxed.has(t) || isGlobal(t) || (ctx.func.locals.get(t) ?? 'f64') !== 'f64') return null
+    at.set(k, t); names.add(t)
+  }
+  if (!at.size) return null
+  // Past its pulls the temp is at most the sequence's dropped value.
+  for (let r = j; r < list.length; r++)
+    if (!(r === list.length - 1 && list[r] === tmp) && refsName(list[r], tmp, REFS_THROUGH_ARROWS)) return null
+  const ir = [callWithArgs(init[1], emitCallArgs(argList, func.sig.params, func), func.sig)]
+  for (let k = n - 1; k >= 0; k--) {
+    const t = at.get(k)
+    ir.push(t ? ['local.set', `$${t}`] : ['drop'])
+    if (t) ctx.func.localValTypesOverlay?.delete(t)
+  }
+  return { ir, pulls: j - from }
+}
+
 export function emitDecl(...inits) {
   const result = []
   // A `let`/`const` declared inside a loop creates a *fresh* binding each
@@ -832,36 +874,9 @@ export function emitDecl(...inits) {
       if (bufStmts) { result.push(...bufStmts); continue }
     }
 
-    // Multi-value ephemeral destructuring — skip heap alloc when temp is
-    // assigned from a multi-value call then immediately destructured element-by-element.
-    if (name.startsWith(T) && Array.isArray(init) && init[0] === '()' && typeof init[1] === 'string'
-      && ctx.funcs.names?.has(init[1])) {
-      const func = ctx.funcs.map.get(init[1])
-      const n = func?.sig.results.length
-      if (n > 1 && !func.rest) {
-        const targets = []
-        let match = true
-        for (let k = 0; k < n && match; k++) {
-          const next = inits[ii + 1 + k]
-          if (!Array.isArray(next) || next[0] !== '=' || typeof next[1] !== 'string') { match = false; break }
-          const rhs = next[2]
-          if (!Array.isArray(rhs) || rhs[0] !== '[]' || rhs[1] !== name) { match = false; break }
-          const idx = rhs[2]
-          if (!Array.isArray(idx) || idx[0] != null || idx[1] !== k) { match = false; break }
-          if (ctx.func.boxed.has(next[1]) || isGlobal(next[1])) { match = false; break }
-          targets.push(next[1])
-        }
-        const argList = commaList(init[2])
-        if (match && targets.length === n && !argList.some(a => Array.isArray(a) && a[0] === '...')) {
-          const emittedArgs = emitCallArgs(argList, func.sig.params, func)
-          result.push(callWithArgs(init[1], emittedArgs, func.sig))
-          for (let k = n - 1; k >= 0; k--)
-            result.push(['local.set', `$${targets[k]}`])
-          ii += n
-          continue
-        }
-      }
-    }
+    // Multi-value ephemeral destructuring: the temp's pulls take the call's results.
+    const tuple = bindTuple(name, init, inits, ii + 1)
+    if (tuple) { result.push(...tuple.ir); ii += tuple.pulls; continue }
     // No-copy slice view: `let t = s.slice(...)` whose result sliceViewCandidate
     // proved never escapes — lower the initializer to a SLICE_BIT view instead
     // of a copying slice. Everything downstream treats `t` as an ordinary

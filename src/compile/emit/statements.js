@@ -15,7 +15,7 @@ import { VAL } from '../../reps.js'
 import { isTerminator } from '../../type.js'
 import { withFinallyStack, withTryState } from '../flow-state.js'
 import { representationProgramHasBigint, representationReturnAction } from '../representation-plan.js'
-import { emit, emitBlockBody, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
+import { bindTuple, emit, emitBlockBody, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
 import { storedValue } from '../../bridge.js'
 import { runsAccessor } from '../../evaluation-effects.js'
 import { frameNode } from '../../function.js'
@@ -157,7 +157,18 @@ export const statementOps = {
   ',': (...args) => {
     // In statement position the sequence has no value: each element is a statement
     // (`j++, k += step` is two writes, not a value block whose value is dropped).
-    if (ctx.func._expect === 'void') return args.flatMap(a => emitVoid(a))
+    if (ctx.func._expect === 'void') {
+      const out = []
+      for (let i = 0; i < args.length; i++) {
+        // `let t = f()` then its pulls `a = t[0], b = t[1]`: an array pattern over a
+        // multi-value call binds the results, no array between (bindTuple)
+        const a = args[i], d = Array.isArray(a) && a[0] === 'let' && a.length === 2 && Array.isArray(a[1]) && a[1][0] === '=' ? a[1] : null
+        const tuple = d && bindTuple(d[1], d[2], args, i + 1)
+        if (tuple) { out.push(...tuple.ir); i += tuple.pulls; continue }
+        out.push(...emitVoid(a))
+      }
+      return out
+    }
     const results = args.map(emit).filter(x => x != null)
     if (results.length === 0) return null
     if (results.length === 1) return results[0]
