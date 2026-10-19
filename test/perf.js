@@ -1302,9 +1302,10 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
       while (i < N - 1) { p[i] = (p[i-1] + p[i] + p[i+1]) * 0.5; i = i + 1 }
     }
   `, { wat: true })
-  const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
+  // (folded whole: a word's guard may read its bound from a pooled float global)
+  const run = foldWords(parseWat(wat)).find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$run') || []
   let decodes = 0, loopDecodes = 0
-  walkWat(foldWords(parseWat(run)), (n, inside) => {
+  walkWat(run, (n, inside) => {
     // Null checks also reinterpret atoms; only extracting an offset decodes a base.
     if (n[0] !== 'i32.wrap_i64' || !['i64.and', 'i64.reinterpret_f64'].includes(n[1]?.[0])) return
     decodes++

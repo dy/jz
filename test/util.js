@@ -75,7 +75,13 @@ export const cases = (rows, opts) => {
 
 const isArr = Array.isArray
 const op = (n, name) => isArr(n) && n[0] === name
-const konst = (n, type, ...vals) => op(n, type + '.const') && vals.some(v => String(n[1]) === String(v))
+// (the speed tier reads a float literal from an immutable global, optimize `poolFloats`: the
+// global's initializer is the literal)
+let pooled = new Map()
+const konst = (n, type, ...vals) => {
+  if (op(n, 'global.get') && pooled.has(n[1])) n = pooled.get(n[1])
+  return op(n, type + '.const') && vals.some(v => String(n[1]) === String(v))
+}
 const MAGIC = n => konst(n, 'f64', 6755399441055744)            // 1.5·2^52
 const BIAS = n => konst(n, 'i64', '0x4338000000000000', '4841369599423283200')
 const NEAR = n => konst(n, 'f64', 2 ** 51, 2 ** 31)
@@ -108,7 +114,14 @@ const foldWord = n => {
  *  as bits, ToInt32's exact form and the magnitude guard around either. A pin
  *  then counts crossings from the number to its word, not the instructions of
  *  one lowering. Takes WAT text or its parsed tree and answers in kind. */
-export const foldWords = wat => typeof wat === 'string' ? printWat(foldWord(parseWat(wat))) : foldWord(wat)
+export const foldWords = wat => {
+  const tree = typeof wat === 'string' ? parseWat(wat) : wat
+  pooled = new Map()
+  if (op(tree, 'module')) for (const g of tree)
+    if (op(g, 'global') && typeof g[2] === 'string' && isArr(g[3]) && /\.const$/.test(g[3][0])) pooled.set(g[1], g[3])
+  const out = foldWord(tree)
+  return typeof wat === 'string' ? printWat(out) : out
+}
 
 /** One function's text out of a WAT module, by paren matching — slicing to the next
  *  `(func` would overrun into lifted closures and give false positives. */
