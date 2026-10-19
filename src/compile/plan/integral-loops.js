@@ -151,7 +151,7 @@ import { T, I32_MIN, I32_MAX, MUTATE_OPS, TYPEOF, REFS_THROUGH_ARROWS, numberGua
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
-import { SOURCE_FULL } from '../../growth.js'
+import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
 import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
@@ -532,10 +532,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   // copies of a nest are one, not one per level squared.
   const versions = new Map()
   let rewrote = false
-  // a body past its growth budget keeps its loops as written (src/growth.js)
+  // a body past its growth budget versions its kernel loops alone (src/growth.js)
   let grown = nodeSize(body)
   for (const [loop, parent, idx, enclosing] of loops) {
-    if (grown > SOURCE_FULL) break
+    if (grown > SOURCE_FULL && !kernelLoop(loop)) continue
     if (parent[idx] !== loop) continue
     // (a loop a version left as written, here or in prepare/split-bindings.js: not copied again)
     if (loop.cold === true) continue

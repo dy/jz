@@ -13,7 +13,7 @@ import { walkAst } from '../ast.js'
 import { PTR, ATOM, atomNanHex, encodePtrHi, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_CLAMPED_FLAG, TYPED_ELEM_F16_FLAG } from '../../layout.js'
 import { matchExitBrIf, isLocalGet } from './vectorize/addr-model.js'
 import { readsVar } from './vectorize/outer-scaffold.js'
-import { IR_FULL, irSize } from '../growth.js'
+import { IR_FULL, irSize, kernelLoopIR } from '../growth.js'
 
 // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering unswitchTypedParamLoop.
 const DBG_UNSWITCH = typeof process !== 'undefined' && (process.env?.JZ_DBG_UNSWITCH || null)
@@ -46,9 +46,10 @@ const numericStoreValue = value => ['select', cloneIR(value), ['f64.const', 'nan
  */
 export function unswitchTypedParamLoop(fn, f16 = false) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
-  // a function past its growth budget keeps its loops as written (src/growth.js)
-  if (irSize(fn) > IR_FULL) return
-  unswitchTypedAccessLoop(fn, f16)
+  // a function past its growth budget versions a loop only where the version
+  // calls nothing, a kernel loop (src/growth.js)
+  const large = irSize(fn) > IR_FULL
+  unswitchTypedAccessLoop(fn, f16, large)
   // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering this pass (DBG_DSR-style).
   if (DBG_UNSWITCH && String(fn[1]).includes(DBG_UNSWITCH)) console.error(JSON.stringify(fn))
   const bodyStart = findBodyStart(fn)
@@ -289,6 +290,7 @@ export function unswitchTypedParamLoop(fn, f16 = false) {
 
     const base = `$__utb${baseId++}`
     const len = `$__utb${baseId++}`
+    const mark = newLocals.length
     newLocals.push(['local', base, 'i32'], ['local', len, 'i32'])
     const reint = () => ['i64.reinterpret_f64', ['local.get', paramName]]
     const high = () => ['i32.wrap_i64', ['i64.shr_u', reint(), ['i64.const', 32]]]
@@ -328,6 +330,7 @@ export function unswitchTypedParamLoop(fn, f16 = false) {
     const hoistedDrops = [...hoistedGuards.values()].map((d) => ['drop', d])
     const fastLoop = ['block', blockLabel, ...preamble.map(cloneIR),
       ['loop', loopLabel, cloneIR(loopNode[2]), ...fastStmts, cloneIR(incNode), cloneIR(loopNode[endIdx])]]
+    if (large && !kernelLoopIR(fastLoop)) { newLocals.length = mark; return }
     parent[idx] = ['if', gate, ['then', ...hoistedDrops, fastLoop], ['else', blockNode]]
   }
 
@@ -345,7 +348,7 @@ export function unswitchTypedParamLoop(fn, f16 = false) {
  * the receiver. Keep their bounds and Number proof, including assignment values
  * and f32 rounding. A second numeric read receiver shares one storage-dispatched clone
  * per output width, preserving the single-receiver fallback for other kinds. */
-function unswitchTypedAccessLoop(fn, f16) {
+function unswitchTypedAccessLoop(fn, f16, large) {
   const start = findBodyStart(fn), locals = []
   if (start < 0) return
   let id = nextLocalId(fn, 'utw')
@@ -465,7 +468,9 @@ function unswitchTypedAccessLoop(fn, f16) {
       return { gate: one.gate, body: [...one.setup,
         ['if', two.gate, ['then', ...two.setup, two.loop], ['else', one.loop]]] }
     }
+    const mark = locals.length
     const f64 = arm(3), f32 = arm(2)
+    if (large && !(kernelLoopIR(f64.body) && kernelLoopIR(f32.body))) { locals.length = mark; return }
     parent[index] = ['if', f64.gate, ['then', ...f64.body],
       ['else', ['if', f32.gate, ['then', ...f32.body], ['else', loop]]]]
     return false

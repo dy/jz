@@ -45,7 +45,7 @@
 import { findBodyStart, cloneIR } from '../ir.js'
 import { walkAst } from '../ast.js'
 import { int32Operand } from '../ir/numeric.js'
-import { IR_FULL, irSize } from '../growth.js'
+import { IR_FULL, irSize, kernelLoopIR } from '../growth.js'
 
 const isArr = Array.isArray
 const isLabel = (s) => typeof s === 'string' && s[0] === '$'
@@ -90,7 +90,7 @@ export function wideAccumulator(fn) {
   } })
   if (unsafe) return
   const newLocals = []
-  // a version is a copy of its loop: none past the function's growth budget (src/growth.js)
+  // a version is a copy of its loop: past the function's growth budget, of a kernel loop alone (src/growth.js)
   let room = IR_FULL - irSize(fn)
   for (let k = loops.length - 1; k >= 0; k--) versionLoop(loops[k])
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
@@ -98,7 +98,7 @@ export function wideAccumulator(fn) {
   function versionLoop({ node: loop, parent, idx }) {
     if (!isLabel(loop[1]) || loop.some(x => isArr(x) && (x[0] === 'result' || x[0] === 'param'))) return
     const n0 = irSize(loop)
-    if (n0 > room) return
+    if (n0 > room && !kernelLoopIR(loop)) return
     // The enclosing block's label is the loop's own exit target; every other
     // outward branch skips the restore.
     const brk = parent[0] === 'block' && isLabel(parent[1]) && !parent.some(x => isArr(x) && x[0] === 'result') ? parent[1] : null

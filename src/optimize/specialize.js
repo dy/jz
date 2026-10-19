@@ -57,7 +57,7 @@
 import { integerPlan } from './int-narrow.js'
 import { plainNaN, conditional, boundOf, boxBits, constBits, LIMIT } from './int-range.js'
 import { pureKernel } from './pure-funcs.js'
-import { IR_FULL } from '../growth.js'
+import { IR_FULL, kernelLoopIR } from '../growth.js'
 
 const isArr = Array.isArray
 const isLabel = s => typeof s === 'string' && s[0] === '$'
@@ -333,8 +333,9 @@ export function specializeLoops(fn) {
   }
   scan(fn)
   if (unsafe) return null
-  // Copies of at most twice the function, and none that would take it past
-  // its growth budget (src/growth.js): a large function keeps its loops as written.
+  // Copies of at most twice the function, and none of a loop that calls that
+  // would take it past its growth budget (src/growth.js): a large function
+  // keeps such loops as written and copies its kernel loops alone.
   const whole = size(fn)
   const budget = { left: Math.max(2 * whole, 400), room: IR_FULL - whole }
   const assume = new Map()
@@ -363,7 +364,7 @@ export function specializeLoops(fn) {
     const { region, loop } = r
     if (!alive.has(region)) return null
     const n0 = size(region)
-    if (n0 > LARGE || n0 > budget.left || n0 > budget.room) return null
+    if (n0 > LARGE || n0 > budget.left || n0 > budget.room && !kernelLoopIR(region)) return null
     if (!isLabel(loop[1]) || typed(loop)) return null
     const setup = region === loop ? [] : region.slice(2, -1)
     // Branches: inside the region, to the region's own exit, or outward without a value.
@@ -686,8 +687,8 @@ export function specializeLoops(fn) {
     const built = []
     for (const r of level) {
       const b = build(r, plan0, alive)
-      // (the copy and its way back measured as built: past the budget, the loop stays as written)
-      if (b && budget.room < 0) undo(b)
+      // (the copy and its way back measured as built: past the budget, a loop that calls stays as written)
+      if (b && budget.room < 0 && !kernelLoopIR(r.region)) undo(b)
       else if (b) built.push(b)
     }
     // Which copies narrow anything, and which assumed integers are read as integers.

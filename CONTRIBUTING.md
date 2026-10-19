@@ -2716,7 +2716,7 @@ src/
   ast.js static.js kind.js type.js param-reps.js
   ctx.js bridge.js reps.js ir.js autoload.js resolve.js
   layout-kinds.js  region-arena relocation arms per heap kind (executable registry; prose twin layout-kinds-doc.js)
-  growth.js     the speed tier's growth budget per function: source nodes for the plan's copies and splices, IR nodes for the optimizer's
+  growth.js     the speed tier's growth budget per function: source nodes for the plan's copies and splices, IR nodes for the optimizer's; a kernel loop's versions are exempt
 module/         stdlib
 layout.js       NaN-box bit layout + PTR.TYPED elem-aux codec (compiler-free, shared with module/)
 interop.js      host↔wasm value marshalling: NaN-box decode/encode at the JS boundary (exports, imports, memory views)

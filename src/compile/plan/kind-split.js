@@ -25,7 +25,7 @@ import { T, ASSIGN_OPS, extractParams, some, walkAst } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
-import { SOURCE_FULL } from '../../growth.js'
+import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { K, core, hasTag, tagOf, typedAux, UNKNOWN } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
@@ -161,10 +161,10 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
   } })
   const done = new Set()
   let rewrote = false, sites = null
-  // a body past its growth budget keeps its loops as written (src/growth.js)
+  // a body past its growth budget versions its kernel loops alone (src/growth.js)
   let size = nodeSize(body)
   for (const [loop, parent, idx] of loops) {
-    if (size > SOURCE_FULL) break
+    if (size > SOURCE_FULL && !kernelLoop(loop)) continue
     if (done.has(loop) || parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
     if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await')) continue
     // a `for`'s own declarations (`for (let x = ch[c], i = 0; …)`) go before the test, the copy and the loop sharing them
