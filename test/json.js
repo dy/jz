@@ -208,6 +208,21 @@ test('JSON.parse: runtime-selected literal sources share shaped parser', () => {
   for (const i of [0, 0, 1, 0]) is(f(i), i ? 21 : 12, 'shaped parser: whitespace → repeat → compact → whitespace')
 })
 
+test('JSON.parse: a shaped parse reads short integers inline and every other number by the full grammar', () => {
+  // One shape, number tokens of every form at each position: the shaped
+  // parser's own cursor reads a short integer in place and hands any other
+  // token, from its start, to the full grammar.
+  const sources = ['{"a":1,"b":[2,30,-400]}', '{"a":-0,"b":[1234567890,4.5,0]}',
+    '{"a":1e2,"b":[-7,999999999,-123456789]}', '{"a":0.5,"b":[12E-1,10,7]}']
+  const src = `const SOURCES = ${JSON.stringify(sources)}
+    export let f = (i) => { const o = JSON.parse(SOURCES[i & 3]); return JSON.stringify(o) + (Object.is(o.a, -0) ? '-0' : '') }`
+  const { f } = run(src)
+  for (const i of [0, 1, 2, 3, 0, 2]) {
+    const o = JSON.parse(sources[i])
+    is(f(i), JSON.stringify(o) + (Object.is(o.a, -0) ? '-0' : ''), sources[i])
+  }
+})
+
 test('JSON.parse: packed keys cover UTF-16 chunk widths and repeated calls', () => {
   const keys = ['', 'a', 'ab', 'abc', 'abcd', 'abcde', 'abcdef', 'abcdefg', 'abcdefgh', 'abcdefghi', '\u8000x\uD83D\uDE00']
   const objects = [1, 2].map(scale => Object.fromEntries(keys.map((k, i) => [k, (i + 1) * scale])))
@@ -526,12 +541,14 @@ test('JSON.parse: runtime decimals share Number rounding and reject incomplete t
   `)
   for (const src of ['0', '-0', '0.10000000000000001', '5e-324', '2.2250738585072014e-308',
     '1.7976931348623157e308', '9007199254740993', '1152921504606847359',
-    '1e4294967296', '1e-4294967296', '100000000000000000000e2147483647', '0e9999', '[0.1,5e-324,-0]', 'null', '[]', '{}']) {
+    '1e4294967296', '1e-4294967296', '100000000000000000000e2147483647', '0e9999', '[0.1,5e-324,-0]', 'null', '[]', '{}',
+    // short integers (the word path) and the tokens beside them that leave it
+    '7', '-7', '999999999', '-123456789', '1000000000', '-2147483649', '4294967296', '12E1', '3e0', '[1,22,-333,0,-0]']) {
     is(f(src), JSON.stringify(JSON.parse(src)), src)
     is(f(src), JSON.stringify(JSON.parse(src)), 'repeat ' + src)
   }
   ok(Object.is(p('-0'), -0), 'negative zero survives parsing')
-  for (const src of ['', '-', '01', '1.', '1e', '1e+', '1e-', '1e-+2', '-.1', '[1.]']) {
+  for (const src of ['', '-', '01', '1.', '1e', '1e+', '1e-', '1e-+2', '-.1', '[1.]', '00', '-00', '-01', '[012]', '7a', '--7']) {
     throws(() => f(src), 'invalid token ' + src)
     is(f('0'), '0', 'valid parse after ' + src)
   }

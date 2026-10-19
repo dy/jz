@@ -183,7 +183,8 @@ export default (ctx) => {
     __jp_val: ['__jp_ws', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
     __jp_str: ['__sso_char', '__char_at', '__str_length', '__hex4', '__ishex', '__sso_norm'],
     __hex4: ['__hex1'],
-    __jp_num: ['__pow10', '__dec_to_f64', '__char_at'],
+    __jp_num: ['__jp_num_full'],
+    __jp_num_full: ['__pow10', '__dec_to_f64', '__char_at'],
     __jp_arr: ['__jp_ws', '__jp_val'],
     __jp_obj: ['__jp_ws', '__jp_val', '__jp_str', '__jp_schema_get', '__alloc_hdr', '__mkptr', '__str_eq', '__jp_key_idx'],
     __jp_schema_get: ['__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__str_hash', '__jp_schema_limit'],
@@ -1005,7 +1006,44 @@ export default (ctx) => {
   // Share decimal accumulation and rounding with Number/parseFloat. JSON supplies
   // a contiguous UTF-16 buffer and enforces its stricter token grammar.
   const numChar = idx => `(i32.load16_u (i32.add (local.get $sbase) (i32.shl ${idx} (i32.const 1))))`
+  // Most JSON numbers are short integers: up to nine digits, no leading zero,
+  // fraction or exponent, read into a word and converted once. Any other token
+  // is read again from its start by the full grammar (__jp_num_full). The two
+  // are apart so the common case pays a small function's frame.
   ctx.core.stdlib['__jp_num'] = `(func $__jp_num (result f64)
+    (local $sbase i32) (local $i i32) (local $len i32) (local $c i32) (local $neg i32) (local $acc i32)
+    (local.set $sbase (global.get $__jpstr))
+    (local.set $len (global.get $__jplen))
+    (local.set $i (global.get $__jppos))
+    (block $slow
+      (if (i32.lt_u (local.get $i) (local.get $len))
+        (then (if (i32.eq ${numChar('(local.get $i)')} (i32.const 45))
+          (then (local.set $neg (i32.const 1)) (local.set $i (i32.add (local.get $i) (i32.const 1)))))))
+      (br_if $slow (i32.ge_u (local.get $i) (local.get $len)))
+      (local.set $acc (i32.sub ${numChar('(local.get $i)')} (i32.const 48)))
+      (br_if $slow (i32.gt_u (local.get $acc) (i32.const 9)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      ;; a leading 0 stands alone
+      (if (local.get $acc)
+        (then (block $digits (loop $more
+          (br_if $digits (i32.ge_u (local.get $i) (local.get $len)))
+          (local.set $c (i32.sub ${numChar('(local.get $i)')} (i32.const 48)))
+          (br_if $digits (i32.gt_u (local.get $c) (i32.const 9)))
+          (br_if $slow (i32.ge_u (local.get $acc) (i32.const 100000000)))
+          (local.set $acc (i32.add (i32.mul (local.get $acc) (i32.const 10)) (local.get $c)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $more)))))
+      ;; the token ends here: no '.', no 'e'/'E', no digit after a lone 0
+      (if (i32.lt_u (local.get $i) (local.get $len))
+        (then
+          (local.set $c ${numChar('(local.get $i)')})
+          (br_if $slow (i32.or (i32.eq (local.get $c) (i32.const 46))
+            (i32.or (i32.eq (i32.or (local.get $c) (i32.const 32)) (i32.const 101))
+              (i32.le_u (i32.sub (local.get $c) (i32.const 48)) (i32.const 9)))))))
+      (global.set $__jppos (local.get $i))
+      (return (select (f64.neg (f64.convert_i32_u (local.get $acc))) (f64.convert_i32_u (local.get $acc)) (local.get $neg))))
+    (call $__jp_num_full))`
+  ctx.core.stdlib['__jp_num_full'] = `(func $__jp_num_full (result f64)
     (local $v i64) (local $sbase i32) (local $i i32) (local $len i32) (local $start i32)
     (local $c i32) (local $neg i32) (local $seen i32) (local $dot i32)
     (local $sigDigits i32) (local $decExp i32) (local $dropped i32) (local $round i32)
@@ -1342,7 +1380,7 @@ export default (ctx) => {
     if (cached) return cached
 
     const name = `__jp_shape_${ctx.runtime.jsonShapeParsers.size}`
-    const locals = new Map([['len', 'i32'], ['buf', 'i32'], ['i', 'i32'], ['ch', 'i32'], ['kp', 'i32']])
+    const locals = new Map([['len', 'i32'], ['buf', 'i32'], ['i', 'i32'], ['ch', 'i32'], ['kp', 'i32'], ['p', 'i32']])
     let uniq = 0
     const local = (p, t) => {
       const n = `${p}${uniq++}`
@@ -1350,13 +1388,24 @@ export default (ctx) => {
       return n
     }
     const fail = `(return (call $__jp (local.get $str)))`
-    const expect = (byte) => `(if (i32.ne ${PEEK} (i32.const ${byte})) (then ${fail}))
-    ${ADV(1)}`
+    // The cursor lives in a local for the whole parse: a global's every read
+    // and write goes through memory, and the cursor is the chain each
+    // character's test waits on. The shared scanners (__jp_num, __jp_str,
+    // __jp_ws) read and advance the global, so a call stores the cursor first
+    // and reloads it after. The copy ends in a sentinel the cursor never
+    // passes (it moves only past a matched unit or by a scanner, which stops at
+    // the end), so a peek tests no bound; the end itself is the cursor at $len.
+    const peek = `(i32.load16_u (i32.add (local.get $buf) (i32.shl (local.get $p) (i32.const 1))))`
+    const adv = (n) => `(local.set $p (i32.add (local.get $p) (i32.const ${n})))`
+    const scan = (call) => `(global.set $__jppos (local.get $p)) ${call} (local.set $p (global.get $__jppos))`
+    const ws = `(if (i32.le_u ${peek} (i32.const 32)) (then ${scan('(call $__jp_ws)')}))`
+    const expect = (byte) => `(if (i32.ne ${peek} (i32.const ${byte})) (then ${fail}))
+    ${adv(1)}`
     // Compare known UTF-16LE text in 8/4/2-byte chunks after a unit bounds check.
     const expectText = (text) => {
       const bytes = stringBytes(text)
       const at = (i) => (i ? `offset=${i} ` : '') + '(local.get $kp)'
-      const out = [`(if (i32.gt_u (i32.add (global.get $__jppos) (i32.const ${text.length})) (global.get $__jplen)) (then ${fail}))`, `(local.set $kp (i32.add (global.get $__jpstr) (i32.shl (global.get $__jppos) (i32.const 1))))`]
+      const out = [`(if (i32.gt_u (i32.add (local.get $p) (i32.const ${text.length})) (local.get $len)) (then ${fail}))`, `(local.set $kp (i32.add (local.get $buf) (i32.shl (local.get $p) (i32.const 1))))`]
       let i = 0
       // WAT needs the bit spelling, not a Number/BigInt carrier. UTF-16 text
       // has an even byte length, so 8/4/2-byte loads consume it exactly.
@@ -1370,7 +1419,7 @@ export default (ctx) => {
           i += width
         }
       }
-      out.push(ADV(text.length))
+      out.push(adv(text.length))
       return out.join('\n    ')
     }
     // Forward-declared with `let` (assigned below) so `parse` captures a boxed
@@ -1384,9 +1433,9 @@ export default (ctx) => {
     (local.set $${out} ${NULL_WAT})`
       if (typeof v === 'boolean') return `${expectText(v ? 'true' : 'false')}
     (local.set $${out} (f64.const nan:${v ? TRUE_NAN : FALSE_NAN}))`
-      if (typeof v === 'number') return `(local.set $${out} (call $__jp_num))`
+      if (typeof v === 'number') return scan(`(local.set $${out} (call $__jp_num))`)
       if (typeof v === 'string') return `${expect(34)}
-    (local.set $${out} (call $__jp_str))`
+    ${scan(`(local.set $${out} (call $__jp_str))`)}`
       if (Array.isArray(v)) return parseArray(v[0], out)
       return parseObject(v, out)
     }
@@ -1405,25 +1454,25 @@ export default (ctx) => {
       // plan hook missed fails closed via a null-kinds entry.
       const hzLive = ctx.schema.slotWriteHazards
       if (hzLive && !hzLive.kindSafeSids.has(sid)) hzLive.kindSafeSids.set(sid, null)
-      let body = `${WS}
+      let body = `${ws}
     ${expect(123)}
     (local.set $${obj} (call $__alloc_hdr (i32.const 0) (i32.const ${Math.max(1, keys.length)})))`
       keys.forEach((k, i) => {
         body += `
-    ${WS}
+    ${ws}
     ${expect(34)}
     ${expectText(k)}
     ${expect(34)}
-    ${WS}
+    ${ws}
     ${expect(58)}
-    ${WS}
+    ${ws}
     ${parse(v[k], val)}
     (f64.store (i32.add (local.get $${obj}) (i32.const ${i * 8})) (local.get $${val}))
-    ${WS}
+    ${ws}
     ${expect(i === keys.length - 1 ? 125 : 44)}`
       })
       if (keys.length === 0) body += `
-    ${WS}
+    ${ws}
     ${expect(125)}`
       return `${body}
     (local.set $${out} (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $${obj})))`
@@ -1435,7 +1484,7 @@ export default (ctx) => {
       const val = local('aval', 'f64')
       const next = local('anew', 'i32')
       const id = uniq++
-      return `${WS}
+      return `${ws}
     ${expect(91)}
     (local.set $${cap} (i32.const 8))
     ;; Alloc via the canonical header allocator (NOT a hand-rolled
@@ -1447,10 +1496,10 @@ export default (ctx) => {
     ;; __alloc_hdr returns (already past the 16-byte header) — every store
     ;; site below drops the old scheme's extra +8 offset.
     (local.set $${ptr} (call $__alloc_hdr (i32.const 0) (local.get $${cap})))
-    ${WS}
-    (if (i32.eq ${PEEK} (i32.const 93))
+    ${ws}
+    (if (i32.eq ${peek} (i32.const 93))
       (then
-        ${ADV(1)}
+        ${adv(1)}
         (local.set $${out} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${ptr}))))
       (else
         (block $ad${id} (loop $al${id}
@@ -1468,14 +1517,14 @@ export default (ctx) => {
           ${parse(elem, val)}
           (f64.store (i32.add (local.get $${ptr}) (i32.shl (local.get $${len}) (i32.const 3))) (local.get $${val}))
           (local.set $${len} (i32.add (local.get $${len}) (i32.const 1)))
-          ${WS}
-          (local.set $ch ${PEEK})
+          ${ws}
+          (local.set $ch ${peek})
           (br_if $ad${id} (i32.eq (local.get $ch) (i32.const 93)))
           (if (i32.ne (local.get $ch) (i32.const 44)) (then ${fail}))
-          ${ADV(1)}
-          ${WS}
+          ${adv(1)}
+          ${ws}
           (br $al${id})))
-        ${ADV(1)}
+        ${adv(1)}
         ;; Patch final length into the header (cap is already correct from
         ;; the last __alloc_hdr call above; propsPtr was zeroed by
         ;; __alloc_hdr and never touched since — a fresh internal array).
@@ -1485,8 +1534,8 @@ export default (ctx) => {
 
     const out = local('out', 'f64')
     const body = `${parse(parsed, out)}
-    ${WS}
-    (if (i32.ne ${PEEK} (i32.const -1)) (then ${fail}))
+    ${ws}
+    (if (i32.ne (local.get $p) (local.get $len)) (then ${fail}))
     (local.get $${out})`
     const localDecls = [...locals].map(([n, t]) => `    (local $${n} ${t})`).join('\n')
     ctx.core.stdlib[name] = `(func $${name} (param $str i64) (result f64)
