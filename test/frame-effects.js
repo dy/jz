@@ -769,9 +769,11 @@ test('frame effects: a call that opens the runtime\'s iterator records keeps not
   // five patterns open at once: one record more than the module made
   const deep = 'export function f(x, n) { const t = [n, n + 1]; const [[[[[a]]]], b] = x; return (a | 0) + (b | 0) + t.length }'
   const once = ([kept, reset]) => kept[0] > 0 && kept[0] < 512 && kept[1] === 0 && kept[2] === 0 && reset[0] > 0 && reset[0] < 512 && reset[1] === 0
+  const none = ([kept, reset]) => [...kept, ...reset].every(n => n === 0)
   for (const optimize of levels(0, 2, 3)) {
     const over = first(pair, [[3, 4]], optimize), set2 = first(set, [0], optimize)
-    ok(once(over), `a pattern over an argument keeps the record it saved, once a round, at ${optimize}: ${over.join(' | ')}`)
+    // (an array argument is read by position behind Array.isArray: no iterator record opens)
+    ok(none(over), `a pattern over an array argument keeps nothing at ${optimize}: ${over.join(' | ')}`)
     ok(once(set2), `a pattern over a Set at ${optimize}: ${set2.join(' | ')}`)
     const [kept, reset] = first(deep, [[[[[[7]]]], 2]], optimize)
     ok(kept[0] > 0 && kept[1] === 0 && kept[2] === 0, `a record past the module's is made once at ${optimize}: ${kept}`)
