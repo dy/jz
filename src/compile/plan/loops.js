@@ -25,6 +25,7 @@ import { containsDeclOf, cloneWithSubst, isUnitIncrement } from '../../type.js'
 import { includeModule } from '../../autoload.js'
 import { clonePlain, forLoopBodyIndex, withForLoopBody, collectBindings, nodeSize, optimizing } from './common.js'
 import { SOURCE_FULL } from '../../growth.js'
+import { K, core, tagOf } from '../../summary/kind.js'
 
 // Nested int row literal: `[[1,2],[3]]` → { flat, starts, lens }.
 const parseNestedIntRowLit = (expr) => {
@@ -411,10 +412,55 @@ export const unrollRowLenPadLoops = () => {
 // (a main-loop break must not fall into the tail), no closures (cloning would
 // duplicate them), receiver/bound/counter unwritten in body, body ≤ 400 nodes
 // (the clone doubles it — `splitCharScan: false` under optimize:'size').
+//
+// A tail step past a String's end reads no character: `i2` starts at the
+// string's length (or the tail runs no step at all), so its
+// `recv.charCodeAt(i2)` is NaN, and BODY′ takes the literal. Its classifier
+// tests fold away and the tail is the few statements the past-the-end steps
+// run, not a second copy of the scan: V8 allocates registers over the whole
+// function, and a tail as large as the main loop spilled the main loop's
+// carried values (the tokenizer's hash took a stack slot each character).
 const hasOp = (node, ops) => some(node, n => ops.has(n[0]))
 const SPLIT_BLOCKERS = new Set(['break', 'label', '=>'])
+const NAN_LIT = [null, NaN]
+const isNaNLit = n => Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isNaN(n[1])
+const charCodeAtNaN = (node, recv, i2) => {
+  if (!Array.isArray(node)) return node
+  if (node[0] === '()' && node[2] === i2 && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === recv && node[1][2] === 'charCodeAt')
+    return NAN_LIT.slice()
+  for (let k = 1; k < node.length; k++) node[k] = charCodeAtNaN(node[k], recv, i2)
+  return node
+}
+// `const c = NaN` (the character the tail read): its later statements read the
+// literal, which the classifier tests fold. A statement that declares the name
+// again, or catches into it, is left as written.
+const readsAsNaN = (node, name) => {
+  if (node === name) return NAN_LIT.slice()
+  if (!Array.isArray(node) || node[0] == null) return node
+  const from = node[0] === '.' || node[0] === '?.' ? 2 : node.length   // a property name is no read
+  for (let k = 1; k < from; k++) node[k] = readsAsNaN(node[k], name)
+  return node
+}
+const propagateNaNConsts = (node) => {
+  if (!Array.isArray(node) || node[0] == null) return node
+  if (node[0] === ';') {
+    const names = []
+    for (let k = 1; k < node.length; k++) {
+      for (const name of names)
+        if (!containsDeclOf(node[k], name) && !hasOp(node[k], CATCHES)) node[k] = readsAsNaN(node[k], name)
+      const s = node[k]
+      if (Array.isArray(s) && s[0] === 'const' && s.length === 2 && Array.isArray(s[1]) && s[1][0] === '=' && typeof s[1][1] === 'string' && isNaNLit(s[1][2]))
+        names.push(s[1][1])
+      else propagateNaNConsts(s)
+    }
+    return node
+  }
+  for (let k = 1; k < node.length; k++) propagateNaNConsts(node[k])
+  return node
+}
+const CATCHES = new Set(['catch'])
 
-const trySplitFor = (node, parent, idx) => {
+const trySplitFor = (node, parent, idx, view) => {
   const [, init, cond, step, body] = node
   if (!Array.isArray(cond) || cond[0] !== '<' || typeof cond[1] !== 'string' || typeof cond[2] !== 'string') return false
   const i = cond[1], B = cond[2]
@@ -443,8 +489,9 @@ const trySplitFor = (node, parent, idx) => {
   for (const d of declNames) rename.set(d, `${T}rs${freshId(ctx)}_${d}`)
   const i2 = `${T}rsi${freshId(ctx)}`
   const subst = new Map([[i, i2]])
-  const tailBody = cloneWithSubst(body, subst, rename)
+  let tailBody = cloneWithSubst(body, subst, rename)
   const tailStep = cloneWithSubst(step, subst, new Map())
+  if (view && tagOf(core(view.kindOfExpr(recv))) === K.STRING) tailBody = propagateNaNConsts(charCodeAtNaN(tailBody, recv, i2))
 
   includeModule('math')  // plan-time injection of math.min/math.ceil — prepare's auto-import has already run
   const M = `${T}ccm${freshId(ctx)}`
@@ -462,9 +509,11 @@ export const splitCharScanLoops = () => {
     if (func.raw || !func.body) continue
     // (a split loop runs a copy of its body past the string: none past the function's growth budget, src/growth.js)
     if (nodeSize(func.body) > SOURCE_FULL) continue
+    let view
     walkAst(func.body, { enter: (node, parent, idx) => {
       if (node[0] === '=>') return false
-      if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return false }
+      if (node[0] === 'for' && node.length === 5 && parent &&
+          trySplitFor(node, parent, idx, view ??= ctx.summary?.at(func.sig) ?? null)) { changed = true; return false }
     } })
     // body root itself can't be a bare `for` without a parent slot — wrap-walk
     // handles every nested position; a top-level-for body is `{}`-wrapped.

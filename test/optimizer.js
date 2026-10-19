@@ -3977,6 +3977,43 @@ test('splitCharScan: integral / fractional / NaN / negative bounds match JS', ()
   for (const n of [0, 3, 6, 9, 4.5, 7.5, NaN, -1]) is(scan(s, n), js(s, n), `n=${n}`)
 })
 
+// The tail starts at the string's length (or runs no step): every character it
+// reads is NaN, so it classifies nothing. Copied verbatim it was a second scan as
+// large as the first, and V8, allocating registers over the whole function,
+// spilled the main loop's hash to the stack (tokenizer: a store and a reload a char).
+test('splitCharScan: the tail reads no character past a string\'s end', () => {
+  const src = `
+    const isAlpha = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+    const scan = (src, len) => {
+      let h = 0x811c9dc5 | 0, number = 0, inNumber = 0, inIdent = 0, tokens = 0
+      for (let i = 0; i < len; i++) {
+        const c = src.charCodeAt(i)
+        if (c >= 48 && c <= 57) { number = ((number * 10) + (c - 48)) | 0; inNumber = 1 }
+        else {
+          if (inNumber) { h = Math.imul(h ^ number, 0x01000193); tokens++; number = 0; inNumber = 0 }
+          if (isAlpha(c)) { if (!inIdent) { h = Math.imul(h ^ c, 0x01000193); tokens++ } inIdent = 1 }
+          else { if (c > 32) { h = Math.imul(h ^ c, 0x01000193); tokens++ } inIdent = 0 }
+        }
+        { const c = 7; h = (h + c) | 0 }
+      }
+      if (inNumber) { h = Math.imul(h ^ number, 0x01000193); tokens++ }
+      return Math.imul(h ^ tokens, 0x01000193) >>> 0
+    }
+    export let main = (n, k) => {
+      let s = ''
+      for (let i = 0; i < n; i++) s = s + 'let a_1 = b + 23; '
+      return (scan(s, s.length + k) ^ scan(s, s.length - 1)) >>> 0
+    }`
+  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const fn = /\(func \$scan[\s\S]*?\n  \)/.exec(wat)?.[0] ?? ''
+  ok(fn.length > 0, 'scan stays a function')
+  ok(!/f64\.(ge|le)\b/.test(fn), 'no character is classified as a Number (`c >= 48 && c <= 57` reads no float)')
+  const want = oracle(src).main
+  const { main } = run(src, { optimize: 'speed' })
+  for (const [n, k] of [[0, 0], [0, 3], [1, -2], [3, 0], [3, 2], [3, 2.5], [3, -40], [3, NaN], [4, 0.25]])
+    is(main(n, k), want(n, k), `n=${n} k=${k}`)
+})
+
 test('splitCharScan: break in body disables the split (a main-loop break must not fall into the tail)', () => {
   const src = `export let find = (s, n) => {
     let at = -1
@@ -6270,7 +6307,11 @@ test('decomposed charCodeAt unswitches SSO vs heap outside leaf byte loops', () 
   ok(/\$s\$ccsso/.test(sw), 'string parameter is decomposed once at entry')
   is((sw.match(/\(local\.get \$s\$ccsso\)/g) || []).length, 2,
     'representation is tested once per split loop, not once per byte')
-  ok((sw.match(/\(loop/g) || []).length >= 4, 'SSO and heap loop versions are materialized')
+  // (the scan's main loop in two versions; its past-the-end tail reads no
+  // character, so it takes no representation version)
+  ok((sw.match(/\(loop/g) || []).length >= 3, 'SSO and heap loop versions are materialized')
+  ok(/i64\.shr_u\s+\(local\.get \$s\$ccp64\)/.test(sw), 'the SSO version reads its units from the payload')
+  is((sw.match(/i32\.load16_u/g) || []).length, 1, 'the heap version reads its units from memory, once')
   const ex = run(src, { optimize: 'speed' })
   is(ex.small(), 294, 'SSO loop version stays exact')
   is(ex.heap(), 3120, 'heap loop version stays exact')
