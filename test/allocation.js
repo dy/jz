@@ -12,6 +12,7 @@ import { firstRefKind, MUTATE_OPS, extractParams, classifyParam, collectParamNam
 import { findFreeVars } from '../src/compile/analyze-scans.js'
 import { numHashLiteral } from '../module/collection.js'
 import { oracle } from './util.js'
+import { offset } from '../interop.js'
 
 const measure = (body, calls = 1000, warm = 10) => {
   const src = `${body}
@@ -530,4 +531,32 @@ test('allocation: copied concat results do not retain builder storage', () => {
       is([len, copied, end], [n * 8 + 8, n * 8 + 1, 33], `O${optimize}: the copied result stays unchanged`)
     }
   }
+})
+
+// A bump allocator packs arrays back to back, so two of 2^k bytes start one
+// header (16 bytes) apart in their low twelve address bits: a kernel storing
+// to one and loading the other an element later matches an in-flight store
+// there on every iteration (4K aliasing). A block of 4 KiB or more starts at
+// the next quarter-page colour instead; the size tier keeps the packing.
+test('allocation: blocks of 4 KiB or more start a quarter page apart mod 4096', () => {
+  const src = `export let ends = (n) => {
+    const a = new Float64Array(n), e0 = __heap_mark()
+    const b = new Float64Array(n), e1 = __heap_mark()
+    const c = new Float64Array(n), e2 = __heap_mark()
+    const d = new Float64Array(n), e3 = __heap_mark()
+    a[1] = 1; b[1] = 2; c[1] = 3; d[1] = 4
+    return [e0 % 4096, e1 % 4096, e2 % 4096, e3 % 4096, a[1] + b[1] + c[1] + d[1]]
+  }`
+  const steps = r => [1, 2, 3].map(k => (r[k] - r[k - 1] + 4096) % 4096)
+  for (const optimize of levels(2, 3, 'size')) {
+    const r = jz(src, { optimize }).exports.ends(1024)
+    is(r[4], 10, `O${optimize}: the arrays hold their values`)
+    is(steps(r), optimize === 'size' ? [16, 16, 16] : [1024, 1024, 1024], `O${optimize}: 8 KiB arrays, ends mod 4096`)
+    // below the threshold arrays stay packed
+    is(steps(jz(src, { optimize }).exports.ends(64)), [528, 528, 528], `O${optimize}: 512-byte arrays stay packed`)
+  }
+  // the host places the arrays it hands a kernel the same way
+  const { memory } = jz('export let f = (a) => a[0]')
+  const offs = [0, 1, 2, 3].map(() => offset(memory.Float64Array(new Float64Array(1024))) % 4096)
+  is([1, 2, 3].map(k => (offs[k] - offs[k - 1] + 4096) % 4096), [1024, 1024, 1024], 'host-allocated 8 KiB arrays')
 })

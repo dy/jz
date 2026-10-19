@@ -885,13 +885,31 @@ export default (ctx) => {
     // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
     // which must stay at the data end or init-time heap objects misread as static.)
     declGlobal('__heap_reset', 'i32', HEAP.START)
+    // Placement of large blocks (optimize.placeLargeBlocks). A bump allocator
+    // packs arrays back to back, so two arrays whose sizes are multiples of
+    // 4 KiB start 16 bytes (the header) apart in their low twelve address
+    // bits. A kernel streaming both stores to one and, an element later,
+    // loads the other at the same low bits: the core cannot tell the load
+    // from the in-flight store until its full address resolves (4K
+    // aliasing), and every iteration stalls (fft: 1.3x on AMD Zen 3). A
+    // block of 4 KiB or more starts instead where its address mod 4096 is
+    // the next of four quarter-page colours: any four consecutive large
+    // blocks sit at least 1 KiB apart there. The gap before each is under
+    // 4 KiB; a compaction, which slides blocks together, drops it.
+    const place = !!ctx.transform.optimize?.placeLargeBlocks
+    if (place) declGlobal('__heap_color', 'i32', 0)
     // Own-memory twin: reject unsigned wraparound here too, before __memgrow
-    // sees an offset that has already wrapped below the live heap.
+    // sees an offset that has already wrapped below the live heap (with the
+    // gap, against the top before it: gap and size stay under 2^32).
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32)
-      (local.set $ptr (global.get $__heap))
+      (local.set $ptr (global.get $__heap))${place ? `
+      (if (i32.ge_u (local.get $bytes) (i32.const 4096))
+        (then
+          (local.set $ptr (i32.add (local.get $ptr) (i32.and (i32.sub (global.get $__heap_color) (local.get $ptr)) (i32.const 4095))))
+          (global.set $__heap_color (i32.and (i32.add (global.get $__heap_color) (i32.const 1024)) (i32.const 4095)))))` : ''}
       (local.set $next (i32.and (i32.add (i32.add (local.get $ptr) (local.get $bytes)) (i32.const 7)) (i32.const -8)))
-      (if (i32.lt_u (local.get $next) (local.get $ptr)) (then ${HEAP_EXHAUSTED_THROW}))
+      (if (i32.lt_u (local.get $next) (${place ? 'global.get $__heap' : 'local.get $ptr'})) (then ${HEAP_EXHAUSTED_THROW}))
       (if (i32.gt_u (local.get $next) (global.get $__heap_end))
         (then (call $__memgrow (local.get $next))))
       (global.set $__heap (local.get $next))

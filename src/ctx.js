@@ -694,6 +694,7 @@ export function reset(proto, globals, bridge) {
     // the representation; all access goes through its helpers).
     dataParts: [],
     dataLen: 0,
+    dataColor: 0,          // the quarter-page colour the next large static block starts at (module/typedarray.js staticStoragePtr)
     dataDedup: new Map(),  // str → offset (dedup literal bytes in active data segment)
     strPoolParts: [],      // shared-memory: byte records with unit-length-prefixed UTF-16LE literals
     strPoolLen: 0,

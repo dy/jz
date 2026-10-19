@@ -62,12 +62,17 @@ const makeJsAllocator = (mem, heapGlobal) => {
   const setPtr = heapGlobal ? v => { heapGlobal.value = v } : v => dv().setInt32(HEAP.PTR_ADDR, v, true)
   // Rewind target: the global's post-static-init value, else the fixed start.
   let base = heapGlobal ? (heapGlobal.value >>> 0) : HEAP.START
+  // A block of 4 KiB or more starts at the next quarter-page colour mod 4096,
+  // as the module's own __alloc places them (module/core.js): arrays the host
+  // hands a kernel do not share their low address bits (4K aliasing).
+  let color = 0
   const alloc = (bytes) => {
     // Align up to 8 without `& ~7` — a JS bitwise op ToInt32-truncates its RESULT too,
     // so `(x + 7) & ~7` would re-introduce the same sign flip past 2 GiB even with a
     // correctly-unsigned `getPtr()`. Plain arithmetic has no such ceiling.
     const ptr = getPtr()
-    const aligned = Math.ceil(ptr / 8) * 8
+    let aligned = Math.ceil(ptr / 8) * 8
+    if (bytes >= 4096) { aligned += (color - aligned % 4096 + 4096) % 4096; color = (color + 1024) % 4096 }
     const next = aligned + bytes
     if (!Number.isSafeInteger(bytes) || bytes < 0 || next >= 2 ** 32)
       throw new RangeError('allocation exceeds the wasm32 heap or has an invalid size')

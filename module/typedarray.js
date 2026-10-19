@@ -19,7 +19,7 @@ import { typedIdxProven, typedIdxWhole, idxKey, exprType } from '../src/type.js'
 import { constIntExpr, intExprRange } from '../src/static.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, TYPED_ELEM_CLAMPED_FLAG, DATA_VIEW_AUX, DATA_VIEW_FLAG, encodeTypedElemAux } from '../layout.js'
-import { err, inc, PTR, LAYOUT, HEAP, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
+import { ctx as ctxRef, err, inc, PTR, LAYOUT, HEAP, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadInfo } from '../src/compile/typed-storage-plan.js'
@@ -89,6 +89,13 @@ const staticStorageLen = (ctx, lenExpr) => {
 const staticStoragePtr = (aux, byteLen, slot) => {
   if (slot?.offset != null) return mkPtrIR(PTR.TYPED, aux, ['i32.const', slot.offset])
   dataAlign(16)
+  // A block of 4 KiB or more starts at the next quarter-page colour, as the
+  // heap places them (module/core.js __alloc): the zero gap is elided data.
+  if (byteLen + 16 >= 4096 && ctxRef.transform.optimize?.placeLargeBlocks) {
+    const r = ctxRef.runtime, gap = (r.dataColor - dataLen() % 4096 + 4096) % 4096
+    if (gap) dataPush(new Uint8Array(gap))
+    r.dataColor = (r.dataColor + 1024) % 4096
+  }
   const hdrOff = dataLen()
   const hdr = new Uint8Array(16), dv = new DataView(hdr.buffer)
   dv.setInt32(8, byteLen, true); dv.setInt32(12, byteLen, true)

@@ -478,7 +478,8 @@ test('compile({ memory: pages }): emits owned memory with initial page count', (
 
 test('allocator: page boundaries, exact-growth fallback, and unsigned overflow', () => {
   if (onKernel()) return // memory limits are host compile options
-  const { instance } = instantiate(compile('export let f=n=>new Uint8Array(n)', { memory: 1, maxMemory: 3 }))
+  // the growth arithmetic alone: a large block's placement gap (allocation.js) off
+  const { instance } = instantiate(compile('export let f=n=>new Uint8Array(n)', { memory: 1, maxMemory: 3, optimize: { placeLargeBlocks: false } }))
   const { _alloc, __heap, memory } = instance.exports
   const start = __heap.value
   is(_alloc(0), start)
@@ -499,6 +500,11 @@ test('allocator: page boundaries, exact-growth fallback, and unsigned overflow',
   is(__heap.value, -8)
   __heap.value = saved
   is(_alloc(0), saved, 'allocator remains usable after failure')
+  // a large block's placement gap wrapping past 4 GiB traps too, the heap unmoved
+  const placed = instantiate(compile('export let f=n=>new Uint8Array(n)', { memory: 1, maxMemory: 3 })).instance.exports
+  placed.__heap.value = -16
+  throws(() => placed._alloc(4096), WebAssembly.RuntimeError)
+  is(placed.__heap.value, -16)
 })
 
 test('allocator: geometric growth changes at the documented page thresholds', () => {
