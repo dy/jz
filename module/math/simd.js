@@ -318,6 +318,14 @@ export const registerMathSimd = () => {
           (f64x2.splat (call $math.log (f64x2.extract_lane 0 (local.get $x))))
           (call $math.log (f64x2.extract_lane 1 (local.get $x)))))))`, ['math.log'])
 
+  // $math.sign two lanes wide: a lane neither NaN nor ±0 takes 1 with its sign, any
+  // other its own value, as the scalar's three tests answer.
+  wat('math.sign_v', `(func $math.sign_v (param $x v128) (result v128)
+    (v128.bitselect
+      (v128.or (v128.and (local.get $x) ${i64s('0x8000000000000000')}) ${splat(1)})
+      (local.get $x)
+      (v128.and (f64x2.eq (local.get $x) (local.get $x)) (f64x2.ne (local.get $x) ${splat(0)}))))`)
+
   // True f64x2 exp2 and exp – the hot path (every lane's k = round(64y) in [−65408, 65535],
   // i.e. a normal result) mirrors the scalar table kernels op for op: the two lanes' T and
   // tail come from two scalar loads, the polynomial and T + T·(q + tail) run 2-wide, 2^e is

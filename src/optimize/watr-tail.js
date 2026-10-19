@@ -17,7 +17,7 @@ import { shareSplitSlots } from './split-slots.js'
 import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { ctx } from '../ctx.js'
 import {
-  SIMD_PINNED, collectReachableGlobalWrites, hoistGlobalPtrOffset,
+  SIMD_PINNED, LANE_PINS, collectReachableGlobalWrites, hoistGlobalPtrOffset,
 } from './index.js'
 import { pureKernel } from './pure-funcs.js'
 import { guardToInt32 } from './to-int32.js'
@@ -139,7 +139,8 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   // mirrors) so watr's inline passes don't dissolve the call nodes the lift needs. The protection
   // policy lives here in jz — watr just honours the `pin` list (no jz names hardcoded in watr).
   if (watrOpts === true) watrOpts = {}
-  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED, ...OUT_OF_LINE] : [...SIMD_PINNED, ...OUT_OF_LINE]
+  const pins = cfg.vectorizeLaneLocal ? [...SIMD_PINNED, ...LANE_PINS, ...OUT_OF_LINE] : [...SIMD_PINNED, ...OUT_OF_LINE]
+  watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...pins] : pins
   // Partial unrolling overlaps branch latency in compact codecs, but duplicates
   // too many cold compiler/parser loops in large module graphs and loses the
   // warm self-compile I-cache race. Users may still opt in explicitly.

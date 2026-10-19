@@ -116,6 +116,7 @@ export default (ctx) => {
     __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
     // the long division is its own function, the common case answered inline
     __rem: ['__rem_div'],
+    __rem_v: ['__rem'],
     __throw_not_callable: ['__alloc_hdr', '__mkptr'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
@@ -504,6 +505,20 @@ export default (ctx) => {
     (if (f64.lt (local.get $x) (f64.mul (local.get $y) (f64.const 2)))
       (then (return (f64.copysign (f64.sub (local.get $x) (local.get $y)) (local.get $a)))))
     (call $__rem_div (local.get $a) (local.get $b)))`
+  // `__rem` two lanes wide for the lane vectorizer (PPC_CALL2): both lanes below twice
+  // their divisors take its own two answers, the dividend or one exact subtraction with
+  // the dividend's sign; any other pair takes `__rem` a lane. Bit for bit the scalar.
+  ctx.core.stdlib['__rem_v'] = `(func $__rem_v (param $a v128) (param $b v128) (result v128)
+    (local $x v128) (local $y v128)
+    (local.set $x (f64x2.abs (local.get $a)))
+    (local.set $y (f64x2.abs (local.get $b)))
+    (if (result v128) (i64x2.all_true (f64x2.lt (local.get $x) (f64x2.mul (local.get $y) (f64x2.splat (f64.const 2)))))
+      (then (v128.bitselect (local.get $a)
+        (v128.or (f64x2.sub (local.get $x) (local.get $y)) (v128.and (local.get $a) (i64x2.splat (i64.const 0x8000000000000000))))
+        (f64x2.lt (local.get $x) (local.get $y))))
+      (else (f64x2.replace_lane 1
+        (f64x2.splat (call $__rem (f64x2.extract_lane 0 (local.get $a)) (f64x2.extract_lane 0 (local.get $b))))
+        (call $__rem (f64x2.extract_lane 1 (local.get $a)) (f64x2.extract_lane 1 (local.get $b)))))))`
   ctx.core.stdlib['__rem_div'] = `(func $__rem_div (param $a f64) (param $b f64) (result f64)
     (local $x f64) (local $y f64)
     (if (f64.ne (local.get $a) (local.get $a)) (then (return (local.get $a))))

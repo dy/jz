@@ -865,6 +865,15 @@ export function liftExprV(expr, ctx) {
     }
   }
 
+  // `copysign(a, b)` (an inline remainder's sign, `x % k` under its magnitude test): the
+  // magnitude bits of a, the sign bit of b, both lanes at once — the scalar's own bits.
+  if ((op === 'f64.copysign' && ctx.laneType === 'f64' || op === 'f32.copysign' && ctx.laneType === 'f32') && expr.length === 3) {
+    const a = liftExprV(expr[1], ctx); if (ctx.fail) return null
+    const b = liftExprV(expr[2], ctx); if (ctx.fail) return null
+    const [splat, sign] = op === 'f64.copysign' ? ['i64x2.splat', ['i64.const', '0x8000000000000000']] : ['i32x4.splat', ['i32.const', '0x80000000']]
+    return ['v128.bitselect', b, a, [splat, sign]]
+  }
+
   if (op === 'call' && ctx.laneType === 'f64' && PPC_CALL2[expr[1]]) {
     const args = []
     for (let i = 2; i < expr.length; i++) { const a = liftExprV(expr[i], ctx); if (ctx.fail) return null; args.push(a) }

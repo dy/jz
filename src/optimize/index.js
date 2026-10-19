@@ -29,7 +29,7 @@
  * @module optimize
  */
 
-export { SIMD_PINNED } from './vectorize/lane-tables.js'
+export { SIMD_PINNED, LANE_PINS } from './vectorize/lane-tables.js'
 export { inlinePureFnsInFn } from './vectorize/inline-pure.js'
 export { hasIROp } from './ir-scan.js'
 

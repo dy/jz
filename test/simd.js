@@ -663,6 +663,50 @@ test('SIMD AoS - constant-exponent pow lifts per lane through the pow kernel (bi
   ok(!/math\.exp_v/.test(w) && !/math\.log_v/.test(w), 'no 2-wide exp∘log second algorithm')
 })
 
+// A pixel kernel's `Math.sign(b) * Math.abs(a)` (copySign), its hue wraps
+// (`((h % τ) + τ) % τ`, `h % 360` under the remainder's magnitude test) and the
+// transcendentals around them run two lanes a step: `$math.sign_v` selects each
+// lane's own answer, `$__rem_v` takes `__rem`'s two inline answers where both lanes
+// lie below twice their divisors and `__rem` a lane past them, `copysign` is the
+// sign bit's select. Every lane is the scalar's bits, NaN, ±0, ±∞ and remainders
+// of many quotients included.
+test('SIMD AoS - Math.sign, a float remainder and copysign lift per lane, bit-exact', () => {
+  const src = `
+    const tau = 2 * Math.PI
+    const copySign = (a, b) => Math.sign(b) * Math.abs(a)
+    const hue360 = (h) => { const r = h % 360; return r < 0 ? r + 360 : r }
+    const buf = new Float64Array(3 * 1024)
+    export let set = (i, v) => { buf[i] = v }
+    export let get = (i) => buf[i]
+    export let map = (n) => { for (let i = 0; i < n; i++) { const j = 3 * i
+      const a = buf[j], b = buf[j + 1], c = buf[j + 2]
+      const h = ((Math.atan2(b, a) % tau) + tau) % tau
+      buf[j] = copySign(c, a - b); buf[j + 1] = hue360(h * (180 / Math.PI) + c); buf[j + 2] = (a * 7) % (b + 0.5) } }
+    export let scalar = (a, b, c) => { const h = ((Math.atan2(b, a) % tau) + tau) % tau
+      return [copySign(c, a - b), hue360(h * (180 / Math.PI) + c), (a * 7) % (b + 0.5)] }`
+  const vals = [0, -0, 1, -1, 0.5, -2.75, 3.25, 359.99, 360, -360.5, 1e9, -3e15, 2 ** 60, Infinity, -Infinity, NaN, 1e-310, 7.25]
+  const input = []
+  for (const a of vals) for (const b of vals) input.push(a, b, (a - b) * 0.37)
+  const n = input.length / 3
+  for (const optimize of [SIMD_OPT.optimize, NOVEC.optimize]) {
+    const e = jz(src, { optimize }).exports
+    for (let i = 0; i < input.length; i++) e.set(i, input[i])
+    e.map(n)
+    for (let i = 0; i < n; i++) {
+      const want = e.scalar(input[3 * i], input[3 * i + 1], input[3 * i + 2])
+      for (let k = 0; k < 3; k++) ok(Object.is(e.get(3 * i + k), want[k]), `pixel ${input.slice(3 * i, 3 * i + 3)} lane ${k}: the scalar's bits`)
+    }
+  }
+  // the sign and the remainder as JS answers them (the hue lane rides atan2, within its documented ulps)
+  const host = oracle(src), e = jz(src, SIMD_OPT).exports
+  for (let i = 0; i < n; i++) {
+    const got = e.scalar(input[3 * i], input[3 * i + 1], input[3 * i + 2]), want = host.scalar(input[3 * i], input[3 * i + 1], input[3 * i + 2])
+    ok(Object.is(got[0], want[0]) && Object.is(got[2], want[2]), `pixel ${input.slice(3 * i, 3 * i + 3)}: copySign and % as JS`)
+  }
+  const body = funcWat(wat(src, SIMD_OPT), 'map')
+  ok(/f64x2/.test(body) && /call \$math\.sign_v/.test(body) && /call \$__rem_v/.test(body), 'the pixel runs in lanes through the sign and remainder mirrors')
+})
+
 test('SIMD AoS - mixed stride (struct loads + array stores) bails, stays correct', () => {
   // Stride-3 object-field loads feeding stride-1 array stores can't share one gather/scatter delta
   // — the recognizer must bail to scalar rather than corrupt the odd-stride sites.

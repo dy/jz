@@ -274,6 +274,7 @@ export const PPC_CALL2 = {
   '$math.pow_b': '$math.pow_b_v',   // a constant base's pow (y, base, log split): the two-wide exponential, bit-exact
   '$math.atan2': '$math.atan2_2', '$math.hypot': '$math.hypot_2',   // 2-arg; bit-exact extract/repack
   '$math.cbrt': '$math.cbrt_v', '$math.pow_fifths': '$math.pow_fifths_v',   // per-lane scalar repack
+  '$math.sign': '$math.sign_v', '$__rem': '$__rem_v',   // a select of the lane's own answers; the remainder's two inline answers, a lane past them scalar
   '$math.pow_fold': '$math.pow_fold_v',   // 2-arg (x, c); only reachable under optimize.crPow — see module/math.js
   // log/exp/exp2: TRUE f64x2 polys — both lanes one evaluation (≈2×, beats V8 native log). Bit-exact
   // via hot-path-vectorized + scalar-edge-fallback ($math.log_v/exp_v/exp2_v, module/math.js).
@@ -286,7 +287,11 @@ export const PPC_CALL2 = {
 // NEITHER: the scalar tail keeps calling `$math.cbrt` and the SIMD body keeps calling
 // `$math.cbrt_v` (inlining the small per-lane repack mirror would erase the vectorized call the
 // lift produced). The protection policy lives here in jz, not hardcoded in watr.
-export const SIMD_PINNED = [...new Set([...Object.keys(PPC_CALL2), ...Object.values(PPC_CALL2)])]
+// `$math.sign` and `$__rem` are small enough that splicing them into their callers pays where
+// no lane loop calls them (the size tier, a remainder outside a loop): they stay calls only
+// where the lane vectorizer runs (LANE_PINS, watr-tail.js resolveWatrOpts).
+export const LANE_PINS = ['$math.sign', '$__rem']
+export const SIMD_PINNED = [...new Set([...Object.keys(PPC_CALL2), ...Object.values(PPC_CALL2)])].filter(n => !LANE_PINS.includes(n))
 // Arithmetic precision can exceed storage width (notably Float32Array).
 // Maps and stencils share this decision before validating memory strides.
 export function floatLane(body) {
