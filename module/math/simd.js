@@ -258,8 +258,26 @@ export const registerMathSimd = () => {
     (local.set $r (f64x2.div (f64x2.sub (local.get $r) (local.get $t))
       (f64x2.add (f64x2.add (local.get $t) (local.get $t)) (local.get $r))))
     (f64x2.add (local.get $t) (f64x2.mul (local.get $t) (local.get $r))))`, ['math.cbrt'])
-  // $math.pow_fifths two lanes wide: x^r and x^p two-wide, the fifth root a scalar call a lane
-  // (the Newton steps divide), exactly the scalar helper's operations; a lane outside [lo, hi]
+  // $math.fifthroot two lanes wide where both lanes are normal and finite: the seed a lane at a
+  // time (the raw bits divided by 5, as the scalar's), then the scalar's four Newton steps both
+  // lanes at once, its operations in its order, so its bits; a zero, subnormal or non-finite
+  // lane sends both through the scalar helper. Two lanes share each step's division.
+  const seed5 = (lane) => `(i64.add (i64.div_u (i64x2.extract_lane ${lane} (local.get $v)) (i64.const 5)) (i64.const 0x3325E66666666800))`
+  const step5 = `
+      (local.set $q (f64x2.mul (local.get $t) (local.get $t)))
+      (local.set $t (f64x2.mul (f64x2.add (f64x2.mul ${splat(4)} (local.get $t)) (f64x2.div (local.get $v) (f64x2.mul (local.get $q) (local.get $q)))) ${splat(0.2)}))`
+  wat('math.fifthroot_v', `(func $math.fifthroot_v (param $v v128) (result v128)
+    (local $t v128) (local $q v128)
+    (if (result v128) (i64x2.all_true (v128.and (f64x2.ge (local.get $v) ${splat(2 ** -1022)}) (f64x2.lt (local.get $v) ${splat('inf')})))
+      (then
+        (local.set $t (i64x2.replace_lane 1 (i64x2.splat ${seed5(0)}) ${seed5(1)}))${step5}${step5}${step5}
+        (local.set $q (f64x2.mul (local.get $t) (local.get $t)))
+        (f64x2.add (local.get $t) (f64x2.mul (f64x2.sub (f64x2.div (local.get $v) (f64x2.mul (local.get $q) (local.get $q))) (local.get $t)) ${splat(0.2)})))
+      (else (f64x2.replace_lane 1
+        (f64x2.splat (call $math.fifthroot (f64x2.extract_lane 0 (local.get $v))))
+        (call $math.fifthroot (f64x2.extract_lane 1 (local.get $v)))))))`, ['math.fifthroot'])
+  // $math.pow_fifths two lanes wide: x^r and x^p two-wide, the fifth root both lanes at once
+  // ($math.fifthroot_v), exactly the scalar helper's operations; a lane outside [lo, hi]
   // sends both through the scalar helper. c, lo and hi are the fold's constants, splat.
   wat('math.pow_fifths_v', `(func $math.pow_fifths_v (param $x v128) (param $c v128) (param $lo v128) (param $hi v128) (result v128)
     (local $p f64) (local $r f64) (local $x2 v128) (local $v v128)
@@ -271,9 +289,7 @@ export const registerMathSimd = () => {
         (local.set $v (if (result v128) (f64.lt (local.get $r) (f64.const 2.5))
           (then (select (local.get $x2) (local.get $x) (f64.gt (local.get $r) (f64.const 1.5))))
           (else (select (f64x2.mul (local.get $x2) (local.get $x2)) (f64x2.mul (local.get $x2) (local.get $x)) (f64.gt (local.get $r) (f64.const 3.5))))))
-        (local.set $v (f64x2.replace_lane 1
-          (f64x2.splat (call $math.fifthroot (f64x2.extract_lane 0 (local.get $v))))
-          (call $math.fifthroot (f64x2.extract_lane 1 (local.get $v)))))
+        (local.set $v (call $math.fifthroot_v (local.get $v)))
         (if (result v128) (f64.lt (local.get $p) (f64.const 0.5))
           (then (local.get $v))
           (else (f64x2.mul
@@ -286,7 +302,7 @@ export const registerMathSimd = () => {
           (f64x2.splat (call $math.pow_fifths (f64x2.extract_lane 0 (local.get $x)) (f64x2.extract_lane 0 (local.get $c))
             (f64x2.extract_lane 0 (local.get $lo)) (f64x2.extract_lane 0 (local.get $hi))))
           (call $math.pow_fifths (f64x2.extract_lane 1 (local.get $x)) (f64x2.extract_lane 1 (local.get $c))
-            (f64x2.extract_lane 1 (local.get $lo)) (f64x2.extract_lane 1 (local.get $hi)))))))`, ['math.pow_fifths', 'math.fifthroot'])
+            (f64x2.extract_lane 1 (local.get $lo)) (f64x2.extract_lane 1 (local.get $hi)))))))`, ['math.pow_fifths', 'math.fifthroot_v'])
   // True f64x2 log — both lanes through one fdlibm poly (≈2× over two scalar calls). The HOT path
   // (both lanes a normal finite x>0) mirrors $math.log's normal branch op-for-op: bit-exact (the
   // sqrt2-center conditional becomes a per-lane bitselect; the i32 exponent k becomes an f64 via the

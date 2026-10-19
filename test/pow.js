@@ -286,6 +286,32 @@ test('fifthroot pow fold (default path): within 48 ulp of the host over the doub
   }
 })
 
+// A lane loop of k/5 powers (the sRGB decode over a buffer) takes the fifth root two
+// lanes a step ($math.fifthroot_v: the seed a lane, the four Newton steps' divisions
+// shared), bit for bit what the loop computes without lanes, at every edge the
+// scalar answers itself (0, subnormal, ±∞, NaN, negative bases, past the fold's range).
+test('fifthroot pow fold in lanes: both lanes share the Newton steps, bit-exact with the scalar loop', () => {
+  const src = `let a = new Float64Array(0), o = new Float64Array(0)
+    export let put = (n) => { a = new Float64Array(n); o = new Float64Array(n) }
+    export let set = (i, v) => { a[i] = v }
+    export let get = (i) => o[i]
+    export let map = (n) => { for (let i = 0; i < n; i++) o[i] = ((a[i] + 0.055) / 1.055) ** 2.4 + a[i] ** 0.6 }`
+  const rng = mkRng(0x5E7D)
+  const xs = [0, -0, 1, -1, 0.04045, 1e-310, 5e-324, 1e300, Infinity, -Infinity, NaN, -0.055, 1e-30, 3e15,
+    ...Array.from({ length: 300 }, () => rng()), ...Array.from({ length: 100 }, () => (1 + rng()) * 2 ** Math.floor(-80 + rng() * 160))]
+  const outs = []
+  for (const optimize of [{ level: 'speed' }, { level: 'speed', simd: false }]) {
+    const e = run(src, { optimize })
+    e.put(xs.length)
+    xs.forEach((x, i) => e.set(i, x))
+    e.map(xs.length)
+    outs.push(xs.map((_, i) => e.get(i)))
+  }
+  for (let i = 0; i < xs.length; i++) ok(Object.is(outs[0][i], outs[1][i]), `${xs[i]}: lanes ${outs[0][i]}, scalar ${outs[1][i]}`)
+  const vec = funcWat(wat(src, { optimize: 'speed' }), 'math.pow_fifths_v')
+  ok(vec && !/call \$math\.fifthroot\s+\(f64x2\.extract_lane/.test(vec.replace(/\(else[\s\S]*$/, '')) && /f64x2\.div/.test(vec), 'the fifth root runs its divisions two lanes wide')
+})
+
 // === 4. Correctly rounded on the authoritative vector set (runtime + fold paths) ===
 
 const NV = 2610 / 16384, P = 1.7 * 2523 / 32
