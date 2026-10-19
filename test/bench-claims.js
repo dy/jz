@@ -331,7 +331,10 @@ test('claims: contenders are the fastest stored rivals of each class, with jz an
   is(contenders(c, 1).join(','), 'jz,as,deno,bun,porf-native', 'one per class')
   is(contenders(c, 2, ['jz', 'c-wasm', 'rust-wasm', 'v8']).join(','), 'jz,c-wasm,rust-wasm,v8', 'ranked among the selected lanes')
   is(contenders(c, 1, ['jz', 'jz-w2c', 'nat', 'as', 'tinygo']).join(','), 'jz,as,jz-w2c,nat', 'a selected lane no claim ranks is measured as selected')
-  is(contenders(undefined, 2).join(','), 'jz', 'a case without evidence ranks no rival')
+  is(contenders(undefined, 2).join(','), 'jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,v8,deno,bun,jsc,porf-native',
+    'a case without evidence measures every rival: no class can rank it')
+  is(contenders({ targets: { jz: row(100), 'jz-w2c': row(90), v8: row(200) } }, 1, ['jz', 'jz-w2c', 'c-wasm', 'as', 'v8', 'deno', 'bun', 'porf-native']).join(','),
+    'jz,c-wasm,as,v8,bun,porf-native,jz-w2c', 'a class with no timed row measures its selected lanes; a ranked class keeps its nearest')
 })
 
 // A --contenders refresh measures the nearest rivals of each class per case: the

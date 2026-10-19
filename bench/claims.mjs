@@ -25,13 +25,17 @@ export const CLAIM_CLASSES = [
 /** The lanes measured for a case under --contenders: jz, the `n` fastest rivals of each
  *  claim class by the stored evidence, Porffor, and every selected lane no claim ranks
  *  (jz's own native lanes, the reference C). A rival with no timed row for the case
- *  cannot be ranked and waits for a full refresh. `lanes` is the selection (every lane
- *  when null), so a rival absent from it is not ranked either. */
+ *  cannot be ranked and waits for a full refresh, unless its class has no timed row at
+ *  all (a case new to the corpus): a class the evidence cannot rank measures every one
+ *  of its lanes. `lanes` is the selection (every lane when null), so a rival absent
+ *  from it is neither ranked nor measured. */
 const RANKED = new Set([...CLAIM_RIVALS, ...JIT_RIVALS, 'porf-native'])
 export const contenders = (caseEvidence, n, lanes = null) => {
   const rows = caseEvidence?.targets ?? {}
-  const fastest = rivals => rivals.filter(r => (!lanes || lanes.includes(r)) && timedBenchmarkRow(rows[r]))
-    .sort((a, b) => rows[a].medianUs - rows[b].medianUs).slice(0, n)
+  const fastest = rivals => {
+    const here = rivals.filter(r => !lanes || lanes.includes(r)), timed = here.filter(r => timedBenchmarkRow(rows[r]))
+    return timed.length ? timed.sort((a, b) => rows[a].medianUs - rows[b].medianUs).slice(0, n) : here
+  }
   return ['jz', ...CLAIM_CLASSES.flatMap(([, rivals]) => fastest(rivals)), ...fastest(['porf-native']),
     ...(lanes ?? []).filter(l => l !== 'jz' && !RANKED.has(l))]
 }
