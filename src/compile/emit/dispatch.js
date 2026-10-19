@@ -575,9 +575,15 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
   // in its own local rather than the header word, so `.length` reads a plain
   // `local.get` instead of a header re-decode.
   let lenT = null
+  // A string part of an own buffer copies through __str_copy_over (outside the
+  // size tier): an inline string's units in two stores, 12 bytes past the copy
+  // allowed, which the parts after it rewrite or the buffer's 12 spare bytes hold.
+  const over = asBuf && bT.some(t => t != null) && !ctx.transform.optimize?.leanRuntime
+  if (over) inc('__str_copy_over')
   if (asBuf) {
     lenT = tempI32('cbl')
-    seq.push(['local.set', `$${offT}`, ['call', '$__alloc', ['i32.shl', totalIR(), ['i32.const', 1]]]])
+    const bytes = ['i32.shl', totalIR(), ['i32.const', 1]]
+    seq.push(['local.set', `$${offT}`, ['call', '$__alloc', over ? ['i32.add', bytes, ['i32.const', 12]] : bytes]])
     seq.push(['local.set', `$${lenT}`, totalIR()])
     seq.push(['local.set', `$${curT}`, ['local.get', `$${offT}`]])
   } else {
@@ -606,7 +612,7 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
         seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.shl', ['local.get', `$${lT[k]}`], ['i32.const', 1]]]])
       return
     }
-    seq.push(['call', '$__str_copy', ['local.get', `$${bT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])
+    seq.push(['call', over ? '$__str_copy_over' : '$__str_copy', ['local.get', `$${bT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])
     if (k < leaves.length - 1)
       seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.shl', ['local.get', `$${lT[k]}`], ['i32.const', 1]]]])
   })

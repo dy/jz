@@ -1677,6 +1677,35 @@ test('charCodeAt on a dissolved concat buffer reads UTF-16 units', () => {
   }
 })
 
+test('dissolved concat buffer: an inline string part writes six units, the parts after it rewrite the rest', () => {
+  // __str_copy_over stores an inline string's six units whatever its length:
+  // the next part starts at the true length and overwrites the extra, the last
+  // part's extra lands in the 12 bytes the buffer holds past its total. Every
+  // length 0..6 next to every other, before a literal, a heap string and an int.
+  const NAMES = ['', 'a', 'ab', 'abc', 'abcd', 'abcde', 'abcdef', 'abcdefg', 'é']
+  const src = `const NAMES = ${JSON.stringify(NAMES)}
+    export function fold(i, j, k) {
+      const line = NAMES[i] + NAMES[j] + ';' + NAMES[k] + (k | 0) + NAMES[i]
+      let h = line.length
+      for (let n = 0; n < line.length; n++) h = (h * 31 + line.charCodeAt(n)) | 0
+      return h
+    }`
+  const ref = (i, j, k) => {
+    const line = NAMES[i] + NAMES[j] + ';' + NAMES[k] + k + NAMES[i]
+    let h = line.length
+    for (let n = 0; n < line.length; n++) h = (h * 31 + line.charCodeAt(n)) | 0
+    return h
+  }
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { fold } = jz(src, { optimize }).exports
+    for (let i = 0; i < NAMES.length; i++) for (let j = 0; j < NAMES.length; j++) for (let k = 0; k < NAMES.length; k++)
+      is(fold(i, j, k), ref(i, j, k), `O${optimize}: ${i},${j},${k}`)
+  }
+  const fn = (optimize) => funcWat(compile(src, { wat: true, optimize }), 'fold')
+  ok(fn({ level: 2, watr: false }).includes('call $__str_copy_over'), 'speed tier: the over-writing copy')
+  ok(!fn('size').includes('$__str_copy_over'), 'size tier: the exact copy')
+})
+
 // A `+` whose side the summary holds to a number or a string (an element of
 // an array built by stores, `toArray`'s default array) is the run's to decide:
 // its value type is no NUMBER (kind/val-type-of.js VT['+'] addsAsNumber), so

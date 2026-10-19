@@ -179,6 +179,7 @@ export default (ctx) => {
     __str_concat_raw_fresh_long: ['__str_length', '__alloc', '__mkptr', '__str_copy'],
     __str_append_unit: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_copy: [],
+    __str_copy_over: [],
     // __str_slice/_view are FUNCTION templates: resolveIncludes' auto-dep scan realizes the
     // factory (v()) to discover body calls, but that realization DIVERGES under self-compile
     // (jz.wasm) — so a body-called helper not also listed here is dropped from the kernel
@@ -1160,6 +1161,24 @@ export default (ctx) => {
               (br $ssocp)))))
       (else
         ;; Heap STRING: memory.copy directly from string data
+        (memory.copy (local.get $dst) (i32.wrap_i64 (i64.and (local.get $src) (i64.const ${LAYOUT.OFFSET_MASK}))) (i32.shl (local.get $len) (i32.const 1))))))`)
+
+  // __str_copy for a destination with 12 bytes to spare past the copy, whose
+  // later bytes the caller writes after it (a fused concat into its own buffer):
+  // an inline string's six 7-bit units spread to six UTF-16 units in two stores,
+  // what lies past its length included, where __str_copy loops a unit at a time
+  // and leaves at a length that varies from row to row.
+  const ssoLane = (shift, k) => `(i64.and (i64.shl (local.get $src) (i64.const ${shift})) (i64.const ${'0x' + (0x7fn << BigInt(16 * k)).toString(16)}))`
+  wat('__str_copy_over', `(func $__str_copy_over (param $src i64) (param $dst i32) (param $len i32)
+    (if (i64.ne (i64.and (local.get $src) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+      (then
+        (i64.store (local.get $dst) (i64.or
+          (i64.or (i64.and (local.get $src) (i64.const 0x7f)) ${ssoLane(9, 1)})
+          (i64.or ${ssoLane(18, 2)} ${ssoLane(27, 3)})))
+        (i32.store offset=8 (local.get $dst) (i32.wrap_i64 (i64.or
+          (i64.and (i64.shr_u (local.get $src) (i64.const 28)) (i64.const 0x7f))
+          (i64.and (i64.shr_u (local.get $src) (i64.const 19)) (i64.const 0x7f0000))))))
+      (else
         (memory.copy (local.get $dst) (i32.wrap_i64 (i64.and (local.get $src) (i64.const ${LAYOUT.OFFSET_MASK}))) (i32.shl (local.get $len) (i32.const 1))))))`)
 
   // Bump-extend fast path: when `a` is a heap STRING sitting at the top of the
