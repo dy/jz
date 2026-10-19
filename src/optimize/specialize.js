@@ -57,6 +57,7 @@
 import { integerPlan } from './int-narrow.js'
 import { plainNaN, conditional, boundOf, boxBits, constBits, LIMIT } from './int-range.js'
 import { pureKernel } from './pure-funcs.js'
+import { IR_FULL } from '../growth.js'
 
 const isArr = Array.isArray
 const isLabel = s => typeof s === 'string' && s[0] === '$'
@@ -332,7 +333,10 @@ export function specializeLoops(fn) {
   }
   scan(fn)
   if (unsafe) return null
-  const budget = { left: Math.max(2 * size(fn), 400) }
+  // Copies of at most twice the function, and none that would take it past
+  // its growth budget (src/growth.js): a large function keeps its loops as written.
+  const whole = size(fn)
+  const budget = { left: Math.max(2 * whole, 400), room: IR_FULL - whole }
   const assume = new Map()
 
   const declare = (name, type) => {
@@ -346,6 +350,7 @@ export function specializeLoops(fn) {
     assume.delete(b.fast)
     for (const d of b.decls) { fn.splice(fn.indexOf(d), 1); bodyStart--; types.delete(d[1]) }
     budget.left += b.size
+    budget.room += b.size
   }
   const dropGuard = (b, g) => {
     for (const t of g.tests) b.entry.splice(b.entry.indexOf(t), 1)
@@ -358,7 +363,7 @@ export function specializeLoops(fn) {
     const { region, loop } = r
     if (!alive.has(region)) return null
     const n0 = size(region)
-    if (n0 > LARGE || n0 > budget.left) return null
+    if (n0 > LARGE || n0 > budget.left || n0 > budget.room) return null
     if (!isLabel(loop[1]) || typed(loop)) return null
     const setup = region === loop ? [] : region.slice(2, -1)
     // Branches: inside the region, to the region's own exit, or outward without a value.
@@ -652,6 +657,7 @@ export function specializeLoops(fn) {
     r.holder[r.holder.indexOf(region)] = whole
     const grown = size(whole) - n0
     budget.left -= grown
+    budget.room -= grown
     return { r, whole, fast, fastLoop, entry: entryBlock, guards: guardList, own: new Set(own.values()), reads: weight, decls, size: grown }
   }
 
@@ -680,7 +686,9 @@ export function specializeLoops(fn) {
     const built = []
     for (const r of level) {
       const b = build(r, plan0, alive)
-      if (b) built.push(b)
+      // (the copy and its way back measured as built: past the budget, the loop stays as written)
+      if (b && budget.room < 0) undo(b)
+      else if (b) built.push(b)
     }
     // Which copies narrow anything, and which assumed integers are read as integers.
     let kept = built

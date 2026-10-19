@@ -46,15 +46,8 @@ export const loopDepth = (node, depth) => {
   return max
 }
 
-/** Node-count weight — drives inline cost heuristics. A declaration weighs what
- *  it declares: `const x1 = v` is the store `x = v` is (prepare/split-bindings.js
- *  writes one for the other, and a body must not cross a budget by the rename). */
-export const nodeSize = (node) => {
-  if (!Array.isArray(node)) return 1
-  let n = node[0] === 'let' || node[0] === 'const' ? 0 : 1
-  for (let i = 1; i < node.length; i++) n += nodeSize(node[i])
-  return n
-}
+// the source measure, beside the growth budget it serves
+export { nodeSize } from '../../growth.js'
 
 /** Collect every binder name in `node` into `out` (lexical-scope set; doesn't
  *  descend into nested arrow bodies — those open a new scope). */

@@ -35,6 +35,7 @@ import { frameNode } from '../function.js'
 import { cloneIR } from '../ir.js'
 import { walkAst, some, isBlockBody, T } from '../ast.js'
 import { K, core, tagOf } from '../summary/kind.js'
+import { SOURCE_FULL, nodeSize } from '../growth.js'
 
 const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-compile kernel rejects a builtin used as a first-class value
 const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[2], 1)   // (iv - 1)
@@ -215,6 +216,8 @@ export const unrollRecurrences = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !isBlockBody(func.body)) continue
+    // (a function past its growth budget keeps its loops as written, src/growth.js)
+    if (nodeSize(func.body) > SOURCE_FULL) continue
     const body = unrollRecurrence(func.body, closureMutatedVars(frameNode(func)), ctx.summary?.at(func.sig))
     if (body === func.body) continue
     setFuncBody(func, body)

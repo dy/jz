@@ -48,6 +48,7 @@ import { materializeVariant } from '../variant.js'
 import { isExported } from '../func-exports.js'
 import { frameNode } from '../../function.js'
 import { liveFunctions } from './scratch.js'
+import { SOURCE_FULL } from '../../growth.js'
 
 // Returns { prefix, value } where prefix is the substituted body statements
 // (excluding any trailing `return X`), and value is the substituted return
@@ -91,7 +92,7 @@ const BIND = CLASS_T + 'bind'
  *  the call (`inlineHotInternalCalls` fills it, `isCandidateCall` consults it). */
 let hotOnly = new Set()
 /** Candidates the speed tier splices in a loop at any depth, while the caller has
- *  room (`CALLER_FULL`): a body of its size at a site the loop runs. */
+ *  room (`SOURCE_FULL`): a body of its size at a site the loop runs. */
 let warm = new Set()
 /** The loops around the statement being spliced. */
 let loopsDeep = 0
@@ -429,14 +430,17 @@ const spliceInlinedShape = (prefix, valueStmt) => {
   return { node: ['{}', [';', ...splice]], splice, changed: true }
 }
 
-// A caller past this size takes no more loops at sites outside its own: the splice
-// of a kernel there saves one call and adds its body to a function the engine
-// compiles as one (a driver of three hundred kernels, each called once, spliced
-// into one function of thirty thousand lines that never left the baseline tier).
-const CALLER_FULL = 3000
+// A caller past its growth budget (`SOURCE_FULL`, src/growth.js) takes no more
+// loops at sites outside its own: the splice of a kernel there saves one call and
+// adds its body to a function the engine compiles as one (a driver of three
+// hundred kernels, each called once, spliced into one function of thirty thousand
+// lines that never left the baseline tier). Nor a body a second site or an export
+// keeps: that copy is one more (webaudio's `main` took 5680 nodes of them).
 // The largest straight-line body the speed tier splices at a site in a loop past the site budgets.
 const WARM_BODY = 200
 let callerSize = 0, callerBound = true, kernels = new Set(), inClosure = false
+// The candidates a second site or an export keeps: a splice of one copies its body.
+let sharedBodies = new Set()
 // The candidates that splice only where an argument they call is a function: name → the positions of those parameters.
 let fnSites = new Map()
 // The positions of the parameters `func` calls inside a loop.
@@ -470,9 +474,10 @@ const isFunctionArg = isFunctionValue
 // `hot`: the call sits in a loop, where a loop-only candidate splices too.
 const isCandidateCall = (node, candidates, hot = false) => {
   if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string' || !candidates.has(node[1])) return false
-  if (warm.has(node[1])) { if (loopsDeep === 0 && !hot || callerSize > CALLER_FULL) return false }
+  if (callerSize > SOURCE_FULL && sharedBodies.has(node[1])) return false
+  if (warm.has(node[1])) { if (loopsDeep === 0 && !hot || callerSize > SOURCE_FULL) return false }
   else if (!hot && hotOnly.has(node[1])) return false
-  if (!hot && callerBound && callerSize > CALLER_FULL && kernels.has(node[1])) { ctx.plans.keptKernels.add(node[1]); return false }
+  if (!hot && callerBound && callerSize > SOURCE_FULL && kernels.has(node[1])) { ctx.plans.keptKernels.add(node[1]); return false }
   // in a callback a factory returns, a kernel splices at a site in the callback's own loop only
   if (inClosure && !hot && kernels.has(node[1])) return false
   const called = fnSites.get(node[1])
@@ -816,7 +821,8 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   // The statement's loop, as the splicer sees it: a body outside `anywhere`
   // hoists (and then splices) in an innermost loop only, a warm one in any loop.
   let inLoop = false, deep = 0
-  const lifts = (name) => bodies.has(name) && (inLoop || anywhere.has(name) || (deep > 0 && warm.has(name) && callerSize <= CALLER_FULL))
+  const lifts = (name) => bodies.has(name) && !(callerSize > SOURCE_FULL && sharedBodies.has(name)) &&
+    (inLoop || anywhere.has(name) || (deep > 0 && warm.has(name) && callerSize <= SOURCE_FULL))
   // a call this pass would lift, in a position the expression may not reach
   const holdsLift = (n) => Array.isArray(n) && n[0] !== '=>' && n[0] !== 'str' &&
     ((n[0] === '()' && typeof n[1] === 'string' && lifts(n[1])) || n.some((c, i) => i > 0 && holdsLift(c)))
@@ -942,6 +948,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   warm = new Set()
   loopsDeep = 0
   kernels = new Set()
+  sharedBodies = new Set()
   fnSites = new Map()
   callerSize = 0
   // the size tier keeps one copy of what is called once, wherever: a function of its own costs its frame
@@ -1135,7 +1142,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // way the everywhere splice's is: two bodies of 200 nodes.
     const loopOnly = !everywhere && hotSites >= 1 && hotSites * size <= 400
     // Past both budgets the speed tier splices a straight-line body in a loop
-    // while the caller has room (`CALLER_FULL`). The budgets above count a
+    // while the caller has room (`SOURCE_FULL`). The budgets above count a
     // callee's sites across the program, so a loop's time would depend on how
     // many other loops call the same function: a library's `sin` is as much
     // the body of the seventh loop that calls it as of the first.
@@ -1221,6 +1228,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (loopOnly || warmBody) hotOnly.add(func.name)
     if (warmBody) warm.add(func.name)
     if (fnOnly) fnSites.set(func.name, called)
+    if (isExported(func) || sites.length !== 1) sharedBodies.add(func.name)
     candidates.set(func.name, func)
     if (constructs) constructing.add(func.name)
     recollect = true  // a function this one blocked (a caller of it) may qualify now
@@ -1564,6 +1572,8 @@ export const inlineLocalLambdas = () => {
   // `optimize: { sourceInline: false }` asks for no source-level inlining at
   // all: the closure form stays (the tests of closure lowering read it).
   if (ctx.transform.optimize?.sourceInline === false) return false
+  // (the program's candidates are no lambdas: none of their names is shared here)
+  sharedBodies = new Set()
   let changed = false
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue

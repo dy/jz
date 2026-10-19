@@ -45,6 +45,7 @@ import {
 import { isExported } from '../func-exports.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { frameRoots } from '../../function.js'
+import { SOURCE_FULL, nodeSize } from '../../growth.js'
 
 // === Loop unrolling & scalarization ===
 
@@ -684,7 +685,8 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
     const names = new Set([...paramCands.keys(), ...fixedByFunc.get(func).keys()])
     if (names.size) {
       let guard = 0
-      while (guard++ < 6) {
+      // (an unrolled loop is copies of its body: none past the function's growth budget, src/growth.js)
+      while (guard++ < 6 && nodeSize(func.body) <= SOURCE_FULL) {
         const body = unrollTypedArrayLoops(func.body, names)
         if (body === func.body) break
         setFuncBody(func, body)

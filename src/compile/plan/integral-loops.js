@@ -151,6 +151,7 @@ import { T, I32_MIN, I32_MAX, MUTATE_OPS, TYPEOF, REFS_THROUGH_ARROWS, numberGua
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, nodeSize } from './common.js'
+import { SOURCE_FULL } from '../../growth.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
 import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
@@ -531,7 +532,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   // copies of a nest are one, not one per level squared.
   const versions = new Map()
   let rewrote = false
+  // a body past its growth budget keeps its loops as written (src/growth.js)
+  let grown = nodeSize(body)
   for (const [loop, parent, idx, enclosing] of loops) {
+    if (grown > SOURCE_FULL) break
     if (parent[idx] !== loop) continue
     // (a loop a version left as written, here or in prepare/split-bindings.js: not copied again)
     if (loop.cold === true) continue
@@ -1912,6 +1916,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const aliases = [...names.map(n => own.get(n)), ...hoistedAliases, ...(bailFlag ? [bailFlag, ...(bailSave ? [bailSave] : [])] : [])]
     const wrapped = aliases.length ? ['{}', [';', ['let', ...aliases.map(a => ['=', a, [null, 0]])], guarded]] : guarded
     parent[idx] = wrapped
+    grown += nodeSize(wrapped) - nodeSize(loop)
     const found = new Set()
     if (test) walkAst(test, { enter: n => { if (n[0] === 'str') return false; for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && n[0] !== '()' && !aliases.includes(n[i])) found.add(n[i]) } })
     const undo = new Map(written.filter(n => !names.includes(n) && !counters.includes(n) && !cursors.has(n) && !numbers.includes(n) && !present.includes(n)).map(n => [own.get(n), n]))

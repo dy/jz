@@ -25,6 +25,7 @@ import { frameNode } from '../function.js'
 import { counterInit } from '../static.js'
 import { cloneWithSubst } from '../type.js'
 import { collectBindings } from './plan/common.js'
+import { SOURCE_FULL, nodeSize } from '../growth.js'
 import { invalidateBodies } from './analyze.js'
 import { invalidateProgramFactsCache } from './program-facts.js'
 import { litN, unitIncVar, normalizeLoop, rewriteBlocks, freshLoopId, loopHazards, closureMutatedVars } from './loop-model.js'
@@ -192,6 +193,8 @@ export function peelClampedStencil() {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
+    // (a peel copies its loop: none in a function past its growth budget, src/growth.js)
+    if (nodeSize(func.body) > SOURCE_FULL) continue
     const old = func.body, cm = closureMutatedVars(frameNode(func))
     const body = rewriteBlocks(old, stmt => tryPeel(stmt, cm))
     if (body === old) continue

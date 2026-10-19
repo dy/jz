@@ -24,6 +24,7 @@ import { constIntExpr } from '../../static.js'
 import { containsDeclOf, cloneWithSubst, isUnitIncrement } from '../../type.js'
 import { includeModule } from '../../autoload.js'
 import { clonePlain, forLoopBodyIndex, withForLoopBody, collectBindings, nodeSize, optimizing } from './common.js'
+import { SOURCE_FULL } from '../../growth.js'
 
 // Nested int row literal: `[[1,2],[3]]` → { flat, starts, lens }.
 const parseNestedIntRowLit = (expr) => {
@@ -378,6 +379,8 @@ export const unrollRowLenPadLoops = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
+    // (an unrolled loop is copies of its body: none past the function's growth budget, src/growth.js)
+    if (nodeSize(func.body) > SOURCE_FULL) continue
     const r = unrollRowLenPadLoopsInBody(func.body)
     if (r.changed) { func.body = r.node; changed = true }
   }
@@ -457,6 +460,8 @@ export const splitCharScanLoops = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
+    // (a split loop runs a copy of its body past the string: none past the function's growth budget, src/growth.js)
+    if (nodeSize(func.body) > SOURCE_FULL) continue
     walkAst(func.body, { enter: (node, parent, idx) => {
       if (node[0] === '=>') return false
       if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return false }

@@ -16,6 +16,7 @@ import { foldIntCompare, narrowI32, int32Operand, guardedInt32Operand } from '..
 import { isLeaf, walkAst } from '../ast.js'
 import { clearFlowRanges, tagFlowRanges } from './flow-range.js'
 import { atomNanHex, STR_INTERN_BIT } from '../../layout.js'
+import { IR_FULL, irSize } from '../growth.js'
 const TWO_63 = 2 ** 63
 
 const MEMOP = /^[fi](32|64)\.(load|store)(\d+(_[su])?)?$/
@@ -178,6 +179,9 @@ export function foldV128Memargs(node) {
  *  expressions, just built by the optimizer instead. */
 export function inlinePtrOffsetFastPass(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
+  // A function past its growth budget keeps the calls (src/growth.js): a
+  // splice at every site of a large one is kilobytes of copies of one body.
+  if (irSize(fn) > IR_FULL) return
   // Skip $__ptr_offset's own body and its cold chase — they ARE the helper.
   const name = typeof fn[1] === 'string' ? fn[1] : null
   if (name && name.startsWith('$__ptr_')) return

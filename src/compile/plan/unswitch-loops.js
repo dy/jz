@@ -20,6 +20,7 @@ import { T, some, walkAst } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { cloneWithSubst } from '../../type.js'
 import { collectBindings, mutatesAny, nodeSize } from './common.js'
+import { SOURCE_FULL } from '../../growth.js'
 
 const LOOPS = new Set(['for', 'while'])
 const TESTS = new Set(['if', '?:', '?'])
@@ -67,7 +68,10 @@ export const unswitchLoops = () => {
       if (node[0] === '=>') return false
       if (LOOPS.has(node[0]) && parent) { loops.push([node, parent, idx]); return false }
     } })
+    // a function past its growth budget keeps its loops as written (src/growth.js)
+    let size = nodeSize(func.body)
     for (const [loop, parent, idx] of loops) {
+      if (size > SOURCE_FULL) break
       if (parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
       if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await')) continue
       const inner = new Set()
@@ -86,6 +90,7 @@ export const unswitchLoops = () => {
         return out
       }
       parent[idx] = ['if', name, ['{}', [';', copy(true)]], ['{}', [';', copy(false)]]]
+      size += nodeSize(loop)
       changed = true
     }
   }

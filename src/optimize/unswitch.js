@@ -13,6 +13,7 @@ import { walkAst } from '../ast.js'
 import { PTR, ATOM, atomNanHex, encodePtrHi, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_CLAMPED_FLAG, TYPED_ELEM_F16_FLAG } from '../../layout.js'
 import { matchExitBrIf, isLocalGet } from './vectorize/addr-model.js'
 import { readsVar } from './vectorize/outer-scaffold.js'
+import { IR_FULL, irSize } from '../growth.js'
 
 // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering unswitchTypedParamLoop.
 const DBG_UNSWITCH = typeof process !== 'undefined' && (process.env?.JZ_DBG_UNSWITCH || null)
@@ -45,6 +46,8 @@ const numericStoreValue = value => ['select', cloneIR(value), ['f64.const', 'nan
  */
 export function unswitchTypedParamLoop(fn, f16 = false) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
+  // a function past its growth budget keeps its loops as written (src/growth.js)
+  if (irSize(fn) > IR_FULL) return
   unswitchTypedAccessLoop(fn, f16)
   // JZ_DBG_UNSWITCH=<substr>: dump matching fns entering this pass (DBG_DSR-style).
   if (DBG_UNSWITCH && String(fn[1]).includes(DBG_UNSWITCH)) console.error(JSON.stringify(fn))

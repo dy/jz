@@ -39,7 +39,8 @@ import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode } from '
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
 import { cloneWithSubst } from '../../type.js'
-import { optimizing } from './common.js'
+import { optimizing, nodeSize } from './common.js'
+import { SOURCE_FULL } from '../../growth.js'
 import { intLevelMap } from '../../type.js'
 import { K, NUMBER, core, tagOf } from '../../summary/kind.js'
 
@@ -483,7 +484,12 @@ export const canonicalizeCountedLoops = () => {
         else strided.push([node, parent, idx])
       }
     }, exit: node => { if (TRY.has(node[0])) protectedDepth-- } })
-    for (const [node, parent, idx] of strided) if (parent[idx] === node && versionUnitStride(node, parent, idx, captured)) changed = true
+    // a version is a copy: none in a function past its growth budget (src/growth.js)
+    let size = nodeSize(func.body)
+    for (const [node, parent, idx] of strided) {
+      if (size > SOURCE_FULL) break
+      if (parent[idx] === node && versionUnitStride(node, parent, idx, captured)) { size += nodeSize(node); changed = true }
+    }
     const loops = []
     walkAst(func.body, { enter: (node, parent, idx) => {
       if (node[0] === '=>') return false
