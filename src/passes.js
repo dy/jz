@@ -99,6 +99,7 @@ export const PASS_NAMES = [
   'placeLargeBlocks',         // a block of 4 KiB or more starts a quarter page past the last such block, mod 4096: streams of consecutive arrays share no low address bits (module/core.js __alloc)
   'versionArrayPatterns',     // an array pattern over a value that may be an array reads by position behind Array.isArray, the protocol beside it (plan/index-array-patterns.js)
   'treeshake',
+  'splitFuncs',               // a large function's conditional arms become functions of their own: V8 compiles what runs (optimize/split-funcs.js), speed-only
   'jsstring',                 // boundary opt-in: flip exported string params to externref
   // Registry completion (architecture plan Stage 0): every flag a call site
   // reads MUST be listed here — an unlisted name is `undefined !== false` and
@@ -156,6 +157,7 @@ export const TUNING_KEYS = [
   'watrLsr',                  // watr's loop strength reduction: addresses affine in a counter become pointers (speed tier)
   'compactStubs',             // entries of the stub log a loop's compaction reads (module/core/stub-log.js); default 65536
   'compactSlack',             // bytes a loop's kept memory grows past twice the last walk before it compacts (module/core/stub-log.js)
+  'splitFn', 'splitArm',      // the instruction nodes a function is split down to, and an arm must reach to move (optimize/split-funcs.js)
   'wordTruncation',           // how a truncation keeps its word: 'wide' | 'narrow' | 'add' (optimize/int-narrow.js)
   'coldTrap',                 // diagnostic: a versioned loop's arm as written throws its version's number (plan/integral-loops.js)
   'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',

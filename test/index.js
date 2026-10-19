@@ -62,6 +62,7 @@ const TESTS = [
   'value-number',
   'schedule',
   'lazy-select',
+  'split-funcs',
   'lanes',
   'buffer',
   'typed-ctors',
