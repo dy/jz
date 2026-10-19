@@ -34,8 +34,7 @@ The speed tier asks watr for loop strength reduction (`lsr`, `watrLsr` in the
 preset): an address affine in a loop counter becomes a pointer set before the
 loop and advanced with the counter, where that lowers the instructions an
 iteration executes without pushing integer values past the register file.
-watr 5.11.10 predates the pass and ignores the option; the release after it
-carries it, and `test/optimizer.js` pins the pointers only where it is present.
+watr 5.11.11 carries the pass; `test/optimizer.js` pins the pointers.
 
 Watr 5.11.5 also defers costly pure local initializers to the
 exclusive value arms that consume them. It runs before local reuse, replacing

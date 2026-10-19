@@ -406,7 +406,6 @@ test('LSR (watr): speed tier advances record and summed-index addresses as point
   const body = tree => ['func', findFunc(tree, '$f') || [], findFunc(tree, '$f$exp') || []]
   const pointers = fn => count(fn, n => n[0] === 'local' && /^\$__lsr\d/.test(n[1]))
   const recFn = body(parse(rec, 'speed'))
-  if (WATR_OPTS.lsr === undefined) return  // a watr before the release carrying lsr: the option is inert
   ok(pointers(recFn) > 0, 'the record loop reads through a pointer')
   is(loopCount(recFn, n => n[0] === 'i32.mul' && n[2]?.[0] === 'i32.const' && +n[2][1] === 24), 0, 'no record-stride multiply in a loop')
   ok(pointers(body(parse(rows, 'speed'))) > 0, 'the row stencil reads through pointers')
