@@ -382,4 +382,27 @@ test('rotate loops on the tape: the top test becomes a guard and a fused back ed
   ok(same(body(fn(loop(['f64.lt', ['local.get', '$d'], ['f64.const', 1]])), rotateLoops)[1][7][4][3][2], ['i32.eqz', ['f64.lt', ['local.get', '$d'], ['f64.const', 1]]]), 'an f64 compare wraps: NaN')
   const cont = fn(['block', '$brk', ['loop', '$l', ['br_if', '$brk', cond], ['br_if', '$l', ['local.get', '$x']], ['br', '$l']]])
   ok(same(body(cont, rotateLoops), cont), 'a branch to the loop label keeps the top test')
+  // a body that dispatches keeps its top test: rotated, the join would end in the
+  // back edge, a second taken branch on every arm but one
+  const step = ['local.set', '$x', ['i32.add', ['local.get', '$x'], ['i32.const', 1]]]
+  const top = (...stmts) => fn(['block', '$brk', ['loop', '$l', ['br_if', '$brk', cond], ...stmts, step, ['br', '$l']]])
+  const ld = (o) => ['i32.load', ['i32.add', ['local.get', '$y'], ['i32.const', o]]]
+  const chain = (a, b, c) => ['local.set', '$s', ['i32.add', ['local.get', '$s'], ['if', ['result', 'i32'], ['i32.eqz', ['local.get', '$k']],
+    ['then', a], ['else', ['if', ['result', 'i32'], ['i32.eq', ['local.get', '$k'], ['i32.const', 1]], ['then', b], ['else', c]]]]]]
+  const table = ['block', '$b2', ['block', '$b1', ['block', '$b0', ['br_table', '$b0', '$b1', '$b2', ['local.get', '$k']]],
+    ['local.set', '$s', ld(0)], ['br', '$b2']], ['local.set', '$s', ld(4)]]
+  for (const [stmts, what] of [[[chain(ld(0), ld(4), ld(8))], 'a three-arm chain of loads'], [[table], 'a br_table into the body']])
+    { const f = top(...stmts); ok(same(body(f, rotateLoops), f), `${what} keeps the top test`) }
+  const guarded = (f) => { const b = body(f, rotateLoops)[1][7]; return b[2][0] === 'br_if' && b[3][0] === 'loop' }
+  const two = ['local.set', '$s', ['if', ['result', 'i32'], ['local.get', '$k'], ['then', ld(0)], ['else', ['i32.const', 0]]]]
+  for (const [stmts, what] of [
+    [[two], 'a two-way join (a checked read and its cold arm)'],
+    [[['if', ['local.get', '$k'], ['then', ['i32.store', ['local.get', '$y'], ['i32.const', 0]]]]], 'a one-armed if that stores'],
+    [[['if', ['local.get', '$k'], ['then', ['br', '$brk']]]], 'an if that only leaves (an exit)'],
+    [[chain(['local.get', '$a'], ['i32.add', ['local.get', '$a'], ['i32.const', 1]], ['i32.const', 2])], 'a chain of values watr makes selects'],
+    [[['local.set', '$s', ['if', ['result', 'i32'], ['i32.lt_u', ['local.get', '$k'], ['local.get', '$d']], ['then', ld(0)],
+      ['else', ['if', ['result', 'i32'], ['i32.lt_u', ['local.get', '$k'], ['local.get', '$e']], ['then', ld(4)], ['else', ['i32.rem_u', ['local.get', '$k'], ['local.get', '$d']]]]]]]],
+      'a ladder of range tests (a remainder\'s fast paths)'],
+    [[['block', '$ib', ['loop', '$il', ['br_if', '$ib', ['local.get', '$y']], chain(ld(0), ld(4), ld(8)), ['br', '$il']]]], 'a nested loop\'s dispatch, which stays inside it'],
+  ]) ok(guarded(top(...stmts)), `${what}: the loop rotates`)
 })
