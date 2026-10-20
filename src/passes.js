@@ -157,7 +157,7 @@ export const TUNING_KEYS = [
   'watrLsr',                  // watr's loop strength reduction: addresses affine in a counter become pointers (speed tier)
   'compactStubs',             // entries of the stub log a loop's compaction reads (module/core/stub-log.js); default 65536
   'compactSlack',             // bytes a loop's kept memory grows past twice the last walk before it compacts (module/core/stub-log.js)
-  'splitFn', 'splitArm',      // the instruction nodes a function is split down to, and an arm must reach to move (optimize/split-funcs.js)
+  'splitFn', 'splitTo', 'splitArm', // the instruction nodes past which a function splits, it is brought down to, and an arm must reach to move (optimize/split-funcs.js)
   'wordTruncation',           // how a truncation keeps its word: 'wide' | 'narrow' | 'add' (optimize/int-narrow.js)
   'coldTrap',                 // diagnostic: a versioned loop's arm as written throws its version's number (plan/integral-loops.js)
   'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',

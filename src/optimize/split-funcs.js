@@ -18,13 +18,26 @@
  * Here a conditional arm of a large function, an `if`'s branch or a
  * `br_table` case's body, becomes a function called where the arm was. An arm
  * that never runs is never compiled; one that runs is compiled as a unit of
- * its own, on its own thread, as soon as it is hot. The largest arms go first,
- * until the function is within the bound: each arm moved is a function the
- * engine tiers up on its own, by its own runs, so the fewer the better (an
- * arm moved for every case left a parser 7% slower where the largest alone
- * left it 1%). A piece still past the bound gives up its own arms in turn, and
- * an `else` holding only the next `if` of a chain is no arm: its cases are, so
- * a chain keeps its tests in its function.
+ * its own, on its own thread, as soon as it is hot. A function past twice the
+ * bound gives up its largest arms first, until it is within the bound: each
+ * arm moved is a function the engine tiers up on its own, by its own runs, so
+ * the fewer the better (an arm moved for every case left a parser 7% slower
+ * where the largest alone left it 1%), and one just past the bound would give
+ * up an arm or two, a small share of its compile, for a call on each run of
+ * them (a parser's functions of 2300 to 3200 nodes ran 1 to 2% slower so). A
+ * piece still past the bound gives up its own arms in turn, and an `else`
+ * holding only the next `if` of a chain is no arm: its cases are, so a chain
+ * keeps its tests in its function.
+ *
+ * A function still past the bound then gives up runs of its statements, each
+ * within the bound, from the end of each statement list outside loops: a
+ * straight body (a module assembler's sections, 12000 nodes of calls) has no
+ * arm to give, and its one compile set the process's peak memory. A run is
+ * whole statements that take no value from the stack and leave none, and it
+ * holds no loop: the engine tiers a piece up by its own runs, so a piece
+ * entered once whose loop spends its budget is compiled again for nothing (a
+ * driver's timing rounds, unrolled into one function, became one compile per
+ * round, each inside the round it timed).
  *
  * An arm moves with its locals by liveness: the locals live at its entry that
  * it reads or writes come in as parameters, the ones it writes that are live
@@ -59,9 +72,13 @@
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string' && x.length > 1 && x.charCodeAt(0) === 36
-/** A function past this many instruction nodes gives up its largest arms until it is within it:
- *  V8's optimizing compile of a function this size takes milliseconds. */
-export const SPLIT_FN = 2000
+/** A function past this many instruction nodes gives up its largest arms until it is within
+ *  SPLIT_TO: V8's optimizing compile of a function this size takes milliseconds. One just past
+ *  SPLIT_TO would give up an arm or two, a small share of its compile for a call on each run of
+ *  the arm. */
+export const SPLIT_FN = 4000
+/** The size a split function is brought down to (instruction nodes). */
+export const SPLIT_TO = 2000
 /** An arm this large (instruction nodes) moves: a call and its moves cost little against it. */
 export const SPLIT_ARM = 150
 /** Inside a loop, an arm moves when the loop is this many times its size: one case of a dispatch
@@ -242,6 +259,46 @@ const callsAlways = (list) => {
   return list.some(visit)
 }
 
+const holdsLoop = (n) => isArr(n) && (n[0] === 'loop' || n.some(holdsLoop))
+const STORE = /^(?:i32|i64|f32|f64|v128)\.store/
+/** Whether statement `n` takes no value from the stack and leaves none, its operands folded in:
+ *  only a run of such statements can become a call (a stack-style operand, or a value a later
+ *  statement takes, would be cut off). `sigs` holds each function's parameter and result counts. */
+const whole = (n, sigs) => {
+  if (!isArr(n)) return false
+  const op = n[0]
+  let kids = 0
+  for (let i = 1; i < n.length; i++) if (isArr(n[i]) && !BLOCK_HEAD.has(n[i][0])) kids++
+  if (op === 'local.set' || op === 'global.set' || op === 'drop') return kids === 1
+  if (STORE.test(op)) return kids === 2
+  if (op === 'memory.copy' || op === 'memory.fill') return kids === 3
+  if (op === 'nop') return true
+  if (op === 'block' || op === 'loop') return !resultOf(n) && !n.some(c => isArr(c) && c[0] === 'param')
+  // (folded: its condition is an operand)
+  if (op === 'if') return !resultOf(n) && n.some((c, i) => i > 0 && isArr(c) && c[0] !== 'then' && c[0] !== 'else' && !BLOCK_HEAD.has(c[0]))
+  if (op === 'call') { const g = sigs.get(n[1]); return !!g && !g.results && kids === g.params }
+  return false
+}
+
+/** The parameter and result counts of each function the module declares or imports by its own
+ *  signature (one named by a type use is left out). */
+const signatures = (module) => {
+  const sigs = new Map()
+  const note = (f) => {
+    if (!isArr(f) || f[0] !== 'func' || !isName(f[1])) return
+    let params = 0, results = 0
+    for (const d of f) {
+      if (!isArr(d)) continue
+      if (d[0] === 'type') return
+      if (d[0] === 'param') params += isName(d[1]) ? 1 : d.length - 1
+      else if (d[0] === 'result') results += d.length - 1
+    }
+    sigs.set(f[1], { params, results })
+  }
+  for (const n of module) if (isArr(n)) { if (n[0] === 'func') note(n); else if (n[0] === 'import') note(n[n.length - 1]) }
+  return sigs
+}
+
 /** The numeric payload types of each tag the module declares or imports (a tag of any other
  *  payload, or one named by a type use, is left out). */
 const tagPayloads = (module) => {
@@ -264,12 +321,12 @@ const tagPayloads = (module) => {
 /**
  * Split the large functions of `module` (watr's module array) in place.
  * @param {Array} module
- * @param {{ fnMin?: number, armMin?: number }} [opts]
+ * @param {{ fnMin?: number, fnTo?: number, armMin?: number }} [opts]
  * @returns {number} the functions made
  */
-export function splitFuncs(module, { fnMin = SPLIT_FN, armMin = SPLIT_ARM } = {}) {
+export function splitFuncs(module, { fnMin = SPLIT_FN, fnTo = Math.min(SPLIT_TO, fnMin), armMin = SPLIT_ARM } = {}) {
   if (!isArr(module)) return 0
-  if (DBG === 'all') { fnMin = 0; armMin = Math.min(armMin, 4) }
+  if (DBG === 'all') { fnMin = fnTo = 0; armMin = Math.min(armMin, 4) }
   const names = new Set()
   for (const n of module) if (isArr(n) && n[0] === 'func' && isName(n[1])) names.add(n[1])
   const large = module.filter(fn => isArr(fn) && fn[0] === 'func' && isName(fn[1]) && size(fn) > fnMin)
@@ -283,15 +340,16 @@ export function splitFuncs(module, { fnMin = SPLIT_FN, armMin = SPLIT_ARM } = {}
     for (let i = 1; i < n.length; i++) if (isArr(n[i])) mark(n[i])
   }
   for (const n of module) if (isArr(n) && n[0] === 'func') mark(n)
-  const ctx = { fnMin, armMin, names, made: [], shared, tags: tagPayloads(module) }
+  const ctx = { fnTo, armMin, names, made: [], runs: new WeakSet(), shared, sigs: signatures(module), tags: tagPayloads(module) }
   for (const fn of large) splitFunc(fn, ctx)
-  // a piece still past the bound gives up its own arms (it took its arms' arms with it)
-  for (let i = 0; i < ctx.made.length; i++) if (size(ctx.made[i]) > fnMin) splitFunc(ctx.made[i], ctx)
+  // a piece still past the bound gives up its own arms (it took its arms' arms with it), and one
+  // made of an arm its runs
+  for (let i = 0; i < ctx.made.length; i++) if (size(ctx.made[i]) > fnTo) splitFunc(ctx.made[i], ctx)
   for (const piece of ctx.made) module.push(piece)
   return ctx.made.length
 }
 
-function splitFunc(fn, { fnMin, armMin, names, made, shared, tags }) {
+function splitFunc(fn, { fnTo, armMin, names, made, runs, shared, sigs, tags }) {
   const types = new Map()
   // the results, where the function declares them (a type use alone leaves them unread)
   let results = null, typed = false
@@ -320,17 +378,20 @@ function splitFunc(fn, { fnMin, armMin, names, made, shared, tags }) {
   // locals the calls of handler-crossing arms need, declared once the arms have moved
   const added = []
 
-  /** Move `list[from..)` (an arm, or a case body) into a function, if it qualifies. */
-  const tryMove = (list, from, at, loop, armTypes) => {
-    if (!at || shared.has(list) || list.length - from < 1) return
+  /** Move `list[from..end)` (an arm, a case body, or a run of whole statements) into a function,
+   *  if it qualifies. */
+  const tryMove = (list, from, at, loop, armTypes, end = list.length) => {
+    if (!at || shared.has(list) || end - from < 1) return
     let s = 0
-    for (let i = from; i < list.length; i++) s += size(list[i])
+    for (let i = from; i < end; i++) s += size(list[i])
     if (s < armMin) return
-    // a branch out at the end stays where it is: the function computes its values
-    let to = list.length
+    // a branch out at the end stays where it is: the function computes its values (a run has
+    // none, and what is live after it is what the rest of its list reads)
+    let to = end
     const last = list[to - 1]
     let exit = null, exitTypes = null, after = at.live
-    if (isArr(last) && (last[0] === 'return' || (last[0] === 'br' && isName(last[1])))) {
+    if (end < list.length) { after = liveSeq(list, at.live, at.env, at.h, null, end); armTypes = [] }
+    else if (isArr(last) && (last[0] === 'return' || (last[0] === 'br' && isName(last[1])))) {
       if (last[0] === 'return') { if (!results) return; exitTypes = results; after = NONE }
       else {
         const target = at.env.get(last[1])
@@ -400,7 +461,8 @@ function splitFunc(fn, { fnMin, armMin, names, made, shared, tags }) {
     }
     made.push(piece)
     if (DBG === 'log') console.error(`split ${name}: ${s} nodes, loop ${loop}, ${ins.length} in, ${outs.length} out${exit ? `, exit ${exit[0]}` : ''}${crossing ? ', crossing' : ''}`)
-    list.splice(from, list.length - from, ...tail)
+    list.splice(from, end - from, ...tail)
+    return piece
   }
 
   // the arms and case bodies, largest first; `loop` is the size of the innermost loop around (as
@@ -427,13 +489,55 @@ function splitFunc(fn, { fnMin, armMin, names, made, shared, tags }) {
   const before = made.length
   let left = size(fn)
   for (const [list, from, loop, armTypes] of arms) {
-    if (left <= fnMin) break
+    if (left <= fnTo) break
     if (gone.has(list)) continue
     const moved = list.slice(from), count = made.length
     tryMove(list, from, seen.get(list), loop, armTypes)
     if (made.length === count) continue
     for (const st of moved) { leave(st); left -= size(st) }
     for (let i = from; i < list.length; i++) left += size(list[i])
+  }
+  // still past the bound: the runs of whole statements its lists outside loops hold move, the
+  // longest lists first and from the end of each, a run within the bound (a whole list is an
+  // arm's or the function's; a piece made of a run keeps its own; inside a loop each pass would
+  // pay a run's call). A statement holding a loop ends a run: the engine tiers a function up by
+  // its own runs, and a piece entered once whose loop spends its budget is compiled again for
+  // nothing, in the middle of the work (a driver's unrolled timing rounds, one piece each).
+  if (left > fnTo && !runs.has(fn)) {
+    const runMax = Math.max(fnTo, armMin)
+    seen.set(fn, { live: NONE, env: new Map(), h: OPEN })
+    const lists = [[fn, body, Infinity]]
+    const gather = (n, inLoop) => {
+      if (!isArr(n) || gone.has(n)) return 0
+      let s = 1
+      for (let i = 1; i < n.length; i++) s += gather(n[i], inLoop || n[0] === 'loop')
+      if (s >= armMin && !inLoop && seen.has(n)) {
+        if (n[0] === 'then' || n[0] === 'else') lists.push([n, 1, s])
+        else if (n[0] === 'block') {
+          let i = 1
+          while (i < n.length && (isName(n[i]) || (isArr(n[i]) && BLOCK_HEAD.has(n[i][0])))) i++
+          lists.push([n, i, s])
+        }
+      }
+      return s
+    }
+    for (let i = body; i < fn.length; i++) gather(fn[i], false)
+    lists.sort((a, b) => b[2] - a[2])
+    for (const [list, start] of lists) {
+      let end = list.length
+      while (left > fnTo && end > start) {
+        let from = end, s = 0
+        while (from > start && whole(list[from - 1], sigs) && !holdsLoop(list[from - 1]) && s + size(list[from - 1]) <= runMax) s += size(list[--from])
+        if (from === end || (from === start && end === list.length)) { end--; continue }
+        const moved = list.slice(from, end), rest = list.length - end
+        const piece = tryMove(list, from, seen.get(list), 0, null, end)
+        if (!piece) { end--; continue }
+        runs.add(piece)
+        for (const st of moved) { leave(st); left -= size(st) }
+        for (let i = from; i < list.length - rest; i++) left += size(list[i])
+        end = from
+      }
+    }
   }
   if (made.length === before) return
   // the locals only the moved arms used leave the function (the engine zeroes each at entry)

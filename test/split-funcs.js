@@ -229,6 +229,73 @@ test('split funcs: a br_table case body moves and keeps its exit', () => {
   for (const k of [0, 1, 2, 9]) for (const v of [0, 5, -3]) is(exports.f(k, v), ref.f(k, v), `f(${k}, ${v})`)
 })
 
+// a straight run of calls, the shape of a module assembler: no arm to give up
+const RUN = (n) => Array.from({ length: n }, (_, i) =>
+  `(local.set $acc (i32.add (local.get $acc) (call $g (i32.add (local.get $k) (i32.const ${i})))))`).join(' ')
+
+test('split funcs: a function past the bound with no arm gives up runs of whole statements', () => {
+  const wat = `(module ${G} (func $f (export "f") (param $k i32) (result i32)
+    (local $acc i32)
+    ${RUN(12)}
+    (i32.mul (local.get $acc) (i32.const 3))))`
+  const ref = plain(wat), { made, exports, mod } = split(wat, { fnMin: 40, armMin: 1 })
+  ok(made >= 2, `runs moved (${made})`)
+  const f = mod.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$f')
+  ok(JSON.stringify(f).includes('["i32.const","3"]'), 'the value the function returns stays in it')
+  for (const k of [0, 7, -100]) is(exports.f(k), ref.f(k), `f(${k})`)
+})
+
+test('split funcs: a run stops at a statement that takes its operand from the stack', () => {
+  // the pair's values are set by two statements that take them off the stack: a run must hold the
+  // call and both sets or none of them
+  const wat = `(module ${G}
+    (func $pair (param $v i32) (result i32 i32) (local.get $v) (i32.mul (local.get $v) (i32.const 2)))
+    (func $f (export "f") (param $k i32) (result i32)
+      (local $acc i32) (local $a i32) (local $b i32)
+      ${RUN(4)}
+      (call $pair (local.get $acc))
+      (local.set $b)
+      (local.set $a)
+      ${RUN(4)}
+      (i32.add (i32.mul (local.get $a) (i32.const 1000)) (i32.add (local.get $b) (local.get $acc)))))`
+  const ref = plain(wat), { made, exports } = split(wat, { fnMin: 30, armMin: 1 })
+  ok(made >= 1, `runs moved (${made})`)
+  for (const k of [0, 3, -9]) is(exports.f(k), ref.f(k), `f(${k})`)
+})
+
+test('split funcs: a statement holding a loop ends a run and stays', () => {
+  // a driver's unrolled rounds: each round's loop would be a piece entered once, compiled again
+  // for nothing once its loop spends its budget
+  const ROUND = (k) => `(block $r${k} (local.set $i (i32.const 0)) (loop $l${k}
+      (br_if $r${k} (i32.ge_s (local.get $i) (local.get $k)))
+      (local.set $acc (i32.add (local.get $acc) (call $g (local.get $i))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l${k})))`
+  const wat = `(module ${G} (func $f (export "f") (param $k i32) (result i32)
+    (local $acc i32) (local $i i32)
+    ${RUN(6)} ${ROUND(0)} ${RUN(6)} ${ROUND(1)}
+    (local.get $acc)))`
+  const ref = plain(wat), { made, exports, mod } = split(wat, { fnMin: 40, armMin: 1 })
+  ok(made >= 1, `the straight runs moved (${made})`)
+  const pieces = mod.filter(n => Array.isArray(n) && n[0] === 'func' && /\$s\d+$/.test(n[1]))
+  ok(!JSON.stringify(pieces).includes('"loop"'), 'no piece holds a loop')
+  for (const k of [0, 3, 7]) is(exports.f(k), ref.f(k), `f(${k})`)
+})
+
+test('split funcs: a run that is most of a loop stays in it', () => {
+  const wat = `(module ${G} (func $f (export "f") (param $n i32) (param $k i32) (result i32)
+    (local $i i32) (local $acc i32)
+    (block $done (loop $next
+      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+      (block $body ${RUN(6)})
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (local.get $acc)))`
+  const ref = plain(wat), { made, exports } = split(wat, { fnMin: 40, armMin: 1 })
+  is(made, 0, 'nothing moved')
+  for (const n of [0, 3]) is(exports.f(n, 2), ref.f(n, 2), `f(${n})`)
+})
+
 test('split funcs: thresholds leave small functions and small arms whole', () => {
   const wat = `(module (func $f (export "f") (param $n i32) (result i32)
     (if (result i32) (local.get $n) (then (i32.const 1)) (else (i32.const 2)))))`

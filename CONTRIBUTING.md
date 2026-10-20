@@ -2916,10 +2916,11 @@ Last of all at the speed tier, a large function's conditional arms become functi
 their own (`optimize/split-funcs.js`, the `splitFuncs` pass): V8 compiles a function whole,
 first with its baseline compiler and then, once it is hot, with its optimizing compiler, and
 the speed tier's fast paths and dispatches leave most of a large function cold for a given
-input (85% of watr's `normalize`). A function past 2000 instruction nodes (`splitFn`) gives
-up its largest arms until it is within that bound, and a piece still past it gives up its
-own: each arm moved is a function the engine tiers up on its own, so the fewest arms that
-bring the function down move. An arm is an `if` arm or a `br_table` case body of at least
+input (85% of watr's `normalize`). A function past 4000 instruction nodes (`splitFn`) gives
+up its largest arms until it is within 2000 (`splitTo`), and a piece still past that gives up
+its own: each arm moved is a function the engine tiers up on its own, so the fewest arms that
+bring the function down move, and a function just past 2000 keeps its arms (an arm or two
+would be a small share of its compile for a call on each of their runs). An arm is an `if` arm or a `br_table` case body of at least
 150 nodes (`splitArm`) that makes a call other than to the math runtime on every path through
 it (one in the arm's own `if` arms or dispatch cases sits on a fallback, and the common path
 would pay the new call), inside a loop only under a quarter of the loop; an `else` holding
@@ -2928,6 +2929,13 @@ Its locals cross by liveness (the ones live at its entry come in, the ones it wr
 are live after go back as results), a trailing `br`/`return` stays at the call and takes
 the values from it, and under a `try_table` whose handler reads a local the arm writes, the
 moved arm catches the handler's tag and the call throws it again once the locals are set.
+A function still past 2000 then gives up runs of its statements outside loops, from the end
+of each statement list, each run within 2000 nodes: a straight body (watr's module
+assembler) has no arm to give, and its one compile set the process's peak memory. A run is
+whole statements, none taking a value from the stack or leaving one, making a call on every
+path, and holding no loop: the engine tiers a piece up by its own runs, so a piece entered
+once whose loop spends its budget is compiled again for nothing (a driver's timing rounds,
+unrolled into one function, became one compile each, inside the round it timed).
 It runs after watr, whose single-caller inliner would splice the arm back, and appends the
 new functions, so no index moves. `JZ_DEBUG_SPLIT=all` moves every arm the rules allow
 (a stress of the moves), `=log` names each arm moved.
