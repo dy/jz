@@ -341,16 +341,35 @@ export default (ctx) => {
   // holes into own undefined slots; raw clones/slices preserve occupancy.
   // A copy holds a hole only where its source did: each slot is tested and
   // only a hole is written (the copy of a dense array stores nothing more).
+  // Where the vectorizer runs, eight cells are tested a round with one branch,
+  // and only a round holding a hole is walked cell by cell: a dense copy costs
+  // two instructions a cell, not twelve.
   deps({ __arr_dense: ['__arr_from', '__ptr_offset', '__arr_values'] })
-  ctx.core.stdlib['__arr_values'] = `(func $__arr_values (param $base i32) (param $n i32)
-    (local $p i32) (local $end i32)
+  ctx.core.stdlib['__arr_values'] = () => {
+    const wide = ctx.transform.optimize?.vectorizeLaneLocal && !ctx.transform.optimize?.leanRuntime
+    return `(func $__arr_values (param $base i32) (param $n i32)
+    (local $p i32) (local $end i32)${wide ? ' (local $q i32) (local $hole v128)' : ''}
     (local.set $p (local.get $base))
-    (local.set $end (i32.add (local.get $base) (i32.shl (local.get $n) (i32.const 3))))
+    (local.set $end (i32.add (local.get $base) (i32.shl (local.get $n) (i32.const 3))))${wide ? `
+    (local.set $hole (i64x2.splat (i64.const ${TOMB_NAN})))
+    (block $wide (loop $round
+      (br_if $wide (i32.lt_u (i32.sub (local.get $end) (local.get $p)) (i32.const 64)))
+      (if (v128.any_true (v128.or
+            (v128.or (i64x2.eq (v128.load (local.get $p)) (local.get $hole)) (i64x2.eq (v128.load offset=16 (local.get $p)) (local.get $hole)))
+            (v128.or (i64x2.eq (v128.load offset=32 (local.get $p)) (local.get $hole)) (i64x2.eq (v128.load offset=48 (local.get $p)) (local.get $hole)))))
+        (then
+          (local.set $q (local.get $p))
+          (loop $cell
+            (if (i64.eq (i64.load (local.get $q)) (i64.const ${TOMB_NAN}))
+              (then (i64.store (local.get $q) (i64.const ${UNDEF_NAN}))))
+            (br_if $cell (i32.lt_u (local.tee $q (i32.add (local.get $q) (i32.const 8))) (i32.add (local.get $p) (i32.const 64)))))))
+      (local.set $p (i32.add (local.get $p) (i32.const 64))) (br $round)))` : ''}
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $p) (local.get $end)))
       (if (i64.eq (i64.load (local.get $p)) (i64.const ${TOMB_NAN}))
         (then (i64.store (local.get $p) (i64.const ${UNDEF_NAN}))))
       (local.set $p (i32.add (local.get $p) (i32.const 8))) (br $next))))`
+  }
   ctx.core.stdlib['__arr_dense'] = `(func $__arr_dense (param $src i64) (result f64)
     (local $out f64) (local $base i32)
     (local.set $out (call $__arr_from (local.get $src)))

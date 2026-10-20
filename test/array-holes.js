@@ -89,6 +89,28 @@ test('array holes: raw copies preserve occupancy and value copies densify', () =
   ok(pass && !/\(call /.test(pass), 'the hole pass of a value copy calls nothing')
 })
 
+// Where the vectorizer runs, the hole pass tests eight cells a round and walks
+// only a round that holds a hole: every length past and short of a round, a
+// hole at every position, a dense copy and a holey one.
+test('array holes: value copies of every length read each hole undefined, by rounds of cells', () => {
+  const src = `const h = (a) => { let x = 7; for (let i = 0; i < a.length; i++) x = (x * 31 + (a[i] === undefined ? 1000 : a[i] + 1)) | 0; return x }
+    export function f(n) {
+      let out = 0
+      for (let hole = -1; hole < n; hole++) {
+        const src = []
+        for (let i = 0; i < n; i++) if (i !== hole) src[i] = i
+        if (hole === n - 1) src.length = n
+        const a = [-1]; a.push(...src)
+        const b = [...src, 5]
+        out = (out * 7 + h(a) + h(b) + a.length + b.length + (0 in a ? 1 : 0) + (hole + 1 in a ? 2 : 0)) | 0
+      }
+      return out
+    }`
+  runCases(src, [0, 1, 7, 8, 9, 15, 16, 17, 24, 33].map(n => ['f', [n]]))
+  const pass = funcWat(compile(src, { wat: true, optimize: 'speed' }), '__arr_values')
+  ok(/v128\.any_true/.test(pass), 'the speed tier tests a round of cells at once')
+})
+
 test('array holes: reads normalize absence before primitive use and recover from property errors', () => {
   const src = `export function f(mode) { const a = [, undefined, {x: 7}]; const k = mode | 0;
       if (k === 3) return [a.pop().x, a.shift(), a.pop()];
