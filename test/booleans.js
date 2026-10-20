@@ -206,6 +206,46 @@ test('bool: boolean export boxes the clean carrier without __is_truthy', () => {
     'equality export skips the __is_truthy truthy-derivation')
 })
 
+test('bool: a value && or || tests its left operand by the kind the summary proves', () => {
+  // `(fn = tbl[i]) && fn(x)` yields its left operand where it is falsy: a
+  // closure or nothing is truthy unless nullish, the question a condition
+  // asks of it too (toBool), with no NaN discrimination.
+  const src = `const tbl = []
+    tbl[3] = (x) => x + 1
+    tbl[5] = (x) => x * 2
+    export function f(i, x) { let fn; return (fn = tbl[i | 0]) && fn(x) }
+    export function g(i, x) { let fn; return ((fn = tbl[i | 0]) && fn(x)) || -1 }`
+  // the generic test, inlined at the speed tier, compares with the empty string
+  const body = (text, name) => { const at = text.indexOf(`(func $${name}`); return text.slice(at, text.indexOf('\n  (func ', at + 1)) }
+  const text = jz.compile(src, { wat: true, optimize: 'speed' })
+  for (const name of ['f', 'g']) ok(!/0x7FFA400000000000|__is_truthy/i.test(body(text, name)), `${name}: the closure-or-nothing operand skips the generic test`)
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const m = run(src, { optimize })
+    for (const i of [0, 3, 5, 9]) is([m.f(i, 4), m.g(i, 4)], [host.f(i, 4), host.g(i, 4)], `i ${i} at ${optimize}`)
+  }
+})
+
+test('bool: a string or nothing, and a number or a string, test by kind', () => {
+  // truthy: a string other than the empty one; beside it a number other than 0 and NaN
+  const src = `const pick = (i) => i === 1 ? 'ab' : i === 2 ? '' : i === 3 ? 'x'.slice(1) : undefined
+    const mix = (i) => i === 1 ? 'ab' : i === 2 ? '' : i === 3 ? 0 : i === 4 ? NaN : i === 5 ? -0 : i === 6 ? 7 : undefined
+    export function f(i) { return pick(i | 0) ? 1 : 0 }
+    export function g(i) { const v = mix(i | 0); return v ? 2 : 3 }
+    export function h(i) { let op = i > 4 ? mix(i | 0) : pick(i | 0); for (let k = 0; k < 2; k++) if (op) return k; return -1 }
+    // an array, an object or nothing: truthy unless nullish
+    const box = (i) => i === 1 ? [0] : i === 2 ? { a: 0 } : i === 3 ? [] : i === 4 ? null : undefined
+    export function k(i) { return box(i | 0) ? 4 : 5 }`
+  const body = (text, name) => { const at = text.indexOf(`(func $${name}`); return text.slice(at, text.indexOf('\n  (func ', at + 1)) }
+  const text = jz.compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false } })
+  for (const name of ['f', 'g', 'k']) ok(!/0x7FFA400000000000[^]*0x7FF8000100000000|__is_truthy/i.test(body(text, name)), `${name}: no generic test`)
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const m = run(src, { optimize })
+    for (let i = 0; i < 8; i++) is([m.f(i), m.g(i), m.h(i), m.k(i)], [host.f(i), host.g(i), host.h(i), host.k(i)], `i ${i} at ${optimize}`)
+  }
+})
+
 // ============================================
 // Host → jz: a JS boolean coerces to the 0/1 carrier
 // ============================================

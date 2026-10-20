@@ -249,12 +249,13 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
 // nullish included, is the TRUE atom exactly; a value that is never a
 // number, string, BigInt or Boolean is truthy iff present. `ir` is the
 // node's emitted f64, evaluated once here (a `local.get` reads in place).
-function kindTruthyIR(node, ir) {
+export function kindTruthyIR(node, ir) {
   const view = ctx.summary?.at(ctx.func.current)
   if (!view) return null
   const NEVER_BY_VALUE = summaryBitOf(K.NUMBER) | summaryBitOf(K.STRING) | summaryBitOf(K.BIGINT) | summaryBitOf(K.BOOL)
+  // (a union of tags reads as ANY to `tagOf`: the tests below read the tags themselves)
   const k = view.kindOfExpr(node)
-  if (k == null || k === 0 || summaryTagOf(k) === K.ANY) return null
+  if (k == null || k === 0) return null
   const tags = summaryTagsOf(k) & ~SUMMARY_NULL_BITS
   if (tags === 0) return null
   const once = Array.isArray(ir) && ir[0] === 'local.get' ? null : temp('kt')
@@ -263,10 +264,16 @@ function kindTruthyIR(node, ir) {
   // atom box; a nullish value is a box that is not TRUE.
   // A number, present or not (an element read that may miss), is truthy where it
   // is a number other than zero: a box, the undefined one included, is a NaN.
+  // A string, present or not, is truthy where it is one other than the empty
+  // string (one atom); beside a number, a NaN-box is that string or nothing.
+  const nonEmpty = () => ['i32.and', boxedPtrTypeEq(get(), PTR.STRING), ['i64.ne', ['i64.reinterpret_f64', get()], ['i64.const', '0x7FFA400000000000']]]
   const test = tags === summaryBitOf(K.BOOL)
     ? ['i32.or', ['i32.and', ['f64.eq', get(), get()], ['f64.ne', get(), ['f64.const', 0]]], ['i64.eq', ['i64.reinterpret_f64', get()], ['i64.const', TRUE_NAN]]]
     : tags === summaryBitOf(K.NUMBER) ? ['i32.and', ['f64.eq', get(), get()], ['f64.ne', get(), ['f64.const', 0]]]
     : (tags & NEVER_BY_VALUE) === 0 ? ['i32.eqz', isNullish(get())]
+    : tags === summaryBitOf(K.STRING) ? nonEmpty()
+    : tags === (summaryBitOf(K.NUMBER) | summaryBitOf(K.STRING))
+      ? ['if', ['result', 'i32'], ['f64.eq', get(), get()], ['then', ['f64.ne', get(), ['f64.const', 0]]], ['else', nonEmpty()]]
     : null
   if (!test) return null
   return typed(once ? ['block', ['result', 'i32'], ['local.set', `$${once}`, asF64(ir)], test] : test, 'i32')

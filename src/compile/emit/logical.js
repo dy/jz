@@ -16,7 +16,14 @@ import { intLiteralValue } from '../../static.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../representation-plan.js'
 import { tagFnArrayDispatch } from './call.js'
-import { emit, markDropped, toBool } from './dispatch.js'
+import { emit, markDropped, toBool, kindTruthyIR } from './dispatch.js'
+// The left operand's truth where its value is the result: by the summary's
+// kind of `node` where the IR alone asks the generic test (a closure or
+// nothing tests only for nothing), as a condition's does (toBool).
+const valueTruthyIR = (node, teed) => {
+  const generic = truthyIR(teed)
+  return Array.isArray(generic) && generic[0] === 'call' && generic[1] === '$__is_truthy' ? kindTruthyIR(node, teed) ?? generic : generic
+}
 import { REF_EQ_KINDS, boolEagerBody, eagerSelectOK, i32JoinRep, isCanonicalBoolExpr, isCmp, isNumArm, selectOK } from './shared.js'
 
 
@@ -466,7 +473,7 @@ export const logicalOps = {
     // A numeric left arm tests truthiness by value, including pointer-looking
     // NaN payloads that remain raw in a uniform Number join.
     if (numA) teed.valKind = VAL.NUMBER
-    return typed(['if', ['result', 'f64'], truthyIR(teed),
+    return typed(['if', ['result', 'f64'], valueTruthyIR(a, teed),
       ['then', canonArm(b, asF64(vb), a, va)],
       ['else', ['local.get', `$${t}`]]], 'f64')
   },
@@ -575,7 +582,7 @@ export const logicalOps = {
     // as a numeric NaN.
     const teed = typed(['local.tee', `$${t}`, asF64(fa)], 'f64')
     if (numA) teed.valKind = VAL.NUMBER   // numeric left arm: NaN-safe truthiness (see `&&`)
-    return typed(['if', ['result', 'f64'], truthyIR(teed),
+    return typed(['if', ['result', 'f64'], valueTruthyIR(a, teed),
       ['then', ['local.get', `$${t}`]],
       ['else', canonArm(b, asF64(vb), a, va)]], 'f64')
   },
