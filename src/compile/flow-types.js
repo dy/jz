@@ -113,6 +113,25 @@ export function extractRefinements(cond, out, sense = true) {
   return out
 }
 
+/** The kinds the type tests of a condition assert on its `sense` arm (`typeof
+ *  x === 'string'`, `Array.isArray(x)`, `x instanceof Map`), through `!`, a
+ *  conjunction's then arm and a disjunction's else arm: `name → VAL` into
+ *  `out`. Unlike extractRefinements it reads no fact of the function being
+ *  emitted, so an analysis of any function may ask it. */
+export function typeTests(cond, out, sense = true) {
+  if (!Array.isArray(cond)) return out
+  const op = cond[0]
+  if (op === '!') return typeTests(cond[1], out, !sense)
+  if (op === '&&' && sense || op === '||' && !sense) { typeTests(cond[1], out, sense); typeTests(cond[2], out, sense); return out }
+  const tp = typeofPredicate(cond)
+  if (tp) { const val = (tp.eq ? sense : !sense) ? TYPEOF_CODE_TO_VAL[tp.code] : undefined; if (val) out.set(tp.name, val); return out }
+  if (!sense) return out
+  const val = op === '()' && typeof cond[2] === 'string' ? predicateRefinement(cond[1])
+    : op === 'instanceof' && typeof cond[1] === 'string' && typeof cond[2] === 'string' ? instanceofRefinement(cond[2]) : null
+  if (val != null) out.set(op === '()' ? cond[2] : cond[1], val)
+  return out
+}
+
 // A failed closed Number test excludes its interval, including fractional
 // values. Keep the whole predicate: one failed conjunct alone says nothing.
 // Only a single binding and literal bounds qualify; no calls or assignments.

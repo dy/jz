@@ -1438,3 +1438,53 @@ test('frame effects: a call that never returns does not make its frame allocate'
   ok(/__throw/.test(compile(src, { wat: true, ...TAPE })), 'the nullish path still throws')
   is(jz(src).exports.g('   x'), 120)
 })
+
+// The census reads a name inside the arm of a type test as the emitter does
+// (flow-types.js typeTests): a method on it is the builtin's, so a loop over a
+// string a `typeof` proves calls nothing unknown, allocates nothing and keeps
+// no compaction or release site; a predicate (`Array.isArray`) is a boolean.
+test('frame effects: a type test makes a method on the name its builtin; a predicate allocates nothing', () => {
+  if (onKernel()) return
+  const guard = `export function f(x) { if (typeof x === 'string') { let h = 0; for (let i = 0; i < x.length; i++) h = (h * 31 + x.charCodeAt(i)) | 0; return h } return Array.isArray(x) ? x.length : 0 }`
+  const body = bodyOf(compile(guard, { wat: true, ...TAPE }), 'f')
+  ok(body && !/__gc_begin|__ibase/.test(body), 'the string loop keeps no compaction or release site')
+  const host = oracle(guard), m = jz(guard).exports
+  for (const x of ['abc', 'aéz', [1, 2], 5]) is(m.f(x), host.f(x), `f(${JSON.stringify(x)})`)
+  const predicate = `export function f(xs) { let n = 0; for (let i = 0; i < xs.length; i++) if (Array.isArray(xs[i])) n += xs[i].length; return n }`
+  ok(!/__gc_begin|__ibase/.test(bodyOf(compile(predicate, { wat: true, ...TAPE }), 'f')), 'a loop of predicates allocates nothing')
+  is(jz(predicate).exports.f([[1, 2], 3, [4]]), 3)
+})
+
+// A frame whose one way to allocate is growing storage older than itself (a
+// parameter's array taking a property) gives nothing back at its return: the
+// growth lowers the flag below its mark, and without one it made nothing.
+// It keeps its heap and pays no protocol; its caller still decides.
+test('frame effects: a frame that only grows storage older than itself pays no protocol', () => {
+  if (onKernel()) return
+  const src = `const loc = (node, at) => (Array.isArray(node) && (node.loc = at), node)
+    export function f(n) { const a = loc([n, n], n | 0); return a.loc + a.length }
+    export function g(n) { let s = 0; for (let i = 0; i < n; i++) s += loc([i], i).loc; return s }`
+  const opts = { ...TAPE, optimize: { watr: false, sourceInline: false, inlineFns: false } }
+  const why = []
+  const text = compile(src, { ...opts, wat: true, whyNotRewind: (n, r) => why.push([n, r]) })
+  is(why.find(([n]) => n === '$loc')?.[1], 'escape: grows only storage older than the frame')
+  ok(!/heap_save|esc_save/.test(bodyOf(text, 'loc')), 'no save at entry, no restore at return')
+  const host = oracle(src)
+  for (const optimize of levels(2, 3, 'size')) {
+    const { exports: m, memory } = jz(src, { optimize })
+    is([m.f(4), m.g(50)], [host.f(4), host.g(50)], `results at ${optimize}`)
+    is(growth(memory, () => m.g(50)), 0, `the caller releases what the arrays took at ${optimize}`)
+  }
+})
+
+// A union of scalars is a scalar to the census (`tagOf` reads any union as
+// ANY): a module counter stepped by a number, a boolean or null holds no heap
+// value, and the step logs nothing.
+test('frame effects: a union of numbers, booleans and nullish stores no heap value', () => {
+  if (onKernel()) return
+  const src = `let idx = 0
+    const step = (c) => c > 64 ? 1 : c === 0 ? null : false
+    export function f(s) { idx = 0; let l; while (l = step(s.charCodeAt(idx))) idx += l; return idx }`
+  ok(!/__esc_root/.test(bodyOf(compile(src, { wat: true, ...TAPE }), 'f')), 'the step logs no root')
+  is(jz(src).exports.f('ABC!'), oracle(src).f('ABC!'))
+})

@@ -119,8 +119,8 @@
  *
  * @module compile/analyze/frame-effects
  */
-import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode, extractParams, takeScratchMap, releaseScratchMap, takeScratchSet, releaseScratchSet } from '../../ast.js'
-import { K, tagOf, hasTag, tagsOf, valOf, core, NUMBER_OPS } from '../../summary/kind.js'
+import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode, extractParams, isReassigned, takeScratchMap, releaseScratchMap, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { K, tagOf, hasTag, tagsOf, valOf, core, kindOfVal, bitOf, NULL_BITS, NUMBER_OPS } from '../../summary/kind.js'
 import { TO_PRIMITIVE, runsAccessor, runsConversion, primitiveKind, primitiveElements, mayBeTyped } from '../../evaluation-effects.js'
 export { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { ctx } from '../../ctx.js'
@@ -128,6 +128,7 @@ import { frameRoots } from '../../function.js'
 import { viewsOn } from '../../../module/schema.js'
 import { TO_JSON } from '../emit/to-json.js'
 import { reachOn } from '../../../module/core/reach.js'
+import { typeTests } from '../flow-types.js'
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
@@ -211,8 +212,8 @@ const PURE_CALLEES = /^(\uE000key|__to_property_key|__object_rest|Function|readS
 const ENUMERATING = /^(__object_rest|Object\.(values|entries)|JSON\.stringify|structuredClone)$/
 const runsGetters = (name) => viewsOn() && ENUMERATING.test(name) || name === 'JSON.stringify' && !!ctx.funcs.runtimeRoots?.has(TO_JSON)
 
-// Callees whose result is a scalar: no allocation.
-const SCALAR_CALLEES = /^((f32x4|f64x2|i32x4|v128)\.\w+|crypto\.getRandomValues|[Mm]ath\.\w+|Number(\.\w+)?|Boolean|isNaN|isFinite|parseInt|parseFloat|Date\.now|performance\.now)$/
+// Callees whose result is a scalar: no allocation. A predicate's is a boolean.
+const SCALAR_CALLEES = /^((f32x4|f64x2|i32x4|v128)\.\w+|crypto\.getRandomValues|[Mm]ath\.\w+|Number(\.\w+)?|Boolean|isNaN|isFinite|parseInt|parseFloat|Date\.now|performance\.now|Array\.isArray|ArrayBuffer\.isView|Object\.(is|hasOwn|isFrozen|isSealed|isExtensible))$/
 
 // Constructors whose instances are fresh storage with no user code run.
 const FRESH_CTORS = /^(Array|Object|Map|Set|WeakMap|WeakSet|Date|RegExp|Error|TypeError|RangeError|SyntaxError|ReferenceError|URIError|EvalError|TextEncoder|TextDecoder|String|Number|Boolean|ArrayBuffer|DataView|(Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)$/
@@ -334,19 +335,16 @@ function mayCarryFreshHeap(view, e) {
   return !scalarKind(view, e)
 }
 
-/** The summary proves the expression a scalar (number, boolean, nullish). */
+/** The summary proves the expression a scalar: a number, a boolean, nullish,
+ *  or a union of those alone (`tagOf` reads any union as ANY). */
+const SCALAR_TAGS = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
 function scalarKind(view, e) {
   if (!view) return false
   let k
   try { k = view.kindOfExpr(e) } catch { return false }
   if (k == null) return false
-  const t = tagOf(k)
-  if (t === K.NUMBER || t === K.BOOL || t === K.NULLISH || t === K.ABSENT) return true
-  if (t === K.ANY || t === K.NONE) return false
-  // A union of scalars only.
-  return !hasTag(k, K.STRING) && !hasTag(k, K.OBJECT) && !hasTag(k, K.ARRAY) && !hasTag(k, K.CLOSURE) &&
-    !hasTag(k, K.MAP) && !hasTag(k, K.SET) && !hasTag(k, K.HASH) && !hasTag(k, K.TYPED) && !hasTag(k, K.BIGINT) &&
-    !hasTag(k, K.DATE) && !hasTag(k, K.REGEX) && !hasTag(k, K.BUFFER) && tagOf(k) !== K.ANY
+  const tags = tagsOf(k)
+  return tags !== 0 && (tags & ~SCALAR_TAGS) === 0
 }
 
 /** The summary does not prove the expression holds no BigInt: arithmetic on one makes another. */
@@ -448,7 +446,7 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * Nested function bodies are entered only for the callbacks CALLBACK_METHODS
  * and callbackArg run synchronously and for local arrows called from this scope.
  */
-function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false) {
+function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false, tested = null, loopTests = null) {
   // These tables belong only to this walk; published facts own their storage.
   const decl = takeScratchMap(), arrows = takeScratchMap(), reads = takeScratchMap()
   const assigned = takeScratchSet(), scanned = takeScratchSet(), writtenNested = takeScratchSet(), nestedDecl = takeScratchSet()
@@ -569,6 +567,23 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // What the name holds is older than the frame whatever the call does: a
   // parameter's value, an enclosing binding's.
   const olderName = (e) => isName(e) && (params.has(e) || outerName(e))
+  // a store that may grow storage the frame made or may have made
+  let youngGrowth = false
+  // The type tests of the conditions around the walk (flow-types.js
+  // typeTests): an arm's binding of this scope that neither the arm nor a
+  // nested function writes holds the tested kind there, as the emitter reads
+  // it (a method on it is the builtin's). `tested`: those standing around the
+  // roots; `loopTests` takes those standing around each loop, keyed by its body.
+  let tests = tested
+  const ownStable = (name) => (params.has(name) || decl.has(name)) && !writtenNested.has(name)
+  const recvKind = (recv) => isName(recv) && tests?.has(recv) ? kindOfVal(tests.get(recv)) : view?.kindOfExpr(recv)
+  const armTests = (op, n, i) => {
+    if (!(op === 'if' || op === '?:' || op === '&&' || op === '||') || i < 2 || i > 3) return null
+    const found = typeTests(n[1], new Map(), op === '||' ? false : i === 2)
+    let out = null
+    for (const [name, val] of found) if (ownStable(name) && !isReassigned(n[i], name)) (out ??= new Map(tests ?? [])).set(name, val)
+    return out
+  }
 
   // 2. Effects.
   const outer = () => { out.writesOuter = true }
@@ -675,7 +690,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     // a typed array takes numbers in place: nothing grows, nothing is held
     if (numeric && typedRecv(recv)) return
     const kind = arg ? SITE.ARG : numeric ? SITE.ELEM : SITE.RECV, kept = !readable(recv)
-    if (grows) escape('grows ' + spell(recv), kind, { grows: arg ? false : recv, kept })
+    if (grows) { if (!olderName(recv)) youngGrowth = true; escape('grows ' + spell(recv), kind, { grows: arg ? false : recv, kept }) }
     if (heap) escape('heap value into ' + spell(recv), kind, { asked, kept, older: olderName(recv) && !(numeric && mayBeTyped(view, recv)) })
   }
   const anyHeap = (list) => list.some(v => mayCarryFreshHeap(view, v))
@@ -723,7 +738,11 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     if (scanned.has(arrow)) return
     scanned.add(arrow)
     loops.push(opaque)
+    // an arrow may run where no test around it holds
+    const around = tests
+    tests = null
     walkExpr(arrow[arrow.length - 1])
+    tests = around
     loops.pop()
   }
   // The arrow a name holds wherever it is called: bound once in this scope,
@@ -815,7 +834,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       if (accessorFunctions(method, recv, method + ACCESSOR_GET) !== NO_FUNCTIONS) return unknownCall('accessor ' + method)
       // A method spelling is a builtin proof only on a builtin receiver whose
       // own property cannot override it. Emission uses the same summary query.
-      const receiverKind = view?.kindOfExpr(recv)
+      const receiverKind = recvKind(recv)
       const receiverTag = receiverKind == null ? K.ANY : tagOf(receiverKind)
       if (receiverTag === K.ANY || receiverTag === K.NONE || receiverTag === K.OBJECT || receiverTag === K.HASH ||
           ctx.summary?.memberMayBeOwnOn(method, valOf(core(receiverKind)))) {
@@ -970,10 +989,12 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     const loop = op === 'for' || op === 'while'
     const arm = op === 'for' ? 3 : op === 'while' ? 2 : BRANCH_ARM[op] ?? n.length
     let rest = false
-    if (loop) loops.push({ node: n, pending: [], noise })
+    if (loop) { loops.push({ node: n, pending: [], noise }); if (tests !== null && loopTests !== null) loopTests.set(op === 'for' ? n[4] : n[2], tests) }
     for (let i = 1; i < n.length; i++) {
       if (i === arm) guarded++
-      walkExpr(n[i])
+      const inArm = armTests(op, n, i)
+      if (inArm === null) walkExpr(n[i])
+      else { const around = tests; tests = inArm; walkExpr(n[i]); tests = around }
       if (op === ';' && !rest && mayReturn(n[i])) { rest = true; guarded++ }
     }
     if (arm < n.length) guarded--
@@ -981,6 +1002,12 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     if (loop) endLoop()
   }
   for (const r of roots) walkExpr(r)
+  // A frame whose one way to allocate is the growth of storage older than
+  // itself gives nothing back at its return: where a store grew, the flag
+  // stands below its mark; where none did, it made nothing. It keeps its
+  // heap, and the protocol is no cost of it (compile/index.js `keeps`).
+  if (conditional && !out.keeps && !out.allocates && !out.callsUnknown && !youngGrowth && out.callees.size === 0 && out.closures.size === 0 &&
+      out.sites.size > 0 && [...out.sites].every(n => out.siteGrown.has(n))) { out.keeps = true; out.keepsWhy = 'grows only storage older than the frame' }
   return out
   } finally {
     releaseScratchSet(nestedDecl); releaseScratchSet(writtenNested); releaseScratchSet(scanned); releaseScratchSet(assigned)
@@ -1013,15 +1040,20 @@ function frameEffectsOf(func, loops) {
   for (const p of func.sig?.params ?? []) if (p?.name) { params.add(p.name); if (p.boundaryTyped) typedParams.add(p.name) }
   if (func.rest) params.add(func.rest)
   // a parameter default runs in the frame, before the body
-  const out = census(view, frameRoots(func), [body], params, typedParams, true, SCRATCH.has(func.name))
+  // (the type tests standing around each loop, which the loop's own census does not walk)
+  const loopTests = new Map()
+  const out = census(view, frameRoots(func), [body], params, typedParams, true, SCRATCH.has(func.name), null, loopTests)
   // A frame that lends a value it made to a record older than itself keeps
   // it, though the census counts no site there: the frame restores nothing.
   if (SCRATCH.has(func.name) && !out.keeps) { out.keeps = true; out.keepsWhy = 'lends what it made to a record' }
   // a loop's scope declares nothing of the function's: its parameters are
   // outer storage there (a block kept in one outlives the iteration);
   // `iteration` the same census judged by the escape flag, as a frame's is
-  out.loops = loops ? loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams),
-    iteration: () => census(view, roots, [loopBody], NO_NAMES, typedParams, true) })) : []
+  out.loops = loops ? loopsOf(body).map(({ body: loopBody, roots }) => {
+    const tested = loopTests.get(loopBody) ?? null
+    return { body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams, false, false, tested),
+      iteration: () => census(view, roots, [loopBody], NO_NAMES, typedParams, true, false, tested) }
+  }) : []
   return out
 }
 
@@ -1043,10 +1075,11 @@ function closureEffectsOf(id) {
     else for (const nm of patternNames(p)) params.add(nm)
   }
   const view = ctx.summary.at(body)
-  const out = census(view, frameRoots({ body, defaults }), [body], params, NO_NAMES, true)
+  const loopTests = new Map()
+  const out = census(view, frameRoots({ body, defaults }), [body], params, NO_NAMES, true, false, null, loopTests)
   // its loops as a function's (frameEffectsOf): a compaction site in one
   // roots the closure's live locals as it would a function's
-  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, NO_NAMES) }))
+  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, NO_NAMES, false, false, loopTests.get(loopBody) ?? null) }))
   return out
 }
 
