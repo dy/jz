@@ -44,23 +44,36 @@ function dropExports(root, names) {
 }
 
 export function link(module, facts) {
-  const cfg = facts.optimize
   resetTape()
-  const root = fromWat(module)
+  return linkTape(fromWat(module), facts)
+}
+
+/** Link the module already decoded onto the tape at `root`. */
+export const linkTape = (root, facts) => { linkPasses(root, facts); return toWat(root) }
+
+/** Link's passes over the module decoded onto the tape at `root`, the tape
+ *  left for `toWat` to read back. Each pass is a phase where the compiler
+ *  hosting the compile asks for one (`facts.phase`, scripts/self.js
+ *  checkpointPhase): what a pass made and nothing reaches goes before the
+ *  next one runs. */
+export function linkPasses(root, facts) {
+  const cfg = facts.optimize, phase = facts.phase ?? (run => run())
   if (DBG_INVARIANTS) check(root, 'after decode')
   // Fold before rotation; watr subsequently simplifies the resulting conditions.
-  for (const f of funcs(root)) {
-    if (!cfg || cfg.fusedRewrite !== false) fold(f)
-    if (cfg && cfg.rotateLoops === true) rotateLoops(f)
-  }
+  phase(() => {
+    for (const f of funcs(root)) {
+      if (!cfg || cfg.fusedRewrite !== false) fold(f)
+      if (cfg && cfg.rotateLoops === true) rotateLoops(f)
+    }
+  })
   if (DBG_INVARIANTS) check(root, 'after the body passes')
   // A throw nothing can observe allocates nothing: its helpers reduce before the
   // rewind's proof and the treeshake read their calls.
-  reduceThrowHelpers(root, facts)
+  phase(() => reduceThrowHelpers(root, facts))
   // The rewind's proof runs at every level (the host's release of a call's
   // argument copies reads it); the rewrite only where the rewind is on.
   const rewind = !cfg || cfg.arenaRewind !== false
-  const arena = arenaRewind(root, { ...facts, rewrite: rewind })
+  const arena = phase(() => arenaRewind(root, { ...facts, rewrite: rewind }))
   // Compaction (module/core/compact.js) serves a module some call of which may
   // keep memory: one whose every export keeps nothing it made or was handed
   // (a result the host copies is released once copied) drops it.
@@ -68,19 +81,18 @@ export function link(module, facts) {
     dropExports(root, new Set(facts.compactLoops ? ['"__compact"', '"__g_cost"'] : ['"__compact"', '"__g_cost"', '"__pin"']))
   // Which exports keep memory per call: the advisory reads the verdict itself.
   if (rewind) facts.adviseKept?.(arena)
-  const callCount = treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals })
-  schemaSections(root, facts)
-  if (facts.exportInner) {
+  const callCount = phase(() => treeshake(root, { removeDead: !cfg || cfg.treeshake !== false, userFuncs: facts.userFuncs, userGlobals: facts.userGlobals }))
+  phase(() => schemaSections(root, facts))
+  if (facts.exportInner) phase(() => {
     const releases = new Map()
     for (const [name, inner] of facts.exportInner)
       if (arena.allocates(inner) || facts.copiedArgs?.has(name)) releases.set(name, inner)
     releaseSection(root, arena, releases, facts.asked, facts.numberResult)
-  }
-  pruneUnusedThrowRuntime(root, facts)
+  })
+  phase(() => pruneUnusedThrowRuntime(root, facts))
   // watr's `sortLocals` orders the final body's declarations; the tape orders them only when watr does not run
-  if ((!cfg || cfg.sortLocalsByUse !== false) && !(cfg && cfg.watr)) sortLocalsByUse(root)
-  orderFuncs(root, callCount)
-  stripLocalRenameSuffixes(root)
+  if ((!cfg || cfg.sortLocalsByUse !== false) && !(cfg && cfg.watr)) phase(() => sortLocalsByUse(root))
+  phase(() => orderFuncs(root, callCount))
+  phase(() => stripLocalRenameSuffixes(root))
   if (DBG_INVARIANTS) check(root, 'after link')
-  return toWat(root)
 }

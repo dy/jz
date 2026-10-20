@@ -13,9 +13,10 @@
  *   kernel). Default false: debug-only invariant code folds out of
  *   production kernels; callers opt in explicitly for an instrumented build.
  * @param {number|string|object|false} [p.optimize] optimize.level (or full
- *   per-pass object, or `false` to disable). Default 1: the compiler artifact
- *   keeps essential cleanup without spending its finite heap optimizing its
- *   own optimizer; user programs still receive their requested profile.
+ *   per-pass object, or `false` to disable). Default SELF_OPTIMIZE: level 1,
+ *   the compiler artifact keeping essential cleanup without spending its
+ *   finite heap optimizing its own optimizer, with the arena rewind and the
+ *   compaction on; user programs still receive their requested profile.
  * @param {boolean} [p.snapshot] optimize.snapshotInit. Default true: pay for
  *   module initialization once at build time. The snapshot probe's encoded
  *   function bodies are reused; only declarations and the captured heap are
@@ -76,10 +77,19 @@ export function specializeInvariants(source, enabled = false) {
   return hasDeclaration ? source.replace(marker, 'export const DBG_INVARIANTS = false') : source
 }
 
+// The compiler artifact's optimizer: level 1, with the frame rewind (a call
+// gives back what it made for itself) and the compaction (module/core/
+// compact.js) on. A phase checkpoint whose phase wrote into compile state
+// older than itself cannot rewind; it compacts the phase's memory instead
+// (scripts/self.js checkpointPhase), which walks the layouts only a module
+// that compacts lays out. A loop's own compaction stays off, as level 1
+// leaves every pass it does not name (`loopCompact`).
+export const SELF_OPTIMIZE = Object.freeze({ level: 1, arenaRewind: true, compact: true })
 // Every builder and attestation resolves the same diagnostic environment.
 // JZ_SELF_COMPILE_OPT accepts a level or a JSON optimizer configuration.
 const selfOptimize = () => {
-  const value = process.env.JZ_SELF_COMPILE_OPT ?? '1'
+  const value = process.env.JZ_SELF_COMPILE_OPT
+  if (value == null) return { ...SELF_OPTIMIZE }
   if (value.trimStart().startsWith('{')) return JSON.parse(value)
   return value === 'false' ? false : isNaN(+value) ? value : +value
 }

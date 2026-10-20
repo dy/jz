@@ -32,7 +32,7 @@ import { registerF16 } from './core/f16.js'
 import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
 import { registerReach, registerIterRelease, reachOn, belowLog, REACH_DEPS } from './core/reach.js'
-import { registerCompact, COMPACT_DEPS } from './core/compact.js'
+import { registerCompact, COMPACT_DEPS, compactOn, declarePin } from './core/compact.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -181,6 +181,7 @@ export default (ctx) => {
     __durable_fwd_heal: [],
     __durable_arr_snap: ['__alloc'],
     __durable_obj_snap: () => ['__alloc', ...(ctx.scope.globals.has('__esc') ? ['__esc_at'] : [])],
+    __durable_cell_snap: ['__durable_obj_snap'],
     __durable_arr_heal: () => ctx.core.includes.has('__durable_obj_snap') ? ['__is_eph_bits'] : [],
     __durable_slot_log: ['__alloc'],
     __durable_slot_relog: [],
@@ -216,7 +217,10 @@ export default (ctx) => {
     __heap_since: [],
     __park_write_ref: ['__park_room'],
     __park_read_ref: ['__park_take'],
+    __park_write_bytes: ['__park_room'],
+    __park_read_bytes: ['__park_take'],
     __park_rewind_to: ['__durable_state'],
+    __gc_phase: ['__gc_begin', '__gc_push', '__gc_walk', '__gc_fwd', '__gc_move'],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -1016,7 +1020,7 @@ export default (ctx) => {
       (if (i32.or
             (i32.lt_u (local.get $base) (global.get $__heap))
             (i32.gt_u (local.get $base) (i32.const ${PARK_END})))
-        (then (unreachable)))
+        (then ${HEAP_EXHAUSTED_THROW}))
       (call $__memgrow (i32.const ${PARK_END}))
       (global.set $__park_base (local.get $base))
       (global.set $__park_cursor (local.get $base))
@@ -1205,6 +1209,50 @@ export default (ctx) => {
       (f64.const nan:${UNDEF_NAN}))`
     ctx.core.stdlib['__park_read_ref'] = `(func $__park_read_ref (result f64)
       (f64.load (call $__park_take (i64.const 8))))`
+    // A typed array's bytes (the tape's columns, scripts/self.js park), copied whole.
+    ctx.core.stdlib['__park_write_bytes'] = `(func $__park_write_bytes (param $src i32) (param $len i32) (result f64)
+      (call $__park_room (i64.extend_i32_u (local.get $len)))
+      (memory.copy (global.get $__park_cursor) (local.get $src) (local.get $len))
+      (global.set $__park_cursor (i32.add (global.get $__park_cursor) (local.get $len)))
+      (f64.const nan:${UNDEF_NAN}))`
+    ctx.core.stdlib['__park_read_bytes'] = `(func $__park_read_bytes (param $dst i32) (param $len i32) (result f64)
+      (memory.copy (local.get $dst) (call $__park_take (i64.extend_i32_u (local.get $len))) (local.get $len))
+      (f64.const nan:${UNDEF_NAN}))`
+    // A phase that wrote into storage older than itself keeps what it made
+    // reachable and no more (scripts/self.js checkpointPhase): the compaction
+    // (module/core/compact.js) over the phase's memory, the mark its floor,
+    // with the module's roots, the phase's result and the phase itself (what
+    // its closure captured) for roots. The phase could write only into
+    // storage it reached, through module state or what it captured, and the
+    // walk reaches below the floor whatever these reach, so every pointer
+    // into the phase's memory is found and forwarded. The frames around the
+    // phase hold nothing it made: their locals were written before it began.
+    // The lane is idle between checkpoints (each park is read back at once),
+    // so the scratch may take the memory past the heap. A phase that grew
+    // less than half of what the last compaction walked keeps its memory: the
+    // walk is of all the module holds, and that holds the walks to twice the
+    // memory they examine. Past half the wasm32 address space every phase
+    // compacts: there the memory left bounds the compile, not the walks.
+    // Answers the result, forwarded.
+    // The move left the log of what escapes wrote into naming addresses it
+    // changed, and the frames around the phase read it as they return
+    // (module/core/reach.js `__survive`): it reads full, and they keep all.
+    ctx.core.stdlib['__gc_phase'] = () => `(func $__gc_phase (param $mark i32) (param $out f64) (param $run f64) (result f64)
+      (if (i32.and
+            (i32.lt_u (i32.sub (global.get $__heap) (local.get $mark)) (i32.shr_u (global.get $__g_cost) (i32.const 1)))
+            (i32.lt_u (global.get $__heap) (i32.const -2147483648)))
+        (then (return (local.get $out))))
+      (global.set $__park_base (i32.const 0))
+      (global.set $__park_cursor (i32.const 0))
+      (global.set $__park_read (i32.const 0))
+      (if (i32.eqz (call $__gc_begin (local.get $mark))) (then (return (local.get $out))))
+      (call $__gc_push (i64.reinterpret_f64 (local.get $out)))
+      (call $__gc_push (i64.reinterpret_f64 (local.get $run)))
+      (call $__gc_walk)
+      (local.set $out (f64.reinterpret_i64 (call $__gc_fwd (i64.reinterpret_f64 (local.get $out)))))
+      (drop (call $__gc_move))${ctx.scope.globals.has('__rootn') ? `
+      (global.set $__rootn (i32.const -1))` : ''}
+      (local.get $out))`
     ctx.core.stdlib['__park_rewind_to'] = `(func $__park_rewind_to (param $mark i32) (param $state i64) (result f64)
       (if (i32.or
             (i32.lt_u (local.get $mark) (global.get $__heap_reset))
@@ -3148,7 +3196,13 @@ export default (ctx) => {
   ctx.core.emit['__heap_since'] = (mark) => (inc('__heap_since'), typed(['call', '$__heap_since', asI32(emit(mark))], 'f64'))
   ctx.core.emit['__park_write_ref'] = (v) => (inc('__park_write_ref'), typed(['call', '$__park_write_ref', asF64(emit(v))], 'f64'))
   ctx.core.emit['__park_read_ref'] = () => (inc('__park_read_ref'), typed(['call', '$__park_read_ref'], 'f64'))
+  ctx.core.emit['__park_write_bytes'] = (src, len) => (inc('__park_write_bytes'), typed(['call', '$__park_write_bytes', asI32(emit(src)), asI32(emit(len))], 'f64'))
+  ctx.core.emit['__park_read_bytes'] = (dst, len) => (inc('__park_read_bytes'), typed(['call', '$__park_read_bytes', asI32(emit(dst)), asI32(emit(len))], 'f64'))
   ctx.core.emit['__park_rewind_to'] = (mark, state) => (inc('__park_rewind_to'), typed(['call', '$__park_rewind_to', asI32(emit(mark)), asI64(emit(state))], 'f64'))
+  // The compaction walks a block by its layout, which a module lays out for it only where it compacts (compactOn): elsewhere the phase keeps its memory.
+  ctx.core.emit['__gc_phase'] = (mark, out, run) => compactOn() && !ctx.memory.shared
+    ? (declarePin(), inc('__gc_phase'), typed(['call', '$__gc_phase', asI32(emit(mark)), asF64(emit(out)), asF64(emit(run))], 'f64'))
+    : typed(asF64(emit(out)), 'f64')
 
   registerErrorClasses()
 }

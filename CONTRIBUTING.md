@@ -710,7 +710,19 @@ Compiler checkpoints check each complete write before touching the upper-memory
 lane and bound reads by the recorded stream end, retained across the arena reset.
 Lengths, intern indexes and integer payloads use unsigned LEB128; string headers
 retain their fixed UTF-16 length. Serializer or decoder allocation into unread
-data traps. These helpers are reachable only from checkpoint users.
+data traps. These helpers are reachable only from checkpoint users. The lane
+also carries an `Int32Array` or `Float64Array` whole (`__park_write_bytes`):
+a large compile decodes the assembled module onto the tape before its first
+checkpoint, which keeps the tape (its columns, symbols and atoms:
+src/ir/tape.js tapeState) with link's and the optimizer's inputs instead of
+the tree, dead once decoded; each of link's passes then runs as a phase of
+its own, and each sweep of the arena rewind over the module's functions
+within it (`phase` in its facts), compacted before the next runs and before
+the tape is read back into the tree the optimizer takes (scripts/self.js
+compileModule, src/link/index.js linkPasses, src/optimize/arena-rewind.js).
+The arena rewind pass alone allocates 6.9 GB under V8 on the compiler's
+own module; `guarded` keeps a node's parent in one column over the tape, not
+a Map per function the pass held to its end.
 
 A phase checkpoint (`scripts/self.js` checkpointPhase, through
 `ctx.transform.phaseCheckpoint`) keeps one phase's result past its arena growth.
@@ -727,15 +739,43 @@ phase as a rewound frame reads it over a call (saves it, clears it, starts the
 lowest afresh so a handler inside the phase takes the lows since the mark, enters
 its base), every censused store of a value made since the mark into older storage
 lowers it below the mark, and `__park_safe` is the flag at or above the mark. A
-phase that wrote into older storage, or whose result the lane cannot carry (a
-function, a typed array) or would cost more to copy than half the growth, keeps
-its memory, as a frame that ran an escape keeps its own; the marks count the
+phase whose result would cost more to copy than half the growth keeps its
+memory in place. One that wrote into older storage, or whose result the lane
+cannot carry (a function, a typed array), keeps what it made reachable and no
+more: `__gc_phase` (module/core.js) compacts the phase's memory
+(module/core/compact.js), the mark its floor, with the module's roots, the
+phase's result and the phase itself for roots. The phase could write only into
+storage it reached through module state or what its closure captured; the walk
+reaches below the floor whatever these reach, so every pointer into the phase's
+memory is found and forwarded, and the frames around the phase hold nothing it
+made (their locals were written before it began). The assemble phases write
+compile state older than themselves as their work (a pooled Map of the flow
+analysis, `ctx.funcs`, function bodies, the facts' caches): without the
+compaction every one of them kept all it allocated, and the compiler's own
+compile ran out of the 4 GiB address space. A phase that grew less than half
+of what the last compaction walked (`__g_cost`) keeps its memory: the walk is
+of all the module holds, and this holds the walks to twice the memory they
+examine (at an eighth, the compactions took most of the compiler's own
+compile). Past half the wasm32 address space every phase compacts: there the
+memory left bounds the compile, not the walks. The
+compaction walks the layouts a module that compacts lays out (`compactOn`): the
+self build turns the rewind and the compaction on and leaves a loop's own
+compaction off (`loopCompact`, scripts/build-profile.mjs SELF_OPTIMIZE): on,
+the compiler's code grew from 29 to 46 MB and its own compile held more
+memory, not less. The
+front is a phase too (scripts/self.js compileModule). The marks count the
 checkpoints taken and declined (`checkpoint:taken`, `checkpoint:unsafe`,
 `checkpoint:unparkable`, `checkpoint:unworthy` among the phase records, each
-before the record of the phase it judged; `__esc_get` reads the flag as it
+before the record of the phase it judged, with the mark, the flag and whether
+the durable logs held beside it, `verdictAt`; `checkpoint:compacted` after a
+verdict whose phase the compaction shrank; `__esc_get` reads the flag as it
 stands, for a diagnostic host). The pass keeps the flag's writes in every
 function a checkpoint can reach, and the census lists the protocol's own calls
-as keeping nothing. A write of a for-in enumeration cache is no escape either:
+as keeping nothing: the park lane's cursors are scratch like the heap's, and its
+writers and readers keep nothing (a checkpoint taken inside a phase, a solve
+inside the summary, leaves the phase safe); self.js's park and unpark hand
+their string tables down the walk instead of filing them in module bindings.
+A write of a for-in enumeration cache is no escape either:
 every read of one asks the epoch, and a frame that fills one, or reaches a
 callee that does, moves the epoch as it restores (`optimize/arena-rewind.js`
 ENUMC), as the round's clear and a phase's rewind do. The rewind resets the dynamic-property and
@@ -2144,9 +2184,14 @@ the audiojs atoms run under it as a check of the proof: every test of a
 computed value passes; the tests that pin the emitted shape or its size (the
 restore of a frame and of a loop, golden sizes, the loop ratchet, the
 kernel's byte parity) see the fill and differ. `JZ_DEBUG_ESC=1`
-makes every site tell the host which one lowered the flag
-(`env.__esc_note(id)`, the ids listed on stderr), to find what keeps a
-call's memory.
+makes every site tell the host which one it is, the flag before it and what
+the site itself lowered the flag to (`env.__esc_note(id, before, target)`, all
+ones where it lowered nothing: the site runs over a cleared flag, which then
+takes the lower of the two; the ids listed on stderr with their function,
+source line and node), to find what keeps a call's memory. A kernel built so
+names the open phase checkpoints and their marks in place (`phaseOpenAddr`,
+scripts/phase-marks.js), and scripts/phase-escapes.mjs runs the compiler's own
+compile through it and lists, per phase, the sites that wrote below its mark.
 
 **Compaction of kept memory** (module/core/compact.js). What the rewind and
 the walk cannot free is what a call stored into module state: a value that
@@ -2229,7 +2274,11 @@ compile memory with them). Liveness is the whole rule: a binding the body
 declares is written before it is read in every iteration, so it is dead at
 the top; a specialized path's copy of a local (`$x.f0`) is live where its
 reads say. Every root is forwarded at every compaction, so no root holds an
-address of moved memory; a dead root's block stays one round more.
+address of moved memory; a dead root's block stays one round more. The
+escape log names addresses the move changed and is emptied; a phase's
+compaction (`__gc_phase`) then sets it full, so the frames around the phase
+keep all rather than read an empty log as nothing escaped and release what
+the move kept.
 
 A suspended frame's local names memory below the floor (allocated before
 the call), which never moves, and reaches memory above it only through a
@@ -3595,7 +3644,16 @@ and their stores need no undo record. A direct field store into a function
 local whose every initializer is an object literal needs no reset save either:
 its receiver was made after the reset mark. The frame census supplies that
 fact; parameter aliases, nested writes to the binding, calls that return an
-object, and paths through its fields retain the runtime check.
+object, and paths through its fields retain the runtime check. A closure's
+store into a binding it captured takes the same field log (src/ir/vars.js
+`capturedCellSave`): a closure built as the module starts, called in a round,
+writes a cell made before the mark. The function that made a cell writes it
+only in the activation that made it, and a number names no memory, so neither
+store needs the record. Its call (`__durable_cell_snap`) reaches the
+record's lowering of the flag but allocates nothing of the closure's
+(optimize/arena-rewind.js ROUND_ALLOCS): counted as the closure's own
+allocation, never run, it made an async function's continuation never resume
+(test/async.js, bare fetch).
 `whyNotRewind` names the reason
 for every candidate that keeps its heap. Load CSE (`src/compile/cse-load.js`) keeps a
 cached typed-array load across a call whose callee does not `writesOuter`; any other

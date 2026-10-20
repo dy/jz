@@ -280,7 +280,13 @@ const SHRINK_METHODS = new Set(['delete', 'clear', 'pop', 'shift'])
 // phase checkpoint's protocol before its verdict (module/core.js `__park_mark`
 // to `__park_end`, scripts/self.js) read and set the arena's own globals,
 // and keep nothing.
-const READS_POINTER = /^__(ptr_offset|ptr_type|ptr_aux|mkptr|box_bigint|unbox_bigint|object_toString|heap_mark|heap_large|heap_since|hide_member|park_(mark|enter|low_enter|base_enter|safe|worth|end)|durable_state|esc_get)$/
+const READS_POINTER = /^__(ptr_offset|ptr_type|ptr_aux|mkptr|box_bigint|unbox_bigint|object_toString|heap_mark|heap_large|heap_since|hide_member|park_(mark|enter|low_enter|base_enter|safe|worth|end)|durable_state|esc_get|gc_phase)$/
+// The park lane's writers and readers (module/core.js, scripts/self.js park,
+// unpark): a value's bits copied into scratch above the heap and read back at
+// once, a pointer from before the phase kept by its bits; the rewinds to a
+// mark. A checkpoint taken inside a phase writes nothing the phase must keep.
+// Reading a string back makes it.
+const PARK_LANE = /^__park_(begin|finish|write_(u8|u32|f64|i64|str|ref|bytes)|read_(u8|u32|f64|i64|ref|bytes)|rewind|rewind_to)$/
 // A builtin's namespace: a call under it the census lists nowhere may do anything with its arguments.
 const STATICS = /^(Object|Reflect|Atomics|Array\.prototype|Function|Promise)\./
 // Builtins that write into their first argument.
@@ -308,7 +314,7 @@ export const listedBuiltin = (callee) => {
   const c = ctorOf(callee)
   if (c !== null) return FRESH_CTORS.test(c)
   return callee === '__iter_arr' || callee === '__keys_ro' || callee === '__keys_dyn' || PURE_CALLEES.test(callee) ||
-    FRESH_CTORS.test(callee) || WRITES_FIRST.test(callee) || READS_POINTER.test(callee)
+    FRESH_CTORS.test(callee) || WRITES_FIRST.test(callee) || READS_POINTER.test(callee) || PARK_LANE.test(callee) || callee === '__park_read_str'
 }
 
 /** Names a `new` or bare call resolves to a same-module function. */
@@ -797,7 +803,8 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       if (FRESH_CTORS.test(callee)) { allocates(); if (callee === 'Map') mapEntries(args); return }   // constructors lowered to plain calls still read Map entries
       // a builtin writing into its first argument: a store into it
       if (WRITES_FIRST.test(callee)) { allocates(); const list = argList(args); return list.length ? store(list[0], anyHeap(list.slice(1)), true, false, true) : undefined }
-      if (READS_POINTER.test(callee)) return
+      if (READS_POINTER.test(callee) || PARK_LANE.test(callee)) return
+      if (callee === '__park_read_str') { allocates(); return }
       // any other builtin the runtime provides by this name: what it does with its arguments is not listed here
       if (ctx.core?.emit?.[callee] != null || STATICS.test(callee)) { unknownCall('call ' + callee); return escape('call ' + callee) }
       // A binding holding closures the summary names: they run here.

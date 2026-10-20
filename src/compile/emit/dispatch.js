@@ -9,7 +9,7 @@ import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, walkAst } from '../../ast.js'
-import { PTR, ctx, err, inc, emitArity, setLinkDemand } from '../../ctx.js'
+import { PTR, ctx, err, inc, emitArity, setLinkDemand, here } from '../../ctx.js'
 import {
   keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
@@ -1797,17 +1797,38 @@ export function whereNew(ir, flag, pre = [], mark = null) {
   return out
 }
 // JZ_DEBUG_ESC=1: every site that lowers the flag tells the host which one it
-// was (`env.__esc_note(id)`, the ids listed on stderr as they are emitted), to
-// find what keeps a call's memory. A tool for this file's work, off in use.
+// was, the flag before it and what the site itself lowered it to
+// (`env.__esc_note(id, before, target)`, all ones where it lowered nothing;
+// the ids listed on stderr with their function, line and site as they are
+// emitted): the site runs over a cleared flag, which then takes the lower of
+// the two. To find what keeps a call's memory or makes a phase checkpoint
+// unsafe. A tool for this file's work, off in use.
 const DBG_ESC = typeof process !== 'undefined' && process.env?.JZ_DEBUG_ESC === '1'
 let escNotes = 0
 const spelled = (n) => Array.isArray(n) ? '[' + n.map(spelled).join(' ') + ']' : String(n)
+// The source line a site stands at: the line starts of each source, found once.
+const lineStarts = new Map()
+const lineOf = (loc) => {
+  const e = ctx.error
+  if (loc == null || !e.src) return ''
+  const part = e.parts?.find(p => loc >= p.base && loc <= p.end)
+  const src = part ? part.src : e.src, at = part ? loc - part.base : loc - (e.lead ?? 0)
+  let starts = lineStarts.get(src)
+  if (!starts) { starts = [0]; for (let i = 0; i < src.length; i++) if (src.charCodeAt(i) === 10) starts.push(i + 1); lineStarts.set(src, starts) }
+  let lo = 0, hi = starts.length - 1
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= at) lo = mid; else hi = mid - 1 }
+  return `${part?.file ? part.file.split('/').slice(-2).join('/') : 'main'}:${lo + 1}`
+}
 const noted = (flag, node) => {
   if (!DBG_ESC || flag === null) return flag
   const id = ++escNotes
-  if (!ctx.module.imports.some(i => i[2] === '"__esc_note"')) { ctx.module.imports.push(['import', '"env"', '"__esc_note"', ['func', '$__esc_note', ['param', 'i32']]]); ctx.module.keepsNothing.add('$__esc_note') }
-  console.error(`esc-note ${id}: ${ctx.func.current?.name ?? ctx.func.name ?? '?'}: ${ctx.plans.siteWhys?.get(ctx.plans.siteOrigin?.get(node) ?? node) ?? 'site'}: ${spelled(node).slice(0, 160)}`)
-  return ['block', flag, ['call', '$__esc_note', ['i32.const', id]]]
+  if (!ctx.module.imports.some(i => i[2] === '"__esc_note"')) { ctx.module.imports.push(['import', '"env"', '"__esc_note"', ['func', '$__esc_note', ['param', 'i32'], ['param', 'i32'], ['param', 'i32']]]); ctx.module.keepsNothing.add('$__esc_note') }
+  const cur = ctx.func.current, fn = typeof cur === 'string' ? cur : cur?.name ?? ctx.funcs.list.find(f => f.sig === cur)?.name ?? '?'
+  console.error(`esc-note ${id}: ${fn} ${lineOf(node?.loc ?? here())}: ${ctx.plans.siteWhys?.get(ctx.plans.siteOrigin?.get(node) ?? node) ?? 'site'}: ${spelled(node).slice(0, 160)}`)
+  const before = escLocal('i32', ESC_NOTE)
+  return ['block', ['local.set', before, ['global.get', '$__esc']], ['global.set', '$__esc', ['i32.const', -1]], flag,
+    ['call', '$__esc_note', ['i32.const', id], ['local.get', before], ['global.get', '$__esc']],
+    ['if', ['i32.lt_u', ['local.get', before], ['global.get', '$__esc']], ['then', ['global.set', '$__esc', ['local.get', before]]]]]
 }
 /** The site (or the site a clone of it copies) is flagged where it is emitted. */
 export const markInstrumented = (node) => ctx.plans.instrumented.add(ctx.plans.siteOrigin?.get(node) ?? node)
@@ -1853,7 +1874,7 @@ function rooted(ir, name = null, node = null) {
 // the check no frame reads (optimize/arena-rewind.js, same tag). Numbered
 // apart from the frame's other names: a site changes no label and no temp
 // of the code around it.
-const ESC_MARK = 'esch', ESC_VALUE = 'escv'
+const ESC_MARK = 'esch', ESC_VALUE = 'escv', ESC_NOTE = 'escd'
 const escLocal = (type, tag) => {
   let name, n = 0
   do { name = `${T}${tag}${n++}` } while (ctx.func.locals.has(name))

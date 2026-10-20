@@ -96,6 +96,7 @@ export const PASS_NAMES = [
   'arenaReach',               // a call that ran an escape keeps what the escape reaches, not all it allocated (links the walk, ~2 KB)
   'iterationRelease',         // a loop whose escapes the frame flags gives back each iteration's memory by the flag and the walk (needs arenaReach)
   'compact',                  // the host compacts what the module keeps as the outermost call returns (module/core/compact.js, ~3 KB)
+  'loopCompact',              // a loop whose iteration keeps some of what it allocates compacts it in place (optimize/loop-compact.js; needs compact)
   'placeLargeBlocks',         // a block of 4 KiB or more starts a quarter page past the last such block, mod 4096: streams of consecutive arrays share no low address bits (module/core.js __alloc)
   'versionArrayPatterns',     // an array pattern over a value that may be an array reads by position behind Array.isArray, the protocol beside it (plan/index-array-patterns.js)
   'treeshake',

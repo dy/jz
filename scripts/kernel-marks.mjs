@@ -10,7 +10,8 @@ const READERS = ['phasesDone', 'phaseCapacity', 'phaseNameAt', 'phaseHeapAt', 's
  * the phases the kernel counted past its record capacity (`setPhaseCapacity`
  * lowers it); the tape's node count and column capacity; the phase checkpoints
  * taken (a phase's result parked and the arena rewound to the phase's mark) and declined
- * (the phase wrote into older storage, or its result cannot be parked). A mark of 0 is a stage
+ * (the phase wrote into older storage, or its result cannot be parked), each verdict with the phase's
+ * mark, the escape flag it read and whether the durable logs held. A mark of 0 is a stage
  * that did not complete. Every read is a call into the kernel that allocates
  * nothing there; the strings come back through the interop's memory reader.
  * @param {{ exports: object, memory: { read(v: any): any } }} self - an `instantiate` result
@@ -25,7 +26,13 @@ export function readMarks(self) {
     throw new Error('Invalid kernel heap diagnostic count or capacity')
   const recorded = Math.min(phasesDone, capacity)
   const phases = []
-  for (let i = 0; i < recorded; i++) phases.push({ name: self.memory.read(ex.phaseNameAt(i)), heap: ex.phaseHeapAt(i) })
+  for (let i = 0; i < recorded; i++) {
+    const name = self.memory.read(ex.phaseNameAt(i)), record = { name, heap: ex.phaseHeapAt(i) }
+    // a verdict's record carries what it judged by (scripts/phase-marks.js verdictAt), where the kernel records it
+    if (typeof ex.verdictAt === 'function' && name.startsWith('checkpoint:') && name !== 'checkpoint:compacted')
+      record.verdict = { mark: ex.verdictAt(i, 0), flag: ex.verdictAt(i, 1), durable: ex.verdictAt(i, 2) === 1, serial: ex.verdictAt(i, 3) }
+    phases.push(record)
+  }
   return {
     heapFront: ex.stageHeap(0), heapEmit: ex.stageHeap(1), heapOptimize: ex.stageHeap(2), heapCheckpoint: ex.stageHeap(3),
     phases, phasesDone, phasesDropped: phasesDone - recorded,

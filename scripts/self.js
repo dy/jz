@@ -23,8 +23,9 @@ import { configureFixedMemory, verifyFixedScratch, verifyFixedMemory } from '../
 
 import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
-import { T } from '../src/ir/tape.js'
-import { resetMarks, recordPhase, markStage, markTape, countCheckpoint, countDecline, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
+import { T, resetTape, fromWat, toWat, tapeState, restoreTape } from '../src/ir/tape.js'
+import { linkPasses } from '../src/link/index.js'
+import { resetMarks, recordPhase, recordVerdict, openPhase, closePhase, markStage, markTape, countCheckpoint, countDecline, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
 import jzify from '../jzify/index.js'
 
 // Final-optimizer tail shared with the host pipeline: its inputs are the
@@ -112,15 +113,18 @@ const PARK_SET = 10
 const PARK_STRREF = 11
 const PARK_INT = 12
 const PARK_REF = 13
+const PARK_I32S = 14
+const PARK_F64S = 15
 
 // A string is written once, the first time; every later occurrence is its
 // index in the order of first writes (an IR's op names and local names
-// repeat per node). A 32-bit integer is written as one.
-let parkStrings = null
-function parkString(text) {
-  const ref = parkStrings.get(text)
+// repeat per node). A 32-bit integer is written as one. The table is the
+// park's own, handed down the walk: a checkpoint taken inside a phase files
+// nothing into module state.
+function parkString(text, strings) {
+  const ref = strings.get(text)
   if (ref !== undefined) { __park_write_u8(PARK_STRREF); __park_write_u32(ref); return }
-  parkStrings.set(text, parkStrings.size)
+  strings.set(text, strings.size)
   __park_write_u8(PARK_STRING); __park_write_str(text)
 }
 
@@ -129,11 +133,11 @@ function parkString(text) {
 // narrowing writes onto). The mark is 0 outside a phase checkpoint.
 let parkMark = 0
 const parked = value => parkMark !== 0 && (__ptr_offset(value) >>> 0) < parkMark
-// A value the lane cannot carry (a function, a typed array): the park fails
-// as a whole, and the lane is abandoned.
+// A value the lane cannot carry (a function, a typed array of another kind
+// than the tape's columns): the park fails as a whole, and the lane is abandoned.
 let parkFailed = false
 
-function parkValue(value) {
+function parkValue(value, strings) {
   if (value === null) { __park_write_u8(PARK_NULL); return }
   if (value === undefined) { __park_write_u8(PARK_UNDEFINED); return }
   if (value === false) { __park_write_u8(PARK_FALSE); return }
@@ -142,8 +146,19 @@ function parkValue(value) {
     if ((value | 0) === value && (value !== 0 || 1 / value > 0)) { __park_write_u8(PARK_INT); __park_write_u32(value); return }
     __park_write_u8(PARK_NUMBER); __park_write_f64(value); return
   }
-  if (typeof value === 'string') { parkString(value); return }
+  if (typeof value === 'string') { parkString(value, strings); return }
   if (typeof value === 'bigint') { __park_write_u8(PARK_BIGINT); __park_write_i64(value); return }
+  // The tape's columns (src/ir/tape.js): their bytes, whole.
+  if (value instanceof Int32Array) {
+    if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
+    __park_write_u8(PARK_I32S); __park_write_u32(value.length); __park_write_bytes(__ptr_offset(value), value.length << 2)
+    return
+  }
+  if (value instanceof Float64Array) {
+    if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
+    __park_write_u8(PARK_F64S); __park_write_u32(value.length); __park_write_bytes(__ptr_offset(value), value.length << 3)
+    return
+  }
   if (Array.isArray(value)) {
     if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     // A WAT string literal watr parsed (the stdlib's and the boundary wrappers'
@@ -151,24 +166,24 @@ function parkValue(value) {
     // (watr/src/util.js `str`); the bytes alone lose it. Park the text: watr's
     // assembler converts a quoted string back to the same literal.
     const text = value.valueOf()
-    if (typeof text === 'string') { parkString(text); return }
+    if (typeof text === 'string') { parkString(text, strings); return }
     __park_write_u8(PARK_ARRAY)
     __park_write_u32(value.length)
-    for (let i = 0; i < value.length && !parkFailed; i++) parkValue(value[i])
+    for (let i = 0; i < value.length && !parkFailed; i++) parkValue(value[i], strings)
     return
   }
   if (value instanceof Map) {
     if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     __park_write_u8(PARK_MAP)
     __park_write_u32(value.size)
-    for (const [k, v] of value) { if (parkFailed) return; parkValue(k); parkValue(v) }
+    for (const [k, v] of value) { if (parkFailed) return; parkValue(k, strings); parkValue(v, strings) }
     return
   }
   if (value instanceof Set) {
     if (parked(value)) { __park_write_u8(PARK_REF); __park_write_ref(value); return }
     __park_write_u8(PARK_SET)
     __park_write_u32(value.size)
-    for (const v of value) { if (parkFailed) return; parkValue(v) }
+    for (const v of value) { if (parkFailed) return; parkValue(v, strings) }
     return
   }
   if (value != null && typeof value === 'object') {
@@ -178,15 +193,14 @@ function parkValue(value) {
     __park_write_u32(keys.length)
     for (let i = 0; i < keys.length && !parkFailed; i++) {
       __park_write_str(keys[i])
-      parkValue(value[keys[i]])
+      parkValue(value[keys[i]], strings)
     }
     return
   }
   parkFailed = true
 }
 
-let unparkStrings = null
-function unparkValue() {
+function unparkValue(strings) {
   const tag = __park_read_u8()
   if (tag === PARK_NULL) return null
   if (tag === PARK_UNDEFINED) return undefined
@@ -194,32 +208,34 @@ function unparkValue() {
   if (tag === PARK_TRUE) return true
   if (tag === PARK_NUMBER) return __park_read_f64()
   if (tag === PARK_INT) return __park_read_u32() | 0
-  if (tag === PARK_STRING) { const text = __park_read_str(); unparkStrings.push(text); return text }
-  if (tag === PARK_STRREF) return unparkStrings[__park_read_u32() >>> 0]
+  if (tag === PARK_STRING) { const text = __park_read_str(); strings.push(text); return text }
+  if (tag === PARK_STRREF) return strings[__park_read_u32() >>> 0]
   if (tag === PARK_BIGINT) return __park_read_i64()
   if (tag === PARK_REF) return __park_read_ref()
+  if (tag === PARK_I32S) { const len = __park_read_u32() >>> 0, out = new Int32Array(len); __park_read_bytes(__ptr_offset(out), len << 2); return out }
+  if (tag === PARK_F64S) { const len = __park_read_u32() >>> 0, out = new Float64Array(len); __park_read_bytes(__ptr_offset(out), len << 3); return out }
   if (tag === PARK_ARRAY) {
     const len = __park_read_u32() >>> 0
     const out = new Array(len)
-    for (let i = 0; i < len; i++) out[i] = unparkValue()
+    for (let i = 0; i < len; i++) out[i] = unparkValue(strings)
     return out
   }
   if (tag === PARK_OBJECT) {
     const len = __park_read_u32() >>> 0
     const out = {}
-    for (let i = 0; i < len; i++) out[__park_read_str()] = unparkValue()
+    for (let i = 0; i < len; i++) out[__park_read_str()] = unparkValue(strings)
     return out
   }
   if (tag === PARK_MAP) {
     const len = __park_read_u32() >>> 0
     const out = new Map()
-    for (let i = 0; i < len; i++) { const k = unparkValue(); out.set(k, unparkValue()) }
+    for (let i = 0; i < len; i++) { const k = unparkValue(strings); out.set(k, unparkValue(strings)) }
     return out
   }
   if (tag === PARK_SET) {
     const len = __park_read_u32() >>> 0
     const out = new Set()
-    for (let i = 0; i < len; i++) out.add(unparkValue())
+    for (let i = 0; i < len; i++) out.add(unparkValue(strings))
     return out
   }
   throw new TypeError(`Invalid parked WAT IR tag ${tag}`)
@@ -227,29 +243,24 @@ function unparkValue() {
 
 function park(value) {
   __park_begin()
-  parkStrings = new Map()
   parkFailed = false
-  parkValue(value)
-  parkStrings = null
+  parkValue(value, new Map())
   if (parkFailed) return false
   __park_finish()
   return true
 }
 function unpark() {
-  unparkStrings = []
-  const out = unparkValue()
-  unparkStrings = null
-  return out
+  return unparkValue([])
 }
 
 /**
- * Park a value (arrays, records, strings, numbers, Maps, Sets) in the binary
- * lane, rewind the arena to its post-init mark and read the value back: what
+ * Park a value (arrays, records, strings, numbers, Maps, Sets, the tape's
+ * typed columns) in the binary lane, rewind the arena to its post-init mark and read the value back: what
  * the compile allocated before is gone, the value alone remains. Every
  * reader after a checkpoint takes its inputs from the value: `ctx` is stale.
  */
 function checkpoint(value) {
-  if (!park(value)) throw new TypeError('Cannot checkpoint a WAT IR value: a function or a typed array in it')
+  if (!park(value)) throw new TypeError('Cannot checkpoint a WAT IR value: a function or a typed array the lane cannot carry in it')
   __park_rewind()
   return unpark()
 }
@@ -265,7 +276,7 @@ const checkpointIR = checkpoint
  * nothing older than itself (`__park_safe`, the flag of optimize/arena-rewind.js
  * read over the phase as a rewound frame reads it over a call) and the result
  * is data the lane carries worth less than half the growth; otherwise the
- * phase keeps its memory, as a frame that ran an escape keeps its own. A phase
+ * phase keeps what it made reachable, its memory compacted. A phase
  * that grew less keeps its result in place: parking costs the result's size.
  * Phases nest (compile/index.js `phase`, plan's sweeps, the solve inside them):
  * what a mark saves lives in this frame's locals.
@@ -274,7 +285,9 @@ const PHASE_MIN = 16 * 1024 * 1024
 function checkpointPhase(run) {
   const mark = __park_mark(), state = __durable_state()
   const esave = __park_enter(), lsave = __park_low_enter(), bsave = __park_base_enter(mark)
+  const serial = openPhase(mark >>> 0)
   const out = run()
+  closePhase()
   let kept = out
   if (__heap_since(mark) >= PHASE_MIN) {
     // Safe: no escape below the mark, and no durable log grew (a durable
@@ -282,14 +295,24 @@ function checkpointPhase(run) {
     // before every mark). The verdict is recorded for the diagnostics before
     // the phase's own record.
     let verdict = 'checkpoint:unsafe'
-    if (__park_safe(mark) && __durable_state() === state) {
+    const esc = __esc_get() >>> 0, durable = __durable_state() === state
+    if (__park_safe(mark) && durable) {
       parkMark = mark >>> 0
       verdict = !park(out) ? 'checkpoint:unparkable' : !__park_worth(mark) ? 'checkpoint:unworthy' : 'checkpoint:taken'
       parkMark = 0
     }
     if (verdict === 'checkpoint:taken') { __park_rewind_to(mark, state); kept = unpark(); countCheckpoint() }
     else countDecline()
-    recordPhase(verdict)
+    recordVerdict(verdict, mark >>> 0, esc, durable ? 1 : 0, serial)
+    // A phase that wrote into older storage, or whose result the lane cannot
+    // carry, keeps what it made reachable and no more: its memory compacted
+    // (module/core.js `__gc_phase`), the result and the phase's own captures
+    // among the roots. A result worth more than half the growth stays as it is.
+    if (verdict === 'checkpoint:unsafe' || verdict === 'checkpoint:unparkable') {
+      const top = __heap_mark()
+      kept = __gc_phase(mark, out, run)
+      if (__heap_mark() !== top) recordPhase('checkpoint:compacted')
+    }
   }
   __park_end(esave, bsave, lsave)
   return kept
@@ -297,7 +320,7 @@ function checkpointPhase(run) {
 
 // Heap diagnostics: scripts/phase-marks.js records them, scripts/kernel-marks.mjs
 // reads them through these exports, after a trap or a thrown compile error too.
-export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, phaseCheckpoints, phaseDeclines } from './phase-marks.js'
+export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, phaseCheckpoints, phaseDeclines, verdictAt, phaseOpenAddr } from './phase-marks.js'
 const stageMarks = { time(name, fn) { const out = fn(); recordPhase(name); return out } }
 
 /**
@@ -309,17 +332,31 @@ const stageMarks = { time(name, fn) { const out = fn(); recordPhase(name); retur
 function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
   const heapMark = __heap_mark()
   setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
-  const ast = front(source, strict, sourceType)
+  // The front is a phase like assemble's: what it made and nothing reaches goes.
+  const ast = checkpointPhase(() => front(source, strict, sourceType))
   markStage(STAGE_FRONT)
   // The assembled module and the inputs of every pass after it: a large
-  // compile checkpoints them here, before the tape, so the front's and the
-  // analyses' allocations are released before link and the optimizer run.
-  let assembled = assemble(ast, stageMarks)
+  // compile decodes the module onto the tape and checkpoints the tape with
+  // link's and the optimizer's inputs, so the front's and the analyses'
+  // allocations and the tree the tape was decoded from are released before
+  // link and the optimizer run.
+  const assembled = assemble(ast, stageMarks)
   let cfg = ctx.transform.optimize
   let facts = tailFacts(cfg)
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-compile')
-  if (__heap_large(heapMark)) { const kept = checkpoint([assembled, cfg, facts]); assembled = kept[0]; cfg = kept[1]; facts = kept[2] }
-  const module = linkAssembled(assembled, stageMarks)
+  let module
+  if (__heap_large(heapMark)) {
+    resetTape()
+    const root = fromWat(assembled.module)
+    const kept = checkpoint([tapeState(), root, assembled.link, cfg, facts])
+    restoreTape(kept[0]); cfg = kept[3]; facts = kept[4]
+    // Each of link's passes is a phase: what it made and left unreached goes
+    // before the next one runs and before the tape is read back.
+    const linkFacts = kept[2]
+    linkFacts.phase = checkpointPhase
+    module = stageMarks.time('link', () => { linkPasses(kept[1], linkFacts); return toWat(kept[1]) })
+  }
+  else module = linkAssembled(assembled, stageMarks)
   markStage(STAGE_EMIT)
   markTape(T.n, T.op.length)
   verifyFixedScratch(module, facts.fixedMemory)

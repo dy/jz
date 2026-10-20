@@ -45,6 +45,8 @@ export const PHASE_NAMES = [
   'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:staticScratch', 'analyzeClosures', 'shareSplitSlots', 'guardToInt32', 'poolFloatConstants', 'selectBits', 'maskOperands', 'splitFuncs',
   // a phase checkpoint's verdict (scripts/self.js checkpointPhase), recorded before the phase's own record
   'checkpoint:taken', 'checkpoint:unsafe', 'checkpoint:unparkable', 'checkpoint:unworthy',
+  // what a declined phase kept once compacted (module/core.js `__gc_phase`), recorded after its verdict
+  'checkpoint:compacted',
 ]
 const PHASE_IDS = new Map(PHASE_NAMES.map((name, id) => [name, id]))
 export const PHASE_RECORDS = 256
@@ -59,7 +61,35 @@ const tape = new Float64Array(2)
 const counts = new Float64Array(4)
 counts[1] = PHASE_RECORDS
 
-export const resetMarks = () => { counts[0] = 0; counts[2] = 0; counts[3] = 0; for (let i = 0; i < 4; i++) stages[i] = 0; tape[0] = 0; tape[1] = 0 }
+// A phase checkpoint's verdict beside its record (scripts/self.js checkpointPhase):
+// the phase's mark, the escape flag the verdict read, whether the durable logs
+// held, and the phase's serial among the phases opened since the entry.
+const verdicts = new Float64Array(PHASE_RECORDS * 4)
+// The open phase checkpoints, innermost last, for a diagnostic host that reads
+// memory as a site lowers the flag (JZ_DEBUG_ESC builds): [depth, serials so far, (serial, mark)…].
+const OPEN_DEPTH = 64
+const open = new Float64Array(2 + 2 * OPEN_DEPTH)
+
+export const resetMarks = () => { counts[0] = 0; counts[2] = 0; counts[3] = 0; for (let i = 0; i < 4; i++) stages[i] = 0; tape[0] = 0; tape[1] = 0; open[0] = 0; open[1] = 0 }
+/** A phase checkpoint opens at `mark`: its serial. */
+export const openPhase = (mark) => {
+  const depth = open[0], serial = open[1] + 1
+  open[1] = serial
+  if (depth < OPEN_DEPTH) { open[2 + 2 * depth] = serial; open[3 + 2 * depth] = mark }
+  open[0] = depth + 1
+  return serial
+}
+export const closePhase = () => { if (open[0] > 0) open[0] = open[0] - 1 }
+/** A verdict's record with what it judged by. */
+export const recordVerdict = (verdict, mark, esc, durable, serial) => {
+  const done = counts[0]
+  if (done < counts[1] && done < PHASE_RECORDS) { verdicts[4 * done] = mark; verdicts[4 * done + 1] = esc; verdicts[4 * done + 2] = durable; verdicts[4 * done + 3] = serial }
+  recordPhase(verdict)
+}
+/** What a verdict record judged by (0: its mark, 1: the flag, 2: durable logs held, 3: its serial); 0 for any other record. */
+export const verdictAt = (i, k) => i >= 0 && i < recorded() && i === Math.floor(i) && k >= 0 && k < 4 && k === Math.floor(k) ? verdicts[4 * i + k] : 0
+/** The address of the open phases' slots, for a host reading them in place. */
+export const phaseOpenAddr = () => __ptr_offset(open) >>> 0
 export const recordPhase = (name) => {
   const done = counts[0]
   if (done < counts[1] && done < PHASE_RECORDS) { ids[done] = PHASE_IDS.get(name) ?? 0; heaps[done] = __heap_mark() >>> 0 }

@@ -163,6 +163,14 @@ export const registerDurableLog = () => {
     (i64.store offset=16 (local.get $rec) (i64.load (local.get $off)))
     (global.set $__durable_arr_log (local.get $rec))${ctx.scope.globals.has('__esc') ? `
     (call $__esc_at (local.get $off))` : ''})`
+  // A captured cell's record (src/ir/vars.js capturedCellSave) is the field's.
+  // A call of it reaches the record's lowering of the flag, so the frame
+  // around it reads the flag, but allocates nothing of the frame's: the
+  // record is the round's (optimize/arena-rewind.js ROUND_ALLOCS). Counted as
+  // the closure's own allocation, never run, it made an async function's
+  // continuation never resume (test/async.js, bare fetch); skipped as a log
+  // the census guards, a frame around it could restore over the record.
+  ctx.core.stdlib['__durable_cell_snap'] = `(func $__durable_cell_snap (param $off i32) (call $__durable_obj_snap (local.get $off)))`
   ctx.core.stdlib['__durable_arr_heal'] = () => `(func $__durable_arr_heal
     (local $rec i32) (local $off i32) (local $len i32) (local $i i32) (local $was i64)
     (local.set $rec (global.get $__durable_arr_log))

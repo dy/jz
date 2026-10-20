@@ -596,6 +596,33 @@ test('memory.reset(): module-global heap values survive a reset (rewind to post-
   is(exports.get(2), 33, 'all module-global slots intact')
 })
 
+// A closure the module builds as it starts keeps its captured bindings in
+// cells made then, below the post-init mark: module state, as a global is. A
+// call that stores one of its own values into such a cell (directly, or as a
+// grown array's new storage) leaves the reset nothing to read through it but
+// what the cell held before the round. Without the cell's undo record the
+// reset gave the memory back while the cell still named it.
+test('memory.reset(): a module-level closure\'s captured binding returns to what the module started with', () => {
+  const src = `const make = () => { let st = null, list = [0]; return { set: (n) => { st = [n, n + 1]; list.push(n) }, get: () => st === null ? -1 : st[0] + st[1], last: () => list[list.length - 1] + list.length } }
+    const api = make()
+    export const set = (n) => api.set(n)
+    export const get = () => api.get()
+    export const last = () => api.last()
+    export const churn = (n) => { let s = 0; for (let i = 0; i < n; i++) { const a = [i, i * 2, 'x' + i, { i }]; s += a.length } return s }`
+  for (const optimize of levels(0, 1, 2)) {
+    const { exports, memory } = jz(src, { optimize })
+    is(exports.get(), -1, `O${optimize}: as the module started`)
+    exports.set(5)
+    is(exports.get(), 11, `O${optimize}: the call's value`)
+    for (let i = 0; i < 20; i++) exports.set(i)
+    memory.reset()
+    is(exports.get(), -1, `O${optimize}: the reset restores the cell`)
+    exports.churn(500)
+    is(exports.get(), -1, `O${optimize}: and nothing reads the reused memory through it`)
+    is(exports.last(), 1, `O${optimize}: the grown array is the one the module started with`)
+  }
+})
+
 test('memory.reset(): own memory grows without reset', () => {
   // The typed array is returned as a view of the module's memory: the host holds it, so the call keeps it.
   const { exports, memory } = jz`

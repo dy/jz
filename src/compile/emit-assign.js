@@ -27,7 +27,7 @@ import {
   typed, asF64, asI32, asI64, keyIndex, temp, tempI32, withTemp, block64,
   ptrOffsetIR, fwdOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
-  freshId, boxBigInt, isNullish, throwTypeErrorIR,
+  freshId, boxBigInt, isNullish, throwTypeErrorIR, capturedCellSave, cellSnap,
 } from '../ir.js'
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationStorageWriteAction } from './representation-plan.js'
@@ -85,7 +85,12 @@ function persistBindingPtr(name, ptr) {
   // A NaN-boxed pointer never lands in an i32-narrowed cell: cellTypes requires
   // intCertain (integer-valued defs only), and a binding that receives array/hash
   // pointers is never integer-certain — so the f64 width is always right here.
-  if (ctx.func.boxed?.has(name)) return ['f64.store', boxedAddr(name), ptr]
+  if (ctx.func.boxed?.has(name)) {
+    if (!capturedCellSave(name, null)) return ['f64.store', boxedAddr(name), ptr]
+    // a cell a closure captured is saved before it names the grown storage (ir/vars.js capturedCellSave)
+    const t = temp()
+    return ['block', ['local.set', `$${t}`, ptr], cellSnap(ctx.func.boxed.get(name), ['local.get', `$${t}`]), ['f64.store', boxedAddr(name), ['local.get', `$${t}`]]]
+  }
   if (isGlobal(name)) return ['global.set', `$${name}`, ptr]
   return ['local.set', `$${name}`, ptr]
 }

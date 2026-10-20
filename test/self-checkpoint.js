@@ -23,7 +23,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import watrCompile from 'watr/compile'
 import { instantiate } from '../interop.js'
-import { readMarks, phaseDeltas } from '../scripts/kernel-marks.mjs'
+import { readMarks } from '../scripts/kernel-marks.mjs'
 import { PHASE_RECORDS } from '../scripts/phase-marks.js'
 import { selfBytes, selfBuildWith } from './_self-build.js'
 import { realpathSync } from 'node:fs'
@@ -68,7 +68,7 @@ const watrSrc = file => realpathSync(new URL(`../node_modules/watr/src/${file}`,
 const FORCED = selfBuildWith({
   'scripts/self.js': [
     // the one behavioral change: both checkpoints run on every compile instead of past 1 GB of growth
-    ['if (__heap_large(heapMark)) { const kept = checkpoint([assembled, cfg, facts]);', 'if (1) { const kept = checkpoint([assembled, cfg, facts]);'],
+    ['if (__heap_large(heapMark)) {', 'if (1) {'],
     ['__heap_large(heapMark) ? checkpoint(optimized) : optimized', 'checkpoint(optimized)'],
     ['const PHASE_MIN = 16 * 1024 * 1024', 'const PHASE_MIN = 0'],
     // and parks whatever the lane carries, however little the phase grew (the worth gate declines a copy past half the growth)
@@ -110,6 +110,12 @@ const run = bytes => instantiate(bytes).exports.main()
 // The phases a kernel records, without the forced kernel's own verdict records
 // (`checkpoint:…`, one before each phase it judged: scripts/self.js checkpointPhase).
 const phasesOf = m => m.phases.map(p => p.name).filter(n => !n.startsWith('checkpoint:'))
+// The records before the first rewind: up to link's, less the verdicts of link's own passes.
+const beforeRewind = m => {
+  let at = m.phases.findIndex(p => p.name === 'link')
+  while (at > 0 && m.phases[at - 1].name.startsWith('checkpoint:')) at--
+  return m.phases.slice(0, at)
+}
 const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
 const A = 'export let main = () => 3 + 4 * 5', A_OUT = 23
 // B's main has a statement body, so it exports through a `$main$exp` boundary wrapper,
@@ -158,10 +164,13 @@ test('checkpoint: the forced kernel parks, rewinds, unparks and encodes; its out
   ok(same(fromForced, fromNormal), `the output through park → rewind → unpark → encode is the direct output, ${fromNormal.length} bytes`)
   is(run(fromForced), A_OUT, 'and it executes')
   is(phasesOf(mf).join(' '), phasesOf(mn).join(' '), 'the same phases, recorded and readable after the rewind')
-  // The first checkpoint falls before link: the records up to it rise, link's is below the front's mark.
+  // The first checkpoint falls before link: the records of the phases before it
+  // (the verdicts of link's own passes, after it, aside) lie at or above the
+  // front's mark and within the memory. They need not rise: a phase gives back
+  // what it made and left unreached.
   const linkAt = mf.phases.findIndex(p => p.name === 'link')
   ok(linkAt > 0, 'link is recorded after the rewind')
-  ok(mf.phases.slice(0, linkAt).every((p, i) => p.heap >= (i ? mf.phases[i - 1].heap : mf.heapFront)), 'the records before the checkpoint are intact')
+  ok(beforeRewind(mf).every(p => p.heap >= mf.heapFront && p.heap <= memoryBytes(forced)), 'the records before the checkpoint are intact')
   ok(mf.phases[linkAt].heap < mf.heapFront, `link ran below the front's mark (${mf.phases[linkAt].heap} < ${mf.heapFront})`)
   const h0 = heap(forced)
   readMarks(forced); readMarks(forced)
@@ -208,7 +217,7 @@ test('checkpoint: a source error, then A; the abrupt path reports its last compl
   m = readMarks(forced)
   is(m.phases[m.phases.length - 1].name, 'publishParameterAbi', 'the last completed phase; emitFuncs did not complete')
   ok(m.heapFront > 0 && m.heapEmit === 0 && m.heapOptimize === 0 && m.heapCheckpoint === 0, 'no stage after the front completed')
-  ok(phaseDeltas(m).every(d => d.bytes >= 0))
+  ok(m.phases.every(p => p.heap >= m.heapFront), 'every record after the front lies at or above its mark')
   // WAT shares the checkpointed pipeline; diagnostics record from zero without rewinding.
   const wat = forced.memory.read(forced.exports.compileWat(forced.memory.String(A), 0, OPT(forced)))
   is(wat, normal.memory.read(normal.exports.compileWat(normal.memory.String(A), 0, OPT(normal))), 'compileWat prints the same IR')
@@ -383,7 +392,8 @@ test('checkpoint: a failure in the encoder after the unpark is attributed past t
   ok(m.heapFront > 0 && m.heapEmit > 0 && m.heapOptimize >= m.heapEmit, 'front, emit and watr completed')
   ok(m.heapCheckpoint > 0 && m.heapCheckpoint < m.heapOptimize, 'the checkpoint completed and rewound: the failure is after it, in the encoder')
   is(phasesOf(m).join(' '), phasesOf(readMarks(normal)).join(' '), 'every phase record is intact')
-  ok(phaseDeltas(m).every(d => d.bytes >= 0 || d.name === 'link'), 'every delta rises but link\'s, recorded after the first rewind')
+  ok(beforeRewind(m).every(p => p.heap >= m.heapFront) && m.phases.every(p => p.heap > 0 && p.heap <= memoryBytes(forced)),
+    'the records before the first rewind lie at or above the front\'s mark, and every record within the memory')
   is(run(a), A_OUT, 'the earlier output is intact')
   const again = compileOn(forced, A)
   ok(same(again, a), 'A right after the failure is the same A'); is(run(again), A_OUT)

@@ -7,7 +7,7 @@
  * @module ir/vars
  */
 
-import { ctx } from '../ctx.js'
+import { ctx, inc } from '../ctx.js'
 import { isI32 } from '../ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage } from '../reps.js'
 import { intExprRange } from '../static.js'
@@ -120,6 +120,22 @@ export const dollar = (name) => {
 // (see scripts/self.js setupSelf) — `.clear()` alone still traps
 // `__hash_set_local` on the 2nd compile of a warm instance.
 export const clearDollar = () => { DOLLAR = new Map() }
+
+// A closure writing a binding it captured may write a cell made as the module
+// started (the closure built then, called in a round): module state below the
+// post-init mark, as a durable object's field is. The cell's prior value is
+// saved once a round, the field's own record (module/core/durable-log.js
+// `__durable_cell_snap`), so the reset returns it and no cell names the memory
+// the reset gave back. The function that made a cell writes it only in the
+// activation that made it, never older than the round; a number or a boolean
+// names no memory.
+export const capturedCellSave = (name, valIR) => ctx.transform.alloc !== false && ctx.scope.globals.has('__heap_reset') &&
+  !!ctx.func.closureAux?.get('parentBoxedCaptures')?.has(name) &&
+  !(valIR?.valKind === VAL.NUMBER || valIR?.valKind === VAL.BOOL || (valIR?.type === 'i32' && valIR.ptrKind == null) || isNumericIR(valIR)) &&
+  (inc('__durable_cell_snap', '__durable_obj_snap', '__is_eph_bits'), true)
+export const cellSnap = (cell, value) => ['if', ['i32.lt_u', ['local.get', `$${cell}`], ['global.get', '$__heap_reset']],
+  ['then', ['if', ['call', '$__is_eph_bits', ['i64.reinterpret_f64', value]],
+    ['then', ['call', '$__durable_cell_snap', ['local.get', `$${cell}`]]]]]]
 
 /** Read variable value: boxed → f64.load, global → global.get, local → local.get.
  *  Unboxed pointer locals (repOf(name).ptrKind) tag the returned node with `.ptrKind`
@@ -251,10 +267,14 @@ export function writeVar(name, valIR, void_, source) {
     const i32Cell = ctx.func.cellTypes?.has(name)
     const st = i32Cell ? 'i32.store' : 'f64.store'
     const v = i32Cell ? asI32(valIR) : asF64(valIR)
-    if (void_) return typed(['block', [st, addr, v]], 'void')
+    const saves = !i32Cell && capturedCellSave(name, valIR)
+    if (void_ && !saves) return typed(['block', [st, addr, v]], 'void')
     const t = i32Cell ? tempI32() : temp()
+    const save = saves ? [cellSnap(ctx.func.boxed.get(name), ['local.get', `$${t}`])] : []
+    if (void_) return typed(['block', ['local.set', `$${t}`, v], ...save, [st, addr, ['local.get', `$${t}`]]], 'void')
     return typed(['block', ['result', i32Cell ? 'i32' : 'f64'],
       ['local.set', `$${t}`, v],
+      ...save,
       [st, addr, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]], i32Cell ? 'i32' : 'f64')
   }

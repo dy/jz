@@ -20,6 +20,7 @@ export const NATIVE_ARENA = {
   __esc_get: () => -1,
   __park_worth: () => 0,
   __durable_state: () => 0n,
+  __gc_phase: (mark, out) => out,
 }
 /** Install the intrinsics a host lacks on `globalThis`. */
 export const installNativeArena = () => { for (const [name, fn] of Object.entries(NATIVE_ARENA)) globalThis[name] ??= fn }

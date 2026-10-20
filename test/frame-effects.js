@@ -656,6 +656,36 @@ test('phase checkpoint: the escape flag says whether a phase wrote into nothing 
   }
 })
 
+// A checkpoint taken inside a phase (scripts/self.js checkpointPhase within an
+// assemble phase, a solve within the summary) parks its result into the lane
+// above the heap, rewinds and reads it back: the lane's cursors are scratch
+// and its writers keep nothing, so the phase around it stays safe.
+test('phase checkpoint: a checkpoint taken inside a phase is no escape of the phase', () => {
+  const src = `const over = (run, n) => { const mark = __park_mark(), esave = __park_enter(), lsave = __park_low_enter(), bsave = __park_base_enter(mark); const r = run(n); const safe = __park_safe(mark); __park_end(esave, bsave, lsave); return safe * 10 + (r > 0 ? 1 : 0) }
+    const taken = (n) => {
+      const mark = __park_mark(), state = __durable_state(), esave = __park_enter(), lsave = __park_low_enter(), bsave = __park_base_enter(mark)
+      const made = []
+      for (let i = 0; i < n; i++) made.push([i, i * 2])
+      let out = made
+      if (__park_safe(mark)) {
+        __park_begin(); __park_write_u32(made.length)
+        for (let i = 0; i < made.length; i++) { __park_write_u32(made[i][0]); __park_write_f64(made[i][1] + 0.5) }
+        __park_finish(); __park_rewind_to(mark, state)
+        const len = __park_read_u32()
+        out = []
+        for (let i = 0; i < len; i++) out.push([__park_read_u32(), __park_read_f64()])
+      }
+      __park_end(esave, bsave, lsave)
+      let s = 0
+      for (const [a, b] of out) s += a + b
+      return s
+    }
+    export let outer = (n) => over(taken, n)`
+  for (const optimize of levels(1, 2, 3)) {
+    is(jz(src, { optimize }).exports.outer(40), 11, `O${optimize}: the phase around a taken checkpoint is safe`)
+  }
+})
+
 // A postfix update of a member or an outer binding is the census's site, and
 // the emitter steps it through its reference, not through `emit`: the site is
 // marked and flagged there (emit/incdec.js), never left for the pass to zero
@@ -729,8 +759,10 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
     'break', 'continue', 'this', 'typeof', 'str', 'strcat', 'delete', 'in', 'navigator.hardwareConcurrency'])
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
-    '__ptr_is', '__throw_method_receiver', '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len', '__park_begin', '__park_finish', '__park_rewind',
-    '__park_rewind_to', ...['u8', 'u32', 'f64', 'i64', 'str', 'ref'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])])
+    '__ptr_is', '__throw_method_receiver', '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len'])
+  // the park lane's writers and readers keep nothing: a checkpoint taken inside a phase leaves it safe
+  ok(['__park_begin', '__park_finish', '__park_rewind', '__park_rewind_to', ...['u8', 'u32', 'f64', 'i64', 'str', 'ref', 'bytes'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])]
+    .every(listedBuiltin), 'the park lane is listed')
   const names = Object.keys(ctx.core.emit).filter(k => !k.includes(':') && /^[A-Za-z_$]/.test(k) && !SYNTAX.has(k))
   ok(names.length > 200, `the runtime's names are read: ${names.length}`)
   is(names.filter(n => !listedBuiltin(n) && !KEEPS.has(n)).join(' '), '', 'every name is listed, or kept on purpose')

@@ -1405,7 +1405,7 @@ export const controlFlowOps = {
     // An iteration that allocates and keeps some of it: the loop compacts what
     // it keeps in place once that piles up (optimize/loop-compact.js), the
     // function's locals its roots (active-function.js publishLoopRewinds).
-    else if (ctx.plans.compactLoops?.has(bodyNode0) && compactOn())
+    else if (ctx.plans.compactLoops?.has(bodyNode0) && compactOn() && ctx.transform.optimize?.loopCompact !== false)
       (ctx.func.loopCompacts ??= new Set()).add(loop)
     // The lowering link hands this loop's facts to the optimizer (src/ir/control.js):
     // `plan` the facts, `lowering` the WAT names of its counter and guard, which a rename

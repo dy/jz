@@ -792,7 +792,11 @@ export const registerCompact = () => {
     for (const [name, g] of ctx.scope.globals) {
       if (!g.mut) continue
       if (g.type === 'f64') {
-        if (name === '__dyn_get_cache_props' || name.startsWith('__tof_') || name.startsWith('__hc_')) continue
+        // Caches name memory they do not own: the for-in key cache (module/object.js)
+        // is read only while its epoch holds, and the move bumps the epoch (endParts);
+        // walked, the cache a reset left (`_clear` bumps the epoch, the pointer stays)
+        // would name the released round, whatever it holds now.
+        if (name === '__dyn_get_cache_props' || name.startsWith('__tof_') || name.startsWith('__hc_') || /^__enumc_arr\d*$/.test(name)) continue
         if (user.has(name) && holdsNoHeap(ctx.summary?.kindOfExpr(name))) continue
         boxed(name)
       } else if (g.type === 'i32') {

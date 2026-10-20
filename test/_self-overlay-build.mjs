@@ -5,18 +5,18 @@
 // `code`) to `[[find, replace], …]` edits applied to that module's source
 // before the compile (test/_self-overlay.js: one module per suffix, one
 // occurrence per find, or the build fails). The profile is the fresh self
-// build's (scripts/self-compile-build.mjs: optimize 1, snapshot on); nothing
+// build's (scripts/build-profile.mjs SELF_OPTIMIZE, snapshot on); nothing
 // in the shipped scripts changes. test/self-checkpoint.js forces the kernel's
 // internal checkpoint branch this way.
 import { writeFileSync } from 'node:fs'
 import { compile } from '../index.js'
-import { resolveSelfCompileBuild, SELF_ENTRY } from '../scripts/build-profile.mjs'
+import { resolveSelfCompileBuild, SELF_ENTRY, SELF_OPTIMIZE } from '../scripts/build-profile.mjs'
 import { applyOverlays } from './_self-overlay.js'
 
 const [out, overlayJson] = process.argv.slice(2)
 if (!out || !overlayJson) { console.error('usage: _self-overlay-build.mjs <out.wasm> <overlays.json>'); process.exit(2) }
 const overlays = JSON.parse(overlayJson)
-const profile = resolveSelfCompileBuild({ optimize: 1, snapshot: true, helperCounters: false, helperCallsites: false })
+const profile = resolveSelfCompileBuild({ optimize: { ...SELF_OPTIMIZE }, snapshot: true, helperCounters: false, helperCallsites: false })
 const graph = applyOverlays(profile.graph, overlays, SELF_ENTRY)
 const wasm = compile(graph.code, {
   modules: graph.modules, memory: profile.memory, optimize: profile.optimize,

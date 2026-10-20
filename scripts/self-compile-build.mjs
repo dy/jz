@@ -19,7 +19,8 @@ const OUT_DIR = dirname(OUT)
 // collection layout are shared with build-dist.mjs via resolveSelfCompileBuild.
 // Both builders consume the identical profile.
 const t0 = Date.now()
-// The compiler artifact defaults to level 1. Higher tiers spend gigabytes
+// The compiler artifact defaults to level 1 with the arena rewind and the
+// compaction on (build-profile.mjs SELF_OPTIMIZE). Higher tiers spend gigabytes
 // optimizing compiler-only SIMD and peephole candidates before encoding; level
 // 1 keeps the essential cleanup while the hosted compiler still applies each
 // user program's requested optimization profile. Override for diagnosis.

@@ -472,3 +472,140 @@ test('compact: a collection that grew at init heals at a reset after a compactio
     }
   }
 })
+
+// A phase checkpoint that declines (scripts/self.js checkpointPhase: the phase
+// wrote into storage older than itself) compacts the phase's memory
+// (module/core.js `__gc_phase`): what the phase filed into module state, what
+// its closure captured and its result survive with their identities, the
+// scratch it dropped goes, and the frames around it, which read the escape
+// log, keep the survivors: a compaction within a call leaves the log full,
+// not empty (an empty log reads as nothing escaped, and a frame would release
+// what the move kept).
+test('compact: a phase that wrote into older storage keeps what it made reachable and no more', () => {
+  if (onWasi() || !counted()) return
+  const src = (compact) => `const filed = new Map(), byKey = new Map(), owners = []
+    let last = null
+    const phase = (run) => {
+      const mark = __park_mark(), esave = __park_enter(), lsave = __park_low_enter(), bsave = __park_base_enter(mark)
+      const out = run()
+      let kept = out
+      ${compact ? 'if (!__park_safe(mark)) kept = __gc_phase(mark, out, run)' : ''}
+      __park_end(esave, bsave, lsave)
+      return kept
+    }
+    export const main = (n) => {
+      const before = __heap_mark(), seen = { hits: [] }
+      const res = phase(() => {
+        const scratch = []
+        for (let i = 0; i < n; i++) {
+          scratch.push(new Array(24).fill(i), 'tmp' + i)
+          const rec = { v: i, list: [i * 2], name: 'k' + i }
+          filed.set(rec.name, rec)
+          if (i % 5 === 0) byKey.set(rec, i)
+          if (i % 7 === 0) owners.push(rec)
+          if (i % 11 === 0) seen.hits.push([i])
+          last = rec
+        }
+        return { n: scratch.length, first: filed.get('k0') }
+      })
+      const grew = __heap_mark() - before
+      let s = 0
+      for (const [k, o] of filed) s += o.v + o.list[0] + (o.name === k ? 1 : 0)
+      for (const [o, i] of byKey) s += o.v === i ? 1 : 0
+      for (const o of owners) s += o.list[0]
+      for (const h of seen.hits) s += h[0]
+      return [res.n, res.first.v, last.v, s, grew]
+    }`
+  // the sum `main` computes after its `call`-th run: the filed records are replaced, byKey and owners keep every run's
+  const n = 3000
+  const expect = (call) => {
+    let s = 0
+    for (let i = 0; i < n; i++) { s += 3 * i + 1; if (i % 5 === 0) s += call; if (i % 7 === 0) s += 2 * i * call; if (i % 11 === 0) s += i }
+    return [2 * n, 0, n - 1, s].join()
+  }
+  for (const level of levels(2, 3)) {
+    const off = jz(src(false), { optimize: level }).exports, on = jz(src(true), { optimize: level }).exports
+    const a = Array.from(off.main(n)), b = Array.from(on.main(n))
+    is(b.slice(0, 4).join(), expect(1), `O${level}: every value the phase filed survives the move`)
+    is(a.slice(0, 4).join(), expect(1), `O${level}: as without the compaction`)
+    ok(b[4] < a[4] / 2, `O${level}: the scratch goes (${b[4]} bytes kept, ${a[4]} without)`)
+    // the next call files over the moved records, and the frames kept them
+    is(Array.from(on.main(n)).slice(0, 4).join(), expect(2), `O${level}: a second phase over the moved records`)
+    is(Array.from(off.main(n)).slice(0, 4).join(), expect(2), `O${level}: as without the compaction, twice`)
+  }
+})
+
+// The same table across a phase's compaction (module/core.js `__gc_phase`): what
+// the phase made keeps its properties under its new address, and the closures
+// and arrays made after it where the moved ones stood take none.
+test('compact: named properties kept by address follow the objects a phase compaction moves', () => {
+  if (onWasi() || !counted()) return
+  const src = (compact) => `const fns = [], lists = []
+    let count = 0
+    const phase = (run) => {
+      const mark = __park_mark(), esave = __park_enter(), lsave = __park_low_enter(), bsave = __park_base_enter(mark)
+      const out = run()
+      let kept = out
+      ${compact ? 'if (!__park_safe(mark)) kept = __gc_phase(mark, out, run)' : ''}
+      __park_end(esave, bsave, lsave)
+      return kept
+    }
+    export const main = (n) => {
+      const made = phase(() => {
+        let scratch = []
+        for (let i = 0; i < n; i++) {
+          scratch.push(new Array(16).fill(i), 'tmp' + i)
+          const f = () => i + count
+          f.tag = 'f' + i
+          fns.push(f)
+          const l = [-1, i, i + 1]
+          l.shift()
+          l.label = 'l' + i
+          lists.push(l)
+          count = i
+        }
+        return fns.length
+      })
+      // new closures and shifted arrays where the moved ones stood
+      const after = []
+      for (let i = 0; i < n; i++) { const g = () => i; const m = [0, i]; m.shift(); after.push(g, m) }
+      let s = 0, bad = 0
+      for (let i = 0; i < fns.length; i++) { if (fns[i].tag !== 'f' + (i % n)) bad++; s += fns[i]() }
+      for (let i = 0; i < lists.length; i++) { if (lists[i].label !== 'l' + (i % n)) bad++; s += lists[i][0] }
+      for (const o of after) if (o.tag !== undefined || o.label !== undefined) bad++
+      return [made, bad, s]
+    }`
+  for (const level of levels(2, 3)) {
+    const off = jz(src(false), { optimize: level }).exports, on = jz(src(true), { optimize: level }).exports
+    for (let call = 0; call < 2; call++) {
+      const a = Array.from(off.main(400)), b = Array.from(on.main(400))
+      is(b[1], 0, `O${level}, call ${call}: every property where its object now stands, none on another`)
+      is(b.join(), a.join(), `O${level}, call ${call}: as without the compaction`)
+    }
+  }
+})
+
+// The for-in key cache (module/object.js: the key array of the last table a
+// for-in enumerated, read only while its epoch holds) names memory it does not
+// own. A reset bumps its epoch and leaves the pointer, as a rewound frame that
+// filled it does; a compaction rooting it would read the released round,
+// whatever the reused memory holds now, as the cached array, and rewrite words
+// of live data as its elements.
+test('compact: a for-in key cache a reset left is no root of the next round\'s compaction', () => {
+  if (onWasi() || !counted()) return
+  const src = `const dict = {}
+    for (let i = 0; i < 12; i++) dict['k' + i] = i
+    let keep = []
+    export const keys = () => { let s = 0; for (const k in dict) s += dict[k] + k.length; return s }
+    export const step = (i) => { keep = keep.concat([[i, 'x' + i, { i }]]); if (keep.length > 40) keep = keep.slice(20); let s = 0; for (const p of keep) s += p[0] + p[2].i; return s }`
+  const { exports, memory } = jz(src)
+  const want = oracle(src)
+  is(exports.keys(), want.keys(), 'enumerated before the reset')
+  for (let i = 0; i < 40; i++) is(exports.step(i), want.step(i), `step(${i})`)
+  memory.reset()
+  const fresh = oracle(src)
+  let last = memory.used, compactions = 0
+  for (let i = 0; i < 3000; i++) { is(exports.step(i), fresh.step(i), `after the reset step(${i})`); if (memory.used < last) compactions++; last = memory.used }
+  ok(compactions >= 1, `compacted after the reset (${compactions})`)
+  is(exports.keys(), fresh.keys(), 'enumerates as before')
+})

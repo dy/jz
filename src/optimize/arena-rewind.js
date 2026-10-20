@@ -66,6 +66,13 @@
  * an escape. The pass returns those functions; `rewrite: false` (optimize
  * levels without the rewind) proves them without rewriting any.
  *
+ * Each sweep over the module's functions is a phase where the compiler
+ * hosting the compile asks for one (`phase`, scripts/self.js
+ * checkpointPhase): what a sweep made and left unreached goes before the
+ * next runs. On the compiler's own module the pass allocates gigabytes
+ * (6.9 GB under V8), more than a wasm32 heap holds; its records and the
+ * tape are what outlive a sweep.
+ *
  * @module optimize/arena-rewind
  */
 import { T, NONE, intern, text, walk, node, str, num, push, insertAfter, remove } from '../ir/tape.js'
@@ -118,7 +125,9 @@ const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__hea
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
   '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch',
   // the reset's log of an object (module/core/durable-log.js `__durable_obj_snap`), which lowers the flag itself
-  '$__durable_arr_seen', '$__durable_arr_log'])
+  '$__durable_arr_seen', '$__durable_arr_log',
+  // the park lane's cursors (module/core.js): scratch above the heap a phase checkpoint writes and reads back at once
+  '$__park_base', '$__park_cursor', '$__park_read'])
 const IC_SITE = /^\$__ic_(hi|slot)\d+$/, REGEX_STATE = /^\$__re_(lastIndex_\d+|g\d+_(start|end))$/
 // The compaction's own state and the host's pin (module/core/compact.js): no value of the program's.
 const GC_STATE = /^\$__(g_\w+|pin|gc_tbl|stubs|stubn)$/
@@ -137,7 +146,12 @@ const NO_NAMES = new Set()
 // first touch does. No frame restores over a logging path. An object's
 // snapshot lowers the flag itself where it allocates (module/core/
 // durable-log.js): a kernel's arm calls it for a store no site stands at.
-const CENSUS_GUARDED = /^\$__durable_(?!obj_snap$)/
+const CENSUS_GUARDED = /^\$__durable_(?!(obj|cell)_snap$)/
+// A captured cell's record (module/core/durable-log.js `__durable_cell_snap`)
+// lowers the flag where it allocates, and what it allocates is the round's,
+// not the frame's: a call of it reaches a lowering, as any field record's
+// does, and allocates nothing of its caller's.
+const ROUND_ALLOCS = new Set(['$__durable_cell_snap'])
 // The runtime's own lowering of the flag (module/core.js), and the tag of the
 // local a growth site keeps the heap's top in (emit/dispatch.js, same tag).
 // A kernel whose store through a global lends a value for a time the runtime
@@ -191,7 +205,7 @@ const EXT_READS = new Set(['$__ext_prop', '$__ext_get', '$__ext_method', '$__ext
  *  @param keepsNothing Set of `$name`: runtime imports that keep nothing they are handed
  *  @returns `releasable` (the rewindable functions whose frames keep nothing, allocating or
  *    not), `rewound` (those rewritten), and per function whether it allocates and why not */
-export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES }) {
+export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES, phase = run => run() }) {
   const releasable = new Set(), rewound = new Set(), flagged = new Set()
   // The conditional functions whose flag something reads: the frames rewound
   // here, and those the host releases by it.
@@ -306,7 +320,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // does not define (an import) may return anything. A fixpoint over the
   // module, since a callee's result feeds its caller's locals.
   const defined = new Set(), tableResults = new Set(), returnsOf = new Map()
-  for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+  phase(() => { for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
     const name = text(T.a[f])
     if (name === null) continue
@@ -328,7 +342,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       const tainted = taintedLocals(f)
       if (values.some(v => reaches(v, tainted))) { tableResults.add(name); changed = true }
     }
-  }
+  } })
   // Whether every value `f` returns is storage it allocated: an allocator's
   // address boxed, growth of such storage (its receiver or fresh storage), or
   // a local every assignment of which is one. A local's assignments are
@@ -429,13 +443,19 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     left.set(id, hit)
     return hit
   }
+  // The parent of every node of a function asked about, filled once per
+  // function into one column over the tape (-2 for a node of no function
+  // asked about): a Map per function held most of the module's nodes for the
+  // whole pass.
+  let up = null
   // Whether an instruction of `rec`'s function may not run on a call: it sits
   // in an `if` arm, or past an instruction that may leave.
   const guarded = (rec, id) => {
-    if (rec.up === null) { const up = rec.up = new Map(); eachBody(rec.f, (n, p) => { up.set(n, p) }) }
+    if (up === null) up = new Int32Array(T.n).fill(-2)
+    if (!rec.up) { rec.up = true; eachBody(rec.f, (n, p) => { if (n < up.length) up[n] = p }) }
     for (let n = id; ;) {
-      const p = rec.up.get(n)
-      if (p === undefined) return false
+      const p = n < up.length ? up[n] : -2
+      if (p === -2) return false
       for (let c = p === NONE ? bodyStart(rec.f) : T.a[p]; c !== n && c !== NONE; c = T.next[c]) if (leaves(c)) return true
       if (p === NONE) return false
       if (T.op[p] === THEN || T.op[p] === ELSE) return true
@@ -449,13 +469,13 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     if (rec.censused) rec.ownFlag = true
     if (!guarded(rec, id)) vetoRec(rec, why)
   }
-  for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+  phase(() => { for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
     const name = text(T.a[f])
     if (name === null) continue
     const verdict = unsafe.has(name)
     const rec = { unsafe: verdict, why: verdict ? 'escape' : null, keeps: keeps.has(name), entry: entry.has(name), tapeUnsafe: false, tapeWhy: null, calls: new Set(), every: new Map(),
-      allocs: false, allocCalls: new Set(), indirect: false, refs: false, lowers: false, f, up: null, censused: censused.has(name), flagAt: [], flagWhy: null, indirectAt: [], ownFlag: false }
+      allocs: false, allocCalls: new Set(), indirect: false, refs: false, lowers: false, f, up: false, censused: censused.has(name), flagAt: [], flagWhy: null, indirectAt: [], ownFlag: false }
     eachBody(f, (id) => {
       const op = T.op[id]
       if (op === GLOBAL_GET && text(T.a[id]) === ESC_LOW) folds = true
@@ -489,12 +509,12 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         // unreachable after) allocates only on a path that leaves the frame
         // by an exception: the epilogue a rewind adds never runs there. Its
         // escapes still reach whoever catches it (`calls`).
-        if (!neverReturns(callee, id)) rec.allocCalls.add(callee)
+        if (!neverReturns(callee, id) && !ROUND_ALLOCS.has(callee)) rec.allocCalls.add(callee)
       }
     })
     if (name.startsWith('$__') && !CENSUS_GUARDED.test(name) && !LOWERS.has(name) && !LENDS.has(name) && !REACH.test(name)) for (const id of storesOutside(f)) escapeAt(rec, id, 'stores outside')
     info.set(name, rec)
-  }
+  } })
   // A module with no heap pointer and no call of the allocator allocates
   // nothing: there is nothing to restore and no flag to read, and the checks
   // its sites carry go (a program whose objects all became scalars keeps the
@@ -528,7 +548,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // call, one that does: a fixpoint over the direct calls. The tape's own
   // verdicts are kept apart (`tapeUnsafe`), for a loop inside a function the
   // census ruled out.
-  for (let changed = true; changed;) {
+  phase(() => { for (let changed = true; changed;) {
     changed = false
     for (const [, rec] of info) {
       if (rec.unsafe && rec.tapeUnsafe) continue
@@ -539,13 +559,13 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         if (g.tapeUnsafe && !rec.tapeUnsafe) { rec.tapeUnsafe = true; rec.tapeWhy = 'calls ' + c + ': ' + g.tapeWhy; changed = true }
       }
     }
-  }
+  } })
   // Code a function may reach lowers the flag: its own instructions, a callee's,
   // a closure's its resolved calls run, or any function's the table holds.
   // `ownFlag`: for a reason found in censused code.
   const reason = (rec) => rec.flagWhy ?? (rec.unsafe ? rec.why : null) ?? (rec.keeps ? keeps.get?.(text(T.a[rec.f])) : null) ?? 'an escape'
   for (const [, rec] of info) if (rec.lowers || rec.flagAt.length || rec.unsafe || rec.keeps || rec.entry) { rec.tapeFlag = true; rec.tapeFlagWhy = reason(rec) }
-  for (let changed = true; changed;) {
+  phase(() => { for (let changed = true; changed;) {
     changed = false
     const tableFlag = [...table].find(n => info.get(n)?.tapeFlag), tableOwn = [...table].some(n => info.get(n)?.ownFlag)
     const tableEnumc = [...table].some(n => info.get(n)?.enumc)
@@ -559,7 +579,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       if (via === undefined && viaTable && tableFlag !== undefined) via = tableFlag
       if (via !== undefined) { rec.tapeFlag = true; rec.tapeFlagWhy = 'calls ' + via + ': ' + info.get(via).tapeFlagWhy; changed = true }
     }
-  }
+  } })
   // Whether what `from` runs may run `name` again: by a call, a tail call, a
   // closure a resolved call runs, or the table. A search from every tail call's
   // callee over the whole call graph ran the compiler's own link a third of its
@@ -578,7 +598,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     return out
   }
   const comp = new Map(), reachesRefs = []   // function → component; component → may run a function whose reference escapes
-  {
+  phase(() => {
     const index = new Map(), low = new Map(), onStack = new Set(), stack = []
     let next = 0
     const nodes = new Set([...info.keys(), ...table])
@@ -613,7 +633,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         reachesRefs.push(refs)
       }
     }
-  }
+  })
   const searchesAgain = (from, name) => {
     const seen = new Set(), work = [from]
     while (work.length) {
@@ -637,7 +657,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   }
   // Allocation is transitive: a string concatenation allocates inside its
   // kernel, and an indirect call allocates when a function the table holds does.
-  for (let changed = true; changed;) {
+  phase(() => { for (let changed = true; changed;) {
     changed = false
     const tableAllocs = [...table].some(n => info.get(n)?.allocs)
     for (const [, rec] of info) {
@@ -645,7 +665,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       if (rec.indirect && !rec.resolved && tableAllocs) { rec.allocs = true; changed = true; continue }
       for (const c of rec.resolved ? [...rec.allocCalls, ...rec.targets] : rec.allocCalls) if (info.get(c)?.allocs) { rec.allocs = true; changed = true; break }
     }
-  }
+  } })
 
   // Per-iteration rewinds (emit/control-flow.js): a `local.set $<mark>lrwN` before a
   // loop and a restore through that local at the top of its body. Kept where the
@@ -699,18 +719,20 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     return plain ? out : null
   }
   const allocatesIn = (id) => { let hit = false; walk(id, (n) => { if (hit) return false; if (T.op[n] === CALL) { const c = text(T.a[n]); if (c === '$__alloc' || c === '$__alloc_hdr' || c === '$__alloc_hdr_n' || info.get(c)?.allocs) hit = true } }); return hit }
-  if (rewrite) for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+  phase(() => { if (rewrite) for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
     const name = text(T.a[f])
     const rec = name === null ? null : info.get(name)
-    const parents = new Map(), saves = [], restores = []
+    const saves = [], restores = []
     eachBody(f, (id) => {
-      for (let c = T.a[id]; c !== NONE; c = T.next[c]) parents.set(c, id)
       const s = opText(id)
       if (s === 'local.set' && isMarker(id)) saves.push(id)
       else if ((s === 'global.set' || s === 'i32.store') && T.a[id] !== NONE) { const v = T.next[T.a[id]]; if (v !== NONE && opText(v) === 'local.get' && isMarker(v)) restores.push(id) }
     })
     if (!saves.length && !restores.length) continue
+    // the parent of every node, for a function with a loop to rewind only
+    const parents = new Map()
+    eachBody(f, (id) => { for (let c = T.a[id]; c !== NONE; c = T.next[c]) parents.set(c, id) })
     const types = new Map()
     for (let c = T.next[T.a[f]]; c !== NONE && isHeader(c); c = T.next[c]) if (T.op[c] === LOCAL || T.op[c] === intern('param')) { const n = text(T.a[c]); if (n !== null && n.startsWith('$')) types.set(n, text(T.next[T.a[c]])) }
     const bodyChildren = new Set()
@@ -746,7 +768,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     push(len, top()); push(len, get())
     push(fill, get()); push(fill, byte); push(fill, len)
     insertAfter(parent, prev, fill)
-  }
+  } })
 
   const inMemory = heapAddr != null
   const heapGet = () => { const g = node(intern(inMemory ? 'i32.load' : 'global.get')); if (inMemory) push(push(g, node(intern('i32.const'))), num(heapAddr)); else push(g, str('$__heap')); return g }
@@ -860,7 +882,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   const localGet = (name) => { const g = node(LOCAL_GET); push(g, str(name)); return g }
   const localSet = (name, value) => { const s = node(LOCAL_SET); push(s, str(name)); push(s, value); return s }
 
-  for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+  phase(() => { for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
     const name = text(T.a[f])
     const resultType = name === null ? undefined : rewindable.get(name)
@@ -971,7 +993,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     for (const n of entry) { insertAfter(f, at, n); at = n }
     rewound.add(name)
     if (esave != null) { flagged.add(name); readers.add(name); report?.(name, 'kept on a call that runs an escape: ' + (conditional.get?.(name) ?? rec.tapeFlagWhy)) }
-  }
+  } })
   // The flag is read by the conditional frames rewound here, through the
   // host by the conditional exports it releases, and by a phase checkpoint
   // (`readers`): every function they can reach keeps its writes; elsewhere they go.
@@ -1014,9 +1036,11 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // The flag lowered as the statement before the one that runs an escape: every
   // operand of a statement runs when it does, and each instruction keeps its
   // arity (a pass reading a `global.set`'s value takes its one operand).
+  // the note stands before its lowering, which takes the flag to zero
   const noted = (f, why) => {
-    const note = node(CALL), id = ++escNotes
-    push(note, str('$__esc_note')); push(note, i32c(id))
+    const note = node(CALL), id = ++escNotes, before = node(GLOBAL_GET)
+    push(before, str('$__esc'))
+    push(note, str('$__esc_note')); push(note, i32c(id)); push(note, before); push(note, i32c(0))
     console.error(`esc-note ${id}: ${text(T.a[f])}: ${why}`)
     return note
   }
@@ -1029,10 +1053,10 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     for (let c = T.a[seq]; c !== n; c = T.next[c]) prev = c
     const lower = escSet(i32c(0))
     insertAfter(seq, prev, lower)
-    if (DBG_ESC && imports.has('$__esc_note')) insertAfter(seq, lower, noted(f, why))
+    if (DBG_ESC && imports.has('$__esc_note')) insertAfter(seq, prev, noted(f, why))
   }
   const isMark = (id) => { const n = text(T.a[id]); return n !== null && n.startsWith('$' + MARK + ESC_MARK) }
-  for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+  phase(() => { for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
     const name = text(T.a[f]), rec = name === null ? null : info.get(name)
     if (!reached.has(name)) {
@@ -1088,9 +1112,9 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       while (T.next[at] !== NONE && isHeader(T.next[at])) at = T.next[at]
       const lower = escSet(i32c(0))
       insertAfter(f, at, lower)
-      if (DBG_ESC && imports.has('$__esc_note')) insertAfter(f, lower, noted(f, 'entered: ' + rec.why))
+      if (DBG_ESC && imports.has('$__esc_note')) insertAfter(f, at, noted(f, 'entered: ' + rec.why))
     }
-  }
+  } })
   if (heapless) flagged.clear()
   // The host is the outermost reader of a call it releases by the flag: what
   // such a call keeps is the host's to walk (interop.js).
