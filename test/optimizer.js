@@ -32,6 +32,7 @@ import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
 import { stripDeadCanons } from '../src/optimize/nan-canon.js'
+import { maskOperands } from '../src/optimize/mask-operands.js'
 import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -4759,6 +4760,49 @@ test('selectBits: a float select the data decides picks the operands\' bits at s
   })
   ok(bits >= 3, `the sign picks and the running minimum select bits (${bits})`)
   ok(plain >= 1, 'the clamp against a literal keeps its float select')
+})
+
+// x64 V8 lowers a byte or halfword mask to a zero extension; over `x ^ y` it extends a register
+// into itself on every path, over `x` alone (still live after) it is a renamed move. The speed tier
+// masks the operand that sets bits past the mask; no path grows, the instruction count holds.
+test('maskOperands: a byte mask over `^`/`|` moves onto the operand it narrows', () => {
+  const g = (n) => ['local.get', n], ld8 = (n) => ['i32.load8_u', g(n)], k = (v) => ['i32.const', v]
+  const and = (x, m) => ['i32.and', x, k(m)]
+  const one = (e) => maskOperands(['module', ['func', ['drop', e]]])[1][1][1]
+  is(one(and(['i32.xor', g('$c'), ld8('$p')], 255)), ['i32.xor', and(g('$c'), 255), ld8('$p')], 'the wide operand takes the mask')
+  is(one(and(['i32.xor', ld8('$p'), g('$c')], 255)), ['i32.xor', ld8('$p'), and(g('$c'), 255)], 'the operands keep their order')
+  is(one(['i32.and', k(255), ['i32.xor', g('$c'), ld8('$p')]]), ['i32.xor', and(g('$c'), 255), ld8('$p')], 'the mask first')
+  is(one(and(['i32.or', g('$h'), ['i32.load16_u', 'offset=2', g('$p')]], 0xFFFF)), ['i32.or', and(g('$h'), 0xFFFF), ['i32.load16_u', 'offset=2', g('$p')]], 'a halfword under `|`')
+  is(one(and(['i32.xor', ['i32.xor', g('$c'), ld8('$p')], ld8('$q')], 255)), ['i32.xor', ['i32.xor', and(g('$c'), 255), ld8('$p')], ld8('$q')], 'the moved mask narrows further')
+  is(one(and(['i32.xor', g('$c'), k(0x5a)], 255)), ['i32.xor', and(g('$c'), 255), k(0x5a)], 'a literal in the mask')
+  is(one(and(['i32.xor', ld8('$p'), ['i32.shr_u', g('$c'), k(24)]], 255)), ['i32.xor', ld8('$p'), ['i32.shr_u', g('$c'), k(24)]], 'nothing past the mask: the mask goes')
+  is(one(and(['i32.xor', g('$a'), g('$b')], 255)), and(['i32.xor', g('$a'), g('$b')], 255), 'both wide: kept')
+  is(one(and(['i32.xor', g('$c'), ld8('$p')], 63)), and(['i32.xor', g('$c'), ld8('$p')], 63), 'a mask no zero extension takes: kept')
+  is(one(and(['i32.add', g('$c'), ld8('$p')], 255)), and(['i32.add', g('$c'), ld8('$p')], 255), 'a sum carries: kept')
+
+  const src = `export let f = (n) => {
+    const buf = new Uint8Array(256), t = new Int32Array(256), h16 = new Uint16Array(64)
+    for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[i] = c | 0; buf[i] = (i * 37 + 11) & 0xff }
+    for (let i = 0; i < 64; i++) h16[i] = (i * 2654435761) >>> 16
+    let c = -1, h = 0
+    for (let i = 0; i < n; i++) {
+      c = t[(c ^ buf[i & 255]) & 0xff] ^ (c >>> 8)
+      h = ((h * 31) | h16[i & 63]) & 0xffff
+    }
+    return ((c ^ -1) >>> 0) + h
+  }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', 2, 'size']) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 256, 1000]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  if (onKernel()) return
+  const masked = (optimize) => {
+    let moved = 0
+    walk(parseWat(jz.compile(src, { wat: true, optimize })), n => {
+      if ((n[0] === 'i32.xor' || n[0] === 'i32.or') && Array.isArray(n[1]) && n[1][0] === 'i32.and' && Array.isArray(n[2]) && (n[2][0] === 'i32.load8_u' || n[2][0] === 'i32.load16_u')) moved++
+    })
+    return moved
+  }
+  ok(masked('speed') >= 2, 'the CRC step and the halfword fold mask their carried value')
+  is(masked('size'), 0, 'the size tier keeps its masks')
 })
 
 test('rec-unroll: an empty statement in a body is no loop', () => {

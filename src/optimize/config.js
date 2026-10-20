@@ -64,7 +64,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
-const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
+const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
 const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false })
 
 const LEVEL_PRESETS = Object.freeze({
@@ -100,7 +100,10 @@ const LEVEL_PRESETS = Object.freeze({
   // integer register at each use, where a global is one folded load. selectBits
   // makes a float select whose condition the data decides an integer select of
   // the operands' bits (optimize/select-bits.js): x64 V8 branches around a float
-  // select, a conditional move needs no prediction.
+  // select, a conditional move needs no prediction. maskOperands moves a byte or
+  // halfword mask over `^`/`|` onto the operand it narrows (optimize/mask-operands.js):
+  // x64 V8 zero-extends a value still live into a register of its own, a move the core
+  // renames away, where over the combination it extends a register into itself.
   3: L3_PRESET,
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).

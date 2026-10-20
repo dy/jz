@@ -159,6 +159,7 @@ export const TUNING_KEYS = [
   'wordTruncation',           // how a truncation keeps its word: 'wide' | 'narrow' | 'add' (optimize/int-narrow.js)
   'coldTrap',                 // diagnostic: a versioned loop's arm as written throws its version's number (plan/integral-loops.js)
   'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',
+  'maskOperands',             // a byte or halfword mask over `^`/`|` moves onto the operand it narrows (optimize/mask-operands.js, speed tier)
   'leanRuntime',              // size tier: runtime walks link their simplest correct body (no hot/cold
                               // split, no chunked scan, no per-site hash fast arms) — the -Os profile
                               // of the string equality/hash family
