@@ -1303,7 +1303,7 @@ test('codegen: typed-array global base decode hoists out of the stencil loop', (
     }
   `, { wat: true })
   // (folded whole: a word's guard may read its bound from a pooled float global)
-  const run = foldWords(parseWat(wat)).find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$run') || []
+  const run = foldWords(parseWat(wat)).find(n => Array.isArray(n) && n[0] === 'func' && typeof n[1] === 'string' && n[1].startsWith('$run')) || []
   let decodes = 0, loopDecodes = 0
   walkWat(run, (n, inside) => {
     // Null checks also reinterpret atoms; only extracting an offset decodes a base.
@@ -2057,7 +2057,9 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // Numeric-compatible fields stay in scalar lanes without linking string coercion.
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 55)
 // A proven dictionary writes its own table; computed keys still coerce at runtime.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 10603)
+// The two-digit integer writer (`__itoa_sn`, the number-to-string of the computed key)
+// and the 4 KiB block colouring in `__alloc`: 11007 -> 11149.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 11149)
 // Parsing and formatting now share the power generator and unsigned product.
 // Keep this closure/string-dispatch fixture's behavior beside its tighter size pin.
 const parserFixture = `export let f = (s) => {
@@ -2075,7 +2077,8 @@ const parserFixture = `export let f = (s) => {
 // (optimize/specialize.js): 14343 -> 14721.
 // Each pass of the scan loop gives back what it allocated, by the escape flag
 // and the walk from its log (iterationRelease): 15233 -> 16876.
-golden('closure-heavy parser', parserFixture, 16876)
+// The two-digit integer writer and the 4 KiB block colouring: 16876 -> 17029.
+golden('closure-heavy parser', parserFixture, 17029)
 test('closure-heavy parser: behavior behind the size pin', () => {
   const { f } = jz(parserFixture).exports
   for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])

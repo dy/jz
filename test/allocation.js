@@ -556,7 +556,7 @@ test('allocation: blocks of 4 KiB or more start a quarter page apart mod 4096', 
     is(steps(jz(src, { optimize }).exports.ends(64)), [528, 528, 528], `O${optimize}: 512-byte arrays stay packed`)
   }
   // the host places the arrays it hands a kernel the same way
-  const { memory } = jz('export let f = (a) => a[0]')
+  const { memory } = jz('export let f = (a) => a[0]', { optimize: 2 })
   const offs = [0, 1, 2, 3].map(() => offset(memory.Float64Array(new Float64Array(1024))) % 4096)
   is([1, 2, 3].map(k => (offs[k] - offs[k - 1] + 4096) % 4096), [1024, 1024, 1024], 'host-allocated 8 KiB arrays')
 })
