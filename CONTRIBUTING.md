@@ -2170,7 +2170,10 @@ floor plus the live words below it, its low bits kept, so a string slice and
 a typed view's data (interior pointers) forward as any address does. A
 pointer to a growth stub above the floor is collapsed to the block; one to a
 stub below the floor stays (a durable receiver's address is what the program
-holds), the stub's forward rewritten once every pointer is forwarded. A Set
+holds), the stub's forward rewritten once every pointer is forwarded: in a
+chain of such stubs (a durable collection that grew as the module started
+and again in the round), the last, the one a reset's relocation heal
+restores. A Set
 or Map keyed by identity is rebuilt from its entries, and so is the table of
 named properties kept by an object's offset (`__dyn_props`: a closure's, a
 shifted array's), each entry under its object's new offset, an entry whose

@@ -411,7 +411,8 @@ test('compact: a props table built at init heals at a reset after compactions re
 // adds to them are logged by their slots' addresses for the reset to drop
 // (core/durable-log.js `__durable_slot_log`). A compaction that moves the
 // round's keys rehashes the tables in place: each logged address follows its
-// entry, so the reset drops the round's entries and keeps the init ones.
+// entry, so the reset drops the round's entries and keeps the init ones,
+// whether or not the round grew the tables past their storage.
 test('compact: collections built at init and keyed by objects heal at a reset after compactions rehashed them', () => {
   if (onWasi() || !counted()) return
   const src = (every, until) => `const byKey = new Map(), seen = new Set()
@@ -427,7 +428,7 @@ test('compact: collections built at init and keyed by objects heal at a reset af
       return byKey.size + seen.size + (byKey.get(base) === 'base' ? 0 : 1000) + (seen.has(base) ? 0 : 1000)
     }
     export const count = () => { let n = 0; for (const [k] of byKey) n += Array.isArray(k) ? 1 : 1000; for (const k of seen) n += Array.isArray(k) ? 1 : 1000; return n }`
-  for (const [every, until, name] of [[400, 2000, 'in place']]) for (const level of levels(2, 3)) {
+  for (const [every, until, name] of [[400, 2000, 'in place'], [50, 1000, 'grown']]) for (const level of levels(2, 3)) {
     const { exports, memory } = jz(src(every, until), { optimize: level })
     const added = 2 * Math.ceil(until / every)
     for (let round = 0; round < 3; round++) {
@@ -437,6 +438,37 @@ test('compact: collections built at init and keyed by objects heal at a reset af
       is(r, 82 + added, `${name}, O${level}, round ${round}: the round's entries`)
       memory.reset()
       is(exports.count(), 82, `${name}, O${level}, round ${round}: the reset keeps the init entries alone`)
+    }
+  }
+})
+
+// A Map that grew at init is a chain of stubs below the reset mark, the
+// pointer the module holds its first. A round grows it again into new
+// storage, which a compaction moves: the stub rewritten to name the moved
+// storage is the chain's last below the mark, the one the reset's relocation
+// heal restores to the table it was, so the reset reads the init entries again.
+test('compact: a collection that grew at init heals at a reset after a compaction moved what the round grew', () => {
+  if (onWasi() || !counted()) return
+  const src = `const list = [], byName = new Map()
+    const fill = (k) => { list.push(k); byName.set('n' + k, k) }
+    for (let k = 0; k < 40; k++) fill(k)
+    let junk = []
+    export const step = (i) => {
+      junk.push(new Array(24).fill(i))
+      if (junk.length > 60) junk = junk.slice(30)
+      if (i % 50 === 0 && i < 1500) { list.push(i); byName.set('r' + i, i) }
+      return list.length + byName.size
+    }
+    export const sum = () => { let s = 0; for (const v of list) s += v; let m = 0; for (const [, v] of byName) m += v; return [list.length, s, byName.size, m].join() }`
+  for (const level of levels(2, 3)) {
+    const { exports, memory } = jz(src, { optimize: level })
+    for (let round = 0; round < 3; round++) {
+      let last = 0, compactions = 0
+      for (let i = 0; i < 2000; i++) { exports.step(i); if (memory.used < last) compactions++; last = memory.used }
+      ok(compactions >= 1, `O${level}, round ${round}: compacted (${compactions})`)
+      is(exports.sum(), '70,22530,70,22530', `O${level}, round ${round}: the round's entries`)
+      memory.reset()
+      is(exports.sum(), '40,780,40,780', `O${level}, round ${round}: the reset reads the init entries again`)
     }
   }
 })
