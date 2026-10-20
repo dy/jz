@@ -309,3 +309,134 @@ test('compact: a reset after compactions returns the module to its start', () =>
   const fresh = oracle(src)
   for (let i = 0; i < 2500; i++) is(exports.step(i), fresh.step(i), `after reset step(${i})`)
 })
+
+// A closure's named properties, and a shifted array's, live in one table keyed
+// by the object's address (module/collection.js `__dyn_props`), which no walk
+// reads as a pointer. Across the compactions between calls, and a reset between
+// rounds, a closure that writes its captured binding, a shifted array and one
+// shifted to no capacity (its words end where its data starts) keep their
+// properties wherever the move lays them, and an object later made at an
+// address a moved one left takes none of its properties.
+test('compact: named properties kept by address follow their objects across the compactions between calls', () => {
+  if (onWasi() || !counted()) return
+  const src = `let kept = []
+    export const step = (i) => {
+      let hits = 0
+      const f = () => { hits++; return i + hits - hits }
+      f.tag = 'f' + i
+      const l = [-1, i, i + 1]
+      l.shift()
+      l.label = 'l' + i
+      // emptied to no capacity, garbage right after it
+      const z = [i]
+      z.shift()
+      const junk = [i, i + 1]
+      if (junk.length > 2) kept.push(junk)
+      z.label = 'z' + i
+      kept.push(f)
+      kept.push(l)
+      kept.push(z)
+      kept.push(new Array(24).fill(i))
+      if (kept.length > 160) kept = kept.slice(80)
+      const g = () => i, m = [0, i]
+      m.shift()
+      let bad = (g.tag === undefined ? 0 : 1) + (m.label === undefined ? 0 : 1)
+      for (let k = 0; k < kept.length; k += 4) {
+        const j = kept[k + 3][0]
+        if (kept[k].tag !== 'f' + j || kept[k]() !== j) bad++
+        if (kept[k + 1].label !== 'l' + j || kept[k + 1][0] !== j) bad++
+        if (kept[k + 2].label !== 'z' + j || kept[k + 2].length !== 0) bad++
+      }
+      return bad
+    }`
+  for (const level of levels(2, 3)) {
+    const { exports, memory } = jz(src, { optimize: level })
+    for (let round = 0; round < 2; round++) {
+      let last = 0, compactions = 0, bad = 0
+      for (let i = 0; i < 2000; i++) { bad += exports.step(i); if (memory.used < last) compactions++; last = memory.used }
+      ok(compactions >= 1, `O${level}, round ${round}: compacted (${compactions})`)
+      is(bad, 0, `O${level}, round ${round}: every property where its object now stands, none on another`)
+      memory.reset()
+    }
+  }
+})
+
+// A table the module's start built (properties given at init) lies below the
+// reset mark, and a reset heals the round's entries in it by their slots'
+// addresses: the move's rekey carries each logged address to its entry's new
+// slot, so the reset drops the round's entries and keeps the init ones.
+test('compact: a props table built at init heals at a reset after compactions rekeyed it', () => {
+  if (onWasi() || !counted()) return
+  const src = `const bases = []
+    const mk = (k) => { const b = () => k; b.kind = 'base' + k; return b }
+    for (let k = 0; k < 300; k++) bases.push(mk(k))
+    let kept = [], junk = []
+    export const step = (i) => {
+      junk.push(new Array(24).fill(i))
+      if (junk.length > 60) junk = junk.slice(30)
+      if (i % 50 === 0) {
+        const f = () => i
+        f.tag = 'f' + i
+        const l = [-1, i, i + 1]
+        l.shift()
+        l.label = 'l' + i
+        kept.push(f)
+        kept.push(l)
+        if (kept.length > 20) kept = kept.slice(10)
+      }
+      const g = () => i, m = [0, i]
+      m.shift()
+      let bad = (g.tag === undefined ? 0 : 1) + (m.label === undefined ? 0 : 1)
+      for (let k = 0; k < kept.length; k += 2) {
+        const j = kept[k]()
+        if (kept[k].tag !== 'f' + j) bad++
+        if (kept[k + 1].label !== 'l' + j || kept[k + 1][0] !== j) bad++
+      }
+      for (let k = 0; k < bases.length; k++) if (bases[k].kind !== 'base' + k) bad++
+      return bad
+    }`
+  for (const level of levels(2, 3)) {
+    const { exports, memory } = jz(src, { optimize: level })
+    for (let round = 0; round < 3; round++) {
+      let last = 0, compactions = 0, bad = 0
+      for (let i = 0; i < 2000; i++) { bad += exports.step(i); if (memory.used < last) compactions++; last = memory.used }
+      ok(compactions >= 1, `O${level}, round ${round}: compacted (${compactions})`)
+      is(bad, 0, `O${level}, round ${round}: the init properties kept, the round's where their objects stand`)
+      memory.reset()
+    }
+  }
+})
+
+// A Map and a Set built at init lie below the reset mark; the entries a round
+// adds to them are logged by their slots' addresses for the reset to drop
+// (core/durable-log.js `__durable_slot_log`). A compaction that moves the
+// round's keys rehashes the tables in place: each logged address follows its
+// entry, so the reset drops the round's entries and keeps the init ones.
+test('compact: collections built at init and keyed by objects heal at a reset after compactions rehashed them', () => {
+  if (onWasi() || !counted()) return
+  const src = (every, until) => `const byKey = new Map(), seen = new Set()
+    const base = [0]
+    byKey.set(base, 'base'); seen.add(base)
+    const fill = (k) => { const o = [k]; byKey.set(o, k); seen.add(o) }
+    for (let k = 0; k < 40; k++) fill(k)
+    let junk = []
+    export const step = (i) => {
+      junk.push(new Array(24).fill(i))
+      if (junk.length > 60) junk = junk.slice(30)
+      if (i % ${every} === 0 && i < ${until}) { const o = [i]; byKey.set(o, 'r' + i); seen.add(o) }
+      return byKey.size + seen.size + (byKey.get(base) === 'base' ? 0 : 1000) + (seen.has(base) ? 0 : 1000)
+    }
+    export const count = () => { let n = 0; for (const [k] of byKey) n += Array.isArray(k) ? 1 : 1000; for (const k of seen) n += Array.isArray(k) ? 1 : 1000; return n }`
+  for (const [every, until, name] of [[400, 2000, 'in place']]) for (const level of levels(2, 3)) {
+    const { exports, memory } = jz(src(every, until), { optimize: level })
+    const added = 2 * Math.ceil(until / every)
+    for (let round = 0; round < 3; round++) {
+      let last = 0, compactions = 0, r = 0
+      for (let i = 0; i < 2000; i++) { r = exports.step(i); if (memory.used < last) compactions++; last = memory.used }
+      ok(compactions >= 1, `${name}, O${level}, round ${round}: compacted (${compactions})`)
+      is(r, 82 + added, `${name}, O${level}, round ${round}: the round's entries`)
+      memory.reset()
+      is(exports.count(), 82, `${name}, O${level}, round ${round}: the reset keeps the init entries alone`)
+    }
+  }
+})

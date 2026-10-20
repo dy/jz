@@ -494,6 +494,15 @@ export function pullStdlib(sec) {
         // and healed like any durable hash's entries.
         if (ctx.scope.globals.has('__dyn_get_cache_off')) caches.push(`(global.set $__dyn_get_cache_off (i32.const ${DYN_CACHE_EMPTY}))`)
         if (ctx.scope.globals.has('__dyn_get_cache_props')) caches.push(`(global.set $__dyn_get_cache_props (f64.const 0))`)
+        // A compaction moves the objects whose properties the table keeps by
+        // their offset: the move rekeys it (module/core/compact.js `__gc_rekey_dyn`).
+        if (ctx.core.includes.has('__gc_move')) {
+          let move = ctx.core.stdlib['__gc_move']
+          if (typeof move === 'function') move = move()
+          ctx.core.stdlib['__gc_move'] = move.replace(';; rekey:dyn', '(call $__gc_rekey_dyn)')
+          inc('__gc_rekey_dyn', '__gc_rehash', '__gc_box', '__gc_room', '__gc_fwd_raw', '__gc_was', '__map_hash')
+          if (ctx.core.includes.has('__durable_slot_log')) inc('__durable_slot_relog', '__durable_slot_cancel')
+        }
       }
       // for-in enum cache (core.js __hash_keys_ro / object.js ro-enumeration):
       // the cache keys a boxed array by table offset — both live in the arena

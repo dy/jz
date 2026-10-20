@@ -653,9 +653,52 @@ export const registerCompact = () => {
   // entries (module/collection/upsert.js lays the table out): each live entry
   // rehashed where its key is a pointer, placed by linear probing into the
   // emptied table, its insertion sequence kept in the hash word's high half.
+  // With `$addr` the keys are numbers naming offsets (the table of named
+  // properties kept by address, `__gc_rekey_dyn` below): a key in the moved
+  // memory takes its object's new offset, and an entry whose object the walk
+  // did not reach goes, so no object later laid at that address takes its
+  // properties. A table `__start` made lies below the reset mark, and the
+  // round's writes into it are logged by their slot's address
+  // (core/durable-log.js `__durable_slot_log`), healed at the reset: each
+  // logged address follows its entry to its new slot, and a dropped entry's
+  // record is cancelled. Answers whether it rebuilt the table.
   const rebuildOn = () => !!(ctx.linkDemand.set || ctx.linkDemand.map)
-  ctx.core.stdlib['__gc_rehash'] = () => `(func $__gc_rehash (param $p i32) (param $es i32)
-    (local $cap i32) (local $stride i32) (local $tmp i32) (local $i i32) (local $slot i32) (local $key i64) (local $h i32) (local $idx i32) (local $to i32) (local $n i32) (local $t i32) (local $any i32) (local $w i64)
+  // the program writes the table of named properties and compacts (wat/assemble/stdlib-pull.js joins the rekey to the move)
+  const rekeyOn = () => (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own')) && ctx.core.includes.has('__gc_move')
+  ctx.core.stdlib['__gc_rehash'] = () => {
+    const addr = rekeyOn(), logged = ctx.core.includes.has('__durable_slot_log')
+    // the rekey asks whether the table was rebuilt
+    const none = addr ? '(return (i32.const 0))' : '(return)'
+    const relog = (from, to, size) => logged ? `
+          (if (local.get $relog) (then (call $__durable_slot_relog ${from} ${to} ${size})))` : ''
+    const cancel = logged ? `(if (local.get $relog) (then (call $__durable_slot_cancel (local.get $slot) (local.get $es))))` : ''
+    const moved = `(i32.and (i32.ge_u (local.get $off) (global.get $__g_floor)) (i32.lt_u (local.get $off) (global.get $__g_top)))`
+    const offOf = `(local.set $off (i32.trunc_sat_f64_s (f64.reinterpret_i64 (local.get $key))))`
+    const identityScan = `(if (i32.and (i64.ne (i64.load (local.get $slot)) (i64.const 0)) (call $__gc_box (local.get $key)))
+        (then (if (i32.and (i32.shl (i32.const 1) ${tagOf('(local.get $key)')}) (i32.const ${IDENTITY_TAGS})) (then (local.set $any (i32.const 1))))))`
+    const addrScan = `(if (i32.and (i64.ne (i64.load (local.get $slot)) (i64.const 0)) (i64.ne (local.get $key) (i64.const ${TOMB_NAN})))
+        (then ${offOf} (if ${moved} (then (local.set $any (i32.const 1))))))`
+    const identityHash = `(if (call $__gc_box (local.get $key))
+            (then (if (i32.and (i32.shl (i32.const 1) ${tagOf('(local.get $key)')}) (i32.const ${IDENTITY_TAGS}))
+              (then (local.set $h (call $__map_hash (local.get $key)))))))`
+    // an object the walk did not reach: its entry goes (its words can't tell: a
+    // shifted array emptied to no capacity ends where its data starts)
+    const addrKey = `(block $kept
+            ${offOf}
+            (br_if $kept (i32.eqz ${moved}))
+            (if (i32.eqz (call $__gc_was (local.get $off))) (then ${cancel} (br $skip)))
+            (local.set $key (i64.reinterpret_f64 (f64.convert_i32_s (call $__gc_fwd_raw (local.get $off)))))
+            (i64.store offset=8 (local.get $slot) (local.get $key))
+            (local.set $h (call $__map_hash (local.get $key))))`
+    // an empty slot, and a zombie (a reset healed it) the rebuild drops
+    const live = addr || logged
+      ? `(block $skip
+          (br_if $skip (i64.eqz (local.get $w)))
+          (if (i64.eq (local.get $key) (i64.const ${TOMB_NAN})) (then ${cancel} (br $skip)))`
+      : `(if (i32.and (i64.ne (local.get $w) (i64.const 0)) (i64.ne (local.get $key) (i64.const ${TOMB_NAN})))
+        (then`
+    return `(func $__gc_rehash (param $p i32) (param $es i32)${addr ? ' (param $addr i32) (result i32)' : ''}
+    (local $cap i32) (local $stride i32) (local $tmp i32) (local $i i32) (local $slot i32) (local $key i64) (local $h i32) (local $idx i32) (local $to i32) (local $n i32) (local $t i32) (local $any i32) (local $w i64)${addr ? ' (local $off i32)' : ''}${logged ? ' (local $relog i32)' : ''}
     (local.set $cap (i32.load (i32.sub (local.get $p) (i32.const 4))))
     (local.set $stride (i32.add (local.get $es) (i32.const ${lane})))
     ;; keys hashed by their bits: any that names memory the move may have changed
@@ -664,15 +707,15 @@ export const registerCompact = () => {
       (br_if $scan (i32.ge_u (local.get $i) (local.get $cap)))
       (local.set $slot (i32.add (local.get $p) (i32.mul (local.get $i) (local.get $es))))
       (local.set $key (i64.load offset=8 (local.get $slot)))
-      (if (i32.and (i64.ne (i64.load (local.get $slot)) (i64.const 0)) (call $__gc_box (local.get $key)))
-        (then (if (i32.and (i32.shl (i32.const 1) ${tagOf('(local.get $key)')}) (i32.const ${IDENTITY_TAGS})) (then (local.set $any (i32.const 1))))))
+      ${addr ? `(if (local.get $addr) (then ${addrScan}) (else ${identityScan}))` : identityScan}
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $probe)))
-    (if (i32.eqz (local.get $any)) (then (return)))
+    (if (i32.eqz (local.get $any)) (then ${none}))
     ;; the entries copied aside, the table emptied, each live entry placed anew
     (local.set $tmp (i32.and (i32.add (i32.add (global.get $__g_list) (i32.shl (global.get $__g_ln) (i32.const 3))) (i32.const 7)) (i32.const -8)))
-    (if (i32.eqz (call $__gc_room (i32.add (local.get $tmp) (i32.mul (local.get $cap) (local.get $es))))) (then (return)))
-    (memory.copy (local.get $tmp) (local.get $p) (i32.mul (local.get $cap) (local.get $es)))
+    (if (i32.eqz (call $__gc_room (i32.add (local.get $tmp) (i32.mul (local.get $cap) (local.get $es))))) (then ${none}))
+    (memory.copy (local.get $tmp) (local.get $p) (i32.mul (local.get $cap) (local.get $es)))${logged ? `
+    (local.set $relog (i32.and (i32.lt_u (local.get $p) (global.get $__heap_reset)) (i32.ne (global.get $__durable_slot_n) (i32.const 0))))${relog('(local.get $p)', '(local.get $tmp)', '(i32.mul (local.get $cap) (local.get $es))')}` : ''}
     (memory.fill (local.get $p) (i32.const 0) (i32.mul (local.get $cap) (local.get $stride)))
     (local.set $i (i32.const 0))
     (block $done (loop $entry
@@ -680,25 +723,45 @@ export const registerCompact = () => {
       (local.set $slot (i32.add (local.get $tmp) (i32.mul (local.get $i) (local.get $es))))
       (local.set $w (i64.load (local.get $slot)))
       (local.set $key (i64.load offset=8 (local.get $slot)))
-      (if (i32.and (i64.ne (local.get $w) (i64.const 0)) (i64.ne (local.get $key) (i64.const ${TOMB_NAN})))
-        (then
+      ${live}
           (local.set $h (i32.wrap_i64 (local.get $w)))
-          (if (call $__gc_box (local.get $key))
-            (then (if (i32.and (i32.shl (i32.const 1) ${tagOf('(local.get $key)')}) (i32.const ${IDENTITY_TAGS}))
-              (then (local.set $h (call $__map_hash (local.get $key)))))))
+          ${addr ? `(if (local.get $addr) (then ${addrKey}) (else ${identityHash}))` : identityHash}
           (local.set $idx (i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1))))
           (block $placed (loop $next
             (local.set $to (i32.add (local.get $p) (i32.mul (local.get $idx) (local.get $es))))
             (br_if $placed (i64.eqz (i64.load (local.get $to))))
             (local.set $idx (i32.and (i32.add (local.get $idx) (i32.const 1)) (i32.sub (local.get $cap) (i32.const 1))))
             (br $next)))
-          (memory.copy (local.get $to) (local.get $slot) (local.get $es))
+          (memory.copy (local.get $to) (local.get $slot) (local.get $es))${relog('(local.get $slot)', '(local.get $to)', '(local.get $es)')}
           (i64.store (local.get $to) (i64.or (i64.extend_i32_u (local.get $h)) (i64.and (local.get $w) (i64.const -4294967296))))
           ${lane ? `(i32.store (i32.add (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $es))) (i32.shl (local.get $idx) (i32.const 2))) (local.get $h))` : ''}
-          (local.set $n (i32.add (local.get $n) (i32.const 1)))))
+          (local.set $n (i32.add (local.get $n) (i32.const 1)))${addr || logged ? ')' : '))'}
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $entry)))
-    (i32.store (i32.sub (local.get $p) (i32.const 8)) (local.get $n)))`
+    (i32.store (i32.sub (local.get $p) (i32.const 8)) (local.get $n))${addr ? '\n    (i32.const 1)' : ''})`
+  }
+
+  // The table of named properties kept by address (module/collection.js
+  // `__dyn_props`: a closure's, a shifted array's) keyed by the number of its
+  // object's offset, which no walk reads as a pointer: rebuilt by its keys'
+  // addresses after the move (`__gc_rehash` above), the membership filter
+  // rebuilt from them.
+  ctx.core.stdlib['__gc_rekey_dyn'] = () => `(func $__gc_rekey_dyn
+    (local $p i32)${has('__dyn_props_filter') ? ' (local $end i32) (local $slot i32) (local $off i32) (local $filter i64)' : ''}
+    (if (f64.eq (global.get $__dyn_props) (f64.const 0)) (then (return)))
+    (local.set $p (i32.wrap_i64 (i64.reinterpret_f64 (global.get $__dyn_props))))
+    (if (i32.eqz (call $__gc_rehash (local.get $p) (i32.const ${MAP_ENTRY}) (i32.const 1))) (then (return)))${has('__dyn_props_filter') ? `
+    (local.set $end (i32.add (local.get $p) (i32.mul (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const ${MAP_ENTRY}))))
+    (local.set $slot (local.get $p))
+    (block $done (loop $entry
+      (br_if $done (i32.ge_u (local.get $slot) (local.get $end)))
+      (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+        (then
+          (local.set $off (i32.trunc_sat_f64_s (f64.reinterpret_i64 (i64.load offset=8 (local.get $slot)))))
+          (local.set $filter (i64.or (local.get $filter) (i64.shl (i64.const 1) (i64.extend_i32_u (i32.and (i32.xor (i32.shr_u (local.get $off) (i32.const 3)) (i32.shr_u (local.get $off) (i32.const 9))) (i32.const 63))))))))
+      (local.set $slot (i32.add (local.get $slot) (i32.const ${MAP_ENTRY})))
+      (br $entry)))
+    (global.set $__dyn_props_filter (local.get $filter))` : ''})`
 
   // The module's own roots: every global that holds a value, marked (`fwd` 0)
   // or rewritten (`fwd` 1). Laid out per program as the module is assembled:
@@ -825,6 +888,7 @@ export const registerCompact = () => {
     if (has('__jstack')) resets.push(`(global.set $__jstack (i32.const 0))`)
     if (has('__closure_spill')) resets.push(`(global.set $__closure_spill (i32.const 0))`)
     if (has('__jz_last_err_bits') && ctx.scope.globals.get('__jz_last_err_bits').mut) resets.push(`(global.set $__jz_last_err_bits (i64.const 0))`)
+    const rehashAt = (es) => rekeyOn() ? `(drop (call $__gc_rehash (i32.load (local.get $at)) (i32.const ${es}) (i32.const 0)))` : `(call $__gc_rehash (i32.load (local.get $at)) (i32.const ${es}))`
     const rehash = rebuildOn() ? `(local.set $i (i32.const 0))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (global.get $__g_ln)))
@@ -833,8 +897,8 @@ export const registerCompact = () => {
       ;; a pointer's high word carries the NaN prefix, above the list's own kinds
       (if (i32.gt_u (i32.load offset=4 (local.get $at)) (i32.const ${KIND_STUB << 16}))
         (then
-          (if (i32.eq (local.get $t) (i32.const ${PTR.SET})) (then (call $__gc_rehash (i32.load (local.get $at)) (i32.const ${SET_ENTRY}))))
-          (if (i32.eq (local.get $t) (i32.const ${PTR.MAP})) (then (call $__gc_rehash (i32.load (local.get $at)) (i32.const ${MAP_ENTRY}))))))
+          (if (i32.eq (local.get $t) (i32.const ${PTR.SET})) (then ${rehashAt(SET_ENTRY)}))
+          (if (i32.eq (local.get $t) (i32.const ${PTR.MAP})) (then ${rehashAt(MAP_ENTRY)}))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $next)))` : ''
     return { resets, rehash }
@@ -955,6 +1019,7 @@ export const registerCompact = () => {
     (global.set $__heap (local.get $dst))
     ;; 5. tables keyed by identity rebuilt, caches naming addresses emptied
     ${rehash}
+    ;; rekey:dyn
     ${resets.join('\n    ')}
     (local.get $dst))`
   }
@@ -979,6 +1044,7 @@ export const COMPACT_DEPS = {
   __gc_seen: [],
   __gc_stub: [],
   __gc_thresh: [],
+  __gc_rekey_dyn: ['__gc_rehash', '__gc_box', '__gc_room', '__gc_fwd_raw', '__gc_was', '__map_hash'],
   __gc_keep: [],
   __gc_row: [],
   __gc_fit: [],

@@ -2171,7 +2171,13 @@ a typed view's data (interior pointers) forward as any address does. A
 pointer to a growth stub above the floor is collapsed to the block; one to a
 stub below the floor stays (a durable receiver's address is what the program
 holds), the stub's forward rewritten once every pointer is forwarded. A Set
-or Map keyed by identity is rebuilt from its entries. Nothing below the
+or Map keyed by identity is rebuilt from its entries, and so is the table of
+named properties kept by an object's offset (`__dyn_props`: a closure's, a
+shifted array's), each entry under its object's new offset, an entry whose
+object the walk did not reach gone (`__gc_rehash`, `__gc_rekey_dyn`). Where
+the module's start built the table, the reset log names the round's entries
+by their slots: each logged address follows its entry, so the reset still
+drops what the round added. Nothing below the
 floor moves: the floor stands at the reset mark, raised by the host over its
 own allocations and to the heap's top after any call during which it decoded
 a view of the module's memory or a closure (a result, a host import's
