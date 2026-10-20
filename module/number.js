@@ -1768,6 +1768,22 @@ export default (ctx) => {
     ;; edge. Every non-NaN raw f64 here is therefore a genuine Number,
     ;; including subnormals; PTR.BIGINT is handled by the tagged arm below.
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
+    ${ctx.transform.optimize?.leanRuntime ? '' : `;; A string held in the pointer whose one to six units are ASCII digits is
+    ;; their decimal value: no space, sign, prefix, point or exponent stands in
+    ;; it (a parser's numeric literal). Any other unit leaves for the grammar.
+    (if (i64.eq (i64.and (local.get $v) (i64.const 0xFFFFC00000000000)) (i64.const 0x7FFA400000000000))
+      (then
+        (local.set $len (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const 42)) (i64.const 7))))
+        (block $units
+          (br_if $units (i32.eqz (local.get $len)))
+          (loop $unit
+            (br_if $units (i32.gt_u
+              (local.tee $c (i32.sub (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.extend_i32_u (i32.mul (local.get $i) (i32.const 7)))) (i64.const 0x7f))) (i32.const 48)))
+              (i32.const 9)))
+            (local.set $digit (i32.add (i32.mul (local.get $digit) (i32.const 10)) (local.get $c)))
+            (br_if $unit (i32.lt_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) (local.get $len))))
+          (return (f64.convert_i32_u (local.get $digit))))
+        (local.set $len (i32.const 0)) (local.set $i (i32.const 0)) (local.set $c (i32.const 0)) (local.set $digit (i32.const 0))))`}
     (if ${print(numberNanIR(['local.get', '$f']))} (then (return (local.get $f))))
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))

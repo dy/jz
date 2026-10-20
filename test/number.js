@@ -331,6 +331,19 @@ test('Number: String() / expression toString', () => {
   ])
 })
 
+// A string held in the pointer (up to six ASCII units) whose every unit is a
+// digit is its decimal value without the grammar's walk; any other unit, an
+// empty string or a heap string takes the full ToNumber.
+test('Number: a short string of digits converts by its units, any other by the grammar', () => {
+  const src = `const strs = ['0', '7', '64', '007', '123456', '999999', '1234567', '', ' ', ' 1', '1 ', '-1', '+1',
+      '1.5', '.5', '5.', '1e3', '0x10', '0b1', '0o7', 'abc', '12a', 'a12', '1_0', 'NaN', 'Infinity', '\\t9', '00', '0000000', '\\u0663', '9/']
+    const id = (s) => s.slice(0)
+    export const f = () => strs.map(s => { const v = +id(s); return Number.isNaN(v) ? 'NaN' : String(v) }).join('|') + '#' + strs.map(s => Number(id(s)) * 2).join(',')`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) is(run(src, { optimize }).f(), host.f(), `at ${optimize}`)
+  ok(/0xFFFFC00000000000/i.test(funcWat(wat(src, { optimize: 'speed' }), '__to_num')), 'the speed tier tests for an inline string first')
+})
+
 // === Template literal coercion ===
 
 test('Template:', () => {
