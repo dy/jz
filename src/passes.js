@@ -97,6 +97,7 @@ export const PASS_NAMES = [
   'iterationRelease',         // a loop whose escapes the frame flags gives back each iteration's memory by the flag and the walk (needs arenaReach)
   'compact',                  // the host compacts what the module keeps as the outermost call returns (module/core/compact.js, ~3 KB)
   'placeLargeBlocks',         // a block of 4 KiB or more starts a quarter page past the last such block, mod 4096: streams of consecutive arrays share no low address bits (module/core.js __alloc)
+  'versionArrayPatterns',     // an array pattern over a value that may be an array reads by position behind Array.isArray, the protocol beside it (plan/index-array-patterns.js)
   'treeshake',
   'jsstring',                 // boundary opt-in: flip exported string params to externref
   // Registry completion (architecture plan Stage 0): every flag a call site

@@ -150,7 +150,8 @@ const indexPattern = (list, at, view, present) => {
   const guard = list[at + 1], pulls = isArr(guard) && guard[0] === 'catch' && isArr(guard[1]) && guard[1][0] === '{}' && isArr(guard[1][1]) && guard[1][1][0] === ';' ? guard[1][1] : null
   const closeAt = pulls ? at + 2 : at + 1, close = list[closeAt], closer = calleeOf(close)
   if (closer === null || !CLOSE.test(closer) || !isArr(close[2]) || close[2][1] !== it) return false
-  if (!provenArray(view, src, present) && !arrayOrMissing(view, src)) return versionPattern(list, at, view, guard, pulls, close)
+  if (!provenArray(view, src, present) && !arrayOrMissing(view, src))
+    return ctx.transform.optimize?.versionArrayPatterns !== false && versionPattern(list, at, view, guard, pulls, close)
   const missing = !provenArray(view, src, present)
   // A source held in a name the pulls leave alone is read through that name:
   // the cursor would be one more name for it, which hides the array's uses.
