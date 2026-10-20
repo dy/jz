@@ -1719,9 +1719,8 @@ test('helper callsite counters attribute dynamic helper calls', async () => {
 test('codegen: runtime .length does not eagerly decode pointer offset', () => {
   if (onKernel()) return  // kernel WAT shape differs; in-process leg owns shape checks
   const wat = compile('export let f = (x) => x.length', { wat: true, optimize: false })
-  const h0 = wat.indexOf('(func $__length')
-  const h1 = wat.indexOf('\n  (func ', h0 + 1)
-  const helperBody = h0 >= 0 ? wat.slice(h0, h1 >= 0 ? h1 : undefined) : ''
+  // (the head answers an array and a string in line; its tail is the whole dispatch)
+  const helperBody = ['__length', '__length.value'].map(n => funcWat(wat, n) + funcWat(wat, `${n}_tail`)).join('')
   ok(helperBody, 'expected $__length helper in WAT')
   ok(/\$__len\b/.test(helperBody), '$__length should still delegate non-string length to $__len')
   is((helperBody.match(/\$__ptr_offset\b/g) || []).length, 0,
@@ -2098,12 +2097,14 @@ test('closure-heavy parser: behavior behind the size pin', () => {
 // on a boundary-unknown arg now carries the 3-way source dispatch (ARRAY→from,
 // TYPED→element-converting copy loop, else→size alloc). JS-correct construction;
 // the copy arm is the cost of not aliasing the source storage.
+// 1581→1725: the element heads (layout.js numTypedWat) open `__typed_idx`, `__len` and
+// the element stores beside their whole bodies, now tails (the size tier keeps one body).
 golden('typed-array loop', `export let f = (arr) => {
   let buf = new Float64Array(arr)
   let s = 0
   for (let i = 0; i < buf.length; i++) s += buf[i] * 2
   return s
-}`, 1532)
+}`, 1725)
 // 1729→1532: a typed copy already owns its source kind and extent; its dynamic
 // element reader needs only aux/view dispatch, not generic Array/missing checks.
 // 1545→1645: the array arm converts each element (a nullish or boolean atom to

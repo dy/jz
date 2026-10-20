@@ -207,7 +207,8 @@ export default (ctx) => {
     __str_idx: ['__char_unit'],
     __sso_norm: [],
     __bytes_decode: ['__typed_data', '__byte_length', '__ptr_type', '__utf8_decode'],
-    __str_eq: lean || !ctx.features.sso ? ['__char_at', '__str_length'] : ['__str_eq_cold'],
+    __str_eq: lean || !ctx.features.sso ? ['__char_at', '__str_length'] : ['__str_eq_tail'],
+    __str_eq_tail: lean || !ctx.features.sso ? ['__char_at', '__str_length'] : ['__str_eq_cold'],
     __str_eq_cold: [],
     __str_cmp: ['__char_at', '__str_length'],
     __str_range_eq: ['__str_length'],
@@ -416,7 +417,10 @@ export default (ctx) => {
   // The loop-free prelude decides identity, SSO and unequal lengths once.
   // The cold loop receives two heap offsets and their equal UTF-16 length.
   // Size mode and the heap-only configuration retain the shared char accessors.
-  wat('__str_eq', () => lean || !ctx.features.sso ? `(func $__str_eq (param $a i64) (param $b i64) (result i32)
+  // With SSO the head answers what most key compares are, the same string or a
+  // short one (bit-different SSO is content-different), small enough for the
+  // engine to inline; `__str_eq_tail` is the whole compare.
+  const strEqBody = (name) => lean || !ctx.features.sso ? `(func $${name} (param $a i64) (param $b i64) (result i32)
     (local $len i32) (local $i i32)
     (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 1))))
@@ -437,7 +441,7 @@ export default (ctx) => {
         (then (return (i32.const 0))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
-    (i32.const 1))` : `(func $__str_eq (param $a i64) (param $b i64) (result i32)
+    (i32.const 1))` : `(func $${name} (param $a i64) (param $b i64) (result i32)
     (local $axA i32) (local $axB i32) (local $offA i32) (local $offB i32) (local $len i32)
     (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 1))))
@@ -467,7 +471,14 @@ export default (ctx) => {
         (local.set $len ${heapLenExpr('$a', '$offA')})
         (if (i32.ne (local.get $len) ${heapLenExpr('$b', '$offB')})
           (then (return (i32.const 0))))))
-    (call $__str_eq_cold (local.get $offA) (local.get $offB) (local.get $len)))`)
+    (call $__str_eq_cold (local.get $offA) (local.get $offB) (local.get $len)))`
+  wat('__str_eq', () => lean || !ctx.features.sso ? strEqBody('__str_eq') : `(func $__str_eq (param $a i64) (param $b i64) (result i32)
+    (if (i64.eq (local.get $a) (local.get $b))
+      (then (return (i32.const 1))))
+    (if (i64.ne (i64.and (i64.or (local.get $a) (local.get $b)) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+      (then (return (i32.const 0))))
+    (call $__str_eq_tail (local.get $a) (local.get $b)))`)
+  wat('__str_eq_tail', () => strEqBody('__str_eq_tail'))
 
   wat('__str_eq_cold', `(func $__str_eq_cold (param $offA i32) (param $offB i32) (param $len i32) (result i32)
     (local $lenB i32) (local $i i32)

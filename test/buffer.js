@@ -636,7 +636,8 @@ test('generic typed indexing: one layout decode across owned, view and empty sto
       is(read(which, i), expected(which, i), `O${optimize}, storage ${which}, index ${i}`)
   }
   const wat = jz.compile(src, { optimize: { level: 2, watr: false }, wat: true })
-  const body = funcWat(wat, '__typed_idx')
+  // (the head answers a numeric element in line; its tail is the whole reader)
+  const body = funcWat(wat, '__typed_idx') + funcWat(wat, '__typed_idx_tail')
   ok(body.includes('call $__typed_shift'), 'generic reader uses the decoded element kind')
   ok(!body.includes('call $__len'), 'generic reader does not decode the layout again through __len')
 })
@@ -899,7 +900,9 @@ test('slice — Int16Array owned→view self-reassign (non-byte stride)', () => 
 // inferred from every construction form: Array.from, array literal, push, index-fill.
 
 import { compile as _compile } from '../index.js'
-const noRuntimeScatter = (src) => !/call \$__typed_set_idx/.test(_compile(src, { wat: true }))
+// (the tagged store's tail stays a function, kept out of line: the generic set's typed arm
+// splices the store's head, whose fallback calls it; no per-element store reaches it)
+const noRuntimeScatter = (src) => !/call \$__typed_set_idx(?!_tagged_tail\b)/.test(_compile(src, { wat: true }))
 
 test('channelData scatter inlines — Array.from / push / index-fill', () => {
   const arrFrom = `export let f = (nc, m) => { let ch = Array.from({length:nc}, () => new Float32Array(m)); for (let i=0;i<m;i++) for (let c=0;c<nc;c++) ch[c][i] = i; return ch }`

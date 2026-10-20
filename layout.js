@@ -170,6 +170,42 @@ export function ctorFromElemAux(aux) {
 export const encodePtrHi = (type, aux) =>
   ((LAYOUT.NAN_PREFIX << 16) | ((type & LAYOUT.TAG_MASK) << (LAYOUT.TAG_SHIFT - 32)) | (aux & LAYOUT.AUX_MASK)) >>> 0
 
+/** `ptr` (i64) is a box of tag `type`: the prefix and the tag, its top 17 bits. */
+export const ptrIsWat = (type, ptr = '(local.get $ptr)') =>
+  `(i32.eq (i32.wrap_i64 (i64.shr_u ${ptr} (i64.const ${LAYOUT.TAG_SHIFT}))) (i32.const ${encodePtrHi(type, 0) >>> LAYOUT.TAG_SHIFT - 32}))`
+
+/** The element heads (module/core.js `__len` and the reads, module/array.js the stores): the
+ *  common case of a hot runtime helper in a few instructions, small enough for the engine to
+ *  inline into the loop that indexes, the rest in the helper's tail.
+ *  A numeric typed array, owned or a view, has an aux of its element code and at most the view
+ *  flag (no DataView, BigInt, Float16 or clamped flag): its pointer's top 29 bits are this word
+ *  with their low bit, the view flag, free. */
+const NUM_TYPED_HI = encodePtrHi(PTR.TYPED, 0) >>> 3
+
+/** `$ptr` is a numeric typed array: `body` runs with `$aux` its high word, `$et` the element
+ *  code, `$s` the log2 width and `$off` its offset, where numTypedBytesWat reads its byte length
+ *  (a view's descriptor holds it, an owned array's header). */
+export const numTypedWat = (body) => `
+    (if (i32.and
+          (i32.eq (i32.and (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const 35))) (i32.const -2)) (i32.const ${NUM_TYPED_HI}))
+          (i32.ge_u (local.tee $off (i32.wrap_i64 (local.get $ptr))) (i32.const 8)))
+      (then
+        (local.set $s (i32.sub
+          (i32.shr_u (local.tee $et (i32.and (local.tee $aux (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const 32)))) (i32.const 7))) (i32.const 1))
+          (i32.eq (local.get $et) (i32.const 6))))
+        ${body}))`
+export const numTypedBytesWat = `(i32.load (select (local.get $off) (i32.sub (local.get $off) (i32.const 8)) (i32.and (local.get $aux) (i32.const 8))))`
+
+/** A numeric typed array's element `$i` in bounds: `body` runs with `$off` its address
+ *  (numTypedWat's locals besides), and returns or falls through to the tail. */
+export const numTypedElemWat = (body) => numTypedWat(`
+        (if (i32.lt_u (local.get $i) (i32.shr_u ${numTypedBytesWat} (local.get $s)))
+          (then
+            (if (i32.and (local.get $aux) (i32.const 8))
+              (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
+            (local.set $off (i32.add (local.get $off) (i32.shl (local.get $i) (local.get $s))))
+            ${body}))`)
+
 export const decodePtrType = hi => (hi >>> (LAYOUT.TAG_SHIFT - 32)) & LAYOUT.TAG_MASK
 export const decodePtrAux = hi => hi & LAYOUT.AUX_MASK
 

@@ -3933,6 +3933,22 @@ These timings precede the asin/acos consolidation. At that snapshot the
 floatbeat corpus ran at 0.49 of V8's time (0.45 before, 0.78 with the full
 fdlibm port); fresh merged performance measurements remain separate evidence.
 
+A hot runtime helper answers its common case in a head small enough for V8's inliner and
+leaves the rest to a tail, as `__rem` leaves its long division to `__rem_div`
+(`module/core.js`): V8 inlines a wasm callee of at most 500 bytes, ranked by call count,
+within a budget that grows with the caller (about a tenth of a large caller's size), so a
+helper of several hundred bytes, or a chain of them, stays a call in a hot loop. The element
+heads (`layout.js` `numTypedWat`) take an array's element in bounds, behind any forwarding,
+and a numeric typed array's, owned or a view, in `__typed_idx`, `__typed_idx_tagged`,
+`__arr_typed_set_idx`, `__arr_typed_obj_set_idx`, `__typed_set_idx_tagged`, `__len`,
+`__length` and `__length.value` (a store's float element takes any Number, an integer element
+one below 2^31 in magnitude, whose 32-bit truncation is ToInt32's word; a length dispatch
+takes a string next, as before); `__str_eq`'s head takes the same string or a short one. Each
+tail is the helper's whole old body, pinned out of line (`optimize/watr-tail.js`
+`OUT_OF_LINE`) against watr's single-caller inliner; the size tier (`leanRuntime`) links that
+body alone under the helper's name. `test/elem-heads.js` pins the shape and every element
+kind, index and value against the host.
+
 Values use proven raw lanes or tagged carriers; heap values use NaN-boxing (see README). The legacy `ctx` store still carries compilation state. Consult its lifecycle ownership table in [`src/ctx.js`](src/ctx.js) before changing state; new persistent facts belong in ProgramIndex and frozen summaries, not another ambient store.
 
 ## Adding a stdlib method

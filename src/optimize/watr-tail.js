@@ -26,11 +26,14 @@ import { selectBits } from './select-bits.js'
 import { maskOperands } from './mask-operands.js'
 
 // A runtime helper's cold half, split off so the engine inlines the hot head
-// (module/core.js `__rem`, its long division `__rem_div`): the single-caller
-// inliner would splice it back.
+// (module/core.js `__rem`, its long division `__rem_div`; the element heads,
+// layout.js numTypedWat, the length dispatchers' and `__str_eq`'s): the
+// single-caller inliner would splice it back.
 // Static seed data is live through this helper. Preserve that ownership edge
 // until late data stripping; inlining would leave untracked raw addresses.
-const OUT_OF_LINE = ['$__rem_div', '$__static_str']
+const OUT_OF_LINE = ['$__rem_div', '$__len_tail', '$__length_tail', '$__length.value_tail', '$__typed_idx_tail',
+  '$__typed_idx_tagged_tail', '$__arr_typed_set_idx_tail', '$__arr_typed_obj_set_idx_tail', '$__typed_set_idx_tagged_tail',
+  '$__str_eq_tail', '$__static_str']
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see

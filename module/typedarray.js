@@ -28,6 +28,7 @@ import { activeBoundsAssumption, activeBoundsFrame } from '../src/type/canonical
 import { frameNode } from '../src/function.js'
 import { requireReceiverWat } from './core/error-object.js'
 import { captureCallback, makeCallback, idxArg } from './array/callback.js'
+import { typedStoreHeadWat } from './array.js'
 import { heapScratch, mergeSortIR } from './array/sort.js'
 import { callbackSetup, isUndefinedNode } from './array/from.js'
 
@@ -107,6 +108,8 @@ const staticStoragePtr = (aux, byteLen, slot) => {
 
 
 export default (ctx) => {
+  // the tagged store's whole body (its tail, or the helper itself at the size tier)
+  const TYPED_SET_TAGGED_DEPS = ['__typed_set_idx', '__is_nullish', '__ptr_aux', '__len', '__to_num', '__to_bigint_strict']
   deps({
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
@@ -114,7 +117,8 @@ export default (ctx) => {
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
     __typed_set_idx: () => ['__ptr_aux', '__ptr_type', '__to_int32',
       ...(ctx.linkDemand.f16 ? ['__f64_to_f16'] : []), ...(ctx.linkDemand.clamped ? ['__u8_clamp'] : [])],
-    __typed_set_idx_tagged: ['__typed_set_idx', '__is_nullish', '__ptr_aux', '__len', '__to_num', '__to_bigint_strict'],
+    __typed_set_idx_tagged: () => ctx.transform.optimize?.leanRuntime ? TYPED_SET_TAGGED_DEPS : ['__typed_set_idx_tagged_tail'],
+    __typed_set_idx_tagged_tail: TYPED_SET_TAGGED_DEPS,
     __typed_get_idx: () => ['__ptr_aux', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __typed_elem_arg: ['__ptr_aux', '__box_bigint'],
     __typed_value: ['__ptr_aux', '__to_num', '__to_bigint_strict'],
@@ -1522,7 +1526,14 @@ export default (ctx) => {
   // 2 proves Number, and other values need runtime ToNumber/ToBigInt
   // conversion. Conversion precedes the bounds check and keeps the RHS value.
   // The raw writer above serves same-element copy/reverse/sort operations.
-  ctx.core.stdlib['__typed_set_idx_tagged'] = () => `(func $__typed_set_idx_tagged (param $ptr i64) (param $i i32) (param $v f64) (param $domain i32) (result f64)
+  // The head stores into a numeric typed array in bounds (module/array.js
+  // typedStoreHeadWat); `__typed_set_idx_tagged_tail` is the whole store.
+  ctx.core.stdlib['__typed_set_idx_tagged'] = () => ctx.transform.optimize?.leanRuntime ? typedSetTaggedBody('__typed_set_idx_tagged') : `(func $__typed_set_idx_tagged (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
+    (local $off i32) (local $aux i32) (local $et i32) (local $s i32)
+    ${typedStoreHeadWat('(local.get $val)')}
+    (call $__typed_set_idx_tagged_tail (local.get $ptr) (local.get $i) (local.get $val) (local.get $domain)))`
+  ctx.core.stdlib['__typed_set_idx_tagged_tail'] = () => typedSetTaggedBody('__typed_set_idx_tagged_tail')
+  const typedSetTaggedBody = (name) => `(func $${name} (param $ptr i64) (param $i i32) (param $v f64) (param $domain i32) (result f64)
     (local $aux i32) (local $raw f64)
     ${requireReceiverWat('(local.get $ptr)')}
     (local.set $aux (call $__ptr_aux (local.get $ptr)))

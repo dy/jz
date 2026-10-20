@@ -116,7 +116,8 @@ export let tone = (t) => { try { return Math.round(wave('sine', t, 0) * 1e9) } c
 test('called args: a string a function tests its parameter against settles in a copy', () => {
   agrees(modes, [['run', 100, 0], ['run', 100, 1], ['run', 100, 2], ['tone', 0.3], ['run', 3, 3]])
   if (belowOpt(2)) return
-  ok(!/call \$__str_eq/.test(wat(modes, { optimize: 2 })), 'no string test left where every mode is a literal')
+  // (the compare's tail is reached only through its head, which `__key_eq` splices)
+  ok(!/call \$__str_eq(?!_tail\b)/.test(wat(modes, { optimize: 2 })), 'no string test left where every mode is a literal')
 })
 
 test('called args: a parameter written, seen by a closure, or given many strings keeps its body', () => {

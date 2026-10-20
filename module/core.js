@@ -22,7 +22,7 @@ import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
-import { ptrOffsetFwdWat, deletedMaskWat, SYMBOL_MIN, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex } from '../layout.js'
+import { ptrOffsetFwdWat, deletedMaskWat, SYMBOL_MIN, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex, numTypedWat, numTypedBytesWat, numTypedElemWat, ptrIsWat } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
 import { schemaValueIR, initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
@@ -54,6 +54,43 @@ const typedLengthWat = `(if (result i32) (i32.and (local.get $aux) (i32.const ${
       (i32.and (local.get $aux) (i32.const 8))))
     (call $__typed_shift (i32.and (local.get $aux) (i32.const 7))))))`
 
+// A typed array may reach the runtime: the program makes one or takes one from its host.
+const typedLinked = () => ctx.linkDemand.typedarray || ctx.linkDemand.external
+// The size tier links each headed helper as its one whole body (the head is speed for size).
+const leanRuntime = () => !!ctx.transform.optimize?.leanRuntime
+
+// The dependencies of the headed helpers' whole bodies (their tails, or the helper itself at
+// the size tier) and of the read's head.
+const LEN_DEPS = ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd']
+const TYPED_IDX_TAIL_DEPS = () => ['__typed_shift', '__ptr_offset_fwd', '__arr_value', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])]
+const TYPED_IDX_TAGGED_DEPS = ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr']
+const typedIdxDeps = () => !typedLinked() ? ['__len', '__ptr_offset', '__ptr_offset_fwd', '__arr_value']
+  : leanRuntime() ? TYPED_IDX_TAIL_DEPS() : ['__typed_idx_tail', '__ptr_offset_fwd', '__arr_value']
+
+// The element read's head (layout.js numTypedWat): an array's element in bounds,
+// behind any forwarding, and a numeric typed array's, each by its own load. A
+// missing index, a BigInt element or any other receiver falls through to the
+// helper's tail. Reads `$ptr $i`; locals `$off $aux $et $s`.
+const elemReadHeadWat = () => {
+  const load = (x) => `(if (result i32) (i32.eq (local.get $s) (i32.const 2))
+              (then (i32.load (local.get $off)))
+              (else (if (result i32) (local.get $s)
+                (then (i32.load16_${x} (local.get $off)))
+                (else (i32.load8_${x} (local.get $off))))))`
+  return `(if (i32.and ${ptrIsWat(PTR.ARRAY)} (i32.ge_u (local.tee $off (i32.wrap_i64 (local.get $ptr))) (i32.const 8)))
+      (then
+        ${followForwardingWat('$off', { lowGuard: false })}
+        (if (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))
+          (then (return (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))))))
+    ${numTypedElemWat(`(return (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
+              (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                (then (f64.load (local.get $off)))
+                (else (f64.promote_f32 (f32.load (local.get $off))))))
+              (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
+                (then (f64.convert_i32_u ${load('u')}))
+                (else (f64.convert_i32_s ${load('s')}))))))`)}`
+}
+
 // A never-relocated (neverGrown) or own-name-current (ownCurrent) array binding
 // always holds the live pointer: its base is the raw offset, no forwarding follow
 // (scanObjectArrayFacts, module/array.js currentBinding for the reader).
@@ -67,6 +104,10 @@ const arrayBaseIR = (obj) => typeof obj === 'string' && liveArrayBinding(obj)
 
 export default (ctx) => {
   const lane = collectionLaneBytes()
+  // the length dispatchers' whole bodies (`__length.value` reads a property arm, `__length` its Number)
+  const LENGTH_VALUE_DEPS = () => ['__str_len', '__len', '__throw_property_nullish',
+    ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])]
+  const LENGTH_DEPS = ['__str_len', '__len', '__throw_property_nullish', '__length_prop_num']
   deps({
     __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : []),
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
@@ -81,12 +122,15 @@ export default (ctx) => {
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
     __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __typeof: ['__ptr_type', '__is_nullish'],
-    __len: ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd'],
+    __len: () => leanRuntime() ? LEN_DEPS : ['__len_tail', '__ptr_offset_fwd'],
+    __len_tail: LEN_DEPS,
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_aux'],
     __arr_value: [],
-    __typed_idx: () => ['__is_nullish', '__arr_value', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
-    __typed_idx_tagged: ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
+    __typed_idx: typedIdxDeps,
+    __typed_idx_tail: TYPED_IDX_TAIL_DEPS,
+    __typed_idx_tagged: () => leanRuntime() ? TYPED_IDX_TAGGED_DEPS : ['__typed_idx_tagged_tail', '__ptr_offset_fwd', '__arr_value'],
+    __typed_idx_tagged_tail: TYPED_IDX_TAGGED_DEPS,
     __box_bigint: ['__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
     __esc_val: () => ['__esc_at', ...(reachOn() ? ['__root'] : [])],
@@ -108,9 +152,10 @@ export default (ctx) => {
     // receivers) needs the dyn dispatcher — but only when the program can even
     // HOLD such a property (a schema'd object or dyn/hash machinery exists);
     // string/array-only programs keep the lean undefined arm.
-    '__length.value': () => ['__str_len', '__len', '__throw_property_nullish',
-      ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
-    __length: ['__str_len', '__len', '__throw_property_nullish', '__length_prop_num'],
+    '__length.value_tail': () => LENGTH_VALUE_DEPS(),
+    __length_tail: LENGTH_DEPS,
+    '__length.value': () => leanRuntime() ? LENGTH_VALUE_DEPS() : ['__length.value_tail', '__ptr_offset_fwd', '__str_len'],
+    __length: () => leanRuntime() ? LENGTH_DEPS : ['__length_tail', '__ptr_offset_fwd', '__str_len'],
     __length_prop_num: () => ['__to_num',
       ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
     __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
@@ -398,8 +443,17 @@ export default (ctx) => {
       (then (f64.const nan:${UNDEF_NAN}))
       (else (call $__arr_value (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3))))))))`
     }
-    // Hot (~37M calls in watr self-compile). Type/aux/offset extracted once from $ptr.
+    // Hot (~37M calls in watr self-compile). `__typed_idx_tail` is the whole read.
+    if (leanRuntime()) return typedIdxBody('__typed_idx')
     return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
+    (local $off i32) (local $aux i32) (local $et i32) (local $s i32)
+    ${elemReadHeadWat()}
+    (call $__typed_idx_tail (local.get $ptr) (local.get $i)))`
+  }
+
+  ctx.core.stdlib['__typed_idx_tail'] = () => typedIdxBody('__typed_idx_tail')
+  const typedIdxBody = (name) => {
+    return `(func $${name} (param $ptr i64) (param $i i32) (result f64)
     (local $t i32) (local $off i32) (local $et i32) (local $aux i32)
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -448,7 +502,14 @@ export default (ctx) => {
   // bit pattern. The explicit bounds test is necessary: UNDEF_NAN itself is a
   // valid i64 BigInt payload, so inspecting the returned bits cannot tell an
   // OOB miss from an in-range value.
-  ctx.core.stdlib['__typed_idx_tagged'] = `(func $__typed_idx_tagged (param $ptr i64) (param $i i32) (result f64)
+  // The head is the plain read's (elemReadHeadWat): a BigInt element is not a
+  // numeric typed array's, so its box is the tail's.
+  ctx.core.stdlib['__typed_idx_tagged'] = () => leanRuntime() ? typedIdxTaggedBody('__typed_idx_tagged') : `(func $__typed_idx_tagged (param $ptr i64) (param $i i32) (result f64)
+    (local $off i32) (local $aux i32) (local $et i32) (local $s i32)
+    ${elemReadHeadWat()}
+    (call $__typed_idx_tagged_tail (local.get $ptr) (local.get $i)))`
+  ctx.core.stdlib['__typed_idx_tagged_tail'] = () => typedIdxTaggedBody('__typed_idx_tagged_tail')
+  const typedIdxTaggedBody = (name) => `(func $${name} (param $ptr i64) (param $i i32) (result f64)
     (local $off i32)
     ;; Only BigInt elements need a tagged result. All other reads retain the
     ;; ordinary helper's own bounds check, without a second length lookup.
@@ -1343,9 +1404,21 @@ export default (ctx) => {
     (local.set $v (i32.shl (i32.wrap_i64 (local.get $bits)) (i32.sub (local.get $exp) (i32.const 1075))))
     (select (i32.sub (i32.const 0) (local.get $v)) (local.get $v) (i64.lt_s (local.get $bits) (i64.const 0))))`
 
-  // Hot (~85M calls in watr self-compile). Type/offset extraction inlined; forwarding
-  // loop only entered for ARRAY. ARRAY fast path dominates (nodes?.length, out.length …).
-  ctx.core.stdlib['__len'] = `(func $__len (param $ptr i64) (result i32)
+  // Hot (~85M calls in watr self-compile; nodes?.length, out.length …). The head
+  // answers an array, its header length behind any forwarding, and a numeric typed
+  // array, its byte length shifted by the element width (layout.js numTypedWat);
+  // `__len_tail` is the whole length, for every other receiver.
+  ctx.core.stdlib['__len'] = () => leanRuntime() ? lenBody('__len') : `(func $__len (param $ptr i64) (result i32)
+    (local $off i32) (local $aux i32) (local $et i32) (local $s i32)
+    (if (i32.and ${ptrIsWat(PTR.ARRAY)} (i32.ge_u (local.tee $off (i32.wrap_i64 (local.get $ptr))) (i32.const 8)))
+      (then
+        ${followForwardingWat('$off', { lowGuard: false })}
+        (return (i32.load (i32.sub (local.get $off) (i32.const 8))))))
+    ${typedLinked() ? numTypedWat(`(return (i32.shr_u ${numTypedBytesWat} (local.get $s)))`) : ''}
+    (call $__len_tail (local.get $ptr)))`
+
+  ctx.core.stdlib['__len_tail'] = () => lenBody('__len_tail')
+  const lenBody = (name) => `(func $${name} (param $ptr i64) (result i32)
     (local $bits i64) (local $t i32) (local $off i32) (local $aux i32)
     (local.set $bits (local.get $ptr))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
@@ -2417,8 +2490,21 @@ export default (ctx) => {
       (then (call $__throw_property_nullish)))
     ${propArm})`
   }
-  ctx.core.stdlib['__length.value'] = () => buildLengthHelper('__length.value', false)
-  ctx.core.stdlib['__length'] = () => buildLengthHelper('__length', true)
+  // The head answers an array and a numeric typed array (the `__len` head's two
+  // arms), then a string as the dispatch does; the tail is the whole dispatch.
+  const lengthHeadHelper = (name) => `(func $${name} (param $ptr i64) (result f64)
+    (local $off i32) (local $aux i32) (local $et i32) (local $s i32)
+    (if (i32.and ${ptrIsWat(PTR.ARRAY)} (i32.ge_u (local.tee $off (i32.wrap_i64 (local.get $ptr))) (i32.const 8)))
+      (then
+        ${followForwardingWat('$off', { lowGuard: false })}
+        (return (f64.convert_i32_s (i32.load (i32.sub (local.get $off) (i32.const 8)))))))
+    ${typedLinked() ? numTypedWat(`(return (f64.convert_i32_s (i32.shr_u ${numTypedBytesWat} (local.get $s))))`) : ''}
+    (if ${ptrIsWat(PTR.STRING)} (then (return (f64.convert_i32_s (call $__str_len (local.get $ptr))))))
+    (call $${name}_tail (local.get $ptr)))`
+  ctx.core.stdlib['__length.value'] = () => leanRuntime() ? buildLengthHelper('__length.value', false) : lengthHeadHelper('__length.value')
+  ctx.core.stdlib['__length.value_tail'] = () => buildLengthHelper('__length.value_tail', false)
+  ctx.core.stdlib['__length'] = () => leanRuntime() ? buildLengthHelper('__length', true) : lengthHeadHelper('__length')
+  ctx.core.stdlib['__length_tail'] = () => buildLengthHelper('__length_tail', true)
 
   // === Property dispatch (.length, .prop) ===
 

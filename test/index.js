@@ -125,6 +125,7 @@ const TESTS = [
   'object-reads',
   'kind-split',
   'remainder',
+  'elem-heads',
   'offset-bound',
   'select-order',
   'pointer-join',

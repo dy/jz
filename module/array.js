@@ -23,7 +23,7 @@ import { hasDurableReset } from './collection/durable.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat, requireObjectWat } from './core/error-object.js'
 import { runsAccessor, runsConversion } from '../src/evaluation-effects.js'
-import { DATA_VIEW_FLAG, nanPrefixHex, ATOM, atomNanHex } from '../layout.js'
+import { DATA_VIEW_FLAG, nanPrefixHex, ATOM, atomNanHex, numTypedElemWat, ptrIsWat } from '../layout.js'
 
 const NAN_BITS = nanPrefixHex()
 import { withRefinements } from '../src/compile/flow-types.js'
@@ -44,6 +44,42 @@ import { heapScratch, mergeSortIR } from './array/sort.js'
 // recvArrTyped's isDisjointFrom check (reps.js, .work/archive/lattice-design.md §5 Slice 2
 // precedent) tests against. Computed once, module-level (not per-call).
 const NOT_ARRAY_OR_TYPED = new Set(KIND_UNIVERSE.filter(k => k !== VAL.ARRAY && k !== VAL.TYPED))
+
+/** The element store's head (layout.js numTypedWat) for a numeric typed array: a float
+ *  element takes any Number, an integer element one below 2^31 in magnitude, whose 32-bit
+ *  truncation is ES ToInt32's word. Any other value (NaN among them: a box needs ToNumber)
+ *  goes on to the tail. Returns `ret`; reads `$ptr $i $val`; locals `$off $aux $et $s`. */
+export const typedStoreHeadWat = (ret) => {
+  const word = '(i32.trunc_sat_f64_s (local.get $val))'
+  return numTypedElemWat(`(if (i32.ge_u (local.get $et) (i32.const 6))
+              (then (if (f64.eq (local.get $val) (local.get $val))
+                (then
+                  (if (i32.and (local.get $et) (i32.const 1))
+                    (then (f64.store (local.get $off) (local.get $val)))
+                    (else (f32.store (local.get $off) (f32.demote_f64 (local.get $val)))))
+                  (return ${ret}))))
+              (else (if (f64.lt (f64.abs (local.get $val)) (f64.const 2147483648))
+                (then
+                  (if (i32.eq (local.get $s) (i32.const 2))
+                    (then (i32.store (local.get $off) ${word}))
+                    (else (if (local.get $s)
+                      (then (i32.store16 (local.get $off) ${word}))
+                      (else (i32.store8 (local.get $off) ${word})))))
+                  (return ${ret})))))`)
+}
+
+/** The head of an Array-or-typed element store: an array's element in bounds, behind any
+ *  forwarding, takes the value as it is; then the numeric typed array (typedStoreHeadWat). */
+const elemStoreHeadWat = (ret) => `
+    (if (i32.and ${ptrIsWat(PTR.ARRAY)} (i32.ge_u (local.tee $off (i32.wrap_i64 (local.get $ptr))) (i32.const 8)))
+      (then
+        ${followForwardingWat('$off', { lowGuard: false })}
+        (if (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))
+          (then
+            ${durableArrSnapIR('off')}
+            (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $val))
+            (return ${ret})))))
+    ${typedStoreHeadWat(ret)}`
 
 /** Allocate ARRAY (type=1): header + n*8 data. Returns { local, setup, ptr } where local is data offset. */
 function allocArray(len, cap) {
@@ -67,6 +103,12 @@ const needsHeadSlack = () => ctx.core.includes.has('__arr_shift')
 // migrated to durableArrSnapIR — see that function's comment), so it remains an accurate
 // name for what it tests, just no longer the ONLY durable-heal gate in this file.
 const needsDurableFwdLog = hasDurableReset
+// The size tier links each headed helper as its one whole body (the head is speed for size).
+const leanRuntime = () => !!ctx.transform.optimize?.leanRuntime
+// The element stores' whole bodies (their tails, or the helper itself at the size tier).
+const arrTypedSetDeps = () => ['__ptr_type', '__ptr_aux', '__len', '__arr_set_idx_ptr',
+  representationProgramHasBigint(ctx) || ctx.core.includes.has('__typed_set_idx_tagged') ? '__typed_set_idx_tagged' : '__typed_set_idx']
+const ARR_TYPED_OBJ_SET_DEPS = ['__is_nullish', '__arr_typed_set_idx', '__ptr_type', '__dyn_set_own', '__i32_to_str']
 // knownArray=true (__arr_grow_known): the raw offset + inline forwarding chase (see
 // arrGrow below) calls $__ptr_offset_fwd directly, not the generic $__ptr_offset.
 // '__durable_arr_snap' is an EXPLICIT edge (not left to the auto-dep scan): arrGrow's
@@ -192,9 +234,10 @@ export default (ctx) => {
     __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __arr_copyWithin: () => ['__ptr_type', '__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
-    __arr_typed_set_idx: () => ['__ptr_type', '__ptr_aux', '__len', '__arr_set_idx_ptr',
-      representationProgramHasBigint(ctx) || ctx.core.includes.has('__typed_set_idx_tagged') ? '__typed_set_idx_tagged' : '__typed_set_idx'],
-    __arr_typed_obj_set_idx: ['__is_nullish', '__arr_typed_set_idx', '__ptr_type', '__dyn_set_own', '__i32_to_str'],
+    __arr_typed_set_idx: () => leanRuntime() ? arrTypedSetDeps() : ['__arr_typed_set_idx_tail', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_typed_set_idx_tail: () => arrTypedSetDeps(),
+    __arr_typed_obj_set_idx: () => leanRuntime() ? ARR_TYPED_OBJ_SET_DEPS : ['__arr_typed_obj_set_idx_tail', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_typed_obj_set_idx_tail: ARR_TYPED_OBJ_SET_DEPS,
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', '__to_num', '__to_int32', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -202,8 +245,9 @@ export default (ctx) => {
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
-      ? ['__len', '__ptr_offset_fwd', '__arr_value']
+      ? ['__typed_idx_tail', '__ptr_offset_fwd', '__arr_value']
       : ['__len', '__ptr_offset', '__ptr_offset_fwd', '__arr_value'],
+    __typed_idx_tail: () => ['__typed_shift', '__ptr_offset_fwd', '__arr_value', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     __arr_idx_known: ['__ptr_offset_fwd', '__arr_value'],
   })
 
@@ -524,14 +568,21 @@ export default (ctx) => {
   // Compact runtime store for an index-only receiver proven not to be an
   // object/string. Keep the ARRAY/TYPED width fork out of hot loop bodies;
   // the speed-tier Float64 unswitch then removes this call from its fast arm.
-  ctx.core.stdlib['__arr_typed_set_idx'] = () => {
+  // The head stores into an array or a numeric typed array in bounds
+  // (elemStoreHeadWat); `__arr_typed_set_idx_tail` is the whole store.
+  ctx.core.stdlib['__arr_typed_set_idx'] = () => leanRuntime() ? arrTypedSetBody('__arr_typed_set_idx') : `(func $__arr_typed_set_idx (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
+      (local $off i32) (local $aux i32) (local $et i32) (local $s i32)
+      ${elemStoreHeadWat('(f64.reinterpret_i64 (local.get $ptr))')}
+      (call $__arr_typed_set_idx_tail (local.get $ptr) (local.get $i) (local.get $val) (local.get $domain)))`
+  ctx.core.stdlib['__arr_typed_set_idx_tail'] = () => arrTypedSetBody('__arr_typed_set_idx_tail')
+  const arrTypedSetBody = (name) => {
     const tagged = representationProgramHasBigint(ctx)
     const store = tagged || ctx.core.includes.has('__typed_set_idx_tagged')
       ? `(drop (call $__typed_set_idx_tagged (local.get $ptr) (local.get $i) (local.get $val) (local.get $domain)))`
       : `(if (i32.or (i32.lt_u (local.get $i) (call $__len (local.get $ptr)))
                     (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${DATA_VIEW_FLAG})))
           (then (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $val)))))`
-    return `(func $__arr_typed_set_idx (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
+    return `(func $${name} (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
       (local $t i32)
       (local.set $t (call $__ptr_type (local.get $ptr)))
       (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
@@ -546,8 +597,13 @@ export default (ctx) => {
   // Property-capable sibling, pulled unless analysis proves ARRAY/TYPED.
   // Other objects use their ordinary own properties. Key/string helpers serve
   // that fallback; outlining keeps their dispatch out of the hot loop body.
-  ctx.core.stdlib['__arr_typed_obj_set_idx'] = () => {
-    return `(func $__arr_typed_obj_set_idx (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
+  ctx.core.stdlib['__arr_typed_obj_set_idx'] = () => leanRuntime() ? arrTypedObjSetBody('__arr_typed_obj_set_idx') : `(func $__arr_typed_obj_set_idx (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
+    (local $off i32) (local $aux i32) (local $et i32) (local $s i32)
+    ${elemStoreHeadWat('(f64.reinterpret_i64 (local.get $ptr))')}
+    (call $__arr_typed_obj_set_idx_tail (local.get $ptr) (local.get $i) (local.get $val) (local.get $domain)))`
+  ctx.core.stdlib['__arr_typed_obj_set_idx_tail'] = () => arrTypedObjSetBody('__arr_typed_obj_set_idx_tail')
+  const arrTypedObjSetBody = (name) => {
+    return `(func $${name} (param $ptr i64) (param $i i32) (param $val f64) (param $domain i32) (result f64)
     (local $t i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     ${requireReceiverWat('(local.get $ptr)')}
