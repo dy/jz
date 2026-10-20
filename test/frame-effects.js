@@ -772,8 +772,10 @@ test('frame effects: a call that opens the runtime\'s iterator records keeps not
   const none = ([kept, reset]) => [...kept, ...reset].every(n => n === 0)
   for (const optimize of levels(0, 2, 3)) {
     const over = first(pair, [[3, 4]], optimize), set2 = first(set, [0], optimize)
-    // (an array argument is read by position behind Array.isArray: no iterator record opens)
-    ok(none(over), `a pattern over an array argument keeps nothing at ${optimize}: ${over.join(' | ')}`)
+    // (an array argument is read by position behind Array.isArray, no iterator record opening,
+    // where the pattern's version runs: `versionArrayPatterns`, off at level 0 and the size tier)
+    if (optimize === 0) ok(once(over), `a pattern over an array argument at 0 opens a record once: ${over.join(' | ')}`)
+    else ok(none(over), `a pattern over an array argument keeps nothing at ${optimize}: ${over.join(' | ')}`)
     ok(once(set2), `a pattern over a Set at ${optimize}: ${set2.join(' | ')}`)
     const [kept, reset] = first(deep, [[[[[[7]]]], 2]], optimize)
     ok(kept[0] > 0 && kept[1] === 0 && kept[2] === 0, `a record past the module's is made once at ${optimize}: ${kept}`)
