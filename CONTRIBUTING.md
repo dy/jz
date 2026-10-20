@@ -2920,8 +2920,10 @@ input (85% of watr's `normalize`). A function past 2000 instruction nodes (`spli
 up its largest arms until it is within that bound, and a piece still past it gives up its
 own: each arm moved is a function the engine tiers up on its own, so the fewest arms that
 bring the function down move. An arm is an `if` arm or a `br_table` case body of at least
-150 nodes (`splitArm`) that makes a call other than to the math runtime, inside a loop only
-under a quarter of the loop; an `else` holding only the next `if` of a chain is no arm.
+150 nodes (`splitArm`) that makes a call other than to the math runtime on every path through
+it (one in the arm's own `if` arms or dispatch cases sits on a fallback, and the common path
+would pay the new call), inside a loop only under a quarter of the loop; an `else` holding
+only the next `if` of a chain is no arm.
 Its locals cross by liveness (the ones live at its entry come in, the ones it writes that
 are live after go back as results), a trailing `br`/`return` stays at the call and takes
 the values from it, and under a `try_table` whose handler reads a local the arm writes, the

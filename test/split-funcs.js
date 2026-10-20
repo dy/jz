@@ -93,6 +93,34 @@ test('split funcs: an arm of arithmetic stays, as does one calling only the math
   is(exports.f(2), 6)
 })
 
+test('split funcs: an arm calling only in its own fallback stays, one calling on every path moves', () => {
+  // a test whose rare miss calls a slow path: the common path is arithmetic, and so is a dispatch
+  // whose one case calls
+  const wat = `(module ${G} (func $f (export "f") (param $n i32) (param $k i32) (result i32)
+    (local $x i32)
+    (if (i32.gt_s (local.get $n) (i32.const 0))
+      (then
+        (local.set $x (i32.mul (local.get $n) (i32.const 3)))
+        (if (i32.gt_s (local.get $x) (i32.const 1000)) (then (local.set $x (call $g (local.get $x)))))
+        (local.set $x (i32.add (local.get $x) (i32.const 7))))
+      (else
+        (local.set $x (call $g (local.get $n)))
+        (local.set $x (i32.sub (local.get $x) (i32.const 2)))))
+    (if (i32.gt_s (local.get $k) (i32.const 0))
+      (then
+        (block $c1 (block $c0 (br_table $c0 $c1 (local.get $k)))
+          (local.set $x (call $g (local.get $x))))
+        (local.set $x (i32.xor (local.get $x) (i32.const 11)))))
+    (local.get $x)))`
+  const ref = plain(wat), { made, exports, mod } = split(wat)
+  const f = JSON.stringify(mod.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$f'))
+  ok(f.includes('["i32.const","7"]'), 'the arm calling only in its fallback stays')
+  ok(f.includes('["i32.const","11"]'), 'the arm calling only in a dispatch case stays')
+  ok(!f.includes('["i32.const","2"]'), 'the arm calling on every path moved')
+  is(made, 3, 'that arm, the fallback and the case moved')
+  for (const n of [0, 5, 400, -3]) for (const k of [0, 1, 2]) is(exports.f(n, k), ref.f(n, k), `f(${n}, ${k})`)
+})
+
 // a loop over cases: the arm for each is a small share of the loop
 const DISPATCH = (arms) => `(module
   (func $g (param $v i32) (result i32) (i32.add (local.get $v) (i32.const 1)))

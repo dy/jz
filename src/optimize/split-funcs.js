@@ -41,10 +41,14 @@
  * arm stays).
  *
  * An arm moves only when it already makes a call other than to the math
- * runtime: one more call is proportionate to work that pays its own, where an
- * arithmetic arm would pay a call it never paid (a numeric kernel keeps every
- * arm). Inside a loop it moves only when it is one case among several, a small
- * share of the loop: the loop's main path would pay the call on every pass.
+ * runtime on every path through it: one more call is proportionate to work
+ * that pays its own, where an arithmetic arm would pay a call it never paid (a
+ * numeric kernel keeps every arm). A call in one of its own `if` arms or
+ * dispatch cases does not count: there sits a fallback or an error path, and
+ * the common path, arithmetic, would pay the call (a parser's character test
+ * whose miss calls a slow scanner keeps its test inline). Inside a loop it
+ * moves only when it is one case among several, a small share of the loop: the
+ * loop's main path would pay the call on every pass.
  *
  * Runs last, after watr's inliner (which would splice a single-caller piece
  * back), and appends the new functions after every existing one, so no
@@ -192,16 +196,15 @@ const resultOf = (n) => {
 }
 
 /** What the statements of `list` touch: locals read and written, labels defined and branched to,
- *  whether they return, call, or use what this pass does not read. */
+ *  whether they return or use what this pass does not read. */
 const scan = (list) => {
-  const acc = { reads: new Set(), writes: new Set(), defs: new Set(), refs: new Set(), returns: false, calls: false, opaque: false }
+  const acc = { reads: new Set(), writes: new Set(), defs: new Set(), refs: new Set(), returns: false, opaque: false }
   const visit = (n) => {
     if (!isArr(n)) return
     const op = n[0]
     if (op === 'local.get') acc.reads.add(n[1])
     else if (op === 'local.set' || op === 'local.tee') acc.writes.add(n[1])
     else if (RETURNS.has(op)) acc.returns = true
-    else if (CALLS.has(op) && !(op === 'call' && pureCall(n[1]))) acc.calls = true
     else if (op === 'delegate' || op === 'rethrow' || op === 'try') acc.opaque = true
     if (STRUCT.has(op) && isName(n[1])) acc.defs.add(n[1])
     if (BR.has(op)) {
@@ -215,6 +218,28 @@ const scan = (list) => {
   }
   for (const n of list) visit(n)
   return acc
+}
+
+/** Whether `list` makes a call, other than to the math runtime, on every path through it:
+ *  one in an `if`'s arm, or in a dispatch's case body (what follows the block a `br_table`
+ *  leaves), runs on some paths only. */
+const callsAlways = (list) => {
+  const visit = (n) => {
+    if (!isArr(n)) return false
+    const op = n[0]
+    if (op === 'then' || op === 'else') return false
+    if (CALLS.has(op) && !(op === 'call' && pureCall(n[1]))) return true
+    let end = n.length
+    if (op === 'block') {
+      let i = 1
+      while (i < n.length && (isName(n[i]) || (isArr(n[i]) && BLOCK_HEAD.has(n[i][0])))) i++
+      // a dispatch's cases: the statements after the block its table leaves
+      if (i < n.length - 1 && isArr(n[i]) && n[i][0] === 'block') end = i + 1
+    }
+    for (let i = 1; i < end; i++) if (visit(n[i])) return true
+    return false
+  }
+  return list.some(visit)
 }
 
 /** The numeric payload types of each tag the module declares or imports (a tag of any other
@@ -321,10 +346,10 @@ function splitFunc(fn, { fnMin, armMin, names, made, shared, tags }) {
     const acc = scan(run)
     if (acc.returns || acc.opaque) return
     for (const r of acc.refs) if (!acc.defs.has(r)) return
-    // an arm moves when it makes calls of its own, to which one more is proportionate (arithmetic
-    // would pay a call it never paid), and inside a loop only when it is one case among several
-    // (the loop's main path would pay a call each pass)
-    if (!acc.calls || (loop > 0 && s * LOOP_SHARE > loop)) return
+    // an arm moves when it makes calls of its own on every path, to which one more is
+    // proportionate (arithmetic would pay a call it never paid), and inside a loop only when it
+    // is one case among several (the loop's main path would pay a call each pass)
+    if (!callsAlways(run) || (loop > 0 && s * LOOP_SHARE > loop)) return
     for (const l of acc.reads) if (!types.has(l)) return
     for (const l of acc.writes) if (!types.has(l)) return
     const valueTypes = exit ? exitTypes : (armTypes ?? [])
