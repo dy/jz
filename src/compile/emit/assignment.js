@@ -79,6 +79,10 @@ function stagedReference(name, update = true, rhs) {
       writeback = [owner, node[2]]
     }
     const h = temp(tag)
+    // A named receiver read before the right side: a store that grows the
+    // array moves its storage, and the binding, where it still names the old
+    // block, follows it with the temp (emit-assign.js persistBindingPtr).
+    if (tag === 'ref' && typeof node === 'string' && !ctx.func.flatObjects?.has(node)) (ctx.func.stagedBindings ??= new Map()).set(h, node)
     const vt = valTypeOf(node)
     if (vt) {
       const k = ctx.summary?.at(ctx.func.current).kindOfExpr(node)

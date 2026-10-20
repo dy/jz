@@ -70,6 +70,18 @@ function arrayIndexKey(key) {
  *  relocate the array header (`__arr_set_idx_ptr`, `__arr_set_length`,
  *  `__arr_grow`, `__hash_set`). */
 function persistBindingPtr(name, ptr) {
+  // A staged receiver (emit/assignment.js stagedReference) holds what its
+  // binding held as the reference was taken. The binding still naming that
+  // block follows the move; one the right side rebound keeps its value.
+  const bound = ctx.func.stagedBindings?.get(name)
+  if (bound !== undefined) {
+    const moved = temp('spm')
+    return ['block',
+      ['local.set', `$${moved}`, ptr],
+      ['if', ['i64.eq', asI64(asF64(emit(bound))), ['i64.reinterpret_f64', ['local.get', `$${name}`]]],
+        ['then', persistBindingPtr(bound, ['local.get', `$${moved}`])]],
+      ['local.set', `$${name}`, ['local.get', `$${moved}`]]]
+  }
   // A NaN-boxed pointer never lands in an i32-narrowed cell: cellTypes requires
   // intCertain (integer-valued defs only), and a binding that receives array/hash
   // pointers is never integer-certain — so the f64 width is always right here.

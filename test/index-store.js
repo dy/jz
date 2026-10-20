@@ -102,3 +102,29 @@ test('index store: receiver, key and RHS are captured before key coercion', () =
       is(wasm.rebind(key, rhs), host.rebind(key, rhs), `O${level}, rebind ${rhs}, key ${key}`)
   }
 })
+
+// A store whose right side calls reads its receiver into a temp first
+// (emit/assignment.js stagedReference). A growth moves the array; the binding,
+// where it still names the old block, follows it with the temp, so a table a
+// registry grows at start is read after it without a forwarding chase.
+test('index store: a binding staged before the right side follows its array as it grows', () => {
+  const source = `export let table = []
+    let made = 0
+    const make = (k) => (made++, (a) => a + k)
+    const reg = (c) => (table[c] = make(c % 3))
+    let other = [1, 2, 3]
+    const swap = () => { const prev = other; other = [9]; return prev.length }
+    export function fill() { for (let c = 33; c < 127; c += 7) reg(c); return [table.length, made] }
+    export function sum(s) { let n = 0; for (let i = 0; i < s.length; i++) { const f = table[s.charCodeAt(i)]; if (f) n += f(1) } return n }
+    export function rebound() { other[50] = swap(); return [other.length, other[0]] }`
+  for (const level of levels(0, 1, 2, 3, 'size')) {
+    const host = oracle(source), wasm = run(source, { optimize: level })
+    is(wasm.fill(), host.fill(), `O${level}, fill`)
+    is(wasm.sum('!(/=DKRY`gnu|'), host.sum('!(/=DKRY`gnu|'), `O${level}, sum`)
+    // the right side rebinds the binding: the store goes to the old array, the binding keeps the new one
+    is(wasm.rebound(), host.rebound(), `O${level}, rebound`)
+  }
+  if (belowOpt(2)) return
+  // (`reg` inlines into `fill`)
+  ok(/global\.set \$table/.test(funcWat(wat(source, { optimize: 2 }), 'fill')), 'the growing store rebinds the module binding')
+})
