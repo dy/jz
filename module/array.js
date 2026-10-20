@@ -1041,8 +1041,12 @@ export default (ctx) => {
     // A receiver proven an array that is present (its binding's kind names the
     // tag alone) is a heap address: the tag test and the other kinds' arm are
     // dead, the read is the forwarding hop, the bounds test and the load.
+    // A module binding has no rep of the function's: the summary's kind of it,
+    // the array tag and no absence, is the proof.
     const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) : null
-    const provenArray = vt === VAL.ARRAY && rep != null && !rep.nullable && !rep.mayBeUndefined && !(typeof arr === 'string' && ctx.func.boxed?.has(arr))
+    const presentGlobal = (name) => isGlobal(name) && (k => k != null && !isNullable(k) && tagOf(k) === K.ARRAY)(ctx.summary?.at(ctx.func.current)?.kindOfExpr(name))
+    const provenArray = vt === VAL.ARRAY && typeof arr === 'string' && !ctx.func.boxed?.has(arr) &&
+      (rep != null ? !rep.nullable && !rep.mayBeUndefined : presentGlobal(arr))
     // A receiver that is an array where it is present (`params.state`, held
     // or not yet): a nullish one throws as the read would, a present one
     // reads as a proven array.
