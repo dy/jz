@@ -463,14 +463,17 @@ bandTest('wasm rival', CLAIM_RIVALS)
 // TIGHT_INT_LOOP_CASES above): V8-family gets the unscoped claim over the full
 // corpus; bun/jsc get it everywhere EXCEPT the documented tight-integer-loop
 // exception, which instead gets its own sanity-band tripwire below.
-const nonExceptionIds = new Set(Object.keys(cases).filter(id => !TIGHT_INT_LOOP_CASES.includes(id)))
+// (the pending library cases stay out of this claim as they stay out of the V8-family one: PENDING_CASES)
+const nonExceptionIds = new Set(Object.keys(cases).filter(id => !TIGHT_INT_LOOP_CASES.includes(id) && !PENDING_CASES.has(id)))
 strictTest('V8-family JIT (v8/node, deno)', V8_FAMILY_RIVALS)
 bandTest('V8-family JIT (v8/node, deno)', V8_FAMILY_RIVALS)
-test.todo('claims: the pending library cases lead every V8-family engine (PENDING_CASES)', () => {
+test.todo('claims: the pending library cases lead every V8-family and bun/jsc engine (PENDING_CASES)', () => {
   const measured = new Set([...PENDING_CASES].filter(id => cases[id]))
   ok(measured.size === PENDING_CASES.size, `unmeasured: ${[...PENDING_CASES].filter(id => !cases[id]).join(', ')}`)
-  const notLed = caseRatios(V8_FAMILY_RIVALS, measured).filter(([, r]) => r >= 1.0).map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
-  ok(notLed.length === 0, `not led: ${notLed.join(', ')}`)
+  for (const rivals of [V8_FAMILY_RIVALS, JSC_FAMILY_RIVALS]) {
+    const notLed = caseRatios(rivals, measured).filter(([, r]) => r >= 1.0).map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
+    ok(notLed.length === 0, `not led: ${notLed.join(', ')}`)
+  }
 })
 strictTest('bun/jsc JIT (outside the tight-integer-loop exception)', JSC_FAMILY_RIVALS, nonExceptionIds)
 bandTest('bun/jsc JIT (outside the tight-integer-loop exception)', JSC_FAMILY_RIVALS, nonExceptionIds)
