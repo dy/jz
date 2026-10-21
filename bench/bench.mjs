@@ -372,6 +372,15 @@ const TIME_ARGS = process.platform === 'darwin' ? ['-l'] : ['-v']
 // the wrapper itself before letting its failure invalidate a correct program.
 const TIME_BIN = existsSync('/usr/bin/time') && spawnSync('/usr/bin/time',
   [...TIME_ARGS, process.execPath, '-e', ''], { stdio: 'ignore' }).status === 0 ? '/usr/bin/time' : null
+// Every run is bounded. A lane whose binary runs away (Porffor's native movavg
+// ran past an hour) must cost one bounded failure, not the reference job's
+// six hours. Under time(1), which forwards no signal, coreutils' timeout sits
+// between time and the program and kills the program itself; spawnSync's own
+// limit, a little later, is the backstop where no timeout(1) exists.
+const RUN_LIMIT_S = Math.max(1, +(process.env.JZ_BENCH_RUN_LIMIT_S || 300))
+const TIMEOUT_BIN = ['timeout', 'gtimeout'].find(t => spawnSync(t, ['1', process.execPath, '-e', ''], { stdio: 'ignore' }).status === 0) ?? null
+// (without timeout(1) the backstop kills time(1), and a runaway program outlives it)
+if (TIME_BIN && !TIMEOUT_BIN) console.warn(`[bench] no timeout(1): a run past ${RUN_LIMIT_S}s is reported failed but its process is left running (install coreutils)`)
 const parseMaxRss = stderr => {
   let m = stderr.match(/(\d+)\s+maximum resident set size/)         // BSD (darwin): bytes
   if (m) return Math.round(+m[1] / 1024)
@@ -384,13 +393,17 @@ const runProc = (argv, opts = {}) => {
   // time(1) does not forward timeout signals. Kill bounded lanes directly,
   // even when the executable handles or ignores SIGTERM.
   const timed = TIME_BIN && !opts.timeout
-  const wrapped = timed ? [TIME_BIN, ...TIME_ARGS, ...argv] : argv
+  const limited = timed && TIMEOUT_BIN ? [TIMEOUT_BIN, '-s', 'KILL', String(RUN_LIMIT_S), ...argv] : argv
+  const wrapped = timed ? [TIME_BIN, ...TIME_ARGS, ...limited] : argv
+  const timeout = opts.timeout ?? (RUN_LIMIT_S + 30) * 1000
   const r = spawnSync(wrapped[0], wrapped.slice(1), {
     cwd: BENCH_DIR,
     encoding: 'utf8',
-    ...(opts.timeout ? { timeout: opts.timeout, killSignal: 'SIGKILL' } : {}),
+    timeout, killSignal: 'SIGKILL',
   })
-  if (r.error?.code === 'ETIMEDOUT') return { error: `timeout after ${opts.timeout}ms` }
+  if (r.error?.code === 'ETIMEDOUT') return { error: `timeout after ${timeout}ms`, timedOut: true }
+  // timeout(1) kills with SIGKILL: the program's status reads 137 through time(1)
+  if (timed && TIMEOUT_BIN && r.status === 137) return { error: `timeout after ${RUN_LIMIT_S}s`, timedOut: true }
   if (r.status !== 0) return { error: `exit ${r.status}: ${(r.stderr || r.stdout || r.signal || '').trim().slice(0, 240)}` }
   const parsed = parseLine(r.stdout)
   if (!parsed) return { error: `unparseable stdout: ${(r.stdout || r.stderr || '').trim().slice(0, 240)}` }
@@ -460,7 +473,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
       pairedBuilt.add(key)
     }
     const parsed = runProc(argv, runOpts)
-    return parsed.error ? { id, error: parsed.error } : { id, ...parsed }
+    return parsed.error ? { id, error: parsed.error, ...(parsed.timedOut && { timedOut: true }) } : { id, ...parsed }
   } catch (e) {
     return { id, error: e.message }
   }
@@ -1461,8 +1474,9 @@ for (const cid of selectedCases) {
     for (const tid of avail) {
       const r = targets[tid].run(c)
       if (r.error) {
-        if (r.buildFailed) recordFailure(tid, r.error)
-        console.log(`[warm] ${tid.padEnd(targetIdWidth)} FAIL: ${r.error}${r.buildFailed ? '' : '; retrying in counted rounds'}`)
+        // a build that failed or a run past the limit will not recover in a counted round
+        if (r.buildFailed || r.timedOut) recordFailure(tid, r.error)
+        console.log(`[warm] ${tid.padEnd(targetIdWidth)} FAIL: ${r.error}${r.buildFailed || r.timedOut ? '' : '; retrying in counted rounds'}`)
       }
     }
     for (let round = 0; round < PAIRED; round++) {
