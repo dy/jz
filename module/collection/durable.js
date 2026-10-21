@@ -202,11 +202,22 @@ export const durableArrSnapNode = (base) => {
   if (!hasDurableReset()) return ['nop']
   const b = ['local.get', `$${base}`], seen = ['global.get', '$__durable_arr_seen']
   const unsaved = ['i32.or', ['i32.eqz', seen],
-    ['i32.eqz', ['i32.and', ['i32.load8_u', ['i32.add', seen, ['i32.shr_u', b, ['i32.const', 6]]]],
+    ['i32.eqz', ['i32.and', ['i32.load8_u', ['i32.add', seen, seenCellNode(b)]],
       ['i32.shl', ['i32.const', 1], ['i32.and', ['i32.shr_u', b, ['i32.const', 3]], ['i32.const', 7]]]]]]
   return ['if', ['i32.lt_u', b, ['global.get', '$__heap_reset']],
     ['then', ['if', unsaved, ['then', ['call', '$__durable_arr_snap', b]]]]]
 }
+
+// The cell of the durable bitmap that holds an address's bit: the address
+// over 64, less the stub log's table (core/stub-log.js) above it, which the
+// start makes first and which holds no durable storage (`__durable_skip`
+// bytes from `__durable_lo`; both 0 without one). One rule for every reader,
+// spelled as the snapshots' WAT text (core/durable-log.js) and as the inline
+// test's IR node above: the test asks the bit the snapshot sets.
+export const seenCellWat = (off) =>
+  `(i32.shr_u (i32.sub ${off} (select (global.get $__durable_skip) (i32.const 0) (i32.ge_u ${off} (global.get $__durable_lo)))) (i32.const 6))`
+export const seenCellNode = (b) =>
+  ['i32.shr_u', ['i32.sub', b, ['select', ['global.get', '$__durable_skip'], ['i32.const', 0], ['i32.ge_u', b, ['global.get', '$__durable_lo']]]], ['i32.const', 6]]
 
 // A tagged object field receives a pointer into this round's arena: record
 // its prior value once. The address bitmap is shared with array snapshots;

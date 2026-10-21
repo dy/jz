@@ -316,6 +316,40 @@ test('compact: durable arrays below and above the stub log\'s table heal at a re
   is(exports.read(), 3 + 5 + 0 + 10 + 4, 'a reset heals both durable arrays')
 })
 
+// An element store into an array made at init asks the durable bitmap inline
+// whether the round saved the array already (module/collection/durable.js
+// durableArrSnapNode); the snapshot sets the bit (core/durable-log.js). With
+// the stub log's table at the start, the snapshot skipped the table's
+// addresses and the inline test did not: it read the bit of an array a table
+// away, or past the bitmap's end, and an array that bit called saved kept the
+// round's write through the reset. Every reader now takes a bit's cell by one
+// rule, the table skipped (collection/durable.js seenCellWat). Arrays a
+// table's span apart, written from the last down and from the first up, all
+// reset.
+test('compact: an element store asks the bit the snapshot sets, past the stub log\'s table', () => {
+  if (onWasi() || !counted()) return
+  const src = `const arrs = []
+    const mk = (k) => arrs.push([k, k])
+    for (let k = 0; k < 3000; k++) mk(k)
+    export const churn = (m) => { let s = ''; for (let i = 0; i < m; i++) s = s + 'x'; return s.length }
+    export const touch = (down) => {
+      if (down) for (let k = arrs.length - 1; k >= 0; k--) arrs[k][0] = -1
+      else for (let k = 0; k < arrs.length; k++) arrs[k][0] = -1
+      return arrs.length
+    }
+    export const kept = () => { let bad = 0; for (let k = 0; k < arrs.length; k++) if (arrs[k][0] !== k) bad++; return bad }`
+  for (const level of levels(2, 3)) {
+    // a table of 1024 stubs (16 KB): three thousand arrays span several of it
+    const { exports: e } = jz(src, { optimize: { level, compactStubs: 1024 } })
+    e.churn(10)
+    for (const down of [1, 0]) {
+      is(e.touch(down), 3000, `O${level}: every array written, ${down ? 'from the last down' : 'from the first up'}`)
+      e._clear()
+      is(e.kept(), 0, `O${level}: the reset returns every array, ${down ? 'from the last down' : 'from the first up'}`)
+    }
+  }
+})
+
 test('compact: a reset after compactions returns the module to its start', () => {
   if (onWasi()) return
   const src = `let st = { n: 0, tags: ['a'] }; const start = { n: 0 }

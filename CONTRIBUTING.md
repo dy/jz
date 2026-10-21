@@ -2320,7 +2320,9 @@ fourteen and a compiler's a million; a declared maximum bounds it to a
 sixteenth of the memory). The table is the first thing the start makes, so
 the durable bitmaps (module/core/durable-log.js, one bit per durable word on
 the first durable write of a round) skip its addresses (`__durable_lo`,
-`__durable_skip`) rather than grow by a sixteen-thousandth of it. The log
+`__durable_skip`) rather than grow by a sixteen-thousandth of it, every
+reader by one rule (collection/durable.js seenCellWat), a store's inline
+test among them. The log
 is weak: once the walk has marked, `__gc_walk` lists each logged stub below
 the floor that still holds a stub forwarding where logged (a rewind may have
 reused the address) and whose chain ends in a block the walk reached, for
