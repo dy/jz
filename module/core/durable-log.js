@@ -33,11 +33,13 @@ export const registerDurableLog = () => {
   // src/wat/assemble.js) restores every logged header to its pre-grow (len, cap)
   // and resets both globals to 0 so the buffer is re-allocated fresh next round —
   // it only needs to survive from "logged this round" to "healed at this round's
-  // `_clear`", never across a reset. 256 entries is a trap-on-overflow ceiling
-  // for a count that is 0 in the overwhelmingly common program (real durable-
-  // growth sites are a handful of compiler-internal structures, not user data).
+  // `_clear`", never across a reset. It starts at 256 entries and doubles as a
+  // round fills it (`__durable_fwd_cap` the entries it has room for): a count
+  // that is 0 in the overwhelmingly common program, and only a round's
+  // relocations of storage older than it in any.
   declGlobal('__durable_fwd_buf', 'i32')
   declGlobal('__durable_fwd_n', 'i32')
+  declGlobal('__durable_fwd_cap', 'i32')
   // Idempotent per $off (scan-then-append): a durable header's FIRST touch
   // this round — whether that's a relocating grow (arrGrow/genUpsertGrow) OR
   // a plain in-place length write that still fits in existing capacity
@@ -66,8 +68,16 @@ export const registerDurableLog = () => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $scan)))
     (if (i32.eqz (global.get $__durable_fwd_buf))
-      (then (global.set $__durable_fwd_buf (call $__alloc (i32.const 3072)))))
-    (if (i32.ge_s (local.get $n) (i32.const 256)) (then (unreachable)))
+      (then
+        (global.set $__durable_fwd_buf (call $__alloc (i32.const 3072)))
+        (global.set $__durable_fwd_cap (i32.const 256))))
+    ;; full: the records move to a buffer twice the size
+    (if (i32.ge_u (local.get $n) (global.get $__durable_fwd_cap))
+      (then
+        (local.set $base (call $__alloc (i32.mul (global.get $__durable_fwd_cap) (i32.const 24))))
+        (memory.copy (local.get $base) (global.get $__durable_fwd_buf) (i32.mul (local.get $n) (i32.const 12)))
+        (global.set $__durable_fwd_buf (local.get $base))
+        (global.set $__durable_fwd_cap (i32.shl (global.get $__durable_fwd_cap) (i32.const 1)))))
     (local.set $base (i32.add (global.get $__durable_fwd_buf) (i32.mul (local.get $n) (i32.const 12))))
     (i32.store (local.get $base) (local.get $off))
     (i32.store offset=4 (local.get $base) (local.get $len))
@@ -85,7 +95,8 @@ export const registerDurableLog = () => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (global.set $__durable_fwd_n (i32.const 0))
-    (global.set $__durable_fwd_buf (i32.const 0)))`
+    (global.set $__durable_fwd_buf (i32.const 0))
+    (global.set $__durable_fwd_cap (i32.const 0)))`
 
   // Durable ARRAY element-data log — collection.js's durableArrSnapIR/
   // durableArrSnapNode have the full rationale: the header-only fwd log above
@@ -212,10 +223,12 @@ export const registerDurableLog = () => {
   // \`__durable_slot_heal\` (wired into \`__clear\` post-hoc, like the fwd heal)
   // overwrites every logged slot with \`undefined\` — the pointed-at data dies
   // with the arena, so entry-death is the only sound semantics. Same lazy-buffer
-  // + trap-ceiling design as the fwd log; the buffer holds 1024 distinct
-  // pending heals. Overwrites are idempotent and cancelled records are reused.
+  // + doubling design as the fwd log: the buffer starts at 1024 distinct
+  // pending heals (`__durable_slot_cap`) and doubles as a round fills it.
+  // Overwrites are idempotent and cancelled records are reused.
   declGlobal('__durable_slot_buf', 'i32')
   declGlobal('__durable_slot_n', 'i32')
+  declGlobal('__durable_slot_cap', 'i32')
   ctx.core.stdlib['__is_eph_bits'] = `(func $__is_eph_bits (param $b i64) (result i32)
     (local $t i32)
     ;; boxed heap pointer: quiet-NaN prefix, heap-kind tag, non-SSO, offset past the durable watermark
@@ -232,7 +245,9 @@ export const registerDurableLog = () => {
   ctx.core.stdlib['__durable_slot_log'] = `(func $__durable_slot_log (param $addr i32) (param $tbl i32)
     (local $n i32) (local $base i32) (local $i i32) (local $slot i32) (local $a i32)
     (if (i32.eqz (global.get $__durable_slot_buf))
-      (then (global.set $__durable_slot_buf (call $__alloc (i32.const 8192)))))
+      (then
+        (global.set $__durable_slot_buf (call $__alloc (i32.const 8192)))
+        (global.set $__durable_slot_cap (i32.const 1024))))
     (local.set $n (global.get $__durable_slot_n))
     ;; One pending heal per slot. Repeated writes need no second record;
     ;; deleted entries leave reusable holes, not a lifetime write counter.
@@ -245,7 +260,13 @@ export const registerDurableLog = () => {
       (if (i32.eq (local.get $a) (local.get $addr)) (then (return)))
       (if (i32.eqz (local.get $a)) (then (local.set $slot (local.get $i))))
       (br $scan)))
-    (if (i32.ge_s (local.get $slot) (i32.const 1024)) (then (unreachable)))
+    ;; full: the records move to a buffer twice the size
+    (if (i32.ge_u (local.get $slot) (global.get $__durable_slot_cap))
+      (then
+        (local.set $base (call $__alloc (i32.shl (global.get $__durable_slot_cap) (i32.const 4))))
+        (memory.copy (local.get $base) (global.get $__durable_slot_buf) (i32.shl (local.get $n) (i32.const 3)))
+        (global.set $__durable_slot_buf (local.get $base))
+        (global.set $__durable_slot_cap (i32.shl (global.get $__durable_slot_cap) (i32.const 1)))))
     (local.set $base (i32.add (global.get $__durable_slot_buf) (i32.shl (local.get $slot) (i32.const 3))))
     (i32.store (local.get $base) (local.get $addr))
     (i32.store offset=4 (local.get $base) (local.get $tbl))
@@ -361,5 +382,6 @@ export const registerDurableLog = () => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l)))
     (global.set $__durable_slot_n (i32.const 0))
-    (global.set $__durable_slot_buf (i32.const 0)))`
+    (global.set $__durable_slot_buf (i32.const 0))
+    (global.set $__durable_slot_cap (i32.const 0)))`
 }

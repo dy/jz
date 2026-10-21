@@ -366,7 +366,7 @@ export function pullStdlib(sec) {
       if (!ctx.memory.shared && ctx.scope.globals.has('__heap_reset')) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__symbol_id',
-          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n',
+          '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n', '__durable_fwd_cap', '__durable_slot_cap',
           '__durable_arr_seen', '__durable_arr_log', '__gsnap_base', '__esc', '__base', '__esc_low', '__rootn', '__rootl'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {

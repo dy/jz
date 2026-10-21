@@ -849,6 +849,40 @@ test('durable slot log reuses repeated writes and cancelled entries before _clea
   }
 })
 
+// The reset's logs grow with the round: a value written into each of thousands
+// of entries of a Map built at init (one pending heal each), and hundreds of
+// collections built at init each grown into new storage (one relocation
+// record each), pass the logs' first buffers (1024 heals, 256 relocations)
+// and still heal, where the first buffer's end trapped.
+test('durable logs grow past their first buffers before _clear', () => {
+  const source = `
+    const cache = new Map(), maps = []
+    const fill = (k) => cache.set('k' + k, [k])
+    const make = () => maps.push(new Map())
+    for (let k = 0; k < 3000; k++) fill(k)
+    for (let k = 0; k < 300; k++) make()
+    export function write(n) { for (let i = 0; i < n; i++) cache.set('k' + i, [i + 1]); return cache.size }
+    export function grow(n) { for (const m of maps) for (let i = 0; i < n; i++) m.set(i, i); return maps.length }
+    export let value = (i) => cache.has('k' + i) ? (cache.get('k' + i) === undefined ? -1 : cache.get('k' + i)[0]) : -2
+    export let sizes = () => { let s = 0; for (const m of maps) s += m.size; return s }
+    export let size = () => cache.size
+  `
+  for (const optimize of levels(false, 2, 3)) {
+    const { exports: e } = jz(source, { optimize })
+    for (let round = 0; round < 2; round++) {
+      is(e.write(2000), 3000, 'two thousand values written into entries made at init')
+      is(e.value(1999), 2000, 'the last write reads back')
+      is(e.grow(20), 300, 'three hundred collections made at init grown')
+      is(e.sizes(), 6000, 'every grown collection holds its entries')
+      e._clear()
+      is(e.size(), 3000, 'the reset keeps every entry made at init')
+      is(e.value(5), -1, 'a value the round wrote reads undefined after the reset')
+      is(e.value(2500), 2500, 'a value the round left keeps its init value')
+      is(e.sizes(), 0, 'the grown collections return to their init storage')
+    }
+  }
+})
+
 test('_clear() heals a durable array header past IN-PLACE growth, not just relocation', () => {
   // Root-caused from .work/evidence.md's banked lead 2 ("warm _clear() corruption
   // non-repro… new durable-array heal length defect banked"): `site.length` read
