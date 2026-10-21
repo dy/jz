@@ -877,6 +877,27 @@ test('_clear() heals a durable array header past IN-PLACE growth, not just reloc
   is(exports.grow(150), 150, 'round 3: still exactly 150 — the fix is not a one-shot coincidence')
 })
 
+// A push of several values writes its elements and the length inline, not
+// through `__arr_push1`: the array made at init is saved for the reset before
+// that first store as well, whether the push fits its storage or grows it.
+test('_clear() heals a durable array a push of several values filled', () => {
+  const source = `
+    let kept = [], rows = [[0, 'a']]
+    export let fill = (n) => { for (let i = 0; i < n; i++) kept.push(i, i + 1, i + 2, i + 3); return kept.length }
+    export let add = (i) => { rows.push([i, 'r' + i], [i + 1, 'r' + (i + 1)]); return rows.length }
+    export let sum = () => { let s = 0; for (const v of kept) s += v; return s + ':' + rows.length + ':' + rows[0][1] }`
+  for (const optimize of levels(false, 2, 3)) {
+    const { exports: e } = jz(source, { optimize })
+    for (let round = 0; round < 3; round++) {
+      is(e.fill(1), 4, `round ${round}: one push of four into the storage made at init`)
+      is(e.add(1), 3, `round ${round}: one push of two arrays`)
+      is(e.fill(5), 24, `round ${round}: pushes past the storage grow it`)
+      e._clear()
+      is(e.sum(), '0:1:a', `round ${round}: the reset returns both arrays to their init state`)
+    }
+  }
+})
+
 test('_clear() heals in-place length writes on the OTHER durable-array length sites', () => {
   // durableLenLogIR (module/collection.js) is called from every site that can
   // write a durable array header's `len` word without relocating — not just

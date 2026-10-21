@@ -1785,6 +1785,18 @@ export default (ctx) => {
         ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
       )
     }
+    // An array older than the reset mark is saved for the reset before its
+    // first store of the round, as `__arr_push1` saves it (the call answers at
+    // once for an array it saved already): a grow that moved it saved it as it
+    // went, and storage the grow made is the round's. A proven fixed builder
+    // is the function's own, and a binding the loop around saved ahead of it
+    // needs no test (control-flow.js durableLoopArrays).
+    const held = typeof arr === 'string' ? ctx.func.refinements?.get(arr) : null
+    if (hasDurableReset() && !reserved && !held?.saved) {
+      inc('__durable_arr_snap')
+      body.push(['if', ['i32.lt_u', ['local.get', `$${pushBase}`], ['global.get', '$__heap_reset']],
+        ['then', ['call', '$__durable_arr_snap', ['local.get', `$${pushBase}`]]]])
+    }
 
     const ulg = unionB ? tempI32('ul') : null
     if (unionB) {
