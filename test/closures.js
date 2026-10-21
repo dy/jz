@@ -2145,6 +2145,20 @@ test('closures: module-scope for-of/for-let captures per-iteration binding', () 
   `).f(), 1005)
 })
 
+// A closure a module-scope loop binds to a declaration of its own body (`const
+// g = () => i`) reads the loop's per-iteration binding: it stays a closure
+// value, where lifting it into a module function (defFunc) named a binding no
+// function scope holds ("'i' is not in scope").
+test('closures: a module-scope loop body binds a closure that captures its counter', () => {
+  for (const optimize of levels(0, 1, 2)) {
+    is(run(`let fs = []; for (let i = 0; i < 3; i++) { const g = () => i; fs.push(g) } export let f = () => fs[0]() * 100 + fs[1]() * 10 + fs[2]()`, { optimize }).f(), 12, `const at ${optimize}`)
+    is(run(`let fs = []; for (let i = 0; i < 3; i++) { const g = () => 'v' + i; g.tag = 't' + i; fs.push(g) } export let f = () => fs.map(g => g() + g.tag).join()`, { optimize }).f(), 'v0t0,v1t1,v2t2', `with a property at ${optimize}`)
+    is(run(`let fs = []; for (const x of [4, 5]) { let g = (d) => x * 10 + d; fs.push(g) } export let f = () => fs[0](1) + fs[1](2)`, { optimize }).f(), 93, `for-of let at ${optimize}`)
+    // a closure that reads no loop binding still lifts into a module function
+    is(run(`let n = 0; for (let i = 0; i < 3; i++) { const add = (d) => n += d; add(i) } export let f = () => n`, { optimize }).f(), 3, `uncapturing at ${optimize}`)
+  }
+})
+
 // Reassigned function bindings: a depth-0 `let g = (…) => …` lifts into a
 // FIXED named function (defFunc) — sound only while the binding is immutable.
 // JS allows reassigning a let/var function binding (even from inside a

@@ -2815,6 +2815,11 @@ function defFunc(name, node) {
   if (!Array.isArray(node) || node[0] !== '=>') return false
   // Only extract top-level functions, not nested (closures stay as values)
   if (prepState.depth > 0) return false
+  // A module-scope loop's per-iteration binding a closure in it captures is a
+  // local of the module's start (loopLocalNames, mintForScope), not a global:
+  // an arrow that reads one stays a closure value, which captures it each
+  // iteration. Lifted, it named a binding no function scope holds.
+  for (const m of ctx.scope.moduleLoopCaptured ?? []) if (refsName(node, m, REFS_THROUGH_ARROWS)) return false
   // A reassigned binding must stay a mutable closure-valued global — lifting it
   // into a fixed named function froze callers onto the first value (see
   // reassignedTopLevel). 'default' can't be reassigned (export default).
