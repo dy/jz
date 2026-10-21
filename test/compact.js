@@ -123,6 +123,24 @@ test('compact: what the host holds does not move', () => {
   is(exports.sum(buf), data.reduce((a, b) => a + b, 0), 'and the buffer too')
 })
 
+// A view the host holds detaches as the memory grows, so a compaction the host
+// asks for never grows it to lay out its scratch: a render loop's pixel buffer,
+// returned once and painted every frame, stays attached while the kept state
+// above it (a density field, a point) is walked every sixteenth call.
+test('compact: a returned view outlives the compactions of the calls after it', () => {
+  if (onWasi()) return
+  const src = `let px, dens, st
+    export const resize = (w, h) => { px = new Uint32Array(w * h); dens = new Uint32Array(w * h); st = new Float64Array(2); return px }
+    export const frame = (k) => { for (let i = 0; i < px.length; i++) { dens[i] = dens[i] + k; px[i] = dens[i] } st[0] = k }`
+  for (const [w, h] of [[300, 200], [640, 400], [1000, 600]]) {
+    const { exports } = jz(src)
+    const px = exports.resize(w, h)
+    for (let i = 0; i < 48; i++) exports.frame(1)
+    is(px.length, w * h, `${w}×${h}: the view stays attached`)
+    is(px[w * h - 1], 48, `${w}×${h}: and reads what the frames wrote`)
+  }
+})
+
 // Within one call, a loop whose iteration allocates and keeps some of it
 // compacts what it keeps in place (optimize/loop-compact.js): the carried
 // string, array or object stays, and every one it replaced goes.

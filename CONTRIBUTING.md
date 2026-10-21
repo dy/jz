@@ -2232,7 +2232,13 @@ a view of the module's memory or a closure (a result, a host import's
 argument, a value stored into a host object: `mem.read` marks `_held`). Shared and imported memory, fixed-memory modules, the size tier
 (`compact: false`, memory-for-size as `arenaReach`) and hosts other than the
 JS one do not compact; a walk that finds no room for its
-scratch above the heap leaves the heap as it was.
+scratch above the heap leaves the heap as it was. Once the host holds a view
+of the module's memory (`__viewed`, set as `mem.read` decodes one or
+`allocTyped` makes one), the walk finds that room in the memory as it stands
+and never grows it, since a grow detaches every view: a render loop's pixel
+buffer, returned once and painted every frame, stays attached however often
+the state beside it is walked. Only a Set or Map rebuilt after the move,
+which must finish, may still grow it.
 
 **Compaction within a call** (optimize/loop-compact.js). A loop whose
 iteration allocates and lets some of it escape (the frame census's

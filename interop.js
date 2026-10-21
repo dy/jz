@@ -795,7 +795,7 @@ export const memory = (src) => {
       // A view of the module's memory: the bytes it shows stay while the host
       // holds it (`held`, for the call that returned it, interop `settled`).
       // The host holds the bytes shown: the heap below their end never moves (`_pinAt`, `settle`).
-      const held = (at, bytes) => { if (at >= mem._above) { mem._held = true; mem._pinAt = Math.max(mem._pinAt, at + bytes); mem._pinSet?.(mem._pinAt) } return at }
+      const held = (at, bytes) => { mem._viewSet?.(); if (at >= mem._above) { mem._held = true; mem._pinAt = Math.max(mem._pinAt, at + bytes); mem._pinSet?.(mem._pinAt) } return at }
       if (a & DATA_VIEW_FLAG) return new DataView(mem.buffer, held(m.getInt32(off + 4, true), m.getInt32(off, true)), m.getInt32(off, true))
       const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
@@ -965,6 +965,7 @@ export const memory = (src) => {
     if (!meta) throw Error(`mem.allocTyped: ${Ctor?.name ?? Ctor} is not a supported typed array constructor — pass one of ${Object.keys(ELEMS).join(', ')}`)
     const [elemId, stride] = meta
     const bytes = n * stride, off = hdr(bytes, bytes, bytes)
+    mem._viewSet?.()
     return { view: new Ctor(mem.buffer, off, n), box: ptr(3, elemId, off) }
   }
 
@@ -1054,7 +1055,7 @@ export const wrap = (memSrc, inst, state) => {
     } catch { /* ignore */ }
   }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
-  const compact = realInst.exports.__compact, pinGlobal = realInst.exports.__pin, cost = realInst.exports.__g_cost
+  const compact = realInst.exports.__compact, pinGlobal = realInst.exports.__pin, cost = realInst.exports.__g_cost, viewed = realInst.exports.__viewed
   const hostAbiExp = new Map()
   const hostAbiBytes = customSection(mod, 'jz:hostabi')
   if (hostAbiBytes) {
@@ -1067,7 +1068,12 @@ export const wrap = (memSrc, inst, state) => {
   // The module's pin (module/core/compact.js `__pin`): the heap below the
   // highest block the host holds by address never moves, in a compaction the
   // host asks for or one a loop runs inside a call. Raised as values decode.
-  if (pinGlobal && mem) { mem._pinSet = (at) => { if (at > (pinGlobal.value >>> 0)) pinGlobal.value = at | 0 }; mem._pinReset = () => { pinGlobal.value = 0 } }
+  if (pinGlobal && mem) { mem._pinSet = (at) => { if (at > (pinGlobal.value >>> 0)) pinGlobal.value = at | 0 }; mem._pinReset = () => { pinGlobal.value = 0; if (viewed) viewed.value = 0 } }
+  // A view the host holds detaches as the memory grows: once one is handed
+  // out, a compaction finds its scratch in the memory as it stands or
+  // declines (`__viewed`, module/core/stub-log.js), as the program's own
+  // allocations alone grow it.
+  if (viewed && mem) mem._viewSet = () => { viewed.value = 1 }
   // Async boundary: a program with async source anywhere in its graph exports
   // __mt_drain / __p_state / __p_value (the `jz:async` std module's contract,
   // re-exported by prepare). Every export call ends

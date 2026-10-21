@@ -57,6 +57,10 @@ export const declarePin = () => {
   // the floor and below: what the next one costs, which its trigger amortizes
   // (the host's `settle`, interop.js; a loop's site, optimize/loop-compact.js)
   declGlobal('__g_cost', 'i32', 0, { export: '__g_cost' })
+  // set by the host once it holds a view of the module's memory (interop.js),
+  // which a grow detaches: a walk then lays its scratch out in the memory as
+  // it stands, or declines
+  declGlobal('__viewed', 'i32', 0, { export: '__viewed' })
 }
 export const declareSites = () => {
   declarePin()

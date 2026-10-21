@@ -178,8 +178,9 @@ export const registerCompact = () => {
       (br $hop)))
     (local.get $off))`
 
-  // Memory up to `need` bytes, grown where the engine allows; the heap's top stays.
-  ctx.core.stdlib['__gc_room'] = () => `(func $__gc_room (param $need i32) (result i32)
+  // Memory up to `need` bytes, grown where the engine allows and `grow` lets
+  // it; the heap's top stays.
+  ctx.core.stdlib['__gc_room'] = () => `(func $__gc_room (param $need i32) (param $grow i32) (result i32)
     (local $have i64) (local $pages i32)
     ${has('__park_base') ? `;; a phase checkpoint holds parked data in a lane above the heap (module/core.js): the scratch ends where the lane starts
     (if (global.get $__park_base) (then
@@ -187,6 +188,7 @@ export const registerCompact = () => {
     (local.set $have (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16)))
     (if (i64.gt_u (i64.extend_i32_u (local.get $need)) (local.get $have))
       (then
+        (if (i32.eqz (local.get $grow)) (then (return (i32.const 0))))
         (local.set $pages (i32.add (i32.wrap_i64 (i64.shr_u (i64.sub (i64.add (i64.extend_i32_u (local.get $need)) (i64.const 65535)) (local.get $have)) (i64.const 16))) (i32.const 1)))
         (if (i32.eq (memory.grow (local.get $pages)) (i32.const -1)) (then (return (i32.const 0))))
         (local.set $have (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16)))
@@ -202,7 +204,7 @@ export const registerCompact = () => {
   ctx.core.stdlib['__gc_more'] = `(func $__gc_more (result i32)
     (local $lim i32) (local $delta i32)
     (local.set $lim (global.get $__g_lim))
-    (if (i32.eqz (call $__gc_room (i32.add (local.get $lim) (i32.const 65536)))) (then (global.set $__g_fail (i32.const 1)) (return (i32.const 0))))
+    (if (i32.eqz (call $__gc_room (i32.add (local.get $lim) (i32.const 65536)) (i32.eqz (global.get $__viewed)))) (then (global.set $__g_fail (i32.const 1)) (return (i32.const 0))))
     (local.set $delta (i32.sub (global.get $__g_lim) (local.get $lim)))
     (if (i32.eqz (local.get $delta)) (then (global.set $__g_fail (i32.const 1)) (return (i32.const 0))))
     (memory.copy (i32.add (global.get $__g_sp) (local.get $delta)) (global.get $__g_sp) (i32.sub (local.get $lim) (global.get $__g_sp)))
@@ -724,7 +726,8 @@ export const registerCompact = () => {
     (if (i32.eqz (local.get $any)) (then ${none}))
     ;; the entries copied aside, the table emptied, each live entry placed anew
     (local.set $tmp (i32.and (i32.add (i32.add (global.get $__g_list) (i32.shl (global.get $__g_ln) (i32.const 3))) (i32.const 7)) (i32.const -8)))
-    (if (i32.eqz (call $__gc_room (i32.add (local.get $tmp) (i32.mul (local.get $cap) (local.get $es))))) (then ${none}))
+    ;; past the move the table must be rebuilt: its scratch grows the memory even a host's view names
+    (if (i32.eqz (call $__gc_room (i32.add (local.get $tmp) (i32.mul (local.get $cap) (local.get $es))) (i32.const 1))) (then ${none}))
     (memory.copy (local.get $tmp) (local.get $p) (i32.mul (local.get $cap) (local.get $es)))${logged ? `
     (local.set $relog (i32.and (i32.lt_u (local.get $p) (global.get $__heap_reset)) (i32.ne (global.get $__durable_slot_n) (i32.const 0))))${relog('(local.get $p)', '(local.get $tmp)', '(i32.mul (local.get $cap) (local.get $es))')}` : ''}
     (memory.fill (local.get $p) (i32.const 0) (i32.mul (local.get $cap) (local.get $stride)))
@@ -880,7 +883,7 @@ export const registerCompact = () => {
     (global.set $__g_list (i32.add (global.get $__g_pre) (i32.add (i32.shr_u (local.get $nl) (i32.const 1)) (i32.const 8))))
     (global.set $__g_ln (i32.const 0))
     (global.set $__g_cost (i32.const 0))
-    (if (i32.eqz (call $__gc_room (i32.add (global.get $__g_list) (i32.const 65536)))) (then ${DBG_GC ? '(global.set $__g_no_room (i32.add (global.get $__g_no_room) (i32.const 1)))' : ''} (return (i32.const 0))))
+    (if (i32.eqz (call $__gc_room (i32.add (global.get $__g_list) (i32.const 65536)) (i32.eqz (global.get $__viewed)))) (then ${DBG_GC ? '(global.set $__g_no_room (i32.add (global.get $__g_no_room) (i32.const 1)))' : ''} (return (i32.const 0))))
     (global.set $__g_sp (global.get $__g_lim))
     (memory.fill (local.get $s) (i32.const 0) (i32.sub (global.get $__g_list) (local.get $s)))
     (global.set $__g_fail (i32.const 0))
