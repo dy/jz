@@ -77,3 +77,17 @@ test('unroll cost: a large body the counter barely touches stays rolled', () => 
   ok(depths.length > 0 && depths.every(depth => depth >= 2), 'every stage body stays in its inner loop')
   for (const optimize of levels(0, 2, 3, 'size')) agree(heavy, 'f', [16], { optimize }, `heavy at ${optimize}`)
 })
+
+// A copy substitutes the counter where it is read, not a string's text, a
+// property name or an object key spelled as it: a module's top-level loop
+// (unrolled as it is emitted) and a function's agree with JS.
+test('unroll cost: a copy leaves a string, a property name and a key spelled as the counter', () => {
+  const top = `const m = new Map(), names = [], o = {}, r = { k: 7 }
+for (let k = 0; k < 4; k++) { m.set('k' + k, k); names.push(\`k\${k}\`); o['k' + k] = { k: k * 2 }.k + r.k }
+export let f = () => [...m.keys()].join() + '|' + names.join() + '|' + Object.keys(o).join() + '|' + Object.values(o).join()`
+  const inFn = `export let f = () => { const o = { i: 5 }, out = []; for (let i = 0; i < 3; i++) out.push('i' + i + o.i + { i }.i); return out.join() }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    agree(top, 'f', [], { optimize }, `module top level at ${optimize}`)
+    agree(inFn, 'f', [], { optimize }, `in a function at ${optimize}`)
+  }
+})

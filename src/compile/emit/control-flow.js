@@ -307,7 +307,7 @@ function unrollSmallConstFor(init, cond, step, body) {
 
   const out = []
   const emitCopy = value => {
-    const copy = cloneWithSubst(body, name, value)
+    const copy = cloneWithSubst(body, new Map([[name, [null, value]]]))
     out.push(...freshenUnrolledScalarBindings(copy, emitVoid(copy)))
   }
   if (values) for (const value of values) emitCopy(value)

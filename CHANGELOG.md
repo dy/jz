@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Substitute an unrolled loop's counter where it is read, not in a string's text, a property name or an object key spelled as it: `m.set('k' + k, k)` in a module's top-level loop threw an internal `str.charCodeAt is not a function` at level 2.
 - Keep a closure a module-scope loop binds in its own body (`for (let i …) { const g = () => i }`) a closure value: lifted into a module function, it named the loop's per-iteration binding from no function scope (`'i' is not in scope`).
 - Save an array made at init for the reset before a push of several values stores into it (`kept.push(a, b, c, d)`): the inline multi-value push wrote the elements and the length with no snapshot, so `_clear()` left the round's length and elements behind.
 - Export the outermost frame's mark setter (`__base`) only where a frame writes the mark or an export is flagged: elsewhere the mark reads all ones and the escape tests against it fold away (json, strbuild, wordcount, worley and immutable ~1.65 KB smaller at the speed tier, the closure-heavy parser 17124 -> 15567 B at level 2).

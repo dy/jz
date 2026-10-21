@@ -10,18 +10,9 @@ import { ctx, getFactStore } from '../ctx.js'
 import { idxKey } from './canonical-bounds.js'
 import { intervalProvenIdx } from './interval-proof.js'
 
-/** Clone AST with substitutions/renames. Skips into `=>` bodies. */
+/** Clone AST with substitutions/renames. Skips into `=>` bodies. A string
+ *  literal's text, a property name and an object key are no references. */
 export function cloneWithSubst(node, subst, rename = null, closures = false) {
-  if (!(subst instanceof Map)) {
-    const name = subst, value = rename
-    if (node === name) return [null, value]
-    if (!Array.isArray(node)) return node
-    if (node[0] === '=>') return node
-    const out = node.map(x => cloneWithSubst(x, name, value))
-    stampClonedIdxProof(node, out)
-    carryNotes(node, out, b => b === name && typeof value === 'string' ? value : b)
-    return carrySite(node, out)
-  }
   const ren = rename instanceof Map ? rename : new Map()
   if (typeof node === 'string') {
     if (subst.has(node)) return cloneNode(subst.get(node))
