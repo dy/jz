@@ -19,6 +19,7 @@ export const KIND_REGISTRY = {
   BUFFER: { tag: PTR.BUFFER, aux: 0, identity: 'pointer-bits' },
   CLOSURE: { tag: PTR.CLOSURE, aux: 'fnTableIndex', identity: 'pointer-bits' },
   EXTERNAL: { tag: PTR.EXTERNAL, aux: 'reserved', identity: 'pointer-bits' },
+  RECORD: { tag: PTR.RECORD, aux: 'layoutId', identity: 'pointer-bits' },
   BIGINT: { tag: PTR.BIGINT, aux: 0, identity: 'content', identityArm: { kind: 'content', order: 0 } },
   'ATOM.NULL': { tag: PTR.ATOM, aux: ATOM.NULL, identity: 'exact-bits' },
   'ATOM.UNDEFINED': { tag: PTR.ATOM, aux: ATOM.UNDEF, identity: 'exact-bits' },

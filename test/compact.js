@@ -80,6 +80,8 @@ const KINDS = {
   errors: `let last = null; export const step = (i) => { try { if (i % 3 == 0) throw new Error('e' + i); last = { ok: i } } catch (e) { last = { msg: e.message } } return last.ok ?? last.msg.length }`,
   regex: `let last = /a(b+)c/; let found = []; export const step = (i) => { const m = last.exec('xxab' + 'b'.repeat(i % 4) + 'cyy'); found.push(m ? m[1] : '-'); if (found.length > 10) found = found.slice(5); return found.join('').length }`,
   holes: `let a = []; export const step = (i) => { a[i % 40] = i; if (i % 7 == 0) delete a[(i + 3) % 40]; let s = 0, c = 0; for (let k = 0; k < a.length; k++) if (k in a) { s += a[k]; c++ } return s + c }`,
+  // arrays whose named properties live in records (module/collection/record.js)
+  records: `const tag = (n, at) => (Array.isArray(n) && (n.loc = at), n); let nodes = []; export const step = (i) => { const a = tag([i, [i + 1]], i * 3); a[1].loc = 'in' + i; if (i & 1) { a.b = [i]; a.c = i } else { a.c = -i; a.b = 'x' } nodes.push(a); if (nodes.length > 30) nodes = nodes.slice(10); let s = 0; for (const n of nodes) s += n.loc + n[1].loc.length + Object.keys(n).length + (Array.isArray(n.b) ? n.b[0] : n.b.length) + n.c; return s }`,
 }
 
 // A numeric array written in place leaves nothing to compact.

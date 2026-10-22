@@ -812,6 +812,24 @@ capacity. `arrayLiteralMinCap` remains an explicit override for kernel builds;
 smaller initial storage uses the existing alias and named-property forwarding.
 Named-property sidecars start with two slots at every tier and grow on demand;
 the speed tier's array reserve does not apply to those sparse property tables.
+An array whose named properties the program names by a literal key keeps them
+in a record instead (src/compile/array-records.js, module/collection/record.js):
+the property word names a block of one slot per name of a layout the summary
+fixes before emission, per array cell (`cellProps`) and one for arrays of
+unknown cell (`strayProps`), at most four names so a record never outgrows the
+smallest dictionary. A slot holds TOMB_NAN while absent; a layout of several
+names keeps the order of first stores, a byte each, which enumeration lists.
+Only a site that names a layout makes a record (`__rec_set`, in an array of the
+round whose word is zero) or reads one in place (`__rec_read`, which answers
+TOMB_NAN for the site's dynamic read wherever the word is anything else). The
+dynamic paths read records as dictionaries (`__rec_get`), store a name the
+layout holds into its slot, and turn the record into a dictionary for any
+other name (`__rec_hash`, in place); enumeration reads a dictionary made for
+the walk; a shift migrates that dictionary to the global table, a growth
+carries the word; compaction and the release walk keep the block and its
+slots. A durable array keeps the policy of its dictionary: a round's stores go
+to the global table, with the shadow bit on the word. The size tier keeps
+dictionaries.
 Collection growth uses `collectionStride` for the entry and optional hash lane;
 a boolean selecting the lane is not its byte width. A shallow Map copy reuses
 the probe layout when its capacity fits the rebuild budget, copying entries and

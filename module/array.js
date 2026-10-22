@@ -20,6 +20,8 @@ import { stubLogIR } from './core/stub-log.js'
 import { ctx, inc, err, strictCode, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
+import { isRecordWat, orRecordWat } from './collection/record.js'
+import { recordsOn } from '../src/compile/array-records.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat, requireObjectWat } from './core/error-object.js'
 import { runsAccessor, runsConversion } from '../src/evaluation-effects.js'
@@ -158,9 +160,9 @@ const headerPropsCopyIR = () => needsArrayDynMove() ? `
     ;; header is ephemeral, where markers are meaningless and an odd props
     ;; offset would corrupt the sidecar probe
     (local.set $oldProps (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $oldProps)) (i64.const -2))))
-    (if (i32.eq
+    (if ${orRecordWat(`(i32.eq
           (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
-          (i32.const ${PTR.HASH}))
+          (i32.const ${PTR.HASH}))`, '(i64.reinterpret_f64 (local.get $oldProps))')}
       (then (f64.store (i32.sub (local.get $newOff) (i32.const 16)) (local.get $oldProps))))` : ''
 
 const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
@@ -168,6 +170,9 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
       (then
         (local.set $oldProps (f64.load (i32.sub (local.get $off) (i32.const 16))))
         (local.set $oldProps (f64.reinterpret_i64 (i64.and (i64.reinterpret_f64 (local.get $oldProps)) (i64.const -2))))
+        ${recordsOn() ? `;; a record goes to the table as the dictionary of its properties
+        (if ${isRecordWat('(i64.reinterpret_f64 (local.get $oldProps))')}
+          (then (local.set $oldProps (f64.reinterpret_i64 (call $__rec_hash (i64.reinterpret_f64 (local.get $oldProps)))))))` : ''}
         (if (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 (local.get $oldProps)) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH}))
@@ -222,7 +227,7 @@ export default (ctx) => {
     __arr_shift: () => [
       '__ptr_offset', '__arr_value',
       ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),  // explicit edge — see arrayGrowDeps's comment
-      ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local'] : []),
+      ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local', ...(recordsOn() ? ['__rec_hash'] : [])] : []),
     ],
     // '__durable_arr_snap' is an explicit edge on __arr_fill/__arr_copyWithin
     // (newly wired by this fix — see durableArrSnapIR's comment in collection.js)

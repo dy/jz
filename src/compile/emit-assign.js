@@ -36,6 +36,7 @@ import { typedIdxProven, inBoundsArrIdx, wholeKey } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
 import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../module/collection/durable.js'
 import { demandHostReceiver } from './func-exports.js'
+import { arrayRecordSlot } from './array-records.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -930,6 +931,25 @@ function accessorStore(obj, prop, val) {
   return typed(['block', ['result', 'f64'], ...pre, ['drop', asF64(emit(body))], ['local.get', `$${vT}`]], 'f64')
 }
 
+/** `obj.prop = val` into the record slot of the layout the receiver's arrays
+ *  have (compile/array-records.js), where the receiver may be such an array:
+ *  any other receiver takes the store's dynamic path inside the helper
+ *  (module/collection/record.js `__rec_set`). */
+function recordStore(obj, prop, val) {
+  const vt = valTypeOf(obj)
+  if (vt != null && vt !== VAL.ARRAY) return null
+  if (typeof obj === 'string' && (ctx.schema.slotOf?.(obj, prop) >= 0 || ctx.func.flatObjects?.has(obj))) return null
+  const r = arrayRecordSlot(obj, prop)
+  if (!r) return null
+  // a receiver of unknown kind may be the host's: the dynamic store behind the slot links its dispatch
+  if (vt == null && ctx.transform.targetProfile.envImports) setLinkDemand('external')
+  ctx.module.include('array')
+  ctx.module.include('collection')
+  inc('__rec_set')
+  return typed(['f64.reinterpret_i64', ['call', '$__rec_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val)),
+    ['i32.const', r.rid], ['i32.const', (r.slot << 8) | r.n]]], 'f64')
+}
+
 export function emitPropertyAssign(obj, prop, val, raw = false) {
   const prim = primitiveStore(obj, null, val)
   if (prim) return prim
@@ -992,6 +1012,10 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]])
   }
+  // An array whose named properties the program fixes keeps them in a record
+  // (compile/array-records.js): a slot store where the site names its layout.
+  const record = recordStore(obj, prop, val)
+  if (record) return record
   // A deletion can reach this receiver through an alias. Let the schema writer
   // update presence as well as the payload, including a rewrite to undefined.
   if (ctx.types.anyDelete && (valTypeOf(obj) == null || valTypeOf(obj) === VAL.OBJECT) && mayBeDeleted(obj)) {

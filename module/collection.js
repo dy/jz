@@ -211,6 +211,8 @@ const keyEq = (fullEq) =>
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
 import { includeCopyKeys } from './object.js'
+import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
+import { recordsOn } from '../src/compile/array-records.js'
 import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'
 export { collectionLaneBytes }
 
@@ -231,6 +233,7 @@ export default (ctx) => {
   const sameValueZeroEqG = lean ? valueEq : keyEq(valueEq)
   // The inline-cache handoff globals (buildObjectSchemaArm → optimize/devirt.js).
   if (!lean) { declGlobal('__ic_found_hi', 'i64'); declGlobal('__ic_found_slot', 'i32') }
+  registerRecords()
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when linkDemand.external.
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.linkDemand.
   const ifExt = (name) => () => ctx.linkDemand.external ? [name] : []
@@ -335,8 +338,8 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
-    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
-    __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), ...(recordsOn() ? ['__rec_get'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...(recordsOn() ? ['__rec_get'] : []), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__arr_value', '__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_key', '__ptr_offset', '__ptr_offset_fwd'],
@@ -353,12 +356,12 @@ export default (ctx) => {
     ],
     __dyn_get_or: ['__dyn_get'],
     __dyn_set: () => [...(ctx.schema.regexSids.size ? ['__regex_prop', '__throw_regex_readonly'] : []), '__dyn_set_own', '__is_nullish', '__key_eq', '__is_str_key', '__to_key', '__arr_set_idx_ptr', '__arr_set_length', '__str_arr_idx', ...(ctx.linkDemand.typedProperties ? ['__typed_key_idx', '__typed_set_idx_tagged'] : [])],
-    __dyn_set_own: () => [...viewDeps('__view_set'), ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
+    __dyn_set_own: () => [...viewDeps('__view_set'), ...(recordsOn() ? ['__rec_slot', '__rec_put', '__rec_hash'] : []), ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(hasDurableReset() ? ['__durable_obj_snap', '__is_eph_bits'] : []), '__schema_slot', '__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__key_eq', '__ptr_aux', '__obj_props'],
     __obj_props: ['__ihash_get_local', '__is_nullish', '__ptr_type'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__key_eq', '__ptr_type', ...relogDeps()],
     // a deleted slot is gone for the host too: it reads the mask through __obj_deleted
-    __dyn_del: () => [...viewDeps('__view_del'), ...(ctx.schema.regexSids.size ? ['__is_regexp'] : []), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_key', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__key_eq', '__obj_deleted', ...(ctx.linkDemand.external ? ['__ext_delete'] : [])],
+    __dyn_del: () => [...viewDeps('__view_del'), ...(recordsOn() ? ['__rec_del'] : []), ...(ctx.schema.regexSids.size ? ['__is_regexp'] : []), '__schema_slot', '__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_key', '__str_arr_idx', '__str_u32_idx', '__len', '__str_length', '__ptr_aux', '__key_eq', '__obj_deleted', ...(ctx.linkDemand.external ? ['__ext_delete'] : [])],
     __str_arr_idx: ['__str_length'],
     __str_u32_idx: ['__str_length'],
     __typed_str_idx: ['__str_length'],
@@ -1902,6 +1905,13 @@ export default (ctx) => {
       (if (result i64) (i64.ne (local.get $val) (i64.const ${TOMB_NAN}))
         (then (local.get $val)) (else ${fallback})))`
     const hasFallback = fallback !== miss
+    // A record (collection/record.js): the value its layout holds for the key,
+    // or, held by none, the read's miss after the sources it consults next.
+    const recordArm = (orElse) => recordsOn() ? `(if ${isRecordWat('(local.get $props)')}
+              (then
+                (local.set $val (call $__rec_get (local.get $props) (local.get $key)))
+                (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val))))
+                ${orElse}))` : ''
     return `(func $${name} (param $obj i64) (param $key i64) (param $type i32) (param $h i32) (result i64)
     (local $props i64) (local $off i32) (local $val i64)
     (local $poff i32) (local $pcap i32) (local $pend i32) (local $idx i32) (local $slot i32) (local $tries i32)
@@ -2032,7 +2042,7 @@ export default (ctx) => {
             ;; table and CANNOT mark — such receivers keep the unconditional
             ;; probe (jump to the no-header path below via $probe).
             (if (i32.eqz (i32.or (i64.eqz (local.get $props))
-                  (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.HASH}))))
+                  ${orRecordWat(`(i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.HASH}))`, '(local.get $props)')}))
               (then (local.set $props (i64.const 0)) (local.set $tries (i32.const -1))))
             (if (i32.and (i32.eq (local.get $tries) (i32.const 0))
                   (i32.and (i32.and (i32.wrap_i64 (local.get $props)) (i32.const 1))
@@ -2049,6 +2059,7 @@ export default (ctx) => {
                         (local.set $val (call $__hash_get_local_hm (local.get $val) (local.get $key) (local.get $h)))
                         (if (i64.ne (local.get $val) (i64.const ${TOMB_NAN})) (then (return (local.get $val))))))))))
             (local.set $props (i64.and (local.get $props) (i64.const -2)))
+            ${recordArm(hasFallback ? '' : `(return ${miss})`)}
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                   (i32.const ${PTR.HASH}))
@@ -2084,6 +2095,7 @@ export default (ctx) => {
                        (i32.ge_u (local.get $off) ${heapResetWat()})))
           (then
             (local.set $props (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
+            ${recordArm('(br $dynDone)')}
             (br_if $haveProps (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (local.get $props) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH})))
@@ -2376,7 +2388,7 @@ export default (ctx) => {
   // A numeric store on a proven OBJECT/HASH can enter here directly.
   ctx.core.stdlib.__dyn_set_own = () => `(func $__dyn_set_own (param $obj i64) (param $key i64) (param $val i64) (result i64)
     (local $root i64) (local $props i64) (local $oldProps i64) (local $objKey i64)
-    (local $off i32) (local $type i32) ${buildObjectSchemaSetLocals()}
+    (local $off i32) (local $type i32) ${recordsOn() ? '(local $slot i32)' : ''} ${buildObjectSchemaSetLocals()}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $type (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     ${ctx.linkDemand.external ? `(if (i32.eq (local.get $type) (i32.const ${PTR.EXTERNAL}))
@@ -2414,6 +2426,15 @@ export default (ctx) => {
               (i32.ge_u (local.get $off) ${heapResetWat()}))
           (then
             (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
+            ${recordsOn() ? `;; a record: the slot of a name its layout holds; another name turns
+            ;; it into the dictionary of its properties (collection/record.js)
+            (if ${isRecordWat('(local.get $oldProps)')}
+              (then
+                (local.set $slot (call $__rec_slot (local.get $oldProps) (local.get $key)))
+                (if (i32.ge_s (local.get $slot) (i32.const 0))
+                  (then (call $__rec_put (local.get $oldProps) (local.get $slot) (local.get $val)) (return (local.get $val))))
+                (local.set $oldProps (call $__rec_hash (local.get $oldProps)))
+                (i64.store (i32.sub (local.get $off) (i32.const 16)) (local.get $oldProps))))` : ''}
             (if (i32.or
                   (i64.eqz (local.get $oldProps))
                   (i32.eq
@@ -2523,7 +2544,7 @@ export default (ctx) => {
       (then
         (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
         (if (i32.or (i64.eqz (local.get $oldProps))
-                    (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.HASH})))
+                    ${orRecordWat(`(i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.HASH}))`, '(local.get $oldProps)')})
           (then (i64.store (i32.sub (local.get $off) (i32.const 16))
                            (i64.or (local.get $oldProps) (i64.const 1)))))))
     (local.get $val))`
@@ -2686,6 +2707,7 @@ export default (ctx) => {
         (if (i32.and ${hasPropsSidecarWat('(local.get $type)', '(local.get $obj)')} (i32.ge_u (local.get $off) (i32.const 16)))
           (then
             (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
+            ${recordsOn() ? `(if ${isRecordWat('(local.get $oldProps)')} (then (call $__rec_del (local.get $oldProps) (local.get $key))))` : ''}
             (if (i32.eq
                   (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
                   (i32.const ${PTR.HASH}))
@@ -2698,6 +2720,7 @@ export default (ctx) => {
                    (i32.ge_u (local.get $off) ${heapResetWat()})))
       (then
         (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
+        ${recordsOn() ? `(if ${isRecordWat('(local.get $oldProps)')} (then (call $__rec_del (local.get $oldProps) (local.get $key)) (return (i32.const 1))))` : ''}
         (if (i32.eq
               (i32.wrap_i64 (i64.and (i64.shr_u (local.get $oldProps) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
               (i32.const ${PTR.HASH}))

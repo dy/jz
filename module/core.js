@@ -34,6 +34,7 @@ import { registerDurableLog } from './core/durable-log.js'
 import { registerReach, registerIterRelease, reachOn, belowLog, REACH_DEPS } from './core/reach.js'
 import { registerCompact, COMPACT_DEPS, compactOn, declarePin } from './core/compact.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
+import { arrayRecordSlot } from '../src/compile/array-records.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
@@ -2228,8 +2229,23 @@ export default (ctx) => {
     }
     return { slot, i32Certain, bigintProven }
   }
+  // `arr.prop` on an array whose record layout the receiver names
+  // (src/compile/array-records.js): the slot read in place, the dynamic read
+  // behind it inside the helper (module/collection/record.js `__rec_read`).
+  function recordRead(va, obj, prop) {
+    const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+    if (vt !== VAL.ARRAY) return null
+    const r = arrayRecordSlot(obj, prop, true)
+    if (!r) return null
+    ctx.module.include('collection')
+    inc('__rec_read')
+    return typed(['f64.reinterpret_i64', ['call', '$__rec_read', asI64(va), asI64(emit(['str', prop])),
+      ['i32.const', strHashLiteral(prop)], ['i32.const', r.rid], ['i32.const', r.slot]]], 'f64')
+  }
+
   function emitPropAccess(va, obj, prop) {
     va = numberCarrierIR(obj, va)
+    if (typeof prop === 'string') { const record = recordRead(va, obj, prop); if (record) return record }
     // Anonymous-literal fast path: when `obj` resolves at compile time to an
     // object literal `{...}` (either directly, or through a `.prop` chain
     // walked back to one), use the literal's slot index instead of falling

@@ -31,6 +31,7 @@
 import { ctx, PTR, LAYOUT, HEAP, FORWARDING_MASK } from '../../src/ctx.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
+import { recordsOn } from '../../src/compile/array-records.js'
 
 // JZ_DEBUG_POISON=1: what the walk frees is overwritten, as a frame's restore does.
 const DBG_POISON = typeof process !== 'undefined' && process.env?.JZ_DEBUG_POISON === '1'
@@ -140,11 +141,12 @@ export const registerReach = () => {
     (i32.const 1))`
 
   // A word that reads as a pointer into the frame's memory waits on the stack.
-  ctx.core.stdlib['__reach_see'] = `(func $__reach_see (param $w i64)
+  // An array's record (module/collection/record.js) is a block of the heap's too.
+  ctx.core.stdlib['__reach_see'] = () => `(func $__reach_see (param $w i64)
     (local $t i32) (local $off i32) (local $sp i32)
     (if (i32.eqz ${isBox('(local.get $w)')}) (then (return)))
     (local.set $t ${tagOf('(local.get $w)')})
-    (if (i32.eqz (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${HEAP_TAGS}))) (then (return)))
+    (if (i32.eqz (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${HEAP_TAGS | (recordsOn() ? 1 << PTR.RECORD : 0)}))) (then (return)))
     (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
           (i64.ne (i64.and (local.get $w) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
       (then (return)))
@@ -207,10 +209,12 @@ export const registerReach = () => {
   // shadowed receiver cleared, module/collection.js): of a block the frame
   // made it waits like any value; of a receiver older than the frame, \`old\`,
   // it is walked at once, being as old and as written into.
-  ctx.core.stdlib['__reach_props'] = `(func $__reach_props (param $w i64) (param $old i32)
+  ctx.core.stdlib['__reach_props'] = () => `(func $__reach_props (param $w i64) (param $old i32)
     (local.set $w (i64.and (local.get $w) (i64.const -2)))
     (if (i32.eqz ${isBox('(local.get $w)')}) (then (return)))
-    (if (i32.ne ${tagOf('(local.get $w)')} (i32.const ${PTR.HASH})) (then (return)))
+    (if (i32.ne ${tagOf('(local.get $w)')} (i32.const ${PTR.HASH}))${recordsOn() ? `
+      ;; an array's record (module/collection/record.js) holds its properties as a table does
+      (then (if (i32.ne ${tagOf('(local.get $w)')} (i32.const ${PTR.RECORD})) (then (return))))` : ' (then (return))'})
     (if (i32.and (local.get $old) (i32.lt_u (i32.wrap_i64 (local.get $w)) (global.get $__r_mark)))
       (then (call $__reach_in (local.get $w) (i32.const 0)))
       (else (call $__reach_see (local.get $w)))))`
@@ -265,7 +269,7 @@ export const registerReach = () => {
 
     ;; cells under a header: an array's elements up to its length, an object's
     ;; slots, the slots of a closure's environment
-    (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${(1 << PTR.ARRAY) | (1 << PTR.OBJECT) | (1 << PTR.CLOSURE)}))
+    (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${(1 << PTR.ARRAY) | (1 << PTR.OBJECT) | (1 << PTR.CLOSURE) | (recordsOn() ? 1 << PTR.RECORD : 0)}))
       (then
         (local.set $cap (call $__reach_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 8)))
         (local.set $n (local.get $cap))

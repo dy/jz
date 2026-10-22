@@ -308,6 +308,24 @@ function buildSchemaInit() {
   return schemaInit
 }
 
+/** The record layouts' name table (module/collection/record.js `$__rec_tbl`):
+ *  per layout a static array of its names, laid out where a helper reads it. */
+function buildRecordTable() {
+  const list = ctx.runtime.records?.list
+  if (!list?.length || !(ctx.core.includes.has('__rec_slot') || ctx.core.includes.has('__rec_hash'))) return
+  const start = dataLen()
+  const slots = list.map(names => {
+    const bits = names.map(k => extractF64Bits(asF64(emit(['str', k]))))
+    if (bits.some(b => b == null)) throw Error(`record layout {${names.join(', ')}}: a name without static bits`)
+    return extractF64Bits(staticArrayPtr(bits))
+  })
+  const off = pushStaticSlots(slots)
+  if (!ctx.scope.globals.has('__rec_tbl')) declGlobal('__rec_tbl', 'i32')
+  ctx.scope.globals.get('__rec_tbl').init = off
+  ;(ctx.runtime.staticI32GlobalInits ??= []).push('__rec_tbl')
+  ctx.runtime.reclaimSpans.push({ global: '__rec_tbl', start, end: dataLen() })
+}
+
 export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   const start = analyzeStartForEmit(ast)
   const startPlan = functionPlanOf(ctx, start)
@@ -351,6 +369,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // Defer template realization so dead helper constants remain reclaimable.
   resolveIncludes(false)
   const schemaInit = buildSchemaInit()
+  buildRecordTable()
 
   const typeofInit = []
   if (ctx.runtime.typeofStrs) {

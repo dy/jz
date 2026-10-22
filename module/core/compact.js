@@ -53,6 +53,7 @@ export { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites
 import { valKindToPtr } from '../../src/ir/pointers.js'
 import { BIGINT_REP_RAW } from '../../src/compile/representation-plan.js'
 import { ROOT_LOG_BYTES } from './reach.js'
+import { recordsOn } from '../../src/compile/array-records.js'
 import { K, bitOf, tagsOf, hasTag, NULL_BITS } from '../../src/summary/kind.js'
 
 // JZ_DEBUG_POISON=1: what a compaction frees is overwritten with all ones.
@@ -132,11 +133,12 @@ export const registerCompact = () => {
 
   // Whether the word names memory of the module's: a box with a heap tag, not
   // a string held in its pointer.
-  ctx.core.stdlib['__gc_box'] = `(func $__gc_box (param $w i64) (result i32)
+  // An array's record (module/collection/record.js) is a block of the heap's too.
+  ctx.core.stdlib['__gc_box'] = () => `(func $__gc_box (param $w i64) (result i32)
     (local $t i32)
     (if (i32.eqz ${isBox('(local.get $w)')}) (then (return (i32.const 0))))
     (local.set $t ${tagOf('(local.get $w)')})
-    (if (i32.eqz (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${HEAP_TAGS}))) (then (return (i32.const 0))))
+    (if (i32.eqz (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${HEAP_TAGS | (recordsOn() ? 1 << PTR.RECORD : 0)}))) (then (return (i32.const 0))))
     (if (i32.and (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
           (i64.ne (i64.and (local.get $w) (i64.const ${ssoBitI64Hex()})) (i64.const 0)))
       (then (return (i32.const 0))))
@@ -422,6 +424,21 @@ export const registerCompact = () => {
           (else
             (global.set $__g_last (local.get $p))
             (global.set $__g_last_hi (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))))))))` : ''}
+    ${recordsOn() ? `;; a record: its header, slots and order list kept, its slots' values walked
+    (if (i32.eq (local.get $t) (i32.const ${PTR.RECORD}))
+      (then
+        (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 8)))
+        (call $__gc_keep (i32.sub (local.get $p) (i32.const 16)) (i32.add (local.get $p) (i32.shl (local.get $cap) (i32.const 3))))
+        (call $__gc_list (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))) (local.get $p))
+        (local.set $n (i32.load (i32.sub (local.get $p) (i32.const 16))))
+        (if (i32.gt_u (local.get $n) (local.get $cap)) (then (local.set $n (local.get $cap))))
+        (local.set $e (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 3))))
+        (block $done (loop $slot
+          (br_if $done (i32.ge_u (local.get $p) (local.get $e)))
+          (call $__gc_push (i64.load (local.get $p)))
+          (local.set $p (i32.add (local.get $p) (i32.const 8)))
+          (br $slot)))
+        (return)))` : ''}
     (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
       (then
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 8)))
@@ -563,7 +580,7 @@ export const registerCompact = () => {
       (i64.or (call $__gc_fwd (i64.and (i64.load (i32.sub ${p} (i32.const 16))) (i64.const -2))) (i64.and (i64.load (i32.sub ${p} (i32.const 16))) (i64.const 1))))`
 
   // Every pointer word of one listed block, rewritten in place.
-  ctx.core.stdlib['__gc_update'] = `(func $__gc_update (param $hi i32) (param $p i32)
+  ctx.core.stdlib['__gc_update'] = () => `(func $__gc_update (param $hi i32) (param $p i32)
     (local $t i32) (local $aux i32) (local $n i32) (local $cap i32) (local $e i32) (local $k i32) (local $row i32) (local $q i32)
     (local.set $t (i32.and (i32.shr_u (local.get $hi) (i32.const ${LAYOUT.TAG_SHIFT - 32})) (i32.const ${LAYOUT.TAG_MASK})))
     (local.set $aux (i32.and (local.get $hi) (i32.const ${LAYOUT.AUX_MASK})))
@@ -585,6 +602,17 @@ export const registerCompact = () => {
           (local.set $q (i32.add (local.get $q) (i32.const 8)))
           (br $cell)))
         (return)))
+    ${recordsOn() ? `(if (i32.eq (local.get $t) (i32.const ${PTR.RECORD}))
+      (then
+        (local.set $n (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 8)))
+        (if (i32.lt_u (i32.load (i32.sub (local.get $p) (i32.const 16))) (local.get $n)) (then (local.set $n (i32.load (i32.sub (local.get $p) (i32.const 16))))))
+        (local.set $e (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 3))))
+        (block $done (loop $slot
+          (br_if $done (i32.ge_u (local.get $p) (local.get $e)))
+          ${fwdAt('(local.get $p)')}
+          (local.set $p (i32.add (local.get $p) (i32.const 8)))
+          (br $slot)))
+        (return)))` : ''}
     (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
       (then
         (if (i32.and (i32.eq (i32.load (i32.sub (local.get $p) (i32.const 12))) (i32.const -1)) (i32.ne (i32.load (i32.sub (local.get $p) (i32.const 16))) (i32.const -1)))

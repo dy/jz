@@ -690,6 +690,7 @@ export function reset(proto, globals, bridge) {
   ctx.runtime = {
     atom: null,
     regex: null,
+    records: null,         // the record layouts of arrays' named properties (compile/array-records.js)
     // Static data segment — parts-array accumulator (src/static-data.js owns
     // the representation; all access goes through its helpers).
     dataParts: [],

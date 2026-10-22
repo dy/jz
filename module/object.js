@@ -26,6 +26,17 @@ import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
 import { isGlobal } from '../src/ir/vars.js'
 import { durableObjSnapNode, hasDurableReset } from './collection/durable.js'
+import { RECORD_HI } from './collection/record.js'
+import { recordsOn } from '../src/compile/array-records.js'
+
+// An array's record (collection/record.js) enumerates as the dictionary of its
+// properties, made for the walk and dropped after it: `props` an i64 local.
+const recordAsHash = (props) => {
+  if (!recordsOn()) return []
+  inc('__rec_hash')
+  return [['if', ['i32.eq', ['i32.wrap_i64', ['i64.shr_u', ['local.get', `$${props}`], ['i64.const', LAYOUT.TAG_SHIFT]]], ['i32.const', RECORD_HI >>> (LAYOUT.TAG_SHIFT - 32)]],
+    ['then', ['local.set', `$${props}`, ['call', '$__rec_hash', ['local.get', `$${props}`]]]]]]
+}
 
 // Object.prototype.toString tag per value category. Matches what JS engines
 // return for primitive/built-in types; canonicalized from
@@ -2007,6 +2018,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
     ['if', ['i32.and', hasHeader(), ['i32.ge_u', ['local.get', `$${base}`], heapResetIR()]],
       ['then',
         ['local.set', `$${props}`, ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]]],
+        ...(indexed == null ? [] : recordAsHash(props)),
         ['if', ['i32.eq',
             ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['local.get', `$${props}`], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]],
             ['i32.const', PTR.HASH]],
@@ -2029,6 +2041,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
           ['then',
         ['local.set', `$${props}`, ['i64.and',
           ['i64.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 16]]], ['i64.const', -2]]],
+        ...(indexed == null ? [] : recordAsHash(props)),
         ['if', ['i32.eq',
             ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['local.get', `$${props}`], ['i64.const', LAYOUT.TAG_SHIFT]], ['i64.const', LAYOUT.TAG_MASK]]],
             ['i32.const', PTR.HASH]],

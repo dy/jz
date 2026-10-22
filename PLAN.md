@@ -6,6 +6,25 @@ passing conformance, speed, size and memory gates. README owns the public
 contract; CONTRIBUTING owns compiler invariants. This file holds the decisions
 that shaped the tree, the work left before release and the latest gate reading.
 
+## Speed, October 21
+
+Array records landed (src/compile/array-records.js, module/collection/record.js,
+CONTRIBUTING after "Named-property sidecars"): the named properties an array
+takes by a literal key live in slots of a layout the summary fixes, per array
+cell and one for arrays of unknown cell, at most four names. On x64 (paired,
+ten rounds) jessie runs 0.92–0.95× its time and still trails JavaScriptCore
+(1.15–1.35×); watr reads 0.98–1.09×, neutral within its noise: its context
+array takes the section names by a computed key before any literal one and
+keeps its dictionary, and its nodes' `loc` is a small share of the run. What
+remains, by profile. Jessie: the dispatch closure (a fifth of the run; a
+parameter used as a loop counter stays an f64, the token's and `curOp`'s
+truthiness and the string compares are generic over unions) and the
+`parse.step`/`parse.space` layers (near a third), a call each. Watr: dynamic
+reads (`__dyn_get_t_h` 5%, `__str_hash` 2%), most of them the own-method probe
+of `buf.push(…)` on a receiver that may be an array or an object with its own
+`push`, and the iterator record a `for…of` over unknown values opens, filled by
+five generic stores (`__hash_set` falling to `__dyn_set`).
+
 ## Release status, October 18
 
 Steps 2 to 5 of the speed plan are on main (word quotient, static locals,

@@ -38,6 +38,9 @@ export const PTR = {
   MAP: 9,
   CLOSURE: 10,
   EXTERNAL: 11,
+  // Never a value: the named properties of an array whose names the program
+  // fixes, the slots of a record layout its aux names (module/collection/record.js).
+  RECORD: 12,
 }
 
 // Host field contracts use pointer-tag bits plus three scalar families.

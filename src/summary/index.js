@@ -1133,6 +1133,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (cellShapes.has(b)) addCellShapes(a, cellShapes.get(b))
     if (cellLostObject.has(b)) addCellLost(a)
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
+    if (propArrays.has(b)) propArrays.add(a)
     if (cellWild.has(b)) raiseWild(kind(K.ARRAY, a), cellWild.get(b))
     if (cellNumeric.has(b)) raiseNumeric(kind(K.ARRAY, a), cellNumeric.get(b))
     if (setCells.has(b)) setCells.add(a)
@@ -1147,6 +1148,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // name may read. Array-index spellings share the element cell; a computed string
   // can name an element too, so its stores also join that cell.
   const cellProps = new Map()   // cell root → Map(name → kind)
+  const propArrays = new Set()  // the array cells named properties are stored on (a union adds its root)
   // A closure's own properties (`fn.ops = ops` on a dispatcher, a handler's
   // metadata): per closure site, the join of what every instance stores under
   // the name. A read on a set joins its members; a name never stored reads
@@ -1182,6 +1184,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (t === K.ARRAY && prop === 'length') { openLen(arr, 'length written as a property'); raiseElem(arr, ABSENT) }
     if (t !== K.ARRAY) raiseElem(arr, k, false, true)
     const c = cell(paramOf(arr)); let m = cellProps.get(c)
+    if (t === K.ARRAY) propArrays.add(c)
     if (cellWild.get(c) === ANY) escape(k)
     if (!m) cellProps.set(c, m = new Map())
     const old = m.get(prop) ?? K.NONE, nk = merge(old, k)
@@ -1309,6 +1312,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // computed-key store, or a store by code the summary cannot see, does not
   // reach a class member (the class contract, jzify/classes.js).
   const dynamicProps = new Set()
+  // Names stored by a literal key on an array whose cell the summary does not
+  // follow (a receiver of several kinds narrowed by a test, `Array.isArray(n)
+  // && (n.loc = at)`): such arrays share one record layout of those names
+  // (compile/array-records.js).
+  const strayProps = new Set()
+  const strayArray = (recv) => hasTag(recv, K.ARRAY) && (tagOf(recv) !== K.ARRAY || paramOf(recv) === UNKNOWN)
   // Own properties on builtin receiver families are tracked by family, not as
   // one global name set: `{push: fn}` must not pessimize every real Array#push.
   const builtinOwnProps = new Map()
@@ -3397,6 +3406,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (typeof target === 'string') { if (hulls.size || indexBounds.size) keepHull(target, op, value); return assignName(target, v) }
     if (Array.isArray(target) && (target[0] === '.' || target[0] === '?.')) {
       const recv = receiver(target[1]), prop = target[2], t = tagOf(recv)
+      if (typeof prop === 'string' && strayArray(recv)) strayProps.add(prop)
       // A store through a nullish receiver throws before storing.
       if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return v
       if (typeof prop !== 'string') { poisonAll(recv, expr(prop), v); escape(v); return v }
@@ -4644,7 +4654,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
-    numeric, strung, dynamicProps, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
+    numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     held,
     boolKeys, storeBits, paramKeys,

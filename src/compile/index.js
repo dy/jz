@@ -77,6 +77,7 @@ import { isExported, exportNamesOf } from './func-exports.js'
 import { paramValueOnly } from './param-numeric.js'
 import { ensureThrowRuntime } from './throw-runtime.js'
 import { buildInternTable } from './intern-table.js'
+import { planArrayRecords } from './array-records.js'
 import { captureFuncInspect } from './func-inspect.js'
 import { fixedMemoryFacts, planStaticLocals } from './fixed-memory.js'
 import { isBoundaryWrapped, synthesizeBoundaryWrappers } from './boundary-wrap.js'
@@ -291,6 +292,8 @@ export function assemble(ast, profiler) {
   // The plan rewrote the program (inlined calls, scalar-replaced literals,
   // specialized variants with their own scopes): summarize what emission sees.
   ctx.summary = summarizeProgram()
+  // The record layouts of arrays' named properties, fixed before any site emits.
+  planArrayRecords()
   // The advisory reports what this summary loses: an earlier one, taken before
   // the plan dropped an arm a test never takes, may lose a shape the program keeps.
   for (const [sid, why, fn, site] of ctx.summary.losses ?? [])

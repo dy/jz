@@ -189,7 +189,7 @@ export default (ctx) => {
     __str_slice_view: ['__str_length', '__mkptr', '__str_slice', '__clamp_idx'],
     __str_indexof: ['__str_length'],
     __str_lastindexof: ['__str_length'],
-    __wrap1: ['__alloc', '__mkptr'],
+    __wrap1: ['__alloc_hdr', '__mkptr'],
     __str_substring: ['__str_slice'],
     __str_startswith: ['__str_length'],
     __str_endswith: ['__str_length'],
@@ -2446,14 +2446,13 @@ export default (ctx) => {
                 ['i32.add', ['local.get', `$${idx}`], ['call', '$__str_length', ['i64.reinterpret_f64', ['local.get', `$${q}`]]]]]]]]]], 'f64')
   })
 
-  // __wrap1(val: i64) → f64 — create 1-element array [val]
+  // __wrap1(val: i64) → f64 — create 1-element array [val], with the header
+  // every array has (its property word read by every named-property path)
   wat('__wrap1', `(func $__wrap1 (param $val i64) (result f64)
-    (local $ptr i32)
-    (local.set $ptr (call $__alloc (i32.const 16)))
-    (i32.store (local.get $ptr) (i32.const 1))
-    (i32.store (i32.add (local.get $ptr) (i32.const 4)) (i32.const 1))
-    (i64.store (i32.add (local.get $ptr) (i32.const 8)) (local.get $val))
-    (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $ptr) (i32.const 8))))`)
+    (local $off i32)
+    (local.set $off (call $__alloc_hdr (i32.const 1) (i32.const 1)))
+    (i64.store (local.get $off) (local.get $val))
+    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $off)))`)
 
   registerEncoding()
 

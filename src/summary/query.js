@@ -20,7 +20,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -561,6 +561,9 @@ export function summaryQueries(facts, internal = false) {
       // arguments and container stores unify aliases in the solver; an open
       // receiver keeps UNKNOWN and proves nothing. Typed views do not use cells.
       arrayCellOf: e => { const k = kindOfExpr(e); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : null },
+      // The arrays a receiver may be, for their record layout (compile/array-records.js):
+      // its cell, -1 for arrays whose cell is unknown, null for no array.
+      arrayRecordOf: e => { const k = kindOfExpr(e); return !hasTag(k, K.ARRAY) ? null : tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : -1 },
       // The length a module binding's array has after module init and keeps
       // (index.js `built`, `grown`, `unknown`): what it was built with plus the
       // elements the top level pushed through this very name in counted loops;
@@ -752,6 +755,12 @@ export function summaryQueries(facts, internal = false) {
     typedPropertiesAbsent: () => elems[typedProps] === K.NONE && [...typedPropsByAux.values()].every(c => elems[c] === K.NONE),
     hasTypedFields: fields.some(a => a?.some(k => tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k))),
     escaped: facts.escaped,
+    // The names the program stores on the arrays of a cell, or on arrays of
+    // unknown cell (-1), by a literal key: a computed key's name is the
+    // dynamic path's (compile/array-records.js).
+    arrayRecordNames: c => c < 0 ? [...strayProps ?? []] : [...(cellProps.get(c)?.keys() ?? [])],
+    // The array cells holding a named property, each by its root once.
+    arrayRecordCells: () => { const out = new Set(); for (const c of propArrays ?? []) out.add(cell(c)); return [...out] },
     /** The truth an `if` or `?:` test has on every run, or null. */
     decisionOf: n => facts.decisions?.get(n) ?? null,
   }

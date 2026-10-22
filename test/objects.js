@@ -503,6 +503,57 @@ test('array enumeration and copies retain named properties beside elements', () 
   }
 })
 
+test('an array whose named properties the program names keeps them in record slots', () => {
+  // Arrays of unknown cell (a receiver of several kinds narrowed by a test, a
+  // parser's `node.loc = at`) and arrays of one cell (`a.y`, `a.x` stored in
+  // either order): slot stores and reads, the order of first stores, `in`,
+  // deletion, a computed name turning the record into a dictionary, growth and
+  // shift, copies and spreads.
+  const src = `
+    const tag = (node, at, w) => { if (Array.isArray(node)) { node.loc = at; if (w) node.w = w } return node }
+    const put = (o, k, v) => { o[k] = v }
+    export function f(n, mode) {
+      const out = []
+      for (let i = 0; i < n; i++) {
+        const v = tag(i % 4 ? [i, i + 1] : { i }, i, i % 3 ? 0 : 'w' + i)
+        if (!Array.isArray(v)) { out.push(JSON.stringify(v)); continue }
+        if (mode === 1 && i % 2) delete v[i % 4 === 1 ? 'loc' : 'w']
+        if (mode === 2 && i % 2) put(v, 'k' + i, i)
+        if (mode === 3) { for (let j = 0; j < 9; j++) v.push(j); v.shift() }
+        if (mode === 4 && i % 3 === 1) { v.w = 'late'; v.loc = -i }
+        const keys = []; for (const k in v) keys.push(k)
+        out.push([Object.keys(v), keys, v.loc, v.w, 'loc' in v, 'w' in v, Object.hasOwn(v, 'w'), v.length,
+          JSON.stringify(v), Object.assign([], v).w, { ...v }.loc])
+      }
+      const a = [n]
+      if (mode & 1) { a.y = 1; a.x = 2 } else { a.x = 3; a.y = 4 }
+      out.push([Object.keys(a), a.x + a.y, Object.values(a)])
+      return JSON.stringify(out)
+    }`
+  const js = oracle(src).f
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize }).exports.f
+    for (const mode of [0, 1, 2, 3, 4, 0]) is(f(9, mode), js(9, mode), `record properties O${optimize}, mode ${mode}`)
+  }
+  if (belowOpt(2)) return
+  const wat = compile(src, { optimize: 2, wat: true })
+  ok(/call \$__rec_set\b/.test(wat) && /call \$__rec_read\b/.test(wat), 'a named store and read of an array are its record\'s slots')
+})
+
+test('a durable array\'s record keeps its init-time values and takes a round\'s in the global table', () => {
+  const src = `
+    const g = [1, 2]; g.tag = 1
+    export function f(n) {
+      g.tag = g.tag + n; g.other = n
+      const keys = []; for (const k in g) keys.push(k)
+      return JSON.stringify([Object.keys(g), keys, g.tag, 'other' in g, g.other])
+    }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const f = jz(src, { optimize }).exports.f, js = oracle(src).f
+    for (const n of [12, 3, 5, 0]) is(f(n), js(n), `durable record O${optimize}, n=${n}`)
+  }
+})
+
 test('array enumeration merges initialized and runtime properties without stale keys', () => {
   const src = `
     const a = [10, 20]; a.first = 1; a.second = 2

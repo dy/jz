@@ -87,7 +87,7 @@ const PROSE = {
 
   ARRAY: {
     allocShape: '16B header ([-16:-8) reserved/forwarding, [-8:-4) len i32, [-4:0) cap i32) + cap*8B payload of f64 slots',
-    childPointers: 'each live slot [0, len) is boxed; dynamic properties use an off-16 HASH sidecar or the global $__dyn_props table',
+    childPointers: 'each live slot [0, len) is boxed; named properties use an off-16 RECORD of the layout the program fixes for them, an off-16 HASH sidecar, or the global $__dyn_props table',
     forwarding: 'array growth leaves [-8:newOffset][-4:-1 sentinel] at the old site; __ptr_offset follows the chain',
     identityNote: 'pointer-bits (REF_EQ_KINDS) — JS `==`/`===` on arrays is reference equality, no content path',
     interopDecode: 'mem.read t===1: follows forwarding (-4 === -1 sentinel loop), reads len @-8, maps mem.read over each BigInt64 slot',
@@ -169,6 +169,16 @@ const PROSE = {
       'surprising consequence of "immediate when no payload" applied to CLOSURE, worth a future audit item)',
     interopDecode: 'mem.read: NO arm for t===10 — falls to the default `return i64ToF64(p)`, reinterpreting the boxed pointer\'s bits as a raw float. Unlike BIGINT (below) this looks intentional/inert: a CLOSURE crossing to the host has no meaningful host-side JS value to decode INTO (calling it needs a wrapped-export path, not mem.read) — flagged here as a documented gap, not elevated to a FINDING since no comment anywhere claims CLOSURE should decode to something else',
     typeofArm: '"function" — the ONE kind besides STRING that $__typeof special-cases explicitly (closureArm, gated on ctx.linkDemand.closure)',
+  },
+
+  RECORD: {
+    auxNote: 'record layout id — indexes the $__rec_tbl name table (src/compile/array-records.js)',
+    allocShape: '16B header ([-16) names i32, [-12) layout i32, [-8) names inserted i32, [-4) words i32) + one f64 slot per name, then for several names their first-store order, a byte each',
+    childPointers: 'each slot (a boxed value, TOMB_NAN while absent); the order bytes are below 0x80 and never read as a box',
+    forwarding: 'fixed size; never relocates (not in FORWARDING_MASK) — an array that grows carries the pointer in its new header',
+    identityNote: 'never a JavaScript value: only an ARRAY header\'s off-16 word names one (module/collection/record.js)',
+    interopDecode: 'none — the host decodes arrays without their named properties',
+    typeofArm: 'none (never reaches $__typeof)',
   },
 
   EXTERNAL: {
