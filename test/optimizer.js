@@ -33,6 +33,7 @@ import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
 import { stripDeadCanons } from '../src/optimize/nan-canon.js'
 import { maskOperands } from '../src/optimize/mask-operands.js'
+import { searchLoops } from '../src/optimize/search-loops.js'
 import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -4803,6 +4804,68 @@ test('maskOperands: a byte mask over `^`/`|` moves onto the operand it narrows',
   }
   ok(masked('speed') >= 2, 'the CRC step and the halfword fold mask their carried value')
   is(masked('size'), 0, 'the size tier keeps its masks')
+})
+
+// A scan whose rounds mostly leave by the guard paid the loop header (V8's stack
+// check) and two taken branches a round; the scan alone, an innermost loop, V8
+// unrolls under one check. The guard's tests and the latch run in the order they did.
+test('searchLoops: a loop whose body is a guarded loop scans for its guard in a loop of its own', () => {
+  const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
+  const latch = ['br_if', '$L', ['i32.lt_s', ['local.tee', '$x', ['i32.add', g('$x'), k(1)]], k(9)]]
+  const guard = [['br_if', '$B', ['i32.ne', ['i32.load8_u', g('$x')], k(1)]], ['br_if', '$B', ['i32.load8_u', 'offset=1', g('$x')]]]
+  const inner = ['loop', '$W', ['br_if', '$W', ['i32.eqz', g('$y')]]]
+  const one = (loop) => searchLoops(['module', ['func', '$f', loop]])[1][2]
+  const tail = ['local.set', '$h', g('$y')]
+  is(one(['loop', '$L', ['block', '$B', ...guard, ['local.set', '$y', g('$x')], inner, tail], latch]),
+    ['block', '$out0', ['loop', '$L', ['block', '$B',
+      ['block', '$found1', ['loop', '$search2',
+        ['block', '$skip3', ['br_if', '$skip3', guard[0][2]], ['br_if', '$skip3', guard[1][2]], ['br', '$found1']],
+        ['br_if', '$search2', latch[2]],
+        ['br', '$out0']]],
+      ['local.set', '$y', g('$x')], inner, tail], latch]], 'the guard scans in an innermost loop, the latch copied after it')
+  const kept = (loop, why) => is(one(loop), loop, why)
+  kept(['loop', '$L', ['block', '$B', ...guard, ['local.set', '$y', g('$x')]], latch], 'a body without a loop keeps its shape')
+  kept(['loop', '$L', ['block', '$B', ['br_if', '$B', ['call', '$p', g('$x')]], inner, tail], latch], 'a guard that calls keeps its shape')
+  kept(['loop', '$L', ['block', '$B', ['local.set', '$y', g('$x')], ...guard, inner, tail], latch], 'a body led by anything but its guard keeps its shape')
+  kept(['loop', '$L', ['block', '$B', ...guard, inner, tail], ['br', '$L']], 'a loop without a conditional latch keeps its shape')
+  kept(['loop', '$L', ['result', 'i32'], ['block', '$B', ...guard, ['local.set', '$y', g('$x')], inner, ['drop', g('$y')]], latch], 'a loop of a value keeps its shape')
+  kept(['loop', '$L', ['block', '$B', ...guard, ['local.set', '$y', g('$x')], inner], latch], 'a body ending in its loop, the guard its entry test, keeps its shape')
+
+  // a pixel scan starting a contour walk where it finds a boundary, a sieve crossing off
+  // from each prime it finds, and a guard whose round continues the scan or leaves it
+  const src = `export let f = (w, n) => {
+    const bmp = new Uint8Array(w * w), seen = new Uint8Array(w * w), comp = new Uint8Array(n + 1)
+    for (let i = 0; i < w * w; i++) bmp[i] = ((i * 2654435761) >>> 27) < 9 ? 1 : 0
+    let h = 0
+    for (let y = 1; y < w - 1; y++) for (let x = 1; x < w - 1; x++) {
+      if (bmp[y * w + x] === 1 && bmp[y * w + x - 1] === 0 && seen[y * w + x] === 0) {
+        let p = y * w + x, s = 0
+        while (p < w * w && bmp[p] === 1 && s < 64) { seen[p] = 1; p += w; s++ }
+        h = Math.imul(h ^ s, 16777619)
+      }
+    }
+    let primes = 0
+    for (let i = 2; i <= n; i++) if (comp[i] === 0) { primes++; for (let j = i * i; j <= n; j += i) comp[j] = 1 }
+    outer: for (let i = 1; i < n; i++) {
+      if (comp[i] === 1 || (i & 3) === 0) continue
+      for (let j = 0; j < 3; j++) { if (i * j > n) break outer; h = (h + i * j) | 0 }
+      if (i > 50) break
+    }
+    return h + primes
+  }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', { level: 'speed', searchLoops: false }, 2]) {
+    const f = run(src, { optimize }).f
+    for (const [w, n] of [[3, 2], [8, 30], [33, 1000], [64, 10000]]) is(f(w, n), host(w, n), `${JSON.stringify(optimize)} w=${w} n=${n}`)
+  }
+  if (onKernel()) return
+  const scans = (optimize) => {
+    let k = 0
+    walk(findFunc(parseWat(jz.compile(src, { wat: true, optimize })), '$f'), n => { if (n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$search')) k++ })
+    return k
+  }
+  ok(scans('speed') >= 2, `the pixel scan and the sieve scan for their guards (${scans('speed')})`)
+  is(scans(2), 0, 'level 2 keeps its loops')
 })
 
 test('rec-unroll: an empty statement in a body is no loop', () => {

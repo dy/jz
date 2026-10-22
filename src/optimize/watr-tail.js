@@ -24,6 +24,7 @@ import { guardToInt32 } from './to-int32.js'
 import { poolFloatConstants } from './pool-floats.js'
 import { selectBits } from './select-bits.js'
 import { maskOperands } from './mask-operands.js'
+import { searchLoops } from './search-loops.js'
 import { splitFuncs } from './split-funcs.js'
 
 // A runtime helper's cold half, split off so the engine inlines the hot head
@@ -552,6 +553,8 @@ export function watrTail(module, cfg, {
   if (cfg.maskOperands === true) time('maskOperands', () => maskOperands(optimized))
   // (after the passes that read a float select as one)
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized))
+  // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)
+  if (cfg.searchLoops === true) time('searchLoops', () => searchLoops(optimized))
   // (last: the float literals every pass above reads as constants)
   if (cfg.poolFloats === true) time('poolFloatConstants', () => poolFloatConstants(optimized))
   // (after every pass that reads a function whole, the inliner above all, which would splice a

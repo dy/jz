@@ -64,7 +64,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
-const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
+const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
 const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false })
 
 const LEVEL_PRESETS = Object.freeze({
@@ -104,6 +104,10 @@ const LEVEL_PRESETS = Object.freeze({
   // halfword mask over `^`/`|` onto the operand it narrows (optimize/mask-operands.js):
   // x64 V8 zero-extends a value still live into a register of its own, a move the core
   // renames away, where over the combination it extends a register into itself.
+  // searchLoops gives a loop whose body is a guarded loop an innermost loop that
+  // scans for the guard (optimize/search-loops.js): V8 unrolls an innermost loop
+  // under one stack check, where each round of the scan paid a header and two
+  // taken branches.
   3: L3_PRESET,
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).
