@@ -754,7 +754,7 @@ export const registerCompact = () => {
     (if (i32.eqz (local.get $any)) (then ${none}))
     ;; the entries copied aside, the table emptied, each live entry placed anew
     (local.set $tmp (i32.and (i32.add (i32.add (global.get $__g_list) (i32.shl (global.get $__g_ln) (i32.const 3))) (i32.const 7)) (i32.const -8)))
-    ;; past the move the table must be rebuilt: its scratch grows the memory even a host's view names
+    ;; past the move the table must be rebuilt: the walk claimed its room ($__gc_walk); short of it, its scratch grows the memory even a host's view names
     (if (i32.eqz (call $__gc_room (i32.add (local.get $tmp) (i32.mul (local.get $cap) (local.get $es))) (i32.const 1))) (then ${none}))
     (memory.copy (local.get $tmp) (local.get $p) (i32.mul (local.get $cap) (local.get $es)))${logged ? `
     (local.set $relog (i32.and (i32.lt_u (local.get $p) (global.get $__heap_reset)) (i32.ne (global.get $__durable_slot_n) (i32.const 0))))${relog('(local.get $p)', '(local.get $tmp)', '(i32.mul (local.get $cap) (local.get $es))')}` : ''}
@@ -956,6 +956,7 @@ export const registerCompact = () => {
   ctx.core.stdlib['__gc_walk'] = () => {
     return `(func $__gc_walk
     (local $top i32) (local $nl i32) (local $i i32) (local $at i32) (local $bits i64) (local $cnt i32)
+    (local $p i32) (local $hi i32) (local $need i64) (local $rh i64)
     (local.set $top (global.get $__g_top))
     (local.set $nl (global.get $__g_nl))
     (if (global.get $__g_fail) (then (return)))
@@ -993,6 +994,42 @@ export const registerCompact = () => {
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $group)))
     (i32.store (i32.add (global.get $__g_pre) (i32.shl (local.get $i) (i32.const 2))) (local.get $cnt))
+    ;; the room what follows takes, claimed while nothing is rewritten: the words
+    ;; the rewrite defers (a stub's forward, a shifted array's mark and record) on
+    ;; the stack, then, once those are written, a rebuilt table's entries past the
+    ;; list. A memory that cannot give it leaves the heap as it was.
+    (local.set $i (i32.const 0))
+    (block $sized (loop $entry
+      (br_if $sized (i32.ge_u (local.get $i) (global.get $__g_ln)))
+      (local.set $at (i32.add (global.get $__g_list) (i32.shl (local.get $i) (i32.const 3))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (local.set $hi (i32.load offset=4 (local.get $at)))
+      (local.set $p (i32.load (local.get $at)))
+      (if (i32.eq (local.get $hi) (i32.const ${KIND_STUB << 16})) (then (local.set $need (i64.add (local.get $need) (i64.const 8))) (br $entry)))
+      (br_if $entry (i32.le_u (local.get $hi) (i32.const ${KIND_STUB << 16})))
+      (local.set $cnt (i32.and (i32.shr_u (local.get $hi) (i32.const ${LAYOUT.TAG_SHIFT - 32})) (i32.const ${LAYOUT.TAG_MASK})))
+      (if (i32.and (i32.eq (local.get $cnt) (i32.const ${PTR.ARRAY}))
+            (i32.and (i32.eq (i32.load (i32.sub (local.get $p) (i32.const 12))) (i32.const -1)) (i32.ne (i32.load (i32.sub (local.get $p) (i32.const 16))) (i32.const -1))))
+        (then (local.set $need (i64.add (local.get $need) (i64.const 16)))))
+      ${rebuildOn() ? `(if (i32.or (i32.eq (local.get $cnt) (i32.const ${PTR.SET})) (i32.eq (local.get $cnt) (i32.const ${PTR.MAP})))
+        (then
+          (local.set $bits (i64.mul (i64.extend_i32_u (i32.load (i32.sub (local.get $p) (i32.const 4))))
+            (select (i64.const ${SET_ENTRY}) (i64.const ${MAP_ENTRY}) (i32.eq (local.get $cnt) (i32.const ${PTR.SET})))))
+          (if (i64.gt_u (local.get $bits) (local.get $rh)) (then (local.set $rh (local.get $bits))))))` : ''}
+      (br $entry)))${rekeyOn() ? `
+    ;; and the table of named properties kept by address, rebuilt there too (\`__gc_rekey_dyn\`)
+    (if (f64.ne (global.get $__dyn_props) (f64.const 0))
+      (then
+        (local.set $bits (i64.mul (i64.extend_i32_u (i32.load (i32.sub (i32.wrap_i64 (i64.reinterpret_f64 (global.get $__dyn_props))) (i32.const 4)))) (i64.const ${MAP_ENTRY})))
+        (if (i64.gt_u (local.get $bits) (local.get $rh)) (then (local.set $rh (local.get $bits))))))` : ''}
+    (if (i64.gt_u (local.get $rh) (local.get $need)) (then (local.set $need (local.get $rh))))
+    (local.set $need (i64.add (local.get $need) (i64.add (i64.extend_i32_u (i32.add (global.get $__g_list) (i32.shl (global.get $__g_ln) (i32.const 3)))) (i64.const 8))))
+    (if (i64.gt_u (local.get $need) (i64.extend_i32_u (global.get $__g_lim)))
+      (then
+        (if (i64.gt_u (local.get $need) (i64.const 0xFFFFFFF8)) (then (global.set $__g_fail (i32.const 1)) (return)))
+        (if (i32.eqz (call $__gc_room (i32.wrap_i64 (local.get $need)) (i32.eqz (global.get $__viewed)))) (then (global.set $__g_fail (i32.const 1)) (return)))
+        ;; the stack is empty: it starts again at the memory's new end
+        (global.set $__g_sp (global.get $__g_lim))))
     ;; 3. every pointer rewritten where it stands
     (local.set $i (i32.const 0))
     (block $updated (loop $next

@@ -2257,6 +2257,14 @@ and never grows it, since a grow detaches every view: a render loop's pixel
 buffer, returned once and painted every frame, stays attached however often
 the state beside it is walked. Only a Set or Map rebuilt after the move,
 which must finish, may still grow it.
+The flag holds while the memory is the one the views showed (`mem._viewBuf`):
+once the program's own allocation grew it, those views are detached and the host
+clears the flag, so under a memory maximum, where each grow fits exactly, the
+garbage is still collected. The room the rewrite's deferred words and a rebuilt
+table take (a Set or Map keyed by identity, the table of named properties kept by
+address) is claimed when the walk ends, before any pointer is rewritten
+(`__gc_walk`): a refusal leaves every pointer as it was, and the rebuild finds its
+room without growing.
 
 **Compaction within a call** (optimize/loop-compact.js). A loop whose
 iteration allocates and lets some of it escape (the frame census's

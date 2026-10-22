@@ -143,6 +143,62 @@ test('compact: a returned view outlives the compactions of the calls after it', 
   }
 })
 
+// Once the program's own allocation grew the memory, the views handed before
+// are detached, and the compaction may grow it for its scratch again. Under a
+// memory maximum each grow fits exactly, with no room to spare: a program that
+// returned one view still has its garbage collected, not an out-of-memory.
+test('compact: once the program grew the memory past its views, a compaction grows it again', () => {
+  if (onWasi() || !counted()) return
+  const src = `let px, junk
+    export const resize = (n) => { px = new Uint32Array(n); return px }
+    export const step = (i) => { junk = new Float64Array(2048); junk[0] = i; return junk[0] + px.length }`
+  const { exports, memory } = jz(src, { maxMemory: 170 })
+  exports.resize(786432)
+  let wrong = 0, compactions = 0, last = 0, threw = null
+  try {
+    for (let i = 0; i < 800; i++) {
+      if (exports.step(i) !== i + 786432) wrong++
+      if (memory.used < last) compactions++
+      last = memory.used
+    }
+  } catch (e) { threw = e.message }
+  is(threw, null, 'no out-of-memory')
+  is(wrong, 0, 'every step answers')
+  ok(compactions >= 2, `compacted past the first grow (${compactions})`)
+})
+
+// A compaction that may not grow claims, before it rewrites a pointer, the
+// room the table of named properties kept by address rebuilds in
+// (`__gc_rekey_dyn`): a memory that cannot give it leaves the heap as it was,
+// so the rebuild neither grows the memory a view shows nor leaves the moved
+// closures' properties at their old offsets.
+test('compact: a compaction that may not grow claims the room the props table rebuilds in', () => {
+  if (onWasi() || !counted()) return
+  const src = `let kept = [], buf = new Float64Array(4)
+    export const view = () => buf
+    export const step = (i) => {
+      for (let k = 0; k < 40; k++) { const f = () => i * 40 + k; f.tag = i * 40 + k; kept.push(f) }
+      if (kept.length > 6000) kept = kept.slice(kept.length >> 1)
+    }
+    export const check = () => { let bad = 0; for (let k = 0; k < kept.length; k++) if (kept[k].tag !== kept[k]()) bad++; return bad }`
+  for (const level of levels(2, 3)) {
+    const { exports, memory } = jz(src, { optimize: level })
+    let bad = 0, held = 0, grew = 0, last = 0, buf = memory.buffer
+    exports.view()
+    for (let i = 0; i < 1000; i++) {
+      exports.step(i)
+      if (memory.used < last) memory.buffer === buf ? held++ : grew++
+      last = memory.used
+      if (i % 16 === 15) bad += exports.check()
+      buf = memory.buffer
+      exports.view()
+    }
+    ok(held >= 1, `O${level}: compacted within the memory a view showed (${held})`)
+    is(grew, 0, `O${level}: no call that compacted grew the memory the view showed`)
+    is(bad, 0, `O${level}: every closure keeps its property`)
+  }
+})
+
 // Within one call, a loop whose iteration allocates and keeps some of it
 // compacts what it keeps in place (optimize/loop-compact.js): the carried
 // string, array or object stays, and every one it replaced goes.

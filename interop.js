@@ -1072,8 +1072,9 @@ export const wrap = (memSrc, inst, state) => {
   // A view the host holds detaches as the memory grows: once one is handed
   // out, a compaction finds its scratch in the memory as it stands or
   // declines (`__viewed`, module/core/stub-log.js), as the program's own
-  // allocations alone grow it.
-  if (viewed && mem) mem._viewSet = () => { viewed.value = 1 }
+  // allocations alone grow it. The buffer the view shows marks how long:
+  // once the program's allocation grew the memory past it (`settle`).
+  if (viewed && mem) mem._viewSet = () => { viewed.value = 1; mem._viewBuf = mem.buffer }
   // Async boundary: a program with async source anywhere in its graph exports
   // __mt_drain / __p_state / __p_value (the `jz:async` std module's contract,
   // re-exported by prepare). Every export call ends
@@ -1570,6 +1571,11 @@ export const wrap = (memSrc, inst, state) => {
     const floor = Math.max(mem._base(), mem._pin), at = mem._top()
     const since = at - floor, need = 2 * mem._live + COMPACT_MIN
     if (since <= need && !(CAP - at < at / 8 + MARGIN + need - since && since > mem._live / 8 + COMPACT_MIN)) return
+    // Once the program's own allocation grew the memory (`allocTyped`'s
+    // LIFETIME), the views handed before are detached: the scratch may grow
+    // it again, as under a memory maximum, where each grow fits exactly, the
+    // garbage must still go.
+    if (viewed && viewed.value && mem._viewBuf !== mem.buffer) viewed.value = 0
     const to = compact(floor | 0) >>> 0
     mem._live = Math.max(to - floor, cost ? cost.value >>> 0 : 0)
   }
