@@ -150,14 +150,47 @@ const EXAMPLES = [
   { name: 'domain-color', frame: 'frame(t) (atan2/hypot field)',
     make: (e) => { e.resize(640, 400); let t = 0
       return () => { t += 1 / 60; e.frame(t, Math.cos(t * 0.23) * 0.4, Math.sin(t * 0.17) * 0.4, 0, 0, 2.5) } } },
+
+  // ── The pages a JS/jz toggle report named (epicycles, sandpile, swarm, blackhole), each at
+  // the size runDemo gives a 1280×720 canvas box at devicePixelRatio 1 (examples/bench-pages.mjs's
+  // box) and driven as its index.html drives it.
+  // The term count sweeps 1→255 over a 20 s cycle; frames sample the cycle at golden-ratio steps,
+  // so either engine's frames, however many, weigh every term count alike. Shape 0 (the heart).
+  { name: 'epicycles', frame: 'frame(t, φ, terms) (DFT chain)',
+    make: (e) => { e.resize(1280, 720); e.setShape(0); e.init(); let k = 0
+      return () => {
+        const t = (k++ * 12.360679774997896) % 20, lfo = (t * 0.05) % 1
+        const boosted = lfo < 0.35 ? lfo * 1.43 : 0.5 + (lfo - 0.35) * 0.77
+        e.frame(t, (t * 0.7) % (2 * Math.PI), Math.max(1, Math.round(boosted * 255)))
+      } } },
+
+  // The avalanche backlog grows for seconds after a seed until each frame spends its whole
+  // 300k-topple budget. Both engines run the same frames: 5 s of demo, then the timed ones.
+  { name: 'sandpile', frame: 'frame(t) (worklist topple)', plan: { warm: 300, per: 4 },
+    make: (e) => { e.resize(1280, 720); e.seed(); let t = 0; return () => { t += 1 / 60; e.frame(t) } } },
+
+  // The idle cursor: the page's Lissajous target. The long-exposure ink pass dominates: an
+  // f32 decay and three channels' `| 0` a pixel, lifted to f64x2 with one magnitude guard a
+  // pixel pair. V8 lowers JavaScript's `| 0` to one arm64 instruction (fjcvtzs), which wasm SIMD
+  // has no lane form of: ~0.95× on an M4 Max. `opt` with a backstop: a lost lift drops it far below.
+  { name: 'swarm', frame: 'frame(t) (ink exposure + flies)', opt: true, floor: 0.8,
+    make: (e) => { e.resize(1280, 720); e.init(); e.setTheme(0, 0, 0, 235, 235, 235); let t = 0
+      return () => { t += 1 / 60; e.setTarget(0.5 + 0.32 * Math.sin(t * 0.23), 0.5 + 0.3 * Math.sin(t * 0.37 + 1)); e.frame(t) } } },
+
+  // A fixed turbulence seed (the page draws one at random) and the page's 80° inclination,
+  // its azimuth drifting as on the page.
+  { name: 'blackhole', frame: 'frame(t, incl, azim) (RK4 geodesics)',
+    make: (e) => { e.resize(400, 224); e.setSeed(1, 2, 3); let t = 0, azim = 0.5
+      return () => { t += 1 / 60; azim += 0.004; e.frame(t, 80 * Math.PI / 180, azim) } } },
 ]
 
 // Auto-calibrated median µs/op: warm, size a batch to ~30ms, take the best-of-9
-// median (steady-state, robust to GC/scheduler blips).
-const timeUs = (fn) => {
-  for (let i = 0; i < 30; i++) fn()
+// median (steady-state, robust to GC/scheduler blips). A simulation whose frames
+// change as it runs takes a fixed `plan` instead, so both engines time the same frames.
+const timeUs = (fn, plan) => {
+  for (let i = 0; i < (plan?.warm ?? 30); i++) fn()
   const t0 = performance.now(); fn(); const one = performance.now() - t0
-  const iters = Math.max(3, Math.min(50000, Math.round(30 / Math.max(one, 0.0005))))
+  const iters = plan?.per ?? Math.max(3, Math.min(50000, Math.round(30 / Math.max(one, 0.0005))))
   const samples = []
   for (let r = 0; r < 9; r++) {
     const a = performance.now()
@@ -189,7 +222,7 @@ console.log('example             frame                V8 µs       jz µs    spe
 console.log('─'.repeat(74))
 
 let geo = 1, n = 0, wins = 0, regressed = [], notStrict = []
-for (const { name, frame, make, opt, jzSrc, floor: kFloor } of EXAMPLES) {
+for (const { name, frame, make, opt, jzSrc, floor: kFloor, plan } of EXAMPLES) {
   // `jzSrc` lets jz compile a different source than the V8 baseline imports — used for
   // the SIMD examples, where jz runs a hand-vectorized kernel against V8's best scalar
   // version (same image, V8 has no auto-SIMD for these divergent per-pixel loops).
@@ -211,8 +244,8 @@ for (const { name, frame, make, opt, jzSrc, floor: kFloor } of EXAMPLES) {
   // speed-for-size / relaxed-fma trades 'speed' makes are exactly what to show here.
   const { exports, memory } = jz(src, { optimize: 'speed' })
 
-  const jsT = timeUs(make(jsmod, null))
-  const jzT = timeUs(make(exports, memory))
+  const jsT = timeUs(make(jsmod, null), plan)
+  const jzT = timeUs(make(exports, memory), plan)
   const sp = jsT / jzT
   geo *= sp; n++
   if (sp > 1) wins++
