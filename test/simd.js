@@ -1655,6 +1655,44 @@ for (const [arr, max] of [['Uint8Array', 255], ['Uint16Array', 65535]]) {
   })
 }
 
+// (d) A statement's three truncations test their lanes with one compare (the swarm exposure):
+// the OR of the channels' bits, its sign cleared, under 2^31's, else every channel takes the
+// scalar ToInt32 lane by lane. Theme values past 2^31 and NaN (runtime, from a Float64Array),
+// negative and NaN ink, and channels each under 2^31 whose bits OR past it (2^25 and 2^24)
+// drive lanes down the fallback; every lane matches the host.
+const TONE_THEME = (n) => `
+  let ink = new Float32Array(${n}), px = new Uint32Array(${n}), th = new Float64Array(6)
+  export let theme = (a, b, c, d, e, f) => { th[0] = a; th[1] = b; th[2] = c; th[3] = d; th[4] = e; th[5] = f }
+  export let main = () => {
+    let i = 0
+    while (i < ${n}) { ink[i] = (i * 37 % 101) * 0.03 - 0.5; i++ }
+    ink[${n} >> 1] = 0 / 0
+    let pr = th[0], pg = th[1], pb = th[2], ir = th[3], ig = th[4], ib = th[5]
+    i = 0
+    while (i < ${n}) {
+      let e = ink[i] * 0.996
+      ink[i] = e
+      let v = e < 1.0 ? e * 0.55 : 0.55
+      let r = (pr + (ir - pr) * v) | 0, g = (pg + (ig - pg) * v) | 0, b = (pb + (ib - pb) * v) | 0
+      px[i] = (255 << 24) | (b << 16) | (g << 8) | r
+      i++
+    }
+    let s = 0; i = 0; while (i < ${n}) { s = (s + px[i] * (i + 1)) | 0; i++ }
+    return s
+  }`
+test('SIMD tonemap - a statement\'s truncations test their lanes with one compare, bit-exact', () => {
+  const w = wat(TONE_THEME(64), SPEED)
+  ok(/v128\.or/.test(w) && /i64x2\.lt_s/.test(w) && !/f64x2\.max/.test(w) && /i32x4\.trunc_sat_f64x2_s_zero/.test(w), 'the channels\' bits meet in one compare before the lane truncation')
+  for (const th of [[0, 0, 0, 235, 235, 235], [12, 18, 27, 1e10, -3e9, 240], [NaN, 0, 0, 5, 5, 5], [2147483647, -2147483648, 0, 1, 1, 1], [33554432, 16777216, 7, 33554432, 16777216, 7]])
+    for (const n of [64, 63, 2, 1]) {
+      const host = oracle(TONE_THEME(n)), simd = runVec(TONE_THEME(n), SPEED), scal = runVec(TONE_THEME(n), SPEED_SCALAR)
+      host.theme(...th); simd.theme(...th); scal.theme(...th)
+      const want = host.main()
+      is(simd.main(), want, `n=${n} theme ${th}: SIMD === host`)
+      is(scal.main(), want, `n=${n} theme ${th}: scalar === host`)
+    }
+})
+
 // Per-pixel-color HAZARD (domain-color): a guarded conditional assignment `let fx=0; if(cond){fx=…}`
 // whose target later feeds a transcendental mirror (hypot/atan2). `fx=0` lifts to an f64x2 lane
 // local, but the statement-form `if` lands in the SCALAR epilogue — so the lifted `hypot(fx,…)`,

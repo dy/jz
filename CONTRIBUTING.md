@@ -4130,6 +4130,17 @@ negations retain their original comparison and invert its boolean result,
 including unordered Number comparisons. Fractional/NaN limits, odd widths,
 zero work and counters carried between pixels are pinned in `test/simd.js`.
 
+A statement's truncations in the tone-map lift test their lanes with one integer compare
+(`optimize/vectorize/tone-map.js` `testWords`). A double's bits order as its value does
+while its sign is clear, and an OR of bits is at least each of them: the OR of the signed
+truncations' bits, its sign cleared, under 2^31's puts every lane in range (the unsigned
+ones': the OR under 2^32's, biased so a set sign fails). A NaN or infinite lane lies past
+the bound; an OR past it with every lane in range takes the scalar arm, which agrees.
+Three channels' `| 0` cost two ORs, a sign clear and a compare before the shared all-true
+test, where they cost three magnitudes, three compares and two ANDs; a `f64x2.max` of the
+magnitudes is one arm64 instruction but two `maxpd` and six NaN and signed-zero fix-ups in
+V8's x64 lowering.
+
 Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):
 
 - **Bit-exact.** Compile `{optimize:3}` vs `{optimize:3, noSimd:true}`, run N frames, compare output

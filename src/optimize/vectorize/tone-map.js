@@ -401,8 +401,23 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     out.push(...inner)
   }
   const batch = []
+  // One integer comparison for all of a statement's truncations. A double's bits, read
+  // as an integer, order as its value does while its sign is clear, and an OR of bits
+  // is at least each of them: the OR under a bound puts every lane of every channel
+  // under it (an OR past it with every lane under takes the scalar arm, which agrees).
+  // Signed: the OR, its sign cleared, under 2^31; unsigned: the OR under 2^32, a set
+  // sign past it (the bias makes the signed comparison unsigned). A NaN or an infinite
+  // lane lies past either bound. (A `f64x2.max` of magnitudes is one arm64 instruction
+  // but, in V8's x64 lowering, two `maxpd` and six fix-ups for NaN and signed zero; an
+  // OR is one instruction on both.)
+  const under = (v, hex) => ['i64x2.lt_s', v, ['v128.const', 'i64x2', hex, hex]]
+  const or = (gets) => gets.reduce((a, b) => ['v128.or', a, b])
   const testWords = (out, pres, ps) => {
-    const check = ps.map(p => inRangeOf(p.get, p.signed)).reduce((a, b) => ['v128.and', a, b])
+    const signed = ps.filter(p => p.signed).map(p => p.get), unsigned = ps.filter(p => !p.signed).map(p => p.get)
+    const checks = []
+    if (signed.length) checks.push(under(['f64x2.abs', or(signed)], '0x41E0000000000000'))
+    if (unsigned.length) checks.push(under(['v128.xor', or(unsigned), ['v128.const', 'i64x2', '0x8000000000000000', '0x8000000000000000']], '0xC1F0000000000000'))
+    const check = checks.reduce((a, b) => ['v128.and', a, b])
     out.push(...pres, ['if', ['i64x2.all_true', check],
       ['then', ...ps.map(p => ['local.set', p.rt, truncZero(p.signed, p.get)])],
       ['else', ...ps.map(p => ['local.set', p.rt, ['i32x4.replace_lane', 1, ['i32x4.splat', laneWord(0, p.get, p.x, p.signed, p.scalar)], laneWord(1, p.get, p.x, p.signed, p.scalar)]])]])
