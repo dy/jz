@@ -60,6 +60,7 @@ import { tryGatherMap } from './gather-map.js'
 import { tryMemCopyFill } from './memcpy.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
 import { matchOuterPixelLoop } from './outer-scaffold.js'
+import { tryPairIterations } from './pair-iterations.js'
 import { tryOuterStripRest } from './outer-strip.js'
 import { tryRampMap } from './ramp.js'
 import { tryPrefilter } from './prefilter.js'
@@ -100,7 +101,7 @@ function assertLoopPlanAgrees(node, bl) {
 export function vectorizeLaneLocal(fn, opts = {}) {
   const { multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false,
     stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false,
-    aliasVersion = true } = opts
+    aliasVersion = true, pairIterations = false } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -313,6 +314,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       }
       // A guard whose first test the lanes can answer, over work too heavy to be common.
       if (!r) r = tryPrefilter(bl, fnLocals, freshIdRef)
+      // Not a lane lift: two items' inner loops run side by side (pair-iterations.js).
+      const paired = r ? null : tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.
@@ -324,6 +327,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
           { fn: `${fnName}#${whyNotN}` })
       }
       if (r) simdFired = true   // one of the real SIMD recognizers above matched
+      if (paired) r = paired
       if (r) {
         // Mark the consumed subtree: the wrapper REUSES these nodes (scalar tail, and the
         // lane splats alias the original load nodes), so a deferred strength-reduce must

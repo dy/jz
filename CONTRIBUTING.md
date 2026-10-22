@@ -4130,6 +4130,27 @@ negations retain their original comparison and invert its boolean result,
 including unordered Number comparisons. Fractional/NaN limits, odd widths,
 zero work and counters carried between pixels are pinned in `test/simd.js`.
 
+A pixel loop no lane lift takes, whose body holds one inner loop (under `if`s, its
+conditions held in flags) that carries an f64 and leaves on a test of it (or of a flag a
+branch on it sets), runs two pixels side by side at the speed tier
+(`optimize/vectorize/pair-iterations.js`, the `pairIterations` pass): lane A's work up to
+its inner loop, lane B's (the pixel counters one ahead, locals of its own), one loop
+stepping whichever lanes still run, then A's work after the loop, then B's. Such a loop's
+trip count is the data's, so the core cannot run ahead past its exit into the next pixel,
+and each step waits on the one before; paired, two chains overlap (blackhole's geodesics,
+hyperbolic's reflections, mandelbrot's deep-zoom perturbation). A counted inner loop (an
+fbm's octaves, a counter stepped by a constant even where a version keeps it an f64) stays
+single: the core already runs ahead of it. Each lane runs its own
+statements in order, so only one lane's work moves against the other's, which the body
+keeps unobservable: no local carries a value from pixel to pixel or past the loop (each
+read follows a write in the pixel, the vectorizer's live-out set), only `$math.*` calls
+and not `random`, no global write, no trap the loop as written would not take alike (a
+division by a variable, a trapping truncation), branches only to its own labels, and
+stores only after the inner loop through a base no load of the body reads (distinct
+bases are distinct arrays, the standing model). An odd last pixel runs the loop as
+written. `test/simd.js` pins widths of zero, one and several pairs, odd tails, the
+condition taken by no lane and by every lane, and the declines.
+
 A statement's truncations in the tone-map lift test their lanes with one integer compare
 (`optimize/vectorize/tone-map.js` `testWords`). A double's bits order as its value does
 while its sign is clear, and an OR of bits is at least each of them: the OR of the signed

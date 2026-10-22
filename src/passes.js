@@ -145,6 +145,7 @@ export const PASS_NAMES = [
   'stencil',                  // stencil vectorizer (bit-exact pure win; listed for the O0 contract)
   'outerStrip',               // outer-loop strip-mining vectorizer
   'toneMap',                  // tone-map reduction vectorizer
+  'pairIterations',           // two items' inner float recurrences run side by side (optimize/vectorize/pair-iterations.js), speed-for-size
   'slp',                      // superword-level parallelism (adjacent-scalar packing)
   'devirtFnArrays',           // const fn-array call_indirect → guarded direct calls
   'devirtSchemaReads',        // megamorphic dyn-get probe → br_table over registered schemas

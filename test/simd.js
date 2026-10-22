@@ -3136,6 +3136,67 @@ test('escape-time f64x2 - julia (fixed c, invariant lanes) + odd width', () => {
   is(dc2, sc2)
 })
 
+// === Paired items (optimize/vectorize/pair-iterations.js) ===
+// A pixel whose inner loop carries a float recurrence, under a condition, with a rare
+// arm that calls and two exits: no lane lift takes it. Two pixels' inner loops then run
+// side by side; every lane computes what the loop as written computes.
+const pairKern = (body = '') => `
+  let W = 64, H = 48
+  let out = new Uint32Array(64 * 48)
+  let seed = new Float64Array(2)
+  seed[0] = 0.25; seed[1] = 1.5
+  export let render = (k, w, h) => {
+    W = w; H = h
+    let j = 0
+    for (let py = 0; py < H; py++) {
+      for (let px = 0; px < W; px++) {
+        let a = (px - W * 0.5) / W, b = (py - H * 0.5) / H
+        let v = 0.0
+        if (a * a + b * b < 0.2 + k) {
+          let x = a, y = b, n = 0, glow = 0.0
+          while (n < 40) {
+            let nx = x * x - y * y + seed[0] * a
+            let ny = 2.0 * x * y + seed[1] * b
+            if (nx * ny < 0.0) glow += Math.sin(nx * 3.0 + ny)
+            if (nx * nx + ny * ny > 4.0) break
+            x = nx; y = ny; n++
+          }
+          v = n + glow * 0.25
+        }
+        ${body}
+        out[j] = (v * 7.0) | 0
+        j++
+      }
+    }
+  }
+  export let cs = () => { let h = 0x811c9dc5 | 0; for (let i = 0; i < W * H; i++) h = ((h ^ out[i]) * 0x01000193) | 0; return h >>> 0 }
+`
+const PAIR_ON = { optimize: 'speed' }, PAIR_OFF = { optimize: { level: 'speed', pairIterations: false } }
+const paired = (src) => /\$__pi\d+_jl/.test(wat(src, PAIR_ON))
+
+test('paired items - a float recurrence under a condition runs two pixels side by side, as written', () => {
+  const src = pairKern()
+  ok(paired(src), 'the pixel loop is paired')
+  const want = oracle(src), on = runVec(src, PAIR_ON), off = runVec(src, PAIR_OFF)
+  // no pair, one pair, odd tails, every lane skipping the condition, every lane taking it
+  for (const [w, h, k] of [[1, 3, 0], [2, 3, 0], [3, 2, 0.1], [5, 7, -1], [63, 9, 0.3], [64, 48, 0]]) {
+    want.render(k, w, h); on.render(k, w, h); off.render(k, w, h)
+    is(on.cs(), want.cs(), `${w}×${h} k=${k} paired = JS`)
+    is(off.cs(), want.cs(), `${w}×${h} k=${k} unpaired = JS`)
+  }
+})
+
+test('paired items - declines where one item could see another', () => {
+  // state carried from pixel to pixel through a module global
+  ok(!paired(pairKern().replace('let v = 0.0', 'let v = 0.0; acc = acc * 0.5 + 1.0').replace('let out =', 'let acc = 0.0\n  let out =')), 'module-global write')
+  // a stateful call
+  ok(!paired(pairKern().replace('glow += Math.sin(nx * 3.0 + ny)', 'glow += Math.random()')), 'Math.random')
+  // a read of the array the body stores into
+  ok(!paired(pairKern().replace('let v = 0.0', 'let v = out[j] * 0.0')), 'reads the stored array')
+  // a store ahead of the inner loop
+  ok(!paired(pairKern().replace('let v = 0.0', 'let v = 0.0; out[j] = 1')), 'store before the loop')
+})
+
 // Compound-top guard `while (escape && i < MAXIT)` — BOTH conditions in the while head, the ESCAPE
 // FIRST (the natural way to write a mandelbrot). This is the compound-top path; with the escape
 // first, the i32 limit lands in the second keep, which the recognizer left unclassified and tried to

@@ -65,7 +65,7 @@ const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
 const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
-const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false })
+const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false, pairIterations: false })
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
@@ -140,6 +140,7 @@ const LEVEL_PRESETS = Object.freeze({
     versionIntegralLoops: false, // an integral copy of a loop beside it: speed-for-size
     unswitchLoops: false,     // a copy of a loop for each answer of a test it reads: speed-for-size
     reciprocalDivisors: false, // a copy of a loop for a power-of-two divisor: speed-for-size
+    pairIterations: false,    // a second copy of a pixel loop's body, its inner loop beside the first's: speed-for-size
     splitLoopKinds: false,    // a copy of a loop where a name of several kinds holds a typed array: speed-for-size
     specializeCalledArgs: false, // a copy of a function for each named function a call passes to a parameter it calls: speed-for-size
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
