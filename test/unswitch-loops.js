@@ -5,7 +5,7 @@
 // `x = stereo ? (L[i] + R[i]) * 0.5 : L[i]` as a number in the stereo copy,
 // where the sum after it adds numbers; in the mono copy `x` may be a channel.
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { funcWat, oracle, run, wat } from './util.js'
 
@@ -51,4 +51,36 @@ test('unswitch loops: the stereo copy adds numbers', () => {
   const on = loops(wat(src, { optimize: alone })), off = loops(wat(src, { optimize: { ...alone, unswitchLoops: false } }))
   is(off.join(), '2', 'one loop: the channels\' sum and the running sum may both concatenate')
   is(on.join(), '1,1', 'a copy for each answer, one sum each that may concatenate: the stereo copy\'s running sum adds numbers')
+})
+
+// A loop nested in another, testing a name the outer loop declares (a converter's
+// loop inlined into the caller's rounds): the inner loop is a copy for each answer.
+const nested = `export let rounds = (data, n, k) => {
+  let acc = 0
+  for (let r = 0; r < n; r++) {
+    const round = (r & k) !== 0
+    for (let i = 0; i < data.length; i++) {
+      let v = data[i] * 0.5
+      if (round) v = Math.round(v)
+      acc += v
+    }
+  }
+  return acc
+}`
+
+test("unswitch loops: an inner loop testing its outer loop's flag answers as the host does", () => {
+  const host = oracle(nested)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(nested, { optimize })
+    for (const [n, k] of [[0, 1], [1, 1], [3, 1], [4, 2], [5, 0]])
+      is(m.rounds(new Float64Array([1.5, -2.5, 3, 7.25]), n, k), host.rounds(new Float64Array([1.5, -2.5, 3, 7.25]), n, k), `rounds(${n}, ${k}) at ${optimize}`)
+  }
+})
+
+test("unswitch loops: the inner loop is a copy for each answer of the outer loop's flag", () => {
+  if (belowOpt(2)) return
+  const alone = { level: 2, splitLoopKinds: false, versionIntegralLoops: false, specializeLoops: false }
+  const count = (text) => (funcWat(text, 'rounds').match(/\(loop/g) || []).length
+  const on = count(wat(nested, { optimize: alone })), off = count(wat(nested, { optimize: { ...alone, unswitchLoops: false } }))
+  ok(on > off, `the inner loop runs once per answer: ${on} loops, ${off} unswitched off`)
 })

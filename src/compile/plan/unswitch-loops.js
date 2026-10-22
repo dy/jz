@@ -10,8 +10,11 @@
  * The name is a local of the function (a parameter or a declaration outside
  * the loop) no closure names; the tests are an `if` or a `?:` of the name or
  * its `!`. The name's truth at the loop's entry is its truth at every test in
- * it, the loop never writing it. A loop with a closure, a label or a
- * suspension in it is left alone, and one too large to copy twice.
+ * it, the loop never writing it. A loop nested in another comes first, on a
+ * name the outer loop may declare or write: a callee's loop its caller's loop
+ * inlined (a converter called per round) tests the callee's flag inside the
+ * round. A loop with a closure, a label or a suspension in it is left alone,
+ * and one too large to copy twice.
  *
  * @module compile/plan/unswitch-loops
  */
@@ -66,11 +69,13 @@ export const unswitchLoops = () => {
     const loops = []
     walkAst(func.body, { enter: (node, parent, idx) => {
       if (node[0] === '=>') return false
-      if (LOOPS.has(node[0]) && parent) { loops.push([node, parent, idx]); return false }
+      if (LOOPS.has(node[0]) && parent) loops.push([node, parent, idx])
     } })
     // a function past its growth budget versions its kernel loops alone (src/growth.js)
     let size = nodeSize(func.body)
-    for (const [loop, parent, idx] of loops) {
+    // innermost first: a loop nested in another (a callee's loop its caller's loop
+    // inlined) tests a name the outer loop declares, which the inner one never writes
+    for (const [loop, parent, idx] of loops.reverse()) {
       if (size > SOURCE_FULL && !kernelLoop(loop)) continue
       if (parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
       if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await')) continue
