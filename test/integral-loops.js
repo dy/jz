@@ -1544,6 +1544,57 @@ test('integral loops: a walk stepped up and down under a literal step count take
   for (const r of [3, 20]) is(m.main(r), js.main(r), `the copy traces r ${r}`)
 })
 
+test('integral loops: a walk entering from the counters of the loops around it stands alone, untested', () => {
+  // The tracer inlined into its scan declares its cursors from the scan's counters
+  // (`let x = sx`, `sx` a `for (let sx = 1; sx < W - 1; sx++)` stepped by its loop
+  // alone): int32s within [1, W - 2], never -0. The entry plus the count each way
+  // fits the word, so the copy tests nothing and needs no loop as written beside
+  // it, whose Number twin held the scan's registers. A start moved by any int32
+  // (`(off | 0) + x`) has no such hull: the guard tests the entry, the twin stays.
+  const src = (start) => `const W = 64, H = 64, MAXCODES = 4096
+    const trace = (bmp, codes, nc, sx, sy) => {
+      let x = sx, y = sy, dir = 3, steps = 0
+      while (steps < MAXCODES) {
+        const inside = x >= 0 && x < W && y >= 0 && y < H && bmp[y * W + x] === 1
+        if (inside) dir = (dir + 3) & 3; else dir = (dir + 1) & 3
+        if (nc < MAXCODES) codes[nc++] = dir
+        if (dir === 0) x++; else if (dir === 1) y++; else if (dir === 2) x--; else y--
+        steps++
+        if (x === sx && y === sy && dir === 3) break
+      }
+      return nc
+    }
+    export let main = (r, off) => {
+      const bmp = new Uint8Array(W * H), codes = new Uint8Array(MAXCODES)
+      const R = r | 0
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const dx = x - 32, dy = y - 32; if (dx * dx + dy * dy <= R * R) bmp[y * W + x] = 1 }
+      let nc = 0, h = 0
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++)
+        if (bmp[y * W + x] === 1 && bmp[y * W + x - 1] === 0) { const start = nc; nc = trace(bmp, codes, nc, ${start}, y); h = Math.imul(h ^ (nc - start), 16777619) }
+      return h
+    }`
+  const innermost = (text) => {
+    let k = 0
+    const inner = (n) => Array.isArray(n) && (n[0] === 'loop' || n.some(inner))
+    const walk = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'loop' && !n.slice(1).some(inner)) { k++; return } for (const c of n) walk(c) }
+    walk(parseWat(funcWat(text, 'main')))
+    return k
+  }
+  const counts = []
+  for (const start of ['x', '(off | 0) + x']) {
+    const js = oracle(src(start))
+    for (const optimize of levels(0, 2, 'speed')) {
+      const m = jz(src(start), { optimize }).exports
+      for (const [r, off] of [[3, 0], [10, 0], [20, 0], [0, 0], [10, 1], [10, -2], [10, 2147483000]]) is(m.main(r, off), js.main(r, off), `${start}: r ${r} off ${off} at ${optimize}`)
+    }
+    if (belowOpt(2)) continue
+    const text = wat(src(start), { optimize: 'speed' })
+    counts.push(innermost(text))
+    if (start === 'x') is(loopFloats(text), 0, 'no Number arithmetic in main\'s loops')
+  }
+  if (!belowOpt(2)) is(counts[0], counts[1] - 1, 'the walk from the scan\'s counters has no loop as written beside its copy')
+})
+
 test('forward conditions: a boolean declared once for the `if` right after it is the test itself', () => {
   // The `if` then refines its arms by the condition's conjuncts; a boolean read
   // anywhere else, or declared with `let`, or tested later, stays declared.

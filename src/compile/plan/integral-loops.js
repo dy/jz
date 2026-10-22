@@ -44,8 +44,11 @@
  * times one run's steps: where its entry plus that fits i32, the copy steps its
  * own word. A ring (`qHead++; if (qHead >= QN) qHead = 0`) stays below its bound
  * whatever the trips. A loop under a literal bound counts its trips without a
- * guard of the bound, and a cursor entering from a literal, or from the hull a
- * copy just before left it in, needs no test: such a copy stands alone. A module
+ * guard of the bound, and a cursor entering from a literal, from the hull a
+ * copy just before left it in, or from a declaration of the counters of the
+ * loops around it (`let x = sx`, an inlined call's argument, `sx` a `for` counter
+ * its loop alone steps: an int32 within the counter's range, never -0) needs no
+ * test: such a copy stands alone. A module
  * binding the loop steps, where the loop runs no user code and nothing in it can
  * throw, is a cursor too: the copy steps its word and stores it back after
  * (one the loop resets before every step of it is its scratch, not a cursor:
@@ -487,7 +490,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // Inner copies settle first; the existing size budget includes them when
     // an outer counter needs its own guarded domain.
     // (`enclosing`: the loop around it, which runs it again, reading what it wrote)
-    if (LOOPS.has(node[0]) && parent && !guarded.has(node)) loops.push([node, parent, idx, stack[stack.length - 1] ?? null])
+    if (LOOPS.has(node[0]) && parent && !guarded.has(node)) loops.push([node, parent, idx, stack[stack.length - 1] ?? null, stack.slice()])
   } })
   // a parameter only the program's own calls bind, each to an integer of no name (`off | 0`)
   const sites = func ? programFacts?.callSites.filter(cs => cs.callee === func.name) ?? [] : []
@@ -534,7 +537,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   let rewrote = false
   // a body past its growth budget versions its kernel loops alone (src/growth.js)
   let grown = nodeSize(body)
-  for (const [loop, parent, idx, enclosing] of loops) {
+  for (const [loop, parent, idx, enclosing, around] of loops) {
     if (grown > SOURCE_FULL && !kernelLoop(loop)) continue
     if (parent[idx] !== loop) continue
     // (a loop a version left as written, here or in prepare/split-bindings.js: not copied again)
@@ -924,6 +927,43 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       }
       return null
     }
+    // The hull an entry declared from integers holds (`let x = sx` under a
+    // scan `for (let sx = 1; sx < W - 1; sx++)` around it, an inlined call's
+    // argument): where its names are counters of the loops around, stepped by
+    // their loops alone, the declaration's value is an int32 within their
+    // ranges, so the entry needs no test of its own. Sums and differences of
+    // them and of integer literals alone: a product or a negation of zero is -0.
+    const heldHull = (list, at, name) => entryHull(list, at, name) ?? declHull(list, at, name)
+    const sumOfCounters = (e) => typeof e === 'string' ? aroundCounter(e) != null
+      : Array.isArray(e) && (e[0] == null ? Number.isInteger(e[1]) && !Object.is(e[1], -0)
+        : e[0] === '()' && e.length === 2 ? sumOfCounters(e[1])
+        : (e[0] === '+' || e[0] === '-') && e.length === 3 && sumOfCounters(e[1]) && sumOfCounters(e[2]))
+    const declHull = (list, at, name) => {
+      if (!Array.isArray(list) || (list[0] !== ';' && list[0] !== '{}')) return null
+      for (let i = at - 1; i >= 1; i--) {
+        const st = list[i]
+        if (!Array.isArray(st)) continue
+        if (st[0] === 'let' || st[0] === 'const' || st[0] === 'var') {
+          const d = st.slice(1).find(d => Array.isArray(d) && d[0] === '=' && d[1] === name)
+          if (!d) continue
+          const r = sumOfCounters(d[2]) ? intExprRange(d[2], aroundCounter) : null
+          return r && Number.isInteger(r[0]) && Number.isInteger(r[1]) && r[0] >= I32_MIN && r[1] <= I32_MAX ? r : null
+        }
+        if (some(st, n => n[0] === '=>' || MUTATE_OPS.has(n[0]) && n[1] === name)) return null
+      }
+      return null
+    }
+    // the range of a counter of a `for` around this loop, its own step its one write
+    const aroundCounter = (n) => {
+      if (captured.has(n)) return null
+      for (let k = around.length - 1; k >= 0; k--) {
+        const a = around[k]
+        if (a[0] !== 'for' || a[1]?.[0] !== 'let' || a[1].length !== 2 || a[1][1]?.[0] !== '=' || a[1][1][1] !== n) continue
+        if (isReassigned(a[4], n) || isReassigned(a[2], n)) return null
+        return forCounterRange(a[1], a[2], a[3], n)
+      }
+      return null
+    }
     // The number `e` comes to where its parts are literals, or null.
     const numOf = (e) => {
       if (!Array.isArray(e)) return null
@@ -988,7 +1028,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       resets = []
       // an int32 at entry, and not -0, with room for its advance: an entry within a
       // hull answers that itself, a reset puts the floor at the higher of the two
-      const entry = global ? null : entryHull(parent, idx, c)
+      const entry = global ? null : heldHull(parent, idx, c)
       // (a cursor declared from a literal is an int32 of the emitter's own where its
       // steps are literals: a copy for its steps inside expressions would change
       // nothing; a loop of literal trips unrolls or proves its own ends at emission,
@@ -1025,7 +1065,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         cursorRange.set(c, [entry ? [null, Math.min(entry[0], r.L)] : ['()', 'math.min', [',', c, [null, r.L]]], ['-', ['()', 'math.ceil', r.B], [null, 1]]])
       } else {
         const base = entry ? [null, floor != null ? Math.max(entry[1], floor) : entry[1]] : floor != null ? ['()', 'math.max', [',', c, [null, floor]]] : c
-        const top = ['+', base, ['*', trips, sum(terms)]], at = numOf(top)
+        // (module constants count as their values: `MAXCODES` trips from an entry of a hull is a number)
+        const top = ['+', base, ['*', trips, sum(terms)]], at = literalTrips(top)
         if (at != null && at > 2147483647) continue
         cursorRange.set(c, [entry ? [null, floor != null ? Math.min(entry[0], floor) : entry[0]] : floor != null ? ['()', 'math.min', [',', c, [null, floor]]] : c, top])
         if (at == null) cursorTests.push(['<=', top, [null, 2147483647]])
@@ -1126,6 +1167,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const intHere = (n, leaves, seen) => {
       if (n === counter || names.includes(n) || cursors.has(n) || words.has(n) || used.has(n)) return true
       if (!locals.has(n) && ctx.scope.globals.get(n)?.type === 'i32') return true
+      // (a counter of a loop around, stepped by its loop alone: an int32 there, no test of its own)
+      if (aroundCounter(n)) return true
       if (guardable(n)) { if (fractional(n)) return false; leaves?.add(n); return true }
       if (!locals.has(n)) return false
       if (seen.has(n)) return true
@@ -1684,10 +1727,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (the stepped cursors the walk kept: their ends over the loop, tested where not literal)
     for (const [c, { lo, hi }] of stepCands) {
       if (lo === 0 && hi === 0) continue
-      const entry = entryHull(parent, idx, c)
+      const entry = heldHull(parent, idx, c)
       const top = hi > 0 ? ['+', entry ? lit(entry[1]) : c, ['*', trips, lit(hi)]] : entry ? lit(entry[1]) : c
       const bottom = lo < 0 ? ['+', entry ? lit(entry[0]) : c, ['*', trips, lit(lo)]] : entry ? lit(entry[0]) : c
-      const atTop = numOf(top), atBottom = numOf(bottom)
+      const atTop = literalTrips(top), atBottom = literalTrips(bottom)
       if (atTop != null && atTop > I32_MAX || atBottom != null && atBottom < I32_MIN) continue
       if (atTop == null) cursorTests.push(['<=', top, lit(I32_MAX)])
       if (atBottom == null) cursorTests.push(['>=', bottom, lit(I32_MIN)])
