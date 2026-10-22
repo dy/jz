@@ -4645,6 +4645,18 @@ test('loop-SR: affine dividends of a for counter are bit-exact ON vs OFF and div
   }
 })
 
+// The copy steps its counters by a branch: a pass carries the remainder's `+ 1` alone, the
+// wrap a test the predictor answers once in w passes; a select would carry the test and its choice.
+test('loop-SR: the copy steps its counters by a branch, not a select', () => {
+  if (onKernel()) return
+  const src = `export let f=(n,w)=>{ let a=0; for(let i=0;i<n;i++){ const si=(i%w)*3+~~(i/w); a=(a*31+si)|0 } return a|0 }`
+  const fn = parse(src, 'speed').find(n => n?.[0] === 'func' && n.some(x => x?.[0] === 'export' && x[1] === '"f"'))
+  const copies = []
+  walk(fn, n => { if (n[0] === 'loop' && count(n, m => /^(?:f64|i32|i64)\.(?:div|rem)/.test(m[0]) || m[0] === 'call' && /__rem/.test(m[1])) === 0) copies.push(n) })
+  ok(copies.length > 0, 'a loop of the copy divides nowhere')
+  ok(copies.every(loop => count(loop, n => n[0] === 'select') === 0 && count(loop, n => n[0] === 'if') > 0), 'its counters step in the arms of a test, no select')
+})
+
 test('loop-SR: a for loop with continue, a written divisor or a closure keeps its divisions (ON==OFF)', () => {
   for (const src of [
     `export let f=(n,w)=>{ let a=0; for(let i=0;i<n;i++){ if((i&3)===1) continue; a=(a*31+i%w+~~(i/w))|0 } return a|0 }`,

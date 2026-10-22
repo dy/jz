@@ -7,8 +7,9 @@
 // floored quotient and remainder do too: the remainder steps by one and wraps
 // at the divisor, carrying into the quotient. The copy keeps `q` and `r` with
 // `E = q * w + r`, `0 <= r < w`, seeded once before the loop and stepped at the
-// end of its body (a `while` loop's after its increment). Each form reads what
-// it denotes and no more:
+// end of its body (a `while` loop's after its increment), in the arms of a test
+// of the wrap: a pass carries `r ± 1` alone. Each form reads what it denotes
+// and no more:
 //   `E % w === 0` (and `==`, `!==`, `!=`) is `r === 0`, whatever E's sign;
 //   `Math.floor(E / w)` is `q`;
 //   `E % w`, `(E / w) | 0`, `~~(E / w)`, `Math.trunc(E / w)` are `r` and `q`
@@ -226,10 +227,12 @@ function tryReduce(stmt, cm) {
       seeds.push(['=', q, ['|', ['/', ['-', e0, r], w], lit(0)]])
       // (the remainder's step tests itself, as a ring's: the sum it guards stays below w)
       const wd = (x) => ['|', x, lit(0)]
-      const upd = s > 0
-        ? [['=', q, ['?:', ['<', r, ['-', P.w, lit(1)]], q, wd(['+', q, lit(1)])]], ['=', r, ['?:', ['<', r, ['-', P.w, lit(1)]], wd(['+', r, lit(1)]), lit(0)]]]
-        : [['=', q, ['?:', ['>', r, lit(0)], q, wd(['-', q, lit(1)])]], ['=', r, ['?:', ['>', r, lit(0)], wd(['-', r, lit(1)]), wd(['-', P.w, lit(1)])]]]
-      if (!res.used.q) upd.shift()
+      // A branch, not a select: the step a pass carries is `r ± 1`, the wrap a test the
+      // predictor answers (once in w passes); selects would carry the test and the choice too.
+      const wrap = s > 0 ? [['=', r, lit(0)], ['=', q, wd(['+', q, lit(1)])]] : [['=', r, wd(['-', P.w, lit(1)])], ['=', q, wd(['-', q, lit(1)])]]
+      if (!res.used.q) wrap.pop()
+      const upd = [['if', s > 0 ? ['<', r, ['-', P.w, lit(1)]] : ['>', r, lit(0)],
+        ['{}', [';', ['=', r, wd([s > 0 ? '+' : '-', r, lit(1)])]]], ['{}', [';', ...wrap]]]]
       if (L.kind === 'for') steps.push(...upd)
       else afterInc.push(...upd)
       if (res.used.base) tests.push(['>=', e0, lit(0)])
