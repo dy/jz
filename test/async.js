@@ -301,6 +301,16 @@ test('async generators: for await + yield* delegation', async () => {
                 async function* g() { yield 0; yield* inner(); yield 3 }
                 async function drive() { let out = ''; for await (const v of g()) out += v; return out }
                 export let f = () => drive()`), '0123')
+  // a declaration in a for-await body inside an async generator, as a stream
+  // reader binds each chunk (dy/jz#117: 0.9.2 read 'chunk' as declared twice)
+  is(await val(`async function* frames(xs) {
+                  for await (const data of xs) {
+                    const chunk = data
+                    if (chunk > 1) { const twice = chunk * 2; yield twice } else yield chunk
+                  }
+                }
+                async function drive() { let out = ''; for await (const v of frames([1, Promise.resolve(2), 3])) out += v + ','; return out }
+                export let f = () => drive()`), '1,4,6,')
 })
 
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
