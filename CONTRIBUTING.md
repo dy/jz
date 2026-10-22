@@ -3006,6 +3006,27 @@ back through the 2^52 addend is the word (the fold again), and a flag of literal
 optimizer leaves compared against literals is a word (`narrowFlagLocals`, the inliner's
 `done`).
 
+Then an element load in a guarded arm takes the word a store or a load under that guard
+left (`optimize/forward-checked.js`, the `forwardChecked` pass, before the float literals
+are pooled): a checked 4-byte store `(if C (then (i32.store A w)))` under its array's bound
+check, then a load of A in an arm whose guard is C or has C as a conjunct, nothing between
+writing memory, loads `w`, teed by the store once a load takes it (`grid[nb] += t; if
+(grid[nb] >= 4)`); a load of A at the top of the arm of the whole guard C leaves its word for
+later loads under C (`grid[c] >= 4`, then `grid[c] >> 2`, then `grid[c] -= …`). Sites match
+by value: every pure expression is numbered as it is evaluated (a local the same condition
+sets twice names each value where it was read), a local holding one carries its number, and
+a load's or a global read's number names the memory it read (a store, a global write or a
+call to a function that may write either starts new memory, except that the bound-checked
+store leaves its own array's header as it was; a function writes neither when it holds no
+store, `global.set` or indirect call and calls only such functions, as `__to_int32` does).
+A loop starts with nothing known, a block a branch leaves to its end forgets what it made,
+and an arm's facts end with the arm: past an `if`, only the words its then arm loaded at its
+top hold, under its guard. A comparison of a checked signed integer element read with an
+integral constant then compares words (`(if (result i32) C (then (i32.ge_s x 4)) (else
+0))`), a missing element failing every ordered comparison and passing `ne`.
+`test/typed-store.js` pins the reads after a store and after a load, and a read in a
+returning arm against the read after it, at every tier.
+
 Last of all at the speed tier, a large function's conditional arms become functions of
 their own (`optimize/split-funcs.js`, the `splitFuncs` pass): V8 compiles a function whole,
 first with its baseline compiler and then, once it is hot, with its optimizing compiler, and

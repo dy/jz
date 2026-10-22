@@ -146,6 +146,7 @@ export const PASS_NAMES = [
   'outerStrip',               // outer-loop strip-mining vectorizer
   'toneMap',                  // tone-map reduction vectorizer
   'pairIterations',           // two items' inner float recurrences run side by side (optimize/vectorize/pair-iterations.js), speed-for-size
+  'forwardChecked',           // an element load under a guard takes the word a store or load under that guard left (optimize/forward-checked.js)
   'slp',                      // superword-level parallelism (adjacent-scalar packing)
   'devirtFnArrays',           // const fn-array call_indirect → guarded direct calls
   'devirtSchemaReads',        // megamorphic dyn-get probe → br_table over registered schemas

@@ -188,3 +188,62 @@ test('typed store: a clamped byte rounds half to even inside [0, 255], inline', 
     if (optimize !== 0) is((fn(wat, 'put').match(/f64\.nearest/g) || []).length, 1, `one rounding, of the number: a word and a constant clamp without it, at ${optimize}`)
   }
 })
+
+// A checked element read after a checked store of that element reads the stored word,
+// and one after a checked read of it the read word (optimize/forward-checked.js):
+// `grid[i] += k; if (grid[i] >= 4)` loads `grid[i]` once, `grid[i] >= 4 ? grid[i] >> 2 : …` too.
+// An index the check fails reads undefined either way; the stored word is ToInt32's,
+// wrapped, never the sum. A comparison of such a read with an integral constant
+// compares words, a missing element failing it (passing `!=`).
+const reread = `let grid, cells
+export const resize = (n) => { grid = new Int32Array(n); cells = new Uint32Array(n); return n }
+export const pour = (i, k) => {
+  grid[i] += k
+  let hits = 0
+  if (grid[i] >= 4) hits += 1
+  if (grid[i] > 2147483000) hits += 10
+  if (grid[i] === 7) hits += 100
+  if (grid[i] != 3) hits += 1000
+  if (5 > grid[i]) hits += 10000
+  return hits * 1e10 + (grid[i] ?? -1)
+}
+export const mark = (i, v) => { cells[i] = v; return cells[i] }
+export const peek = (i) => grid[i] >= 4 ? (grid[i] >> 2) * 10 + grid[i] : -1`
+test('typed store: a checked read after a checked store of its element reads the stored word', () => {
+  const calls = []
+  for (const i of [0, 1, 3, 4, -1, 1.5, 2 ** 31, NaN, 2]) for (const k of [1, 3, 2, 2 ** 31, -5, 0.5, 2147483000]) calls.push(['pour', i, k])
+  for (const i of [0, 3, 4, -1]) for (const v of [7, -1, 2 ** 32 + 5, 0.5]) calls.push(['mark', i, v])
+  for (const i of [0, 1, 2, 3, 4, -1, 1.5, NaN]) calls.push(['peek', i])
+  // (the calls build on each other's stores: each tier runs them against a fresh host)
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const host = oracle(`${reread}\nresize(4)`), mod = jz(`${reread}\nresize(4)`, { optimize }).exports
+    for (const [name, ...args] of calls) {
+      const want = host[name](...args), got = mod[name](...args)
+      ok(Object.is(want, got), `reread: ${name}(${args.join(',')}) at ${optimize}: ${String(got)} for ${String(want)}`)
+    }
+  }
+  const body = fn(compile(reread, { optimize: 'speed', wat: true }), 'pour')
+  // (an element's load addresses `base + (i << 2)`; a header's, `base - 8`)
+  is((body.match(/\(i32\.load\s*\(i32\.add/g) || []).length, 1, 'one element load: the re-reads take the stored word')
+  ok(/\(i32\.ge_s/.test(body) && /\(i32\.gt_s/.test(body), 'the comparisons compare words')
+  // a load under the guard leaves its word for the loads under it
+  const peek = fn(compile(reread, { optimize: 'speed', wat: true }), 'peek')
+  is((peek.match(/\(i32\.load\s*\(i32\.add/g) || []).length, 1, 'one element load: the loads under the guard take its word')
+})
+
+// A word a load took in an arm is known only where that arm ran: the read in the
+// returning arm and the read after it check the same index, and the second still loads.
+const armed = `let tbl = new Int32Array(8)
+for (let k = 0; k < 8; k++) tbl[k] = k * 10 + 1
+export const leak = (c, h, v) => {
+  if (c < 0) return tbl[h * 2 + v] * 3
+  return tbl[h * 2 + v] + 1
+}`
+test('typed store: a word a checked read took in an arm holds only where the arm ran', () => {
+  const host = oracle(armed)
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const { leak } = jz(armed, { optimize }).exports
+    for (const [c, h, v] of [[-1, 1, 1], [1, 1, 1], [1, 0, 0], [1, 3, 1], [1, 9, 0], [1, 0.5, 0], [1, NaN, 0]])
+      ok(Object.is(leak(c, h, v), host.leak(c, h, v)), `leak(${c},${h},${v}) at ${optimize}: ${leak(c, h, v)} for ${host.leak(c, h, v)}`)
+  }
+})

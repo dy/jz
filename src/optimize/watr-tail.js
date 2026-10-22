@@ -26,6 +26,7 @@ import { selectBits } from './select-bits.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
 import { splitFuncs } from './split-funcs.js'
+import { forwardCheckedElements } from './forward-checked.js'
 
 // A runtime helper's cold half, split off so the engine inlines the hot head
 // (module/core.js `__rem`, its long division `__rem_div`; the element heads,
@@ -549,6 +550,8 @@ export function watrTail(module, cfg, {
   // optimizer leaves it, against literals, is a word)
   foldWrappedWords(optimized)
   for (const n of optimized) narrowFlagLocals(n)
+  // (on the checked reads and stores watr left, before the float literals are pooled)
+  if (cfg.forwardChecked !== false) time('forwardChecked', () => forwardCheckedElements(optimized))
   stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
   if (cfg.maskOperands === true) time('maskOperands', () => maskOperands(optimized))
   // (after the passes that read a float select as one)
