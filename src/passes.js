@@ -116,6 +116,7 @@ export const PASS_NAMES = [
   'adoptLoopCounters',        // a `for` adopts a counter declared outside it and read nowhere else (plan/counted-loops.js)
   'forwardConditions',        // a boolean declared once from a condition for the `if` right after it: the `if` tests the condition (plan/forward-conditions.js)
   'unswitchLoops',            // a loop testing a name it never writes: a copy for each answer (plan/unswitch-loops.js), speed-for-size
+  'reciprocalDivisors',       // a loop dividing by a name it never writes: a copy multiplying by the reciprocal where the divisor is a power of two (plan/reciprocal-loops.js), speed-for-size
   'splitLoopKinds',           // a loop reading a name of several kinds, a typed array among them: a copy where it holds that array (plan/kind-split.js), speed-for-size
   'loadCSE',                  // straight-line typed element-load CSE (compile-level, pre-analyze)
   'intDivLower',              // i32/i32 constant-divisor strength lowering

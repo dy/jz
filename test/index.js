@@ -119,6 +119,7 @@ const TESTS = [
   'index-words',
   'buffer-alias',
   'unswitch-loops',
+  'reciprocal-loops',
   'chosen-calls',
   'loop-fields',
   'absent-member',

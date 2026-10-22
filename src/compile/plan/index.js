@@ -60,6 +60,7 @@ import { versionIntegralLoops } from './integral-loops.js'
 import { strengthReduceLoopDivMod } from '../loop-divmod.js'
 import { forwardConditions } from './forward-conditions.js'
 import { unswitchLoops } from './unswitch-loops.js'
+import { reciprocalLoopDivisors } from './reciprocal-loops.js'
 import { splitLoopKinds } from './kind-split.js'
 import { callChosenFunctions } from './chosen-calls.js'
 import { specializeCalledArgs } from './called-args.js'
@@ -261,6 +262,8 @@ export default function plan(ast, profiler, summarize) {
     // A division by an invariant of a dividend the counter moves: a copy stepping its quotient
     // and remainder, ahead of the integral copies, which read its counters as words.
     sweep('strengthReduceLoopDivMod', strengthReduceLoopDivMod)
+    // A division by an invariant the counters left: a copy multiplying by its reciprocal where that is exact.
+    sweep('reciprocalLoopDivisors', reciprocalLoopDivisors)
     // A loop indexing by numbers of unknown integrality: a copy over their int32s, where they are ones.
     sweep('versionIntegralLoops', () => versionIntegralLoops(facts()))
     // A DP recurrence's pairs, of the copy: its tests of a sum's wide side go with the cell they precede.

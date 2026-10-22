@@ -139,6 +139,7 @@ const LEVEL_PRESETS = Object.freeze({
     staticLocals: false,      // a static block's header segment and wide address constants outweigh the allocator call it saves (29 of the bench corpus larger, none smaller) — speed-for-size
     versionIntegralLoops: false, // an integral copy of a loop beside it: speed-for-size
     unswitchLoops: false,     // a copy of a loop for each answer of a test it reads: speed-for-size
+    reciprocalDivisors: false, // a copy of a loop for a power-of-two divisor: speed-for-size
     splitLoopKinds: false,    // a copy of a loop where a name of several kinds holds a typed array: speed-for-size
     specializeCalledArgs: false, // a copy of a function for each named function a call passes to a parameter it calls: speed-for-size
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
