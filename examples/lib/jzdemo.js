@@ -61,12 +61,18 @@ if (EMBED) {
 // site.css (.masthead) — one source of truth across all pages; here we add only the
 // markup, the `.fixed` overlay (example pages are full-screen canvases), and the link.
 const SITE_CSS = new URL('../../assets/site.css', import.meta.url).href
+// The demo's box comes from the site stylesheet: a canvas measured before it applies
+// is the browser's default 300×150 (a fresh visit in Chrome renders the demo at that
+// size, stretched). A page sizes its canvas once this resolves.
+let styled = Promise.resolve()
+export const styleReady = () => styled
 const addMasthead = (name) => {
   if (name) document.title = `${titleOf(name)} - jz`   // tab title (covers hud-only examples too)
   if (document.querySelector('.masthead')) return
   if (!document.querySelector('link[data-jz-site]')) {
     const link = document.createElement('link')
     link.rel = 'stylesheet'; link.href = SITE_CSS; link.dataset.jzSite = ''
+    styled = new Promise(done => { link.onload = link.onerror = done })
     document.head.appendChild(link)
   }
   if (!document.querySelector('script[data-jz-ver]')) {   // fill the version slot from package.json, same as every other page's header
@@ -708,6 +714,7 @@ export const runDemo = ({ name, frame, overlay, hint = '', load, size = {}, wasm
   const setEngine = async (kind) => {
     const my = ++gen
     const e = await loadEngine(kind, { js: `./${name}.js`, wasm: `./${wasm || name}.wasm` })
+    await styled
     if (my !== gen) return
     engine = e; sizeTo(); load?.(engine, demo); applyTheme(engine)
   }

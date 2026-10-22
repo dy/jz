@@ -23,7 +23,7 @@
 <body>
 <canvas></canvas>
 <script type="module">
-import { loadEngine, hud } from "../lib/jzdemo.js";
+import { loadEngine, hud, styleReady } from "../lib/jzdemo.js";
 
 // One source both ways: the JS toggle imports mandelbrot.js, the jz toggle runs the SAME file
 // compiled to wasm — where jz's escape-time vectorizer lifts the inner loop to f64x2 on its own
@@ -38,7 +38,9 @@ const ctx = cnv.getContext("2d");
 const h = hud({ kind: "jz", hint: "the Mandelbrot set · scroll to zoom — perturbation theory carries it past 10³⁰×, double-click to reset", src: "https://github.com/dy/jz/tree/main/examples/mandelbrot", code: "./mandelbrot.js", nav: "mandelbrot", onSwitch: start });
 
 // Viewport size — the framed canvas box at CSS-pixel res (every frame recomputes the whole
-// set, so we don't multiply by DPR: retina would 4× the per-frame cost).
+// set, so we don't multiply by DPR: retina would 4× the per-frame cost). The box is the site
+// stylesheet's: measured before it applies, it is the canvas default 300×150.
+await styleReady();
 const bcr = cnv.getBoundingClientRect();
 const width  = bcr.width  | 0;
 const height = bcr.height | 0;
