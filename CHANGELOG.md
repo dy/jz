@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Add `fs.readSync(fd, buffer[, offset, length])` and `fs.writeSync(fd, buffer | string[, offset[, length]])` under `host: 'wasi'`: raw bytes through stdin, stdout and stderr with Node's argument forms and errors, so a byte protocol (a Native Messaging host) runs the same source under Node, wasmtime and `node:wasi`. The `jz/wasi` shim writes bytes to `process.stdout` unchanged.
 - Grow the reset's logs as a round fills them, not trap: past 1024 values written into collections built at init, or 256 relocations of storage built at init, the log's first buffer ended in `unreachable`.
 - Substitute an unrolled loop's counter where it is read, not in a string's text, a property name or an object key spelled as it: `m.set('k' + k, k)` in a module's top-level loop threw an internal `str.charCodeAt is not a function` at level 2.
 - Keep a closure a module-scope loop binds in its own body (`for (let i …) { const g = () => i }`) a closure value: lifted into a module function, it named the loop's per-iteration binding from no function scope (`'i' is not in scope`).

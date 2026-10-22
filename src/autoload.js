@@ -202,6 +202,8 @@ const CALL_MODULES = dict({
   'fs.read': ['core', 'string', 'fs'],
   'fetch': ['core', 'web'],
   'fs.write': ['core', 'string', 'fs'],
+  'fs.readSync': ['core', 'typedarray', 'fs'],
+  'fs.writeSync': ['core', 'string', 'typedarray', 'fs'],
   'String.fromCharCode': ['core', 'string'],
   Symbol: ['core', 'symbol'],
   Function: ['core'],

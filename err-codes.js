@@ -60,6 +60,7 @@ export const ERR = {
   BIGINT_TO_NUMBER: 123,      // implicit ToNumber(BigInt)
   PRIMITIVE_PROPERTY: 124,     // a property store on a Number, String, Boolean or BigInt (strict code)
   DELETE_PROPERTY: 125,       // strict delete of a nonconfigurable own property
+  FS_BUFFER: 126,              // fs.readSync/writeSync: buffer is not a TypedArray (or, for writeSync, a string)
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -79,6 +80,7 @@ export const ERR = {
   TYPED_SET_OFFSET: 214,       // TypedArray.prototype.set: offset negative or source past the receiver's end
   HEAP_EXHAUSTED: 215,         // an allocation the linear memory cannot grow to hold (its maximum, wasm32 or the engine's limit)
   ARRAY_LENGTH: 216,           // ArraySetLength: ToUint32(value) differs from ToNumber(value)
+  FS_RANGE: 217,               // fs.readSync/writeSync: offset or length outside the buffer
 
   // ── 3xx SyntaxError/URIError-class ───────────────────────────────────────
   JSON_PARSE_SYNTAX: 300,      // JSON.parse — malformed input
@@ -127,6 +129,7 @@ export const ERR_INFO = {
   [ERR.SYMBOL_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a Symbol value to a number' },
   [ERR.BIGINT_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a BigInt value to a number' },
   [ERR.DELETE_PROPERTY]: { name: 'TypeError', message: 'Cannot delete a non-configurable property' },
+  [ERR.FS_BUFFER]: { name: 'TypeError', message: 'The "buffer" argument must be a TypedArray; writeSync also takes a string with no offset or length' },
   [ERR.PRIMITIVE_PROPERTY]: { name: 'TypeError', message: 'Cannot create a property on a primitive' },
   [ERR.STRING_SEARCH_REGEX]: { name: 'TypeError', message: 'First argument must not be a regular expression' },
   [ERR.ENCODE_INTO_RECEIVER]: { name: 'TypeError', message: 'encodeInto: destination must be a Uint8Array' },
@@ -156,6 +159,7 @@ export const ERR_INFO = {
   [ERR.TYPED_SET_OFFSET]: { name: 'RangeError', message: 'offset is out of bounds' },
   [ERR.HEAP_EXHAUSTED]: { name: 'RangeError', message: 'Out of memory: the heap cannot grow' },
   [ERR.ARRAY_LENGTH]: { name: 'RangeError', message: 'Invalid array length' },
+  [ERR.FS_RANGE]: { name: 'RangeError', message: 'The value of "offset" or "length" is out of range' },
 
   [ERR.JSON_PARSE_SYNTAX]: { name: 'SyntaxError', message: 'Unexpected token in JSON' },
   [ERR.BIGINT_PARSE_DIGIT]: { name: 'SyntaxError', message: 'Cannot convert string to a BigInt' },

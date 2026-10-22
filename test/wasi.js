@@ -627,6 +627,102 @@ test('fs: read + write round-trip under node:wasi preopens', async () => {
   is(mem.read(inst.exports.missing()), 44)   // WASI errno 44 = NOENT
 })
 
+// fs.readSync/writeSync move raw bytes through fd 0/1, so the same source runs
+// under Node and under WASI; Node's own fs is the reference for every value.
+// Node runs the module and calls _start; WASI starts the compiled command.
+const runBoth = async (src, input) => {
+  const { WASI } = await import('node:wasi')
+  const { mkdtempSync, writeFileSync: wf, readFileSync, openSync, closeSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'jz-fd-'))
+  try {
+    wf(join(dir, 'in'), input)
+    wf(join(dir, 'm.mjs'), src + '\n_start()')
+    const node = execSync(`node ${JSON.stringify(join(dir, 'm.mjs'))}`, { input })
+    const stdin = openSync(join(dir, 'in'), 'r'), stdout = openSync(join(dir, 'out'), 'w')
+    const w = new WASI({ version: 'preview1', stdin, stdout })
+    w.start(new WebAssembly.Instance(new WebAssembly.Module(compile(src, { host: 'wasi' })), w.getImportObject()))
+    closeSync(stdin); closeSync(stdout)
+    return { node, jz: readFileSync(join(dir, 'out')) }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('fs: readSync/writeSync argument forms answer what Node answers', async () => {
+  const { node, jz } = await runBoth(`import fs from 'fs'
+    const tryIt = (f) => { try { return f() } catch (e) { return e.name } }
+    export let _start = () => {
+      const b = new Uint8Array(6), w = new Uint16Array(2), r = []
+      r.push(fs.readSync(0, b), fs.readSync(0, b, 2, 3), fs.readSync(0, w), fs.readSync(0, b, 0, undefined), fs.readSync(0, b, 9, 0))
+      r.push(tryIt(() => fs.readSync(0, b, 2, 5)), tryIt(() => fs.readSync(0, b, 0, -1)), tryIt(() => fs.readSync(0, [1, 2])))
+      r.push(fs.writeSync(1, b), fs.writeSync(1, b, 4), fs.writeSync(1, b, 1, 2), fs.writeSync(1, b, 2, undefined), fs.writeSync(1, w), fs.writeSync(1, 'é😀'), fs.writeSync(1, 'ok'))
+      r.push(fs.readSync(0, b.subarray(3)), fs.writeSync(1, b.subarray(3), 1), fs.writeSync(1, b.subarray(6)))
+      r.push(tryIt(() => fs.writeSync(1, b, 7)), tryIt(() => fs.writeSync(1, 42)), tryIt(() => fs.writeSync(1, b, 1, 6)))
+      r.push(fs.readSync(0, b, 0, 6), fs.readSync(0, b, 0, 6))
+      fs.writeSync(1, '|' + r.join(','))
+    }`, Buffer.from([0, 1, 2, 3, 200, 255, 10, 20, 30, 0x80, 0xc0, 0xfe, 0xff, 7, 8, 9, 0xaa, 0xbb, 0xcc]))
+  ok(node.length > 0, 'node ran')
+  is(Buffer.compare(jz, node), 0, `jz ${JSON.stringify(jz.toString('latin1'))} vs node ${JSON.stringify(node.toString('latin1'))}`)
+})
+
+test('fs: a Native Messaging host echoes length-prefixed frames byte-exact', async () => {
+  // Chrome's framing: a 32-bit length in native (little-endian) order, then UTF-8 JSON.
+  const src = `import fs from 'fs'
+    const readFull = (buf) => {
+      let n = 0
+      while (n < buf.length) { const r = fs.readSync(0, buf, n, buf.length - n); if (r === 0) return false; n += r }
+      return true
+    }
+    export let _start = () => {
+      const head = new Uint8Array(4)
+      while (readFull(head)) {
+        const body = new Uint8Array(head[0] | head[1] << 8 | head[2] << 16 | head[3] << 24)
+        if (!readFull(body)) return
+        const out = new TextEncoder().encode(JSON.stringify({ echo: JSON.parse(new TextDecoder().decode(body)) }))
+        const h = new Uint8Array(4)
+        h[0] = out.length; h[1] = out.length >> 8; h[2] = out.length >> 16; h[3] = out.length >> 24
+        fs.writeSync(1, h); fs.writeSync(1, out)
+      }
+    }`
+  const frame = (v) => { const b = Buffer.from(JSON.stringify(v)), h = Buffer.alloc(4); h.writeUInt32LE(b.length); return Buffer.concat([h, b]) }
+  const input = Buffer.concat([frame({ a: 1 }), frame({ t: 'é😀'.repeat(60) }), frame([1, 'x'])])
+  const { node, jz } = await runBoth(src, input)
+  is(Buffer.compare(jz, node), 0)
+  is(node.readUInt32LE(0), 16, 'first frame header')
+  // empty input; a header with no body; a body cut short: the host stops, as Node's does
+  for (const cut of [Buffer.alloc(0), input.subarray(0, 4), input.subarray(0, 10), input.subarray(0, 20 + 4 + 1)]) {
+    const r = await runBoth(src, cut)
+    is(Buffer.compare(r.jz, r.node), 0, `${cut.length}-byte input`)
+  }
+  // a reader that hands over one byte per fd_read: every frame split at every byte
+  let off = 0
+  const out = []
+  const { instantiate } = await import('../interop.js')
+  const inst = instantiate(compile(src, { host: 'wasi' }), {
+    read: (fd, buf) => { if (off >= input.length || !buf.length) return 0; buf[0] = input[off++]; return 1 },
+  })
+  const { stdout } = globalThis.process, write = stdout.write
+  stdout.write = (b) => { out.push(Buffer.from(b)); return true }
+  try { inst.exports._start() } finally { stdout.write = write }
+  is(Buffer.compare(Buffer.concat(out), node), 0, 'byte-at-a-time reads')
+})
+
+test('fs: readSync/writeSync reject what they cannot serve at compile', () => {
+  const hint = (src, host = 'wasi') => { try { compile(src, { host }) } catch (x) { return x.message } return '' }
+  ok(/options call/.test(hint(`export let f = () => fs.readSync(0, new Uint8Array(4), 1)`)), 'lone offset reads as Node options')
+  ok(/position/.test(hint(`export let f = () => fs.writeSync(1, new Uint8Array(4), 0, 4, 2)`)), 'explicit position')
+  ok(/WASI host/.test(hint(`export let f = () => fs.readSync(0, new Uint8Array(4))`, 'js')), 'host js')
+})
+
+test('WASI polyfill: writes reach process.stdout as raw bytes', () => {
+  const chunks = []
+  const sink = { write: (b) => { chunks.push(b) } }
+  const { result } = runWithCapturedFallback({ stdout: sink, stderr: sink },
+    `export let f = () => { fs.writeSync(1, new Uint8Array([200, 0, 0, 0, 255])); return 1 }`)
+  is(result, 1)
+  is([...Buffer.concat(chunks)].join(), '200,0,0,0,255')
+})
+
 test('init: top-level WASI calls run via _initialize (reactor), not a start section', () => {
   // The p1 ABI forbids WASI calls inside the wasm start section — it runs during
   // `new WebAssembly.Instance`, before ANY host can wire memory, so a top-level

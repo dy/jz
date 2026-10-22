@@ -2,7 +2,7 @@
  * WASI shim for jz-emitted modules — NOT a general WASI Preview 1 runtime.
  *
  * jz emits only the few `wasi_snapshot_preview1` imports its lowerings use:
- * `fd_write` (console.log/error), `fd_read` (stdin), `clock_time_get`
+ * `fd_write` (console.log/error, fs.writeSync), `fd_read` (readStdin, fs.readSync), `clock_time_get`
  * (Date.now/performance.now/timers), `random_get` (only with `{ randomSeed: true }`,
  * to seed Math.random), plus no-op `proc_exit` / `environ_*` stubs. This shim
  * implements exactly that set, so jz modules run in browsers and plain Node
@@ -25,23 +25,25 @@
 /**
  * Create WASI import object for WebAssembly instantiation.
  * @param {object} [opts]
- * @param {function} [opts.write] - Custom write: (fd, text) => void
+ * @param {function} [opts.write] - Custom write: (fd, text) => void. Without it,
+ *   bytes go to process.stdout/stderr unchanged (fs.writeSync stays binary-exact).
  * @param {function} [opts.read] - Custom read: (fd, buf: Uint8Array) => bytesRead
  */
 import { decodeUtf8 } from './utf8.js'
 
 export function wasi(opts = {}) {
   let mem = null
-  const fallbackWrite = (fd, text) => {
+  // A stream may hold the chunk past the call, so it gets a copy of the bytes.
+  const fallbackWrite = (fd, bytes) => {
     const stream = fd === 1 ? globalThis.process?.stdout : globalThis.process?.stderr
     if (stream && typeof stream.write === 'function') {
-      try { stream.write(text); return }
+      try { stream.write(bytes.slice()); return }
       catch {}
     }
-    const msg = text.replace(/\n$/, '')
+    const msg = decodeUtf8(bytes, false).replace(/\n$/, '')
     ;(fd === 1 ? console.log : console.warn)(msg)
   }
-  const write = opts.write || fallbackWrite
+  const write = opts.write ? (fd, bytes) => opts.write(fd, decodeUtf8(bytes, false)) : fallbackWrite
 
   return {
     wasi_snapshot_preview1: {
@@ -63,7 +65,7 @@ export function wasi(opts = {}) {
         for (let i = 0; i < iovs_len; i++) {
           const ptr = dv.getUint32(iovs + i * 8, true)
           const len = dv.getUint32(iovs + i * 8 + 4, true)
-          write(fd, decodeUtf8(new Uint8Array(mem.buffer, ptr, len), false))
+          write(fd, new Uint8Array(mem.buffer, ptr, len))
           written += len
         }
         dv.setUint32(nwritten, written, true)

@@ -206,14 +206,14 @@ function rebinds(n, name) {
 // plus the numeric/string globals whose results are fresh values or scalars,
 // and the lane operations (module/simd.js), which compute on values wasm
 // holds outside the heap. `math.` is the prepared spelling of `Math.`.
-const PURE_CALLEES = /^(\uE000key|__to_property_key|__object_rest|Function|readStdin|(f32x4|f64x2|i32x4|v128)\.\w+|crypto\.(getRandomValues|randomUUID)|Object\.(keys|values|entries|isFrozen|isSealed|isExtensible|freeze|seal|preventExtensions|create|getOwnPropertyDescriptor|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries|groupBy)|Map\.groupBy|JSON\.(stringify|parse)|Array\.(isArray|of|from)|ArrayBuffer\.isView|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(from|fromBase64|fromHex)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Atomics\.\w+|RegExp\.escape|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse|atob|btoa|(en|de)codeURI(Component)?)$/
+const PURE_CALLEES = /^(\uE000key|__to_property_key|__object_rest|Function|readStdin|(f32x4|f64x2|i32x4|v128)\.\w+|crypto\.(getRandomValues|randomUUID)|fs\.(readSync|writeSync)|Object\.(keys|values|entries|isFrozen|isSealed|isExtensible|freeze|seal|preventExtensions|create|getOwnPropertyDescriptor|getOwnPropertyNames|getPrototypeOf|hasOwn|is|fromEntries|groupBy)|Map\.groupBy|JSON\.(stringify|parse)|Array\.(isArray|of|from)|ArrayBuffer\.isView|((Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)\.(from|fromBase64|fromHex)|console\.\w+|[Mm]ath\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt(\.\w+)?|Symbol(\.\w+)?|Atomics\.\w+|RegExp\.escape|Date\.now|performance\.now|isNaN|isFinite|parseInt|parseFloat|structuredClone|Date\.UTC|Date\.parse|atob|btoa|(en|de)codeURI(Component)?)$/
 // Pure callees that read a literal's getters (module/schema.js viewsOn) while
 // they list its properties; JSON.stringify also calls toJSON (emit/to-json.js).
 const ENUMERATING = /^(__object_rest|Object\.(values|entries)|JSON\.stringify|structuredClone)$/
 const runsGetters = (name) => viewsOn() && ENUMERATING.test(name) || name === 'JSON.stringify' && !!ctx.funcs.runtimeRoots?.has(TO_JSON)
 
 // Callees whose result is a scalar: no allocation. A predicate's is a boolean.
-const SCALAR_CALLEES = /^((f32x4|f64x2|i32x4|v128)\.\w+|crypto\.getRandomValues|[Mm]ath\.\w+|Number(\.\w+)?|Boolean|isNaN|isFinite|parseInt|parseFloat|Date\.now|performance\.now|Array\.isArray|ArrayBuffer\.isView|Object\.(is|hasOwn|isFrozen|isSealed|isExtensible))$/
+const SCALAR_CALLEES = /^((f32x4|f64x2|i32x4|v128)\.\w+|crypto\.getRandomValues|fs\.readSync|[Mm]ath\.\w+|Number(\.\w+)?|Boolean|isNaN|isFinite|parseInt|parseFloat|Date\.now|performance\.now|Array\.isArray|ArrayBuffer\.isView|Object\.(is|hasOwn|isFrozen|isSealed|isExtensible))$/
 
 // Constructors whose instances are fresh storage with no user code run.
 const FRESH_CTORS = /^(Array|Object|Map|Set|WeakMap|WeakSet|Date|RegExp|Error|TypeError|RangeError|SyntaxError|ReferenceError|URIError|EvalError|TextEncoder|TextDecoder|String|Number|Boolean|ArrayBuffer|DataView|(Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|Float16Array)$/
