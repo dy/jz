@@ -650,7 +650,8 @@ const handlers = {
   },
 
   'from'(specifiers, source, lazy = false) {
-    const mod = source?.[1]
+    // `node:fs` is Node's name for the builtin `fs`, unless the program supplies its own
+    const mod = source?.[1] === 'node:fs' && !ctx.module.hostImports?.['node:fs'] && !isBundledModule('node:fs') ? 'fs' : source?.[1]
     if (!mod || typeof mod !== 'string') return err(`Invalid import source ${JSON.stringify(source)} — the module specifier after \`from\` must be a string literal`)
     if (lazy && !isBundledModule(mod)) err(ctx.module.hostImports?.[mod] || hasModule(mod)
       ? `import('${mod}'): only a source module (the \`modules\` option, or a file) can be imported dynamically`

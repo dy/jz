@@ -665,6 +665,33 @@ test('fs: readSync/writeSync argument forms answer what Node answers', async () 
   is(Buffer.compare(jz, node), 0, `jz ${JSON.stringify(jz.toString('latin1'))} vs node ${JSON.stringify(node.toString('latin1'))}`)
 })
 
+// Node's options forms, readSync(fd, buffer, { offset, length, position }) and
+// writeSync(fd, buffer, options), with their defaults (offset 0, length
+// byteLength - offset), a third argument of null taken for options, and the
+// errors of Node's checks (lib/fs.js, internal/fs/utils.js validateInteger,
+// validateOffsetLengthRead/Write), named imports from node:fs.
+test('fs: readSync/writeSync options forms answer what Node answers', async () => {
+  const { node, jz } = await runBoth(`import { readSync, writeSync } from 'node:fs'
+    const t = (f) => { try { return f() } catch (e) { return e.name } }
+    const rd = (b, o, l) => readSync(0, b, o, l), ro = (b, l) => readSync(0, b, { length: l }), wo = (b, o) => writeSync(1, b, { offset: o })
+    export let _start = () => {
+      const b = new Uint8Array(6), w = new Uint16Array(2), e = new Uint8Array(0), r = []
+      r.push(readSync(0, b, { offset: 0, length: b.length }), readSync(0, b, { offset: 2 }), readSync(0, b, { length: 2 }), readSync(0, b, {}), readSync(0, b, null), readSync(0, b, undefined))
+      r.push(readSync(0, b, { offset: 1, length: 2, position: null }), readSync(0, b, { length: 2, offset: 3 }), readSync(0, b, null, 2), readSync(0, b, { offset: 1 }, 2), readSync(0, w, { offset: 1, length: 2 }))
+      r.push(t(() => readSync(0, b, { offset: 7 })), t(() => readSync(0, b, { offset: -1 })), t(() => readSync(0, b, { offset: 1.5 })), t(() => readSync(0, b, { offset: '1' })), t(() => readSync(0, b, { offset: null })))
+      r.push(t(() => readSync(0, b, { length: 7 })), readSync(0, b, { length: 0 }), readSync(0, e, {}), t(() => readSync(0, e, { length: 1 })), readSync(0, b, { length: undefined }), ro(b, undefined), ro(b, 1))
+      r.push(t(() => rd(b, 1.5, 2)), rd(b, undefined, 2), t(() => rd(1.09375, 0, 1)), t(() => rd(b, NaN, 1)), t(() => rd(b, '1', 1)), rd(b, 0, '2'), rd(b, 9, 0), t(() => rd(b, -1, 0)))
+      writeSync(1, '|')
+      r.push(writeSync(1, b, { offset: 1, length: 2 }), writeSync(1, b, { offset: 4 }), writeSync(1, b, {}), writeSync(1, b, null), writeSync(1, b, { length: 1 }), writeSync(1, b, null, 2))
+      r.push(writeSync(1, 'str', { offset: 1 }), writeSync(1, 'é', null), writeSync(1, 'x', undefined, 'utf8'), writeSync(1, b, 4, 0), t(() => writeSync(1, b, 7, 0)))
+      r.push(t(() => writeSync(1, b, { offset: 7 })), t(() => writeSync(1, b, { length: 7 })), t(() => writeSync(1, b, { length: 1.5 })), t(() => writeSync(1, b, { length: -1 })), writeSync(1, b, { offset: null }), t(() => writeSync(1, b, { offset: '1' })), writeSync(1, b, { length: '2' }))
+      r.push(writeSync(1, b, 1, '2'), t(() => writeSync(1, 1.09375)), wo(b, undefined), wo(b, 5), t(() => wo(b, 1.5)), writeSync(1, w, { offset: 1, length: 2 }))
+      writeSync(1, '|' + r.join(','))
+    }`, Buffer.from(Array.from({ length: 64 }, (_, i) => (i * 37 + 11) & 255)))
+  ok(/\|6,4,2,6,6,6,2,2,6,5,2,RangeError/.test(node.toString('latin1')), 'node ran the options forms')
+  is(Buffer.compare(jz, node), 0, `jz ${JSON.stringify(jz.toString('latin1'))} vs node ${JSON.stringify(node.toString('latin1'))}`)
+})
+
 test('fs: a Native Messaging host echoes length-prefixed frames byte-exact', async () => {
   // Chrome's framing: a 32-bit length in native (little-endian) order, then UTF-8 JSON.
   const src = `import fs from 'fs'
@@ -709,8 +736,17 @@ test('fs: a Native Messaging host echoes length-prefixed frames byte-exact', asy
 
 test('fs: readSync/writeSync reject what they cannot serve at compile', () => {
   const hint = (src, host = 'wasi') => { try { compile(src, { host }) } catch (x) { return x.message } return '' }
-  ok(/options call/.test(hint(`export let f = () => fs.readSync(0, new Uint8Array(4), 1)`)), 'lone offset reads as Node options')
+  ok(/as options/.test(hint(`export let f = () => fs.readSync(0, new Uint8Array(4), 1)`)), 'lone offset reads as Node options')
   ok(/position/.test(hint(`export let f = () => fs.writeSync(1, new Uint8Array(4), 0, 4, 2)`)), 'explicit position')
+  ok(/position/.test(hint(`export let f = () => fs.readSync(0, new Uint8Array(4), { position: 0 })`)), 'position option')
+  // options jz cannot read at compile time: an object held in a binding, a spread, an accessor
+  for (const opts of ['o', '{ ...o }', '{ get length() { return 1 } }'])
+    for (const m of ['readSync', 'writeSync'])
+      ok(/object literal/.test(hint(`const o = { offset: 1 }; export let f = () => fs.${m}(1, new Uint8Array(4), ${opts}, 1)`)), `${m} ${opts}`)
+  ok(/object literal/.test(hint(`const o = { offset: 1 }; export let f = () => fs.readSync(0, new Uint8Array(4), o)`)), 'readSync lone binding')
+  // node:fs is the builtin unless the program supplies its own
+  ok(/WASI host/.test(hint(`import { readSync } from 'node:fs'; export let f = () => readSync(0, new Uint8Array(4))`, 'js')), 'node:fs is fs')
+  is(run(`import { readSync } from 'node:fs'; export let f = () => readSync(0, 1)`, { host: 'js', modules: { 'node:fs': 'export const readSync = (fd, n) => fd + n + 6' } }).f(), 7, 'own node:fs module')
   ok(/WASI host/.test(hint(`export let f = () => fs.readSync(0, new Uint8Array(4))`, 'js')), 'host js')
 })
 

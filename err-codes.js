@@ -61,6 +61,8 @@ export const ERR = {
   PRIMITIVE_PROPERTY: 124,     // a property store on a Number, String, Boolean or BigInt (strict code)
   DELETE_PROPERTY: 125,       // strict delete of a nonconfigurable own property
   FS_BUFFER: 126,              // fs.readSync/writeSync: buffer is not a TypedArray (or, for writeSync, a string)
+  FS_OFFSET: 127,              // fs.readSync/writeSync: offset is not a Number
+  FS_EMPTY: 128,               // fs.readSync: a nonzero length into an empty buffer
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -129,7 +131,9 @@ export const ERR_INFO = {
   [ERR.SYMBOL_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a Symbol value to a number' },
   [ERR.BIGINT_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a BigInt value to a number' },
   [ERR.DELETE_PROPERTY]: { name: 'TypeError', message: 'Cannot delete a non-configurable property' },
-  [ERR.FS_BUFFER]: { name: 'TypeError', message: 'The "buffer" argument must be a TypedArray; writeSync also takes a string with no offset or length' },
+  [ERR.FS_BUFFER]: { name: 'TypeError', message: 'The "buffer" argument must be a TypedArray; writeSync also takes a string with no position' },
+  [ERR.FS_OFFSET]: { name: 'TypeError', message: 'The "offset" argument must be of type number' },
+  [ERR.FS_EMPTY]: { name: 'TypeError', message: "The argument 'buffer' is empty and cannot be written" },
   [ERR.PRIMITIVE_PROPERTY]: { name: 'TypeError', message: 'Cannot create a property on a primitive' },
   [ERR.STRING_SEARCH_REGEX]: { name: 'TypeError', message: 'First argument must not be a regular expression' },
   [ERR.ENCODE_INTO_RECEIVER]: { name: 'TypeError', message: 'encodeInto: destination must be a Uint8Array' },
