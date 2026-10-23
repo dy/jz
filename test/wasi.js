@@ -629,8 +629,10 @@ test('fs: read + write round-trip under node:wasi preopens', async () => {
 
 // fs.readSync/writeSync move raw bytes through fd 0/1, so the same source runs
 // under Node and under WASI; Node's own fs is the reference for every value.
-// Node runs the module and calls _start; WASI starts the compiled command.
-const runBoth = async (src, input) => {
+// Node runs the module and calls _start; WASI starts the compiled command, under
+// node:wasi and, with `wasmtime` (a source with no try/catch: wasmtime 25 has no
+// exception handling), under wasmtime when it is installed (`wt`, else null).
+const runBoth = async (src, input, { wasmtime = false } = {}) => {
   const { WASI } = await import('node:wasi')
   const { mkdtempSync, writeFileSync: wf, readFileSync, openSync, closeSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
@@ -640,11 +642,17 @@ const runBoth = async (src, input) => {
     wf(join(dir, 'in'), input)
     wf(join(dir, 'm.mjs'), src + '\n_start()')
     const node = execSync(`node ${JSON.stringify(join(dir, 'm.mjs'))}`, { input })
+    const wasm = compile(src, { host: 'wasi' })
     const stdin = openSync(join(dir, 'in'), 'r'), stdout = openSync(join(dir, 'out'), 'w')
     const w = new WASI({ version: 'preview1', stdin, stdout })
-    w.start(new WebAssembly.Instance(new WebAssembly.Module(compile(src, { host: 'wasi' })), w.getImportObject()))
+    w.start(new WebAssembly.Instance(new WebAssembly.Module(wasm), w.getImportObject()))
     closeSync(stdin); closeSync(stdout)
-    return { node, jz: readFileSync(join(dir, 'out')) }
+    let wt = null
+    if (wasmtime && hasCmd('wasmtime')) {
+      wf(join(dir, 'm.wasm'), wasm)
+      wt = execSync(`wasmtime ${JSON.stringify(join(dir, 'm.wasm'))}`, { input })
+    }
+    return { node, jz: readFileSync(join(dir, 'out')), wt }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 
@@ -690,6 +698,66 @@ test('fs: readSync/writeSync options forms answer what Node answers', async () =
     }`, Buffer.from(Array.from({ length: 64 }, (_, i) => (i * 37 + 11) & 255)))
   ok(/\|6,4,2,6,6,6,2,2,6,5,2,RangeError/.test(node.toString('latin1')), 'node ran the options forms')
   is(Buffer.compare(jz, node), 0, `jz ${JSON.stringify(jz.toString('latin1'))} vs node ${JSON.stringify(node.toString('latin1'))}`)
+})
+
+// The reporter's host (dy/jz discussion #116): a reader passed as a callback,
+// `readSync(0, buf, { offset, length })` through named node:fs imports, bytes
+// accumulated into a typed array at `start + got + i`. readSync's result is a
+// Number, so the index is one and the store is the typed array's; the same
+// source answers byte for byte under Node, node:wasi and wasmtime.
+test('fs: a node:fs reader passed as a callback fills a typed array, no dynamic store', async () => {
+  const src = `import { readSync, writeSync } from 'node:fs'
+    function readFillExact(read, buf, start, n) {
+      let got = 0
+      while (got < n) {
+        const tmp = new Uint8Array(n - got)
+        const r = read(tmp)
+        if (r === null || r <= 0) return false
+        let i = 0
+        while (i < r) { buf[start + got + i] = tmp[i]; i = i + 1 }
+        got = got + r
+      }
+      return true
+    }
+    function nodeFsRead(buf) { return readSync(0, buf, { offset: 0, length: buf.length }) }
+    function nodeFsWrite(buf) {
+      let n = 0
+      while (n < buf.length) { const w = writeSync(1, buf, n); if (w <= 0) return; n = n + w }
+    }
+    function serve(read, write) {
+      const header = new Uint8Array(4)
+      while (true) {
+        if (!readFillExact(read, header, 0, 4)) return
+        const len = header[0] + header[1] * 256 + header[2] * 65536 + header[3] * 16777216
+        if (len === 0) return
+        const out = new Uint8Array(4 + len)
+        out[0] = len & 255; out[1] = len >> 8 & 255; out[2] = len >> 16 & 255; out[3] = len >> 24 & 255
+        if (!readFillExact(read, out, 4, len)) return
+        write(out)
+      }
+    }
+    export let _start = () => serve(nodeFsRead, nodeFsWrite)`
+  const warnings = { entries: [] }
+  const wat = compile(src, { host: 'wasi', wat: true, warnings })
+  is(warnings.entries.map(e => e.code), [], 'no deopt advisory')
+  ok(!/__dyn_set|__dyn_get/.test(wat), 'no dynamic property access')
+  const frame = (v) => { const b = Buffer.from(JSON.stringify(v)), h = Buffer.alloc(4); h.writeUInt32LE(b.length); return Buffer.concat([h, b]) }
+  const input = Buffer.concat([frame({ a: 1 }), frame('é😀'.repeat(70)), frame([1, 'x']), Buffer.alloc(4), frame('unread')])
+  const { node, jz, wt } = await runBoth(src, input, { wasmtime: true })
+  is(node.length, input.length - 4 - frame('unread').length, 'node echoed the frames before the zero frame')
+  is(Buffer.compare(jz, node), 0, 'node:wasi')
+  if (wt) is(Buffer.compare(wt, node), 0, 'wasmtime')
+  // one byte per fd_read: every read short, `got` carried across reads
+  let off = 0
+  const out = []
+  const { instantiate } = await import('../interop.js')
+  const inst = instantiate(compile(src, { host: 'wasi' }), {
+    read: (fd, buf) => { if (off >= input.length || !buf.length) return 0; buf[0] = input[off++]; return 1 },
+  })
+  const { stdout } = globalThis.process, write = stdout.write
+  stdout.write = (b) => { out.push(Buffer.from(b)); return true }
+  try { inst.exports._start() } finally { stdout.write = write }
+  is(Buffer.compare(Buffer.concat(out), node), 0, 'byte-at-a-time reads')
 })
 
 test('fs: a Native Messaging host echoes length-prefixed frames byte-exact', async () => {

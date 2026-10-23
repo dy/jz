@@ -76,6 +76,10 @@ const CALLEE_VAL = {
   'Date.parse': VAL.NUMBER,
   'performance.now': VAL.NUMBER,
   'Date.now': VAL.NUMBER,
+  // module/fs.js: the bytes a descriptor call moved, and a file's text.
+  'fs.readSync': VAL.NUMBER,
+  'fs.writeSync': VAL.NUMBER,
+  'fs.read': VAL.STRING,
   // ES2024 groupBy: a dictionary (HASH) keyed by ToPropertyKey strings, and a
   // real Map keyed by SameValueZero — result reads dispatch to the right table.
   'Object.groupBy': VAL.HASH,
