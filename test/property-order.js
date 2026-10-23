@@ -110,3 +110,41 @@ test('collection order: insertion-only traversal uses one slot-offset buffer', (
   is((body.match(/call \$__alloc\b/g) || []).length, 2, 'empty return and one 4N-byte offset buffer; no rank allocation')
   ok(!body.includes('$__str_index_key'), 'Map ordering does not parse property indices')
 })
+
+// A table places its entries by hash, so the order helpers gather slots in no
+// order and sort them by insertion rank: an insertion sort up to 64 entries
+// (core.js ORDER_SORT_MIN), a radix sort past it. Sizes on both sides of the
+// bound and well past it, keys placed out of order, some deleted and put back:
+// Map and Set iteration, an object's keys (indices ascending before the string
+// keys, each in insertion order) through every enumeration and copy.
+test('collection order: past the insertion sort\'s bound, Map, Set and object keys keep insertion order', () => {
+  check(`export function f(n) {
+    const m = new Map(), s = new Set(), o = {}
+    for (let i = 0; i < n; i++) {
+      const j = (i * 7919) % n
+      m.set(j, i); s.add('s' + j)
+      o[j % 3 ? 'k' + j : j] = i
+    }
+    for (let j = 0; j < n; j += 5) { m.delete(j); s.delete('s' + j); delete o[j % 3 ? 'k' + j : j] }
+    for (let j = 0; j < n; j += 10) { m.set(j, -j); s.add('s' + j); o[j % 3 ? 'k' + j : j] = -j }
+    return JSON.stringify([[...m.keys()], [...m.values()], [...s], [...new Map(m).keys()], [...new Set(s)],
+      Object.keys({ ...o }), Object.keys(Object.assign({}, o)), Object.getOwnPropertyNames(o)]) + snapshot(o)
+  }`, [63, 64, 65, 66, 300, 2000])
+})
+
+// The order of a large collection is linear in its entries: 300,000 entries
+// placed by hash, built and enumerated in order well within a bound (the radix
+// sort takes milliseconds; an insertion sort takes some 2·10^10 moves, tens of
+// seconds). A bound of seconds holds on a loaded machine and fails a quadratic order.
+test('collection order: a large Map, Set and object enumerate in linear work', () => {
+  const { exports: e } = jz(`
+    export const map = (n) => { const m = new Map(); for (let i = 0; i < n; i++) m.set((i * 7919) % n, i); let c = 0, prev = -1; for (const [k, v] of m) { if (v !== prev + 1) return -1; prev = v; c++ } return c }
+    export const set = (n) => { const s = new Set(); for (let i = 0; i < n; i++) s.add('s' + ((i * 7919) % n)); let c = 0, prev = ''; for (const v of s) { if (c && v === prev) return -1; prev = v; c++ } return c }
+    export const obj = (n) => { const o = {}; for (let i = 0; i < n; i++) o['k' + ((i * 7919) % n)] = i; let c = 0, prev = -1; for (const k in o) { if (o[k] !== prev + 1) return -1; prev = o[k]; c++ } return c }`)
+  const N = 300000
+  for (const f of ['map', 'set', 'obj']) {
+    const t = performance.now(), got = e[f](N), ms = performance.now() - t
+    is(got, N, `${f}: every entry, in insertion order`)
+    ok(ms < 5000, `${f}: ${N} entries built and enumerated in ${ms.toFixed(0)} ms, under 5 s`)
+  }
+})

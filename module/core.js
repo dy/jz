@@ -168,9 +168,10 @@ export default (ctx) => {
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
     __hash_keys_ro: ['__ptr_offset', '__prop_order', '__alloc_hdr', '__mkptr'],
-    __coll_order: ['__alloc'],
-    __own_order: () => ['__alloc', '__is_str_key', ...(ctx.core.stdlib['__char_at'] ? ['__str_index_key'] : [])],
-    __prop_order: () => ['__alloc', '__is_str_key', ...(ctx.core.stdlib['__char_at'] ? ['__str_index_key'] : [])],
+    __coll_order: ['__alloc', '__order_sort'],
+    __own_order: () => ['__alloc', '__order_sort', '__is_str_key', ...(ctx.core.stdlib['__char_at'] ? ['__str_index_key'] : [])],
+    __prop_order: () => ['__alloc', '__order_sort', '__is_str_key', ...(ctx.core.stdlib['__char_at'] ? ['__str_index_key'] : [])],
+    __order_sort: ['__alloc'],
     __str_index_key: ['__str_length'],
     // Durable-receiver global-table merge (see __obj_clone's body) pulls in
     // __ihash_get_local/__is_nullish only when collection.js's dyn-props
@@ -1276,8 +1277,11 @@ export default (ctx) => {
   // seqStore). Every order-sensitive iteration (keys/values/entries, for-in,
   // spread, JSON, Map copy) walks this instead of raw slot order, so jz matches
   // the JS spec's insertion order. Lives in core (not collection) because object
-  // and json iterate HASH tables without pulling the collection module. Insertion
-  // sort: enumerated collections are small, and it stays branch-light when sorted.
+  // and json iterate HASH tables without pulling the collection module. A table
+  // places its entries by hash, so the slots come in no order: up to
+  // ORDER_SORT_MIN entries an insertion sort orders them, past it a radix sort
+  // (`__order_sort`), linear in the entries where the insertion sort's work
+  // grows with their square.
   //
   // $__coll_order_n: the buffer's REAL live-entry extent, stamped into this global
   // right before return. Every caller that treats the returned buffer as a bound
@@ -1297,14 +1301,17 @@ export default (ctx) => {
   // indices ascending before the string keys in insertion order. A Map/Set
   // uses its existing sequence directly, with no rank buffer. Property ranks are computed once per slot
   // (u64: an index key is its index, any other key is 2^32 | sequence) into a
-  // parallel buffer the insertion sort moves alongside the slot offsets.
+  // parallel buffer the sort moves alongside the slot offsets.
   const indexRank = () => ctx.core.stdlib['__char_at'] ? `(if (call $__is_str_key (i64.load offset=8 (local.get $slot)))
           (then
             (local.set $ix (call $__str_index_key (i64.load offset=8 (local.get $slot))))
             (if (i32.ne (local.get $ix) (i32.const -1)) (then (local.set $rank (i64.extend_i32_u (local.get $ix)))))))` : ''
+  // the most entries the insertion sort orders; past it the radix sort's
+  // passes cost less than its moves (__order_sort below)
+  const ORDER_SORT_MIN = 64
   for (const [name, propKeys, symbols] of [['__coll_order', false, true], ['__prop_order', true, false], ['__own_order', true, true]])
   ctx.core.stdlib[name] = () => `(func $${name} (param $off i32) (param $cap i32) (param $stride i32) (result i32)
-    (local $i i32) (local $n i32) (local $slot i32) (local $buf i32) ${propKeys ? '(local $rk i32) (local $ix i32)' : ''}
+    (local $i i32) (local $n i32) (local $slot i32) (local $buf i32) (local $rk i32) ${propKeys ? '(local $ix i32)' : ''}
     (local $j i32) (local $k i32) (local $cur i32) (local $rank i64)
     ;; A null/empty backing pointer (off below the heap base) has no live slots —
     ;; ordering it yields the empty list. Guard before the $off-8 length read so a
@@ -1330,6 +1337,12 @@ export default (ctx) => {
           (local.set $n (i32.add (local.get $n) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $gl)))
+    ;; past the bound a radix sort orders buf[0..n) by rank (core.js __order_sort)
+    (if (i32.gt_u (local.get $n) (i32.const ${ORDER_SORT_MIN}))
+      (then
+        (call $__order_sort (local.get $buf) (local.get $rk) (local.get $n))
+        (global.set $__coll_order_n (local.get $n))
+        (return (local.get $buf))))
     ;; insertion-sort buf[0..n) ascending by rank (rk moves alongside)
     (local.set $j (i32.const 1))
     (block $sd (loop $sl
@@ -1352,6 +1365,84 @@ export default (ctx) => {
       (br $sl)))
     (global.set $__coll_order_n (local.get $n))
     (local.get $buf))`
+  // The order of n > ORDER_SORT_MIN gathered entries: an LSD radix sort of
+  // buf[0..n) (slot offsets) by rank, a byte of `rank - lowest` a pass, as many
+  // passes as the ranks' range has bytes, a pass whose byte every rank shares
+  // skipped. Each pass is stable, so the passes compose: 2n + 256 steps a pass,
+  // at most eight, where the insertion sort takes some n²/4 moves on slots in
+  // hash order. `rk` holds the ranks beside the offsets (a property table's);
+  // 0 reads each rank off its slot, the insertion sequence in the hash word's
+  // high half (a Map's or a Set's). The order ends in the caller's buffer, and
+  // the arena takes the scratch back, as typedarray.js __typed_rsort's does: an
+  // enumeration keeps its buffer and no more.
+  ctx.core.stdlib['__order_sort'] = () => {
+    const heapTop = ctx.memory.shared ? `(i32.load (i32.const ${HEAP.PTR_ADDR}))` : '(global.get $__heap)'
+    const at = (base, scale) => `(i32.add (local.get ${base}) (i32.shl (local.get $i) (i32.const ${scale})))`
+    const rank = (b, r) => `(if (result i64) (local.get $rk) (then (i64.load ${at(r, 3)})) (else (i64.shr_u (i64.load (i32.load ${at(b, 2)})) (i64.const 32))))`
+    const bucket = `(i32.add (local.get $cnt) (i32.shl (i32.wrap_i64 (i64.and (i64.shr_u (i64.sub (local.get $key) (local.get $lo)) (local.get $shift)) (i64.const 255))) (i32.const 2)))`
+    return `(func $__order_sort (param $buf i32) (param $rk i32) (param $n i32)
+    (local $i i32) (local $key i64) (local $lo i64) (local $hi i64) (local $shift i64)
+    (local $sb i32) (local $sr i32) (local $db i32) (local $dr i32) (local $cnt i32) (local $d i32) (local $t i32) (local $sum i32) (local $save i32)
+    (local.set $sb (local.get $buf)) (local.set $sr (local.get $rk))
+    ;; the ranks' range
+    (local.set $lo (i64.const -1))
+    (block $md (loop $ml
+      (br_if $md (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $key ${rank('$sb', '$sr')})
+      (if (i64.lt_u (local.get $key) (local.get $lo)) (then (local.set $lo (local.get $key))))
+      (if (i64.gt_u (local.get $key) (local.get $hi)) (then (local.set $hi (local.get $key))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $ml)))
+    (local.set $save ${heapTop})
+    (local.set $db (call $__alloc (i32.shl (local.get $n) (i32.const 2))))
+    (if (local.get $rk) (then (local.set $dr (call $__alloc (i32.shl (local.get $n) (i32.const 3))))))
+    (local.set $cnt (call $__alloc (i32.const 1024)))
+    (block $pd (loop $pl
+      (br_if $pd (i64.ge_u (local.get $shift) (i64.const 64)))
+      (br_if $pd (i64.eqz (i64.shr_u (i64.sub (local.get $hi) (local.get $lo)) (local.get $shift))))
+      ;; each bucket's count
+      (memory.fill (local.get $cnt) (i32.const 0) (i32.const 1024))
+      (local.set $i (i32.const 0))
+      (block $cd (loop $cl
+        (br_if $cd (i32.ge_u (local.get $i) (local.get $n)))
+        (local.set $key ${rank('$sb', '$sr')})
+        (local.set $d ${bucket})
+        (i32.store (local.get $d) (i32.add (i32.load (local.get $d)) (i32.const 1)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $cl)))
+      (if (i32.ne (i32.load (local.get $d)) (local.get $n))
+        (then
+          ;; each bucket's first place, then every entry to its bucket's next one
+          (local.set $sum (i32.const 0))
+          (local.set $i (i32.const 0))
+          (block $sd (loop $sl
+            (br_if $sd (i32.ge_u (local.get $i) (i32.const 256)))
+            (local.set $d ${at('$cnt', 2)})
+            (local.set $t (i32.load (local.get $d)))
+            (i32.store (local.get $d) (local.get $sum))
+            (local.set $sum (i32.add (local.get $sum) (local.get $t)))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $sl)))
+          (local.set $i (i32.const 0))
+          (block $xd (loop $xl
+            (br_if $xd (i32.ge_u (local.get $i) (local.get $n)))
+            (local.set $key ${rank('$sb', '$sr')})
+            (local.set $d ${bucket})
+            (local.set $t (i32.load (local.get $d)))
+            (i32.store (local.get $d) (i32.add (local.get $t) (i32.const 1)))
+            (i32.store (i32.add (local.get $db) (i32.shl (local.get $t) (i32.const 2))) (i32.load ${at('$sb', 2)}))
+            (if (local.get $rk) (then (i64.store (i32.add (local.get $dr) (i32.shl (local.get $t) (i32.const 3))) (local.get $key))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $xl)))
+          ;; the pass's order is the next pass's input
+          (local.set $t (local.get $sb)) (local.set $sb (local.get $db)) (local.set $db (local.get $t))
+          (local.set $t (local.get $sr)) (local.set $sr (local.get $dr)) (local.set $dr (local.get $t))))
+      (local.set $shift (i64.add (local.get $shift) (i64.const 8)))
+      (br $pl)))
+    (if (i32.ne (local.get $sb) (local.get $buf))
+      (then (memory.copy (local.get $buf) (local.get $sb) (i32.shl (local.get $n) (i32.const 2)))))${ctx.memory.shared ? '' : `
+    (global.set $__heap (local.get $save))`})`
+  }
   // Canonical array-index parse of a property key (-1 for any other key).
   ctx.core.stdlib['__str_index_key'] = stringIndexWat('__str_index_key', 4294967294)
 

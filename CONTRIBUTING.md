@@ -1842,6 +1842,10 @@ nothing, since their properties never enumerate. The HASH arm's
 `__prop_order` and Map/Set's `__coll_order` specialize one sorting template.
 Only property sorting allocates ranks; Map/Set read insertion sequence numbers
 from their existing slots, using a 4N-byte offset buffer instead of 12N bytes.
+A table places entries by hash, so the slots arrive in no order: up to 64 an
+insertion sort orders them, past it `__order_sort`, an LSD radix sort a byte of
+the rank's range a pass, linear in the entries where the insertion sort grows
+with their square.
 Coercion activation reuses the class-dispatch member census, including definitions
 and parameter defaults. Its generated intrinsic probes add no ordinary member
 accesses, so synthesis does not invalidate that census.
