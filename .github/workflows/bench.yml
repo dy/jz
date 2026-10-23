@@ -86,7 +86,7 @@ jobs:
         run: python3 -m pip install --break-system-packages numpy || pip install numpy || true
       # GNU time supplies RSS; SIMDe supplies wasm2c's SIMD headers.
       - name: install measurement and native headers
-        run: sudo apt-get install -y time libsimde-dev clang
+        run: sudo apt-get update && sudo apt-get install -y time libsimde-dev clang
       # wasmtime runs the standalone `jz → wasmtime` / `jz → wasm2c` reference rows.
       - name: install wasmtime
         run: |
