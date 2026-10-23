@@ -443,7 +443,8 @@ JavaScript's bounds checks.
 JZ is experimental and pre-1.0: pin a version and re-test upgrades. CI runs the
 core suite, selected test262 tests, the benchmark gate and a self-compile
 (`npm run test:self` builds and tests a fresh compiler in a temporary directory).
-The same WASM lowers to native through wasm2c; see the
+The same WASM lowers to a native executable through wasm2c
+(`node scripts/native/compile.mjs app.js`); see the
 [native pipeline](scripts/native/README.md).
 
 Adoption is ejectable: remove the JZ build step and the source remains JavaScript.

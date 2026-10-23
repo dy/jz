@@ -1,5 +1,56 @@
 # jz → native binary
 
+## Any program
+
+`compile.mjs` builds a standalone executable from a jz program: jz
+`--host wasi --no-tail-call` → wasm2c → C compiler, linked with `wasi.c`, a
+WASI Preview 1 shim for exactly the imports jz emits (`fd_read`, `fd_write`,
+`path_open`, `fd_close`, `fd_filestat_get`, `clock_time_get`, `random_get`).
+
+```bash
+node scripts/native/compile.mjs host.js -o host     # jz options may follow: -O3, -D K=V, --no-simd
+
+jz host.js --host wasi -o host.wasm                 # or a module you already built
+node scripts/native/compile.mjs host.wasm -o host
+```
+
+Built from the `.js`, the module has no tail calls (`--no-tail-call`). A `.wasm`
+of your own may keep them: wasm2c translates most, but WABT 1.0.39-1.0.41 emit
+invalid C for a tail call that passes several values. The script says so when
+that happens; rebuild the module with `--no-tail-call`.
+
+It needs WABT (wasm2c and its runtime: `brew install wabt` or a
+[release](https://github.com/WebAssembly/wabt/releases)) and clang or another C
+compiler. WABT is found through `WABT_DIR` (a checkout or install prefix),
+`WABT_W2C_DIR` (its runtime directory, `share/wabt/wasm2c`), the `wasm2c` on
+PATH, or the Homebrew, `/usr/local` and `/usr` prefixes; `CC` and `CFLAGS`
+choose the compiler and add flags. A program that vectorizes needs the SIMDe
+headers (`brew install simde`, `apt install libsimde-dev`, or `SIMDE_DIR`), or
+`--no-simd`.
+
+What the executable does:
+
+- it calls `_initialize` (top-level code), then `_start`, where exported, as
+  wasmtime does;
+- `fd_read` and `fd_write` are blocking `readv`/`writev` on the process's
+  descriptors, partial counts as the OS returns them and 0 at EOF, so a byte
+  protocol over `fs.readSync`/`fs.writeSync` (a Chrome Native Messaging host)
+  answers as under Node; a closed reader is `EPIPE` (64), not `SIGPIPE`; a
+  descriptor another process left non-blocking still blocks, where wasmtime 25
+  and Node fail with `EAGAIN`;
+- fd 3, the preopen `fs.read`/`fs.write` resolve against, is the working
+  directory (wasmtime needs `--dir .` for it);
+- a failing call returns its WASI errno, which jz throws as a number; try/catch
+  works through wasm2c's exception runtime;
+- a trap prints `wasm trap: <reason>` and exits 134.
+
+`test/native-lowering.js` builds a Native Messaging echo host and compares its
+output byte for byte with `node` and `wasmtime`, a 1 MiB message included. The
+bench's `jz-w2c` lane builds through the same `wasm2native()` with its speed
+flags and the postprocess below.
+
+## watr PGO pipeline
+
 Compile a jz JavaScript source to a standalone native executable. The pipeline
 self-compiles watr's WAT compiler at the time of writing and serves as the
 reference target for "how fast can a jz-produced wasm get if you really care."
@@ -43,6 +94,8 @@ Env overrides:
 
 | Path                              | Role                                                                        |
 |-----------------------------------|-----------------------------------------------------------------------------|
+| `compile.mjs`                     | Any program → executable; toolchain discovery shared with the bench.         |
+| `wasi.c`                          | WASI Preview 1 shim and entry for `compile.mjs` and the bench's `jz-w2c`.    |
 | `build.sh`                        | Three-stage PGO build orchestrator.                                          |
 | `gen-watr-wasm.mjs`               | jz-compiles `watr/src/compile.js` directly to validated `jz-watr.wasm`.      |
 | `postprocess-watr.awk`            | Remove wasm2c barriers; hoist memory base; lower scalar/SIMD memory access.   |

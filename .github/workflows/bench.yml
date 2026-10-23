@@ -198,6 +198,12 @@ jobs:
           echo "WABT_W2C_DIR=$RUNNER_TEMP/wabt-1.0.41/share/wabt/wasm2c" >> "$GITHUB_ENV"
       - run: npm run test:bench
         if: ${{ !inputs.reference && github.event_name != 'schedule' }}
+      # scripts/native/compile.mjs builds a Native Messaging host and every WASI
+      # import through wasm2c + clang; output must match node and wasmtime byte
+      # for byte. The test workflow has no WABT and skips these.
+      - name: native executable (scripts/native/compile.mjs)
+        if: ${{ !inputs.reference && github.event_name != 'schedule' }}
+        run: node test/index.js native-lowering
       # Same-machine, alternating paired rounds. The strict claims gate reads
       # these fresh files; CI does not turn a timing loss into an informational row.
       # A verdict needs only the lanes that could lead: --contenders measures jz

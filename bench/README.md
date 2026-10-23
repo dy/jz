@@ -268,8 +268,9 @@ multi-value results. `jz-wasmtime` keeps tail calls. A second translator,
 `jz-w2c2`, remains a CI smoke check rather than a published row because w2c2
 supports neither SIMD nor multi-value returns. Both translators check recursive
 and string kernels; WABT additionally checks the multi-value tokenizer kernel.
-The adapter accepts source and installed WABT layouts and reads w2c2's generated
-header to match its symbol naming. CI pins the tested w2c2 revision.
+`jz-w2c` builds through `scripts/native/compile.mjs`, the generic native path,
+which accepts source and installed WABT layouts; the w2c2 adapter reads w2c2's
+generated header to match its symbol naming. CI pins the tested w2c2 revision.
 
 ### Parity classes
 
