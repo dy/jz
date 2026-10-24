@@ -370,6 +370,20 @@ test('interval proof: assignment-valued indices retain bounds and execute mutati
   }
 })
 
+// A counter enters its loop with what the whole head left it: a later declaration
+// can move it (`c = (i = -1)`), and the head's own effects run once.
+test('interval proof: a counter starts where its whole head leaves it', () => {
+  for (const src of [
+    `export let f = () => { let x = new Float64Array(8); x.fill(3); let r = 9; for (let i = 0, c = (i = -1); i < x.length; i++) { r = x[i]; break } return r }`,
+    `export let f = () => { let x = new Float64Array(4); x.fill(3); let r = 9; for (let i = 0, c = (i = -1); i < 4; i++) { r = x[i]; break } return r }`,
+    `export let f = () => { let x = [1, 2, 3]; let r = 9; for (let i = 0, c = (i = -1); i < x.length; i++) { r = x[i]; break } return r }`,
+    `export let f = () => { let x = new Float64Array(2); x.fill(5); let k = 3; for (let i = k--; i < 4; i++) {} return x[k] }`,
+  ]) {
+    const native = oracle(src).f()
+    for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(), native, `O${optimize}: ${src.slice(60, 120)}`)
+  }
+})
+
 test('interval proof: existing bounds do not trigger a whole-body interval scan', () => {
   if (onKernel()) return
   for (const length of [1, 4, 4, 0, 1]) {

@@ -36,6 +36,7 @@ import { cloneIR } from '../ir.js'
 import { walkAst, some, isBlockBody, T } from '../ast.js'
 import { K, core, tagOf } from '../summary/kind.js'
 import { SOURCE_FULL, nodeSize } from '../growth.js'
+import { counterInit } from '../static.js'
 
 const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-compile kernel rejects a builtin used as a first-class value
 const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[2], 1)   // (iv - 1)
@@ -125,8 +126,10 @@ function tryUnroll(stmt, cm, view) {
   const iv = unitIncVar(L.step)
   if (!iv) return null
 
-  // init `let iv = LO`, LO a literal ≥ 1 (so arr[LO-1] is a valid in-bounds index)
-  if (!(isArr(L.init) && L.init[0] === 'let' && isArr(L.init[1]) && L.init[1][0] === '=' && L.init[1][1] === iv)) return null
+  // init `let iv = LO` alone, LO a literal ≥ 1 (so arr[LO-1] is a valid in-bounds index):
+  // both arms restate the head as that declaration, which another one could move
+  // (`let j = 1, c = (j = 2)` starts at 2) or the body could read
+  if (!(isArr(L.init) && L.init[0] === 'let' && L.init.length === 2 && isArr(L.init[1]) && L.init[1][0] === '=' && L.init[1][1] === iv)) return null
   const LO = L.init[1][2], loVal = loopLitVal(LO)
   if (loVal == null || loVal < 1) return null
 
@@ -241,8 +244,8 @@ export const unrollRecurrences = () => {
 // name/literal), body a plain statement list with NO element stores, no calls /
 // control / closures / nested loops (hasUnsafe), iv written only by the step,
 // and ≥1 element read whose index mentions a body-ASSIGNED outer scalar (the
-// carried chain). The transform emits pair + tail:
-//   let i = LO; while (i < HI-1) { body; body[i+1]; i += 2 } ; if (i </<= HI) body
+// carried chain). The transform emits pair + tail, the loop's head kept whole:
+//   let i = LO, …; while (i < HI-1) { body; body[i+1]; i += 2 } ; if (i </<= HI) body
 // Each copy is a verbatim iteration (checked reads and all), so values are
 // exact for every input incl. OOB — only the iteration grouping changes.
 // (the chain's tail copy of the body stands after the loop: a `break` there has no loop to leave)
@@ -257,8 +260,10 @@ function tryUnrollScalarChain(stmt, cm) {
   if (!body) { if (DBG) console.error('[usc] body-shape'); return null }
   const iv = unitIncVar(L.step)
   if (!iv) { if (DBG) console.error('[usc] no-unit-iv'); return null }
-  if (!(isArr(L.init) && L.init[0] === 'let' && isArr(L.init[1]) && L.init[1][0] === '=' && L.init[1][1] === iv)) { if (DBG) console.error('[usc] init-shape'); return null }
-  const LO = L.init[1][2], loVal = loopLitVal(LO)
+  // the head declares the counter, which starts at what the head gives it (counterInit:
+  // no other declaration of the head writes it); the pair keeps the head whole
+  if (!(isArr(L.init) && L.init[0] === 'let')) { if (DBG) console.error('[usc] init-shape'); return null }
+  const LO = counterInit(L.init, iv), loVal = LO == null ? null : loopLitVal(LO)
   if (loVal == null || loVal < 0) { if (DBG) console.error('[usc] lo', JSON.stringify(LO)); return null }
   if (!(isArr(L.cond) && (L.cond[0] === '<=' || L.cond[0] === '<') && L.cond[1] === iv)) { if (DBG) console.error('[usc] cond-shape'); return null }
   const cmpOp = L.cond[0], HI = L.cond[2]
@@ -315,7 +320,7 @@ function tryUnrollScalarChain(stmt, cm) {
   const id = freshLoopId()
   const cell = () => stmts.map(cloneIR)
   const cell1 = renameDecls(stmts.map(s => subIv(cloneIR(s), iv, ['+', iv, [null, 1]])), `$c${id}`)
-  const letIv = ['let', ['=', iv, cloneIR(LO)]]
+  const letIv = cloneIR(L.init)
   const twoFit = cmpOp === '<=' ? ['<', iv, cloneIR(HI)] : ['<', iv, ['-', cloneIR(HI), 1]]
   const main = ['while', twoFit,
     [';', ['{}', [';', ...cell()]], ['{}', [';', ...cell1]], ['=', iv, ['+', iv, 2]]]]

@@ -811,8 +811,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         else if (name[0] === '+' && typeof name[2] === 'string' && l != null) { bias = l; name = name[2] }
       }
       if (typeof name === 'string') {
+        // the counter enters the loop with what the whole head left it, not its own
+        // initializer: `let i = 0, c = (i = -1)` starts at -1, and `let i = k--`
+        // ran its decrement once, in the head walk above
         const dv = decls.get(name)
-        const As = dv != null ? ev(dv) : env.get(name)
+        const As = env.get(name)
         const Bs = cond[2] != null ? ev(cond[2]) : null
         const A = As && As[0] === As[1] ? As[0] : null
         const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null

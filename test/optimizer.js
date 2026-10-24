@@ -4941,6 +4941,19 @@ test('rec-unroll: bails (ON==OFF) on non-unit step / aliasing index / call in bo
   ]) for (const n of [0, 1, 2, 3, 8, 13, 40]) is(recOn(src)(n), recOff(src)(n), `n=${n}`)
 })
 
+// The recurrence pair and the serial-chain pair start the counter where the loop's
+// head does: another declaration of the head may move it or name what the body reads.
+test('rec-unroll and chain unroll: the counter starts where the whole head leaves it', () => {
+  for (const src of [
+    `export let f=(n)=>{ const a=new Float64Array(n); a[0]=100; a[1]=7; for(let j=1,c=(j=2);j<n;j++){ const v=a[j-1]+1; a[j]=v } return a[n-1] }`,
+    `export let f=(n)=>{ const b=new Uint8Array(n); for(let k=0;k<n;k++)b[k]=k+1; const t=new Int32Array(256); for(let k=0;k<256;k++)t[k]=k*3+1; let crc=0; for(let i=3,c=(i=0);i<n;i++){ crc=t[(crc^b[i])&255]^(crc>>>8) } return crc }`,
+    `export let f=(n)=>{ const b=new Uint8Array(n); for(let k=0;k<n;k++)b[k]=k+1; const t=new Int32Array(256); for(let k=0;k<256;k++)t[k]=k*3+1; let crc=0; for(let i=0,m=255;i<n;i++){ crc=t[(crc^b[i])&m]^(crc>>>8) } return crc }`,
+  ]) {
+    const host = oracle(src).f
+    for (const optimize of [2, 3, 'speed']) { const f = run(src, { optimize }).f; for (const n of [6, 9]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  }
+})
+
 test('rec-unroll: fires (carry declared at speed, absent when disabled)', () => {
   if (onKernel()) return  // host-codegen SHAPE assertion; bit-exactness above is portable
   const src = `export let f=(n)=>{ const a=new Int32Array(70); for(let k=0;k<70;k++)a[k]=k|0; for(let j=1;j<=n;j++){ const up=a[j]; const ins=a[j-1]+1; let m=up+1; if(ins<m)m=ins; a[j]=m } return a[60]|0 }`
