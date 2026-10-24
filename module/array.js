@@ -1180,7 +1180,7 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         ...(held?.notNullish ? [] : [['if', ['i32.or',
           ['i64.eq', ['i64.reinterpret_f64', ptrExpr], ['i64.const', atomNanHex(ATOM.NULL)]],
-          ['i64.eq', ['i64.reinterpret_f64', ptrExpr], ['i64.const', atomNanHex(ATOM.UNDEFINED)]]],
+          ['i64.eq', ['i64.reinterpret_f64', ptrExpr], ['i64.const', atomNanHex(ATOM.UNDEF)]]],
           ['then', ['call', '$__throw_property_nullish'], ['unreachable']]]]),
         arrayFast(null, vi, ptrExpr, true)], 'f64')
     }

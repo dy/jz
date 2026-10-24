@@ -29,6 +29,7 @@ import { buildProgramIndex } from '../src/compile/program-index.js'
 import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
 import { rewriteChildren } from '../src/ast.js'
+import { ATOM } from '../layout.js'
 
 import jzify from '../jzify/index.js'
 import { canonicalizeObjectIdioms } from '../jzify/bundler.js'
@@ -520,6 +521,17 @@ test('layout: NaN-box carrier i64 hex only via layout.js helpers', () => {
   ok(violations.length === 0, violations.length
     ? `use layout.js helpers (nanPrefixHex, ssoBitI64Hex, sliceBitI64Hex, …):\n${violations.join('\n')}`
     : 'no hand-rolled layout hex')
+})
+
+// A misspelled atom (`ATOM.UNDEFINED` for `ATOM.UNDEF`) is undefined, and
+// atomNanHex throws only when its branch is emitted: a rare branch carries it
+// unseen. Every atom the source names must be one layout.js defines.
+test('layout: every atom the source names is one layout.js defines', () => {
+  const unknown = []
+  for (const dir of SCAN) for (const file of jsFiles(dir))
+    for (const m of readFileSync(file, 'utf8').matchAll(/\bATOM\.([A-Za-z_$][\w$]*)/g))
+      if (!Object.hasOwn(ATOM, m[1])) unknown.push(`${relative(ROOT, file)}: ATOM.${m[1]}`)
+  is(unknown.join('\n'), '', `atoms are ${Object.keys(ATOM).join(', ')}`)
 })
 
 test('architecture: missing active BigInt RepresentationPlan fails closed', () => {
