@@ -103,3 +103,17 @@ export let f = (k) => { const s = 'x'; const r = (bump() && typeof s === 'number
     is([mod.f(0), mod.f(1)], [js.f(0), js.f(1)], `${src.split('\n').pop()} at ${optimize}`)
   }
 })
+
+// A test of a binding the first rounds see empty (`let c = p.coefs`, the field
+// holding what a function the walk meets later returns) is decided by the round
+// whose kinds settled: `c` holds the array every caller builds, so the library's
+// `if (!Array.isArray(c)) c = [c]` never runs, and neither does what it calls.
+test('kind tests: a test is decided by the kinds the last round settles on', () => {
+  const src = `let wrap = (x) => [x, x]
+let total = (p) => { let c = p.coefs; if (!Array.isArray(c)) c = wrap(c); let s = 0; for (let i = 0; i < c.length; i++) s += c[i]; return s * 10 + c.length }
+let design = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i * 0.5); return a }
+let run = (k) => total({ coefs: design(k) })
+export let f = (k) => run(k)`
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `at ${optimize}`)
+  ok(!/\$wrap/.test(compile(src, { optimize: 0, wat: true })), 'the arm never taken is gone, and the function only it calls')
+})

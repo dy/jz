@@ -2847,7 +2847,8 @@ src/
                 plan/kind-split.js: a loop reading a name of several kinds, a typed array among them, a copy over that array where `instanceof` says the name holds it (the constructor from the name's values and its callers' arguments)
                 loop-recurrence.js (`unrollRecurrences`, after the versioning: the pairs are of the copies): a unit-stride loop storing `arr[j]` and reading `arr[j-1]` (a row recurrence), the read a scalar carried from the store, two cells a pass of a counted loop stepped by 2 (the second under the loop's test one cell on), under a guard that the range is not empty; a `break` leaves the pair loop as it leaves the loop
                 plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one (a cursor declared from the counters of the loops around it, an inlined call's argument, needs no test: the copy stands alone); a cursor stepped by literals (a ring with its resets, a module binding in a loop that runs no user code, a stream position stepped inside an index) as a word under its advance budget, and one stepped by expressions of a literal hull, up or down, under the budget of both ends; a derived integer of the counter and of proven int32s (a row base, a derived index, a guarded scatter cell, an index with a product, an element at a proven index, a clamped float truncated) as a word where its hull, kept by a walk of the body through its tests and early exits, fits i32 (an end at the type's extreme opens under a name, a visible fraction is held to a Number); a walk over links (`j = next[j]` under `j >= 0`) as a word reading a missed link as -1; an inner version whose names are such words absorbed into the copy, its tests over the counter lifted to the counter's ends; a cursor stepped inside nested loops (LZ's output cursor) under a count a nested loop entered on the round's own test gives, its trips read off the round's declarations by the advance budget where no name of the loop's names them; a sum or difference of int32s no hull holds within int32 (`up + 1` over an int32 element, a DP cell) as a word of the copy under a test of its wide side before the statement (`if (up > 2147483646) { j$ = j; bail = 1; break }`), the copy leaving for the loop as written, resumed at its counter, where the result would leave the word (the round runs nothing before the test it could not run again)
-                plan/loop-fields.js: a field or a Float64Array element a loop reads and writes through one receiver, in a local for the loop, stored back after it
+                plan/loop-fields.js: a field or a Float64Array element a loop reads and writes through one receiver, in a local for the loop, stored back after it; so is a constant-index element of a dense numeric array whose length never changes, the copy finding the arrays of one construction cell distinct, a receiver an alias of a field or of a constant-index element (`const s = state[k]`), and a field no store of the loop names through any receiver. A loop whose only inner loops count from 0 by one below a constant of at most eight (a cascade's stages) is read with them written out, a copy per pass, and takes that form where it then holds state
+                plan/built-lengths.js: the length of an array the summary knows for good (one a function built by counted pushes, summary builtLenOf), read through a name, as its number
                 plan/chosen-calls.js: a local holding one of several named functions and only called, the choice of direct calls
                 plan/called-args.js: a function whose parameter is only called or tested against strings, a copy for each named function or string literal a call passes there
                 plan/object-reads.js: a key a loop reads of an object the function made and only reads, read once where the object is made
@@ -3219,11 +3220,28 @@ the cell's own load off the raw base, never absent inside the count; a
 literal-index store inside it is the cell's own store, behind the reset's
 snapshot of a durable array. A module const grown only by counted top-level
 pushes through its own name is frozen after init (`frozenLenOf`): its binding
-holds the final pointer, so reads through it follow no forward. An element
+holds the final pointer, so reads through it follow no forward. An array a
+function builds is whole once the function has it (`builds`, `builtLenOf`): a
+literal declared `const` among the function's own statements, named by
+nothing but pushes up to the last statement pushing through it, each push on
+no path but counted loops whose start and end are one value each, stepped by
+one, with no `break`, `continue` or `return` (`exactTrips`). Nothing else sees
+it before then, so another function reads its literal's count plus the
+pushes, where nothing else resizes the cell and no other construction joins
+it (`multiSite`); a push with no such count leaves the cell open for the
+round, the last round deciding as for `grown`. `plan/built-lengths.js` folds
+such a read of a name's length to the number: `const n = coefs.length` of a
+design function's sections is `const n = 8`. An element
 read whose index the walk finds inside a fixed length is present by node
 (`presentReads`), and a never-nullish expression of one layout reads its slot
-directly. A bare `let` assigned before every read declares empty, not absent
-(`summary/definite.js`). The module's own bare declarations take the same
+directly. A test is decided by the round whose kinds settled (`decisions`
+start afresh each round): a binding the first rounds see empty, its value a
+field holding what a function met later returns, decides nothing until then,
+and an arm walked in those rounds no longer keeps the test open. A bare `let`
+assigned before every read declares empty, not absent
+(`summary/definite.js`); a condition carries what each outcome assigned, a
+true `&&` and a false `||` having run every operand (`if (a && (r = a[0]) !=
+null && r !== b)` reads `r` assigned). The module's own bare declarations take the same
 proof over its statements: a function runs where a statement names it or,
 called by the host, after they end, so a name a function reads is assigned on
 every path to the end (`var HIGH; if (le) HIGH = 1; else HIGH = 0` holds a
