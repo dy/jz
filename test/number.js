@@ -654,6 +654,24 @@ test('Number payload proofs: plain-array arithmetic stores raw, raw ingress stil
   }
 })
 
+test('Number payload proofs: an exported Number result crosses as a Number whatever its bits', () => {
+  // the host reads a result crossing as a Number as one (interop.js numberRet):
+  // a NaN whose bits spell a boolean, a string or an array's pointer is NaN,
+  // returned by an arrow or a function, a typed array's element or arithmetic
+  // on one. (The exact bits of null and undefined read as those, the values a
+  // nullable Number result returns.)
+  const src=`const bits=(hi,lo)=>{const t=new Float64Array(1),w=new Uint32Array(t.buffer);w[0]=lo;w[1]=hi;return t}
+    export let e=(hi,lo)=>bits(hi,lo)[0]
+    export function d(hi,lo){const v=bits(hi,lo)[0];return v}
+    export function m(hi,lo){return bits(hi,lo)[0]*2}`
+  const want=oracle(src)
+  for(const optimize of levels(0,1,2,3,'size')){
+    const got=jz(src,{optimize:{level:optimize}}).exports
+    for(const [hi,lo] of [[0x7ff80004,0],[0x7ff80005,0],[0x7ffa4000,0],[0x7ff88000,0x1000],[0x7ff87fff,0xffffffff],[0x3ff00000,0]])
+      for(const name of ['e','d','m'])is(got[name](hi,lo),want[name](hi,lo),`${name} ${hi.toString(16)}:${lo.toString(16)} O${optimize}`)
+  }
+})
+
 test('Number nullable boundaries retain missing arms and evaluate reads once', () => {
   const src=`let reads=0;
     function see(v){return[typeof v,Number.isNaN(v),typeof v==='number',typeof v==='undefined',Boolean(v),String(v)]}

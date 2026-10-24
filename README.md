@@ -301,7 +301,9 @@ Host Number values remain numbers, including NaNs with custom payloads. Pass
 allocated memory by its bigint handle from `memory.Array`, `memory.Float64Array`
 or the other constructors. Raw `memory.read` and pointer codec helpers also
 accept legacy floating-point carriers; ordinary argument and value marshaling
-does not interpret Number payloads as handles.
+does not interpret Number payloads as handles. An export's Number result reads
+as a Number whatever its payload, but for the exact bits of the undefined and
+null a nullable Number result returns.
 
 For DSP, `memory: { fixed: ['process'] }` checks the final Wasm call graph:
 the selected exports and their typed variants must run without heap allocation,

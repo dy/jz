@@ -265,6 +265,13 @@ const decode = (v, fnOf = null, symbols = null) => {
   return i64ToF64(v)                            // canonical NaN-number / unknown
 }
 
+// An export's result that crosses as a Number is one by its contract: the
+// boundary wrapper (src/compile/boundary-wrap.js) hands every result that may
+// be another value to the host as its i64 bits, so a Number result is a
+// Number, or the undefined or null a nullable one returns. A NaN reads as NaN
+// whatever payload the computation left in it, but for those two boxes' bits.
+const numberRet = (v) => v === v ? v : (b => b === UNDEF_NAN ? undefined : b === NULL_NAN ? null : NaN)(f64ToI64(v))
+
 // Decode a boundary value arriving as i64 bits (BigInt). Heap modules go through mem.read.
 const readArgBits = (state, big) => state.mem ? state.mem.read(big) : decode(big)
 
@@ -1179,6 +1186,8 @@ export const wrap = (memSrc, inst, state) => {
     const errClassName = errorSidClassOf(r)
     return errClassName != null ? new (globalThis[errClassName] ?? Error)(decoded.message) : decoded
   }
+  // an export's result: one crossing as a Number is a Number (numberRet), a closure's is any value
+  const exportRet = (r) => typeof r === 'number' ? numberRet(r) : readRet(r)
   const lastErrBits = realInst.exports.__jz_last_err_bits
   // audit-#8 P1-1: `__jz_last_err_bits` is declared `(mut i64)` at the jz source
   // level (src/compile/index.js ensureThrowRuntime), but watr's OWN generic
@@ -1605,7 +1614,7 @@ export const wrap = (memSrc, inst, state) => {
     const above = mem._above, held = mem._held
     mem._above = mark.top; mem._held = false
     try {
-      const out = finishRet(ret, readRet)
+      const out = finishRet(ret, exportRet)
       mark.held = mem._held || (asyncMod && out instanceof Promise)
       return out
     } finally { mem._above = above; mem._held = held }
@@ -1648,11 +1657,11 @@ export const wrap = (memSrc, inst, state) => {
           // A proven raw-BigInt result stays raw; tagged results set `r` and
           // take the generic decoder.
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return mem.read(ret, fnOf)
+          return typeof ret === 'number' ? numberRet(ret) : mem.read(ret, fnOf)
         } catch (e) { decodeThrown(e) }
       }
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : mem.read(ret, fnOf), always, idle, hostAbi?.skip) : general
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : typeof ret === 'number' ? numberRet(ret) : mem.read(ret, fnOf), always, idle, hostAbi?.skip) : general
     }
     return exports
   }
@@ -1735,7 +1744,7 @@ export const wrap = (memSrc, inst, state) => {
       // would have to know what it kept; it counts as one that runs (a host
       // function it calls may call back), and one that threw leaves no mark.
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod && !(release && hostReleased.has(name))
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : readRet(ret), running, ran, hostAbi?.skip) : general
+        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : exportRet(ret), running, ran, hostAbi?.skip) : general
     } else {
       exports[name] = fn
     }

@@ -78,7 +78,10 @@ Signaling/negative NaNs stay numeric; infinities and real pointer/atom boxes do 
 Positive quiet payloads that collide with a live box are normalized when a proven
 Number enters a generic slot, mixed join, nullable result or parameter with an
 active default. Checked reads normalize only their present arm. Uniform Number
-parameters, results and typed stores retain their bits; `typeof` and nullish
+parameters, results and typed stores retain their bits, an export's Number
+result too: the host reads a result crossing as a Number as one (interop.js
+`numberRet`: a NaN is NaN, but for the exact bits of the undefined and null a
+nullable Number result returns); `typeof` and nullish
 checks use their semantic Number proof. No generic consumer guesses a lost kind.
 A binding every read of which consumes a Number takes its bits raw. A value that
 can carry no payload is not normalized at all (`kind/payload.js`): a constant,
