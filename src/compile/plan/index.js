@@ -68,6 +68,7 @@ import { hoistObjectReads } from './object-reads.js'
 import { hoistSiteReceivers } from './site-receivers.js'
 import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
 import { foldKindTests } from './fold-kind-tests.js'
+import { foldBuiltLengths } from './built-lengths.js'
 import { viewGuardedTyped } from './guard-views.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
@@ -159,6 +160,8 @@ export default function plan(ast, profiler, summarize) {
     _dirty = true; getFactStore().revision++
     ctx.summary = summarize()
   }
+  // A length the summary knows for good (an array a function built by counted pushes) is its number.
+  if (t('foldBuiltLengths', foldBuiltLengths)) { _dirty = true; getFactStore().revision++; ctx.summary = summarize() }
   if (t('declareUnseenKeys', () => declareUnseenKeys(ast))) { _dirty = true; getFactStore().revision++; ctx.summary = summarize() }
   // Devirtualize calls through init-constant function globals (closure
   // devirtualization) — must follow the SROA above, which creates the globals.

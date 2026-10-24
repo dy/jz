@@ -116,3 +116,50 @@ test('loop fields: an element a loop stores a maybe-missing value into reads bac
   agrees(`export let f = (k) => { const o = { p: undefined }, b = new Float64Array(4); if (k === 1) o.p = 2.5; let s = 1
       for (let i = 0; i < 3; i++) { b[1] = o.p; s = b[1] + s } return s }`, [['f', 1], ['f', 9]])
 })
+
+// A cascade of sections kept as the library keeps them: records from a design
+// function, each section's state a pair array, the stage loop bounded by the
+// count the design built. The stage loop runs a constant number of times, so
+// it is written out, and the sample loop then holds every coefficient and every
+// state element in a local, the pairs stored back after it; a call handing one
+// pair for two sections (the pairs found not distinct) runs the loop as written.
+const cascade = `const design = (n) => { const sos = []; for (let i = 0; i < n; i++) sos.push({ b0: 0.2 + i * 0.01, b1: 0.3, b2: 0.2, a1: -0.4 + i * 0.02, a2: 0.1 }); return sos }
+const filter = (data, coefs, state) => {
+  const n = coefs.length
+  for (let i = 0; i < data.length; i++) {
+    let x = data[i]
+    for (let j = 0; j < n; j++) {
+      const c = coefs[j], s = state[j]
+      const y = c.b0 * x + s[0]
+      s[0] = c.b1 * x - c.a1 * y + s[1]
+      s[1] = c.b2 * x - c.a2 * y
+      x = y
+    }
+    data[i] = x
+  }
+  return state[0][0] + state[n - 1][1]
+}
+const coefs = design(4)
+export let run = (len) => { const d = new Float64Array(len).fill(1), st = []; for (let j = 0; j < 4; j++) st.push([0, 0]); return filter(d, coefs, st) + filter(d, coefs, st) + (d[len - 1] ?? 0) }
+export let shared = (len) => { const d = new Float64Array(len).fill(1), z = [0, 0], st = [z, z, [0, 0], z]; return filter(d, coefs, st) + (d[len - 1] ?? 0) + z[1] }`
+
+test('loop fields: a cascade of sections in pair arrays agrees with JS, its pairs apart or shared', () => {
+  agrees(cascade, [['run', 9], ['run', 1], ['run', 0], ['shared', 9], ['shared', 0]])
+})
+
+test('loop fields: the sample loop of a cascade holds its coefficients and state in locals', () => {
+  for (const optimize of levels(2, 3)) {
+    const loops = loopsOf(wat(cascade, { optimize })).filter(l => (l.match(/f64\.mul/g) || []).length >= 20)
+    ok(loops.some(l => (l.match(/f64\.(load|store)/g) || []).length === 2 && !/call \$|i64\.load|i32\.load/.test(l)), `at ${optimize}: one loop reads and writes the sample alone`)
+  }
+})
+
+// An element alias reads its array each pass where the loop may change that
+// array: a store of its length (the next pass reads a missing element and
+// throws, as the host does), or a store of the element itself.
+test('loop fields: an element alias of an array the loop truncates or rewrites reads it every pass', () => {
+  agrees(`const f = (data, state, cut) => { for (let i = 0; i < data.length; i++) { const s = state[0]; s[0] = s[0] + data[i]; s[1] = data[i]; if (i === cut) state.length = 0 } return state.length }
+export let run = (cut) => { const st = [[0, 0]]; return f(new Float64Array(5).fill(1), st, cut) }`, [['run', 2], ['run', 9]])
+  agrees(`const f = (data, state) => { for (let i = 0; i < data.length; i++) { const s = state[0]; s[0] = s[0] + data[i]; s[1] = data[i]; state[0] = state[1] } return state[0][0] + state[1][0] }
+export let run = () => f(new Float64Array(5).fill(1), [[0, 0], [10, 0]])`, [['run']])
+})

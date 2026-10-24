@@ -39,6 +39,12 @@ const programs = [
     export const f = (c) => { let t; try { bad(c); t = 1 } catch (e) { } return t === undefined ? -1 : t }`, [1], []],
   ['a pattern assignment', `export const f = (c) => { let a, b; [a, b] = [c, c * 2]; return a + b }`, [3], ['a', 'b']],
   ['a switch that may skip', `export const f = (c) => { let t; switch (c) { case 1: t = 5; break } return t === undefined ? -1 : t }`, [2], []],
+  // A test that comes out true ran every operand of its `&&`, one that comes
+  // out false every operand of its `||`: the arm, and the operands after, read
+  // what the operands before assigned.
+  ['assigned by the operands of a true and', `export const f = (a) => { let r, q; if (a.length > 0 && (r = a[0]) > 0 && (q = r * 2) > r) return r + q; return 0 }`, [[3]], ['q', 'r']],
+  ['assigned by the operands of a false or', `export const f = (a) => { let r, q; if ((r = a[0]) === undefined || (q = r + 1) < 0) return 0; return r + q }`, [[3]], ['q', 'r']],
+  ['read where an and came out false', `export const f = (a) => { let r; if (a.length > 0 && (r = a[0]) > 0) return r; return r === undefined ? -1 : r }`, [[0]], []],
   ['a loop test that assigns', `let k = 0
     const next = () => { k = k + 1; return k <= 3 ? k : -1 }
     export const f = () => { let v, s = 0; while ((v = next()) > 0) s += v; return s + v }`, [], ['v']],
