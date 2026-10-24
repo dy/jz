@@ -36,6 +36,7 @@ test('typed presence: a read inside a known count binds a number', () => {
     'a helper\'s array, its length bounds': G + 'const N = 64\n' + MK + 'export let probe = () => { const x = mk(N), out = new Float64Array(N); for (let i = 0; i < x.length; i++) out[i] = g(x[i]); return out[3] }',
     'a helper\'s array of an unknown length, its length bounds': G + MK + 'export let probe = (n) => { const x = mk(n), out = new Float64Array(x.length); for (let i = 0; i < x.length; i++) out[i] = g(x[i]); return out[3] }',
     'a parameter\'s array, its length bounds': G + 'function sweep(x, out) { for (let i = 0; i < x.length; i++) out[i] = g(x[i]); return out[3] }\nconst N = 64\n' + MK + 'export let probe = () => sweep(mk(N), new Float64Array(N))',
+    'a parameter\'s array, its length declared beside the counter': G + 'function sweep(x, out) { for (let i = 0, l = x.length; i < l; i++) out[i] = g(x[i]); return out[3] }\nconst N = 64\n' + MK + 'export let probe = () => sweep(mk(N), new Float64Array(N))',
     'a closure\'s loop over a helper\'s array': G + 'const N = 64\n' + MK + 'export let probe = () => { const x = mk(N), out = new Float64Array(N); const sweep = () => { for (let i = 0; i < 2 * N; i++) out[i & (N - 1)] = g(x[i & (N - 1)]) }; sweep(); return out[3] }',
     'a module array, a shifted count': G + 'const N = 1 << 6\nconst x = new Float64Array(N), out = new Float64Array(N)\nfor (let i = 0; i < N; i++) x[i] = i * 0.5\nexport let probe = () => { for (let i = 0; i < x.length; i++) out[i] = g(x[i]); return out[3] }',
   }
@@ -53,6 +54,7 @@ test('typed presence: a read the walk cannot place inside the count stays number
     'a neighbour under the length bound': G + 'const N = 64\nexport let probe = () => { const x = new Float64Array(N), out = new Float64Array(N); for (let i = 0; i < x.length; i++) out[i] = g(x[i + 1]); return out[N - 1] }',
     'a mask wider than the count': G + 'const N = 64\nexport let probe = () => { const x = new Float64Array(N), out = new Float64Array(2 * N); for (let i = 0; i < 2 * N; i++) out[i] = g(x[i & (2 * N - 1)]); return out[N] }',
     'a helper of two counts': G + 'const mk = (n) => n > 0 ? new Float64Array(64) : new Float64Array(32)\nexport let probe = (n) => { const x = mk(n), out = new Float64Array(64); for (let i = 0; i < 64; i++) out[i] = g(x[i]); return out[40] }',
+    'a length declared beside the counter, grown in the loop': G + 'const N = 64\nexport let probe = () => { const x = new Float64Array(N), out = new Float64Array(N + 1); for (let i = 0, l = x.length; i < l; i++) { out[i] = g(x[i]); if (i === 0) l = l + 1 } return out[N] }',
     'an array rebound in the loop': G + 'const N = 64\nexport let probe = () => { let x = new Float64Array(N); const out = new Float64Array(N); for (let i = 0; i < x.length; i++) { out[i] = g(x[i]); x = new Float64Array(N / 2) } return out[N - 1] }',
     'a count from an unknown length': G + 'export let probe = (n) => { const x = new Float64Array(n), out = new Float64Array(64); for (let i = 0; i < 64; i++) out[i] = g(x[i]); return out[40] }',
   }

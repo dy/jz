@@ -3250,7 +3250,9 @@ element read inside the array's count is a number, never undefined
 allocation of one bounded length, a name of one definition, a helper whose
 every return is such an array, a view of the whole buffer of such an array:
 `new Uint32Array(f64.buffer)`), a mask, or a counter the loop bounds by the
-array's own length (`i < x.length`). An integer a name holds for good is known
+array's own length (`i < x.length`, or a name holding it the loop leaves
+alone: `for (let i = 0, l = x.length; i < l; i++)`, the counter any
+declaration of the loop the test bounds). An integer a name holds for good is known
 from the first round (`ints`): its one definition's value, through the names
 it copies and the fields of a literal nothing stores to (`heldLiteral`: every
 mention reads a field by name or declares an alias read the same way), since

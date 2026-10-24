@@ -892,11 +892,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   /** A loop `for (let i = a; i < b; i += c)` whose body leaves `i` alone: the
    *  counter and the integers it takes in the body; null for any other loop. */
+  // whether an expression assigns, updates or deletes anything
+  const writesIn = (e) => Array.isArray(e) && (MUTATE_OPS.has(e[0]) || e[0] === 'delete' || e.some((c, i) => i > 0 && writesIn(c)))
   const loopCounter = (n) => {
     const init = n[1], test = n[2], step = n[3]
-    if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2 || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return null
-    const name = init[1][1], from = spanOf(init[1][2], current, true)
-    if (!from || !Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || test[1] !== name) return null
+    if (!Array.isArray(init) || init[0] !== 'let' || !Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || typeof test[1] !== 'string') return null
+    // the counter is the declaration the test bounds; any other is a binding made once before the
+    // loop (`let i = 0, l = data.length`) that writes nothing and runs no code of the program's:
+    // `cut = (i = -1)` would move the counter, `cut = (a.length = 0)` the length a name holds
+    const decl = init.find((d, k) => k > 0 && Array.isArray(d) && d[0] === '=' && d[1] === test[1])
+    if (!decl) return null
+    for (let k = 1; k < init.length; k++) if (init[k] !== decl && (!Array.isArray(init[k]) || init[k][0] !== '=' || writesIn(init[k][2]) || bodyRunsCode(init[k][2]))) return null
+    const name = decl[1], from = spanOf(decl[2], current, true)
+    if (!from) return null
     if (!Array.isArray(step) || step[1] !== name) return null
     const by = step[0] === '++' ? 1 : step[0] === '+=' ? spanOf(step[2], current, true)?.[0] : null
     if (!(by > 0) || assignedIn(n[4]).includes(name)) return null
