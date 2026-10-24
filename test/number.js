@@ -631,14 +631,20 @@ test('Number generic boundaries canonicalize box-looking NaNs without changing n
 })
 
 test('Number payload proofs: plain-array arithmetic stores raw, raw ingress still normalizes', () => {
-  // A plain array's elements were normalized where they were stored, and
-  // arithmetic on them makes no payload: the store back needs no select.
-  const kernel=(make)=>`export function f(n){const a=${make},o=[];for(let i=0;i<n;i++)a[i]=i*0.5;
-    for(let i=0;i<n;i++){const x=a[i];let y=x*2;y=y+a[i];o[i]=Math.sqrt(y)-x}return o}`
+  // A boxed array's elements were normalized where they were stored, and
+  // arithmetic on them makes no payload: the store back needs no select. An
+  // array of raw Numbers (compile/numeric-arrays.js) and one that may hold a
+  // hole hand a numeric read the cell as it lies (the hole a NaN): what
+  // arithmetic makes of it is normalized where it leaves, as a typed element's is.
+  const kernel=(make,use='')=>`const a=${make};export function f(n){const o=[];for(let i=0;i<4;i++)a[i]=i*0.5+a[(i+1)&3];${use}
+    for(let i=0;i<4;i++){const x=a[i];let y=x*2;y=y+a[i];o[i]=Math.sqrt(y)-x}return o}`
   // canonicalNumberIR's own test of its temp: `cn != cn`
   const normalized=src=>(funcWat(wat(src,{optimize:{level:2,sourceInline:false,watr:false}}),'f').match(/\(f64\.ne \(local\.get \$\S*cn\d+\S*\) \(local\.get \$\S*cn\d+\S*\)\)/g)||[]).length
-  is(normalized(kernel('[]')),0,'plain elements carry no payload')
-  ok(normalized(kernel('new Float64Array(n)'))>0,'a typed element may')
+  // (`join` reads the elements as values: the array keeps the boxed layout; the fill leaves no hole)
+  is(normalized(kernel('[0,0,0,0]','a.join();')),0,'boxed dense elements carry no payload')
+  ok(normalized(kernel('[0,0,0,0]'))>0,'a raw Number element may')
+  ok(normalized(kernel('[]'))>0,'a holey element read as stored may')
+  ok(normalized(kernel('new Float64Array(4)'))>0,'a typed element may')
   const src=`function see(v){return[typeof v,Number.isNaN(v),Boolean(v),String(v),v===undefined,v==null]}
     export function f(hi,lo,mode){const t=new Float64Array(2),w=new Uint32Array(t.buffer);w[0]=lo;w[1]=hi;t[1]=2;
       const a=[1,2],o=[0,0,0,0];

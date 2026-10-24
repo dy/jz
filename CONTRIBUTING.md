@@ -937,7 +937,21 @@ to NaN (`checkedNumRead`); a value whose IR may yield the box (`mayYieldUndef`:
 a constant arm, a runtime reader's result, a local the expression set to
 either) or whose expression the summary lets be missing takes one compare and
 a select (`missToNaN`); a value that is a number by construction (arithmetic, a
-conversion, a load made without a bounds test) converts nothing. The kind of
+conversion, a load made without a bounds test) converts nothing. An element
+whose cell holds a Number or a hole, never the undefined box (`storedElement`:
+a typed array's, or a plain array's into which no value that may be missing
+is stored, summary `cellStoresAbsent`; the holes a construction, a growth or
+a deletion leaves are raised apart, `raiseHole`), converts nothing either
+where it has no proof of no payload (`kind/payload.js`): it is read as it
+lies in memory, the hole a NaN, and a bounds-checked read's miss, the
+undefined box, is the canonical NaN in place (`cellAsNumber`); whatever
+arithmetic makes of it is normalized where it leaves for a generic slot, as
+a typed element's payload is. Any other Number-or-absent value (a binding, a
+field, a call's result, an element of an array a missing value is stored
+into) may be the undefined box itself, whose bits would read as undefined
+where a Number crosses to the host as it is, and takes the compare and
+select. A sum whose side is such an element with no null takes it by the
+same rule (emit/arithmetic.js). The kind of
 a conditional joins what any arm may be on any path, so a conditional answers
 by its arms, each with its own value (`mayMissValue`): a binding by what it
 holds (one that normalizes on write, or that a guard or its definition holds

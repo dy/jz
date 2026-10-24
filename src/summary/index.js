@@ -651,6 +651,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const hostSchemas = new Set() // host-visible objects store tagged fields
   const retainedSchemas = new Set() // objects reachable across calls, through globals or captures
   const hostArrays = new Set()   // arrays exposed to host writes
+  const absentStored = new Set() // arrays a value that may be missing is stored into (raiseElem), by id at the store
   const retainedArrays = new Set() // arrays reachable across calls, through globals or captures
   const hostClosures = new Set() // callable results the host can receive
   const tuples = new Map()       // cell root → positional kinds; null after mutation, union or a mixed read
@@ -979,7 +980,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
-    if (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c]) raiseElem(arr, ABSENT)
+    if (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c]) raiseHole(arr)
     if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c) }
     else if (!(stores.get(c) >= span[1])) {
       if (onOpen && lens[c] >= 0 && span[1] >= lens[c]) onOpen(lens[c], `stored at index ${span[1]}`, current, site)
@@ -1091,9 +1092,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (row && paramOf(elems[id]) === UNKNOWN) for (const k of row) lose(k)
     }
   }
-  const raiseElem = (arr, k, literal = false, keyed = false) => {
+  const raiseElem = (arr, k, literal = false, keyed = false, hole = false) => {
     if (!celled(arr)) return
     const id = cell(paramOf(arr))
+    // a stored value that may be missing: the cell may hold the undefined box itself, not only holes
+    if (!hole && hasTag(k, K.ABSENT)) absentStored.add(id)
     if (hostArrays.has(id) && retainedArrays.has(id)) { retain(k); escapeToHost(k); k = ANY; literal = false }
     if (!literal) invalidateTuple(arr)
     const held = setCells.has(id) && !enumerated.has(id)
@@ -1107,6 +1110,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A keyed dictionary's entry stored under a name the summary does not see.
     if (!keyed && hasTag(arr, K.HASH) && keyedCells.has(id)) raiseWildCell(id, k)
   }
+
+  // A hole an array may have (a construction's count, a store past the length,
+  // a length written, a deletion): absent, but not a value stored.
+  const raiseHole = (arr) => raiseElem(arr, ABSENT, false, false, true)
 
   const unify = (a, b) => {
     a = cell(a); b = cell(b)
@@ -1181,7 +1188,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const t = tagOf(arr)
     if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return
     if (t === K.ARRAY && isArrayIndexKey(prop)) { storeAt(arr, prop); raiseElem(arr, k); return }
-    if (t === K.ARRAY && prop === 'length') { openLen(arr, 'length written as a property'); raiseElem(arr, ABSENT) }
+    if (t === K.ARRAY && prop === 'length') { openLen(arr, 'length written as a property'); raiseHole(arr) }
     if (t !== K.ARRAY) raiseElem(arr, k, false, true)
     const c = cell(paramOf(arr)); let m = cellProps.get(c)
     if (t === K.ARRAY) propArrays.add(c)
@@ -1190,7 +1197,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const old = m.get(prop) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { m.set(prop, nk); changed = true }
   }
-  const raiseWild = (arr, k) => { const t = tagOf(arr); if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return; if (t === K.ARRAY) { openLen(arr, 'stored under an unknown property'); raiseElem(arr, ABSENT) } raiseElem(arr, k, false, true); const c = cell(paramOf(arr)); const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
+  const raiseWild = (arr, k) => { const t = tagOf(arr); if (!(t === K.ARRAY || isDict(arr)) || paramOf(arr) === UNKNOWN) return; if (t === K.ARRAY) { openLen(arr, 'stored under an unknown property'); raiseHole(arr) } raiseElem(arr, k, false, true); const c = cell(paramOf(arr)); const old = cellWild.get(c) ?? K.NONE, nk = merge(old, k); if (nk !== old) { cellWild.set(c, nk); changed = true } }
   // A map's keys: stored by `set`, handed out only by enumeration (keys(),
   // entries(), forEach, iteration, a copy). A key kept in a map is lost when
   // the map enumerates or is itself lost, not when it is stored.
@@ -2426,7 +2433,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (n === 1) {
       const k = ks[base]
       if (typeof node?.[2] === 'string' && celled(arr)) cellLenAlias.set(cell(paramOf(arr)), node[2])
-      if (hasTag(k, K.NUMBER) && !(celled(arr) && filledCells.has(cell(paramOf(arr))))) raiseElem(arr, ABSENT)
+      if (hasTag(k, K.NUMBER) && !(celled(arr) && filledCells.has(cell(paramOf(arr))))) raiseHole(arr)
       if ((k & TAGS & ~bitOf(K.NUMBER)) !== 0 || kspread[base]) raiseElem(arr, kspread[base] ? k : k & ~bitOf(K.NUMBER))
     } else for (let i = 0; i < n; i++) raiseElem(arr, ks[base + i])
     return arr
@@ -3421,7 +3428,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         dynamicProps.add(prop)
       }
       // A length store extends an array with holes (`a.length = n`: the new slots read undefined).
-      else if (t === K.ARRAY) { if (prop === 'length') { openLen(recv, 'its length is stored to'); raiseElem(recv, ABSENT) } else if (paramOf(recv) !== UNKNOWN) { if (isArrayIndexKey(prop)) storeAt(recv, prop); raiseProp(recv, prop, v) } else escape(v) }
+      else if (t === K.ARRAY) { if (prop === 'length') { openLen(recv, 'its length is stored to'); raiseHole(recv) } else if (paramOf(recv) !== UNKNOWN) { if (isArrayIndexKey(prop)) storeAt(recv, prop); raiseProp(recv, prop, v) } else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseProp(recv, prop, v); else escape(v) }
       else if (t === K.CLOSURE && closureOwn(recv) && !FUNCTION_PROTO.has(prop)) raiseClosureProp(recv, prop, v)
       else if (builtinReceiverTag(t)) escape(v)
@@ -4176,7 +4183,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // Prepared as `['delete', receiver, key]`. A static key on a fixed shape
       // is rejected downstream; a computed key may remove any slot.
       const r = expr(n[1]), k = expr(n[2])
-      if (tagOf(r) === K.ARRAY) { invalidateTuple(r); openLen(r, 'an element is deleted'); raiseElem(r, ABSENT) }
+      if (tagOf(r) === K.ARRAY) { invalidateTuple(r); openLen(r, 'an element is deleted'); raiseHole(r) }
       if (tagOf(r) === K.OBJECT && paramOf(r) !== UNKNOWN) for (const sid of shapesOf(paramOf(r))) deletable.add(sid)
       else if (dictOrObject(r)) { for (const sid of shapesInCell(cell(paramOf(r)))) deletable.add(sid); if (cellLostObject.has(cell(paramOf(r)))) deleteReach.unknown = true }
       else if (hasTag(r, K.OBJECT)) deleteReach.unknown = true
@@ -4656,7 +4663,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
-    mapKeys, heldKeys,
+    mapKeys, heldKeys, absentStored,
     held,
     boolKeys, storeBits, paramKeys,
     contracts: null,   // the result contracts, built at the freeze below
@@ -5097,7 +5104,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
     if (losses) losses.length = 0
-    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.length = 0; stores.clear(); built.length = 0; grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)

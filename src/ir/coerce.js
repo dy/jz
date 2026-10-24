@@ -14,7 +14,7 @@ import { ctx, inc, PTR, LAYOUT, OPTF } from '../ctx.js'
 import { ERR_CLASS_NAMES, ERR, errorCodeLiteral } from '../../err-codes.js'
 import { ptrBits, i64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
 import { VAL, repOf, numericStorage, mayBeUndefined } from '../reps.js'
-import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, boolTagged, mixedBoolKind } from '../kind.js'
+import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenied, boolTagged, mixedBoolKind, payloadFree } from '../kind.js'
 import { intExprRange } from '../static.js'
 import { K, bitOf, hasTag, tagOf, NULL_BITS, TAGS, NUMBER_OPS } from '../summary/kind.js'
 import { COMPOUND_NUMERIC_OPS } from '../kind-traits.js'
@@ -187,6 +187,32 @@ const asStored = (v) => {
   return hit?.holeRead ? typed([...v.slice(0, 3), ['then', hit.holeRead], v[4]], 'f64') : v
 }
 
+// An element whose cell holds a Number or a hole, never the undefined box: a
+// typed array's, or a plain array's into which no value that may be missing is
+// stored (summary cellStoresAbsent; a hole is a NaN, not the box). The element
+// read itself, or the one an assignment's value is (a load of a field or of a
+// boxed binding may hold the box); null for any other.
+export const storedElement = (n) => {
+  if (!Array.isArray(n)) return null
+  if (n[0] === '=') return storedElement(n[2])
+  if (n[0] !== '[]') return null
+  if (valTypeOf(n[1]) === VAL.TYPED) return n
+  const c = ctx.summary?.at(ctx.func.current)?.arrayCellOf(n[1])
+  return c == null || ctx.summary.cellStoresAbsent?.(c) !== false ? null : n
+}
+// Such an element read as it lies in memory (the cell as stored, `holeRead`, or
+// the load), alone or as a bounds-checked read's hit arm whose miss is the
+// undefined box, that box taken to NaN: no test at all. Null for any other value.
+const storedCell = (v) => v.holeRead ?? (v[0] === 'f64.load' || v[0] === 'local.tee' && v[2]?.[0] === 'f64.load' ? v : null)
+const cellAsNumber = (node, v) => {
+  if (!storedElement(node)) return null
+  const cell = storedCell(v)
+  if (cell) return asF64(cell)
+  const hit = v[0] === 'if' && v.length === 5 && v[3]?.[0] === 'then' && v[3].length === 2 && v[4]?.[0] === 'else' && v[4].length === 2 ? storedCell(v[3][1]) : null
+  if (!hit || !(v[4][1]?.[0] === 'f64.const' && v[4][1][1] === `nan:${UNDEF_NAN}`)) return null
+  return typed([...v.slice(0, 3), ['then', hit], ['else', ['f64.const', 'nan']]], 'f64')
+}
+
 // ToNumber of a Number that may be undefined: undefined converts to NaN. An
 // array cell read as stored (ir/arrays.js arrayValue `holeRead`) skips the test
 // that maps its hole to undefined, the hole being a NaN as well: one test maps
@@ -293,7 +319,17 @@ export function toNumF64(node, v) {
   const readKind = ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? K.NONE
   if ((readKind & TAGS) === (bitOf(K.NUMBER) | bitOf(K.ABSENT)) ||
       Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
-    return v.presentNumRead || !mayMissValue(node, v) ? asF64(v) : missToNaN(v)
+    if (v.presentNumRead || !mayMissValue(node, v)) return asF64(v)
+    // An element whose cell holds a Number or a hole (storedElement) with no
+    // proof of no payload (kind/payload.js: a holey array's, a float typed
+    // array's) is normalized where it leaves for a generic slot, and so is
+    // every sum of it: here it is the Number it lies as in memory, the hole a
+    // NaN, and a bounds-checked read's miss, the undefined box, the canonical
+    // NaN in place. The box itself must not reach arithmetic: its exact bits
+    // would read as undefined where a Number crosses to the host as it is
+    // (interop.js numberRet).
+    if (!payloadFree(node)) { const cell = cellAsNumber(node, v); if (cell) return cell }
+    return missToNaN(v)
   }
   const vt = valTypeOf(node)
   if (vt === VAL.BIGINT || vt == null && isPlanRawBigint(node)) {
@@ -353,7 +389,9 @@ export function toNumF64(node, v) {
       return coerceNullishToNum(asF64(v))
     }
     // The kind names what a read finds; a read that finds nothing answers undefined.
-    if (typeof node !== 'string' && (mayYieldUndef(v) || mayMissValue(node, v))) return missToNaN(v)
+    // (an element read as it lies in memory takes its miss to NaN in place, as above)
+    if (typeof node !== 'string' && (mayYieldUndef(v) || mayMissValue(node, v)))
+      return cellAsNumber(node, v) || missToNaN(v)
     return asF64(v)
   }
   if (vt === VAL.DATE && !ctx.funcs.runtimeRoots.has(TO_PRIMITIVE.number)) {

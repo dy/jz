@@ -198,6 +198,18 @@ test('array holes: numeric absence converts once without broad ToNumber and mixe
   }
 })
 
+test('array holes: a missing value stored into an array never reaches arithmetic as the undefined box', () => {
+  // a hole reads as a NaN where a number is wanted (ir/coerce.js storedElement); a
+  // stored missing value is the undefined box, whose bits a Number result would
+  // cross to the host with: those cells convert, the sum is NaN
+  const src = `const miss = (k) => { const m = new Map(); m.set('present', 1); return m.get(k) }
+    export const sum = (k) => { const a = [1, 2, 3]; a[k] = miss('x'); let s = 0; for (let i = 0; i < 3; i++) s += a[i]; return s }
+    export const scaled = (k) => { const a = new Array(4).fill(0); a[k] = miss('x'); let s = 0; for (let i = 0; i < 4; i++) s = s + a[i] * 2; return s }
+    export const holey = (k) => { const a = new Array(4).fill(1); a[k + 6] = 2; let s = 0; for (let i = 0; i < 8; i++) s += a[i]; return s }
+    export const field = () => ({ x: miss('x') }).x + 1`
+  runCases(src, [['sum', [1]], ['sum', [5]], ['scaled', [2]], ['holey', [0]], ['holey', [-6]], ['field', []]])
+})
+
 test('array holes: dense length growth and BigInt payloads keep separate value and presence bits', () => {
   const src = `${signature}
     export function f(n) {

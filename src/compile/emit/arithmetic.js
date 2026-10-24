@@ -5,7 +5,7 @@
  */
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
+import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, storedElement, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
@@ -371,6 +371,7 @@ const mayBeMissing = (node) => {
 // the end of a number array. A call's result keeps the generic sum: its kind
 // is the callee's, which a closure table's call sites pin as open
 // (test/closures.js, the fail-open pins of the parameter lattice).
+const NUMBER_OR_ABSENT = bitOf(K.NUMBER) | bitOf(K.ABSENT)
 export const numberOrMissing = (node) => {
   if (Array.isArray(node) && (node[0] === '()' || node[0] === '?.()')) return false
   const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
@@ -539,8 +540,9 @@ export const arithmeticOps = {
     // number passes.
     if ((vtA == null || vtB == null) && (vtA === VAL.NUMBER || vtA == null && numberOrMissing(a)) &&
         (vtB === VAL.NUMBER || vtB == null && numberOrMissing(b))) {
+      // (a number, or an element no null spells whose cell holds a Number or a hole, storedElement, converts as ToNumber reads it: toNumF64)
       const side = (vt, n) => {
-        if (vt === VAL.NUMBER) return toNumF64(n, emit(n))
+        if (vt === VAL.NUMBER || (ctx.summary?.at(ctx.func.current)?.kindOfExpr(n) & TAGS) === NUMBER_OR_ABSENT && storedElement(n)) return toNumF64(n, emit(n))
         const t = temp('add'), get = () => typed(['local.get', `$${t}`], 'f64')
         return typed(['if', ['result', 'f64'], ['f64.eq', ['local.tee', `$${t}`, asF64(emit(n))], get()],
           ['then', get()], ['else', coerceNullishToNum(get())]], 'f64')

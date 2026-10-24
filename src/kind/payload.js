@@ -8,7 +8,8 @@
  * canonical NaN when every NaN input is canonical); a plain array's element
  * carries none, normalized where it was stored, unless the array keeps
  * raw Numbers (compile/numeric-arrays.js), whose element is raw ingress as a
- * typed one is. A value that is no Number (a box) has none to speak of.
+ * typed one is, or may hold a hole, whose element a numeric read takes as it
+ * lies in memory (ir/coerce.js toNumF64). A value that is no Number (a box) has none to speak of.
  *
  * @module kind/payload
  */
@@ -44,8 +45,10 @@ const free = (n, names) => {
     // an integer typed array's element is an integer
     if (tagOf(k) === K.TYPED) return aux !== UNKNOWN && (aux & 7) <= TYPED_ELEM_CODE.Uint32Array && !(aux & (TYPED_ELEM_BIGINT_FLAG | TYPED_ELEM_F16_FLAG))
     // a plain array to the summary and to the emitter: storage promoted to typed keeps raw bits,
-    // and so does an array whose elements are raw Numbers (compile/numeric-arrays.js)
-    return tagOf(k) === K.ARRAY && valTypeOf(n[1]) === VAL.ARRAY && !numericArrayExpr(n[1])
+    // and so does an array whose elements are raw Numbers (compile/numeric-arrays.js); an
+    // element of an array that may hold a hole is read as stored where a number is wanted (ir/coerce.js toNumF64)
+    return tagOf(k) === K.ARRAY && valTypeOf(n[1]) === VAL.ARRAY && !numericArrayExpr(n[1]) &&
+      ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(n[1]) === true
   }
   if (op === '()') return MATH.has(n[1]) && (n[2]?.[0] === ',' ? n[2].slice(1) : n.slice(2)).every(a => free(a, names))
   return false

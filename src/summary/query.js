@@ -20,7 +20,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -781,6 +781,9 @@ export function summaryQueries(facts, internal = false) {
     resultVal: name => valOf(resultOfId(name)),
     // the array cell, by root, every result of a function is an array of, or null
     resultCellOf: name => { const k = resultOfId(name); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : null },
+    // whether an array of cell `c` (by root) may hold a stored value that is missing, the
+    // undefined box itself, beside the holes a construction, a growth or a deletion leaves
+    cellStoresAbsent: c => { for (const id of absentStored ?? []) if (cell(id) === c) return true; return false },
     // The closures a closure or closure-set id (calleeOf) names, and a
     // closure's arrow: what a call through a resolved binding runs.
     closureMembers: id => membersOf(id),
