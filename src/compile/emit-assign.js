@@ -17,7 +17,7 @@ import { T, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith, lacksSlot } from './emit/class-dispatch.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, intExprRange } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
-import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../layout.js'
+import { i64Hex, encodePtrHi, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, ARRAY_RAW } from '../../layout.js'
 import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-closure-tables.js'
 import { isPresentNumber, valTypeOf, shapeOf } from '../kind.js'
 import { K, NUMBER, kindOfVal, bitOf as summaryBitOf, tagOf as summaryTagOf, tagsOf as summaryTagsOf, NULL_BITS as SUMMARY_NULL_BITS } from '../summary/kind.js'
@@ -27,7 +27,7 @@ import {
   typed, asF64, asI32, asI64, keyIndex, temp, tempI32, withTemp, block64,
   ptrOffsetIR, fwdOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
-  freshId, boxBigInt, isNullish, throwTypeErrorIR, capturedCellSave, cellSnap,
+  freshId, boxBigInt, isNullish, throwTypeErrorIR, capturedCellSave, cellSnap, cloneIR,
 } from '../ir.js'
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationStorageWriteAction } from './representation-plan.js'
@@ -37,6 +37,7 @@ import { trySlotUpdate } from './slot-update.js'
 import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../module/collection/durable.js'
 import { demandHostReceiver } from './func-exports.js'
 import { arrayRecordSlot } from './array-records.js'
+import { numericArrayExpr, numericArraysOn } from './numeric-arrays.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -127,7 +128,7 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = fals
     const base = tempI32('asb'), baseG = ['local.get', `$${base}`]
     // (a binding the loop around saved for the reset ahead of it needs no snapshot test here: control-flow.js durableLoopArrays)
     const held = arrName != null ? ctx.func.refinements?.get(arrName) : null
-    const saved = hasDurableReset() && !held?.saved ? [durableArrSnapNode(base)] : []
+    const saved = hasDurableReset() && !held?.saved ? [durableArrSnapNode(base, ['i64.reinterpret_f64', direct ? cloneIR(arrExpr) : arrG])] : []
     if (saved.length) inc('__durable_arr_snap')
     body.push(['local.set', `$${base}`, fwdOffsetIR(typed(direct ? arrExpr : arrG, 'f64'))])
     // An index proven inside the length (type/canonical-bounds.js
@@ -151,12 +152,15 @@ function storeFixedElement(arr, index, valueExpr, nullable) {
   const held = typeof arr === 'string' ? ctx.func.refinements?.get(arr) : null
   const base = tempI32('fb'), recv = nullable && !held?.notNullish ? temp('fr') : null
   // A store of this block already saved the array (dispatch.js emitBlockBody).
-  const saved = hasDurableReset() && !held?.saved ? [durableArrSnapNode(base)] : []
+  // (the pointer in a local where the save reads its aux: an array of raw Numbers logs a raw record)
+  const snap = hasDurableReset() && !held?.saved
+  const pin = snap && !recv && numericArraysOn() ? temp('fp') : recv
+  const saved = snap ? [durableArrSnapNode(base, pin ? ['i64.reinterpret_f64', ['local.get', `$${pin}`]] : null)] : []
   if (saved.length) { inc('__durable_arr_snap'); if (typeof arr === 'string') (ctx.func.savedStores ??= []).push(arr) }
-  const ptr = recv ? typed(['local.get', `$${recv}`], 'f64') : asF64(emit(arr))
+  const ptr = pin ? typed(['local.get', `$${pin}`], 'f64') : asF64(emit(arr))
   if (recv && typeof arr === 'string') (ctx.func.checkedRecv ??= []).push(arr)
   return withTemp(valueExpr, t => [
-    ...(recv ? [['local.set', `$${recv}`, asF64(emit(arr))], ['if', isNullish(ptr), ['then', ['drop', throwTypeErrorIR()]]]] : []),
+    ...(recv ? [['local.set', `$${recv}`, asF64(emit(arr))], ['if', isNullish(ptr), ['then', ['drop', throwTypeErrorIR()]]]] : pin ? [['local.set', `$${pin}`, asF64(emit(arr))]] : []),
     ['local.set', `$${base}`, ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptr], ['i64.const', LAYOUT.OFFSET_MASK]]]],
     ...saved,
     ctx.abi.array.ops.store(['local.get', `$${base}`], index, ['local.get', `$${t}`]),
@@ -210,7 +214,8 @@ function dynSetCall(arr, keyExpr, valueExpr, receiver = null) {
   if (typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {
     const recvTmp = temp('dsa'), valTmp = temp('dsv')
     const recv = typed(['local.get', `$${recvTmp}`], 'f64')
-    const persist = persistBindingPtr(arr, mkPtrIR(PTR.ARRAY, 0, fwdOffsetIR(recv)))
+    // (the pointer rebuilt keeps its aux: ARRAY_RAW where the binding's cell keeps raw Numbers, which names every array it holds)
+    const persist = persistBindingPtr(arr, mkPtrIR(PTR.ARRAY, numericArrayExpr(arr) ? ARRAY_RAW : 0, fwdOffsetIR(recv)))
     return block64(
       ['local.set', `$${recvTmp}`, receiver ?? asF64(emit(arr))],
       ['local.set', `$${valTmp}`, ['f64.reinterpret_i64', ['call', `$${setter}`, asI64(recv), asI64(keyExpr), asI64(valueExpr)]]],
@@ -639,7 +644,8 @@ function emitElementStore(arr, idx, val, node) {
   // happening. `storedValueNarrow` never fires for an inline expression,
   // only for a bare name independently proven boxed elsewhere.
   const arrProvenTyped = numericKey && valTypeOf(arr) === VAL.TYPED && plannedTypedStorageInfo(ctx, arr) != null
-  const valueExpr = arrProvenTyped ? storedValueNarrow(val) : storedValue(val)
+  // An array whose elements are raw Numbers (compile/numeric-arrays.js) takes the value's bits as they are.
+  const valueExpr = arrProvenTyped || numericKey && numericArrayExpr(arr) ? storedValueNarrow(val) : storedValue(val)
   // A runtime-typed destination needs a self-describing value. A definite
   // BigInt source may lawfully stay raw under its ordinary RepresentationPlan
   // edge, so materialize the PTR.BIGINT tag specifically for the polymorphic

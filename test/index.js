@@ -34,6 +34,7 @@ const TESTS = [
   'method-receivers',
   'array-methods',
   'array-holes',
+  'numeric-arrays',
   'features',
   'feature-gating',
   'strings',

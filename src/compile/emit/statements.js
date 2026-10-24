@@ -16,7 +16,8 @@ import { isTerminator } from '../../type.js'
 import { withFinallyStack, withTryState } from '../flow-state.js'
 import { representationProgramHasBigint, representationReturnAction } from '../representation-plan.js'
 import { bindTuple, emit, emitBlockBody, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
-import { storedValue } from '../../bridge.js'
+import { storedValue, storedValueNarrow } from '../../bridge.js'
+import { numericArrayExpr } from '../numeric-arrays.js'
 import { runsAccessor } from '../../evaluation-effects.js'
 import { frameNode } from '../../function.js'
 
@@ -325,8 +326,11 @@ export const statementOps = {
       // Each lane is an element carrier: the caller stores the lanes into an
       // array as they are and the host decodes them, so a lane takes the
       // container store's form (a boolean its atom, a BigInt its planned box);
-      // a hole (`[, x]`) reads undefined.
-      const vals = expr.slice(1).map(e => e == null ? undefExpr() : storedValue(e))
+      // a hole (`[, x]`) reads undefined. The lanes of a literal whose cell
+      // keeps raw Numbers keep their bits, as its elements would
+      // (compile/numeric-arrays.js; the array a call builds of them is tagged).
+      const raw = numericArrayExpr(expr)
+      const vals = expr.slice(1).map(e => e == null ? undefExpr() : raw ? storedValueNarrow(e) : storedValue(e))
       if (finalizers.length === 0) return typed(['return', ...vals], 'void')
       const names = vals.map(() => temp('ret'))
       return [

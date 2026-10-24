@@ -1316,7 +1316,7 @@ export const controlFlowOps = {
     const savedRefs = new Map()
     for (const name of savedArrays) {
       const b = tempI32('lsb')
-      result.push(['local.set', `$${b}`, ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(emit(name))]]], durableArrSnapNode(b))
+      result.push(['local.set', `$${b}`, ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(emit(name))]]], durableArrSnapNode(b, ['i64.reinterpret_f64', asF64(emit(name))]))
       inc('__durable_arr_snap')
       ;(ctx.func.savedStores ??= []).push(name)
       savedRefs.set(name, { ...ctx.func.refinements?.get(name), saved: true })

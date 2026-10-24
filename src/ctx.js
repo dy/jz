@@ -691,6 +691,8 @@ export function reset(proto, globals, bridge) {
     atom: null,
     regex: null,
     records: null,         // the record layouts of arrays' named properties (compile/array-records.js)
+    numericCells: null,    // the array cells whose elements are raw Numbers (compile/numeric-arrays.js)
+    numericConstructions: null, // the constructions that make their arrays, tagged ARRAY_RAW
     // Static data segment — parts-array accumulator (src/static-data.js owns
     // the representation; all access goes through its helpers).
     dataParts: [],

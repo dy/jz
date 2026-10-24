@@ -4,10 +4,11 @@
  * @module compile/emit/dispatch
  */
 
+import { numericConstruction, numericLanes } from '../numeric-arrays.js'
 import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
-import { STR_HCACHE_BIT, HEAP } from '../../../layout.js'
+import { STR_HCACHE_BIT, HEAP, ARRAY_RAW } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand, here } from '../../ctx.js'
 import {
@@ -45,7 +46,7 @@ import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summa
 // where an appended trailing element would corrupt the operand list.
 // `[]` hands its node to the element read: an access node carries its own
 // occurrence's bounds proof (type/interval-proof.js).
-const SELF_AWARE_OPS = new Set(['u-', '~', '[]', 'postfix', ...BIGINT_JOINT_BINARY_OPS, ...JOIN_OPS])
+const SELF_AWARE_OPS = new Set(['u-', '~', '[]', '[', 'postfix', ...BIGINT_JOINT_BINARY_OPS, ...JOIN_OPS])
 
 // Host globals auto-imported as `(import "env" "name" (global … i64))` when
 // referenced as a value. Drained from ctx.core.hostGlobals at assembly.
@@ -954,7 +955,7 @@ export function emitDecl(...inits) {
     let val = viewInit
     if (!val) {
       if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
-        val = ctx.core.emit['[capacity'](name, init.slice(1))
+        val = numericConstruction(init, ctx.core.emit['[capacity'](name, init.slice(1), init))
       else val = tagged && hasAmbiguousBoolMerge(init) ? emitIdentitySafe(init) : emit(init)
     }
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
@@ -2139,7 +2140,7 @@ function emitNode(node, expect) {
           // ARRAY branch always reads the propsPtr word at off-16 (FOURTH
           // mechanism, .work/evidence.md §Region arena: a short header
           // aliases whatever memory preceded the allocation).
-          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} ${restLocals}${restPrelude}(call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc_hdr (i32.const ${n}) (i32.const ${n}))) ${stores} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${arr})))`
+          ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} ${restLocals}${restPrelude}(call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc_hdr (i32.const ${n}) (i32.const ${n}))) ${stores} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const ${numericLanes(node) ? ARRAY_RAW : 0}) (local.get $${arr})))`
           inc(trampolineName, '__alloc_hdr', '__mkptr')
         } else {
           // Rebox the inner result into the uniform closure ABI (always f64).
@@ -2306,5 +2307,7 @@ function emitNode(node, expect) {
     }
   }
   if (ir && ir.type === 'f64' && valTypeOf(node) === VAL.NUMBER) ir.valKind = VAL.NUMBER
+  // a construction of an array whose elements are raw Numbers tags its pointer (compile/numeric-arrays.js)
+  if (op === '[' || op === '()' && node[1] === 'new.Array') return numericConstruction(node, ir)
   return ir
 }

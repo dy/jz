@@ -25,7 +25,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
@@ -792,6 +792,8 @@ export const memory = (src) => {
     }
     if (t === 1) {  // ARRAY
       const len = m.getInt32(off - 8, true), out = new Array(len)
+      // an array of raw Numbers (aux ARRAY_RAW): every element a number, none a box or a hole
+      if (a & ARRAY_RAW) { for (let i = 0; i < len; i++) out[i] = m.getFloat64(off + i * 8, true); return out }
       for (let i = 0; i < len; i++) {
         const value = m.getBigInt64(off + i * 8, true)
         if (value !== TOMB_BITS) out[i] = mem.read(value, fnOf)

@@ -1,3 +1,4 @@
+import { numericArraysOn } from '../src/compile/numeric-arrays.js'
 import { OPTF } from '../src/ctx.js'
 import print from 'watr/print'
 /**
@@ -23,7 +24,7 @@ import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, deletedMaskWat, SYMBOL_MIN, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex, numTypedWat, numTypedBytesWat, numTypedElemWat, ptrIsWat } from '../layout.js'
-import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex } from '../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex, ARRAY_RAW } from '../layout.js'
 import { schemaValueIR, initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
@@ -63,10 +64,16 @@ const leanRuntime = () => !!ctx.transform.optimize?.leanRuntime
 // The dependencies of the headed helpers' whole bodies (their tails, or the helper itself at
 // the size tier) and of the read's head.
 const LEN_DEPS = ['__typed_shift', '__ptr_offset', '__ptr_offset_fwd']
-const TYPED_IDX_TAIL_DEPS = () => ['__typed_shift', '__ptr_offset_fwd', '__arr_value', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])]
+const TYPED_IDX_TAIL_DEPS = () => ['__typed_shift', '__ptr_offset_fwd', '__arr_value', arrCellHelper(), ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])]
 const TYPED_IDX_TAGGED_DEPS = ['__typed_idx', '__typed_data', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr']
-const typedIdxDeps = () => !typedLinked() ? ['__len', '__ptr_offset', '__ptr_offset_fwd', '__arr_value']
-  : leanRuntime() ? TYPED_IDX_TAIL_DEPS() : ['__typed_idx_tail', '__ptr_offset_fwd', '__arr_value']
+const typedIdxDeps = () => !typedLinked() ? ['__len', '__ptr_offset', '__ptr_offset_fwd', '__arr_value', arrCellHelper()]
+  : leanRuntime() ? TYPED_IDX_TAIL_DEPS() : ['__typed_idx_tail', '__ptr_offset_fwd', '__arr_value', arrCellHelper()]
+
+// An element of the array `$ptr` as a value (`load` its cell): where the program
+// keeps an array's elements raw (compile/numeric-arrays.js) `__arr_cell` reads
+// the pointer's aux first, so that no Number's bits read as a hole.
+export const arrCellHelper = () => numericArraysOn() ? '__arr_cell' : '__arr_value'
+export const arrCellWat = (load) => numericArraysOn() ? `(call $__arr_cell (local.get $ptr) ${load})` : `(call $__arr_value ${load})`
 
 // The element read's head (layout.js numTypedWat): an array's element in bounds,
 // behind any forwarding, and a numeric typed array's, each by its own load. A
@@ -82,7 +89,7 @@ const elemReadHeadWat = () => {
       (then
         ${followForwardingWat('$off', { lowGuard: false })}
         (if (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))
-          (then (return (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))))))
+          (then (return ${arrCellWat('(f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))')})))))
     ${numTypedElemWat(`(return (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
               (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
                 (then (f64.load (local.get $off)))
@@ -128,9 +135,10 @@ export default (ctx) => {
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_aux'],
     __arr_value: [],
+    __arr_cell: ['__arr_value'],
     __typed_idx: typedIdxDeps,
     __typed_idx_tail: TYPED_IDX_TAIL_DEPS,
-    __typed_idx_tagged: () => leanRuntime() ? TYPED_IDX_TAGGED_DEPS : ['__typed_idx_tagged_tail', '__ptr_offset_fwd', '__arr_value'],
+    __typed_idx_tagged: () => leanRuntime() ? TYPED_IDX_TAGGED_DEPS : ['__typed_idx_tagged_tail', '__ptr_offset_fwd', '__arr_value', arrCellHelper()],
     __typed_idx_tagged_tail: TYPED_IDX_TAGGED_DEPS,
     __box_bigint: ['__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
@@ -233,6 +241,12 @@ export default (ctx) => {
   ctx.core.stdlib['__arr_value'] = `(func $__arr_value (param $v f64) (result f64)
     (select (f64.const nan:${UNDEF_NAN}) (local.get $v)
       (i64.eq (i64.reinterpret_f64 (local.get $v)) (i64.const ${TOMB_NAN}))))`
+  // An element of the array \`ptr\` as a value: a hole reads undefined, unless
+  // the array keeps raw Numbers (its aux ARRAY_RAW, compile/numeric-arrays.js),
+  // which holds none, so that no Number's bits read as one.
+  ctx.core.stdlib['__arr_cell'] = `(func $__arr_cell (param $ptr i64) (param $v f64) (result f64)
+    (select (local.get $v) (call $__arr_value (local.get $v))
+      (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const 32)) (i64.const ${ARRAY_RAW})))))`
 
   // "$x holds a PTR.BIGINT box": a NaN-box with the BIGINT tag. The NaN test
   // comes first, as everywhere (a Number's bits spell any tag: 12.0 reads
@@ -1632,7 +1646,7 @@ export default (ctx) => {
 
   // Set len in memory (for push/pop). Hot (~42M calls in watr self-compile).
   // Type/offset extraction inlined; forwarding loop only entered for ARRAY.
-  ctx.core.stdlib['__set_len'] = `(func $__set_len (param $ptr i64) (param $len i32)
+  ctx.core.stdlib['__set_len'] = () => `(func $__set_len (param $ptr i64) (param $len i32)
     (local $bits i64) (local $t i32) (local $off i32)
     (local.set $bits (local.get $ptr))
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
@@ -1650,7 +1664,7 @@ export default (ctx) => {
         (if (i32.eq (local.get $t) (i32.const 1))
           (then
             ${followForwardingWat('$off', { lowGuard: true })}
-            ${durableArrSnapIR('off')})
+            ${durableArrSnapIR('off', 'ptr')})
           (else
             ${durableLenLogIR('off')}))
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len)))))`

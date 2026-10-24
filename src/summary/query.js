@@ -20,7 +20,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
@@ -92,6 +92,39 @@ export function summaryQueries(facts, internal = false) {
     if (ik === NUMBER) return merge(elemOf(arr), numericPropsOf(arr))
     return merge(anyPropOf(arr), merge(NUMBER, kind(K.CLOSURE)))
   }
+  // The array cells a value of the solver's kind `k` may hold at any depth: its
+  // own, its elements' and properties', a map's keys, an object's slots and the
+  // properties beside them. A value of a kind with no parameter holds none: a
+  // join that loses a cell escapes it, and an escaped cell's elements are ANY.
+  const reachCells = (k, out, seen) => {
+    if (k == null || paramOf(k) === UNKNOWN) return
+    if (celled(k)) {
+      const c = cell(paramOf(k))
+      if (seen.has(-1 - c)) return
+      seen.add(-1 - c); out.add(c)
+      reachCells(elems[c], out, seen)
+      for (const v of tuples.get(c) ?? []) reachCells(v, out, seen)
+      for (const v of cellProps.get(c)?.values() ?? []) reachCells(v, out, seen)
+      reachCells(cellNumeric.get(c), out, seen); reachCells(cellWild.get(c), out, seen)
+      reachCells(mapKeys?.get(c), out, seen)
+      for (const v of heldKeys?.get(c) ?? []) reachCells(v, out, seen)
+      for (const sid of cellShapes.get(c) ?? []) reachCells(kind(K.OBJECT, sid), out, seen)
+    } else if (tagOf(k) === K.OBJECT) for (const sid of shapesOf(paramOf(k))) {
+      if (seen.has(sid)) continue
+      seen.add(sid)
+      for (const s of slots(sid)) reachCells(s, out, seen)
+      for (const v of sideProps.get(sid)?.values() ?? []) reachCells(v, out, seen)
+      reachCells(sideWild.get(sid), out, seen)
+    } else if (tagOf(k) === K.CLOSURE) for (const id of membersOf(paramOf(k))) {
+      if (seen.has(-1 - SET_BASE - id)) continue
+      seen.add(-1 - SET_BASE - id)
+      for (const v of closureProps.get(id)?.values() ?? []) reachCells(v, out, seen)
+    }
+  }
+  // An array construction whose arrays the emitter makes itself and can tag
+  // (compile/numeric-arrays.js): a literal of no hole and no spread, `new Array()`, `new Array(n)`.
+  const taggedConstruction = (n) => Array.isArray(n) && (n[0] === '[' && n.every((e, i) => i === 0 || e != null && !(Array.isArray(e) && e[0] === '...')) ||
+    n[0] === '()' && n[1] === 'new.Array' && (n.length === 2 || n.length === 3 && !(Array.isArray(n[2]) && (n[2][0] === ',' || n[2][0] === '...'))))
   const classMember = (recv, name) => { const sid = layoutOf(recv); return sid !== UNKNOWN ? methods.get(sid)?.get(name) ?? null : null }
   // A property's accessor and binder names, built once per property.
   const getterNames = new Map(), binderNames = new Map()
@@ -561,6 +594,8 @@ export function summaryQueries(facts, internal = false) {
       // arguments and container stores unify aliases in the solver; an open
       // receiver keeps UNKNOWN and proves nothing. Typed views do not use cells.
       arrayCellOf: e => { const k = kindOfExpr(e); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : null },
+      // The array cells the value of `e` may hold at any depth (reachCells).
+      arrayCellsReachedByExpr: e => { const out = new Set(); reachCells(kindOfExpr(e), out, new Set()); return out },
       // The arrays a receiver may be, for their record layout (compile/array-records.js):
       // its cell, -1 for arrays whose cell is unknown, null for no array.
       arrayRecordOf: e => { const k = kindOfExpr(e); return !hasTag(k, K.ARRAY) ? null : tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : -1 },
@@ -744,6 +779,8 @@ export function summaryQueries(facts, internal = false) {
     fieldSid: (sid, prop) => { const k = fieldKind(sid, prop); return tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN && !isNullable(k) ? paramOf(k) : null },
     resultOf: name => pub(resultOfId(name)),
     resultVal: name => valOf(resultOfId(name)),
+    // the array cell, by root, every result of a function is an array of, or null
+    resultCellOf: name => { const k = resultOfId(name); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : null },
     // The closures a closure or closure-set id (calleeOf) names, and a
     // closure's arrow: what a call through a resolved binding runs.
     closureMembers: id => membersOf(id),
@@ -761,6 +798,23 @@ export function summaryQueries(facts, internal = false) {
     arrayRecordNames: c => c < 0 ? [...strayProps ?? []] : [...(cellProps.get(c)?.keys() ?? [])],
     // The array cells holding a named property, each by its root once.
     arrayRecordCells: () => { const out = new Set(); for (const c of propArrays ?? []) out.add(cell(c)); return [...out] },
+    // The array cells, by root, whose arrays may keep their elements as raw
+    // Numbers (compile/numeric-arrays.js): every element a Number and none a
+    // hole (the cell's kind is NUMBER alone), every array of the cell made by a
+    // construction the emitter tags, none handed to the host. The uses the
+    // census reads decide the rest.
+    // Returns the constructions, node → cell, of every candidate.
+    numericArrayCandidates: () => {
+      const bad = new Set(), out = new Map()
+      for (const [node, id] of cells) {
+        const c = cell(id)
+        if (bad.has(c)) continue
+        if (!taggedConstruction(node) || (elems[c] & TAGS) !== bitOf(K.NUMBER) || hostArrays.has(c)) bad.add(c)
+        else out.set(node, c)
+      }
+      for (const [node, c] of out) if (bad.has(c)) out.delete(node)
+      return out
+    },
     /** The truth an `if` or `?:` test has on every run, or null. */
     decisionOf: n => facts.decisions?.get(n) ?? null,
   }

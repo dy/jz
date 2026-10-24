@@ -10,7 +10,7 @@ import { PTR, LAYOUT, ATOM, STR_INTERN_BIT, STR_HCACHE_BIT } from './layout.js'
 export const KIND_REGISTRY = {
   NUMBER: { tag: null, aux: null, identity: 'value' },
   STRING: { tag: PTR.STRING, aux: null, identity: 'content', identityArm: { kind: 'content', order: 1 } },
-  ARRAY: { tag: PTR.ARRAY, aux: null, identity: 'pointer-bits' },
+  ARRAY: { tag: PTR.ARRAY, aux: 'rawElements', identity: 'pointer-bits' },
   OBJECT: { tag: PTR.OBJECT, aux: 'schemaId', identity: 'pointer-bits' },
   HASH: { tag: PTR.HASH, aux: 0, identity: 'pointer-bits' },
   SET: { tag: PTR.SET, aux: 0, identity: 'pointer-bits' },

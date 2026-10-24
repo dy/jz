@@ -8,9 +8,11 @@
  * @module array
  */
 
-import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR } from '../src/ir.js'
+import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
-import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, positionArgs } from '../src/bridge.js'
+import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
+import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
+import { arrCellWat, arrCellHelper } from './core.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey, isReassigned, some } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
@@ -78,7 +80,7 @@ const elemStoreHeadWat = (ret) => `
         ${followForwardingWat('$off', { lowGuard: false })}
         (if (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))
           (then
-            ${durableArrSnapIR('off')}
+            ${durableArrSnapIR('off', 'ptr')}
             (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $val))
             (return ${ret})))))
     ${typedStoreHeadWat(ret)}`
@@ -219,9 +221,11 @@ export default (ctx) => {
     const action = representationStorageWriteAction(ctx, node)
     return action === REP_EDGE_REJECT ? storedValue(node) : storedValuePlanned(node, action)
   }
+  // A value stored into the array `arr`: as it is where the array keeps raw Numbers (compile/numeric-arrays.js).
+  const elemStoredValue = (arr, node) => numericArrayExpr(arr) ? storedValueNarrow(node) : taggedStoredValue(node)
 
   deps({
-    __arr_idx: ['__ptr_offset_fwd', '__arr_value'],
+    __arr_idx: () => ['__ptr_offset_fwd', arrCellHelper()],
     __arr_grow: arrayGrowDeps(false),
     __arr_grow_known: arrayGrowDeps(true),
     __arr_shift: () => [
@@ -250,10 +254,10 @@ export default (ctx) => {
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
-      ? ['__typed_idx_tail', '__ptr_offset_fwd', '__arr_value']
-      : ['__len', '__ptr_offset', '__ptr_offset_fwd', '__arr_value'],
-    __typed_idx_tail: () => ['__typed_shift', '__ptr_offset_fwd', '__arr_value', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
-    __arr_idx_known: ['__ptr_offset_fwd', '__arr_value'],
+      ? ['__typed_idx_tail', '__ptr_offset_fwd', arrCellHelper()]
+      : ['__len', '__ptr_offset', '__ptr_offset_fwd', arrCellHelper()],
+    __typed_idx_tail: () => ['__typed_shift', '__ptr_offset_fwd', arrCellHelper(), ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
+    __arr_idx_known: () => ['__ptr_offset_fwd', arrCellHelper()],
   })
 
   // Iteration methods invoke callbacks with an implicit trailing index: .map/
@@ -324,7 +328,7 @@ export default (ctx) => {
 
   // ARRAY-only indexed read. Inline forwarding-follow + bounds check + load — avoids
   // the redundant double pass through __len then __ptr_offset that both follow forwarding.
-  ctx.core.stdlib['__arr_idx'] = `(func $__arr_idx (param $ptr i64) (param $i i32) (result f64)
+  ctx.core.stdlib['__arr_idx'] = () => `(func $__arr_idx (param $ptr i64) (param $i i32) (result f64)
     (local $off i32)
     (if (result f64)
       (i32.ne
@@ -340,10 +344,10 @@ export default (ctx) => {
             (i32.and
               (i32.ge_s (local.get $i) (i32.const 0))
               (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))))
-          (then (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
+          (then ${arrCellWat('(f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))')})
           (else (f64.const nan:${UNDEF_NAN})))))) `
 
-  ctx.core.stdlib['__arr_idx_known'] = `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
+  ctx.core.stdlib['__arr_idx_known'] = () => `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
     (local $off i32)
     (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${followForwardingWat('$off', { lowGuard: true })}
@@ -353,7 +357,7 @@ export default (ctx) => {
         (i32.and
           (i32.ge_s (local.get $i) (i32.const 0))
           (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))))
-      (then (call $__arr_value (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
+      (then ${arrCellWat('(f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))')})
       (else (f64.const nan:${UNDEF_NAN}))))`
 
   // Runtime-dispatch index: element-type aware load with bounds check + view indirection.
@@ -456,17 +460,23 @@ export default (ctx) => {
       (then
         (local.set ${base} (i32.load (i32.sub (local.get ${off}) (i32.const 16))))
         (local.set ${base} (select (i32.sub (local.get ${off}) (i32.const 8)) (local.get ${base}) (i32.eq (local.get ${base}) (local.get ${off}))))))`
+  // The grown array's pointer: where the program keeps an array's elements raw
+  // (compile/numeric-arrays.js) it keeps the high word the pointer had, its aux
+  // ARRAY_RAW included, every pointer to one array carrying the same.
+  const grownPtrWat = (off) => numericArraysOn()
+    ? `(f64.reinterpret_i64 (i64.or (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF00000000)) (i64.extend_i32_u ${off})))`
+    : `(call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) ${off})`
   // Relocation: a fresh block, the old header forwarding to it.
   const relocateWat = () => `
     (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     ${headerPropsCopyIR()}
     ${maybeDynMoveIR()}
-    ${durableArrSnapIR('off')}
+    ${durableArrSnapIR('off', 'ptr')}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
     ${stubLogIR('off', 'newOff', PTR.ARRAY)}
-    (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))`
+    (return ${grownPtrWat('(local.get $newOff)')})`
   const arrGrow = (name, defensive) => {
     const slack = needsHeadSlack()
     // The array's storage ends at the heap top (nothing allocated since it)
@@ -529,7 +539,7 @@ export default (ctx) => {
       (i32.gt_s (local.get $minCap) (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1)))))
     ${!ctx.memory.shared && ctx.transform.alloc !== false ? `${room}${slide}
     (i32.store (i32.sub (local.get $base) (i32.const 4)) (local.get $newCap))
-    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $base)))` : `${relocateWat()})`}`
+    ${grownPtrWat('(local.get $base)')})` : `${relocateWat()})`}`
   }
 
   ctx.core.stdlib['__arr_grow'] = () => arrGrow('__arr_grow', true)
@@ -545,13 +555,13 @@ export default (ctx) => {
   // only lived inside the grow branch, since only growth ever touched the LENGTH word —
   // but an in-bounds overwrite mutates a DATA cell with no length change at all, the exact
   // per-element gap this fix closes).
-  ctx.core.stdlib['__arr_set_idx_ptr'] = `(func $__arr_set_idx_ptr (param $ptr i64) (param $i i32) (param $val f64) (result f64)
+  ctx.core.stdlib['__arr_set_idx_ptr'] = () => `(func $__arr_set_idx_ptr (param $ptr i64) (param $i i32) (param $val f64) (result f64)
     (local $base i32) (local $p f64) (local $oldLen i32) (local $k i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.lt_s (local.get $i) (i32.const 0))
       (then (return (local.get $p))))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
-    ${durableArrSnapIR('base')}
+    ${durableArrSnapIR('base', 'ptr')}
     (local.set $oldLen (i32.load (i32.sub (local.get $base) (i32.const 8))))
     (if (i32.ge_u (local.get $i) (local.get $oldLen))
       (then
@@ -637,12 +647,12 @@ export default (ctx) => {
   // restore with its wrong one. One mechanism, one idempotent table, whichever call
   // reaches a given durable array first this round — is the only way every caller's
   // "first touch" assumption stays true simultaneously.
-  ctx.core.stdlib['__arr_push1'] = `(func $__arr_push1 (param $ptr i64) (param $val f64) (result f64)
+  ctx.core.stdlib['__arr_push1'] = () => `(func $__arr_push1 (param $ptr i64) (param $val f64) (result f64)
     (local $p f64) (local $base i32) (local $len i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (local.set $base (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${followForwardingWat('$base', { lowGuard: true })}
-    ${durableArrSnapIR('base')}
+    ${durableArrSnapIR('base', 'ptr')}
     (local.set $len (i32.load (i32.sub (local.get $base) (i32.const 8))))
     (if (i32.lt_s (i32.load (i32.sub (local.get $base) (i32.const 4))) (i32.add (local.get $len) (i32.const 1)))
       (then
@@ -663,12 +673,12 @@ export default (ctx) => {
   // shares this layout logic but needs neither forwarding nor growth.
   for (const fixed of [false, true]) {
     const name = fixed ? '__arr_push_slot_fixed' : '__arr_push_slot'
-    ctx.core.stdlib[name] = `(func $${name} (param $ptr i64) (param $strideB i32) (param $zero i32) (result f64 i32)
+    ctx.core.stdlib[name] = () => `(func $${name} (param $ptr i64) (param $strideB i32) (param $zero i32) (result f64 i32)
     (local $p f64) (local $base i32) (local $n i32) (local $len i32) (local $slot i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (local.set $base (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${fixed ? '' : followForwardingWat('$base', { lowGuard: true })}
-    ${fixed ? '' : durableArrSnapIR('base')}
+    ${fixed ? '' : durableArrSnapIR('base', 'ptr')}
     (local.set $n (i32.div_u (i32.shl (i32.load (i32.sub (local.get $base) (i32.const 8))) (i32.const 3)) (local.get $strideB)))
     (local.set $len (i32.shr_u (i32.add (i32.mul (i32.add (local.get $n) (i32.const 1)) (local.get $strideB)) (i32.const 7)) (i32.const 3)))
     ${fixed ? '' : `(if (i32.lt_s (i32.load (i32.sub (local.get $base) (i32.const 4))) (local.get $len))
@@ -688,7 +698,7 @@ export default (ctx) => {
   // matching JS sparse-array semantics. Non-ARRAY receivers are left unchanged so a
   // mistyped `.length =` cannot corrupt object/collection headers. Returns the
   // (possibly relocated) pointer; the assignment's value is N (computed at the call site).
-  ctx.core.stdlib['__arr_set_length'] = `(func $__arr_set_length (param $ptr i64) (param $value i64) (result f64)
+  ctx.core.stdlib['__arr_set_length'] = () => `(func $__arr_set_length (param $ptr i64) (param $value i64) (result f64)
     (local $base i32) (local $p f64) (local $oldLen i32) (local $cap i32) (local $k i32) (local $n i32)
     (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY}))
@@ -705,7 +715,7 @@ export default (ctx) => {
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)}))))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
     (if (i32.lt_u (local.get $base) (i32.const 8)) (then (return (local.get $p))))
-    ${durableArrSnapIR('base')}
+    ${durableArrSnapIR('base', 'ptr')}
     (local.set $oldLen (i32.load (i32.sub (local.get $base) (i32.const 8))))
     (local.set $cap (i32.load (i32.sub (local.get $base) (i32.const 4))))
     (if (i32.gt_s (local.get $n) (local.get $cap))
@@ -725,9 +735,11 @@ export default (ctx) => {
 
   // === Array literal ===
 
-  const arrayLiteral = (elems, capacity = 0) => {
+  // `node`, the literal: one that makes an array of raw Numbers (compile/numeric-arrays.js) stores their bits.
+  const arrayLiteral = (elems, capacity = 0, node = null) => {
     const hasSpread = elems.some(e => Array.isArray(e) && e[0] === '...')
-    const value = e => e == null ? typed(['f64.const', `nan:${TOMB_NAN}`], 'f64') : taggedStoredValue(e)
+    const raw = node != null && ctx.runtime.numericConstructions?.has(node)
+    const value = e => e == null ? typed(['f64.const', `nan:${TOMB_NAN}`], 'f64') : raw ? storedValueNarrow(e) : taggedStoredValue(e)
 
     // Synthetic destructuring arrays use the same tagged slots as ordinary
     // literals. Proven scalarization can erase the array before emission.
@@ -790,8 +802,9 @@ export default (ctx) => {
       : sid != null ? count * structInline(ctx.schema.list[sid].length, ctx.schema.inlineCellI32?.has(sid)).cpe : count
     return cells <= 0x1ffffffe ? cells : null
   }
-  ctx.core.emit['['] = (...elems) => arrayLiteral(elems)
-  ctx.core.emit['[capacity'] = (name, elems) => arrayLiteral(elems, arrayCapacity(name) ?? 0)
+  // (the literal's node rides last: emit/dispatch.js SELF_AWARE_OPS)
+  ctx.core.emit['['] = (...elems) => { const node = elems.pop(); return arrayLiteral(elems, 0, node) }
+  ctx.core.emit['[capacity'] = (name, elems, node = null) => arrayLiteral(elems, arrayCapacity(name) ?? 0, node)
 
   // === Index read ===
 
@@ -1140,7 +1153,7 @@ export default (ctx) => {
               ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
             ['if', ['result', 'f64'],
               ['i32.lt_u', ['local.get', `$${ix}`], ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
-              ['then', arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]))],
+              ['then', arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), holeFree)],
               ['else', undefExpr()]]],
           ['else', slow(['local.get', `$${ix}`])]]]
     }
@@ -1662,7 +1675,7 @@ export default (ctx) => {
       const isGlobal = !box && ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr)
       const readVar = box ? ['f64.load', ['local.get', `$${box}`]] : isGlobal ? ['global.get', `$${arr}`] : ['local.get', `$${arr}`]
       const writeVar = v => box ? ['f64.store', ['local.get', `$${box}`], v] : isGlobal ? ['global.set', `$${arr}`, v] : ['local.set', `$${arr}`, v]
-      const vv = taggedStoredValue(vals[0])
+      const vv = elemStoredValue(arr, vals[0])
       const pushed = ['call', '$__arr_push1', ['i64.reinterpret_f64', readVar], vv]
       if (void_) return typed(['block', writeVar(pushed)], 'void')
       return typed(['block', ['result', 'f64'],
@@ -1840,7 +1853,7 @@ export default (ctx) => {
     } else {
       // Store each value and increment len
       for (const val of vals) {
-        const vv = taggedStoredValue(val)
+        const vv = elemStoredValue(arr, val)
         body.push(
           ['f64.store',
             ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
@@ -1895,7 +1908,7 @@ export default (ctx) => {
             // the length word of the header the hop above resolved (`__set_len`
             // would read the tag and chase the forward again), a durable
             // header saved first as `__set_len` saves it
-            durableArrSnapNode(off),
+            durableArrSnapNode(off, ['i64.reinterpret_f64', ['local.get', `$${t}`]]),
             ['i32.store', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]], ['local.get', `$${len}`]],
             arrayValue(['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]])]]], 'f64')
     }
@@ -1971,7 +1984,7 @@ export default (ctx) => {
     const recv = temp('afr'), value = temp('afv'), positions = positionArgs([start, end])
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${recv}`, asF64(emit(arr))],
-      ['local.set', `$${value}`, val == null ? undefExpr() : asF64(taggedStoredValue(val))],
+      ['local.set', `$${value}`, val == null ? undefExpr() : asF64(elemStoredValue(arr, val))],
       ...positions.setup,
       ['call', '$__arr_fill',
         ['i64.reinterpret_f64', ['local.get', `$${recv}`]],
@@ -1980,7 +1993,7 @@ export default (ctx) => {
         positions.index(1, ['i32.const', 0x7FFFFFFF])]], 'f64')
   }
 
-  ctx.core.stdlib['__arr_fill'] = `(func $__arr_fill (param $arr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
+  ctx.core.stdlib['__arr_fill'] = () => `(func $__arr_fill (param $arr i64) (param $val f64) (param $start i32) (param $end i32) (result f64)
     (local $off i32) (local $len i32) (local $i i32)
     (if (i32.eq
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $arr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
@@ -1989,7 +2002,7 @@ export default (ctx) => {
         (local.set $off (call $__ptr_offset (local.get $arr)))
         (if (i32.ge_u (local.get $off) (i32.const 8))
           (then
-            ${durableArrSnapIR('off')}
+            ${durableArrSnapIR('off', 'arr')}
             (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
             (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
             (local.set $end (call $__clamp_idx (local.get $end) (local.get $len)))
@@ -2029,7 +2042,7 @@ export default (ctx) => {
       ...positions.setup,
       ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
       lenInit,
-      durableArrSnapNode(off),
+      durableArrSnapNode(off, ['i64.reinterpret_f64', cloneIR(va)]),
       // clamp start to [0, len]
       ['local.set', `$${s}`, vs],
       ['if', ['i32.lt_s', ['local.get', `$${s}`], ['i32.const', 0]],
@@ -2119,11 +2132,11 @@ export default (ctx) => {
   // in-place anymore); if it didn't relocate (spare capacity), $off is still the
   // ORIGINAL durable address and this is the only protection the shift-copy gets — grow
   // itself only ever logs on ITS relocating path, never on a same-capacity return.
-  ctx.core.stdlib['__arr_unshift'] = `(func $__arr_unshift (param $arr i64) (param $val f64) (result f64)
+  ctx.core.stdlib['__arr_unshift'] = () => `(func $__arr_unshift (param $arr i64) (param $val f64) (result f64)
     (local $off i32) (local $len i32) (local $a f64)
     (local.set $a (call $__arr_grow (local.get $arr) (i32.add (call $__len (local.get $arr)) (i32.const 1))))
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $a))))
-    ${durableArrSnapIR('off')}
+    ${durableArrSnapIR('off', 'arr')}
     (local.set $len (call $__len (i64.reinterpret_f64 (local.get $a))))
     (memory.copy
       (i32.add (local.get $off) (i32.const 8))
@@ -2139,7 +2152,7 @@ export default (ctx) => {
   // but leaves a forwarding pointer, so the caller's NaN-box still resolves —
   // no write-back needed (mirrors __arr_unshift). memory.copy is memmove, so the
   // tail shift is correct whether the array grew (shift right) or shrank (left).
-  ctx.core.stdlib['__arr_splice'] = `(func $__arr_splice (param $arr i64) (param $start i32) (param $del i32) (param $ins i64) (result f64)
+  ctx.core.stdlib['__arr_splice'] = () => `(func $__arr_splice (param $arr i64) (param $start i32) (param $del i32) (param $ins i64) (result f64)
     (local $off i32) (local $len i32) (local $s i32) (local $cnt i32)
     (local $m i32) (local $newLen i32) (local $tail i32) (local $out f64) (local $a f64)
     (local.set $len (call $__len (local.get $arr)))
@@ -2166,7 +2179,7 @@ export default (ctx) => {
     (if (i32.gt_s (local.get $newLen) (local.get $len))
       (then (local.set $a (call $__arr_grow (local.get $arr) (local.get $newLen)))))
     (local.set $off (call $__ptr_offset (i64.reinterpret_f64 (local.get $a))))
-    ${durableArrSnapIR('off')}
+    ${durableArrSnapIR('off', 'arr')}
     (memory.copy
       (i32.add (local.get $off) (i32.shl (i32.add (local.get $s) (local.get $m)) (i32.const 3)))
       (i32.add (local.get $off) (i32.shl (i32.add (local.get $s) (local.get $cnt)) (i32.const 3)))
@@ -2538,7 +2551,7 @@ export default (ctx) => {
       setup,
       ['local.set', `$${arrTmp}`, value],
       ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
-      durableArrSnapNode(base),
+      durableArrSnapNode(base, ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]),
       ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${base}`], ['i32.const', 8]]]],
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['local.set', `$${j}`, ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]],
@@ -2624,7 +2637,7 @@ export default (ctx) => {
         mergeSortIR(buf, tmp, m, shift, after),
         // back into the array, as it stands now, undefined last
         ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', get(arrTmp)]]],
-        durableArrSnapNode(base),
+        durableArrSnapNode(base, ['i64.reinterpret_f64', get(arrTmp)]),
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$sortwd${id}`, ['loop', `$sortw${id}`,
           ['br_if', `$sortwd${id}`, ['i32.ge_s', get(i), get(len)]],
@@ -2693,12 +2706,12 @@ export default (ctx) => {
         positions.index(1, ['i32.const', 0]),
         positions.index(2, ['i32.const', 0x7FFFFFFF])]], 'f64')
   }
-  ctx.core.stdlib['__arr_copyWithin'] = `(func $__arr_copyWithin (param $arr i64) (param $target i32) (param $start i32) (param $end i32) (result f64)
+  ctx.core.stdlib['__arr_copyWithin'] = () => `(func $__arr_copyWithin (param $arr i64) (param $target i32) (param $start i32) (param $end i32) (result f64)
     (local $off i32) (local $len i32) (local $count i32)
     (if (i32.eq (call $__ptr_type (local.get $arr)) (i32.const ${PTR.ARRAY}))
       (then
         (local.set $off (call $__ptr_offset (local.get $arr)))
-        ${durableArrSnapIR('off')}
+        ${durableArrSnapIR('off', 'arr')}
         (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
         (local.set $target (call $__clamp_idx (local.get $target) (local.get $len)))
         (local.set $start (call $__clamp_idx (local.get $start) (local.get $len)))
@@ -2716,7 +2729,7 @@ export default (ctx) => {
   // Array.of(...items) — spec-identical to the array literal `[...items]`; the
   // `[` emitter already handles spread-tagged args and the static-data path.
   // (Distinct from `Array(n)`, which makes a length-n hole array.)
-  ctx.core.emit['Array.of'] = (...items) => ctx.core.emit['['](...items)
+  ctx.core.emit['Array.of'] = (...items) => arrayLiteral(items)
 
   // Boxed pointer values (strings/objects/etc.) carry NaN payloads, and
   // f64.eq treats NaN as not-equal to anything — even bit-identical NaN —

@@ -44,9 +44,10 @@
  *
  * @module core/compact
  */
+import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx, PTR, LAYOUT, HEAP, FORWARDING_MASK, declGlobal } from '../../src/ctx.js'
 import { TOMB_NAN } from '../../src/ir.js'
-import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, STR_HCACHE_BIT } from '../../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, STR_HCACHE_BIT, ARRAY_RAW } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
 import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP, compactSlack, PRESSURE_SLACK, MARGIN } from './stub-log.js'
 export { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP }
@@ -345,8 +346,9 @@ export const registerCompact = () => {
       (call $__gc_list (i32.const ${KIND_CELL << 16}) (local.get $c))
       (call $__gc_push (i64.load (local.get $c))))))`
 
-  // The reset log's records (core/durable-log.js): [next, off, len, cap, cells…].
-  ctx.core.stdlib['__gc_rec'] = `(func $__gc_rec (param $rec i32)
+  // The reset log's records (core/durable-log.js): [next, off, len, cap, cells…];
+  // bit 1 of the offset marks an array of raw Numbers, whose cells hold no pointer.
+  ctx.core.stdlib['__gc_rec'] = () => `(func $__gc_rec (param $rec i32)
     (local $n i32) (local $p i32) (local $e i32)
     (block $done (loop $next
       (br_if $done (i32.or (i32.lt_u (local.get $rec) (global.get $__g_lo)) (i32.gt_u (local.get $rec) (global.get $__g_top))))
@@ -355,7 +357,8 @@ export const registerCompact = () => {
       (call $__gc_keep (local.get $rec) (i32.add (i32.add (local.get $rec) (i32.const 16)) (i32.shl (local.get $n) (i32.const 3))))
       (call $__gc_list (i32.const ${KIND_REC << 16}) (local.get $rec))
       (local.set $p (i32.add (local.get $rec) (i32.const 16)))
-      (local.set $e (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 3))))
+      (local.set $e ${numericArraysOn() ? `(select (local.get $p) (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 3)))
+        (i32.and (i32.load offset=4 (local.get $rec)) (i32.const 2)))` : '(i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 3)))'})
       (block $cells (loop $cell
         (br_if $cells (i32.ge_u (local.get $p) (local.get $e)))
         (call $__gc_push (i64.load (local.get $p)))
@@ -455,6 +458,8 @@ export const registerCompact = () => {
         (call $__gc_keep (local.get $e) (i32.add (local.get $p) (i32.shl (local.get $cap) (i32.const 3))))
         (call $__gc_list (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))) (local.get $p))
         (if (i32.ne (i32.load (i32.sub (local.get $p) (i32.const 12))) (i32.const -1)) (then ${props('(local.get $p)')}))
+        ;; an array of raw Numbers (its aux ARRAY_RAW) holds no pointer
+        ${numericArraysOn() ? `(if (i32.and (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))) (i32.const ${ARRAY_RAW})) (then (local.set $n (i32.const 0))))` : ''}
         (local.set $e (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 3))))
         (block $done (loop $cell
           (br_if $done (i32.ge_u (local.get $p) (local.get $e)))
@@ -594,6 +599,7 @@ export const registerCompact = () => {
       (then
         (i32.store (local.get $p) (call $__gc_fwd_raw (i32.load (local.get $p))))
         (local.set $n (select (i32.load offset=12 (local.get $p)) (i32.load offset=8 (local.get $p)) (i32.and (i32.load offset=4 (local.get $p)) (i32.const 1))))
+        ${numericArraysOn() ? '(if (i32.and (i32.load offset=4 (local.get $p)) (i32.const 2)) (then (local.set $n (i32.const 0))))' : ''}
         (local.set $q (i32.add (local.get $p) (i32.const 16)))
         (local.set $e (i32.add (local.get $q) (i32.shl (local.get $n) (i32.const 3))))
         (block $done (loop $cell
@@ -627,6 +633,7 @@ export const registerCompact = () => {
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 8)))
         (local.set $n (i32.load (i32.sub (local.get $p) (i32.const 8))))
         (if (i32.gt_u (local.get $n) (local.get $cap)) (then (local.set $n (local.get $cap))))
+        ${numericArraysOn() ? `(if (i32.and (local.get $aux) (i32.const ${ARRAY_RAW})) (then (local.set $n (i32.const 0))))` : ''}
         (local.set $e (i32.add (local.get $p) (i32.shl (local.get $n) (i32.const 3))))
         (block $done (loop $cell
           (br_if $done (i32.ge_u (local.get $p) (local.get $e)))

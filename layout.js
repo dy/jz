@@ -55,6 +55,11 @@ export const SYMBOL_MIN = 16  // first user Symbol atom id
 /** Private absent-slot marker; no JavaScript value encodes this atom. */
 export const TOMB_NAN = '0x7FF87FFFFFFFFFFF'
 
+/** The aux of an ARRAY pointer whose elements are raw Numbers (src/compile/numeric-arrays.js):
+ *  every element is an f64 of any bits, no element a box or a hole, so a walk
+ *  reads none of them as a pointer. Every pointer to one array carries it. */
+export const ARRAY_RAW = 1
+
 /** Tags whose heap block can relocate on growth (ARRAY/HASH/SET/MAP) — leaving a
  *  forwarding header that `__ptr_offset` must follow. `(1 << tag) & FORWARDING_MASK`
  *  tests membership in one shl+and, replacing a 4-way tag-equality OR. */

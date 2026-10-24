@@ -20,6 +20,8 @@ import { persistBindingPtr } from '../emit-assign.js'
 import { withExpectedValue } from '../flow-state.js'
 import { copyReceiverFacts } from './shared.js'
 import { arrayView, viewBase } from '../array-view.js'
+import { numericLanes } from '../numeric-arrays.js'
+import { ARRAY_RAW } from '../../../layout.js'
 import { emit, emitCallArgs } from './dispatch.js'
 
 
@@ -54,13 +56,14 @@ export function materializeMulti(callNode) {
   const n = func.sig.results.length
   const argList = commaList(callNode[2])
   const emittedArgs = emitCallArgs(argList, func.sig.params, func)
-  return materializeMultiIR(callWithArgs(name, emittedArgs, func.sig), n)
+  return materializeMultiIR(callWithArgs(name, emittedArgs, func.sig), n, name)
 }
 
-/** Pack an already-emitted multi-value call, independent of argument lowering. */
-export function materializeMultiIR(callIR, n) {
+/** Pack an already-emitted multi-value call of `callee`, independent of argument lowering.
+ *  Lanes that keep raw Numbers make an array tagged ARRAY_RAW (compile/numeric-arrays.js). */
+export function materializeMultiIR(callIR, n, callee) {
   const temps = Array.from({ length: n }, () => temp())
-  const out = allocPtr({ type: 1, len: n, tag: 'marr' })
+  const out = allocPtr({ type: 1, aux: numericLanes(callee) ? ARRAY_RAW : 0, len: n, tag: 'marr' })
   const ir = [out.init, callIR]
   for (let k = n - 1; k >= 0; k--) ir.push(['local.set', `$${temps[k]}`])
   for (let k = 0; k < n; k++)
@@ -391,7 +394,7 @@ function emitArraySpreadMutation(objArg, parsed, method) {
     ir.push(['local.set', `$${from}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${sa}`]]]],
       ['if', ['i32.eq', arrayBase, ['local.get', `$${base}`]],
         ['then', ['local.set', `$${from}`, ['i32.add', arrayBase, ['i32.shl', count, ['i32.const', 3]]]]]])
-    ir.push(durableArrSnapNode(base),
+    ir.push(durableArrSnapNode(base, ['i64.reinterpret_f64', ['local.get', `$${sa}`]]),
       ['memory.copy',
         ['i32.add', ['local.get', `$${base}`], ['i32.shl', count, ['i32.const', 3]]],
         ['local.get', `$${base}`], ['i32.shl', ['local.get', `$${ol}`], ['i32.const', 3]]])

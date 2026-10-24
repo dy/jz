@@ -28,8 +28,9 @@
  *
  * @module core/reach
  */
+import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx, PTR, LAYOUT, HEAP, FORWARDING_MASK } from '../../src/ctx.js'
-import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex } from '../../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, ARRAY_RAW } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
 import { recordsOn } from '../../src/compile/array-records.js'
 
@@ -274,7 +275,9 @@ export const registerReach = () => {
         (local.set $cap (call $__reach_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.const 8)))
         (local.set $n (local.get $cap))
         (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
-          (then (if (i32.lt_u (i32.load (i32.sub (local.get $p) (i32.const 8))) (local.get $cap)) (then (local.set $n (i32.load (i32.sub (local.get $p) (i32.const 8))))))))
+          (then (if (i32.lt_u (i32.load (i32.sub (local.get $p) (i32.const 8))) (local.get $cap)) (then (local.set $n (i32.load (i32.sub (local.get $p) (i32.const 8))))))
+            ;; an array of raw Numbers (its aux ARRAY_RAW) holds no pointer
+            ${numericArraysOn() ? `(if (i32.and (local.get $aux) (i32.const ${ARRAY_RAW})) (then (local.set $n (i32.const 0))))` : ''}))
         (call $__reach_end (i32.add (local.get $p) (i32.shl (local.get $cap) (i32.const 3))))
         (if (i32.ge_u (local.get $p) (i32.const 16)) (then (call $__reach_props (i64.load (i32.sub (local.get $p) (i32.const 16))) (local.get $old))))
         (call $__reach_cells (local.get $p) (local.get $n))

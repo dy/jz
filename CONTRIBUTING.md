@@ -87,7 +87,8 @@ A binding every read of which consumes a Number takes its bits raw. A value that
 can carry no payload is not normalized at all (`kind/payload.js`): a constant,
 an integer, arithmetic on such operands, an element of a plain array or of an
 integer typed array, a local every write of which is one of these. Raw ingress
-stays a float typed element, a parameter, a call's result and an exact Number
+stays a float typed element, an element of an array that keeps raw Numbers
+(below, "Numeric arrays"), a parameter, a call's result and an exact Number
 slot. The loop specializer reads a checked element through its normalization.
 Exact Number schema slots retain raw payloads. Enumeration, JSON and generic
 property dispatch normalize them using the settled per-slot Number contract;
@@ -833,6 +834,39 @@ carries the word; compaction and the release walk keep the block and its
 slots. A durable array keeps the policy of its dictionary: a round's stores go
 to the global table, with the shadow bit on the word. The size tier keeps
 dictionaries.
+
+Numeric arrays (src/compile/numeric-arrays.js, `numericArrays`, off at O0 and
+O1 with the other representation passes): an array cell whose kind is
+NUMBER alone (no other value stored, no hole), every array of which a literal
+of no hole or spread or `new Array(n)` makes, none handed to the host, keeps
+its elements as raw f64: a store takes the value's bits (no canonicalization),
+a read is the load, a NaN of any bits reads back as a Number. The construction
+ORs `ARRAY_RAW` into the pointer's aux (layout.js), growth keeps it (`arrGrow`
+rebuilds the pointer with it), so every pointer to the array carries it. A
+literal a function returns as lanes (a multi-value result) is made where a
+call builds the array of them (`materializeMultiIR`, the closure trampoline):
+its lanes keep their bits, and the array is tagged by the function's result
+cell (`numericLanes`), so a literal of another cell keeps the boxed layout. A
+census after the last summary, over every function and closure in its scope,
+admits only the uses the emitter's own element paths serve: an index read or
+store under a Number key, `.length`, `.push`, `.fill`, a call of the program's
+own functions, identity, presence and truth tests, and the value bound or
+passed on. A use that copies or compares the elements of the array it is
+called on (`slice`, `map`, a spread into a literal) reads that array's cell;
+any other (a join, a conversion, `in`, a builtin's argument) reads every cell
+its value reaches at any depth (summary `arrayCellsReachedByExpr`), and those
+keep the boxed layout. A value that may hold such an array always names its
+cell: a join that loses a cell escapes it, and an escaped cell's elements are
+ANY. Compaction's mark and update and the release walk take no element of an
+`ARRAY_RAW` array for a pointer; the reset's snapshot of one is a raw record
+(bit 1 of its offset, read off the pointer where the snapshot runs), whose
+cells the compaction skips and the heal copies back (each of these runtime
+arms is linked only where the census keeps some array raw); the index-read helpers
+(`__arr_cell`) map no element of one to a hole; `mem.read` decodes one as
+numbers. `JZ_NUMERIC_WHY=1` lists each cell's first generic use
+(`ctx.runtime.numericWhy`). test/numeric-arrays.js pins the stores, the
+payloads, the readers that keep the boxed layout, growth through compactions,
+the reset's raw record and the arrays built of lanes.
 Collection growth uses `collectionStride` for the entry and optional hash lane;
 a boolean selecting the lane is not its byte width. A shallow Map copy reuses
 the probe layout when its capacity fits the rebuild budget, copying entries and

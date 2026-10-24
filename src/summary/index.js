@@ -4656,6 +4656,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
+    mapKeys, heldKeys,
     held,
     boolKeys, storeBits, paramKeys,
     contracts: null,   // the result contracts, built at the freeze below

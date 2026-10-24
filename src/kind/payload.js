@@ -6,8 +6,9 @@
  * result, an exact Number slot. A constant and an integer carry none;
  * arithmetic on operands that carry none makes none (Wasm answers the
  * canonical NaN when every NaN input is canonical); a plain array's element
- * carries none, normalized where it was stored. A value that is no Number
- * (a box) has none to speak of.
+ * carries none, normalized where it was stored, unless the array keeps
+ * raw Numbers (compile/numeric-arrays.js), whose element is raw ingress as a
+ * typed one is. A value that is no Number (a box) has none to speak of.
  *
  * @module kind/payload
  */
@@ -18,6 +19,7 @@ import { VAL } from '../reps.js'
 import { K, UNKNOWN, core, paramOf, tagOf } from '../summary/kind.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG } from '../../layout.js'
 import { valTypeOf } from './val-type-of.js'
+import { numericArrayExpr } from '../compile/numeric-arrays.js'
 
 const ARITH = new Set(['+', '-', '*', '/', 'u-', 'u+', '&&', '||', '??', ','])
 // An integer, a Boolean, a string: no NaN at all.
@@ -41,8 +43,9 @@ const free = (n, names) => {
     const k = core(ctx.summary?.at(ctx.func.current).kindOfExpr(n[1]) ?? K.NONE), aux = paramOf(k)
     // an integer typed array's element is an integer
     if (tagOf(k) === K.TYPED) return aux !== UNKNOWN && (aux & 7) <= TYPED_ELEM_CODE.Uint32Array && !(aux & (TYPED_ELEM_BIGINT_FLAG | TYPED_ELEM_F16_FLAG))
-    // a plain array to the summary and to the emitter: storage promoted to typed keeps raw bits
-    return tagOf(k) === K.ARRAY && valTypeOf(n[1]) === VAL.ARRAY
+    // a plain array to the summary and to the emitter: storage promoted to typed keeps raw bits,
+    // and so does an array whose elements are raw Numbers (compile/numeric-arrays.js)
+    return tagOf(k) === K.ARRAY && valTypeOf(n[1]) === VAL.ARRAY && !numericArrayExpr(n[1])
   }
   if (op === '()') return MATH.has(n[1]) && (n[2]?.[0] === ',' ? n[2].slice(1) : n.slice(2)).every(a => free(a, names))
   return false

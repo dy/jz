@@ -18,6 +18,7 @@
  * @module collection/durable
  */
 
+import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx } from '../../src/ctx.js'
 
 // The post-init high-water mark (see module/core.js's __heap_reset) as a WAT operand —
@@ -179,12 +180,19 @@ export const durableLenLogIR = (base) => {
 // helpers built from these templates (push, splice, fill, set) already pay a
 // call per operation, so they ask the helper; the inliner copies their bodies
 // into callers, and the bit test inline would be copied with them.
-export const durableArrSnapIR = (base) => {
+// `ptr`, the local holding the array's pointer where the helper has it: an
+// array whose aux is ARRAY_RAW (compile/numeric-arrays.js) logs a raw record,
+// bit 1 of the offset passed (core/durable-log.js), whose cells no walk reads.
+export const durableArrSnapIR = (base, ptr = null) => {
   if (!hasDurableReset()) return ''
+  const off = ptr && numericArraysOn() ? `(i32.or (local.get $${base}) ${rawSnapBitWat(`(local.get $${ptr})`)})` : `(local.get $${base})`
   return `
     (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
-      (then (call $__durable_arr_snap (local.get $${base}))))`
+      (then (call $__durable_arr_snap ${off})))`
 }
+// Bit 1 where the pointer's aux is ARRAY_RAW (layout.js): the aux's low bit is the pointer's bit 32.
+const rawSnapBitWat = (bits) => `(i32.and (i32.wrap_i64 (i64.shr_u ${bits} (i64.const 31))) (i32.const 2))`
+export const rawSnapBitNode = (bits) => ['i32.and', ['i32.wrap_i64', ['i64.shr_u', bits, ['i64.const', 31]]], ['i32.const', 2]]
 
 // IR-node (array-tree) twin of durableArrSnapIR, for the two array mutators built as
 // raw IR arrays instead of WAT-template strings (.reverse/.sort — emitArrayReverseInPlace/
@@ -198,14 +206,15 @@ export const durableArrSnapIR = (base) => {
 // A direct element store (emit-assign.js storeFixedElement, call-args.js) is a
 // few instructions, so here the bit test is inline: a store in a loop pays a
 // byte load and a branch, and the call runs once per array per round.
-export const durableArrSnapNode = (base) => {
+// `bits`, the array's pointer as an i64 expression, read only where the call runs.
+export const durableArrSnapNode = (base, bits = null) => {
   if (!hasDurableReset()) return ['nop']
   const b = ['local.get', `$${base}`], seen = ['global.get', '$__durable_arr_seen']
   const unsaved = ['i32.or', ['i32.eqz', seen],
     ['i32.eqz', ['i32.and', ['i32.load8_u', ['i32.add', seen, seenCellNode(b)]],
       ['i32.shl', ['i32.const', 1], ['i32.and', ['i32.shr_u', b, ['i32.const', 3]], ['i32.const', 7]]]]]]
   return ['if', ['i32.lt_u', b, ['global.get', '$__heap_reset']],
-    ['then', ['if', unsaved, ['then', ['call', '$__durable_arr_snap', b]]]]]
+    ['then', ['if', unsaved, ['then', ['call', '$__durable_arr_snap', bits && numericArraysOn() ? ['i32.or', ['local.get', `$${base}`], rawSnapBitNode(bits)] : b]]]]]
 }
 
 // The cell of the durable bitmap that holds an address's bit: the address

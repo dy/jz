@@ -167,7 +167,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
           ['i32.add', ['local.get', `$${aOff}`], ['i32.const', fixedParamCount * 8]],
           ['i32.shl', ['local.get', `$${rLen}`], ['i32.const', 3]]],
         ['call', `$${callee}`, ...fixedLoads, rest.ptr]], func.sig.results[0])
-      return func.sig.results.length > 1 ? materializeMultiIR(callIR, func.sig.results.length) : attachSigMeta(callIR, func.sig)
+      return func.sig.results.length > 1 ? materializeMultiIR(callIR, func.sig.results.length, callee) : attachSigMeta(callIR, func.sig)
     }
     // Pad missing fixed args with `undefined` so default-param init triggers per spec.
     const fixedParams = func.sig.params.slice(0, fixedParamCount)
@@ -180,7 +180,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
     // Build array: emit code for normal args + code to expand spreads
     const arrayIR = buildArrayWithSpreads(restArgsFinal)
     const callIR = typed(['call', `$${callee}`, ...emittedFixed, arrayIR], func.sig.results[0])
-    return func.sig.results.length > 1 ? materializeMultiIR(callIR, func.sig.results.length) : attachSigMeta(callIR, func.sig)
+    return func.sig.results.length > 1 ? materializeMultiIR(callIR, func.sig.results.length, callee) : attachSigMeta(callIR, func.sig)
   }
 
   // Regular function call with a spread (`mat3(M, ...xyz)`): build the full
@@ -200,7 +200,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
       ['local.set', `$${aOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${aVal}`]]]],
       ['local.set', `$${aLen}`, ['i32.load', ['i32.sub', ['local.get', `$${aOff}`], ['i32.const', 8]]]]]
     if (func.sig.results.length > 1)
-      return typed(['block', ['result', 'f64'], ...setup, materializeMultiIR(callIR, func.sig.results.length)], 'f64')
+      return typed(['block', ['result', 'f64'], ...setup, materializeMultiIR(callIR, func.sig.results.length, callee)], 'f64')
     return attachSigMeta(typed(['block', ['result', resultType], ...setup, callIR], resultType), func.sig)
   }
   if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee} — pass arguments individually, or give ${callee} a rest parameter (...args)`)

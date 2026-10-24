@@ -108,6 +108,7 @@ export const PASS_NAMES = [
   // test/passes.js greps every gate read against this list + TUNING_KEYS.
   'declareUnseenKeys',        // a key stored on objects nothing asks for their keys: a slot of their literals (plan/declare-unseen-keys.js)
   'promoteLoopFields',        // a field a loop reads and writes through one receiver: a local for the loop (plan/loop-fields.js)
+  'numericArrays',            // an array the program proves holds only Numbers keeps them raw: no canonicalization, no hole test (compile/numeric-arrays.js)
   'callChosenFunctions',      // a local holding one of several functions and only called: the choice of direct calls (plan/chosen-calls.js)
   'specializeCalledArgs',     // a parameter only called, given a named function: a copy calling it by name (plan/called-args.js)
   'hoistObjectReads',         // a key a loop reads of an object the function made and only reads: one read where it is made (plan/object-reads.js)

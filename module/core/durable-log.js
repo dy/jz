@@ -18,6 +18,7 @@
  *
  * @module core/durable-log
  */
+import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx, declGlobal, PTR, LAYOUT } from '../../src/ctx.js'
 import { UNDEF_NAN, TOMB_NAN } from '../../src/ir.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex } from '../../layout.js'
@@ -133,8 +134,12 @@ export const registerDurableLog = () => {
   // every reader takes a bit's cell by one rule, collection/durable.js seenCellWat
   declGlobal('__durable_lo', 'i32')
   declGlobal('__durable_skip', 'i32')
-  ctx.core.stdlib['__durable_arr_snap'] = `(func $__durable_arr_snap (param $off i32)
-    (local $cell i32) (local $bit i32) (local $len i32) (local $rec i32)
+  // Bit 1 of \`off\` marks an array whose elements are raw Numbers (layout.js
+  // ARRAY_RAW): its record keeps the bit, and no walk reads its cells for pointers.
+  ctx.core.stdlib['__durable_arr_snap'] = () => `(func $__durable_arr_snap (param $off i32)
+    (local $cell i32) (local $bit i32) (local $len i32) (local $rec i32)${numericArraysOn() ? ` (local $raw i32)
+    (local.set $raw (i32.and (local.get $off) (i32.const 2)))
+    (local.set $off (i32.xor (local.get $off) (local.get $raw)))` : ''}
     (if (i32.eqz (global.get $__durable_arr_seen))
       (then
         (local.set $len (i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1)))
@@ -147,7 +152,7 @@ export const registerDurableLog = () => {
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $rec (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $len) (i32.const 3)))))
     (i32.store (local.get $rec) (global.get $__durable_arr_log))
-    (i32.store offset=4 (local.get $rec) (local.get $off))
+    (i32.store offset=4 (local.get $rec) ${numericArraysOn() ? '(i32.or (local.get $off) (local.get $raw))' : '(local.get $off)'})
     (i32.store offset=8 (local.get $rec) (local.get $len))
     (i32.store offset=12 (local.get $rec) (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (memory.copy (i32.add (local.get $rec) (i32.const 16)) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
@@ -206,6 +211,8 @@ export const registerDurableLog = () => {
                   (select (i64.const ${UNDEF_NAN}) (local.get $was) (call $__is_eph_bits (local.get $was))))))
             (br $slot)))` : ''})
         (else
+          ;; an array: its header and cells as they stood${numericArraysOn() ? ` (bit 1, raw cells, is no part of the offset)
+          (local.set $off (i32.and (local.get $off) (i32.const -3)))` : ''}
           (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $len))
           (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.load offset=12 (local.get $rec)))
           (memory.copy (local.get $off) (i32.add (local.get $rec) (i32.const 16)) (i32.shl (local.get $len) (i32.const 3)))))

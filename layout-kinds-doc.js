@@ -86,8 +86,9 @@ const PROSE = {
   },
 
   ARRAY: {
+    auxNote: 'ARRAY_RAW (1): every element a raw Number of any bits, no hole (src/compile/numeric-arrays.js); 0 otherwise. Set where the array is made, kept by its growth, the same on every pointer to it',
     allocShape: '16B header ([-16:-8) reserved/forwarding, [-8:-4) len i32, [-4:0) cap i32) + cap*8B payload of f64 slots',
-    childPointers: 'each live slot [0, len) is boxed; named properties use an off-16 RECORD of the layout the program fixes for them, an off-16 HASH sidecar, or the global $__dyn_props table',
+    childPointers: 'each live slot [0, len) is boxed, none where the aux is ARRAY_RAW; named properties use an off-16 RECORD of the layout the program fixes for them, an off-16 HASH sidecar, or the global $__dyn_props table',
     forwarding: 'array growth leaves [-8:newOffset][-4:-1 sentinel] at the old site; __ptr_offset follows the chain',
     identityNote: 'pointer-bits (REF_EQ_KINDS) — JS `==`/`===` on arrays is reference equality, no content path',
     interopDecode: 'mem.read t===1: follows forwarding (-4 === -1 sentinel loop), reads len @-8, maps mem.read over each BigInt64 slot',
