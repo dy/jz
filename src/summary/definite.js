@@ -55,6 +55,18 @@ export function definitelyAssigned(body, reach = null, later = null) {
   // label of a block → the states its breaks left with; a loop's label has none
   // (what follows a loop starts from what held before it)
   const exits = new Map()
+  // what a condition leaves where it comes out true and where false: the right
+  // operand of `&&` runs where the left came out true, of `||` where false, so
+  // a true `&&` ran every operand (`if (a && (r = a[0]) != null && r !== b)`
+  // reads `r` assigned in its arm and in the operand after it)
+  const split = (n, a) => {
+    const op = Array.isArray(n) ? n[0] : null
+    if (op === '!') { const [yes, no] = split(n[1], a); return [no, yes] }
+    if (op === '&&') { const [yes, no] = split(n[1], a), [yes2, no2] = split(n[2], yes); return [yes2, join(no, no2)] }
+    if (op === '||') { const [yes, no] = split(n[1], a), [yes2, no2] = split(n[2], no); return [join(yes, yes2), no2] }
+    a = walk(n, a)
+    return [a, fork(a)]
+  }
 
   const walk = (n, a) => {
     if (typeof n === 'string') { read(n, a); return a }
@@ -75,10 +87,11 @@ export function definitelyAssigned(body, reach = null, later = null) {
       return assign(t, n.length > 2 ? walk(n[2], a) : a)
     }
     if (op === 'if' || op === '?:' || op === '?') {
-      a = walk(n[1], a)
-      return join(walk(n[2], fork(a)), n[3] == null ? a : walk(n[3], fork(a)))
+      const [yes, no] = split(n[1], a)
+      return join(walk(n[2], yes), n[3] == null ? no : walk(n[3], no))
     }
-    if (op === '&&' || op === '||' || op === '??' || op === '?.' || op === '?.()' || op === '?.[]') {
+    if (op === '&&' || op === '||') { const [yes, no] = split(n, a); return join(yes, no) }
+    if (op === '??' || op === '?.' || op === '?.()' || op === '?.[]') {
       a = walk(n[1], a)
       seq(n, fork(a), 2)
       return a

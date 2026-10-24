@@ -9,7 +9,7 @@ import jz, { _compileInProcess as compile } from '../index.js'
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, wat, funcWat } from './util.js'
+import { agree, oracle, run, wat, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 import { walk } from '../scripts/wat-probe.mjs'
 
@@ -211,6 +211,53 @@ test('frozen length: a read through the binding follows no forward and loads no 
     const body = funcWat(wat(src, { optimize }), 'f')
     ok(!/__ptr_offset|i32\.load|__throw_property_nullish/.test(body), `only element loads at ${optimize}`)
   }
+})
+
+// An array a function builds, a literal grown by pushes through its name alone,
+// each inside counted loops of one trip count and named by nothing else until
+// the pushes end, has that many elements wherever another function reads it
+// (summary `builds`, query builtLenOf): the length of a design function's
+// sections is a number, and a loop bounded by it runs that many times.
+const builtLen = (src, scope, name) => {
+  compile(src, { optimize: 0 })
+  const fn = ctx.funcs.map.get(scope)
+  const spelled = JSON.stringify(fn.body).match(new RegExp('"' + name + '[^"A-Za-z0-9_$][^"]*"'))?.[0]
+  return ctx.summary.at(fn.body).builtLenOf(spelled ? JSON.parse(spelled) : name)
+}
+const use = `const use = (xs) => { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[i]; return s * 100 + xs.length }`
+const built = [
+  ['one push a pass', `const make = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i * 2); return out }
+    ${use}\nexport const f = () => use(make(5))`, 5],
+  ['nested loops, two arguments, a literal start', `const make = (n) => { const out = [7]; for (let i = 0; i < n; i++) for (let j = 0; j < 3; j++) out.push(i, j); return out }
+    ${use}\nexport const f = () => use(make(4))`, 25],
+  ['a bound the module holds', `const N = 6\nconst make = () => { const out = []; for (let i = 0; i <= N; i++) out.push(i); return out }
+    ${use}\nexport const f = () => use(make())`, 7],
+]
+const unbuilt = [
+  ['a push under a condition', `const make = (n) => { const out = []; for (let i = 0; i < n; i++) if (i % 2) out.push(i); return out }\n${use}\nexport const f = () => use(make(5))`],
+  ['a loop that may leave early', `const make = (n) => { const out = []; for (let i = 0; i < n; i++) { if (i > 2) break; out.push(i) } return out }\n${use}\nexport const f = () => use(make(5))`],
+  ['a loop that may skip a push', `const make = (n) => { const out = []; for (let i = 0; i < n; i++) { if (i === 1) continue; out.push(i) } return out }\n${use}\nexport const f = () => use(make(5))`],
+  ['a stride', `const make = (n) => { const out = []; for (let i = 0; i < n; i += 2) out.push(i); return out }\n${use}\nexport const f = () => use(make(5))`],
+  ['calls passing two counts', `const make = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i); return out }\n${use}\nexport const f = () => use(make(5)) + use(make(6))`],
+  ['a count reassigned in the body', `const make = (n) => { const out = []; for (let i = 0; i < n; i++) { out.push(i); n = n - 1 } return out }\n${use}\nexport const f = () => use(make(6))`],
+  ['named before it is whole', `let held = null\nconst peek = () => held ? held.length : -1\nconst make = (n) => { const out = []; held = out; for (let i = 0; i < n; i++) out.push(peek()); return out }\n${use}\nexport const f = () => use(make(4))`],
+  ['resized by its reader', `const make = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i); return out }
+    const use = (xs) => { xs.push(9); let s = 0; for (let i = 0; i < xs.length; i++) s += xs[i]; return s * 100 + xs.length }\nexport const f = () => use(make(5))`],
+  ['joined with another array', `const make = (n) => { const out = []; for (let i = 0; i < n; i++) out.push(i); return out }\n${use}\nexport const f = (c) => use(c > 0 ? make(5) : [1, 2])`],
+]
+
+test('built length: counted pushes before anything else names the array give its length to another function', () => {
+  for (const [name, src, len] of built) is(builtLen(src, 'use', 'xs'), len, name)
+  for (const [name, src] of unbuilt) is(builtLen(src, 'use', 'xs'), null, name)
+  is(builtLen(built[0][1], 'make', 'out'), null, 'the builder reads its array while it grows')
+})
+
+test('built length: every kernel matches the host', () => {
+  for (const [name, src] of [...built, ...unbuilt])
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const host = oracle(src).f, mod = run(src, { optimize }).f
+      for (const c of [0, 1]) is(mod(c), host(c), `${name} at ${optimize}, ${c}`)
+    }
 })
 
 // An element read whose counter the walk found inside the fixed length is
