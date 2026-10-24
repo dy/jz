@@ -890,6 +890,20 @@ test('.flat', () => {
   ])
 })
 
+// `flat(depth)` flattens `depth` levels (ToIntegerOrInfinity: undefined is 1, at most
+// zero none), skipping a hole at every level; the result's element kinds follow the depth.
+test('.flat(depth)', () => {
+  const src = `export let user = (a) => [[a]].flat(2).length
+export let deep = () => [1, [2, [3, [4, [5]]]]].flat(3).length
+export let all = () => [1, [2, [3, [4, [5]]]]].flat(Infinity).join('-')
+export let none = () => { const r = [[1, 2], [3]].flat(0); return r[0].length + r[1].length }
+export let holes = () => [1, , [2, , [3, , 4]]].flat(2).length
+export let dyn = (d) => { const r = [[[1, 2]], [[3]]].flat(d); return typeof r[0] === 'number' ? r[0] + r[1] + r.length * 100 : r.length * 10 + r[0].length }`
+  const host = oracle(src), { exports } = jz(src)
+  for (const [name, ...args] of [['user', [1, 2]], ['user', 5], ['deep'], ['all'], ['none'], ['holes'], ['dyn', 2], ['dyn', 1], ['dyn', undefined], ['dyn', -1], ['dyn', '2']])
+    is(exports[name](...args), host[name](...args), `${name}(${args.map(String)})`)
+})
+
 // === .flatMap ===
 
 test('.flatMap', () => {

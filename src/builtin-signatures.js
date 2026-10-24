@@ -21,7 +21,7 @@ export const INTRINSIC_ARITY = {
   '.fill': 4, '.splice': 3, '.copyWithin': 4, '.with': 3,
   '.some': 3, '.every': 3, '.find': 3, '.findIndex': 3, '.findLast': 3, '.findLastIndex': 3,
   '.map': 3, '.filter': 3, '.reduce': 3, '.reduceRight': 3, '.forEach': 3,
-  '.reverse': 1, '.toReversed': 1, '.sort': 2, '.toSorted': 2, '.flat': 1, '.flatMap': 3,
+  '.reverse': 1, '.toReversed': 1, '.sort': 2, '.toSorted': 2, '.flat': 2, '.flatMap': 3,
   '.indexOf': 3, '.lastIndexOf': 3, '.includes': 3, '.at': 2, '.slice': 3, '.subarray': 3,
   '.join': 2, '.hasOwnProperty': 2, '.valueOf': 1, '.toString': 2,
   '.toFixed': 2, '.toExponential': 2, '.toPrecision': 2,

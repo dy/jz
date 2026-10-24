@@ -252,7 +252,8 @@ export default (ctx) => {
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', '__to_num', '__to_int32', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
-    __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
+    __arr_flat: ['__arr_flat_in', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
+    __arr_flat_in: ['__ptr_offset', '__len', '__ptr_type'],
     __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
       ? ['__typed_idx_tail', '__ptr_offset_fwd', arrCellHelper()]
       : ['__len', '__ptr_offset', '__ptr_offset_fwd', arrCellHelper()],
@@ -2968,67 +2969,49 @@ export default (ctx) => {
   // mirroring `.at`. A known-ARRAY receiver still dispatches here directly.
   ctx.core.emit['.concat'] = ctx.core.emit['.array:concat']
 
-  // .flat() → flatten one level of nested arrays
-  ctx.core.stdlib['__arr_flat'] = `(func $__arr_flat (param $src i64) (result f64)
-    (local $len i32) (local $off i32) (local $i i32) (local $total i32) (local $dst i32) (local $pos i32)
-    (local $elem f64) (local $subLen i32) (local $subOff i32) (local $j i32)
+  // .flat(depth) → FlattenIntoArray: an array element at a depth above zero gives
+  // its own elements one level down, a hole is skipped at every level.
+  // `__arr_flat_in` appends `src`'s elements at `pos` of `dst` and returns the
+  // next position; a `dst` of 0 only counts (an allocation is never at 0).
+  ctx.core.stdlib['__arr_flat_in'] = `(func $__arr_flat_in (param $dst i32) (param $pos i32) (param $src i64) (param $depth i32) (result i32)
+    (local $off i32) (local $len i32) (local $i i32) (local $elem f64)
     (local.set $off (call $__ptr_offset (local.get $src)))
     (local.set $len (call $__len (local.get $src)))
-    ;; First pass: count total elements
-    (local.set $total (i32.const 0)) (local.set $i (i32.const 0))
-    (block $c1 (loop $cl1
-      (br_if $c1 (i32.ge_s (local.get $i) (local.get $len)))
+    (block $done (loop $next
+      (br_if $done (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
-      (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
-        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
-        (then (local.set $total (i32.add (local.get $total) (call $__len (i64.reinterpret_f64 (local.get $elem))))))
-        (else (local.set $total (i32.add (local.get $total) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $cl1)))
-    ;; Allocate result via the canonical header allocator (NOT a hand-rolled
-    ;; (i32.const 8)+total*8 alloc, which this function used to do directly):
-    ;; __dyn_get_t_h's ARRAY branch unconditionally reads the propsPtr word
-    ;; at off-16 for every ARRAY receiver (module/collection.js). __alloc_hdr
-    ;; reserves and zeroes that word as part of its 16-byte header; a
-    ;; hand-rolled 8-byte header left it out entirely, silently relying on
-    ;; the following bytes being untouched (zero) fresh linear memory — true
-    ;; before region-arena's compaction starts reusing already-written
-    ;; address ranges, false after (FOURTH mechanism, .work/evidence.md
-    ;; §Region arena: the "stale receiver" was never stale or unrooted — it
-    ;; was a genuine, freshly-built .flatMap() result whose off-16 word
-    ;; aliased a neighboring allocation's leftover bytes).
-    (local.set $dst (call $__alloc_hdr (local.get $total) (local.get $total)))
-    ;; Second pass: copy
-    (local.set $pos (i32.const 0)) (local.set $i (i32.const 0))
-    (block $c2 (loop $cl2
-      (br_if $c2 (i32.ge_s (local.get $i) (local.get $len)))
-      (local.set $elem (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
-      (if (i64.eq (i64.reinterpret_f64 (local.get $elem)) (i64.const ${TOMB_NAN})) (then
-        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $cl2)))
-      (if (i32.and (f64.ne (local.get $elem) (local.get $elem))
-        (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY})))
-        (then
-          (local.set $subOff (call $__ptr_offset (i64.reinterpret_f64 (local.get $elem))))
-          (local.set $subLen (call $__len (i64.reinterpret_f64 (local.get $elem))))
-          (local.set $j (i32.const 0))
-          (block $s (loop $sl
-            (br_if $s (i32.ge_s (local.get $j) (local.get $subLen)))
-            (local.set $elem (f64.load (i32.add (local.get $subOff) (i32.shl (local.get $j) (i32.const 3)))))
-            (if (i64.ne (i64.reinterpret_f64 (local.get $elem)) (i64.const ${TOMB_NAN})) (then
-              (f64.store (i32.add (local.get $dst) (i32.shl (local.get $pos) (i32.const 3))) (local.get $elem))
-              (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
-            (local.set $j (i32.add (local.get $j) (i32.const 1)))
-            (br $sl))))
-        (else
-          (f64.store (i32.add (local.get $dst) (i32.shl (local.get $pos) (i32.const 3))) (local.get $elem))
-          (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $cl2)))
-    (i32.store (i32.sub (local.get $dst) (i32.const 8)) (local.get $pos))
+      (if (i64.ne (i64.reinterpret_f64 (local.get $elem)) (i64.const ${TOMB_NAN})) (then
+        (if (i32.and (i32.gt_s (local.get $depth) (i32.const 0))
+              (i32.and (f64.ne (local.get $elem) (local.get $elem))
+                (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $elem))) (i32.const ${PTR.ARRAY}))))
+          (then (local.set $pos (call $__arr_flat_in (local.get $dst) (local.get $pos)
+            (i64.reinterpret_f64 (local.get $elem)) (i32.sub (local.get $depth) (i32.const 1)))))
+          (else
+            (if (local.get $dst) (then
+              (f64.store (i32.add (local.get $dst) (i32.shl (local.get $pos) (i32.const 3))) (local.get $elem))))
+            (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))))
+      (br $next)))
+    (local.get $pos))`
+  // The result through the canonical header allocator: __dyn_get_t_h's ARRAY
+  // branch reads the propsPtr word at off-16 of every ARRAY receiver
+  // (module/collection.js), which __alloc_hdr reserves and zeroes. Counting
+  // first sizes it exactly; nothing runs between the two walks.
+  ctx.core.stdlib['__arr_flat'] = `(func $__arr_flat (param $src i64) (param $depth i32) (result f64)
+    (local $n i32) (local $dst i32)
+    (local.set $n (call $__arr_flat_in (i32.const 0) (i32.const 0) (local.get $src) (local.get $depth)))
+    (local.set $dst (call $__alloc_hdr (local.get $n) (local.get $n)))
+    (drop (call $__arr_flat_in (local.get $dst) (i32.const 0) (local.get $src) (local.get $depth)))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
-  ctx.core.emit['.flat'] = (arr) => (inc('__arr_flat'),
-    typed(['call', '$__arr_flat', asI64(emit(arr))], 'f64'))
+  // The depth is ToIntegerOrInfinity of the argument, 1 where it is undefined,
+  // captured after the receiver; at most zero flattens nothing.
+  ctx.core.emit['.flat'] = (arr, depth) => {
+    const recv = hoistArrayValue(arr), positions = positionArgs([depth])
+    inc('__arr_flat')
+    return typed(['block', ['result', 'f64'], recv.setup, ...positions.setup,
+      ['call', '$__arr_flat', asI64(recv.value), positions.index(0, ['i32.const', 1])]], 'f64')
+  }
 
   // Flatten each callback result before invoking the next callback. A later
   // callback may mutate a previously returned array, including the receiver.
@@ -3037,7 +3020,7 @@ export default (ctx) => {
       // With no intervening effects, two passes can size the result exactly.
       const mapped = ctx.core.emit['.map'](arr, fn, thisArg)
       inc('__arr_flat')
-      return typed(['call', '$__arr_flat', asI64(mapped)], 'f64')
+      return typed(['call', '$__arr_flat', asI64(mapped), ['i32.const', 1]], 'f64')
     }
     const recv = hoistArrayValue(arr)
     const cb = makeCallback(fn, callbackArgReps(arr), callbackElem(arr), thisArg)

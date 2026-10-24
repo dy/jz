@@ -69,6 +69,15 @@ import {
   continuesOptional } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
+/** The depth `flat(depth)` flattens to (ToIntegerOrInfinity, at least 0): 1 when
+ *  omitted or undefined, null where no literal names it. */
+const flatDepth = (a) => {
+  if (a === undefined || Array.isArray(a) && a[0] == null && a[1] === undefined) return 1
+  if (!Array.isArray(a) || a[0] != null || typeof a[1] !== 'number') return null
+  const v = Math.trunc(a[1])
+  return v > 0 ? v : 0
+}
+
 // Builtins that read their arguments and never write a field of them; any
 // other unresolved callee may store into an object it receives.
 const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|JSON\.stringify|Array\.isArray|console\.\w+|Math\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt|Symbol(\.\w+)?|isNaN|isFinite|parseInt|parseFloat|structuredClone)$/
@@ -1048,6 +1057,23 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return k
   }
   const arrayOf = (node, elem) => { const arr = cellOf(node, K.ARRAY, elem); if (paramOf(arr) !== UNKNOWN) fixLen(cell(paramOf(arr)), literalCount(node)); return arr }
+  /** The elements `flat` copies from elements of kind `e`: an array among them gives
+   *  its own, one level down per unit of `depth` (null for a depth no literal names:
+   *  any level's, arrays included); a value of several kinds an array among them,
+   *  or an array of no cell, elements of any kind. */
+  const flatElems = (e, depth) => {
+    let out = K.NONE
+    const seen = new Set()
+    for (let d = depth; ; d = d == null ? null : d - 1) {
+      if (d === 0 || !hasTag(e, K.ARRAY)) return join(out, e)
+      if (tagOf(e) !== K.ARRAY || paramOf(e) === UNKNOWN) return ANY
+      out = join(out, d == null ? e : e & NULL_BITS)
+      const c = cell(paramOf(e))
+      if (seen.has(c)) return out
+      seen.add(c)
+      e = elemOf(e)
+    }
+  }
   /** `new Set(iterable)`: a cell holding the iterable's members. */
   const setOf = (node, base, count) => {
     let value = K.NONE
@@ -2707,7 +2733,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if ((name === 'toSorted' || name === 'toReversed' || name === 'toSpliced' || name === 'flat') && node) {
         escapeArgs(base, n)
         const out = arrayOf(node, K.NONE), e = elemOf(recv)
-        raiseElem(out, name === 'flat' && tagOf(e) === K.ARRAY ? elemOf(e) : e)
+        raiseElem(out, name === 'flat' ? flatElems(e, flatDepth(args(node[2])[0])) : e)
         return out
       }
       if (name === 'copyWithin') return recv
