@@ -679,6 +679,22 @@ export function summaryQueries(facts, internal = false) {
       valOfExpr: e => valOf(kindOfExpr(e)),
       arrayNumericPropertiesAbsent: e => { const k = core(kindOfExpr(e)); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN && numericPropsOf(k) === K.NONE },
       mayBeNullishExpr: e => { const k = kindOfExpr(e); return hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT) },
+      // Whether the slot `obj.prop` reads may hold a nullish a store put there, in a shape of
+      // the receiver that holds the field (a shape without it is not read through the slot);
+      // null where the receiver names no shape holding it.
+      slotMayBeNullish: (obj, prop) => {
+        const r = core(kindOfExpr(obj))
+        if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN) return null
+        let held = false
+        for (const sid of shapesOf(paramOf(r))) {
+          const i = schemas[sid]?.indexOf(prop) ?? -1
+          if (i < 0) continue
+          held = true
+          const k = slotKind(sid, i)
+          if (hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)) return true
+        }
+        return held ? false : null
+      },
       typedCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
       typedPayloadCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && typedAux(k) !== UNKNOWN ? ctorFromElemAux(typedAux(k)) : null },
       // A call of a name that holds one of several functions (`colors[c](n)`): the

@@ -42,3 +42,21 @@ for (const [shell, wrap] of Object.entries(shells)) for (const [read, [decl, x]]
       }
     }
   })
+
+// A field's slot and a captured binding's cell are loads too, and hold what was
+// stored there: a Map's miss stored in one is undefined, and arithmetic on it NaN.
+test('missing value in arithmetic: held in a field or a captured binding', () => {
+  const M = `const m = new Map(); m.set('a', 1)`
+  for (const src of [
+    `export let f = (k) => { ${M}; return ({ x: m.get(k) }).x * 2 }`,
+    `export let f = (k) => { ${M}; const o = { in: { x: m.get(k) } }; return o.in.x * 2 }`,
+    `class P { constructor(m, k) { this.x = m.get(k) } }\nexport let f = (k) => { ${M}; return new P(m, k).x * 2 }`,
+    `export let f = (k) => { ${M}; let v = m.get(k); const g = () => { v = v }; g(); return v * 2 }`,
+  ]) {
+    const host = oracle(src).f
+    for (const optimize of [0, 2, 3]) {
+      const f = jz(src, { optimize }).exports.f
+      for (const k of ['a', 'missing']) ok(Object.is(f(k), host(k)), `${k} at ${optimize}: ${f(k)} for ${host(k)}: ${src.slice(0, 60)}`)
+    }
+  }
+})

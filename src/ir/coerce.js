@@ -154,8 +154,12 @@ const OWN_RESULT_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...COMPA
 const armTail = (v, tag) => { const a = v.find(c => Array.isArray(c) && c[0] === tag); return a && a.length > 1 ? a[a.length - 1] : null }
 /** Whether the summary lets the expression `node` be missing, and its value
  *  `v` is no shape that is a number by construction (arithmetic, a conversion,
- *  a load the emitter made without a bounds test): a `find` that matched
- *  nothing, a key a Map does not hold. A conditional answers by its arms, each
+ *  the load of an element or a field slot that never holds a stored nullish,
+ *  made without a bounds test): a `find` that matched nothing, a key a Map does
+ *  not hold. A slot holds what was stored there: a field the kind holds absent
+ *  only for a shape without it reads its slot as a number where it is read
+ *  that way, and a slot or a captured binding's cell that a missing value was
+ *  stored into holds the box. A conditional answers by its arms, each
  *  with its own value, where the value keeps the arms apart: the kind of the
  *  whole joins what any arm may be on any path, while the emitter knows how it
  *  loaded each (`a[i] > m ? a[i] : m` over an index in range is two numbers).
@@ -175,8 +179,15 @@ const mayMissValue = (node, v, byKind = true) => {
     if (numericStorage(node) || ctx.func.refinements?.get(node)?.notNullish) return false
     if (ctx.func.maybeNullish?.has(node) || mayBeUndefined(node)) return true
   }
-  return mayYieldUndef(v) || byKind && !(v[0] === 'f64.load' || isNumericIR(v)) &&
+  return mayYieldUndef(v) || byKind && !(v[0] === 'f64.load' && (storedElement(node) || storedSlot(node)) || isNumericIR(v)) &&
     ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(node) === true
+}
+// A field read (`o.x`, `o['x']`) whose slot no store left a nullish in, in every
+// shape of the receiver that holds the field (summary slotMayBeNullish); null for any other.
+const storedSlot = (n) => {
+  if (!Array.isArray(n) || n.length !== 3 || (n[0] !== '.' && n[0] !== '[]')) return null
+  const prop = n[0] === '.' ? n[2] : Array.isArray(n[2]) && (n[2][0] == null || n[2][0] === 'str') ? n[2][1] : null
+  return typeof prop === 'string' && ctx.summary?.at(ctx.func.current)?.slotMayBeNullish?.(n[1], prop) === false ? n : null
 }
 
 /** `v` with the undefined box taken to NaN: one compare and a select. */
