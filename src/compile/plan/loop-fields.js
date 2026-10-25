@@ -407,8 +407,10 @@ const UNROLL_SIZE = 1000
 const EXITS = new Set(['break', 'continue', 'return', 'label'])
 
 /** The integer a count is on every run of the function, or null: a literal, the
- *  length of an array the summary knows never changes (`fixedLenOf`), or a
- *  name the function declares once, `const` of either. */
+ *  length of an array the summary knows for good (one never resized,
+ *  `fixedLenOf`, or one another function built by counted pushes,
+ *  `builtLenOf`), or a name the function declares once, `const` of either
+ *  (`const n = coefs.length` of a design function's sections). */
 const countsOf = (body, view) => {
   const declared = new Map(), init = new Map()
   someDeep(body, n => {
@@ -421,7 +423,7 @@ const countsOf = (body, view) => {
     return false
   })
   const known = (e) => Array.isArray(e) && e[0] == null && Number.isInteger(e[1]) ? e[1]
-    : Array.isArray(e) && e[0] === '.' && e[2] === 'length' && isName(e[1]) ? view.fixedLenOf(e[1]) : null
+    : Array.isArray(e) && e[0] === '.' && e[2] === 'length' && isName(e[1]) ? view.builtLenOf(e[1]) ?? view.fixedLenOf(e[1]) : null
   return (e) => known(e) ?? (isName(e) && declared.get(e) === 1 && init.has(e) ? known(init.get(e)) : null)
 }
 

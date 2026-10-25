@@ -18,7 +18,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -609,6 +609,18 @@ export function summaryQueries(facts, internal = false) {
         const c = cell(paramOf(k)), n = built[c], g = grown.get(c)
         if (!(n >= 0) || unknown.has(c) || (g && g.name !== name)) return null
         const len = n + (g?.n ?? 0)
+        return stores.get(c) >= len ? null : len
+      },
+      // The length an array has once the function building it has it (index.js
+      // `builds`): its literal's count plus the pushes, where another function
+      // reads it; null where the read is the builder's, or anything else resizes it.
+      builtLenOf: e => {
+        const k = kindOfExpr(e)
+        if (tagOf(k) !== K.ARRAY || isNullable(k) || paramOf(k) === UNKNOWN) return null
+        const c = cell(paramOf(k)), b = builds.get(c), n = built[c]
+        if (!b || b.scope === scope || !(n >= 0) || resizedElsewhere.has(c) || multiSite.has(c)) return null
+        let len = n
+        for (const count of b.pushes.values()) len += count
         return stores.get(c) >= len ? null : len
       },
       // The finite interval each parameter of a function receives over every

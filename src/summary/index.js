@@ -49,7 +49,7 @@
  * @module summary
  */
 import { SPAN_BINARY, spanBinary } from './span.js'
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, T as SEP } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, T as SEP } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -685,8 +685,27 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const built = []               // dense cell root → count | LEN_OPEN
   const grown = new Map()        // cell root → { n, name }: init pushes' count and the one name they went through
   const unknown = new Set()      // cell roots resized in a way no count follows
+  const resizedElsewhere = new Set()   // the same but for the pushes of a function building the array (`builds`)
   const trips = []               // the trip counts of the counted loops being walked
   let countedDepth = 0           // how many of the paths `branch` counts are counted loops
+  // An array a function builds: a literal declared `const` among the
+  // function's own statements, named by nothing but pushes until the last
+  // statement that pushes (`ownBuilds`), each push through that name inside
+  // counted loops of an exact trip count and on no other path (`exactTrips`:
+  // a start and an end of one value each, a step of one, no `break`,
+  // `continue` or `return` in the body). Nothing else can see it before it is
+  // whole, so wherever another function reads it, it has its literal's count
+  // plus the pushes, where nothing else resizes the cell (`resizedElsewhere`:
+  // `unknown` but for these pushes, which other proofs still read as a
+  // resize) and no other construction joins it (`builds`, `multiSite`; query.js
+  // builtLenOf): `const sos = []; for
+  // (let i = 0; i < n; i++) sos.push(…); return sos` where every call passes
+  // one `n`. A push with no such count leaves the cell open for the round
+  // (null); the round's walk is complete, so the last one decides, as for `grown`.
+  const ownBuilds = new Map()    // binding key → the literal its declaration builds
+  const builds = new Map()       // cell root → { scope, key, pushes: Map(push node → elements) } | null
+  const exactTrips = []          // per counted loop being walked: its exact trip count, or -1
+  const multiSite = new Set()    // cell roots joining several construction sites
   // The element reads whose index the walk found inside the receiver's fixed
   // length (a counter's span), by node: the query has no loop in view and
   // reads them present through this set.
@@ -715,7 +734,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (was !== next) built[c] = next
   }
   /** The array's length may change: by a counted init push (`counted`) or in a way no count follows. */
-  const openLen = (arr, why, counted = false) => { const c = lenCell(arr); if (c >= 0) { setLen(c, LEN_OPEN, why); if (!counted) unknown.add(c) } }
+  const openLen = (arr, why, counted = false, built = false) => { const c = lenCell(arr); if (c >= 0) { setLen(c, LEN_OPEN, why); if (!counted) unknown.add(c); if (!counted && !built) resizedElsewhere.add(c) } }
   /** The fixed length of the array `arr` holds, -1 where it may change or differ. */
   const fixedLen = (arr) => { const c = lenCell(arr), n = c < 0 ? -1 : lens[c]; return n >= 0 && !(stores.get(c) >= n) ? n : -1 }
   // The integers an index can be, `[lo, hi]`: a literal, a constant, the
@@ -925,6 +944,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const to = spanOf(c.test[2])
     return to ? [c.name, c.from[0], c.test[0] === '<' ? to[1] - 1 : to[1]] : null
   }
+  // The trips a counted loop runs on every entry: -1 where its start or its end
+  // may be several values, it strides, or its body may leave or skip a pass.
+  const exactTrip = (n) => {
+    const c = loopCounter(n), to = c && spanOf(c.test[2])
+    if (!to || c.from[0] !== c.from[1] || to[0] !== to[1] || n[3][0] !== '++') return -1
+    if (some(n[4], m => m[0] === 'break' || m[0] === 'continue' || m[0] === 'return')) return -1
+    return Math.max(0, (c.test[0] === '<' ? to[0] : to[0] + 1) - c.from[0])
+  }
   /** A loop `for (let i = a; i < x.length; i += c)`, `a` at least 0, whose body leaves
    *  `i` and `x` alone: the counter and the array whose count bounds it. */
   // A bound that is a name declared as an array's length and never reassigned
@@ -998,7 +1025,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
     if (!span || lens[c] == null || lens[c] < 0 || span[1] > lens[c]) raiseHole(arr)
-    if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c) }
+    if (!span || span[0] < 0) { setLen(c, LEN_OPEN, 'stored at an index the walk cannot bound'); unknown.add(c); resizedElsewhere.add(c) }
     else if (!(stores.get(c) >= span[1])) {
       if (onOpen && lens[c] >= 0 && span[1] >= lens[c]) onOpen(lens[c], `stored at index ${span[1]}`, current, site)
       stores.set(c, span[1]); changed = true
@@ -1163,8 +1190,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const ba = built[a] ?? LEN_OPEN, bb = built[b] ?? LEN_OPEN
     built[a] = ba === bb ? ba : LEN_OPEN
     if (unknown.has(b)) unknown.add(a)
+    if (resizedElsewhere.has(b)) resizedElsewhere.add(a)
     const ga = grown.get(a), gb = grown.get(b)
-    if (gb) { if (!ga) grown.set(a, gb); else if (ga.name === gb.name) ga.n += gb.n; else unknown.add(a) }
+    if (gb) { if (!ga) grown.set(a, gb); else if (ga.name === gb.name) ga.n += gb.n; else { unknown.add(a); resizedElsewhere.add(a) } }
+    multiSite.add(a)
+    if (builds.has(b)) builds.set(a, builds.has(a) ? null : builds.get(b))
     // The cells are one before the rows merge: a row that reaches itself ends here.
     if (rows) { tuples.set(b, null); for (let i = 0; i < ra.length; i++) { const nk = merge(ra[i], rb[i]); if (nk !== ra[i]) ra[i] = nk } }
     if (hostArrays.has(b)) hostArrays.add(a)
@@ -1390,7 +1420,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         escapeToHost(cellNumeric.get(c) ?? K.NONE, seen)
         escapeToHost(cellWild.get(c) ?? K.NONE, seen)
         hostArrays.add(c)
-        setLen(c, LEN_OPEN, 'handed to the host'); unknown.add(c)
+        setLen(c, LEN_OPEN, 'handed to the host'); unknown.add(c); resizedElsewhere.add(c)
         if (retainedArrays.has(c)) raiseElem(k, ANY)
       }
     }
@@ -2673,11 +2703,24 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (name === 'push') {
         const via = node && Array.isArray(node[1]) && typeof node[1][1] === 'string' && current === null && branch === countedDepth
           && bindingScope[keyOf(node[1][1]) ?? -1] === MODULE && spreadAt(base, n) === n ? node[1][1] : null
-        openLen(recv, 'resized by push', via !== null)
         const c = lenCell(recv)
+        // through the name a function builds its array in (`ownBuilds`): counted, or the cell open for the round
+        const own = via === null && current !== null && node && Array.isArray(node[1]) && typeof node[1][1] === 'string' ? keyOf(node[1][1]) : null
+        const site = own !== null && bindingScope[own] === current ? ownBuilds.get(own) : undefined
+        const building = site !== undefined && c >= 0 && cells.has(site) && cell(cells.get(site)) === c
+        openLen(recv, 'resized by push', via !== null, building)
+        if (building) {
+          const b = builds.get(c), exact = branch === countedDepth && spreadAt(base, n) === n && exactTrips.every(t => t >= 0)
+          if (!exact || b === null || (b && b.key !== own)) builds.set(c, null)
+          else {
+            const count = exactTrips.reduce((p, t) => p * t, n), pushes = b?.pushes ?? new Map(), was = pushes.get(node)
+            if (was !== undefined && was !== count) builds.set(c, null)
+            else { pushes.set(node, count); if (!b) builds.set(c, { scope: current, key: own, pushes }) }
+          }
+        }
         if (c >= 0 && via !== null) {
           const g = grown.get(c), count = trips.reduce((p, t) => p * t, n)
-          if (!g) grown.set(c, { n: count, name: via }); else if (g.name === via) g.n += count; else unknown.add(c)
+          if (!g) grown.set(c, { n: count, name: via }); else if (g.name === via) g.n += count; else { unknown.add(c); resizedElsewhere.add(c) }
         }
       } else if (name === 'unshift' || name === 'pop' || name === 'shift' || name === 'splice') openLen(recv, onOpen ? `resized by ${name}` : null)
       if (node && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
@@ -3670,6 +3713,28 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (!names) assignedFirst.set(current, names = definitelyAssigned(typeof current === 'string' ? funcByName.get(current).body : closureBodies[current]))
     return names.has(name) ? K.NONE : ABSENT
   }
+  // Whether `decl`, one of the current function's own statements, declares in
+  // `name` (by its declarator `d`) an array nothing else can see before the
+  // last statement pushing through the name ends: from the declaration to it,
+  // the name is only ever a push's receiver (`ownBuilds`). Syntactic, so read
+  // once per declarator.
+  const alone = new Map()   // declarator → whether it builds alone
+  const buildsAlone = (decl, d, name) => {
+    let r = alone.get(d)
+    if (r !== undefined) return r
+    const body = typeof current === 'string' ? funcByName.get(current)?.body : closureBodies[current]
+    const list = isBlock(body) ? (Array.isArray(body[1]) && body[1][0] === ';' ? body[1] : [';', body[1]]) : null
+    const at = list ? list.indexOf(decl) : -1
+    const isPush = (m) => m[0] === '()' && Array.isArray(m[1]) && m[1][0] === '.' && m[1][1] === name && m[1][2] === 'push'
+    let last = -1
+    for (let i = at + 1; at > 0 && i < list.length; i++) if (some(list[i], isPush, { skipArrow: false })) last = i
+    // every mention of the name, but the declared one, is a push's receiver
+    let names = -1, pushes = 0
+    const count = (m) => { if (!Array.isArray(m) || m[0] === 'str') return; if (isPush(m)) pushes++; for (let i = 1; i < m.length; i++) if (m[i] === name) names++; else count(m[i]) }
+    for (let i = at; last > 0 && i <= last; i++) count(list[i])
+    alone.set(d, r = last > 0 && names === pushes)
+    return r
+  }
   const decl = (n) => {
     const tdz = isTdzDecl(n)
     for (let i = 1; i < n.length; i++) {
@@ -3677,6 +3742,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (typeof d === 'string') declare(d, tdz ? K.NONE : bare(d))
       else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
         if (n[0] === 'const') {
+          if (current !== null && branch === 0 && Array.isArray(d[2]) && d[2][0] === '[' && literalCount(d[2]) >= 0 && keyOf(d[1]) !== null && buildsAlone(n, d, d[1])) ownBuilds.set(keyOf(d[1]), d[2])
           if (Array.isArray(d[2]) && d[2][0] == null && Number.isInteger(d[2][1])) ints.set(d[1], d[2][1])
           const r = rangeOf(d[2]), key = keyOf(d[1])
           if (r) constRanges.set(key, r)
@@ -4178,10 +4244,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       stmt(n[1]); const loop = loopEnter(n); loopAssigns(n); branch++; flowPath++; selectedExpr(n[2], 0)
       const mark = rtop, counted = countedLoop(n), bounded = counted ? null : lengthBoundedLoop(n)
       if (n[2] != null) proves(n[2], true)
-      if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); countedDepth++ }
+      if (counted) { spans.set(counted[0], [counted[1], counted[2]]); trips.push(Math.max(0, counted[2] - counted[1] + 1)); exactTrips.push(exactTrip(n)); countedDepth++ }
       if (bounded) { lenBounds.set(bounded[0], keyOf(bounded[1])); spans.set(bounded[0], [bounded[2], LENGTH_BOUND]); loopBodies.set(bounded[0], n[4]); loopPure.set(bounded[0], !bodyRunsCode(n[4])); if (!lengthMayChange(bounded[0], n[4], bounded[1])) lenStable.add(bounded[0]) }
       stmt(n[4])
-      if (counted) { spans.delete(counted[0]); trips.pop(); countedDepth-- }
+      if (counted) { spans.delete(counted[0]); trips.pop(); exactTrips.pop(); countedDepth-- }
       if (bounded) { lenBounds.delete(bounded[0]); spans.delete(bounded[0]); loopBodies.delete(bounded[0]); loopPure.delete(bounded[0]); lenStable.delete(bounded[0]) }
       unwind(mark); selectedExpr(n[3], 0); branch--; flowPath--
       loopExit(loop)
@@ -4694,7 +4760,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
@@ -5059,6 +5125,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     changed = false
     grown.clear()   // the init pushes are counted afresh by every round's walk
     decisions.clear()   // as are the tests: the round without a change, its kinds settled, decides
+    ownBuilds.clear(); builds.clear()   // and the arrays functions build
     retainSeen.clear(); hostSeen.clear()   // the walks' records, afresh each round (retain)
     spreadSources.clear() // join the source kinds from this round's reachable contexts
     for (const f of funcs) {
@@ -5142,7 +5209,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.length = 0; stores.clear(); built.length = 0; grown.clear(); unknown.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
+    tuples.clear(); lens.length = 0; stores.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()

@@ -156,6 +156,16 @@ test('loop fields: a cascade of sections in pair arrays agrees with JS, its pair
 
 test('loop fields: the sample loop of a cascade holds its coefficients and state in locals', () => holdsState(cascade))
 
+// The library's count is the length of the array its design function built
+// (`const n = coefs.length`, summary builtLenOf): a constant all the same.
+const designed = cascadeOf(`const design = (n) => { const sos = []; for (let i = 0; i < n; i++) sos.push({ b0: 0.2 + i * 0.01, b1: 0.3, b2: 0.2, a1: -0.4 + i * 0.02, a2: 0.1 }); return sos }
+const coefs = design(4)`, 'coefs.length')
+
+test('loop fields: a cascade over the sections a design function built agrees with JS and holds its state', () => {
+  agrees(designed, [['run', 9], ['run', 0], ['shared', 9]])
+  holdsState(designed)
+})
+
 // An element alias reads its array each pass where the loop may change that
 // array: a store of its length (the next pass reads a missing element and
 // throws, as the host does), or a store of the element itself.

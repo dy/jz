@@ -464,7 +464,7 @@ const WASM_TODO = {
   // levers: coverage proofs (a loop over the array's own count fills it: no
   // hole), a canonical-NaN contract for values a typed read produced, and SIMD
   // lowering of the float-to-int conversion (pcmconvert's clamp and round).
-  sosfilter: 'jz 1.98× c-wasm: per stage two bounds tests, a tomb test, a nullish test and the durable test per state pair, three NaN canonicalizations.',
+  sosfilter: 'jz 0.94–0.97× c-wasm on EPYC 7763 and 9V74 runners and a Xeon 8370C (bench-probe, 2026-10-24): the stage loop written out over the count the design function built, its coefficients and state in locals. C → wasm still leads on a Xeon 8573C (1.025×; a hand-written form of the same loop reads 1.025× there too) and read 1.04–1.07× on EPYC 9V45 runners with earlier builds of the change. clang runs every stage\'s y first and the state after, an order that reads 1.006–1.010× against the stage order\'s 0.956× on a 7763, so the stage order stays. Delete once the reference run leads on every runner.',
   movavg:    'jz 1.78× c-wasm: the tomb test (the loop as written may have grown the shared history), NaN canonicalization of the stored sample, the undefined-to-NaN select of the read.',
   upfirdn:   'jz 1.90× c-wasm: the stride test and quotient run as i64/f64 integers, not i32 words (the product n * down does not fit a word by hull); the typed index converts.',
   pcmconvert: 'jz 2.43× c-wasm: no SIMD for the clamp-and-round conversion (the vectorizer reads the per-iteration `let v` as loop-carried) and a `__to_int32` call per integer store.',
