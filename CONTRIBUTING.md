@@ -35,6 +35,11 @@ preset): an address affine in a loop counter becomes a pointer set before the
 loop and advanced with the counter, where that lowers the instructions an
 iteration executes without pushing integer values past the register file.
 watr 5.11.11 carries the pass; `test/optimizer.js` pins the pointers.
+Where the counter is then read only by its own step and its tests against
+constants, jz's `pointerExits` (src/optimize/pointer-exits.js, speed tier)
+stops the loop where the pointer reaches the end set before it, and the
+counter's step leaves the iteration; a trip count the constants do not decide
+keeps the counter, since the end could then wrap.
 
 Watr 5.11.5 also defers costly pure local initializers to the
 exclusive value arms that consume them. It runs before local reuse, replacing

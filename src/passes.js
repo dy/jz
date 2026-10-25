@@ -168,6 +168,7 @@ export const TUNING_KEYS = [
   'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',
   'maskOperands',             // a byte or halfword mask over `^`/`|` moves onto the operand it narrows (optimize/mask-operands.js, speed tier)
   'searchLoops',              // a loop whose body is a guarded loop scans for its guard in an innermost loop (optimize/search-loops.js, speed tier)
+  'pointerExits',             // a loop keeping a counter only to stop stops by the pointer strength reduction steps beside it (optimize/pointer-exits.js, speed tier)
   'leanRuntime',              // size tier: runtime walks link their simplest correct body (no hot/cold
                               // split, no chunked scan, no per-site hash fast arms) — the -Os profile
                               // of the string equality/hash family

@@ -34,6 +34,7 @@ import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
 import { stripDeadCanons } from '../src/optimize/nan-canon.js'
 import { maskOperands } from '../src/optimize/mask-operands.js'
 import { searchLoops } from '../src/optimize/search-loops.js'
+import { pointerExits } from '../src/optimize/pointer-exits.js'
 import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -4878,6 +4879,94 @@ test('searchLoops: a loop whose body is a guarded loop scans for its guard in a 
   }
   ok(scans('speed') >= 2, `the pixel scan and the sieve scan for their guards (${scans('speed')})`)
   is(scans(2), 0, 'level 2 keeps its loops')
+})
+
+test('pointerExits: a loop keeping a counter only to stop stops by the pointer stepped beside it', () => {
+  const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
+  const step = (x, c) => ['local.set', x, ['i32.add', g(x), k(c)]]
+  const tee = (x, c) => ['local.tee', x, ['i32.add', g(x), k(c)]]
+  const add = ['local.set', '$s', ['i32.add', g('$s'), ['i32.load', 'offset=4', g('$p')]]]
+  const fn = (...body) => ['func', '$f', ['param', '$b', 'i32'], ['result', 'i32'], ['local', '$i', 'i32'], ['local', '$p', 'i32'], ['local', '$s', 'i32'], ...body, g('$s')]
+  const one = (f) => pointerExits(['module', f])[1]
+  // a top-tested loop: the counter's start goes, its declaration holds the end
+  const top = (N, cmp = 'i32.ge_s', S = 1, D = 20, I0 = 0) => fn(['local.set', '$i', k(I0)],
+    ['block', '$B', ['local.set', '$p', g('$b')],
+      ['loop', '$L', ['br_if', '$B', [cmp, g('$i'), k(N)]], add, step('$i', S), step('$p', D), ['br', '$L']]])
+  is(one(top(1024)), ['func', '$f', ['param', '$b', 'i32'], ['result', 'i32'], ['local', '$__pe0', 'i32'], ['local', '$p', 'i32'], ['local', '$s', 'i32'],
+    ['block', '$B', ['local.set', '$p', g('$b')], ['local.set', '$__pe0', ['i32.add', g('$p'), k(20480)]],
+      ['loop', '$L', ['br_if', '$B', ['i32.eq', g('$p'), g('$__pe0')]], add, step('$p', 20), ['br', '$L']]], g('$s')],
+    'the test asks for the end pointer, the step and the start go')
+  // a rotated loop unrolled twice: a guard reading the start, a test in the middle and at the back edge
+  const rot = (N) => fn(['block', '$B', ['br_if', '$B', ['i32.ge_s', ['local.tee', '$i', k(0)], k(N)]], ['local.set', '$p', g('$b')],
+    ['loop', '$L', add, step('$p', 20), ['br_if', '$B', ['i32.eqz', ['i32.lt_s', tee('$i', 1), k(N)]]],
+      add, step('$p', 20), ['br_if', '$L', ['i32.lt_s', tee('$i', 1), k(N)]]]])
+  is(one(rot(64))[7], ['block', '$B', ['local.set', '$p', g('$b')], ['local.set', '$__pe0', ['i32.add', g('$p'), k(1280)]],
+    ['loop', '$L', add, step('$p', 20), ['br_if', '$B', ['i32.eq', g('$p'), g('$__pe0')]],
+      add, step('$p', 20), ['br_if', '$L', ['i32.ne', g('$p'), g('$__pe0')]]]], 'both tests ask for the end; the guard that never branches goes')
+  const kept = (f, why) => is(one(f), JSON.parse(JSON.stringify(f)), why)
+  const loopOf = (f) => f[f.length - 2][2]
+  const withBody = (f, edit) => { const c = JSON.parse(JSON.stringify(f)); edit(loopOf(c)); return c }
+  kept(withBody(top(64), L => L.splice(3, 0, ['local.set', '$s', g('$i')])), 'a counter the body reads stays')
+  kept(withBody(top(64), L => L.splice(3, 0, ['if', g('$s'), ['then', ['br', '$L']]])), 'a continue past the steps keeps the counter')
+  kept(withBody(top(64), L => { L[2] = ['br_if', '$B', ['i32.ge_s', g('$i'), g('$b')]] }), 'a bound the constants do not decide keeps the counter')
+  kept(withBody(top(64), L => L.splice(4, 1)), 'a counter without a pointer stepped beside it stays')
+  kept(withBody(top(64), L => { L[5] = ['if', g('$s'), ['then', step('$p', 20)]] }), 'a pointer stepped conditionally keeps the counter')
+  kept(top(-5, 'i32.ge_u', 1, 20, 2147483000), 'a counter that would wrap before it leaves stays')
+  kept(top(65536, 'i32.ge_s', 1, 65536), 'an end past 2^32 bytes of pointer steps keeps the counter')
+  kept(top(9, 'i32.eq', 2), 'a counter that never meets its constant stays')
+
+  // the rewritten loops run as the originals: counting up, down, by three, unsigned, to a meeting, odd trips
+  const exec = (f, base) => {
+    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', ['memory', '$m', ['export', '"m"'], 2], [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]])))
+    const mem = new Int32Array(m.exports.m.buffer)
+    for (let i = 0; i < mem.length; i++) mem[i] = Math.imul(i, 2654435761) >>> 9
+    try { return m.exports.f(base) } catch (e) { return String(e) }   // a pointer stepped out of memory traps alike
+  }
+  const shapes = [top(1024), top(1, 'i32.ge_s'), top(0, 'i32.ge_s'), top(-3, 'i32.lt_s', -1, -20, 40), top(100, 'i32.ge_u', 3),
+    top(99, 'i32.eq', 3), top(31, 'i32.gt_s', 1, 12, 5), top(7, 'i32.ge_s', 1, -8, 0), rot(64), rot(63), rot(1)]
+  for (const f of shapes) {
+    const before = JSON.stringify(f), after = one(JSON.parse(before))
+    ok(JSON.stringify(after) !== before, `${before.slice(70, 150)}… is rewritten`)
+    for (const base of [0, 4096, 60000]) is(exec(after, base), exec(JSON.parse(before), base), `same answer at ${base}: ${before.slice(70, 150)}`)
+  }
+
+  // a scan of records of four shapes, a constant count of them, read through the strength-reduced pointer
+  const src = `const build = () => {
+      const rows = []
+      let s = 0x1234abcd | 0
+      for (let i = 0; i < 512; i++) {
+        s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        const k = s & 3, a = (s >>> 3) & 1023, b = (s >>> 13) & 1023
+        if (k === 0) rows.push({ k: k, x: a, y: b })
+        else if (k === 1) rows.push({ k: k, r: a })
+        else if (k === 2) rows.push({ k: k, w: a, h: b })
+        else rows.push({ k: k, n: b })
+      }
+      return rows
+    }
+    const measure = (o) => {
+      const k = o.k
+      if (k === 0) return (o.x + o.y) | 0
+      else if (k === 1) return Math.imul(o.r, 3)
+      else if (k === 2) return Math.imul(o.w, o.h)
+      return o.n
+    }
+    const scan = (rows) => {
+      let h = 0
+      for (let r = 0; r < 4; r++) {
+        let sum = r | 0
+        for (let i = 0; i < rows.length; i++) sum = (sum + measure(rows[i])) | 0
+        h = Math.imul(h ^ sum, 16777619)
+      }
+      return h
+    }
+    export let f = () => scan(build())`
+  const want = oracle(src).f()
+  for (const optimize of ['speed', { level: 'speed', pointerExits: false }, 2]) is(run(src, { optimize }).f(), want, JSON.stringify(optimize))
+  if (onKernel()) return
+  const ends = (optimize) => count(parseWat(jz.compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__pe'))
+  ok(ends('speed') >= 1, `the record loop stops by its pointer (${ends('speed')})`)
+  is(ends({ level: 'speed', pointerExits: false }), 0, 'pointerExits: false keeps the counter')
 })
 
 test('rec-unroll: an empty statement in a body is no loop', () => {
