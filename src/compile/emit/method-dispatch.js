@@ -633,7 +633,8 @@ function trySchemaClosureCall(c) {
 function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   const collectionMisfit = COLLECTION_METHODS.has(method) &&
     !parsed.hasSpread && parsed.normal.length === 0
-  const strIndexMisfit = STR_INDEX_METHODS.has(method) &&
+  // (a proven string's surplus arguments are just evaluated)
+  const strIndexMisfit = STR_INDEX_METHODS.has(method) && vt !== VAL.STRING &&
     !parsed.hasSpread && parsed.normal.length > 1
   // A proven plain-object/dict receiver never inherits the Array/collection
   // builtins these generic emitters serve — an own property of the same name
@@ -756,9 +757,12 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
     // A proven closure's unshadowed call is an invocation, not a property
     // dispatch. This includes protocol methods narrowed by typeof guards.
     if (vt === VAL.CLOSURE && method === 'call' && !parsed.hasSpread &&
-        !ctx.summary.memberMayBeOwnOn('call', VAL.CLOSURE))
-      return callMethod(obj, (fn, receiver, ...args) => ctx.closure.call(
-        asF64(emit(fn)), args, false, false, receiver == null ? null : asF64(storedValue(receiver))))
+        !ctx.summary.memberMayBeOwnOn('call', VAL.CLOSURE)) {
+      const invoke = (fn, receiver, ...args) => ctx.closure.call(
+        asF64(emit(fn)), args, false, false, receiver == null ? null : asF64(storedValue(receiver)))
+      invoke.argc = Infinity   // the closure takes every argument
+      return callMethod(obj, invoke)
+    }
     includeForRuntimeKeyIteration()
     if (strictCode())
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)

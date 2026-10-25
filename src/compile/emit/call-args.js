@@ -8,9 +8,10 @@ import { callWithArgs } from '../../ir.js'
 import { T, commaList } from '../../ast.js'
 import { includeForArrayLiteral, includeForStringOnly } from '../../autoload.js'
 import { PTR, ctx, emitArity, inc } from '../../ctx.js'
+import { INTRINSIC_ARITY, INTRINSIC_VARIADIC } from '../../builtin-signatures.js'
 import { storedValue } from '../../bridge.js'
 import {
-  TOMB_NAN, throwTypeErrorIR, allocPtr, asF64, block64, deferBigintBox, dispatchByPtrType, freshId, isPureIR, materializeDeferredBigint, multiCount, reconstructArgsWithSpreads, temp, tempI32,
+  TOMB_NAN, throwTypeErrorIR, allocPtr, asF64, block64, deferBigintBox, dispatchByPtrType, flat, freshId, isNumericIR, isPureIR, materializeDeferredBigint, multiCount, reconstructArgsWithSpreads, temp, tempI32, typed,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -22,7 +23,7 @@ import { copyReceiverFacts } from './shared.js'
 import { arrayView, viewBase } from '../array-view.js'
 import { numericLanes } from '../numeric-arrays.js'
 import { ARRAY_RAW } from '../../../layout.js'
-import { emit, emitCallArgs } from './dispatch.js'
+import { emit, emitCallArgs, emitVoid } from './dispatch.js'
 
 
 /** A proven non-callable value still evaluates its arguments before TypeError.
@@ -526,9 +527,65 @@ function emitFixedSpreadMethodCall(objArg, methodEmitter, parsed, method) {
   return call
 }
 
+// A surplus argument the call need not evaluate: reading a literal, a name or
+// a function expression has no effect.
+const passive = n => !Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === '=>'
+// An operand that reads the same after a later argument's effects: a literal
+// or a function expression (a name could be written by one).
+const inert = n => Array.isArray(n) ? n[0] == null || n[0] === 'str' || n[0] === '=>' : typeof n !== 'string'
+// The facts that say what a value's bits are, kept on the block that prefixes it.
+const VALUE_FACTS = ['ptrKind', 'ptrAux', 'srcPtrKind', 'schemaSid', 'valKind', 'bigintRaw']
+function prefixed(setup, ir) {
+  if (!setup.length) return ir
+  if (!ir?.type || ir.type === 'void') return typed(['block', ...setup, ...flat(ir)], 'void')
+  const out = typed(['block', ['result', ir.type], ...setup, ir], ir.type)
+  for (const key of VALUE_FACTS) if (ir[key] !== undefined) out[key] = ir[key]
+  if (ir.bigintBox) deferBigintBox(out, () => prefixed(setup, materializeDeferredBigint(ir)))
+  return out
+}
+
+/** JS evaluates every argument, left to right, even one its callee ignores.
+ *  A builtin emitter lowers only the first `max` operands (a method's receiver
+ *  among them): when a later one can have an effect, the operands before it
+ *  are held in that order (a literal or a function expression left in place),
+ *  then the surplus runs, then `lower` gets the held operands. Surplus
+ *  literals and names keep the call exactly as it was. */
+export function withSurplusArgs(nodes, max, lower) {
+  let last = nodes.length - 1
+  while (last >= max && passive(nodes[last])) last--
+  if (last < max) return lower(nodes)
+  const view = ctx.summary?.at(ctx.func.current), setup = [], held = [], operands = []
+  try {
+    for (let i = 0; i < max; i++) {
+      const node = nodes[i]
+      if (inert(node)) { operands.push(node); continue }
+      const name = temp('arg'), value = storedValue(node)
+      copyReceiverFacts(node, name)
+      // A guarded read or conversion may be narrower than its source kind.
+      if (isNumericIR(value)) (ctx.func.refinements ??= new Map()).set(name, { val: VAL.NUMBER, notNullish: true })
+      view?.alias(name, node, false)
+      setup.push(['local.set', `$${name}`, value])
+      held.push(name); operands.push(name)
+    }
+    for (let i = max; i <= last; i++) setup.push(...emitVoid(nodes[i]))
+    return prefixed(setup, lower(operands))
+  } finally { for (const name of held) { view?.unalias(name); ctx.func.refinements?.delete(name) } }
+}
+
+/** The operands a builtin emitter lowers, its receiver included: its own
+ *  parameters, or what it states (`argc`, an ad-hoc emitter's too). A variadic
+ *  one, or one naming none (`(...args)`) the table does not say takes none,
+ *  lowers them all. */
+export const builtinArity = (handler, name) => {
+  if (INTRINSIC_VARIADIC.has(name)) return Infinity
+  const n = emitArity(handler) ?? 0
+  return n > 0 || INTRINSIC_ARITY[name] === 0 ? n : Infinity
+}
+
 /** Method-emitter call: directly, or via one of the spread fast paths. */
 export function emitMethodCallSpread(objArg, methodEmitter, parsed, method) {
-  if (!parsed.hasSpread) return methodEmitter(objArg, ...parsed.normal)
+  if (!parsed.hasSpread) return withSurplusArgs([objArg, ...parsed.normal], builtinArity(methodEmitter, `.${method}`),
+    ([recv, ...args]) => methodEmitter(recv, ...args))
   if (method === 'push' || method === 'unshift')
     return emitArraySpreadMutation(objArg, parsed, method)
   if (method !== 'concat' && method !== 'splice')

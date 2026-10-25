@@ -1,3 +1,12 @@
+/** Intrinsics whose emitters lower every supplied argument: their arity is a
+ *  fixed prefix. Any other emitter ignores an argument past its arity, which
+ *  the call lowering evaluates for it (call-args.js withSurplusArgs). */
+export const INTRINSIC_VARIADIC = new Set([
+  'math.max', 'math.min', 'math.hypot', 'Array.of', 'String.fromCharCode', 'String.fromCodePoint',
+  'console.log', 'console.warn', 'console.error', 'console.info', 'console.debug', 'fetch',
+  '.push', '.unshift', '.concat', '.splice', '.toSpliced',
+])
+
 /** Intrinsic emit-handler arities, available in both compiler hosts without
  *  function reflection. For variadic handlers this is the fixed prefix, just
  *  like Function.length; their emitters still lower all supplied arguments. */

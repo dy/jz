@@ -957,6 +957,30 @@ test('audit: intrinsic calls retain excess argument effects before the operation
   }
 })
 
+// A builtin evaluates every argument it ignores, after its receiver and in
+// order, before it runs; a user method of the same name still receives them.
+test('audit: builtin calls evaluate the arguments they ignore', () => {
+  const src = `let log = ''
+    const mark = x => { log += x; return x }
+    export function methods() { let n = 0
+      const r = [[1, 2].reverse(n++).join(), [1, 2].indexOf(2, 0, n++), 'ab'.charAt(0, n++), 'ab'.charCodeAt(1, n++),
+        [1].toString(n++), (255).toString(16, n++), 'abc'.toUpperCase(n++), new Map([[1, 2]]).get(1, n++)]
+      return [r, n] }
+    export function statics() { let n = 0
+      const r = [Object.keys({ a: 1 }, n++), Array.isArray([], n++), parseInt('7', 10, n++), JSON.stringify(1, null, 0, n++),
+        Object.groupBy([1], x => x, n++)[1]]
+      return [r, n] }
+    export function order() { log = ''; let a = [1, 2]
+      const r = [mark(1), 2].indexOf(mark(2), mark(0), mark(9)), s = a.indexOf(1, 0, a = [9]), t = a.reverse(a.push(3))
+      return [log, r, s, t] }
+    export function owned() { let n = 0; const o = { reverse(x, y) { return x + y } }; return [o.reverse(1, n++ + 10), n] }`
+  const expected = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (const name of ['methods', 'statics', 'order', 'owned']) is(got[name](), expected[name](), `${name} ${optimize}`)
+  }
+})
+
 
 test('audit: missing record methods throw after argument evaluation', () => {
   for (const optimize of TIERS) for (const init of [

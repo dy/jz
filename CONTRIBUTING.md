@@ -2657,6 +2657,15 @@ definition; unknown writes and nonfinite or overflowing endpoints reject it.
 This can remove a ToInt32 magnitude guard but never authorizes i32 storage.
 Intrinsic and user calls share excess-argument sequencing. Collection probes
 retain precomputed literal hashes while using the same boxed-value conversion.
+Every other builtin, method or static, evaluates an argument past its emitter's
+arity (`withSurplusArgs`, compile/emit/call-args.js): the handler's own arity,
+so `[1].toString(x)` ignores what `(255).toString(x)` takes. When such an
+argument may have an effect, the receiver and the arguments before it are held
+in temporaries in order (a literal or a function expression stays in place),
+the surplus runs, then the emitter lowers what it takes; a surplus literal or
+name leaves the call as it was. `INTRINSIC_VARIADIC` names the emitters that
+lower every argument, as does one declaring no parameter (`(...args)`) the
+arity table does not give zero; an ad-hoc emitter states its arity in `argc`.
 Math arguments finish evaluating before any operand converts to Number;
 unknown or BigInt operands capture their values first, and ignored arguments
 still run. Spreads materialize their argument values before conversion so a

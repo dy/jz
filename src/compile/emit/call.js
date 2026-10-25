@@ -22,7 +22,8 @@ import { K, core, tagOf, hasTag, isNullable } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
-import { attachSigMeta, buildArrayWithSpreads, emitNonCallable, materializeMulti, materializeMultiIR, parseCallArgs } from './call-args.js'
+import { attachSigMeta, buildArrayWithSpreads, builtinArity, emitNonCallable, materializeMulti, materializeMultiIR, parseCallArgs, withSurplusArgs } from './call-args.js'
+import { INTRINSIC_VARIADIC } from '../../builtin-signatures.js'
 import { TYPED_HI_MASK, argIR, coerceArg, emit, emitReference, emitGroupedCall, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
 
@@ -75,7 +76,6 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
 /** Builtin / module-emitter call: `Math.max(...)`, `JSON.parse(...)`, etc. The
  *  emitter accepts the same `...args` flat shape as the AST (with `['...', x]`
  *  spread markers re-inserted in original position). */
-const VARIADIC_MATH = new Set(['math.max', 'math.min', 'math.hypot'])
 function emitBuiltinCall(callee, parsed) {
   if (parsed.hasSpread) {
     if (callee.startsWith('math.')) {
@@ -84,7 +84,7 @@ function emitBuiltinCall(callee, parsed) {
       const name = temp('args')
       const source = buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))
       ctx.func.localValTypesOverlay.set(name, VAL.ARRAY)
-      const args = VARIADIC_MATH.has(callee) ? [['...', name]]
+      const args = INTRINSIC_VARIADIC.has(callee) ? [['...', name]]
         : Array.from({ length: emitArity(ctx.core.emit[callee], callee) ?? 0 }, (_, i) => ['[]', name, [null, i]])
       const value = ctx.core.emit[callee](...args)
       return typed(['block', ['result', value.type], ['local.set', `$${name}`, asF64(source)], value], value.type)
@@ -100,13 +100,17 @@ function emitBuiltinCall(callee, parsed) {
   }
   // Math reads an argument left out as undefined, as JS passes it: `Math.atan2(y)` is
   // atan2(y, NaN). max, min and hypot take any number of them.
-  const math = callee.startsWith('math.'), fixed = math && !VARIADIC_MATH.has(callee)
+  const math = callee.startsWith('math.'), fixed = math && !INTRINSIC_VARIADIC.has(callee)
   const n = fixed ? emitArity(ctx.core.emit[callee], callee) ?? 0 : parsed.normal.length
   const view = ctx.summary?.at(ctx.func.current)
   // Arguments finish before conversion or Object.assign's property copies.
   // Hooks may write a later argument's source; ignored Math arguments still run.
   const capture = callee === 'Object.assign' || math && (parsed.normal.length > n ||
     parsed.normal.length > 1 && parsed.normal.some(a => !primitiveKind(view, a) || hasTag(view?.kindOfExpr(a) ?? -1, K.BIGINT)))
+  // Any other builtin ignores an argument past its arity, which still runs.
+  // (A compiler-made `__` call passes what its emitter takes.)
+  if (!capture && !math && !callee.startsWith('__'))
+    return withSurplusArgs(parsed.normal, builtinArity(ctx.core.emit[callee], callee), args => ctx.core.emit[callee](...args))
   if (!capture) return ctx.core.emit[callee](...parsed.normal,
     ...Array.from({ length: n - parsed.normal.length }, () => [, undefined]))
   const args = [], setup = [], aliases = []
