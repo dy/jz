@@ -488,18 +488,31 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
         return
       }
       // (b) Conditional VALUE update — `if (cond) { L = …; … }` (no else) updating lane locals.
+      // The test runs once, before the arm, as the scalar loop runs it: an update to a lane
+      // it reads (`if (g > 200) { g -= 150; h = g }`) does not change what the next selects by.
       if (!hasElse) {
+        const widthOf = (name) => fnLocals.get(name) === 'f64' ? 'f64' : 'i32'
+        const masks = new Map(), seen = new Set(toneSetBefore)   // data width → its mask local
         for (const s of thenStmts) {
           if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3 && localKind.get(s[1]) === 'lane')) {
             liftFail(ctx, 'tonemap: no-else arm is not a lane update'); return
           }
-          const name = s[1], ty = fnLocals.get(name) === 'f64' ? 'f64' : 'i32'
+          const ty = widthOf(s[1])
+          if (seen.has(s[1]) && !masks.has(ty)) {
+            const m = liftMask(stmt[1], ty); if (ctx.fail) return
+            const mt = freshMask()
+            out.push(['local.set', mt, m]); masks.set(ty, mt)
+          }
+          seen.add(s[1])
+        }
+        for (const s of thenStmts) {
+          const name = s[1], ty = widthOf(name)
           const xv = liftV(s[2]); if (ctx.fail) return
           const ln = laned(name)
-          if (toneSetBefore.has(name)) {
-            const m = liftMask(stmt[1], ty); if (ctx.fail) return   // conditional merge
-            const mt = freshMask()
-            out.push(['local.set', mt, m], ['local.set', ln, ['v128.bitselect', xv, ['local.get', ln], ['local.get', mt]]])
+          if (toneSetBefore.has(name)) {   // conditional merge
+            // (a lane a tee set since the test was lifted has no mask of its width: decline)
+            if (!masks.has(ty)) { liftFail(ctx, 'tonemap: arm merges a lane set after its test'); return }
+            out.push(['local.set', ln, ['v128.bitselect', xv, ['local.get', ln], ['local.get', masks.get(ty)]]])
           } else {
             out.push(['local.set', ln, xv]); toneSetBefore.add(name)   // first, unconditional (liveness-gated)
           }

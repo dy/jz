@@ -1655,6 +1655,32 @@ for (const [arr, max] of [['Uint8Array', 255], ['Uint16Array', 65535]]) {
   })
 }
 
+// (c') The test of a conditional VALUE update runs once, before its arm: an arm that updates a lane
+// its own test reads, then another from it (`if (g > 200) { g = g - 150; h = g }`), selects both by
+// the test as it read before the arm (as int lanes and as float lanes).
+const TONE_RETEST = (n, arm) => `
+  let dens = new Uint32Array(${n}), px = new Uint32Array(${n})
+  export let main = () => {
+    let i = 0
+    while (i < ${n}) { dens[i] = (i * 53) % 600; i++ }
+    i = 0
+    while (i < ${n}) {
+      let v = dens[i], g = 0, h = 3
+      ${arm}
+      px[i] = (255 << 24) | (g << 16) | (h << 8)
+      i++
+    }
+    let s = 0; i = 0; while (i < ${n}) { s = (s + px[i]) | 0; i++ }
+    return s
+  }`
+for (const [label, arm] of [
+  ['int lanes', 'g = (Math.log(v + 1.0) * 44.0) | 0; if (g > 200) { g = g - 150; h = g }'],
+  ['float lanes', 'let L = Math.log(v + 1.0) * 44.0, M = 3.0; if (L > 200.0) { L = L - 150.0; M = L }; g = L | 0; h = M | 0'],
+]) test(`SIMD tonemap - an arm updating the lane its test reads selects by the test as first read (${label})`, () => {
+  ok(/f64x2\.convert_low_i32x4/.test(wat(TONE_RETEST(64, arm), SPEED)), 'lifts')
+  for (const n of [64, 63, 7, 1]) is(runVec(TONE_RETEST(n, arm), SPEED).main(), oracle(TONE_RETEST(n, arm)).main(), `n=${n}: SIMD === host`)
+})
+
 // (d) A statement's three truncations test their lanes with one compare (the swarm exposure):
 // the OR of the channels' bits, its sign cleared, under 2^31's, else every channel takes the
 // scalar ToInt32 lane by lane. Theme values past 2^31 and NaN (runtime, from a Float64Array),

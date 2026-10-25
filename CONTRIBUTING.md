@@ -4331,6 +4331,10 @@ test, where they cost three magnitudes, three compares and two ANDs; a `f64x2.ma
 magnitudes is one arm64 instruction but two `maxpd` and six NaN and signed-zero fix-ups in
 V8's x64 lowering.
 
+The tone-map lift's conditional update (`if (c) { g = …; h = … }`, no else) tests `c` once,
+before the arm, as the loop as written does: a mask per data width is set first, so an
+update to a lane the test reads (`g -= 150`) leaves the next selecting by the first answer.
+
 Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):
 
 - **Bit-exact.** Compile `{optimize:3}` vs `{optimize:3, noSimd:true}`, run N frames, compare output
