@@ -113,7 +113,7 @@ export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess, main
     .filter(Boolean).map(d => `-DJZ_${d}`)
   mkdirSync(dir, { recursive: true })
   const c = join(dir, 'jz.c')
-  run(tools.wasm2c, ['--enable-exceptions', '--enable-tail-call', '-n', 'jz', wasm, '-o', c])
+  run(tools.wasm2c, ['-n', 'jz', wasm, '-o', c])
   if (postprocess) writeFileSync(c, execFileSync('awk', ['-f', postprocess, c], { maxBuffer: 1 << 30 }))
   // CC may carry its own arguments: CC="zig cc".
   const [cc, ...ccArgs] = tools.cc.trim().split(/\s+/)
