@@ -270,6 +270,15 @@ const decode = (v, fnOf = null, symbols = null) => {
 // be another value to the host as its i64 bits, so a Number result is a
 // Number, or the undefined or null a nullable one returns. A NaN reads as NaN
 // whatever payload the computation left in it, but for those two boxes' bits.
+// A host NaN argument spelling the undefined or null box, of either sign and
+// quiet or signaling (an operation may set a NaN's sign and quiets it),
+// enters with the canonical bits: no Number a host call passes reads as one
+// of those inside, or comes back as one. Any other payload enters as it is.
+const numberArg = (x) => {
+  if (x === x || typeof x !== 'number') return x
+  const b = f64ToI64(x) & 0x7FFFFFFFFFFFFFFFn | 0x0008000000000000n
+  return b === UNDEF_NAN || b === NULL_NAN ? NaN : x
+}
 const numberRet = (v) => v === v ? v : (b => b === UNDEF_NAN ? undefined : b === NULL_NAN ? null : NaN)(f64ToI64(v))
 
 // Decode a boundary value arriving as i64 bits (BigInt). Heap modules go through mem.read.
@@ -1282,7 +1291,7 @@ export const wrap = (memSrc, inst, state) => {
   // reads the whole argument list from an array.
   const callClosure = mem ? realInst.exports.__call_closure : null
   const lanes = callClosure ? callClosure.length - 4 : 0
-  const closureArg = (v) => typeof v === 'bigint' && !isBox(v) && mem.BigInt ? mem.BigInt(v) : v
+  const closureArg = (v) => typeof v === 'bigint' && !isBox(v) && mem.BigInt ? mem.BigInt(v) : numberArg(v)
   // The call keeps its heap as an export that releases nothing does (a closure
   // has no `jz:release` of its own), and what it kept holds the heap of the
   // call around it (`enter`/`leave` below); a module with no heap has neither.
@@ -1325,6 +1334,7 @@ export const wrap = (memSrc, inst, state) => {
       }
       case 1: return (a) => {
         if (skip0 && a !== undefined) a = 0
+        a = numberArg(a)
         if (big(a) || !begin()) return general(a)
         let threw = false
         try { return out(fn(a)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
@@ -1332,6 +1342,7 @@ export const wrap = (memSrc, inst, state) => {
       case 2: return (a, b) => {
         if (skip0 && a !== undefined) a = 0
         if (skip1 && b !== undefined) b = 0
+        a = numberArg(a); b = numberArg(b)
         if (big(a) || big(b) || !begin()) return general(a, b)
         let threw = false
         try { return out(fn(a, b)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
@@ -1340,6 +1351,7 @@ export const wrap = (memSrc, inst, state) => {
         if (skip0 && a !== undefined) a = 0
         if (skip1 && b !== undefined) b = 0
         if (skip2 && c !== undefined) c = 0
+        a = numberArg(a); b = numberArg(b); c = numberArg(c)
         if (big(a) || big(b) || big(c) || !begin()) return general(a, b, c)
         let threw = false
         try { return out(fn(a, b, c)) } catch (e) { threw = true; decodeThrown(e) } finally { end(threw) }
@@ -1358,6 +1370,7 @@ export const wrap = (memSrc, inst, state) => {
     // No read means no ToNumber, boxing, getter or backing-store copy is due.
     if (hostAbi?.skip.has(i)) return ie?.p.has(i) ? x === undefined ? UNDEF_NAN : 0n : x === undefined ? undefined : 0
     if (ext?.has(i)) return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
+    x = numberArg(x)
     // A BigInt is a value at a `val` slot whatever its bits (the function reads
     // the parameter only as a scalar, so no handle belongs there); elsewhere
     // the NaN-box prefix marks a jz-minted handle passed back raw.

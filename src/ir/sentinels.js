@@ -147,8 +147,29 @@ export function numberCarrierIR(node, value) {
     return result
   }
   // (a value its source proves free of a payload enters as it is: kind/payload.js)
-  return (value.presentNumRead || isNumericIR(value) || ctx.summary?.at(ctx.func.current).kindOfExpr(node) === NUMBER) && !sourcePayloadFree(node)
-    ? canonicalNumberIR(value) : value
+  if ((value.presentNumRead || isNumericIR(value) || ctx.summary?.at(ctx.func.current).kindOfExpr(node) === NUMBER) && !sourcePayloadFree(node))
+    return canonicalNumberIR(value)
+  // A choice one of whose values is a checked read (`c ? a[i] : 0`): each
+  // checked read normalized where it lies, the other values as they are.
+  return checkedArms(value) ?? value
+}
+
+// The value IR with the checked reads among its results (an if's arms, a
+// select's operands, a block's tail) normalized, or null where it has none.
+function checkedArms(n) {
+  if (!Array.isArray(n)) return null
+  if (n.checkedNumRead) { const v = numberCarrierIR(null, n); return v.numberArmsCanonical ? v : null }
+  const keep = (out) => { const r = typed(out, n.type ?? 'f64'); for (const k of ['ptrKind', 'ptrAux', 'valKind']) if (n[k] !== undefined) r[k] = n[k]; return r }
+  if (n[0] === 'block' && n.length > 1) { const t = checkedArms(n[n.length - 1]); return t && keep([...n.slice(0, -1), t]) }
+  if (n[0] === 'select' && n.length === 4) {
+    const a = checkedArms(n[1]), b = checkedArms(n[2])
+    return a || b ? keep(['select', a ?? n[1], b ?? n[2], n[3]]) : null
+  }
+  if (n[0] === 'if' && n.length === 5 && n[3]?.[0] === 'then' && n[4]?.[0] === 'else' && n[3].length > 1 && n[4].length > 1) {
+    const a = checkedArms(n[3][n[3].length - 1]), b = checkedArms(n[4][n[4].length - 1])
+    return a || b ? keep([...n.slice(0, 3), a ? [...n[3].slice(0, -1), a] : n[3], b ? [...n[4].slice(0, -1), b] : n[4]]) : null
+  }
+  return null
 }
 
 /** Materialize the boxed-boolean carrier from a 0/1-valued expression: a select

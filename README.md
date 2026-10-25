@@ -297,7 +297,8 @@ Memory that cannot grow, past `memory: { maximum }`, the 4 GiB of wasm32 or
 the engine's limit, throws the RangeError of an allocation, which the program
 can catch; after a `memory.reset()` the module runs again.
 
-Host Number values remain numbers, including NaNs with custom payloads. Pass
+Host Number values remain numbers, including NaNs with custom payloads (one
+whose bits spell the undefined or null box enters as the canonical NaN). Pass
 allocated memory by its bigint handle from `memory.Array`, `memory.Float64Array`
 or the other constructors. Raw `memory.read` and pointer codec helpers also
 accept legacy floating-point carriers; ordinary argument and value marshaling
