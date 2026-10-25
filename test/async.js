@@ -395,6 +395,67 @@ test('async generators: requests settle in microtask order', async () => {
     }`)
 })
 
+// yield* in an async generator hands next(), throw() and return() to its
+// delegate, awaiting each result; a sync delegate's values are awaited
+// (CreateAsyncFromSyncIterator). A for await closes its iterator when the
+// body leaves early or a return() arrives at a yield inside it.
+test('async generators: yield* and for await forward to and close the inner iterator', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    const show = (r) => r.value + ':' + r.done + ','
+    async function* inner() { try { yield 'a'; yield 'b' } catch (e) { log += 'c' + e; yield 'h'; return 'r' } finally { log += 'I'; await null; log += 'J' } }
+    async function* outer() { try { const v = yield* inner(); log += 'v' + v; yield 'z' } finally { log += 'O' } }
+    function* sync() { try { yield 1; yield Promise.resolve(2) } catch (e) { log += 's' + e; yield 'k' } finally { log += 'S' } }
+    async function* overSync() { const v = yield* sync(); log += 'w' + v }
+    function* rejecting() { try { yield 1; yield Promise.reject('R') } finally { log += 'S' } }
+    async function* overRejecting() { try { yield* rejecting() } catch (e) { log += 'c' + e } }
+    async function* loop() { try { for await (const x of inner()) { yield x; if (x === 'b') break } yield 'end' } finally { log += 'F' } }
+    const own = () => ({ next() { return Promise.resolve({ value: 1, done: false }) }, return() { log += 'R'; return Promise.resolve({}) }, [Symbol.asyncIterator]() { return this } })
+    async function* viaOwn() { try { yield* own() } catch (e) { log += e instanceof TypeError ? 'T' : 'x'; yield 'p' } }
+    const syncOwn = () => ({ next() { return { value: 1, done: false } }, return() { log += 'R'; return {} }, [Symbol.iterator]() { return this } })
+    async function* viaSyncOwn() { try { yield* syncOwn() } catch (e) { log += e instanceof TypeError ? 'T' : 'x'; yield 'p' } }
+    export async function returned() { log = ''; const it = outer(); await it.next(); return show(await it.return(5)) + log }
+    export async function thrown() { log = ''; const it = outer(); await it.next(); return show(await it.throw('X')) + show(await it.next()) + show(await it.next()) + log }
+    export async function syncValues() { log = ''; let s = ''; for await (const v of overSync()) s += v; return s + log }
+    export async function syncThrown() { log = ''; const it = overSync(); await it.next(); return show(await it.throw('Y')) + show(await it.next()) + log }
+    export async function missingThrow() { log = ''; const it = viaOwn(); await it.next(); return show(await it.throw('W')) + log }
+    export async function syncMissingThrow() { log = ''; const it = viaSyncOwn(); await it.next(); return show(await it.throw('V')) + log }
+    export async function syncRejects() { log = ''; let s = ''; for await (const v of overRejecting()) s += v; return s + log }
+    export async function forSyncRejects() { log = ''; try { for await (const v of rejecting()) log += v } catch (e) { log += 'E' + e } return log }
+    export async function broken() { log = ''; let s = ''; for await (const v of loop()) s += v; return s + log }
+    export async function closedAtYield() { log = ''; const it = loop(); await it.next(); return show(await it.return(7)) + log }`)
+})
+
+// Forwarding takes the jobs Node's does: a done return() result ends the
+// generator with its value as it is, a missing return() awaits it; a for
+// await over an async iterator awaits each next() only.
+test('async generators: delegation and for await settle in microtask order', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    const ticker = async (n) => { for (let i = 0; i < n; i++) { log += i; await null } }
+    async function* inner() { try { yield 'a'; yield 'b' } finally { log += 'I'; await null; log += 'J' } }
+    async function* outer(src) { try { yield* src } finally { log += 'O' } }
+    const own = (ret) => ({ next() { return Promise.resolve({ value: 1, done: false }) }, return: ret, [Symbol.asyncIterator]() { return this } })
+    const closing = async (src, v) => {
+      log = ''
+      const it = outer(src)
+      await it.next()
+      const t = ticker(10), p = it.return(v).then(r => { log += 'R' + (typeof r.value === 'object' ? 'obj' : r.value) })
+      await t; await p
+      return log
+    }
+    export async function requests() {
+      log = ''
+      const it = outer(inner()), t = ticker(16)
+      const a = it.next().then(r => { log += 'N' + r.value }), b = it.next().then(r => { log += 'M' + r.value }), c = it.return(9).then(r => { log += 'R' + r.value })
+      await t; await a; await b; await c
+      return log
+    }
+    export const doneValue = () => closing(own(() => { log += 'r'; return { value: Promise.resolve(9), done: true } }), 5)
+    export const noReturn = () => closing({ next() { return Promise.resolve({ value: 1, done: false }) }, [Symbol.asyncIterator]() { return this } }, 5)
+    export async function consumer() { log = ''; const t = ticker(12); for await (const v of inner()) log += 'v' + v; await t; return log }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals

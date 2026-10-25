@@ -446,6 +446,27 @@ test('generators: return() and every completion leaving a try run its finally bl
   export let delegateYields = () => { log = ''; const it = resumed(); it.next(); return show(it.return(3)) + show(it.next()) + log }
   export let jumping = () => { log = ''; const it = jumps(); return show(it.next()) + show(it.next()) + log }`))
 
+// throw() at a yield* goes to the delegate's throw(): its catch can answer,
+// and a done result ends the yield* with its value. A delegate with no
+// throw() is closed and the yield* throws a TypeError; an array's iterator
+// has neither throw() nor return().
+test('generators: yield* forwards throw() to its delegate', () => agreeAll(`let log = ''
+  const show = (r) => r.value + ':' + r.done + ','
+  function* inner() { try { yield 'a'; yield 'b' } catch (e) { log += 'c' + e; yield 'h'; return 'r' } finally { log += 'I' } }
+  function* outer() { const v = yield* inner(); log += 'v' + v; yield 'z' }
+  function* quick() { try { yield 'a' } catch (e) { return 'q' + e } }
+  function* ends() { const v = yield* quick(); yield 'v' + v }
+  const own = () => ({ i: 0, next() { this.i++; return { value: this.i, done: this.i > 3 } }, return() { log += 'R'; return {} }, [Symbol.iterator]() { return this } })
+  function* viaOwn() { try { yield* own() } catch (e) { log += e instanceof TypeError ? 'T' : 'x'; yield 'p' } }
+  function* viaArray() { try { yield* [1, 2] } catch (e) { log += e instanceof TypeError ? 'T' : 'x' } }
+  function* viaNumber() { try { yield* { next() { return 5 }, [Symbol.iterator]() { return this } } } catch (e) { log += e instanceof TypeError ? 'T' : 'x' } }
+  export let forwarded = () => { log = ''; const it = outer(); it.next(); return show(it.throw('X')) + show(it.next()) + show(it.next()) + log }
+  export let done = () => { const it = ends(); it.next(); return show(it.throw('X')) + show(it.next()) }
+  export let missing = () => { log = ''; const it = viaOwn(); it.next(); return show(it.throw('Z')) + log }
+  export let array = () => { log = ''; const it = viaArray(); it.next(); return show(it.throw('Y')) + log }
+  export let arrayReturn = () => { log = ''; const it = viaArray(); it.next(); return show(it.return(3)) + log }
+  export let notObject = () => { log = ''; return show(viaNumber().next()) + log }`))
+
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,
 // a continue and an exception from next() close nothing; the body's exception

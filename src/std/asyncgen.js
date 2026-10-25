@@ -1,7 +1,8 @@
 /**
  * `jz:asyncgen` – async generators over the same sync machine, with TAGGED
  * yields (jzify/generators.js): the machine yields `{ a: 1, v }` where the
- * source awaits and `{ a: 0, v }` where it yields. `__ag_run` drives it as
+ * source awaits, `{ a: 0, v }` where it yields and `{ a: 2, v }` where a
+ * yield* yields its delegate's value. `__ag_run` drives it as
  * ECMA-262 runs an async generator (27.6.3): next(), throw() and return()
  * queue, the oldest settling at each yield and at completion. An await, or a
  * yielded value, that rejects throws into the machine where it stands, so its
@@ -20,6 +21,8 @@ export let __ag_call = (st, g, k, v) => {
   try { r = k === 0 ? g.next(v) : k === 1 ? g.throw(v) : g.return(v) } catch (e) { __ag_done(st, 2, e); return }
   if (r.done) { __ag_done(st, 1, { value: r.value, done: true }); return }
   let t = r.value
+  // a delegate's value (a yield*'s) is yielded as it is
+  if (t.a === 2) { __ag_yield(st, g, t.v); return }
   __await(t.v, (x) => { if (t.a === 0) __ag_yield(st, g, x); else __ag_call(st, g, 0, x) }, (e) => __ag_call(st, g, 1, e))
 }
 // AsyncGeneratorYield: the oldest request settles, a queued one resumes at once
@@ -70,6 +73,35 @@ export let __ag_ask = (st, g, k, v) => {
   else if (st.s < 2) __ag_resume(st, g)
   return p
 }
+// CreateAsyncFromSyncIterator, for a yield* of a sync iterator: each result
+// a promise of it with its value awaited; a value that rejects closes the
+// iterator, unless it came of return() or the result is done.
+export let __ag_cont = (it, r, close) => {
+  if (r == null || typeof r !== 'object' && typeof r !== 'function') throw new TypeError('iterator result is not an object')
+  let p = __p_new(), done = r.done
+  __await(r.value, (x) => __p_settle(p, 1, { value: x, done: done }), (e) => {
+    if (close && !done) { try { if (it.return != null) it.return() } catch (x) {} }
+    __p_settle(p, 2, e)
+  })
+  return p
+}
+export let __ag_from = (it) => ({
+  next: (v) => { try { return __ag_cont(it, it.next(v), 1) } catch (e) { return __p_reject(e) } },
+  return: (v) => {
+    try { return it.return == null ? __p_resolve({ value: v, done: true }) : __ag_cont(it, it.return(v), 0) } catch (e) { return __p_reject(e) }
+  },
+  // a missing throw() closes the iterator, then rejects with a TypeError
+  throw: (v) => {
+    try {
+      if (it.throw != null) return __ag_cont(it, it.throw(v), 1)
+      if (it.return != null) {
+        let r = it.return()
+        if (r == null || typeof r !== 'object' && typeof r !== 'function') throw new TypeError('iterator return result is not an object')
+      }
+      throw new TypeError("The iterator does not provide a 'throw' method")
+    } catch (e) { return __p_reject(e) }
+  },
+})
 export let __ag_run = (g) => {
   let st = { s: 0, q: [] }
   let ag = { next: undefined, return: undefined, throw: undefined, '@@asyncIterator': undefined }

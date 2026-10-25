@@ -13,19 +13,20 @@
  *   - plain `return E` anywhere; unlabeled break/continue of yield-bearing loops
  *   - compound statements WITHOUT yield stay atomic (later passes handle them)
  *   - yield* E — delegates to ANY iterator-protocol value (sent values thread,
- *     the completion value lands in `x = yield* E`)
+ *     throw() and return() go to the delegate's own, the completion value
+ *     lands in `x = yield* E`)
  *   - an async body's `await E` (jzify/async.js) suspends as a yield does; the
  *     value it resumes with is `__awaited(a, sent)`, `a` holding E, which the
  *     program summary types as the settled value of E
  *   - an async generator's machine yields tagged records to its driver
- *     (jz:asyncgen): an await or a yield
+ *     (jz:asyncgen): an await, a yield, or a delegate's value
  *   - try/catch/finally across yields: a completion leaving a guarded body (a
  *     throw, return, break or continue, or a return() at a yield) runs the
  *     finally blocks it crosses, which may yield themselves
  *   - for-of closes its iterator when its body leaves early (closingLoop)
  * Out (v1): yield inside arbitrary expressions, for-of/for-in bodies
  * containing yield (except known-generator for-of, which desugars), labeled
- * break/continue across states, throw() forwarded through yield*.
+ * break/continue across states.
  *
  * @module jzify/generators
  */
@@ -383,63 +384,107 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       }
       return [...(value === slot ? [] : [['=', slot, value]]), ...leave(crossing(fin), completeS)]
     }
-    // Suspension points: what a return() received there has to do.
-    const resumes = []
+    // Suspension points a return() reaches as a return completion (a yield),
+    // and the delegated yields of a yield*, which take whatever completion
+    // arrives as data: its `kind` local says which (0 next, 1 throw, 2 return).
+    const resumes = [], delivered = []
 
     // `yield E` at a resume boundary: park the resume id, emit the {value,done:false}
     // return. The resume state optionally starts by binding `target = __sent`.
     // An await's operand is kept in a local of its own: the target binds
     // `__awaited(a, __sent)`, the sent value typed as the settled value of `a`.
-    // An async generator's driver (jz:asyncgen) reads the yielded value as a
-    // tagged record: `a: 1` an await, `a: 0` a yield, whose value it awaits first.
+    // `['yield', E, kind]` is a yield*'s. An async generator's driver
+    // (jz:asyncgen) reads the yielded value as a tagged record: `a: 1` an
+    // await, `a: 0` a yield, whose value it awaits first, `a: 2` a delegate's
+    // value, yielded as it is.
     const emitYield = (cur, yexpr, target) => {
-      const resume = newState(), op = yexpr[0]
+      const resume = newState(), op = yexpr[0], kind = op === 'yield' ? yexpr[2] : null
       let value = yexpr[1] === undefined ? [null, undefined] : transform(yexpr[1]), sent = S.SENT
       if (target && op === 'await') {
         const a = genTemp('av'); locals.add(a)
         stmtsOf(cur).push(['=', a, value])
         value = a; sent = ['()', '__awaited', [',', a, S.SENT]]
       }
-      if (agen) value = ['{}', [',', [':', 'a', [null, op === 'await' ? 1 : 0]], [':', 'v', value]]]
+      if (agen) value = ['{}', [',', [':', 'a', [null, op === 'await' ? 1 : kind ? 2 : 0]], [':', 'v', value]]]
       stmtsOf(cur).push([';;set', resume], ['return', record(value, false)])
       if (target) stmtsOf(resume).push(['=', target, sent])
       // an await is resumed only by its own settling
-      if (op !== 'await') resumes.push({ resume, delegate: yexpr.delegate })
+      if (kind) delivered.push({ resume, kind })
+      else if (op !== 'await') resumes.push(resume)
       return resume
     }
 
-    // yield* E — the delegate loop is nothing but already-supported constructs:
-    // sent values thread through (`sent = yield r.value; r = it.next(sent)`),
-    // and the delegate's COMPLETION value (final r.value) lands in `target`.
-    // E may be any iterable: an ['@@iterator']() provider unwraps first; a
-    // plain indexed iterable (array/string) yields element-wise (fork mirrors
-    // desugarForOfProtocol; both arms decompose like any generator-body loop).
-    // The protocol arm's yield names its delegate: a return() there is the
-    // delegate's to answer first (delegateReturn).
+    // yield* E: E's iterator answers each completion the generator receives
+    // at the delegated yield. throw(e) calls its throw(e), or, lacking one,
+    // closes it and throws a TypeError; return(v) calls its return(v), or,
+    // lacking one, returns v; a done result of either ends the generator with
+    // a return of its value, a done next() the yield* with its value (in
+    // `target`). A method is tested, then read again where it is called, as
+    // for-of's return() is (GetMethod reads once; a method held as a value to
+    // call costs the program its receivers' kinds). An async generator awaits
+    // each result, and the value of a return() with no method to answer it, and
+    // takes a sync iterator through __ag_from (CreateAsyncFromSyncIterator),
+    // its values yielded as they are (tag 2). E may be any iterable: an
+    // ['@@iterator']() provider unwraps first; a plain indexed iterable
+    // (array/string) yields element-wise, as an iterator with no throw() or
+    // return() (the fork mirrors desugarForOfProtocol; both arms decompose
+    // like any generator-body loop).
     const desugarYieldStar = (expr, target) => {
       // the source copies before the @@iterator() unwrap — single-assignment
       // locals keep the probe reads on the precise kind.
-      const src = genTemp('yv'), it = genTemp('yi'), r = genTemp('yr'), sent = genTemp('ys'), ix = genTemp('yx')
-      locals.add(src); locals.add(it); locals.add(r); locals.add(sent); locals.add(ix)
+      const local = (t) => { const name = genTemp(t); locals.add(name); return name }
+      const src = local('yv'), it = local('yi'), r = local('yr'), sent = local('ys'), ix = local('yx'), kind = local('yk')
+      // an async generator's awaited value
+      const value = agen ? local('yw') : null
       const NULL = [null, null]
+      const settled = (e) => agen ? ['await', e] : e
+      const typeError = (msg) => ['throw', ['new', ['()', 'TypeError', [null, msg]]]]
+      // fresh nodes at each use: a node stands in one place in the tree
+      const notObject = () => ['||', ['==', r, NULL], ['&&', ['!==', ['typeof', r], [null, 'object']], ['!==', ['typeof', r], [null, 'function']]]]
+      // the value of a return() the delegate cannot answer (an async one awaits it)
+      const returns = (v) => agen ? [['=', value, ['await', v]], ['return', value]] : [['return', v]]
+      const call = (name, args) => ['=', r, settled(['()', ['.', it, name], args])]
+      const noThrow = () => typeError("The iterator does not provide a 'throw' method")
+      const has = (key) => ['&&', ['!=', src, NULL], ['!=', ['.', src, key], NULL]]
+      const syncIterator = ['()', probe(src, '@@iterator'), null]
       return ['{}', [';',
         ['=', src, expr],
         ['=', it, src],
-        ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@iterator'], NULL]],
-          ['=', it, ['()', probe(src, '@@iterator'), null]]],
+        agen
+          ? ['if', has('@@asyncIterator'), ['=', it, ['()', ['.', src, '@@asyncIterator'], null]],
+            ['if', has('@@iterator'), ['=', it, ['()', '__ag_from', syncIterator]]]]
+          : ['if', has('@@iterator'), ['=', it, syncIterator]],
         ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
           ['{}', [';',
-            ['=', r, ['()', ['.', it, 'next'], null]],
-            ['while', ['!', ['.', r, 'done']], ['{}', [';',
-              ['=', sent, Object.assign(['yield', ['.', r, 'value']], { delegate: it })],
-              ['=', r, ['()', ['.', it, 'next'], sent]],
+            ['=', kind, [null, 0]],
+            ['=', sent, [null, undefined]],
+            ['while', [null, true], ['{}', [';',
+              ['if', ['===', kind, [null, 0]], call('next', sent),
+                ['if', ['===', kind, [null, 1]], ['{}', [';',
+                  // IteratorClose before the TypeError: return()'s own error stands
+                  ['if', ['==', ['.', it, 'throw'], NULL], ['{}', [';',
+                    ['if', ['!=', ['.', it, 'return'], NULL], ['{}', [';', call('return', null),
+                      ['if', notObject(), typeError('iterator return result is not an object')]]]],
+                    noThrow()]]],
+                  call('throw', sent)]],
+                ['{}', [';',
+                  ['if', ['==', ['.', it, 'return'], NULL], ['{}', [';', ...returns(sent)]]],
+                  call('return', sent)]]]],
+              ['if', notObject(), typeError('iterator result is not an object')],
+              ['if', ['.', r, 'done'], ['{}', [';', ['if', ['===', kind, [null, 2]], ['return', ['.', r, 'value']]], ['break']]]],
+              ['=', kind, [null, 0]],
+              ['=', sent, ['yield', ['.', r, 'value'], kind]],
             ]]],
             ...(target ? [['=', target, ['.', r, 'value']]] : []),
           ]],
           ['{}', [';',
             ['=', ix, [null, 0]],
             ['while', ['<', ix, ['.', it, 'length']], ['{}', [';',
-              ['yield', ['[]', it, ix]],
+              ...(agen ? [['=', value, ['await', ['[]', it, ix]]]] : []),
+              ['=', kind, [null, 0]],
+              ['=', sent, ['yield', agen ? value : ['[]', it, ix], kind]],
+              ['if', ['===', kind, [null, 1]], noThrow()],
+              ['if', ['===', kind, [null, 2]], ['{}', [';', ...returns(sent)]]],
               ['=', ix, ['+', ix, [null, 1]]],
             ]]],
             ...(target ? [['=', target, [null, undefined]]] : []),
@@ -653,42 +698,20 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     const end = flattenList(body, entry, null)
     if (end != null) stmtsOf(end).push([';;set', -1], ['return', record([null, undefined], true)])
 
-    // A delegate's answer to return(v) completes the yield* as a return (no
-    // such method, or a done result), or is yielded from the same suspension.
-    // Its exceptions are thrown at the yield*, under that state's handler.
-    const delegateReturn = (resume, it, fin) => {
-      const result = genTemp('yreturn'), slot = returnSlot()
-      locals.add(result)
-      const handler = curHandler
-      curHandler = stateHandler[resume]
-      const s = newState()
-      curHandler = handler
-      const NULL = [null, null], value = ['.', result, 'value']
-      stmtsOf(s).push(
-        ['if', transform(['==', ['.', it, 'return'], NULL]), [';', ...leaveReturn(fin, slot)]],
-        transform(['=', result, ['()', ['.', it, 'return'], slot]]),
-        transform(['if', ['||', ['==', result, NULL], ['&&', ['!==', ['typeof', result], [null, 'object']], ['!==', ['typeof', result], [null, 'function']]]],
-          ['throw', ['new', ['()', 'TypeError', [null, 'iterator return result is not an object']]]]]),
-        ['if', transform(['.', result, 'done']), [';', ...leaveReturn(fin, transform(value))]],
-        [';;set', resume], ['return', record(transform(value), false)])
-      return s
-    }
     // return(v) at a suspended yield is a return completion there (its value in
-    // `returned`): the enclosing finally blocks run first, and a yield* asks its
-    // delegate's return() before them. Elsewhere it just closes the machine.
-    // Each entry state starts that completion; returnFn dispatches to it.
-    const entries = new Map(), finallyEntries = new Map()
-    const enter = (s, resume) => (entries.get(s) ?? entries.set(s, []).get(s)).push(resume)
-    for (const { resume, delegate } of resumes) {
+    // `returned`): the enclosing finally blocks run first. Elsewhere it just
+    // closes the machine. Each entry state starts that completion; returnFn
+    // dispatches to it. A yield*'s yield takes the completion itself.
+    const entries = new Map()
+    for (const resume of resumes) {
       const fin = stateFinally[resume]
-      if (delegate) { enter(delegateReturn(resume, delegate, fin), resume); continue }
       if (!fin) continue
-      if (!finallyEntries.has(fin)) {
+      if (!entries.has(fin)) {
         const s = newState()
         stmtsOf(s).push(...leaveReturn(fin, returnSlot()))
-        finallyEntries.set(fin, s)
+        entries.set(fin, { s, ids: [] })
       }
-      enter(finallyEntries.get(fin), resume)
+      entries.get(fin).ids.push(resume)
     }
 
     // ---- assemble the dispatch loop ----
@@ -734,18 +757,22 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     ]
 
     const nextFn = ['=>', '__v', ['()', '__next', '__v']]
+    const at = (ids) => ids.map(i => ['===', S.NEXT, [null, i]]).reduce((a, b) => ['||', a, b])
+    // a yield*'s yield resumes with the completion's kind and value
+    const deliver = (k) => delivered.map(({ resume, kind }) => ['if', at([resume]),
+      ['{}', [';', ['=', kind, [null, k]], ['return', ['()', '__next', '__v']]]]])
     const closing = []
-    for (const [s, ids] of entries) closing.push(['if', ids.map(i => ['===', S.NEXT, [null, i]]).reduce((a, b) => ['||', a, b]),
+    for (const { s, ids } of entries.values()) closing.push(['if', at(ids),
       ['{}', [';', ['=', returned, '__v'], ['=', S.NEXT, [null, s]], ['return', ['()', '__next', [null, undefined]]]]]])
-    const returnFn = ['=>', '__v', ['{}', [';', ...closing,
+    const returnFn = ['=>', '__v', ['{}', [';', ...deliver(2), ...closing,
       ['=', S.NEXT, [null, -1]],
       ['return', record('__v', true)]]]]
     // throw(v): with try regions the exception is raised at the resume point
     // (the machine's own catch routes it); without, no handler can exist, so
     // close the machine and rethrow to the caller of throw().
     const throwFn = guarded
-      ? ['=>', '__v', ['{}', [';', ['=', S.THR, '__v'], ['=', S.THRSET, [null, true]], ['return', ['()', '__next', [null, undefined]]]]]]
-      : ['=>', '__v', ['{}', [';', ['=', S.NEXT, [null, -1]], ['throw', '__v']]]]
+      ? ['=>', '__v', ['{}', [';', ...deliver(1), ['=', S.THR, '__v'], ['=', S.THRSET, [null, true]], ['return', ['()', '__next', [null, undefined]]]]]]
+      : ['=>', '__v', ['{}', [';', ...deliver(1), ['=', S.NEXT, [null, -1]], ['throw', '__v']]]]
 
     // Helper-bearing programs mint through __it_mk (decorated iterator —
     // map/filter/… as value-position methods); others keep the bare record.

@@ -3393,15 +3393,23 @@ break of the loop, labeled jump or yield: `leavesLoop`) carries no finally,
 which jz duplicates on every exit. An unknown iterator's return() is read and called in
 place, as its next() is: a shared helper's parameter would join every loop's
 iterator, and a value seen through the protocol arm of an indexed source (an
-array of classes) would lose its identity. A loop over a known generator whose
+array of classes) would lose its identity. It is read again where it is called
+after the read that tests it, where GetMethod reads once: held as a value and
+called with `.call`, it cost webaudio its specializations and 2.3–2.7× its time
+(2026-10-25), so a getter on `return` runs twice. A loop over a known generator whose
 return() runs no code (no finally, `using`, yield* or suspended for-of:
 `closesOnReturn`) needs no close. Fused helper loops, `take`'s limit and
 `for await` in an async function close too.
 The generator machine carries completions through its finally blocks: each try
 with a finally records where its finally continues (a state, or a pending
 exception), so a return, break or continue crosses every finally between it and
-its target, and return() at a suspended yield enters the same route (a yield*
-asks its delegate's return() first).
+its target, and return() at a suspended yield enters the same route.
+A yield* is a loop over its delegate (`desugarYieldStar`) whose yield takes
+the completion that arrives there as data: its `['yield', E, kind]` resume
+sets `kind` (0 next, 1 throw, 2 return) where throw() and return() find it,
+and the loop calls the delegate's next(), throw() or return(), a delegate
+lacking throw() closed before a TypeError, one lacking
+return() leaving by a return statement, so the finally blocks around it run.
 An async generator's body is the same machine in its async mode (the
 `function*` node carries `'async'`): each suspension yields a tagged record to
 the driver, `__ag_run` (src/std/asyncgen.js), `{ a: 1, v }` at an await and
@@ -3411,7 +3419,11 @@ settles (ECMA-262 Yield). The driver runs the requests ECMA-262 queues
 rejection, of an await or of a yielded value, is a throw() into the machine
 where it stands, so its try regions route it; return(v) at a yield awaits v,
 then enters the machine's return route; `return E` awaits E (`awaitReturns`).
-Its `for await` and `yield*` do not close yet.
+Its yield* awaits each delegate result and yields the values as they are
+(`{ a: 2, v }`); a sync delegate goes through `__ag_from`
+(CreateAsyncFromSyncIterator: values awaited, a rejected one closing it).
+Its `for await` closes as an async function's does; a for await awaits a
+value only from a sync source (`sync`), as that adapter would.
 
 An object rest `{a, ...r} = o` is the spread of `o` without the keys the
 pattern names (`expandDestruct`, `src/prepare/handlers.js`): the spread item
