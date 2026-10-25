@@ -51,7 +51,9 @@ if [ ! -f jz-watr.wasm ] || [ "$NEWEST_INPUT" -nt jz-watr.wasm ]; then
   BUILD_DIR="$BUILD_DIR" node "$SRC_DIR/gen-watr-wasm.mjs" > /dev/null
 fi
 if [ ! -f watr.c ] || [ jz-watr.wasm -nt watr.c ] || [ "$SRC_DIR/postprocess-watr.awk" -nt watr.c ]; then
-  "$WABT_DIR/bin/wasm2c" --enable-exceptions -n jzwatr -o watr.c jz-watr.wasm
+  # WABT 1.0.42 enables exception handling by default and dropped the flag.
+  EH=$("$WABT_DIR/bin/wasm2c" --help | grep -q -- --enable-exceptions && echo --enable-exceptions || true)
+  "$WABT_DIR/bin/wasm2c" $EH -n jzwatr -o watr.c jz-watr.wasm
   # Remove wasm2c optimizer barriers, hoist the stable guard-page memory base,
   # and lower scalar/SIMD accesses through that alias. The pass fails closed if
   # WABT's generated-C shape changes.

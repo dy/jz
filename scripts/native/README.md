@@ -65,7 +65,7 @@ reference target for "how fast can a jz-produced wasm get if you really care."
         ▼
   jz-watr.wasm
         │
-   wasm2c --enable-exceptions
+   wasm2c (exceptions on)
         │
         ▼
   watr.c (post-processed: remove barriers + hoist stable memory base)
