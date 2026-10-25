@@ -3,14 +3,24 @@
 // body is a dispatch loop over hoisted locals; `{ next, return }` are ordinary
 // closures over that state (mutable captures). for-of over a KNOWN generator
 // call desugars to while-next (inside AND outside generator bodies). Sync only.
-// v1 rejects (precise messages): yield in arbitrary expressions, a finally
-// that yields, yield inside for-of/for-in bodies.
+// v1 rejects (precise messages): yield in arbitrary expressions, yield inside
+// for-of/for-in bodies over values not known to be generators.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { oracle, batch } from './util.js'
 
 const j = (code) => jz(code).exports.f()
+
+// Every export of `source` answers what Node answers, at each level.
+const agreeAll = (source) => {
+  const expected = oracle(source)
+  for (const optimize of [0, 2, 3, 'size']) {
+    const actual = jz(source, { optimize }).exports
+    for (const name of Object.keys(expected))
+      if (typeof expected[name] === 'function') is(actual[name](), expected[name](), `${name}, level ${optimize}`)
+  }
+}
 
 // Several standalone arrows as one compile, each called once.
 const jMany = (arrows) => batch(arrows).map(f => f())
@@ -139,7 +149,7 @@ test('generators: v1 rejections are precise', () => {
     let e; try { jz.compile(src) } catch (x) { e = x }
     ok(e && e.message.includes(needle), `${needle}: got ${e?.message?.slice(0, 90)}`)
   }
-  rejects(`function* g() { try { yield 1 } finally { yield 2 } } export let f = () => 1`, 'finally')
+  rejects(`function* g(a) { for (const x of a) yield x } export let f = () => 1`, 'for-of')
   rejects(`export let f = () => { let y = yield 1; return y }`, 'yield outside a generator')
 })
 
@@ -411,6 +421,70 @@ test('generators: finally runs once on normal, injected and caught exceptions', 
     is(j(source), expected)
   }
 })
+
+// A completion leaving a try runs its finally blocks, innermost first: a
+// return(), a return statement, a break or continue. return() at a yield* asks
+// the delegate first; a finally can yield or override the pending completion.
+test('generators: return() and every completion leaving a try run its finally blocks', () => agreeAll(`let log = ''
+  function* g() { try { yield 1; yield 2 } finally { log += 'F' } }
+  function* nested() { try { try { yield 1 } finally { log += 'a' } } finally { log += 'b' } }
+  function* yields() { try { yield 1 } finally { yield 2; log += 'f' } }
+  function* own() { try { yield 1 } finally { return 'own' } }
+  function* inner() { try { yield 'a'; yield 'b' } finally { log += 'I' } }
+  function* delegating() { try { yield* inner() } finally { log += 'D' } }
+  function* stubborn() { try { yield 1 } finally { yield 'again' } }
+  function* resumed() { yield* stubborn(); log += 'after' }
+  function* jumps() { for (let i = 0; i < 3; i++) { try { if (i === 1) continue; if (i === 2) break; yield i } finally { log += i } } try { return 'r' } finally { log += 'R' } }
+  const show = (r) => r.value + ':' + r.done + ','
+  export let manual = () => { log = ''; const it = g(); it.next(); return show(it.return(7)) + show(it.next()) + log }
+  export let unstarted = () => { log = ''; const it = g(); return show(it.return(7)) + show(it.next()) + log }
+  export let pattern = () => { log = ''; const [a] = g(); return a + log }
+  export let order = () => { log = ''; const it = nested(); it.next(); return show(it.return(5)) + log }
+  export let yielding = () => { log = ''; const it = yields(); it.next(); return show(it.return(9)) + show(it.next()) + show(it.next()) + log }
+  export let overriding = () => { log = ''; const it = own(); it.next(); return show(it.return(9)) }
+  export let delegated = () => { log = ''; const it = delegating(); it.next(); return show(it.return(4)) + log }
+  export let delegateYields = () => { log = ''; const it = resumed(); it.next(); return show(it.return(3)) + show(it.next()) + log }
+  export let jumping = () => { log = ''; const it = jumps(); return show(it.next()) + show(it.next()) + log }`))
+
+// for-of closes its iterator (IteratorClose) when the body leaves early: a
+// break, return, throw or outward continue calls return(), once. Exhaustion,
+// a continue and an exception from next() close nothing; the body's exception
+// stands over return()'s, which is otherwise the loop's (with its result
+// checked to be an object).
+test('for-of: a body leaving early closes its iterator', () => agreeAll(`let log = ''
+  function* g() { try { yield 1; yield 2; yield 3 } finally { log += 'F' } }
+  function* bad() { try { yield 1 } finally { throw 'R' } }
+  function* boom() { try { yield 1; throw 'N' } finally { log += 'F' } }
+  function* outer() { try { for (const x of g()) yield x } finally { log += 'O' } }
+  function* relay() { for (const x of g()) yield x }
+  const own = (ret) => ({ i: 0, next() { this.i++; return { value: this.i, done: this.i > 3 } }, return: ret, [Symbol.iterator]() { return this } })
+  const closed = () => { log += 'R'; return {} }
+  const trap = (f) => { try { return f() } catch (e) { return e instanceof TypeError ? 'TypeError' : e } }
+  export let broken = () => { log = ''; for (const x of g()) { log += x; break } return log }
+  export let returned = () => { log = ''; const f = () => { for (const x of g()) return x }; return f() + log }
+  export let thrown = () => { log = ''; return trap(() => { for (const x of g()) throw 'E' }) + log }
+  export let jumped = () => { log = ''; outer: for (let i = 0; i < 2; i++) for (const x of g()) { log += x; continue outer } return log }
+  export let completed = () => { log = ''; for (const x of g()) { if (x < 3) continue; log += x } return log }
+  export let assigned = () => { log = ''; let x; for (x of g()) if (x === 2) break; return log + x }
+  export let bodyWins = () => trap(() => { for (const x of bad()) throw 'B' })
+  export let returnErr = () => trap(() => { for (const x of bad()) break })
+  export let nextErr = () => { log = ''; return trap(() => { for (const x of boom()) log += x }) + log }
+  export let suspended = () => { log = ''; for (const x of outer()) { log += x; break } return log }
+  export let relayed = () => { log = ''; for (const x of relay()) { log += x; break } return log }
+  export let protocol = () => { log = ''; for (const x of own(closed)) if (x === 2) break; return log }
+  export let protocolBodyWins = () => trap(() => { for (const x of own(() => { throw 'X' })) throw 'B' })
+  export let notCallable = () => trap(() => { for (const x of own(5)) break })
+  export let notObject = () => trap(() => { for (const x of own(() => 5)) break })`))
+
+test('iterator helpers: fused loops close their generator; take() closes before another pull', () => agreeAll(`let log = ''
+  function* g() { try { log += 1; yield 1; log += 2; yield 2; log += 3; yield 3 } finally { log += 'F' } }
+  export let mapped = () => { log = ''; for (const x of g().map(v => v * 10)) { log += x; break } return log }
+  export let found = () => { log = ''; return g().find(v => v === 2) + log }
+  export let some = () => { log = ''; return g().some(v => v === 1) + log }
+  export let taken = () => { log = ''; for (const x of g().take(1)) log += 'x'; return log }
+  export let filtered = () => { log = ''; return g().filter(v => v > 1).take(1).toArray().join() + log }
+  export let threw = () => { log = ''; try { g().map(v => { throw 'C' }).toArray() } catch (e) { log += e } return log }
+  export let assigned = () => { log = ''; let x; for (x of g().map(v => v * 10)) {} return x + log }`))
 
 // `E[Symbol.iterator]()` is the iterator over E for any E: an indexed value's
 // own (`__it_from` mints it), a provider's `@@iterator` result, a machine

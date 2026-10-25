@@ -17,9 +17,13 @@
  *   - an async body's `await E` (jzify/async.js) suspends as a yield does; the
  *     value it resumes with is `__awaited(a, sent)`, `a` holding E, which the
  *     program summary types as the settled value of E
- * Out (v1): yield inside arbitrary expressions, try across yield,
- * for-of/for-in bodies containing yield (except known-generator for-of, which
- * desugars), labeled break/continue across states.
+ *   - try/catch/finally across yields: a completion leaving a guarded body (a
+ *     throw, return, break or continue, or a return() at a yield) runs the
+ *     finally blocks it crosses, which may yield themselves
+ *   - for-of closes its iterator when its body leaves early (closingLoop)
+ * Out (v1): yield inside arbitrary expressions, for-of/for-in bodies
+ * containing yield (except known-generator for-of, which desugars), labeled
+ * break/continue across states, throw() forwarded through yield*.
  *
  * @module jzify/generators
  */
@@ -84,13 +88,49 @@ const blockStmts = (b) =>
 
 const S = { NEXT: '__s', SENT: '__sent', ERR: '__err', THR: '__thr', THRSET: '__thrset' }
 
+/** A loop over an iterator, closed when its body leaves early (IteratorClose):
+ *  `open` is set while the body runs. A break, return or outward jump runs
+ *  `close`, whose error propagates; an exception runs `abort`, which swallows
+ *  its own, and stands. Leaving through the iterator itself (its next(), done
+ *  or value) closes nothing. A body that cannot leave but by an exception
+ *  (`leavesLoop`) needs no finally. */
+export const closingLoop = (loop, open, close, abort, error, body) => ['try', ['{}', [';', loop]],
+  ['catch', error, ['{}', [';', ['if', open, ['{}', [';', ['=', open, [null, false]], ...abort]]], ['throw', error]]]],
+  ...(leavesLoop(body) ? [['finally', ['{}', [';', ['if', open, ['{}', [';', ...close]]]]]]] : [])]
+
+/** Whether statements of a loop's body can leave it other than by finishing
+ *  or throwing: a return, a break of it, a labeled jump, or a yield (where a
+ *  return() can arrive). A nested loop or switch binds its own break. */
+const leavesLoop = (n, depth = 0) => {
+  if (!Array.isArray(n)) return false
+  const op = n[0]
+  if (FN_BOUNDARY_OPS.has(op)) return false
+  if (op === 'return' || op === 'yield' || op === 'yield*') return true
+  if (op === 'break') return n[1] != null || depth === 0
+  if (op === 'continue') return n[1] != null
+  const inner = op === 'while' || op === 'do' || op === 'for' || op === 'switch' ? depth + 1 : depth
+  for (let i = 1; i < n.length; i++) if (leavesLoop(n[i], inner)) return true
+  return false
+}
+
+/** Whether a generator body's return() does more than end the machine: a
+ *  finally or a `using` to run, a yield* delegate or a for-of suspended in its
+ *  body to close. A loop over a generator that does none has nothing to close. */
+export const closesOnReturn = (body) => some(body, n => n[0] === 'finally' || n[0] === 'yield*' || n[0] === 'using' ||
+  n[0] === 'for' && Array.isArray(n[1]) && n[1][0] === 'of' && hasYield(n[2]), { boundary: fnBoundary })
+
+/** A for-of head's binding of one value: a declaration, or an assignment to its target. */
+export const bindTo = (decl, value) => Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const' || decl[0] === 'var')
+  ? [decl[0], ['=', decl[1], value]] : ['=', decl, value]
+const bodyStmts = (body) => Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+
 // ES2025 iterator helpers on iterator VALUES ride `jz:iter-helpers` (src/std),
 // imported when a program that mints iterators also uses helper methods in
 // non-fusable positions (chain stored as a value, helper on an unknown
 // receiver) or tests `instanceof Iterator`; generator objects then mint
 // through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
-export function createGeneratorLowering({ transform, transformParams, err, generatorNames, genTemp, iterProto, lowerArguments }) {
+export function createGeneratorLowering({ transform, transformParams, err, generatorNames, generatorCloses, genTemp, iterProto, lowerArguments }) {
   // A destructuring declaration in the body binds through a temp: the machine
   // hoists plain names only, so `let { a, b: c, d = 1 } = e` becomes the
   // declarators `t = e, a = t.a, c = t.b, d = t.d ?? 1` (arrays by index, a
@@ -295,10 +335,53 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     // dispatch loop routes an exception raised in a state to that handler
     const stateHandler = []
     let curHandler = -1
-    const newState = () => (states.push([]), stateHandler.push(curHandler), states.length - 1)
+    // A try with a finally guards its body and catch: a completion leaving them
+    // (normal, a throw, a return, a break or continue) runs the finally first.
+    // `next` holds where the finally continues: a state, or THROWN with the
+    // exception in `error`. Every state records the innermost such try whose
+    // guarded part it belongs to (null: none), so a return() injected at a yield
+    // finds the finally blocks it must run.
+    const stateFinally = []
+    let curFinally = null
+    const newState = () => (states.push([]), stateHandler.push(curHandler), stateFinally.push(curFinally), states.length - 1)
     const stmtsOf = (id) => states[id]
-    const setState = (id) => [';;set', id]           // internal marker, resolved below
     const gotoIR = (id) => [[';;set', id], [';;continue']]
+    const record = (value, done) => ['{}', [',', [':', 'value', value], [':', 'done', [null, done]]]]
+    const THROWN = -2
+    // The finally blocks a jump from `fin` to a point outside `until` crosses, innermost first.
+    const crossing = (fin, until = null) => {
+      const out = []
+      for (let f = fin; f !== until; f = f.outer) out.push(f)
+      return out
+    }
+    // Leave for state `target` through the finally blocks `fins`: each, once
+    // complete, continues at the next, the outermost at `target`.
+    const leave = (fins, target) => {
+      let dest = target
+      for (let i = fins.length - 1; i > 0; i--) {
+        const via = newState()
+        stmtsOf(via).push(['=', fins[i].next, [null, dest]], ...gotoIR(fins[i].finS))
+        dest = via
+      }
+      return fins.length ? [['=', fins[0].next, [null, dest]], ...gotoIR(fins[0].finS)] : gotoIR(dest)
+    }
+    // A return completion: its value waits in `returned` while finally blocks run.
+    let returned = null, completeS = -1
+    const returnSlot = () => {
+      if (returned == null) { returned = genTemp('returned'); locals.add(returned) }
+      return returned
+    }
+    const leaveReturn = (fin, value) => {
+      if (!fin) return [[';;set', -1], ['return', record(value, true)]]
+      const slot = returnSlot()
+      if (completeS < 0) {
+        completeS = newState()
+        stmtsOf(completeS).push([';;set', -1], ['return', record(slot, true)])
+      }
+      return [...(value === slot ? [] : [['=', slot, value]]), ...leave(crossing(fin), completeS)]
+    }
+    // Suspension points: what a return() received there has to do.
+    const resumes = []
 
     // `yield E` at a resume boundary: park the resume id, emit the {value,done:false}
     // return. The resume state optionally starts by binding `target = __sent`.
@@ -312,10 +395,10 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         stmtsOf(cur).push(['=', a, value])
         value = a; sent = ['()', '__awaited', [',', a, S.SENT]]
       }
-      stmtsOf(cur).push(
-        [';;set', resume],
-        ['return', ['{}', [',', [':', 'value', value], [':', 'done', [null, false]]]]])
+      stmtsOf(cur).push([';;set', resume], ['return', record(value, false)])
       if (target) stmtsOf(resume).push(['=', target, sent])
+      // an async body's machine is driven to completion, never closed
+      if (yexpr[0] !== 'await') resumes.push({ resume, delegate: yexpr.delegate })
       return resume
     }
 
@@ -325,6 +408,8 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     // E may be any iterable: an ['@@iterator']() provider unwraps first; a
     // plain indexed iterable (array/string) yields element-wise (fork mirrors
     // desugarForOfProtocol; both arms decompose like any generator-body loop).
+    // The protocol arm's yield names its delegate: a return() there is the
+    // delegate's to answer first (delegateReturn).
     const desugarYieldStar = (expr, target) => {
       // the source copies before the @@iterator() unwrap — single-assignment
       // locals keep the probe reads on the precise kind.
@@ -340,7 +425,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
           ['{}', [';',
             ['=', r, ['()', ['.', it, 'next'], null]],
             ['while', ['!', ['.', r, 'done']], ['{}', [';',
-              ['=', sent, ['yield', ['.', r, 'value']]],
+              ['=', sent, Object.assign(['yield', ['.', r, 'value']], { delegate: it })],
               ['=', r, ['()', ['.', it, 'next'], sent]],
             ]]],
             ...(target ? [['=', target, ['.', r, 'value']]] : []),
@@ -404,20 +489,20 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       // --- return ---
       if (op === 'return') {
         let v = st[1] === undefined ? [null, undefined] : transform(st[1])
-        if (curHandler >= 0 && st[1] !== undefined) {
+        if (curHandler >= 0 && !curFinally && st[1] !== undefined) {
           // Evaluate while this state's exception handler is still active.
           const value = genTemp('return'); locals.add(value)
           stmtsOf(cur).push(['=', value, v]); v = value
         }
-        stmtsOf(cur).push(
-          [';;set', -1],
-          ['return', ['{}', [',', [':', 'value', v], [':', 'done', [null, true]]]]])
+        stmtsOf(cur).push(...leaveReturn(curFinally, v))
         return null
       }
 
-      // --- break/continue of a DECOMPOSED loop ---
-      if (op === 'break' && st[1] == null && loopCtx) { stmtsOf(cur).push(...gotoIR(loopCtx.brk)); return null }
-      if (op === 'continue' && st[1] == null && loopCtx) { stmtsOf(cur).push(...gotoIR(loopCtx.cont)); return null }
+      // --- break/continue of a DECOMPOSED loop, through the finally blocks between ---
+      if ((op === 'break' || op === 'continue') && st[1] == null && loopCtx) {
+        stmtsOf(cur).push(...leave(crossing(curFinally, loopCtx.fin), op === 'break' ? loopCtx.brk : loopCtx.cont))
+        return null
+      }
 
       // --- function declarations: top-level ones were hoisted to consts by
       // lowerGenerator's pre-pass; one reaching HERE sits inside a DECOMPOSED
@@ -470,7 +555,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         const test = newState(), bodyS = newState(), exit = newState()
         stmtsOf(cur).push(...gotoIR(test))
         stmtsOf(test).push(['if', transform(cond), [';', ...gotoIR(bodyS)], [';', ...gotoIR(exit)]], [';;continue'])
-        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: test, brk: exit })
+        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: test, brk: exit, fin: curFinally })
         if (bEnd != null) stmtsOf(bEnd).push(...gotoIR(test))
         return exit
       }
@@ -478,7 +563,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         const [, bodyB, cond] = st
         const bodyS = newState(), test = newState(), exit = newState()
         stmtsOf(cur).push(...gotoIR(bodyS))
-        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: test, brk: exit })
+        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: test, brk: exit, fin: curFinally })
         if (bEnd != null) stmtsOf(bEnd).push(...gotoIR(test))
         stmtsOf(test).push(['if', transform(cond), [';', ...gotoIR(bodyS)], [';', ...gotoIR(exit)]], [';;continue'])
         return exit
@@ -500,7 +585,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         const test = newState(), bodyS = newState(), stepS = newState(), exit = newState()
         stmtsOf(cur).push(...gotoIR(test))
         stmtsOf(test).push(['if', cond == null ? [null, true] : transform(cond), [';', ...gotoIR(bodyS)], [';', ...gotoIR(exit)]], [';;continue'])
-        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: stepS, brk: exit })
+        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: stepS, brk: exit, fin: curFinally })
         if (bEnd != null) stmtsOf(bEnd).push(...gotoIR(stepS))
         if (step != null) stmtsOf(stepS).push(transform(step))
         stmtsOf(stepS).push(...gotoIR(test))
@@ -509,29 +594,27 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       if (op === 'try') {
         // try/catch across a yield (an await): the try body's states carry the
         // catch state as their handler; the catch binds the machine's `__err`.
-        // A `finally` that yields, or a return/break/continue leaving a try
-        // that has a finally (the finally would be skipped), stays out of v1.
+        // A finally runs for every completion leaving the body or the catch:
+        // each records in `next` where the finally continues (curFinally).
         const catchC = st.find((c, i) => i > 1 && Array.isArray(c) && c[0] === 'catch')
         const finallyC = st.find((c, i) => i > 1 && Array.isArray(c) && c[0] === 'finally')
-        if (finallyC && (hasYield(finallyC[1]) || hasReturn(st[1]) || (catchC && hasReturn(catchC[2])) || hasFreeJump(st[1]) || (catchC && hasFreeJump(catchC[2]))))
-          err('generators v1: a `finally` that yields, or a return/break/continue leaving a try with a finally, is not supported yet across a yield')
-        const outer = curHandler
+        const outer = curHandler, outerFinally = curFinally
         const after = newState()
-        const finS = finallyC ? newState() : after
-        const errorS = finallyC ? newState() : outer
-        let pending, error
-        if (finallyC) {
-          pending = genTemp('pending'); error = genTemp('error')
-          locals.add(pending); locals.add(error)
-          stmtsOf(errorS).push(['=', pending, [null, true]], ['=', error, S.ERR], ...gotoIR(finS))
+        const fin = finallyC ? { finS: newState(), next: genTemp('next'), error: genTemp('error'), outer: outerFinally } : null
+        const finS = fin ? fin.finS : after
+        const errorS = fin ? newState() : outer
+        if (fin) {
+          locals.add(fin.next); locals.add(fin.error)
+          stmtsOf(errorS).push(['=', fin.next, [null, THROWN]], ['=', fin.error, S.ERR], ...gotoIR(finS))
         }
         const finish = end => {
           if (end == null) return
-          if (finallyC) stmtsOf(end).push(['=', pending, [null, false]])
+          if (fin) stmtsOf(end).push(['=', fin.next, [null, after]])
           stmtsOf(end).push(...gotoIR(finS))
         }
         // Exceptions from the catch must also run the finalizer. Its own
         // states belong to the outer region, so it cannot catch itself.
+        if (fin) curFinally = fin
         curHandler = errorS
         const catchS = catchC ? newState() : errorS
         curHandler = catchS
@@ -544,11 +627,13 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
           finish(flattenList(blockStmts(catchC[2]), catchS, loopCtx))
         }
         curHandler = outer
-        if (finallyC) {
-          // One finalizer for both paths. A return/throw here overrides the
-          // pending exception; falling through resumes it.
+        curFinally = outerFinally
+        if (fin) {
+          // One finalizer for every completion. Its own return, throw or jump
+          // overrides the pending one; falling through resumes it.
           const end = flattenList(blockStmts(finallyC[1]), finS, loopCtx)
-          if (end != null) stmtsOf(end).push(['if', pending, ['throw', error]], ...gotoIR(after))
+          if (end != null) stmtsOf(end).push(['if', ['===', fin.next, [null, THROWN]], ['throw', fin.error]],
+            ['=', S.NEXT, fin.next], [';;continue'])
         }
         return after
       }
@@ -560,9 +645,45 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
 
     const entry = newState()
     const end = flattenList(body, entry, null)
-    if (end != null) stmtsOf(end).push(
-      [';;set', -1],
-      ['return', ['{}', [',', [':', 'value', [null, undefined]], [':', 'done', [null, true]]]]])
+    if (end != null) stmtsOf(end).push([';;set', -1], ['return', record([null, undefined], true)])
+
+    // A delegate's answer to return(v) completes the yield* as a return (no
+    // such method, or a done result), or is yielded from the same suspension.
+    // Its exceptions are thrown at the yield*, under that state's handler.
+    const delegateReturn = (resume, it, fin) => {
+      const result = genTemp('yreturn'), slot = returnSlot()
+      locals.add(result)
+      const handler = curHandler
+      curHandler = stateHandler[resume]
+      const s = newState()
+      curHandler = handler
+      const NULL = [null, null], value = ['.', result, 'value']
+      stmtsOf(s).push(
+        ['if', transform(['==', ['.', it, 'return'], NULL]), [';', ...leaveReturn(fin, slot)]],
+        transform(['=', result, ['()', ['.', it, 'return'], slot]]),
+        transform(['if', ['||', ['==', result, NULL], ['&&', ['!==', ['typeof', result], [null, 'object']], ['!==', ['typeof', result], [null, 'function']]]],
+          ['throw', ['new', ['()', 'TypeError', [null, 'iterator return result is not an object']]]]]),
+        ['if', transform(['.', result, 'done']), [';', ...leaveReturn(fin, transform(value))]],
+        [';;set', resume], ['return', record(transform(value), false)])
+      return s
+    }
+    // return(v) at a suspended yield is a return completion there (its value in
+    // `returned`): the enclosing finally blocks run first, and a yield* asks its
+    // delegate's return() before them. Elsewhere it just closes the machine.
+    // Each entry state starts that completion; returnFn dispatches to it.
+    const entries = new Map(), finallyEntries = new Map()
+    const enter = (s, resume) => (entries.get(s) ?? entries.set(s, []).get(s)).push(resume)
+    for (const { resume, delegate } of resumes) {
+      const fin = stateFinally[resume]
+      if (delegate) { enter(delegateReturn(resume, delegate, fin), resume); continue }
+      if (!fin) continue
+      if (!finallyEntries.has(fin)) {
+        const s = newState()
+        stmtsOf(s).push(...leaveReturn(fin, returnSlot()))
+        finallyEntries.set(fin, s)
+      }
+      enter(finallyEntries.get(fin), resume)
+    }
 
     // ---- assemble the dispatch loop ----
     // Internal markers resolve here: [';;set', k] → __s = k; [';;continue'] → continue.
@@ -573,7 +694,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       return withLoc(n.map(resolve), n)
     }
     // if-chain over states (highest → the shape jz compiles tightly)
-    let dispatch = ['return', ['{}', [',', [':', 'value', [null, undefined]], [':', 'done', [null, true]]]]]
+    let dispatch = ['return', record([null, undefined], true)]
     for (let i = states.length - 1; i >= 0; i--)
       dispatch = ['if', ['===', S.NEXT, [null, i]], ['{}', [';', ...states[i].map(resolve), ['continue']]], ['{}', [';', dispatch]]]
 
@@ -607,9 +728,12 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     ]
 
     const nextFn = ['=>', '__v', ['()', '__next', '__v']]
-    const returnFn = ['=>', '__v', ['{}', [';',
+    const closing = []
+    for (const [s, ids] of entries) closing.push(['if', ids.map(i => ['===', S.NEXT, [null, i]]).reduce((a, b) => ['||', a, b]),
+      ['{}', [';', ['=', returned, '__v'], ['=', S.NEXT, [null, s]], ['return', ['()', '__next', [null, undefined]]]]]])
+    const returnFn = ['=>', '__v', ['{}', [';', ...closing,
       ['=', S.NEXT, [null, -1]],
-      ['return', ['{}', [',', [':', 'value', '__v'], [':', 'done', [null, true]]]]]]]]
+      ['return', record('__v', true)]]]]
     // throw(v): with try regions the exception is raised at the resume point
     // (the machine's own catch routes it); without, no handler can exist, so
     // close the machine and rethrow to the caller of throw().
@@ -682,12 +806,11 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
           ['if', hv, ['{}', [';', ...inner()]]]]
         build.decls = [[c, [null, 0]], [hv, [null, undefined]]].concat(inner.decls || [])
       } else if (h === 'take') {
+        // the limit is checked before the next pull, and reaching it closes the source
         const n = args[0], c = temp('tk')
-        build = () => [
-          ['if', ['>=', c, n], ['{}', [';', ['break']]]],
-          ['=', c, ['+', c, [null, 1]]],
-          ...inner()]
+        build = () => [['=', c, ['+', c, [null, 1]]], ...inner()]
         build.decls = [[c, [null, 0]]].concat(inner.decls || [])
+        build.limits = [[c, n]].concat(inner.limits || [])
       } else if (h === 'drop') {
         const n = args[0], c = temp('dp')
         build = () => [
@@ -696,28 +819,25 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         build.decls = [[c, [null, 0]]].concat(inner.decls || [])
       }
       if (!build.decls && inner.decls) build.decls = inner.decls
+      if (!build.limits && inner.limits) build.limits = inner.limits
     }
     return build
   }
 
-  // Fused loop skeleton: declares it/r (+stage counters), loops next().
+  // Fused loop skeleton: declares it/r (+stage counters), loops next(). A
+  // stage callback, the body or a terminal leaving early closes the generator.
   function fusedLoop(root, stages, temp, x, emitStmts, prologue = [], epilogue = []) {
-    const it = temp('gi'), r = temp('gr')
+    const it = temp('gi'), r = temp('gr'), closes = closesGenerator(root)
     const build = stageBody(stages, x, temp, emitStmts)
-    // Pull at the TOP of the body: stage/user `continue` must advance to the
-    // NEXT item — a tail-position pull would be skipped and re-process the
-    // same value forever (the drop()-stage / user-continue hazard).
+    // a take() at its limit stops before another pull, closing the source
+    const limits = (build.limits || []).map(([c, n]) =>
+      ['if', ['>=', c, n], ['{}', [';', ...(closes ? closeGenerator(it) : []), ['break']]]])
     return ['{}', [';',
       ['const', ['=', it, root]],
       ['let', ['=', x, [null, undefined]], ['=', r, [null, undefined]],
         ...(build.decls || []).map(([n, init]) => ['=', n, init])],
       ...prologue,
-      ['while', [null, true], ['{}', [';',
-        ['=', r, ['()', ['.', it, 'next'], null]],
-        ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
-        ['=', x, ['.', r, 'value']],
-        ...build(),
-      ]]],
+      ...pullLoop(it, r, limits, [['=', x, ['.', r, 'value']], ...build()], closes, temp),
       ...epilogue,
     ]]
   }
@@ -777,22 +897,34 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     return T === 'some' || T === 'every' ? ['!', ['!', iife]] : iife
   }
 
+  // A generator object's own return(): closing it runs its pending finally
+  // blocks. A call of a known generator whose return() has none needs none.
+  const closeGenerator = (it) => [['()', ['.', it, 'return'], null]]
+  const abortGenerator = (it, temp) => [['try', ['{}', [';', ...closeGenerator(it)]], ['catch', temp('gq'), ['{}', null]]]]
+  const closesGenerator = (call) => !(Array.isArray(call) && call[0] === '()' && typeof call[1] === 'string' &&
+    generatorNames?.has(call[1]) && !generatorCloses?.has(call[1]))
+
+  // `while (true)` pulling the generator `it` into `r` at the TOP, then `body`:
+  // a stage or user `continue` must advance to the NEXT item, where a tail pull
+  // would be skipped and re-process the same value forever (the drop()-stage /
+  // user-continue hazard). `before` runs ahead of each pull.
+  const pullLoop = (it, r, before, body, closes, temp) => {
+    const pull = [['=', r, ['()', ['.', it, 'next'], null]], ['if', ['.', r, 'done'], ['{}', [';', ['break']]]]]
+    if (!closes) return [['while', [null, true], ['{}', [';', ...before, ...pull, ...body]]]]
+    const open = temp('go')
+    return [['let', ['=', open, [null, false]]], closingLoop(['while', [null, true], ['{}', [';',
+      ['=', open, [null, false]], ...before, ...pull, ['=', open, [null, true]], ...body]]],
+      open, closeGenerator(it), abortGenerator(it, temp), temp('ge'), [';', ...body])]
+  }
+
   // for-of over a KNOWN generator call → while-next desugar (fusion-friendly:
   // the optimizer sees plain closure calls + a fixed-shape result object).
   function desugarForOfGenerator(decl, iterExpr, body, temp) {
     const it = temp('gi'), r = temp('gr')
-    const name = Array.isArray(decl) ? decl[1] : decl
-    // Pull at the TOP: a user `continue` in the body must advance the iterator
-    // (a tail pull would be skipped — infinite loop on the same item).
     return ['{}', [';',
       ['const', ['=', it, iterExpr]],
       ['let', ['=', r, [null, undefined]]],
-      ['while', [null, true], ['{}', [';',
-        ['=', r, ['()', ['.', it, 'next'], null]],
-        ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
-        ['let', ['=', name, ['.', r, 'value']]],
-        ...(Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]),
-      ]]],
+      ...pullLoop(it, r, [], [bindTo(decl, ['.', r, 'value']), ...bodyStmts(body)], closesGenerator(iterExpr), temp),
     ]]
   }
 
@@ -807,11 +939,18 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     // `w` starts as a COPY of the source and takes the @@iterator() result —
     // the source local stays single-assignment so its precise kind keeps
     // serving the probe reads above the fork.
-    const v = temp('gv'), w = temp('gw'), r = temp('gr')
+    const v = temp('gv'), w = temp('gw'), r = temp('gr'), open = temp('go'), value = temp('gn'), result = temp('gq')
     const NULL = [null, null]
-    const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
-    const bind = isDecl ? [decl[0], ['=', decl[1], ['.', r, 'value']]] : ['=', decl, ['.', r, 'value']]
-    const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+    // IteratorClose in place, as next() is called: `w` keeps this loop's
+    // kinds (a helper's parameter would join every loop's iterators). A
+    // non-callable return() throws its TypeError by the call.
+    const close = [['if', ['!=', ['.', w, 'return'], NULL], ['{}', [';',
+      ['=', result, ['()', ['.', w, 'return'], null]],
+      ['if', ['||', ['==', result, NULL], ['&&', ['!==', ['typeof', result], [null, 'object']], ['!==', ['typeof', result], [null, 'function']]]],
+        ['throw', ['new', ['()', 'TypeError', [null, 'iterator return result is not an object']]]]]]]]]
+    const abort = [['try', ['{}', [';', ['if', ['!=', ['.', w, 'return'], NULL], ['()', ['.', w, 'return'], null]]]],
+      ['catch', temp('ge'), ['{}', null]]]]
+    // A value read throws before the binding, which closes on its own errors.
     return ['{}', [';',
       ['let', ['=', v, iterExpr]],
       ['let', ['=', w, v]],
@@ -819,17 +958,20 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         ['=', w, ['()', probe(v, '@@iterator'), null]]],
       ['if', ['&&', ['!=', w, NULL], ['!=', ['.', w, 'next'], NULL]],
         ['{}', [';',
-          ['let', ['=', r, [null, undefined]]],
-          ['while', [null, true], ['{}', [';',
+          ['let', ['=', r, [null, undefined]], ['=', open, [null, false]], ['=', value, [null, undefined]], ['=', result, [null, undefined]]],
+          closingLoop(['while', [null, true], ['{}', [';',
+            ['=', open, [null, false]],
             ['=', r, ['()', ['.', w, 'next'], null]],
             ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
-            bind,
-            ...bodyStmts,
-          ]]],
+            ['=', value, ['.', r, 'value']],
+            ['=', open, [null, true]],
+            bindTo(decl, value),
+            ...bodyStmts(body),
+          ]]], open, close, abort, temp('ge'), body),
         ]],
         ['for', ['of-idx', decl, w], body]],
     ]]
   }
 
-  return { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal: (h) => TERMINAL_HELPERS.has(h) }
+  return { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal: (h) => TERMINAL_HELPERS.has(h) }
 }

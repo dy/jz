@@ -3364,6 +3364,25 @@ after entry errors before another step. Native inputs keep their copy path unles
 an own iterator overrides it. Generator records expose their self-returning iterator
 method; a plain next-only object is not an iterable. Iterator/result objects may
 also be callable, as required by the ordinary object protocol.
+A for-of closes its iterator when the body leaves early (`closingLoop`,
+jzify/generators.js): a flag marks the body running, a finally calls return()
+for a break, return or outward jump and lets its error through, a catch calls it
+for an exception and keeps that exception. The iterator's own next(), done and
+value close nothing; a body that can leave only by an exception (no return,
+break of the loop, labeled jump or yield: `leavesLoop`) carries no finally,
+which jz duplicates on every exit. An unknown iterator's return() is read and called in
+place, as its next() is: a shared helper's parameter would join every loop's
+iterator, and a value seen through the protocol arm of an indexed source (an
+array of classes) would lose its identity. A loop over a known generator whose
+return() runs no code (no finally, `using`, yield* or suspended for-of:
+`closesOnReturn`) needs no close. Fused helper loops, `take`'s limit and
+`for await` in an async function close too.
+The generator machine carries completions through its finally blocks: each try
+with a finally records where its finally continues (a state, or a pending
+exception), so a return, break or continue crosses every finally between it and
+its target, and return() at a suspended yield enters the same route (a yield*
+asks its delegate's return() first). An async generator's machine still has no
+try across a suspension, so its `for await` and `yield*` do not close.
 
 An object rest `{a, ...r} = o` is the spread of `o` without the keys the
 pattern names (`expandDestruct`, `src/prepare/handlers.js`): the spread item

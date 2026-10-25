@@ -6,9 +6,10 @@
  * (__async_run) steps it, parking on awaited promises; the runtime is
  * imported implicitly by every module that awaits, one copy per program.
  *
- * v1 surface (precise rejects elsewhere): try/catch across an await routes
- * the rejection to the catch (the machine's try regions, generators.js); a
- * `finally` that awaits stays out;
+ * v1 surface (precise rejects elsewhere): try/catch/finally across an await
+ * routes the rejection to the catch and every completion through the finally
+ * (the machine's try regions, generators.js), which may await itself; an async
+ * generator still rejects a try across a suspension;
  * `new Promise(executor)`, `Promise.resolve/reject/all/race/allSettled/any/
  * try/withResolvers`, `.then/.catch/.finally` chains all work (canonicalized
  * to the injected helpers). AggregateError surfaces as a fixed-shape
@@ -22,7 +23,7 @@
  * @module jzify/async
  */
 
-import { FN_BOUNDARY_OPS, probe } from './generators.js'
+import { FN_BOUNDARY_OPS, probe, closingLoop } from './generators.js'
 import { usesArguments } from './arguments.js'
 import { some, ASSIGN_OPS, extractParams, withLoc } from '../src/ast.js'
 
@@ -40,9 +41,12 @@ export function createAsyncLowering({ genTemp, err }) {
   // each element (sync-source values may be promises; awaiting an async
   // iterator's already-resolved value is a harmless pass-through). Non-protocol
   // sources fall to an indexed loop with per-element await. The result is
-  // machine-lowerable by the same v1 yield surface as any while loop.
+  // machine-lowerable by the same v1 yield surface as any while loop. In an
+  // async function a body leaving early awaits the iterator's return()
+  // (AsyncIteratorClose); an async generator's machine has no try across a
+  // suspension, so its loops do not close.
   const NULL = [null, null]
-  function desugarForAwait(head, body) {
+  function desugarForAwait(head, body, closes = true) {
     const [, decl, srcExpr] = head
     const src = genTemp('fa'), it = genTemp('fi'), r = genTemp('fr'), ix = genTemp('fx')
     const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
@@ -51,6 +55,35 @@ export function createAsyncLowering({ genTemp, err }) {
     // otherwise re-declare it — the machine hoists locals and rejects dupes)
     const bind = (valExpr) => ['=', name, ['await', valExpr]]
     const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+    // Pull at the top: a `continue` in the body must advance the iterator.
+    let protocol = ['while', [null, true], ['{}', [';',
+      ['=', r, ['await', ['()', ['.', it, 'next'], null]]],
+      ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
+      bind(['.', r, 'value']),
+      ...bodyStmts,
+    ]]]
+    if (closes) {
+      const open = genTemp('fo'), value = genTemp('fv'), result = genTemp('fq'), close = ['.', it, 'return']
+      const notObject = ['||', ['==', result, NULL], ['&&', ['!==', ['typeof', result], [null, 'object']], ['!==', ['typeof', result], [null, 'function']]]]
+      protocol = ['{}', [';',
+        ['let', ['=', open, [null, false]], ['=', value, [null, undefined]], ['=', result, [null, undefined]]],
+        closingLoop(['while', [null, true], ['{}', [';',
+          ['=', open, [null, false]],
+          ['=', r, ['await', ['()', ['.', it, 'next'], null]]],
+          ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
+          ['=', value, ['.', r, 'value']],
+          ['=', open, [null, true]],
+          bind(value),
+          ...bodyStmts,
+        ]]], open, [
+          ['if', ['!=', close, NULL], ['{}', [';',
+            ['=', result, ['await', ['()', close.slice(), null]]],
+            ['if', notObject, ['throw', ['new', ['()', 'TypeError', [null, 'iterator return result is not an object']]]]]]]],
+        ], [
+          ['try', ['{}', [';', ['if', ['!=', close.slice(), NULL], ['{}', [';', ['await', ['()', close.slice(), null]]]]]]],
+            ['catch', genTemp('fe'), ['{}', null]]],
+        ], genTemp('ff'), body)]]
+    }
     return ['{}', [';',
       ...(isDecl ? [['let', ['=', name, [null, undefined]]]] : []),
       ['let', ['=', src, srcExpr]],
@@ -61,12 +94,8 @@ export function createAsyncLowering({ genTemp, err }) {
           ['=', it, ['()', probe(src, '@@iterator'), null]]]],
       ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
         ['{}', [';',
-          ['let', ['=', r, ['await', ['()', ['.', it, 'next'], null]]]],
-          ['while', ['!', ['.', r, 'done']], ['{}', [';',
-            bind(['.', r, 'value']),
-            ...bodyStmts,
-            ['=', r, ['await', ['()', ['.', it, 'next'], null]]],
-          ]]],
+          ['let', ['=', r, [null, undefined]]],
+          protocol,
         ]],
         ['{}', [';',
           ['let', ['=', ix, [null, 0]]],
@@ -231,7 +260,7 @@ export function createAsyncLowering({ genTemp, err }) {
     if (!Array.isArray(node)) return node
     if (FN_OPS.has(node[0])) return node
     if (node[0] === 'for await' && Array.isArray(node[1]) && node[1][0] === 'of')
-      return mapAgen(desugarForAwait(node[1], node[2]))
+      return mapAgen(desugarForAwait(node[1], node[2], false))
     if (node[0] === 'yield*') return mapAgen(desugarYieldStarAsync(node[1], null))
     if (node[0] === 'await') return withLoc(tag(1, mapAgen(node[1])), node)
     if (node[0] === 'yield') return withLoc(node[1] === undefined ? tag(0, [null, undefined]) : tag(0, mapAgen(node[1])), node)

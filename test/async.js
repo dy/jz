@@ -11,7 +11,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { batch } from './util.js'
+import { batch, oracle } from './util.js'
 import { onWasi, onKernel } from './_matrix.js'
 
 const val = async (src, ...args) => {
@@ -202,10 +202,32 @@ test('async: destructuring declarations across an await', async () => {
   is(await val(src, 3), 97563)
 })
 
-test('async: a finally that awaits is a precise reject', () => {
-  let e
-  try { jz.compile(`async function g() { try { await 1 } finally { await 2 } } export let f = () => 1`) } catch (x) { e = x }
-  ok(e && e.message.includes('finally'), `precise reject: ${e?.message?.slice(0, 80)}`)
+// Each export answers, once settled, what Node's does.
+const agreeAsync = async (source) => {
+  const expected = oracle(source), actual = jz(source).exports
+  for (const name of Object.keys(expected)) is(await actual[name](), await expected[name](), name)
+}
+
+test('async: a finally that awaits runs for every completion', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    async function g(x) { try { await 1; if (x) throw 'E'; log += 't'; return 'r' } catch (e) { log += e } finally { await 2; log += 'f' } return 'n' }
+    export async function passes() { log = ''; return await g(0) + log }
+    export async function throws() { log = ''; return await g(1) + log }`)
+})
+
+// for await closes its iterator, awaiting return(), when the body leaves
+// early, and a continue advances it.
+test('async: for await closes its iterator on an early exit', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    function* g() { try { yield 1; yield 2; yield 3 } finally { log += 'F' } }
+    const own = (ret) => ({ i: 0, next() { this.i++; return Promise.resolve({ value: this.i, done: this.i > 3 }) }, return: ret, [Symbol.asyncIterator]() { return this } })
+    export async function broken() { log = ''; for await (const x of g()) { log += x; break } return log }
+    export async function thrown() { log = ''; try { for await (const x of g()) throw 'E' } catch (e) { log += e } return log }
+    export async function skipped() { log = ''; for await (const x of g()) { if (x < 3) continue; log += x } return log }
+    export async function closed() { log = ''; for await (const x of own(() => { log += 'R'; return Promise.resolve({}) })) if (x === 2) break; return log }
+    export async function notObject() { try { for await (const x of own(() => 5)) break } catch (e) { return e instanceof TypeError } }`)
 })
 
 // Async HOST IMPORTS — a host function returning a thenable becomes a jz

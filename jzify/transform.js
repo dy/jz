@@ -651,11 +651,10 @@ export function createTransform(opts) {
       if (_gen && Array.isArray(head) && head[0] === 'of' && Array.isArray(head[2])) {
         const chain = _gen.unwindChain(head[2])
         if (chain && chain.stages.length && chain.stages.every(st => !_gen.isTerminal(st.h))) {
-          const name = Array.isArray(head[1]) ? head[1][1] : head[1]
           const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
           const x = names.genTemp('gx')
           const fused = _gen.fusedLoop(chain.root, chain.stages, names.genTemp, x,
-            () => [['let', ['=', name, x]], ...bodyStmts])
+            () => [_gen.bindTo(head[1], x), ...bodyStmts])
           return transform(fused)
         }
       }

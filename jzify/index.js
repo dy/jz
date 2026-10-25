@@ -19,7 +19,7 @@ import { hoistVars, prependDecls } from './hoist-vars.js'
 import { settleVars } from './settle-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
-import { createGeneratorLowering } from './generators.js'
+import { createGeneratorLowering, closesOnReturn } from './generators.js'
 import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS } from '../src/ast.js'
 import { err } from '../src/ctx.js'
 
@@ -248,6 +248,8 @@ bindTransform(transform)
 const constStrings = new Map()
 ;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, shadowsBuiltin: shadowsJzifyBuiltin, classBindingScope, readsConstructor: () => ctorUse.on }))
 const generatorNames = new Set()
+// the ones whose return() runs code (closesOnReturn): loops over them close
+const generatorCloses = new Set()
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
 // programs without iterator producers compile byte-identically.
@@ -260,9 +262,9 @@ const iterProto = { on: false, helpers: false, program: false, programHelpers: f
 // `a.constructor === C`): its classes then carry the member (classes.js).
 const ctorUse = { on: false, program: false }
 const genErr = (msg) => err('jzify: ' + msg)
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
 const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
-bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
+bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
 
@@ -502,6 +504,7 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   // member names `[K]() {}` (const guarantees the binding never changes).
   constStrings.clear()
   generatorNames.clear()
+  generatorCloses.clear()
   iterProto.on = iterProto.program
   iterProto.helpers = iterProto.programHelpers
   iterProto.std = std
@@ -514,8 +517,11 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   if (Array.isArray(ast)) {
     const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
     for (const st of stmts) {
-      if (Array.isArray(st) && st[0] === 'function*' && typeof st[1] === 'string' && st[1]) generatorNames.add(st[1])
-      if (Array.isArray(st) && st[0] === 'export' && Array.isArray(st[1]) && st[1][0] === 'function*' && st[1][1]) generatorNames.add(st[1][1])
+      const gen = Array.isArray(st) && st[0] === 'export' ? st[1] : st
+      if (Array.isArray(gen) && gen[0] === 'function*' && typeof gen[1] === 'string' && gen[1]) {
+        generatorNames.add(gen[1])
+        if (closesOnReturn(gen[3])) generatorCloses.add(gen[1])
+      }
       if (!Array.isArray(st) || st[0] !== 'const') continue
       for (let i = 1; i < st.length; i++) {
         const d = st[i]
