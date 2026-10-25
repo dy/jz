@@ -1471,3 +1471,18 @@ test('catch: a spread of a value that may not iterate keeps its try', () => {
     ok((wat.match(/try_table/g) || []).length >= 2, `${optimize}: the catches stay`)
   }
 })
+
+test('catch: an optional call keeps its try', () => {
+  // `f?.()` is a call where `f` is present: what it throws reaches the catch
+  // around it, as a plain call's does (statements.js canThrow).
+  const src = `
+    export const method = () => { const o = { m() { throw new Error('m') } }; try { o.m?.(); return 'none' } catch (e) { return e.message } }
+    export const arrow = () => { const f = () => { throw 7 }; try { f?.(); return 'none' } catch (e) { return e } }
+    export const named = () => { function h() { throw 2 } try { h?.(); return 'none' } catch (e) { return e } }
+    export const chained = () => { const o = { m() { throw 9 } }; let r = 'none'; try { r = o?.m?.() } catch (e) { r = e } finally { r += '!' } return r }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const got = jz(src, { optimize }).exports
+    for (const name of ['method', 'arrow', 'named', 'chained']) is(got[name](), want[name](), `${name} at ${optimize}`)
+  }
+})

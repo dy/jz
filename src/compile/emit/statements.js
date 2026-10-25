@@ -82,9 +82,10 @@ function canThrow(body, seen = new Set(), view = ctx.summary?.at(ctx.func.curren
       (body[1][0] === '.' || body[1][0] === '[]') && mayBePrimitive(body[1][1], view)) return true
   if (op === '=>') return false
   if (op === '[' && spreadsMayThrow(body[1], view)) return true
-  if (op === '()') {
+  // An optional call (`f?.()`, `o.m?.()`) is a call where its callee is present.
+  if (op === '()' || op === '?.()') {
     const callee = body[1]
-    if (spreadsMayThrow(body[2], view)) return true
+    if (spreadsMayThrow(op === '()' ? body[2] : [',', ...body.slice(2)], view)) return true
     // A call can throw unless we can see the whole callee and prove it can't:
     // only direct calls into a resolvable, non-raw function body are traceable.
     // Indirect/method/builtin calls (callee not a plain name, or a name we can't
