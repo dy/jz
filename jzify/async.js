@@ -7,9 +7,10 @@
  * imported implicitly by every module that awaits, one copy per program.
  *
  * v1 surface (precise rejects elsewhere): try/catch/finally across an await
- * routes the rejection to the catch and every completion through the finally
- * (the machine's try regions, generators.js), which may await itself; an async
- * generator still rejects a try across a suspension;
+ * (or an async generator's yield) routes the rejection to the catch and every
+ * completion through the finally (the machine's try regions, generators.js),
+ * which may await itself; an async generator's driver (__ag_run, jz:asyncgen)
+ * throws a rejection into the machine where it stands;
  * `new Promise(executor)`, `Promise.resolve/reject/all/race/allSettled/any/
  * try/withResolvers`, `.then/.catch/.finally` chains all work (canonicalized
  * to the injected helpers). AggregateError surfaces as a fixed-shape
@@ -27,7 +28,7 @@ import { FN_BOUNDARY_OPS, probe, closingLoop } from './generators.js'
 import { usesArguments } from './arguments.js'
 import { some, ASSIGN_OPS, extractParams, withLoc } from '../src/ast.js'
 
-export function createAsyncLowering({ genTemp, err }) {
+export function createAsyncLowering({ genTemp }) {
 
   // The awaits of THIS function body only (nested function forms keep
   // their own await/this rules; a stray await inside a nested sync fn falls
@@ -119,9 +120,7 @@ export function createAsyncLowering({ genTemp, err }) {
   }
   function fnBoundary(n) { return FN_OPS.has(n[0]) }
   function isAwait(n) { return n[0] === 'await' || n[0] === 'for await' }
-  function isSuspend(n) { return isAwait(n) || n[0] === 'yield' || n[0] === 'yield*' }
   function refsAwait(node) { return some(node, isAwait, { boundary: fnBoundary }) }
-  function refsSuspend(node) { return some(node, isSuspend, { boundary: fnBoundary }) }
 
   // ---- await in expression position → statement position ----
   // The machine suspends at statements only (generators.js: a yield as a
@@ -251,22 +250,23 @@ export function createAsyncLowering({ genTemp, err }) {
   }
   const hoistAwaits = (body) => Array.isArray(body) && body[0] === '{}' ? block(hoistList(body)) : seq(hoistList(body))
 
-  // async generator body → tagged-yield machine body: `await E` suspends as
-  // { a: 1, v: E } (driver resumes with the resolved value), `yield E` as
-  // { a: 0, v: E } (driver resolves next() and resumes with the sent value).
-  // `yield*`/for-await desugar into plain await/yield loops first and recurse.
-  const tag = (a, v) => ['yield', ['{}', [',', [':', 'a', [null, a]], [':', 'v', v]]]]
+  // async generator body → machine body: `yield*`/for-await desugar into
+  // plain await/yield loops first and recurse; the machine (generators.js,
+  // async-generator mode) suspends at both, tagging which for the driver.
   function mapAgen(node) {
     if (!Array.isArray(node)) return node
     if (FN_OPS.has(node[0])) return node
     if (node[0] === 'for await' && Array.isArray(node[1]) && node[1][0] === 'of')
       return mapAgen(desugarForAwait(node[1], node[2], false))
     if (node[0] === 'yield*') return mapAgen(desugarYieldStarAsync(node[1], null))
-    if (node[0] === 'await') return withLoc(tag(1, mapAgen(node[1])), node)
-    if (node[0] === 'yield') return withLoc(node[1] === undefined ? tag(0, [null, undefined]) : tag(0, mapAgen(node[1])), node)
-    if (node[0] === 'try' && refsSuspend(node))
-      err('try/catch across `await`/`yield` is outside the v1 async-generator surface — let the rejection reject, or move the try into a sync helper')
     return withLoc(node.map((n, i) => i === 0 ? n : mapAgen(n)), node)
+  }
+  // An async generator's `return E` awaits E (ECMA-262 ReturnStatement), inside
+  // whatever try it stands in; a bare `return` does not.
+  function awaitReturns(node) {
+    if (!Array.isArray(node) || FN_OPS.has(node[0])) return node
+    if (node[0] === 'return' && node[1] !== undefined) return withLoc(['return', ['await', node[1]]], node)
+    return withLoc(node.map((n, i) => i === 0 ? n : awaitReturns(n)), node)
   }
 
   // `yield* E` inside an async generator: delegate through await'd next()
@@ -328,7 +328,7 @@ export function createAsyncLowering({ genTemp, err }) {
   function lowerAsyncGen(params, body) {
     const aa = genTemp('ag')
     return ['=>', ['()', ['...', aa]],
-      ['()', '__ag_run', ['()', ['function*', null, params, mapAgen(hoistAwaits(body))], ['...', aa]]]]
+      ['()', '__ag_run', ['()', ['function*', null, params, mapAgen(hoistAwaits(awaitReturns(body))), 'async'], ['...', aa]]]]
   }
 
   return {

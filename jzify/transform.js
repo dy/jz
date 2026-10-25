@@ -485,13 +485,14 @@ export function createTransform(opts) {
       return ['let', ...args.map(transform)]
     },
 
-    'function*'(name, params, body) {
+    'function*'(name, params, body, agen) {
       // Expression form (`let g = function* () {…}`). Named statement forms are
-      // hoisted in transformScope like plain function declarations.
+      // hoisted in transformScope like plain function declarations. An async
+      // generator's body arrives as `['function*', null, params, body, 'async']`.
       if (!_gen) return
       const prior = enterBuiltinScope(body)
       let value
-      try { value = _gen.lowerGenerator(params, body) } finally { leaveBuiltinScope(prior) }
+      try { value = _gen.lowerGenerator(params, body, agen === 'async') } finally { leaveBuiltinScope(prior) }
       return name && (mentions(body, name) || mentions(params, name)) ? namedFunction(name, value) : value
     },
 

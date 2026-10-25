@@ -335,6 +335,66 @@ test('async generators: for await + yield* delegation', async () => {
                 export let f = () => drive()`), '1,4,6,')
 })
 
+// try/catch/finally across await and yield in an async generator: a rejected
+// await, a rejected yielded value or a throw() lands in the catch; return(v)
+// at a yield awaits v, then runs the finally blocks, which may await or yield;
+// `return E` awaits E; requests queue (ECMA-262 27.6.3).
+test('async generators: try/catch/finally across await and yield', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    const show = (r) => r.value + ':' + r.done + ','
+    const reject = (e) => Promise.reject(e)
+    async function* caught() { try { await reject('E'); yield 'no' } catch (e) { yield 'c' + e } yield 'after' }
+    async function* fin() { try { yield 1 } finally { await 0; log += 'F' } }
+    async function* again() { try { yield 1 } finally { yield 'again'; log += 'Y' } }
+    async function* handles() { try { yield 1 } catch (e) { log += e; yield 'h' } yield 'z' }
+    async function* rejects() { try { yield reject('Y') } catch (e) { yield 'got' + e } }
+    async function* returns() { try { return reject('R') } catch (e) { return 'ret' + e } }
+    async function* plain() { log += 'S'; yield 1 }
+    export async function awaited() { const it = caught(); return show(await it.next()) + show(await it.next()) + show(await it.next()) }
+    export async function returned() { log = ''; const it = fin(); await it.next(); return show(await it.return(5)) + show(await it.next()) + log }
+    export async function yieldsAgain() { log = ''; const it = again(); await it.next(); return show(await it.return(5)) + show(await it.next()) + log }
+    export async function thrown() { log = ''; const it = handles(); await it.next(); return show(await it.throw('T')) + show(await it.next()) + log }
+    export async function yieldedRejection() { const it = rejects(); return show(await it.next()) + show(await it.next()) }
+    export async function returnAwaits() { const it = returns(); return show(await it.next()) }
+    export async function returnRejectsAtYield() { log = ''; const it = handles(); await it.next(); return show(await it.return(reject('Q'))) + log }
+    export async function throwAtStart() { log = ''; const it = plain(); let m = ''; try { await it.throw('X') } catch (e) { m = e } return m + show(await it.next()) + log }
+    export async function returnAtStart() { log = ''; const it = plain(); return show(await it.return(Promise.resolve(4))) + show(await it.next()) + log }
+    export async function completed() { const it = plain(); await it.next(); await it.next(); let m = ''; try { await it.throw('D') } catch (e) { m = e } return m + show(await it.return(Promise.resolve(3))) }
+    export async function queued() { log = ''; const it = handles(); const a = it.next(), b = it.throw('Q'), c = it.return(Promise.resolve(8)), d = it.next(); return show(await a) + show(await b) + show(await c) + show(await d) + log }`)
+})
+
+// The driver settles requests and resumes the body in the microtask order
+// Node's does, against a ticker counting jobs.
+test('async generators: requests settle in microtask order', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    const ticker = async (n) => { for (let i = 0; i < n; i++) { log += i; await null } }
+    async function* g() { log += 'a'; yield 1; log += 'b'; try { await null; log += 'c'; yield 2 } finally { log += 'f'; await null; log += 'g' } }
+    async function* h() { try { yield Promise.resolve('p'); log += 'h' } catch (e) { log += 'x' } return Promise.resolve('q') }
+    export async function requests() {
+      log = ''
+      const it = g(), t = ticker(12)
+      const p = it.next().then(r => { log += 'N' + r.value }), q = it.next().then(r => { log += 'M' + r.value }), s = it.return(9).then(r => { log += 'R' + r.value })
+      await t; await p; await q; await s
+      return log
+    }
+    export async function values() {
+      log = ''
+      const it = h(), t = ticker(10)
+      const p = it.next().then(r => { log += 'N' + r.value }), q = it.next().then(r => { log += 'M' + r.value })
+      await t; await p; await q
+      return log
+    }
+    export async function returnAtStart() {
+      log = ''
+      const t = ticker(6), it = g()
+      const p = it.return(Promise.resolve(3)).then(r => { log += 'R' + r.value }), q = it.next().then(r => { log += 'N' + r.done })
+      await t; await p; await q
+      return log
+    }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals

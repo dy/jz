@@ -17,6 +17,8 @@
  *   - an async body's `await E` (jzify/async.js) suspends as a yield does; the
  *     value it resumes with is `__awaited(a, sent)`, `a` holding E, which the
  *     program summary types as the settled value of E
+ *   - an async generator's machine yields tagged records to its driver
+ *     (jz:asyncgen): an await or a yield
  *   - try/catch/finally across yields: a completion leaving a guarded body (a
  *     throw, return, break or continue, or a return() at a yield) runs the
  *     finally blocks it crosses, which may yield themselves
@@ -297,7 +299,8 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     if (FN_BOUNDARY_OPS.has(n[0])) return false
   } })
 
-  function lowerGenerator(params, rawBody) {
+  // `agen`: the body of an async generator, whose driver reads tagged yields
+  function lowerGenerator(params, rawBody, agen = false) {
     const lowered = lowerArguments(params, rawBody, true)
     params = lowered[0]; rawBody = lowered[1]
     const paramInit = lowered[2].map(transform)
@@ -387,18 +390,21 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     // return. The resume state optionally starts by binding `target = __sent`.
     // An await's operand is kept in a local of its own: the target binds
     // `__awaited(a, __sent)`, the sent value typed as the settled value of `a`.
+    // An async generator's driver (jz:asyncgen) reads the yielded value as a
+    // tagged record: `a: 1` an await, `a: 0` a yield, whose value it awaits first.
     const emitYield = (cur, yexpr, target) => {
-      const resume = newState()
+      const resume = newState(), op = yexpr[0]
       let value = yexpr[1] === undefined ? [null, undefined] : transform(yexpr[1]), sent = S.SENT
-      if (target && yexpr[0] === 'await') {
+      if (target && op === 'await') {
         const a = genTemp('av'); locals.add(a)
         stmtsOf(cur).push(['=', a, value])
         value = a; sent = ['()', '__awaited', [',', a, S.SENT]]
       }
+      if (agen) value = ['{}', [',', [':', 'a', [null, op === 'await' ? 1 : 0]], [':', 'v', value]]]
       stmtsOf(cur).push([';;set', resume], ['return', record(value, false)])
       if (target) stmtsOf(resume).push(['=', target, sent])
-      // an async body's machine is driven to completion, never closed
-      if (yexpr[0] !== 'await') resumes.push({ resume, delegate: yexpr.delegate })
+      // an await is resumed only by its own settling
+      if (op !== 'await') resumes.push({ resume, delegate: yexpr.delegate })
       return resume
     }
 

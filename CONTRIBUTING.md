@@ -3401,8 +3401,17 @@ The generator machine carries completions through its finally blocks: each try
 with a finally records where its finally continues (a state, or a pending
 exception), so a return, break or continue crosses every finally between it and
 its target, and return() at a suspended yield enters the same route (a yield*
-asks its delegate's return() first). An async generator's machine still has no
-try across a suspension, so its `for await` and `yield*` do not close.
+asks its delegate's return() first).
+An async generator's body is the same machine in its async mode (the
+`function*` node carries `'async'`): each suspension yields a tagged record to
+the driver, `__ag_run` (src/std/asyncgen.js), `{ a: 1, v }` at an await and
+`{ a: 0, v }` at a yield, whose value the driver awaits before the yield
+settles (ECMA-262 Yield). The driver runs the requests ECMA-262 queues
+(next, throw, return; one settles at each yield and at completion): a
+rejection, of an await or of a yielded value, is a throw() into the machine
+where it stands, so its try regions route it; return(v) at a yield awaits v,
+then enters the machine's return route; `return E` awaits E (`awaitReturns`).
+Its `for await` and `yield*` do not close yet.
 
 An object rest `{a, ...r} = o` is the spread of `o` without the keys the
 pattern names (`expandDestruct`, `src/prepare/handlers.js`): the spread item

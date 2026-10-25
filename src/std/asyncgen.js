@@ -1,50 +1,81 @@
 /**
  * `jz:asyncgen` – async generators over the same sync machine, with TAGGED
- * yields: the lowered body yields `{ a: 1, v }` where the source awaited and
- * `{ a: 0, v }` where it yielded; `__ag_run` drives the machine, parking on
- * awaited promises and resolving each next() with a `{ value, done }`
- * record. next() calls serialize through a per-instance queue (spec:
- * requests queue while a step is inflight).
+ * yields (jzify/generators.js): the machine yields `{ a: 1, v }` where the
+ * source awaits and `{ a: 0, v }` where it yields. `__ag_run` drives it as
+ * ECMA-262 runs an async generator (27.6.3): next(), throw() and return()
+ * queue, the oldest settling at each yield and at completion. An await, or a
+ * yielded value, that rejects throws into the machine where it stands, so its
+ * try regions see it; return(v) at a yield awaits v, then runs the finally
+ * blocks around it; a generator not started, or completed, answers return(v)
+ * with v awaited, throw(e) by rejecting.
  *
  * @module std/asyncgen
  */
 
 export default `
-export let __ag_fin = (st, p, ok, v) => { __p_settle(p, ok, v); st.b = 0; __ag_kick(st) }
-export let __ag_step = (st, g, p, r) => {
-  if (r.done) { __ag_fin(st, p, 1, { value: r.value, done: true }); return }
-  let t = r.value
-  // AsyncGeneratorYield AWAITS the yielded value first – yielding a rejected
-  // promise rejects the pending next() and closes the machine.
-  if (t.a === 0) {
-    __await(t.v,
-      (v) => __ag_fin(st, p, 1, { value: v, done: false }),
-      (e) => { g.return(undefined); __ag_fin(st, p, 2, e) })
-    return
-  }
-  __await(t.v,
-    (v) => {
-      let r2
-      try { r2 = g.next(v) } catch (e) { __ag_fin(st, p, 2, e); return }
-      __ag_step(st, g, p, r2)
-    },
-    (e) => { g.return(undefined); __ag_fin(st, p, 2, e) })
-}
-export let __ag_kick = (st) => {
-  if (st.b === 1) return
-  if (st.q.length === 0) return
-  st.b = 1
-  let job = st.q.shift()
+// st.s: 0 suspended at its start, 1 at a yield, 2 executing, 3 awaiting a
+// return, 4 completed; st.q: the requests { k: 0 next, 1 throw, 2 return, v, p }
+export let __ag_call = (st, g, k, v) => {
   let r
-  try { r = job.g.next(job.v) } catch (e) { st.b = 0; __p_settle(job.p, 2, e); __ag_kick(st); return }
-  __ag_step(st, job.g, job.p, r)
+  try { r = k === 0 ? g.next(v) : k === 1 ? g.throw(v) : g.return(v) } catch (e) { __ag_done(st, 2, e); return }
+  if (r.done) { __ag_done(st, 1, { value: r.value, done: true }); return }
+  let t = r.value
+  __await(t.v, (x) => { if (t.a === 0) __ag_yield(st, g, x); else __ag_call(st, g, 0, x) }, (e) => __ag_call(st, g, 1, e))
+}
+// AsyncGeneratorYield: the oldest request settles, a queued one resumes at once
+export let __ag_yield = (st, g, x) => {
+  __p_settle(st.q.shift().p, 1, { value: x, done: false })
+  if (st.q.length > 0) __ag_resume(st, g)
+  else st.s = 1
+}
+// AsyncGeneratorResume with the oldest request: a return awaits its value first
+export let __ag_resume = (st, g) => {
+  st.s = 2
+  let job = st.q[0]
+  if (job.k === 2) __await(job.v, (x) => __ag_call(st, g, 2, x), (e) => __ag_call(st, g, 1, e))
+  else __ag_call(st, g, job.k, job.v)
+}
+// the body completed: the oldest request settles, then the queued ones
+export let __ag_done = (st, ok, v) => {
+  st.s = 4
+  __p_settle(st.q.shift().p, ok, v)
+  __ag_drain(st)
+}
+// AsyncGeneratorDrainQueue: a next() is done, a throw() rejects, a return() awaits its value
+export let __ag_drain = (st) => {
+  while (st.q.length > 0) {
+    let job = st.q[0]
+    if (job.k === 2) {
+      st.s = 3
+      __await(job.v, (x) => { st.s = 4; st.q.shift(); __p_settle(job.p, 1, { value: x, done: true }); __ag_drain(st) },
+        (e) => { st.s = 4; st.q.shift(); __p_settle(job.p, 2, e); __ag_drain(st) })
+      return
+    }
+    st.q.shift()
+    if (job.k === 1) __p_settle(job.p, 2, job.v)
+    else __p_settle(job.p, 1, { value: undefined, done: true })
+  }
+}
+// A request at the start resumes the machine as one at a yield does: its
+// throw() or return() there ends it without running the body.
+export let __ag_ask = (st, g, k, v) => {
+  let p = __p_new()
+  if (st.s === 4 && k !== 2) {
+    if (k === 1) __p_settle(p, 2, v)
+    else __p_settle(p, 1, { value: undefined, done: true })
+    return p
+  }
+  st.q.push({ k: k, v: v, p: p })
+  if (st.s === 4) __ag_drain(st)
+  else if (st.s < 2) __ag_resume(st, g)
+  return p
 }
 export let __ag_run = (g) => {
-  let st = { b: 0, q: [] }
+  let st = { s: 0, q: [] }
   let ag = { next: undefined, return: undefined, throw: undefined, '@@asyncIterator': undefined }
-  ag.next = (v) => { let p = __p_new(); st.q.push({ g: g, p: p, v: v }); __ag_kick(st); return p }
-  ag.return = (v) => { let p = __p_new(); let r = g.return(v); __p_settle(p, 1, { value: r.value, done: true }); return p }
-  ag.throw = (e) => { let p = __p_new(); try { g.throw(e) } catch (x) { __p_settle(p, 2, x) } return p }
+  ag.next = (v) => __ag_ask(st, g, 0, v)
+  ag.return = (v) => __ag_ask(st, g, 2, v)
+  ag.throw = (e) => __ag_ask(st, g, 1, e)
   ag[Symbol.asyncIterator] = () => ag
   return ag
 }

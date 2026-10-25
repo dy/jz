@@ -1147,12 +1147,11 @@ const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed th
 //    unreached as spec requires. This file now PASSES outright — removed.
 const EXPECTED_FAIL_FILES = new Map([
   // for-await grammar edges (2026-07-13, wired with async generators):
-  // Job ordering is per drain cycle (the documented host-boundary model).
-  // Iterator binding and generator abrupt-completion cases now pass.
-  ['test/language/statements/async-generator/return-undefined-implicit-and-explicit.js',
-    '[DIALECT] per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
+  // iterator binding and generator abrupt-completion cases pass, and the
+  // async generator driver settles requests in Node's job order (2026-10-25).
+  // A for await awaits each value of an async iterator a second time.
   ['test/language/expressions/await/for-await-of-interleaved.js',
-    '[DIALECT] per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
+    '[DIALECT] per-tick job ordering — for await awaits an async iterator\'s values again'],
   // Short-circuit dead-arm identity box reaching an undeclared other arm —
   // see point 5 in the comment above for the mechanism.
   // `logical-or/S11.11.2_A2.1_T4.js` and `logical-and/S11.11.1_A2.1_T4.js`

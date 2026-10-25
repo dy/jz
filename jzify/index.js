@@ -263,7 +263,7 @@ const iterProto = { on: false, helpers: false, program: false, programHelpers: f
 const ctorUse = { on: false, program: false }
 const genErr = (msg) => err('jzify: ' + msg)
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments })
-const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
+const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t) })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
