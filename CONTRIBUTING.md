@@ -2676,6 +2676,9 @@ the surplus runs, then the emitter lowers what it takes; a surplus literal or
 name leaves the call as it was. `INTRINSIC_VARIADIC` names the emitters that
 lower every argument, as does one declaring no parameter (`(...args)`) the
 arity table does not give zero; an ad-hoc emitter states its arity in `argc`.
+A `charAt`/`charCodeAt` given more than its index on a receiver the compiler
+cannot kind is the builtin where the run finds a string and the value's own
+method of the name otherwise (method-dispatch.js tryRuntimePtrTypeFork).
 Math arguments finish evaluating before any operand converts to Number;
 unknown or BigInt operands capture their values first, and ignored arguments
 still run. Spreads materialize their argument values before conversion so a

@@ -981,6 +981,22 @@ test('audit: builtin calls evaluate the arguments they ignore', () => {
   }
 })
 
+// A charAt/charCodeAt with more than its index, on a receiver the compiler
+// cannot kind, is the string builtin where the run finds a string and the
+// value's own method otherwise (method-dispatch.js tryRuntimePtrTypeFork).
+test('audit: an unkinded string receiver evaluates the index methods its surplus arguments', () => {
+  const src = `const own = { charAt(a, b) { return a + b }, charCodeAt(a, b, c) { return a * b * c } }
+    export function host(s) { let n = 0; const r = [s.charAt(0, n++), s.charCodeAt(1, n++)]; return [r, n] }
+    export function mixed() { let n = 0; const r = []; for (const x of ['xy', own]) r.push(x.charCodeAt(1, 2, n++), x.charAt(1, 10)); return [r, n] }
+    export function primitive() { let r = ''; for (const x of [5, 'q', null]) { try { r += x.charAt(0, 1) } catch (e) { r += e instanceof TypeError ? 'T' : 'E' } } return r }`
+  const expected = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    is(got.host('ab'), expected.host('ab'), `host ${optimize}`)
+    for (const name of ['mixed', 'primitive']) is(got[name](), expected[name](), `${name} ${optimize}`)
+  }
+})
+
 
 test('audit: missing record methods throw after argument evaluation', () => {
   for (const optimize of TIERS) for (const init of [

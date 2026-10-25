@@ -48,6 +48,9 @@ const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'add', 'delete'])
 // name (e.g. the self-compile abi's `ctx.abi.string.ops.charCodeAt(sF64,iI32,ctx,oobNan)`).
 // It must fall through to dynamic dispatch, mirroring COLLECTION_METHODS' arity guard.
 const STR_INDEX_METHODS = new Set(['charCodeAt', 'charAt'])
+const strIndexSurplus = (method, parsed) => STR_INDEX_METHODS.has(method) && !parsed.hasSpread && parsed.normal.length > 1
+// Whether the summary lets `obj` hold a value of `tag` (unknown: it may).
+const mayBeKind = (obj, tag) => { const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(obj); return k == null || hasTag(k, tag) }
 
 // Leading method-call strategies (chain positions 1–4). Each is *context-free* —
 // it depends only on the parsed call, not on the receiver-type analysis (`vt` /
@@ -427,10 +430,15 @@ function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
 function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }) {
   // VAL.ARRAY is structurally incompatible with PTR.STRING — no fork needed.
   // Only fork when vt is truly unknown (!vt), not for proven types.
-  const strEmitter = builtinMethod(method, 'string')
+  // A charAt/charCodeAt given more than its index, on a receiver that may be
+  // a string, is the string's builtin (which evaluates and ignores the rest)
+  // where the run finds a string, and any other value's own method of the
+  // name otherwise (tryGenericEmitter's strIndexMisfit, decided at run time).
+  const strIndex = !vt && strIndexSurplus(method, parsed) && mayBeKind(obj, K.STRING)
+  const strEmitter = builtinMethod(method, 'string') ?? (strIndex ? builtinMethod(method) : null)
   const typedEmitter = builtinMethod(method, 'typed')
   const bufferEmitter = builtinMethod(method, VAL.BUFFER)
-  const genEmitter = builtinMethod(method)
+  const genEmitter = strIndex ? null : builtinMethod(method)
   if (!vt && (strEmitter || typedEmitter || bufferEmitter)) {
     // Block-bodied callbacks require closures in every arm. Lower each source
     // callback once, then reuse its construction expression on the mutually
@@ -633,9 +641,9 @@ function trySchemaClosureCall(c) {
 function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   const collectionMisfit = COLLECTION_METHODS.has(method) &&
     !parsed.hasSpread && parsed.normal.length === 0
-  // (a proven string's surplus arguments are just evaluated)
-  const strIndexMisfit = STR_INDEX_METHODS.has(method) && vt !== VAL.STRING &&
-    !parsed.hasSpread && parsed.normal.length > 1
+  // (a proven string's surplus arguments are just evaluated; a receiver that
+  // may be one forks at run time, tryRuntimePtrTypeFork)
+  const strIndexMisfit = vt !== VAL.STRING && strIndexSurplus(method, parsed)
   // A proven plain-object/dict receiver never inherits the Array/collection
   // builtins these generic emitters serve — an own property of the same name
   // shadows them (ES prototype semantics). Skip the builtin so the dynamic
