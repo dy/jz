@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
+import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
 import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
@@ -2813,7 +2813,18 @@ export default (ctx) => {
     } else {
       ctx.module.include('collection')
       inc('__same_value_zero')
-      eq = (item) => ['call', '$__same_value_zero', ['i64.reinterpret_f64', item], ['i64.reinterpret_f64', vget]]
+      const svz = (a) => ['call', '$__same_value_zero', a, ['i64.reinterpret_f64', vget]]
+      // An array, a set or a map is one value before and after it moved
+      // (module/core.js __same_ref), where the search value may be one.
+      const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(val)
+      const moves = (k == null || hasTag(k, K.ARRAY) || hasTag(k, K.SET) || hasTag(k, K.MAP) || hasTag(k, K.HASH)) &&
+        !((view?.fixedLenOfExpr(val) ?? -1) >= 0)
+      if (moves) {
+        inc('__same_ref')
+        const x = tempI64('icx'), xg = ['local.get', `$${x}`]
+        eq = (item) => ['block', ['result', 'i32'], ['local.set', `$${x}`, ['i64.reinterpret_f64', item]],
+          ['if', ['result', 'i32'], svz(xg), ['then', ['i32.const', 1]], ['else', ['call', '$__same_ref', xg, ['i64.reinterpret_f64', vget]]]]]
+      } else eq = (item) => svz(['i64.reinterpret_f64', item])
     }
     const result = tempI32('ic'), len = tempI32('icl'), ptr = tempI32('icp')
     const from = fromIndexIR(positions, len, false)

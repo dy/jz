@@ -12,6 +12,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { _compileInProcess } from '../index.js'
 import { run, oracle } from './util.js'
+import { levels } from './_matrix.js'
 import { scanBindingUses, invalidateBindingUsesCache, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, USE } from '../src/compile/analyze-scans.js'
 
 test('binding census: declaration demand retains forward uses and outer captures', () => {
@@ -244,4 +245,21 @@ export let main = () => {
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(/call \$__ptr_offset\b|__inl\d|__poff\d/.test(body), 'escaping param keeps forwarding-aware reads')
   is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'value exact')
+})
+
+// A reference taken before an array grew and moved holds the old offset,
+// whose header forwards to the new one (__ptr_offset), as every element read
+// follows it: identity follows it too, inline (`===` and its kin) and in the
+// dynamic comparisons and the searches. Distinct arrays stay distinct.
+test('never-grown: identity follows an array that moved as it grew', () => {
+  const src = `const grow = (x, n) => { for (let i = 0; i < n; i++) x.push(i) }
+    export let inline = () => { const a = [1]; const s = [a]; for (let i = 0; i < 100; i++) a.push(i); const b = s[0]; return [b === a, a !== b, b == a, s.findIndex(x => x === a)] }
+    export let dynamic = (k) => { const a = [1]; const s = [a]; for (let i = 0; i < 100; i++) a.push(i); const z = k ? s[0] : 'q'; return [z === a, z == a, z !== a, s.indexOf(a), s.lastIndexOf(a), s.includes(a)] }
+    export let distinct = (k) => { const a = [1], b = [1]; const s = [a]; grow(a, 100); grow(b, 100); const z = k ? s[0] : 'q'; return [s[0] === b, z === b, s.indexOf(b), s.includes(b)] }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports
+    is(got.inline(), want.inline(), `inline at ${optimize}`)
+    for (const name of ['dynamic', 'distinct']) is(got[name](1), want[name](1), `${name} at ${optimize}`)
+  }
 })

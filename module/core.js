@@ -117,7 +117,8 @@ export default (ctx) => {
     ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])]
   const LENGTH_DEPS = ['__str_len', '__len', '__throw_property_nullish', '__length_prop_num']
   deps({
-    __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : []),
+    __same_ref: () => [leanRuntime() ? '__ptr_offset' : '__ptr_offset_fwd'],
+    __eq: () => ['__str_eq', '__ptr_type', '__is_nullish', '__same_ref', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq', '__ptr_offset'] : []),
       ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __to_prim_dflt: ['__ptr_type', '__ptr_aux', '__to_str'],
     __to_prim_num: ['__ptr_type', '__ptr_aux', '__to_str'],
@@ -127,7 +128,7 @@ export default (ctx) => {
     __cmp_i64_num: ['__cmp_i64'],
     __add_slow: () => ['__ptr_type', '__is_object', '__to_prim_dflt', '__is_str_key', '__str_concat_fresh',
       ...(representationProgramHasBigint(ctx) ? ['__box_bigint', '__ptr_offset'] : [])],
-    __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset'],
+    __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset', '__same_ref'],
     __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __typeof: ['__ptr_type', '__is_nullish'],
     __len: () => leanRuntime() ? LEN_DEPS : ['__len_tail', '__ptr_offset_fwd'],
@@ -268,6 +269,31 @@ export default (ctx) => {
                   (then (call $__bigint_eq (i64.load (call $__ptr_offset (local.get $a))) (local.get $b)))
                   (else (call $__bigint_eq (i64.load (call $__ptr_offset (local.get $b))) (local.get $a)))))))` : ''
 
+  // Two boxes of one growable value (ARRAY/HASH/SET/MAP, layout.js
+  // FORWARDING_MASK): a reference taken before the value grew and moved holds
+  // the old offset, whose header forwards to the new one. One value has one
+  // high word (tag and aux) and one live offset. Reached only where the bits
+  // differ (identity's fast path is bit equality).
+  // Two live headers are two values: only a stub (cap -1) forwards, followed
+  // inline (the size tier calls the forwarding reader).
+  ctx.core.stdlib['__same_ref'] = () => `(func $__same_ref (param $a i64) (param $b i64) (result i32)
+    (local $x i32) (local $y i32)
+    (if (i64.ne (i64.shr_u (local.get $a) (i64.const 32)) (i64.shr_u (local.get $b) (i64.const 32)))
+      (then (return (i32.const 0))))
+    (if (i32.eqz (i32.and
+          (i32.shl (i32.const 1) (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+          (i32.const ${FORWARDING_MASK})))
+      (then (return (i32.const 0))))
+    ${ctx.transform.optimize?.leanRuntime ? `(i32.eq (call $__ptr_offset (local.get $a)) (call $__ptr_offset (local.get $b)))` : `
+    (local.set $x (i32.wrap_i64 (i64.and (local.get $a) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $y (i32.wrap_i64 (i64.and (local.get $b) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ${followForwardingWat('$x')}
+    ${followForwardingWat('$y')}
+    (i32.eq (local.get $x) (local.get $y))`})`
+  // The arm of the dynamic comparisons that asks it, once $ta/$tb are read.
+  const sameRefArm = () => `(if (i32.and (i32.shr_u (i32.const ${FORWARDING_MASK}) (local.get $ta)) (i32.eq (local.get $ta) (local.get $tb)))
+              (then (return (call $__same_ref (local.get $a) (local.get $b)))))`
+
   ctx.core.stdlib['__eq'] = () => `(func $__eq (param $a i64) (param $b i64) (result i32)
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     ;; Fast path: bit equality covers identical pointers AND interned/SSO strings (same content
@@ -324,6 +350,7 @@ export default (ctx) => {
             ;; Object-to-primitive effects above still run beside a numeric NaN.
             (if (i32.or ${print(numberNanIR(['local.get', '$fa']))} ${print(numberNanIR(['local.get', '$fb']))})
               (then (return (i32.const 0))))${bigintMixedArm()}
+            ${sameRefArm()}
             ;; CARRIER PROGRAM Slice 3 — registry-derived 'eq-identity' arm
             ;; (layout-kinds.js KIND_REGISTRY.BIGINT / FINDINGS[eq-identity]):
             ;; two independently-boxed BigInts compare by PAYLOAD content, not
@@ -355,6 +382,7 @@ export default (ctx) => {
             (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
             (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))${representationProgramHasBigint(ctx) ? `
             (if ${oneBox()} (then (return (i32.const 0))))` : ''}
+            ${sameRefArm()}
             ${eqIdentityChain()})))))`
 
   // Loose `==` of a Number $n against a carrier the lowering could not kind:

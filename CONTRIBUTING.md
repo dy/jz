@@ -523,7 +523,14 @@ retain bounds checks, f32 rounding and the original assignment value. Numeric
 store proofs permit direct writes; coercing values and other element types keep
 their existing helpers. The raw typed readers, writers and data-address
 helper decode fixed storage directly; only relocatable collections need the
-generic forwarding decoder. A second stable numeric read receiver can cache its
+generic forwarding decoder. Identity follows it too: a reference taken before
+an array, set or map grew and moved holds the old offset, so where the bits of
+two such values differ, `===` and its kin, the dynamic comparisons
+(`__eq`, `__eq_strict`) and `includes` ask `__same_ref` whether
+both forward to one live block. Beside an array no reference can hold stale
+(never resized by the summary, or a `neverGrown`/`ownCurrent` binding) the bits
+are identity. A Map or Set key hashed before it moved is not found after
+(its hash is its bits). A second stable numeric read receiver can cache its
 base, length and element width, sharing one load dispatcher per output version.
 This covers integer, floating and clamped storage; nullish and BigInt receivers
 retain the original single-receiver loop. Float16 reuses the already-demanded

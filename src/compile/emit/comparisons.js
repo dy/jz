@@ -25,6 +25,18 @@ import { representationProvesBigint, representationStorageWriteAction } from '..
 import { REF_EQ_KINDS, foldOperandPure, stringOps } from './shared.js'
 import { positionArgs } from '../../bridge.js'
 
+// The kinds whose storage moves as it grows (layout.js FORWARDING_MASK; a
+// HASH compares through the dynamic helpers).
+const GROWABLE_KINDS = new Set([VAL.ARRAY, VAL.SET, VAL.MAP])
+// An array no reference can hold stale: one the summary proves never
+// resized (it never moves), or a binding that always holds its array's live
+// pointer and that nothing aliases (analyze-scans.js neverGrown, ownCurrent).
+// Beside it, bits are identity.
+const liveUnaliased = (n) => {
+  const r = typeof n === 'string' ? ctx.func.localReps?.get(n) : null
+  return r?.neverGrown === true || r?.ownCurrent === true ||
+    (ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(n) ?? -1) >= 0
+}
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 function emitTypeofCmp(a, b, cmpOp) {
@@ -398,6 +410,19 @@ function emitLooseEq(a, b, negate, strict) {
   const sentinel = emitNum(negate ? 1 : 0)
   const charCmp = emitSingleCharIndexCmp(a, b, negate); if (charCmp) return charCmp
   const subCmp = emitSubstringEqCmp(a, b, negate); if (subCmp) return subCmp
+  // A name beside itself is one value, unequal only as a NaN (`x !== x`):
+  // any NaN of a present Number, a numeric NaN of any other carrier.
+  if (typeof a === 'string' && a === b) {
+    const v = emit(a)
+    if (v.type === 'i32' || v.type === 'i64') return typed(['i32.const', negate ? 0 : 1], 'i32')
+    if (v.type === 'f64') {
+      const leaf = Array.isArray(v) && v.length === 2 && (v[0] === 'local.get' || v[0] === 'global.get')
+      const t = leaf ? null : temp('self'), get = leaf ? v : ['local.get', `$${t}`]
+      const number = resolveValType(a, valTypeOf, lookupValType) === VAL.NUMBER && !nullableOperand(a)
+      const nan = number ? ['f64.ne', get, get] : numberNanIR(get), r = negate ? nan : ['i32.eqz', nan]
+      return typed(leaf ? r : ['block', ['result', 'i32'], ['local.set', `$${t}`, v], r], 'i32')
+    }
+  }
   // JS loose nullish equality: x == null / x == undefined.
   // If the non-literal side has a known non-null VAL type, fold to the sentinel.
   const nullishOf = (other) => {
@@ -505,7 +530,16 @@ function emitLooseEq(a, b, negate, strict) {
   // STRING needs __eq (heap strings can be equal by content but different pointers).
   // BIGINT needs __eq (heap-allocated, content compare).
   if (vta && vta === vtb && REF_EQ_KINDS.has(vta)) {
-    return typed([`i64.${eqOp}`, ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
+    if (!GROWABLE_KINDS.has(vta) || liveUnaliased(a) || liveUnaliased(b) || typeof a === 'string' && a === b)
+      return typed([`i64.${eqOp}`, ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
+    // An array, set or map moves as it grows: a reference taken before holds
+    // the old offset, forwarding to the new (__same_ref, asked where the bits differ).
+    inc('__same_ref')
+    const ia = tempI64('req'), ib = tempI64('req'), aG = ['local.get', `$${ia}`], bG = ['local.get', `$${ib}`]
+    const same = typed(['block', ['result', 'i32'],
+      ['local.set', `$${ia}`, asI64(va)], ['local.set', `$${ib}`, asI64(vb)],
+      ['if', ['result', 'i32'], ['i64.eq', aG, bG], ['then', ['i32.const', 1]], ['else', ['call', '$__same_ref', aG, bG]]]], 'i32')
+    return negate ? typed(['i32.eqz', same], 'i32') : same
   }
   // String content compares by bits first, then by content for heap strings.
   // Loose unknown partners take the shared conversion path before these

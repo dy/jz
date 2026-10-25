@@ -90,3 +90,19 @@ test('number equality: numeric reads test undefined without a null comparison', 
   ok(/f64\.eq/.test(body), 'NaN still compares as a number')
   is((body.match(/i64\.eq/g) || []).length, 2, 'one undefined check per operand')
 })
+
+test('number equality: a name beside itself is unequal only as a NaN, and calls no helper', () => {
+  // `x !== x` of a value of any kind: a present Number's NaN of any bits, a
+  // numeric NaN of a generic carrier (comparisons.js emitLooseEq).
+  const code = `const isnan = (x) => x !== x, same = (x) => x === x, loose = (x) => [x == x, x != x]
+    export const f = () => [[NaN, 1, 'a', undefined, null, [1], 0 / 0, true, 5n].map(isnan), [NaN, 1, 'a', {}, -0].map(same), loose(NaN), loose(null)]
+    export const g = () => { const t = new Float64Array(1), w = new Uint32Array(t.buffer); w[1] = 0x7FF80002; const v = t[0]; return v !== v }`
+  const host = oracle(code)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const wasm = run(code, { optimize })
+    is(wasm.f(), host.f(), `f at ${optimize}`)
+    is(wasm.g(), host.g(), `g at ${optimize}`)
+  }
+  const body = funcWat(wat(code, { optimize: 0 }), 'isnan')
+  ok(body && !/__eq/.test(body), 'no dynamic comparison')
+})
