@@ -40,6 +40,16 @@ constants, jz's `pointerExits` (src/optimize/pointer-exits.js, speed tier)
 stops the loop where the pointer reaches the end set before it, and the
 counter's step leaves the iteration; a trip count the constants do not decide
 keeps the counter, since the end could then wrap.
+A counted loop that steps a cursor around a ring (`p = (p + 1) % m` as the
+emitter writes it under `p >= 0`, a remainder by a constant, a mask
+`(p + 1) & (2^j - 1)`) runs a lap at a time under `ringLaps`
+(src/optimize/ring-laps.js, speed tier, before `pointerExits`): where the cursor
+enters below m and the counter below its bound, an inner loop runs the passes
+before the wrap, `min(N - i, m - p)` of them, with the cursor stepped by one and
+one exit test, and the wrap, with its work (`if (p === 0) …`, the body's last
+statement, reading no counter), runs after it; the loop as written is the
+other arm. A cursor read after its step, a branch out of the loop or a call
+keep the loop as it is.
 
 Watr 5.11.5 also defers costly pure local initializers to the
 exclusive value arms that consume them. It runs before local reuse, replacing
@@ -2871,6 +2881,7 @@ src/
                 plan/site-receivers.js: a store's receiver the frame census cannot read again (`map.get(k).push(v)`, `(seen ??= new Set()).add(k)`), read once into a local before the statement, so the escape flag lowers to its address instead of zero
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
+                ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 arena-rewind, sort-locals are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
   summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint refreshed after source rewrites

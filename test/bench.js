@@ -83,9 +83,9 @@ const SPEED = {
   // 0.78×, movavg 0.98× (a tie band, not a lead: the loop still pays a
   // forwarding test and the durable snapshot test per sample). No AS port.
   sosfilter:      { v8: 'win',  as: 'na' },
-  // (movavg reads 0.70×, 0.98× and 1.12× V8 across three loaded runs: a `near`
-  // band keeps the pin honest without flaking; its loop makes no call now)
-  movavg:         { v8: 'near', as: 'na' },
+  // (movavg, its window loop run a lap at a time (optimize/ring-laps.js), reads
+  // 0.177× V8 paired on an M-series host and 0.163–0.176× on x64 runners, 2026-10-25)
+  movavg:         { v8: 'win',  as: 'na' },
   upfirdn:        { v8: 'win',  as: 'na' },
   pcmconvert:     { v8: 'win',  as: 'na' },
   mandelbrot:     { v8: 'tie',  as: 'tie' },
@@ -465,7 +465,6 @@ const WASM_TODO = {
   // hole), a canonical-NaN contract for values a typed read produced, and SIMD
   // lowering of the float-to-int conversion (pcmconvert's clamp and round).
   sosfilter: 'jz 0.94–0.97× c-wasm on EPYC 7763 and 9V74 runners and a Xeon 8370C (bench-probe, 2026-10-24): the stage loop written out over the count the design function built, its coefficients and state in locals. C → wasm still leads on a Xeon 8573C (1.025×; a hand-written form of the same loop reads 1.025× there too) and read 1.04–1.07× on EPYC 9V45 runners with earlier builds of the change. clang runs every stage\'s y first and the state after, an order that reads 1.006–1.010× against the stage order\'s 0.956× on a 7763, so the stage order stays. Delete once the reference run leads on every runner.',
-  movavg:    'jz 1.78× c-wasm: the tomb test (the loop as written may have grown the shared history), NaN canonicalization of the stored sample, the undefined-to-NaN select of the read.',
   upfirdn:   'jz 1.90× c-wasm: the stride test and quotient run as i64/f64 integers, not i32 words (the product n * down does not fit a word by hull); the typed index converts.',
   pcmconvert: 'jz 2.43× c-wasm: no SIMD for the clamp-and-round conversion (the vectorizer reads the per-iteration `let v` as loop-carried) and a `__to_int32` call per integer store.',
   sdf:      "jz 0.98–1.01× c-wasm across local interleaved runs (best: min 14.57 vs 14.64 ms, median 14.91 vs 15.13): a tie within jitter; delete this entry once the CI reference run shows the lead (1.12× before the pop's guards split, 1.41× before sentinel guards). Every fast path is check-free (compile/sentinel-guard.js), and the pop tests each bound where its read runs: z[k] needs k >= 0, tested once a round, v[k - 1] needs k >= 1, tested in the body, so a pass that stops at the hull's bottom (k = 0, 17% of rounds) no longer runs the checked loop. The seed map `bmp[i] === 1 ? 0 : INF` runs in f64x2 lanes over the widened i32x4 comparison (vectorize/lift.js liftIntMask), where clang's build is scalar. Carrying z[k] across rounds in a register, as clang does, measured within noise; so did strength-reducing and unrolling the column copies.",

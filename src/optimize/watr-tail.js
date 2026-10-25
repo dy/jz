@@ -26,6 +26,7 @@ import { selectBits } from './select-bits.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
 import { pointerExits } from './pointer-exits.js'
+import { ringLaps } from './ring-laps.js'
 import { splitFuncs } from './split-funcs.js'
 import { forwardCheckedElements } from './forward-checked.js'
 
@@ -554,6 +555,8 @@ export function watrTail(module, cfg, {
   // (on the checked reads and stores watr left, before the float literals are pooled)
   if (cfg.forwardChecked !== false) time('forwardChecked', () => forwardCheckedElements(optimized))
   stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
+  // (on the counted loops the optimizer leaves, before their counters become pointer tests)
+  if (cfg.ringLaps === true) time('ringLaps', () => ringLaps(optimized))
   // (on the pointers watr's strength reduction left beside their counters)
   if (cfg.pointerExits === true) time('pointerExits', () => pointerExits(optimized))
   if (cfg.maskOperands === true) time('maskOperands', () => maskOperands(optimized))

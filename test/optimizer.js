@@ -35,6 +35,7 @@ import { stripDeadCanons } from '../src/optimize/nan-canon.js'
 import { maskOperands } from '../src/optimize/mask-operands.js'
 import { searchLoops } from '../src/optimize/search-loops.js'
 import { pointerExits } from '../src/optimize/pointer-exits.js'
+import { ringLaps } from '../src/optimize/ring-laps.js'
 import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -4967,6 +4968,115 @@ test('pointerExits: a loop keeping a counter only to stop stops by the pointer s
   const ends = (optimize) => count(parseWat(jz.compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__pe'))
   ok(ends('speed') >= 1, `the record loop stops by its pointer (${ends('speed')})`)
   is(ends({ level: 'speed', pointerExits: false }), 0, 'pointerExits: false keeps the counter')
+})
+
+test('ringLaps: a counted loop stepping a cursor around a ring runs a lap at a time', () => {
+  const g = (n) => ['local.get', n], k = (v) => ['i32.const', v], set = (x, v) => ['local.set', x, v]
+  // the remainder below the divisor, as emit/arithmetic.js belowDivisorRem writes it
+  const below = (m) => ['if', ['result', 'i32'], ['i32.lt_u', ['local.tee', '$t', ['i32.add', g('$p'), k(1)]], m], ['then', g('$t')],
+    ['else', ['if', ['result', 'i32'], ['i32.lt_u', ['local.tee', '$u', ['i32.sub', g('$t'), m]], m], ['then', g('$u')], ['else', ['i32.rem_s', g('$t'), m]]]]]
+  const rem = (op, m) => [op, ['i32.add', g('$p'), k(1)], m]
+  const mask = (v) => ['i32.and', ['i32.add', k(1), g('$p')], k(v)]
+  // S1 reads the cursor, S2 the counter; the wrap's work, where there is one, ends the body
+  const fn = (ring, { s1 = [], s2 = [], wrap = [set('$s', ['i32.add', g('$s'), k(1000)])], after = [], pre = true } = {}) =>
+    ['func', '$f', ['param', '$n', 'i32'], ['param', '$m', 'i32'], ['param', '$p0', 'i32'], ['result', 'i32'],
+      ['local', '$i', 'i32'], ['local', '$p', 'i32'], ['local', '$s', 'i32'], ['local', '$t', 'i32'], ['local', '$u', 'i32'],
+      set('$p', g('$p0')),
+      ['block', '$B', ...(pre ? [['br_if', '$B', ['i32.ge_s', g('$i'), g('$n')]]] : []),
+        ['loop', '$L', ...s1, set('$s', ['i32.add', ['i32.mul', g('$s'), k(31)], g('$p')]), set('$p', ring),
+          set('$s', ['i32.xor', g('$s'), g('$i')]), ...s2, ...(wrap ? [['if', ['i32.eqz', g('$p')], ['then', ...wrap]]] : []), ...after,
+          ['br_if', '$L', ['i32.lt_s', ['local.tee', '$i', ['i32.add', g('$i'), k(1)]], g('$n')]]]],
+      ['i32.add', ['i32.mul', g('$s'), k(7)], g('$p')]]
+  const one = (f) => ringLaps(['module', f])[1]
+  const exec = (f, args) => {
+    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]])))
+    try { return m.exports.f(...args) } catch (e) { return String(e) }   // a remainder by zero traps alike
+  }
+  const shapes = {
+    'the remainder below the divisor': fn(below(g('$m'))),
+    'no wrap work': fn(below(g('$m')), { wrap: null }),
+    'a temporary the optimizer gave the address read too': fn(below(g('$m')), { s1: [set('$t', ['i32.mul', g('$i'), k(3)]), set('$s', ['i32.add', g('$s'), g('$t')])] }),
+    'a signed remainder by a local': fn(rem('i32.rem_s', g('$m'))),
+    'an unsigned remainder by a constant': fn(rem('i32.rem_u', k(7))),
+    'a mask of 16 slots': fn(mask(15)),
+    // the wrap's work reads the cursor (0 there, not m) and the temporaries the step wrote
+    'wrap work reading the cursor and the temporaries': fn(below(g('$m')), { s1: [set('$u', ['i32.mul', g('$i'), k(5)])],
+      s2: [set('$s', ['i32.add', g('$s'), g('$t')])], wrap: [set('$s', ['i32.add', ['i32.add', g('$s'), ['i32.mul', g('$p'), k(13)]], g('$u')])] }),
+    // a rotated loop no test enters: one pass runs whatever the counter, the laps only where it is below its bound
+    'no test before the loop': fn(below(g('$m')), { pre: false }),
+  }
+  const grid = []
+  for (const n of [0, 1, 5, 16, 17, 33, 100]) for (const m of [1, 2, 7, 16, 0, -3]) for (const p0 of [0, 1, m - 1, m, m + 3, 6, 15, -1]) grid.push([n, m, p0])
+  for (const [why, f] of Object.entries(shapes)) {
+    const before = JSON.stringify(f), after = one(JSON.parse(before))
+    ok(JSON.stringify(after) !== before, `${why}: rewritten`)
+    const block = after.find(n => Array.isArray(n) && n[0] === 'block'), guarded = block[block.length - 1]
+    const laps = JSON.stringify(guarded[2])
+    ok(!/rem_|i32\.and/.test(laps) && laps.includes('$__rl'), `${why}: the laps step the cursor by one`)
+    let bad = 0
+    for (const args of grid) if (!Object.is(exec(after, args), exec(JSON.parse(before), args))) bad++
+    is(bad, 0, `${why}: same answer over ${grid.length} counts, sizes and entries`)
+  }
+  const kept = (f, why) => is(one(f), JSON.parse(JSON.stringify(f)), why)
+  kept(fn(below(g('$m')), { s2: [set('$s', ['i32.add', g('$s'), g('$p')])] }), 'a cursor read after its step stays')
+  kept(fn(below(g('$m')), { wrap: [set('$s', ['i32.add', g('$s'), g('$i')])] }), 'wrap work reading the counter stays')
+  kept(fn(below(g('$m')), { after: [set('$s', ['i32.add', g('$s'), k(1)])] }), 'wrap work that does not end the body stays')
+  kept(fn(below(g('$m')), { s1: [['br_if', '$B', ['i32.eq', g('$s'), k(12345)]]] }), 'a branch out of the loop stays')
+  kept(fn(below(g('$m')), { s1: [['if', g('$s'), ['then', ['br', '$L']]]] }), 'a continue stays')
+  kept(fn(below(g('$m')), { s2: [['drop', ['call', '$g', g('$s')]]] }), 'a call stays')
+  kept(fn(below(g('$m')), { s1: [set('$p', ['i32.xor', g('$p'), k(0)])] }), 'a cursor written beside its step stays')
+  kept(fn(below(g('$m')), { s1: [set('$i', g('$i'))] }), 'a counter written in the body stays')
+  kept(fn(below(g('$m')), { s2: [set('$n', g('$n'))] }), 'a bound the loop writes stays')
+  kept(fn(below(g('$m')), { s2: [set('$m', g('$m'))] }), 'a ring size the loop writes stays')
+  kept(fn(below(g('$m')), { s2: [set('$u', k(0))] }), 'the wrap temporary written after the step stays')
+  kept(fn(mask(12)), 'a mask of no power of two stays')
+  kept(fn(rem('i32.rem_s', k(0))), 'a remainder by zero stays')
+
+  // a boxcar running sum over a window kept in a parameters record (a DSP library's idiom), its
+  // sum refreshed once a lap: the same answers at every tier, laps at the speed tier
+  const src = (w) => `const avg = (data, params) => {
+      let ptr = params.ptr
+      let mem = params.memory
+      if (ptr == null) {
+        if (typeof mem === 'number') mem = new Array(mem).fill(0)
+        ptr = params.ptr = 0
+        params.memory = mem
+      }
+      const m = mem.length
+      let sum = params._sum
+      if (sum == null) { sum = 0; for (let j = 0; j < m; j++) sum += mem[j] }
+      for (let i = 0, l = data.length; i < l; i++) {
+        sum += data[i] - mem[ptr]
+        mem[ptr] = data[i]
+        ptr = (ptr + 1) % m
+        data[i] = sum / m
+        if (ptr === 0) { sum = 0; for (let j = 0; j < m; j++) sum += mem[j] }
+      }
+      params.ptr = ptr
+      params._sum = sum
+      return data
+    }
+    export let f = (n, calls) => {
+      const params = { memory: ${w} }
+      let h = 0
+      for (let c = 0; c < calls; c++) {
+        const x = new Float64Array(n + c)
+        for (let i = 0; i < x.length; i++) x[i] = Math.sin(i * 0.37 + c) * 3
+        avg(x, params)
+        for (let i = 0; i < x.length; i++) h = (Math.imul(h, 31) + (x[i] * 1000 | 0)) | 0
+        h = (h + params.ptr) | 0
+      }
+      return h
+    }`
+  for (const w of [16, 7, 1]) {
+    const want = oracle(src(w)).f, opts = ['speed', { level: 'speed', ringLaps: false }, 2]
+    for (const optimize of opts) for (const [n, calls] of [[100, 3], [15, 4], [16, 2], [0, 2], [33, 5]])
+      is(run(src(w), { optimize }).f(n, calls), want(n, calls), `window ${w}, ${n} samples, ${calls} calls, ${JSON.stringify(optimize)}`)
+  }
+  if (onKernel()) return
+  const laps = (optimize) => count(parseWat(jz.compile(src(16), { wat: true, optimize })), n => n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$__rl'))
+  ok(laps('speed') >= 2, `the window's sample loop runs in laps (${laps('speed')} lap loops)`)
+  is(laps({ level: 'speed', ringLaps: false }), 0, 'ringLaps: false keeps the loop as written')
 })
 
 test('rec-unroll: an empty statement in a body is no loop', () => {
