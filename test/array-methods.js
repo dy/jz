@@ -2764,6 +2764,25 @@ test('.sort: stable, undefined last, default order by strings, as JS sorts', () 
   }
 })
 
+// An undefined comparefn is the default order (ECMA-262 23.1.3.30 step 1,
+// 23.2.3.29 step 1), written or passed at run time; a value that is no
+// function throws a TypeError. toSorted evaluates its receiver first.
+test('.sort/.toSorted: an undefined comparator sorts by default, a non-function throws', () => {
+  const src = `const by = (a, c) => a.sort(c).join(), copy = (a, c) => a.toSorted(c).join()
+    const err = (f) => { try { f(); return 'none' } catch (e) { return e instanceof TypeError } }
+    export let written = () => [[3, 1, 20, 2].sort(undefined).join(), [3, 1, 20, 2].toSorted(undefined).join(),
+      new Float64Array([3, 1, 20, 2]).sort(undefined).join(), new Int32Array([3, 1, 20, 2]).toSorted(undefined).join()]
+    export let passed = () => [by([3, 1, 20, 2]), by([3, undefined, 1, 20, 2], (a, b) => b - a), copy([3, 1, 20, 2]),
+      copy([3, 1, 20, 2], (a, b) => a - b), by(new Float64Array([3, 1, 20, 2])), by(new Float64Array([3, 1, 20, 2]), (a, b) => b - a)]
+    export let thrown = () => [err(() => [2, 1].sort(null)), err(() => [].sort(5)), err(() => new Float64Array([2, 1]).sort({}))]
+    export let order = () => { let log = ''; const r = () => (log += 'r', [2, 1]), c = () => (log += 'c', (a, b) => a - b); r().toSorted(c()); return log }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports
+    for (const name of ['written', 'passed', 'thrown', 'order']) is(got[name](), want[name](), `${name} at ${optimize}`)
+  }
+})
+
 // A parameter every call fixes to one integer reads as the integer in its body
 // (narrow/param-abi.js substituteIntConstParams): a self-recursive helper's
 // `out[offset + stride]` is a store at a literal index, not a growth the helper

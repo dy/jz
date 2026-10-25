@@ -22,7 +22,7 @@ import { valTypeOf } from '../../src/kind.js'
 import { typedCtorElemValType } from '../../src/kind-traits.js'
 import { plannedTypedStorageCtor } from '../../src/compile/typed-storage-plan.js'
 import { representationProgramHasBigint } from '../../src/compile/representation-plan.js'
-import { extractParams, refsName, REFS_IN_EXPR, T } from '../../src/ast.js'
+import { extractParams, isUndefinedLiteral, refsName, REFS_IN_EXPR, T } from '../../src/ast.js'
 import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, PTR } from '../../src/ctx.js'
 import { valOf as summaryValOf } from '../../src/summary/index.js'
@@ -63,6 +63,15 @@ export function captureCallback(fn, name = temp('af'), thisArg) {
     value, dynamic: true, call, stored: call,
   }
 }
+
+/** A sort's comparefn (ECMA-262 23.1.3.30 step 1, 23.2.3.29 step 1):
+ *  `null` where none is passed or `undefined` is written (the default
+ *  order), else whether the value is callable on every run (a function
+ *  expression, or a closure the summary proves present). Any other value is
+ *  decided at run time: undefined sorts by default, a non-function throws. */
+export const sortComparator = (fn) => fn == null || isUndefinedLiteral(fn) ? null
+  : { fn, callable: Array.isArray(fn) && fn[0] === '=>' ||
+      valTypeOf(fn) === VAL.CLOSURE && ctx.summary?.at(ctx.func.current).mayBeNullishExpr(fn) === false }
 
 // Pure-expression check: no statements, binders, control flow, or assignments.
 // Inlining is only safe for these — anything else needs the full closure machinery.

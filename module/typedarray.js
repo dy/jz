@@ -9,7 +9,7 @@ import print from 'watr/print'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, numberNanIR, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, numberNanIR, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish, isUndef } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, storedValue, idx, deps, call, positionArgs } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -27,7 +27,7 @@ import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption, activeBoundsFrame } from '../src/type/canonical-bounds.js'
 import { frameNode } from '../src/function.js'
 import { requireReceiverWat } from './core/error-object.js'
-import { captureCallback, makeCallback, idxArg } from './array/callback.js'
+import { captureCallback, makeCallback, idxArg, sortComparator } from './array/callback.js'
 import { typedStoreHeadWat } from './array.js'
 import { heapScratch, mergeSortIR } from './array/sort.js'
 import { callbackSetup, isUndefinedNode } from './array/from.js'
@@ -1926,28 +1926,33 @@ export default (ctx) => {
   // positive return shifts (same convention as Array.prototype.sort).
   // Sort the typed array VALUE `arrValIR` in place and return it. Factored out so
   // .typed:sort sorts the receiver and .typed:toSorted sorts a fresh copy with one body.
-  const emitTypedSort = (arrValIR, fn, r = null) => {
-    if (fn == null) {
-      // A receiver of known kind calls that kind's body: the program links one
-      // sort, not the nine the dispatch reaches.
-      const kind = !r || r.isF16 || ctx.transform.optimize?.leanRuntime ? null : r.isBigInt ? SORTS[8] : SORTS[r.et]
-      if (kind) {
-        // The receiver's kind is known: its data and length read from its header.
-        inc(`__typed_sort_${kind.sfx}`)
-        const t = temp('tsr')
-        const recv = () => typed(['local.get', `$${t}`], 'f64')
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${t}`, asF64(arrValIR)],
-          ['call', `$__typed_sort_${kind.sfx}`, typedDataAddr(recv(), r.isView), typedLen(recv(), r.et, r.isView)],
-          ['local.get', `$${t}`]], 'f64')
-      }
-      inc('__typed_sort')
-      return typed(['call', '$__typed_sort', asI64(arrValIR)], 'f64')
+  // The default numeric order of the typed array VALUE `arrValIR`.
+  const defaultTypedSort = (arrValIR, r) => {
+    // A receiver of known kind calls that kind's body: the program links one
+    // sort, not the nine the dispatch reaches.
+    const kind = !r || r.isF16 || ctx.transform.optimize?.leanRuntime ? null : r.isBigInt ? SORTS[8] : SORTS[r.et]
+    if (kind) {
+      // The receiver's kind is known: its data and length read from its header.
+      inc(`__typed_sort_${kind.sfx}`)
+      const t = temp('tsr')
+      const recv = () => typed(['local.get', `$${t}`], 'f64')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${t}`, asF64(arrValIR)],
+        ['call', `$__typed_sort_${kind.sfx}`, typedDataAddr(recv(), r.isView), typedLen(recv(), r.et, r.isView)],
+        ['local.get', `$${t}`]], 'f64')
     }
+    inc('__typed_sort')
+    return typed(['call', '$__typed_sort', asI64(arrValIR)], 'f64')
+  }
+  const emitTypedSort = (arrValIR, fn, r = null) => {
+    const cmp = sortComparator(fn)
+    if (cmp == null) return defaultTypedSort(arrValIR, r)
     // With a comparator: the elements out into a scratch of doubles, merge
     // sorted stably by the comparator (module/array/sort.js), and written back.
+    // One the summary cannot prove callable is tested first: undefined takes
+    // the default order, any other non-function throws a TypeError.
     inc('__len', '__typed_get_idx', '__typed_elem_arg', '__typed_set_idx')
-    const arrL = temp('tsa'), cbL = temp('tsf')
+    const arrL = temp('tsa'), cbL = temp('tsf'), cb = captureCallback(cmp.fn, cbL)
     const len = tempI32('tsn'), i = tempI32('tsi'), buf = tempI32('tsb'), tmp = tempI32('tst')
     const id = freshId(ctx)
     const get = (n) => ['local.get', `$${n}`]
@@ -1965,9 +1970,7 @@ export default (ctx) => {
     const after = (a, b) => ['f64.gt',
       asF64(ctx.closure.call(typed(get(cbL), 'f64'), [argOf(typed(['f64.load', a], 'f64')), argOf(typed(['f64.load', b], 'f64'))])),
       ['f64.const', 0]]
-    return typed(['block', ['result', 'f64'],
-      ['local.set', `$${arrL}`, asF64(arrValIR)],
-      ['local.set', `$${cbL}`, asF64(emit(fn))],
+    const sorted = [
       ['local.set', `$${len}`, ['call', '$__len', ptr()]],
       ['if', ['i32.gt_s', get(len), ['i32.const', 1]], ['then',
         ...scratch.take,
@@ -1976,7 +1979,13 @@ export default (ctx) => {
         mergeSortIR(buf, tmp, len, 3, after),
         ...each('tsw', [['drop', ['call', '$__typed_set_idx', ptr(), get(i), ['f64.load', at(i)]]]]),
         scratch.release]],
-      get(arrL)], 'f64')
+      get(arrL)]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${arrL}`, asF64(arrValIR)],
+      cb.setup,
+      ...(cmp.callable ? sorted : [['if', ['result', 'f64'], isUndef(cb.value),
+        ['then', defaultTypedSort(typed(get(arrL), 'f64'), r)],
+        ['else', cb.check, ...sorted]]])], 'f64')
   }
   // `a.subarray(lo, hi).sort()` as a statement: the view is made to be sorted
   // and read by nobody, so its range sorts where it lies and no view is made.

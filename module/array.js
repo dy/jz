@@ -38,7 +38,7 @@ import { restViewRead } from '../src/compile/rest-view.js'
 import { core, hasTag, isNullable, K, NUMBER, tagOf, valOf } from '../src/summary/kind.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
-import { callbackLoop, hoistArrayValue, makeCallback, callbackElem, callbackArgReps, idxArg, arrArg, callbackReadsArray } from './array/callback.js'
+import { callbackLoop, hoistArrayValue, makeCallback, callbackElem, callbackArgReps, idxArg, arrArg, callbackReadsArray, sortComparator } from './array/callback.js'
 import { arrayFromEmit } from './array/from.js'
 import { registerEarlyExit } from './array/early-exit.js'
 import { heapScratch, mergeSortIR } from './array/sort.js'
@@ -2586,34 +2586,42 @@ export default (ctx) => {
   // comparator ran (it may have grown the array). A comparator's positive
   // result puts a after b; NaN is no order. The default order compares each
   // element's string once made (__to_str → __str_cmp, code unit order, not
-  // locale-aware): records of a key and its value.
+  // locale-aware): records of a key and its value. A comparator the summary
+  // cannot prove callable is tested once before the sort (sortComparator):
+  // undefined takes the default order, a function compares, any other value
+  // throws a TypeError; its records carry both forms.
   function emitArraySortInPlace(setup, value, fn, dense = false) {
     const arrTmp = temp('sr'), base = tempI32('sb'), len = tempI32('sl'), m = tempI32('sm'), i = tempI32('si')
     const buf = tempI32('sbf'), tmp = tempI32('stp'), v = temp('sv'), present = dense ? null : tempI32('sn')
     const id = freshId(ctx)
-    const shift = fn == null ? 4 : 3
+    const cmp = sortComparator(fn), byDefault = cmp == null ? null : cmp.callable ? false : tempI32('sdf')
+    const keyed = byDefault !== false, shift = keyed ? 4 : 3
+    const get = (n) => ['local.get', `$${n}`]
+    const plus8 = (a) => ['i32.add', a, ['i32.const', 8]]
     let cmpSetup = ['nop'], after
-    if (fn == null) {
-      // default comparator is ToString + code unit compare: both live in the string
-      // module, which an all-numeric program hasn't loaded (dangling inc otherwise)
-      ctx.module.include('string')
-      inc('__to_str', '__str_cmp')
-      after = (a, b) => ['i32.gt_s', ['call', '$__str_cmp', ['i64.load', a], ['i64.load', b]], ['i32.const', 0]]
-    } else {
-      const cb = makeCallback(fn, [])
-      cmpSetup = cb.setup
-      after = (a, b) => ['f64.gt', asF64(cb.call([typed(['f64.load', a], 'f64'), typed(['f64.load', b], 'f64')])), ['f64.const', 0]]
+    // default comparator is ToString + code unit compare: both live in the string
+    // module, which an all-numeric program hasn't loaded (dangling inc otherwise)
+    if (keyed) { ctx.module.include('string'); inc('__to_str', '__str_cmp') }
+    const byKey = (a, b) => ['i32.gt_s', ['call', '$__str_cmp', ['i64.load', a], ['i64.load', b]], ['i32.const', 0]]
+    if (cmp == null) after = byKey
+    else {
+      const cb = makeCallback(cmp.fn, [])
+      const byFn = (a, b) => ['f64.gt', asF64(cb.call([typed(['f64.load', a], 'f64'), typed(['f64.load', b], 'f64')])), ['f64.const', 0]]
+      if (byDefault) {
+        cmpSetup = ['block', cb.setup, ['local.set', `$${byDefault}`, isUndef(cb.value)], ['if', ['i32.eqz', get(byDefault)], ['then', cb.check]]]
+        after = (a, b) => ['if', ['result', 'i32'], get(byDefault), ['then', byKey(a, b)], ['else', byFn(plus8(a), plus8(b))]]
+      } else { cmpSetup = cb.setup; after = byFn }
     }
+    const keyOf = byDefault ? (r) => ['if', get(byDefault), ['then', r]] : (r) => r
     inc('__ptr_offset')
     if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
-    const get = (n) => ['local.get', `$${n}`]
     const slot = (b, k) => ['i32.add', get(b), ['i32.shl', get(k), ['i32.const', 3]]]
     const rec = (k) => ['i32.add', get(buf), ['i32.shl', get(k), ['i32.const', shift]]]
     const scratch = heapScratch(buf, ['i32.shl', get(len), ['i32.const', shift + 1]])
     const collect = ['if', ['i32.eqz', isUndef(get(v))], ['then',
-      ...(fn == null
-        ? [['i64.store', rec(m), ['call', '$__to_str', ['i64.reinterpret_f64', get(v)]]],
-           ['f64.store', ['i32.add', rec(m), ['i32.const', 8]], get(v)]]
+      ...(keyed
+        ? [keyOf(['i64.store', rec(m), ['call', '$__to_str', ['i64.reinterpret_f64', get(v)]]]),
+           ['f64.store', plus8(rec(m)), get(v)]]
         : [['f64.store', rec(m), get(v)]]),
       ['local.set', `$${m}`, ['i32.add', get(m), ['i32.const', 1]]]]]
     return typed(['block', ['result', 'f64'],
@@ -2643,7 +2651,7 @@ export default (ctx) => {
         ['block', `$sortwd${id}`, ['loop', `$sortw${id}`,
           ['br_if', `$sortwd${id}`, ['i32.ge_s', get(i), get(len)]],
           ['f64.store', slot(base, i), ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(m)],
-            ['then', ['f64.load', fn == null ? ['i32.add', rec(i), ['i32.const', 8]] : rec(i)]],
+            ['then', ['f64.load', keyed ? plus8(rec(i)) : rec(i)]],
             ['else', dense ? undefExpr() : ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(present)],
               ['then', undefExpr()], ['else', ['f64.const', `nan:${TOMB_NAN}`]]]]]],
           ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
@@ -2659,7 +2667,10 @@ export default (ctx) => {
   ctx.core.emit['.toSorted'] = (arr, fn) => {
     const copy = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) ? '__arr_from' : '__arr_dense'
     inc(copy)
-    return emitArraySortInPlace(['nop'], typed(['call', '$' + copy, asI64(emit(arr))], 'f64'), fn, true)
+    // the copy is made before the comparator is evaluated, as its receiver is
+    const t = temp('tsc')
+    return emitArraySortInPlace(['local.set', `$${t}`, typed(['call', '$' + copy, asI64(emit(arr))], 'f64')],
+      typed(['local.get', `$${t}`], 'f64'), fn, true)
   }
 
   // .with(index, value) (ES2023) — a COPY with one element replaced. Negative
