@@ -3050,7 +3050,11 @@ function stores into it, so an integer element read from one is bounded by
 those stores (a stack of triangle indices, a hash table of counters); an
 array a local of which is read anywhere but an address, a header, a fill, a
 copy, a box, an unbox or a compare of its box escapes, and its elements are
-any word. The elements are part of the fixpoint, and one whose hull grows
+any word; so does one a box or an unbox of which goes anywhere but into
+another, an alias or a compare (a call's argument: `fill(-1)`; a closure's
+capture), and a store of another width through it (the tone-map lift's
+`i64.store` of two pixels) makes its elements any word.
+The elements are part of the fixpoint, and one whose hull grows
 for more than three rounds is any word. A number the intervals know is truthy
 where it is not zero, and the test a copy makes of a number it assumes an
 integer is decided where the intervals already know it (`int-narrow.js`);

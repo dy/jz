@@ -581,6 +581,38 @@ test('int-narrow: elements bounded by what the function stores', () => {
   for (const n of [0, 1, 2, 5, 16, 100]) agree(src, 'f', [n])
 })
 
+test('int-narrow: an element written where the function cannot see it is any word', () => {
+  // a fill (a call handed the array's box) and a closure's capture write elements the stores do not show
+  const src = `export function f(k) {
+  const index = new Int32Array(4), low = new Int32Array(4)
+  index.fill(-1)
+  const mark = (j) => { if (j < 4) { low[j] = -1; mark(j + 2) } }
+  mark(k & 1)
+  let n = 0
+  for (let v = 0; v < 4; v++) { if (index[v] === -1) n++; if (low[v] === -1) n += 10 }
+  return n
+}`
+  for (const k of [0, 1, 2, 3, 6]) agree(src, 'f', [k])
+  // the pass itself: the box handed to a call that writes through it, and a store of two elements at once
+  for (const [label, write] of [
+    ['a call given its box', '(call $sink (f64.reinterpret_i64 (i64.or (i64.const 0x7FF9800400000000) (i64.extend_i32_u (local.get $a)))))'],
+    ['an i64 store', '(i64.store (local.get $a) (i64.const -1))'],
+  ]) {
+    const ir = parseWat(`(module (memory 1)
+      (func $__alloc_hdr_n (param i32) (result i32) (i32.const 64))
+      (func $sink (param $p f64) (i32.store (i32.wrap_i64 (i64.reinterpret_f64 (local.get $p))) (i32.const -1)))
+      (func $f (export "f") (result f64) (local $a i32)
+        (local.set $a (call $__alloc_hdr_n (i32.const 4)))
+        ${write}
+        (f64.convert_i32_s (i32.load (local.get $a)))))`)
+    const fn = ir.find(n => n[0] === 'func' && n[1] === '$f'), start = fn.findIndex(n => n[0] === 'local.set')
+    const read = fn.at(-1)[1]
+    ok(intRanges(fn, start).av.get(read)?.lo !== 0, `${label}: the load is not the zero the array was made with`)
+    narrowInts(fn)
+    is(new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f(), -1, `${label}: reads what was written`)
+  }
+})
+
 test('int-narrow: i64 comparisons retain bits beyond exact Number integers', () => {
   const pairs = [
     ['9007199254740992', '9007199254740993'],

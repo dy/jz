@@ -335,7 +335,9 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   // the function stores into it. A local is one of them where its every write is
   // an allocation, boxed or not; an alias where its every write copies, boxes or
   // unboxes one; the array escapes where a local of it is read anywhere but an
-  // address, a header, a fill, a copy, a box, an unbox or a compare of its box.
+  // address, a header, a fill, a copy, a box, an unbox or a compare of its box,
+  // and where a box or an unbox of it goes anywhere but into another, an alias or
+  // a compare (a call's argument, a stored value: `fill(-1)`, a closure's capture).
   const wexprs = new Map()
   const noteExprs = n => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3) (wexprs.get(n[1]) ?? wexprs.set(n[1], []).get(n[1])).push(n[2]); for (let i = 1; i < n.length; i++) noteExprs(n[i]) }
   for (let i = bodyStart; i < fn.length; i++) noteExprs(fn[i])
@@ -361,9 +363,24 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   // the base local an address reads, through the adds of an index
   const baseOf = e => { if (!isArr(e)) return null; if (nameRead(e) != null) return rootOf.has(nameRead(e)) ? nameRead(e) : null; if (e[0] === 'i32.add' && e.length === 3) return baseOf(e[1]) ?? baseOf(e[2]); return null }
   const LOAD = /^(i32|i64|f32|f64)\.(load|store)/
+  // the operand a box or an unbox of a pointer re-encodes (its tag, its bits, its word), or null
+  const isTag = e => isArr(e) && (e[0] === 'i64.const' || e[0] === 'global.get')
+  const encodes = e => {
+    if (!isArr(e)) return null
+    if ((e[0] === 'i64.extend_i32_u' || e[0] === 'f64.reinterpret_i64' || e[0] === 'i64.reinterpret_f64' || e[0] === 'i32.wrap_i64') && e.length === 2) return e[1]
+    if (e[0] === 'i64.or' && e.length === 3) return isTag(e[1]) ? e[2] : isTag(e[2]) ? e[1] : null
+    if (e[0] === 'i64.and' && e.length === 3 && e[2]?.[0] === 'i64.const') return e[1]
+    return mkptr(e)
+  }
+  // the array a box or an unbox carries
+  const carried = e => { const x = nameRead(e); if (x != null) return rootOf.get(x) ?? null; const c = encodes(e); return c == null ? null : carried(c) }
   const escapes = (n, parent, at) => {
     if (!isArr(n)) return
     const x = nameRead(n)
+    if (x == null && encodes(n) != null) {
+      const r = carried(n), p = parent?.[0]
+      if (r != null && !(encodes(parent) === n || ((p === 'local.set' || p === 'local.tee') && rootOf.has(parent[1])) || /^(i32|i64|f64)\.(eq|ne)$/.test(p))) escaped.add(r)
+    }
     if (x != null && rootOf.has(x)) {
       const p = parent?.[0]
       const ok = (LOAD.test(p) && at === 1 && baseOf(n) != null) ||
@@ -728,6 +745,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     for (const k of kids) vs.push(ev(k, st))
     if (!st.env) return null
     if (FITS[op] && kids.length === 2) { const el = rootAt(kids[0]); if (el) stored(el, vs[1], FITS[op]) }
+    // (a store of another width, the tone-map lift's two pixels in one `i64.store`: any element)
+    else if (op.includes('.store') && kids.length === 2) { const el = rootAt(kids[0]); if (el) stored(el, null) }
     else if (op === 'memory.fill' && kids.length === 3) { const el = rootAt(kids[0]); if (el && !el.unknown) { const b = vs[1]; if (b && b.lo === b.hi && (b.lo & 255) === 0) {} else if (b && b.lo === b.hi && (b.lo & 255) === 255) { if (!el.ones) { el.ones = true; elementsMoved = true } } else { el.unknown = true; elementsMoved = true } } }
     for (let i = 0; i < kids.length; i++) seenAt.set(kids[i], vs[i])
     const r = kids.length === n.length - 1 ? remainderOf(n) : null
