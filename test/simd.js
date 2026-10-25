@@ -3568,6 +3568,47 @@ test('escape-time f64x2 - per-pixel threshold derived from a c-var', () => {
   }
 })
 
+// What a break assigns (`if (esc) { found = 1; break }`) is each lane's own: lanes no break
+// converges keep the value the pixel set before the loop, and one not set there is the last
+// pixel's. A single break that assigns keeps its loop scalar; several breaks track their
+// outcome lanes seeded with that value.
+test('escape-time f64x2 - a break\'s assignments are each lane\'s, seeded as the pixel sets them', () => {
+  const mk = (decl, init, breaks) => `
+    let out = new Float64Array(64 * 16)
+    export let render = (W, H, cx0, cy0, s) => {
+      ${decl}
+      for (let py = 0; py < H; py++) for (let px = 0; px < W; px++) {
+        let cx = cx0 + px * s, cy = cy0 + py * s
+        let x = 0.0, y = 0.0, it = 0${init}
+        while (it < 50) {
+          let nx = x * x - y * y + cx
+          y = 2.0 * x * y + cy
+          x = nx
+          ${breaks}
+          it++
+        }
+        out[py * W + px] = it + root * 1000
+      }
+    }
+    export let get = (i) => out[i]`
+  const two = 'if (x * x + y * y > 4.0) { root = 1; break }\n if (x * x + y * y < 0.0001) { root = 2; break }'
+  for (const [label, src, lifts] of [
+    ['one break assigns', mk('', ', root = 0', 'if (x * x + y * y > 4.0) { root = 1; break }'), false],
+    ['two breaks, an outcome set to -1', mk('', ', root = -1', two), true],
+    ['two breaks, an outcome set to 0', mk('', ', root = 0', two), true],
+    ['two breaks, an outcome the last pixel set', mk('let root = 0', '', two), false],
+  ]) {
+    is(/f64x2\./.test(wat(src, ESC_VEC)), lifts, `${label}: ${lifts ? 'lifts' : 'stays scalar'}`)
+    const d = runVec(src, ESC_VEC), js = oracle(src)
+    for (const [W, H, a, b, s] of [[64, 16, -2, -1, 0.05], [7, 3, -1.5, -0.5, 0.1], [9, 4, -0.1, -0.1, 0.02]]) {
+      d.render(W, H, a, b, s); js.render(W, H, a, b, s)
+      const at = []
+      for (let i = 0; i < W * H; i++) if (!Object.is(d.get(i), js.get(i))) at.push(i)
+      is(at.length, 0, `${label}, ${W}x${H}: as JS`)
+    }
+  }
+})
+
 test('SIMD multi-pixel - 4-pixel RGBA box blur (the Zig-matcher)', () => {
   // tryBlurMultiPixel: 4 output pixels per iteration, 16-byte v128.load → two i16x8
   // accumulators (AoS aligns, no shuffle), divide+store per pixel, scalar ≤3 remainder.

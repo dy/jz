@@ -4335,6 +4335,11 @@ The tone-map lift's conditional update (`if (c) { g = …; h = … }`, no else) 
 before the arm, as the loop as written does: a mask per data width is set first, so an
 update to a lane the test reads (`g -= 150`) leaves the next selecting by the first answer.
 
+The escape-time lift (`optimize/vectorize/divergent-escape.js`) keeps what a break assigns
+only on its multi-break path, an i32x4 lane per outcome seeded with the constant the pixel
+sets before the loop; a lone break that assigns (`{ found = 1; break }`), an outcome the
+pixel does not set (the last pixel's) and a top guard that assigns keep the loop scalar.
+
 Discipline (non-negotiable — these run in the default `speed` build that ships to everyone):
 
 - **Bit-exact.** Compile `{optimize:3}` vs `{optimize:3, noSimd:true}`, run N frames, compare output

@@ -71,6 +71,8 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
     return isArr(bc) && CMP_LANE[bc[0]] ? { cmp: bc, negate } : null
   }
   const topBcR = breakCond(innerLoop[2])
+  // (the lanes model a break's assignments on the multi-break path alone, below)
+  if (topBcR?.assigns.length) return null
   const topBc = topBcR?.cond   // raw condition expr (backward-compat name for compound-top checks)
   let keepTop = topBcR && keepOf(topBcR.cond)
   const ibody = innerLoop.slice(3, iEnd - 1)
@@ -104,7 +106,9 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
     }
     if (midBreaks.length === 0) return null
     if (midBreaks.length === 1) {
-      // single-break: preserve exact existing behaviour
+      // single-break: preserve exact existing behaviour (its paths keep no outcome lanes: a
+      // break that assigns, `if (esc) { found = 1; break }`, stays scalar)
+      if (midBreaks[0].assigns.length) return null
       midIdx = midBreaks[0].idx; keepMid = midBreaks[0].keep
     }
     // multi-break: handled below after classification
@@ -208,6 +212,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
   // i32 outcome variables assigned by multi-break outcome stmts (e.g. $root in Newton).
   // Their pre-inner `local.set $root 0` default-init is valid and must not be rejected.
   const outcomeVarSetEarly = new Set(midBreaks.flatMap(mb => mb.assigns.map(a => a.name)))
+  const outcomeInit = new Map()   // outcome var → its pixel's value before the loop (lanes no break assigns keep it)
   const carriedInit = new Map()   // carried var → its f64.const seed (before the loop)
   const perPxInit = new Map()     // c-var → its per-pixel init expr
   // Pre-watr, jz's raw lowering hasn't run DCE yet — obody[0..innerIdx) may hold pre-loop f64
@@ -252,7 +257,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
       hasCounterInit = true
     }
     else if (needed.has(tgt)) { cVars.add(tgt); perPxInit.set(tgt, expr) }
-    else if (outcomeVarSetEarly.has(tgt)) { /* i32 outcome var default init — ignored, handled per-lane */ }
+    else if (outcomeVarSetEarly.has(tgt)) outcomeInit.set(tgt, expr)   // i32 outcome var default init: each lane's seed
     else if (!hasSideEffect(expr)) { /* dead per-pixel local — the escape update never reads it, drop */ }
     else return null
   }
@@ -447,15 +452,21 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
         if (a.name !== itVar && !outcomeVarSet.has(a.name)) { outcomeVarSet.add(a.name); outcomeVars.push(a.name) }
       }
     }
-    // Each outcome var gets an i32x4 shadow vector (initial value 0 = "no convergence" default).
+    // Each outcome var gets an i32x4 shadow vector, seeded with the constant the pixel sets it to
+    // before the loop: a lane no break converges keeps that. (Without one, the value is the last
+    // pixel's: no lane of the pair has it.)
     const outcomeVec = new Map()
-    for (const v of outcomeVars) { const sv = nm('out' + v.replace(/\W/g, '')); outcomeVec.set(v, sv); newLocalDecls.push(['local', sv, 'v128']) }
+    for (const v of outcomeVars) {
+      const init = outcomeInit.get(v)
+      if (!isArr(init) || init[0] !== 'i32.const') return null
+      const sv = nm('out' + v.replace(/\W/g, '')); outcomeVec.set(v, sv); newLocalDecls.push(['local', sv, 'v128'])
+    }
 
     newLocalDecls.push(['local', iterV, 'v128'], ['local', activeV, 'v128'], ['local', maxitLane, 'v128'])
     pre.push(['local.set', iterV, ['f64x2.splat', ['f64.const', 0]]])
     pre.push(['local.set', activeV, ['v128.const', 'i32x4', '-1', '-1', '-1', '-1']])
     pre.push(['local.set', maxitLane, ['f64x2.splat', boundI32 ? ['f64.convert_i32_s', boundExpr] : boundExpr]])
-    for (const sv of outcomeVec.values()) pre.push(['local.set', sv, ['v128.const', 'i32x4', '0', '0', '0', '0']])
+    for (const [v, sv] of outcomeVec) { const k = String(outcomeInit.get(v)[1]); pre.push(['local.set', sv, ['v128.const', 'i32x4', k, k, k, k]]) }
 
     // keepMask for the limit top-guard (iter < MAXIT)
     const keepMask = (keep, isLimit) => {
