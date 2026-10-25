@@ -3198,7 +3198,8 @@ const pairKern = (body = '') => `
   export let cs = () => { let h = 0x811c9dc5 | 0; for (let i = 0; i < W * H; i++) h = ((h ^ out[i]) * 0x01000193) | 0; return h >>> 0 }
 `
 const PAIR_ON = { optimize: 'speed' }, PAIR_OFF = { optimize: { level: 'speed', pairIterations: false } }
-const paired = (src) => /\$__pi\d+_jl/.test(wat(src, PAIR_ON))
+// A void export's body inlines into its boundary entry, under that inline's prefix.
+const paired = (src) => /\$(__inl\d+L?_)?__pi\d+_jl/.test(wat(src, PAIR_ON))
 
 test('paired items - a float recurrence under a condition runs two pixels side by side, as written', () => {
   const src = pairKern()

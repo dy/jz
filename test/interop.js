@@ -670,6 +670,35 @@ test('interop: boxes carry as i64 BigInt, never an f64 NaN-box (JSC-safe codec)'
   is(exports.f(), 'hello world')                 // and the boxed result still decodes correctly
 })
 
+// JSC gives a NaN crossing as f64 the canonical bits, so no result may carry
+// undefined or null as a NaN box: a void export has no result, a nullable
+// Number crosses as i64 (boundary-wrap.js), and an f64 result is a Number
+// whose every NaN reads as NaN (numberRet). The same answers in this engine
+// and in each other installed one (bun is JSC, deno V8).
+test('interop: void and nullable Number exports answer undefined and null on every engine', async () => {
+  if (onWasi() || onKernel()) return
+  const script = `import jz from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+    const src = 'const bits = (hi) => { const t = new Float64Array(1), w = new Uint32Array(t.buffer); w[1] = hi; return t }\\n' +
+      'export let v = () => {}\\nexport function g() { let s = 0; for (let i = 0; i < 3; i++) s += i }\\n' +
+      'export let n = (i) => new Float64Array(2)[i]\\nexport let u = (x) => { if (x) return 1 }\\nexport let z = (x) => x ? 1 : null\\n' +
+      'export let e = (hi) => bits(hi)[0] * 2'
+    const out = []
+    for (const optimize of [0, 2, 'size']) { const x = jz(src, { optimize }).exports; out.push([x.v(), x.g(), x.n(5), x.n(1), x.u(0), x.u(1), x.z(0), x.z(1), x.e(0x7ff80002), x.e(0x7ff80001)]) }
+    console.log(JSON.stringify(out, (k, v) => v === undefined ? 'undefined' : typeof v === 'number' && v !== v ? 'NaN' : v))`
+  const row = ['undefined', 'undefined', 'undefined', 0, 'undefined', 1, null, 1, 'NaN', 'NaN'], want = JSON.stringify([row, row, row])
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path')
+  const { spawnSync } = await import('node:child_process')
+  const dir = mkdtempSync(join(tmpdir(), 'jz-engines-')), file = join(dir, 'probe.mjs')
+  writeFileSync(file, script)
+  try {
+    for (const [engine, args] of [[process.execPath, [file]], ['bun', [file]], ['deno', ['run', '-A', '--node-modules-dir=manual', file]]]) {
+      if (engine !== process.execPath && spawnSync(engine, ['--version'], { stdio: 'ignore' }).status !== 0) continue
+      const r = spawnSync(engine, args, { encoding: 'utf8', timeout: 120_000, cwd: new URL('..', import.meta.url).pathname })
+      is(r.stdout.trim().split('\n').pop(), want, `${engine === process.execPath ? 'node' : engine}: ${r.stderr.slice(0, 200)}`)
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('interop: semantic Number ingress does not decode NaN payloads as handles', () => {
   const mem=interop.memory(),a=new Float64Array(1),w=new Uint32Array(a.buffer)
   const nan=(hi,lo=0)=>{w[0]=lo;w[1]=hi;return a[0]}

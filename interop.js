@@ -267,9 +267,9 @@ const decode = (v, fnOf = null, symbols = null) => {
 
 // An export's result that crosses as a Number is one by its contract: the
 // boundary wrapper (src/compile/boundary-wrap.js) hands every result that may
-// be another value to the host as its i64 bits, so a Number result is a
-// Number, or the undefined or null a nullable one returns. A NaN reads as NaN
-// whatever payload the computation left in it, but for those two boxes' bits.
+// be another value, undefined and null among them, to the host as its i64
+// bits, and a void export has no result. A NaN reads as NaN whatever payload
+// the computation left in it.
 // A host NaN argument spelling the undefined or null box, of either sign and
 // quiet or signaling (an operation may set a NaN's sign and quiets it),
 // enters with the canonical bits: no Number a host call passes reads as one
@@ -279,7 +279,7 @@ const numberArg = (x) => {
   const b = f64ToI64(x) & 0x7FFFFFFFFFFFFFFFn | 0x0008000000000000n
   return b === UNDEF_NAN || b === NULL_NAN ? NaN : x
 }
-const numberRet = (v) => v === v ? v : (b => b === UNDEF_NAN ? undefined : b === NULL_NAN ? null : NaN)(f64ToI64(v))
+const numberRet = (v) => v === v ? v : NaN
 
 // Decode a boundary value arriving as i64 bits (BigInt). Heap modules go through mem.read.
 const readArgBits = (state, big) => state.mem ? state.mem.read(big) : decode(big)

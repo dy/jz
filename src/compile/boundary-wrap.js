@@ -3,7 +3,7 @@ import { VAL } from '../reps.js'
 import { typed, mkPtrIR, valKindToPtr, boolBoxIR } from '../ir.js'
 import { representationHostBoxesParam } from './representation-plan.js'
 import { CARRIER } from '../summary/contract.js'
-import { valOf, core } from '../summary/kind.js'
+import { valOf } from '../summary/kind.js'
 import { isExported } from './func-exports.js'
 import { paramArrayWritten } from './param-numeric.js'
 import { frameNode } from '../function.js'
@@ -23,10 +23,16 @@ import { frameNode } from '../function.js'
 // callable identity's, published from the plan's summary).
 const resultCarrier = func => ctx.plans.programIndex.resultContract(func)?.carrier ?? CARRIER.ANY
 
+// A Number on every completion: the result crosses as its f64, and the host
+// reads every NaN of it as NaN. One that may be undefined or null is a box
+// beside its Numbers and crosses as i64, as any other box does: an engine may
+// give a NaN result the canonical bits (JSC does), which would erase it.
 const resultNumeric = func => {
   const contract = ctx.plans.programIndex.resultContract(func)
-  return contract?.voidResult || contract != null && valOf(core(contract.kind)) === VAL.NUMBER
+  return contract != null && !contract.voidResult && valOf(contract.kind) === VAL.NUMBER
 }
+// No completion returns a value: the export has no result, and the host reads undefined.
+const resultVoid = func => ctx.plans.programIndex.resultContract(func)?.voidResult === true
 
 export const isBoundaryWrapped = (func) => {
   if (!isExported(func) || func.raw) return false
@@ -35,9 +41,9 @@ export const isBoundaryWrapped = (func) => {
   // box whose NaN payload JSC/V8 erases at the boundary — wrap to i64-carry every lane.
   if (func.sig.results.length !== 1) return true
   if (func.sig.results[0] !== 'f64' || func.sig.ptrKind != null) return true
-  // The settled result kind owns the host carrier. Void exports need no
-  // payload transport; a numeric payload retains the raw numeric ABI.
-  if (!resultNumeric(func)) return true
+  // The settled result kind owns the host carrier: a numeric payload retains
+  // the raw numeric ABI; a void export drops its undefined; any other crosses i64.
+  if (resultVoid(func) || !resultNumeric(func)) return true
   // Number result, but a param may still carry a box — a pointer-ABI param, or a
   // dynamic f64 param flagged `boundaryI64` during analyze — so wrap for i64 params.
   return func.sig.params.some(p => p.type !== 'f64' || p.ptrKind != null || p.boundaryI64)
@@ -96,7 +102,8 @@ export function synthesizeBoundaryWrappers() {
     // Dynamic f64 result: not pointer/bool/raw-bigint and not a proven
     // number. It may be a NaN box (a boxed BigInt among them), so cross i64
     // and let interop's generic decoder own it.
-    const resultDynamic = !resultPtr && !resultBool && !resultRawBigint &&
+    const voidResult = !resultPtr && !resultBool && !resultRawBigint && sig.results.length === 1 && resultVoid(func)
+    const resultDynamic = !resultPtr && !resultBool && !resultRawBigint && !voidResult &&
       sig.results[0] === 'f64' && !resultNumeric(func)
     const resultI64 = resultPtr || resultBool || resultRawBigint || resultDynamic
     // jz:i64exp `r` marks results interop must reinterpret then `mem.read`.
@@ -168,6 +175,14 @@ export function synthesizeBoundaryWrappers() {
       // lane (vs `r`'s single reinterpret). Always recorded — even with no i64 params — so the
       // numeric-only `(a,b)=>[a+1,b+2]` tuple still gets its lanes turned back into numbers.
       func._exportI64 = { p: i64Params, m: sig.results.length, t: typedSlots, k: inPlaceSlots }
+      wrappers.push(wrapNode)
+      continue
+    }
+    // A void export has no result: every host reads undefined, which no
+    // engine can canonicalize away.
+    if (voidResult) {
+      wrapNode.push(['drop', callIR])
+      if (i64Params.length) func._exportI64 = { p: i64Params, r: 0, t: typedSlots, k: inPlaceSlots }
       wrappers.push(wrapNode)
       continue
     }

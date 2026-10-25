@@ -101,13 +101,15 @@ Number enters a generic slot, mixed join, nullable result or parameter with an
 active default. Checked reads normalize only their present arm, there or as
 one value of a choice (`c ? a[i] : 0`, ir/sentinels.js `checkedArms`). Uniform Number
 parameters, results and typed stores retain their bits, an export's Number
-result too: the host reads a result crossing as a Number as one (interop.js
-`numberRet`: a NaN is NaN, but for the exact bits of the undefined and null a
-nullable Number result returns). The host gives a NaN argument whose bits
-spell the undefined or null box, of either sign, quiet or signaling, the
-canonical bits (interop.js `numberArg`), so a parameter's NaN never comes back
-as one; a Number result left with such a payload inside the module (a typed
-element's) still reads as the box. `typeof` and nullish
+result too: the host reads a result crossing as f64 as a Number, every NaN
+of it NaN (interop.js `numberRet`). Only a Number on every completion crosses
+so: a result that may also be undefined or null crosses as its i64 bits, a
+box among boxes, and a void export has no result (boundary-wrap.js
+`resultNumeric`, `resultVoid`), since an engine may give a NaN result the
+canonical bits (JSC does) and so erase a box carried as one. The host gives
+a NaN argument whose bits spell the undefined or null box, of either sign,
+quiet or signaling, the canonical bits (interop.js `numberArg`), so a
+parameter's NaN never reads as one inside. `typeof` and nullish
 checks use their semantic Number proof. No generic consumer guesses a lost kind.
 A binding every read of which consumes a Number takes its bits raw. A value that
 can carry no payload is not normalized at all (`kind/payload.js`): a constant,

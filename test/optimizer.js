@@ -8012,7 +8012,8 @@ export let at = (i) => rows[1][i] + rows[1].length`,
   const grow = m => m[0] === 'call' && /^\$__arr_grow/.test(m[1])
   const has = (n, pred) => { let f = false; walk(n, m => { if (pred(m)) f = true }); return f }
   for (const [name, src] of Object.entries(srcs)) {
-    const fn = findFunc(parse(src, { level: 'speed' }), '$fill')
+    // a void export's body inlines into its boundary entry
+    const tree = parse(src, { level: 'speed' }), fn = findFunc(tree, '$fill') ?? findFunc(tree, '$fill$exp')
     // the innermost arms that grow: each stores the moved pointer back
     const arms = []
     walk(fn, n => { if (n[0] === 'then' && has(n, grow) && !n.slice(1).some(c => Array.isArray(c) && has(c, m => m[0] === 'then' && has(m, grow)))) arms.push(n) })

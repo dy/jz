@@ -707,7 +707,7 @@ test('codegen: nested-loop indices retain full Number growth', () => {
     };
   `, { wat: true })
   const run = funcWat(wat, 'run')
-  for(const name of ['ix','i0','id'])ok(new RegExp(`\\(local \\$${name} f64\\)`).test(run), `${name} retains its full Number domain`)
+  for(const name of ['ix','i0','id'])ok(new RegExp(`\\(local \\$(__inl\\d+_)?${name} f64\\)`).test(run), `${name} retains its full Number domain`)
   ok(run.includes('f64.mul'), 'the geometric stride keeps Number multiplication')
 })
 
@@ -1222,8 +1222,8 @@ test('codegen: f64-strided index does NOT force its counter to i32', () => {
     export let init = (k) => { mem = new Float64Array(k*k); return mem; };
     export let run = (w, n) => { let y = 0; while (y < n) { mem[y * w] = 1.0; y++; } };
   `, { wat: true })
-  const run = wat.match(/\(func \$run[\s\S]*?\n  \)/)?.[0] || ''
-  ok(run.includes('(local $y f64)'), 'counter behind an f64-strided index still widens to f64')
+  const run = funcWat(wat, 'run')
+  ok(/\(local \$(__inl\d+_)?y f64\)/.test(run), 'counter behind an f64-strided index still widens to f64')
 })
 
 test('codegen: global storage requires a complete integer-width proof', () => {

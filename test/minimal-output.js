@@ -7,7 +7,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import { compile } from '../index.js'
-import { onWasi, onKernel, levels } from './_matrix.js'
+import { onWasi, onKernel, levels, adaptI64 } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
 import { oracle } from './util.js'
 import { ctx } from '../src/ctx.js'
@@ -693,7 +693,8 @@ test('minimal: the compact-prototype bench rows stay at or below their recorded 
 // === Size-tier codegen classes closed against the v1 ledger ===
 // Each pins one lowering with a differential run and a byte ratchet at
 // `optimize: 'size'` (the recorded value may only fall).
-const run = (src, opts) => new WebAssembly.Instance(new WebAssembly.Module(compile(src, { alloc: false, ...opts }))).exports
+// (a raw host: a result that may be undefined or null crosses as its i64 bits, jz:i64exp `r`)
+const run = (src, opts) => { const mod = new WebAssembly.Module(compile(src, { alloc: false, ...opts })); return adaptI64(mod, new WebAssembly.Instance(mod).exports) }
 const jsFn = (src, name) => oracle(src)[name]
 
 // A union-typed array pushed from several literal sites reserves each element

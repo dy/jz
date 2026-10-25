@@ -303,8 +303,8 @@ allocated memory by its bigint handle from `memory.Array`, `memory.Float64Array`
 or the other constructors. Raw `memory.read` and pointer codec helpers also
 accept legacy floating-point carriers; ordinary argument and value marshaling
 does not interpret Number payloads as handles. An export's Number result reads
-as a Number whatever its payload, but for the exact bits of the undefined and
-null a nullable Number result returns.
+as a Number whatever its payload; one that may be undefined or null, and a void
+export's undefined, read as those on every engine.
 
 For DSP, `memory: { fixed: ['process'] }` checks the final Wasm call graph:
 the selected exports and their typed variants must run without heap allocation,

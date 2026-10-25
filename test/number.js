@@ -683,10 +683,12 @@ test('Number payload proofs: a host NaN or a checked read spelling undefined or 
   // signaling, enters with the canonical bits (interop.js numberArg), so a
   // parameter's NaN cannot come back as undefined or null; a nullable
   // result's checked read is normalized where it lies inside a choice
-  // (ir/sentinels.js checkedArms). Nullable and void results still read
-  // undefined and null. (A Number result left with such a payload inside the
-  // module, `bits(hi, 0)[0] * 2`, still reads as the box: the host cannot tell.)
+  // (ir/sentinels.js checkedArms). A Number result left with such a payload
+  // inside the module (`bits(hi, 0)[0] * 2`) is a NaN: a result that may be
+  // undefined or null crosses as i64, so an f64 one is a Number (numberRet).
+  // Nullable and void results still read undefined and null.
   const src=`const bits=(hi,lo)=>{const t=new Float64Array(1),w=new Uint32Array(t.buffer);w[0]=lo;w[1]=hi;return t}
+    export let product=(hi)=>bits(hi,0)[0]*2
     export function read(hi){const v=bits(hi,0)[0];return v}
     export let param=(x)=>x*2
     export let negate=(x)=>-x
@@ -699,7 +701,7 @@ test('Number payload proofs: a host NaN or a checked read spelling undefined or 
   for(const optimize of levels(0,2,3,'size')){
     const got=jz(src,{optimize:{level:optimize}}).exports
     for(const hi of [0x7ff80001,0x7ff80002]){
-      for(const name of ['read','choice'])is(got[name](hi),want[name](hi),`${name} ${hi.toString(16)} O${optimize}`)
+      for(const name of ['product','read','choice'])is(got[name](hi),want[name](hi),`${name} ${hi.toString(16)} O${optimize}`)
       is(got.param(nanOf(hi)),NaN,`param ${hi.toString(16)} O${optimize}`)
       is(got.negate(nanOf((hi|0x80000000)>>>0)),NaN,`negate ${hi.toString(16)} O${optimize}`)
       is(got.param(nanOf(hi&~0x80000)),NaN,`signaling ${hi.toString(16)} O${optimize}`)
