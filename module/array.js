@@ -2743,16 +2743,16 @@ export default (ctx) => {
   // (Distinct from `Array(n)`, which makes a length-n hole array.)
   ctx.core.emit['Array.of'] = (...items) => arrayLiteral(items)
 
-  // Boxed pointer values (strings/objects/etc.) carry NaN payloads, and
-  // f64.eq treats NaN as not-equal to anything — even bit-identical NaN —
-  // so a raw f64 compare misses string and reference matches. Route those
-  // through __eq, the same helper `==` uses for STRING/BIGINT/cross-type.
-  // f64.eq stays the fast path when the search value is statically NUMBER.
+  // indexOf and lastIndexOf compare by IsStrictlyEqual (23.1.3.17 step 10.b):
+  // boxed values (strings, objects) carry NaN payloads f64.eq never matches,
+  // so they take the helper `===` falls back to, which converts nothing
+  // (`[1].indexOf('1')` is -1). f64.eq stays the fast path when the search
+  // value is statically NUMBER.
   const arrEqIR = (val) => {
     const vt = resolveValType(val, valTypeOf, lookupValType)
     if (vt === VAL.NUMBER) return (item, vv) => ['f64.eq', item, vv]
-    inc('__eq')
-    return (item, vv) => ['call', '$__eq', ['i64.reinterpret_f64', item], ['i64.reinterpret_f64', vv]]
+    inc('__eq_strict')
+    return (item, vv) => ['call', '$__eq_strict', ['i64.reinterpret_f64', item], ['i64.reinterpret_f64', vv]]
   }
 
   // The search methods' fromIndex (23.1.3.17 steps 4-9, 23.1.3.20 steps 4-8):

@@ -526,7 +526,7 @@ helper decode fixed storage directly; only relocatable collections need the
 generic forwarding decoder. Identity follows it too: a reference taken before
 an array, set or map grew and moved holds the old offset, so where the bits of
 two such values differ, `===` and its kin, the dynamic comparisons
-(`__eq`, `__eq_strict`) and `includes` ask `__same_ref` whether
+(`__eq`, `__eq_strict`), `includes` and `Object.is` ask `__same_ref` whether
 both forward to one live block. Beside an array no reference can hold stale
 (never resized by the summary, or a `neverGrown`/`ownCurrent` binding) the bits
 are identity. A Map or Set key hashed before it moved is not found after

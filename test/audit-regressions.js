@@ -1623,3 +1623,20 @@ test('audit: the class of a value that is no number or a truth value', () => {
   const want = oracle(src).f()
   for (const optimize of TIERS) is(jz(src, { optimize }).exports.f(), want, `${optimize}`)
 })
+
+// indexOf and lastIndexOf compare by IsStrictlyEqual, converting nothing;
+// Object.is is SameValue: strings by content, NaNs of any payload as one,
+// +0 apart from -0, BigInts by value, an array before and after it moved.
+test('audit: indexOf compares strictly and Object.is is SameValue', () => {
+  const src = `export function search(x) { return [[1].indexOf('1'), [null].indexOf(undefined), [0].indexOf(false), ['a', 1].lastIndexOf('1'), [1, 2].indexOf(x), [x, 'b'].indexOf('b')] }
+    export function same(s) { const t = new Float64Array(1), w = new Uint32Array(t.buffer); w[1] = 0x7FF80001
+      const a = [1], k = [a]; for (let i = 0; i < 100; i++) a.push(i); const n = 5n
+      const u = s.length > 3 ? k[0] : 'q', v = s.length > 3 ? a : 1
+      return [Object.is(s + 'ij', 'abcdefghij'), Object.is(t[0], NaN), Object.is(0, -0), Object.is(s, -0), Object.is(k[0], a), Object.is(u, v), Object.is(n * 2n, 10n), Object.is(n, 5), Object.is(null, undefined), Object.is([true][0], true)] }`
+  const expected = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    is(got.search('1'), expected.search('1'), `search ${optimize}`)
+    is(got.same('abcdefgh'), expected.same('abcdefgh'), `same ${optimize}`)
+  }
+})

@@ -276,14 +276,33 @@ export default (ctx) => {
   // survives only for freeze-as-a-value (`arr.map(Object.freeze)`).
   ctx.core.emit['Object.freeze'] = (obj) => asF64(emit(obj))
 
-  // Object.is(a, b) — SameValue, which on NaN-boxed f64 values is exact bit
-  // equality. That is precisely why it diverges from `===`: +0 and -0 carry
-  // distinct bit patterns (→ false), and a NaN equals itself bit-for-bit
-  // (→ true). Objects/booleans/null/undefined compare by their fixed boxed
-  // bits, i.e. reference identity, as SameValue requires. (Two distinct heap
-  // strings would compare by pointer rather than content; jz only uses numeric
-  // Object.is — overwhelmingly `Object.is(x, -0)` — so that path never arises.)
-  ctx.core.emit['Object.is'] = (a, b) => typed(['i64.eq', asI64(emit(a)), asI64(emit(b))], 'i32')
+  // Object.is(a, b) is SameValue (ECMA-262 7.2.10): equal bits, or what bits
+  // do not settle, which SameValueZero's arms do: two NaNs of any payload,
+  // two strings or BigInts by content, two boxes of one array a growth moved.
+  // +0 and -0 differ by their bits alone, so a Number that is never NaN (a
+  // literal, `Object.is(x, -0)`, or an integer a bitwise operator makes,
+  // `Object.is(x, x | 0)`) is the same value only as its bits; two Numbers
+  // are their bits or two NaNs. Beside a value that is no Number, SameValue
+  // is IsStrictlyEqual (`===`, whose BigInt and string forms it then takes).
+  const INT_OPS = new Set(['|', '&', '^', '~', '<<', '>>', '>>>'])
+  const numberLiteral = (n) => Array.isArray(n) && (n[0] == null ? typeof n[1] === 'number' && n[1] === n[1]
+    : n[0] === 'u-' ? numberLiteral(n[1]) : INT_OPS.has(n[0]) && valTypeOf(n) === VAL.NUMBER)
+  const noNumber = (n) => { const vt = valTypeOf(n); return vt != null && vt !== VAL.NUMBER }
+  ctx.core.emit['Object.is'] = (a, b) => {
+    if (!numberLiteral(a) && !numberLiteral(b) && (noNumber(a) || noNumber(b))) return ctx.core.emit['==='](a, b)
+    const va = asI64(storedValue(a)), vb = asI64(storedValue(b))
+    if (numberLiteral(a) || numberLiteral(b)) return typed(['i64.eq', va, vb], 'i32')
+    const ia = tempI64('sv'), ib = tempI64('sv'), ga = ['local.get', `$${ia}`], gb = ['local.get', `$${ib}`]
+    const nan = (g) => ['f64.ne', ['f64.reinterpret_i64', g], ['f64.reinterpret_i64', g]]
+    const numbers = valTypeOf(a) === VAL.NUMBER && valTypeOf(b) === VAL.NUMBER
+    if (!numbers) { ctx.module.include('collection'); inc('__same_value_zero', '__same_ref') }
+    // two boxes: SameValueZero's arms, or one array (set, map) before and after it moved
+    const boxes = ['if', ['result', 'i32'], ['call', '$__same_value_zero', ga, gb], ['then', ['i32.const', 1]], ['else', ['call', '$__same_ref', ga, gb]]]
+    return typed(['block', ['result', 'i32'], ['local.set', `$${ia}`, va], ['local.set', `$${ib}`, vb],
+      ['if', ['result', 'i32'], ['i64.eq', ga, gb], ['then', ['i32.const', 1]],
+        ['else', numbers ? ['i32.and', nan(ga), nan(gb)]
+          : ['if', ['result', 'i32'], ['i32.and', nan(ga), nan(gb)], ['then', boxes], ['else', ['i32.const', 0]]]]]], 'i32')
+  }
 
   // Object.isExtensible / isSealed / isFrozen.
   // jz fixes an object's schema at construction: a `{…}` literal can
