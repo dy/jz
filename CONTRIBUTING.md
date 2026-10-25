@@ -3235,7 +3235,9 @@ start afresh each round): a binding the first rounds see empty, its value a
 field holding what a function met later returns, decides nothing until then,
 and an arm walked in those rounds no longer keeps the test open. A bare `let`
 assigned before every read declares empty, not absent
-(`summary/definite.js`). The module's own bare declarations take the same
+(`summary/definite.js`); a condition carries what each outcome assigned, a
+true `&&` and a false `||` having run every operand (`if (a && (r = a[0]) !=
+null && r !== b)` reads `r` assigned). The module's own bare declarations take the same
 proof over its statements: a function runs where a statement names it or,
 called by the host, after they end, so a name a function reads is assigned on
 every path to the end (`var HIGH; if (le) HIGH = 1; else HIGH = 0` holds a
