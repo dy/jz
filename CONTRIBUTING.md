@@ -2517,7 +2517,11 @@ slot by name; onto an array or dictionary it stores every shape of a shape-set
 source. An object handed to a call the summary cannot see through (a source of
 unknown shape, an unknown method) holds anything in its slots and under any
 name beside them (`escapeObjectValue`: `poisonSchema` and the shape's
-`sideWild`), so a read under a computed name holds anything too.
+`sideWild`), so a read under a computed name holds anything too, and so does
+a read under a name the program never stores: a lost shape's read beside its
+slots joins its sides, the values computed-key stores through unknown
+receivers left, and anything under a name the program stores by (the solver's
+`member` and the query's `memberOf` alike).
 
 Unknown-receiver stores affect schemas whose identity escaped analysis or whose
 instances the host can hold. The summary retains their stored values and applies

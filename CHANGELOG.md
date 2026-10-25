@@ -2,6 +2,7 @@
 
 ## Unreleased — v1 preparation
 
+- Read what a call the summary cannot see through stored on a lost shape under a name the program never stores (`Object.assign(o, JSON.parse(s)); o.b.map(f)`): the summary's solver and query both read such a name as nullish, ignoring the shape's any-name stores, so a method of the stored value threw "is not a function". Every bench case is byte-identical.
 - Evaluate a `charAt`/`charCodeAt`'s surplus arguments on a receiver the compiler cannot kind (`s.charAt(0, n++)` with `s` from the host): the call is the string builtin where the run finds a string and the value's own method of that name otherwise, where it took the property call and threw "is not a function". Every bench case is byte-identical.
 - Catch what an optional call throws (`o.m?.()`, `f?.()`): a try around one whose body had no other call or throw was dropped as unable to throw (statements.js canThrow). Every bench case is byte-identical.
 - Sort by the default order where the comparator is `undefined`, written or passed (`[3, 1, 2].sort(undefined)`, `a.toSorted(c)` with `c` undefined at run time, typed arrays alike), and throw a TypeError for one that is no function: a comparator the summary could not prove callable was called as one and trapped with "table index is out of bounds". `toSorted` evaluates its receiver before its comparator. Every bench case is byte-identical.

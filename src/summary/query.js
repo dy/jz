@@ -417,8 +417,10 @@ export function summaryQueries(facts, internal = false) {
         }
         const getter = classMember(r, getterOf(prop)), fn = getter ?? (classMember(r, prop) ? binderOf(classMember(r, prop)) : null)
         if (fn) return memberMayBeOwn(prop) ? ANY : results.has(fn) ? resultOfId(fn) : ANY
-        if (!lostSchema(paramOf(r))) return merge(NULLISH, sideOf(paramOf(r), prop))
-        return memberMayBeOwn(prop) ? ANY : NULLISH
+        // a lost shape also holds what receivers the summary cannot name stored (the solver's `member`)
+        const side = merge(NULLISH, sideOf(paramOf(r), prop))
+        if (!lostSchema(paramOf(r))) return side
+        return memberMayBeOwn(prop) ? ANY : pendingAll ? merge(side, wildValues) : side
       }
       if (t === K.HASH) return orAbsent(hashPropOf(r, prop))
       if (dictOrObject(r)) {

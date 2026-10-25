@@ -1808,3 +1808,15 @@ export let f = (k) => { fill(); return pick(k > 0 ? 'b' : 'a') }`
   _compileInProcess(src, { optimize: 0, imports: { host: { make: { params: 0 } } } })
   is(tagOf(kindOf('pick', 'e')), K.ANY, 'the read holds anything')
 })
+
+// A shape the summary loses to such a call holds anything as well under a
+// name the program never stores: `o.b` read as nullish, so a method of the
+// value the call put there threw (`o.b.map` is not a function).
+test('summary: a lost shape holds what an unseen call stored under a name the program never stores', () => {
+  const src = `export let f = (s) => { const o = { a: 1 }; Object.assign(o, JSON.parse(s)); const e = o.b
+    return [e.map(x => x * 2), o.b.at(-1), o.b?.length, o.c ?? 'none'] }`
+  summarize(src)
+  is(tagOf(kindOf('f', 'e')), K.ANY, 'the read holds anything')
+  const want = oracle(src).f('{"b":[4,5]}')
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f('{"b":[4,5]}'), want, `O${optimize}`)
+})

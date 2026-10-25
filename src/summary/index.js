@@ -3127,9 +3127,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // A shape the summary follows holds outside its slots only what was
       // stored beside them through this shape: a receiver of unknown shape is
       // an instance of a lost shape or a foreign object, never of this one. A
-      // lost shape may hold anything of the name.
-      if (!lostSchema(paramOf(recv))) return optionalResult(op, recv, merge(NULLISH, mixedReadIn(mixedSides.get(paramOf(recv)) ?? NO_MIX, prop, sideOf(paramOf(recv), prop))))
-      return optionalResult(op, recv, memberMayBeOwn(prop) ? ANY : NULLISH)
+      // lost shape holds besides what such a receiver stored: anything under
+      // a name the program stores by, the values of its computed-key stores,
+      // and under any name what code the summary cannot see put there (an
+      // `Object.assign` from a host value: `sideWild`, escapeObject).
+      const side = merge(NULLISH, mixedReadIn(mixedSides.get(paramOf(recv)) ?? NO_MIX, prop, sideOf(paramOf(recv), prop)))
+      if (!lostSchema(paramOf(recv))) return optionalResult(op, recv, side)
+      return optionalResult(op, recv, memberMayBeOwn(prop) ? ANY : pendingAll ? merge(side, wildValues) : side)
     }
     if (unknownReceiver(recv)) {
       callCandidates(recv, getterOf(prop), 0, 0)
