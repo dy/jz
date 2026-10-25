@@ -1362,7 +1362,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // Own properties on builtin receiver families are tracked by family, not as
   // one global name set: `{push: fn}` must not pessimize every real Array#push.
   const builtinOwnProps = new Map()
-  const escapeObjectValue = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) poisonSchema(sid); if (hasTag(k, K.TYPED)) escapeTypedProps(k); escape(k) }
+  // A call the summary cannot see through may store anything into the object, under
+  // its slots' names or any other: every slot and every name beside them holds anything.
+  const escapeObjectValue = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) { poisonSchema(sid); raiseSideWild(sid, ANY) } if (hasTag(k, K.TYPED)) escapeTypedProps(k); escape(k) }
   const escapeObject = (k) => losingAs('passed to a call the summary cannot see through', escapeObjectValue, k)
   const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   /** A value the host holds (an export's result, an exported global, an import's argument): every closure it reaches may be called with anything. */

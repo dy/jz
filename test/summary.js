@@ -1792,3 +1792,19 @@ test('phase checkpoint, natively: a solve\'s result is data, and what predates t
   class C {}
   throws(() => run(() => new C()), /holds a C object/)
 })
+
+// A call the summary cannot see through (`Object.assign` from a value of
+// unknown shape, a method it does not know) may store anything into the object
+// it is handed, under any name: a read under a computed name holds anything,
+// not only what the visible stores left beside the layout (an empty one here).
+// The compiler's own dependency table, a `{}` modules fill by `Object.assign`,
+// read `typeof entry === 'function'` as never true.
+test('summary: an object an unseen call fills holds anything under any name', () => {
+  const src = `import { make } from 'host'
+const core = { deps: {} }
+const fill = () => Object.assign(core.deps, make())
+const pick = (name) => { const e = core.deps[name]; return e === undefined ? -1 : e * 10 }
+export let f = (k) => { fill(); return pick(k > 0 ? 'b' : 'a') }`
+  _compileInProcess(src, { optimize: 0, imports: { host: { make: { params: 0 } } } })
+  is(tagOf(kindOf('pick', 'e')), K.ANY, 'the read holds anything')
+})

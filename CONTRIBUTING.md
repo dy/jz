@@ -2504,7 +2504,10 @@ reads its own argument's result; away from a call site (`resultOf`) a
 forwarded result is unknown. A closure set holds up to 1024 members before
 its members escape. `Object.assign` onto a shaped target stores each source
 slot by name; onto an array or dictionary it stores every shape of a shape-set
-source.
+source. An object handed to a call the summary cannot see through (a source of
+unknown shape, an unknown method) holds anything in its slots and under any
+name beside them (`escapeObjectValue`: `poisonSchema` and the shape's
+`sideWild`), so a read under a computed name holds anything too.
 
 Unknown-receiver stores affect schemas whose identity escaped analysis or whose
 instances the host can hold. The summary retains their stored values and applies
