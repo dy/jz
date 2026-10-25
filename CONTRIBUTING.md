@@ -3230,7 +3230,11 @@ pushes through its own name is frozen after init (`frozenLenOf`): its binding
 holds the final pointer, so reads through it follow no forward. An element
 read whose index the walk finds inside a fixed length is present by node
 (`presentReads`), and a never-nullish expression of one layout reads its slot
-directly. A bare `let` assigned before every read declares empty, not absent
+directly. A test is decided by the round whose kinds settled (`decisions`
+start afresh each round): a binding the first rounds see empty, its value a
+field holding what a function met later returns, decides nothing until then,
+and an arm walked in those rounds no longer keeps the test open. A bare `let`
+assigned before every read declares empty, not absent
 (`summary/definite.js`). The module's own bare declarations take the same
 proof over its statements: a function runs where a statement names it or,
 called by the host, after they end, so a name a function reads is assigned on

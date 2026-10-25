@@ -5058,6 +5058,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const fixpoint = () => rounds(() => {
     changed = false
     grown.clear()   // the init pushes are counted afresh by every round's walk
+    decisions.clear()   // as are the tests: the round without a change, its kinds settled, decides
     retainSeen.clear(); hostSeen.clear()   // the walks' records, afresh each round (retain)
     spreadSources.clear() // join the source kinds from this round's reachable contexts
     for (const f of funcs) {
