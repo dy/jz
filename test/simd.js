@@ -3197,6 +3197,50 @@ test('paired items - declines where one item could see another', () => {
   ok(!paired(pairKern().replace('let v = 0.0', 'let v = 0.0; out[j] = 1')), 'store before the loop')
 })
 
+test('paired items - a loop in a condition is no inner loop; one in an else arm is', () => {
+  // an inlined scan in an `if` test, the pixel loop's only loop (the compiler's own source has it)
+  const src = `const ys = [1, 2, 3]
+    export let f = (out) => { for (let i = 0; i < out.length; i++) if (ys.includes(i)) out[i] = i * 2 }`
+  const on = run(src, PAIR_ON), js = oracle(src)
+  for (const n of [0, 1, 4, 9]) {
+    const a = new Float64Array(n).fill(-1), b = new Float64Array(n).fill(-1)
+    on.f(a); js.f(b)
+    is([...a], [...b], `${n} items, as JS`)
+  }
+  if (onKernel()) return // Exercise the host IR pass directly.
+  // the same shape as the pass meets it: the loop in the test, with and without an else
+  const scan = `(block (result i32) (local.set $j (i32.const 0))
+    (block $sb (loop $sl (br_if $sb (i32.ge_s (local.get $j) (i32.const 3)))
+      (local.set $j (i32.add (local.get $j) (i32.const 1))) (br $sl)))
+    (i32.eq (local.get $j) (i32.and (local.get $i) (i32.const 3))))`
+  const recurrence = `(local.set $x (f64.convert_i32_s (local.get $i))) (local.set $v (f64.const 0))
+    (block $ib (loop $il (br_if $ib (f64.gt (local.get $x) (f64.const 100)))
+      (local.set $x (f64.add (f64.mul (local.get $x) (f64.const 1.5)) (f64.const 1)))
+      (local.set $v (f64.add (local.get $v) (f64.const 1))) (br $il)))`
+  const kernel = (stmt) => `(module (memory (export "memory") 1)
+    (func (export "f") (param $n i32) (local $i i32) (local $j i32) (local $x f64) (local $v f64)
+      (block $ob (loop $ol (br_if $ob (i32.eqz (i32.lt_s (local.get $i) (local.get $n))))
+        ${stmt}
+        (f64.store (i32.shl (local.get $i) (i32.const 3)) (local.get $v))
+        (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $ol)))))`
+  for (const [label, stmt, pairs] of [
+    ['a scan in the test, no else', `(local.set $v (f64.const 2)) (if ${scan} (then (local.set $v (f64.const 1))))`, false],
+    ['a scan in the test, an else', `(if ${scan} (then (local.set $v (f64.const 1))) (else (local.set $v (f64.const 2))))`, false],
+    ['a recurrence in the else arm', `(if (i32.and (local.get $i) (i32.const 1)) (then (local.set $v (f64.const -1))) (else ${recurrence}))`, true],
+  ]) {
+    const scalar = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(parseWat(kernel(stmt))))).exports
+    const tree = parseWat(kernel(stmt))
+    vectorizeLaneLocal(tree.find(n => Array.isArray(n) && n[0] === 'func'), { pairIterations: true })
+    is(/\$__pi\d+_jl/.test(JSON.stringify(tree)), pairs, `${label}: ${pairs ? 'paired' : 'declined'}`)
+    const lifted = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree))).exports
+    for (const n of [0, 1, 2, 5, 8, 13]) {
+      new Float64Array(scalar.memory.buffer).fill(7); new Float64Array(lifted.memory.buffer).fill(7)
+      scalar.f(n); lifted.f(n)
+      is([...new Float64Array(lifted.memory.buffer, 0, 14)], [...new Float64Array(scalar.memory.buffer, 0, 14)], `${label}, ${n} items`)
+    }
+  }
+})
+
 // Compound-top guard `while (escape && i < MAXIT)` — BOTH conditions in the while head, the ESCAPE
 // FIRST (the natural way to write a mandelbrot). This is the compound-top path; with the escape
 // first, the i32 limit lands in the second keep, which the recognizer left unclassified and tried to

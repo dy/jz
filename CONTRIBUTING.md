@@ -4304,7 +4304,8 @@ trip count is the data's, so the core cannot run ahead past its exit into the ne
 and each step waits on the one before; paired, two chains overlap (blackhole's geodesics,
 hyperbolic's reflections, mandelbrot's deep-zoom perturbation). A counted inner loop (an
 fbm's octaves, a counter stepped by a constant even where a version keeps it an f64) stays
-single: the core already runs ahead of it. Each lane runs its own
+single: the core already runs ahead of it, and so does a loop in an `if`'s test (an
+inlined scan, `if (ys.includes(i))`), which no arm holds. Each lane runs its own
 statements in order, so only one lane's work moves against the other's, which the body
 keeps unobservable: no local carries a value from pixel to pixel or past the loop (each
 read follows a write in the pixel, the vectorizer's live-out set), only `$math.*` calls

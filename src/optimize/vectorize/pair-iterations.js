@@ -60,8 +60,16 @@ const ifParts = (n) => {
   return { cond, then, els }
 }
 
+const hasLoop = (n) => {
+  let has = false
+  walkAst(n, { enter: x => { if (has) return false; if (x[0] === 'loop') has = true } })
+  return has
+}
+
 // The block holding the inner loop, as the last of its statements, and the path of
 // `if` arms down to it from the body: [{ list, idx, arm }] (arm: 'then' | 'else' | null).
+// A loop in an `if`'s condition (an inlined scan: `if (ys.includes(i))`) runs before
+// either arm, and no arm holds it: the body has no inner loop to pair.
 function findInner(obody) {
   let loops = 0
   for (const s of obody) walkAst(s, { enter: n => { if (n[0] === 'loop') loops++ } })
@@ -69,10 +77,7 @@ function findInner(obody) {
   const search = (list, path) => {
     for (let i = 0; i < list.length; i++) {
       const s = list[i]
-      if (!isArr(s)) continue
-      let has = false
-      walkAst(s, { enter: n => { if (has) return false; if (n[0] === 'loop') has = true } })
-      if (!has) continue
+      if (!isArr(s) || !hasLoop(s)) continue
       if (s[0] === 'block') {
         const last = s[s.length - 1]
         if (!isLabel(s[1]) || !isArr(last) || last[0] !== 'loop' || !isLabel(last[1])) return null
@@ -82,11 +87,10 @@ function findInner(obody) {
       }
       if (s[0] === 'if') {
         const p = ifParts(s)
-        if (!p) return null
-        let inThen = false
-        walkAst(p.then, { enter: n => { if (inThen) return false; if (n[0] === 'loop') inThen = true } })
-        const arm = inThen ? p.then : p.els
-        return search(arm.slice(1), [...path, { list, idx: i, arm: inThen ? 'then' : 'else', node: s, parts: p }])
+        if (!p || hasLoop(p.cond)) return null
+        // (the one loop is in an arm: then, or else, which therefore exists)
+        const inThen = hasLoop(p.then)
+        return search((inThen ? p.then : p.els).slice(1), [...path, { list, idx: i, arm: inThen ? 'then' : 'else', node: s, parts: p }])
       }
       return null
     }
