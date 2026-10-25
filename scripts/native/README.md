@@ -23,8 +23,10 @@ It needs WABT (wasm2c and its runtime: `brew install wabt` or a
 [release](https://github.com/WebAssembly/wabt/releases)) and clang or another C
 compiler. WABT is found through `WABT_DIR` (a checkout or install prefix),
 `WABT_W2C_DIR` (its runtime directory, `share/wabt/wasm2c`), the `wasm2c` on
-PATH, or the Homebrew, `/usr/local` and `/usr` prefixes; `CC` and `CFLAGS`
-choose the compiler and add flags. A program that vectorizes needs the SIMDe
+PATH, or the Homebrew, `/usr/local` and `/usr` prefixes; `CC` (`CC="zig cc"`
+too) and `CFLAGS` choose the compiler and add flags; a clang profile-guided
+build is `CFLAGS=-fprofile-instr-generate`, a run, `llvm-profdata merge`, then
+`CFLAGS=-fprofile-instr-use=<profdata>`. A program that vectorizes needs the SIMDe
 headers (`brew install simde`, `apt install libsimde-dev`, or `SIMDE_DIR`), or
 `--no-simd`.
 

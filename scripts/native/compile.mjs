@@ -9,7 +9,7 @@
  *
  * Environment: WABT_DIR (a WABT checkout or install prefix) or WABT_W2C_DIR (its
  * wasm2c runtime directory, share/wabt/wasm2c in a release); otherwise the wasm2c
- * on PATH and the usual install prefixes. CC (default clang, else cc), CFLAGS
+ * on PATH and the usual install prefixes. CC (default clang, else cc; may carry arguments, as "zig cc"), CFLAGS
  * (appended), SIMDE_DIR (SIMDe include root, for programs that vectorize).
  */
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -115,12 +115,15 @@ export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess, main
   const c = join(dir, 'jz.c')
   run(tools.wasm2c, ['--enable-exceptions', '--enable-tail-call', '-n', 'jz', wasm, '-o', c])
   if (postprocess) writeFileSync(c, execFileSync('awk', ['-f', postprocess, c], { maxBuffer: 1 << 30 }))
+  // CC may carry its own arguments: CC="zig cc".
+  const [cc, ...ccArgs] = tools.cc.trim().split(/\s+/)
   try {
-    run(tools.cc, [...cflags, ...sysroot(), ...defines, ...[dir, ...tools.include].map(p => `-I${p}`),
+    run(cc, [...ccArgs, ...cflags, ...sysroot(), ...defines, ...[dir, ...tools.include].map(p => `-I${p}`),
       SHIM, c, ...RUNTIME.map(f => join(tools.runtime, f)), '-lm', '-o', out])
   } catch (e) {
     // WABT 1.0.39-1.0.41 emit invalid C for a tail call that passes several values.
-    if (readFileSync(c, 'utf8').includes('wasm_tailcall_'))
+    // Every import gets a tail-call entry; only the module's own functions show a tail call.
+    if (readFileSync(c, 'utf8').includes('wasm_tailcall_w2c_jz_'))
       e.message += '\nThe module makes tail calls, which wasm2c mistranslates in some shapes: build it with --no-tail-call, or give this script the .js source.'
     throw e
   }
