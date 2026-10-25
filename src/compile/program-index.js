@@ -573,6 +573,8 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   //   the edge rather than trusting source magnitude or a result-wide guess.
   const sourceBoundaryData = new Array(sourceFunctions.length).fill(null)
   const variantFunctions = [], variantSourceIds = [], variantKinds = [], variantBoundaryData = []
+  // the function each variant was made from (a source, or a variant before it)
+  const variantOrigins = []
   const anonymousBoundaryKinds = [], anonymousBoundaryData = []
   const anonymousBoundaryIds = new Map()
   const variantObjectIds = new Map(), variantNameIds = new Map()
@@ -587,6 +589,8 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     : variantObjectIds.get(funcOrName) ?? -1
   const sourceIdOfVariant = variantId => Number.isInteger(variantId) && variantId >= 0 && variantId < variantSourceIds.length
     ? variantSourceIds[variantId] : -1
+  const variantOriginOf = variantId => Number.isInteger(variantId) && variantId >= 0 && variantId < variantOrigins.length
+    ? variantOrigins[variantId] : null
   const publishFunctionBoundaryData = (func, data, anonymousKind) => {
     const sourceId = sourceIdOf(func)
     if (sourceId >= 0) {
@@ -665,6 +669,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     variantFunctions.push(variant)
     variantSourceIds.push(sourceId)
     variantKinds.push(kind)
+    variantOrigins.push(origin)
     variantBoundaryData.push(null)
     variantObjectIds.set(variant, id)
     variantNameIds.set(variant.name, id)
@@ -705,6 +710,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     Object.freeze(variantFunctions)
     Object.freeze(variantSourceIds)
     Object.freeze(variantKinds)
+    Object.freeze(variantOrigins)
     Object.freeze(variantBoundaryData)
     variantIndex = Object.freeze({
       variantCount: variantFunctions.length,
@@ -1130,6 +1136,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     variantFunctionById,
     variantIdOf,
     sourceIdOfVariant,
+    variantOriginOf,
     publishFunctionBoundaryData,
     functionBoundaryData,
     anonymousBoundaryKindOf,

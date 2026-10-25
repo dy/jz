@@ -129,3 +129,15 @@ test('called args: a parameter written, seen by a closure, or given many strings
   agrees(`function f (m, x) { return m === 'm3' ? x * 3 : m === 'm7' ? x * 7 : x }
     export let run = (x) => ${many}`, [['run', 2]])
 })
+
+test('called args: a copy runs the defaults its own calls leave to run', () => {
+  // the copy's calls are its own: one passing the mode alone runs the default
+  // after it, however the other copies' calls pass it
+  agrees(`const check = (body, kind, names = []) => { let n = 0; for (const x of body) { if (kind === 'global') n += 100; if (names.includes(x)) n += 10; n++ } return n }
+    export let run = (k) => check(['a', 'b'], 'global') + check(['a'], 'function', ['a']) + (k ? check(['c'], 'block') : 0)`, [['run', 0], ['run', 1]])
+  agrees(`const step = (n, kind, k = 7) => { let s = 0; for (let i = 0; i < n; i++) s += kind === 'up' ? k : -k; return s }
+    export let run = (n) => step(n, 'up') + step(n, 'down', 3)`, [['run', 0], ['run', 4]])
+  agrees(`function sq (x) { return x * x } function cube (x) { return x * x * x }
+    const apply = (f, x, k = 5) => f(x) + k
+    export let run = (x) => apply(sq, x) + apply(cube, x, 1)`, [['run', 2], ['run', -3]])
+})

@@ -236,10 +236,15 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   // charDecomp prologue is resolved in `collectParamInits` below.
   const defaults = func.defaults || {}
   const defaultInits = new Map()
-  // the summary's view of the function: a variant's calls are its source's
+  // the summary's view of the function's calls: its own where the summary walked
+  // it (a plan's copy, `check·s…` for one string a call passes, its sites retargeted
+  // before the program was summarized), else the nearest origin's it walked, whose
+  // calls its sites were (a copy made after)
   const pi = programFacts.programIndex
-  const source = pi.sourceFunctionById(pi.sourceIdOfVariant(pi.variantIdOf(func)))
-  const view = ctx.summary?.at(source?.name ?? name)
+  let viewed = func
+  for (let id = pi.variantIdOf(viewed); id >= 0 && !ctx.summary?.reaches(viewed.name) && pi.variantOriginOf(id); id = pi.variantIdOf(viewed))
+    viewed = pi.variantOriginOf(id)
+  const view = ctx.summary?.at(viewed.name)
   for (const [pname, defVal] of Object.entries(defaults)) {
     const p = sig.params.find(p => p.name === pname)
     // a default no call lets run (every caller passes the argument) is dead
