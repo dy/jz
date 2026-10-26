@@ -551,7 +551,7 @@ binding at the old block when the array moves: where that binding is a local
 or a module global the host cannot write, holding an array of no fixed length
 that is no Map's or Set's key (`arrayMayBeKeyExpr`), the call is followed by a
 read of the forwarding word, and the binding takes the new block
-(`refreshGrown`), so its later reads follow no forward. A second stable numeric read receiver can cache its
+(`refreshGrown`, off at the size tier, where each read follows the forward), so its later reads follow no forward. A second stable numeric read receiver can cache its
 base, length and element width, sharing one load dispatcher per output version.
 This covers integer, floating and clamped storage; nullish and BigInt receivers
 retain the original single-receiver loop. Float16 reuses the already-demanded

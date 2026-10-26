@@ -289,7 +289,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   // so consumer's asF64 uses `f64.convert_i32_u` instead of `_s` ([0, 2^32) range).
   const rt = func?.sig.results[0] || 'f64'
   const call = typed(func ? callWithArgs(callee, args, func.sig) : ['call', `$${callee}`, ...args], rt)
-  const refresh = func && func.sig.results.length <= 1 ? refreshGrown(func, parsed.normal) : []
+  const refresh = func && func.sig.results.length <= 1 && ctx.transform.optimize?.refreshGrown === true ? refreshGrown(func, parsed.normal) : []
   if (refresh.length) {
     if (!func.sig.results.length) return attachSigMeta(typed(['block', call, ...refresh], rt), func.sig)
     const t = rt === 'i32' ? tempI32('cr') : rt === 'i64' ? null : temp('cr')
