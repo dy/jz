@@ -294,4 +294,8 @@ export let stacked = () => { const stack = [[0, 1]], done = []
     .split('(func ').find(c => c.startsWith('$' + name)) || '').includes('0xFFFFFFFF00000000')
   ok(refreshes(grown, 'local') && refreshes(grown, 'module'), 'a local and a module binding read the grown array after the call')
   ok(!refreshes(keyed, 'keyed'), 'a key of a Map keeps its address')
+  // a local read nowhere after the call keeps its block: a refresh would only cost
+  const once = append + 'export let once = (n) => { let t = 0; for (let r = 0; r < n; r++) { const a = [r]; append(a, [r, r]); t += r } return t }'
+  is(jz(once).exports.once(4), 6, 'a local passed and dropped')
+  ok(!refreshes(once, 'once'), 'a local named only by its declaration and the argument keeps its block')
 })

@@ -62,10 +62,21 @@ const paramGrows = (func, k) => {
   row[k] = grows
   return grows
 }
+// How often each name occurs in a function body (a declaration, a read, a write).
+const mentionsOf = new WeakMap()
+const mentions = (body, name) => {
+  let counts = mentionsOf.get(body)
+  if (!counts) {
+    mentionsOf.set(body, counts = new Map())
+    walkAst(body, { enter: n => { for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string') counts.set(n[i], (counts.get(n[i]) ?? 0) + 1) } })
+  }
+  return counts.get(name) ?? 0
+}
 /** After a call that may grow an array a local binding passed it, the binding reads where
  *  the array is (`appendRange(dst, …)` grew `dst`): the array leaves a forward behind,
  *  which every later read through the old block would follow, as reads through the name a
- *  push went through never do. */
+ *  push went through never do. A local the function names nowhere else (its declaration and
+ *  this argument) is read no more: it keeps its block. */
 const refreshGrown = (func, argNodes) => {
   const out = []
   for (let k = 0; k < argNodes.length && k < func.sig.params.length; k++) {
@@ -75,6 +86,7 @@ const refreshGrown = (func, argNodes) => {
     const local = ctx.func.locals?.has(x)
     const g = !local && ctx.scope.userGlobals?.has(x) ? ctx.scope.globals.get(x) : null
     if (local ? ctx.func.locals.get(x) !== 'f64' : !(g?.mut && g.type === 'f64' && !g.export && ctx.funcs.exports?.[x] == null)) continue
+    if (local && Array.isArray(ctx.func.body) && mentions(ctx.func.body, x) <= (ctx.func.current?.sig?.params?.some(p => p.name === x) ? 1 : 2)) continue
     // (an array a Map or a Set may hold as a key keeps the address it was hashed by; one of a
     // length nothing changes never moves)
     const view = ctx.summary?.at(ctx.func.current), kd = view?.kindOfExpr(x)
