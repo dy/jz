@@ -158,3 +158,34 @@ test('element bounds: compiler reuse keeps allocation relations local to one pro
     is(compile(good, options(2)), cold, 'A -> A and A -> different B preserve the original output bytes')
   }
 })
+
+test('element bounds: a bitwise key over Numbers names an element of a plain array', () => {
+  // `(ix[s] & MASK) * 2` is a 32-bit integer whatever ix holds: the read is an element
+  // read, with no own-property path for a key outside the index domain (an array of
+  // the cell holds numeric properties: `v[1.5]`)
+  const src = `const MASK = 0x0fffffff
+const pick = (v, ix, s) => v[(ix[s] & MASK) * 2] + v[((ix[s] >>> 1) ^ 3) % 7]
+export let f = (n) => { const v = [], ix = []
+  for (let i = 0; i < n; i++) { v.push(i * 0.5, -i); ix.push((n - 1 - i) | 0x80000000) }
+  v[1.5] = n
+  let t = 0; for (let k = 0; k < n; k++) t += pick(v, ix, k); return t }
+export let g = (a, b) => [10, 20, 30, 40][(a | 0) & b] ?? -1`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const n of [0, 1, 5, 40]) is(m.f(n), want.f(n), `f(${n}) at ${optimize}`)
+    for (const [a, b] of [[1, 3], [2.5, 3], [-1, 7], [7, 3]]) is(m.g(a, b), want.g(a, b), `g(${a}, ${b}) at ${optimize}`)
+  }
+  // a negative word is a property name, read as the array holds it
+  const neg = `const w = [1, 2, 3]
+w[-1] = 9
+export let h = (a, b) => w[a & b] + w[~a] * 10`
+  const host = oracle(neg).h
+  for (const optimize of levels(0, 2, 3)) {
+    const h = jz(neg, { optimize }).exports.h
+    for (const [a, b] of [[-1, -1], [0, 2], [-2, 1]]) is(h(a, b), host(a, b), `h(${a}, ${b}) at ${optimize}`)
+  }
+  if (onKernel()) return
+  const pick = funcWat(compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false } }), 'pick')
+  ok(pick && !/__dyn_get_expr/.test(pick), 'the masked read takes no property path')
+})

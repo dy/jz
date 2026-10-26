@@ -357,7 +357,10 @@ An open indexed-read kind still retains BigInt producer provenance from known
 stored elements and own properties; it does not prove the whole read a BigInt.
 Array-valued receiver expressions share named arrays' tagged storage readiness.
 Reads and writes retain the original key for ToPropertyKey unless an integer
-index proof authorizes truncation. Integer endpoints of a parameter hull do not
+index proof authorizes truncation. A bitwise operator over Numbers (`&`, `|`,
+`^`, a shift, `~`: a Number kind, never a BigInt) yields a 32-bit integer, so it
+is such a key whatever its operands (expr-type.js `wholeKey`), as `+ - *` over
+integers are; a negative one names a property. Integer endpoints of a parameter hull do not
 prove every argument integral. An i32 parameter ABI can supply integrality,
 but its incoming magnitude is reused only within signed-word bounds and while
 the parameter is never reassigned, including through a nested closure. Wider

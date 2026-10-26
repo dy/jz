@@ -299,10 +299,14 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
 // and + - * over them. No fraction, no NaN: it truncates to its index exactly,
 // and one past the i32 range saturates past every length.
 const WHOLE_OPS = new Set(['+', '-', '*'])
+// A bitwise operator over Numbers is a 32-bit integer whatever its operands (`(h ^ k) & 255`).
+const BIT_OPS = new Set(['&', '|', '^', '<<', '>>', '>>>'])
 export const wholeKey = (e) => {
   if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || repOf(e)?.intCertain === true
   if (!Array.isArray(e)) return false
   if (e[0] == null) return Number.isInteger(e[1])
+  if ((BIT_OPS.has(e[0]) && e.length === 3) || (e[0] === '~' && e.length === 2))
+    return core(ctx.summary?.at(ctx.func.current)?.kindOfExpr(e) ?? K.NONE) === NUMBER
   // A cursor stepped in place (`buf[r++]`, `buf[++r]`): its old and new
   // values are both the name's, whose every definition is integral.
   if (e[0] === 'postfix') return wholeKey(e[1])
