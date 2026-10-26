@@ -154,6 +154,8 @@ test('generators: v1 rejections are precise', () => {
   rejects(`function* g() { void yield } export let f = () => 1`, 'must stand in parentheses')
   rejects(`function* g() { const x = 3 + yield 4 } export let f = () => 1`, 'must stand in parentheses')
   rejects(`function* g() { yield\n* 1 } export let f = () => 1`, 'must stand in parentheses')
+  // a pattern's default that yields runs as steps, but an object rest beside it is still out
+  rejects(`function* g(o) { const { a = yield 1, ...r } = o } export let f = () => 1`, 'an object rest beside a yield')
   // an async function is no generator: a yield in it, a pattern's default too, is no suspension
   rejects(`async function h() { for await ([x = yield] of [[]]) {} } export let f = () => 1`, 'yield outside a generator body')
   // a parenthesized comma expression is no array pattern element
@@ -575,6 +577,20 @@ test('generators: yield in destructuring defaults and computed keys', () => agre
   export let returned = () => { log = ''; const it = closing(); it.next(); return JSON.stringify(it.return(5)) + log }
   export let thrown = () => { log = ''; const it = closing(); it.next(); try { it.throw('E') } catch (e) { log += e } return log }
   export let catchClause = () => drive(caught(), ['M'])`))
+
+// A function declaration in a block the machine splits binds at the block's
+// start, callable before it and closing over that iteration's bindings, a
+// switch case's before the switch; a class declaration binds where it
+// stands, for the states after it.
+test('generators: function and class declarations in split blocks', () => agreeAll(`function h() { return 'outer' }
+  function* g(x) { yield h(); { yield h(); function h() { return 'inner' } } yield h()
+    const fs = []; for (let i = 0; i < 3; i++) { yield sq(); function sq() { return i * i } fs.push(sq) }
+    switch (x) { case 1: yield k(); break; case 2: function k() { return 'k' + x } yield k() }
+    try { yield 1; function t() { return 't' } throw t() } catch (e) { function m() { return 'm' + e } yield m() }
+    if (x) { function* inner() { yield 'a'; yield 'b' } yield* inner() }
+    class C { m() { return 7 } }; yield 'c'; yield new C().m()
+    yield fs.map(f => f()).join() }
+  export let declared = () => [1, 2].map(x => [...g(x)].join()).join('|')`))
 
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,

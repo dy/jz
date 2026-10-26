@@ -3554,7 +3554,9 @@ call made where it stands. A destructuring declaration assigns its pattern
 to the hoisted names as a destructuring assignment does, a catch clause's
 and a for-of head's too; one whose default or computed key suspends runs
 the steps ECMA-262 takes (`patternSteps`: keys read in turn, an iterator
-stepped and closed). The
+stepped and closed). A list the machine flattens binds its function
+declarations as constants at its start, a switch case's before the switch,
+and its class declarations as `let`s where they stand (`declarations`). The
 machine's locals are declared ahead of the steps that initialize them behind
 the TDZ mark (`src/ast.js`), a declaration that defines no value; a bare
 `let x` in the body defines its undefined where it stands. An async function

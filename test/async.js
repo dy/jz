@@ -516,6 +516,13 @@ test('async: destructuring with rests and iterators across awaits', async () => 
     export async function awaited() { const { a = await Promise.resolve(1), b = await 2 } = { b: 10 }; const [x = await 3] = []; return a + b + x }`)
 })
 
+// A function declaration in a block an async body splits binds at the
+// block's start; an async one too, closing over its iteration.
+test('async: function declarations in split blocks', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`export async function f(c) { let s = ''; if (c !== 0) { s += h() + await 1; function h() { return 5 } } for (let i = 0; i < 2; i++) { async function step() { await null; return 'i' + i } s += await step() } return s }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals
@@ -546,17 +553,6 @@ test('async/generator bodies: nested function forms own their returns and declar
   // Same machinery, plain generator: fn decl at generator-body top level.
   is(jz(`function* g() { function h() { return 4 } yield h() }
          export let f = () => g().next().value`).exports.f(), 4)
-})
-
-test('async/generator bodies: block-nested function declaration is a named v1 reject', () => {
-  if (onWasi() || onKernel()) return
-  // A declaration inside a DECOMPOSED block (if/loop arm) has no hoist lane
-  // yet — must refuse with the named limit, never leak an unresolvable
-  // reference or a silent trap.
-  let msg = ''
-  try { jz(`export let f = async (c) => { if (c) { function h() { return 5 } return h() } return 0 }`) }
-  catch (e) { msg = e.message }
-  ok(/generators v1: function declaration 'h' inside a decomposed/.test(msg), `named reject (got: ${msg.slice(0, 60)})`)
 })
 
 test('async: finally overrides rejection with return or throw', async () => {

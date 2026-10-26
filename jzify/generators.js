@@ -35,8 +35,8 @@
  *     machine splits keeping its iteration's bindings (resolveLocals)
  *   - destructuring declarations, catch and for-of patterns of any shape, a
  *     yield in a default or computed key running the steps (patternSteps)
- * Out (v1): an object rest beside a yield or await in a destructuring default;
- *   a function declaration in a split block.
+ *   - function and class declarations in any block (declarations)
+ * Out (v1): an object rest beside a yield or await in a destructuring default.
  *
  * @module jzify/generators
  */
@@ -144,6 +144,9 @@ export const closesOnReturn = (body) => some(body, n => n[0] === 'finally' || n[
 export const bindTo = (decl, value) => Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const' || decl[0] === 'var')
   ? [decl[0], ['=', decl[1], value]] : ['=', decl, value]
 const bodyStmts = (body) => Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+// A block's own statements: a block inside it is a statement of its own.
+const ownStmts = (n) => n == null ? [] : Array.isArray(n) && n[0] === '{}' ? (n[1] == null ? [] : Array.isArray(n[1]) && n[1][0] === ';' ? n[1].slice(1) : [n[1]])
+  : Array.isArray(n) && n[0] === ';' ? n.slice(1) : [n]
 /** The names a binding pattern binds. */
 const patternNames = (p) => { const out = new Set(); collectParamName(p, out); return [...out] }
 /** A loop under its labels, outermost first. */
@@ -253,9 +256,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     const hasCell = (p, s) => patternNames(p).some(n => lookup(n, s)?.cell)
     const cellsOf = (s) => [...s.names.values()].filter(b => b.cell)
     const makeCells = (s) => emitting ? cellsOf(s).map(b => ['let', ['=', b.spelling, cellOf(UNDEF)]]) : []
-    // a block's own statements (a block in it is a statement of its own)
-    const own = (n) => n == null ? [] : Array.isArray(n) && n[0] === '{}' ? (n[1] == null ? [] : Array.isArray(n[1]) && n[1][0] === ';' ? n[1].slice(1) : [n[1]])
-      : Array.isArray(n) && n[0] === ';' ? n.slice(1) : [n]
+    const own = ownStmts
     // what a block lowers to keeps its spelling: braces, a list or a lone statement
     const shaped = (orig, out) => {
       if (Array.isArray(orig) && orig[0] === '{}') {
@@ -443,7 +444,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     emitting = true
     return list(stmts, root, true)
   }
-  // Collect every let/const binding name in the body, a pattern's names too —
+  // Collect every let/const binding name in the body, a pattern's names too:
   // generator locals live in the factory scope so they survive across next()
   // resumes (each spelled apart by resolveLocals above).
   const collectLocals = (node, out) => walkAst(node, { enter: n => {
@@ -484,24 +485,52 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       labeled(labels, ['for', [';', null, ['<', i, ['.', list, 'length']], ['=', i, ['+', i, [null, 1]]]],
         ['{}', [';', bindTo(decl, ['[]', list, i]), inner]]])]]
   }
-  // the statements a machine body decomposes, their for-of and for-in loops desugared
-  const desugarLoops = (st, labels = null) => withLoc(desugarLoopsAt(st, labels), st)
-  const desugarLoopsAt = (st, labels) => {
-    if (!Array.isArray(st) || !decomposes(st)) return st
-    const op = st[0], each = (b) => desugarLoops(b)
+  // A list the machine flattens binds its function declarations as constants
+  // first, as JS hoists them (the last first), and a class declaration as a
+  // `let` where it stands: either would declare in the one state it runs
+  // in. A switch's cases share one list's declarations, bound before it.
+  const declarations = (stmts) => {
+    const fns = [], rest = []
+    for (const st of stmts) {
+      const decl = Array.isArray(st) && st[0] === 'async' ? st[1] : st
+      if (Array.isArray(decl) && (decl[0] === 'function' || decl[0] === 'function*') && decl[1]) {
+        const value = [decl[0], '', decl[2], decl[3]]
+        fns.unshift(withLoc(['const', ['=', decl[1], st[0] === 'async' ? ['async', value] : value]], st))
+      } else if (Array.isArray(st) && st[0] === 'class' && st[1]) rest.push(withLoc(['let', ['=', st[1], st.slice()]], st))
+      else rest.push(st)
+    }
+    return { fns, rest }
+  }
+  const flatList = (stmts) => { const { fns, rest } = declarations(stmts.map(st => prepared(st))); return [...fns, ...rest] }
+  // the body as the machine splits it: its lists' declarations bound, its
+  // decomposed for-of and for-in loops desugared
+  const prepared = (st, labels = null) => withLoc(preparedAt(st, labels), st)
+  const preparedAt = (st, labels) => {
+    if (!Array.isArray(st)) return st
+    const op = st[0], each = (b) => prepared(b)
+    // a block in a list the machine flattens flattens too
+    if (op === ';') return [';', ...flatList(st.slice(1))]
+    if (op === '{}') return ['{}', [';', ...flatList(ownStmts(st))]]
+    if (!decomposes(st)) return st
     if (op === ':' && typeof st[1] === 'string') {
       const names = [...(labels || []), st[1]], inner = st[2]
-      if (Array.isArray(inner) && inner[0] === ':' || isEach(inner)) return desugarLoops(inner, names)
+      if (Array.isArray(inner) && inner[0] === ':' || isEach(inner)) return prepared(inner, names)
       return labeled(names, each(inner))
     }
-    if (isEach(st)) return desugarLoops(eachLoop(st, labels))
-    if (op === ';') return [';', ...st.slice(1).map(each)]
-    if (op === '{}') return ['{}', each(st[1])]
+    if (isEach(st)) return prepared(eachLoop(st, labels))
     if (op === 'if') return ['if', st[1], each(st[2]), ...(st.length > 3 ? [each(st[3])] : [])]
     if (op === 'while' || op === 'for') return [op, st[1], each(st[2])]
     if (op === 'do') return ['do', each(st[1]), st[2]]
-    if (op === 'try') return ['try', each(st[1]), ...st.slice(2).map(c => c[0] === 'catch' ? ['catch', c[1], each(c[2])] : c[0] === 'finally' ? ['finally', each(c[1])] : c)]
-    if (op === 'switch') return ['switch', st[1], ...st.slice(2).map(c => c[0] === 'case' ? ['case', c[1], each(c[2])] : c[0] === 'default' ? ['default', each(c[1])] : c)]
+    if (op === 'try') return ['try', each(st[1]), ...st.slice(2).map(c => c[0] === 'catch' ? ['catch', c[1], each(c[2] ?? ['{}', null])] : c[0] === 'finally' ? ['finally', each(c[1])] : c)]
+    if (op === 'switch') {
+      const fns = [], clauses = st.slice(2).map(c => {
+        const i = c[0] === 'case' ? 2 : 1, d = declarations(ownStmts(c[i]).map(s => prepared(s)))
+        fns.push(...d.fns)
+        const out = c.slice(); out[i] = [';', ...d.rest]
+        return out
+      })
+      return fns.length ? [';', ...fns, ['switch', st[1], ...clauses]] : ['switch', st[1], ...clauses]
+    }
     return st
   }
 
@@ -513,25 +542,10 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     // every yield and await at a statement (jzify/async.js)
     const body = blockStmts(hoistSuspensions(rawBody))
 
-    // JS hoists function declarations: a machine body binds its TOP-LEVEL
-    // ones as consts up front (the machine assigns hoisted locals before
-    // dispatch reaches any user statement, so call-before-declaration keeps
-    // working). The const-bound function EXPRESSION rides the proven closure
-    // lane; the raw declaration statement would otherwise reach the machine
-    // splice as an unresolvable reference (transform-level hoistFnDecl binds
-    // a scope the __next closure never sees). Block-nested declarations stay
-    // a named v1 reject in flattenStmt below.
-    for (let i = 0; i < body.length; i++) {
-      const st = body[i]
-      const decl = Array.isArray(st) && st[0] === 'async' ? st[1] : st
-      if (Array.isArray(decl) && (decl[0] === 'function' || decl[0] === 'function*') && decl[1]) {
-        const value = [decl[0], '', decl[2], decl[3]]
-        body.splice(i, 1)
-        body.unshift(['const', ['=', decl[1], st[0] === 'async' ? ['async', value] : value]])
-      }
-    }
-
-    for (let i = 0; i < body.length; i++) body[i] = desugarLoops(body[i])
+    // the root list binds its function declarations up front: the machine
+    // assigns hoisted locals before dispatch reaches any user statement, so a
+    // call before the declaration works
+    body.splice(0, body.length, ...flatList(body))
     body.splice(0, body.length, ...resolveLocals(body, [...new Set(extractParams(params).flatMap(patternNames))]))
     const locals = new Set()
     for (const st of body) collectLocals(st, locals)
@@ -786,12 +800,6 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         if (at) { stmtsOf(cur).push(...leave(crossing(curFinally, at.fin), at.s)); return null }
       }
 
-      // --- function declarations: top-level ones were hoisted to consts by
-      // lowerGenerator's pre-pass; one reaching HERE sits inside a DECOMPOSED
-      // block — name the v1 limit instead of leaking an unresolvable ref ---
-      if (op === 'function' && st[1])
-        err(`generators v1: function declaration '${st[1]}' inside a decomposed async/generator block is not supported yet — move it to the function's top level or bind it as \`const ${st[1]} = function () { … }\``)
-
       // --- a statement list flattens statement by statement: its `let`s are
       // hoisted machine locals and must become assignments, never a nested
       // block's own bindings shadowing them ---
@@ -871,7 +879,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       }
       if (op === 'for') {
         const [, head, bodyB] = st
-        // (a for-of or for-in arrives desugared: desugarLoops)
+        // (a for-of or for-in arrives desugared: eachLoop)
         // C-style [';', init, cond, step] (subscript head shape)
         const [, init, cond, step] = Array.isArray(head) && head[0] === ';' ? head : [';', head, undefined, undefined]
         if (init != null) cur = flattenStmt(init, cur, jumps)
@@ -1008,7 +1016,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         out.push(['if', ['==', src, NULL], typeError('cannot destructure undefined or null')])
         for (const it of p[1] == null ? [] : Array.isArray(p[1]) && p[1][0] === ',' ? p[1].slice(1) : [p[1]]) {
           if (Array.isArray(it) && it[0] === '...')
-            err('generators v1: an object rest beside a yield or await in a destructuring default is not supported yet — read the value into a name first')
+            err('generators v1: an object rest beside a yield or await in a destructuring default is not supported yet – read the value into a name first')
           const key = typeof it === 'string' ? it : it[0] === '=' ? it[1] : it[1], target = typeof it === 'string' || it[0] === '=' ? it : it[2]
           // a computed key is evaluated as the pattern reaches it
           const read = typeof key === 'string' ? ['.', src, key]
