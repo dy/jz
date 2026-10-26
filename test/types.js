@@ -2,7 +2,7 @@
 // intCertain lattice
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { belowOpt, onWasi, onKernel, withBigintStrict } from './_matrix.js'
+import { belowOpt, onWasi, onKernel, withBigintStrict, levels } from './_matrix.js'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../interop.js'
@@ -1526,6 +1526,20 @@ test('untyped receiver: toFixed dispatches the number emitter', () => {
       return a.v.toFixed(1)
     }`)
   is(f(), '2.5')
+})
+
+// A program with no closure has no own method to probe for: a Number takes
+// the builtin, any other value the unknown receiver's dispatch (a host
+// object's method, a TypeError for a missing one).
+test('untyped receiver: a closure-free program calls a Number method on a value of unknown kind', () => {
+  const src = `export let fixed = (s) => JSON.parse(s).b.toFixed(1)
+    export let local = (s) => { const v = JSON.parse(s).b; return v.toPrecision(3) }
+    export let missing = (s) => { try { return JSON.parse(s).b.toFixed(1) } catch (e) { return e instanceof TypeError } }
+    export let host = (h) => h.x.toFixed(1)`
+  for (const optimize of levels(0, 2, 'size')) {
+    const m = jz(src, { optimize }).exports
+    is([m.fixed('{"b":2.25}'), m.local('{"b":2.25}'), m.missing('{"c":1}'), m.host({ x: 1.25 })], ['2.3', '2.25', true, '1.3'], `O${optimize}`)
+  }
 })
 
 test('untyped receiver: string toString(radix) ignores the radix (JS semantics)', () => {

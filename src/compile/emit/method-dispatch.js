@@ -564,9 +564,17 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
 // and otherwise yields `undefined`, the same result the dynamic path produced.
 function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
   const numEmitter = builtinMethod(method, 'number')
-  if (vt || !numEmitter || parsed.hasSpread || !ctx.closure.call) return
+  if (vt || !numEmitter || parsed.hasSpread) return
   const t = `${T}rn${freshId(ctx)}`
   ctx.func.locals.set(t, 'f64')
+  // With no closure in the program no own method can shadow the builtin: a
+  // Number takes it, any other value the dispatch an unknown receiver takes.
+  if (!ctx.closure.call) return block64(
+    ['local.set', `$${t}`, asF64(emit(obj))],
+    ['if', ['result', 'f64'],
+      ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
+      ['then', asF64(callMethod(t, numEmitter))],
+      ['else', asF64(externalMethodFallback({ obj: t, method, parsed }))]])
   // Only a genuinely mayBeUndefined receiver pays for the nullish
   // guard — same `censusMaybeUndefined` predicate as every other check in
   // this design (see tryRuntimePtrTypeFork's comment for the measured SIZE
