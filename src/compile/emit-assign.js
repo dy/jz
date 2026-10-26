@@ -480,10 +480,15 @@ function tryStructInlineReplaceStore(arr, idx, val) {
 // here; a receiver that may also be an object decides in __dyn_set.
 const PRIMITIVE_TAGS = summaryBitOf(K.NUMBER) | summaryBitOf(K.STRING) | summaryBitOf(K.BOOL) | summaryBitOf(K.BIGINT)
 function primitiveStore(obj, key, val) {
-  let k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+  const view = ctx.summary?.at(ctx.func.current)
+  let k = view?.kindOfExpr(obj)
   // A staged reference is an emitter temp outside the source summary. Its
-  // existing value-kind overlay still proves a primitive target.
-  if (k == null || k === 0 || summaryTagOf(k) === K.ANY) k = kindOfVal(valTypeOf(obj))
+  // existing value-kind overlay still proves a primitive target. What the
+  // summary holds, a binding or an expression, is what it says, any value
+  // included: the value type a method's name suggests (`ops.charCodeAt(i)`,
+  // a String's) proves nothing to throw on.
+  const outside = !view || typeof obj === 'string' && view.keyOfName(obj) === null
+  if (outside && (k == null || k === 0 || summaryTagOf(k) === K.ANY)) k = kindOfVal(valTypeOf(obj))
   if (summaryTagOf(k) === K.ANY) return null
   const tags = summaryTagsOf(k) & ~SUMMARY_NULL_BITS
   if (!tags || (tags & ~PRIMITIVE_TAGS)) return null

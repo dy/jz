@@ -28,8 +28,12 @@ export let booleans = (c) => catching(() => { let b = c > 0; b.x = 1; return b.x
 export let union = (k) => catching(() => put(k > 5 ? {} : 3))
 export let order = () => { log.length = 0; catching(() => { let m = 5; m[key()] = val() }); return log.join() }
 export let objects = () => [put({}), catching(() => { g.count = (g.count ?? 0) + 1; return g.count }), catching(() => { h.count = 2; return h.count + h() })].join()
-export let readOnly = () => { let m = 5; let get = () => m.tag; return [typeof get(), m + 1].join() }`
-const calls = [['local', []], ['module', []], ['captured', []], ['strings', []], ['booleans', [1]], ['union', [9]], ['union', [0]], ['order', []], ['objects', []], ['readOnly', []]]
+export let readOnly = () => { let m = 5; let get = () => m.tag; return [typeof get(), m + 1].join() }
+let tag = (node, t) => (node.t = t, node)
+let own = { charCodeAt: (x) => x }
+let pick = (k) => k ? own : 'str'
+export let ownMethod = (v) => catching(() => tag(pick(v.length).charCodeAt(v), 'i32').t)`
+const calls = [['local', []], ['module', []], ['captured', []], ['strings', []], ['booleans', [1]], ['union', [9]], ['union', [0]], ['order', []], ['objects', []], ['readOnly', []], ['ownMethod', [[1, 2]]]]
 
 for (const optimize of levels(0, 2, 3, 'size'))
   test(`primitive store: a property store on a primitive throws TypeError at ${optimize}`, () => {
