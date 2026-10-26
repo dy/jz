@@ -38,6 +38,7 @@ import { pointerExits } from '../src/optimize/pointer-exits.js'
 import { ringLaps } from '../src/optimize/ring-laps.js'
 import { earlyStores } from '../src/optimize/early-stores.js'
 import { leadChains } from '../src/optimize/lead-chains.js'
+import { issueOrder } from '../src/optimize/issue-order.js'
 import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -5364,6 +5365,50 @@ test('leadChains: a value a statement writes inside itself is read after it', ()
   // a tee the split cannot take out (what runs before it reads its name) keeps the run as written
   const held = fn([...body.slice(0, 7), ['local.set', '$w', ['f64.sub', g('$acc'), ['local.tee', '$acc', ['f64.add', g('$acc'), g('$ya')]]]], ...body.slice(7)])
   is(JSON.stringify(leadChains(['module', JSON.parse(JSON.stringify(held))])[1]), JSON.stringify(held), 'a tee left in its statement keeps the run')
+})
+
+// The Lorenz attractor's step: three loop-carried values, a 57-cycle chain of 3-cycle operations
+const rk4 = `export let f = (n) => {
+  let x = 0.1, y = 0.0, z = 0.0
+  for (let i = 0; i < n; i++) {
+    const k1x = 10 * (y - x), k1y = x * (28 - z) - y, k1z = x * y - 2.6666666666666665 * z
+    const ax = x + k1x * 0.001, ay = y + k1y * 0.001, az = z + k1z * 0.001
+    const k2x = 10 * (ay - ax), k2y = ax * (28 - az) - ay, k2z = ax * ay - 2.6666666666666665 * az
+    const bx = x + k2x * 0.001, by = y + k2y * 0.001, bz = z + k2z * 0.001
+    const k3x = 10 * (by - bx), k3y = bx * (28 - bz) - by, k3z = bx * by - 2.6666666666666665 * bz
+    const cx = x + k3x * 0.002, cy = y + k3y * 0.002, cz = z + k3z * 0.002
+    const k4x = 10 * (cy - cx), k4y = cx * (28 - cz) - cy, k4z = cx * cy - 2.6666666666666665 * cz
+    x = x + (k1x + 2 * k2x + 2 * k3x + k4x) / 3000
+    y = y + (k1y + 2 * k2y + 2 * k3y + k4y) / 3000
+    z = z + (k1z + 2 * k2z + 2 * k3z + k4z) / 3000
+  }
+  return x * 1e6 + y * 1e3 + z
+}`
+test('issueOrder: an integrator step is written in the order that issues its chain soonest', () => {
+  const want = oracle(rk4).f(5000)
+  for (const optimize of ['speed', { level: 'speed', issueOrder: false }, 2]) is(run(rk4, { optimize }).f(5000), want, JSON.stringify(optimize))
+  if (onKernel()) return
+  // the loop's operations each a statement of their own, in a new order (fresh locals); as written when off
+  const fresh = (optimize) => count(parse(rk4, optimize), n => n[0] === 'local' && typeof n[1] === 'string' && /^\$io\d+$/.test(n[1]))
+  ok(fresh('speed') >= 32, `the step's values take locals of their own (${fresh('speed')})`)
+  is(fresh({ level: 'speed', issueOrder: false }), 0, 'issueOrder: false keeps the step as written')
+  // a pass over the module twice changes nothing more; a run with a load, or too short a run, stays
+  const g = (n) => ['local.get', n], c = (v) => ['f64.const', v]
+  const chain = (extra) => {
+    const body = [['local.set', '$a', ['f64.add', ['f64.mul', g('$a'), c(0.5)], g('$b')]]]
+    for (let k = 0; k < 9; k++) body.push(['local.set', k & 1 ? '$a' : '$b', ['f64.sub', ['f64.mul', g('$a'), g('$b')], ['f64.mul', c(0.25 + k), g(k & 1 ? '$b' : '$a')]]])
+    return ['func', '$f', ['param', '$n', 'i32'], ['result', 'f64'], ['local', '$a', 'f64'], ['local', '$b', 'f64'], ['local', '$i', 'i32'],
+      ['local.set', '$a', c(0.1)], ['local.set', '$b', c(0.2)],
+      ['loop', '$L', ...body, ...extra, ['br_if', '$L', ['i32.lt_s', ['local.tee', '$i', ['i32.add', g('$i'), ['i32.const', 1]]], g('$n')]]],
+      ['f64.add', g('$a'), g('$b')]]
+  }
+  const exec = (f, mem) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', ...(mem ? [['memory', 1]] : []), [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]]))).exports.f(40)
+  const plain = chain([]), ordered = issueOrder(['module', JSON.parse(JSON.stringify(plain))])[1]
+  is(exec(ordered), exec(plain), 'the reordered run computes what the run as written does')
+  const again = issueOrder(['module', JSON.parse(JSON.stringify(ordered))])[1]
+  is(JSON.stringify(again), JSON.stringify(ordered), 'a second pass leaves the order it chose')
+  const loaded = chain([['local.set', '$b', ['f64.add', g('$b'), ['f64.load', ['i32.const', 0]]]]])
+  is(JSON.stringify(issueOrder(['module', JSON.parse(JSON.stringify(loaded))])[1]), JSON.stringify(loaded), 'a load keeps the run as written')
 })
 
 test('rec-unroll: an empty statement in a body is no loop', () => {

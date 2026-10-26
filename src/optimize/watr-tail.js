@@ -29,6 +29,7 @@ import { searchLoops } from './search-loops.js'
 import { pointerExits } from './pointer-exits.js'
 import { ringLaps } from './ring-laps.js'
 import { leadChains } from './lead-chains.js'
+import { issueOrder } from './issue-order.js'
 import { splitFuncs, loopPasses } from './split-funcs.js'
 import { inlineTiny } from './inline-tiny.js'
 import { forwardCheckedElements } from './forward-checked.js'
@@ -564,6 +565,8 @@ export function watrTail(module, cfg, {
   if (cfg.pointerExits === true) time('pointerExits', () => pointerExits(optimized))
   // (on the loop bodies the optimizer leaves: its own passes would merge the split values back)
   if (cfg.leadChains === true) time('leadChains', () => leadChains(optimized))
+  // (after them: a run they leave as written, an integrator's stages, the order the core issues soonest)
+  if (cfg.issueOrder === true) time('issueOrder', () => issueOrder(optimized))
   if (cfg.maskOperands === true) time('maskOperands', () => maskOperands(optimized))
   // (before the float selects become selects of bits)
   if (cfg.truncChoice !== false) time('truncChoice', () => truncChoice(optimized))
