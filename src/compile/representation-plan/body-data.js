@@ -9,7 +9,7 @@ import {
   ANY_BIGINT, BIGINT_DEMAND_TAG_REQUIRED, BIGINT_KIND_BIT, BIGINT_REP_BOXED, BIGINT_REP_NONE, BIGINT_REP_RAW, BIGINT_REP_TOP, BOXED_BIGINT,
   CONDITIONAL_ASSIGN_OPS, DEF_OWNER, DEF_RHS, EDGE_KIND, EDGE_KIND_NAME, JOIN_OPS, NO_BIGINT, NUMERIC_VALUE_OPS,
   RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_HOST_BOX, REP_EDGE_KEEP, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS,
-  bigintRepBits, bigintRepIsClosed, bitOfKind, callMember, canBeBigint, collectDefs, collectLocalClosures, contractRep,
+  bigintRepBits, bigintRepIsClosed, bitOfKind, callMember, canBeBigint, collectDefs, collectLocalClosures, contractRep, defaultWrites,
   definiteBigint, edgeAction, excludesBigint, isBigintOrigin, isExported, joinRep, joinSem, memberReceiver,
   noBigintSemantic, onlyBigintKind, packSemantic, programPlanRecord, returnEdgeAction, sameSem, semAll, semBottom, semKind,
   semanticClosed, semanticFromRep, semanticObserved, targetRepFor,
@@ -511,6 +511,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
     for (let i = 1; i < node.length; i++) walkEdges(node[i])
   }
+  for (const write of defaultWrites(identity?.defaults)) walkEdges(write)
   walkEdges(body, true)
 
   // Expression-bodied functions have no explicit return node.
@@ -892,7 +893,7 @@ export function mintRepresentationPlan(ctx, identity, sig, body, localReps, opti
     throw new Error(`RepresentationPlan already published for ${identity?.name || '<anonymous>'}`)
   // Provenance and representation solve the same immutable definition set.
   // Keep its pairs across fixpoint rounds instead of rematerializing Map entries.
-  const defs = collectDefs(body, sig?.params), bindings = [...defs]
+  const defs = collectDefs(body, sig?.params, identity?.defaults), bindings = [...defs]
   const localProvenance = options.generic && program.provenance
     ? deriveLocalProvenance(sig, body, localReps, program.provenance, ctx.summary?.at(identity), bindings)
     : null

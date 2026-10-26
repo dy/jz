@@ -206,7 +206,9 @@ export const JOIN_OPS = new Set(['?:', '&&', '||', '??'])
 export const CONDITIONAL_ASSIGN_OPS = new Set(['&&=', '||=', '??='])
 
 export const DEF_RHS = 0, DEF_OWNER = 1
-export function collectDefs(body, params = []) {
+/** A parameter default is a write of the parameter, ahead of the body's. */
+export const defaultWrites = defaults => defaults ? Object.keys(defaults).map(name => ['=', name, defaults[name]]) : []
+export function collectDefs(body, params = [], defaults = null) {
   const defs = new Map(), nestedDefs = []
   const add = (name, rhs, owner, nested = false) => {
     if (typeof name !== 'string') return
@@ -241,6 +243,7 @@ export function collectDefs(body, params = []) {
     }
     for (let i = 1; i < node.length; i++) walk(node[i], false, nested)
   }
+  for (const write of defaultWrites(defaults)) walk(write)
   walk(body, true)
   // Binding IDs are unique across prepared scopes. Include a nested closure's
   // writes to this frame's names, while leaving its own locals in that scope.

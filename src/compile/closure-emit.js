@@ -309,6 +309,7 @@ export function emitClosureBody(cb, functionPlan) {
   if (cb.defaults) {
     for (const [pname, defVal] of Object.entries(cb.defaults)) {
       // A parameter the callers give a number beside a Boolean default takes its atom.
+      // A BigInt default lands in the parameter's planned BigInt carrier.
       const value = asF64(bindingStore(pname, defVal))
       if (boxedParamNames.has(pname)) {
         defaultParamInits.push(['if', isUndef(['f64.load', boxedAddr(pname)]),

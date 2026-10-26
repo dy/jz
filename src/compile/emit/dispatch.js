@@ -724,8 +724,10 @@ export function boolCarrier(name, node, ir) {
   const k = ctx.summary.at(ctx.func.current).kindOfExpr(node)
   return k & SUMMARY_NULL_BITS ? nullableBoolBoxIR(ir) : boolBoxIR(ir)
 }
-/** `node` emitted as the value a store into the binding `name` lands (boolCarrier). */
-export const bindingStore = (name, node) => boolCarrier(name, node, boolTagged(name) && hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node))
+/** `node` emitted as the value a store into the binding `name` lands: in the
+ *  binding's BigInt carrier (the plan's write edge) and its Boolean one (boolCarrier). */
+export const bindingStore = (name, node) => boolCarrier(name, node, applyBigintRepresentationAction(
+  boolTagged(name) && hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node), node, representationBindingWriteAction(ctx, name, node)))
 
 /** Emit let/const initializations as typed local.set instructions. */
 // A typed element the emitter loaded bare (its index proven inside the array),

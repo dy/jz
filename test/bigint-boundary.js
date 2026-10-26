@@ -207,3 +207,27 @@ test('bigint boundary: the sibling scopes run: the same function not exported; a
   const expr = 'export const addr = (idx) => typeof idx === "number" ? idx * 8 : idx\nexport let f = () => addr(2)'
   is(run(expr, 1).f(), 16, 'the expression form compiles natively: the kernel, compiling the same, throws in emitFuncs')
 })
+
+// A parameter default is a write of the parameter (representation-plan
+// defaultWrites): the plan sees its BigInt, and it lands in the parameter's
+// planned carrier as any write does (emit bindingStore), so a host call that
+// leaves the argument out runs it, and so does a call inside the module.
+test('bigint boundary: a BigInt parameter default runs when the host leaves the argument out', () => {
+  const src = `let s = 0n
+    export const kind = (n = 5n) => typeof n
+    export const twice = (n = 5n) => n * 2n
+    export const same = (n = 5n) => n
+    export function pair(n = 5n) { return [n, typeof n] }
+    export const made = () => (n = 7n) => n + 1n
+    const inner = (n = 5n) => [typeof n, n * 2n]
+    const keep = (n = 7n) => { s = n }
+    export const local = () => [...inner(), ...inner(3n)]
+    export const kept = () => { keep(); const a = s * 2n; keep(3n); return [a, s + 1n] }`
+  for (const level of levels(0, 2, 'size')) {
+    const ex = run(src, level)
+    is([ex.kind(), ex.twice(), ex.same(), ex.pair(), ex.made()()], ['bigint', 10n, 5n, [5n, 'bigint'], 8n], `defaults, O${level}`)
+    is([ex.kind(3n), ex.twice(3n), ex.same(3n), ex.pair(3n), ex.made()(3n)], ['bigint', 6n, 3n, [3n, 'bigint'], 4n], `passed, O${level}`)
+    is(ex.local(), ['bigint', 10n, 'bigint', 6n], `inside the module, O${level}`)
+    is(ex.kept(), [14n, 4n], `written to a module binding, O${level}`)
+  }
+})

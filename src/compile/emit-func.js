@@ -258,6 +258,7 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
     // emit(defVal) ONCE, before branching on t — same self-compile miscompile class as
     // emit.js's 'return' handler. See .work/archive/todo.md (groundtruth archive).
     // A parameter the callers give a number beside a Boolean default takes its atom.
+    // A BigInt default lands in the parameter's planned BigInt carrier.
     const emittedDefVal = bindingStore(pname, defVal)
     // dyn-closure-tables.js: a default value that's provably a closure literal
     // (e.g. subscript's `dispatch(ops, tail, fn = (a, …) => {…})`) is the fact

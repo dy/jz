@@ -375,8 +375,7 @@ export const assignmentOps = {
     const lhs = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
     const cond = op === '??=' ? isNullish(lhs) : truthyIR(lhs)
     // &&= and ??= assign when cond is true (truthy / nullish); ||= assigns when cond is false
-    const repAction = representationBindingWriteAction(ctx, name, val)
-    const assigned0 = asF64(applyBigintRepresentationAction(bindingStore(name, val), val, repAction))
+    const assigned0 = asF64(bindingStore(name, val))
     const asked = site && ctx.plans.siteAsked?.has(ctx.plans.siteOrigin?.get(site) ?? site)
     const assigned = !site ? assigned0 : asked ? whereNew(assigned0, siteFlag(site, name)) : withEscapeFlag(assigned0, siteFlag(site, name))
     const [thenExpr, elseExpr] = op === '||='
