@@ -44,6 +44,9 @@ const held = {
   'a single of a literal': ['const PI32 = Math.fround(3.141592653589793)\nexport let f = (x) => x * PI32', 'PI32', Math.fround(3.141592653589793)],
   'through a name that holds the function': ['var fround = typeof Math.fround === "function" ? Math.fround : null\nvar f32 = fround\nvar PI32 = f32(3.141592653589793)\nvar HALF = PI32\nexport let f = (x) => f32(f32(x) * HALF)', 'HALF', Math.fround(3.141592653589793)],
   'a floor, a root and a greater of held numbers': ['const A = 10.75, B = Math.floor(A), C = Math.sqrt(16), D = Math.max(B, C, 3)\nexport let f = (x) => x * B + C + D', 'D', 10],
+  // a table's length read before anything can resize it, the table passed on and its sibling pushed to
+  'the length of a table declared before it': ['const T = [0, 0, 6, 0, 6, 3, 5, 3]\nconst N = T.length / 2\nconst U = []\nfor (let i = 0; i < 4; i++) U.push(i * 0.5, i)\nconst sum = (v, n) => { let s = 0; for (let i = 0; i < n; i++) s += v[i * 2] * v[i * 2 + 1]; return s }\nexport let f = (x) => x * N + sum(T, N) + sum(U, 4)', 'N', 4],
+  'the length of a table past numbers declared between': ['const T = [1, 2, 3]\nconst K = 2, M = K * 3 + -1\nconst W = [K, M]\nconst N = T.length + W.length * M\nexport let f = (x) => x + N', 'N', 13],
 }
 
 test('held number: a name that holds one number for good reads as it', () => {
@@ -74,6 +77,10 @@ const open = {
   'a field stored before the read': ['const idx = { HIGH: 1 }\nidx.HIGH = 5\nconst H = idx.HIGH\nexport let get = () => H', 'H', [['get']]],
   'a literal a function may write': ['const idx = { HIGH: 1 }\nconst poke = (o) => { o.HIGH = 7; return o }\npoke(idx)\nconst H = idx.HIGH\nexport let get = () => H', 'H', [['get']]],
   'a literal a computed key writes': ['const idx = { HIGH: 1 }\nconst key = (v) => v > 0 ? "HIGH" : "LOW"\nidx[key(1)] = 9\nconst H = idx.HIGH\nexport let get = () => H', 'H', [['get']]],
+  'a table pushed to before its length is read': ['const T = [1, 2]\nT.push(3)\nconst N = T.length\nexport let get = () => N', 'N', [['get']]],
+  'a table a call between may resize': ['const T = [1, 2]\nconst grow = () => { T.push(3); return 1 }\nconst G = grow()\nconst N = T.length\nexport let get = () => N * 10 + G', 'N', [['get']]],
+  'a table read past an object\'s conversion': ['const T = [1, 2]\nconst o = { valueOf() { T.push(9); return 1 } }\nconst V = o * 2\nconst N = T.length\nexport let get = () => N * 10 + V', 'N', [['get']]],
+  'a table a loop between may resize': ['const T = [1, 2]\nfor (let i = 0; i < 2; i++) T.push(i)\nconst N = T.length\nexport let get = () => N', 'N', [['get']]],
 }
 
 test('held number: a name with another write or an earlier read keeps its global', () => {

@@ -52,16 +52,56 @@ export function holdModuleNumbers() {
   return any
 }
 
-/** Publish immutable numeric globals before representation planning. */
+/** The operators over numbers that convert nothing, so run no code. */
+const INERT_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', '>>>', 'u-', 'u+', '~', '!',
+  '<', '<=', '>', '>=', '===', '!==', '==', '!=', '?:'])
+/** The count of an array literal (`[a, b, c]`, no spread), or -1. */
+const literalCount = (n) => !Array.isArray(n) || n[0] !== '[' || n.some((e, i) => i > 0 && Array.isArray(e) && e[0] === '...') ? -1 : n.length - 1
+/** `init` with each `X.length` of an array `fresh` counts read as the count. */
+const freshLengths = (init, fresh) => {
+  if (!fresh?.size || !Array.isArray(init)) return init
+  if (init[0] === '.' && init.length === 3 && init[2] === 'length' && fresh.has(init[1])) return [, fresh.get(init[1])]
+  let out = init
+  for (let i = 1; i < init.length; i++) {
+    const c = freshLengths(init[i], fresh)
+    if (c !== init[i]) { if (out === init) out = init.slice(); out[i] = c }
+  }
+  return out
+}
+
+/** Publish immutable numeric globals before representation planning. A length a
+ *  declaration reads of a module const's array literal declared before it, where
+ *  no statement between could run code (`const T = [1.5, …]; const N = T.length
+ *  / 2`), is the literal's count: what runs between them is declarations of
+ *  numbers (literals, the consts declared so, such lengths, and the arithmetic
+ *  and comparisons of those, which convert no object) or of array literals of
+ *  them, and functions' declarations, which run nothing where they stand. */
 export function foldModuleConstants(ast) {
   const pending = []
+  const fresh = new Map()   // decl → the module consts' literal counts its initializer may read
   for (const root of [ast, ...ctx.module.moduleInits]) {
     const stmts = Array.isArray(root) && root[0] === ';' ? root.slice(1) : [root]
+    let counts = new Map()
+    const nums = new Set()   // the consts of the list declared as such numbers
+    const inert = (e) => typeof e === 'number' || (typeof e === 'string' ? nums.has(e)
+      : Array.isArray(e) && (e[0] == null ? e.length === 2 && typeof e[1] === 'number'
+        : e[0] === '.' ? e.length === 3 && e[2] === 'length' && counts.has(e[1])
+        : INERT_OPS.has(e[0]) && e.length >= 2 && e.length <= 4 && e.slice(1).every(inert)))
     for (const stmt of stmts) {
-      if (!Array.isArray(stmt) || stmt[0] !== 'const') continue
-      for (const decl of stmt.slice(1))
-        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' &&
-            ctx.scope.globals.has(decl[1]) && ctx.scope.consts?.has(decl[1])) pending.push(decl)
+      if (Array.isArray(stmt) && stmt[0] === 'function') continue
+      if (!Array.isArray(stmt) || stmt[0] !== 'const') { counts = new Map(); continue }
+      let ran = false
+      for (const decl of stmt.slice(1)) {
+        if (!(Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string')) { ran = true; continue }
+        const own = ctx.scope.globals.has(decl[1]) && ctx.scope.consts?.has(decl[1])
+        if (own) pending.push(decl)
+        if (counts.size) fresh.set(decl, counts)
+        const lit = literalCount(decl[2])
+        if (lit >= 0 && decl[2].slice(1).every(inert)) { if (own) counts = new Map(counts).set(decl[1], lit) }
+        else if (inert(decl[2])) nums.add(decl[1])
+        else ran = true
+      }
+      if (ran) counts = new Map()
     }
   }
   holdModuleNumbers()
@@ -75,7 +115,7 @@ export function foldModuleConstants(ast) {
     let remaining = 0
     for (const decl of pending) {
       const [, name, init] = decl
-      const value = constNumExpr(init, lookup)
+      const value = constNumExpr(freshLengths(init, fresh.get(decl)), lookup)
       if (value == null || !Number.isFinite(value)) { pending[remaining++] = decl; continue }
       const int = isInt(value)
       declGlobal(name, int ? 'i32' : 'f64', value, { mut: false })

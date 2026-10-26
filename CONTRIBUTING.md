@@ -3363,7 +3363,10 @@ number, with no per-use conversion, and the emitter takes the verdict as an
 index proof of its own (`presentTypedRead`, `typedIdxProven` class 8): the
 read loads with no bounds test and no miss arm. Any number a name holds for
 good (`held`, the same definitions) is what a module name's reads fold to
-(`foldModuleConstants`): `HIGH = idx.HIGH` indexes by a constant. The global
+(`foldModuleConstants`): `HIGH = idx.HIGH` indexes by a constant. So does
+a length a declaration reads of a module const's array literal declared before
+it, where nothing between could run code (`const T = [...]; const N = T.length
+/ 2`, past declarations of numbers, of number arrays and of functions). The global
 stays with the statement that assigns it, and an exported name keeps its read,
 since the host can store to it (`test/held-number.js`). preEval decides a test that
 reads a module constant (`const DEBUG = false`, a `var` written once) and
