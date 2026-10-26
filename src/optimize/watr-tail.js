@@ -24,6 +24,7 @@ import { guardToInt32 } from './to-int32.js'
 import { poolFloatConstants } from './pool-floats.js'
 import { selectBits } from './select-bits.js'
 import { truncChoice } from './trunc-choice.js'
+import { selectArms } from './select-arms.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
 import { pointerExits } from './pointer-exits.js'
@@ -570,6 +571,8 @@ export function watrTail(module, cfg, {
   if (cfg.maskOperands === true) time('maskOperands', () => maskOperands(optimized))
   // (before the float selects become selects of bits)
   if (cfg.truncChoice !== false) time('truncChoice', () => truncChoice(optimized))
+  // (on the arms the truncations brought together: a select of their leaves, before the selects become bits)
+  if (cfg.selectArms !== false) time('selectArms', () => selectArms(optimized))
   // (after the passes that read a float select as one)
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)

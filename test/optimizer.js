@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop, splitLoopPrivateScratch, narrowLoopBound } from '../src/optimize/licm.js'
+import { selectArms } from '../src/optimize/select-arms.js'
 import { devirtSchemaReads } from '../src/optimize/devirt.js'
 import { hoistAddrBase, hoistPtrType } from '../src/optimize/cse-address.js'
 import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
@@ -8273,5 +8274,36 @@ test('peephole: a word tested against zero and a constant bound is one unsigned 
     is((text.match(/i32\.lt_u/g) || []).length, k < 2 ? 2 : 0, `condition ${k}: a pair per word folds, a lone test stays`)
     for (const x of [-2147483648, -1, 0, 1, 299, 300, 511, 512, 2147483647]) for (const y of [-1, 0, 299, 300])
       is(after(x, y), before(x, y), `condition ${k}: x=${x} y=${y}`)
+  }
+})
+
+// A choice whose arms compute one tree (optimize/select-arms.js): the tree over a select
+// of the leaves the arms differ in, so data that decides the test mispredicts nothing.
+// An exponential's sign-dependent rounding (`x < 0 ? trunc(c·x − ½) : trunc(c·x + ½)`) is the
+// kernel; a rounding the arm's sign decides is the truncation, a dead tee its value.
+test('selectArms: arms that share their tree select their leaves', () => {
+  const arm = (round, op) => `(${round} (${op} (f64.mul (f64.const 1.4426950408889634) (local.get $x)) (f64.const 0.5)))`
+  const teed = `(f64.trunc (local.tee $t (f64.sub (f64.mul (f64.const 1.4426950408889634) (local.get $x)) (f64.const 0.5))))`
+  // (past its overflow tests, as an exponential's argument is)
+  const fn = (then, other, tail = '') => `(module (func $f (export "f") (param $x f64) (result f64) (local $t f64) (local $u f64) (local $k f64)
+    (if (i32.eqz (f64.lt (f64.abs (local.get $x)) (f64.const 708))) (then (return (local.get $x))))
+    (local.set $k (if (result f64) (f64.lt (local.get $x) (f64.const 0)) (then ${then}) (else ${other})))
+    ${tail} (f64.add (f64.add (local.get $k) (local.get $t)) (local.get $u))))`
+  const cases = [
+    ['truncations', fn(arm('f64.trunc', 'f64.sub'), arm('f64.trunc', 'f64.add')), true],
+    ['the roundings the arms decide', fn(arm('f64.ceil', 'f64.sub'), arm('f64.floor', 'f64.add')), true],
+    ['a dead tee', fn(teed, arm('f64.trunc', 'f64.add'), '(local.set $t (f64.const 2))'), true],
+    ['a live tee', fn(teed, arm('f64.trunc', 'f64.add')), false],
+    ['two live tees', fn(teed, '(f64.trunc (local.tee $u (f64.add (f64.mul (f64.const 1.4426950408889634) (local.get $x)) (f64.const 0.5))))'), false],
+    ['arms that differ in work', fn(arm('f64.trunc', 'f64.sub'), '(f64.trunc (f64.sqrt (local.get $x)))'), false],
+    ['roundings no sign decides', fn(arm('f64.floor', 'f64.sub'), arm('f64.ceil', 'f64.add')), false],
+  ]
+  for (const [label, src, merges] of cases) {
+    const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(parseWat(src)))).exports.f
+    const ir = selectArms(parseWat(src))
+    is(/"if",\["result"/.test(JSON.stringify(ir)), !merges, `${label}: ${merges ? 'one tree over a select' : 'the choice stays'}`)
+    const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+    for (const x of [-3.7, -0.3, -0, 0, 0.3, 2.5, 709, NaN, Infinity, -Infinity, 1e300, -1e300])
+      ok(Object.is(after(x), before(x)), `${label}: f(${x})`)
   }
 })

@@ -102,6 +102,7 @@ export const PASS_NAMES = [
   'treeshake',
   'refreshGrown',             // after a call that may grow an array, the caller's binding of it takes the new block (compile/emit/call.js), off at the size tier
   'truncChoice',              // a choice of a float's ceiling below zero and its floor above is its truncation (optimize/trunc-choice.js)
+  'selectArms',               // a choice whose arms compute one tree: the tree over a select of the leaves they differ in (optimize/select-arms.js)
   'splitFuncs',               // a large function's conditional arms become functions of their own: V8 compiles what runs (optimize/split-funcs.js), speed-only
   'loopPasses',               // in a function that runs once, each pass of a loop that runs a loop is a call: V8 replaces code between calls only (optimize/split-funcs.js), speed-only
   'jsstring',                 // boundary opt-in: flip exported string params to externref

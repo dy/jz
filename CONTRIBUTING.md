@@ -2940,6 +2940,7 @@ src/
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);
+                select-arms.js (after watr: a choice whose two arms compute one tree is the tree over a select of the leaves they differ in, a rounding its sign decides read as the truncation, a dead tee as its value);
                 arena-rewind, sort-locals are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
   summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint refreshed after source rewrites
