@@ -19949,11 +19949,17 @@ const uniform = (n, seed) => {
   return out
 }
 
-// every word of every result
+// every word of every result, a NaN as one encoding: the bits of a NaN a
+// Float64Array holds are the engine's to choose (ECMA-262 NumericToRawBytes),
+// and the CPU's (x64 sets the sign of a NaN an invalid operation makes, arm64
+// does not)
 const checksum = (out) => {
   const w = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)
   let h = 0x811c9dc5 | 0
-  for (let i = 0; i < w.length; i++) h = mix(h, w[i])
+  for (let i = 0; i < out.length; i++) {
+    const nan = out[i] !== out[i]
+    h = mix(mix(h, nan ? 0 : w[2 * i]), nan ? 0x7ff80000 : w[2 * i + 1])
+  }
   return h >>> 0
 }
 

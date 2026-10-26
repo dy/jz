@@ -1348,7 +1348,12 @@ const FMA_CHECKSUMS = {
 const REFERENCE_CHECKSUMS = {
   entity: 1275530752,
   'stdlib-exp': 4129678277, 'stdlib-gamma': 2961059269, 'stdlib-erf': 2529385925, 'stdlib-pow': 1170594757,
-  'stdlib-ddot': 187360325, 'stdlib-special': 2131273638, 'stdlib-dists': 2524697909,
+  'stdlib-ddot': 187360325, 'stdlib-special': 2131273638,
+  // its NaN results hashed as one encoding (the case's `checksum`): node 20, 22
+  // and 25, deno, bun and jz agree on arm64. Under the raw-bits hash every
+  // engine gave 2524697909 on x64, this sum with bit 31 flipped: the sign an
+  // x64 NaN carries and an arm64 one does not.
+  'stdlib-dists': 377214261,
   polytri: 84696351, worley: 4117862664, fabrik: 2711562489, quatmul: 3862405384,
   // (native C, V8 and jz agree: clang -O3, node 25, jz e93a9cd3)
   sosfilter: 3613342271, movavg: 4274945053, upfirdn: 2901183035, pcmconvert: 1465809949,

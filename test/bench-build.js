@@ -1,12 +1,13 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
+import { mix } from '../bench/_lib/benchlib.js'
 import { agreement, exactAgreement, channelsAgree, agrees } from '../bench/_audiojs/compare.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
@@ -93,6 +94,25 @@ test('bench build: every committed workload is a valid JavaScript module', () =>
   `, ROOT], { encoding: 'utf8', timeout: 30000 })
   if (result.error) throw result.error
   is(result.status, 0, result.stderr)
+})
+
+// A NaN's bits in a Float64Array are the engine's to choose, and the CPU's: x64
+// sets the sign of a NaN an invalid operation makes, arm64 does not. The stdlib
+// sweeps' checksum (scripts/stdlib-probe.mjs and the cases it wrote) hashes
+// every NaN as one encoding, so one reference holds on both.
+test('bench build: the stdlib sweeps hash a NaN as one encoding', () => {
+  for (const file of ['scripts/stdlib-probe.mjs', 'bench/stdlib-dists/stdlib-dists.js', 'bench/stdlib-special/stdlib-special.js']) {
+    const body = readFileSync(join(ROOT, file), 'utf8').match(/\nconst checksum = \(out\) => \{[\s\S]*?\n\}/)?.[0]
+    ok(body, `${file}: the sweep's checksum`)
+    const checksum = new Function('mix', `${body}; return checksum`)(mix)
+    const a = new Float64Array([1.5, NaN, -0.25]), b = new Float64Array(a), u = new BigUint64Array(b.buffer)
+    u[1] = 0xfff8000000000000n
+    is(checksum(b), checksum(a), `${file}: a NaN's sign is not hashed`)
+    u[1] = 0x7ff8000000000001n
+    is(checksum(b), checksum(a), `${file}: nor its payload`)
+    b[2] = 0.25
+    ok(checksum(b) !== checksum(a), `${file}: a number's sign is`)
+  }
 })
 
 test('audio comparison: every channel and encoded byte contributes to the verdict', () => {
