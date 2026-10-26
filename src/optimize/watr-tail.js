@@ -28,6 +28,7 @@ import { searchLoops } from './search-loops.js'
 import { pointerExits } from './pointer-exits.js'
 import { ringLaps } from './ring-laps.js'
 import { splitFuncs } from './split-funcs.js'
+import { inlineTiny } from './inline-tiny.js'
 import { forwardCheckedElements } from './forward-checked.js'
 
 // A runtime helper's cold half, split off so the engine inlines the hot head
@@ -564,6 +565,10 @@ export function watrTail(module, cfg, {
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)
   if (cfg.searchLoops === true) time('searchLoops', () => searchLoops(optimized))
+  // (after the passes that read the runtime's calls by name: a helper of a few instructions joins
+  // its callers)
+  if (cfg.inlineTiny === true && watrOpts)
+    time('inlineTiny', () => inlineTiny(optimized, { pin: watrOpts.pin, max: cfg.tinyNodes ?? 16 }))
   // (last: the float literals every pass above reads as constants)
   if (cfg.poolFloats === true) time('poolFloatConstants', () => poolFloatConstants(optimized))
   // (after every pass that reads a function whole, the inliner above all, which would splice a

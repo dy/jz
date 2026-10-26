@@ -3133,6 +3133,14 @@ integral constant then compares words (`(if (result i32) C (then (i32.ge_s x 4))
 `test/typed-store.js` pins the reads after a store and after a load, and a read in a
 returning arm against the read after it, at every tier.
 
+Before the literals are pooled, a function of at most 16 instruction nodes (`tinyNodes`) and
+no loop joins every caller (`optimize/inline-tiny.js`, the `inlineTiny` pass, speed tier):
+V8 runs a short program mostly as baseline code, which inlines nothing and enters every
+call's frame through a setup stub, so the runtime's tag tests, boxes and allocation headers
+cost more as calls than as code. watr's inliner splices them, every other function pinned,
+and the touched callers propagate the arguments in. The passes before it see the calls by
+name.
+
 Last of all at the speed tier, a large function's conditional arms become functions of
 their own (`optimize/split-funcs.js`, the `splitFuncs` pass): V8 compiles a function whole,
 first with its baseline compiler and then, once it is hot, with its optimizing compiler, and
