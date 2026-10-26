@@ -404,6 +404,9 @@ export function summaryQueries(facts, internal = false) {
         const r = kindOfExpr(t[1])
         return tagOf(r) === K.TYPED && typedElementKey(t[2], kindOfExpr(t[2]) === NUMBER) ? typedStore(typedElemKind(r), v) : v
       }
+      // `a ??= b` is `a` where it is not nullish, else `b` (the solver's assign).
+      if (op === '??=') return merge(core(kindOfExpr(n[1])), kindOfExpr(n[2]))
+      if (op === '||=' || op === '&&=') return merge(kindOfExpr(n[1]), kindOfExpr(n[2]))
       if (op === '?' || op === '?:') return merge(kindOfExpr(n[2]), kindOfExpr(n[3]))
       if (logical) return merge(selectedExpr(n[1], mask & logical), selectedExpr(n[2], mask))
       if (op === ',') return kindOfExpr(n[n.length - 1])

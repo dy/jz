@@ -1820,3 +1820,22 @@ test('summary: a lost shape holds what an unseen call stored under a name the pr
   const want = oracle(src).f('{"b":[4,5]}')
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f('{"b":[4,5]}'), want, `O${optimize}`)
 })
+
+// A logical assignment's value is its target where that stands, else its
+// value (summary/query.js, as the solver's assign reads it): `(idx ??= [])` an
+// array, so its `.push` is an array's, where the query read anything.
+test('summary: a logical assignment reads as its target or its value', () => {
+  const src = `export let f = (n) => { let idx = null, s = '', k = 0
+      for (let i = 0; i < n; i++) if (i % 3) (idx ??= []).push(i)
+      const a = (s ||= 'x'), b = (k &&= 2)
+      return [idx ? idx.length : 0, a, b] }`
+  summarize(src)
+  const nodes = {}, find = (n) => { if (!Array.isArray(n)) return; if (n[0] === '??=' || n[0] === '||=' || n[0] === '&&=') nodes[n[0]] = n; n.forEach(find) }
+  find(ctx.funcs.list.find(f => f.name === 'f').body)
+  const q = ctx.summary.at('f')
+  is(q.kindOfExpr(nodes['??=']), kind(K.ARRAY, paramOf(q.kindOfExpr(nodes['??=']))), '`idx ??= []` is the array')
+  is(tagOf(q.kindOfExpr(nodes['||='])), K.STRING, '`s ||= "x"` is a string')
+  is(tagOf(q.kindOfExpr(nodes['&&='])), K.NUMBER, '`k &&= 2` is a number')
+  const want = oracle(src).f(7)
+  for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(7), want, `O${optimize}`)
+})
