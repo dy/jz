@@ -17,8 +17,14 @@ import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { PROMISE_KEYS } from '../src/std/async.js'
 
 // A promise (std/async.js) keeps its state in slots, none its own property
-// in JS: enumeration sees none of them (JSON.stringify gives `{}`).
+// in JS: enumeration sees none of them (JSON.stringify gives `{}`), in a
+// program whose code enumerates (`enumerates`); one that never does pays nothing.
 const PROMISE_KEY = schemaKey(canonicalKeyOrder(PROMISE_KEYS))
+const hidePromise = () => {
+  const names = ctx.schema.list[ctx.schema.promiseSid]
+  ctx.schema.hidden.set(names, new Set(names))
+  ctx.schema.hiddenViews = true
+}
 
 export { ENUM_DATA, ENUM_GET, ENUM_SET } from '../src/ast.js'
 
@@ -65,7 +71,21 @@ export const enumViewsOn = () => ctx.schema.views || ctx.schema.hiddenViews
 export function settleViews(roots) {
   const acc = ctx.transform.literalAccessorNames
   ctx.schema.views = !!acc?.size && roots.some(r => buildsView(r, acc))
-  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || ctx.schema.promiseHidden || roots.some(seesHidden)
+  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || roots.some(seesHidden)
+  ctx.schema.enumerates = roots.some(enumerates)
+  if (ctx.schema.enumerates && ctx.schema.promiseSid != null) hidePromise()
+}
+
+// Code that lists an object's own keys: a for-in, an object spread or rest,
+// the builtins that enumerate.
+const ENUMERATING = /^(JSON\.stringify|Object\.(keys|values|entries|assign|getOwnPropertyNames)|structuredClone)$/
+const enumerates = (n) => {
+  if (!Array.isArray(n)) return false
+  if (n[0] === 'for' && Array.isArray(n[1]) && n[1][0] === 'in') return true
+  if (n[0] === '()' && typeof n[1] === 'string' && ENUMERATING.test(n[1])) return true
+  if (n[0] === '{}' && n.slice(1).some(p => Array.isArray(p) && (p[0] === '...' || p[0] === ',' && p.slice(1).some(q => Array.isArray(q) && q[0] === '...')))) return true
+  for (let i = 1; i < n.length; i++) if (enumerates(n[i])) return true
+  return false
 }
 
 // A RegExp or Error the code constructs, or a bound catch which may hold
@@ -122,7 +142,7 @@ export function initSchema(ctx) {
     if (existing != null) return existing
     const id = ctx.schema.list.push(props) - 1
     byKey.set(key, id)
-    if (key === PROMISE_KEY) { ctx.schema.hidden.set(props, new Set(props)); ctx.schema.promiseHidden = ctx.schema.hiddenViews = true }
+    if (key === PROMISE_KEY) { ctx.schema.promiseSid = id; if (ctx.schema.enumerates) hidePromise() }
     for (let i = 0; i < props.length; i++) {
       const p = props[i]
       let bucket = byProp.get(p)

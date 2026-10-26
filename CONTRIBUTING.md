@@ -1809,7 +1809,9 @@ literals. Property lookup retains hidden slots in the own-property view;
 enumeration keeps its separate filtered view. A promise's layout
 (std/async.js `PROMISE_KEYS`) hides every slot, as an Error's hides
 `message` and `name`: JSON.stringify gives `{}`, and keys, entries, for-in
-and a spread see nothing. Getter and setter calls retain
+and a spread see nothing. It hides them only in a program whose code lists
+an object's keys (module/schema.js `enumerates`), which alone could tell.
+Getter and setter calls retain
 surrounding catches even when their receiver has a known layout.
 Date uses the same own-method lookup before its inherited timestamp or string
 method. Numeric conversion and relational operators request the number hint;
