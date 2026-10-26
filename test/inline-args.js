@@ -48,3 +48,14 @@ test('inline args: a body that writes what an argument names', () => {
   export function f(x) { v = x; let s = 0; for (let k = 0; k < 2; k++) s += w(v, k); return s + v }`
   each(src, [[0], [3], [-2]])
 })
+
+test('inline args: a body that yields a sequence is one argument where the call stood', () => {
+  // `(node.type = type, node)` spliced among another call's arguments: the sequence
+  // is one value, not that call's argument list (the compiler's own `typed`)
+  const src = `const tag = (node, t) => (node.t = t, node)
+  const unwrap = (n) => n.t === 'f' ? n : tag(['cvt', n], 'f')
+  const box = (n) => tag(['box', unwrap(n)], 'b')
+  const wrap = (o) => ['out', box(tag(o, 'f'))]
+  export function f(k) { const r = wrap(['get', k]); return r[1][1][0] === 'get' ? r[1][1][1] : r[1][1][0] === 'cvt' ? -1 : -2 }`
+  each(src, [[0], [2], [7]])
+})

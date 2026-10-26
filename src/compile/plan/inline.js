@@ -251,14 +251,18 @@ const inlinedBody = (func, args) => {
   const clone = closures ? (n, sub, ren) => cloneWithSubst(n, sub, ren, true) : cloneWithSubst
 
   const mark = bodyHasCall(func.body) ? n => n : eagerCallFreeBooleans
+  // A sequence the body yields (`(node.type = type, node)`) is one value where the
+  // call stood: parenthesized, so an argument or element list around the site does
+  // not read its operands as arguments of its own.
+  const one = (v) => Array.isArray(v) && v[0] === ',' ? ['(', v] : v
   // Expression-bodied arrow `(c) => expr`: no statement block; the whole body
   // *is* the return value. Treat as zero-prefix + value.
-  if (!stmts) return { prefix: argPrefix, value: mark(clone(func.body, subst, rename)) }
+  if (!stmts) return { prefix: argPrefix, value: one(mark(clone(func.body, subst, rename))) }
   const last = stmts.length ? stmts[stmts.length - 1] : null
   const isTrailingReturn = Array.isArray(last) && last[0] === 'return'
   const prefixSrc = isTrailingReturn ? stmts.slice(0, -1) : stmts
   const prefix = prefixSrc.map(stmt => mark(clone(stmt, subst, rename)))
-  const value = isTrailingReturn && last.length > 1 ? mark(clone(last[1], subst, rename)) : null
+  const value = isTrailingReturn && last.length > 1 ? one(mark(clone(last[1], subst, rename))) : null
   callerSize += nodeSize(func.body)
   return { prefix: argPrefix.length ? [...argPrefix, ...prefix] : prefix, value }
 }
