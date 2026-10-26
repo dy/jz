@@ -375,6 +375,20 @@ test('bigint tag: a tagged value written to a module binding reads back as the B
   }
 })
 
+// `typeof x` is a string (kind/val-type-of.js VT.typeof): beside a BigInt the
+// sum concatenates, where the untyped operand sent it down the BigInt add.
+test('bigint tag: typeof beside a BigInt concatenates', () => {
+  const SRC = `let g = 4n
+  export let pre = (k) => { const s = k ? 4n : 5n; return typeof s + s }
+  export let post = (k) => { const s = k ? 4n : 5n; return s + typeof s }
+  export let mod = () => typeof g + g`
+  const host = oracle(SRC)
+  for (const optimize of LEVELS) {
+    const ex = jz(SRC, { optimize }).exports
+    is([ex.pre(1), ex.post(0), ex.mod()], [host.pre(1), host.post(0), host.mod()], `O${optimize || 0}`)
+  }
+})
+
 // A module binding's carrier is one program-wide fact (representation-plan
 // representationGlobalCarrier, from the summary's kind of it): a raw BigInt
 // where the binding holds a BigInt alone, a box where it may hold one beside

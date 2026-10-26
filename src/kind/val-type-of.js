@@ -78,6 +78,8 @@ for (const op of BOOL_OPS) VT[op] = VT.bool
 VT.bigint = () => VAL.BIGINT
 VT['['] = () => VAL.ARRAY
 VT.str = VT.strcat = () => VAL.STRING
+// `typeof x` names its operand's type: a string whatever the operand.
+VT.typeof = () => VAL.STRING
 VT['=>'] = () => VAL.CLOSURE
 VT['//'] = () => VAL.REGEX
 
