@@ -609,6 +609,18 @@ test('generators: an empty literal filled in the body reads back its keys', () =
   function* g(a) { const o = {}; o.p = a[0]; o.name = 'n'; yield o.p + 1; yield o.name; yield JSON.stringify(o) }
   export let filled = () => [...g([1, 2])].join('|')`))
 
+// A class in a generator body lowers in the body's scope, as in any function:
+// it reads its iteration's loop binding and a parameter, and one declared in a
+// block shadows the module's class of its name there only.
+test('generators: a class in the body reads its bindings', () => agreeAll(`
+  class C { v() { return 'module' } }
+  function* loop() { for (let i = 0; i < 3; i++) { const K = class { v() { return i } }; yield new K().v() } }
+  function* declared() { for (let i = 0; i < 2; i++) { class K { v() { return i } } yield new K().v() } }
+  function* param(n) { const P = class { v() { return n * 2 } }; yield new P().v() }
+  function* block() { { class C { v() { return 'block' } } yield new C().v() } yield new C().v() }
+  function* nested() { for (let i = 0; i < 2; i++) { const inner = function* () { yield new (class { v() { return i } })().v() }; yield* inner() } }
+  export let classes = () => [...loop(), ...declared(), ...param(4), ...block(), ...nested()].join()`))
+
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,
 // a continue and an exception from next() close nothing; the body's exception

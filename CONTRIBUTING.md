@@ -3565,6 +3565,11 @@ the steps ECMA-262 takes (`patternSteps`: keys read in turn, an iterator
 stepped and closed). A list the machine flattens binds its function
 declarations as constants at its start, a switch case's before the switch,
 and its class declarations as `let`s where they stand (`declarations`). The
+states lower in the machine's own lexical scope (jzify/index.js
+`enterMachineScope`), a child of the function's with every binding the
+machine hoists, under which the nodes `resolveLocals` copied are scoped
+again: a class there is a function's local class, not a module's, and a name
+the body binds shadows a builtin or a module class throughout. The
 machine's locals are declared ahead of the steps that initialize them behind
 the TDZ mark (`src/ast.js`), a declaration that defines no value; a bare
 `let x` in the body defines its undefined where it stands. An async function

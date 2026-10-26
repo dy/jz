@@ -158,7 +158,7 @@ export const labeled = (labels, loop) => labels ? labels.reduceRight((l, name) =
 // receiver) or tests `instanceof Iterator`; generator objects then mint
 // through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
-export function createGeneratorLowering({ transform, transformParams, err, generatorNames, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr }) {
+export function createGeneratorLowering({ transform, transformParams, err, generatorNames, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterMachineScope, leaveBuiltinScope }) {
   // ---- the body's bindings, resolved ----
   // The machine hoists every declaration of its body into the factory scope,
   // where all its states see it, so each takes a spelling of its own: a
@@ -536,6 +536,8 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
 
   // `agen`: the body of an async generator, whose driver reads tagged yields
   function lowerGenerator(params, rawBody, agen = false) {
+    // the function's own scope, as its source declared it
+    const owners = [rawBody, params]
     const lowered = lowerArguments(params, rawBody, true)
     params = lowered[0]; rawBody = lowered[1]
     const paramInit = lowered[2].map(transform)
@@ -1073,7 +1075,10 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
 
 
     const entry = newState()
-    const end = flattenList(body, entry, null)
+    // the states lower in the machine's scope (jzify/index.js enterMachineScope)
+    const outer = enterMachineScope?.(owners, body)
+    let end
+    try { end = flattenList(body, entry, null) } finally { if (enterMachineScope) leaveBuiltinScope(outer) }
     if (end != null) stmtsOf(end).push([';;set', -1], ['return', record([null, undefined], true)])
 
     // return(v) at a suspended yield is a return completion there (its value in

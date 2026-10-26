@@ -533,6 +533,14 @@ test('async generators: yield* over builtin iterables', async () => {
     export async function values() { let s = 0; for await (const v of g(new Set([1, Promise.resolve(2)]))) s += v; return s }`)
 })
 
+// A class in an async body lowers in the body's scope, as in any function.
+test('async: a class in the body reads its bindings', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`async function h(n) { await null; const C = class { v() { return n + 1 } }; return new C().v() }
+    async function* g() { for (let i = 0; i < 2; i++) { await null; const C = class { v() { return i } }; yield new C().v() } }
+    export async function f() { const out = [await h(5)]; for (let i = 0; i < 3; i++) { await null; const C = class { v() { return i } }; out.push(new C().v()) } for await (const v of g()) out.push(v); return out.join() }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals

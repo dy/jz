@@ -90,9 +90,8 @@ const functionNameWrite = name => {
 
 // Build the lexical scope chain before rewriting. A program-wide name census
 // made a parameter in one function suppress unrelated builtin lowering in
-// every other function.
-const buildBuiltinScopes = root => {
-  const map = new WeakMap()
+// every other function. The builder scopes nodes into `map`.
+const scopeBuilder = (map) => {
   const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), strict: parent?.strict ?? false, self: null })
   const functionDecls = new WeakSet()
   const strictBody = body => {
@@ -214,6 +213,10 @@ const buildBuiltinScopes = root => {
     if (here !== scope) map.set(node, here)
     for (let i = 1; i < node.length; i++) visit(node[i], here)
   }
+  return { childScope, strictBody, declarations, vars, visit }
+}
+const buildBuiltinScopes = root => {
+  const map = new WeakMap(), { childScope, strictBody, declarations, vars, visit } = scopeBuilder(map)
   const program = childScope(null)
   program.strict = strictBody(root)
   declarations(root, program)
@@ -221,6 +224,36 @@ const buildBuiltinScopes = root => {
   if (Array.isArray(root)) map.set(root, program)
   visit(root, program, true)
   return map
+}
+// A generator or async body lowers to a machine whose states share one scope:
+// resolveLocals (jzify/generators.js) hoists each binding of its blocks there,
+// spelled apart. Its states lower in that scope, a child of the function's
+// own (the first of `owners` scoped) with every binding the machine hoists,
+// the nodes the machine copied scoped under it.
+const enterMachineScope = (owners, stmts) => {
+  const { childScope, declarations, vars, visit } = scopeBuilder(builtinScopes)
+  let parent = activeBuiltinScope
+  for (const n of owners) if (Array.isArray(n) && builtinScopes.has(n)) { parent = builtinScopes.get(n); break }
+  const machine = childScope(parent)
+  // every binding outside the body's nested functions: a list's or a block's
+  // declarations, a declaration standing alone (a for head's), a catch's
+  const hoist = (n) => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === 'function' || op === 'function*' || op === '=>' || op === 'class') return
+    if (op === ';') declarations(n, machine)
+    else if (op === '{}' && (isBlockBody(n) || JZ_BLOCK_OPS.has(n[1]?.[0]))) declarations(n[1], machine)
+    else if (op === 'let' || op === 'const' || op === 'using') declarations(n, machine)
+    else if (op === 'catch') addPatternNames(machine, n[1])
+    for (let i = 1; i < n.length; i++) hoist(n[i])
+  }
+  const list = [';', ...stmts]
+  hoist(list)
+  vars(list, machine)
+  for (const st of stmts) visit(st, machine)
+  const prior = activeBuiltinScope
+  activeBuiltinScope = machine
+  return prior
 }
 const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
 
@@ -263,7 +296,7 @@ const iterProto = { on: false, helpers: false, program: false, programHelpers: f
 const ctorUse = { on: false, program: false }
 const genErr = (msg) => err('jzify: ' + msg)
 const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterMachineScope, leaveBuiltinScope })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
