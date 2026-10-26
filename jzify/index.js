@@ -284,8 +284,9 @@ const constStrings = new Map()
 const generatorNames = new Set()
 // the ones whose return() runs code (closesOnReturn): loops over them close
 const generatorCloses = new Set()
-// A call of `name` calls the module's generator declaration: no nearer scope binds the name.
-const isGenerator = (name) => generatorNames.has(name) && !classBindingScope(name)?.parent
+// A call of `name` calls the module's generator declaration: no nearer scope
+// binds the name, and nothing in the module assigns it another value.
+const isGenerator = (name) => generatorNames.has(name) && !classBindingScope(name)?.parent && !census.names.has(name)
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
 // programs without iterator producers compile byte-identically.

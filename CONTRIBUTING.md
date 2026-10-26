@@ -3490,8 +3490,9 @@ return() runs no code (no finally, `using`, yield* or suspended for-of:
 `for await` in an async function close too. A known generator call calls a
 module generator declaration by a name no nearer scope binds (`isGenerator`,
 jzify/index.js; a generator body prepares in a scope of the names it binds
-as written): a parameter, a local or a catch parameter of its name is called
-for what it holds.
+as written) and the module never assigns (async.js `assignCensus`): a
+parameter, a local or a catch parameter of its name, or the name assigned
+another value, is called for what it holds.
 In a generator or async body a for-of or for-in the machine splits desugars
 first (`eachLoop`, jzify/generators.js): over a known generator call, or in
 a program that mints iterators through the protocol fork above, closing as

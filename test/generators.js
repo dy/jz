@@ -671,6 +671,15 @@ test('generators: for (using x of src) disposes each iteration', () => agreeAll(
   export let empty = () => { log.length = 0; for (using r of [null, undefined]) log.push(String(r)); return log.join() }
   export let named = () => { let using, of = [[9], [8], [7]], out = []; for (using of of [0, 1, 2]) out.push(using); return out.join() }`))
 
+// A module generator whose name the module assigns another value is called
+// for what the name holds: a spread, a for-of and a yield* iterate that.
+test('generators: a reassigned module generator name calls what it holds', () => agreeAll(`
+  function* h() { yield 1 }
+  function* g() { yield* h(); for (const v of h()) yield v }
+  h = () => [5, 6]
+  export let spread = () => [...h()].join()
+  export let loops = () => { let s = ''; for (const v of h()) s += v; return s + '|' + [...g()].join() }`))
+
 // An optional chain whose base is nullish skips a yield in its rest.
 test('generators: an optional chain skips a yield after a nullish base', () => agreeAll(`
   function* g(a) { const r = a?.f(yield 1); yield r }
