@@ -5288,6 +5288,43 @@ test('leadChains: a cascade computes its output chain ahead of the state updates
   is(fresh2({ level: 'speed', leadChains: false }), 0, 'leadChains: false keeps the sections as written')
 })
 
+test('leadChains: a value a statement writes inside itself is read after it', () => {
+  const g = (n) => ['local.get', n], c = (v) => ['f64.const', v]
+  const S = 6
+  const y = (j) => j % 2 ? '$yb' : '$ya', inOf = (j) => j ? g(y(j - 1)) : g('$x')
+  const body = [['local.set', '$x', ['f64.load', g('$p')]]]
+  for (let j = 0; j < S; j++) {
+    const k = 0.05 * (j + 1), out = ['f64.add', ['f64.mul', c(0.1 + k), inOf(j)], g(`$z${j}a`)]
+    // the third section's output reads a value derived from the running total below
+    body.push(['local.set', y(j), j === 2 ? ['f64.add', out, ['f64.mul', c(1e-3), g('$v')]] : out],
+      ['local.set', `$z${j}a`, ['f64.add', ['f64.sub', ['f64.mul', c(0.2 - k), inOf(j)], ['f64.mul', c(-1.5 + k), g(y(j))]], g(`$z${j}b`)]],
+      ['local.set', `$z${j}b`, ['f64.sub', ['f64.mul', c(0.1), inOf(j)], ['f64.mul', c(0.6 - k), g(y(j))]]])
+    // a running total stepped inside a statement: a tee whose operand reads the name it writes
+    if (j === 1) body.push(['local.set', '$w', ['f64.mul', c(0.5), ['local.tee', '$acc', ['f64.add', g('$acc'), g(y(j))]]]],
+      ['local.set', '$v', ['f64.mul', g('$acc'), c(2)]])
+  }
+  body.push(['f64.store', g('$p'), ['f64.add', g(y(S - 1)), g('$w')]], ['local.set', '$p', ['i32.add', g('$p'), ['i32.const', 8]]])
+  const zs = []
+  for (let j = 0; j < S; j++) zs.push(['local', `$z${j}a`, 'f64'], ['local', `$z${j}b`, 'f64'])
+  const fn = (b) => ['func', '$f', ['param', '$p', 'i32'], ['param', '$end', 'i32'], ['local', '$x', 'f64'], ['local', '$ya', 'f64'], ['local', '$yb', 'f64'],
+    ['local', '$acc', 'f64'], ['local', '$w', 'f64'], ['local', '$v', 'f64'], ...zs,
+    ['loop', '$L', ...b, ['br_if', '$L', ['i32.lt_u', g('$p'), g('$end')]]]]
+  const before = fn(JSON.parse(JSON.stringify(body)))
+  const after = leadChains(['module', JSON.parse(JSON.stringify(before))])[1]
+  ok(JSON.stringify(after) !== JSON.stringify(before), 'the run is scheduled: the tee becomes a statement of its own')
+  const exec = (f) => {
+    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', ['memory', '$m', ['export', '"m"'], 1], [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]])))
+    const mem = new Float64Array(m.exports.m.buffer, 0, 256)
+    for (let i = 0; i < 256; i++) mem[i] = Math.sin(i * 0.37)
+    m.exports.f(0, 2040)
+    return [...mem.slice(0, 256)]
+  }
+  is(exec(after), exec(before), 'the total is read after its step')
+  // a tee the split cannot take out (what runs before it reads its name) keeps the run as written
+  const held = fn([...body.slice(0, 7), ['local.set', '$w', ['f64.sub', g('$acc'), ['local.tee', '$acc', ['f64.add', g('$acc'), g('$ya')]]]], ...body.slice(7)])
+  is(JSON.stringify(leadChains(['module', JSON.parse(JSON.stringify(held))])[1]), JSON.stringify(held), 'a tee left in its statement keeps the run')
+})
+
 test('rec-unroll: an empty statement in a body is no loop', () => {
   const body = [';', null]
   is(unrollRecurrence(body, new Set()), body, 'the body stays as it is')

@@ -25,7 +25,9 @@
  * chain whose side work feeds its next links (an integrator's stages) has
  * nothing hanging and stays as written. A local written more than once in the
  * run takes a fresh name for each write but its last, and a tee nested in a
- * statement becomes a statement of its own, so each value is one statement.
+ * statement becomes a statement of its own, so each value is one statement; a
+ * run where a tee cannot leave its statement (what runs before it there reads
+ * its name or writes a local) is left as written.
  * Loads keep their order with the run's stores; a run holding a call, a branch,
  * a trap or a global write is left as written.
  *
@@ -81,9 +83,11 @@ const splitTees = (s) => {
     const seen = []
     const visit = (n, parent, idx) => {
       if (found || !isArr(n)) return
+      // (what the tee's own operand evaluates moves with it)
+      const start = seen.length
       for (let i = 1; i < n.length; i++) visit(n[i], n, i)
       if (found) return
-      if (n[0] === 'local.tee' && n !== s) { found = { n, parent, idx, before: seen.slice() }; return }
+      if (n[0] === 'local.tee' && n !== s) { found = { n, parent, idx, before: seen.slice(0, start) }; return }
       seen.push(n)
     }
     if (s[0] === 'local.set') visit(s[2], s, 2)
@@ -105,6 +109,10 @@ const schedule = (run, fresh, types) => {
   let stmts = []
   for (const s of run) stmts.push(...splitTees(clone(s)))
   if (stmts.some(s => s[0] === 'local.set' && !types.has(s[1]))) return null
+  // a tee left inside a statement writes a value the dependences below do not see
+  let nested = false
+  for (const s of stmts) walk(s[0] === 'local.set' ? s[2] : s, (c) => { if (c[0] === 'local.tee') nested = true })
+  if (nested) return null
   const last = new Map()
   for (let i = 0; i < stmts.length; i++) if (stmts[i][0] === 'local.set') last.set(stmts[i][1], i)
   const cur = new Map()
