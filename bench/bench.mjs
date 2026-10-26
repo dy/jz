@@ -659,7 +659,11 @@ if (typeof TextEncoder === 'undefined') {
     })
     body += r.outputFiles[0].text
   } else {
-    body += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
+    // `export let main = …`, or `export { run as main }` as the bundled stdlib cases end
+    // (whose library may declare a `main` of its own): the entry called by its own name.
+    const entry = /\bexport\s*\{\s*(\w+)\s+as\s+main\s*\}/.exec(src)?.[1]
+    body += (entry ? src.replace(/\bexport\s*\{\s*\w+\s+as\s+main\s*\}/, '') + `\n${entry}()\n`
+      : src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n')
   }
   // Native compilers with their own Web globals need no shell polyfills.
   const heapShim = NATIVE_ARENA_RE.test(body) ? NATIVE_ARENA_SHIM : ''
