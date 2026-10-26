@@ -544,7 +544,14 @@ two such values differ, `===` and its kin, the dynamic comparisons
 both forward to one live block. Beside an array no reference can hold stale
 (never resized by the summary, or a `neverGrown`/`ownCurrent` binding) the bits
 are identity. A Map or Set key hashed before it moved is not found after
-(its hash is its bits). A second stable numeric read receiver can cache its
+(its hash is its bits). A call that may grow an array an argument names (a
+push, unshift or splice through the parameter, a store into it, or the name
+passed on to a callee that may, emit/call.js `paramGrows`) leaves the caller's
+binding at the old block when the array moves: where that binding is a local
+or a module global the host cannot write, holding an array of no fixed length
+that is no Map's or Set's key (`arrayMayBeKeyExpr`), the call is followed by a
+read of the forwarding word, and the binding takes the new block
+(`refreshGrown`), so its later reads follow no forward. A second stable numeric read receiver can cache its
 base, length and element width, sharing one load dispatcher per output version.
 This covers integer, floating and clamped storage; nullish and BigInt receivers
 retain the original single-receiver loop. Float16 reuses the already-demanded

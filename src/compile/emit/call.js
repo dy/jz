@@ -32,6 +32,67 @@ import { emitMethodCall } from './method-dispatch.js'
 // which `ctx.funcs.names` also holds but which has no body and may legitimately
 // share a name with a built-in emitter (e.g. an imported `parseInt`).
 const isUserFunc = name => !!ctx.funcs.map.get(name)?.body
+
+// Whether a function may grow the array its parameter `k` holds: a push, unshift or
+// splice of the name, a store to its length or to an element, or the name passed where a
+// callee may grow it. A grown array moves and leaves a forward at the block it left.
+const GROWS = new Set(['push', 'unshift', 'splice'])
+const growsAt = new Map()   // function → per parameter, whether it may grow (null while it is being read)
+const paramGrows = (func, k) => {
+  let row = growsAt.get(func)
+  if (!row) growsAt.set(func, row = [])
+  if (row[k] !== undefined) return row[k] !== false
+  const name = func.sig.params[k]?.name
+  if (!name || !func.body) return (row[k] = false)
+  row[k] = null
+  let grows = false
+  walkAst(func.body, { enter: n => {
+    if (grows) return false
+    const op = n[0]
+    if (typeof op !== 'string') return
+    if (op === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][1] === name && GROWS.has(n[1][2])) { grows = true; return false }
+    if ((op === '=' || op.length > 1 && op.endsWith('=') && op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>=') &&
+        Array.isArray(n[1]) && (n[1][0] === '[]' || n[1][0] === '.') && n[1][1] === name) { grows = true; return false }
+    if (op === '()' && typeof n[1] === 'string') {
+      const g = ctx.funcs.map.get(n[1])
+      const args = n[2] == null ? [] : Array.isArray(n[2]) && n[2][0] === ',' ? n[2].slice(1) : [n[2]]
+      for (let i = 0; i < args.length; i++) if (args[i] === name && (!g || paramGrows(g, i) !== false)) { grows = true; return false }
+    }
+  } })
+  row[k] = grows
+  return grows
+}
+/** After a call that may grow an array a local binding passed it, the binding reads where
+ *  the array is (`appendRange(dst, …)` grew `dst`): the array leaves a forward behind,
+ *  which every later read through the old block would follow, as reads through the name a
+ *  push went through never do. */
+const refreshGrown = (func, argNodes) => {
+  const out = []
+  for (let k = 0; k < argNodes.length && k < func.sig.params.length; k++) {
+    const x = argNodes[k]
+    if (typeof x !== 'string' || ctx.func.boxed?.has(x)) continue
+    // a local of the box, or a module binding the program alone writes
+    const local = ctx.func.locals?.has(x)
+    const g = !local && ctx.scope.userGlobals?.has(x) ? ctx.scope.globals.get(x) : null
+    if (local ? ctx.func.locals.get(x) !== 'f64' : !(g?.mut && g.type === 'f64' && !g.export && ctx.funcs.exports?.[x] == null)) continue
+    // (an array a Map or a Set may hold as a key keeps the address it was hashed by; one of a
+    // length nothing changes never moves)
+    const view = ctx.summary?.at(ctx.func.current), kd = view?.kindOfExpr(x)
+    if (kd == null || tagOf(kd) !== K.ARRAY || isNullable(kd) || hasTag(kd, K.ABSENT) || view.arrayMayBeKeyExpr(x) ||
+        view.fixedLenOfExpr(x) != null || !paramGrows(func, k)) continue
+    if (out.some(n => n.refreshes === x)) continue
+    inc('__ptr_offset_fwd')
+    const get = [local ? 'local.get' : 'global.get', `$${x}`], set = local ? 'local.set' : 'global.set'
+    const bits = ['i64.reinterpret_f64', get], off = ['i32.wrap_i64', bits]
+    const stmt = ['if', ['i32.eq', ['i32.load', ['i32.sub', off, ['i32.const', 4]]], ['i32.const', -1]],
+      ['then', [set, `$${x}`, ['f64.reinterpret_i64', ['i64.or',
+        ['i64.and', bits, ['i64.const', '0xFFFFFFFF00000000']],
+        ['i64.extend_i32_u', ['call', '$__ptr_offset_fwd', off]]]]]]]
+    stmt.refreshes = x
+    out.push(stmt)
+  }
+  return out
+}
 function emitSpeculativeCall(callee, spec, argNodes, func) {
   const params = func.sig.params
   const specAt = new Map(spec.guards.map(g => [g.k, g.aux]))
@@ -226,8 +287,15 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
                     : parsed.normal.map(a => coerceArg(argIR(a), undefined, a))
   // attachSigMeta also handles the unsigned-uint32 flag (every tail was `>>>`),
   // so consumer's asF64 uses `f64.convert_i32_u` instead of `_s` ([0, 2^32) range).
-  return attachSigMeta(typed(func ? callWithArgs(callee, args, func.sig)
-    : ['call', `$${callee}`, ...args], func?.sig.results[0] || 'f64'), func?.sig)
+  const rt = func?.sig.results[0] || 'f64'
+  const call = typed(func ? callWithArgs(callee, args, func.sig) : ['call', `$${callee}`, ...args], rt)
+  const refresh = func && func.sig.results.length <= 1 ? refreshGrown(func, parsed.normal) : []
+  if (refresh.length) {
+    if (!func.sig.results.length) return attachSigMeta(typed(['block', call, ...refresh], rt), func.sig)
+    const t = rt === 'i32' ? tempI32('cr') : rt === 'i64' ? null : temp('cr')
+    if (t) return attachSigMeta(typed(['block', ['result', rt], ['local.set', `$${t}`, call], ...refresh, ['local.get', `$${t}`]], rt), func.sig)
+  }
+  return attachSigMeta(call, func?.sig)
 }
 
 /** Const-bound, non-escaping closure — direct call to its body, skipping

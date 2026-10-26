@@ -263,3 +263,35 @@ test('never-grown: identity follows an array that moved as it grew', () => {
     for (const name of ['dynamic', 'distinct']) is(got[name](1), want[name](1), `${name} at ${optimize}`)
   }
 })
+
+test('never-grown: a binding a callee grew reads where the array went', () => {
+  // `append(a, …)` grows `a` through its parameter: after the call the caller's binding
+  // (a local, a module array) reads the array's new block, so reads through it follow no
+  // forward; an array a Map or a Set holds as a key keeps the address it was hashed by
+  const append = 'const append = (dst, src) => { for (let i = 0; i < src.length; i++) dst.push(src[i]) }\n'
+  const grown = append + `const out = []
+const put = (o, n) => { for (let i = 0; i < n; i++) o[i] = i * 2; return n }
+export let local = () => { const a = []; for (let r = 0; r < 6; r++) append(a, [r, r + 1, r + 2])
+  let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * (i + 1)
+  const k = [a]; append(a, [9, 9, 9, 9, 9]); return [s, a.length, k[0] === a, k[0].length, k.indexOf(a), k.includes(a)] }
+export let module = () => { let t = 0; for (let r = 0; r < 5; r++) t += put(out, 10 + r * 7); let s = 0; for (let i = 0; i < out.length; i++) s += out[i]; return [t, s, out.length] }
+export let stacked = () => { const stack = [[0, 1]], done = []
+  for (let r = 0; r < 12 && stack.length; r++) { const p = stack.pop(), lo = [], hi = []
+    append(lo, p); append(hi, p); lo.push(r, r * 2); hi.push(-r)
+    if (lo.length < 9) stack.push(lo, hi); else done.push(lo.length + hi.length, lo[lo.length - 1]) }
+  return [done.join(), stack.length] }`
+  const keyed = append + `export let keyed = () => { const a = [1], m = new Map(), st = new Set(); m.set(a, 7); st.add(a)
+  for (let r = 0; r < 6; r++) append(a, [r, r, r, r]); return [m.get(a), st.has(a), a.length] }`
+  for (const src of [grown, keyed]) {
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const m = jz(src, { optimize }).exports
+      for (const name of Object.keys(want)) is(JSON.stringify(m[name]()), JSON.stringify(want[name]()), `${name} at ${optimize}`)
+    }
+  }
+  // the binding's new block: its box's high word over the forwarded offset
+  const refreshes = (src, name) => (jz.compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false, watr: false } })
+    .split('(func ').find(c => c.startsWith('$' + name)) || '').includes('0xFFFFFFFF00000000')
+  ok(refreshes(grown, 'local') && refreshes(grown, 'module'), 'a local and a module binding read the grown array after the call')
+  ok(!refreshes(keyed, 'keyed'), 'a key of a Map keeps its address')
+})

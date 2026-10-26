@@ -36,6 +36,22 @@ export function summaryQueries(facts, internal = false) {
     const c = cell(paramOf(k)), n = lens[c]
     return n >= 0 && !(stores.get(c) >= n) ? n : null
   }
+  // The array cells a Map's or a Set's key may be (`anyKey`: one whose kind names
+  // arrays of no cell): the collections hash an array by its address
+  // (module/collection.js `__map_hash`).
+  let keyCells = null, anyKey = false
+  const arrayKeyCells = () => {
+    if (keyCells) return keyCells
+    keyCells = new Set()
+    const note = kk => {
+      if (kk == null || !hasTag(kk, K.ARRAY)) return
+      if (tagOf(kk) === K.ARRAY && paramOf(kk) !== UNKNOWN) keyCells.add(cell(paramOf(kk)))
+      else anyKey = true
+    }
+    for (const kk of mapKeys?.values() ?? []) note(kk)
+    for (const ks of heldKeys?.values() ?? []) for (const kk of ks) note(kk)
+    return keyCells
+  }
   const NO_SLOTS = []
   const slots = sid => fields[sid] ?? NO_SLOTS   // a schema never stored to has every slot at NONE
   const slotKind = (sid, i) => fields[sid]?.[i] ?? K.NONE
@@ -598,6 +614,8 @@ export function summaryQueries(facts, internal = false) {
       arrayCellOf: e => { const k = kindOfExpr(e); return tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : null },
       // The array cells the value of `e` may hold at any depth (reachCells).
       arrayCellsReachedByExpr: e => { const out = new Set(); reachCells(kindOfExpr(e), out, new Set()); return out },
+      // Whether the array the value of `e` holds may be a Map's or a Set's key (`arrayKeyCells`).
+      arrayMayBeKeyExpr: e => { const k = kindOfExpr(e), cs = arrayKeyCells(); return anyKey || tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN || cs.has(cell(paramOf(k))) },
       // The arrays a receiver may be, for their record layout (compile/array-records.js):
       // its cell, -1 for arrays whose cell is unknown, null for no array.
       arrayRecordOf: e => { const k = kindOfExpr(e); return !hasTag(k, K.ARRAY) ? null : tagOf(k) === K.ARRAY && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : -1 },
