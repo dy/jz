@@ -3537,11 +3537,15 @@ a yield or an await as a statement, or the right side of `let x = yield E` /
 `x = yield E` / `x.f = yield E`), so `jzify/async.js` (`hoistSuspensions`)
 hoists every other one first: the value it resumes with lands in a temp
 declared before the statement; what the statement evaluates before it lands
-in temps ahead of it, a callee staying in place; an assignment reads its
-target's object and computed key, and a compound one its current value,
-before the suspension, as JS does (concurrent tasks see the difference); a
-short-circuit or conditional whose later arm suspends becomes an if statement
-assigning a temp. A loop's test, step and initializer and a case's test stay
+in temps ahead of it, a call's callee and a method's receiver and computed
+key among them (the method itself is read where it is called, so the call
+stays a method call), while a name reads its binding where it stands; an
+assignment reads its target's object and computed key, and a compound one
+its current value, before the suspension, as JS does (concurrent tasks see
+the difference); a short-circuit or conditional whose later arm suspends
+becomes an if statement assigning a temp, and so does an optional chain
+whose links after a `?.` suspend: its base nullish, nothing after it runs
+(`hoistOptional`; `a.b?.(x)` reads `a.b` again to call it). A loop's test, step and initializer and a case's test stay
 where they are: the machine runs each as statements where the loop or the
 switch runs it (`split`), so a `continue` reaches a test that suspends. A
 switch splits into a test per case, in order, and a body per case falling

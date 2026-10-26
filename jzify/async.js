@@ -121,10 +121,13 @@ export function createAsyncLowering({ genTemp, err }) {
   // `x = yield E` / `x.f = yield E`). Every other one is hoisted: the value
   // it resumes with lands in a temp declared before the statement, and
   // whatever the statement evaluates before it lands in temps first, so the
-  // source's order holds (a callee stays in place: a temp would turn a method
-  // call into a closure call; an assignment, hoistAssign). A short-circuit or
-  // conditional whose later arm suspends becomes an if statement assigning a
-  // temp. A loop's test, step and initializer and a
+  // source's order holds: a call's callee, a method's receiver and computed
+  // key (the method stays a method, read where it is called), an
+  // assignment's target (hoistAssign); a name, a callee's or a receiver's
+  // too, reads its binding where it stands. A
+  // short-circuit or conditional whose later arm suspends becomes an if
+  // statement assigning a temp, an optional chain whose later links suspend
+  // too (hoistOptional). A loop's test, step and initializer and a
   // case's test stay where they are: the machine runs them as statements
   // where the loop and the switch run them (hoistExpr, generators.js).
   const UNDEF = [null, undefined]
@@ -136,7 +139,15 @@ export function createAsyncLowering({ genTemp, err }) {
   const hoistList = (b) => stmtsOf(b).flatMap(hoistStmt)
   // A body keeps its spelling: a block stays a block, a lone statement stays bare.
   const blockOf = (b) => { if (b == null) return b; const list = hoistList(b); return list.length === 1 && !(Array.isArray(b) && b[0] === '{}') ? list[0] : block(list) }
-  const keepsPlace = (op, i) => i === 1 && (op === '()' || op === '?.()' || ASSIGN_OPS.has(op) || op === '++' || op === '--')
+  const keepsPlace = (op, i) => i === 1 && (op === '?.()' || ASSIGN_OPS.has(op) || op === '++' || op === '--')
+  // A value a temp need not hold: a literal, a name, `this`.
+  const isStable = (e) => isSimple(e) || e[0] === 'this'
+  const isGroup = (e) => Array.isArray(e) && e[0] === '()' && e.length === 2
+  const isMember = (e) => Array.isArray(e) && (e[0] === '.' || e[0] === '[]' && e.length === 3)
+  const OPTIONAL = new Set(['?.', '?.[]', '?.()'])
+  const LINKS = new Set(['.', '[]', '()', ...OPTIONAL])
+  // An optional chain's links, outermost first, down to its root (a group ends it).
+  const chainOf = (e) => { const out = []; for (let x = e; Array.isArray(x) && LINKS.has(x[0]) && !isGroup(x); x = x[1]) out.push(x); return out }
   // What an expression or a statement lowers to stands where it stood.
   function hoistExpr(e) {
     const h = hoistExprNode(e)
@@ -161,14 +172,25 @@ export function createAsyncLowering({ genTemp, err }) {
       return { pre: [...c.pre, ['let', ['=', t, UNDEF]], ['if', c.expr, block([...a.pre, ['=', t, a.expr]]), block([...b.pre, ['=', t, b.expr]])]], expr: t }
     }
     if (ASSIGN_OPS.has(op)) return hoistAssign(op, e[1], e[2])
+    // an optional link whose later links suspend
+    const chain = chainOf(e), at = chain.findLastIndex(x => OPTIONAL.has(x[0]))
+    if (at >= 0 && chain.slice(0, at + 1).some(x => x.slice(2).some(refsAwait))) return hoistOptional(chain, at)
     // Children evaluate left to right: those before the last awaiting child
     // land in temps, the rest stay in place.
     const out = e.slice(), pre = []
     let last = 1
     for (let i = 1; i < e.length; i++) if (refsAwait(e[i])) last = i
     // A property or a spread is not a value: its value settles instead.
-    const settleVal = (x) => { if (isSimple(x)) return x; const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
-    const settle = (i, x) => isSimple(x) || keepsPlace(op, i) ? x
+    const settleVal = (x) => { if (isStable(x)) return x; const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
+    // a callee read before its arguments, a method on its receiver (`(o.m)()` too)
+    const settleCallee = (x) => {
+      const m = isGroup(x) && isMember(x[1]) ? x[1] : x
+      if (typeof m === 'string') return m
+      if (m[0] === '.') return ['.', settleVal(m[1]), m[2]]
+      if (m[0] === '[]' && m.length === 3) return ['[]', settleVal(m[1]), settleVal(m[2])]
+      return settleVal(m)
+    }
+    const settle = (i, x) => op === '()' && i === 1 ? settleCallee(x) : isSimple(x) || keepsPlace(op, i) ? x
       : x[0] === ':' ? [':', x[1], settleVal(x[2])]
       : x[0] === '...' ? ['...', settleVal(x[1])]
       : settleVal(x)
@@ -180,6 +202,24 @@ export function createAsyncLowering({ genTemp, err }) {
       out[i] = i < last ? settle(i, h.expr) : h.expr
     }
     return { pre, expr: out }
+  }
+  // An optional link short-circuits its chain: with its base nullish, the
+  // chain is undefined and nothing after the link runs, a suspension there
+  // neither. Its base settles first, a method's optional call on its receiver
+  // (`a.b?.(x)` calls b on a, the method read again where it is called), and
+  // the chain's rest runs on it, as a plain link, while the base is present.
+  function hoistOptional(chain, at) {
+    const link = chain[at], pre = [], temp = (x) => { if (isStable(x)) return x; const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
+    const part = (x) => { const h = hoistExpr(x); pre.push(...h.pre); return temp(h.expr) }
+    let base = link[1]
+    if (link[0] === '?.()' && isMember(base)) base = base[0] === '.' ? ['.', part(base[1]), base[2]] : ['[]', part(base[1]), part(base[2])]
+    else base = part(base)
+    const at0 = () => Array.isArray(base) ? base.slice() : base
+    let rest = link[0] === '?.' ? ['.', at0(), link[2]] : link[0] === '?.[]' ? ['[]', at0(), link[2]] : ['()', at0(), link[2]]
+    for (let i = at - 1; i >= 0; i--) rest = [chain[i][0], rest, ...chain[i].slice(2)]
+    const r = genTemp('aw'), h = hoistExpr(rest)
+    pre.push(['let', ['=', r, UNDEF]], ['if', ['!=', at0(), NULL], block([...h.pre, ['=', r, h.expr]])])
+    return { pre, expr: r }
   }
   // An assignment that suspends reads first what JS reads first: its target's
   // object and computed key (a named receiver stays: the machine stores

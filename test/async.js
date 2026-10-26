@@ -544,6 +544,27 @@ test('async: an object rest of a resolved value holds its keys', async () => {
     export async function bound() { const { b, ...r } = await get(1); return Object.keys(r).join() + r.c }`)
 })
 
+// A call whose arguments await evaluates its callee first, a method's
+// receiver and computed key; an optional chain whose base is nullish skips the
+// rest of the chain, an await in it too (ECMA-262 EvaluateCall, OptionalChain).
+test('async: a call reads its callee before an await in its arguments', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    const st = { obj: { tag: 'old', f(v) { return this.tag + v } } }
+    const later = async () => { await null; st.obj = { tag: 'new', f(v) { return this.tag + v } }; return 1 }
+    const v = async (x) => { log += 'V'; await null; return x }
+    const pick = () => { log += 'P'; return (x) => log += 'C' + x }
+    const o = { k: 5, a(x) { return log += 'a' + x }, m(x) { return this.k + x } }
+    const key = () => { log += 'K'; return 'a' }
+    export async function receiver() { return st.obj.f(await later()) }
+    export async function callee() { log = ''; pick()(await v(1)); o[key()](await v(2)); const m = (o.m)(await v(3)); return log + m }
+    export async function optional() {
+      log = ''
+      const a = null, b = { c: null }, d = { c: { e: (x) => x * 3 } }, p = { k: 1 }
+      return [a?.b(await v(1)), a?.c.e(await v(2)), b.c?.e(await v(3)), d?.c.e(await v(4)), o.m?.(await v(5)), p.m?.(await v(6)), a?.[await v('x')], d?.[await v('c')].e(1), log].join()
+    }`)
+})
+
 // A class in an async body lowers in the body's scope, as in any function.
 test('async: a class in the body reads its bindings', async () => {
   if (onWasi() || onKernel()) return

@@ -621,6 +621,11 @@ test('generators: a class in the body reads its bindings', () => agreeAll(`
   function* nested() { for (let i = 0; i < 2; i++) { const inner = function* () { yield new (class { v() { return i } })().v() }; yield* inner() } }
   export let classes = () => [...loop(), ...declared(), ...param(4), ...block(), ...nested()].join()`))
 
+// An optional chain whose base is nullish skips a yield in its rest.
+test('generators: an optional chain skips a yield after a nullish base', () => agreeAll(`
+  function* g(a) { const r = a?.f(yield 1); yield r }
+  export let chain = () => { const x = [...g(null)].join('|'); const it = g({ f: (v) => v * 2 }); it.next(); return x + '/' + it.next(5).value }`))
+
 // A call of a name that shadows a module generator calls what the name binds
 // (a parameter, an inner declaration, a catch parameter, a binding of a
 // generator body's block): for-of, a spread and yield* iterate its value.
