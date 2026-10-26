@@ -19,7 +19,7 @@ import { methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { representationProgramHasBigint } from '../representation-plan.js'
-import { buildArrayWithSpreads, emitMethodCallSpread, emitNonCallable } from './call-args.js'
+import { buildArrayWithSpreads, callMaybeHost, emitMethodCallSpread, emitNonCallable, mayBeHostFn } from './call-args.js'
 import { emit } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { copyReceiverFacts, isPresentArrayElement, stringOps } from './shared.js'
@@ -616,9 +616,9 @@ function trySchemaClosureCall(c) {
   view.alias(recv, obj, false)
   try {
     const kind = view.kindOfExpr(['.', recv, method])
-    const prop = ['.', recv, method], propRead = asF64(emit(prop))
-    let call = ctx.closure.call ? ownMethodCall(propRead, parsed,
-      tagOf(kind) !== K.CLOSURE || isNullable(kind), typed(['local.get', `$${recv}`], 'f64'))
+    const prop = ['.', recv, method], propRead = asF64(emit(prop)), self = typed(['local.get', `$${recv}`], 'f64')
+    let call = mayBeHostFn(kind) ? callMaybeHost(propRead, parsed, self)
+      : ctx.closure.call ? ownMethodCall(propRead, parsed, tagOf(kind) !== K.CLOSURE || isNullable(kind), self)
       : emitNonCallable(prop, parsed, propRead)
     if (own.length !== shapes.length || mayDelete) {
       const tag = ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['i64.const', OBJECT_SCHEMA_HI_MASK]]
@@ -817,10 +817,15 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
       try { propRead = emit(['.', objTmp, method]) }
       finally { view.unalias(objTmp) }
     }
-    const closureOnly = slot >= 0 || usesDynProps(vt) || !ctx.transform.targetProfile.envImports
+    // The receiver may be a host object, whose method the host reads; the
+    // method, what a slot or a property holds, may be a host function.
+    const hostRecv = slot < 0 && !usesDynProps(vt) && ctx.transform.targetProfile.envImports
+    const hostFn = mayBeHostFn(ctx.summary.at(ctx.func.current).kindOfExpr(['.', obj, method]))
+    const closureOnly = !hostRecv && !hostFn
     if (slot >= 0) inc('__ptr_type'); else inc('__dyn_get_expr', '__ptr_type')
-    if (!closureOnly) {
-      inc('__ext_method', '__ext_invoke'); setLinkDemand('external')
+    if (!closureOnly) { inc('__ext_invoke'); setLinkDemand('external') }
+    if (hostRecv) {
+      inc('__ext_method')
       propRead = typed(['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
         ['then', ['f64.reinterpret_i64', ['call', '$__ext_method', bits, asI64(emit(['str', method]))]]],
         ['else', propRead]], 'f64')
@@ -849,8 +854,10 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
       }
     }
     const missing = throwTypeErrorIR('call')
+    const hostCallee = ptrTypeEq(['local.get', `$${propTmp}`], PTR.EXTERNAL)
     const fallback = closureOnly ? missing
-      : ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
+      : ['if', ['result', 'f64'], !hostFn ? ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL)
+          : hostRecv ? ['i32.or', ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL), hostCallee] : hostCallee,
           ['then', ['f64.reinterpret_i64', ['call', '$__ext_invoke',
             ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]],
             ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
@@ -893,13 +900,22 @@ function externalMethodFallback({ obj, method, parsed }) {
     // them and then throws for the non-callable member. Both arms throw, so the
     // test costs nothing a run reaches — no maybe-undefined census gates it,
     // and that census under-approximates an out-of-bounds element read anyway.
+    // A property a host value filled may hold a host function, which the host calls.
     const rt = temp('mrecv')
     const recv = () => typed(['local.get', `$${rt}`], 'f64')
+    const view = ctx.summary.at(ctx.func.current), hostFn = mayBeHostFn(view.kindOfExpr(['.', obj, method]))
+    const value = asF64(emit(obj))
+    let call
+    if (hostFn) {
+      copyReceiverFacts(obj, rt)
+      view.alias(rt, obj, false)
+      try { call = callMaybeHost(emit(['.', rt, method]), parsed, recv()) } finally { view.unalias(rt) }
+    } else call = emitNonCallable(obj, parsed, recv())
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${rt}`, asF64(emit(obj))],
+      ['local.set', `$${rt}`, value],
       ['if', ['result', 'f64'], isNullish(recv()),
         ['then', throwTypeErrorIR()],
-        ['else', emitNonCallable(obj, parsed, recv())]]], 'f64')
+        ['else', call]]], 'f64')
   }
   if (strictCode())
     err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_invoke\`. Annotate the receiver type or pass { strict: false }.`)

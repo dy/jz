@@ -376,3 +376,30 @@ test('A host object lists, copies and serializes as JS', () => {
   const { run } = jz(src).exports
   for (const g of [undefined, 2, '--']) is(run(host(), g), js(host(), g), `gap ${g}`)
 })
+
+// A native container's slot holds what was stored in it, a host value too: a
+// read through a slot the summary cannot bound asks the host for a host object
+// (module/core.js nestedMayBeExternal), and a call of such a slot invokes a host
+// function (compile/emit/call-args.js callMaybeHost). The chain read reached jz's
+// own dispatch and answered undefined; the call threw, or at O2, where the
+// literal dissolves into its fields, left a call of the field's name unresolved.
+test('A host object or function held in a native container reads and calls through it', () => {
+  if (onWasi()) return
+  const host = () => ({ b: { c: 42, d: 'x' }, f: (x) => x * 2 }), dbl = (x) => x * 2
+  // one module each: a call in one export must not decide another's dispatch
+  const cases = [
+    ['chain', `(h) => { const o = {}; Object.assign(o, h); return o.b.c + o.b.d }`, host],
+    ['slot', `(h) => { const o = { b: h.b }; return o.b.c }`, host],
+    ['elem', `(h) => { const a = [h]; return a[0].b.c }`, host],
+    ['held', `(fn) => { const o = { m: fn, k: 2 }; return o.m(3) + o.k }`, () => dbl],
+    ['set', `(fn) => { const o = {}; o.m = fn; return o.m(3) }`, () => dbl],
+    ['copied', `(h) => { const o = {}; Object.assign(o, h); return o.f(4) }`, host],
+    ['spread', `(fn) => { const o = { m: fn }; const a = [3]; return o.m(...a) }`, () => dbl],
+    ['plain', `(v) => { const o = { m: v }; try { return o.m(3) } catch (e) { return e instanceof TypeError } }`, () => 7],
+  ]
+  for (const [name, fn, arg] of cases) {
+    const src = `export const f = ${fn}`, want = oracle(src).f(arg())
+    for (const code of [src, src + '\nconst id = (x) => x\nexport const z = () => id(1)']) for (const optimize of levels(0, 2, 'size'))
+      is(jz(code, { optimize }).exports.f(arg()), want, `${name}, ${code === src ? 'no closure' : 'closures'}, O${optimize}`)
+  }
+})

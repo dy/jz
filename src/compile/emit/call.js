@@ -11,10 +11,9 @@ import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
   PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, hasOptionalChain, walkAst,
 } from '../../ast.js'
-import { LAYOUT, OPTF, PTR, ctx, err, inc, setLinkDemand, emitArity } from '../../ctx.js'
-import { includeForArrayAccess } from '../../autoload.js'
+import { LAYOUT, OPTF, PTR, ctx, err, inc, emitArity } from '../../ctx.js'
 import {
-  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, isNumericIR, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
+  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, isNumericIR, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -22,7 +21,7 @@ import { K, core, tagOf, hasTag, isNullable } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
 import { recordClosureCallRepresentations, representationCallArgAction } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
-import { attachSigMeta, buildArrayWithSpreads, builtinArity, emitNonCallable, materializeMulti, materializeMultiIR, parseCallArgs, withSurplusArgs } from './call-args.js'
+import { attachSigMeta, buildArrayWithSpreads, builtinArity, callMaybeHost, emitNonCallable, materializeMulti, materializeMultiIR, mayBeHostFn, parseCallArgs, withSurplusArgs } from './call-args.js'
 import { INTRINSIC_VARIADIC } from '../../builtin-signatures.js'
 import { TYPED_HI_MASK, argIR, coerceArg, emit, emitReference, emitGroupedCall, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
@@ -448,34 +447,7 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
       ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
       : parsed.normal
     ir = ctx.closure.call(calleeIR, args, parsed.hasSpread, open || nullable, receiver)
-  } else {
-    includeForArrayAccess()
-    inc('__ext_invoke', '__ptr_type')
-    setLinkDemand('external')
-    // The host ABI shares evaluation with the compiled-call branch; only a
-    // host call materializes the inline arguments as a host-readable array.
-    const ct = temp('callee'), recv = typed(['local.get', `$${ct}`], 'f64')
-    const setup = [['local.set', `$${ct}`, calleeIR]]
-    const values = parsed.hasSpread
-      ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
-      : parsed.normal
-    const args = values.map(value => {
-      const t = temp('arg')
-      setup.push(['local.set', `$${t}`, ctx.closure.argIR(value)])
-      return typed(['local.get', `$${t}`], 'f64')
-    })
-    let arrayIR = args[0]
-    if (!parsed.hasSpread) {
-      const arr = allocPtr({ type: PTR.ARRAY, len: args.length, tag: 'args' })
-      arrayIR = ['block', ['result', 'f64'], arr.init,
-        ...args.map((a, i) => ['f64.store', ['i32.add', ['local.get', `$${arr.local}`], ['i32.const', i * 8]], a]), arr.ptr]
-    }
-    ir = typed(['block', ['result', 'f64'], ...setup,
-      ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.EXTERNAL),
-        ['then', ['f64.reinterpret_i64', ['call', '$__ext_invoke',
-          ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', receiver ?? undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
-        ['else', ctx.closure.call(recv, args, parsed.hasSpread, true, receiver)]]], 'f64')
-  }
+  } else ir = callMaybeHost(calleeIR, parsed, receiver)
   return dvName ? tagFnArrayDispatch(ir, dvName, open, fixedTable ? calleeIR.elemKey : null) : ir
 }
 
@@ -587,6 +559,11 @@ export const callOps = {
         (typeof callee !== 'string' || isBoundName(callee))) return emitNonCallable(callee, parsed)
 
     if (ctx.closure.call) return emitGenericClosureCall(callee, parsed, thisArg)
+
+    // A value in a program that makes no closure (a field a scalarized literal
+    // held, plan/literals.js): a host function, or no function at all.
+    if (typeof callee === 'string' && isBoundName(callee))
+      return mayBeHostFn(ctx.summary.kindOfExpr(callee)) ? callMaybeHost(emit(callee), parsed) : emitNonCallable(callee, parsed)
 
     return emitUnknownCalleeCall(callee, argList)
   },

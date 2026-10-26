@@ -6,12 +6,14 @@
 
 import { callWithArgs } from '../../ir.js'
 import { T, commaList } from '../../ast.js'
-import { includeForArrayLiteral, includeForStringOnly } from '../../autoload.js'
-import { PTR, ctx, emitArity, inc } from '../../ctx.js'
+import { includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForStringOnly } from '../../autoload.js'
+import { PTR, ctx, emitArity, inc, setLinkDemand } from '../../ctx.js'
+import { unbounded } from '../../summary/contract.js'
+import { demandHostReceiver } from '../func-exports.js'
 import { INTRINSIC_ARITY, INTRINSIC_VARIADIC } from '../../builtin-signatures.js'
 import { storedValue } from '../../bridge.js'
 import {
-  TOMB_NAN, throwTypeErrorIR, allocPtr, asF64, block64, deferBigintBox, dispatchByPtrType, flat, freshId, isNumericIR, isPureIR, materializeDeferredBigint, multiCount, reconstructArgsWithSpreads, temp, tempI32, typed,
+  TOMB_NAN, throwTypeErrorIR, allocPtr, asF64, block64, deferBigintBox, dispatchByPtrType, flat, freshId, isNumericIR, isPureIR, materializeDeferredBigint, multiCount, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -35,6 +37,41 @@ export function emitNonCallable(callee, parsed, recvIR = null) {
     ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
     : parsed.normal.map(a => emit(a))
   return block64(['drop', receiver], ...args.map(a => ['drop', asF64(a)]), throwTypeErrorIR('call'))
+}
+
+/** Whether a value of summary kind `k` may be a host function: one the summary
+ *  cannot bound, in a module the host can hand values to. */
+export const mayBeHostFn = k => (k == null || unbounded(k)) && demandHostReceiver()
+
+/** Call a value that may be a host function (an EXTERNAL box): the host invokes
+ *  it with the arguments as an array; any other value takes the closure call,
+ *  which tests for a closure. The arguments evaluate once, ahead of either. */
+export function callMaybeHost(calleeIR, parsed, receiver = null) {
+  includeForArrayAccess()
+  if (!ctx.closure.call) includeForCallableValue()
+  inc('__ext_invoke', '__ptr_type')
+  setLinkDemand('external')
+  const ct = temp('callee'), recv = typed(['local.get', `$${ct}`], 'f64')
+  const setup = [['local.set', `$${ct}`, asF64(calleeIR)]]
+  const values = parsed.hasSpread
+    ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
+    : parsed.normal
+  const args = values.map(value => {
+    const t = temp('arg')
+    setup.push(['local.set', `$${t}`, ctx.closure.argIR(value)])
+    return typed(['local.get', `$${t}`], 'f64')
+  })
+  let arrayIR = args[0]
+  if (!parsed.hasSpread) {
+    const arr = allocPtr({ type: PTR.ARRAY, len: args.length, tag: 'args' })
+    arrayIR = ['block', ['result', 'f64'], arr.init,
+      ...args.map((a, i) => ['f64.store', ['i32.add', ['local.get', `$${arr.local}`], ['i32.const', i * 8]], a]), arr.ptr]
+  }
+  return typed(['block', ['result', 'f64'], ...setup,
+    ['if', ['result', 'f64'], ptrTypeEq(recv, PTR.EXTERNAL),
+      ['then', ['f64.reinterpret_i64', ['call', '$__ext_invoke',
+        ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', receiver ?? undefExpr()], ['i64.reinterpret_f64', arrayIR]]]],
+      ['else', ctx.closure.call(recv, args, parsed.hasSpread, true, receiver)]]], 'f64')
 }
 
 /** Stamp a `call` IR with the pointer-ABI / sign metadata its signature carries.

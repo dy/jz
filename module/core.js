@@ -39,6 +39,7 @@ import { arrayRecordSlot } from '../src/compile/array-records.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
+import { unbounded } from '../src/summary/contract.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 
 const NAN_BITS = nanPrefixHex()
@@ -2340,7 +2341,10 @@ export default (ctx) => {
       node = node[1]
     return node
   }
-  const nestedMayBeExternal = node => ctx.transform.targetProfile.envImports && valTypeOf(opaquePropertyRoot(node)) == null
+  // A native container's slot holds what was stored in it, a host object too:
+  // a receiver whose kind the summary cannot bound may be one.
+  const nestedMayBeExternal = node => ctx.transform.targetProfile.envImports && (valTypeOf(opaquePropertyRoot(node)) == null ||
+    (k => k == null || unbounded(k))(ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)))
 
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
   // The slot every member layout of a proven-object receiver holds `prop` in,
