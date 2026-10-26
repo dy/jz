@@ -58,6 +58,7 @@ import { peelClampedStencil } from '../peel-stencil.js'
 import { unrollRecurrences } from '../loop-recurrence.js'
 import { versionIntegralLoops } from './integral-loops.js'
 import { strengthReduceLoopDivMod } from '../loop-divmod.js'
+import { jamLoopItems } from '../loop-jam.js'
 import { forwardConditions } from './forward-conditions.js'
 import { unswitchLoops } from './unswitch-loops.js'
 import { reciprocalLoopDivisors } from './reciprocal-loops.js'
@@ -262,6 +263,8 @@ export default function plan(ast, profiler, summarize) {
     // A division by an invariant of a dividend the counter moves: a copy stepping its quotient
     // and remainder, ahead of the integral copies, which read its counters as words.
     sweep('strengthReduceLoopDivMod', strengthReduceLoopDivMod)
+    // Items whose inner loops carry independent chains: two at a time, side by side, where their elements are apart.
+    sweep('jamLoopItems', () => jamLoopItems(facts()))
     // A division by an invariant the counters left: a copy multiplying by its reciprocal where that is exact.
     sweep('reciprocalLoopDivisors', reciprocalLoopDivisors)
     // A loop indexing by numbers of unknown integrality: a copy over their int32s, where they are ones.

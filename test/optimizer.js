@@ -5411,6 +5411,55 @@ test('issueOrder: an integrator step is written in the order that issues its cha
   is(JSON.stringify(issueOrder(['module', JSON.parse(JSON.stringify(loaded))])[1]), JSON.stringify(loaded), 'a load keeps the run as written')
 })
 
+// Blocks of a mix bus, each an inner loop carrying its own smoothing chain (slices' kernel)
+const jamSrc = (call) => `
+const pass = (input, bus, inOff, busOff, len, nb, gain) => {
+  for (let b = 0; b < nb; b++) {
+    const io = inOff[b], bo = busOff[b], l = len[b]
+    let sm = 0.0
+    for (let i = 0; i < l; i++) {
+      sm = sm * 0.995 + input[io + i] * 0.005
+      bus[bo + i] = bus[bo + i] + sm * gain
+    }
+  }
+}
+export let f = (nb, seed, spread) => {
+  const input = new Float64Array(512), bus = new Float64Array(512)
+  const inOff = new Int32Array(64), busOff = new Int32Array(64), len = new Int32Array(64)
+  let s = seed | 0
+  for (let i = 0; i < 512; i++) { s = (s * 1103515245 + 12345) | 0; input[i] = (s >>> 8) / 16777216 - 0.5 }
+  for (let b = 0; b < nb; b++) {
+    s = (s * 1103515245 + 12345) | 0; len[b] = ((s >>> 16) % 40) - 3
+    s = (s * 1103515245 + 12345) | 0; inOff[b] = (s >>> 16) % 400
+    s = (s * 1103515245 + 12345) | 0; busOff[b] = (s >>> 16) % spread
+  }
+  ${call}
+  let h = 0
+  for (let i = 0; i < 512; i++) h = (h * 31 + Math.round(bus[i] * 1e9)) | 0
+  return h
+}`
+test('jamItems: two items of an item loop run their inner chains side by side, where their elements are apart', () => {
+  const src = jamSrc('pass(input, bus, inOff, busOff, len, nb, 0.5); pass(input, bus, inOff, busOff, len, nb, 0.25)')
+  const js = oracle(src).f
+  for (const optimize of ['speed', { level: 'speed', jamItems: false }, 2]) {
+    const f = run(src, { optimize }).f
+    // (a narrow spread overlaps the bus ranges of neighbours: the pair runs them one after the other)
+    for (const nb of [0, 1, 2, 7, 24]) for (const spread of [8, 60, 400]) is(f(nb, 11 + nb, spread), js(nb, 11 + nb, spread), `${JSON.stringify(optimize)}: nb=${nb} spread=${spread}`)
+  }
+  // a call passing one buffer under two names: no pair
+  const twice = jamSrc('pass(input, input, inOff, busOff, len, nb, 0.5)')
+  for (const nb of [3, 8]) is(run(twice, { optimize: 'speed' }).f(nb, 5, 300), oracle(twice).f(nb, 5, 300), `aliased buffers: nb=${nb}`)
+  // an inner loop that moves its own bound: no pair
+  const moving = src.replace('const io = inOff[b], bo = busOff[b], l = len[b]', 'const io = inOff[b], bo = busOff[b]; let l = len[b]')
+    .replace('bus[bo + i] = bus[bo + i] + sm * gain', 'bus[bo + i] = bus[bo + i] + sm * gain\n      l = l - 0.5')
+  ok(moving !== src, 'the moving-bound variant differs')
+  for (const nb of [3, 8]) is(run(moving, { optimize: 'speed' }).f(nb, 5, 300), oracle(moving).f(nb, 5, 300), `a moving bound: nb=${nb}`)
+  if (onKernel()) return
+  // the pair's loops: one stepping both items, one finishing each, the pair run in turn, an odd last item
+  const loops = (optimize) => count(parse(src, optimize), n => n[0] === 'loop')
+  ok(loops('speed') >= loops({ level: 'speed', jamItems: false }) + 4, `the pair's loops (${loops('speed')} vs ${loops({ level: 'speed', jamItems: false })} as written)`)
+})
+
 test('rec-unroll: an empty statement in a body is no loop', () => {
   const body = [';', null]
   is(unrollRecurrence(body, new Set()), body, 'the body stays as it is')
