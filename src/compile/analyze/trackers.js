@@ -59,7 +59,7 @@ export const makeTypedTracker = (get, set, del, getLen, setLen, delLen, body) =>
             ? ctx.funcs.map?.get(rhs[1])?.sig?.typedLen ?? null : null
           const len = typedStaticLen(rhs) ?? callLen ?? (typeof rhs === 'string'
             ? getLen(rhs) ?? ctx.func.typedLen?.get(rhs) ?? ctx.scope?.globalTypedLen?.get(rhs) ?? null
-            : null)
+            : null) ?? ctx.summary?.at(ctx.func.current)?.typedLenOf?.(name) ?? null
           const prevLen = getLen(name)
           if (len == null || (prevLen !== undefined && prevLen !== len)) delLen(name)
           else setLen(name, len)

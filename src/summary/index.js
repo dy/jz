@@ -420,6 +420,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     losingAs(other === null || tagOf(other) === K.ANY ? 'joined with an unknown value' : `joined with a ${TAG_NAME[tagOf(other)]} value`, escape, k)
   }
   const slots = (sid) => fields[sid] ??= new Array(schemas[sid].length).fill(K.NONE)
+  // The count and bytes every typed array stored into a slot was made with
+  // (typedShapeOf at the store), OPEN_SHAPE once a store of another or of an
+  // unknown size reaches it: a typed array's length is fixed for its life.
+  const slotShapes = []
+  const OPEN_SHAPE = { len: -1, bytes: -1 }
+  const raiseSlotShape = (sid, i, k, shape) => {
+    if (!hasTag(k, K.TYPED)) return
+    const a = slotShapes[sid] ??= [], old = a[i]
+    const next = old === undefined ? shape ?? OPEN_SHAPE : shape && old.len === shape.len && old.bytes === shape.bytes ? old : OPEN_SHAPE
+    if (next !== old) { a[i] = next; changed = true }
+  }
   // A binding some definition of which names BigInt among a bounded set: the
   // member the join to ANY erases (`n = BigInt(n)` on one path of a parameter
   // of every kind), kept for the result contract's certain-return walk.
@@ -494,7 +505,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k) => { if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinAt(mixedSlots, sid, i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k)) } }
+  const raiseSlot = (sid, i, k, shape = null) => { raiseSlotShape(sid, i, k, shape); if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinAt(mixedSlots, sid, i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k)) } }
   // A layout with more construction sites than a shape set holds is one shape:
   // its sites fold into it, and a fact raised on any of them reaches them all.
   const foldedLayouts = new Set()
@@ -3052,7 +3063,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       let name, value
       if (typeof p === 'string') { name = p; value = expr(p) }
       else { if (isBrand(p[1])) continue; name = p[1]; value = init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2]) }
-      if (sid === NO_SID) { foreignProps.add(name); escape(value) } else raiseSlot(sid, schemas[sid].indexOf(name), value)
+      if (sid === NO_SID) { foreignProps.add(name); escape(value) } else raiseSlot(sid, schemas[sid].indexOf(name), value, hasTag(value, K.TYPED) ? typedShapeOf(current ?? MODULE, typeof p === 'string' ? p : p[2]) : null)
     }
     // A static literal has its own shape even when the registry has not named it.
     if (sid === NO_SID) return kind(K.OBJECT)
@@ -4067,6 +4078,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       ;(seen ??= new Set()).add(key)
       return typedShapeOf(def[0], def[1], seen)
     }
+    // a field of objects whose every store of that name was an array of one size
+    if (Array.isArray(e) && e[0] === '.' && typeof e[1] === 'string' && typeof e[2] === 'string') return slotShapeOf(scope, e[1], e[2])
     if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string') return null
     const m = e[1].startsWith('new.') ? TYPED_CTOR.exec(e[1]) : null
     if (m) {
@@ -4088,6 +4101,22 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return shape
   }
   const typedLenOf = (scope, e) => typedShapeOf(scope, e)?.len ?? null
+  // The shape of `obj.prop` where obj holds objects of known shapes whose slot of that name the
+  // walk saw every store into (no host, lost or folded layout, no accessor): one size for all.
+  const slotShapeOf = (scope, obj, prop) => {
+    const key = keyOf(obj, scope), k = key === null ? K.NONE : kinds[key] ?? K.NONE
+    if (tagOf(core(k)) !== K.OBJECT || paramOf(k) === UNKNOWN || hasGetter(prop)) return null
+    let shape = null
+    for (const sid of shapesOf(paramOf(k))) {
+      if (lostSchema(sid) || openSchemas.has(sid) || foldedLayouts.has(layouts[sid])) return null
+      const i = schemas[sid].indexOf(prop), s = i < 0 ? undefined : slotShapes[sid]?.[i], held = i < 0 ? K.NONE : slots(sid)[i]
+      // every object of the shape holds an array there: no other kind, no absent or nullish value
+      if (tagOf(held) !== K.TYPED || hasTag(held, K.NULLISH) || hasTag(held, K.ABSENT)) return null
+      if (s === undefined || s.len < 0 || (shape !== null && (s.len !== shape.len || s.bytes !== shape.bytes))) return null
+      shape = s
+    }
+    return shape
+  }
   // A binding that holds one value for its life: a parameter or a declaration
   // never assigned again (`definitions`: one write with a value, or none).
   const stable = (name, scope) => {

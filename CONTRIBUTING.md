@@ -3361,7 +3361,11 @@ element read inside the array's count is a number, never undefined
 (`typedReadPresent`): the index's span within a count the walk knows (an
 allocation of one bounded length, a name of one definition, a helper whose
 every return is such an array, a view of the whole buffer of such an array:
-`new Uint32Array(f64.buffer)`), a mask, or a counter the loop bounds by the
+`new Uint32Array(f64.buffer)`, a field of objects of known shapes whose every
+store under that name, a literal's value or such a name, put an array of one
+count: `slotShapes`, open after a store of another count or of a count the walk
+cannot fix, or where a shape is the host's, lost or folded, the name has an
+accessor or a shape lacks it or may hold anything else there), a mask, or a counter the loop bounds by the
 array's own length (`i < x.length`, or a name holding it the loop leaves
 alone: `for (let i = 0, l = x.length; i < l; i++)`, the counter any
 declaration of the loop the test bounds). An integer a name holds for good is known
@@ -3372,7 +3376,10 @@ the functions of a round walk ahead of the module's statements and an absent
 joined in the first round is never lost. A callee taking such a read takes a
 number, with no per-use conversion, and the emitter takes the verdict as an
 index proof of its own (`presentTypedRead`, `typedIdxProven` class 8): the
-read loads with no bounds test and no miss arm. Any number a name holds for
+read loads with no bounds test and no miss arm. The count a binding holds
+(`typedLenOf`) also reaches the emitter's typed tracker (analyze/trackers.js),
+so a binding read from such a field (`({ perm }) =>`) proves its masked and
+interval-bounded reads as a module table does, with no versioned copy. Any number a name holds for
 good (`held`, the same definitions) is what a module name's reads fold to
 (`foldModuleConstants`): `HIGH = idx.HIGH` indexes by a constant. So does
 a length a declaration reads of a module const's array literal declared before

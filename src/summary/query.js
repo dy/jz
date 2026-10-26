@@ -658,6 +658,8 @@ export function summaryQueries(facts, internal = false) {
       },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && publicSid(e) !== UNKNOWN ? publicSid(e) : null },
       /** The name's value is read as a string somewhere it flows: through a copy, a call, a sum. */
+      // The count a typed array binding of one definition holds for its life (index.js typedShapeOf).
+      typedLenOf: name => { const key = keyOfAnywhere(name); return typeof key === 'number' ? typedLengths?.get(key) ?? null : null },
       stringDemand: name => { const key = keyOfAnywhere(name); return key !== null && (typeof key === 'number' ? strung.has(key) : key.some(k => strung.has(k))) },
       numericDemand: name => { const key = keyOfAnywhere(name), isNumeric = k => numeric.get(k) === 2; return key !== null && (typeof key === 'number' ? isNumeric(key) : key.every(isNumeric)) },
       numericStorage: name => { const key = keyOf(name), k = readKind(name); return key !== null && numeric.get(key) === 2 && tagOf(core(k)) === K.NUMBER && hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) },
