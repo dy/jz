@@ -622,7 +622,8 @@ jzify.iteratorProtocol = () => iterProto.program
  *  before any is lowered: each module then lowers for-of and spreads under
  *  the graph's producers, not its own. Resets the witness per compile. */
 jzify.witness = (asts) => {
-  witnessed = new WeakSet(asts)
+  // an empty module's tree is no object: nothing to witness
+  witnessed = new WeakSet(asts.filter(ast => ast !== null && typeof ast === 'object'))
   programProps = new Set()
   for (const ast of asts) assignCensus(ast, true, new Map(), programProps)
   iterProto.program = false
