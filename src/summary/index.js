@@ -4331,7 +4331,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       else if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r, k, ABSENT)
       return
     }
-    if (op === 'label') { stmt(n[2]); return }
+    // A break to a block's label leaves it with what held there: what follows
+    // reads the join of its exits, as after a loop (the kind at its entry
+    // joined with every kind the block assigns). A loop's own exit join
+    // already covers a break to the loop's label.
+    if (op === 'label') {
+      if (!labelBreaks(n)) { stmt(n[2]); return }
+      const block = loopEnter(n[2]); branch++; flowPath++; stmt(n[2]); branch--; flowPath--; loopExit(block)
+      return
+    }
     if (op === 'break' || op === 'continue') return
     if (op === 'export') { for (let i = 1; i < n.length; i++) stmt(n[i]); return }
     selectedExpr(n, 0)
@@ -4599,6 +4607,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // The keys a conditional's arms assign, listed once per node (the solve
   // revisits every statement each round, and the hosted compiler frees a
   // solve's allocations only as a whole: a visit must not allocate).
+  // Whether a break names a labeled block's label (a loop's label: no), once per node.
+  const labelBreaksOf = new Map()   // labeled statement → whether a break leaves it
+  const breaksTo = (n, label) => {
+    if (!Array.isArray(n) || n[0] === '=>') return false
+    if (n[0] === 'break' && n[1] === label) return true
+    for (let i = 1; i < n.length; i++) if (breaksTo(n[i], label)) return true
+    return false
+  }
+  const labelBreaks = (n) => {
+    let b = labelBreaksOf.get(n)
+    if (b === undefined) labelBreaksOf.set(n, b = !(Array.isArray(n[2]) && (n[2][0] === 'for' || n[2][0] === 'while')) && breaksTo(n[2], n[1]))
+    return b
+  }
   const armKeysOf = new Map()   // if statement → the keys its arms assign, or null
   const armKeys = (n) => {
     let keys = armKeysOf.get(n)

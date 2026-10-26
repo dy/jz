@@ -1587,6 +1587,24 @@ test('audit: a break to a labeled block leaves with what was assigned by then', 
   }
 })
 
+// The summary's kinds past the block join what each break to it left, as its
+// definite assignment does: a result past one may be undefined, so `??`, a
+// nullish test and `=== undefined` on it are not folded away.
+test('audit: the kinds a break to a labeled block leaves join past it', () => {
+  const src = `const f = (c) => { let r; lab: { if (c) break lab; r = 1 } return r }
+    export let nn = (c) => f(c) ?? 5
+    export let eq = (c) => f(c) === undefined
+    export let held = (c) => [f(c)].length + (f(c) == null ? 10 : 0)
+    export let mix = (c) => { let r = 0; lab: { r = 'x'; if (c) break lab; r = 2 } return typeof r }
+    export let bare = (c) => { let r; lab: { if (c) break lab; r = 1 } return r }`
+  const js = oracle(src)
+  for (const optimize of TIERS) {
+    const wasm = jz(src, { optimize }).exports
+    for (const name of ['nn', 'eq', 'held', 'mix', 'bare']) for (const c of [0, 1])
+      is(wasm[name](c), js[name](c), `${optimize}: ${name}(${c})`)
+  }
+})
+
 test('audit: a truth value prints as its name', () => {
   // Boolean.prototype.toString (ES2024 20.3.3.2)
   const src = `export let of = (x) => (x > 0).toString()
