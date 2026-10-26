@@ -346,6 +346,9 @@ test('claims: contenders are the fastest stored rivals of each class, with jz an
 // of; an engine or Porffor runs every case's JavaScript.
 const WASM_SOURCES = ['.c', '.rs', '.go', '.zig', '.as.ts']
 const wasmSource = id => WASM_SOURCES.some(ext => existsSync(join(ROOT, 'bench', id, id + ext)))
+// Over only the cases it has a source for, the wasm class must race nearly all of
+// them: COVERAGE_FLOOR sizes one lane's portability, not a class over its own field.
+const SOURCED_FLOOR = 0.95
 test('claims: every named rival is contested (coverage ≥ floor of the corpus)', () => {
   const total = Object.keys(cases).length
   const need = Math.ceil(total * COVERAGE_FLOOR)
@@ -353,7 +356,7 @@ test('claims: every named rival is contested (coverage ≥ floor of the corpus)'
     const covered = Object.entries(cases).filter(([id]) => !PENDING_CASES.has(id))
     for (const [label, rivals] of [...CLAIM_CLASSES, ['porffor', ['porf-native']]]) {
       const field = label === 'wasm' ? covered.filter(([id]) => wasmSource(id)) : covered
-      const needCovered = Math.ceil(field.length * COVERAGE_FLOOR)
+      const needCovered = Math.ceil(field.length * (label === 'wasm' ? SOURCED_FLOOR : COVERAGE_FLOOR))
       const rows = field.filter(([, c]) => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
       ok(rows >= needCovered, `claim class '${label}' is contested on ${rows}/${field.length} cases (floor ${needCovered}) under --contenders=${res.meta.contenders}`)
     }
