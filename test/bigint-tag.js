@@ -375,6 +375,40 @@ test('bigint tag: a tagged value written to a module binding reads back as the B
   }
 })
 
+// A module binding's carrier is one program-wide fact (representation-plan
+// representationGlobalCarrier, from the summary's kind of it): a raw BigInt
+// where the binding holds a BigInt alone, a box where it may hold one beside
+// another value. Every write converts to it and every read takes it, so a raw
+// BigInt a function stores reads as a BigInt for typeof, ===, a string and the
+// host, a join of a product and the binding boxes the product, and an exported
+// parameter stored into one takes the host's BigInt (provenance).
+test('bigint tag: a module binding holds its BigInt in one carrier for every write and read', () => {
+  const SRC = `let h = 0, m = 5n, c = null, s = 1n, e = 0
+  const put = (n) => { h = n }
+  const lit = () => { h = 7n }
+  const flip = (k) => { if (k) m = 'x' }
+  const set = () => { c = 7n }
+  const step = () => { s = s * 3n + 1n }
+  export let raw = (k) => { if (k) put(3n); else lit(); return [typeof h, h, h === 7n, '' + h, [h][0]] }
+  export let mixed = (k) => { flip(k); return [typeof m, typeof m === 'bigint' ? m * 2n : m] }
+  export let joined = (k) => { flip(k); return k ? m + '!' : m * 2n }
+  export let nullable = (k) => { if (k) set(); return c == null ? -1n : c + 1n }
+  export let lcg = () => { step(); step(); return [typeof s, s] }
+  export let stored = (n) => { e = n; return typeof e === 'bigint' ? e * 2n : e }
+  let q = null
+  const bump = () => { q += 2n }
+  export let compound = () => { q = 1n; bump(); return [typeof q, q, q === 3n] }`
+  for (const optimize of LEVELS) {
+    // the bindings keep state across calls: a fresh module beside a fresh oracle
+    const ex = jz(SRC, { optimize }).exports, host = oracle(SRC)
+    for (const k of [0, 1]) for (const f of ['raw', 'mixed', 'joined', 'nullable'])
+      is(ex[f](k), host[f](k), `${f}(${k}) (O${optimize || 0})`)
+    is(ex.lcg(), host.lcg(), `lcg (O${optimize || 0})`)
+    is(ex.compound(), host.compound(), `compound (O${optimize || 0})`)
+    for (const v of [5n, 5, 'q']) is(ex.stored(v), host.stored(v), `stored(${typeof v}) (O${optimize || 0})`)
+  }
+})
+
 // A tagged local beside an operand with no evidence: `at` copies the
 // `length` of an untyped parameter (a builder from a closure table), and the
 // program holds a BigInt elsewhere, so the plan tags `at`. The subtraction

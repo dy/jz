@@ -122,6 +122,20 @@ const paramNeedsHostTag = (node, name, localClosures, seen, root = true) => {
   return false
 }
 
+/** Whether `name` is stored into a module binding that may hold a BigInt: a
+ *  BigInt the host passes reaches the binding, whose carrier holds it. */
+const storesToBigintBinding = (ctx, node, name) => {
+  let found = false
+  walkAst(node, { enter: n => {
+    if (found) return false
+    if (n[0] === '=' && n[2] === name && typeof n[1] === 'string' && ctx.scope.globals?.has(n[1])) {
+      const k = ctx.summary?.at(null)?.bindingKindOf(n[1])
+      if (k == null || summaryHasTag(k, SUMMARY_KIND.BIGINT)) found = true
+    }
+  } })
+  return found
+}
+
 /** Seed `bigintTyped` from every `new BigInt64Array`/`new BigUint64Array`
  *  declaration reachable from `node`, program-wide. A PURE SYNTACTIC fact —
  *  depends on nothing but the AST and the target Set — so, like
@@ -246,7 +260,8 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         bigintTyped.add(func.sig.params[k].name)
       if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT ||
           (observed instanceof Set && observed.size < KIND_UNIVERSE.length && observed.has(VAL.BIGINT)) ||
-          (isExported(ctx, func) && paramNeedsHostTag(func.body, func.sig.params[k].name, localClosures, EMPTY_SEEN)))
+          (isExported(ctx, func) && (paramNeedsHostTag(func.body, func.sig.params[k].name, localClosures, EMPTY_SEEN) ||
+            storesToBigintBinding(ctx, func.body, func.sig.params[k].name))))
         pset.add(k)
     }
     for (const k of pset) namesFor(func).add(func.sig.params[k].name)

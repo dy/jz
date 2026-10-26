@@ -1,9 +1,9 @@
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import {
-  BIGINT_REP_BOXED, BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, bigintRepBits, bigintRepIsClosed,
-  callContractOf, canBeBigint, contractRep,
-  definiteBigint, edgeAction, isBigintOrigin, programPlanRecord, returnEdgeAction,
+  BIGINT_REP_BOXED, BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_REJECT, REP_EDGE_TAG_BOX,
+  REP_EDGE_UNBOX, bigintRepBits, bigintRepIsClosed, callContractOf, canBeBigint, contractRep,
+  definiteBigint, edgeAction, isBigintOrigin, programPlanRecord, representationGlobalCarrier, returnEdgeAction,
 } from './common.js'
 import { memberStorageRep } from './body-data.js'
 import { boundaryDataOf } from './boundaries.js'
@@ -143,6 +143,8 @@ export function representationActiveMaterializedRep(ctx, name) {
   while (Array.isArray(name) && (name[0] === ',' || name[0] === '(')) name = name[name.length - 1]
   const active = activeBody(ctx, 'representationActiveMaterializedRep')
   if (!active) return NO_BIGINT
+  // A module binding holds its program-wide carrier in every body.
+  if (typeof name === 'string' && ctx.scope.globals?.has(name)) return representationGlobalCarrier(ctx, name)
   if (Array.isArray(name) && active.materializedJoins?.has(name))
     return activeRep(ctx, name, true)
   if (Array.isArray(name) && JOIN_OPS.has(name[0])) return NO_BIGINT
@@ -240,9 +242,18 @@ export function representationGlobalMayBox(ctx, name) {
   return rep != null && (!bigintRepIsClosed(rep) || (bigintRepBits(rep) & BIGINT_REP_BOXED) !== 0)
 }
 
+// A write of a module binding converts to its carrier. KEEP is no action
+// there: on a deferred producer it would materialize the boxed alternate.
+const globalWriteAction = (sourceRep, carrier) => {
+  const action = edgeAction(sourceRep, carrier)
+  return action === REP_EDGE_BOX || action === REP_EDGE_UNBOX || (action === REP_EDGE_KEEP && carrier === BOXED_BIGINT) ? action : REP_EDGE_REJECT
+}
+
 /** Frozen action for one plain declaration/assignment write. */
 export function representationBindingWriteAction(ctx, name, source) {
   const body = activeBody(ctx, 'representationBindingWriteAction')
+  const carrier = representationGlobalCarrier(ctx, name)
+  if (carrier !== NO_BIGINT) return globalWriteAction(activeEmittedRep(ctx, source), carrier)
   if (!body?.materializedNames?.has(name)) return REP_EDGE_REJECT
   return edgeAction(activeEmittedRep(ctx, source), activeRep(ctx, name, true))
 }
@@ -266,6 +277,8 @@ export function representationBindingWriteAction(ctx, name, source) {
  *  box-pointer-bits-as-value disease this fixpoint exists to close). */
 export function representationCompoundAssignAction(ctx, name) {
   const body = activeBody(ctx, 'representationCompoundAssignAction')
+  const carrier = representationGlobalCarrier(ctx, name)
+  if (carrier !== NO_BIGINT) return globalWriteAction(RAW_BIGINT, carrier)
   if (!body?.materializedNames?.has(name)) return REP_EDGE_REJECT
   return edgeAction(RAW_BIGINT, activeRep(ctx, name, true))
 }

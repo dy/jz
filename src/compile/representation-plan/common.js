@@ -1,6 +1,7 @@
 import { ASSIGN_OPS, commaList, walkAst } from '../../ast.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
 import { CARRIER } from '../../summary/contract.js'
+import { K as SUMMARY_K, core as summaryCore, hasTag as summaryHasTag, isNullable as summaryNullable, tagOf as summaryTagOf } from '../../summary/kind.js'
 import { isExportedIn } from '../func-exports.js'
 
 // RepresentationPlan v2 uses compact scalar facts. The low two bits describe
@@ -136,6 +137,17 @@ export const isExported = (ctx, func) => isExportedIn(ctx.funcs, func)
 export const noBigintSemantic = () => packSemantic(ALL_KIND_BITS & ~BIGINT_KIND_BIT, true, true)
 
 export const programPlanRecord = ctx => ctx.plans.representationData.get(ctx.plans)
+
+/** A module binding's BigInt carrier, the same in every body: raw where the
+ *  binding holds a BigInt and nothing else, a box where it may hold one beside
+ *  another value (the summary's kind of it, program-wide). No body plan
+ *  materializes a module binding; its writes convert to this, its reads take it. */
+export function representationGlobalCarrier(ctx, name) {
+  if (typeof name !== 'string' || !ctx.scope.globals?.has(name) || programPlanRecord(ctx)?.bigint !== true) return NO_BIGINT
+  const k = ctx.summary?.at(ctx.func.current)?.bindingKindOf(name)
+  if (k == null || !summaryHasTag(k, SUMMARY_K.BIGINT)) return NO_BIGINT
+  return summaryTagOf(summaryCore(k)) === SUMMARY_K.BIGINT && !summaryNullable(k) ? RAW_BIGINT : BOXED_BIGINT
+}
 
 /** The result contract of the callable a call reaches: a source function's
  *  (ProgramIndex holds the one the plan's summary published; a `.`-member

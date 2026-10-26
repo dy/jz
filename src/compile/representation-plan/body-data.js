@@ -10,7 +10,7 @@ import {
   CONDITIONAL_ASSIGN_OPS, DEF_OWNER, DEF_RHS, EDGE_KIND, EDGE_KIND_NAME, JOIN_OPS, NO_BIGINT, NUMERIC_VALUE_OPS,
   RAW_BIGINT, REP_EDGE_BOX, REP_EDGE_HOST_BOX, REP_EDGE_KEEP, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS,
   bigintRepBits, bigintRepIsClosed, bitOfKind, callMember, canBeBigint, collectDefs, collectLocalClosures, contractRep, defaultWrites,
-  definiteBigint, edgeAction, excludesBigint, isBigintOrigin, isExported, joinRep, joinSem, memberReceiver,
+  definiteBigint, edgeAction, excludesBigint, isBigintOrigin, isExported, joinRep, joinSem, memberReceiver, representationGlobalCarrier,
   noBigintSemantic, onlyBigintKind, packSemantic, programPlanRecord, returnEdgeAction, sameSem, semAll, semBottom, semKind,
   semanticClosed, semanticFromRep, semanticObserved, targetRepFor,
 } from './common.js'
@@ -138,6 +138,11 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     return callee ? contractRep(ctx.plans.programIndex?.resultContract(callee) ?? ctx.summary?.resultContract(callee.name)) : null
   }
   const directCallRep = name => directCallClaim(name) ?? calleeBodyOf(name)?.resultTarget ?? ANY_BIGINT
+  // A module binding's program-wide carrier where it may hold a BigInt, else undefined.
+  const globalCarrierOf = name => {
+    const carrier = ctx.scope.globals?.has(name) ? representationGlobalCarrier(ctx, name) : NO_BIGINT
+    return carrier === NO_BIGINT ? undefined : carrier
+  }
   const semanticNames = new Map()
   const currentNames = new Map()
   const targetNames = new Map()
@@ -323,7 +328,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const currentOf = node => {
     const sem = semanticOf(node)
     if (excludesBigint(sem)) return NO_BIGINT
-    if (typeof node === 'string') return currentNames.get(node) ?? provenance?.globalReps.get(node) ?? ANY_BIGINT
+    if (typeof node === 'string') return globalCarrierOf(node) ?? currentNames.get(node) ?? provenance?.globalReps.get(node) ?? ANY_BIGINT
     if (!Array.isArray(node)) return ANY_BIGINT
     const cached = nodeCurrent.get(node)
     if (cached != null) return cached
@@ -630,6 +635,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     while (Array.isArray(node) && (node[0] === ',' || node[0] === '(')) node = node[node.length - 1]
     if (typeof node === 'string') {
       if (materializedNames.has(node)) return ((targetNames.get(node) ?? ANY_BIGINT) | PRODUCER_READY)
+      const carrier = globalCarrierOf(node)
+      if (carrier !== undefined) return carrier | PRODUCER_READY
       const k = params.get(node)
       if (k != null) {
         // Closure-forwarding slice: a param's boundary-level readiness is
