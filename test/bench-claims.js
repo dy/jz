@@ -422,12 +422,12 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // Cases the claims do not yet cover: a library's own code added to the corpus
 // that jz does not lead on every runner yet (AGENTS.md's "tracked as todo in the
 // gate until jz takes the lead — never silently accepted"):
-// - stdlib-exp leads every engine on EPYC runners, and trails deno on Xeons
-//   (1.12× on a 6973P-C, 1.48× on an 8370C);
+// - stdlib-exp leads V8, bun and JSC on every runner sampled (Neoverse-N2, EPYC
+//   7763/9V45/9V74, Xeon 8370C/8573C) and every engine on an Apple M4, and trails
+//   deno 2.9.8 on x64 (1.20-1.61×), whose V8 runs its JavaScript 1.6-2.0× faster
+//   there than node 24's;
 // - polytri's triangulation leads, its decomposition, polygons split and pushed
-//   element by element, trails (deno and bun 1.00-1.23×, JSC 1.13-1.34×);
-// - worley trails bun and JSC by 5-11% once its table keeps its count through
-//   the record, the rest in its ToInt32 work;
+//   element by element, trails (deno and bun 1.00-1.24×, JSC 1.12-1.34×);
 // - fabrik runs ~70 µs a round, so its verdict is V8's tier-up race: the rounds
 //   of one process read 0.50-1.69× its own base build, and 9 of 22 probe runs
 //   saw V8 or deno ahead;
@@ -435,7 +435,7 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 //   list's per-sample getValue (dynamic event reads, number-to-string keys).
 // Excluded from the strict and band tests and from the corpus-coverage test
 // until the todo below flips; a case leaves this set the commit it leads.
-const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'worley', 'fabrik', 'webaudio'])
+const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'webaudio'])
 const caseRatios = (rivals, ids = null) => {
   const out = []
   for (const [id, c] of Object.entries(cases)) {
