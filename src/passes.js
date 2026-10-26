@@ -172,6 +172,7 @@ export const TUNING_KEYS = [
   'pointerExits',             // a loop keeping a counter only to stop stops by the pointer strength reduction steps beside it (optimize/pointer-exits.js, speed tier)
   'ringLaps',                 // a counted loop stepping a cursor around a ring runs a lap at a time (optimize/ring-laps.js, speed tier)
   'earlyStores',              // a store ready before a long computation it does not read goes ahead of it (optimize/early-stores.js, speed tier)
+  'leadChains',               // a loop body of arithmetic computes its chain a few links ahead of the work hanging off it (optimize/lead-chains.js, speed tier)
   'leanRuntime',              // size tier: runtime walks link their simplest correct body (no hot/cold
                               // split, no chunked scan, no per-site hash fast arms) — the -Os profile
                               // of the string equality/hash family

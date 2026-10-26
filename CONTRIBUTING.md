@@ -53,6 +53,9 @@ keep the loop as it is.
 Before watr, `earlyStores` (src/optimize/early-stores.js, speed tier) moves a
 store whose value is ready just ahead of a long computation it does not read,
 where the plan proves the buffers apart.
+After watr, `leadChains` (src/optimize/lead-chains.js, speed tier) computes the
+longest chain of a loop body three links ahead of the weighty work hanging off
+it, a filter cascade's state updates.
 
 Watr 5.11.5 also defers costly pure local initializers to the
 exclusive value arms that consume them. It runs before local reuse, replacing

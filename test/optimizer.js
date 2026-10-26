@@ -37,6 +37,7 @@ import { searchLoops } from '../src/optimize/search-loops.js'
 import { pointerExits } from '../src/optimize/pointer-exits.js'
 import { ringLaps } from '../src/optimize/ring-laps.js'
 import { earlyStores } from '../src/optimize/early-stores.js'
+import { leadChains } from '../src/optimize/lead-chains.js'
 import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -5210,6 +5211,81 @@ test('earlyStores: a store ready before a long computation it does not read goes
   }
   ok(ahead('speed'), 'the first state store goes ahead of the first output')
   ok(!ahead({ level: 'speed', earlyStores: false }), 'earlyStores: false keeps it after')
+})
+
+test('leadChains: a cascade computes its output chain ahead of the state updates hanging off it', () => {
+  const g = (n) => ['local.get', n], c = (v) => ['f64.const', v]
+  const S = 6
+  // y_j = b0*in + z0_j; z0_j = b1*in - a1*y_j + z1_j; z1_j = b2*in - a2*y_j — two names for the outputs, alternating
+  const y = (j) => j % 2 ? '$yb' : '$ya', inOf = (j) => j ? g(y(j - 1)) : g('$x')
+  const body = [['local.set', '$x', ['f64.load', g('$p')]]]
+  for (let j = 0; j < S; j++) {
+    const k = 0.05 * (j + 1)
+    body.push(['local.set', y(j), ['f64.add', ['f64.mul', c(0.1 + k), inOf(j)], g(`$z${j}a`)]],
+      ['local.set', `$z${j}a`, ['f64.add', ['f64.sub', ['f64.mul', c(0.2 - k), inOf(j)], ['f64.mul', c(-1.5 + k), g(y(j))]], g(`$z${j}b`)]],
+      ['local.set', `$z${j}b`, ['f64.sub', ['f64.mul', c(0.1), inOf(j)], ['f64.mul', c(0.6 - k), g(y(j))]]])
+  }
+  body.push(['f64.store', g('$p'), g(y(S - 1))], ['local.set', '$p', ['i32.add', g('$p'), ['i32.const', 8]]])
+  const zs = []
+  for (let j = 0; j < S; j++) zs.push(['local', `$z${j}a`, 'f64'], ['local', `$z${j}b`, 'f64'])
+  const fn = (b) => ['func', '$f', ['param', '$p', 'i32'], ['param', '$end', 'i32'], ['local', '$x', 'f64'], ['local', '$ya', 'f64'], ['local', '$yb', 'f64'], ...zs,
+    ['loop', '$L', ...b, ['br_if', '$L', ['i32.lt_u', g('$p'), g('$end')]]]]
+  const before = fn(JSON.parse(JSON.stringify(body)))
+  const after = leadChains(['module', JSON.parse(JSON.stringify(before))])[1]
+  const loop = after.find(n => Array.isArray(n) && n[0] === 'loop')
+  const stmts = loop.slice(2, -1)
+  // the outputs' statements read the state's incoming values: each section's output comes before its updates,
+  // and the first four outputs before any update
+  const isOut = (s) => s[0] === 'local.set' && JSON.stringify(s[2]).split('f64.mul').length === 2
+  const firstUpdate = stmts.findIndex(s => s[0] === 'local.set' && /^\$z\d[ab]$/.test(s[1]))
+  ok(stmts.slice(0, firstUpdate).filter(isOut).length >= 4, `four outputs lead the first update (${stmts.slice(0, firstUpdate).filter(isOut).length})`)
+  const fresh = after.filter(n => Array.isArray(n) && n[0] === 'local' && /\$l\d+$/.test(n[1]))
+  ok(fresh.length >= 4, `the outputs' repeated names take fresh locals (${fresh.length})`)
+  // the rewritten loop runs as the original
+  const exec = (f) => {
+    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', ['memory', '$m', ['export', '"m"'], 1], [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]])))
+    const mem = new Float64Array(m.exports.m.buffer, 0, 256)
+    for (let i = 0; i < 256; i++) mem[i] = Math.sin(i * 0.37)
+    m.exports.f(0, 2040)
+    return [...mem.slice(0, 256)]
+  }
+  is(exec(after), exec(before), 'same samples out')
+  // a short chain, or one with nothing weighty hanging off it, stays as written
+  const kept = (b, why) => { const f = fn(b), want = JSON.stringify(f); is(JSON.stringify(leadChains(['module', f])[1]), want, why) }
+  kept(body.slice(0, 7).concat(body.slice(-2)), 'two sections are too short a chain')
+  kept(body.map(s => s[0] === 'local.set' && /^\$z\d[ab]$/.test(s[1]) ? ['local.set', s[1], g('$x')] : s), 'copies hanging off the chain stay')
+  kept([...body.slice(0, 4), ['local.set', '$x', ['call', '$g']], ...body.slice(4)], 'a call keeps the run')
+
+  // second-order sections in direct form II transposed, the library idiom: state and
+  // coefficients in locals, the signal filtered in place
+  const src = `const run = (data) => {
+      let a0 = 0, a1 = 0, b0 = 0, b1 = 0, c0 = 0, c1 = 0, d0 = 0, d1 = 0, e0 = 0, e1 = 0, f0 = 0, f1 = 0
+      for (let i = 0; i < data.length; i++) {
+        const x = data[i]
+        const ya = 0.11 * x + a0;  a0 = 0.21 * x + 0.31 * ya + a1;  a1 = 0.12 * x - 0.41 * ya
+        const yb = 0.13 * ya + b0; b0 = 0.22 * ya + 0.32 * yb + b1; b1 = 0.14 * ya - 0.42 * yb
+        const yc = 0.15 * yb + c0; c0 = 0.23 * yb + 0.33 * yc + c1; c1 = 0.16 * yb - 0.43 * yc
+        const yd = 0.17 * yc + d0; d0 = 0.24 * yc + 0.34 * yd + d1; d1 = 0.18 * yc - 0.44 * yd
+        const ye = 0.19 * yd + e0; e0 = 0.25 * yd + 0.35 * ye + e1; e1 = 0.20 * yd - 0.45 * ye
+        const yf = 0.21 * ye + f0; f0 = 0.26 * ye + 0.36 * yf + f1; f1 = 0.22 * ye - 0.46 * yf
+        data[i] = yf
+      }
+      return data
+    }
+    export let f = (n) => {
+      const d = new Float64Array(n)
+      for (let i = 0; i < n; i++) d[i] = Math.sin(i * 0.37)
+      run(d); run(d)
+      let h = 0
+      for (let i = 0; i < n; i++) h = (h + d[i] * 1e9) | 0
+      return h
+    }`
+  const want = oracle(src).f(500)
+  for (const optimize of ['speed', { level: 'speed', leadChains: false }, 2]) is(run(src, { optimize }).f(500), want, JSON.stringify(optimize))
+  if (onKernel()) return
+  const fresh2 = (optimize) => count(parseWat(jz.compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && /\$l\d+$/.test(n[1]))
+  ok(fresh2('speed') >= 4, `the sections' outputs lead (${fresh2('speed')} fresh locals)`)
+  is(fresh2({ level: 'speed', leadChains: false }), 0, 'leadChains: false keeps the sections as written')
 })
 
 test('rec-unroll: an empty statement in a body is no loop', () => {

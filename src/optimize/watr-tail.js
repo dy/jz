@@ -27,6 +27,7 @@ import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
 import { pointerExits } from './pointer-exits.js'
 import { ringLaps } from './ring-laps.js'
+import { leadChains } from './lead-chains.js'
 import { splitFuncs } from './split-funcs.js'
 import { inlineTiny } from './inline-tiny.js'
 import { forwardCheckedElements } from './forward-checked.js'
@@ -560,6 +561,8 @@ export function watrTail(module, cfg, {
   if (cfg.ringLaps === true) time('ringLaps', () => ringLaps(optimized))
   // (on the pointers watr's strength reduction left beside their counters)
   if (cfg.pointerExits === true) time('pointerExits', () => pointerExits(optimized))
+  // (on the loop bodies the optimizer leaves: its own passes would merge the split values back)
+  if (cfg.leadChains === true) time('leadChains', () => leadChains(optimized))
   if (cfg.maskOperands === true) time('maskOperands', () => maskOperands(optimized))
   // (after the passes that read a float select as one)
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized))
