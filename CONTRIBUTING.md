@@ -1679,7 +1679,10 @@ census when deduplication removes copies or introduces a temporary. Each loop
 checks private writes against it without rescanning the whole function.
 JZ uses watr's instruction-effect classifier for every memory-write family;
 unknown write targets block alias-dependent motion. Buffer origins follow
-single-definition locals and closed scalar recurrences. Conversion blocks may
+single-definition locals and closed scalar recurrences. Two parameters are
+distinct buffers where every call passes each a fresh local: a `new` typed array
+of a numeric length, or the result of a function whose every return names such
+an allocation of its own (plan/common.js `freshReturningFuncs`). Conversion blocks may
 stage an index in local scratch: origin tracing visits every statement and the
 result, still rejecting loads, calls and conflicting roots. Other origins remain
 unknown. Allocating

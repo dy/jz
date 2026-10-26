@@ -138,21 +138,53 @@ const isFreshTypedArrayAlloc = (expr, consts) => {
 
 /** Local names const-bound to a fresh typed-array allocation (each a unique buffer, distinct from
  *  every other such binding and from any pre-existing value). `const` only — an immutable binding
- *  always holds that fresh buffer. Element writes (`a[i]=…`) don't reassign `a`, so they're fine. */
-export const freshTypedArrayLocals = (body) => {
-  const fresh = new Set(), consts = new Set()
+ *  always holds that fresh buffer. Element writes (`a[i]=…`) don't reassign `a`, so they're fine.
+ *  `numbers` are names known to hold numbers (a function's number parameters), `freshFns` the
+ *  functions each call of which returns a buffer it allocated (freshReturningFuncs). */
+export const freshTypedArrayLocals = (body, numbers = null, freshFns = null) => {
+  const fresh = new Set(), consts = new Set(numbers ?? [])
   walkAst(body, { enter: node => {
     if (node[0] === '=>') return false
     if (node[0] === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
-        if (isFreshTypedArrayAlloc(d[2], consts)) fresh.add(d[1])
+        if (isFreshTypedArrayAlloc(d[2], consts) || freshCall(d[2], freshFns)) fresh.add(d[1])
         else if (primitiveLen(d[2], consts)) consts.add(d[1])
       }
     }
   } })
   return fresh
+}
+const freshCall = (e, freshFns) => !!freshFns && Array.isArray(e) && e[0] === '()' && typeof e[1] === 'string' && freshFns.has(e[1])
+
+/** The functions each call of which returns a typed array the call allocated: every `return`
+ *  of the body (none of a nested function's) names a fresh local of its own, or an expression
+ *  body is the allocation. Two calls' results are two buffers, as two allocations are. */
+export const freshReturningFuncs = (funcs) => {
+  const out = new Set()
+  const numbersOf = (func) => new Set((func.sig?.params ?? []).filter(p => p.val === 'number' && !p.ptrKind).map(p => p.name))
+  // (a function returning another's fresh result is fresh in its turn: a few rounds reach it)
+  for (let round = 0, grew = true; grew && round < 4; round++) {
+    grew = false
+    for (const func of funcs) {
+      const body = func.body
+      if (!body || func.raw || typeof func.name !== 'string' || out.has(func.name)) continue
+      const numbers = numbersOf(func)
+      let ok = true, any = false
+      if (!Array.isArray(body) || body[0] !== '{}') ok = any = isFreshTypedArrayAlloc(body, numbers) || freshCall(body, out)
+      else {
+        const fresh = freshTypedArrayLocals(body, numbers, out)
+        if (!fresh.size) continue
+        walkAst(body, { enter: n => {
+          if (!ok || n[0] === '=>') return false
+          if (n[0] === 'return') { if (typeof n[1] === 'string' && fresh.has(n[1])) any = true; else ok = false; return false }
+        } })
+      }
+      if (ok && any) { out.add(func.name); grew = true }
+    }
+  }
+  return out
 }
 
 /** Map of name → {len, coerce} for every fixed-size typed-array binding declared

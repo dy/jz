@@ -39,7 +39,7 @@ import { includeModule } from '../../autoload.js'
 import { analyzeValueFacts, setFuncBody } from '../analyze.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_NULL_CMP, BINDING_USE_STORE } from '../analyze-scans.js'
 import {
-  isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals,
+  isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals, freshReturningFuncs,
   collectBindings,
 } from './common.js'
 import { isExported } from '../func-exports.js'
@@ -720,7 +720,9 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
 //   • scalar (non-TYPED) params are ignored — they can't alias a buffer.
 // Conservatively all-or-nothing per function: any non-fresh/duplicate typed arg ⇒ no fact.
 export const analyzeParamDistinctness = (programFacts) => {
-  const freshByFunc = new Map(ctx.funcs.list.map(func => [func, freshTypedArrayLocals(func.body)]))
+  // (a local bound to the result of a function returning what it allocates is a buffer of its own)
+  const freshFns = freshReturningFuncs(ctx.funcs.list)
+  const freshByFunc = new Map(ctx.funcs.list.map(func => [func, freshTypedArrayLocals(func.body, null, freshFns)]))
   const sitesByCallee = new Map()
   for (const site of programFacts.callSites) {
     if (!site.callerFunc) continue

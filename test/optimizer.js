@@ -2903,6 +2903,38 @@ test('param-distinctness LICM: SOUND — same array passed for two params is NOT
   is(jz(SRC, { optimize: { level: 'speed' } }).exports.main(), ref, 'aliasing result correct at speed tier (load NOT wrongly hoisted)')
 })
 
+test('param-distinctness: a function returning what it allocates hands each call a buffer of its own', () => {
+  // src and dst come from calls of a maker, each allocating; the src loads of proc hoist across
+  // the dst store as they do for two `new` locals. A maker returning one cached array gives both
+  // calls the same buffer: no fact, the loads stay, and the answer is JS's, the store clobbering src.
+  const SRC = (mk) => `
+    ${mk}
+    const proc = (src, dst, n) => { for (let i = 0; i < n; i++) dst[i] = src[0] + src[1] * i + src[2] - src[3] }
+    export const main = () => {
+      const src = mk(256), dst = mk(256)
+      for (let k = 0; k < 256; k++) src[k] = k + 0.5
+      proc(src, dst, 256); proc(src, dst, 256); proc(src, dst, 256)
+      return (dst[255] * 1000) | 0
+    }`
+  const hoisted = (src) => {
+    const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+    let fn = wat.slice(wat.indexOf('(func $proc'), wat.indexOf('\n  (func ', wat.indexOf('(func $proc') + 10) + 1 || undefined)
+    if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
+    return !/f64\.load/.test(fn.slice(fn.indexOf('(loop')))
+  }
+  for (const [mk, fresh] of [
+    ['const mk = (n) => { const a = new Float64Array(n); return a }', true],
+    ['const mk = (n) => new Float64Array(n)', true],
+    ['const make = (n) => new Float64Array(n)\n    const mk = (n) => { const a = make(n); return a }', true],
+    ['let cache = null\n    const mk = (n) => { if (!cache) cache = new Float64Array(n); return cache }', false],
+    ['const all = new Float64Array(256)\n    const mk = (n) => all', false],
+  ]) {
+    const src = SRC(mk)
+    is(jz(src, { optimize: 'speed' }).exports.main(), oracle(src).main(), `${mk.split('\n').pop()}: JS's answer`)
+    if (!onKernel()) is(hoisted(src), fresh, `${mk.split('\n').pop()}: src loads ${fresh ? 'leave' : 'stay in'} the loop`)
+  }
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate of the char code itself', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 — no __to_num, no
   // f64.convert_i32_u of the char code. Inspect jz's type decisions before
