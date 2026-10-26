@@ -391,6 +391,12 @@ V8 also compiles hot JS to machine code. JZ can beat it by analyzing the whole
 program ahead of time: inferred types, fixed layouts, direct calls and SIMD on
 suitable loops, with no garbage collector.
 
+A large module pays the engine's warm-up, which the bench times as it does a
+JIT's: V8 runs each wasm function in its baseline tier until the optimizing tier
+has compiled it. On the 4-core CI runners that is 9 to 13 of watr's 21 timed
+rounds (a 320 KB module), so watr trails V8 and JSC there. With every round
+optimized (`--no-liftoff`), one runner timed it at 996 µs against JSC's 1866 µs.
+
 Nothing ships that the program does not reach: a heap-free numeric module has
 no memory, allocator or startup, and an empty program is an empty module.
 Size-optimized JZ stays within 5% of AssemblyScript's geomean while keeping
