@@ -1,4 +1,8 @@
 import { ctx, setLinkDemand } from '../ctx.js'
+import { unboundedPresent } from '../summary/contract.js'
+import { K, NULL_BITS, TAGS, bitOf } from '../summary/kind.js'
+import { VAL } from '../reps.js'
+import { commaList } from '../ast.js'
 
 // =============================================================================
 // Single-source export semantics
@@ -50,6 +54,54 @@ export const hasExternalIngress = () => {
   )
   return ctx.facts.externalIngress
 }
+
+// The result of an imported function the program reads, or a call that hands
+// the host anything but primitives (a closure the host may call back with its
+// own values), brings host values in; a call in statement position with
+// primitive arguments, or an import whose spec declares a primitive result
+// (`performance.now`), brings none.
+const PRIMITIVE_RESULTS = new Set([VAL.NUMBER, VAL.STRING, VAL.BIGINT])
+const PRIMITIVE_ARG_TAGS = ~(bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | NULL_BITS) & TAGS
+const importIngress = () => {
+  const aliases = new Set()
+  for (const i of ctx.module.imports) if (i[3]?.[0] === 'func') {
+    const name = i[3][1].slice(1)
+    if (!PRIMITIVE_RESULTS.has(ctx.module.hostImportValTypes.get(name))) aliases.add(name)
+  }
+  if (!aliases.size) return false
+  let found = false
+  const visit = (n, parent, func) => {
+    if (found || !Array.isArray(n)) return
+    if (n[0] === '()' && aliases.has(n[1])) {
+      const view = ctx.summary?.at(func?.sig ?? null)
+      if (!parent || (parent[0] !== ';' && parent[0] !== '{}')) { found = true; return }
+      for (const arg of commaList(n[2])) {
+        const k = view?.kindOfExpr(arg)
+        if (k == null || (k & PRIMITIVE_ARG_TAGS) !== 0) { found = true; return }
+      }
+    }
+    for (let i = 1; i < n.length; i++) visit(n[i], n, func)
+  }
+  for (const f of ctx.funcs.list) if (f.body) visit(f.body, null, f)
+  for (const init of ctx.module.moduleInits ?? []) visit(init, null, null)
+  return found
+}
+
+/** Whether the host can hand the module a value the summary cannot bound: a
+ *  host global, an exported function's parameter, an import's result
+ *  (importIngress). Narrower than hasExternalIngress, which also counts an
+ *  import the program only calls. */
+export const hostValueIngress = () => {
+  if (!ctx.transform.targetProfile.envImports) return false
+  if (ctx.facts.hostValueIngress == null) ctx.facts.hostValueIngress = ctx.core.hostGlobals.size > 0 ||
+    ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64')) || importIngress()
+  return ctx.facts.hostValueIngress
+}
+
+/** Whether a value of summary kind `k` may be a host object or function: one
+ *  the summary cannot bound, where the host can hand the module values. A
+ *  query: no link demand. */
+export const mayHoldHostValue = k => (k == null || unboundedPresent(k)) && hostValueIngress()
 
 /** Whether a receiver a site cannot type may be a host object (the host can
  *  hand the module one, hasExternalIngress), demanding the host arm of the

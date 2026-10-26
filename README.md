@@ -183,6 +183,7 @@ Where behaviour differs from JS:
 - **No runtime prototype chain.** `Object.create(null)` creates an empty object; `Object.create(obj)` copies supported object layouts instead of linking a prototype. Class inheritance and supported prototype assignments are resolved at compile time.
 - **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver.
 - **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates. A use as a string counts through a copy, a call and a sum: `(s) => (s + s).slice(1)` takes a string.
+- **Host methods named like builtins.** A host object the host passes in runs its own method of any name, a string's or an array's included. Where that builtin returns a number, a boolean or a string (`charCodeAt`, `includes`, `toUpperCase`), the call converts the host method's result to that type: an `o.charCodeAt(1)` that returns `'7'` gives 7.
 
 </details>
 

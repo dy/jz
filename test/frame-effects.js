@@ -1473,6 +1473,25 @@ test('frame effects: a call that never returns does not make its frame allocate'
   is(jz(src).exports.g('   x'), 120)
 })
 
+// `cur` may hold a host object the host passed `g` (method-dispatch
+// hostReceiverFork): its method of the name is the host's. A call with up to
+// four primitive arguments passes them inline (interop.js
+// __ext_invoke_inline), handing the host nothing it can keep, so the call is
+// no escape and the frame keeps its flag; its result converts to the builtin's
+// Number, so `c` stays one and the scan above allocates nothing.
+test('frame effects: a host method call with primitive arguments is no escape', () => {
+  if (onKernel()) return
+  const src = `let cur
+    export function f(i) { const t = [i, i + 1]; return cur.charCodeAt(i | 0) + t[1] }
+    export function g(s) { cur = s; return f(0) }`
+  const body = bodyOf(compile(src, { wat: true, ...TAPE }), 'f')
+  ok(/__ext_invoke_inline/.test(body), 'the host call passes its argument inline')
+  ok(!/\(global\.set \$__esc \(i32\.const 0\)\)/.test(body), 'no store lowers the flag to zero')
+  const m = jz(src).exports
+  is(m.g('ab'), 98)
+  is(m.g({ charCodeAt: (i) => i + 5 }), 6)
+})
+
 // The census reads a name inside the arm of a type test as the emitter does
 // (flow-types.js typeTests): a method on it is the builtin's, so a loop over a
 // string a `typeof` proves calls nothing unknown, allocates nothing and keeps

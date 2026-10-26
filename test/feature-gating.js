@@ -110,7 +110,9 @@ test('features.external ON: untyped method call captures and invokes a host memb
   if (onWasi()) return  // wasi: external object
   const w = wat(`export let f = (o) => o.m()`)
   is(hasImport(w, '__ext_method'), true)
-  is(hasImport(w, '__ext_invoke'), true)
+  // no argument, or primitives alone, go inline; others in an array
+  is(hasImport(w, '__ext_invoke_inline'), true)
+  is(hasImport(wat(`export let f = (o) => o.m({ a: 1 })`), '__ext_invoke'), true)
 })
 
 test('features.external ON: HOST_GLOBALS reference — __ext_get import present', () => {

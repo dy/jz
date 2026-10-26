@@ -1972,18 +1972,35 @@ const prepareInterop = (opts) => {
   // Raw property Get, shared by reads, copies and method references. Do not
   // bind functions: that changes identity/this and observes name/length.
   opts._interp.__ext_method = (objBig, propBig) => readProperty(objBig, propBig, false, true)
-  const invoke = (fn, obj, args) => {
+  // `as`: a call the module types as its builtin's result (`o.charCodeAt(i)` a
+  // Number) takes the host method's value as that type: 1 a Number, 2 a
+  // Boolean, 3 a string (kind-traits.js hostResultAs); 0 or absent, as it is.
+  const invoke = (fn, obj, args, as) => {
     if (typeof fn !== 'function') {
       const miss = state.methodMiss
       throw new TypeError(miss && miss.obj === obj ? `${String(miss.prop)} is not a function on the host receiver` : 'Host value is not callable')
     }
     const value = Reflect.apply(fn, obj, args)
+    if (as === 1) return hostRet(state, Number(value))
+    if (as === 2) return hostRet(state, !!value)
+    if (as === 3) return hostRet(state, String(value))
     const bigTyped = typeof value === 'bigint' &&
       (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
     return hostRet(state, value, bigTyped)
   }
   opts._interp.__ext_invoke = (fnBig, recvBig, argsBig) => invoke(
     state.mem.read(fnBig, state.fnOf), state.mem.read(recvBig, state.fnOf), state.mem.read(argsBig, state.fnOf))
+  opts._interp.__ext_invoke_as = (fnBig, recvBig, argsBig, as) => invoke(
+    state.mem.read(fnBig, state.fnOf), state.mem.read(recvBig, state.fnOf), state.mem.read(argsBig, state.fnOf), as)
+  // Up to four arguments inline, their count first: the module builds no array.
+  opts._interp.__ext_invoke_inline = (fnBig, recvBig, n, as, a0, a1, a2, a3) => {
+    const read = v => state.mem.read(v, state.fnOf), args = []
+    if (n > 0) args.push(read(a0))
+    if (n > 1) args.push(read(a1))
+    if (n > 2) args.push(read(a2))
+    if (n > 3) args.push(read(a3))
+    return invoke(read(fnBig), read(recvBig), args, as)
+  }
   // Older compiled modules pass receiver/key/arguments to this import. Keep
   // that ABI distinct from the captured callable/receiver/arguments above.
   opts._interp.__ext_call = (objBig, propBig, argsBig) => {

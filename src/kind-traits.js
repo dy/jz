@@ -10,6 +10,7 @@ import { typedCtorName } from './typed-provenance.js'
 import { summaryTypedCtor, typedStorageCtorFromContext } from './typed-context.js'
 import { contractVal } from './summary/contract.js'
 import { valOf } from './summary/kind.js'
+import { mayHoldHostValue } from './compile/func-exports.js'
 export { CMP_OPS, BOOL_OPS } from './summary/kind.js'
 
 export const NUMERIC_BINARY_OPS = ['-', 'u-', '*', '/', '%', '&', '|', '^', '<<', '>>']
@@ -172,7 +173,24 @@ export function calleeValType(callee, _args, ctx) {
   return ctx.summary ? valOf(ctx.summary.resultContract(name).kind) : null
 }
 
+// The results a host method's value converts to where a call is typed as its
+// builtin's (interop.js `invoke`, the `as` code `hostResultAs` names).
+const HOST_RESULT_AS = new Map([[VAL.NUMBER, 1], [VAL.BOOL, 2], [VAL.STRING, 3]])
+
+/** The conversion a host method's result takes for a call typed `vt`: 1 to a
+ *  Number, 2 a Boolean, 3 a string, 0 none. */
+export const hostResultAs = vt => HOST_RESULT_AS.get(vt) ?? 0
+
 export function methodValType(method, obj, objType, ctx) {
+  const vt = builtinMethodValType(method, obj, objType, ctx)
+  // A receiver of no known kind may be a host object the host handed the
+  // module, which may own a method of any name: its result converts to the
+  // primitive the builtin returns, and is anything otherwise.
+  return vt == null || HOST_RESULT_AS.has(vt) || obj == null || objType != null || !ctx?.summary ||
+    !mayHoldHostValue(ctx.summary.at(ctx.func.current).kindOfExpr(obj)) ? vt : null
+}
+
+function builtinMethodValType(method, obj, objType, ctx) {
   // A builtin-looking name is not a result-kind proof when this receiver
   // family can carry an own method with that name. Passing a null `obj` asks
   // specifically for the prototype builtin's contract (used by a fallback

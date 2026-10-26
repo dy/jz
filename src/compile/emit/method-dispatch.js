@@ -6,19 +6,21 @@
 
 import { positionArgs, storedValue } from '../../bridge.js'
 import { i64Hex, oobNanIR, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
-import { K, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../../summary/index.js'
+import { K, tagOf, tagsOf, paramOf, isNullable, hasTag, UNKNOWN } from '../../summary/index.js'
+import { bitOf } from '../../summary/kind.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
 import { T, ACCESSOR_GET, isLeaf, isReassigned } from '../../ast.js'
 import { RESOLVED_PROP_MODULES, includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, strictCode, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, TRUE_NAN, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isBoolAtom, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, TRUE_NAN, UNDEF_NAN, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isBoolAtom, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
-import { methodValType } from '../../kind-traits.js'
+import { hostResultAs, methodValType } from '../../kind-traits.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { representationProgramHasBigint } from '../representation-plan.js'
+import { mayHoldHostValue } from '../func-exports.js'
 import { buildArrayWithSpreads, callMaybeHost, emitMethodCallSpread, emitNonCallable, mayBeHostFn } from './call-args.js'
 import { emit } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
@@ -49,6 +51,16 @@ const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'add', 'delete'])
 // It must fall through to dynamic dispatch, mirroring COLLECTION_METHODS' arity guard.
 const STR_INDEX_METHODS = new Set(['charCodeAt', 'charAt'])
 const strIndexSurplus = (method, parsed) => STR_INDEX_METHODS.has(method) && !parsed.hasSpread && parsed.normal.length > 1
+// A kind of primitives alone (or a missing value): the host keeps nothing of one it is handed.
+const PRIMITIVE_TAGS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | bitOf(K.NULLISH) | bitOf(K.ABSENT)
+const primitiveKind = k => k != null && (tagsOf(k) & ~PRIMITIVE_TAGS) === 0
+// A host function called with an array of arguments (i64 bits each); `as`, the
+// conversion its result takes where the call is typed as a builtin's
+// (kind-traits.js hostResultAs), selects the import that applies it.
+const includeHostInvoke = as => inc(as ? '__ext_invoke_as' : '__ext_invoke')
+const hostInvoke = (fn, recv, args, as) => ['f64.reinterpret_i64', as
+  ? ['call', '$__ext_invoke_as', fn, recv, args, ['i32.const', as]]
+  : ['call', '$__ext_invoke', fn, recv, args]]
 // Whether some object of the program may own a member of the name: a store
 // the summary saw, a builtin's own property, a layout's field.
 const ownMemberPossible = method => ctx.summary?.memberMayBeOwn(method) ||
@@ -329,14 +341,15 @@ function unresolvedDateMethod(obj, method, parsed) {
   let nonDate = throwTypeErrorIR('call')
   if (ctx.transform.targetProfile.envImports) {
     includeForRuntimeKeyIteration()
-    inc('__ext_method', '__ext_invoke')
+    const as = hostResultAs(methodValType(method, obj, null, ctx))
+    inc('__ext_method'); includeHostInvoke(as)
     setLinkDemand('external')
     nonDate = typed(['if', ['result', 'f64'],
       ['i32.eq', ['local.get', `$${pt}`], ['i32.const', PTR.EXTERNAL]],
-      ['then', ['f64.reinterpret_i64', ['call', '$__ext_invoke',
+      ['then', hostInvoke(
         ['i64.reinterpret_f64', ['local.get', `$${hostMethod}`]],
         ['i64.reinterpret_f64', ['local.get', `$${recv}`]],
-        ['i64.reinterpret_f64', ['local.get', `$${argv}`]]]]],
+        ['i64.reinterpret_f64', ['local.get', `$${argv}`]], as)],
       ['else', nonDate]], 'f64')
   }
   const argNames = argTemps.map(name => name)
@@ -515,7 +528,14 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
             (p, o) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed, false, typed(['local.get', `$${o}`], 'f64')),
             () => inherited)
         : inherited
-    } else generic = tryDynamicPropCall({ obj: t, method, parsed, vt: null, optional }) ?? missing
+    } else generic = tryDynamicPropCall({ obj: t, method, parsed, vt: null, optional })
+    // A host object owns its methods, a string's or an array's name among them:
+    // the host answers for a receiver the summary cannot bound, where the
+    // property call above (a program with closures) does not already ask it.
+    const hostLeg = !optional && !strictCode() && mayHoldHostValue(receiverKind) && (genEmitter || !generic)
+    generic ??= missing
+    if (hostLeg) generic = typed(['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.EXTERNAL]],
+      ['then', asF64(externalMethodFallback({ obj: t, method, parsed, leg: true }))], ['else', generic]], 'f64')
     const cases = []
     if (strEmitter && mayBe(K.STRING)) cases.push([PTR.STRING, materializeBuiltinResult(VAL.STRING, callMethod(t, strEmitter))])
     if (typedEmitter && mayBe(K.TYPED)) cases.push([PTR.TYPED, materializeBuiltinResult(VAL.TYPED, callMethod(t, typedEmitter))])
@@ -648,7 +668,23 @@ function trySchemaClosureCall(c) {
 // collection op (each needs ≥1 key/value arg) — it is a user/closure
 // method (e.g. `new C().get()`). Skip the collection emitter so it falls
 // through to closure/dynamic dispatch instead of crashing on `emit(key)`.
-function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
+// The receiver evaluated once: a host object takes the host's method call
+// (externalMethodFallback), any other value `rest(receiver)`. A name is read
+// again in each arm (a read is pure), so a global string keeps its own shape.
+function hostReceiverFork({ obj, method, parsed }, rest) {
+  if (typeof obj === 'string') return typed(['if', ['result', 'f64'], ptrTypeEq(asF64(emit(obj)), PTR.EXTERNAL),
+    ['then', asF64(externalMethodFallback({ obj, method, parsed, leg: true }))], ['else', asF64(rest(obj))]], 'f64')
+  const t = temp('hostRecv'), view = ctx.summary.at(ctx.func.current), value = asF64(emit(obj))
+  copyReceiverFacts(obj, t)
+  view.alias(t, obj, false)
+  try {
+    return block64(['local.set', `$${t}`, value], ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${t}`], PTR.EXTERNAL),
+      ['then', asF64(externalMethodFallback({ obj: t, method, parsed, leg: true }))], ['else', asF64(rest(t))]])
+  } finally { view.unalias(t) }
+}
+
+function tryGenericEmitter(c) {
+  const { obj, method, parsed, vt, callMethod } = c
   const collectionMisfit = COLLECTION_METHODS.has(method) &&
     !parsed.hasSpread && parsed.normal.length === 0
   // (a proven string's surplus arguments are just evaluated; a receiver that
@@ -664,6 +700,14 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
   const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
   if (builtinMethod(method) && !collectionMisfit && !strIndexMisfit && !objectShadow) {
+    // A receiver of no known kind the host may have handed the module is a host
+    // object where its tag says so, whose own method of the name the host calls;
+    // any other value takes the builtin below.
+    if (vt == null && !c.hostTested && !strictCode() && mayHoldHostValue(ctx.summary?.at(ctx.func.current)?.kindOfExpr(obj)))
+      return hostReceiverFork(c, recv => {
+        const value = materializeDeferredBigint(tryGenericEmitter({ ...c, obj: recv, hostTested: true }))
+        return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
+      })
     // Only an actual Date-only alias needs a brand guard. Shared names such
     // as toString/valueOf retain their generic inherited implementation.
     const generic = builtinMethod(method)
@@ -827,7 +871,8 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
     const hostFn = mayBeHostFn(ctx.summary.at(ctx.func.current).kindOfExpr(['.', obj, method]))
     const closureOnly = !hostRecv && !hostFn
     if (slot >= 0) inc('__ptr_type'); else inc('__dyn_get_expr', '__ptr_type')
-    if (!closureOnly) { inc('__ext_invoke'); setLinkDemand('external') }
+    const as = hostResultAs(methodValType(method, obj, vt, ctx))
+    if (!closureOnly) { includeHostInvoke(as); setLinkDemand('external') }
     if (hostRecv) {
       inc('__ext_method')
       propRead = typed(['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL),
@@ -862,10 +907,10 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
     const fallback = closureOnly ? missing
       : ['if', ['result', 'f64'], !hostFn ? ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL)
           : hostRecv ? ['i32.or', ptrTypeEq(['local.get', `$${objTmp}`], PTR.EXTERNAL), hostCallee] : hostCallee,
-          ['then', ['f64.reinterpret_i64', ['call', '$__ext_invoke',
+          ['then', hostInvoke(
             ['i64.reinterpret_f64', ['local.get', `$${propTmp}`]],
             ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
-            ['i64.reinterpret_f64', extArrayIR]]]],
+            ['i64.reinterpret_f64', extArrayIR], as)],
           ['else', missing]]
     let dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
       ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), closureArgs, parsed.hasSpread, false, typed(['local.get', `$${objTmp}`], 'f64'))],
@@ -892,7 +937,8 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
 }
 
 // 12. Unknown callee — assume external method. Total: always returns.
-function externalMethodFallback({ obj, method, parsed }) {
+// `leg`: the host's arm beside a builtin's, which a host object alone takes: no deopt.
+function externalMethodFallback({ obj, method, parsed, leg = false }) {
   // Missing builtins remain unsupported; missing own record methods throw.
   // Unknown receivers may still be host objects, dispatched below.
   const vt = typeof obj === 'string' ? (lookupValType(obj) ?? valTypeOf(obj)) : valTypeOf(obj)
@@ -946,16 +992,30 @@ function externalMethodFallback({ obj, method, parsed }) {
     // can target js and wasi from one source; users who want fail-fast
     // pass `strict: true` (handled above).
     if (!ctx.transform.targetProfile.envImports) return undefExpr()
-    warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_invoke\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
+    if (!leg) warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_invoke\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
     includeForRuntimeKeyIteration()
-    inc('__ext_method', '__ext_invoke')
     setLinkDemand('external')
+    // The host method's result converts to the primitive the call is typed as.
+    const as = hostResultAs(methodValType(method, obj, null, ctx))
+    // Up to four primitive arguments go inline: the host can keep nothing the
+    // call hands it, and the module builds no array (interop.js __ext_invoke_inline).
+    const view = ctx.summary?.at(ctx.func.current)
+    if (!parsed.hasSpread && parsed.normal.length <= 4 && parsed.normal.every(a => primitiveKind(view?.kindOfExpr(a)))) {
+      inc('__ext_method', '__ext_invoke_inline')
+      ctx.module.keepsNothing.add('$__ext_invoke_inline')
+      const held = temp('hostReceiver'), bits = ['i64.reinterpret_f64', ['local.get', `$${held}`]]
+      const args = parsed.normal.map(a => asI64(storedValue(a)))
+      while (args.length < 4) args.push(['i64.const', UNDEF_NAN])
+      return block64(['local.set', `$${held}`, recv], ['f64.reinterpret_i64', ['call', '$__ext_invoke_inline',
+        ['call', '$__ext_method', bits, asI64(emit(['str', method]))], bits, ['i32.const', parsed.normal.length], ['i32.const', as], ...args]])
+    }
+    inc('__ext_method'); includeHostInvoke(as)
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
     const arrayIR = buildArrayWithSpreads(combined)
     const held = temp('hostReceiver'), bits = ['i64.reinterpret_f64', ['local.get', `$${held}`]]
-    return block64(['local.set', `$${held}`, recv], ['f64.reinterpret_i64', ['call', '$__ext_invoke',
+    return block64(['local.set', `$${held}`, recv], hostInvoke(
       ['call', '$__ext_method', bits, asI64(emit(['str', method]))], bits,
-      ['i64.reinterpret_f64', arrayIR]]])
+      ['i64.reinterpret_f64', arrayIR], as))
   }
   if (!mayBeUndef) return dispatch(asF64(emit(obj)))
   // Evaluate the receiver once, guard first, THEN pick the host/no-op

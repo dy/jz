@@ -3,11 +3,13 @@
  *  the summary's freeze (`summarize`). Read through `resultContract` (query.js)
  *  and published into ProgramIndex beside the boundary data (narrow/results.js
  *  seedResultKinds), so a callable identity owns it. No solver state, no body walk. */
-import { K, TAGS, tagOf, tagsOf, hasTag, isNullable, valOf, core, join } from './kind.js'
+import { K, NULL_BITS, TAGS, tagOf, tagsOf, hasTag, isNullable, valOf, core, join } from './kind.js'
 import { VAL } from '../reps.js'
 
 /** A kind the summary could not bound: every tag set. */
 export const unbounded = k => tagsOf(k) === TAGS
+/** A kind the summary could not bound but for its presence (a value a nullish test let through). */
+export const unboundedPresent = k => (tagsOf(k) | NULL_BITS) === TAGS
 
 /** The carrier a result crosses its ABI in. `i32`/`f64`/`v128`/`ptr` are the
  *  wasm result the range and pointer narrowing chose (narrow/results.js): the

@@ -443,6 +443,12 @@ export default (ctx) => {
   ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_invoke'] = '(import "env" "__ext_invoke" (func $__ext_invoke (param i64 i64 i64) (result i64)))'
+  // The same call whose result converts to the primitive a builtin's call is
+  // typed as (kind-traits.js hostResultAs): 1 a Number, 2 a Boolean, 3 a string.
+  ctx.core.stdlib['__ext_invoke_as'] = '(import "env" "__ext_invoke_as" (func $__ext_invoke_as (param i64 i64 i64 i32) (result i64)))'
+  // The same call with up to four arguments inline (the count and the conversion
+  // first, the rest undefined): no array of the module's.
+  ctx.core.stdlib['__ext_invoke_inline'] = '(import "env" "__ext_invoke_inline" (func $__ext_invoke_inline (param i64 i64 i32 i32 i64 i64 i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_method'] = '(import "env" "__ext_method" (func $__ext_method (param i64 i64) (result i64)))'
   // Hash function: simple f64 → i32 hash
   // Mix high mantissa bits into low buckets. XOR alone sends consecutive

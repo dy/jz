@@ -1568,6 +1568,38 @@ test('untyped receiver: a method named like a builtin on a receiver that may own
     is(jz(`${own}export let f = ${fn}`, { optimize }).exports.f(...args), want, `${fn} ${JSON.stringify(args)}, O${optimize}`)
 })
 
+// A value the host hands the module (an exported function's argument, what an
+// import returns, a callback's argument) may be a host object owning a method
+// of any name: the host calls it (method-dispatch hostReceiverFork). A call
+// typed as its builtin's Number, boolean or string takes the host method's
+// result as that type (kind-traits hostResultAs, interop.js `invoke`); one
+// typed otherwise (`lastIndexOf`, an array's or a string's; `split`, an array)
+// takes it as it is, as JS does. A string still takes the builtin.
+test('untyped receiver: a host object\'s method named like a builtin is its own', () => {
+  const host = { charCodeAt: (i) => i + 6, includes: () => 'yes', toUpperCase: () => 5, slice: () => 42, indexOf: (o) => o.k + 1, lastIndexOf: () => '3', split: () => 'xy' }
+  const src = `export let code = (o) => o.charCodeAt(1)
+    export let has = (o) => o.includes(1)
+    export let upper = (o) => o.toUpperCase()
+    export let cut = (o) => o.slice(1)
+    export let find = (o) => o.indexOf({ k: 1 })
+    export let last = (o) => o.lastIndexOf('a') + 1
+    export let parts = (o) => o.split(',')[0]
+    let cur
+    export let scan = (s) => { cur = s; let c = cur.charCodeAt(0); return c <= 32 }`
+  const imports = { host: { get: () => host, each: (cb) => cb(host) } }
+  const viaHost = `import { get, each } from 'host'
+    export let got = () => get().charCodeAt(1)
+    export let given = () => { let r = 0; each((o) => { r = o.toUpperCase() }); return r }`
+  // a program with closures dispatches an unknown receiver through its own-member probe first
+  for (const extra of ['', '\nconst id = (x) => x\nexport let z = () => id(1)']) for (const optimize of levels(0, 2, 'size')) {
+    const m = jz(src + extra, { optimize }).exports, at = `${extra ? 'closures' : 'no closures'}, O${optimize}`
+    is([m.code(host), m.has(host), m.upper(host), m.cut(host), m.find(host), m.last(host), m.parts(host), m.scan(host)], [7, true, '5', 42, 2, '31', 'x', true], `host object, ${at}`)
+    is([m.code('abc'), m.has('a1'), m.upper('ab'), m.cut('abc'), m.last('aba'), m.parts('a,b'), m.scan(' x'), m.scan('x')], [98, true, 'AB', 'bc', 3, 'a', true, false], `string, ${at}`)
+    const v = jz(viaHost + extra, { optimize, imports }).exports
+    is([v.got(), v.given()], [7, '5'], `from an import, ${at}`)
+  }
+})
+
 test('untyped receiver: string toString(radix) ignores the radix (JS semantics)', () => {
   const { f } = runHost(`
     let mk = (x) => ({ v: x })
