@@ -339,16 +339,23 @@ test('claims: contenders are the fastest stored rivals of each class, with jz an
 
 // A --contenders refresh measures the nearest rivals of each class per case: the
 // claim class is contested on a case when any of its lanes has a timed row there,
-// over the cases the claims cover (the pending ones have no rival at all).
+// over the cases the claims cover (the pending ones have no rival at all) that the
+// class has a program for: a wasm producer contests a case only beside its source
+// in that producer's language (bench/<case>/<case>.c, .rs, .go, .zig, .as.ts, the
+// bench's lanes), which a library's own JavaScript (stdlib, pmndrs/math) has none
+// of; an engine or Porffor runs every case's JavaScript.
+const WASM_SOURCES = ['.c', '.rs', '.go', '.zig', '.as.ts']
+const wasmSource = id => WASM_SOURCES.some(ext => existsSync(join(ROOT, 'bench', id, id + ext)))
 test('claims: every named rival is contested (coverage ≥ floor of the corpus)', () => {
   const total = Object.keys(cases).length
   const need = Math.ceil(total * COVERAGE_FLOOR)
   if (res.meta?.contenders) {
-    const covered = Object.entries(cases).filter(([id]) => !PENDING_CASES.has(id)).map(([, c]) => c)
-    const needCovered = Math.ceil(covered.length * COVERAGE_FLOOR)
+    const covered = Object.entries(cases).filter(([id]) => !PENDING_CASES.has(id))
     for (const [label, rivals] of [...CLAIM_CLASSES, ['porffor', ['porf-native']]]) {
-      const rows = covered.filter(c => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
-      ok(rows >= needCovered, `claim class '${label}' is contested on ${rows}/${covered.length} cases (floor ${needCovered}) under --contenders=${res.meta.contenders}`)
+      const field = label === 'wasm' ? covered.filter(([id]) => wasmSource(id)) : covered
+      const needCovered = Math.ceil(field.length * COVERAGE_FLOOR)
+      const rows = field.filter(([, c]) => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
+      ok(rows >= needCovered, `claim class '${label}' is contested on ${rows}/${field.length} cases (floor ${needCovered}) under --contenders=${res.meta.contenders}`)
     }
     return
   }
@@ -410,14 +417,22 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // (optional Set) restricts which cases are considered — used to carve the
 // JSC tight-integer-loop exception out of the general bun/jsc claim.
 // Cases the claims do not yet cover: a library's own code added to the corpus
-// (bench/stdlib-*, the pmndrs/math cases polytri, worley, fabrik and quatmul,
-// the web-audio-api render webaudio: ~1.2× V8 once its node outputs and
-// private registries kept their kinds, the rest in the automation list's
-// per-sample getValue (dynamic event reads, number-to-string keys); AGENTS.md's "tracked as todo in the gate until jz takes the lead
-// — never silently accepted"). Excluded from the strict and band tests and
-// from the corpus-coverage test until the todo below flips; a case leaves this
-// set the commit it leads.
-const PENDING_CASES = new Set(['stdlib-special', 'stdlib-dists', 'stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot', 'polytri', 'worley', 'fabrik', 'quatmul', 'webaudio'])
+// that jz does not lead on every runner yet (AGENTS.md's "tracked as todo in the
+// gate until jz takes the lead — never silently accepted"):
+// - stdlib-exp leads every engine on EPYC runners, and trails deno on Xeons
+//   (1.12× on a 6973P-C, 1.48× on an 8370C);
+// - polytri's triangulation leads, its decomposition, polygons split and pushed
+//   element by element, trails (deno and bun 1.00-1.23×, JSC 1.13-1.34×);
+// - worley trails bun and JSC by 5-11% once its table keeps its count through
+//   the record, the rest in its ToInt32 work;
+// - fabrik runs ~70 µs a round, so its verdict is V8's tier-up race: the rounds
+//   of one process read 0.50-1.69× its own base build, and 9 of 22 probe runs
+//   saw V8 or deno ahead;
+// - webaudio (the web-audio-api render): 1.2-1.5× V8 and bun, in the automation
+//   list's per-sample getValue (dynamic event reads, number-to-string keys).
+// Excluded from the strict and band tests and from the corpus-coverage test
+// until the todo below flips; a case leaves this set the commit it leads.
+const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'worley', 'fabrik', 'webaudio'])
 const caseRatios = (rivals, ids = null) => {
   const out = []
   for (const [id, c] of Object.entries(cases)) {
