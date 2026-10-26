@@ -2520,9 +2520,10 @@ those that allocate and whose result may be a heap value: their calls take
 the general path, which releases once the host holds a copy of the result.
 
 `E[Symbol.iterator]()` is `__it_from(E)` for every receiver (jzify): an
-indexed value's own iterator, a collection's snapshot view, a provider's
-`@@iterator` result, a machine itself; a jz builtin carries no `@@iterator`
-or `next` member of its own. The summary names each mint's record by its
+indexed value's own iterator (a string's by code point), a collection's
+snapshot view, a provider's `@@iterator` result, a machine itself; a jz
+builtin carries no `@@iterator` or `next` member of its own. The summary
+names each mint's record by its
 call node, a site of the runtime record's layout (std/iter-helpers
 `ITER_RECORD_KEYS`), and keeps the source beside it: `it.next().value` is the
 source's element where the record's own slots would join every mint in the
@@ -3494,7 +3495,8 @@ The generator machine carries completions through its finally blocks: each try
 with a finally records where its finally continues (a state, or a pending
 exception), so a return, break or continue crosses every finally between it and
 its target, and return() at a suspended yield enters the same route.
-A yield* is a loop over its delegate (`desugarYieldStar`) whose yield takes
+A yield* is a loop over its delegate (`desugarYieldStar`), one without the
+protocol over what a for-of reads of it (`__iter_arr`), whose yield takes
 the completion that arrives there as data: its `['yield', E, kind]` resume
 sets `kind` (0 next, 1 throw, 2 return) where throw() and return() find it,
 and the loop calls the delegate's next(), throw() or return(), a delegate

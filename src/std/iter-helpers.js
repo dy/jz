@@ -112,6 +112,8 @@ export let __it_from = (v) => {
     w = w[Symbol.iterator]()
   }
   if (typeof w === 'object' && w.next != null) return w
+  // an indexed value's own iterator; a string's steps by code point, as for-of reads it
+  if (typeof v === 'string') v = [...v]
   let ix = 0
   return __it_mk(() => {
     if (ix >= v.length) return { value: undefined, done: true }

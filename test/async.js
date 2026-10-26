@@ -523,6 +523,16 @@ test('async: function declarations in split blocks', async () => {
   await agreeAsync(`export async function f(c) { let s = ''; if (c !== 0) { s += h() + await 1; function h() { return 5 } } for (let i = 0; i < 2; i++) { async function step() { await null; return 'i' + i } s += await step() } return s }`)
 })
 
+// An async generator's yield* takes a builtin iterable as for-of reads it,
+// each value awaited: a string by code point, a Map's entries.
+test('async generators: yield* over builtin iterables', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`async function* g(x) { yield* x }
+    export async function strings() { let s = ''; for await (const v of g('x😀y')) s += v + '|'; return s }
+    export async function entries() { let s = ''; for await (const [k, v] of g(new Map([['k', Promise.resolve(1)], ['j', 2]]))) s += k + typeof v; return s }
+    export async function values() { let s = 0; for await (const v of g(new Set([1, Promise.resolve(2)]))) s += v; return s }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals

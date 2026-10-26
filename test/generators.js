@@ -592,6 +592,16 @@ test('generators: function and class declarations in split blocks', () => agreeA
     yield fs.map(f => f()).join() }
   export let declared = () => [1, 2].map(x => [...g(x)].join()).join('|')`))
 
+// yield* and `E[Symbol.iterator]()` take a builtin iterable as a for-of reads
+// it: a string by code point, a Map's entries, a Set's values, a typed array
+// and an array live.
+test('generators: yield* and [Symbol.iterator]() over builtin iterables', () => agreeAll(`
+  function* g(x) { yield* x }
+  const step = (it) => { let s = '', r; while (!(r = it.next()).done) s += JSON.stringify(r.value) + '|'; return s }
+  export let strings = () => [...g('a😀b')].join('|') + step('x😀'[Symbol.iterator]()) + 'a😀b'[Symbol.iterator]().toArray().length
+  export let collections = () => JSON.stringify([...g(new Map([[1, 2], [3, 4]]))]) + [...g(new Set([7, 8]))].join() + [...g(new Int8Array([5, 6]))].join()
+  export let live = () => { const a = [1, 2], out = []; for (const x of g(a)) { out.push(x); if (x === 1) a.push(3) } return out.join() }`))
+
 // An empty literal a generator body fills is the dictionary its readers take
 // it for: the machine assigns its hoisted local in a closure, and an inlined
 // copy of that closure allocates it as the plan reads it.

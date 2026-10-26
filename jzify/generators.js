@@ -645,15 +645,16 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     // each result, and the value of a return() with no method to answer it, and
     // takes a sync iterator through __ag_from (CreateAsyncFromSyncIterator),
     // its values yielded as they are (tag 2). E may be any iterable: an
-    // ['@@iterator']() provider unwraps first; a plain indexed iterable
-    // (array/string) yields element-wise, as an iterator with no throw() or
+    // ['@@iterator']() provider unwraps first; any other yields what a for-of
+    // reads of it (`__iter_arr`: an array live, a string's code points, a
+    // Map's entries, a Set's values), as an iterator with no throw() or
     // return() (the fork mirrors desugarForOfProtocol; both arms decompose
     // like any generator-body loop).
     const desugarYieldStar = (expr, target) => {
       // the source copies before the @@iterator() unwrap — single-assignment
       // locals keep the probe reads on the precise kind.
       const local = (t) => { const name = genTemp(t); locals.add(name); return name }
-      const src = local('yv'), it = local('yi'), r = local('yr'), sent = local('ys'), ix = local('yx'), kind = local('yk')
+      const src = local('yv'), it = local('yi'), r = local('yr'), sent = local('ys'), ix = local('yx'), kind = local('yk'), list = local('yl')
       // an async generator's awaited value
       const value = agen ? local('yw') : null
       const NULL = [null, null]
@@ -698,11 +699,12 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
             ...(target ? [['=', target, ['.', r, 'value']]] : []),
           ]],
           ['{}', [';',
+            ['=', list, ['()', '__iter_arr', it]],
             ['=', ix, [null, 0]],
-            ['while', ['<', ix, ['.', it, 'length']], ['{}', [';',
-              ...(agen ? [['=', value, ['await', ['[]', it, ix]]]] : []),
+            ['while', ['<', ix, ['.', list, 'length']], ['{}', [';',
+              ...(agen ? [['=', value, ['await', ['[]', list, ix]]]] : []),
               ['=', kind, [null, 0]],
-              ['=', sent, ['yield', agen ? value : ['[]', it, ix], kind]],
+              ['=', sent, ['yield', agen ? value : ['[]', list, ix], kind]],
               ['if', ['===', kind, [null, 1]], noThrow()],
               ['if', ['===', kind, [null, 2]], ['{}', [';', ...returns(sent)]]],
               ['=', ix, ['+', ix, [null, 1]]],
