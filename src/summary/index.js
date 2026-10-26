@@ -58,11 +58,11 @@ import { typedElementKey, typedCtorName } from '../typed-provenance.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
 import { buildResultContracts, unbounded } from './contract.js'
-import { definitelyAssigned } from './definite.js'
+import { assignedByCalls, definitelyAssigned } from './definite.js'
 export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 
 import {
-  K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, paramOf, hasTag, isNullable,
+  K, UNKNOWN, bitOf, TAGS, NULL_BITS, kind, tagOf, tagsOf, paramOf, hasTag, isNullable,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind, outsideKind, emptySpreadKind,
@@ -137,11 +137,13 @@ export const hasModeledResult = name => MODELED_RESULT.test(name)
  *  releases the solver's arena (scripts/self.js checkpointPhase). */
 export function summarize(ast, options) {
   const { registerLayouts = null, checkpoint = null } = options
+  let byCalls = true
   const solve = discover => {
-    const run = () => solveSummary(ast, { ...options, discover })
+    const run = () => solveSummary(ast, { ...options, discover, byCalls })
     return checkpoint ? checkpoint(run) : run()
   }
   let solved = solve(typeof registerLayouts === 'function')
+  if (solved.refuted) { byCalls = false; solved = solve(typeof registerLayouts === 'function') }
   // Discovery names layouts outside the solve: the registry is the compile's. A
   // registry that adds none declines the discovery, and the solve runs again
   // without provisional identities: no discarded solve donates local layout IDs
@@ -149,6 +151,7 @@ export function summarize(ast, options) {
   if (solved.discovered) {
     if (registerLayouts(solved.discovered)) return null
     solved = solve(false)
+    if (solved.refuted) { byCalls = false; solved = solve(false) }
   }
   return publish(solved)
 }
@@ -168,7 +171,7 @@ function publish({ facts, unnamedLayouts, contract }) {
   return published
 }
 
-function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, discover = false, liftedProp = () => null, guardedClone = () => null, conversions = true }) {
+function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, discover = false, liftedProp = () => null, guardedClone = () => null, conversions = true, byCalls = true }) {
   // Numeric entry contracts restart the kind solve. Report its final losses,
   // not the discarded unknown-parameter solve's intermediate escapes.
   const reportLose = onLose, losses = onLose ? [] : null
@@ -3725,8 +3728,59 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     for (const f of funcs) if (f.name.includes(CLASS_T) || f.name.endsWith(ACCESSOR_GET) || f.name.endsWith(ACCESSOR_SET)) unnamed.push(f.name)
     if (classes) for (const e of classes.values()) for (const fn of e.methods.values()) unnamed.push(fn)
     visit(unnamed, name => assignedModule.delete(name))
+    // What the statements leave unassigned may still be assigned before every
+    // read, by the call that runs first (definite.js assignedByCalls): the
+    // solve then checks the host holds none of the program's functions.
+    if (byCalls) {
+      const candidates = new Set()
+      const bareTop = (n) => {
+        if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
+        if (n[0] === 'let') for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && !assignedModule.has(n[i])) candidates.add(n[i])
+        for (let i = 1; i < n.length; i++) bareTop(n[i])
+      }
+      for (const top of tops) bareTop(top)
+      for (const name of hostGlobals) candidates.delete(name)
+      const members = candidates.size ? memberFunctions() : null
+      if (members && !conversions && !IMPLICIT_CALLS.some(name => members.names.has(name))) {
+        const entries = [...unnamed, ...members.accessors]
+        for (const f of funcs) if (exportedNames.has(f.name) || f.sig.dispatcher) entries.push(f.name)
+        const proven = assignedByCalls({ tops, funcs: funcByName, candidates, entries, isBinding: (name) => nameKeys.has(name), userMethods: members.names,
+          onMember: (recv, scope) => { byCallsMembers.push(recv, scope); return true } })
+        for (const name of proven) { assignedModule.add(name); byCallsProven.add(name) }
+      }
+    }
     return assignedModule
   }
+  // The member names under which the program may keep a function (a literal's
+  // keys, a member a store names, a class's methods), and its accessors: what
+  // a property's read or store runs, which no call names. Null where an
+  // accessor is not a closure or a function the walk can follow.
+  const memberFunctions = () => {
+    const names = new Set(), found = []
+    if (accessors) for (const name of accessors.keys()) names.add(name)
+    if (classes) for (const e of classes.values()) for (const m of e.methods.keys()) names.add(m)
+    let open = false
+    const noteMember = (key, value) => {
+      names.add(key)
+      if (!key.endsWith(ACCESSOR_GET) && !key.endsWith(ACCESSOR_SET)) return
+      if (Array.isArray(value) && value[0] === '=>' || typeof value === 'string' && funcByName.has(value)) found.push(value)
+      else open = true
+    }
+    const scan = (n) => {
+      if (!Array.isArray(n) || n[0] === 'str' || n[0] == null) return
+      if (n[0] === ':' && typeof n[1] === 'string') noteMember(n[1], n[2])
+      if (MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && typeof n[1][2] === 'string') noteMember(n[1][2], n[0] === '=' ? n[2] : null)
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    for (const top of tops) scan(top)
+    for (const f of funcs) { scan(f.body); if (f.defaults) for (const d of Object.values(f.defaults)) scan(d) }
+    return open ? null : { names, accessors: found }
+  }
+  // A program function the language calls on its own (a conversion, an
+  // iteration, a thenable's `then`): no call names it, so no walk follows it.
+  // (an iterator's `next` runs only from the `@@iterator` method that returns it)
+  const IMPLICIT_CALLS = ['valueOf', 'toString', 'toLocaleString', 'toJSON', 'then', '@@iterator', '@@asyncIterator', '@@toPrimitive', '@@hasInstance']
+  const byCallsProven = new Set(), byCallsMembers = []   // the declarations proved so, and the receivers [node, scope] of the member calls the proof took for builtins'
   const bare = (name) => {
     if (current === null) return moduleAssigned().has(name) ? K.NONE : ABSENT
     let names = assignedFirst.get(current)
@@ -5354,6 +5408,22 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   queryFacts.scalarValues = scalarValues
   queryFacts.scalarFields = scalarFields
   if (reportLose) for (const loss of losses) reportLose(...loss)
+  // Each member call the proof took for a builtin's has a receiver that holds
+  // none of the program's functions: no object, dictionary or function.
+  const byCallsBuiltins = () => {
+    const owner = bitOf(K.OBJECT) | bitOf(K.HASH) | bitOf(K.CLOSURE) | bitOf(K.DATE) | bitOf(K.REGEX)   // ANY sets every tag
+    for (let i = 0; i < byCallsMembers.length; i += 2) {
+      const node = byCallsMembers[i], at = byCallsMembers[i + 1]
+      const scope = at === null ? MODULE : typeof at === 'string' ? at : closures.get(at)
+      if (scope === undefined) return false
+      const k = queries.at(scope).kindOfExpr(node)
+      if ((k & owner) !== 0 || tagsOf(k) === 0) return false
+    }
+    return true
+  }
+  // A declaration proved assigned by the calls that run first holds only
+  // where the host can call none of the program's functions but its exports.
+  if (byCallsProven.size && (hostClosures.size || !byCallsBuiltins())) return { refuted: true }
   // Data alone, nothing of the solver: `publish` builds the readers over it.
   return {
     facts: queryFacts, unnamedLayouts: [...unnamed.values()],

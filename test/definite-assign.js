@@ -203,6 +203,47 @@ const modules = [
     var G = H
     H = 1
     export let f = (x) => x + (typeof G === 'undefined' ? 5 : G) + H`, 'G', true],
+  // What the statements leave unassigned a function may assign before
+  // anything that reads it runs (summary/definite.js assignedByCalls): a
+  // parser's cursor, read only by what its entry calls after setting it.
+  ['assigned by the call that runs first (a cursor)', `let idx, cur
+    const peek = () => cur.charCodeAt(idx)
+    const skip = () => { idx++ }
+    const lex = () => { let n = 0; while (idx < cur.length) { if (peek() === 32) n++; skip() } return n }
+    const parse = (s) => { idx = 0; cur = s; return lex() }
+    export let f = (x) => parse('a b c') + x`, 'idx', false],
+  ['the cursor\'s text, assigned by the same call', `let idx, cur
+    const lex = () => { let n = 0; while (idx < cur.length) { if (cur.charCodeAt(idx) === 32) n++; idx++ } return n }
+    const parse = (s) => { idx = 0; cur = s; return lex() }
+    export let f = (x) => parse('a b c') + x`, 'cur', false],
+  ['assigned before a closure the module made is called', `let idx
+    const step = [() => idx + 1]
+    export let f = (x) => { idx = x; return step[0]() }`, 'idx', false],
+  ['an export reads it before any assignment', `let idx
+    export let get = () => idx
+    export let f = (x) => { idx = x; return get() }`, 'idx', true],
+  ['a closure made and called through a value before the assignment', `let idx
+    const fns = [() => idx]
+    const first = fns[0]()
+    export let f = (x) => { idx = x; return (first === undefined ? 5 : first) + fns[0]() }`, 'idx', true],
+  ['a builtin calls back a reader before the assignment', `let idx
+    const read = () => idx
+    export let f = (x) => { const r = [1].map(read)[0]; idx = x; return (r === undefined ? 5 : r) + read() }`, 'idx', true],
+  ['a builtin calls back a local reader before the assignment', `let idx
+    export let f = (x) => { const g = (v) => idx; const r = [1].map(g)[0]; idx = x; return (r === undefined ? 5 : r) + g(0) }`, 'idx', true],
+  ['a reader run by call() before the assignment', `let idx
+    function read() { return idx }
+    export let f = (x) => { const r = read.call(null); idx = x; return (r === undefined ? 5 : r) + read() }`, 'idx', true],
+  ['a getter reads it before the assignment', `let idx
+    const o = { get v() { return idx } }
+    export let f = (x) => { const r = o.v; idx = x; return (r === undefined ? 5 : r) + o.v }`, 'idx', true],
+  ['the host keeps a reader', `let idx
+    export let mk = () => () => idx
+    export let f = (x) => { idx = x; return x }`, 'idx', true],
+  ['a method of a value of unknown kind before the assignment', `let idx
+    const box = { read: () => idx }
+    const pick = (o) => o.read()
+    export let f = (x) => { const r = pick(box); idx = x; return (r === undefined ? 5 : r) + pick(box) }`, 'idx', true],
 ]
 
 test('definite assignment: a module declaration assigned on every path holds what was assigned', () => {
@@ -245,9 +286,10 @@ const globals = [
     function t(v) { return v === undefined ? 5 : v }
     export let set = (v) => { H = v | 0 }
     export let f = () => t(H)`, e => e.f(), 'H', 'f64'],
-  ['unassigned module number used after a helper store', `let N
+  // every read follows the helper's store, whatever the host calls first (summary/definite.js assignedByCalls)
+  ['unassigned module number read after a helper store', `let N
     export let init = (k) => { N = k | 0 }
-    export let f = () => { init(4); let s = 0; for (let i = 0; i < N; i++) s += i; return s }`, e => e.f(), 'N', 'f64'],
+    export let f = () => { init(4); let s = 0; for (let i = 0; i < N; i++) s += i; return s }`, e => e.f(), 'N', 'i32'],
   ['declared with its value', `let W = 0
     export let init = (k) => { W = k | 0 }
     export let f = () => { init(4); return W * 2 }`, e => e.f(), 'W', 'i32'],
