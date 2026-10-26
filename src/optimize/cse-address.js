@@ -279,6 +279,25 @@ const PURE_I32_ADDR_OPS = new Set([
   'i32.add', 'i32.sub', 'i32.mul', 'i32.shl', 'i32.shr_s', 'i32.shr_u',
   'i32.and', 'i32.or', 'i32.xor', 'i32.wrap_i64',
 ])
+// The locals of `fn` written once, with an i32 constant (an unrolled loop's
+// per-copy index), and never a parameter.
+function constLocals(fn) {
+  const writes = new Map(), out = new Set()
+  const bodyStart = findBodyStart(fn)
+  const visit = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+      const w = writes.get(n[1])
+      writes.set(n[1], w === undefined && Array.isArray(n[2]) && n[2][0] === 'i32.const' && n[2].length === 2 ? n[2] : null)
+    }
+    for (let i = 1; i < n.length; i++) visit(n[i])
+  }
+  for (let i = bodyStart; i < fn.length; i++) visit(fn[i])
+  for (const [name, w] of writes) if (w) out.add(name)
+  for (let i = 2; i < bodyStart; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'param') out.delete(fn[i][1])
+  return out
+}
+
 // Serialize a pure-i32 subscript to a stable key, accumulating its local deps.
 // Returns null if any leaf isn't a local.get / i32.const / pure-i32 op (a load,
 // call, or global.get could change between sites — not CSE-safe by local tracking).
@@ -298,6 +317,7 @@ function pureI32AddrKey(node, deps) {
 }
 
 export function hoistAddrBase(fn) {
+  const consts = constLocals(fn)
   return regionTrackCSE(fn, {
     matchSite(node) {
       if (node[0] !== 'i32.add' || node.length !== 3) return null
@@ -322,6 +342,11 @@ export function hoistAddrBase(fn) {
       const deps = new Set([baseGet[1]])
       const idxKey = pureI32AddrKey(idx, deps)
       if (idxKey == null) return null
+      // A constant index (an unrolled loop's) makes the address the base plus a
+      // constant, which the memargs take once watr folds it: a hoisted base would
+      // hold the sum in a register, and the access defining it would stay a
+      // statement of its own, ahead of the use it would otherwise be read in.
+      if ([...deps].every(d => d === baseGet[1] || consts.has(d))) return null
       return { key: `${baseGet[1]}|${idxKey}|${shamt ? shamt[1] : 0}`, deps: [...deps] }
     },
     localPrefix: 'ab',

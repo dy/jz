@@ -2935,6 +2935,32 @@ test('param-distinctness: a function returning what it allocates hands each call
   }
 })
 
+test('address CSE: a constant index leaves its address to the accesses', () => {
+  // an unrolled stage's index, a local written once with a constant, is no base worth a local:
+  // the accesses take the constant once watr folds it, and the first stays where it is used
+  const load = (off) => `(f64.load${off ? ` offset=${off}` : ''} (i32.add (local.get $c) (i32.shl (local.get $k) (i32.const 3))))`
+  const src = (k) => `(module (memory (export "m") 1)
+    (func $f (export "f") (param $c i32) (param $j i32) (result f64) (local $k i32)
+      (local.set $k ${k})
+      (f64.add (f64.add ${load(0)} ${load(8)}) ${load(16)})))`
+  const exec = (tree) => {
+    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree)))
+    const mem = new Float64Array(m.exports.m.buffer, 0, 64)
+    for (let i = 0; i < 64; i++) mem[i] = i * 0.5 + 1
+    return m.exports.f(64, 3)
+  }
+  const bases = (k) => {
+    const tree = parseWat(src(k)), fn = findFunc(tree, '$f')
+    walk(fn, n => { if (n[0] === 'i32.const') n[1] = Number(n[1]) })
+    const before = exec(tree)
+    hoistAddrBase(fn)
+    is(exec(tree), before, `${k}: the same sum`)
+    return fn.filter(n => Array.isArray(n) && n[0] === 'local' && /^\$__ab/.test(n[1])).length
+  }
+  is(bases('(i32.const 5)'), 0, 'a constant index hoists no base')
+  is(bases('(local.get $j)'), 1, 'an index the function computes still shares its base')
+})
+
 test('charCodeAt: returns i32 — no f64 widen/truncate of the char code itself', () => {
   // `let c = s.charCodeAt(i)` should leave $c as i32 — no __to_num, no
   // f64.convert_i32_u of the char code. Inspect jz's type decisions before
