@@ -10,7 +10,14 @@
 // all: within ±2^51 the truncation plus 1.5·2^52 holds the integer in its low
 // bits. The same test then guards every other 64-bit truncation, and an element
 // key's exactness test takes the sum's bits as its word.
-// It runs after watr: every pass before reads the exact form.
+// It runs after watr: every pass before reads the exact form. The functions are
+// then whole, with the bodies watr inlined, and their intervals
+// (optimize/int-range.js) bound what a helper's parameter could not: a number
+// within ±2^51 that is never NaN takes the add with no test (a saturating
+// truncation too, where its interval keeps it inside the word), and an integer
+// takes it with no truncation.
+
+import { intRanges } from './int-range.js'
 
 const isArr = Array.isArray
 const isInf = n => isArr(n) && n[0] === 'f64.const' && (n[1] === Infinity || /^\+?inf$/i.test(String(n[1])))
@@ -26,35 +33,58 @@ const exactForm = n => {
   return isArr(x) && (x[0] === 'local.tee' || x[0] === 'local.get') && x[1] === name ? { x, name } : null
 }
 
-const MAGIC = () => ['f64.const', 6755399441055744], NEAR = () => ['f64.const', 2 ** 51]
+const MAGIC = () => ['f64.const', 6755399441055744], NEAR = 2 ** 51
 // the integer of x (|x| < 2^51, no NaN) in its word or its 64 bits, by the add
-const added = (x, w) => {
-  const bits = ['i64.reinterpret_f64', ['f64.add', ['f64.trunc', x], MAGIC()]]
+// (`whole`: x is an integer already, its own truncation)
+const added = (x, w, whole = false) => {
+  const bits = ['i64.reinterpret_f64', ['f64.add', whole ? x : ['f64.trunc', x], MAGIC()]]
   return w === 'i32' ? ['i32.wrap_i64', bits] : ['i64.sub', bits, ['i64.const', '0x4338000000000000']]
 }
-const wideOf = n => isArr(n) && n[0] === 'i32.wrap_i64' && isArr(n[1]) && n[1][0] === 'i64.trunc_sat_f64_s' ? { x: n[1][1], w: 'i32' }
-  : isArr(n) && n[0] === 'i64.trunc_sat_f64_s' ? { x: n[1], w: 'i64' } : null
+// the word or 64 bits a truncation keeps, where `n` is one: [operand slot, width]
+const wideOf = n => isArr(n) && n[0] === 'i32.wrap_i64' && isArr(n[1]) && n[1][0] === 'i64.trunc_sat_f64_s' ? { of: n[1], w: 'i32' }
+  : isArr(n) && n[0] === 'i64.trunc_sat_f64_s' ? { of: n, w: 'i64' } : null
+// the range a saturating truncation keeps inside its word, by its signedness
+const SAT = new Map([['i32.trunc_sat_f64_s', [-(2 ** 31) - 1, 2 ** 31]], ['i32.trunc_sat_f64_u', [-1, 2 ** 32]]])
+// a number never NaN strictly inside (lo, hi)
+const inside = (v, lo, hi) => !!v && !v.nan && v.lo > lo && v.hi < hi
 
-const lower = (n, add, temp) => {
+/** Lower `n`'s conversions; `s` is { add, temp, at } (`at`: the operand's interval or null). */
+const lower = (n, s) => {
   if (!isArr(n)) return n
   const f = exactForm(n)
   if (f) {
+    const v = s.at(f.x)
+    if (f.x[0] === 'local.tee') f.x[2] = lower(f.x[2], s)
+    if (inside(v, -NEAR, NEAR)) return s.add ? added(f.x, 'i32', v.int) : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', f.x]]
     const get = () => ['local.get', f.name]
     // (new nodes throughout: the form may be shared, and its other reader keeps its tee)
-    return ['if', ['result', 'i32'], ['f64.lt', ['f64.abs', f.x], add ? NEAR() : ['f64.const', 2147483648]],
-      ['then', add ? added(get(), 'i32') : ['i32.trunc_sat_f64_s', get()]],
+    return ['if', ['result', 'i32'], ['f64.lt', ['f64.abs', f.x], ['f64.const', s.add ? NEAR : 2147483648]],
+      ['then', s.add ? added(get(), 'i32', v?.int) : ['i32.trunc_sat_f64_s', get()]],
       ['else', ['select', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]], ['i32.const', 0], ['f64.ne', get(), ['f64.const', Infinity]]]]]
   }
-  for (let i = 0; i < n.length; i++) n[i] = lower(n[i], add, temp)
-  // Any other 64-bit truncation, with `add`: the add where |x| < 2^51, the
-  // truncation itself past it (NaN fails the test and truncates to zero there).
-  const wide = add && wideOf(n)
-  if (!wide) return n
-  const t = isArr(wide.x) && (wide.x[0] === 'local.get' || wide.x[0] === 'local.tee') ? wide.x[1] : temp()
-  const get = () => ['local.get', t], first = isArr(wide.x) && wide.x[0] === 'local.get' ? wide.x : ['local.tee', t, wide.x[0] === 'local.tee' ? wide.x[2] : wide.x]
-  return ['if', ['result', wide.w], ['f64.lt', ['f64.abs', first], NEAR()],
-    ['then', added(get(), wide.w)],
-    ['else', wide.w === 'i32' ? ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]] : ['i64.trunc_sat_f64_s', get()]]]
+  // A 64-bit truncation, or the word of one, with `add`: the add where its
+  // interval keeps it within ±2^51, else the add where a test finds it there and
+  // the truncation itself past it (NaN fails the test and truncates to zero there).
+  const wide = s.add && wideOf(n)
+  if (wide) {
+    const v = s.at(wide.of[1])
+    const x = wide.of[1] = lower(wide.of[1], s)
+    if (inside(v, -NEAR, NEAR)) return added(x, wide.w, v.int)
+    const t = isArr(x) && (x[0] === 'local.get' || x[0] === 'local.tee') ? x[1] : s.temp()
+    const get = () => ['local.get', t], first = isArr(x) && x[0] === 'local.get' ? x : ['local.tee', t, x[0] === 'local.tee' ? x[2] : x]
+    return ['if', ['result', wide.w], ['f64.lt', ['f64.abs', first], ['f64.const', NEAR]],
+      ['then', added(get(), wide.w, v?.int)],
+      ['else', wide.w === 'i32' ? ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]] : ['i64.trunc_sat_f64_s', get()]]]
+  }
+  // A saturating truncation whose interval stays inside the word saturates nowhere: the add.
+  const sat = s.add && SAT.get(n[0])
+  if (sat && n.length === 2) {
+    const v = s.at(n[1])
+    n[1] = lower(n[1], s)
+    return inside(v, sat[0], sat[1]) ? added(n[1], 'i32', v.int) : n
+  }
+  for (let i = 0; i < n.length; i++) n[i] = lower(n[i], s)
+  return n
 }
 
 // An element key's test, as keyIndex writes it: the key is an i32 integer
@@ -99,16 +129,27 @@ const exactKeys = fn => {
     t.holder[t.at] = ['i32.wrap_i64', ['i64.reinterpret_f64', ['f64.add', t.x, MAGIC()]]]
 }
 
+// Whether `n` holds a conversion the lowering rewrites.
+const converts = (n, add) => isArr(n) && (exactForm(n) != null || (add && (wideOf(n) != null || (SAT.has(n[0]) && n.length === 2))) || n.some(c => converts(c, add)))
+
 /** Guard each exact ToInt32 of `module`'s functions with the 32-bit path (`add`:
- *  the conversion-free one, which also answers each element key's test). */
+ *  the conversion-free one, which also answers each element key's test), and
+ *  take the add with no test wherever the function's intervals bound the number. */
 export function guardToInt32(module, add = false) {
   for (const node of module) if (isArr(node) && node[0] === 'func') {
-    if (add) exactKeys(node)
     let k = 0, at = 2
-    const decls = []
     while (isArr(node[at]) && (node[at][0] === 'export' || node[at][0] === 'type' || node[at][0] === 'param' || node[at][0] === 'result' || node[at][0] === 'local')) at++
+    let body = false
+    for (let i = at; i < node.length && !body; i++) body = converts(node[i], add)
+    if (!body) continue
+    // (read before any rewrite: the intervals key the nodes the walk visited)
+    const facts = intRanges(node, at)
+    const av = facts?.av
+    if (add) exactKeys(node)
+    const decls = []
     const temp = () => { const name = `$__w64_${k++}`; decls.push(['local', name, 'f64']); return name }
-    for (let i = at; i < node.length; i++) node[i] = lower(node[i], add, temp)
+    const s = { add, temp, at: x => av?.get(x) ?? null }
+    for (let i = at; i < node.length; i++) node[i] = lower(node[i], s)
     node.splice(at, 0, ...decls)
   }
   return module

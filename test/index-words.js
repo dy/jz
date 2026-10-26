@@ -6,6 +6,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
+import compileWat from 'watr/compile'
+import { guardToInt32 } from '../src/optimize/to-int32.js'
 import jz from '../index.js'
 import { levels } from './_matrix.js'
 import { funcWat, oracle, wat } from './util.js'
@@ -105,6 +107,35 @@ test('index words: words by the add answer at every edge', () => {
       for (const y of [0, -3, x | 0]) is(got.spiral(x | 0, y), host.spiral(x | 0, y), `O${optimize} spiral ${x | 0}, ${y}`)
     }
   }
+})
+
+// After watr the lowering reads each function's intervals (optimize/to-int32.js): a
+// number they keep within ±2^51 and never NaN takes the add with no magnitude test,
+// an integer takes it with no truncation, and a saturating truncation they keep
+// inside the word takes it too. What they leave open keeps the test.
+test('index words: a bounded ToInt32 after watr takes the add with no test', () => {
+  const src = `(module (func $f (export "f") (param $x f64) (result i32) (local $t f64) (local $i i32) (local $s i32)
+    (block $out (loop $l
+      (br_if $out (i32.ge_s (local.get $i) (i32.const 96)))
+      (local.set $s (i32.add (local.get $s)
+        (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.tee $t (f64.add (f64.floor (f64.mul (f64.convert_i32_s (local.get $i)) (f64.const 0.13))) (f64.const 71)))))
+          (i32.const 0) (f64.ne (local.get $t) (f64.const inf)))))
+      (local.set $s (i32.add (local.get $s) (i32.trunc_sat_f64_s (f64.mul (f64.convert_i32_s (local.get $i)) (f64.const -2.5)))))
+      (local.set $s (i32.xor (local.get $s)
+        (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.tee $t (f64.add (local.get $x) (f64.convert_i32_s (local.get $i))))))
+          (i32.const 0) (f64.ne (local.get $t) (f64.const inf)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (local.get $s)))`
+  const before = new WebAssembly.Instance(new WebAssembly.Module(compileWat(parseWat(src)))).exports.f
+  const ir = guardToInt32(parseWat(src), true)
+  const text = JSON.stringify(ir)
+  is((text.match(/"f64\.abs"/g) || []).length, 1, 'only the unbounded number keeps its magnitude test')
+  is((text.match(/6755399441055744/g) || []).length, 3, 'the two bounded ones take the add, as does the tested one')
+  is((text.match(/"f64\.trunc"/g) || []).length, 2, 'the floor plus 71 takes it with no truncation')
+  ok(!/i32\.trunc_sat_f64_s/.test(text), 'the saturating truncation the interval keeps in the word is the add')
+  const after = new WebAssembly.Instance(new WebAssembly.Module(compileWat(ir))).exports.f
+  for (const x of EDGES) is(after(x), before(x), `f(${x})`)
 })
 
 // A module bound the loop also reads past its test (`f[k * n + c]` under

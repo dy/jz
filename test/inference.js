@@ -1601,14 +1601,13 @@ test('bare-escape scan: Math.imul multi-arg list passes idx-mode through its com
     export let f = (n) => { const comp = new Uint8Array(n); sieve(comp); return comp[0] }
   `
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
-  const truncCount = (wat.match(/trunc_sat|i32\.wrap/g) || []).length
-  // Absolute ratchet (perf-ratchet.js's own style): 21 trunc/wrap ops measured
-  // at the fix (WAT-byte-identical to the pre-28b2530b compiler); 34 at the
-  // regression (loop-square's `i` blamed post-rewrite, widened to f64,
-  // reintroducing a trunc_sat/wrap pair per inner-loop iteration). Margin to
-  // 25 tolerates unrelated future codegen drift without masking a return of
-  // this exact class.
-  ok(truncCount <= 25, `sieve kernel's i*i-guarded index chain must stay i32 (got ${truncCount} trunc_sat/i32.wrap ops, expected <=25 — the fixed compiler measures 21, the false-positive regression measures 34)`)
+  // Absolute ratchet (perf-ratchet.js's own style), in crossings from a number to
+  // its word whatever lowering takes them (foldWords): 4 at the fix; 8 where `i`
+  // is widened to f64 (measured with `loopSquare: false`, the shape of the
+  // regression, where loop-square's `i` was blamed post-rewrite and a truncation
+  // returned per inner-loop iteration: 21 against 34 trunc/wrap tokens then).
+  const words = (foldWords(wat).match(/\(word /g) || []).length
+  ok(words <= 5, `sieve kernel's i*i-guarded index chain must stay i32 (got ${words} number-to-word crossings, expected <=5; the fixed compiler measures 4, a widened i 8)`)
 })
 
 // MODULE-GLOBAL SIBLING (fixed 2026-08-03, .work/archive/todo.md's own follow-up

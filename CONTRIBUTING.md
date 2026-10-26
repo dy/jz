@@ -4224,7 +4224,16 @@ key's exactness test (`convert(word) == key`) takes the sum's low bits as its
 word. `bench/lowering.mjs`, printed by examples-perf on each target: x64 4.1
 ns wide against 1.0 added, arm64 0.82 against 0.93, Apple M1 0.73 against
 0.81; the gallery on x64 went from 39 to 44 of 65 pages ahead of JS, arm64
-from 45 to 46. An unproven value keeps the guarded select. The range
+from 45 to 46. An unproven value keeps the guarded select. After watr the
+lowering (`optimize/to-int32.js`) reads each function's intervals again, its
+inlined bodies now inside their callers' loops: a number they keep within
+±2^51 and never NaN takes the add with no test, an integer takes it with no
+truncation, and a saturating truncation they keep inside the word takes it
+too. Per conversion, the add costs 1.41 ns on a Xeon 8370C against 2.30 for
+`i32.trunc_sat_f64_s` and 1.77 for the guarded add, 0.98 / 1.51 / 1.52 on an
+EPYC 7763, 0.94 / 1.11 / 1.30 on a Neoverse-N2 and 0.40 / 0.49 / 0.52 on an
+Apple M4, so the speed tier takes the add over the 32-bit truncation wherever an
+interval allows it. The range
 is flow-sensitive (`optimize/flow-range.js`): a comparison bounds the local in
 the arm it guards, the arms hull at their join, and a loop's written locals
 are unknown at its head, so a clamp (`if (v > K) v = K; else if (v < L) v = L`)
