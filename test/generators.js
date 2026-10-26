@@ -634,6 +634,24 @@ test('generators: yield* of a module generator call takes the protocol only', ()
   return agreeAll(src)
 })
 
+// `using` in a generator body disposes its resource when the rest of its
+// block leaves, however it leaves: done, a break of the consuming loop
+// (return() at a yield), a continue, an exception; resources last first, a
+// missing dispose method a TypeError, a function declared after it hoisted.
+test('generators: using disposes across yields', () => agreeAll(`
+  const log = []
+  const res = (n) => ({ n, [Symbol.dispose]() { log.push('d' + n) } })
+  function* top() { using a = res(1); yield 'x'; using b = res(2), c = res(3); yield 'y' }
+  function* blk() { { using a = res(1); yield 'x' } log.push('after'); yield h(); function h() { return 'h' } }
+  function* loop() { for (let i = 0; i < 3; i++) { using r = res(i); if (i === 1) continue; yield r.n } }
+  function* caught() { using a = res(1); try { yield 1 } catch (e) { log.push('c' + e) } yield 2 }
+  function* bare() { using a = { n: 1 }; yield 1 }
+  const run = (it) => { for (const v of it) log.push(v) }
+  export let done = () => { log.length = 0; run(top()); run(blk()); run(loop()); return log.join() }
+  export let early = () => { log.length = 0; for (const v of top()) { log.push(v); break } return log.join() }
+  export let thrown = () => { log.length = 0; const it = caught(); it.next(); it.throw('x'); it.next(); it.next(); return log.join() }
+  export let missing = () => { try { [...bare()]; return 'no' } catch (e) { return e instanceof TypeError } }`))
+
 // An optional chain whose base is nullish skips a yield in its rest.
 test('generators: an optional chain skips a yield after a nullish base', () => agreeAll(`
   function* g(a) { const r = a?.f(yield 1); yield r }

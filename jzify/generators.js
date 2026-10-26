@@ -501,7 +501,29 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     }
     return { fns, rest }
   }
-  const flatList = (stmts) => { const { fns, rest } = declarations(stmts.map(st => prepared(st))); return [...fns, ...rest] }
+  // `using x = r` binds r and reads its [Symbol.dispose] method, a TypeError
+  // unless a present resource has one, and runs the rest of its list in a try
+  // whose finally calls it, as transform.js lowerUsing does where a list
+  // lowers whole: the machine runs that finally however the rest leaves, a
+  // return() at a yield in it too. Resources dispose last first.
+  const usingList = (stmts) => {
+    const i = stmts.findIndex(st => Array.isArray(st) && st[0] === 'using')
+    if (i < 0) return stmts
+    const nul = () => [null, null], decls = stmts[i].slice(1)
+    let rest = usingList(stmts.slice(i + 1))
+    for (let k = decls.length - 1; k >= 0; k--) {
+      const [, name, init] = decls[k], method = genTemp('dsp')
+      rest = [
+        withLoc(['let', ['=', name, init]], stmts[i]),
+        ['let', ['=', method, ['?', ['!=', name, nul()], ['.', name, '@@dispose'], nul()]]],
+        ['if', ['&&', ['!=', name, nul()], ['!==', ['typeof', method], [null, 'function']]],
+          ['throw', ['new', ['()', 'TypeError', [null, 'using: value has no [Symbol.dispose]() method']]]]],
+        ['try', ['{}', [';', ...rest]], ['finally', ['{}', [';', ['if', ['!=', name, nul()], ['()', ['.', method, 'call'], name]]]]]],
+      ]
+    }
+    return [...stmts.slice(0, i), ...rest]
+  }
+  const flatList = (stmts) => { const { fns, rest } = declarations(stmts.map(st => prepared(st))); return [...fns, ...usingList(rest)] }
   // the body as the machine splits it: its lists' declarations bound, its
   // decomposed for-of and for-in loops desugared
   const prepared = (st, labels = null) => withLoc(preparedAt(st, labels), st)

@@ -565,6 +565,16 @@ test('async: a call reads its callee before an await in its arguments', async ()
     }`)
 })
 
+// `using` in an async body disposes its resource after the awaits of the rest
+// of its block, a rejection's too.
+test('async: using disposes across awaits', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`const log = []
+    const res = async (n) => ({ n, [Symbol.dispose]() { log.push('d' + n) } })
+    const fail = async () => { using a = await res(1); await null; throw 'e' }
+    export async function f() { { using a = await res(4); log.push(a.n); await null } log.push('after'); try { await fail() } catch (e) { log.push(e) } return log.join() }`)
+})
+
 // A class in an async body lowers in the body's scope, as in any function.
 test('async: a class in the body reads its bindings', async () => {
   if (onWasi() || onKernel()) return

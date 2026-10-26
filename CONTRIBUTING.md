@@ -3575,7 +3575,10 @@ and a for-of head's too; one whose default or computed key suspends runs
 the steps ECMA-262 takes (`patternSteps`: keys read in turn, an iterator
 stepped and closed). A list the machine flattens binds its function
 declarations as constants at its start, a switch case's before the switch,
-and its class declarations as `let`s where they stand (`declarations`). The
+and its class declarations as `let`s where they stand (`declarations`); a
+`using` binds its resource and runs the rest of its list in a try whose
+finally disposes it (`usingList`, as transform.js `lowerUsing` does for a
+list it lowers whole), so a return() at a yield disposes too. The
 states lower in the machine's own lexical scope (jzify/index.js
 `enterMachineScope`), a child of the function's with every binding the
 machine hoists, under which the nodes `resolveLocals` copied are scoped
