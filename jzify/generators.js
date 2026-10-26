@@ -655,12 +655,15 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     // reads of it (`__iter_arr`: an array live, a string's code points, a
     // Map's entries, a Set's values), as an iterator with no throw() or
     // return() (the fork mirrors desugarForOfProtocol; both arms decompose
-    // like any generator-body loop).
+    // like any generator-body loop). A module generator's call in a generator
+    // is its own iterator: the protocol loop alone, as for-of over one
+    // (desugarForOfGenerator).
     const desugarYieldStar = (expr, target) => {
+      const known = !agen && Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string' && isGenerator?.(expr[1])
       // the source copies before the @@iterator() unwrap — single-assignment
       // locals keep the probe reads on the precise kind.
       const local = (t) => { const name = genTemp(t); locals.add(name); return name }
-      const src = local('yv'), it = local('yi'), r = local('yr'), sent = local('ys'), ix = local('yx'), kind = local('yk'), list = local('yl')
+      const src = known ? null : local('yv'), it = local('yi'), r = local('yr'), sent = local('ys'), ix = known ? null : local('yx'), kind = local('yk'), list = known ? null : local('yl')
       // an async generator's awaited value
       const value = agen ? local('yw') : null
       const NULL = [null, null]
@@ -672,6 +675,29 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       const returns = (v) => agen ? [['=', value, ['await', v]], ['return', value]] : [['return', v]]
       const call = (name, args) => ['=', r, settled(['()', ['.', it, name], args])]
       const noThrow = () => typeError("The iterator does not provide a 'throw' method")
+      const protocol = ['{}', [';',
+        ['=', kind, [null, 0]],
+        ['=', sent, [null, undefined]],
+        ['while', [null, true], ['{}', [';',
+          ['if', ['===', kind, [null, 0]], call('next', sent),
+            ['if', ['===', kind, [null, 1]], ['{}', [';',
+              // IteratorClose before the TypeError: return()'s own error stands
+              ['if', ['==', ['.', it, 'throw'], NULL], ['{}', [';',
+                ['if', ['!=', ['.', it, 'return'], NULL], ['{}', [';', call('return', null),
+                  ['if', notObject(), typeError('iterator return result is not an object')]]]],
+                noThrow()]]],
+              call('throw', sent)]],
+            ['{}', [';',
+              ['if', ['==', ['.', it, 'return'], NULL], ['{}', [';', ...returns(sent)]]],
+              call('return', sent)]]]],
+          ['if', notObject(), typeError('iterator result is not an object')],
+          ['if', ['.', r, 'done'], ['{}', [';', ['if', ['===', kind, [null, 2]], ['return', ['.', r, 'value']]], ['break']]]],
+          ['=', kind, [null, 0]],
+          ['=', sent, ['yield', ['.', r, 'value'], kind]],
+        ]]],
+        ...(target ? [['=', target, ['.', r, 'value']]] : []),
+      ]]
+      if (known) return ['{}', [';', ['=', it, expr], protocol]]
       const has = (key) => ['&&', ['!=', src, NULL], ['!=', ['.', src, key], NULL]]
       const syncIterator = ['()', probe(src, '@@iterator'), null]
       return ['{}', [';',
@@ -682,28 +708,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
             ['if', has('@@iterator'), ['=', it, ['()', '__ag_from', syncIterator]]]]
           : ['if', has('@@iterator'), ['=', it, syncIterator]],
         ['if', ['&&', ['!=', it, NULL], ['!=', ['.', it, 'next'], NULL]],
-          ['{}', [';',
-            ['=', kind, [null, 0]],
-            ['=', sent, [null, undefined]],
-            ['while', [null, true], ['{}', [';',
-              ['if', ['===', kind, [null, 0]], call('next', sent),
-                ['if', ['===', kind, [null, 1]], ['{}', [';',
-                  // IteratorClose before the TypeError: return()'s own error stands
-                  ['if', ['==', ['.', it, 'throw'], NULL], ['{}', [';',
-                    ['if', ['!=', ['.', it, 'return'], NULL], ['{}', [';', call('return', null),
-                      ['if', notObject(), typeError('iterator return result is not an object')]]]],
-                    noThrow()]]],
-                  call('throw', sent)]],
-                ['{}', [';',
-                  ['if', ['==', ['.', it, 'return'], NULL], ['{}', [';', ...returns(sent)]]],
-                  call('return', sent)]]]],
-              ['if', notObject(), typeError('iterator result is not an object')],
-              ['if', ['.', r, 'done'], ['{}', [';', ['if', ['===', kind, [null, 2]], ['return', ['.', r, 'value']]], ['break']]]],
-              ['=', kind, [null, 0]],
-              ['=', sent, ['yield', ['.', r, 'value'], kind]],
-            ]]],
-            ...(target ? [['=', target, ['.', r, 'value']]] : []),
-          ]],
+          protocol,
           ['{}', [';',
             ['=', list, ['()', '__iter_arr', it]],
             ['=', ix, [null, 0]],

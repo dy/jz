@@ -3500,7 +3500,8 @@ with a finally records where its finally continues (a state, or a pending
 exception), so a return, break or continue crosses every finally between it and
 its target, and return() at a suspended yield enters the same route.
 A yield* is a loop over its delegate (`desugarYieldStar`), one without the
-protocol over what a for-of reads of it (`__iter_arr`), whose yield takes
+protocol over what a for-of reads of it (`__iter_arr`), a module
+generator's call (`isGenerator`) over its protocol alone, whose yield takes
 the completion that arrives there as data: its `['yield', E, kind]` resume
 sets `kind` (0 next, 1 throw, 2 return) where throw() and return() find it,
 and the loop calls the delegate's next(), throw() or return(), a delegate

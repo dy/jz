@@ -621,6 +621,19 @@ test('generators: a class in the body reads its bindings', () => agreeAll(`
   function* nested() { for (let i = 0; i < 2; i++) { const inner = function* () { yield new (class { v() { return i } })().v() }; yield* inner() } }
   export let classes = () => [...loop(), ...declared(), ...param(4), ...block(), ...nested()].join()`))
 
+// A yield* of a module generator's call delegates through its protocol alone:
+// no arm reads the delegate as a collection (a string's code points), and the
+// delegation answers next(), return() and throw() as before.
+test('generators: yield* of a module generator call takes the protocol only', () => {
+  const src = `function* h() { try { yield 1; yield 2 } finally { log.push('fin') } return 3 }
+  const log = []
+  function* g() { const r = yield* h(); yield r }
+  export let all = () => [...g()].join()
+  export let early = () => { const it = g(); it.next(); log.length = 0; const r = it.return(7); return JSON.stringify(r) + log.join() }`
+  for (const optimize of [2, 'size']) is(/\$__str_points\b/.test(jz.compile(src, { wat: true, optimize })), false, `O${optimize}: no indexed arm`)
+  return agreeAll(src)
+})
+
 // An optional chain whose base is nullish skips a yield in its rest.
 test('generators: an optional chain skips a yield after a nullish base', () => agreeAll(`
   function* g(a) { const r = a?.f(yield 1); yield r }
