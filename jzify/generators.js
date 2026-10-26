@@ -158,7 +158,7 @@ export const labeled = (labels, loop) => labels ? labels.reduceRight((l, name) =
 // receiver) or tests `instanceof Iterator`; generator objects then mint
 // through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
-export function createGeneratorLowering({ transform, transformParams, err, generatorNames, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterMachineScope, leaveBuiltinScope }) {
+export function createGeneratorLowering({ transform, transformParams, err, isGenerator, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterMachineScope, leaveBuiltinScope }) {
   // ---- the body's bindings, resolved ----
   // The machine hoists every declaration of its body into the factory scope,
   // where all its states see it, so each takes a spelling of its own: a
@@ -474,7 +474,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
   const eachLoop = (st, labels) => {
     const [, [kind, decl, src], body] = st
     const inner = ['{}', [';', ...bodyStmts(body)]]
-    if (kind === 'of' && Array.isArray(src) && src[0] === '()' && typeof src[1] === 'string' && generatorNames?.has(src[1]))
+    if (kind === 'of' && Array.isArray(src) && src[0] === '()' && typeof src[1] === 'string' && isGenerator?.(src[1]))
       return desugarForOfGenerator(decl, src, inner, genTemp, labels)
     if (kind === 'of' && iterProto?.on) return desugarForOfProtocol(decl, src, inner, genTemp, labels)
     const list = genTemp(kind === 'in' ? 'fk' : 'fa'), i = genTemp('fx'), key = genTemp('fn')
@@ -546,9 +546,13 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
 
     // the root list binds its function declarations up front: the machine
     // assigns hoisted locals before dispatch reaches any user statement, so a
-    // call before the declaration works
-    body.splice(0, body.length, ...flatList(body))
-    body.splice(0, body.length, ...resolveLocals(body, [...new Set(extractParams(params).flatMap(patternNames))]))
+    // call before the declaration works. The body prepares in a scope of the
+    // names it binds as written: a call of one is no module generator's.
+    const written = enterMachineScope?.(owners, body, false)
+    try {
+      body.splice(0, body.length, ...flatList(body))
+      body.splice(0, body.length, ...resolveLocals(body, [...new Set(extractParams(params).flatMap(patternNames))]))
+    } finally { if (enterMachineScope) leaveBuiltinScope(written) }
     const locals = new Set()
     for (const st of body) collectLocals(st, locals)
 
@@ -1196,7 +1200,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       stages.unshift({ h: helper, args: cur[2] == null ? [] : (Array.isArray(cur[2]) && cur[2][0] === ',' ? cur[2].slice(1) : [cur[2]]) })
       cur = cur[1][1]
     }
-    if (!(Array.isArray(cur) && cur[0] === '()' && typeof cur[1] === 'string' && generatorNames?.has(cur[1]))) return null
+    if (!(Array.isArray(cur) && cur[0] === '()' && typeof cur[1] === 'string' && isGenerator?.(cur[1]))) return null
     return { root: cur, stages }
   }
 
@@ -1318,7 +1322,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
   const closeGenerator = (it) => [['()', ['.', it, 'return'], null]]
   const abortGenerator = (it, temp) => [['try', ['{}', [';', ...closeGenerator(it)]], ['catch', temp('gq'), ['{}', null]]]]
   const closesGenerator = (call) => !(Array.isArray(call) && call[0] === '()' && typeof call[1] === 'string' &&
-    generatorNames?.has(call[1]) && !generatorCloses?.has(call[1]))
+    isGenerator?.(call[1]) && !generatorCloses?.has(call[1]))
 
   // `while (true)` pulling the generator `it` into `r` at the TOP, then `body`:
   // a stage or user `continue` must advance to the NEXT item, where a tail pull

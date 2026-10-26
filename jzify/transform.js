@@ -645,7 +645,7 @@ export function createTransform(opts) {
       // object is plain closures + a fixed-shape result record).
       if (_gen && Array.isArray(head) && head[0] === 'of' &&
           Array.isArray(head[2]) && head[2][0] === '()' &&
-          typeof head[2][1] === 'string' && _gen.generatorNames.has(head[2][1]))
+          typeof head[2][1] === 'string' && _gen.isGenerator(head[2][1]))
         return transform(_gen.desugarForOfGenerator(head[1], transform(head[2]), body, names.genTemp))
       // for-of over an iterator-HELPER CHAIN rooted at a known generator call
       // → one fused while-next loop (map/filter/take/drop compose in place).

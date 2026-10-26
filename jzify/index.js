@@ -229,8 +229,9 @@ const buildBuiltinScopes = root => {
 // resolveLocals (jzify/generators.js) hoists each binding of its blocks there,
 // spelled apart. Its states lower in that scope, a child of the function's
 // own (the first of `owners` scoped) with every binding the machine hoists,
-// the nodes the machine copied scoped under it.
-const enterMachineScope = (owners, stmts) => {
+// the nodes the machine copied scoped under it (`copies`; a body not yet
+// spelled apart declares its names as written, and scopes nothing).
+const enterMachineScope = (owners, stmts, copies = true) => {
   const { childScope, declarations, vars, visit } = scopeBuilder(builtinScopes)
   let parent = activeBuiltinScope
   for (const n of owners) if (Array.isArray(n) && builtinScopes.has(n)) { parent = builtinScopes.get(n); break }
@@ -250,7 +251,7 @@ const enterMachineScope = (owners, stmts) => {
   const list = [';', ...stmts]
   hoist(list)
   vars(list, machine)
-  for (const st of stmts) visit(st, machine)
+  if (copies) for (const st of stmts) visit(st, machine)
   const prior = activeBuiltinScope
   activeBuiltinScope = machine
   return prior
@@ -283,6 +284,8 @@ const constStrings = new Map()
 const generatorNames = new Set()
 // the ones whose return() runs code (closesOnReturn): loops over them close
 const generatorCloses = new Set()
+// A call of `name` calls the module's generator declaration: no nearer scope binds the name.
+const isGenerator = (name) => generatorNames.has(name) && !classBindingScope(name)?.parent
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
 // programs without iterator producers compile byte-identically.
@@ -296,8 +299,8 @@ const iterProto = { on: false, helpers: false, program: false, programHelpers: f
 const ctorUse = { on: false, program: false }
 const genErr = (msg) => err('jzify: ' + msg)
 const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterMachineScope, leaveBuiltinScope })
-bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, isGenerator, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterMachineScope, leaveBuiltinScope })
+bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, isGenerator, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
 

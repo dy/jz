@@ -621,6 +621,19 @@ test('generators: a class in the body reads its bindings', () => agreeAll(`
   function* nested() { for (let i = 0; i < 2; i++) { const inner = function* () { yield new (class { v() { return i } })().v() }; yield* inner() } }
   export let classes = () => [...loop(), ...declared(), ...param(4), ...block(), ...nested()].join()`))
 
+// A call of a name that shadows a module generator calls what the name binds
+// (a parameter, an inner declaration, a catch parameter, a binding of a
+// generator body's block): for-of, a spread and yield* iterate its value.
+test('generators: a name shadowing a module generator calls its own binding', () => agreeAll(`
+  function* h() { yield 9 }
+  const k = (h) => { let s = ''; for (const v of h()) s += v; return s + [...h()].join() }
+  function* g(h) { for (const v of h()) yield v; yield* h() }
+  function* blk() { { const h = () => 'b'; for (const v of h()) yield v } for (const v of h()) yield v }
+  export let param = () => k(() => [1, 2]) + '|' + [...g(() => 'xy')].join() + '|' + [...blk()].join()
+  export let inner = () => { function h() { return [3, 4] } let s = 0; for (const v of h()) s += v; return s }
+  export let caught = () => { try { throw () => [5] } catch (h) { let s = 0; for (const v of h()) s += v; return s } }
+  export let own = () => [...h()].join()`))
+
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,
 // a continue and an exception from next() close nothing; the body's exception

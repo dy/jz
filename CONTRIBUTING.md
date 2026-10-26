@@ -3482,7 +3482,11 @@ called with `.call`, it cost webaudio its specializations and 2.3–2.7× its ti
 (2026-10-25), so a getter on `return` runs twice. A loop over a known generator whose
 return() runs no code (no finally, `using`, yield* or suspended for-of:
 `closesOnReturn`) needs no close. Fused helper loops, `take`'s limit and
-`for await` in an async function close too.
+`for await` in an async function close too. A known generator call calls a
+module generator declaration by a name no nearer scope binds (`isGenerator`,
+jzify/index.js; a generator body prepares in a scope of the names it binds
+as written): a parameter, a local or a catch parameter of its name is called
+for what it holds.
 In a generator or async body a for-of or for-in the machine splits desugars
 first (`eachLoop`, jzify/generators.js): over a known generator call, or in
 a program that mints iterators through the protocol fork above, closing as
