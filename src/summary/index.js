@@ -2629,7 +2629,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // closure its shapes hold under the name, as a read of it answers (`member`).
     if (dictOrObject(recv)) {
       const fk = member('.', recv, name)
-      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) {
+        // The primitives beside the shape answer with their own builtin (a string's `toUpperCase`).
+        let r = merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
+        for (const tag of PRIMITIVE_TAGS) if (hasTag(recv, tag)) r = merge(r, method(kind(tag), name, base, n, node))
+        return r
+      }
     }
     // A proven builtin receiver still permits an own data property to shadow
     // its prototype method. The packed summary does not retain per-instance

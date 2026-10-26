@@ -49,6 +49,10 @@ const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'add', 'delete'])
 // It must fall through to dynamic dispatch, mirroring COLLECTION_METHODS' arity guard.
 const STR_INDEX_METHODS = new Set(['charCodeAt', 'charAt'])
 const strIndexSurplus = (method, parsed) => STR_INDEX_METHODS.has(method) && !parsed.hasSpread && parsed.normal.length > 1
+// Whether some object of the program may own a member of the name: a store
+// the summary saw, a builtin's own property, a layout's field.
+const ownMemberPossible = method => ctx.summary?.memberMayBeOwn(method) ||
+  ctx.summary?.builtinMemberMayBeOwn(method) || ctx.schema.list.some(schema => schema.includes(method))
 // Whether the summary lets `obj` hold a value of `tag` (unknown: it may).
 const mayBeKind = (obj, tag) => { const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(obj); return k == null || hasTag(k, tag) }
 
@@ -477,9 +481,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     const canShadowProbe = genEmitter && ctx.closure.call && ctx.core.emit.str
     // The core stub can only miss. When this program actually defines such an
     // own method, load the real schema/sidecar lookup before stdlib linking.
-    const ownMethodPossible = ctx.summary?.memberMayBeOwn(method) ||
-      ctx.summary?.builtinMemberMayBeOwn(method) ||
-      ctx.schema.list.some(schema => schema.includes(method))
+    const ownMethodPossible = ownMemberPossible(method)
     if (canShadowProbe && ownMethodPossible) includeModule('collection')
     const missing = optional ? undefExpr() : emitNonCallable(undefExpr(), parsed)
     // Object-prototype emitters accept every non-null receiver, including
@@ -712,7 +714,9 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
       // A known builtin receiver normally takes this generic emitter directly,
       // but an observed own-property write requires the same sidecar lookup as
       // an unknown receiver. Ensure the real lookup replaces the core miss stub.
-      if (knownOwnShadow) includeModule('collection')
+      // The core stub can only miss: where some object may own the member (a
+      // layout's field as well), the real lookup answers the probe.
+      if (knownOwnShadow || ownMemberPossible(method)) includeModule('collection')
       // HOISTED override probe: for a stable module-global receiver (the same
       // proof as charCodeAt shape-1b — never assigned in this function, and the
       // body's only calls are .charCodeAt, so nothing that runs here can change

@@ -184,6 +184,9 @@ export function methodValType(method, obj, objType, ctx) {
       (objType === VAL.ARRAY || objType === VAL.TYPED || objType === VAL.MAP ||
        objType === VAL.SET || objType === VAL.REGEX || objType === VAL.CLOSURE ||
        objType === VAL.OBJECT || objType === VAL.HASH)) return null
+  // A receiver of no known kind may be an object of the program that owns the member.
+  if (obj != null && objType == null && ctx?.summary && (ctx.summary.memberMayBeOwn(method) ||
+      ctx.schema.list.some(s => s?.includes(method) || s?.includes(method + ACCESSOR_GET)))) return null
   // Element-returning typed methods inherit the receiver's storage domain.
   // In particular BigInt64Array#at yields raw i64 BigInt bits; classifying it
   // as unknown/Number sends Number(at(...)) through the NaN-box decoder and

@@ -1550,6 +1550,24 @@ test('untyped receiver: a dot read through a value of no single kind links its d
   for (const optimize of levels(0, 2, 'size')) is(jz(src, { optimize }).exports.f(1), 5, `O${optimize}`)
 })
 
+// A builtin's name says nothing of a receiver that may hold the member itself,
+// an object of the program with a field of the name (kind-traits
+// methodValType). The call reaches the field through the probe's real lookup,
+// and the summary joins the field's closure result with the builtin the
+// primitives beside it answer.
+test('untyped receiver: a method named like a builtin on a receiver that may own it', () => {
+  // one module each: what one export links must not decide another's lookup
+  const own = `const a = { charCodeAt: (x) => x, toUpperCase: () => 5, startsWith: () => 7 }
+    const pick = (k) => k ? a : 'str'\n`
+  const calls = [
+    ['(v) => { const r = pick(v.length).charCodeAt(v); r.type = "i32"; return r.type }', [[1, 2]], 'i32'],
+    ['(v) => pick(v).toUpperCase()', [1], 5], ['(v) => pick(v).toUpperCase()', [0], 'STR'],
+    ['(v) => pick(v).startsWith("s")', [1], 7], ['(v) => pick(v).startsWith("s")', [0], true],
+  ]
+  for (const [fn, args, want] of calls) for (const optimize of levels(0, 2, 'size'))
+    is(jz(`${own}export let f = ${fn}`, { optimize }).exports.f(...args), want, `${fn} ${JSON.stringify(args)}, O${optimize}`)
+})
+
 test('untyped receiver: string toString(radix) ignores the radix (JS semantics)', () => {
   const { f } = runHost(`
     let mk = (x) => ({ v: x })
