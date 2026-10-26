@@ -354,6 +354,27 @@ test('bigint tag: a join written to a raw binding unboxes its call arm', () => {
   }
 })
 
+// No body materializes a module binding: it holds what each write stored, a
+// tagged carrier's box included. Its BigInt reads took the bits raw, and
+// arithmetic ran on the box's pointer; they test the tag where a write of the
+// binding may store a box (provenance globalReps joins a function's writes).
+test('bigint tag: a tagged value written to a module binding reads back as the BigInt', () => {
+  const SRC = `let h = 0, g = 0
+  const put = (k) => { const m = k ? 5n : 'a'; g = m }
+  export let same = (k) => { let m = k ? 5n : 'a'; h = m; if (!k) return h + '!'; const r = h * 2n; return r }
+  export let across = (k) => { put(k); if (!k) return g + '?'; const r = g * 3n; return r }
+  export let held = (k) => { put(k); return [typeof g, g, '' + g, g === 5n] }`
+  const host = oracle(SRC)
+  for (const optimize of LEVELS) {
+    const { same, across, held } = jz(SRC, { optimize }).exports
+    for (const k of [1, 0]) {
+      is(same(k), host.same(k), `same(${k}) (O${optimize || 0})`)
+      is(across(k), host.across(k), `across(${k}) (O${optimize || 0})`)
+      is(held(k), host.held(k), `held(${k}) (O${optimize || 0})`)
+    }
+  }
+})
+
 // A tagged local beside an operand with no evidence: `at` copies the
 // `length` of an untyped parameter (a builder from a closure table), and the
 // program holds a BigInt elsewhere, so the plan tags `at`. The subtraction

@@ -1,7 +1,8 @@
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import {
-  BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, callContractOf, canBeBigint, contractRep,
+  BIGINT_REP_BOXED, BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, bigintRepBits, bigintRepIsClosed,
+  callContractOf, canBeBigint, contractRep,
   definiteBigint, edgeAction, isBigintOrigin, programPlanRecord, returnEdgeAction,
 } from './common.js'
 import { memberStorageRep } from './body-data.js'
@@ -230,6 +231,13 @@ export function representationReturnAction(ctx, source) {
   if (current === NO_BIGINT)
     return target === BOXED_BIGINT && canBeBigint(body.resultSemantic) ? REP_EDGE_TAG_BOX : edgeAction(current, target)
   return returnEdgeAction(current, target)
+}
+
+/** Whether a module binding may hold a BigInt box. No body materializes one:
+ *  it holds what each write stored, which provenance's globalReps joins. */
+export function representationGlobalMayBox(ctx, name) {
+  const rep = programPlanRecord(ctx)?.provenance?.globalReps.get(name)
+  return rep != null && (!bigintRepIsClosed(rep) || (bigintRepBits(rep) & BIGINT_REP_BOXED) !== 0)
 }
 
 /** Frozen action for one plain declaration/assignment write. */

@@ -15,7 +15,7 @@ import { isPresentNumber } from '../kind.js'
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { valTypeOf } from '../kind.js'
-import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS, callContractOf, representationActiveMaterializedRep, representationProvesBigint } from '../compile/representation-plan.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS, callContractOf, representationActiveMaterializedRep, representationGlobalMayBox, representationProvesBigint } from '../compile/representation-plan.js'
 import { CARRIER } from '../summary/contract.js'
 import { typed } from './tag.js'
 import { temp, tempI32, blockTyped } from './locals.js'
@@ -312,10 +312,13 @@ export const isTaggedElemRead = node => {
   return recv === VAL.TYPED ? !isPresentNumber(ctx, node[2]) : recv !== VAL.OBJECT
 }
 
+/** A module binding a write may have stored a box in (representationGlobalMayBox). */
+const isBoxedGlobal = name => ctx.scope.globals.has(name) && representationGlobalMayBox(ctx, name)
+
 export const readI64MayUnbox = node => {
   // Groups and sequences forward the final value's storage or call carrier.
   while (Array.isArray(node) && (node[0] === ',' || node[0] === '(')) node = node[node.length - 1]
-  return (typeof node === 'string' && isTaggedLocal(node)) ||
+  return (typeof node === 'string' && (isTaggedLocal(node) || isBoxedGlobal(node))) ||
     isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node) || isBoxedStorageMethodRead(node) ||
     isTaggedElemRead(node) || isTaggedCallResult(node)
 }

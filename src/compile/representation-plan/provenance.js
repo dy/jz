@@ -484,8 +484,10 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         const kp = func.sig.params.findIndex(p => p.name === node[1])
         if (kp >= 0 && mark(paramsFor(func), kp)) changed = true
       }
-      if (!func) {
-        const rep = isBigintOrigin(node[2]) ? RAW_BIGINT : ANY_BIGINT
+      // A module binding's carrier joins each write of it, a function's too:
+      // no body materializes the binding, so it holds what the write emitted.
+      if (!func || ctx.scope.globals.has(node[1])) {
+        const rep = func ? exprRep(node[2], func, localNames) : isBigintOrigin(node[2]) ? RAW_BIGINT : ANY_BIGINT
         const prev = globalReps.get(node[1])
         const next = prev == null ? rep : joinRep(prev, rep)
         if (prev !== next) { globalReps.set(node[1], next); changed = true }

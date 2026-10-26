@@ -48,6 +48,7 @@ export {
   representationComputedExprAction,
   representationReturnAction,
   representationBindingWriteAction,
+  representationGlobalMayBox,
   representationCompoundAssignAction,
   representationUnaryUpdateAction,
   representationProgramHasBigint,
