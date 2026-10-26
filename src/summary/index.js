@@ -3776,10 +3776,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const literalShapes = new Map()   // `{}` node → its static shape, or null, read once
   const literalShapeOf = (n) => { let shape = literalShapes.get(n); if (shape === undefined) literalShapes.set(n, shape = literalShape(n)); return shape }
   const coversShape = (props, shape) => { for (const p of shape.props) if (!props.includes(p)) return false; return true }
+  // A `{}` assigned is one too: into a global named by its writes, or into a
+  // function's own binding (a closure's included), as module/object.js
+  // allocates it; a declared module binding is a dictionary only where the
+  // plan publishes it as one (classifyHashDictGlobals), which this solve cannot see.
   const dictLiteral = (name, value) => {
     if (!Array.isArray(value) || value[0] !== '{}' || value.length !== 1) return null
     const key = keyOf(name)
-    if (!writtenGlobals.has(key) || !dictKeys.has(key)) return null
+    if (key === null || !dictKeys.has(key) || !writtenGlobals.has(key) && key === keyIn(MODULE, name)) return null
     const bound = boundSchema(name)
     return bound == null || !schemas[bound].length ? cellOf(value, K.HASH, K.NONE) : null
   }

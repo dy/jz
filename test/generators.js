@@ -592,6 +592,13 @@ test('generators: function and class declarations in split blocks', () => agreeA
     yield fs.map(f => f()).join() }
   export let declared = () => [1, 2].map(x => [...g(x)].join()).join('|')`))
 
+// An empty literal a generator body fills is the dictionary its readers take
+// it for: the machine assigns its hoisted local in a closure, and an inlined
+// copy of that closure allocates it as the plan reads it.
+test('generators: an empty literal filled in the body reads back its keys', () => agreeAll(`
+  function* g(a) { const o = {}; o.p = a[0]; o.name = 'n'; yield o.p + 1; yield o.name; yield JSON.stringify(o) }
+  export let filled = () => [...g([1, 2])].join('|')`))
+
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,
 // a continue and an exception from next() close nothing; the body's exception

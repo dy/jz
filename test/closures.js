@@ -2749,6 +2749,24 @@ test('closures: protected block shadows stay separate through errors and finaliz
 // writes is declared, so the declaration's absent value is not what later reads
 // see (test262 async-function/evaluation-body: `assert(called)` after `foo()`);
 // a test of the name proves nothing past a call either.
+// An empty literal a closure assigns to a binding it captures and then writes
+// keys into is the dictionary every reader takes it for: the assignment is
+// typed as a declaration is, and its allocation follows that plan.
+test('closures: an empty literal a closure assigns and fills reads back its keys', () => {
+  const srcs = {
+    keys: `export function f(k){let o;const h=()=>{o={};o.p=k;o.q=k+1;return o.p+o.q};return h()+o.q}`,
+    json: `export function f(k){let o;const h=()=>{o={};o.name='n'+k};h();return JSON.stringify(o)+o.name}`,
+    twoClosures: `export function f(k){let o;const h=()=>{o={};o.p=k};const r=()=>o.p*2;h();return r()}`,
+  }
+  for (const [name, src] of Object.entries(srcs)) {
+    const want = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const k of [1, 0, 5]) is(got.f(k), want.f(k), `${name} O${optimize}, k=${k}`)
+    }
+  }
+})
+
 test('closures: a binding a closure assigns keeps no straight-line value or proof across calls', () => {
   const srcs = {
     hoisted: `export function f(k){var check=(c)=>{if(!c)return 0;return 1};let called;function foo(){called=k}foo();return check(called)}`,

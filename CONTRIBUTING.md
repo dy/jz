@@ -1910,7 +1910,13 @@ bound literal's layout widens; the program-facts merge used to add every
 written key. Empty literals (the dictionary idiom), spreads, computed keys,
 brands, index keys, `length`, a name with a computed-key write or an
 `Object.assign` (a dictionary: its keys and their order are runtime facts),
-and names that also take a non-literal value stay as they are. A bracket
+and names that also take a non-literal value stay as they are. An empty
+literal a binding takes and then writes keys into is a dictionary whether it
+is declared or assigned, a closure assigning one to a binding it captures
+included: the summary types it HASH where `module/object.js` allocates it
+so, and the allocation follows the binding's plan wherever the plan types it
+(an inlined copy under a renamed binding too); a lean or i32 dictionary
+layout is only for a binding the plan reads as a dictionary. A bracket
 string key on a summary-shaped receiver reads as
 dot syntax. A for-in over a closed layout unrolls one body copy per key (the
 loop variable a string literal, so `o[k]` is a slot read and `k.length` a

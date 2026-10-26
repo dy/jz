@@ -321,14 +321,15 @@ export function analyzeValTypes(body) {
         if (!dict && emptyLit && merged == null && ctx.schema.register && !ctx.schema.poisoned?.has(a[1]))
           updateRep(a[1], { schemaId: ctx.schema.register([]) })
         const vt = dict ? VAL.HASH : valTypeOf(a[2])
-        const leanDict = dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
+        setVal(a[1])
+        // a lean layout only for a dictionary the plan reads as one (module/object.js allocates it so)
+        const leanDict = dict && getVal(a[1]) === VAL.HASH && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
         if (leanDict) {
           (ctx.func.leanHashLocals ??= new Set()).add(a[1])
           if (i32DictUse(a[1])) (ctx.func.i32HashLocals ??= new Set()).add(a[1])
           const domain = dictDomain(a[1])
           if (domain) (ctx.func.leanHashDomains ??= new Map()).set(a[1], domain)
         }
-        setVal(a[1])
         // A single initializer bounds its binding for the whole body. Unrolling
         // can copy a declaration under one name; no individual copy owns its
         // range. Share the same lifetime proof with the early body walk: the
@@ -415,13 +416,13 @@ export function analyzeValTypes(body) {
       // sibling of the decl-site stamp above.
       // Map-value-type census, local half — reassignment site sibling of the
       // decl-site stamp above.
-      if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(node[1])) {
+      setVal(node[1])
+      if (dict && getVal(node[1]) === VAL.HASH && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(node[1])) {
         (ctx.func.leanHashLocals ??= new Set()).add(node[1])
         if (i32DictUse(node[1])) (ctx.func.i32HashLocals ??= new Set()).add(node[1])
         const domain = dictDomain(node[1])
         if (domain) (ctx.func.leanHashDomains ??= new Map()).set(node[1], domain)
       }
-      setVal(node[1])
       if (vt === VAL.REGEX) trackRegex(node[1], node[2])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(node[2])) trackTyped(node[1], node[2])
       if (vt === VAL.OBJECT) bindObjSchema(node[1], node[2])

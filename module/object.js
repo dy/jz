@@ -9,7 +9,6 @@
 
 import print from 'watr/print'
 import { enterActiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
-import { DBG_INVARIANTS } from '../src/debug.js'
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, withIgnoredArgs, deps } from '../src/bridge.js'
@@ -97,10 +96,15 @@ export default (ctx) => {
       const writtenAsRecord = target && ctx.types.literalWriteKeys?.get(target)?.size
       // A module binding is read by every function: it holds a dictionary only
       // where the plan published it as one (classifyHashDictGlobals), else its
-      // readers take it for the object the summary sees.
-      if (target && !merged?.length &&
-          (!isGlobal(target) || ctx.scope.globalValTypes?.get(target) === VAL.HASH) &&
-          (ctx.types.dynWriteVars?.has(target) || writtenAsRecord)) {
+      // readers take it for the object the summary sees. A function's binding
+      // is allocated as its plan reads it: a dictionary where the plan types
+      // it HASH (an inlined copy under a name the censuses never saw too), an
+      // object where it types it otherwise; the censuses decide only where the
+      // plan has no type for it.
+      const planned = repOf(target)?.val
+      if (target && !merged?.length && (isGlobal(target)
+        ? ctx.scope.globalValTypes?.get(target) === VAL.HASH && (ctx.types.dynWriteVars?.has(target) || writtenAsRecord)
+        : planned === VAL.HASH || planned == null && (ctx.types.dynWriteVars?.has(target) || writtenAsRecord))) {
         ctx.module.include('collection')
         const domain = ctx.func.leanHashDomains?.get(target)
         // Clearing a previous allocation is legal only when no alias or
@@ -109,12 +113,6 @@ export default (ctx) => {
         const reuse = !ctx.func.atModuleScope && !isGlobal(target) && ctx.func.leanHashLocals?.has(target)
         const old = reuse ? asI64(emit(target)) : ['i64.const', 0]
         inc('__hash_reuse_eph')
-        // The dict decision is made at PLAN time (analyze's dynWriteVars +
-        // empty-merged gate stamps VAL.HASH on both decl and `=` paths) —
-        // this branch's own condition is the same predicate, so the rep is
-        // already HASH here. Assert-only tripwire (slice-4 P4 flip).
-        if (DBG_INVARIANTS && repOf(target)?.val !== VAL.HASH)
-          throw new Error(`P4 dict-mode drift: ${target} reaches the HASH branch with plan val=${repOf(target)?.val}`)
         // Preallocation sizing must be a COMPILE-TIME fact only (repOf
         // arrayLen — the same fact emit-assign.js's RMW capHint uses): the
         // domain hint name may be a LOCAL whose def executes after this
