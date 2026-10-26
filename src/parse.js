@@ -13,7 +13,7 @@
  * literal and needs no override.
  */
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
-import { lookup, idx, cur, skip, err, prec, seek, expr, word } from 'subscript/parse'
+import { lookup, idx, cur, skip, err, prec, seek, expr, word, keyword, next } from 'subscript/parse'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 import { validateEarlyErrors } from './early-errors.js'
 import { here, where } from './ctx.js'
@@ -405,6 +405,27 @@ const parse = (src, sourceType = 'jz', base = 0) => {
 }
 
 token('NaN', 200, a => !a && ['nan'])
+
+// `for (using x of src)`: a using declaration binds each value a for-of
+// takes (ERM). subscript's `using` commits only to `name = init`; a for
+// head's `using name of` reads here, in the for-of head's own shape
+// (`['of', ['using', name], src]`, which the `for` keeps as it is); any other
+// `using` falls back to subscript's (a declaration, or the name `using`).
+keyword('using', 200, () => {
+  const from = idx
+  jessieParse.space()
+  const c = cur.charCodeAt(idx)
+  if (jessieParse.id(c) && (c < 48 || c > 57) && !word('of')) {
+    const name = next(jessieParse.id)
+    jessieParse.space()
+    if (word('of')) {
+      skip(2)
+      const src = expr(10)
+      if (src != null) return ['of', ['using', name], src]
+    }
+  }
+  seek(from)
+})
 
 // `true`/`false` parse to the self-describing `['bool', 1|0]` marker rather than
 // subscript's `[, true]`/`[, false]` value-literal. The raw JS boolean degrades to

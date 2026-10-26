@@ -620,6 +620,16 @@ test('async: a promise enumerates no keys', async () => {
     export async function settled() { const p = g(); const s = JSON.stringify(p); return s + (await p) + ('then' in p) }`)
 })
 
+// `for (using x of src)` and `for await (using x of src)` in an async body
+// dispose each iteration's resource as the iteration leaves, after its awaits.
+test('async: for (using x of src) disposes each iteration', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`const log = []
+    const res = (n) => ({ n, [Symbol.dispose]() { log.push('d' + n) } })
+    async function* src() { yield res(3); yield res(4) }
+    export async function f() { for (using r of [res(1), res(2)]) { await null; log.push(r.n) } for await (using r of src()) log.push(r.n); return log.join() }`)
+})
+
 // A class in an async body lowers in the body's scope, as in any function.
 test('async: a class in the body reads its bindings', async () => {
   if (onWasi() || onKernel()) return

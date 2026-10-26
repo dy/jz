@@ -20,7 +20,7 @@ import { settleVars } from './settle-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering, closesOnReturn } from './generators.js'
-import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS } from '../src/ast.js'
+import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS, withLoc } from '../src/ast.js'
 import { err } from '../src/ctx.js'
 
 const names = createNames()
@@ -536,9 +536,26 @@ function implicitStdImports(ast) {
  *   (the source-level lowering) keeps every class as per-instance closures.
  * @returns {Array} Transformed AST
  */
+// `for (using x of src) body` takes each value in a constant of its own and
+// declares the resource in the iteration's block, `for (const t of src)
+// { using x = t; body }`, which the using lowering disposes as each
+// iteration leaves (a for await's too).
+const forUsing = (n) => {
+  if (!Array.isArray(n) || n[0] == null) return n
+  let out = n
+  for (let i = 1; i < n.length; i++) {
+    const c = forUsing(n[i])
+    if (c !== n[i]) { if (out === n) out = withLoc(n.slice(), n); out[i] = c }
+  }
+  if ((out[0] !== 'for' && out[0] !== 'for await') || !Array.isArray(out[1]) || out[1][0] !== 'of' || !Array.isArray(out[1][1]) || out[1][1][0] !== 'using') return out
+  const t = names.genTemp('us')
+  return withLoc([out[0], ['of', ['const', t], out[1][2]], ['{}', [';', withLoc(['using', ['=', out[1][1][1], t]], out[1]), ...(out[2] == null ? [] : [out[2]])]]], n)
+}
+
 export default function jzify(ast, { structs = true, importedBinding = null, std = false } = {}) {
   const entry = ast
   names.reset()
+  ast = forUsing(ast)
   activeBuiltinScope = null
   builtinScopes = buildBuiltinScopes(ast)
   // Module-scope `const K = 'str'` bindings — lets class lowering fold computed

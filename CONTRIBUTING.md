@@ -3590,7 +3590,10 @@ declarations as constants at its start, a switch case's before the switch,
 and its class declarations as `let`s where they stand (`declarations`); a
 `using` binds its resource and runs the rest of its list in a try whose
 finally disposes it (`usingList`, as transform.js `lowerUsing` does for a
-list it lowers whole), so a return() at a yield disposes too. The
+list it lowers whole), so a return() at a yield disposes too. A
+`for (using x of src)` (src/parse.js reads its head; subscript commits a
+`using` to `name = init` only) is `for (const t of src) { using x = t; … }`
+before anything else lowers (jzify/index.js `forUsing`), in any function. The
 states lower in the machine's own lexical scope (jzify/index.js
 `enterMachineScope`), a child of the function's with every binding the
 machine hoists, under which the nodes `resolveLocals` copied are scoped

@@ -658,6 +658,19 @@ test('generators: an operand reads before a yield where JS reads it', () => agre
   function* g() { const r = log + (yield 1); yield r }
   export let operand = () => { log = 'a'; const it = g(); it.next(); log = 'b'; return it.next('!').value }`))
 
+// `for (using x of src)` binds each value as a resource disposed as its
+// iteration leaves (a break, an exception, a return() at a yield), in any
+// function; `using` stays a name elsewhere (`for (using of of xs)`).
+test('generators: for (using x of src) disposes each iteration', () => agreeAll(`
+  const log = []
+  const res = (n) => ({ n, [Symbol.dispose]() { log.push('d' + n) } })
+  function* g() { for (using r of [res(1), res(2)]) yield r.n }
+  export let plain = () => { log.length = 0; for (using r of [res(1), res(2), res(3)]) { if (r.n === 3) break; log.push(r.n) } return log.join() }
+  export let thrown = () => { log.length = 0; try { for (using r of [res(1), res(2)]) { if (r.n === 2) throw 'e'; log.push(r.n) } } catch (e) { log.push(e) } return log.join() }
+  export let gen = () => { log.length = 0; for (const v of g()) log.push(v); for (const v of g()) { log.push(v); break } return log.join() }
+  export let empty = () => { log.length = 0; for (using r of [null, undefined]) log.push(String(r)); return log.join() }
+  export let named = () => { let using, of = [[9], [8], [7]], out = []; for (using of of [0, 1, 2]) out.push(using); return out.join() }`))
+
 // An optional chain whose base is nullish skips a yield in its rest.
 test('generators: an optional chain skips a yield after a nullish base', () => agreeAll(`
   function* g(a) { const r = a?.f(yield 1); yield r }

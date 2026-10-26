@@ -1959,6 +1959,10 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
           if (lhs[0] !== 'var' && boundNames(lhs[1]).some(name => decodeIdentifier(name) === 'let'))
             fail("for-in/of lexical declaration cannot bind 'let'")
           walk(lhs, { ...cx, forBinding: true })
+        } else if (isNode(lhs) && lhs[0] === 'using' && head[0] === 'of') {
+          // `for (using x of src)`: one identifier, bound as `let` binds it
+          if (lhs.length !== 2 || typeof lhs[1] !== 'string') fail('for-of using declaration must bind one identifier')
+          checkBindingName(lhs[1], { ...cx, lexical: true })
         } else if (isNode(lhs) && lhs.length === 2 && (lhs[0] === '[]' || lhs[0] === '{}')) {
           if (patternHasTrailingRestComma(lhs, source, head.loc))
             fail('rest element in a for-in/of assignment pattern cannot have a trailing comma')
