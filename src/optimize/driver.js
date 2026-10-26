@@ -15,6 +15,7 @@ import { verifyFn } from '../ir.js'
 import { recursionUnroll } from './recurse.js'
 import { stripDeadCanons } from './nan-canon.js'
 import { forwardStores } from './forward-store.js'
+import { earlyStores } from './early-stores.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistPtrOffset, hoistAddrBase } from './cse-address.js'
 import {
@@ -98,6 +99,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // After the address hoists: a chained kernel's out-parameter results stay in the locals
   // that staged them, and the stores the chain overwrites go.
   if (!cfg || cfg.forwardStores !== false) forwardStores(fn)
+  // (on the stores forwarding kept: one ready before a computation it does not read goes first)
+  if (cfg && cfg.earlyStores === true) earlyStores(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, reachableWrites)
   if (cfg && cfg.vectorizeLaneLocal === true) {
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr

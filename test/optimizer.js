@@ -36,6 +36,7 @@ import { maskOperands } from '../src/optimize/mask-operands.js'
 import { searchLoops } from '../src/optimize/search-loops.js'
 import { pointerExits } from '../src/optimize/pointer-exits.js'
 import { ringLaps } from '../src/optimize/ring-laps.js'
+import { earlyStores } from '../src/optimize/early-stores.js'
 import { foldWords, funcWat, run, oracle } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -5135,6 +5136,80 @@ test('ringLaps: a counted loop stepping a cursor around a ring runs a lap at a t
   const laps = (optimize) => count(parseWat(jz.compile(src(16), { wat: true, optimize })), n => n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$__rl'))
   ok(laps('speed') >= 2, `the window's sample loop runs in laps (${laps('speed')} lap loops)`)
   is(laps({ level: 'speed', ringLaps: false }), 0, 'ringLaps: false keeps the loop as written')
+})
+
+test('earlyStores: a store ready before a long computation it does not read goes ahead of it', () => {
+  const g = (n) => ['local.get', n], k = (v) => ['i32.const', v], f = (v) => ['f64.const', v]
+  const ld = (b, off) => off ? ['f64.load', `offset=${off}`, g(b)] : ['f64.load', g(b)]
+  const st = (b, off, v) => off ? ['f64.store', `offset=${off}`, g(b), v] : ['f64.store', g(b), v]
+  const chain = (...xs) => xs.reduce((a, x) => ['f64.add', ['f64.mul', a, x], f(0.5)])
+  const fn = (...body) => {
+    const n = ['func', '$f', ['param', '$s', 'i32'], ['param', '$c', 'i32'], ['param', '$v', 'f64'], ['result', 'f64'],
+      ['local', '$x1', 'f64'], ['local', '$y', 'f64'], ...body, g('$y')]
+    n.distinctParams = new Set(['$s', '$c'])
+    return n
+  }
+  const one = (n) => { earlyStores(n); return n }
+  // the state's first cell: loaded, stored over before the output its section computes
+  const x1 = ['local.set', '$x1', ld('$s', 0)]
+  const y = ['local.set', '$y', chain(ld('$c', 0), g('$v'), ld('$c', 8), g('$x1'), ld('$s', 8), ld('$c', 16))]
+  const s0 = st('$s', 0, g('$v')), s1 = st('$s', 8, g('$x1')), s2 = st('$s', 16, g('$y'))
+  is(one(fn(x1, y, s0, s1, s2)).slice(8, 13), [x1, s0, y, s1, s2], 'the input store goes ahead of the output; the stores the output reads or writes stay')
+  const kept = (body, why) => { const n = fn(...body), want = JSON.stringify(n); is(JSON.stringify(one(n)), want, why) }
+  const y2 = ['local.set', '$y', chain(ld('$c', 0), g('$v'), g('$x1'), ld('$s', 8), g('$x1'), ld('$c', 16))]
+  kept([x1, y2, st('$s', 8, g('$v')), s2], 'a store over a cell the computation reads stays after it')
+  kept([x1, y2, ['f64.store', ['i32.const', 64], g('$v')]], 'a constant address may be either buffer')
+  kept([x1, y2, st('$s', 0, ['f64.div', g('$y'), f(2)])], 'a store of what the computation yields waits for it')
+  kept([x1, ['local.set', '$y', ['f64.add', g('$v'), f(1)]], s0], 'a short computation keeps its stores')
+  kept([x1, ['local.set', '$y', ['f64.add', ['call', '$g'], chain(g('$v'), g('$x1'), g('$v'))]], s0], 'a call keeps every store after it')
+  const noFacts = fn(x1, y2, s0)
+  delete noFacts.distinctParams
+  const before = JSON.stringify(noFacts)
+  is(JSON.stringify(one(noFacts)), before, 'without distinct buffers nothing moves')
+
+  // a cascade's sections over state and coefficient buffers from a maker, as biquad's
+  const src = `const mk = (n) => new Float64Array(n)
+    const cascade = (x, c, st, out) => {
+      for (let i = 0; i < x.length; i++) {
+        let v = x[i]
+        for (let s = 0; s < 4; s++) {
+          const x1 = st[s * 3], x2 = st[s * 3 + 1], y1 = st[s * 3 + 2]
+          const y = c[s * 4] * v + c[s * 4 + 1] * x1 + c[s * 4 + 2] * x2 - c[s * 4 + 3] * y1
+          st[s * 3] = v
+          st[s * 3 + 1] = x1
+          st[s * 3 + 2] = y
+          v = y
+        }
+        out[i] = v
+      }
+    }
+    export let f = (n) => {
+      const x = mk(n), c = mk(16), st = mk(12), out = mk(n)
+      for (let i = 0; i < n; i++) x[i] = Math.sin(i) * 0.5
+      for (let k = 0; k < 16; k++) c[k] = 0.1 + k * 0.01
+      cascade(x, c, st, out); cascade(x, c, st, out)
+      let h = 0
+      for (let i = 0; i < n; i++) h = (h + out[i] * 1e6) | 0
+      return h
+    }`
+  const want = oracle(src).f(100)
+  for (const optimize of ['speed', { level: 'speed', earlyStores: false }, 2]) is(run(src, { optimize }).f(100), want, JSON.stringify(optimize))
+  if (onKernel()) return
+  // the statements of the cascade's sample loop: is a store ahead of the first section's output?
+  const ahead = (optimize) => {
+    // the loop with the most stores: the sections'
+    let loop = null, most = 0
+    walk(parseWat(jz.compile(src, { wat: true, optimize })), n => {
+      if (n[0] !== 'loop') return
+      const k = n.filter(s => Array.isArray(s) && s[0] === 'f64.store').length
+      if (k > most) { most = k; loop = n }
+    })
+    const stmts = loop.filter(s => Array.isArray(s))
+    const store = stmts.findIndex(s => s[0] === 'f64.store'), mul = stmts.findIndex(s => JSON.stringify(s).includes('f64.mul'))
+    return store < mul
+  }
+  ok(ahead('speed'), 'the first state store goes ahead of the first output')
+  ok(!ahead({ level: 'speed', earlyStores: false }), 'earlyStores: false keeps it after')
 })
 
 test('rec-unroll: an empty statement in a body is no loop', () => {

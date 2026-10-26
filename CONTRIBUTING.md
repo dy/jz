@@ -50,6 +50,9 @@ one exit test, and the wrap, with its work (`if (p === 0) …`, the body's last
 statement, reading no counter), runs after it; the loop as written is the
 other arm. A cursor read after its step, a branch out of the loop or a call
 keep the loop as it is.
+Before watr, `earlyStores` (src/optimize/early-stores.js, speed tier) moves a
+store whose value is ready just ahead of a long computation it does not read,
+where the plan proves the buffers apart.
 
 Watr 5.11.5 also defers costly pure local initializers to the
 exclusive value arms that consume them. It runs before local reuse, replacing
