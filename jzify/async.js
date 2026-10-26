@@ -28,7 +28,7 @@ import { FN_BOUNDARY_OPS, probe, closingLoop, labeled, bindTo } from './generato
 import { usesArguments } from './arguments.js'
 import { some, ASSIGN_OPS, extractParams, withLoc } from '../src/ast.js'
 
-export function createAsyncLowering({ genTemp }) {
+export function createAsyncLowering({ genTemp, err }) {
 
   // The awaits of THIS function body only (nested function forms keep
   // their own await/this rules; a stray await inside a nested sync fn falls
@@ -211,6 +211,8 @@ export function createAsyncLowering({ genTemp }) {
     if (!Array.isArray(st) || !refsAwait(st)) return [st]
     const op = st[0]
     if (op === ';') return st.slice(1).flatMap(hoistStmt)
+    // a statement's parentheses group nothing a statement reads (`({ a = yield } = o)`)
+    if (op === '()' && st.length === 2) return hoistStmt(st[1])
     if (op === '{}') return [block(hoistList(st[1]))]
     if (isAwaitOf(st)) { const inner = hoistExpr(st[1]); return [...inner.pre, [op, inner.expr]] }
     if (op === 'let' || op === 'const' || op === 'var') {
@@ -270,6 +272,9 @@ export function createAsyncLowering({ genTemp }) {
     // default's in a name of its own, a rest by spreading it: the machine's
     // parameters are then its callers' arguments, as a plain function's are. A
     // function reading `arguments` takes them all, `(...aa)`, keeping their count.
+    // An async function is no generator: its machine would take a yield for a suspension.
+    if (some([null, params, body], n => n[0] === 'yield' || n[0] === 'yield*', { boundary: fnBoundary }))
+      err('yield outside a generator body: an async function yields nothing, an `async function*` does')
     const machine = ['function*', null, params, mapAwait(hoistSuspensions(body))], list = extractParams(params)
     const own = usesArguments(body) || usesArguments(params) ? [['...', genTemp('aa')]]
       : list.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? ['...', genTemp('aa')] : genTemp('ap'))

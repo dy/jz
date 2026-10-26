@@ -33,9 +33,10 @@
  *   - for-of closes its iterator when its body leaves early (closingLoop)
  *   - block scopes: each binding spelled apart, a closure in a loop the
  *     machine splits keeping its iteration's bindings (resolveLocals)
- * Out (v1): a destructuring shape the temp expansion cannot take (an object
- *   rest, a computed key, a catch pattern); a function declaration in a split
- *   block.
+ *   - destructuring declarations, catch and for-of patterns of any shape, a
+ *     yield in a default or computed key running the steps (patternSteps)
+ * Out (v1): an object rest beside a yield or await in a destructuring default;
+ *   a function declaration in a split block.
  *
  * @module jzify/generators
  */
@@ -155,56 +156,6 @@ export const labeled = (labels, loop) => labels ? labels.reduceRight((l, name) =
 // through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
 export function createGeneratorLowering({ transform, transformParams, err, generatorNames, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr }) {
-  // A destructuring declaration in the body binds through a temp: the machine
-  // hoists plain names only, so `let { a, b: c, d = 1 } = e` becomes the
-  // declarators `t = e, a = t.a, c = t.b, d = t.d ?? 1` (arrays by index, a
-  // rest element by slice, nested patterns recursively). prepare's own
-  // destructuring never sees a generator body (the machine lowers first).
-  const patternDecls = (pat, src, out) => {
-    const items = (n) => n == null ? [] : Array.isArray(n) && n[0] === ',' ? n.slice(1) : [n]
-    const bind = (target, value) => {
-      if (typeof target === 'string') { out.push(['=', target, value]); return }
-      if (Array.isArray(target) && target[0] === '=') {   // default: `name = dflt`
-        const t = genTemp('pd'); out.push(['=', t, value])
-        bind(target[1], ['??', t, target[2]]); return
-      }
-      if (Array.isArray(target) && (target[0] === '{}' || target[0] === '[]')) {
-        const t = genTemp('pt'); out.push(['=', t, value]); patternDecls(target, t, out); return
-      }
-      err('generators v1: this destructuring shape inside a generator body is not supported yet – bind names first')
-    }
-    if (pat[0] === '{}') {
-      for (const it of items(pat[1])) {
-        if (typeof it === 'string') bind(it, ['.', src, it])
-        else if (Array.isArray(it) && it[0] === ':') bind(it[2], ['.', src, it[1]])
-        else if (Array.isArray(it) && it[0] === '=') bind(it, ['.', src, it[1]])
-        else err('generators v1: this destructuring shape inside a generator body is not supported yet – bind names first')
-      }
-    } else {
-      items(pat[1]).forEach((it, i) => {
-        if (it == null) return
-        if (Array.isArray(it) && it[0] === '...') bind(it[1], ['()', ['.', src, 'slice'], [null, i]])
-        else bind(it, ['[]', src, [null, i]])
-      })
-    }
-  }
-  const desugarPatternDecls = (node) => {
-    if (!Array.isArray(node)) return node
-    if (FN_BOUNDARY_OPS.has(node[0])) return node
-    if ((node[0] === 'let' || node[0] === 'const') && node.some((d, i) => i > 0 && Array.isArray(d) && d[0] === '=' && Array.isArray(d[1]))) {
-      // one declarator per statement: the machine's `let x = yield E` case
-      // takes a lone declarator, and the temp's initializer may be that yield
-      const out = []
-      for (let i = 1; i < node.length; i++) {
-        const d = node[i]
-        if (Array.isArray(d) && d[0] === '=' && Array.isArray(d[1])) {
-          const t = genTemp('pv'); out.push(['=', t, desugarPatternDecls(d[2])]); patternDecls(d[1], t, out)
-        } else out.push(Array.isArray(d) ? ['=', d[1], desugarPatternDecls(d[2])] : d)
-      }
-      return withLoc([';', ...out.map(d => withLoc(['let', d], node))], node)
-    }
-    return withLoc(node.map((n, i) => i === 0 ? n : desugarPatternDecls(n)), node)
-  }
   // ---- the body's bindings, resolved ----
   // The machine hoists every declaration of its body into the factory scope,
   // where all its states see it, so each takes a spelling of its own: a
@@ -492,20 +443,19 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     emitting = true
     return list(stmts, root, true)
   }
-  // Collect every let/const binding name in the body — generator locals live in
-  // the factory scope so they survive across next() resumes (shadowing renamed
-  // apart by uniqueLocals above).
-  const collectLocals = (node, out, path) => walkAst(node, { enter: n => {
+  // Collect every let/const binding name in the body, a pattern's names too —
+  // generator locals live in the factory scope so they survive across next()
+  // resumes (each spelled apart by resolveLocals above).
+  const collectLocals = (node, out) => walkAst(node, { enter: n => {
     if ((n[0] === 'let' || n[0] === 'const')) {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
-        const name = Array.isArray(d) && d[0] === '=' ? d[1] : d
-        // a rejection names this declaration
-        if ((typeof name !== 'string' || out.has(name)) && n.loc != null) ctx.error.loc = n.loc
-        if (typeof name !== 'string')
-          err('generators v1: this destructuring shape inside a generator body is not supported yet – bind names first')
-        if (out.has(name)) err(`generators v1: '${name}' is declared twice in the generator body — hoisted locals must be unique`)
-        out.add(name)
+        for (const name of patternNames(Array.isArray(d) && d[0] === '=' ? d[1] : d)) {
+          // a rejection names this declaration
+          if (out.has(name) && n.loc != null) ctx.error.loc = n.loc
+          if (out.has(name)) err(`generators v1: '${name}' is declared twice in the generator body — hoisted locals must be unique`)
+          out.add(name)
+        }
       }
     }
     // nested function forms create their own scope — their decls don't hoist
@@ -581,7 +531,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       }
     }
 
-    for (let i = 0; i < body.length; i++) body[i] = desugarPatternDecls(desugarLoops(body[i]))
+    for (let i = 0; i < body.length; i++) body[i] = desugarLoops(body[i])
     body.splice(0, body.length, ...resolveLocals(body, [...new Set(extractParams(params).flatMap(patternNames))]))
     const locals = new Set()
     for (const st of body) collectLocals(st, locals)
@@ -858,7 +808,8 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         if (op === 'let' || op === 'const') {
           for (let i = 1; i < st.length; i++) {
             const d = st[i]
-            if (Array.isArray(d) && d[0] === '=') stmtsOf(cur).push(withLoc(['=', d[1], transform(d[2])], d))
+            // a pattern assigns its names as any destructuring assignment does
+            if (Array.isArray(d) && d[0] === '=') stmtsOf(cur).push(Array.isArray(d[1]) ? transform(withLoc(['=', d[1], d[2]], d)) : withLoc(['=', d[1], transform(d[2])], d))
             else if (typeof d === 'string') stmtsOf(cur).push(['=', d, [null, undefined]])
           }
           return cur
@@ -990,8 +941,14 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         finish(flattenList(blockStmts(st[1]), bodyS, jumps))
         if (catchC) {
           curHandler = errorS
-          if (catchC[1] != null) { locals.add(catchC[1]); stmtsOf(catchS).push(['=', catchC[1], S.ERR]) }
-          finish(flattenList(blockStmts(catchC[2]), catchS, jumps))
+          let at = catchS
+          if (catchC[1] != null) {
+            for (const name of patternNames(catchC[1])) locals.add(name)
+            if (typeof catchC[1] === 'string') stmtsOf(catchS).push(['=', catchC[1], S.ERR])
+            else if (hasYield(catchC[1])) at = flattenList(patternSteps('let', catchC[1], S.ERR), catchS, jumps)
+            else stmtsOf(catchS).push(transform(['=', catchC[1], S.ERR]))
+          }
+          finish(flattenList(blockStmts(catchC[2]), at, jumps))
         }
         curHandler = outer
         curFinally = outerFinally
@@ -1006,7 +963,102 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       }
       if (op === 'catch' || op === 'finally')
         err('generators v1: a stray catch/finally clause across a yield')
+      // what hoistSuspensions leaves in place: a pattern's default or computed key
+      if (op === 'let' || op === 'const')
+        return flattenList(st.slice(1).flatMap(d => Array.isArray(d) && d[0] === '=' && hasYield(d[1]) ? patternSteps(op, d[1], d[2]) : [[op, d]]), cur, jumps)
+      if (op === '=' && hasYield(st[1])) return flattenList(patternSteps(null, st[1], st[2]), cur, jumps)
       err(`generators v1: yield inside \`${op}\` is not supported yet — hoist the yield to statement position`)
+    }
+    // A destructuring whose default or computed key suspends runs as the
+    // steps ECMA-262 takes (BindingInitialization,
+    // DestructuringAssignmentEvaluation): an object pattern reads its keys in
+    // turn, an array pattern steps its source's iterator (its protocol, or an
+    // index over what a for-of reads), a default runs for undefined only, an
+    // assignment's target is evaluated before its value, and an iterator the
+    // pattern leaves unfinished closes, by an exception or a return() too.
+    // `kind` declares the names (let, const) or assigns the targets (null).
+    const patternSteps = (kind, pat, value) => {
+      const out = [], UNDEF = [null, undefined], NULL = [null, null]
+      const local = (x) => { const t = genTemp('ds'); locals.add(t); out.push(['=', t, x]); return t }
+      const now = (e) => { const h = split(e); out.push(...h.pre); return h.expr }
+      const typeError = (msg) => ['throw', ['new', ['()', 'TypeError', [null, msg]]]]
+      // an assignment target's reference: its object and key, read first
+      const ref = (t) => {
+        if (kind || !Array.isArray(t)) return t
+        if (t[0] === '.') return ['.', local(now(t[1])), t[2]]
+        if (t[0] === '[]' && t.length === 3) return ['[]', local(now(t[1])), local(now(t[2]))]
+        return t
+      }
+      const bind = (target, v, settled) => {
+        const isDefault = Array.isArray(target) && target[0] === '='
+        const inner = isDefault ? target[1] : target
+        const nested = Array.isArray(inner) && (inner[0] === '{}' || inner[0] === '[]' && inner.length === 2)
+        const place = nested || settled ? inner : ref(inner)
+        let value = v
+        if (isDefault) {
+          value = local(v)
+          const h = split(target[2])
+          out.push(['if', ['===', value, UNDEF], ['{}', [';', ...h.pre, ['=', value, h.expr]]]])
+        }
+        if (nested) return inner[0] === '{}' ? object(inner, value) : array(inner, value)
+        out.push(kind ? [kind, ['=', place, value]] : ['=', place, value])
+      }
+      const object = (p, v) => {
+        const src = local(v)
+        out.push(['if', ['==', src, NULL], typeError('cannot destructure undefined or null')])
+        for (const it of p[1] == null ? [] : Array.isArray(p[1]) && p[1][0] === ',' ? p[1].slice(1) : [p[1]]) {
+          if (Array.isArray(it) && it[0] === '...')
+            err('generators v1: an object rest beside a yield or await in a destructuring default is not supported yet — read the value into a name first')
+          const key = typeof it === 'string' ? it : it[0] === '=' ? it[1] : it[1], target = typeof it === 'string' || it[0] === '=' ? it : it[2]
+          // a computed key is evaluated as the pattern reaches it
+          const read = typeof key === 'string' ? ['.', src, key]
+            : Array.isArray(key) && key[0] === '[]' && key.length === 2 ? ['[]', src, local(now(key[1]))] : ['[]', src, key]
+          bind(target, read)
+        }
+      }
+      const array = (p, v) => {
+        const src = local(v)
+        out.push(['if', ['==', src, NULL], typeError('value is not iterable')])
+        const w = local(src)
+        out.push(['if', ['!=', ['.', src, '@@iterator'], NULL], ['=', w, ['()', probe(src, '@@iterator'), null]]])
+        const open = local(['&&', ['!=', w, NULL], ['!=', ['.', w, 'next'], NULL]]), proto = local(open)
+        out.push(['if', ['!', proto], ['=', w, ['()', '__iter_arr', w]]])
+        const done = local([null, false]), ix = local([null, 0]), r = local(UNDEF)
+        // the next element, or undefined once the source is done; the
+        // iterator's own next(), done or value throwing closes nothing
+        const step = (v) => ['if', ['!', done], ['if', proto,
+          ['{}', [';', ['=', open, [null, false]], ['=', r, ['()', ['.', w, 'next'], null]],
+            ['if', ['.', r, 'done'], ['=', done, [null, true]], ['{}', [';', ['=', v, ['.', r, 'value']], ['=', open, [null, true]]]]]]],
+          ['if', ['<', ix, ['.', w, 'length']], ['{}', [';', ['=', v, ['[]', w, ix]], ['=', ix, ['+', ix, [null, 1]]]]], ['=', done, [null, true]]]]]
+        const outer = out.splice(0)
+        for (const it of p[1] == null ? [] : Array.isArray(p[1]) && p[1][0] === ',' ? p[1].slice(1) : [p[1]]) {
+          if (it == null) { out.push(step(local(UNDEF))); continue }
+          if (Array.isArray(it) && it[0] === '...') {
+            const rest = local(['[]', null]), v = local(UNDEF)
+            out.push(['while', ['!', done], ['{}', [';', ['=', v, UNDEF], step(v), ['if', ['!', done], ['()', ['.', rest, 'push'], v]]]]])
+            bind(it[1], rest)
+            continue
+          }
+          // an assignment's target is evaluated before the step
+          const isDefault = Array.isArray(it) && it[0] === '='
+          const inner = isDefault ? it[1] : it
+          const nested = Array.isArray(inner) && (inner[0] === '{}' || inner[0] === '[]' && inner.length === 2)
+          const place = nested ? inner : ref(inner)
+          const v = local(UNDEF)
+          out.push(step(v))
+          bind(isDefault ? ['=', place, it[2]] : place, v, true)
+        }
+        // the pattern's own exception closes the iterator and stands; a
+        // completion leaving it unfinished closes it
+        const body = out.splice(0), error = genTemp('de')
+        locals.add(error)
+        out.push(...outer, ['try', ['{}', [';', ...body]],
+          ['catch', error, ['{}', [';', ['if', open, ['{}', [';', ['=', open, [null, false]],
+            ['try', ['{}', [';', ['if', ['!=', ['.', w, 'return'], NULL], ['()', ['.', w, 'return'], null]]]], ['catch', genTemp('dq'), ['{}', null]]]]]], ['throw', error]]]],
+          ['finally', ['{}', [';', ['if', open, ['{}', [';', ['=', open, [null, false]], ['if', ['!=', ['.', w, 'return'], NULL], ['()', ['.', w, 'return'], null]]]]]]]]])
+      }
+      bind(pat, value)
+      return out
     }
 
 

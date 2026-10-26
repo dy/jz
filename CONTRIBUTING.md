@@ -3550,7 +3550,11 @@ it splits) that a closure captures lives in a cell `{ v }` made at each
 entry, a for-head's copied into a fresh cell after the initializer and
 before each step (ECMA-262 CreatePerIterationEnvironment), and a closure
 made there reads the cells it was made with, through the parameters of a
-call made where it stands. The
+call made where it stands. A destructuring declaration assigns its pattern
+to the hoisted names as a destructuring assignment does, a catch clause's
+and a for-of head's too; one whose default or computed key suspends runs
+the steps ECMA-262 takes (`patternSteps`: keys read in turn, an iterator
+stepped and closed). The
 machine's locals are declared ahead of the steps that initialize them behind
 the TDZ mark (`src/ast.js`), a declaration that defines no value; a bare
 `let x` in the body defines its undefined where it stands. An async function

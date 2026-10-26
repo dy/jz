@@ -506,6 +506,16 @@ test('async: closures keep their iteration\'s bindings across awaits', async () 
     export async function interleaved() { log = ''; await Promise.all([task('a'), task('b')]); await new Promise(r => setTimeout(r, 5)); return log }`)
 })
 
+// A destructuring declaration across an await binds as one anywhere does:
+// an object rest, an iterator's values through its protocol, a for await's
+// pattern, a default that awaits.
+test('async: destructuring with rests and iterators across awaits', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`function* src() { yield 1; yield 2; yield 3 }
+    export async function f() { const { a, ...rest } = await Promise.resolve({ a: 1, b: 2, c: 3 }); const [x, ...more] = await src(); let s = ''; for await (const [k, { v = 0 }] of [['p', { v: 1 }], ['q', {}]]) s += k + v; return a + Object.keys(rest).join() + x + more.join() + s }
+    export async function awaited() { const { a = await Promise.resolve(1), b = await 2 } = { b: 10 }; const [x = await 3] = []; return a + b + x }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals

@@ -262,7 +262,7 @@ const iterProto = { on: false, helpers: false, program: false, programHelpers: f
 // `a.constructor === C`): its classes then carry the member (classes.js).
 const ctorUse = { on: false, program: false }
 const genErr = (msg) => err('jzify: ' + msg)
-const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr } = createAsyncLowering({ genTemp: (t) => names.genTemp(t) })
+const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, generatorNames, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)

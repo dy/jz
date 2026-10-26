@@ -154,6 +154,8 @@ test('generators: v1 rejections are precise', () => {
   rejects(`function* g() { void yield } export let f = () => 1`, 'must stand in parentheses')
   rejects(`function* g() { const x = 3 + yield 4 } export let f = () => 1`, 'must stand in parentheses')
   rejects(`function* g() { yield\n* 1 } export let f = () => 1`, 'must stand in parentheses')
+  // an async function is no generator: a yield in it, a pattern's default too, is no suspension
+  rejects(`async function h() { for await ([x = yield] of [[]]) {} } export let f = () => 1`, 'yield outside a generator body')
   // a parenthesized comma expression is no array pattern element
   rejects(`let x, y; function h() { [(x, y)] = [[]] } export let f = () => 1`, 'invalid destructuring target')
 })
@@ -542,6 +544,37 @@ test('generators: block scopes and per-iteration bindings across yields', () => 
   export let shadowed = () => [...shadow(1)].join()
   export let forwardRefs = () => { const it = forward(); const f = it.next().value; it.next(); return f() }
   export let perIteration = () => [...loops()].join('|')`))
+
+// A destructuring declaration in a generator body binds as one anywhere
+// does: an object rest, a default for undefined only, an iterator through
+// its protocol, nested and computed patterns, across a yield, in a catch
+// clause and in a for-of head.
+test('generators: destructuring across yields', () => agreeAll(`
+  function* src() { yield 1; yield 2; yield 3 }
+  function* g(o) { let { a, b = 2, ...r } = o; yield a + ':' + b + ':' + Object.keys(r).join()
+    const [x, y] = new Set([1, 2]); const [first, ...rest] = src(); const [c1] = '😀b'; yield x + y + first + rest.join() + c1
+    const { p: [q, { z = 5 } = {}], [o.k]: w } = { p: [1], dyn: 'W' }; yield q + z + w
+    let [m, n] = yield 'send'; const { s, t = 4 } = yield 'send2'; yield m + n + s + t
+    try { yield 0; throw { e1: 1, e2: [2] } } catch ({ e1, e2: [e3] }) { yield e1 + e3 }
+    for (const [k, v] of new Map([['a', 1]])) yield k + v
+    let u, v; for ([u, v] of [[1, 2], [3, 4]]) yield u * v }
+  export let destructured = () => { const it = g({ a: 1, b: null, c: 3, k: 'dyn' }); const out = []; let r = it.next(); while (!r.done) { out.push(r.value); r = it.next(r.value === 'send' ? [1, 2] : r.value === 'send2' ? { s: 3 } : undefined) } return out.join('|') }`))
+
+// A destructuring whose default or computed key yields runs the steps
+// ECMA-262 takes: keys read in turn, an iterator stepped as the pattern
+// reaches each element and closed when the pattern leaves it unfinished (a
+// return() or throw() at the yield too), an assignment's target evaluated
+// before its value.
+test('generators: yield in destructuring defaults and computed keys', () => agreeAll(`let log = ''
+  function* src() { try { yield undefined; yield 2; yield 3 } finally { log += 'F' } }
+  function* g(o) { const { a = yield 'a?', [yield 'k?']: b, c = yield 'c?' } = o; const [x = yield 'x?', y, ...r] = src(); yield a + b + c + x + y + r.join() + log; const t = {}; [t.p = yield 't?'] = []; yield JSON.stringify(t) }
+  function* closing() { const [m = yield 'm?', n] = src(); yield m + n }
+  function* caught() { try { throw {} } catch ({ e = yield 'e?' }) { yield 'got ' + e } }
+  const drive = (it, sends) => { const out = []; let r = it.next(), k = 0; while (!r.done) { out.push(r.value); r = it.next(sends[k++]) } return out.join() }
+  export let defaults = () => { log = ''; return drive(g({ k: 'K', c: 'C' }), [1, 'k', 9, 'X', 'T']) }
+  export let returned = () => { log = ''; const it = closing(); it.next(); return JSON.stringify(it.return(5)) + log }
+  export let thrown = () => { log = ''; const it = closing(); it.next(); try { it.throw('E') } catch (e) { log += e } return log }
+  export let catchClause = () => drive(caught(), ['M'])`))
 
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,
