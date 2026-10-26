@@ -456,6 +456,27 @@ test('async generators: delegation and for await settle in microtask order', asy
     export async function consumer() { log = ''; const t = ticker(12); for await (const v of inner()) log += 'v' + v; await t; return log }`)
 })
 
+// An await in a switch, a case's test, a loop's test, step or initializer
+// suspends where it stands, in Node's order; an assignment reads its target's
+// key and its current value before the await, as concurrent tasks see.
+test('async: await in switch, loop heads and assignments', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    const tick = async (n) => { for (let i = 0; i < n; i++) { log += i; await null } }
+    class W { async write(x) { log += 'w' + x; await null; return x * 10 }
+      async run(op) { let r = 0; switch (op) { case 1: r = await this.write(1); break; case 2: r = await this.write(2); case 3: r += await this.write(3); break; case (await this.write(4)) / 10: r = -4; break; default: r = -1 } return r } }
+    let total = 0, i = 0, arr = [], calls = 0
+    const add = async (n) => { total += await n }
+    const slot = async (x) => { arr[i++] = await x }
+    const v = async (x) => { calls++; return x }
+    export async function switches() { log = ''; const w = new W(), t = tick(16), out = []; for (let k = 1; k < 6; k++) out.push(await w.run(k)); await t; return out.join() + log }
+    export async function racing() { total = 0; await Promise.all([add(1), add(2), add(3)]); return total }
+    export async function slots() { i = 0; arr = []; const a = slot(new Promise(r => setTimeout(() => r('A'), 5))), b = slot('B'); await a; await b; return arr.join() }
+    export async function logical() { calls = 0; let a = 1, b = 0, c = null; a ||= await v(5); b ||= await v(6); c ??= await v(7); a &&= await v(8); return [a, b, c, calls].join() }
+    export async function heads() { let n = 0, s = ''; const more = async () => n++ < 4; while (await more()) { if (n === 2) continue; s += n } do { n++; if (n === 7) continue; s += 'd' + n } while (await (n < 8)); for (let k = await 1; k < 4; k = await (k + 1)) { if (k === 2) continue; s += 'k' + k } return s }
+    export async function labeled() { let s = ''; outer: for (let a = 0; a < 3; a++) { for (let b = 0; b < 3; b++) { await null; if (b === 1) continue outer; if (a === 2) break outer; s += a + '' + b } } return s }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals

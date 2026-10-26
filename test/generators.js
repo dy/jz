@@ -151,6 +151,12 @@ test('generators: v1 rejections are precise', () => {
   }
   rejects(`function* g(a) { for (const x of a) yield x } export let f = () => 1`, 'for-of')
   rejects(`export let f = () => { let y = yield 1; return y }`, 'yield outside a generator')
+  // a yield as an operand stands in parentheses (ECMA-262 YieldExpression is an AssignmentExpression)
+  rejects(`function* g() { void yield } export let f = () => 1`, 'must stand in parentheses')
+  rejects(`function* g() { const x = 3 + yield 4 } export let f = () => 1`, 'must stand in parentheses')
+  rejects(`function* g() { yield\n* 1 } export let f = () => 1`, 'must stand in parentheses')
+  // a parenthesized comma expression is no array pattern element
+  rejects(`let x, y; function h() { [(x, y)] = [[]] } export let f = () => 1`, 'invalid destructuring target')
 })
 
 // try/catch across a yield: the try body's states carry the catch state as
@@ -466,6 +472,32 @@ test('generators: yield* forwards throw() to its delegate', () => agreeAll(`let 
   export let array = () => { log = ''; const it = viaArray(); it.next(); return show(it.throw('Y')) + log }
   export let arrayReturn = () => { log = ''; const it = viaArray(); it.next(); return show(it.return(3)) + log }
   export let notObject = () => { log = ''; return show(viaNumber().next()) + log }`))
+
+// A yield anywhere in an expression suspends at a statement of its own, the
+// operands before it evaluated first, an assignment's target and current
+// value read first; a loop's test, step and initializer, a switch's case
+// tests and a labeled statement's jumps run across yields.
+test('generators: yield in expressions, loop heads, switch and labels', () => agreeAll(`let log = ''
+  const m = (x) => { log += x; return x }
+  const drive = (it, sends) => { const out = []; let r = it.next(), k = 0; while (!r.done) { out.push(r.value); r = it.next(sends[k++]) } return out.join() + '=' + r.value }
+  function* expr() { const r = m('a') + (yield m('b')) + m('c'); const o = { p: yield 'p', q: [yield 'q', ...(yield 'r')] }; return r + JSON.stringify(o) + (yield (yield 1) + 1) }
+  function* logic(c) { const a = c && (yield 'y'); const b = c || (yield 'n'); return [a, b, c ? yield 't' : yield 'f'].join() }
+  let s = 10
+  function* assign(o) { s += yield 1; o.a.b = yield 2; o.a.c ||= yield 3; o.a.d ||= yield 4; return s + JSON.stringify(o) }
+  function* sw(x) { switch (x) { case 1: yield 'a'; case 2: yield 'b'; break; case (yield 'q'): yield 'c'; default: yield 'd'; case 4: yield 'e' } return 'end' }
+  function* skip() { let n = 0; while (n < 5) { n++; yield n; switch (n % 2) { case 0: continue } yield 'o' } }
+  function* wh() { let n = 0; while ((yield 'w' + n) < 2) { n++; if (n === 2) continue; n += 10 } return n }
+  function* fr() { for (let i = yield 'i', j = i * 2; i < (yield 'c' + i); i += yield 's' + i) { if (i === 1) continue; yield 'b' + i + j } return 'f' }
+  function* dw() { let n = 0; do { n++; if (n === 2) continue; yield 'b' + n } while (yield 't' + n); return n }
+  function* lb() { a: for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) { if (j === 1) continue a; if (i === 2) break a; yield '' + i + j } } b: { yield 'x'; if (s) break b; yield 'y' } c: try { yield 'z'; break c } finally { log += 'F' } return 'L' }
+  function* closing() { try { switch (1) { case 1: yield 1; yield 2 } } finally { log += 'C' } }
+  export let expressions = () => { log = ''; return drive(expr(), ['S', 1, 2, [3, 4], 5, 6]) + log }
+  export let shortCircuit = () => [0, 1].map(c => drive(logic(c), ['S', 'T', 'U'])).join('|')
+  export let assignments = () => { s = 10; const o = { a: { b: 0, c: 0, d: 1 } }; const it = assign(o); it.next(); s = 100; it.next(5); it.next(6); return JSON.stringify(it.next(7)) }
+  export let switches = () => [[1, []], [3, [3]], [4, [0]], [9, [0]]].map(([x, sends]) => drive(sw(x), sends)).join('|') + drive(skip(), [])
+  export let loopHeads = () => drive(wh(), [0, 1, 5]) + '|' + drive(fr(), [1, 3, 1, 3, 'x', 5, 3]) + '|' + drive(dw(), [1, 1, 1, 0, 0])
+  export let labeled = () => { log = ''; s = 1; return drive(lb(), []) + log }
+  export let returned = () => { log = ''; const it = closing(); it.next(); return JSON.stringify(it.return(5)) + log }`))
 
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,

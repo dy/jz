@@ -8,9 +8,14 @@
  * captures already ship). Sync only — no event loop, no microtasks.
  *
  * v1 surface (everything else rejects with a precise message):
- *   - yield as a statement, or as the RHS of `let x = yield E` / `x = yield E`
- *   - yield inside if/else, while, do-while and C-style for (any nesting)
- *   - plain `return E` anywhere; unlabeled break/continue of yield-bearing loops
+ *   - yield as a statement, or as the RHS of `let x = yield E` / `x = yield E`;
+ *     one anywhere else in an expression is hoisted to a statement of its own,
+ *     what the expression evaluates before it first (jzify/async.js)
+ *   - yield inside if/else, while, do-while, C-style for (in its test, step
+ *     and initializer too), switch (in a case's test too) and labeled
+ *     statements (any nesting)
+ *   - plain `return E` anywhere; break and continue, labeled or not, of a
+ *     statement split into states
  *   - compound statements WITHOUT yield stay atomic (later passes handle them)
  *   - yield* E — delegates to ANY iterator-protocol value (sent values thread,
  *     throw() and return() go to the delegate's own, the completion value
@@ -24,9 +29,8 @@
  *     throw, return, break or continue, or a return() at a yield) runs the
  *     finally blocks it crosses, which may yield themselves
  *   - for-of closes its iterator when its body leaves early (closingLoop)
- * Out (v1): yield inside arbitrary expressions, for-of/for-in bodies
- * containing yield (except known-generator for-of, which desugars), labeled
- * break/continue across states.
+ * Out (v1): for-of/for-in bodies containing yield (except known-generator
+ * for-of, which desugars).
  *
  * @module jzify/generators
  */
@@ -53,16 +57,20 @@ export const FN_BOUNDARY_OPS = new Set(['=>', 'function', 'function*', 'class', 
 const fnBoundary = (n) => FN_BOUNDARY_OPS.has(n[0])
 const hasYield = (n) => some(n, isYield, { boundary: fnBoundary })
 
-// A break/continue that would bind OUTSIDE this statement (its target loop was
+// A break/continue that would bind OUTSIDE this statement (its target was
 // decomposed into states, so the raw op would bind my dispatch while(1) instead).
-// Inner loops re-bind their own jumps; nested function forms bind their own.
-const hasFreeJump = (n, depth = 0) => {
+// An inner loop binds its own break and continue, a switch its break, a label
+// its jumps; nested function forms bind their own.
+const hasFreeJump = (n, loops = 0, switches = 0, labels = null) => {
   if (!Array.isArray(n)) return false
   const op = n[0]
-  if ((op === 'break' || op === 'continue') && n[1] == null) return depth === 0
+  if (op === 'break' || op === 'continue')
+    return n[1] != null ? !labels?.includes(n[1]) : op === 'continue' ? loops === 0 : loops + switches === 0
   if (FN_BOUNDARY_OPS.has(op)) return false
-  const inner = op === 'while' || op === 'do' || op === 'for' || op === 'switch' ? depth + 1 : depth
-  return n.some((c, i) => i > 0 && hasFreeJump(c, inner))
+  if (op === ':' && typeof n[1] === 'string') return hasFreeJump(n[2], loops, switches, [...(labels || []), n[1]])
+  const loop = op === 'while' || op === 'do' || op === 'for' ? 1 : 0, sw = op === 'switch' ? 1 : 0
+  for (let i = 1; i < n.length; i++) if (hasFreeJump(n[i], loops + loop, switches + sw, labels)) return true
+  return false
 }
 
 // A `return` anywhere in this statement (same canonical boundary — a nested
@@ -78,6 +86,10 @@ const hasReturn = (n) => {
   if (FN_BOUNDARY_OPS.has(n[0])) return false
   return n[0] === 'return' || n.some(hasReturn)
 }
+
+// A statement the machine splits into states (the rest stay atomic): one
+// holding a yield or an await, a return, or a jump out of it.
+const decomposes = (st) => hasYield(st) || hasReturn(st) || hasFreeJump(st)
 
 // Canonical statement-list view of any body/branch node: '{}' unwraps
 // (recursively — a block's payload may itself be a ';' list or one stmt),
@@ -133,7 +145,7 @@ const bodyStmts = (body) => Array.isArray(body) && body[0] === ';' ? body.slice(
 // receiver) or tests `instanceof Iterator`; generator objects then mint
 // through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
-export function createGeneratorLowering({ transform, transformParams, err, generatorNames, generatorCloses, genTemp, iterProto, lowerArguments }) {
+export function createGeneratorLowering({ transform, transformParams, err, generatorNames, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr }) {
   // A destructuring declaration in the body binds through a temp: the machine
   // hoists plain names only, so `let { a, b: c, d = 1 } = e` becomes the
   // declarators `t = e, a = t.a, c = t.b, d = t.d ?? 1` (arrays by index, a
@@ -305,7 +317,8 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     const lowered = lowerArguments(params, rawBody, true)
     params = lowered[0]; rawBody = lowered[1]
     const paramInit = lowered[2].map(transform)
-    const body = blockStmts(rawBody)
+    // every yield and await at a statement (jzify/async.js)
+    const body = blockStmts(hoistSuspensions(rawBody))
 
     // JS hoists function declarations: a machine body binds its TOP-LEVEL
     // ones as consts up front (the machine assigns hoisted locals before
@@ -494,45 +507,69 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
 
     // Flatten a statement list into states. Returns the state id control falls
     // into after the list (or null if control never falls through).
-    // loopCtx = { cont, brk } target state ids for the innermost decomposed loop.
-    const flattenList = (stmts, cur, loopCtx) => {
+    // `jumps` = { brk, cont, labels }: where a break, a continue and a jump to
+    // a label go out of decomposed statements, each a target { s, fin } (its
+    // state, and the try with a finally it stands in: a jump to it crosses
+    // the finally blocks between). `labels` name the statement flattening.
+    const flattenList = (stmts, cur, jumps) => {
       for (const st of stmts) {
         if (cur == null) return null   // unreachable code after a terminator — drop
-        cur = flattenStmt(st, cur, loopCtx)
+        cur = flattenStmt(st, cur, jumps)
       }
       return cur
     }
 
     // a statement is the current position while it flattens (ctx.js)
-    const flattenStmt = (st, cur, loopCtx) => {
+    const flattenStmt = (st, cur, jumps, labels) => {
       const outer = ctx.error.loc
       if (Array.isArray(st) && st.loc != null) ctx.error.loc = st.loc
-      const next = flattenStmtAt(st, cur, loopCtx)
+      const next = flattenStmtAt(st, cur, jumps, labels)
       ctx.error.loc = outer
       return next
     }
-    const flattenStmtAt = (st, cur, loopCtx) => {
+    const target = (s) => ({ s, fin: curFinally })
+    // a loop's jumps: its break and continue, under each of its labels too
+    const loopJumps = (jumps, labels, brk, cont) => {
+      const own = { brk: target(brk), cont: target(cont), labels: jumps?.labels }
+      if (labels) { own.labels = new Map(own.labels); for (const l of labels) own.labels.set(l, own) }
+      return own
+    }
+    // An expression that may suspend, as statements and a value: its yields
+    // and awaits land in temps of their own (hoistExpr), machine locals.
+    const split = (e) => {
+      if (e == null || !hasYield(e)) return { pre: [], expr: e }
+      const h = hoistExpr(e)
+      for (const s of h.pre) collectLocals(s, locals)
+      return h
+    }
+    // Branch on a test that may suspend, where it stands.
+    const branch = (at, cond, then, otherwise, jumps) => {
+      const c = split(cond)
+      at = flattenList(c.pre, at, jumps)
+      stmtsOf(at).push(['if', c.expr == null ? [null, true] : transform(c.expr), [';', ...gotoIR(then)], [';', ...gotoIR(otherwise)]], [';;continue'])
+    }
+    const flattenStmtAt = (st, cur, jumps, labels) => {
       if (!Array.isArray(st)) { if (st != null) stmtsOf(cur).push(transform(st)); return cur }
       const op = st[0]
 
       // --- yield forms ---
-      if (op === 'yield*') return flattenStmt(desugarYieldStar(st[1], null), cur, loopCtx)
+      if (op === 'yield*') return flattenStmt(desugarYieldStar(st[1], null), cur, jumps)
       if (op === 'yield' || op === 'await') return emitYield(cur, st, null)
       if ((op === 'let' || op === 'const') && st.length === 2 && Array.isArray(st[1]) &&
           st[1][0] === '=' && isYield(st[1][2])) {
-        if (st[1][2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[1][2][1], st[1][1]), cur, loopCtx)
+        if (st[1][2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[1][2][1], st[1][1]), cur, jumps)
         return emitYield(cur, st[1][2], st[1][1])
       }
       if (op === '=' && typeof st[1] === 'string' && isYield(st[2])) {
-        if (st[2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[2][1], st[1]), cur, loopCtx)
+        if (st[2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[2][1], st[1]), cur, jumps)
         return emitYield(cur, st[2], st[1])
       }
       // `name.prop = yield E` (a field set from an await): the value lands in a
       // temp at the resume, then the store – the receiver is a plain name, so
       // evaluating it after the yield changes nothing observable
-      if (op === '=' && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][1] === 'string' && isYield(st[2]) && st[2][0] !== 'yield*') {
+      if (op === '=' && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][1] === 'string' && isYield(st[2])) {
         const t = genTemp('ya'); locals.add(t)
-        const resume = emitYield(cur, st[2], t)
+        const resume = st[2][0] === 'yield*' ? flattenStmt(desugarYieldStar(st[2][1], t), cur, jumps) : emitYield(cur, st[2], t)
         stmtsOf(resume).push(['=', st[1], t])
         return resume
       }
@@ -549,10 +586,11 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         return null
       }
 
-      // --- break/continue of a DECOMPOSED loop, through the finally blocks between ---
-      if ((op === 'break' || op === 'continue') && st[1] == null && loopCtx) {
-        stmtsOf(cur).push(...leave(crossing(curFinally, loopCtx.fin), op === 'break' ? loopCtx.brk : loopCtx.cont))
-        return null
+      // --- a break or continue of a DECOMPOSED statement, through the finally blocks between ---
+      if (op === 'break' || op === 'continue') {
+        const to = st[1] != null ? jumps?.labels?.get(st[1]) : jumps
+        const at = to && (op === 'break' ? to.brk : to.cont)
+        if (at) { stmtsOf(cur).push(...leave(crossing(curFinally, at.fin), at.s)); return null }
       }
 
       // --- function declarations: top-level ones were hoisted to consts by
@@ -564,14 +602,14 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       // --- a statement list flattens statement by statement: its `let`s are
       // hoisted machine locals and must become assignments, never a nested
       // block's own bindings shadowing them ---
-      if (op === '{}' || op === ';') return flattenList(blockStmts(st), cur, loopCtx)
+      if (op === '{}' || op === ';') return flattenList(blockStmts(st), cur, jumps)
 
       // --- compound statements stay atomic only when they carry no yield, no
       // plain return (see hasReturn — a nested return must reach the `return`
       // case above, not fall-through as a bare host return), AND no
-      // break/continue that binds a DECOMPOSED loop (the raw op would bind the
-      // dispatch while(1) instead — an infinite next()) ---
-      if (!hasYield(st) && !hasReturn(st) && !(loopCtx && hasFreeJump(st))) {
+      // break/continue that binds a DECOMPOSED statement (the raw op would
+      // bind the dispatch while(1) instead — an infinite next()) ---
+      if (!decomposes(st)) {
         // let/const initializers become assignments (names are hoisted), a
         // declaration without one the undefined it declares
         if (op === 'let' || op === 'const') {
@@ -582,8 +620,24 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
           }
           return cur
         }
-        stmtsOf(cur).push(transform(st))
+        // a labeled block keeps its label (a colon in an expression names no statement)
+        if (op === ':' && typeof st[1] === 'string' && Array.isArray(st[2]) && st[2][0] === '{}')
+          stmtsOf(cur).push(withLoc(['label', st[1], transform(st[2])], st))
+        else stmtsOf(cur).push(transform(st))
         return cur
+      }
+
+      // --- a labeled statement: a loop takes its labels, any other statement
+      // ends where a break of its label goes ---
+      if (op === ':' && typeof st[1] === 'string') {
+        const names = [...(labels || []), st[1]], inner = st[2]
+        if (Array.isArray(inner) && (inner[0] === ':' || inner[0] === 'while' || inner[0] === 'do' || inner[0] === 'for'))
+          return flattenStmt(inner, cur, jumps, names)
+        const after = newState(), own = { brk: target(after) }, map = new Map(jumps?.labels)
+        for (const l of names) map.set(l, own)
+        const end = flattenStmt(inner, cur, { ...jumps, labels: map })
+        if (end != null) stmtsOf(end).push(...gotoIR(after))
+        return after
       }
 
       // --- yield-bearing control ---
@@ -593,20 +647,22 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         const thenS = newState()
         const elseS = elseB != null ? newState() : join
         stmtsOf(cur).push(['if', transform(cond), [';', ...gotoIR(thenS)], [';', ...gotoIR(elseS)]], [';;continue'])
-        const tEnd = flattenList(blockStmts(thenB), thenS, loopCtx)
+        const tEnd = flattenList(blockStmts(thenB), thenS, jumps)
         if (tEnd != null) stmtsOf(tEnd).push(...gotoIR(join))
         if (elseB != null) {
-          const eEnd = flattenList(blockStmts(elseB), elseS, loopCtx)
+          const eEnd = flattenList(blockStmts(elseB), elseS, jumps)
           if (eEnd != null) stmtsOf(eEnd).push(...gotoIR(join))
         }
         return join
       }
+      // A loop's test, step and initializer run where the loop runs them, a
+      // yield or await among them suspending there (split).
       if (op === 'while') {
         const [, cond, bodyB] = st
         const test = newState(), bodyS = newState(), exit = newState()
         stmtsOf(cur).push(...gotoIR(test))
-        stmtsOf(test).push(['if', transform(cond), [';', ...gotoIR(bodyS)], [';', ...gotoIR(exit)]], [';;continue'])
-        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: test, brk: exit, fin: curFinally })
+        branch(test, cond, bodyS, exit, jumps)
+        const bEnd = flattenList(blockStmts(bodyB), bodyS, loopJumps(jumps, labels, exit, test))
         if (bEnd != null) stmtsOf(bEnd).push(...gotoIR(test))
         return exit
       }
@@ -614,9 +670,9 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         const [, bodyB, cond] = st
         const bodyS = newState(), test = newState(), exit = newState()
         stmtsOf(cur).push(...gotoIR(bodyS))
-        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: test, brk: exit, fin: curFinally })
+        const bEnd = flattenList(blockStmts(bodyB), bodyS, loopJumps(jumps, labels, exit, test))
         if (bEnd != null) stmtsOf(bEnd).push(...gotoIR(test))
-        stmtsOf(test).push(['if', transform(cond), [';', ...gotoIR(bodyS)], [';', ...gotoIR(exit)]], [';;continue'])
+        branch(test, cond, bodyS, exit, jumps)
         return exit
       }
       if (op === 'for') {
@@ -626,20 +682,45 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         if (Array.isArray(head) && head[0] === 'of' && Array.isArray(head[2]) &&
             head[2][0] === '()' && typeof head[2][1] === 'string' && generatorNames?.has(head[2][1])) {
           const localTemp = (t) => { const n = genTemp(t); locals.add(n); return n }
-          return flattenStmt(desugarForOfGenerator(head[1], head[2], bodyB, localTemp), cur, loopCtx)
+          return flattenStmt(desugarForOfGenerator(head[1], head[2], bodyB, localTemp), cur, jumps)
         }
         if (Array.isArray(head) && (head[0] === 'of' || head[0] === 'in'))
           err('generators v1: yield inside for-of/for-in is not supported yet — use an indexed for')
         // C-style [';', init, cond, step] (subscript head shape)
         const [, init, cond, step] = Array.isArray(head) && head[0] === ';' ? head : [';', head, undefined, undefined]
-        if (init != null) flattenStmt(init, cur, null) === cur || err('generators v1: yield in a for-init is not supported — move the initializer before the loop')
+        if (init != null) cur = flattenStmt(init, cur, jumps)
         const test = newState(), bodyS = newState(), stepS = newState(), exit = newState()
         stmtsOf(cur).push(...gotoIR(test))
-        stmtsOf(test).push(['if', cond == null ? [null, true] : transform(cond), [';', ...gotoIR(bodyS)], [';', ...gotoIR(exit)]], [';;continue'])
-        const bEnd = flattenList(blockStmts(bodyB), bodyS, { cont: stepS, brk: exit, fin: curFinally })
+        branch(test, cond, bodyS, exit, jumps)
+        const bEnd = flattenList(blockStmts(bodyB), bodyS, loopJumps(jumps, labels, exit, stepS))
         if (bEnd != null) stmtsOf(bEnd).push(...gotoIR(stepS))
-        if (step != null) stmtsOf(stepS).push(transform(step))
-        stmtsOf(stepS).push(...gotoIR(test))
+        const s = split(step), sEnd = flattenList(s.pre, stepS, jumps)
+        if (s.expr != null) stmtsOf(sEnd).push(transform(s.expr))
+        stmtsOf(sEnd).push(...gotoIR(test))
+        return exit
+      }
+      // A switch tests its cases in order, a yield or await in a test
+      // suspending there, enters the first that matches, else its default,
+      // and falls from each case into the next; a break leaves it.
+      if (op === 'switch') {
+        const clauses = st.slice(2), exit = newState(), disc = genTemp('sw')
+        locals.add(disc)
+        stmtsOf(cur).push(['=', disc, transform(st[1])])
+        const bodies = clauses.map(() => newState())
+        let at = cur
+        clauses.forEach((c, i) => {
+          if (c[0] !== 'case') return
+          const t = split(c[1])
+          at = flattenList(t.pre, at, jumps)
+          stmtsOf(at).push(['if', ['===', disc, transform(t.expr)], [';', ...gotoIR(bodies[i])]])
+        })
+        const dflt = clauses.findIndex(c => c[0] === 'default')
+        stmtsOf(at).push(...gotoIR(dflt >= 0 ? bodies[dflt] : exit))
+        const own = { ...jumps, brk: target(exit) }
+        clauses.forEach((c, i) => {
+          const end = flattenList(blockStmts(c[0] === 'case' ? c[2] : c[1]), bodies[i], own)
+          if (end != null) stmtsOf(end).push(...gotoIR(i + 1 < clauses.length ? bodies[i + 1] : exit))
+        })
         return exit
       }
       if (op === 'try') {
@@ -671,18 +752,18 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
         curHandler = catchS
         const bodyS = newState()
         stmtsOf(cur).push(...gotoIR(bodyS))
-        finish(flattenList(blockStmts(st[1]), bodyS, loopCtx))
+        finish(flattenList(blockStmts(st[1]), bodyS, jumps))
         if (catchC) {
           curHandler = errorS
           if (catchC[1] != null) { locals.add(catchC[1]); stmtsOf(catchS).push(['=', catchC[1], S.ERR]) }
-          finish(flattenList(blockStmts(catchC[2]), catchS, loopCtx))
+          finish(flattenList(blockStmts(catchC[2]), catchS, jumps))
         }
         curHandler = outer
         curFinally = outerFinally
         if (fin) {
           // One finalizer for every completion. Its own return, throw or jump
           // overrides the pending one; falling through resumes it.
-          const end = flattenList(blockStmts(finallyC[1]), finS, loopCtx)
+          const end = flattenList(blockStmts(finallyC[1]), finS, jumps)
           if (end != null) stmtsOf(end).push(['if', ['===', fin.next, [null, THROWN]], ['throw', fin.error]],
             ['=', S.NEXT, fin.next], [';;continue'])
         }

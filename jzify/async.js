@@ -110,22 +110,23 @@ export function createAsyncLowering({ genTemp }) {
     return withLoc(node.map((n, i) => i === 0 ? n : mapAwait(n)), node)
   }
   function fnBoundary(n) { return FN_OPS.has(n[0]) }
-  function isAwait(n) { return n[0] === 'await' || n[0] === 'for await' }
+  function isAwait(n) { return n[0] === 'await' || n[0] === 'for await' || n[0] === 'yield' || n[0] === 'yield*' }
   function refsAwait(node) { return some(node, isAwait, { boundary: fnBoundary }) }
 
-  // ---- await in expression position → statement position ----
-  // The machine suspends at statements only (generators.js: a yield as a
-  // statement, or the right side of `let x = yield E` / `x = yield E` /
-  // `x.f = yield E`). Every other await is hoisted: the awaited value lands
-  // in a temp declared before the statement, and whatever the statement
-  // evaluates before that await lands in temps first, so the source's order
-  // holds (a callee and an assignment target stay in place: a temp would
-  // turn a method call into a closure call, or store into a copy). A
-  // short-circuit or conditional whose later arm awaits becomes an if
-  // statement assigning a temp; a loop whose test awaits tests at the top of
-  // each iteration of `while (true)`.
+  // ---- a suspension in expression position → statement position ----
+  // The machine suspends at statements only (generators.js: a yield or an
+  // await as a statement, or the right side of `let x = yield E` /
+  // `x = yield E` / `x.f = yield E`). Every other one is hoisted: the value
+  // it resumes with lands in a temp declared before the statement, and
+  // whatever the statement evaluates before it lands in temps first, so the
+  // source's order holds (a callee stays in place: a temp would turn a method
+  // call into a closure call; an assignment, hoistAssign). A short-circuit or
+  // conditional whose later arm suspends becomes an if statement assigning a
+  // temp. A loop's test, step and initializer and a
+  // case's test stay where they are: the machine runs them as statements
+  // where the loop and the switch run them (hoistExpr, generators.js).
   const UNDEF = [null, undefined]
-  const isAwaitOf = (e) => Array.isArray(e) && e[0] === 'await'
+  const isAwaitOf = (e) => Array.isArray(e) && (e[0] === 'await' || e[0] === 'yield' || e[0] === 'yield*')
   const isSimple = (e) => !Array.isArray(e) || e[0] == null
   const stmtsOf = (b) => b == null ? [] : Array.isArray(b) && b[0] === ';' ? b.slice(1) : Array.isArray(b) && b[0] === '{}' ? stmtsOf(b[1]) : [b]
   const seq = (list) => list.length === 1 ? list[0] : [';', ...list]
@@ -133,7 +134,6 @@ export function createAsyncLowering({ genTemp }) {
   const hoistList = (b) => stmtsOf(b).flatMap(hoistStmt)
   // A body keeps its spelling: a block stays a block, a lone statement stays bare.
   const blockOf = (b) => { if (b == null) return b; const list = hoistList(b); return list.length === 1 && !(Array.isArray(b) && b[0] === '{}') ? list[0] : block(list) }
-  const hasContinue = (b) => some(b, n => n[0] === 'continue', { boundary: fnBoundary })
   const keepsPlace = (op, i) => i === 1 && (op === '()' || op === '?.()' || ASSIGN_OPS.has(op) || op === '++' || op === '--')
   // What an expression or a statement lowers to stands where it stood.
   function hoistExpr(e) {
@@ -145,9 +145,9 @@ export function createAsyncLowering({ genTemp }) {
   function hoistExprNode(e) {
     if (!Array.isArray(e) || FN_OPS.has(e[0]) || !refsAwait(e)) return { pre: [], expr: e }
     const op = e[0]
-    if (op === 'await') {
+    if (isAwaitOf(e)) {
       const inner = hoistExpr(e[1]), t = genTemp('aw')
-      return { pre: [...inner.pre, ['let', ['=', t, ['await', inner.expr]]]], expr: t }
+      return { pre: [...inner.pre, ['let', ['=', t, [op, inner.expr]]]], expr: t }
     }
     if ((op === '&&' || op === '||' || op === '??') && refsAwait(e[2])) {
       const l = hoistExpr(e[1]), r = hoistExpr(e[2]), t = genTemp('aw')
@@ -158,6 +158,7 @@ export function createAsyncLowering({ genTemp }) {
       const c = hoistExpr(e[1]), a = hoistExpr(e[2]), b = hoistExpr(e[3]), t = genTemp('aw')
       return { pre: [...c.pre, ['let', ['=', t, UNDEF]], ['if', c.expr, block([...a.pre, ['=', t, a.expr]]), block([...b.pre, ['=', t, b.expr]])]], expr: t }
     }
+    if (ASSIGN_OPS.has(op)) return hoistAssign(op, e[1], e[2])
     // Children evaluate left to right: those before the last awaiting child
     // land in temps, the rest stay in place.
     const out = e.slice(), pre = []
@@ -178,6 +179,27 @@ export function createAsyncLowering({ genTemp }) {
     }
     return { pre, expr: out }
   }
+  // An assignment that suspends reads first what JS reads first: its target's
+  // object and computed key (a named receiver stays: the machine stores
+  // through it), and a compound assignment's current value, which a logical
+  // one tests before its value runs at all.
+  function hoistAssign(op, target, value) {
+    const pre = [], temp = (x) => { const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
+    const part = (x, keep) => { const h = hoistExpr(x); pre.push(...h.pre); return keep(h.expr) ? h.expr : temp(h.expr) }
+    let place = target
+    if (Array.isArray(target) && target[0] === '.') place = ['.', part(target[1], isSimple), target[2]]
+    else if (Array.isArray(target) && target[0] === '[]' && target.length === 3)
+      place = ['[]', part(target[1], isSimple), part(target[2], (k) => Array.isArray(k) && k[0] == null)]
+    const at = () => Array.isArray(place) ? place.slice() : place
+    const v = hoistExpr(value)
+    if (op === '=') return { pre: [...pre, ...v.pre], expr: ['=', at(), v.expr] }
+    const t = temp(at())
+    if (op === '&&=' || op === '||=' || op === '??=') {
+      const test = op === '&&=' ? t : op === '||=' ? ['!', t] : ['==', t, NULL]
+      return { pre: [...pre, ['if', test, block([...v.pre, ['=', t, ['=', at(), v.expr]]])]], expr: t }
+    }
+    return { pre: [...pre, ...v.pre], expr: ['=', at(), [op.slice(0, -1), t, v.expr]] }
+  }
   function hoistStmt(st) {
     const out = hoistStmtNode(st)
     for (const s of out) withLoc(s, st)
@@ -188,58 +210,44 @@ export function createAsyncLowering({ genTemp }) {
     const op = st[0]
     if (op === ';') return st.slice(1).flatMap(hoistStmt)
     if (op === '{}') return [block(hoistList(st[1]))]
-    if (op === 'await') { const inner = hoistExpr(st[1]); return [...inner.pre, ['await', inner.expr]] }
+    if (isAwaitOf(st)) { const inner = hoistExpr(st[1]); return [...inner.pre, [op, inner.expr]] }
     if (op === 'let' || op === 'const' || op === 'var') {
       const out = []
       for (const d of st.slice(1)) {
         if (!Array.isArray(d) || d[0] !== '=' || !refsAwait(d[2])) { out.push([op, d]); continue }
-        if (typeof d[1] === 'string' && isAwaitOf(d[2])) { const inner = hoistExpr(d[2][1]); out.push(...inner.pre, [op, ['=', d[1], ['await', inner.expr]]]); continue }
+        if (typeof d[1] === 'string' && isAwaitOf(d[2])) { const inner = hoistExpr(d[2][1]); out.push(...inner.pre, [op, ['=', d[1], [d[2][0], inner.expr]]]); continue }
         const h = hoistExpr(d[2]); out.push(...h.pre, [op, ['=', d[1], h.expr]])
       }
       return out
     }
     if (ASSIGN_OPS.has(op)) {
       const target = st[1], plain = typeof target === 'string' || (Array.isArray(target) && target[0] === '.' && typeof target[1] === 'string')
-      if (op === '=' && plain && isAwaitOf(st[2])) { const inner = hoistExpr(st[2][1]); return [...inner.pre, ['=', target, ['await', inner.expr]]] }
-      const h = hoistExpr(st[2])
-      return [...h.pre, [op, target, h.expr]]
+      if (op === '=' && plain && isAwaitOf(st[2])) { const inner = hoistExpr(st[2][1]); return [...inner.pre, ['=', target, [st[2][0], inner.expr]]] }
+      const h = hoistAssign(op, target, st[2])
+      return [...h.pre, ...(typeof h.expr === 'string' ? [] : [h.expr])]
     }
     if (op === 'return' || op === 'throw') { const h = hoistExpr(st[1]); return [...h.pre, [op, h.expr]] }
     if (op === 'if') { const c = hoistExpr(st[1]); return [...c.pre, ['if', c.expr, blockOf(st[2]), ...(st.length > 3 ? [blockOf(st[3])] : [])]] }
-    if (op === 'while') {
-      if (!refsAwait(st[1])) return [['while', st[1], blockOf(st[2])]]
-      const c = hoistExpr(st[1])
-      return [['while', [null, true], block([...c.pre, ['if', ['!', c.expr], ['break']], ...hoistList(st[2])])]]
-    }
-    if (op === 'do') {
-      if (!refsAwait(st[2])) return [['do', blockOf(st[1]), st[2]]]
-      if (hasContinue(st[1])) return [st]
-      const c = hoistExpr(st[2])
-      return [['while', [null, true], block([...hoistList(st[1]), ...c.pre, ['if', ['!', c.expr], ['break']]])]]
-    }
+    if (op === 'while') return [['while', st[1], blockOf(st[2])]]
+    if (op === 'do') return [['do', blockOf(st[1]), st[2]]]
     if (op === 'for' && Array.isArray(st[1])) {
       const head = st[1]
       if (head[0] === 'of' || head[0] === 'in') { const src = hoistExpr(head[2]); return [...src.pre, ['for', [head[0], head[1], src.expr], blockOf(st[2])]] }
       if (head[0] === ';') {
         const [, init, cond, step] = head
-        const initStmts = init == null ? [] : hoistStmt(init)
-        if (!refsAwait(cond) && !refsAwait(step)) {
-          const inline = initStmts.length === 1 && !refsAwait(init)
-          return [...(inline ? [] : initStmts), ['for', [';', inline ? init : null, cond, step], blockOf(st[2])]]
-        }
-        if (hasContinue(st[2])) return [st]
-        const c = cond == null ? { pre: [], expr: [null, true] } : hoistExpr(cond), s = step == null ? null : hoistExpr(step)
-        return [...initStmts, ['while', [null, true], block([...c.pre, ['if', ['!', c.expr], ['break']], ...hoistList(st[2]), ...(s ? [...s.pre, s.expr] : [])])]]
+        return [['for', [';', init != null && refsAwait(init) ? seq(hoistStmt(init)) : init, cond, step], blockOf(st[2])]]
       }
     }
     if (op === 'for await' && Array.isArray(st[1]) && st[1][0] === 'of') { const src = hoistExpr(st[1][2]); return [...src.pre, ['for await', ['of', st[1][1], src.expr], blockOf(st[2])]] }
     if (op === 'try') return [['try', blockOf(st[1]), ...st.slice(2).map(c => c[0] === 'catch' ? ['catch', c[1], blockOf(c[2])] : c[0] === 'finally' ? ['finally', blockOf(c[1])] : c)]]
     if (op === 'switch') { const d = hoistExpr(st[1]); return [...d.pre, ['switch', d.expr, ...st.slice(2).map(c => c[0] === 'case' ? ['case', c[1], seq(hoistList(c[2]))] : c[0] === 'default' ? ['default', seq(hoistList(c[1]))] : c)]] }
-    if (op === ':' && typeof st[1] === 'string') return [[':', st[1], blockOf(st[2])]]
+    // what the labeled statement evaluates first stands ahead of the label
+    if (op === ':' && typeof st[1] === 'string') { const list = hoistStmt(st[2]); return [...list.slice(0, -1), [':', st[1], list[list.length - 1]]] }
     const h = hoistExpr(st)
     return [...h.pre, ...(typeof h.expr === 'string' ? [] : [h.expr])]
   }
-  const hoistAwaits = (body) => Array.isArray(body) && body[0] === '{}' ? block(hoistList(body)) : seq(hoistList(body))
+  /** A body whose every yield and await stands at a statement (above). */
+  const hoistSuspensions = (body) => Array.isArray(body) && body[0] === '{}' ? block(hoistList(body)) : seq(hoistList(body))
 
   // An async generator's `return E` awaits E (ECMA-262 ReturnStatement), inside
   // whatever try it stands in; a bare `return` does not.
@@ -260,7 +268,7 @@ export function createAsyncLowering({ genTemp }) {
     // default's in a name of its own, a rest by spreading it: the machine's
     // parameters are then its callers' arguments, as a plain function's are. A
     // function reading `arguments` takes them all, `(...aa)`, keeping their count.
-    const machine = ['function*', null, params, mapAwait(hoistAwaits(body))], list = extractParams(params)
+    const machine = ['function*', null, params, mapAwait(hoistSuspensions(body))], list = extractParams(params)
     const own = usesArguments(body) || usesArguments(params) ? [['...', genTemp('aa')]]
       : list.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? ['...', genTemp('aa')] : genTemp('ap'))
     const seq = (l) => l.length === 0 ? null : l.length === 1 ? l[0] : [',', ...l]
@@ -280,10 +288,10 @@ export function createAsyncLowering({ genTemp }) {
   function lowerAsyncGen(params, body) {
     const aa = genTemp('ag')
     return ['=>', ['()', ['...', aa]],
-      ['()', '__ag_run', ['()', ['function*', null, params, mapAwait(hoistAwaits(awaitReturns(body))), 'async'], ['...', aa]]]]
+      ['()', '__ag_run', ['()', ['function*', null, params, mapAwait(hoistSuspensions(awaitReturns(body))), 'async'], ['...', aa]]]]
   }
 
   return {
-    lowerAsync, lowerAsyncGen,
+    lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr,
   }
 }

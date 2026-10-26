@@ -744,7 +744,8 @@ const patternItems = pattern => {
   // length 3 is `receiver[key]` element access — a leaf, not a container.
   // Only the length-2 shape should recurse; `'{}'` has no such ambiguity.
   if (pattern[0] === '{}' && pattern.length > 1) return patternItems(pattern[1])
-  if (pattern[0] === '[]' && pattern.length === 2) return patternItems(pattern[1])
+  // An element in parentheses is one element (`[(x, y)]` is no `[x, y]`).
+  if (pattern[0] === '[]' && pattern.length === 2) return isNode(pattern[1]) && pattern[1][0] === ',' ? pattern[1].slice(1) : [pattern[1]]
   if (pattern[0] === ',') return pattern.slice(1)
   return [pattern]
 }
@@ -1057,6 +1058,20 @@ const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
     if (paramNames.includes(name)) fail(`lexical declaration '${name}' conflicts with a parameter`)
   }
   for (const name of lexical) checkBindingName(name, { ...cx, lexical: true })
+}
+
+// A yield expression is an AssignmentExpression: as an operand (`void yield`,
+// `3 + yield 4`, `yield\n* 1`, `yield.x`) it stands only in parentheses.
+const YIELD_UNARY = new Set(['void', 'typeof', 'delete', '!', '~', 'await', '++', '--'])
+const YIELD_BINARY = new Set(['+', '-', '*', '/', '%', '**', '<', '>', '<=', '>=', '==', '!=', '===', '!==',
+  '&', '|', '^', '<<', '>>', '>>>', '&&', '||', '??', 'instanceof', 'in'])
+const YIELD_HEAD = new Set(['.', '?.', '?.[]', '?.()', 'new', '``', '?'])
+const isYieldNode = n => isNode(n) && (n[0] === 'yield' || n[0] === 'yield*')
+const yieldOperand = (node) => {
+  const op = node[0]
+  if (YIELD_UNARY.has(op) || node.length === 2 && (op === '+' || op === '-')) return isYieldNode(node[1])
+  if (YIELD_BINARY.has(op)) return isYieldNode(node[1]) || isYieldNode(node[2])
+  return (YIELD_HEAD.has(op) || node.length === 3 && (op === '[]' || op === '()')) && isYieldNode(node[1])
 }
 
 const isAssignmentTarget = (node, allowPattern) => {
@@ -1460,6 +1475,7 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
     if (!isNode(node)) return
     const op = node[0]
     if (op == null) return
+    if (cx.generator && yieldOperand(node)) fail('a yield expression as an operand must stand in parentheses')
     for (let i = 1; i < node.length; i++) {
       const value = node[i]
       if (op !== 'class' && typeof value === 'string' && value.startsWith('#') && !cx.privateNames?.has(value))
