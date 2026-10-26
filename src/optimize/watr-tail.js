@@ -28,7 +28,7 @@ import { searchLoops } from './search-loops.js'
 import { pointerExits } from './pointer-exits.js'
 import { ringLaps } from './ring-laps.js'
 import { leadChains } from './lead-chains.js'
-import { splitFuncs } from './split-funcs.js'
+import { splitFuncs, loopPasses } from './split-funcs.js'
 import { inlineTiny } from './inline-tiny.js'
 import { forwardCheckedElements } from './forward-checked.js'
 
@@ -576,6 +576,8 @@ export function watrTail(module, cfg, {
   if (cfg.poolFloats === true) time('poolFloatConstants', () => poolFloatConstants(optimized))
   // (after every pass that reads a function whole, the inliner above all, which would splice a
   // single-caller arm back)
+  // (the same: an inliner would splice a pass back into the function that runs once)
+  if (cfg.loopPasses === true) time('loopPasses', () => loopPasses(optimized, { user: name => ctx.funcs.map.has(name.slice(1)) }))
   if (cfg.splitFuncs === true) time('splitFuncs', () => splitFuncs(optimized, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm }))
   return optimized
 }

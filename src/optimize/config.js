@@ -65,7 +65,7 @@ const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
 const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, pointerExits: true, ringLaps: true, earlyStores: true, leadChains: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, inlineTiny: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
-const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false, pairIterations: false })
+const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false, loopPasses: false, pairIterations: false })
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
@@ -146,6 +146,7 @@ const LEVEL_PRESETS = Object.freeze({
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
     guardedToInt32: false,    // a magnitude test and a second truncation beside each ToInt32 — speed-only
     splitFuncs: false,        // a call and its moves per moved arm: the size tier keeps its functions whole
+    loopPasses: false,        // a call and its moves per pass of a loop nest: the size tier keeps its functions whole
     leanRuntime: true,        // `__str_eq`/`__str_hash` link their plain byte walks (the hot/cold split, the 4-byte chunking and the per-probe hash fast arms are speed-for-size)
 
     inlineToNum: false,      // unknown conversions share __to_num; the per-site number fast path trades bytes for speed

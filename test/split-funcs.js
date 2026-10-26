@@ -6,7 +6,7 @@ import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import compileWat from 'watr/compile'
 import jz, { compile } from '../index.js'
-import { splitFuncs } from '../src/optimize/split-funcs.js'
+import { splitFuncs, loopPasses } from '../src/optimize/split-funcs.js'
 import { onKernel } from './_matrix.js'
 import { oracle } from './util.js'
 
@@ -348,4 +348,105 @@ test('split funcs: the default and size tiers keep their functions whole', () =>
   if (onKernel()) return
   for (const level of [2, 'size'])
     ok(!/\(func \$[^\s()]*\$s\d+/.test(compile(SRC, { optimize: { level, splitFn: 0, splitArm: 1 }, wat: true })), `${level}`)
+})
+
+// Each pass of a loop of a few passes that runs a loop, in a function that runs once, is a
+// call (loopPasses): V8 replaces a function's code between calls only.
+const NEST = (inner, rows = '(i32.const 40)', entry = '') => `(func $f (export "f") (param $n i32) (result i32)
+    (local $i i32) (local $j i32) (local $acc i32) (local $row i32)
+    ${entry}
+    (block $done (loop $rows
+      (br_if $done (i32.ge_s (local.get $i) ${rows}))
+      (local.set $row (i32.mul (local.get $i) (i32.add (local.get $n) (i32.const 3))))
+      (local.set $j (i32.const 0))
+      (block $cols (loop $col
+        (br_if $cols (i32.ge_s (local.get $j) (local.get $i)))
+        (local.set $acc (i32.add (local.get $acc) (i32.xor (local.get $row) ${inner})))
+        (local.set $j (i32.add (local.get $j) (i32.const 1)))
+        (br $col)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $rows)))
+    (i32.add (local.get $acc) (local.get $i)))`
+const passes = (wat) => {
+  const mod = parseWat(wat)
+  const made = loopPasses(mod, { user: name => !name.startsWith('$__') })
+  return { made, exports: new WebAssembly.Instance(new WebAssembly.Module(compileWat(mod))).exports, mod }
+}
+
+test('loop passes: a nest in an export gives its outer loop\'s pass, carried locals in and out', () => {
+  const wat = `(module ${NEST('(local.get $j)')})`
+  const ref = plain(wat), { made, exports, mod } = passes(wat)
+  is(made, 1, 'the outer pass moved')
+  for (const n of [0, 1, 2, 7, 30]) is(exports.f(n), ref.f(n), `f(${n})`)
+  const piece = mod.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$f$s0')
+  ok(piece && piece.some(n => Array.isArray(n) && n[0] === 'result'), 'the piece returns what the loop carries')
+})
+
+test('loop passes: a loop of passes a runtime value counts, of many passes, or entered at an unknown count keeps them', () => {
+  // its passes may be short (a frame's loop over its rows): a call each would cost
+  const kept = {
+    'a runtime count': NEST('(local.get $j)', '(local.get $n)'),
+    'many passes': NEST('(local.get $j)', '(i32.const 100000)'),
+    'a count entered from a parameter': NEST('(local.get $j)', '(i32.const 40)', '(local.set $i (local.get $n))'),
+  }
+  for (const [label, fn] of Object.entries(kept)) {
+    const wat = `(module ${fn})`, { made, exports } = passes(wat)
+    is(made, 0, label)
+    for (const n of [0, 3, 20]) is(exports.f(n), plain(wat).f(n), `${label}: f(${n})`)
+  }
+  const set = `(module ${NEST('(local.get $j)', '(i32.const 40)', '(local.set $i (i32.const 2))')})`
+  is(passes(set).made, 1, 'a count set to a constant before the loop moves')
+  for (const n of [0, 3, 20]) is(passes(set).exports.f(n), plain(set).f(n), `set: f(${n})`)
+})
+
+test('loop passes: a function called once from one that runs once gives its pass; one called in a loop, or the runtime\'s, keeps it', () => {
+  const callee = (name) => NEST('(local.get $j)').replace('$f (export "f")', name)
+  const once = `(module ${callee('$k')} (func $f (export "f") (param $n i32) (result i32) (call $k (local.get $n))))`
+  const looped = `(module ${callee('$k')} (func $f (export "f") (param $n i32) (result i32) (local $s i32) (local $r i32)
+    (block $b (loop $l (br_if $b (i32.ge_s (local.get $r) (i32.const 3)))
+      (local.set $s (i32.add (local.get $s) (call $k (local.get $n))))
+      (local.set $r (i32.add (local.get $r) (i32.const 1))) (br $l)))
+    (local.get $s)))`
+  const runtime = `(module ${NEST('(local.get $j)').replace('$f (export "f")', '$__walk (export "f")')})`
+  const r1 = passes(once), r2 = passes(looped), r3 = passes(runtime)
+  is(r1.made, 1, 'called once: moved')
+  is(r2.made, 0, 'called in a loop: kept')
+  is(r3.made, 0, 'the runtime\'s export: kept')
+  for (const n of [0, 3, 12]) { is(r1.exports.f(n), plain(once).f(n), `once f(${n})`); is(r2.exports.f(n), plain(looped).f(n), `looped f(${n})`) }
+})
+
+test('loop passes: a pass that branches out of itself, or that compacts, stays', () => {
+  const out = `(module ${NEST('(local.get $j)').replace('(local.set $j (i32.add (local.get $j) (i32.const 1)))', '(br_if $done (i32.gt_s (local.get $acc) (i32.const 1000))) (local.set $j (i32.add (local.get $j) (i32.const 1)))')})`
+  const { made, exports } = passes(out)
+  // the inner block is the only window holding the loop, and it branches to $done
+  is(made, 0, 'a branch out keeps the pass')
+  for (const n of [0, 5, 60]) is(exports.f(n), plain(out).f(n), `f(${n})`)
+  const gc = `(module (func $__gc_begin (param i32) (result i32) (local.get 0)) ${NEST('(call $__gc_begin (local.get $j))')})`
+  is(passes(gc).made, 0, 'a compaction keeps the pass')
+})
+
+const NEST_SRC = (rounds = 12) => `export let main = (n) => {
+  const xs = new Float64Array(64)
+  for (let i = 0; i < 64; i++) xs[i] = (i * 7) % 13 - 6
+  let total = 0
+  for (let r = 0; r < ${rounds}; r++) {
+    let s = 0
+    for (let i = 0; i < 64; i++) s += xs[i] * (r + n)
+    total += s
+  }
+  return total
+}
+`
+
+test('loop passes: the speed tier moves a driver\'s rounds and answers as the source does', () => {
+  for (const rounds of [12, 'n']) {
+    const src = NEST_SRC(rounds), native = oracle(src).main
+    const main = jz(src, { optimize: { level: 'speed' } }).exports.main
+    for (const n of [0, 1, 5, 40]) is(main(n), native(n), `${rounds} rounds: main(${n})`)
+  }
+  if (onKernel()) return
+  ok(/\(func \$main\$s\d+/.test(compile(NEST_SRC(), { optimize: { level: 'speed' }, wat: true })), 'the rounds\' pass is a function')
+  ok(!/\(func \$main\$s\d+/.test(compile(NEST_SRC('n'), { optimize: { level: 'speed' }, wat: true })), 'rounds a runtime value counts stay')
+  for (const level of [2, 'size'])
+    ok(!/\(func \$main\$s\d+/.test(compile(NEST_SRC(), { optimize: { level }, wat: true })), `${level} keeps it`)
 })

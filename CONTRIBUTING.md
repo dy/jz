@@ -3178,6 +3178,21 @@ It runs after watr, whose single-caller inliner would splice the arm back, and a
 new functions, so no index moves. `JZ_DEBUG_SPLIT=all` moves every arm the rules allow
 (a stress of the moves), `=log` names each arm moved.
 
+Just before it, each pass of a loop that runs a loop becomes a function where the loop's
+function runs once (the `loopPasses` pass, same file, speed tier): V8 replaces a function's
+code only between its calls, so a function its caller enters once runs as baseline code for
+as long as that call lasts, a driver's rounds and the kernel spliced into them included
+(stdlib-ddot's timed rounds). A function runs once when it is an export of the program's own
+that no function calls, or its one call sits outside every loop of a function that runs once;
+an outer loop of it that holds a loop and runs a few passes (`fewPasses`: a counter stepped by
+one, from zero or above on entry, to a constant of at most 256) gives up its longest run of
+whole statements holding the inner loop, branching only inside the run, its locals moving as
+an arm's do. The first pass runs as baseline code and spends the budget that queues the
+compile, the later passes run optimized code. A loop a runtime value counts stays (a frame's
+loop over its rows may run short passes, where a call each would cost), as does a run that
+compacts (a compaction site roots its own function's locals) and the runtime's exports, which
+the host calls again and again.
+
 A loop is compiled twice where its values decide its types
 (`optimize/specialize.js`, the `specializeLoops` pass, off in the `size`
 preset): a copy for reads that hit and integers that are integers, and the loop

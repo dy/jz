@@ -162,6 +162,8 @@ const liveIn = (n, out, env, h, seen) => {
       if (!grew) { live = next; break }
       live = union(new Set(live), next)
     }
+    // (a loop's own list: what is live after it, and the head's live-in at its label)
+    if (seen) seen.set(n, { live: out, env: inner, h })
     return live
   }
   if (op === 'try_table') {
@@ -349,7 +351,174 @@ export function splitFuncs(module, { fnMin = SPLIT_FN, fnTo = Math.min(SPLIT_TO,
   return ctx.made.length
 }
 
-function splitFunc(fn, { fnTo, armMin, names, made, runs, shared, sigs, tags }) {
+/** The compaction's kernels (module/core/compact.js): a loop's compaction site roots its own
+ *  function's locals, so the statements around one stay in that function. */
+const COMPACTS = new Set(['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thresh'])
+
+/**
+ * Each pass of a loop that runs a loop, a function of its own, in a function that runs once
+ * (speed tier).
+ *
+ * V8 replaces a function's code between its calls only, never inside one (it has no on-stack
+ * replacement for wasm): a function its caller enters once runs as baseline code for as long as
+ * that call lasts, whatever its loops do. A program's work is often a loop nest in such a
+ * function: a driver's rounds each running a sweep (a bench's timing loop over the kernel the
+ * inliner spliced into it), a command's passes over its input. All of it ran as baseline code,
+ * two to four times slower (stdlib-ddot's rounds). Here the pass of such an outer loop is a
+ * call: the first runs as baseline code and spends the budget that queues the function's
+ * optimizing compile, the later ones run the optimized code.
+ *
+ * A function runs once when it is an export of the program's own (`entries`: the runtime's,
+ * `__compact` and its kin, the host calls again and again) no function calls, or when its one call
+ * is outside every loop of a function that runs once. A loop of it holding a loop, outside
+ * any loop of its own, of a few passes (`fewPasses`: a counter stepped by one from zero or
+ * above to a bound of at most PASS_MAX, so each of the passes a long call makes is long), gives up
+ * the longest run of its statements that holds the inner loop: whole statements (`whole`),
+ * between the loop's tests, branching only inside the run, whatever its size (a call per pass is
+ * nothing beside the loop it runs once the pass is optimized code, and baseline code is slower by
+ * more); its locals go in and come back by liveness as an arm's do. A loop of many passes or of
+ * passes a runtime value counts stays, as a frame's loop over its rows does: its passes may be
+ * short, where a call each would cost. A run that compacts stays: the compaction roots its own
+ * function's locals.
+ * @param {Array} module
+ * @param {{ user?: (name: string) => boolean }} [opts] whether a function is the program's own
+ *   (every function, where not given)
+ * @returns {number} the functions made
+ */
+const PASS_MAX = 256
+/** The counter of `loop`'s passes and its bound: a test of a counter stepped by one, against a
+ *  constant, as the loop's last statement (`br_if $loop (lt (local.tee $i (add (get $i) 1)) N)`,
+ *  or the step the statement before it) or as its first, the step last before the branch back
+ *  (`br_if $exit (ge (get $i) N) … (local.set $i (add (get $i) 1)) (br $loop)`). Null otherwise. */
+const passCounter = (loop) => {
+  const label = isName(loop[1]) ? loop[1] : null, last = loop.at(-1)
+  if (!label || !isArr(last)) return null
+  const stepOf = (e, name, t) => isArr(e) && e[0] === `${t}.add` && isArr(e[1]) && e[1][0] === 'local.get' && e[1][1] === name && isArr(e[2]) && e[2][0] === `${t}.const` && Number(e[2][1]) === 1
+  const typeOf = (op, lt) => (lt ? op === 'i32.lt_s' || op === 'i32.lt_u' : op === 'i32.ge_s' || op === 'i32.ge_u') ? 'i32' : op === (lt ? 'f64.lt' : 'f64.ge') ? 'f64' : null
+  const stepBefore = (name, t) => { const s = loop.at(-2); return isArr(s) && s[0] === 'local.set' && s[1] === name && stepOf(s[2], name, t) ? s : null }
+  if (last[0] === 'br_if' && last[1] === label && isArr(last[2]) && last[2].length === 3) {
+    const [op, test, bound] = last[2], t = typeOf(op, true)
+    if (!t || !isArr(bound) || bound[0] !== `${t}.const` || !isArr(test)) return null
+    if (test[0] === 'local.tee' && stepOf(test[2], test[1], t)) return { i: test[1], t, n: Number(bound[1]), step: test }
+    const step = test[0] === 'local.get' ? stepBefore(test[1], t) : null
+    return step ? { i: test[1], t, n: Number(bound[1]), step } : null
+  }
+  if (last[0] === 'br' && last[1] === label) {
+    let k = 2
+    while (k < loop.length && isArr(loop[k]) && BLOCK_HEAD.has(loop[k][0])) k++
+    const head = loop[k]
+    if (!isArr(head) || head[0] !== 'br_if' || head[1] === label || !isArr(head[2]) || head[2].length !== 3) return null
+    const [op, get, bound] = head[2], t = typeOf(op, false)
+    if (!t || !isArr(get) || get[0] !== 'local.get' || !isArr(bound) || bound[0] !== `${t}.const`) return null
+    const step = stepBefore(get[1], t)
+    return step ? { i: get[1], t, n: Number(bound[1]), step } : null
+  }
+  return null
+}
+/** Whether `loop`, outside every loop of `fn`, runs at most PASS_MAX passes: its counter
+ *  (`passCounter`) is bounded by at most PASS_MAX, the loop writes it nowhere but its step, and
+ *  what it holds on entry is zero or above: no parameter, the latest write before the loop a
+ *  statement setting a constant (it runs on every way there: no loop is around), or none (a
+ *  local starts at zero). */
+const fewPasses = (loop, fn) => {
+  const c = passCounter(loop)
+  if (!c || !(c.n >= 1 && c.n <= PASS_MAX) || !isName(c.i) || fn.some(d => isArr(d) && d[0] === 'param' && d[1] === c.i)) return false
+  const writes = (n, skip = null) => isArr(n) && n !== skip && (((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === c.i) || n.some(x => writes(x, skip)))
+  if (loop.some((x, k) => k > 0 && writes(x, c.step))) return false
+  // the way down to the loop; what comes before it on that way runs before it
+  const path = []
+  const find = (n) => { if (n === loop) return true; if (!isArr(n)) return false; for (let k = 1; k < n.length; k++) { path.push([n, k]); if (find(n[k])) return true; path.pop() } return false }
+  if (!find(fn)) return false
+  for (let p = path.length - 1; p >= 0; p--) {
+    const [node, k] = path[p]
+    for (let j = k - 1; j >= 1; j--) if (writes(node[j]))
+      return node[j][0] === 'local.set' && node[j][1] === c.i && isArr(node[j][2]) && node[j][2][0] === `${c.t}.const` && Number(node[j][2][1]) >= 0
+  }
+  return true
+}
+
+export function loopPasses(module, { user = () => true } = {}) {
+  if (!isArr(module)) return 0
+  const funcs = new Map(), names = new Set(), entries = new Set()
+  for (const n of module) {
+    if (!isArr(n)) continue
+    if (n[0] === 'func' && isName(n[1])) {
+      funcs.set(n[1], n); names.add(n[1])
+      if (n.some(d => isArr(d) && d[0] === 'export') && user(n[1])) entries.add(n[1])
+    } else if (n[0] === 'export') for (const d of n) if (isArr(d) && d[0] === 'func' && isName(d[1]) && user(d[1])) entries.add(d[1])
+  }
+  // every direct call: its caller and whether a loop of the caller holds it
+  const sites = new Map()
+  for (const [name, fn] of funcs) {
+    const visit = (n, inLoop) => {
+      if (!isArr(n)) return
+      if ((n[0] === 'call' || n[0] === 'return_call') && isName(n[1])) {
+        const at = sites.get(n[1])
+        if (at) at.push({ caller: name, inLoop }); else sites.set(n[1], [{ caller: name, inLoop }])
+      }
+      for (let i = 1; i < n.length; i++) visit(n[i], inLoop || n[0] === 'loop')
+    }
+    visit(fn, false)
+  }
+  const memo = new Map()
+  const once = (name) => {
+    if (memo.has(name)) return memo.get(name)
+    memo.set(name, false)
+    const at = sites.get(name) ?? []
+    const r = at.length === 0 ? entries.has(name) : at.length === 1 && !at[0].inLoop && once(at[0].caller)
+    memo.set(name, r)
+    return r
+  }
+  const shared = new WeakSet(), seenNode = new WeakSet()
+  const mark = (n) => {
+    if (seenNode.has(n)) { shared.add(n); return }
+    seenNode.add(n)
+    for (let i = 1; i < n.length; i++) if (isArr(n[i])) mark(n[i])
+  }
+  for (const fn of funcs.values()) mark(fn)
+  const ctx = { armMin: 0, names, made: [], shared, sigs: signatures(module), tags: tagPayloads(module) }
+  const compacts = (n) => isArr(n) && ((n[0] === 'call' && COMPACTS.has(n[1])) || n.some(compacts))
+  for (const [name, fn] of funcs) {
+    if (!once(name) || !holdsLoop(fn)) continue
+    // the loops outside any loop, each holding a loop
+    const outer = []
+    const find = (n) => {
+      if (!isArr(n)) return
+      if (n[0] === 'loop') { if (n.some((c, i) => i > 0 && holdsLoop(c))) outer.push(n); return }
+      for (let i = 1; i < n.length; i++) find(n[i])
+    }
+    find(fn)
+    if (!outer.length) continue
+    const m = mover(fn, ctx)
+    if (!m) continue
+    const before = ctx.made.length
+    for (const loop of outer) {
+      const at = m.seen.get(loop)
+      if (!at || shared.has(loop) || !fewPasses(loop, fn)) continue
+      let start = 1
+      while (start < loop.length && (isName(loop[start]) || (isArr(loop[start]) && BLOCK_HEAD.has(loop[start][0])))) start++
+      // the longest window of whole statements, each branching only inside itself, that holds a loop
+      let best = null
+      for (let i = start; i < loop.length;) {
+        const fits = (s) => { if (!whole(s, ctx.sigs) || compacts(s)) return false; const a = scan([s]); return !a.returns && !a.opaque && [...a.refs].every(r => a.defs.has(r)) }
+        if (!fits(loop[i])) { i++; continue }
+        let j = i, s = 0, inner = false
+        while (j < loop.length && fits(loop[j])) { s += size(loop[j]); inner ||= holdsLoop(loop[j]); j++ }
+        if (inner && (!best || s > best.s)) best = { from: i, end: j, s }
+        i = j
+      }
+      if (best) m.tryMove(loop, best.from, at, size(loop), [], best.end, true)
+    }
+    if (ctx.made.length !== before) m.finish()
+  }
+  for (const piece of ctx.made) module.push(piece)
+  return ctx.made.length
+}
+
+/** What moving a piece of `fn` into a function reads of it: its locals' types, results, liveness
+ *  and the move itself (`tryMove`), and `finish`, which drops the locals only moved pieces used.
+ *  Null where a local has no name of its own. */
+function mover(fn, { armMin, names, made, shared, tags }) {
   const types = new Map()
   // the results, where the function declares them (a type use alone leaves them unread)
   let results = null, typed = false
@@ -359,7 +528,7 @@ function splitFunc(fn, { fnTo, armMin, names, made, runs, shared, sigs, tags }) 
     if (!isArr(d) || !HEADER.has(d[0])) { body = i; break }
     if (d[0] === 'param' || d[0] === 'local') {
       // a declaration without a name (`(local i32 i32)`) cannot be told apart by its reads
-      if (!isName(d[1]) || d.length !== 3) return
+      if (!isName(d[1]) || d.length !== 3) return null
       types.set(d[1], d[2])
     }
     else if (d[0] === 'result') results = [...(results ?? []), ...d.slice(1)]
@@ -379,8 +548,9 @@ function splitFunc(fn, { fnTo, armMin, names, made, runs, shared, sigs, tags }) 
   const added = []
 
   /** Move `list[from..end)` (an arm, a case body, or a run of whole statements) into a function,
-   *  if it qualifies. */
-  const tryMove = (list, from, at, loop, armTypes, end = list.length) => {
+   *  if it qualifies. `free`: a loop's pass (`loopPasses`), which moves for the engine's tiers
+   *  whatever its calls and its share of the loop. */
+  const tryMove = (list, from, at, loop, armTypes, end = list.length, free = false) => {
     if (!at || shared.has(list) || end - from < 1) return
     let s = 0
     for (let i = from; i < end; i++) s += size(list[i])
@@ -410,7 +580,7 @@ function splitFunc(fn, { fnTo, armMin, names, made, runs, shared, sigs, tags }) 
     // an arm moves when it makes calls of its own on every path, to which one more is
     // proportionate (arithmetic would pay a call it never paid), and inside a loop only when it
     // is one case among several (the loop's main path would pay a call each pass)
-    if (!callsAlways(run) || (loop > 0 && s * LOOP_SHARE > loop)) return
+    if (!free && (!callsAlways(run) || (loop > 0 && s * LOOP_SHARE > loop))) return
     for (const l of acc.reads) if (!types.has(l)) return
     for (const l of acc.writes) if (!types.has(l)) return
     const valueTypes = exit ? exitTypes : (armTypes ?? [])
@@ -464,6 +634,27 @@ function splitFunc(fn, { fnTo, armMin, names, made, runs, shared, sigs, tags }) 
     list.splice(from, end - from, ...tail)
     return piece
   }
+
+  // the locals only the moved pieces used leave the function (the engine zeroes each at entry)
+  const finish = () => {
+    const used = new Set()
+    const note = (n) => {
+      if (!isArr(n)) return
+      if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && isName(n[1])) used.add(n[1])
+      for (let i = 1; i < n.length; i++) if (isArr(n[i])) note(n[i])
+    }
+    for (let i = body; i < fn.length; i++) note(fn[i])
+    for (let i = body - 1; i >= 2; i--) if (isArr(fn[i]) && fn[i][0] === 'local' && !used.has(fn[i][1])) { fn.splice(i, 1); body-- }
+    fn.splice(body, 0, ...added)
+  }
+  return { body, seen, tryMove, finish }
+}
+
+function splitFunc(fn, ctx) {
+  const { fnTo, armMin, made, runs, sigs } = ctx
+  const m = mover(fn, ctx)
+  if (!m) return
+  const { body, seen, tryMove } = m
 
   // the arms and case bodies, largest first; `loop` is the size of the innermost loop around (as
   // written), 0 outside any
@@ -539,15 +730,5 @@ function splitFunc(fn, { fnTo, armMin, names, made, runs, shared, sigs, tags }) 
       }
     }
   }
-  if (made.length === before) return
-  // the locals only the moved arms used leave the function (the engine zeroes each at entry)
-  const used = new Set()
-  const note = (n) => {
-    if (!isArr(n)) return
-    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && isName(n[1])) used.add(n[1])
-    for (let i = 1; i < n.length; i++) if (isArr(n[i])) note(n[i])
-  }
-  for (let i = body; i < fn.length; i++) note(fn[i])
-  for (let i = body - 1; i >= 2; i--) if (isArr(fn[i]) && fn[i][0] === 'local' && !used.has(fn[i][1])) { fn.splice(i, 1); body-- }
-  fn.splice(body, 0, ...added)
+  if (made.length !== before) m.finish()
 }

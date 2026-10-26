@@ -101,6 +101,7 @@ export const PASS_NAMES = [
   'versionArrayPatterns',     // an array pattern over a value that may be an array reads by position behind Array.isArray, the protocol beside it (plan/index-array-patterns.js)
   'treeshake',
   'splitFuncs',               // a large function's conditional arms become functions of their own: V8 compiles what runs (optimize/split-funcs.js), speed-only
+  'loopPasses',               // in a function that runs once, each pass of a loop that runs a loop is a call: V8 replaces code between calls only (optimize/split-funcs.js), speed-only
   'jsstring',                 // boundary opt-in: flip exported string params to externref
   // Registry completion (architecture plan Stage 0): every flag a call site
   // reads MUST be listed here — an unlisted name is `undefined !== false` and
