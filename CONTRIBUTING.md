@@ -3476,6 +3476,14 @@ called with `.call`, it cost webaudio its specializations and 2.3–2.7× its ti
 return() runs no code (no finally, `using`, yield* or suspended for-of:
 `closesOnReturn`) needs no close. Fused helper loops, `take`'s limit and
 `for await` in an async function close too.
+In a generator or async body a for-of or for-in the machine splits desugars
+first (`eachLoop`, jzify/generators.js): over a known generator call, or in
+a program that mints iterators through the protocol fork above, closing as
+these loops close; otherwise by index over `__iter_arr` of its source, as
+prepare's for-of reads one (an array live, a string's code points, a
+collection's entries), or over the keys a native for-in collects. Each
+iteration binds its value first and runs the body as a block of its own;
+the loop's labels go to its loops (`labeled`), as a `for await`'s do.
 The generator machine carries completions through its finally blocks: each try
 with a finally records where its finally continues (a state, or a pending
 exception), so a return, break or continue crosses every finally between it and

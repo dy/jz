@@ -14,6 +14,8 @@
  *   - yield inside if/else, while, do-while, C-style for (in its test, step
  *     and initializer too), switch (in a case's test too) and labeled
  *     statements (any nesting)
+ *   - yield inside a for-of or for-in body: the loop desugars to ones the
+ *     machine splits (eachLoop), its iterator closed as a for-of closes it
  *   - plain `return E` anywhere; break and continue, labeled or not, of a
  *     statement split into states
  *   - compound statements WITHOUT yield stay atomic (later passes handle them)
@@ -29,8 +31,9 @@
  *     throw, return, break or continue, or a return() at a yield) runs the
  *     finally blocks it crosses, which may yield themselves
  *   - for-of closes its iterator when its body leaves early (closingLoop)
- * Out (v1): for-of/for-in bodies containing yield (except known-generator
- * for-of, which desugars).
+ * Out (v1): a destructuring shape the temp expansion cannot take (an object
+ *   rest, a computed key, a catch pattern); a function declaration in a split
+ *   block.
  *
  * @module jzify/generators
  */
@@ -138,6 +141,8 @@ export const closesOnReturn = (body) => some(body, n => n[0] === 'finally' || n[
 export const bindTo = (decl, value) => Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const' || decl[0] === 'var')
   ? [decl[0], ['=', decl[1], value]] : ['=', decl, value]
 const bodyStmts = (body) => Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+/** A loop under its labels, outermost first. */
+export const labeled = (labels, loop) => labels ? labels.reduceRight((l, name) => [':', name, l], loop) : loop
 
 // ES2025 iterator helpers on iterator VALUES ride `jz:iter-helpers` (src/std),
 // imported when a program that mints iterators also uses helper methods in
@@ -312,6 +317,49 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     if (FN_BOUNDARY_OPS.has(n[0])) return false
   } })
 
+  // A decomposed for-of or for-in becomes loops the machine splits as it
+  // splits any: over a known generator's machine or an iterator's protocol
+  // (closed when the body leaves early, closingLoop), or by index over what
+  // the source holds as prepare's for-of reads it (`__iter_arr`: an array, a
+  // typed array, a string's code points, a collection's entries), or over the
+  // keys a for-in enumerates. Its binding is the first statement of each
+  // iteration, the body a block inside; its labels go to the loops.
+  const isEach = (n) => Array.isArray(n) && n[0] === 'for' && Array.isArray(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in' || n[1][0] === 'of-idx')
+  const eachLoop = (st, labels) => {
+    const [, [kind, decl, src], body] = st
+    const inner = ['{}', [';', ...bodyStmts(body)]]
+    if (kind === 'of' && Array.isArray(src) && src[0] === '()' && typeof src[1] === 'string' && generatorNames?.has(src[1]))
+      return desugarForOfGenerator(decl, src, inner, genTemp, labels)
+    if (kind === 'of' && iterProto?.on) return desugarForOfProtocol(decl, src, inner, genTemp, labels)
+    const list = genTemp(kind === 'in' ? 'fk' : 'fa'), i = genTemp('fx'), key = genTemp('fn')
+    const fill = kind === 'in'
+      ? [['let', ['=', list, ['[]', null]]], ['for', ['in', ['const', key], src], ['()', ['.', list, 'push'], key]]]
+      : [['let', ['=', list, ['()', '__iter_arr', src]]]]
+    return ['{}', [';', ...fill, ['let', ['=', i, [null, 0]]],
+      labeled(labels, ['for', [';', null, ['<', i, ['.', list, 'length']], ['=', i, ['+', i, [null, 1]]]],
+        ['{}', [';', bindTo(decl, ['[]', list, i]), inner]]])]]
+  }
+  // the statements a machine body decomposes, their for-of and for-in loops desugared
+  const desugarLoops = (st, labels = null) => withLoc(desugarLoopsAt(st, labels), st)
+  const desugarLoopsAt = (st, labels) => {
+    if (!Array.isArray(st) || !decomposes(st)) return st
+    const op = st[0], each = (b) => desugarLoops(b)
+    if (op === ':' && typeof st[1] === 'string') {
+      const names = [...(labels || []), st[1]], inner = st[2]
+      if (Array.isArray(inner) && inner[0] === ':' || isEach(inner)) return desugarLoops(inner, names)
+      return labeled(names, each(inner))
+    }
+    if (isEach(st)) return desugarLoops(eachLoop(st, labels))
+    if (op === ';') return [';', ...st.slice(1).map(each)]
+    if (op === '{}') return ['{}', each(st[1])]
+    if (op === 'if') return ['if', st[1], each(st[2]), ...(st.length > 3 ? [each(st[3])] : [])]
+    if (op === 'while' || op === 'for') return [op, st[1], each(st[2])]
+    if (op === 'do') return ['do', each(st[1]), st[2]]
+    if (op === 'try') return ['try', each(st[1]), ...st.slice(2).map(c => c[0] === 'catch' ? ['catch', c[1], each(c[2])] : c[0] === 'finally' ? ['finally', each(c[1])] : c)]
+    if (op === 'switch') return ['switch', st[1], ...st.slice(2).map(c => c[0] === 'case' ? ['case', c[1], each(c[2])] : c[0] === 'default' ? ['default', each(c[1])] : c)]
+    return st
+  }
+
   // `agen`: the body of an async generator, whose driver reads tagged yields
   function lowerGenerator(params, rawBody, agen = false) {
     const lowered = lowerArguments(params, rawBody, true)
@@ -338,7 +386,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       }
     }
 
-    for (let i = 0; i < body.length; i++) body[i] = desugarPatternDecls(body[i])
+    for (let i = 0; i < body.length; i++) body[i] = desugarPatternDecls(desugarLoops(body[i]))
     body.splice(0, body.length, ...uniqueLocals(body))
     const locals = new Set()
     for (const st of body) collectLocals(st, locals)
@@ -677,15 +725,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       }
       if (op === 'for') {
         const [, head, bodyB] = st
-        // for-of over a KNOWN generator call inside a generator body: desugar to
-        // the while-next form first — the result is yield-decomposable.
-        if (Array.isArray(head) && head[0] === 'of' && Array.isArray(head[2]) &&
-            head[2][0] === '()' && typeof head[2][1] === 'string' && generatorNames?.has(head[2][1])) {
-          const localTemp = (t) => { const n = genTemp(t); locals.add(n); return n }
-          return flattenStmt(desugarForOfGenerator(head[1], head[2], bodyB, localTemp), cur, jumps)
-        }
-        if (Array.isArray(head) && (head[0] === 'of' || head[0] === 'in'))
-          err('generators v1: yield inside for-of/for-in is not supported yet — use an indexed for')
+        // (a for-of or for-in arrives desugared: desugarLoops)
         // C-style [';', init, cond, step] (subscript head shape)
         const [, init, cond, step] = Array.isArray(head) && head[0] === ';' ? head : [';', head, undefined, undefined]
         if (init != null) cur = flattenStmt(init, cur, jumps)
@@ -1022,23 +1062,23 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
   // a stage or user `continue` must advance to the NEXT item, where a tail pull
   // would be skipped and re-process the same value forever (the drop()-stage /
   // user-continue hazard). `before` runs ahead of each pull.
-  const pullLoop = (it, r, before, body, closes, temp) => {
+  const pullLoop = (it, r, before, body, closes, temp, labels) => {
     const pull = [['=', r, ['()', ['.', it, 'next'], null]], ['if', ['.', r, 'done'], ['{}', [';', ['break']]]]]
-    if (!closes) return [['while', [null, true], ['{}', [';', ...before, ...pull, ...body]]]]
+    if (!closes) return [labeled(labels, ['while', [null, true], ['{}', [';', ...before, ...pull, ...body]]])]
     const open = temp('go')
-    return [['let', ['=', open, [null, false]]], closingLoop(['while', [null, true], ['{}', [';',
-      ['=', open, [null, false]], ...before, ...pull, ['=', open, [null, true]], ...body]]],
+    return [['let', ['=', open, [null, false]]], closingLoop(labeled(labels, ['while', [null, true], ['{}', [';',
+      ['=', open, [null, false]], ...before, ...pull, ['=', open, [null, true]], ...body]]]),
       open, closeGenerator(it), abortGenerator(it, temp), temp('ge'), [';', ...body])]
   }
 
   // for-of over a KNOWN generator call → while-next desugar (fusion-friendly:
   // the optimizer sees plain closure calls + a fixed-shape result object).
-  function desugarForOfGenerator(decl, iterExpr, body, temp) {
+  function desugarForOfGenerator(decl, iterExpr, body, temp, labels) {
     const it = temp('gi'), r = temp('gr')
     return ['{}', [';',
       ['const', ['=', it, iterExpr]],
       ['let', ['=', r, [null, undefined]]],
-      ...pullLoop(it, r, [], [bindTo(decl, ['.', r, 'value']), ...bodyStmts(body)], closesGenerator(iterExpr), temp),
+      ...pullLoop(it, r, [], [bindTo(decl, ['.', r, 'value']), ...bodyStmts(body)], closesGenerator(iterExpr), temp, labels),
     ]]
   }
 
@@ -1049,7 +1089,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
   // doesn't re-enter. The probes run once per loop, not per iteration, and
   // programs without iterator producers never take this shape (iterProto
   // gate) — they compile byte-identically.
-  function desugarForOfProtocol(decl, iterExpr, body, temp) {
+  function desugarForOfProtocol(decl, iterExpr, body, temp, labels) {
     // `w` starts as a COPY of the source and takes the @@iterator() result —
     // the source local stays single-assignment so its precise kind keeps
     // serving the probe reads above the fork.
@@ -1073,7 +1113,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
       ['if', ['&&', ['!=', w, NULL], ['!=', ['.', w, 'next'], NULL]],
         ['{}', [';',
           ['let', ['=', r, [null, undefined]], ['=', open, [null, false]], ['=', value, [null, undefined]], ['=', result, [null, undefined]]],
-          closingLoop(['while', [null, true], ['{}', [';',
+          closingLoop(labeled(labels, ['while', [null, true], ['{}', [';',
             ['=', open, [null, false]],
             ['=', r, ['()', ['.', w, 'next'], null]],
             ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
@@ -1081,9 +1121,9 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
             ['=', open, [null, true]],
             bindTo(decl, value),
             ...bodyStmts(body),
-          ]]], open, close, abort, temp('ge'), body),
+          ]]]), open, close, abort, temp('ge'), body),
         ]],
-        ['for', ['of-idx', decl, w], body]],
+        labeled(labels, ['for', ['of-idx', decl, w], body])],
     ]]
   }
 

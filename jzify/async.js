@@ -24,7 +24,7 @@
  * @module jzify/async
  */
 
-import { FN_BOUNDARY_OPS, probe, closingLoop } from './generators.js'
+import { FN_BOUNDARY_OPS, probe, closingLoop, labeled, bindTo } from './generators.js'
 import { usesArguments } from './arguments.js'
 import { some, ASSIGN_OPS, extractParams, withLoc } from '../src/ast.js'
 
@@ -44,21 +44,19 @@ export function createAsyncLowering({ genTemp }) {
   // Non-protocol sources fall to an indexed loop with per-element await. The
   // result is machine-lowerable by the same v1 yield surface as any while
   // loop. A body leaving early awaits the iterator's return() (AsyncIteratorClose).
+  // Each iteration binds the value first, the body a block inside; the
+  // loop's labels go to its loops.
   const NULL = [null, null]
-  function desugarForAwait(head, body) {
+  function desugarForAwait(head, body, labels) {
     const [, decl, srcExpr] = head
     const src = genTemp('fa'), it = genTemp('fi'), r = genTemp('fr'), ix = genTemp('fx'), sync = genTemp('fs')
-    const isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
-    const name = isDecl ? decl[1] : decl
-    // the loop binding declares ONCE before the protocol fork (both arms would
-    // otherwise re-declare it — the machine hoists locals and rejects dupes)
-    const bodyStmts = Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+    const inner = ['{}', [';', ...(Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body])]]
     const open = genTemp('fo'), value = genTemp('fv'), result = genTemp('fq'), close = ['.', it, 'return']
     const notObject = ['||', ['==', result, NULL], ['&&', ['!==', ['typeof', result], [null, 'object']], ['!==', ['typeof', result], [null, 'function']]]]
     // Pull at the top: a `continue` in the body must advance the iterator.
     const protocol = ['{}', [';',
       ['let', ['=', open, [null, false]], ['=', value, [null, undefined]], ['=', result, [null, undefined]]],
-      closingLoop(['while', [null, true], ['{}', [';',
+      closingLoop(labeled(labels, ['while', [null, true], ['{}', [';',
         ['=', open, [null, false]],
         ['=', r, ['await', ['()', ['.', it, 'next'], null]]],
         ['if', ['.', r, 'done'], ['{}', [';', ['break']]]],
@@ -66,9 +64,9 @@ export function createAsyncLowering({ genTemp }) {
         ['=', open, [null, true]],
         // a sync source's rejected value closes it
         ['if', sync, ['=', value, ['await', value]]],
-        ['=', name, value],
-        ...bodyStmts,
-      ]]], open, [
+        bindTo(decl, value),
+        inner,
+      ]]]), open, [
         ['if', ['!=', close, NULL], ['{}', [';',
           ['=', result, ['await', ['()', close.slice(), null]]],
           ['if', notObject, ['throw', ['new', ['()', 'TypeError', [null, 'iterator return result is not an object']]]]]]]],
@@ -77,7 +75,6 @@ export function createAsyncLowering({ genTemp }) {
           ['catch', genTemp('fe'), ['{}', null]]],
       ], genTemp('ff'), body)]]
     return ['{}', [';',
-      ...(isDecl ? [['let', ['=', name, [null, undefined]]]] : []),
       ['let', ['=', src, srcExpr]],
       ['let', ['=', it, src], ['=', sync, [null, false]]],
       ['if', ['&&', ['!=', src, NULL], ['!=', ['.', src, '@@asyncIterator'], NULL]],
@@ -91,22 +88,27 @@ export function createAsyncLowering({ genTemp }) {
         ]],
         ['{}', [';',
           ['let', ['=', ix, [null, 0]]],
-          ['while', ['<', ix, ['.', it, 'length']], ['{}', [';',
-            ['=', name, ['await', ['[]', it, ix]]],
+          labeled(labels, ['while', ['<', ix, ['.', it, 'length']], ['{}', [';',
+            bindTo(decl, ['await', ['[]', it, ix]]),
             ['=', ix, ['+', ix, [null, 1]]],
-            ...bodyStmts,
-          ]]],
+            inner,
+          ]]]),
         ]]],
     ]]
   }
 
   // `for await` → plain awaits. An await stays an await: the machine suspends
   // at it as at a yield and types the value it resumes with (generators.js).
-  function mapAwait(node) {
+  function mapAwait(node, labels) {
     if (!Array.isArray(node)) return node
     if (FN_OPS.has(node[0])) return node
+    if (node[0] === ':' && typeof node[1] === 'string') {
+      const names = [...(labels || []), node[1]], inner = node[2]
+      if (Array.isArray(inner) && (inner[0] === ':' || inner[0] === 'for await')) return mapAwait(inner, names)
+      return withLoc(labeled(names, mapAwait(inner)), node)
+    }
     if (node[0] === 'for await' && Array.isArray(node[1]) && node[1][0] === 'of')
-      return mapAwait(desugarForAwait(node[1], node[2]))
+      return mapAwait(desugarForAwait(node[1], node[2], labels))
     return withLoc(node.map((n, i) => i === 0 ? n : mapAwait(n)), node)
   }
   function fnBoundary(n) { return FN_OPS.has(n[0]) }

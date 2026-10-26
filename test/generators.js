@@ -149,7 +149,6 @@ test('generators: v1 rejections are precise', () => {
     let e; try { jz.compile(src) } catch (x) { e = x }
     ok(e && e.message.includes(needle), `${needle}: got ${e?.message?.slice(0, 90)}`)
   }
-  rejects(`function* g(a) { for (const x of a) yield x } export let f = () => 1`, 'for-of')
   rejects(`export let f = () => { let y = yield 1; return y }`, 'yield outside a generator')
   // a yield as an operand stands in parentheses (ECMA-262 YieldExpression is an AssignmentExpression)
   rejects(`function* g() { void yield } export let f = () => 1`, 'must stand in parentheses')
@@ -498,6 +497,31 @@ test('generators: yield in expressions, loop heads, switch and labels', () => ag
   export let loopHeads = () => drive(wh(), [0, 1, 5]) + '|' + drive(fr(), [1, 3, 1, 3, 'x', 5, 3]) + '|' + drive(dw(), [1, 1, 1, 0, 0])
   export let labeled = () => { log = ''; s = 1; return drive(lb(), []) + log }
   export let returned = () => { log = ''; const it = closing(); it.next(); return JSON.stringify(it.return(5)) + log }`))
+
+// A for-of or for-in whose body yields runs over what the source holds as a
+// for-of reads it (an array live, a string's code points, a Map's entries, a
+// typed array, an iterator through its protocol) or over the keys a for-in
+// enumerates; the iterator closes when the body leaves early, a labeled jump
+// leaves it, or a return() or throw() arrives at a yield in it.
+test('generators: yield in for-of and for-in bodies', () => agreeAll(`let log = ''
+  const own = (n) => ({ i: 0, next() { this.i++; return { value: this.i, done: this.i > n } }, return() { log += 'R'; return {} }, [Symbol.iterator]() { return this } })
+  function* src() { try { yield 1; yield 2 } finally { log += 'S' } }
+  function* values(a) { for (const x of a) { yield x; if (x === 1) a.push(9) } }
+  function* chars(s) { for (const c of s) yield c }
+  function* entries(m, s, t) { for (const [k, v] of m) yield k + v; for (const x of s) yield x; for (const x of t) yield x }
+  function* proto(n) { for (const x of own(n)) { yield x; if (x === 2) break } yield 'end' }
+  function* closing() { try { for (const x of src()) yield x * 10 } finally { log += 'G' } }
+  function* labeled() { outer: for (const x of [1, 2, 3]) { for (const y of own(3)) { if (y === 2) continue outer; if (x === 3) break outer; yield x * 10 + y } } yield 0 }
+  function* keys(o) { for (const k in o) { if (k === 'c') return k; yield k + o[k] } }
+  function* heads(a) { let x; const o = { p: 0 }; for (x of a) yield x; for (o.p of a) yield o.p + 1; yield 'x' + x }
+  export let arrays = () => [...values([1, 2])].join() + '|' + [...chars('a😀b')].join('|')
+  export let collections = () => [...entries(new Map([['a', 1], ['b', 2]]), new Set([7, 8]), new Float64Array([1.5]))].join()
+  export let protocols = () => { log = ''; return [...proto(5)].join() + log + [...proto(1)].join() + log }
+  export let returned = () => { log = ''; const it = closing(); return it.next().value + JSON.stringify(it.return(5)) + log }
+  export let thrown = () => { log = ''; const it = proto(5); it.next(); try { it.throw('E') } catch (e) { log += e } return log }
+  export let jumps = () => { log = ''; return [...labeled()].join() + log }
+  export let forIn = () => JSON.stringify([...keys({ a: 1, b: 2, c: 3, d: 4 })]) + [...keys(null)].length
+  export let assignedHeads = () => [...heads([1, 2])].join()`))
 
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,

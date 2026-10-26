@@ -477,6 +477,24 @@ test('async: await in switch, loop heads and assignments', async () => {
     export async function labeled() { let s = ''; outer: for (let a = 0; a < 3; a++) { for (let b = 0; b < 3; b++) { await null; if (b === 1) continue outer; if (a === 2) break outer; s += a + '' + b } } return s }`)
 })
 
+// An await in a for-of or for-in body runs once per value, in Node's order; a
+// return from the body closes the iterator; a labeled jump reaches its for await.
+test('async: await in for-of and for-in bodies', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    const tick = async (n) => { for (let i = 0; i < n; i++) { log += i; await null } }
+    function* src() { try { yield 1; yield 2; yield 3 } finally { log += 'F' } }
+    async function sum(a) { let s = 0; for (const x of a) s += await x; return s }
+    async function first(a) { for (const x of a) { if (x > 1) return x * (await 10) } return 0 }
+    async function walk() { for (const x of src()) { log += 'x' + x; await null; if (x === 2) return x } }
+    async function keys(o) { let s = ''; for (const k in o) s += k + await o[k]; return s }
+    async function* echo(a) { for (const x of a) yield await x }
+    export async function values() { log = ''; const t = tick(8); const out = [await sum([1, Promise.resolve(2), 3]), await first([1, 2, 3]), await first([0]), await keys({ a: 1, b: Promise.resolve(2) })]; await t; return out.join() + log }
+    export async function closes() { log = ''; const t = tick(8); const r = await walk(); await t; return r + log }
+    export async function generated() { let s = ''; for await (const v of echo([1, Promise.resolve(2), 3])) s += v; return s }
+    export async function labeled() { let s = ''; outer: for await (const x of [1, 2, 3]) { for await (const y of ['a', 'b']) { if (y === 'b') continue outer; if (x === 3) break outer; s += x + y } } return s }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals
