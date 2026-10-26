@@ -14,6 +14,11 @@ import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, inc } from '../src/ctx.js'
 import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey, layoutView, accessorOf, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
+import { PROMISE_KEYS } from '../src/std/async.js'
+
+// A promise (std/async.js) keeps its state in slots, none its own property
+// in JS: enumeration sees none of them (JSON.stringify gives `{}`).
+const PROMISE_KEY = schemaKey(canonicalKeyOrder(PROMISE_KEYS))
 
 export { ENUM_DATA, ENUM_GET, ENUM_SET } from '../src/ast.js'
 
@@ -60,7 +65,7 @@ export const enumViewsOn = () => ctx.schema.views || ctx.schema.hiddenViews
 export function settleViews(roots) {
   const acc = ctx.transform.literalAccessorNames
   ctx.schema.views = !!acc?.size && roots.some(r => buildsView(r, acc))
-  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || roots.some(seesHidden)
+  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || ctx.schema.promiseHidden || roots.some(seesHidden)
 }
 
 // A RegExp or Error the code constructs, or a bound catch which may hold
@@ -117,6 +122,7 @@ export function initSchema(ctx) {
     if (existing != null) return existing
     const id = ctx.schema.list.push(props) - 1
     byKey.set(key, id)
+    if (key === PROMISE_KEY) { ctx.schema.hidden.set(props, new Set(props)); ctx.schema.promiseHidden = ctx.schema.hiddenViews = true }
     for (let i = 0; i < props.length; i++) {
       const p = props[i]
       let bucket = byProp.get(p)

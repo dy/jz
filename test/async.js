@@ -608,6 +608,18 @@ test('async: operands read before an await where JS reads them', async () => {
     export async function local() { let x = 1; x = 2; const out = []; for (let i = 0; i < 2; i++) out.push(x + await Promise.resolve(i)); return out.join() }`)
 })
 
+// A promise has no own enumerable property: JSON.stringify gives `{}`, and
+// Object.keys, entries, for-in and a spread see nothing, while it still settles.
+test('async: a promise enumerates no keys', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`const g = async () => 1
+    const box = []
+    export function json() { return JSON.stringify([Promise.resolve(1), { p: Promise.reject(2).catch(() => 0) }]) }
+    export function keys() { const p = Promise.resolve(1); let s = ''; for (const k in p) s += k; return Object.keys(p).length + '|' + s + '|' + JSON.stringify({ ...p }) + '|' + Object.entries(p).length }
+    export function dynamic() { box.push(Promise.resolve(3), { x: 1 }); return box.map(v => JSON.stringify(v)).join() }
+    export async function settled() { const p = g(); const s = JSON.stringify(p); return s + (await p) + ('then' in p) }`)
+})
+
 // A class in an async body lowers in the body's scope, as in any function.
 test('async: a class in the body reads its bindings', async () => {
   if (onWasi() || onKernel()) return

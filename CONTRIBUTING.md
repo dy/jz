@@ -1806,7 +1806,10 @@ constant inherited tag. The two functions are runtime roots
 surrounding catches, since method calls only become explicit during emission.
 Closure classes register their accessor slots in the same census as object
 literals. Property lookup retains hidden slots in the own-property view;
-enumeration keeps its separate filtered view. Getter and setter calls retain
+enumeration keeps its separate filtered view. A promise's layout
+(std/async.js `PROMISE_KEYS`) hides every slot, as an Error's hides
+`message` and `name`: JSON.stringify gives `{}`, and keys, entries, for-in
+and a spread see nothing. Getter and setter calls retain
 surrounding catches even when their receiver has a known layout.
 Date uses the same own-method lookup before its inherited timestamp or string
 method. Numeric conversion and relational operators request the number hint;

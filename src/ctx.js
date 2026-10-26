@@ -574,6 +574,7 @@ export function reset(proto, globals, bridge) {
     views: false,          // code the program lowers builds an object literal with an accessor (module/schema.js viewsOn)
     hidden: new Map(),     // a registered name list → the slots its layout owns but does not enumerate (module/schema.js enumView)
     hiddenViews: false,    // enumeration may meet such a layout: the code constructs or catches an Error (module/schema.js enumViewsOn)
+    promiseHidden: false,  // the program registers the promise layout, all hidden (module/schema.js)
     vars: new Map(),
     poisoned: new Set(),   // names whose assignments disagree on shape (literal +
                            //   non-literal, or two different literals). A poisoned
