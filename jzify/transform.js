@@ -155,8 +155,9 @@ export function createTransform(opts) {
     ['let', name], ['=', name, value], ['return', name]
   ]]]], null]
 
-  // A declared function's binding (`const name = value`) stands where the declaration `fn` does.
-  const bindFn = (name, value, fn) => withLoc(['const', withLoc(['=', name, withLoc(value, fn)], fn)], fn)
+  // A declared function's binding (`const name = value`, a `let` where the
+  // module assigns the name another value) stands where the declaration `fn` does.
+  const bindFn = (name, value, fn) => withLoc([opts.assigned?.(name) ? 'let' : 'const', withLoc(['=', name, withLoc(value, fn)], fn)], fn)
   function hoistFnDecl(name, params, body, fn) {
     const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
     const decl = bindFn(name, ['=>', transformParams(p2), withLoc(wrapArrowBody(b2), fn)], fn)
@@ -268,12 +269,12 @@ export function createTransform(opts) {
         const t = transform(stmt)
         if (fnDepth === 0) rest.push(...classHoists.splice(0))   // a class expression's shared functions
         if (t == null) continue
-        if (Array.isArray(t) && t[0] === 'const' && t._hoisted) {
+        if (Array.isArray(t) && (t[0] === 'const' || t[0] === 'let') && t._hoisted) {
           hoisted.push(t)
         } else if (Array.isArray(t) && t[0] === ';') {
           for (const s of t.slice(1)) {
             if (s != null) {
-              if (Array.isArray(s) && s[0] === 'const' && s._hoisted) hoisted.push(s)
+              if (Array.isArray(s) && (s[0] === 'const' || s[0] === 'let') && s._hoisted) hoisted.push(s)
               else rest.push(s)
             }
           }

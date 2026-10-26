@@ -272,6 +272,7 @@ let transform, transformScope, transformParams
   classStaticAccessor: (name, slot) => classStaticAccessor(name, slot),
   isClass: declaredClass,
   isValue: declaredValue,
+  assigned: (name) => census.names.has(name),
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,
   shadowsBuiltin: shadowsJzifyBuiltin,

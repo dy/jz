@@ -680,6 +680,18 @@ test('generators: a reassigned module generator name calls what it holds', () =>
   export let spread = () => [...h()].join()
   export let loops = () => { let s = ''; for (const v of h()) s += v; return s + '|' + [...g()].join() }`))
 
+// A function declaration's name a function assigns another value: a plain,
+// an async and a generator one, each called for what it holds after.
+test('generators: a function declaration reassigned from a function', () => agreeAll(`
+  function k() { return 1 }
+  async function a() { return 2 }
+  function* h() { yield 3 }
+  const k0 = k, a0 = a, h0 = h
+  const swap = () => { k = () => 10; a = async () => 20; h = () => [30, 31] }
+  const restore = () => { k = k0; a = a0; h = h0 }
+  function* g() { for (const v of h()) yield v }
+  export let plain = () => { const before = k() + [...h()].join(); swap(); const after = k() + ',' + [...h()].join() + ',' + [...g()].join(); restore(); return before + '|' + after }`))
+
 // An optional chain whose base is nullish skips a yield in its rest.
 test('generators: an optional chain skips a yield after a nullish base', () => agreeAll(`
   function* g(a) { const r = a?.f(yield 1); yield r }
