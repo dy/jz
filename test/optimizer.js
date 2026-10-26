@@ -7767,8 +7767,9 @@ export let main = () => {
     for (const optimize of levels(0, 2, 'speed'))
       ok(Object.is(run(src, { optimize }).main(), expected), `${name} at O${optimize}: ${run(src, { optimize }).main()} vs ${expected}`)
     if (belowOpt(2) || onKernel()) continue
-    const text = compile(src, { wat: true, optimize: 'speed' })
-    ok(/i64\.(lt|le|gt|ge)_s/.test(text), `${name}: the inner guard still lifts`)
+    // (one test of the window's last index, `j + 7 < length`, covers the inner loop's eight reads)
+    const text = compile(src, { wat: true, optimize: 'speed' }).replace(/\s+/g, ' ')
+    ok(/\(i(32|64)\.lt_s \(i\1\.add \(i\1\.const (?:7|0x0*7)\)/.test(text), `${name}: the inner guard still lifts`)
   }
 })
 

@@ -20,7 +20,9 @@
 // of every i32, i64 and f64 local at each point. A comparison refines the
 // interval in the arm it guards; arms hull at their join. A loop is walked to
 // a fixpoint: its head is the hull of its entry and its back edges, bounds
-// that still move after two walks widen to infinity, and two more walks
+// that still move after two walks widen to infinity (those of the locals the
+// loop itself writes: one it leaves alone moves only with the loop that
+// writes it, and widens there), and two more walks
 // without widening take back what the loop's own tests bound (a counter
 // `e >= 0; e--` from E lies in [-1, E]). The function is walked whole each
 // time, every loop from the head it had: the walks are as many as the heads
@@ -277,6 +279,12 @@ const clearsBits = (x, y, stack) => {
 }
 // The values each way of reading back holds exactly.
 const BACK = { whole: [-Infinity, Infinity], i32: [-(2 ** 31), 2 ** 31 - 1], u32: [0, 2 ** 32 - 1], i64: [-(2 ** 63), 2 ** 63] }
+// A local the collection forwards into itself (`x = fwd(x)`, a loop's compaction arm):
+// a number it holds stays as it is, so the write moves no bound and closes no cycle.
+const forwarded = (v, x) => isArr(v) && v[0] === 'call' && v[1] === '$__gc_fwd' && v.length === 3 &&
+  ((v[2]?.[0] === 'local.get' && v[2][1] === x) || (v[2]?.[0] === 'i64.reinterpret_f64' && v[2][1]?.[0] === 'local.get' && v[2][1][1] === x))
+const selfForward = m => m.length === 3 && (forwarded(m[2], m[1]) || (m[2]?.[0] === 'f64.reinterpret_i64' && forwarded(m[2][1], m[1])))
+
 export const KIND = /^\$__is_(str_key|nullish|null|object)$/
 
 /** The remainder the emitter lowers `x % K` to for a constant K:
@@ -327,7 +335,7 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   // other): the ones a loop can move without end, which widen; the rest follow them.
   const feeds = new Map()
   const readsOf = (n, out) => { if (!isArr(n)) return out; if ((n[0] === 'local.get' || n[0] === 'local.tee') && typeof n[1] === 'string') out.add(n[1]); for (let i = 1; i < n.length; i++) readsOf(n[i], out); return out }
-  const noteWrites = n => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { const out = feeds.get(n[1]) ?? feeds.set(n[1], new Set()).get(n[1]); for (let i = 2; i < n.length; i++) readsOf(n[i], out) } for (let i = 1; i < n.length; i++) noteWrites(n[i]) }
+  const noteWrites = n => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && !selfForward(n)) { const out = feeds.get(n[1]) ?? feeds.set(n[1], new Set()).get(n[1]); for (let i = 2; i < n.length; i++) readsOf(n[i], out) } for (let i = 1; i < n.length; i++) noteWrites(n[i]) }
   for (let i = bodyStart; i < fn.length; i++) noteWrites(fn[i])
   const cyclic = new Set()
   // The typed arrays this function makes (`__alloc_hdr_n`, zeroed) and reads and
@@ -569,6 +577,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
         }
         bound(env, c[1], truth ? 'ne' : 'eq', { lo: 0, hi: 0 }, false, proof)
       }
+      // (a condition saved as it is tested, `a || b` keeping `a` for its arm: what it tests holds too)
+      if (op === 'local.tee') refine(c[2], truth, env, stale, root, proof)
       return
     }
     const [p, q] = c.filter(isArr)
@@ -917,6 +927,9 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     // are equal or they are not.
     if (op === 'call' && typeof n[1] === 'string' && KIND.test(n[1])) return a?.of && a.mask == null ? answer(0) : BOOL
     if (op === 'call' && n[1] === '$__eq_strict') return BOOL
+    // A collection moves boxes: a number's bits, which are no box, it forwards as they are
+    // (a loop's compaction arm forwards every float local it may hold a pointer in).
+    if (op === 'call' && n[1] === '$__gc_fwd' && x && !y) return a?.of && a.mask == null ? a : null
     return null
   }
 
@@ -944,7 +957,7 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     let head = heads.get(n)
     if (phase === 'up') {
       if (!head) { head = entering; moved = true }
-      else if (!envWithin(entering, head)) { head = round > 2 ? widen(head, entering, open()) : joinEnv(head, entering); moved = true }
+      else if (!envWithin(entering, head)) { head = round > 2 ? widen(head, entering, openIn(n)) : joinEnv(head, entering); moved = true }
     } else if (phase === 'down' && head && envWithin(entering, head)) head = entering
     else if (!head) head = entering
     heads.set(n, head)
@@ -982,8 +995,22 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   }
 
   const env = envOf(new Map())
-  let openSlots = null
-  const open = () => { if (!openSlots) { openSlots = new Set(); for (const [name, i] of env.index) if (cyclic.has(name)) openSlots.add(i) } return openSlots }
+  // The slots a loop's head widens: the locals on a cycle of writes that the loop
+  // itself writes. One it leaves alone enters each pass as it entered the first,
+  // and the loop around that writes it widens it there (an outer counter keeps the
+  // bound its own test gives it through every loop nested inside).
+  const openSlots = new Map()
+  const openIn = loop => {
+    let slots = openSlots.get(loop)
+    if (slots) return slots
+    const mine = new Set()
+    const scan = m => { if (!isArr(m)) return; if ((m[0] === 'local.set' || m[0] === 'local.tee') && cyclic.has(m[1]) && !selfForward(m)) mine.add(m[1]); for (let i = 1; i < m.length; i++) scan(m[i]) }
+    scan(loop)
+    slots = new Set()
+    for (const [name, i] of env.index) if (mine.has(name)) slots.add(i)
+    openSlots.set(loop, slots)
+    return slots
+  }
   for (const [name, type] of types) if (type === 'f64' || type === 'i32' || type === 'i64') bind(env, name, params.has(name) ? type === 'i32' ? I32 : null : exact(0))
   const body = fn.slice(bodyStart)
   const walk = () => seq(body, { env: fork(env) })

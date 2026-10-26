@@ -66,6 +66,58 @@ test('int-narrow: entry assumptions retain established magnitude and zero facts'
   }
 })
 
+// What the speed tier's ToInt32 lowering reads after watr (optimize/to-int32.js), where
+// inlined bodies sit inside the loops of their callers: an outer counter, a number the
+// collection forwards into itself, a NaN test saved for the arm of an `||`.
+test('int-range: bounds survive nested passes, a forward and a saved NaN test', () => {
+  const read = (src, op) => {
+    const ir = parseWat(src), fn = ir.find(n => n[0] === 'func' && n[1] === '$f')
+    let at = 2
+    while (Array.isArray(fn[at]) && ['export', 'param', 'result', 'local'].includes(fn[at][0])) at++
+    const find = n => !Array.isArray(n) ? null : n[0] === op ? n : n.reduce((r, c) => r ?? find(c), null)
+    const v = intRanges(fn, at)?.av.get(find(fn)[1])
+    return v ? [v.lo, v.hi, v.int, v.nan] : null
+  }
+  // (each loop runs inside one of its own that restarts it, as a collecting loop's
+  // compaction arm does: the outer counter, written only outside, keeps its test's bound)
+  is(read(`(module (func $f (param $n i32) (result f64) (local $y i32) (local $x i32) (local $k i32) (local $s f64)
+    (block $out (loop $again (block $o0 (loop $l0
+      (br_if $o0 (i32.gt_u (local.get $k) (local.get $n)))
+      (br_if $out (i32.ge_s (local.get $y) (i32.const 96)))
+      (local.set $x (i32.const 0))
+      (block $o1 (loop $again1 (block $p1 (loop $l1
+        (br_if $p1 (i32.gt_u (local.get $k) (local.get $n)))
+        (br_if $o1 (i32.ge_s (local.get $x) (i32.const 96)))
+        (local.set $s (f64.add (local.get $s) (f64.convert_i32_s (local.get $y))))
+        (local.set $x (i32.add (local.get $x) (i32.const 1)))
+        (br $l1)))
+        (local.set $k (i32.const 0))
+        (br $again1)))
+      (local.set $y (i32.add (local.get $y) (i32.const 1)))
+      (br $l0)))
+      (local.set $k (i32.const 0))
+      (br $again)))
+    (local.get $s)))`, 'f64.convert_i32_s'), [0, 95, true, false], 'an outer counter keeps its bound through loops nested in it')
+  is(read(`(module (func $__gc_fwd (param i64) (result i64) (local.get 0))
+    (func $f (param $n i32) (param $y i32) (result f64) (local $v f64) (local $i i32) (local $s f64)
+    (local.set $v (f64.mul (f64.convert_i32_u (i32.and (local.get $y) (i32.const 255))) (f64.const 0.5)))
+    (block $out (loop $l
+      (br_if $out (i32.ge_s (local.get $i) (local.get $n)))
+      (if (i32.and (local.get $i) (i32.const 7)) (then
+        (local.set $v (f64.reinterpret_i64 (call $__gc_fwd (i64.reinterpret_f64 (local.get $v)))))))
+      (local.set $s (f64.add (local.get $s) (f64.floor (local.get $v))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (local.get $s)))`, 'f64.floor'), [0, 127.5, false, false], 'a number the collection forwards into itself keeps its interval')
+  is(read(`(module (func $f (param $x f64) (result f64) (local $t i32)
+    (if (result f64)
+      (if (result i32) (local.tee $t (f64.ne (local.get $x) (local.get $x)))
+        (then (local.get $t)) (else (f64.gt (local.get $x) (f64.const 700))))
+      (then (local.get $x))
+      (else (if (result f64) (f64.lt (local.get $x) (f64.const -700)) (then (f64.const 0))
+        (else (f64.trunc (local.get $x))))))))`, 'f64.trunc'), [-700, 700, false, false], 'a NaN test saved for the arm of an `||` leaves a number')
+})
+
 test('int-narrow: nested fast loops reuse the established Number bound', () => {
   const source = `export function f(n) { let s=0
     for(let i=0;i<n;i++) for(let j=0;j<n;j++) s=(s+i)|0
