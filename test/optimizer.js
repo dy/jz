@@ -4719,6 +4719,47 @@ test('loop-SR: the copy steps its counters by a branch, not a select', () => {
   ok(copies.every(loop => count(loop, n => n[0] === 'select') === 0 && count(loop, n => n[0] === 'if') > 0), 'its counters step in the arms of a test, no select')
 })
 
+// A pass the remainder test turns away does nothing, so the copy runs only the passes it
+// admits: the counter starts where the dividend first divides and steps by the divisor.
+test('loop-SR: a loop guarded by a divisibility test steps from one admitted pass to the next', () => {
+  const kernels = {
+    // the upsampling gather of a resampler (upfirdn): a descending dividend, the quotient its index
+    gather: `export let f=(n,w,base,from)=>{ let s=0;
+      for(let k=from;k<n;k++){ const e=base-k; if(e>=0 && e%w===0){ const x=e/w; s=s*1.5+((k&7)-3)*(x+1) } } return s }`,
+    // an ascending dividend, a bound tested with <=, the remainder test first
+    rising: `export let f=(n,w,base,from)=>{ let s=0; for(let k=from;k<=n;k++){ const e=k+base; if(e%w===0 && e>-50){ s=(s*31+(e/w)+k)|0 } } return s }`,
+    // a decimation's every-w-th pass and a break out of it
+    stop: `export let f=(n,w,base,from)=>{ let s=0; for(let k=from;k<n;k++){ if((k-base)%w===0){ s=(s*7+k)|0; if(s>1e6) break } } return s }`,
+  }
+  const off = { level: 'speed', loopIVDivMod: false }
+  for (const [name, src] of Object.entries(kernels)) {
+    const on = run(src, { optimize: 'speed' }).f, ref = run(src, { optimize: off }).f, js = oracle(src).f
+    for (const w of [1, 2, 3, 5, 16, 0, -3, 2.5, NaN]) for (const n of [0, 1, 12, 40]) for (const base of [0, 9, 31, -4, -40]) for (const from of [0, 3, -7]) {
+      is(on(n, w, base, from), js(n, w, base, from), `${name}: n=${n} w=${w} base=${base} from=${from}`)
+      is(on(n, w, base, from), ref(n, w, base, from), `${name} ON==OFF: n=${n} w=${w} base=${base} from=${from}`)
+    }
+    // a counter or a stride past the int32 range runs the loop as written
+    for (const [n, w, base, from] of [[2147483647, 7, 2147483640, 2147483600], [2147483647, 2147483000, 5, 2147483640], [-2147483600, 3, 0, -2147483648]])
+      is(on(n, w, base, from), js(n, w, base, from), `${name}: wide n=${n} w=${w} base=${base} from=${from}`)
+    if (onKernel()) continue
+    // the copy's loop steps its counter by the divisor and tests no remainder
+    const fn = parse(src, 'speed').find(m => m?.[0] === 'func' && m.some(x => x?.[0] === 'export' && x[1] === '"f"'))
+    const loops = []
+    walk(fn, m => { if (m[0] === 'loop') loops.push(m) })
+    const strided = loops.filter(loop => count(loop, m => /^(?:f64|i32|i64)\.(?:div|rem)/.test(m[0]) || m[0] === 'call' && /__rem/.test(m[1])) === 0 &&
+      count(loop, m => m[0] === 'i32.add' && m[1]?.[0] === 'local.get' && m[2]?.[0] === 'local.get') > 0 && count(loop, m => m[0] === 'if' && m.some(c => c?.[0] === 'else')) === 0)
+    ok(strided.length > 0, `${name}: a loop of the copy strides`)
+  }
+  // a pass that does something whatever the remainder, or reads a value of no known kind ahead of the test, keeps every pass
+  for (const src of [
+    `export let f=(n,w,base)=>{ let s=0,c=0; for(let k=0;k<n;k++){ c++; const e=base-k; if(e>=0 && e%w===0) s=(s*31+e/w+c)|0 } return s }`,
+    `export let f=(n,w,base,o)=>{ let s=0; for(let k=0;k<n;k++){ const e=base-k; if(o.t>k && e%w===0) s=(s*31+e/w)|0 } return s }`,
+  ]) {
+    const on = run(src, { optimize: 'speed' }).f, js = oracle(src).f
+    for (const w of [1, 3, 0, -2]) for (const n of [0, 9, 40]) is(on(n, w, 30, { t: 20 }), js(n, w, 30, { t: 20 }), `kept: n=${n} w=${w}`)
+  }
+})
+
 test('loop-SR: a for loop with continue, a written divisor or a closure keeps its divisions (ON==OFF)', () => {
   for (const src of [
     `export let f=(n,w)=>{ let a=0; for(let i=0;i<n;i++){ if((i&3)===1) continue; a=(a*31+i%w+~~(i/w))|0 } return a|0 }`,
