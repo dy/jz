@@ -20,7 +20,7 @@ import { valTypeOf } from '../src/kind.js'
 import { NUMBER } from '../src/summary/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
-import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
+import { ctx, inc, PTR, LAYOUT, FORWARDING_MASK, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
 import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY, nanPrefixHex, nanPrefixMaskHex } from '../layout.js'
 import { ssoEncode } from './string.js'
@@ -212,6 +212,7 @@ const keyEq = (fullEq) =>
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
+import registerIdentity, { arrayKeysOn, noteKeys, pinKeyWat } from './collection/identity.js'
 import { recordsOn } from '../src/compile/array-records.js'
 import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'
 export { collectionLaneBytes }
@@ -231,9 +232,13 @@ export default (ctx) => {
   const valueEq = '(call $__same_value_zero (i64.load offset=8 (local.get $slot)) (local.get $key))'
   const propEqG = lean ? propEq : keyEq(propEq)
   const sameValueZeroEqG = lean ? valueEq : keyEq(valueEq)
+  // An insertion into a Set or Map pins an array key where arrays keep identities (collection/identity.js).
+  const pinKey = () => pinKeyWat('(local.get $key)')
+  const pinDeps = () => arrayKeysOn() ? ['__arr_pin'] : []
   // The inline-cache handoff globals (buildObjectSchemaArm → optimize/devirt.js).
   if (!lean) { declGlobal('__ic_found_hi', 'i64'); declGlobal('__ic_found_slot', 'i32') }
   registerRecords()
+  registerIdentity()
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when linkDemand.external.
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.linkDemand.
   const ifExt = (name) => () => ctx.linkDemand.external ? [name] : []
@@ -269,8 +274,8 @@ export default (ctx) => {
     __view_has: [],
     __view_data: ['__view_copy'],
     __view_copy: ['__hash_get_local_hm', '__hash_new', '__hash_set_local', '__ptr_type', '__ptr_offset', '__own_order', '__prop_order', '__obj_props', '__dyn_get_t_hm', '__dyn_get_t_h', '__str_hash'],
-    __same_value_zero: ['__str_eq'],
-    __map_hash: ['__hash', '__str_hash'],
+    __same_value_zero: () => ['__str_eq', ...(arrayKeysOn() ? ['__same_ref'] : [])],
+    __map_hash: () => ['__hash', '__str_hash', ...(arrayKeysOn() ? ['__arr_ident_word', '__ptr_offset'] : [])],
     // '__durable_fwd_log' on __set_add/__map_set/__hash_set/__hash_set_local: an
     // EXPLICIT edge, not left to the auto-dep scan — genUpsert/genUpsertGrow's
     // `forward` branch always contains a durableFwdLogIR() call, but self-compile's
@@ -282,7 +287,7 @@ export default (ctx) => {
     // log (durableEntryLogIR) still calls $__durable_slot_log — without the
     // explicit edge the kernel leg drops the helper (auto-scan divergence, the
     // self-compile-includes class) and every `new Set(...)` fails to compile there.
-    __set_add: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __set_add: () => [...(ctx.linkDemand.external ? ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — caller (layout-kinds.js regionArmSetMap)
     // folds the hash, mirrors __hash_set_local_h's own prehashed dep shape.
     __set_add_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
@@ -291,7 +296,7 @@ export default (ctx) => {
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
     __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_fill', '__obj_clone', '__hash_new', '__is_symbol', '__sclone_properties'],
     __sclone_properties: ['__copy_keys', '__sclone_rec', '__ptr_offset', '__ptr_type', '__len', '__dyn_has', '__dyn_get_any', '__str_arr_idx', '__hash_new_small', '__hash_set_local'],
-    __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __map_set: () => [...(ctx.linkDemand.external ? ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash', '__ext_set'] : ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__coll_rehash']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — MAP-shaped sibling of __set_add_h.
     __map_set_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
     __map_get: () => ctx.linkDemand.external ? ['__ext_get', '__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
@@ -326,7 +331,7 @@ export default (ctx) => {
     __hash_set_local_h: () => ['__key_eq', '__zomb_scan', ...slotLogDeps()],
     __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_set_value: ['__hash_set_local', '__to_key', '__is_nullish'],
-    __map_slot: () => ['__map_hash', '__same_value_zero', '__alloc_hdr_n', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
+    __map_slot: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__alloc_hdr_n', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_lookup_slot: ['__str_hash', '__key_eq', '__ptr_offset_fwd'],
     __hash_hide: ['__hash_lookup_slot'],
@@ -463,7 +468,7 @@ export default (ctx) => {
     (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 13))))`
   inc('__hash')
 
-  ctx.core.stdlib['__same_value_zero'] = `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
+  ctx.core.stdlib['__same_value_zero'] = () => `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     (if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
     (local.set $fa (f64.reinterpret_i64 (local.get $a)))
@@ -478,10 +483,14 @@ export default (ctx) => {
     ;; select a string/BigInt dereference or alias a reserved atom/Symbol.
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $tb (i32.wrap_i64 (i64.and (i64.shr_u (local.get $b) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
+    ${arrayKeysOn() ? `;; an array a Set or Map holds through a reference taken before it moved
+    ;; and one after (core.js __same_ref; collection/identity.js)
+    (if (i32.and (i32.shr_u (i32.const ${FORWARDING_MASK}) (local.get $ta)) (i32.eq (local.get $ta) (local.get $tb)))
+      (then (return (call $__same_ref (local.get $a) (local.get $b)))))` : ''}
     ${sameValueZeroIdentityChain()})`
 
-  ctx.core.stdlib['__map_hash'] = `(func $__map_hash (param $v i64) (result i32)
-    (local $f f64) (local $t i32) (local $h i32) (local $aux i32) (local $off i32)
+  ctx.core.stdlib['__map_hash'] = () => `(func $__map_hash (param $v i64) (result i32)
+    (local $f f64) (local $t i32) (local $h i32) (local $aux i32) (local $off i32)${arrayKeysOn() ? ' (local $w i64)' : ''}
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     ;; Numeric NaNs share one bucket; only genuine boxes may decode a tag.
     (if (f64.ne (local.get $f) (local.get $f))
@@ -490,6 +499,19 @@ export default (ctx) => {
         (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
         ${mapHashStringArm(lean)}
         ${mapHashBigintArm()}
+        ${arrayKeysOn() ? `;; an array by its identity (collection/identity.js), its high word kept
+        (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+          (then
+            (local.set $off (call $__ptr_offset (local.get $v)))
+            ;; the word in place: a pinned array's identity word${recordsOn() ? ', a record named by its offset' : ''}; other words ask
+            (local.set $w (if (result i64) (i32.lt_u (local.get $off) (i32.const 16)) (then (i64.const 0))
+              (else (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))))
+            (if (i32.ne (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))) (i32.const -2))
+              (then (local.set $w ${recordsOn() ? `(if (result i64) ${isRecordWat('(local.get $w)')}
+                (then (i64.or (i64.const 0xFFFFFFFE00000000) (i64.and (local.get $w) (i64.const 0xFFFFFFFF))))
+                (else (call $__arr_ident_word (local.get $off))))` : '(call $__arr_ident_word (local.get $off))'})))
+            (local.set $v (i64.or (i64.and (local.get $v) (i64.const 0xFFFFFFFF00000000))
+              (i64.extend_i32_u (select (i32.wrap_i64 (local.get $w)) (local.get $off) (i64.ne (local.get $w) (i64.const 0))))))))` : ''}
         (if (i32.eqz (local.get $t)) (then (return (i32.const 3)))))
       (else (if (f64.eq (local.get $f) (f64.const 0)) (then (return (i32.const 2))))))
     ;; $__hash's mix, inline: a number key (an id, an index) is the other
@@ -527,6 +549,7 @@ export default (ctx) => {
     // while seeding. Floors at initCap for the empty/short case.
     const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
     inc('__set_add', '__ptr_type', '__len', read)
+    noteKeys()
     const setL = temp('nss'), arrL = temp('nsa')
     const iL = tempI32('nsi'), lenL = tempI32('nsl')
     const capExpr = ['select', ['i32.const', initCap],
@@ -556,7 +579,8 @@ export default (ctx) => {
       ['local.get', `$${setL}`]], 'f64')
   })
 
-  ctx.core.emit['.add'] = call('__set_add', 'II', 'i64')
+  const setAdd = call('__set_add', 'II', 'i64')
+  ctx.core.emit['.add'] = Object.assign((set, key, ...rest) => (noteKeys(key), setAdd(set, key, ...rest)), { argc: setAdd.argc })
 
   // `.has` / `.delete` exist on BOTH Set and Map, which differ only in entry
   // stride (16 vs 24). A receiver of unproven kind (e.g. a Map read off a nested
@@ -679,7 +703,7 @@ export default (ctx) => {
 
   // Generated Set probe functions
   ctx.core.stdlib.__coll_rehash = genRehash
-  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
+  ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external, false, pinKey())
   // Region-arena rebuild fix (.work/evidence.md §Region arena, front-boundary
   // hunt): __region_copy_rec's SET/MAP arm (layout-kinds.js regionArmSetMap)
   // rebuilds a relocated Set/Map into a fresh cap-sized table (never grows,
@@ -721,6 +745,7 @@ export default (ctx) => {
     // Keep a Map copy on its direct table path. Other sources use the same
     // nullish-tolerant iterable check as Set before the entry reader runs.
     inc('__map_from')
+    noteKeys()
     ctx.runtime.throws = true
     const vt = valTypeOf(iterExpr)
     if (vt === VAL.MAP || vt === VAL.ARRAY)
@@ -734,7 +759,8 @@ export default (ctx) => {
           ['then', value], ['else', asF64(normalized)]]]]], 'f64')
   })
 
-  ctx.core.emit['.set'] = call('__map_set', 'III', 'i64')
+  const mapSet = call('__map_set', 'III', 'i64')
+  ctx.core.emit['.set'] = Object.assign((map, key, ...rest) => (noteKeys(key), mapSet(map, key, ...rest)), { argc: mapSet.argc })
   ctx.core.emit[`.${VAL.MAP}:set`] = (map, key, value, ...ignored) =>
     (!ignored.length && value != null && trySlotUpdate(map, key, value, true)) ||
     ctx.core.emit['.set'](map, key, value, ...ignored)
@@ -838,6 +864,7 @@ export default (ctx) => {
     const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
     inc('__iter_arr', '__len', read, '__arr_push1')
     inc(...(isMap ? ['__map_set', '__map_get'] : ['__hash_new', '__hash_set', '__hash_get', '__to_key']))
+    if (isMap) noteKeys()
     const recv = temp('gbs'), cb = temp('gbc'), result = temp('gbr')
     const len = tempI32('gbl'), i = tempI32('gbi')
     const item = temp('gbv'), key = tempI64('gbk'), bucket = temp('gbb')
@@ -1114,8 +1141,8 @@ export default (ctx) => {
   }
 
   // Generated Map probe functions
-  ctx.core.stdlib['__map_slot'] = () => genUpsert('__map_slot', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, true)
-  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external)
+  ctx.core.stdlib['__map_slot'] = () => genUpsert('__map_slot', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, true, pinKey())
+  ctx.core.stdlib['__map_set'] = () => genUpsert('__map_set', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, ctx.linkDemand.external, false, pinKey())
   // Region-arena rebuild fix — see __set_add_h's own comment for the full
   // mechanism; this is its MAP-shaped (hasVal) sibling.
   ctx.core.stdlib['__map_set_h'] = () => genUpsertStrictPrehashed('__map_set_h', MAP_ENTRY, sameValueZeroEqG, PTR.MAP)

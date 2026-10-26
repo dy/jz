@@ -333,6 +333,32 @@ test('Map/Set lookups follow aliased growth and preserve misses after deletion',
   }
 })
 
+// An array a Set or Map holds is found after it grows: a relocation hands its
+// binding the new block's pointer, which hashes by the identity the insertion
+// pinned (collection/identity.js) and compares equal to the old one (core.js
+// __same_ref, which SameValueZero now asks). The identity rides a grow, a
+// shift and its slide back, the array's first properties, a record of named
+// properties and the dictionary one turns into.
+test('Map/Set: an array key is found after it grows, shifts and takes properties', () => {
+  const src = `const mark = (a, at) => { a.loc = at; return a }
+    let kept = [1]; const held = new Map([[kept, 'm']])
+    export let f = (n) => {
+      const plain = [1], shifted = [1, 2, 3], props = [1], named = mark([1], 4), late = [1], other = [1]
+      props.tag = 'p'; props['k' + n] = n
+      const m = new Map([[plain, 1], [shifted, 2], [props, 3], [named, 4], [late, 5]]), s = new Set([plain, shifted, other]), w = new WeakMap([[other, 6]])
+      const alias = plain
+      shifted.shift(); shifted.shift()
+      for (let i = 0; i < n; i++) { plain.push(i); shifted.push(i); props.push(i); named.push(i); other.push(i); kept.push(i) }
+      late.extra = 9; named.other = 1; shifted.shift()
+      for (let i = 0; i < 6; i++) { named['p' + i] = i; props['q' + i] = i }
+      for (let i = 0; i < n; i++) late.push(i)
+      return [m.get(plain), m.get(alias), m.get(shifted), m.get(props), m.get(named), m.get(late), s.has(plain), s.has(shifted), s.has(other), w.get(other),
+        held.get(kept), [plain].includes(alias), [alias].indexOf(plain), props.tag + named.loc + named.other + named.p5 + props.q5 + late.extra, m.size + s.size]
+    }`
+  for (const optimize of levels(0, 2, 'size'))
+    for (const n of [0, 1, 40]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, ${n} pushes`)
+})
+
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
   return adaptI64(module, instance.exports)

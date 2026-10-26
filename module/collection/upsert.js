@@ -22,6 +22,7 @@ import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
 import { STR_HCACHE_BIT, HIDDEN_PROPERTY_SEQ } from '../../layout.js'
 import { durableFwdLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, durableSlotRelogIR } from './durable.js'
 import { stubLogIR } from '../core/stub-log.js'
+import { arrayKeysOn } from './identity.js'
 
 // Normal outputs keep the cache-dense HASH LANE introduced for wordcount
 // (+7.2% measured). The self-compile artifact's compact profile drops only that
@@ -240,7 +241,7 @@ function genRehash() {
  *  owner's propsPtr slot that genUpsertGrow can rewrite). */
 // slotOnly returns the value address, inserting undefined only on a miss.
 // It shares growth, forwarding, insertion order and durable logs with set/add.
-function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt, slotOnly = false) {
+function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt, slotOnly = false, prologue = '') {
   const valParam = hasVal && !slotOnly ? '(param $val i64) ' : ''
   const slotLog = hasVal && !slotOnly ? durableSlotLogIR('slot', 16, 'val') : ''
   const storeVal = slotOnly ? `\n          (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))`
@@ -272,7 +273,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
       (then
         (local.set $off (call $__ptr_offset_fwd (local.get $off)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
-    (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))${prologue}
     ;; Probe before growing: an update needs neither a new slot nor a new table.
     (block $done (loop $retry
     ${slotOnly ? keyHashIR(hashFn) : `(local.set $h (call ${hashFn} (local.get $key)))`}
@@ -541,7 +542,9 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     (br $done))
     ;; Only a missing key can reach the growth path.
         ${nextCapIR()}
-        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
+        (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))${arrayKeysOn() ? `
+        ;; a dictionary of an array's properties keeps the array's identity word here (collection/identity.js)
+        (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))` : ''}
         (call $__coll_rehash (local.get $off) (local.get $newptr)
           (local.get $cap) (local.get $newcap) (i32.const ${entrySize}))
         ${forward

@@ -13,6 +13,7 @@ import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
 import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
 import { arrCellWat, arrCellHelper } from './core.js'
+import { arrayKeysOn } from './collection/identity.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey, isReassigned, some } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields, intExprRange } from '../src/static.js'
@@ -21,7 +22,7 @@ import { structInline } from '../src/abi/index.js'
 import { stubLogIR } from './core/stub-log.js'
 import { ctx, inc, err, strictCode, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
-import { hasDurableReset } from './collection/durable.js'
+import { hasDurableReset, heapResetWat } from './collection/durable.js'
 import { isRecordWat, orRecordWat } from './collection/record.js'
 import { recordsOn } from '../src/compile/array-records.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -125,6 +126,7 @@ const arrayGrowDeps = (knownArray = false) => () => [
   '__alloc_hdr', '__mkptr',
   ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : []),
   ...(needsArrayDynMove() ? ['__dyn_move'] : []),
+  ...(arrayKeysOn() ? ['__arr_ident_word'] : []),
 ]
 
 // Marks an ARRAY header slot ($off-16) as "props live in the global __dyn_props
@@ -232,6 +234,7 @@ export default (ctx) => {
       '__ptr_offset', '__arr_value',
       ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []),  // explicit edge — see arrayGrowDeps's comment
       ...(needsArrayDynMove() ? ['__dyn_move', '__hash_new', '__ihash_set_local', ...(recordsOn() ? ['__rec_hash'] : [])] : []),
+      ...(arrayKeysOn() ? ['__arr_ident_word'] : []),
     ],
     // '__durable_arr_snap' is an explicit edge on __arr_fill/__arr_copyWithin
     // (newly wired by this fix — see durableArrSnapIR's comment in collection.js)
@@ -467,12 +470,20 @@ export default (ctx) => {
   const grownPtrWat = (off) => numericArraysOn()
     ? `(f64.reinterpret_i64 (i64.or (i64.and (local.get $ptr) (i64.const 0xFFFFFFFF00000000)) (i64.extend_i32_u ${off})))`
     : `(call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) ${off})`
+  // A pinned array's identity word (collection/identity.js) where the grown
+  // header's word holds no dictionary or record of properties, which keep their own.
+  const carryIdentWat = () => arrayKeysOn() ? `
+    (if (i64.ne (local.get $ident) (i64.const 0))
+      (then (if (i32.eqz (i32.or
+            (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (i64.load (i32.sub (local.get $newOff) (i32.const 16))) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.HASH}))
+            ${recordsOn() ? isRecordWat('(i64.load (i32.sub (local.get $newOff) (i32.const 16)))') : '(i32.const 0)'}))
+        (then (i64.store (i32.sub (local.get $newOff) (i32.const 16)) (local.get $ident))))))` : ''
   // Relocation: a fresh block, the old header forwarding to it.
   const relocateWat = () => `
     (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $newCap)))
     (memory.copy (local.get $newOff) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
     ${headerPropsCopyIR()}
-    ${maybeDynMoveIR()}
+    ${maybeDynMoveIR()}${carryIdentWat()}
     ${durableArrSnapIR('off', 'ptr')}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newOff))
     (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
@@ -512,10 +523,10 @@ export default (ctx) => {
         (memory.copy (local.get $base) (local.get $off) (i32.shl (local.get $len) (i32.const 3)))
         (i32.store (i32.sub (local.get $base) (i32.const 8)) (local.get $len))
         (local.set $newOff (local.get $base))
-        ${maybeDynMoveIR()}))` : ''
+        ${maybeDynMoveIR()}${carryIdentWat()}))` : ''
     return `(func $${name} (param $ptr i64) (param $minCap i32) (result f64)
     ${defensive ? '(local $t i32) ' : ''}(local $off i32) (local $oldCap i32) (local $newCap i32) (local $newOff i32) (local $len i32) (local $base i32) (local $head i32)
-    ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}
+    ${needsArrayDynMove() ? '(local $oldProps f64)' : ''}${arrayKeysOn() ? ' (local $ident i64)' : ''}
     ${defensive ? `(local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
     ;; Defensive path: invalid/non-array pointer -> create fresh array buffer.
@@ -533,7 +544,17 @@ export default (ctx) => {
       (then (return (f64.reinterpret_i64 (local.get $ptr)))))
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     ${slack ? `${arrBaseWat('$off', '$base')}
-    (local.set $head (i32.shr_u (i32.sub (local.get $off) (local.get $base)) (i32.const 3)))` : '(local.set $base (local.get $off))'}
+    (local.set $head (i32.shr_u (i32.sub (local.get $off) (local.get $base)) (i32.const 3)))` : '(local.set $base (local.get $off))'}${arrayKeysOn() ? `
+    ;; a pinned array's identity word, before a move overwrites the header: its
+    ;; own, or a shifted array's base's (collection/identity.js); a dictionary or
+    ;; a record of properties keeps its own across the move
+    (local.set $ident (i64.load (i32.sub (local.get $off) (i32.const 16))))
+    (local.set $ident (if (result i64) (i32.eq (i32.wrap_i64 (i64.shr_u (local.get $ident) (i64.const 32))) (i32.const -2))
+      (then (i64.and (local.get $ident) (i64.const -2)))
+      (else (if (result i64) (i32.and (i32.eq (i32.wrap_i64 (i64.shr_u (local.get $ident) (i64.const 32))) (i32.const -1))
+                                      (i32.ne (i32.wrap_i64 (local.get $ident)) (i32.const -1)))
+        (then (call $__arr_ident_word (local.get $off)))
+        (else (i64.const 0))))))` : ''}
     (local.set $newCap (select
       (local.get $minCap)
       (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1))
@@ -1959,7 +1980,13 @@ export default (ctx) => {
             (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
             (local.set $newOff (i32.add (local.get $off) (i32.const 8)))
             ${arrBaseWat('$off', '$base')}
-            ${headerPropsToGlobalIR()}
+            ${headerPropsToGlobalIR()}${arrayKeysOn() ? `
+            ;; the first shift above the reset mark: the base's word, which a
+            ;; pinned array's identity is read from (collection/identity.js), holds
+            ;; the identity word or zero, no longer the properties moved above
+            ;; (the word still names them, or the record turned dictionary)
+            (if (i32.and (i32.eq (local.get $base) (local.get $off)) (i32.ge_u (local.get $off) ${heapResetWat()}))
+              (then (i64.store (i32.sub (local.get $off) (i32.const 16)) (call $__arr_ident_word (local.get $off)))))` : ''}
             ;; the vacated slot: the new header's len/cap
             (i32.store (local.get $off) (i32.sub (local.get $len) (i32.const 1)))
             (i32.store (i32.add (local.get $off) (i32.const 4))

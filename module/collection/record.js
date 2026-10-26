@@ -31,6 +31,7 @@ import { TOMB_NAN } from '../../src/ir.js'
 import { encodePtrHi, ptrIsWat } from '../../layout.js'
 import { heapResetWat } from './durable.js'
 import { recordsOn } from '../../src/compile/array-records.js'
+import { arrayKeysOn, identWordWat } from './identity.js'
 
 /** The high word of a record pointer of layout 0; a layout's is this or its id. */
 export const RECORD_HI = encodePtrHi(PTR.RECORD, 0)
@@ -227,6 +228,8 @@ export default function registerRecords() {
         (then (local.set $h (call $__hash_set_local (local.get $h)
           (i64.load (i32.add (local.get $keys) (i32.shl (local.get $slot) (i32.const 3)))) (local.get $v)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $entry)))
+      (br $entry)))${arrayKeysOn() ? `
+    ;; the record's offset named its array to a Set or Map: the dictionary keeps it (collection/identity.js)
+    (i64.store (i32.sub (i32.wrap_i64 (local.get $h)) (i32.const 16)) ${identWordWat('(local.get $rec)')})` : ''}
     (local.get $h))`
 }
