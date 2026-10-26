@@ -9,6 +9,7 @@ import { _compileInProcess as compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { definitelyAssigned } from '../src/summary/definite.js'
 import { K, hasTag } from '../src/summary/kind.js'
+import { T } from '../src/ast.js'
 import { belowOpt, levels } from './_matrix.js'
 import { agree, oracle, run, wat } from './util.js'
 
@@ -75,6 +76,45 @@ test('definite assignment: such a binding holds what was assigned, never absence
   is(hasTag(view.kindOf(spelled('a0')), K.ABSENT), false, 'assigned before its reads')
   is(hasTag(view.kindOf(spelled('late')), K.ABSENT), true, 'read before its assignment')
   is(view.fixedLenOf('o'), 2, 'the array it is stored into keeps its elements present and its count')
+})
+
+// A parameter every read of which an assignment in the body precedes never
+// shows its argument: prepare declares it in the body (handlers.js
+// localizeDeadParams), so it holds the kind of what is assigned, not whatever
+// a caller passes (subscript's `(a, b) => a && (b = expr(p)) && [op, a, b]`).
+// One a read, a default or a closure can see before the assignment keeps it.
+// [name, source (its second parameter the one asked about), args, whether it is a declaration of the body]
+const params = [
+  ['assigned first', `const g = (a, b) => { b = a * 2; return b + 1 }
+    export const f = (x) => g(x, 'not a number') + g(x)`, [3], true],
+  ['assigned by the operand before', `const g = (a, b) => a > 0 && (b = a * 2) > 1 && b + 1
+    export const f = (x) => g(x, 'y') + g(-x)`, [3], true],
+  ['an exported function\'s, which the host calls', `export const f = (x, t) => { t = x * 2; return t + 1 }`, [3], true],
+  ['the length stays', `const g = (a, b) => { b = a; return b }
+    export const f = (x) => g(x) + g.length * 10`, [3], true],
+  ['read before the assignment', `const g = (a, b) => { const r = b === undefined ? 1 : 2; b = a; return r + b }
+    export const f = (x) => g(x) + g(x, 5)`, [3], false],
+  ['a default reads it', `const g = (a, b, c = b) => { b = a; return (c === undefined ? 7 : c) + b }
+    export const f = (x) => g(x) + g(x, 5)`, [3], false],
+  ['a closure made before the assignment', `const g = (a, b) => { const h = () => b; const r = h(); b = a; return (r === undefined ? 7 : r) + h() }
+    export const f = (x) => g(x) + g(x, 5)`, [3], false],
+  ['assigned in one arm', `const g = (a, b) => { if (a > 1) b = a; return b === undefined ? -1 : b }
+    export const f = (x) => g(x) + g(0, 4)`, [3], false],
+]
+
+test('definite assignment: a parameter its body assigns before every read holds what is assigned', () => {
+  for (const [name, src, args, local] of params) {
+    for (const optimize of levels(0, 1, 2, 3)) agree(src, 'f', args, { optimize }, `${name} at ${optimize}`)
+    compile(src, { optimize: 0 })
+    const fn = ctx.funcs.list.find(f => f.name === 'g') ?? ctx.funcs.list.find(f => f.name === 'f')
+    // a declaration of the body leaves a placeholder in its place, the body declaring it first
+    const placeholder = fn.sig.params[1].name.startsWith(T + 'p')
+    is(placeholder, local, `${name}: ${local ? 'declared in the body' : 'a parameter'}`)
+    if (!local) continue
+    const decl = fn.body[1][0] === ';' ? fn.body[1][1] : fn.body[1]
+    is(decl[0], 'let', `${name}: declared first`)
+    is(hasTag(ctx.summary.at(fn.body).kindOf(decl[1]), K.STRING), false, `${name}: no argument's kind`)
+  }
 })
 
 // The module's own bare declarations: its statements run once, in order, and a

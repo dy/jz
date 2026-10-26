@@ -25,6 +25,7 @@ import { isNamedCallee, COLLECTION_CTORS, CTORS, hasModule, includeForArrayAcces
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
+import { definitelyAssigned } from '../summary/definite.js'
 import { NO_VALUE, staticObjectProps, staticPropertyKey, staticValue } from '../static.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
@@ -1008,6 +1009,7 @@ const handlers = {
       else
         preparedBody = ['{}', [';', ...prefix, ['return', preparedBody]]]
     }
+    preparedBody = localizeDeadParams(nextParams, preparedBody, Array.isArray(body) && body[0] === '{}', fnScope)
     // A function body always has a position, its own or else the nearest
     // written one around the arrow: a fault anywhere in the function falls back to it (ctx.js here).
     if (Array.isArray(preparedBody) && preparedBody.loc == null) preparedBody.loc = Array.isArray(body) && body.loc != null ? body.loc : ctx.error.loc
@@ -2810,6 +2812,35 @@ function resolveCallee(callee, args) {
   }
   includeForCallableValue()
   return normalizeMethodCallee(prep(callee))
+}
+
+// A parameter every read of which an assignment in the body precedes never
+// shows what a caller passed (`(a, b) => a && (b = expr(p)) && [op, a, b]`,
+// `(a, p, cc, fn) => (fn = lookup[cc]) && fn(a, p)`): the body declares it
+// (summary/definite.js gives a bare declaration the kind of what is assigned),
+// and a placeholder takes its position, so the function's length and the
+// parameters after it stay where they were. A parameter a default reads, or
+// one a read can find unassigned, keeps its argument.
+function localizeDeadParams(params, body, block, fnScope) {
+  const names = []
+  for (const p of params) if (typeof p === 'string' && refsName(body, p, REFS_THROUGH_ARROWS) &&
+    !params.some(q => Array.isArray(q) && q[0] === '=' && refsName(q[2], p, REFS_THROUGH_ARROWS))) names.push(p)
+  if (!names.length) return body
+  const assigned = definitelyAssigned([';', ['let', ...names], body])
+  const dead = names.filter(n => assigned.has(n))
+  if (!dead.length) return body
+  for (const n of dead) {
+    const tmp = `${T}p${freshPrepareId()}`
+    fnScope.set(tmp, tmp)
+    params[params.indexOf(n)] = tmp
+  }
+  const decl = ['let', ...dead]
+  if (!block) return withLoc(['{}', [';', decl, ['return', body]]], body)
+  if (!Array.isArray(body) || body[0] !== '{}') return body
+  const out = body.length < 2 ? ['{}', decl]
+    : Array.isArray(body[1]) && body[1][0] === ';' ? ['{}', [';', decl, ...body[1].slice(1)]]
+    : ['{}', [';', decl, body[1]]]
+  return withLoc(out, body)
 }
 
 function defFunc(name, node) {
