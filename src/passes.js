@@ -100,6 +100,7 @@ export const PASS_NAMES = [
   'placeLargeBlocks',         // a block of 4 KiB or more starts a quarter page past the last such block, mod 4096: streams of consecutive arrays share no low address bits (module/core.js __alloc)
   'versionArrayPatterns',     // an array pattern over a value that may be an array reads by position behind Array.isArray, the protocol beside it (plan/index-array-patterns.js)
   'treeshake',
+  'truncChoice',              // a choice of a float's ceiling below zero and its floor above is its truncation (optimize/trunc-choice.js)
   'splitFuncs',               // a large function's conditional arms become functions of their own: V8 compiles what runs (optimize/split-funcs.js), speed-only
   'loopPasses',               // in a function that runs once, each pass of a loop that runs a loop is a call: V8 replaces code between calls only (optimize/split-funcs.js), speed-only
   'jsstring',                 // boundary opt-in: flip exported string params to externref

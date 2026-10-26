@@ -2920,6 +2920,7 @@ src/
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
+                trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);
                 arena-rewind, sort-locals are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
   summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint refreshed after source rewrites

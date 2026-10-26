@@ -1140,3 +1140,28 @@ test('Math: a rounding of a word by a positive literal is a word where no -0 can
   ok(!funcWat(text, 'half').includes('f64.floor'), 'no float rounding of the words')
   ok(funcWat(text, 'fl').includes('i32.shr_s'), 'a floor shifts a negative dividend too')
 })
+
+test('Math: a ceiling below zero and a floor above is a truncation', () => {
+  // the way a library writes trunc (stdlib's `trunc`, spliced into every caller):
+  // one rounding where the choice computed both
+  const src = `const trunc = (x) => { if (x < 0) return Math.ceil(x); return Math.floor(x) }
+export let a = (x) => trunc(x * 1.5 - 0.25)
+export let b = (x) => x <= 0 ? Math.ceil(x) : Math.floor(x)
+export let c = (x) => { const v = x / 3; return v > 0 ? Math.floor(v) : Math.ceil(v) }
+export let d = (x) => x >= 0 ? Math.floor(x) : Math.ceil(x)
+export let e = (x, y) => x < 0 ? Math.ceil(y) : Math.floor(y)`
+  const want = oracle(src)
+  const xs = [0, -0, 0.4, -0.4, 1.5, -1.5, 2.999, -2.999, 1e300, -1e300, Infinity, -Infinity, NaN, 4503599627370497, -0.75]
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(src, { optimize })
+    for (const x of xs) for (const f of ['a', 'b', 'c', 'd']) is(Object.is(m[f](x), want[f](x)), true, `${f}(${x}) at ${optimize}: ${m[f](x)}`)
+    for (const [x, y] of [[-1, 2.5], [1, -2.5], [-1, -2.5], [0, -0.5]]) is(Object.is(m.e(x, y), want.e(x, y)), true, `e(${x}, ${y}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = compile(src, { wat: true, optimize: 3 })
+  for (const f of ['trunc', 'b', 'c', 'd']) {
+    const body = funcWat(text, f)
+    ok(/f64\.trunc/.test(body) && !/f64\.ceil|f64\.floor/.test(body), `${f}: one truncation`)
+  }
+  ok(/f64\.ceil|f64\.floor/.test(funcWat(text, 'e')), 'a choice over another value keeps its roundings')
+})

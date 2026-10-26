@@ -23,6 +23,7 @@ import { pureKernel } from './pure-funcs.js'
 import { guardToInt32 } from './to-int32.js'
 import { poolFloatConstants } from './pool-floats.js'
 import { selectBits } from './select-bits.js'
+import { truncChoice } from './trunc-choice.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
 import { pointerExits } from './pointer-exits.js'
@@ -564,6 +565,8 @@ export function watrTail(module, cfg, {
   // (on the loop bodies the optimizer leaves: its own passes would merge the split values back)
   if (cfg.leadChains === true) time('leadChains', () => leadChains(optimized))
   if (cfg.maskOperands === true) time('maskOperands', () => maskOperands(optimized))
+  // (before the float selects become selects of bits)
+  if (cfg.truncChoice !== false) time('truncChoice', () => truncChoice(optimized))
   // (after the passes that read a float select as one)
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)
