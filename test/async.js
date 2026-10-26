@@ -533,6 +533,17 @@ test('async generators: yield* over builtin iterables', async () => {
     export async function values() { let s = 0; for await (const v of g(new Set([1, Promise.resolve(2)]))) s += v; return s }`)
 })
 
+// An object rest of a value an async call resolves to (a layout the promise
+// carries, lost to the summary) holds the keys its pattern leaves, for every
+// reader: a property read, Object.keys and entries, a for-in.
+test('async: an object rest of a resolved value holds its keys', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`const get = async (n) => ({ a: n, b: n * 2, c: n + 1 })
+    const h = (v) => { const { a, ...rest } = v; let s = ''; for (const k in rest) s += k; return Object.keys(rest).join() + s + JSON.stringify(Object.entries(rest)) + rest.b }
+    export async function passed() { return h(await get(3)) }
+    export async function bound() { const { b, ...r } = await get(1); return Object.keys(r).join() + r.c }`)
+})
+
 // A class in an async body lowers in the body's scope, as in any function.
 test('async: a class in the body reads its bindings', async () => {
   if (onWasi() || onKernel()) return

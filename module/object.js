@@ -1153,12 +1153,13 @@ function resolveSchema(obj) {
 // it would (a) slot-index-copy from a layout the actual argument need not have and
 // (b) make emit build an OBJECT while analysis HASH-typed the binding, so reads
 // misdispatch. Treat params as unknown → dynamic runtime-key spread (always sound),
-// mirroring spreadSchema in src/kind.js so both phases agree.
-function spreadSourceSchema(obj, site) {
+// mirroring spreadSchema in src/kind.js so both phases agree. A literal that
+// merges the source (`merged`: more than its lone copy) takes no lost layout.
+function spreadSourceSchema(obj, site, merged = false) {
   if (ctx.summary) {
     const view = ctx.summary.at(ctx.func.current)
     if (view.emptySpreadOfExpr(obj, site)) return []
-    const sid = view.spreadSidOfExpr(obj, site)
+    const sid = view.spreadSidOfExpr(obj, site, merged)
     return sid == null ? null : ctx.schema.list[sid]
   }
   if (typeof obj === 'string') {
@@ -1206,12 +1207,14 @@ function conditionalSpreadGroup(node) {
 // and take emitDynamicSpread's HASH path, where insertion records presence.
 function mergeSpreadNames(props) {
   const names = [], seen = new Set()
+  // a source's lone copy keeps its kind (`{ ...o }`); anything more merges it
+  const merged = props.length !== 1 || !Array.isArray(props[0]) || props[0][0] !== '...' || !!spreadExclusions(props[0])
   for (const p of props) {
     if (Array.isArray(p) && p[0] === '...') {
       // Conditional presence requires HASH key insertion; fixed slots cannot
       // distinguish absent from present-with-undefined.
       if (conditionalSpreadGroup(p[1])) return null
-      const s = spreadSourceSchema(p[1], p)
+      const s = spreadSourceSchema(p[1], p, merged)
       // an object rest skips its pattern's keys; a computed one is known at run time only
       const skip = spreadExclusions(p)
       if (!s || skip?.exprs.length) return null
@@ -1427,7 +1430,7 @@ function emitDynamicSpread(props, excluded = null) {
         ['then', ['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]], ...setKeys]])
       continue
     }
-    const sSchema = excluded ? null : spreadSourceSchema(p[1], p), skip = spreadExclusions(p)
+    const sSchema = excluded ? null : spreadSourceSchema(p[1], p, true), skip = spreadExclusions(p)
     body.push(['local.set', `$${s}`, asF64(emit(p[1]))])
     if (sSchema) {
       body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])

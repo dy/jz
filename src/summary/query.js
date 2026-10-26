@@ -551,7 +551,9 @@ export function summaryQueries(facts, internal = false) {
       targetSidOfExpr: e => { const k = core(kindOfExpr(e)), sid = publicSid(k); return tagOf(k) === K.OBJECT && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site)) ? sid : null },
       spreadValOfExpr: (e, site) => valOf(spreadSourceKind(e, site)),
       emptySpreadOfExpr: (e, site) => emptySpreadKind(spreadSourceKind(e, site)),
-      spreadSidOfExpr: (e, site) => { const k = spreadSourceKind(e, site), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site) || facts.deletable?.has(site) || facts.deleteReach?.unknown && lostSchema(site)) ? sid : null },
+      // A literal merging a source (`merged`: not its lone, exclusion-free copy)
+      // reads a lost layout's keys at run time, as the solve types it (dynamicLiteral).
+      spreadSidOfExpr: (e, site, merged = false) => { const k = spreadSourceKind(e, site), sid = publicSid(k); return tagOf(k) === K.OBJECT && !isNullable(k) && sid !== UNKNOWN && !shapesOf(paramOf(k)).some(site => openSchemas.has(site) || facts.deletable?.has(site) || (merged || facts.deleteReach?.unknown) && lostSchema(site)) ? sid : null },
       // The member shapes of an object expression, a set's or the one shape, for a
       // guarded slot access; null when the shape is unknown or not an object.
       /** A function or closure a walk reached: the program runs it; the rest keep no kind. */
