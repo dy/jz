@@ -523,6 +523,26 @@ test('generators: yield in for-of and for-in bodies', () => agreeAll(`let log = 
   export let forIn = () => JSON.stringify([...keys({ a: 1, b: 2, c: 3, d: 4 })]) + [...keys(null)].length
   export let assignedHeads = () => [...heads([1, 2])].join()`))
 
+// The body's declarations are the machine's locals, each spelled apart: a
+// block's binding shadows a parameter, an outer name or a catch parameter
+// without touching it, a reference made before a later declaration reads
+// that declaration's binding, a hoisted var names its parameter. A closure
+// made in a loop the machine splits keeps its own iteration's bindings, as
+// JS keeps them, and shares them with the iteration's code.
+test('generators: block scopes and per-iteration bindings across yields', () => agreeAll(`let outer = 'o'
+  function* shadow(p) { var p; { let p = 2; let outer = 3; yield p + outer } yield p + outer; let e = 'e'; try { yield 0; throw 'x' } catch (e) { yield e } yield e }
+  function* forward() { const f = () => x; { let x = 1; yield f } let x = 2; yield x }
+  function* loops() { const fs = []
+    for (let i = 0; i < 3; i++) { const j = i * 2; fs.push(() => i + ':' + j); yield i }
+    let k = 0; while (k < 2) { const c = k; fs.push(() => c); yield k++ }
+    for (let i = 0, f0 = () => i; i < 2; i++) { fs.push(f0, () => i++); yield i }
+    for (const x of ['a', 'b']) { fs.push(() => x); yield x }
+    for (let n = 0; n < 2; n++) { try { yield n; throw n * 10 } catch (e) { fs.push(() => e) } switch (n) { case 0: case 1: let s = 's' + n; fs.push(() => s) } }
+    yield fs.map(f => f()).join() + '/' + fs.map(f => f()).join() }
+  export let shadowed = () => [...shadow(1)].join()
+  export let forwardRefs = () => { const it = forward(); const f = it.next().value; it.next(); return f() }
+  export let perIteration = () => [...loops()].join('|')`))
+
 // for-of closes its iterator (IteratorClose) when the body leaves early: a
 // break, return, throw or outward continue calls return(), once. Exhaustion,
 // a continue and an exception from next() close nothing; the body's exception

@@ -3539,7 +3539,18 @@ the operand: the summary types it as the operand's settled value, the operand
 itself when it is no thenable, the value an async call's promise fulfills with
 (the promise is named at its `__async_run` call node, as the iterator runtime's
 records are, beside what the machine completes with, a promise or thenable it
-completes with adopted), anything for a promise made another way. The
+completes with adopted), anything for a promise made another way.
+A machine body's declarations are its factory's locals, so `resolveLocals`
+spells each apart first: a top-level one keeps its name (a `var` hoisted
+under a parameter's name is the parameter), a block's keeps it unless a
+parameter, a name the body reads from outside or an earlier binding holds
+it, and every reference reads the binding its scope resolves to, a forward
+one included. A binding of a scope the machine enters again (inside a loop
+it splits) that a closure captures lives in a cell `{ v }` made at each
+entry, a for-head's copied into a fresh cell after the initializer and
+before each step (ECMA-262 CreatePerIterationEnvironment), and a closure
+made there reads the cells it was made with, through the parameters of a
+call made where it stands. The
 machine's locals are declared ahead of the steps that initialize them behind
 the TDZ mark (`src/ast.js`), a declaration that defines no value; a bare
 `let x` in the body defines its undefined where it stands. An async function

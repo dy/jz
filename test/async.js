@@ -495,6 +495,17 @@ test('async: await in for-of and for-in bodies', async () => {
     export async function labeled() { let s = ''; outer: for await (const x of [1, 2, 3]) { for await (const y of ['a', 'b']) { if (y === 'b') continue outer; if (x === 3) break outer; s += x + y } } return s }`)
 })
 
+// A closure made in a loop that awaits keeps its own iteration's bindings,
+// a for await's and a for-in's included, while the loop's tasks interleave.
+test('async: closures keep their iteration\'s bindings across awaits', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    async function loops() { const fs = []; for (let i = 0; i < 3; i++) { await null; fs.push(() => i) } for (const k in { a: 1, b: 2 }) { await null; fs.push(() => k) } for await (const x of [1, 2]) fs.push(() => x); return fs.map(f => f()).join() }
+    async function task(tag) { for (let i = 0; i < 2; i++) { await null; setTimeout(() => { log += tag + i }, 0) } }
+    export const bindings = () => loops()
+    export async function interleaved() { log = ''; await Promise.all([task('a'), task('b')]); await new Promise(r => setTimeout(r, 5)); return log }`)
+})
+
 test('async/generator bodies: nested function forms own their returns and declarations', async () => {
   if (onWasi() || onKernel()) return
   // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals

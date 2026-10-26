@@ -31,6 +31,8 @@
  *     throw, return, break or continue, or a return() at a yield) runs the
  *     finally blocks it crosses, which may yield themselves
  *   - for-of closes its iterator when its body leaves early (closingLoop)
+ *   - block scopes: each binding spelled apart, a closure in a loop the
+ *     machine splits keeping its iteration's bindings (resolveLocals)
  * Out (v1): a destructuring shape the temp expansion cannot take (an object
  *   rest, a computed key, a catch pattern); a function declaration in a split
  *   block.
@@ -38,7 +40,7 @@
  * @module jzify/generators
  */
 
-import { walkAst, some, isBlockBody, TDZ, withLoc } from '../src/ast.js'
+import { walkAst, some, TDZ, withLoc, noted, collectParamName, extractParams } from '../src/ast.js'
 import { ctx } from '../src/ctx.js'
 
 const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*' || n[0] === 'await')
@@ -141,6 +143,8 @@ export const closesOnReturn = (body) => some(body, n => n[0] === 'finally' || n[
 export const bindTo = (decl, value) => Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const' || decl[0] === 'var')
   ? [decl[0], ['=', decl[1], value]] : ['=', decl, value]
 const bodyStmts = (body) => Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]
+/** The names a binding pattern binds. */
+const patternNames = (p) => { const out = new Set(); collectParamName(p, out); return [...out] }
 /** A loop under its labels, outermost first. */
 export const labeled = (labels, loop) => labels ? labels.reduceRight((l, name) => [':', name, l], loop) : loop
 
@@ -201,101 +205,292 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     }
     return withLoc(node.map((n, i) => i === 0 ? n : desugarPatternDecls(n)), node)
   }
-  // Hoisting flattens block scopes into the factory scope: a name declared in
-  // two blocks (`for (let i …)` twice, an `i` in each `if` arm) would be one
-  // hoisted local, so every later declaration renames apart (`i`, `i$1`) with
-  // its references, scope by scope, before the collect below. A block, a loop
-  // head, an `if` arm and a catch clause open a scope; a nested function sees
-  // the renamed outer name unless it rebinds it, and its own declarations are
-  // not hoisted, so they keep their spelling.
-  const uniqueLocals = (body) => {
-    const taken = new Set()
-    let uid = 0
-    const declNames = (st) => {
-      const out = []
-      if (Array.isArray(st) && (st[0] === 'let' || st[0] === 'const'))
-        for (let i = 1; i < st.length; i++) { const d = st[i]; const n = Array.isArray(d) && d[0] === '=' ? d[1] : d; if (typeof n === 'string') out.push(n) }
-      return out
+  // ---- the body's bindings, resolved ----
+  // The machine hoists every declaration of its body into the factory scope,
+  // where all its states see it, so each takes a spelling of its own: a
+  // top-level one its name (a `var` hoisted under a parameter's name is the
+  // parameter), a block's its name unless a parameter, a name the body reads
+  // from outside it or an earlier binding holds it, then `name$k`; every
+  // reference reads the binding its scope resolves to, a forward one too. A
+  // binding of a scope the machine enters again (one a loop it splits runs
+  // through) that a closure captures lives in a cell, `{ v }`, made each time
+  // the scope is entered (a for-head's copied into a fresh one each
+  // iteration, as JS copies it), and a closure reads the cells it was made
+  // with: `((x) => () => x.v)(x)`. Nested functions keep their bindings.
+  const resolveLocals = (stmts, params) => {
+    const deep = (n) => Array.isArray(n) ? noted(n, n.map(deep)) : n
+    stmts = stmts.map(deep)
+    const scopes = new WeakMap(), reads = new WeakMap(), free = new Set(), seen = new Set(), tops = [], nested = []
+    const paramScope = { parent: null, names: new Map(), machine: false }
+    for (const p of params) paramScope.names.set(p, { name: p, spelling: p })
+    const root = { parent: paramScope, names: new Map(), machine: true, top: true, flat: true, reenter: false }
+    let emitting = false, outer = null
+    const UNDEF = [null, undefined]
+    const cellOf = (v) => ['{}', [':', 'v', v]]
+    const at = (b) => b.cell ? ['.', b.spelling, 'v'] : b.spelling
+    const items = (n) => n == null ? [] : Array.isArray(n) && n[0] === ',' ? n.slice(1) : [n]
+    const commas = (list) => list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]
+    // a scope per node and role, made while scanning and found again while emitting
+    const scope = (node, tag, parent, props = {}) => {
+      let m = scopes.get(node)
+      if (!m) { m = new Map(); scopes.set(node, m) }
+      let s = m.get(tag)
+      if (!s) {
+        s = { parent, names: new Map(), machine: parent.machine && !props.fn && !props.own, top: false,
+          fn: !!props.fn, flat: !!props.flat, reenter: !!props.flat && (!!parent.reenter || !!props.loop) }
+        m.set(tag, s)
+      }
+      return s
     }
-    // declare the statement's names into env: a repeat renames, a first keeps its spelling
-    const declare = (st, env, hoisted) => {
-      for (const n of declNames(st)) {
-        if (!hoisted) { env.delete(n); continue }
-        if (taken.has(n)) env.set(n, `${n}$${++uid}`)
-        else { taken.add(n); env.delete(n) }
+    const bind = (s, name) => {
+      if (typeof name !== 'string' || !name || s.names.has(name)) return
+      // a top-level `var` (a bare `let`) under a parameter's name is the parameter
+      if (s.top && paramScope.names.has(name)) return
+      const b = { name, spelling: name, cell: false, captured: false, machine: s.machine, top: s.top, reenter: s.reenter }
+      s.names.set(name, b)
+      if (b.machine) (b.top ? tops : nested).push(b)
+    }
+    const bindPattern = (s, p) => { for (const n of patternNames(p)) bind(s, n) }
+    // a list's declarations bind where the list begins, as JS hoists them in their scope
+    const declare = (list, s) => {
+      for (let st of list) {
+        if (!Array.isArray(st)) continue
+        if (st[0] === ';') { declare(st.slice(1), s); continue }
+        if (st[0] === 'async' && Array.isArray(st[1])) st = st[1]
+        if (st[0] === 'let' || st[0] === 'const') for (let i = 1; i < st.length; i++) bindPattern(s, Array.isArray(st[i]) && st[i][0] === '=' ? st[i][1] : st[i])
+        else if ((st[0] === 'function' || st[0] === 'function*' || st[0] === 'class') && typeof st[1] === 'string') bind(s, st[1])
       }
     }
-    const paramNames = (params) => { const out = []; walkAst(Array.isArray(params) ? params : [null, params], { enter: n => { for (const c of n) if (typeof c === 'string' && c !== '()' && c !== ',' && c !== '...' && c !== '=') out.push(c) } }); return out }
-    // what a node renames to stands at its source position
-    const walk = (n, env, hoisted) => withLoc(walkNode(n, env, hoisted), n)
-    const walkNode = (n, env, hoisted) => {
-      if (typeof n === 'string') return env.get(n) ?? n
-      if (!Array.isArray(n) || n[0] == null || n[0] === 'str') return n
+    const lookup = (name, s) => { for (let t = s; t; t = t.parent) { const b = t.names.get(name); if (b) return b } return null }
+    const ref = (name, s) => {
+      seen.add(name)
+      let crossed = false
+      for (let t = s; t; t = t.parent) {
+        const b = t.names.get(name)
+        if (b) {
+          if (!emitting && crossed && b.machine) { b.captured = true; reads.get(outer)?.add(b) }
+          return emitting && b.machine ? at(b) : name
+        }
+        if (t.fn) crossed = true
+      }
+      if (!emitting) free.add(name)
+      return name
+    }
+    const key = (k, s) => Array.isArray(k) && k[0] === '[]' && k.length === 2 ? ['[]', expr(k[1], s)] : k
+    // an object literal or pattern's items: a shorthand names its key and its binding at once
+    const object = (n, s, leaf) => ['{}', commas(items(n[1]).map(it => {
+      const name = typeof it === 'string' ? it : Array.isArray(it) && it[0] === '=' && typeof it[1] === 'string' ? it[1] : null
+      if (name == null) return leaf(it)
+      const r = leaf(name)
+      if (typeof it === 'string') return r === name ? it : [':', name, r]
+      const d = expr(it[2], s)
+      return r === name ? ['=', name, d] : [':', name, ['=', r, d]]
+    }))]
+    // A declaration's target: each name's spelling, a cell's slot where `slot`
+    // (the declaration assigns it), defaults and computed keys read in `s`.
+    const target = (p, s, slot) => {
+      if (typeof p === 'string') { const b = lookup(p, s); return b?.machine ? (slot ? at(b) : b.spelling) : p }
+      if (!Array.isArray(p) || p[0] == null) return p
+      const op = p[0]
+      if (op === '=') return ['=', target(p[1], s, slot), expr(p[2], s)]
+      if (op === '...') return ['...', target(p[1], s, slot)]
+      if (op === ':') return [':', key(p[1], s), target(p[2], s, slot)]
+      if (op === ',' || op === '[]') return [op, ...p.slice(1).map(x => x == null ? x : target(x, s, slot))]
+      if (op === '{}') return object(p, s, (x) => target(x, s, slot))
+      return expr(p, s)
+    }
+    const hasCell = (p, s) => patternNames(p).some(n => lookup(n, s)?.cell)
+    const cellsOf = (s) => [...s.names.values()].filter(b => b.cell)
+    const makeCells = (s) => emitting ? cellsOf(s).map(b => ['let', ['=', b.spelling, cellOf(UNDEF)]]) : []
+    // a block's own statements (a block in it is a statement of its own)
+    const own = (n) => n == null ? [] : Array.isArray(n) && n[0] === '{}' ? (n[1] == null ? [] : Array.isArray(n[1]) && n[1][0] === ';' ? n[1].slice(1) : [n[1]])
+      : Array.isArray(n) && n[0] === ';' ? n.slice(1) : [n]
+    // what a block lowers to keeps its spelling: braces, a list or a lone statement
+    const shaped = (orig, out) => {
+      if (Array.isArray(orig) && orig[0] === '{}') {
+        const inner = orig[1]
+        if (Array.isArray(inner) && inner[0] === ';') return ['{}', [';', ...out]]
+        if (inner == null && !out.length) return orig.slice()
+        return ['{}', out.length === 1 && inner != null ? out[0] : [';', ...out]]
+      }
+      if (Array.isArray(orig) && orig[0] === ';') return [';', ...out]
+      return out.length === 1 ? out[0] : [';', ...out]
+    }
+    // statements of a scope, its cells made first, a function declaration
+    // bound as a constant (one that reads cells) next
+    const list = (stmts, s, flat) => {
+      if (!emitting) declare(stmts, s)
+      const out = stmts.map(st => stmt(st, s, flat))
+      const hoisted = (st) => Array.isArray(st) && st.hoisted === true
+      return [...makeCells(s), ...out.filter(hoisted), ...out.filter(st => !hoisted(st))]
+    }
+    const block = (n, parent, flat, loop) => {
+      // a lone name or literal declares nothing (a function body may be one)
+      if (!Array.isArray(n)) return expr(n, parent)
+      const s = scope(n, 'b', parent, { flat, loop })
+      return withLoc(shaped(n, list(own(n), s, flat)), n)
+    }
+    const declaration = (n, s) => {
+      const op = n[0], parts = []
+      let decls = []
+      const flush = () => { if (decls.length) parts.push([op, ...decls]); decls = [] }
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i], assigns = Array.isArray(d) && d[0] === '=', t = assigns ? d[1] : d, init = assigns ? expr(d[2], s) : undefined
+        if (typeof t === 'string' && s.top && paramScope.names.has(t)) {
+          if (assigns) { flush(); parts.push(['=', t, init]) }
+          continue
+        }
+        if (emitting && hasCell(t, s)) {
+          // a cell's declaration assigns its slot; the pattern's other names declare apart
+          flush()
+          const plain = patternNames(t).map(x => lookup(x, s)).filter(b => !b.cell).map(b => b.spelling)
+          if (plain.length) parts.push(['let', ...plain])
+          parts.push(['=', target(t, s, true), assigns ? init : UNDEF])
+          continue
+        }
+        decls.push(assigns ? withLoc(['=', target(t, s, false), init], d) : target(t, s, false))
+      }
+      flush()
+      return parts.length === 1 ? parts[0] : [';', ...parts]
+    }
+    const stmt = (n, s, flat) => withLoc(stmtAt(n, s, flat), n)
+    const stmtAt = (n, s, flat) => {
+      if (!Array.isArray(n) || n[0] == null) return expr(n, s)
+      const op = n[0], inner = flat && decomposes(n)
+      if (op === ';') return [';', ...n.slice(1).map(st => stmt(st, s, flat))]
+      if (op === '{}') return block(n, s, flat)
+      if (op === 'let' || op === 'const') return declaration(n, s)
+      if (op === ':' && typeof n[1] === 'string') return [':', n[1], stmt(n[2], s, inner)]
+      if (op === 'if') return ['if', expr(n[1], s), block(n[2], s, inner), ...(n.length > 3 ? [block(n[3], s, inner)] : [])]
+      if (op === 'while') return ['while', expr(n[1], s), block(n[2], s, inner, true)]
+      if (op === 'do') return ['do', block(n[1], s, inner, true), expr(n[2], s)]
+      if (op === 'for') return forStmt(n, s, inner)
+      if (op === 'try') return ['try', block(n[1], s, inner), ...n.slice(2).map(c => {
+        if (!Array.isArray(c)) return c
+        if (c[0] === 'finally') return ['finally', block(c[1], s, inner)]
+        // the parameter and the body share a scope (the body cannot redeclare it)
+        const cs = scope(c, 'x', s, { flat: inner })
+        if (!emitting && c[1] != null) bindPattern(cs, c[1])
+        const out = list(own(c[2]), cs, inner)
+        if (c[1] == null || !emitting || !hasCell(c[1], cs)) return ['catch', c[1] == null ? c[1] : target(c[1], cs, false), shaped(c[2] ?? ['{}', null], out)]
+        // a captured parameter lives in a cell the body makes first
+        const caught = genTemp('ce'), made = cellsOf(cs).length
+        const plain = patternNames(c[1]).map(x => cs.names.get(x)).filter(b => !b.cell).map(b => b.spelling)
+        return ['catch', caught, ['{}', [';', ...out.slice(0, made), ...(plain.length ? [['let', ...plain]] : []),
+          ['=', target(c[1], cs, true), caught], ...out.slice(made)]]]
+      })]
+      if (op === 'switch') {
+        // its cases share one scope, made as it is entered
+        const w = scope(n, 'w', s, { flat: inner }), clauses = n.slice(2)
+        const bodyOf = (c) => own(c[0] === 'case' ? c[2] : c[1])
+        if (!emitting) declare(clauses.flatMap(bodyOf), w)
+        const out = ['switch', expr(n[1], s), ...clauses.map(c => c[0] === 'case'
+          ? ['case', expr(c[1], w), shaped(c[2], bodyOf(c).map(st => stmt(st, w, inner)))]
+          : ['default', shaped(c[1], bodyOf(c).map(st => stmt(st, w, inner)))])]
+        const made = makeCells(w)
+        return made.length ? [';', ...made, out] : out
+      }
+      const decl = op === 'async' && Array.isArray(n[1]) ? n[1] : n
+      if ((decl[0] === 'function' || decl[0] === 'function*' || decl[0] === 'class' && op !== 'async') && typeof decl[1] === 'string' && decl[1]) {
+        const out = fn(n, s, true)
+        if (out[0] !== '()') return out
+        // a declaration whose closure reads cells binds the call's value
+        return Object.assign(['const', ['=', target(decl[1], s, false), out]], { hoisted: decl[0] !== 'class' })
+      }
+      return expr(n, s)
+    }
+    const forStmt = (n, s, inner) => {
+      const head = n[1], h = scope(n, 'h', s, { flat: inner, loop: true })
+      if (Array.isArray(head) && (head[0] === 'of' || head[0] === 'in' || head[0] === 'of-idx')) {
+        // the source reads outside the loop's scope, the binding and the body inside it
+        const decl = head[1], isDecl = Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')
+        if (!emitting && isDecl) bindPattern(h, decl[1])
+        return ['for', [head[0], isDecl ? [decl[0], target(decl[1], h, false)] : expr(decl, s), expr(head[2], s)], block(n[2], h, inner, true)]
+      }
+      const [, init, cond, step] = Array.isArray(head) && head[0] === ';' ? head : [';', head, null, null]
+      if (!emitting && init != null) declare([init], h)
+      const init2 = init == null ? init : stmt(init, h, inner), cond2 = cond == null ? cond : expr(cond, h), step2 = step == null ? step : expr(step, h)
+      const body = block(n[2], h, inner, true), cells = emitting ? cellsOf(h) : []
+      if (!cells.length) return ['for', [';', init2, cond2, step2], body]
+      // the head's bindings copy into fresh cells after the initializer and before each step
+      const copy = () => cells.map(b => ['=', b.spelling, cellOf(['.', b.spelling, 'v'])])
+      const steps = [...copy(), ...(step2 == null ? [] : [step2])]
+      return ['for', [';', [';', ...makeCells(h), ...(init2 == null ? [] : [init2]), ...copy()], cond2, commas(steps)], body]
+    }
+    // A function form: a scope of its own. One standing in the machine body
+    // reads the cells it captures through the parameters of a call made where
+    // it stands.
+    const fn = (n, s, decl) => {
+      const top = outer == null
+      if (top) { outer = n; if (!emitting) reads.set(n, new Set()) }
+      const out = fnAt(n, s, decl)
+      if (!top) return out
+      outer = null
+      const cells = emitting ? [...reads.get(n)].filter(b => b.cell).map(b => b.spelling) : []
+      if (!cells.length) return out
+      return ['()', ['=>', ['()', commas(cells)], out], commas(cells.slice())]
+    }
+    const fnParams = (p, f) => {
+      if (!emitting) for (const x of extractParams(p)) bindPattern(f, x)
+      return p == null ? p : expr(p, f)
+    }
+    const fnAt = (n, s, decl) => {
       const op = n[0]
-      if (op === '.' || op === '?.') return [op, walk(n[1], env, hoisted), n[2]]
-      if (op === ':') return [op, n[1], walk(n[2], env, hoisted)]
-      if (op === 'class') return n
-      // object literal shorthand `{ i }` is key and reference at once
-      if (op === '{}' && n.length === 2 && !isBlockBody(n)) {
-        const items = Array.isArray(n[1]) && n[1][0] === ',' ? n[1].slice(1) : [n[1]]
-        const out = items.map(it => typeof it === 'string' && env.has(it) ? [':', it, env.get(it)] : walk(it, env, hoisted))
-        return ['{}', out.length === 1 ? out[0] : [',', ...out]]
+      if (op === 'async') return ['async', fnAt(n[1], s, decl)]
+      if (op === '=>') {
+        const f = scope(n, 'f', s, { fn: true })
+        const p = fnParams(n[1], f)
+        return ['=>', p, Array.isArray(n[2]) && n[2][0] === '{}' ? block(n[2], f, false) : expr(n[2], f)]
       }
-      if (op === '=>' || op === 'function' || op === 'function*' || op === 'async') {
-        if (op === 'async') return [op, walk(n[1], env, false)]
-        const inner = new Map(env)
-        const params = op === '=>' ? n[1] : n[2], body = op === '=>' ? n[2] : n[3]
-        for (const p of paramNames(params)) inner.delete(p)
-        const out = n.slice()
-        out[op === '=>' ? 1 : 2] = walk(params, inner, false)
-        out[op === '=>' ? 2 : 3] = scope(body, inner, false)
-        return out
+      if (op === 'class') {
+        // a class names itself inside; its members run apart from the body
+        const c = scope(n, 'c', s, { own: true }), k = scope(n, 'k', c, { fn: true })
+        if (!emitting && n[1] && !decl) bind(c, n[1])
+        const mk = (x) => Array.isArray(x) && x[0] === 'static' ? ['static', mk(x[1])] : key(x, c)
+        const member = (m) => {
+          if (!Array.isArray(m)) return m
+          if (m[0] === 'static') return ['static', Array.isArray(m[1]) && m[1][0] === '{}' ? block(m[1], k, false) : member(m[1])]
+          if (m[0] === '=' || m[0] === ':') return [m[0], mk(m[1]), expr(m[2], k)]
+          if (m[0] === 'get' || m[0] === 'set') { const f = scope(m, 'f', k, { fn: true }); return [m[0], mk(m[1]), fnParams(m[2], f), block(m[3], f, false)] }
+          return expr(m, k)
+        }
+        const body = n[3] == null ? n[3] : Array.isArray(n[3]) && n[3][0] === ';' ? [';', ...n[3].slice(1).map(member)] : member(n[3])
+        return ['class', decl ? target(n[1], s, false) : n[1], n[2] == null ? n[2] : expr(n[2], s), body]
       }
-      if (op === 'for') {
-        const inner = new Map(env)
-        const head = n[1]
-        let outHead
-        if (Array.isArray(head) && (head[0] === 'of' || head[0] === 'in')) {
-          declare(head[1], inner, hoisted)
-          outHead = [head[0], walk(head[1], inner, hoisted), walk(head[2], env, hoisted)]
-        } else if (Array.isArray(head) && head[0] === ';') {
-          if (Array.isArray(head[1]) && (head[1][0] === 'let' || head[1][0] === 'const')) declare(head[1], inner, hoisted)
-          outHead = head.map((c, i) => i === 0 ? c : walk(c, inner, hoisted))
-        } else outHead = walk(head, inner, hoisted)
-        return ['for', outHead, scope(n[2], inner, hoisted)]
-      }
-      if (op === 'while' || op === 'do') return [op, walk(n[1], env, hoisted), scope(n[2], env, hoisted)]
-      if (op === 'if') return ['if', walk(n[1], env, hoisted), scope(n[2], env, hoisted), ...(n.length > 3 ? [scope(n[3], env, hoisted)] : [])]
-      if (op === 'try') return n.map((c, i) => {
-        if (i === 0) return c
-        if (Array.isArray(c) && c[0] === 'catch') { const inner = new Map(env); if (typeof c[1] === 'string') inner.delete(c[1]); return ['catch', c[1], scope(c[2], inner, hoisted)] }
-        if (Array.isArray(c) && c[0] === 'finally') return ['finally', scope(c[1], env, hoisted)]
-        return scope(c, env, hoisted)
-      })
-      if (op === '{}') return scope(n, env, hoisted)
-      if (op === 'switch') { const inner = new Map(env); return n.map((c, i) => i === 0 ? c : walk(c, inner, hoisted)) }
-      if (op === ';') return list(n.slice(1), env, hoisted, ';')
-      if (op === 'let' || op === 'const') {
-        // the declarator's own initializer sees the new name (`let go = () => go()`)
-        declare(n, env, hoisted)
-        return n.map((d, i) => i === 0 ? d : typeof d === 'string' ? (env.get(d) ?? d) : withLoc(['=', walk(d[1], env, hoisted), walk(d[2], env, hoisted)], d))
-      }
-      return n.map((c, i) => i === 0 ? c : walk(c, env, hoisted))
+      // function / function*: an expression's own name binds inside it
+      const self = scope(n, 's', s, { own: true }), f = scope(n, 'f', self, { fn: true })
+      if (!emitting && n[1] && !decl) bind(self, n[1])
+      const p = fnParams(n[2], f)
+      return [op, decl ? target(n[1], s, false) : n[1], p, n[3] == null ? n[3] : block(n[3], f, false), ...n.slice(4)]
     }
-    // a statement in scope position: a block, a sequence or a lone statement
-    const scope = (n, env, hoisted) => {
-      const inner = new Map(env)
-      if (Array.isArray(n) && n[0] === '{}' && isBlockBody(n)) {
-        const stmts = n.length === 1 ? [] : Array.isArray(n[1]) && n[1][0] === ';' ? n[1].slice(1) : [n[1]]
-        const out = list(stmts, inner, hoisted, ';')
-        return withLoc(['{}', out], n)
-      }
-      return walk(n, inner, hoisted)
+    const expr = (n, s) => {
+      if (typeof n === 'string') return ref(n, s)
+      if (!Array.isArray(n) || n[0] == null) return n
+      return withLoc(noted(n, exprAt(n, s)), n)
     }
-    // statements sharing one scope, in order: a declaration renames what follows
-    const list = (stmts, env, hoisted, head) => [head, ...stmts.map(st => walk(st, env, hoisted))]
-    const env = new Map()
-    return body.map(st => walk(st, env, true))
+    const exprAt = (n, s) => {
+      const op = n[0]
+      if (op === 'str' || op === '//' || op === 'break' || op === 'continue') return n.slice()
+      if (op === '.' || op === '?.') return [op, expr(n[1], s), n[2]]
+      if (FN_BOUNDARY_OPS.has(op)) return fn(n, s, false)
+      if (op === 'get' || op === 'set') { const f = scope(n, 'f', s, { fn: true }); return [op, key(n[1], s), fnParams(n[2], f), block(n[3], f, false)] }
+      if (op === ':') return [':', key(n[1], s), expr(n[2], s)]
+      if (op === '{}') return object(n, s, (x) => expr(x, s))
+      return n.map((c, i) => i === 0 ? c : expr(c, s))
+    }
+    // scan: bind, resolve, note what each closure captures
+    list(stmts, root, true)
+    for (const b of nested) b.cell = b.reenter && b.captured
+    // spell: a top-level binding keeps its name, a block's takes one nothing else holds
+    const taken = new Set([...paramScope.names.keys(), ...free, ...Object.values(S), '__next', '__in', '__v', '__e'])
+    for (const b of tops) taken.add(b.name)
+    for (const b of nested) {
+      let sp = b.name, k = 0
+      while (taken.has(sp) || sp !== b.name && seen.has(sp)) sp = `${b.name}$${++k}`
+      b.spelling = sp; taken.add(sp)
+    }
+    emitting = true
+    return list(stmts, root, true)
   }
   // Collect every let/const binding name in the body — generator locals live in
   // the factory scope so they survive across next() resumes (shadowing renamed
@@ -387,7 +582,7 @@ export function createGeneratorLowering({ transform, transformParams, err, gener
     }
 
     for (let i = 0; i < body.length; i++) body[i] = desugarPatternDecls(desugarLoops(body[i]))
-    body.splice(0, body.length, ...uniqueLocals(body))
+    body.splice(0, body.length, ...resolveLocals(body, [...new Set(extractParams(params).flatMap(patternNames))]))
     const locals = new Set()
     for (const st of body) collectLocals(st, locals)
 
