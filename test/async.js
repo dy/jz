@@ -575,6 +575,39 @@ test('async: using disposes across awaits', async () => {
     export async function f() { { using a = await res(4); log.push(a.n); await null } log.push('after'); try { await fail() } catch (e) { log.push(e) } return log.join() }`)
 })
 
+// What JS evaluates before a suspension reads before it where another
+// activation could tell: a name another call or a closure assigns meanwhile,
+// a callee of that name, a method off a receiver whose key the program
+// writes or a getter defines (called on that receiver), a constructor, a
+// spread's iteration, a shorthand's value, a computed key, an assignment's
+// receiver. A name nothing else assigns, and a builtin method, read in place.
+test('async: operands read before an await where JS reads them', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = '', total = 0, n = 1, k = 'a', g = (x) => 'old' + x
+    class A { constructor(x) { this.t = 'A' + x } }
+    class B { constructor(x) { this.t = 'B' + x } }
+    let C = A
+    const o = { k: 3, m(x) { return this.k + x }, get h() { log += 'G'; return (x) => log += 'H' + x } }
+    const ns = { get B() { log += 'N'; return B } }
+    const v = async (x) => { log += 'V'; await null; return x }
+    const swap = async () => { await null; g = (x) => 'new' + x; o.m = (x) => 'new' + x; C = B; n = 2; k = 'b'; return 1 }
+    const add = async (x) => { total = total + await Promise.resolve(x); return total }
+    export async function operand() { log = 'a'; return log + await v(1) }
+    export async function concurrent() { total = 0; await Promise.all([add(1), add(2), add(3)]); return total }
+    export async function captured() { let x = 1; const bump = async () => { await null; x = 10 }; const p = bump(); const r = x + await Promise.resolve(5); await p; return r + ',' + x }
+    export async function callees() { return [g(await swap()), o.m(1)].join() }
+    export async function methods() { o.m = function (x) { return 'kept' + x }; const r = o.m(await v(1)); log = ''; o.h(await v(2)); return r + log }
+    export async function constructors() { C = A; log = ''; const a = new C(await swap()).t, b = new ns.B(await v(4)).x; return a + log }
+    export async function literals() {
+      const xs = [1, 2], obj = { a: 1 }
+      const later = async () => { await null; xs.push(3); obj.b = 2; n = 5; k = 'z'; return 9 }
+      n = 1; k = 'a'
+      return JSON.stringify([[...xs, await later()], { ...obj, c: await later() }, { n, c: await later() }, { [k]: await later() }])
+    }
+    export async function receiver() { let p = { v: 0 }; const old = p; const swapP = async () => { await null; p = { v: 0 }; return 5 }; p.v = await swapP(); return old.v + ',' + p.v }
+    export async function local() { let x = 1; x = 2; const out = []; for (let i = 0; i < 2; i++) out.push(x + await Promise.resolve(i)); return out.join() }`)
+})
+
 // A class in an async body lowers in the body's scope, as in any function.
 test('async: a class in the body reads its bindings', async () => {
   if (onWasi() || onKernel()) return

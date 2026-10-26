@@ -26,9 +26,39 @@
 
 import { FN_BOUNDARY_OPS, probe, closingLoop, labeled, bindTo } from './generators.js'
 import { usesArguments } from './arguments.js'
-import { some, ASSIGN_OPS, extractParams, withLoc } from '../src/ast.js'
+import { some, ASSIGN_OPS, extractParams, withLoc, collectParamName } from '../src/ast.js'
 
-export function createAsyncLowering({ genTemp, err }) {
+const DECLS = new Set(['let', 'const', 'var', 'using'])
+/** The names a node assigns, counted per name (a destructuring target's, a
+ *  bare for-in or for-of head's, an update's), and the property keys it
+ *  writes by a static key, deletes, or defines a getter for; through nested
+ *  functions where `deep`. A declaration's initializer assigns nothing. */
+export const assignCensus = (node, deep, names = new Map(), props = new Set()) => {
+  const target = (t) => {
+    if (typeof t === 'string') { names.set(t, (names.get(t) ?? 0) + 1); return }
+    if (!Array.isArray(t)) return
+    const op = t[0]
+    if (op === '.') { if (typeof t[2] === 'string') props.add(t[2]); return }
+    if (op === '[]' && t.length === 3) { if (Array.isArray(t[2]) && t[2][0] == null && typeof t[2][1] === 'string') props.add(t[2][1]); return }
+    if (op === '[]' || op === '{}' || op === ',') { for (let i = 1; i < t.length; i++) target(t[i]); return }
+    if (op === '=' || op === '...' || op === '()' && t.length === 2) target(t[1])
+    else if (op === ':') target(t[2])
+  }
+  const walk = (n) => {
+    if (!Array.isArray(n) || n[0] == null) return
+    const op = n[0]
+    if (!deep && FN_BOUNDARY_OPS.has(op)) return
+    if (DECLS.has(op)) { for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=') walk(n[i][2]); return }
+    if (op === 'get' && typeof n[1] === 'string') props.add(n[1])
+    if (ASSIGN_OPS.has(op) || op === '++' || op === '--' || op === 'delete') target(n[1])
+    else if (op === 'for' && Array.isArray(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in') && !(Array.isArray(n[1][1]) && DECLS.has(n[1][1][0]))) target(n[1][1])
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(node)
+  return { names, props }
+}
+
+export function createAsyncLowering({ genTemp, err, censusOf }) {
 
   // The awaits of THIS function body only (nested function forms keep
   // their own await/this rules; a stray await inside a nested sync fn falls
@@ -121,11 +151,12 @@ export function createAsyncLowering({ genTemp, err }) {
   // `x = yield E` / `x.f = yield E`). Every other one is hoisted: the value
   // it resumes with lands in a temp declared before the statement, and
   // whatever the statement evaluates before it lands in temps first, so the
-  // source's order holds: a call's callee, a method's receiver and computed
-  // key (the method stays a method, read where it is called), an
-  // assignment's target (hoistAssign); a name, a callee's or a receiver's
-  // too, reads its binding where it stands. A
-  // short-circuit or conditional whose later arm suspends becomes an if
+  // source's order holds where another activation could tell: a name another
+  // may assign meanwhile (`volatile`), a spread's iteration, a callee, a
+  // method's receiver and computed key, and the method itself where its key
+  // is written or a getter's (`watched`: then called on the receiver it was
+  // read off), a constructor (hoistNew), an assignment's target (hoistAssign).
+  // A short-circuit or conditional whose later arm suspends becomes an if
   // statement assigning a temp, an optional chain whose later links suspend
   // too (hoistOptional). A loop's test, step and initializer and a
   // case's test stay where they are: the machine runs them as statements
@@ -141,7 +172,47 @@ export function createAsyncLowering({ genTemp, err }) {
   const blockOf = (b) => { if (b == null) return b; const list = hoistList(b); return list.length === 1 && !(Array.isArray(b) && b[0] === '{}') ? list[0] : block(list) }
   const keepsPlace = (op, i) => i === 1 && (op === '?.()' || ASSIGN_OPS.has(op) || op === '++' || op === '--')
   // A value a temp need not hold: a literal, a name, `this`.
-  const isStable = (e) => isSimple(e) || e[0] === 'this'
+  const isStable = (e) => isSimple(e) || e[0] === 'this' || e[0] === 'str'
+  // The body being lowered: the names it declares, and how often it assigns
+  // each outside its nested functions (enterBody).
+  let own = null
+  const declaredIn = (n, out) => {
+    if (!Array.isArray(n) || n[0] == null || FN_OPS.has(n[0])) return
+    if (DECLS.has(n[0])) for (let i = 1; i < n.length; i++) collectParamName(Array.isArray(n[i]) && n[i][0] === '=' ? n[i][1] : n[i], out)
+    else if (n[0] === 'catch' && n[1] != null) collectParamName(n[1], out)
+    for (let i = 1; i < n.length; i++) declaredIn(n[i], out)
+  }
+  const enterBody = (params, body) => {
+    const prior = own, declared = new Set()
+    for (const p of params == null ? [] : extractParams(params)) collectParamName(p, declared)
+    declaredIn(body, declared)
+    own = { declared, assigns: assignCensus(body, false).names }
+    return prior
+  }
+  const leaveBody = (prior) => { own = prior }
+  // A name another activation may assign while the body is suspended: one the
+  // body declares, assigned in a function nested in it; any other, assigned
+  // anywhere in the module (by another call of this very function too).
+  const volatile = (n) => {
+    if (typeof n !== 'string' || own == null || !censusOf) return false
+    const all = censusOf().names.get(n) ?? 0
+    return own.declared.has(n) ? all > (own.assigns.get(n) ?? 0) : all > 0
+  }
+  // A value that reads the same after the suspension.
+  const isSettled = (e) => isStable(e) && !volatile(e)
+  // A property whose read the suspension may change or that runs code: a key
+  // the program writes by name or defines a getter for, any computed one.
+  const watched = (key) => typeof key !== 'string' || !censusOf || censusOf().props.has(key)
+  // The key a member reads, when it names one.
+  const keyOf = (m) => m[0] === '.' ? m[2] : Array.isArray(m[2]) && m[2][0] == null && typeof m[2][1] === 'string' ? m[2][1] : null
+  const copy = (x) => Array.isArray(x) ? x.slice() : x
+  // a call on the receiver `r` of the method `fn` read off it; never lowered again
+  const madeCalls = new WeakSet()
+  const callOn = (fn, r, args) => {
+    const callee = ['.', fn, 'call']
+    madeCalls.add(callee)
+    return ['()', callee, args == null ? copy(r) : Array.isArray(args) && args[0] === ',' ? [',', copy(r), ...args.slice(1)] : [',', copy(r), args]]
+  }
   const isGroup = (e) => Array.isArray(e) && e[0] === '()' && e.length === 2
   const isMember = (e) => Array.isArray(e) && (e[0] === '.' || e[0] === '[]' && e.length === 3)
   const OPTIONAL = new Set(['?.', '?.[]', '?.()'])
@@ -149,13 +220,14 @@ export function createAsyncLowering({ genTemp, err }) {
   // An optional chain's links, outermost first, down to its root (a group ends it).
   const chainOf = (e) => { const out = []; for (let x = e; Array.isArray(x) && LINKS.has(x[0]) && !isGroup(x); x = x[1]) out.push(x); return out }
   // What an expression or a statement lowers to stands where it stood.
-  function hoistExpr(e) {
-    const h = hoistExprNode(e)
+  function hoistExpr(e, within) {
+    const h = hoistExprNode(e, within)
     for (const s of h.pre) withLoc(s, e)
     withLoc(h.expr, e)
     return h
   }
-  function hoistExprNode(e) {
+  // `within`: the literal or the call a `,` list stands in
+  function hoistExprNode(e, within) {
     if (!Array.isArray(e) || FN_OPS.has(e[0]) || !refsAwait(e)) return { pre: [], expr: e }
     const op = e[0]
     if (isAwaitOf(e)) {
@@ -175,63 +247,98 @@ export function createAsyncLowering({ genTemp, err }) {
     // an optional link whose later links suspend
     const chain = chainOf(e), at = chain.findLastIndex(x => OPTIONAL.has(x[0]))
     if (at >= 0 && chain.slice(0, at + 1).some(x => x.slice(2).some(refsAwait))) return hoistOptional(chain, at)
+    if (op === 'new' && Array.isArray(e[1]) && e[1][0] === '()' && e[1].length === 3 && refsAwait(e[1][2])) return hoistNew(e[1])
     // Children evaluate left to right: those before the last awaiting child
     // land in temps, the rest stay in place.
     const out = e.slice(), pre = []
-    let last = 1
+    let last = 1, recv = null
     for (let i = 1; i < e.length; i++) if (refsAwait(e[i])) last = i
-    // A property or a spread is not a value: its value settles instead.
-    const settleVal = (x) => { if (isStable(x)) return x; const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
-    // a callee read before its arguments, a method on its receiver (`(o.m)()` too)
+    const temp = (x) => { const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
+    const settleVal = (x) => isSettled(x) ? x : temp(x)
+    // a computed key reads before what follows it
+    const settleKey = (k) => Array.isArray(k) && k[0] === '[]' && k.length === 2 ? ['[]', settleVal(k[1])] : k
+    // a callee read before its arguments, a method on its receiver (`(o.m)()`
+    // too): one whose read may differ read off it then, and called on it
     const settleCallee = (x) => {
       const m = isGroup(x) && isMember(x[1]) ? x[1] : x
-      if (typeof m === 'string') return m
-      if (m[0] === '.') return ['.', settleVal(m[1]), m[2]]
-      if (m[0] === '[]' && m.length === 3) return ['[]', settleVal(m[1]), settleVal(m[2])]
-      return settleVal(m)
+      if (!isMember(m) || madeCalls.has(m)) return isMember(m) ? m : settleVal(m)
+      const key = keyOf(m), r = settleVal(m[1]), k = m[0] === '.' ? m[2] : settleVal(m[2])
+      if (m[1] === 'super' || typeof key === 'string' && key[0] === '#' || !watched(key)) return [m[0], r, k]
+      recv = r
+      return temp([m[0], copy(r), k])
     }
-    const settle = (i, x) => op === '()' && i === 1 ? settleCallee(x) : isSimple(x) || keepsPlace(op, i) ? x
-      : x[0] === ':' ? [':', x[1], settleVal(x[2])]
-      : x[0] === '...' ? ['...', settleVal(x[1])]
-      : settleVal(x)
+    const inObject = op === '{}' || op === ',' && within === '{}'
+    const settle = (i, x) => {
+      if (op === '()' && i === 1) return settleCallee(x)
+      if (op === ':' && i === 1) return settleKey(x)
+      if (keepsPlace(op, i)) return x
+      // a shorthand property keeps its key
+      if (typeof x === 'string') { const v = settleVal(x); return inObject && v !== x ? [':', x, v] : v }
+      if (isSimple(x)) return x
+      if (x[0] === ':') return [':', settleKey(x[1]), settleVal(x[2])]
+      // a spread iterates before what follows it
+      if (x[0] === '...') return ['...', temp(inObject ? ['{}', ['...', x[1]]] : ['[]', ['...', x[1]]])]
+      return settleVal(x)
+    }
     for (let i = 1; i < e.length; i++) {
       const child = e[i]
       if (i > last) continue
-      const h = refsAwait(child) ? hoistExpr(child) : { pre: [], expr: child }
+      const h = refsAwait(child) ? hoistExpr(child, op) : { pre: [], expr: child }
       pre.push(...h.pre)
       out[i] = i < last ? settle(i, h.expr) : h.expr
     }
+    if (recv != null) return { pre, expr: callOn(out[1], recv, out[2]) }
     return { pre, expr: out }
+  }
+  // `new C(args)` reads its constructor before its arguments: a name another
+  // may assign meanwhile, a member whose read may differ.
+  function hoistNew(call) {
+    const pre = [], temp = (x) => { const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
+    const c = hoistExpr(call[1])
+    pre.push(...c.pre)
+    const m = isGroup(c.expr) && isMember(c.expr[1]) ? c.expr[1] : c.expr
+    let ctor
+    if (isMember(m)) {
+      const r = isSettled(m[1]) ? m[1] : temp(m[1]), k = m[0] === '.' ? m[2] : isSettled(m[2]) ? m[2] : temp(m[2])
+      ctor = watched(keyOf(m)) ? temp([m[0], r, k]) : [m[0], r, k]
+    } else ctor = isSettled(c.expr) ? c.expr : temp(c.expr)
+    const a = hoistExpr(call[2], '()')
+    return { pre: [...pre, ...a.pre], expr: ['new', ['()', ctor, a.expr]] }
   }
   // An optional link short-circuits its chain: with its base nullish, the
   // chain is undefined and nothing after the link runs, a suspension there
   // neither. Its base settles first, a method's optional call on its receiver
-  // (`a.b?.(x)` calls b on a, the method read again where it is called), and
-  // the chain's rest runs on it, as a plain link, while the base is present.
+  // (`a.b?.(x)` calls b on a: read once and called on it where its read may
+  // differ, read again where it is called otherwise), and the chain's rest
+  // runs on it, as a plain link, while the base is present.
   function hoistOptional(chain, at) {
-    const link = chain[at], pre = [], temp = (x) => { if (isStable(x)) return x; const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
-    const part = (x) => { const h = hoistExpr(x); pre.push(...h.pre); return temp(h.expr) }
-    let base = link[1]
-    if (link[0] === '?.()' && isMember(base)) base = base[0] === '.' ? ['.', part(base[1]), base[2]] : ['[]', part(base[1]), part(base[2])]
-    else base = part(base)
-    const at0 = () => Array.isArray(base) ? base.slice() : base
-    let rest = link[0] === '?.' ? ['.', at0(), link[2]] : link[0] === '?.[]' ? ['[]', at0(), link[2]] : ['()', at0(), link[2]]
+    const link = chain[at], pre = [], temp = (x) => { const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
+    const part = (x) => { const h = hoistExpr(x); pre.push(...h.pre); return isSettled(h.expr) ? h.expr : temp(h.expr) }
+    let base = link[1], test, rest
+    if (link[0] === '?.()' && isMember(base)) {
+      const r = part(base[1]), k = base[0] === '.' ? base[2] : part(base[2])
+      if (watched(keyOf(base))) { const fn = temp([base[0], copy(r), copy(k)]); test = fn; rest = callOn(fn, r, link[2]) }
+      else { test = [base[0], copy(r), copy(k)]; rest = ['()', [base[0], copy(r), copy(k)], link[2]] }
+    } else {
+      base = part(base); test = base
+      rest = link[0] === '?.' ? ['.', copy(base), link[2]] : link[0] === '?.[]' ? ['[]', copy(base), link[2]] : ['()', copy(base), link[2]]
+    }
     for (let i = at - 1; i >= 0; i--) rest = [chain[i][0], rest, ...chain[i].slice(2)]
     const r = genTemp('aw'), h = hoistExpr(rest)
-    pre.push(['let', ['=', r, UNDEF]], ['if', ['!=', at0(), NULL], block([...h.pre, ['=', r, h.expr]])])
+    pre.push(['let', ['=', r, UNDEF]], ['if', ['!=', copy(test), NULL], block([...h.pre, ['=', r, h.expr]])])
     return { pre, expr: r }
   }
   // An assignment that suspends reads first what JS reads first: its target's
-  // object and computed key (a named receiver stays: the machine stores
-  // through it), and a compound assignment's current value, which a logical
+  // object and computed key (a named receiver none may assign meanwhile
+  // stays: the machine stores through it), and a compound assignment's current value, which a logical
   // one tests before its value runs at all.
   function hoistAssign(op, target, value) {
     const pre = [], temp = (x) => { const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
     const part = (x, keep) => { const h = hoistExpr(x); pre.push(...h.pre); return keep(h.expr) ? h.expr : temp(h.expr) }
     let place = target
-    if (Array.isArray(target) && target[0] === '.') place = ['.', part(target[1], isSimple), target[2]]
+    if (Array.isArray(target) && target[0] === '.') place = ['.', part(target[1], isSettled), target[2]]
     else if (Array.isArray(target) && target[0] === '[]' && target.length === 3)
-      place = ['[]', part(target[1], isSimple), part(target[2], (k) => Array.isArray(k) && k[0] == null)]
+      place = ['[]', part(target[1], isSettled), part(target[2], (k) => Array.isArray(k) && k[0] == null)]
     const at = () => Array.isArray(place) ? place.slice() : place
     const v = hoistExpr(value)
     if (op === '=') return { pre: [...pre, ...v.pre], expr: ['=', at(), v.expr] }
@@ -265,7 +372,7 @@ export function createAsyncLowering({ genTemp, err }) {
       return out
     }
     if (ASSIGN_OPS.has(op)) {
-      const target = st[1], plain = typeof target === 'string' || (Array.isArray(target) && target[0] === '.' && typeof target[1] === 'string')
+      const target = st[1], plain = typeof target === 'string' || (Array.isArray(target) && target[0] === '.' && typeof target[1] === 'string' && isSettled(target[1]))
       if (op === '=' && plain && isAwaitOf(st[2])) { const inner = hoistExpr(st[2][1]); return [...inner.pre, ['=', target, [st[2][0], inner.expr]]] }
       const h = hoistAssign(op, target, st[2])
       return [...h.pre, ...(typeof h.expr === 'string' ? [] : [h.expr])]
@@ -315,7 +422,10 @@ export function createAsyncLowering({ genTemp, err }) {
     // An async function is no generator: its machine would take a yield for a suspension.
     if (some([null, params, body], n => n[0] === 'yield' || n[0] === 'yield*', { boundary: fnBoundary }))
       err('yield outside a generator body: an async function yields nothing, an `async function*` does')
-    const machine = ['function*', null, params, mapAwait(hoistSuspensions(body))], list = extractParams(params)
+    const prior = enterBody(params, body)
+    let hoisted
+    try { hoisted = hoistSuspensions(body) } finally { leaveBody(prior) }
+    const machine = ['function*', null, params, mapAwait(hoisted)], list = extractParams(params)
     const own = usesArguments(body) || usesArguments(params) ? [['...', genTemp('aa')]]
       : list.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? ['...', genTemp('aa')] : genTemp('ap'))
     const seq = (l) => l.length === 0 ? null : l.length === 1 ? l[0] : [',', ...l]
@@ -333,12 +443,14 @@ export function createAsyncLowering({ genTemp, err }) {
   // machine (generators.js, its async mode) suspends at awaits and yields
   // alike, tagging which for the driver, and lowers yield*.
   function lowerAsyncGen(params, body) {
-    const aa = genTemp('ag')
+    const aa = genTemp('ag'), prior = enterBody(params, body)
+    let hoisted
+    try { hoisted = hoistSuspensions(awaitReturns(body)) } finally { leaveBody(prior) }
     return ['=>', ['()', ['...', aa]],
-      ['()', '__ag_run', ['()', ['function*', null, params, mapAwait(hoistSuspensions(awaitReturns(body))), 'async'], ['...', aa]]]]
+      ['()', '__ag_run', ['()', ['function*', null, params, mapAwait(hoisted), 'async'], ['...', aa]]]]
   }
 
   return {
-    lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr,
+    lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr, enterBody, leaveBody,
   }
 }

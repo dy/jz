@@ -652,6 +652,12 @@ test('generators: using disposes across yields', () => agreeAll(`
   export let thrown = () => { log.length = 0; const it = caught(); it.next(); it.throw('x'); it.next(); it.next(); return log.join() }
   export let missing = () => { try { [...bare()]; return 'no' } catch (e) { return e instanceof TypeError } }`))
 
+// A name the caller assigns while the generator is suspended reads before the yield.
+test('generators: an operand reads before a yield where JS reads it', () => agreeAll(`
+  let log = 'a'
+  function* g() { const r = log + (yield 1); yield r }
+  export let operand = () => { log = 'a'; const it = g(); it.next(); log = 'b'; return it.next('!').value }`))
+
 // An optional chain whose base is nullish skips a yield in its rest.
 test('generators: an optional chain skips a yield after a nullish base', () => agreeAll(`
   function* g(a) { const r = a?.f(yield 1); yield r }
