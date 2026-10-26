@@ -4439,6 +4439,12 @@ keep what both hold. Any other use of a binding (an argument, a return, an expor
 of another object, an index that is not constant, a view made in a function or of a part)
 keeps its array in memory, with every binding that shares the buffer. `test/static-scratch.js`
 pins the shapes, the joins and the bails.
+Before it, a binding of static typed storage leaves the compaction's roots
+(`dropStaticRoots`, same file): the storage lies below the static data's end, where nothing
+moves and no walk reads, so its line in `__gc_roots` forwarded the address to itself and
+marked nothing, yet as a second write it kept the binding a mutable global, out of reach of
+this pass and of `hoistConstGlobalInits` in every program that compacts (the stdlib cases'
+`FLOAT64_VIEW`/`UINT32_VIEW` word views).
 
 An assignment that is a statement of a function's own list declares its value as a binding of
 its own (`src/prepare/split-bindings.js`, last in prepare, at every level; `splitBindings: false` opts out): `x -= n; xx =

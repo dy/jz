@@ -16,7 +16,7 @@ import { walkAst } from '../../ast.js'
 import {
   optimizeFunc, collectReachableGlobalWrites, collectReachableMemoryWrites,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
-  specializeMkptr, scalarizeStaticScratch, buildPureFuncMap, inlinePureFnsInFn,
+  specializeMkptr, scalarizeStaticScratch, dropStaticRoots, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
 import { dataLen } from '../../static-data.js'
 import { HEAP } from '../../../layout.js'
@@ -31,6 +31,8 @@ const COMPACT_KERNELS = ['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thres
 export function optimizeModule(sec, profiler) {
   const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, () => checkpointed(fn)) : (_, fn) => checkpointed(fn)
   const cfg = ctx.transform.optimize
+  // (a binding of static typed storage the compaction never moves is no root of it)
+  t('dropStaticRoots', () => dropStaticRoots([...sec.funcs, ...sec.stdlib, ...sec.start]))
   // First: it reads the accesses as emitted, before a pass stages their bases in locals.
   if (!cfg || cfg.staticScratch !== false) t('staticScratch', () =>
     scalarizeStaticScratch([...sec.funcs, ...sec.stdlib, ...sec.start]))

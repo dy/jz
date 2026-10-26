@@ -98,6 +98,29 @@ test('static scratch: a view of a static array\'s whole buffer is declared with 
   }
 })
 
+test('static scratch: a program the compaction keeps roots none of its static arrays', () => {
+  // `g` keeps what it allocates, so the module compacts (module/core/compact.js): the
+  // static arrays, which never move, are no roots, and stay registers and constants.
+  const src = V + 'const B = new Uint8Array(F.buffer)\nlet kept = []\n'
+    + 'export let g = (n) => { kept = []; for (let i = 0; i < n; i++) kept.push([i]); return kept.length }\n'
+    + 'export let f = (x) => { F[0] = x; return U[1] * 4294967296 + U[0] + B[7] }\n'
+    + 'export let h = (i) => { F[0] = i; return U[1] + kept.length }'
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(src, { optimize })
+    for (const x of FLOATS) { is(m.g(40), host.g(40), `kept at ${optimize}`); is(m.f(x), host.f(x), `f(${x}) at ${optimize}`) }
+    for (const i of [0, 1, 7]) is(m.h(i), host.h(i), `h(${i}) at ${optimize}`)
+  }
+  if (onWasi()) return
+  for (const optimize of levels(0, 2, 3)) {
+    const text = wat(src, { optimize })
+    ok(/\(func \$__gc_roots/.test(text), `the module compacts at ${optimize}`)
+    ok(!/global\.[gs]et \$[FUB]\b/.test(funcWat(text, '__gc_roots')), `no root names a static array at ${optimize}`)
+    ok(!/\(global \$[FUB] \(mut/.test(text), `no static array is a mutable global at ${optimize}`)
+    if (optimize >= 2) ok(!/\b[if](32|64)\.(load|store)/.test(funcWat(text, 'f')), `no load and no store in f at ${optimize}`)
+  }
+})
+
 test('static scratch: a store a later call reads stays', () => {
   if (onWasi()) return
   const src = V + 'export let put = (x) => { F[0] = x }\nexport let high = () => U[1]\nexport let low = () => U[0]\nexport let swap = () => { const h = U[1]; U[1] = U[0]; U[0] = h; return F[0] }'

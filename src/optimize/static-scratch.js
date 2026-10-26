@@ -90,6 +90,45 @@ const staticBindings = (funcs, start) => {
   return found
 }
 
+/**
+ * A binding of static typed storage is no root of the compaction (module/core/compact.js
+ * `__gc_roots`): the storage lies below the static data's end, where nothing moves and no walk
+ * reads, and a typed array holds no pointers, so its root line forwards the address to itself
+ * and marks nothing. Dropped, the line no longer writes the binding, whose one write is again
+ * its declaration (`scalarizeStaticScratch` below, hoistConstGlobalInits). `funcs` is every
+ * function of the module, `__start` included.
+ */
+export function dropStaticRoots(funcs) {
+  const roots = funcs.find(f => isArr(f) && f[0] === 'func' && f[1] === '$__gc_roots')
+  const start = funcs.find(f => isArr(f) && f[0] === 'func' && f[1] === '$__start')
+  const bytes = roots && start ? dataBytes() : null
+  if (!bytes?.length) return
+  // A root line: `(if (local.get $fwd) (then (global.set $g …)) (else …))`.
+  const rooted = s => {
+    const then = isArr(s) && s[0] === 'if' ? s.find(c => isArr(c) && c[0] === 'then') : null
+    return then?.length === 2 && isArr(then[1]) && then[1][0] === 'global.set' && typeof then[1][1] === 'string' ? then[1][1] : null
+  }
+  const writes = new Map()
+  for (const fn of funcs) if (fn !== roots) walkAst(fn, { enter: n => {
+    if (n[0] === 'global.set' && typeof n[1] === 'string') writes.set(n[1], (writes.get(n[1]) || 0) + 1)
+  } })
+  const exported = new Set()
+  for (const name in ctx.funcs.exports) {
+    const v = ctx.funcs.exports[name]
+    exported.add(v === true ? name : v)
+  }
+  const statics = new Set()
+  for (let i = findBodyStart(start); i < start.length; i++) {
+    const s = start[i]
+    if (!isArr(s) || s[0] !== 'global.set' || typeof s[1] !== 'string' || writes.get(s[1]) !== 1) continue
+    const name = s[1].slice(1), g = ctx.scope.globals.get(name)
+    if (!g || g.export || exported.has(name)) continue
+    if (isArr(s[2]) && s[2][0] === 'global.get' ? statics.has(s[2][1]) : staticTypedAddr(s[2], bytes) >= 0) statics.add(s[1])
+  }
+  if (!statics.size) return
+  for (let i = roots.length - 1; i >= findBodyStart(roots); i--) if (statics.has(rooted(roots[i]))) roots.splice(i, 1)
+}
+
 /** A memory access based on one of `bindings`: its bytes, or why it is none of ours. */
 const privateAccess = (n, bindings) => {
   if (!isAccess(n[0])) return null
