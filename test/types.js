@@ -1542,6 +1542,14 @@ test('untyped receiver: a closure-free program calls a Number method on a value 
   }
 })
 
+// A dot read the summary cannot kind takes the host-aware dispatcher, which the
+// collection module serves: a program that loaded it nowhere else failed to link it.
+test('untyped receiver: a dot read through a value of no single kind links its dispatcher', () => {
+  const src = `const a = { toUpperCase: () => 5, k: 1 }; const pick = (k) => k ? a : 'str'
+    export let f = (v) => { const p = pick(v); const m = p.toUpperCase; return m() }`
+  for (const optimize of levels(0, 2, 'size')) is(jz(src, { optimize }).exports.f(1), 5, `O${optimize}`)
+})
+
 test('untyped receiver: string toString(radix) ignores the radix (JS semantics)', () => {
   const { f } = runHost(`
     let mk = (x) => ({ v: x })

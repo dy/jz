@@ -2239,6 +2239,8 @@ export default (ctx) => {
   }
 
   function emitDynGetAnyTyped(base, key, vt, prop, devirt = true) {
+    // The dispatchers live in the collection module, as emitDynGetExprTyped's do.
+    ctx.module.include('collection')
     // Constant string key: fold the FNV hash at compile time and call the
     // prehashed body — no __str_hash on every access (hot for `parse.step` etc).
     if (typeof prop === 'string') {
