@@ -41,9 +41,11 @@ import { forwardCheckedElements } from './forward-checked.js'
 // store's, module/collection/record.js): the single-caller inliner would splice it back.
 // Static seed data is live through this helper. Preserve that ownership edge
 // until late data stripping; inlining would leave untracked raw addresses.
+// The arena rewind's cold paths (optimize/arena-rewind.js): a frame's release
+// and the outermost frame's entry, which every conditional frame would carry.
 const OUT_OF_LINE = ['$__rem_div', '$__len_tail', '$__length_tail', '$__length.value_tail', '$__typed_idx_tail',
   '$__typed_idx_tagged_tail', '$__arr_typed_set_idx_tail', '$__arr_typed_obj_set_idx_tail', '$__typed_set_idx_tagged_tail',
-  '$__str_eq_tail', '$__rec_set_tail', '$__static_str']
+  '$__str_eq_tail', '$__rec_set_tail', '$__static_str', '$__frame_give', '$__frame_outer']
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see

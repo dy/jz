@@ -2200,7 +2200,19 @@ heap at return when the flag stands at or above the frame's own mark: it
 saves and clears the flag at entry and leaves the lower of the two at exit
 (optimize/arena-rewind.js). A temporary built of closures, cells and objects
 within a call goes with the call; a state made on the first call keeps that
-call's memory and releases every later one's.
+call's memory and releases every later one's. A call that left nothing above
+its mark asks nothing at exit: one comparison of the heap with the mark comes
+before the result's question, the flag's test and the enumeration epoch,
+which moves wherever the call left memory above its mark, kept or given back
+(a cache filled in the call may name it, and what the frame keeps an outer
+frame, a loop's iteration or the host may give back later without moving
+it). What follows the question, and what
+the outermost frame does as it is entered (the log emptied, the lowest flag
+clear), are kernels out of line (`$__frame_give`, `$__frame_outer`), which
+every conditional frame calls and no frame carries. Every frame still takes
+the lower of its mark and the base as it is entered: the base a frame finds
+can stand above its mark (leaving it as it stood freed a string a module
+binding held, test/number.js under `alloc: false`).
 
 Four refinements keep a site from lowering the flag for nothing. A store of
 a value that holds no heap pointer escapes only by making its receiver grow

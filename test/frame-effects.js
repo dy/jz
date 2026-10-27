@@ -252,7 +252,8 @@ test('frame effects: a value the call surely made, stored into storage older tha
   const kept = 'kept on a call that runs an escape: '
   const param = 'export function f(o, n) { o.x = { y: n }; const t = new Array(n).fill(0); return t.length }'
   ok(whyNot(param).startsWith(kept + 'heap value into o'), 'through a parameter (the prepared name of `o`)')
-  ok(flagged(param) && /\$__survive/.test(bodyOf(compile(param, { wat: true, ...TAPE }), 'f')), 'its frame walks from what it wrote into')
+  const walks = compile(param, { wat: true, ...TAPE })
+  ok(flagged(param) && /\$__frame_give/.test(bodyOf(walks, 'f')) && /\$__survive/.test(bodyOf(walks, '__frame_give')), 'its frame walks from what it wrote into (its release out of line)')
   is(whyNot('const reg = []; function keep(o) { reg.push(o) } export function f(n) { const o = { x: n }; keep(o); return 1 }'), kept + 'heap value into reg', 'through a callee that pushes it into module state')
   is(whyNot('let last = null; export function f(n) { last = [n, n]; return last.length }'), kept + 'outer binding last', 'into a module binding')
   // A function of the module's own keeps whole: the frame around it decides for both.
@@ -1168,9 +1169,13 @@ test('arena rewind on the tape: the log made at start goes where no frame walks 
       ['if', ['local.get', '$c'], ['then', ['global.set', '$__esc', ['i32.const', 0]], ['global.set', '$__tab', ['local.get', '$c']]]], ...body],
   ]
   const run = (body) => { const out = onTape(m(body), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, censused: new Set(['$f']), userGlobals: new Set(['__tab']),
-    conditional: new Map([['$f', 'outer binding tab']]) })); return [src(out.find(n => n[1] === '$__start')), src(out.find(n => n[1] === '$f'))] }
+    conditional: new Map([['$f', 'outer binding tab']]) }))
+    // the frame's release past the result's question is out of line: the kernel walks
+    const give = out.find(n => n[1] === '$__frame_give'), f = src(out.find(n => n[1] === '$f'))
+    return [src(out.find(n => n[1] === '$__start')), /"call","\$__frame_give"/.test(f) && give && /"call","\$__survive"/.test(src(give)) ? f : '']
+  }
   const [kept, walked] = run([alloc])
-  ok(/"global.set","\$__roots"/.test(kept) && /"call","\$__survive"/.test(walked), 'a frame that walks keeps the log')
+  ok(/"global.set","\$__roots"/.test(kept) && walked !== '', 'a frame that walks keeps the log')
   const [gone] = run([['i32.const', 0]])
   ok(!/\$__roots/.test(gone) && /"global.set","\$__tab"/.test(gone), 'with no frame to walk the allocation goes, and the start keeps the rest')
 })
@@ -1224,7 +1229,7 @@ test('arena rewind on the tape: a tail call is a call: what its callee lowers or
   ]
   const run = (call, callee, opts = {}) => {
     const why = []
-    const out = src(onTape(m(call, callee), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, exported: new Set(['$f']), report: (n, r) => why.push(`${n}: ${r}`), ...opts })).at(-1))
+    const out = src(onTape(m(call, callee), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, exported: new Set(['$f']), report: (n, r) => why.push(`${n}: ${r}`), ...opts })).find(n => n[1] === '$f'))
     return `${mode(out)}: ${why.join(' | ')}`
   }
   is(run('call', '$__k'), 'flag: $f: kept on a call that runs an escape: calls $mid: calls $__k: global.set $__tab', 'the frame above restores by the flag the kernel lowers')
@@ -1266,7 +1271,7 @@ test('arena rewind on the tape: a frame whose result may be a heap value restore
       ['if', ['local.get', '$c'], ['then', ['global.set', '$__esc', ['i32.const', 0]], ['global.set', '$__tab', ['local.get', '$c']]]], ['drop', alloc], value],
   ]
   const run = (kernel, type, value, opts = {}) => { const why = []; return [src(onTape(m(kernel, type, value), root => arenaRewind(root, { rewindable: new Map([['$f', type]]), asked: new Set(['$f']), heapAddr: null,
-    censused: new Set(['$f']), userGlobals: new Set(['__tab']), report: (n, r) => why.push(`${n}: ${r}`), ...opts })).at(-1)), why.join(' | ')] }
+    censused: new Set(['$f']), userGlobals: new Set(['__tab']), report: (n, r) => why.push(`${n}: ${r}`), ...opts })).find(n => n[1] === '$f')), why.join(' | ')] }
   const [boxed] = run(true, 'f64', ['f64.const', 1])
   ok(/\["if",\["call","\$__made",\["local.get","\$[^"]*arena_ret0"\],\["local.get","\$[^"]*heap_save0"\]\],\["then"\],\["else",/.test(boxed), 'a tagged result is asked by the kernel, and the heap goes back in the other arm: ' + boxed.slice(0, 300))
   const [address] = run(false, 'i32', ['i32.const', 8])
@@ -1274,6 +1279,13 @@ test('arena rewind on the tape: a frame whose result may be a heap value restore
   const [cond] = run(true, 'f64', ['f64.const', 1], { conditional: new Map([['$f', 'outer binding tab']]) })
   ok(/"\$__made"/.test(cond) && /esc_save/.test(cond), 'a frame that restores by the flag asks its result first')
   ok(cond.indexOf('"$__made"') < cond.lastIndexOf('"global.set","$__base"'), 'and puts the flag and the mark back whatever the result')
+  // A call that left nothing above its mark gives back nothing: the comparison comes before the question.
+  const above = /\["if",\["i32.gt_u",\["global.get","\$__heap"\],\["local.get","\$[^"]*heap_save0"\]\],\["then",\["if",\["call","\$__made"/
+  ok(above.test(boxed) && above.test(cond), 'the result is asked only where the heap stands above the mark')
+  const [lean] = run(true, 'f64', ['f64.const', 1], { optimize: { rewindGuard: false } })
+  ok(!/"i32.gt_u"/.test(lean) && /"\$__made"/.test(lean), 'the size tier asks at once: no comparison at each return')
+  // The release past the question is out of line.
+  ok(/"call","\$__frame_give"/.test(cond) && !/"\$__survive"/.test(cond), 'a conditional frame calls the release: ' + cond.slice(0, 200))
   const [none, why] = run(false, 'f64', ['f64.const', 1])
   ok(!/heap_save/.test(none), 'with no kernel to ask a tagged result the frame keeps its heap')
   is(why, '$f: result: may hold a heap value', 'by name')

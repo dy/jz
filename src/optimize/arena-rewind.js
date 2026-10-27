@@ -75,7 +75,7 @@
  *
  * @module optimize/arena-rewind
  */
-import { T, NONE, intern, text, walk, node, str, num, push, insertAfter, remove } from '../ir/tape.js'
+import { T, NONE, intern, text, walk, node, str, num, push, insertAfter, remove, fromWat } from '../ir/tape.js'
 import { T as MARK } from '../ast.js'
 
 // JZ_DEBUG_POISON=1: a rewound frame overwrites what it frees, so a pointer
@@ -179,6 +179,8 @@ const ITER_RELEASE = '$__iter_release'
 const PARK_CALLS = /^\$__(park_(mark|enter|low_enter|base_enter|worth|end)|durable_state|heap_since|heap_mark|heap_large|esc_get)$/
 // What asks of a frame's result whether the frame made it (module/core.js).
 const MADE = '$__made'
+// The protocol's cold paths, out of line: a conditional frame's release and the outermost frame's entry.
+const GIVE = '$__frame_give', OUTER = '$__frame_outer'
 const ESC_MARK = 'esch'
 // jz's interop imports that hand the host nothing it could keep: they read.
 const EXT_READS = new Set(['$__ext_prop', '$__ext_get', '$__ext_method', '$__ext_has', '$__ext_has_iterator', '$__ext_enum', '$__ext_json', '$__ext_json_omits'])
@@ -203,9 +205,10 @@ const EXT_READS = new Set(['$__ext_prop', '$__ext_get', '$__ext_method', '$__ext
  *                    write there to a module binding (`userGlobals`) is the census's to judge:
  *                    a heap value it flagged as a site, anything else keeps nothing fresh
  *  @param keepsNothing Set of `$name`: runtime imports that keep nothing they are handed
+ *  @param optimize   the resolved optimize config: `rewindGuard: false` (the size tier) leaves out the comparison before a release
  *  @returns `releasable` (the rewindable functions whose frames keep nothing, allocating or
  *    not), `rewound` (those rewritten), and per function whether it allocates and why not */
-export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES, phase = run => run() }) {
+export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked = NO_NAMES, heapAddr, unsafe = NO_NAMES, keeps = NO_NAMES, entry = NO_NAMES, exported = NO_NAMES, exportInner = null, report = null, rewrite = true, scalarGlobals = NO_NAMES, closureTargets = null, closureNames = NO_NAMES, conditional = NO_NAMES, censused = NO_NAMES, userGlobals = NO_NAMES, keepsNothing = NO_NAMES, optimize = null, phase = run => run() }) {
   const releasable = new Set(), rewound = new Set(), flagged = new Set()
   // The conditional functions whose flag something reads: the frames rewound
   // here, and those the host releases by it.
@@ -805,6 +808,12 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // flag (none ran as it was entered: the base it saved is all ones) keeps
   // what the escapes reach and gives back the rest (module/core/reach.js); a
   // frame inside another keeps all, the outer one deciding for both.
+  // A call that left nothing above its mark gives back nothing: one
+  // comparison spares it the result's question, the flag's test and the
+  // epoch. The epoch moves wherever the call left memory above its mark,
+  // kept or given back: a cache filled in the call may name it, and what
+  // the frame keeps a frame around it, a loop's iteration or the host may
+  // give back later, none of which moves it.
   const reach = globals.has(ROOTN) && info.has(SURVIVE) && info.has(ROOT_RESET)
   const outermost = (bsave) => { const t = node(intern('i32.eq')); push(t, localGet(bsave)); push(t, i32c(-1)); return t }
   // A frame whose result may be a heap value (`ask`: the locals its results
@@ -834,33 +843,56 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     for (const n of nodes) push(not, n)
     return [iff]
   }
+  // The kernels of the protocol's cold paths, out of line (optimize/watr-tail.js
+  // OUT_OF_LINE keeps them there): every conditional frame calls them, a call
+  // runs them only where memory may go back, or as the outermost frame is
+  // entered. Made once, where a frame first needs one, and added to the module
+  // as the pass ends.
+  const kernels = []
+  const heapAt = () => inMemory ? ['i32.load', ['i32.const', heapAddr]] : ['global.get', '$__heap']
+  const heapTo = (v) => inMemory ? ['i32.store', ['i32.const', heapAddr], v] : ['global.set', '$__heap', v]
+  // `$__frame_give(save, bsave)`: a conditional frame's release, past the
+  // result's question. Where no escape wrote below the mark the heap goes back
+  // to it; where one did, the outermost frame keeps what the escapes reach and
+  // gives back the rest.
+  let give = null
+  const giveKernel = () => give ??= (kernels.push(['func', GIVE, ['param', '$save', 'i32'], ['param', '$bsave', 'i32'],
+    ['if', ['i32.ge_u', ['global.get', '$__esc'], ['local.get', '$save']],
+      ['then', ...(DBG_POISON ? [['memory.fill', ['local.get', '$save'], ['i32.const', 255], ['i32.sub', heapAt(), ['local.get', '$save']]]] : []), heapTo(['local.get', '$save'])],
+      ...(reach ? [['else', ['if', ['i32.eq', ['local.get', '$bsave'], ['i32.const', -1]], ['then', heapTo(['call', SURVIVE, ['local.get', '$save']])]]]] : [])]]), GIVE)
+  // `$__frame_outer()`: the outermost frame reading the flag starts the log
+  // empty and the lowest flag clear, no loop's floor raised.
+  let outer = null
+  const outerKernel = () => outer ??= (kernels.push(['func', OUTER,
+    ...(reach ? [['call', ROOT_RESET]] : []), ...(folds ? [['global.set', ESC_LOW, ['i32.const', -1]]] : []),
+    ...(globals.has(IBASE) ? [['global.set', IBASE, ['i32.const', 0]]] : [])]), OUTER)
   const restore = (save, esave, bsave, ask = null, bump = false) => {
-    const bumped = bump ? [epochBump()] : []
-    if (esave == null) return [...unlessMade(ask, save, back(save)), ...bumped]
-    const test = node(intern('i32.ge_u')); push(test, escGet()); push(test, localGet(save))
-    const iff = node(intern('if')); push(iff, test)
-    const then = node(intern('then')); for (const n of back(save)) push(then, n); push(iff, then)
-    if (reach) {
-      const walked = node(CALL); push(walked, str(SURVIVE)); push(walked, localGet(save))
-      const keep = node(intern('if')); push(keep, outermost(bsave))
-      push(push(keep, node(intern('then'))), heapSet(walked))
-      push(push(iff, node(intern('else'))), keep)
+    let gives
+    if (esave == null) gives = unlessMade(ask, save, back(save))
+    else {
+      const call = node(CALL); push(call, str(giveKernel())); push(call, localGet(save)); push(call, localGet(bsave))
+      gives = unlessMade(ask, save, [call])
     }
+    const bumped = bump ? [epochBump()] : []
+    // a plain restore is one store: no comparison saves anything; the size tier pays none
+    if (optimize?.rewindGuard !== false && (esave != null || ask != null || bump)) {
+      const above = node(intern('i32.gt_u')); push(above, heapGet()); push(above, localGet(save))
+      const iff = node(intern('if')); push(iff, above)
+      const then = push(iff, node(intern('then'))); for (const n of [...bumped, ...gives]) push(then, n)
+      gives = [iff]
+    } else gives = [...gives, ...bumped]
+    if (esave == null) return gives
     const lower = node(intern('i32.lt_u')); push(lower, localGet(esave)); push(lower, escGet())
     const join = node(intern('if')); push(join, lower)
     const joined = node(intern('then')); push(joined, escSet(localGet(esave))); push(join, joined)
-    return [...unlessMade(ask, save, [iff]), ...bumped, join, baseSet(localGet(bsave))]
+    return [...gives, join, baseSet(localGet(bsave))]
   }
   // The log starts empty with the outermost frame, and the lowest flag clear.
   const lowSet = (value) => { const s = node(GLOBAL_SET); push(s, str(ESC_LOW)); push(s, value); return s }
   const lowGet = () => { const g = node(intern('global.get')); push(g, str(ESC_LOW)); return g }
   const logFrom = (bsave) => {
     const iff = node(intern('if')); push(iff, outermost(bsave))
-    const then = push(iff, node(intern('then')))
-    if (reach) { const empty = node(CALL); push(empty, str(ROOT_RESET)); push(then, empty) }
-    if (folds) push(then, lowSet(i32c(-1)))
-    // a loop an exception or a return left raised no receiver past it
-    if (globals.has(IBASE)) { const s = node(GLOBAL_SET); push(s, str(IBASE)); push(s, i32c(0)); push(then, s) }
+    const call = push(push(iff, node(intern('then'))), node(CALL)); push(call, str(outerKernel()))
     return iff
   }
   // A frame that clears the flag hands what it held to the lowest: a handler
@@ -894,11 +926,14 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     // a tagged result is asked by a kernel the module has to hold
     if (asked.has(name) && types.some(t => t !== 'i32') && !info.has(MADE)) { if (rewrite) report?.(name, 'result: may hold a heap value'); continue }
     if (rec.unsafe) { if (rewrite) report?.(name, rec.why); continue }
-    let unsafe = false
+    let unsafe = false, flat = false
     const hasAlloc = rec.allocs, tails = []
     eachBody(f, (id) => {
       if (unsafe) return false
       const op = T.op[id]
+      // a return whose value is on the stack (flat, or an atom) would leave past the restore:
+      // the outermost frame's mark would stay
+      if ((op === RETURN && T.a[id] === NONE) || (op < 0 && text(id) === 'return')) flat = true
       if (!TAILS.has(op)) return
       // A tail call leaves before the epilogue. One whose callee never runs the
       // function again can be a plain call: the frame then outlives the callee
@@ -915,7 +950,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     if (cond && !conditional.has(name) && !rec.ownFlag && !exported.has(name)) { if (rewrite) report?.(name, 'escape: ' + rec.tapeFlagWhy); continue }
     if (!unsafe) { releasable.add(name); if (cond) { flagged.add(name); if (hosted.has(name)) readers.add(name) } }
     if (!rewrite) continue
-    if (unsafe || !hasAlloc) { report?.(name, unsafe ? 'return_call' : 'no allocation'); continue }
+    if (unsafe || flat || !hasAlloc) { report?.(name, unsafe ? 'return_call' : flat ? 'flat return' : 'no allocation'); continue }
     // A result asked by its age that is always storage the frame made gives
     // nothing back on any call: the rewind would only test it.
     if (asked.has(name) && !numberResult.has(name) && types.length === 1 && resultMade(f)) { report?.(name, 'result: always storage the frame made'); continue }
@@ -954,7 +989,9 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     // (a block of several results names a type, which the encoder indexes
     // wrongly past the 64th). A return inside X leaves before the one around
     // it (a dispatched tail call: each arm returns its call), and takes the
-    // same path: the walk goes on into X.
+    // same path: the walk goes on into X. The restore stands at each return,
+    // not once past a block every return leaves for: a branch to it merges
+    // every path's values there, which measured slower on V8 than the copies.
     eachBody(f, (id) => {
       if (T.op[id] !== RETURN || T.a[id] === NONE) return
       if (types.length > 1) {
@@ -1130,5 +1167,6 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     if (T.op[f] !== FUNC || text(T.a[f]) !== '$__start') continue
     walk(f, (id, parent) => { if (parent !== NONE && T.op[id] === GLOBAL_SET && text(T.a[id]) === ROOTS) { remove(parent, id); return false } })
   }
+  for (const k of kernels) push(root, fromWat(k))
   return { releasable, rewound, flagged, allocates: (name) => info.get(name)?.allocs ?? false, why: (name) => info.get(name)?.why ?? null }
 }

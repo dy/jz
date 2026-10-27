@@ -133,6 +133,7 @@ const LEVEL_PRESETS = Object.freeze({
     specializeLoops: false,   // a specialized copy keeps the loop as written beside it: speed-only
     sourceInlineDup: false,   // shared/exported source bodies stay outlined; single-use internal bodies still inline
     arenaReach: false,        // the walk from what a call's escapes wrote into is ~2 KB of runtime: a call that ran an escape keeps all it allocated — memory-for-size
+    rewindGuard: false,       // a comparison at each return of a rewound frame, sparing a call that allocated nothing the release: speed-for-size
     compact: false,           // the compaction of kept memory is ~4 KB of runtime where a call may keep memory: the size tier keeps what it stored — memory-for-size
     placeLargeBlocks: false,  // the allocator's placement branch and the gap before each large block: speed-for-size
     versionArrayPatterns: false, // a positional read beside each pull of the protocol: speed-for-size

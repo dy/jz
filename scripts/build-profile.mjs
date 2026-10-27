@@ -15,7 +15,8 @@
  * @param {number|string|object|false} [p.optimize] optimize.level (or full
  *   per-pass object, or `false` to disable). Default SELF_OPTIMIZE: level 1,
  *   the compiler artifact keeping essential cleanup without spending its
- *   finite heap optimizing its own optimizer, with the arena rewind and the
+ *   finite heap optimizing its own optimizer, with the arena rewind (its
+ *   comparison before a release too, rewindGuard) and the
  *   compaction on; user programs still receive their requested profile.
  * @param {boolean} [p.snapshot] optimize.snapshotInit. Default true: pay for
  *   module initialization once at build time. The snapshot probe's encoded
@@ -84,7 +85,7 @@ export function specializeInvariants(source, enabled = false) {
 // (scripts/self.js checkpointPhase), which walks the layouts only a module
 // that compacts lays out. A loop's own compaction stays off, as level 1
 // leaves every pass it does not name (`loopCompact`).
-export const SELF_OPTIMIZE = Object.freeze({ level: 1, arenaRewind: true, compact: true })
+export const SELF_OPTIMIZE = Object.freeze({ level: 1, arenaRewind: true, rewindGuard: true, compact: true })
 // Every builder and attestation resolves the same diagnostic environment.
 // JZ_SELF_COMPILE_OPT accepts a level or a JSON optimizer configuration.
 const selfOptimize = () => {
