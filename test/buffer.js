@@ -301,6 +301,33 @@ test('subview — stride respected for non-byte element types', () => {
   is(exports.main(), 68 * 1000 + 136)  // 0x44=68, 0x88=136
 })
 
+// === new TypedArray(source, byteOffset) ===
+
+test('a buffer and an offset view the buffer from the offset; any other source ignores it', () => {
+  const src = `const tryIt = (f) => { try { return f() } catch (e) { return e.name } }
+    export const view = (bytes, offset) => tryIt(() => {
+      const b = new ArrayBuffer(bytes), w = new Uint16Array(b, offset)
+      w[0] = 0x1234
+      return [w.length, w.byteOffset, w.byteLength, w.buffer === b, new Uint8Array(b)[offset], w.subarray(1).byteOffset]
+    })
+    export const open = (s, offset) => tryIt(() => { const w = new Float64Array(s, offset); return [w.length, w.byteOffset] })
+    export const order = () => { const log = []; const b = new ArrayBuffer(8)
+      new Uint8Array((log.push('src'), b), { valueOf() { log.push('offset'); return 2 } }); return log.join() }
+    const len = (a) => a.length + a[1], make = (b) => new Uint16Array(b, 2), hold = { v: null }
+    export const carried = () => { const w = make(new ArrayBuffer(8)); w[1] = 9; hold.v = w
+      let s = 0; for (let i = 0; i < hold.v.length; i++) s += hold.v[i]; return [len(w), s, hold.v.length] }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const got = jz(src, { optimize }).exports
+    for (const [bytes, offset] of [[8, 0], [8, 2], [8, 8], [8, 1], [8, 10], [8, -2], [7, 2], [8, NaN], [8, '4'], [8, 2.9]])
+      is(got.view(bytes, offset), want.view(bytes, offset), `O${optimize} view(${bytes}, ${offset})`)
+    for (const [s, offset] of [[new ArrayBuffer(32), 8], [[1, 2, 3], 99], [new Float64Array(5), 3], [4, 1], [new ArrayBuffer(32), 4]])
+      is(got.open(s, offset), want.open(s, offset), `O${optimize} open(${s?.constructor?.name}, ${offset})`)
+    is(got.order(), want.order(), `O${optimize} the offset converts after both arguments evaluate`)
+    is(got.carried(), want.carried(), `O${optimize} a view returned and stored keeps its view form`)
+  }
+})
+
 // === Reinterpret: new TypedArray(buf) ===
 
 test('reinterpret — Uint8Array from fresh ArrayBuffer', () => {

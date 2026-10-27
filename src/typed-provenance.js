@@ -63,9 +63,10 @@ export function typedElemCtor(rhs) {
   const name = rhs[1].slice(4)
   if (!TYPED_FAMILY_CTORS.has(name)) return null
   const args = rhs[2]
-  const isView = name.endsWith('Array') && name !== 'ArrayBuffer' &&
-    Array.isArray(args) && args[0] === ',' && args.length >= 4
-  return isView ? rhs[1] + '.view' : rhs[1]
+  const listed = name.endsWith('Array') && name !== 'ArrayBuffer' && Array.isArray(args) && args[0] === ','
+  // (buffer, byteOffset, length) is a view; (source, byteOffset) a view where
+  // the source is a buffer and an owned copy otherwise, the view bit read at run time
+  return listed && args.length >= 4 ? rhs[1] + '.view' : listed && args.length === 3 ? rhs[1] + '.anyview' : rhs[1]
 }
 
 const joinCtor = (a, b) => {

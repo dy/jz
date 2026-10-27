@@ -1978,8 +1978,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (m) {
           // The three-argument constructor stores a descriptor, not element
           // bytes. Preserve that representation through calls and closures.
+          // Two arguments view a buffer and copy anything else: either form.
           const aux = encodeTypedElemAux(m[1], !!m[2] || n >= 3)
-          return kind(K.TYPED, aux == null ? UNKNOWN : aux)
+          return kind(K.TYPED, aux == null ? UNKNOWN : !m[2] && n === 2 ? aux | TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG : aux)
         }
         if (callee === 'new.RegExp') return kind(K.REGEX)
         if (callee === 'new.ArrayBuffer' || callee === 'new.SharedArrayBuffer') return kind(K.BUFFER)

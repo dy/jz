@@ -63,6 +63,8 @@ export const ERR = {
   FS_BUFFER: 126,              // fs.readSync/writeSync: buffer is not a TypedArray (or, for writeSync, a string)
   FS_OFFSET: 127,              // fs.readSync/writeSync: offset is not a Number
   FS_EMPTY: 128,               // fs.readSync: a nonzero length into an empty buffer
+  BUFFER_NOT_RESIZABLE: 129,   // ArrayBuffer.prototype.resize on a fixed-length buffer
+  VIEW_OUT_OF_BOUNDS: 130,     // a DataView whose resizable buffer shrank below it
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -83,6 +85,11 @@ export const ERR = {
   HEAP_EXHAUSTED: 215,         // an allocation the linear memory cannot grow to hold (its maximum, wasm32 or the engine's limit)
   ARRAY_LENGTH: 216,           // ArraySetLength: ToUint32(value) differs from ToNumber(value)
   FS_RANGE: 217,               // fs.readSync/writeSync: offset or length outside the buffer
+  BUFFER_MAX_LENGTH: 218,      // new ArrayBuffer(n, { maxByteLength }): n past it, or it unrepresentable
+  BUFFER_RESIZE_LENGTH: 219,   // ArrayBuffer.prototype.resize: length past maxByteLength
+  TYPED_OFFSET_ALIGN: 220,     // new TypedArray(buffer, byteOffset): offset not a multiple of the element size
+  TYPED_LENGTH_ALIGN: 221,     // new TypedArray(buffer): fixed byte length not a multiple of the element size
+  TYPED_OFFSET_BOUNDS: 222,    // new TypedArray(buffer, byteOffset): offset past the buffer's end
 
   // ── 3xx SyntaxError/URIError-class ───────────────────────────────────────
   JSON_PARSE_SYNTAX: 300,      // JSON.parse — malformed input
@@ -134,6 +141,8 @@ export const ERR_INFO = {
   [ERR.FS_BUFFER]: { name: 'TypeError', message: 'The "buffer" argument must be a TypedArray; writeSync also takes a string with no position' },
   [ERR.FS_OFFSET]: { name: 'TypeError', message: 'The "offset" argument must be of type number' },
   [ERR.FS_EMPTY]: { name: 'TypeError', message: "The argument 'buffer' is empty and cannot be written" },
+  [ERR.BUFFER_NOT_RESIZABLE]: { name: 'TypeError', message: 'Method ArrayBuffer.prototype.resize called on incompatible receiver' },
+  [ERR.VIEW_OUT_OF_BOUNDS]: { name: 'TypeError', message: 'DataView is out of bounds of its ArrayBuffer' },
   [ERR.PRIMITIVE_PROPERTY]: { name: 'TypeError', message: 'Cannot create a property on a primitive' },
   [ERR.STRING_SEARCH_REGEX]: { name: 'TypeError', message: 'First argument must not be a regular expression' },
   [ERR.ENCODE_INTO_RECEIVER]: { name: 'TypeError', message: 'encodeInto: destination must be a Uint8Array' },
@@ -164,6 +173,11 @@ export const ERR_INFO = {
   [ERR.HEAP_EXHAUSTED]: { name: 'RangeError', message: 'Out of memory: the heap cannot grow' },
   [ERR.ARRAY_LENGTH]: { name: 'RangeError', message: 'Invalid array length' },
   [ERR.FS_RANGE]: { name: 'RangeError', message: 'The value of "offset" or "length" is out of range' },
+  [ERR.BUFFER_MAX_LENGTH]: { name: 'RangeError', message: 'Invalid array buffer max length' },
+  [ERR.BUFFER_RESIZE_LENGTH]: { name: 'RangeError', message: 'ArrayBuffer.prototype.resize: Invalid length parameter' },
+  [ERR.TYPED_OFFSET_ALIGN]: { name: 'RangeError', message: 'start offset of a typed array should be a multiple of its element size' },
+  [ERR.TYPED_LENGTH_ALIGN]: { name: 'RangeError', message: 'byte length of a typed array should be a multiple of its element size' },
+  [ERR.TYPED_OFFSET_BOUNDS]: { name: 'RangeError', message: 'Start offset is outside the bounds of the buffer' },
 
   [ERR.JSON_PARSE_SYNTAX]: { name: 'SyntaxError', message: 'Unexpected token in JSON' },
   [ERR.BIGINT_PARSE_DIGIT]: { name: 'SyntaxError', message: 'Cannot convert string to a BigInt' },

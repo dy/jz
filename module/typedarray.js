@@ -136,6 +136,7 @@ export default (ctx) => {
     __typed_isort: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc', '__clamp_idx'],
     __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n', '__clamp_idx'],
+    __ta_view: ['__ptr_offset', '__alloc', '__mkptr'],
   })
 
   // .map/.forEach/.find/.some/.every/.filter/.findIndex invoke with
@@ -441,41 +442,13 @@ export default (ctx) => {
           ...body,
           out.ptr]
       }
-      // Single arg array-like source: copy elements instead of treating the pointer as a length.
-      if (srcType === VAL.ARRAY && fromArrayOf.has(name))
-        return fromArrayOf.get(name)(lenExpr)
-      if (srcType === VAL.TYPED) {
-        const src = temp('ts')
-        // Build copyFromTyped's IR BEFORE emit(lenExpr) recurses into a sibling
-        // new.${name} closure instance (composing typed-array ctors, e.g.
-        // `new Int32Array(new Float64Array(...))`) — self-compile closure-capture-
-        // after-nested-emit class (.work/archive/todo.md §TYPED-INDEX KERNEL
-        // MISCOMPILE): a free variable this closure captures (elemType/aux/
-        // stride/name, from the `for (const [name, elemType] of ...)` loop
-        // above) read AFTER a nested emit() call can observe the OTHER
-        // iteration's values once this file is compiled by the kernel — native
-        // (interpreted) execution never exposes it. copyFromTyped(src) only
-        // needs src's temp NAME (already allocated), not its emitted value, so
-        // building it first is behavior-identical — same IR tree, reassembled.
-        const copyIR = copyFromTyped(src, resolveElem(lenExpr))
-        return typed(['block', ['result', 'f64'],
-          ['local.set', `$${src}`, asF64(emit(lenExpr))],
-          copyIR], 'f64')
-      }
-      // Reinterpret on a buffer: zero-copy view. TYPED retagged at the same offset —
-      // the byteLen header is shared with the parent. __len(view) = byteLen >> shift
-      // computes elemCount for this view's elemType.
-      if (srcType === VAL.BUFFER) {
-        setLinkDemand('typedView')  // zero-copy reinterpret aliases the source — SLP must not pack across it
-        return mkPtrIR(PTR.TYPED, aux, ownedBufferBase(lenExpr) ?? ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
-      }
-      // A Set or a Map iterates, any other object is an array-like (23.2.5.1
-      // steps 6-8); both land in a fresh array the copy takes from there.
-      if ((srcType === VAL.SET || srcType === VAL.MAP) && fromArrayOf.has(name))
-        return fromArrayOf.get(name)(['()', '__iter_arr', lenExpr])
-      if ((srcType === VAL.OBJECT || srcType === VAL.HASH) && fromArrayOf.has(name))
-        return fromArrayOf.get(name)(['()', 'Array.from', lenExpr])
-      if (srcType == null && fromArrayOf.has(name)) {
+      // An argument of open kind dispatches at run time: a primitive sizes an
+      // owned array, an array or a typed array is copied, a buffer is viewed
+      // (`viewArm`, given the temp holding it; the bare retag by default), a
+      // Set, a Map or an array-like object is iterated. `pre` runs after the
+      // source is evaluated and before the dispatch: a later argument's own
+      // evaluation (`new Uint8Array(src, byteOffset)`).
+      const runtimeSource = (lenExpr, viewArm = null, pre = []) => {
         setLinkDemand('typedView')  // unknown arg: runtime may take the buffer zero-copy-view branch
 
         // Runtime dispatch: number → allocate; array/typed → copy elements; buffer → zero-copy view.
@@ -523,7 +496,7 @@ export default (ctx) => {
           typedLenGuard(len, shift),
           numAlloc.init,
           numAlloc.ptr]
-        const viewIR = mkPtrIR(PTR.TYPED, aux, ['call', '$__ptr_offset', srcBits])
+        const viewIR = viewArm ? viewArm(src) : mkPtrIR(PTR.TYPED, aux, ['call', '$__ptr_offset', srcBits])
         // A Set or a Map lands in a fresh array first (the collection
         // module's normalizer), and the array copy takes it from there: the
         // arm exists where the argument's own kind names one or some binding
@@ -549,6 +522,7 @@ export default (ctx) => {
         const copied = ['i32.or', isKind(PTR.ARRAY), ['i32.or', isKind(PTR.TYPED), isKind(PTR.BUFFER)]]
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${src}`, asF64(emit(lenExpr))],
+          ...pre,
           ['if', ['result', 'f64'],
             ['i32.or', ['f64.eq', ['local.get', `$${src}`], ['local.get', `$${src}`]],
               ['i32.eqz', objectTest ? ['i32.or', copied, objectTest] : copied]],
@@ -559,6 +533,57 @@ export default (ctx) => {
                 ['then', copyTypedIR],
                 ['else', objectArm ? ['if', ['result', 'f64'], isKind(PTR.BUFFER), ['then', viewIR], ['else', objectArm]] : viewIR]]]]]]], 'f64')
       }
+      // (source, byteOffset): a buffer is viewed from that offset to its end
+      // (InitializeTypedArrayFromArrayBuffer, `__ta_view`), anything else is
+      // what the one-argument form makes of it, the offset evaluated and unused.
+      if (offsetExpr != null && lenExpr2 == null) {
+        setLinkDemand('typedView')
+        ctx.runtime.throws = true
+        inc('__ta_view')
+        const viewAux = typedAux(name, true), shiftConst = ['i32.const', SHIFT[elemType]]
+        const at = temp('tvo')
+        const viewArm = (s) => typed(['call', '$__ta_view', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
+          toNumF64(at, typed(['local.get', `$${at}`], 'f64')), shiftConst, ['i32.const', viewAux]], 'f64')
+        const offsetIR = ['local.set', `$${at}`, asF64(emit(offsetExpr))]
+        if (srcType !== VAL.BUFFER) return runtimeSource(lenExpr, viewArm, [offsetIR])
+        const s = temp('tvs')
+        return typed(['block', ['result', 'f64'], ['local.set', `$${s}`, asF64(emit(lenExpr))], offsetIR, viewArm(s)], 'f64')
+      }
+      // Single arg array-like source: copy elements instead of treating the pointer as a length.
+      if (srcType === VAL.ARRAY && fromArrayOf.has(name))
+        return fromArrayOf.get(name)(lenExpr)
+      if (srcType === VAL.TYPED) {
+        const src = temp('ts')
+        // Build copyFromTyped's IR BEFORE emit(lenExpr) recurses into a sibling
+        // new.${name} closure instance (composing typed-array ctors, e.g.
+        // `new Int32Array(new Float64Array(...))`) — self-compile closure-capture-
+        // after-nested-emit class (.work/archive/todo.md §TYPED-INDEX KERNEL
+        // MISCOMPILE): a free variable this closure captures (elemType/aux/
+        // stride/name, from the `for (const [name, elemType] of ...)` loop
+        // above) read AFTER a nested emit() call can observe the OTHER
+        // iteration's values once this file is compiled by the kernel — native
+        // (interpreted) execution never exposes it. copyFromTyped(src) only
+        // needs src's temp NAME (already allocated), not its emitted value, so
+        // building it first is behavior-identical — same IR tree, reassembled.
+        const copyIR = copyFromTyped(src, resolveElem(lenExpr))
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${src}`, asF64(emit(lenExpr))],
+          copyIR], 'f64')
+      }
+      // Reinterpret on a buffer: zero-copy view. TYPED retagged at the same offset —
+      // the byteLen header is shared with the parent. __len(view) = byteLen >> shift
+      // computes elemCount for this view's elemType.
+      if (srcType === VAL.BUFFER) {
+        setLinkDemand('typedView')  // zero-copy reinterpret aliases the source — SLP must not pack across it
+        return mkPtrIR(PTR.TYPED, aux, ownedBufferBase(lenExpr) ?? ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(lenExpr))]])
+      }
+      // A Set or a Map iterates, any other object is an array-like (23.2.5.1
+      // steps 6-8); both land in a fresh array the copy takes from there.
+      if ((srcType === VAL.SET || srcType === VAL.MAP) && fromArrayOf.has(name))
+        return fromArrayOf.get(name)(['()', '__iter_arr', lenExpr])
+      if ((srcType === VAL.OBJECT || srcType === VAL.HASH) && fromArrayOf.has(name))
+        return fromArrayOf.get(name)(['()', 'Array.from', lenExpr])
+      if (srcType == null && fromArrayOf.has(name)) return runtimeSource(lenExpr)
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
       // The size is ToIndex: NaN is 0, a fraction truncates, and a negative or a
       // byte count past the heap's i32 span traps (JS: a RangeError), where the
@@ -600,6 +625,30 @@ export default (ctx) => {
           (f64.ge (local.get $n) (f64.const 2147483640)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_BUFFER_LENGTH)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_BUFFER_LENGTH)}))))
     (i32.trunc_f64_s (local.get $n)))`
+
+  // new TypedArray(buffer, byteOffset): the view of `buffer` from byteOffset to
+  // its end (InitializeTypedArrayFromArrayBuffer). ToIndex the offset, then a
+  // RangeError for an offset off the element grid, a buffer byte length off it,
+  // or an offset past the end. `$aux` is the view's own (element code | view).
+  const throwWat = (code) => `(global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(code)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(code)}))`
+  ctx.core.stdlib['__ta_view'] = `(func $__ta_view (param $buf i64) (param $o f64) (param $shift i32) (param $aux i32) (result f64)
+    (local $off i32) (local $mask i32) (local $root i32) (local $len i32) (local $desc i32)
+    (if (f64.ne (local.get $o) (local.get $o)) (then (local.set $o (f64.const 0))))
+    (local.set $o (f64.trunc (local.get $o)))
+    (if (i32.or (f64.lt (local.get $o) (f64.const 0)) (f64.ge (local.get $o) (f64.const 2147483640)))
+      (then ${throwWat(ERR.TYPED_OFFSET_BOUNDS)}))
+    (local.set $off (i32.trunc_f64_u (local.get $o)))
+    (local.set $mask (i32.sub (i32.shl (i32.const 1) (local.get $shift)) (i32.const 1)))
+    (if (i32.and (local.get $off) (local.get $mask)) (then ${throwWat(ERR.TYPED_OFFSET_ALIGN)}))
+    (local.set $root (call $__ptr_offset (local.get $buf)))
+    (local.set $len (i32.load (i32.sub (local.get $root) (i32.const 8))))
+    (if (i32.and (local.get $len) (local.get $mask)) (then ${throwWat(ERR.TYPED_LENGTH_ALIGN)}))
+    (if (i32.gt_u (local.get $off) (local.get $len)) (then ${throwWat(ERR.TYPED_OFFSET_BOUNDS)}))
+    (local.set $desc (call $__alloc (i32.const 16)))
+    (i32.store (local.get $desc) (i32.sub (local.get $len) (local.get $off)))
+    (i32.store offset=4 (local.get $desc) (i32.add (local.get $root) (local.get $off)))
+    (i32.store offset=8 (local.get $desc) (local.get $root))
+    (call $__mkptr (i32.const ${PTR.TYPED}) (local.get $aux) (local.get $desc)))`
 
   // new ArrayBuffer(n) → allocate n bytes, return as BUFFER pointer.
   // Length is ToNumber-coerced (ToIndex) so a Symbol length raises a TypeError;
