@@ -14,7 +14,8 @@ import { ctx, inc } from '../../ctx.js'
 import { createFunction } from '../../function.js'
 import { memberUses } from '../../member-uses.js'
 import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET } from '../../ast.js'
-import { asF64, asI64, boolBoxIR, isNullish, isUndef, ptrOffsetIR, rawBigInt, temp, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
+import { asF64, asI64, boolBoxIR, isNullish, isUndef, ptrOffsetIR, rawBigInt, temp, tempI32, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
+import { hasDurableReset } from '../../../module/collection/durable.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { callContractOf } from '../representation-plan.js'
@@ -81,6 +82,18 @@ const ownSlot = (entries, name) => {
 }
 const local = (name) => typed(['local.get', `$${name}`], 'f64')
 
+// Whether the object in local `t` holds no property outside its layout: an
+// object of this round keeps those in its properties word (module/collection.js
+// dynGetBody), zero where it has none.
+const noOwnProps = (t) => {
+  const off = tempI32('own'), at = ['local.get', `$${off}`]
+  return ['if', ['result', 'i32'],
+    ['i32.and', ['i32.ge_u', ['local.tee', `$${off}`, ptrOffsetIR(local(t), VAL.OBJECT)], ['i32.const', 16]],
+      ['i32.ge_u', at, hasDurableReset() ? ['global.get', '$__heap_reset'] : ['i32.const', 0]]],
+    ['then', ['i64.eqz', ['i64.and', ['i64.load', ['i32.sub', at, ['i32.const', 16]]], ['i64.const', -2]]]],
+    ['else', ['i32.const', 0]]]
+}
+
 const tagEq = (recv, sid) => ['i64.eq', ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]]
 
 /**
@@ -119,8 +132,15 @@ function dispatch(obj, name, fnOf, build, rest, dispatcher, held, own) {
         ['if', ['result', 'f64'], isUndef(local(v)), ['then', asF64(build(fn, t))], ['else', asF64(own(v, t))]]]
     }
     inc('__dyn_get_expr', '__ptr_type')
+    const probe = isUndef(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', name]))]])
+    // Where none of the receiver's layouts holds the name, an own property of
+    // it is one outside the layout: none there, the member is the class's
+    // without the probe's lookup.
+    const layouts = layoutsOf(ctx.summary?.at(ctx.func.current), obj)
+    const outside = !!layouts?.length && !ctx.transform.dynamicAccessorNames?.has(name) &&
+      layouts.every(sid => ctx.schema.list[sid] && !ctx.schema.list[sid].includes(name) && !ctx.schema.list[sid].includes(name + ACCESSOR_GET))
     return ['if', ['result', 'f64'],
-      isUndef(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${t}`]], asI64(emit(['str', name]))]]),
+      outside ? ['if', ['result', 'i32'], noOwnProps(t), ['then', ['i32.const', 1]], ['else', probe]] : probe,
       ['then', asF64(build(fn, t))], ['else', asF64(rest(t))]]
   }
   if (!known.nullable && !ctx.summary.memberMayBeOwn(name)) return build(fn, held ?? obj)

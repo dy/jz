@@ -11,8 +11,9 @@
 // `super.x` property semantics, non-constant computed member names.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onWasi, OPT_LEVEL, levels } from './_matrix.js'
+import { onWasi, onKernel, OPT_LEVEL, levels } from './_matrix.js'
 import jz, { compile as compileWat } from '../index.js'
+import { instantiate } from '../interop.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports
 
@@ -561,6 +562,30 @@ test('class struct: a method read as a value is bound to its receiver; an own pr
     export const f = () => { const p = new P(4); const f = p.dbl; return f() + [1].map(p.dbl)[0] }`), 16)
   is(j(`class P { constructor(x) { this.x = x } dbl() { return this.x * 2 } }
     export const f = () => { const p = new P(4); p.dbl = () => 1; return p.dbl() + new P(5).dbl() }`), 11)
+})
+
+// A member name some instance owns (`poke` stores it): a receiver of known
+// layouts none of which holds the name keeps any such own property in its
+// properties word, so one whose word is zero calls the class's method without
+// the property lookup, and the instance that owns one still calls its own.
+test('class struct: an instance with no own properties skips the shadowing lookup', () => {
+  const src = `class Param { constructor(v) { this.v = v } tick() { return this.v } }
+    class Node { constructor(v) { this.p = new Param(v) } run() { return this.p.tick() } }
+    const poke = (x) => { x.tick = () => -1 }
+    export const f = (k) => {
+      const a = new Node(2), b = new Node(3)
+      let s = 0
+      for (let i = 0; i < 4; i++) { if (i === k) poke(b.p); s += a.run() * 10 + b.run() }
+      return s
+    }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [-1, 0, 2, 5]) is(f(k), [92, 76, 84, 92][[-1, 0, 2, 5].indexOf(k)], `O${optimize}: poked at ${k}`)
+  }
+  if (onWasi() || onKernel()) return  // a host-only profiling option
+  const inst = instantiate(new WebAssembly.Module(compileWat(src, { optimize: 2, helperCounters: true })), {})
+  is(inst.exports.f(-1), 92)
+  is((inst.instance?.exports ?? inst.exports).__hc_dyn_get_expr.value, 0n, 'no instance owns the name: no lookup')
 })
 
 test('class struct: nullable method values retain binding and reject missing receivers', () => {
