@@ -278,8 +278,12 @@ const coerceNullishToStr = (valIR, nullable = false) => {
  *  string-parsing `__to_num` isn't loaded (no string module → no strings can
  *  exist) nullish *literals* still fold statically (null→+0, undefined→NaN);
  *  non-literal values pass through uncoerced — except bindings flagged
- *  maybeNullish, which get a runtime nullish coerce (null-flow correctness). */
-export function toNumF64(node, v) {
+ *  maybeNullish, which get a runtime nullish coerce (null-flow correctness).
+ *  `word`: the Number only feeds a 32-bit word conversion (ToInt32, ToUint32),
+ *  which takes every NaN to 0 as it takes undefined and null to 0: a Number
+ *  that may be missing or nullish converts as it lies (a hole, a miss's or a
+ *  stored box being a NaN), with no test mapping it to the canonical NaN. */
+export function toNumF64(node, v, word = false) {
   // Source literals stay constant even when emit interns their sentinel in
   // a global. Recognize them before asking whether a runtime helper is loaded.
   if (Array.isArray(node) && node[0] == null && node.length === 2 && node[1] == null)
@@ -331,6 +335,7 @@ export function toNumF64(node, v) {
   if ((readKind & TAGS) === (bitOf(K.NUMBER) | bitOf(K.ABSENT)) ||
       Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
     if (v.presentNumRead || !mayMissValue(node, v)) return asF64(v)
+    if (word && (readKind & TAGS) === (bitOf(K.NUMBER) | bitOf(K.ABSENT))) return asF64(asStored(v))
     // An element whose cell holds a Number or a hole (storedElement) with no
     // proof of no payload (kind/payload.js: a holey array's, a float typed
     // array's) is normalized where it leaves for a generic slot, and so is
@@ -382,6 +387,7 @@ export function toNumF64(node, v) {
     // same asF64(v) call, no new branch taken.
     if ((vt === VAL.NUMBER || censusNum) &&
         (typeof node === 'string' && (ctx.func.maybeNullish?.has(node) || mayBeUndefined(node) || mayMissValue(node, v)) || censusMaybeUndefined(node))) {
+      if (word) return asF64(v)
       // A computed read can invoke a key's conversion hook; even a pure
       // Map/dictionary probe is costly to repeat. Evaluate every expression
       // once, then duplicate only its local read in the sentinel branches.
@@ -402,7 +408,7 @@ export function toNumF64(node, v) {
     // The kind names what a read finds; a read that finds nothing answers undefined.
     // (an element read as it lies in memory takes its miss to NaN in place, as above)
     if (typeof node !== 'string' && (mayYieldUndef(v) || mayMissValue(node, v)))
-      return cellAsNumber(node, v) || missToNaN(v)
+      return word ? asF64(asStored(v)) : cellAsNumber(node, v) || missToNaN(v)
     return asF64(v)
   }
   if (vt === VAL.DATE && !ctx.funcs.runtimeRoots.has(TO_PRIMITIVE.number)) {

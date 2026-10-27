@@ -75,7 +75,7 @@ export const bitwiseOps = {
       if (hasBigintDomain(inner))
         return bigIntUnary(inner, v => v, v => ['f64.convert_i32_s', toInt32(v)], computedBoxOf(self))
       const iv = emit(inner)
-      return isLit(iv) ? emitNum(int32(litVal(iv))) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
+      return isLit(iv) ? emitNum(int32(litVal(iv))) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv, true)), 'i32')
     }
     // BigInt complement is the i64 `x ^ -1` (all bits flipped), like emitNeg's i64.sub.
     // bigIntUnary: a maybeUndefined-BIGINT operand's real
@@ -84,7 +84,7 @@ export const bitwiseOps = {
     // The full summary kind keeps nullable BigInt producers on this branch.
     if (hasBigintDomain(a))
       return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], v => ['f64.convert_i32_s', ['i32.xor', toInt32(v), ['i32.const', -1]]], computedBoxOf(self))
-    const v = emit(a); return isLit(v) ? emitNum(~int32(litVal(v))) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
+    const v = emit(a); return isLit(v) ? emitNum(~int32(litVal(v))) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v, true)), typed(['i32.const', -1], 'i32')], 'i32')
   },
   ...Object.fromEntries([
     ['&', 'and'], ['|', 'or'], ['^', 'xor'], ['<<', 'shl'], ['>>', 'shr_s'],
@@ -125,8 +125,8 @@ export const bitwiseOps = {
       if (op === '^') return emitNum(la ^ lb); if (op === '<<') return emitNum(la << lb)
       if (op === '>>') return emitNum(la >> lb)
     }
-    const ca = isI32Num(va) || isLit(va) ? va : toNumF64(a, va)
-    const cb = isI32Num(vb) || isLit(vb) ? vb : toNumF64(b, vb)
+    const ca = isI32Num(va) || isLit(va) ? va : toNumF64(a, va, true)
+    const cb = isI32Num(vb) || isLit(vb) ? vb : toNumF64(b, vb, true)
     return typed([`i32.${fn}`, toI32(ca), toI32(cb)], 'i32')
   }])),
   '>>>': (a, b) => {
@@ -154,8 +154,8 @@ export const bitwiseOps = {
     // [0, 2^32) value range). Without this, `(s >>> 0) / 4294967296` would convert
     // signed for negative-high-bit s values, flipping sign and breaking the
     // canonical "uint32 → f64" idiom used in PRNGs and bit-manipulation code.
-    const ca = isI32Num(va) || isLit(va) ? va : toNumF64(a, va)
-    const cb = isI32Num(vb) || isLit(vb) ? vb : toNumF64(b, vb)
+    const ca = isI32Num(va) || isLit(va) ? va : toNumF64(a, va, true)
+    const cb = isI32Num(vb) || isLit(vb) ? vb : toNumF64(b, vb, true)
     const node = typed(['i32.shr_u', toI32(ca), toI32(cb)], 'i32')
     node.unsigned = true
     return node

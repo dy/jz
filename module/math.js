@@ -468,8 +468,8 @@ export default (ctx) => {
   // skip the convert/trunc round-trip entirely.
   // Operands take ECMAScript ToInt32 (wrapping), not saturation — `Math.imul(x, k)`
   // with a literal k ≥ 2³¹ must wrap to negative, matching JS, not clamp to INT_MAX.
-  ctx.core.emit['math.clz32'] = a => typed(['i32.clz', toI32(toNumF64(a, emit(a)))], 'i32')
-  ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(toNumF64(a, emit(a))), toI32(toNumF64(b, emit(b)))], 'i32')
+  ctx.core.emit['math.clz32'] = a => typed(['i32.clz', toI32(toNumF64(a, emit(a), true))], 'i32')
+  ctx.core.emit['math.imul'] = (a, b) => typed(['i32.mul', toI32(toNumF64(a, emit(a), true)), toI32(toNumF64(b, emit(b), true))], 'i32')
 
   registerMathRandom()
 

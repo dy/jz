@@ -1000,7 +1000,11 @@ field, a call's result, an element of an array a missing value is stored
 into) may be the undefined box itself, whose bits would read as undefined
 where a Number crosses to the host as it is, and takes the compare and
 select. A sum whose side is such an element with no null takes it by the
-same rule (emit/arithmetic.js). The kind of
+same rule (emit/arithmetic.js). A Number that may be missing or nullish
+which only a 32-bit word conversion reads (a bitwise operand, `Math.imul`,
+`Math.clz32`: `toNumF64`'s `word`) converts as it lies, the hole, a miss's
+undefined and a stored null among it: ToInt32 takes every NaN to 0, as it
+takes undefined and null. The kind of
 a conditional joins what any arm may be on any path, so a conditional answers
 by its arms, each with its own value (`mayMissValue`): a binding by what it
 holds (one that normalizes on write, or that a guard or its definition holds
