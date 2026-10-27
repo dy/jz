@@ -28,7 +28,7 @@ import { emit, argIR, storedValue, positionArgs, withIgnoredArgs, bool, method, 
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, isPresentNumber } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
-import { dataAlign, dataPush, dataLen, strPoolPush } from '../src/static-data.js'
+import { dataAlign, dataPush, dataLen, dataRecord, strPoolPush } from '../src/static-data.js'
 import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { stringBytes, stringHash } from '../src/string-data.js'
@@ -300,6 +300,7 @@ export default (ctx) => {
       view.setUint32(hdr - 4, len, true)
       chunk.set(bytes, hdr)
       dataPush(chunk)
+      dataRecord(offset, offset + chunk.length, true)
       ctx.runtime.dataDedup.set(str, offset)
       return mkPtrIR(PTR.STRING, aux, offset + hdr)
     }

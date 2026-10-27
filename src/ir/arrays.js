@@ -13,7 +13,7 @@ import { mkPtrIR } from './pointers.js'
 import { asF64 } from './numeric.js'
 import { isPureIR } from './classify.js'
 import { UNDEF_NAN, TOMB_NAN } from './sentinels.js'
-import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../static-data.js'
+import { dataAlign, dataPush, dataLen, dataRecord, pushStaticSlots } from '../static-data.js'
 
 /** Read a boxed array cell as a value: an absent cell answers undefined.
  *  The speed tier (the one that inlines functions) tests in place: a holey
@@ -159,6 +159,7 @@ export function staticArrayPtr(slots) {
   dv.setInt32(8, len, true); dv.setInt32(12, len, true)  // off-8: len, off-4: cap (props word at 0..7 stays 0)
   dataPush(hdr)
   pushStaticSlots(slots)
+  dataRecord(headerOff, dataLen(), false)
   const ptr = mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
   // Compile-time identity for the static base/len read fold (see the saArr tag in
   // the '[]' handler + optimize's foldStaticConstArrayReads): a const global bound

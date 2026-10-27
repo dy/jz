@@ -706,6 +706,7 @@ export function reset(proto, globals, bridge) {
     dataLen: 0,
     dataColor: 0,          // the quarter-page colour the next large static block starts at (module/typedarray.js staticStoragePtr)
     dataDedup: new Map(),  // str → offset (dedup literal bytes in active data segment)
+    dataRecords: [],       // [start, end, leaf] per literal laid out in the data segment (static-data.js dataRecord)
     strPoolParts: [],      // shared-memory: byte records with unit-length-prefixed UTF-16LE literals
     strPoolLen: 0,
     strPoolInit: false,    // __strBase declared once on first pooled literal

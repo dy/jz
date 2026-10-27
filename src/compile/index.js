@@ -124,6 +124,7 @@ export function tailFacts(cfg) {
     targetProfile: ctx.transform.targetProfile,
     lazyDataSpans: ctx.runtime.lazySpans,
     staticDataSpan: ctx.runtime.staticPrefixSpan,
+    dataRecords: ctx.memory.shared ? null : ctx.runtime.dataRecords,
     stableGlobals: stablePtrGlobalNames(),
     fixedMemory: fixedMemoryFacts(),
   }

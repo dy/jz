@@ -9,7 +9,7 @@
 
 import print from 'watr/print'
 import { enterActiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
-import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
+import { dataAlign, dataPush, dataLen, dataRecord, pushStaticSlots } from '../src/static-data.js'
 import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, withIgnoredArgs, deps } from '../src/bridge.js'
 import { NUMBER } from '../src/summary/kind.js'
@@ -231,6 +231,7 @@ export default (ctx) => {
         hdv.setInt32(12, ctx.abi.object.ops.allocSlots ? ctx.abi.object.ops.allocSlots(schema.length) : schema.length, true)
         dataPush(hdr)
         pushStaticSlots(orderedBits)
+        dataRecord(hdrOff, dataLen(), false)
         return mkPtrIR(PTR.OBJECT, schemaId, hdrOff + 16)
       }
     }

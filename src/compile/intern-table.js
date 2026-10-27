@@ -1,6 +1,6 @@
 import { ctx, declGlobal } from '../ctx.js'
 import { stringHash } from '../string-data.js'
-import { dataAlign, dataPush, dataLen } from '../static-data.js'
+import { dataAlign, dataPush, dataLen, dataRecord } from '../static-data.js'
 
 // Static-string intern index (the `internStrings` pass). Open-addressing table
 // over the deduped static string literals (5–32 bytes): [hash u32][ptr u32]
@@ -54,6 +54,7 @@ export function buildInternTable() {
   const bytes = new Uint8Array(slots.length * 4), view = new DataView(bytes.buffer)
   for (let i = 0; i < slots.length; i++) view.setUint32(i * 4, slots[i], true)
   dataPush(bytes)
+  dataRecord(base, dataLen(), false)
   ctx.runtime.internTable = { base, size }
   declGlobal('__internBase', 'i32', base, { mut: false })
   declGlobal('__internMask', 'i32', mask, { mut: false })

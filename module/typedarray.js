@@ -63,7 +63,7 @@ import { STRIDE, SHIFT, LOAD, STORE } from './typedarray/elem-tables.js'
 // saturating `asI32` clamped (4e9 must wrap to -294967296, not INT32_MAX).
 
 import { analyzeSimd, genSimdMap } from './typedarray/simd-map.js'
-import { dataAlign, dataPush, dataLen } from '../src/static-data.js'
+import { dataAlign, dataPush, dataLen, dataRecord } from '../src/static-data.js'
 import { nonNegIntLiteral, int32 } from '../src/static.js'
 
 // Static typed storage: a constant-length typed array constructed at module
@@ -102,6 +102,7 @@ const staticStoragePtr = (aux, byteLen, slot) => {
   dv.setInt32(8, byteLen, true); dv.setInt32(12, byteLen, true)
   dataPush(hdr)
   dataPush(new Uint8Array(byteLen))
+  dataRecord(hdrOff, dataLen(), true)
   if (slot) slot.offset = hdrOff + 16
   return mkPtrIR(PTR.TYPED, aux, ['i32.const', hdrOff + 16])
 }

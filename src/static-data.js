@@ -1,6 +1,6 @@
 /** Static data and shared string pools contain bytes, never JS text. */
 import { ctx } from './ctx.js'
-import { LAYOUT } from '../layout.js'
+import { LAYOUT, PTR } from '../layout.js'
 
 const joinBytes = (parts, len) => {
   if (parts.length === 1) return parts[0]
@@ -29,6 +29,27 @@ export const dataBytes = () => {
 export const dataReset = (bytes) => {
   ctx.runtime.dataParts = bytes.length ? [bytes] : []
   ctx.runtime.dataLen = bytes.length
+}
+
+/** A literal the program lays out in the data segment (a string, an array, an
+ *  object, a table): its bytes [start, end), and `leaf` where they never hold
+ *  the address of another literal (a string's). The late data strip
+ *  (optimize/watr-tail.js stripDeadLateData) drops the bytes of a literal no
+ *  surviving code or data names. Flat triples, in data-segment coordinates. */
+export const dataRecord = (start, end, leaf) => { ctx.runtime.dataRecords.push(start, end, leaf ? 1 : 0) }
+/** Keep the segment's first `n` bytes: a literal past them is gone. */
+export const dataTruncate = (n) => {
+  dataReset(dataBytes().slice(0, n))
+  const recs = ctx.runtime.dataRecords, kept = []
+  for (let i = 0; i < recs.length; i += 3) if (recs[i + 1] <= n) kept.push(recs[i], recs[i + 1], recs[i + 2])
+  ctx.runtime.dataRecords = kept
+}
+/** Drop the segment's first `n` bytes: every literal after them moves down by `n`. */
+export const dataDropPrefix = (n) => {
+  dataReset(dataBytes().slice(n))
+  const recs = ctx.runtime.dataRecords, kept = []
+  for (let i = 0; i < recs.length; i += 3) if (recs[i] >= n) kept.push(recs[i] - n, recs[i + 1] - n, recs[i + 2])
+  ctx.runtime.dataRecords = kept
 }
 
 /** Decode static table literals directly to bytes. */
@@ -79,4 +100,99 @@ export const strPoolBytes = () => {
   const bytes = joinBytes(r.strPoolParts, r.strPoolLen)
   r.strPoolParts = bytes.length ? [bytes] : []
   return bytes
+}
+
+const WORD = 4294967296
+
+/** The low word of an integer literal's two's complement, read from its text
+ *  (decimal or hex, signed): -1 for none. No BigInt (the kernel runs this). */
+export function lowWord(v) {
+  if (typeof v === 'number') return Number.isInteger(v) ? ((v % WORD) + WORD) % WORD : -1
+  let s = String(v).replace(/_/g, ''), neg = false
+  if (s[0] === '-' || s[0] === '+') { neg = s[0] === '-'; s = s.slice(1) }
+  let r = 0
+  if (s[1] === 'x' || s[1] === 'X') r = parseInt(s.length > 10 ? s.slice(-8) : s.slice(2), 16)
+  else for (let i = 0; i < s.length; i++) {
+    const d = s.charCodeAt(i) - 48
+    if (d < 0 || d > 9) return -1
+    r = (r * 10 + d) % WORD
+  }
+  if (!(r >= 0)) return -1
+  return neg ? (WORD - r) % WORD : r
+}
+
+/** The low word of a float literal that can carry an address: a NaN box's
+ *  payload, or (`integral`) an integral value. -1 for any other. */
+function floatWord(v, integral) {
+  const s = String(v), at = s.indexOf('nan:0x')
+  if (at >= 0) { const h = s.slice(at + 6); return parseInt(h.length > 8 ? h.slice(-8) : h, 16) }
+  if (!integral) return -1
+  const n = Number(s)
+  return Number.isInteger(n) && n >= 0 && n < WORD ? n : -1
+}
+
+const COMPARE = new Set(), SHIFT = new Set(), TRUNC = new Set()
+for (const t of ['i32', 'i64']) {
+  for (const c of ['eqz', 'eq', 'ne', 'lt_s', 'lt_u', 'gt_s', 'gt_u', 'le_s', 'le_u', 'ge_s', 'ge_u']) COMPARE.add(t + '.' + c)
+  for (const c of ['shl', 'shr_s', 'shr_u', 'rotl', 'rotr']) SHIFT.add(t + '.' + c)
+  for (const c of ['trunc_f64_s', 'trunc_f64_u', 'trunc_sat_f64_s', 'trunc_sat_f64_u']) TRUNC.add(t + '.' + c)
+}
+for (const t of ['f32', 'f64']) for (const c of ['eq', 'ne', 'lt', 'gt', 'le', 'ge']) COMPARE.add(t + '.' + c)
+
+/** Each 32-bit word a `v128.const` holds. */
+function vectorWords(node, add) {
+  const shape = node[1]
+  if (shape === 'i32x4' || shape === 'i64x2') for (let i = 2; i < node.length; i++) add(lowWord(node[i]))
+  else if (shape === 'f64x2') for (let i = 2; i < node.length; i++) add(floatWord(node[i], false))
+  else if (shape === 'i16x8' || shape === 'i8x16') {
+    const per = shape === 'i16x8' ? 2 : 4, unit = per === 2 ? 65536 : 256
+    for (let i = 2; i + per <= node.length; i += per) {
+      let w = 0
+      for (let j = per - 1; j >= 0; j--) w = w * unit + (lowWord(node[i + j]) + WORD) % unit
+      add(w)
+    }
+  }
+}
+
+/** Each word a node of code may address the data segment by, to `add`: an
+ *  integer literal's low word, a NaN box's offset, a memory access's constant
+ *  offset and its sum with a constant base. A literal only compared, or a
+ *  shift's count, addresses nothing (a value equal to it comes from a reference
+ *  of its own); a float does as a NaN box, or as the operand of a truncation O0
+ *  leaves unfolded. `parent` is the node's parent's op, `at` its index there. */
+export function constWords(node, parent, at, add) {
+  const op = node[0]
+  if (op === 'i32.const' || op === 'i64.const' || op === 'f64.const' || op === 'v128.const') {
+    if (COMPARE.has(parent) || (at === 2 && SHIFT.has(parent))) return
+    if (op === 'v128.const') vectorWords(node, add)
+    else add(op === 'f64.const' ? floatWord(node[1], TRUNC.has(parent)) : lowWord(node[1]))
+  } else if (typeof op === 'string' && (op.includes('.load') || op.includes('.store') || op.includes('atomic'))) {
+    let off = -1, base = -1
+    for (let i = 1; i < node.length; i++) {
+      const c = node[i]
+      if (typeof c === 'string' && c.startsWith('offset=')) off = lowWord(c.slice(7))
+      else if (base < 0 && Array.isArray(c) && c[0] === 'i32.const') base = lowWord(c[1])
+    }
+    if (off >= 0) { add(off); if (base >= 0) add(base + off) }
+  }
+}
+
+/** The address a pointer literal names: a heap box's offset (`f64.const nan:…`,
+ *  `i64.const 0x7ff8…`; not an atom's id, a host reference's or a short
+ *  string's packed units) or the literal offset `__mkptr` boxes. -1 for any
+ *  other node. */
+export function boxOffset(node) {
+  const op = node[0]
+  if (op === 'call' && node[1] === '$__mkptr')
+    return Array.isArray(node[4]) && node[4][0] === 'i32.const' ? lowWord(node[4][1]) : -1
+  if ((op !== 'f64.const' && op !== 'i64.const') || typeof node[1] !== 'string') return -1
+  const t = node[1]
+  let hex = op === 'f64.const' ? (t.startsWith('nan:0x') ? t.slice(6) : '') : (t.startsWith('0x') ? t.slice(2) : '')
+  if (!hex) return -1
+  hex = hex.length < 16 ? '0000000000000000'.slice(hex.length) + hex : hex.slice(-16)
+  const hi = parseInt(hex.slice(0, 8), 16) >>> 0
+  const tag = (hi >>> 15) & 15
+  if (((hi >>> 16) & 0xFFF8) !== LAYOUT.NAN_PREFIX || tag === PTR.ATOM || tag === PTR.EXTERNAL) return -1
+  if (tag === PTR.STRING && (hi & LAYOUT.SSO_BIT)) return -1
+  return parseInt(hex.slice(8), 16) >>> 0
 }

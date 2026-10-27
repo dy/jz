@@ -1912,6 +1912,13 @@ Runtime initialization uses declared helper dependencies: a table reached
 through a fallback needs initialization even without a direct helper call.
 Template realization follows table setup, keeping dead helper constants at
 the reclaimable data tail. Table consumers must declare their dependencies.
+After watr, a literal laid out in the data segment (a string, a static array
+or object, typed storage, a table: `dataRecord`, src/static-data.js) leaves
+the binary in place where no constant of the final code names a byte of it
+and no surviving data word holds its pointer (optimize/watr-tail.js
+stripDeadLateData); a constant only compared, or a shift's count, names
+nothing. A string a later helper shares with a dead helper's tail span keeps
+the span (`stripDeadInternedSpans`).
 Source inlining leaves spread argument lists to runtime call marshalling
 instead of treating each spread as one positional value.
 

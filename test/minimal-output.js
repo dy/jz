@@ -635,6 +635,29 @@ test('minimal: live opaque-.length throw path keeps both strings and throws a re
     `message was ${JSON.stringify(caught?.message)}, expected it to mention "Cannot read properties of undefined"`)
 })
 
+// A literal laid out in the data segment whose every referent the optimizer
+// erased leaves the binary, wherever in the segment it lies
+// (optimize/watr-tail.js stripDeadLateData): watr inlines `pick(k)` with a
+// constant and folds the other arm away, its string with it, while the string
+// beside it keeps its bytes. The pre-link reclaim only cut the segment's tail,
+// and only for helpers' spans: a dead stdlib error message laid out before a
+// live one (stdlib-dists' typed-view messages) stayed.
+test('minimal: a literal whose last referent the optimizer folded away leaves the data segment', () => {
+  if (skip) return
+  const enc = s => s.split('').join('\\00')
+  const first = 'first long string here', second = 'second long string here'
+  for (const [k, kept, gone] of [[1, first, second], [2, second, first]]) {
+    const src = `const pick = (k) => k === 1 ? '${first}' : '${second}'
+export let f = () => pick(${k})`
+    for (const O of [...levels(2, 3), 'size']) {
+      const w = wat(src, O)
+      ok(w.includes(enc(kept)), `@O${O} pick(${k}): the string the program reads keeps its bytes`)
+      ok(!w.includes(enc(gone)), `@O${O} pick(${k}): the folded arm's string leaves the data segment`)
+      is(jz(src, { optimize: O }).exports.f(), kept, `@O${O} pick(${k}): the kept string reads as written`)
+    }
+  }
+})
+
 // Per-instance RUNTIME HEAP cost of a constructed Error. audit-#9 P0-2 shrank
 // the object from 3 slots (['message','name','__errcls__']) to 2
 // (['message','name']) — class identity moved to the schema id, so this is

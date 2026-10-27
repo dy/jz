@@ -7,7 +7,7 @@
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
  * behavior change. See ../assemble.js for the stage contract and
  * `.work/archive/assemble-outliers.md` §4: none of the three calls another in this
- * file, but all three share the same `dataBytes`/`dataReset`/`dataAlign`/
+ * file, but all three share the same `dataBytes`/`dataTruncate`/`dataAlign`/
  * `dataPush` substrate (../../static-data.js) and compile/index.js runs them
  * back-to-back (stripStaticDataPrefix, then optimizeModule, then
  * stripDeadLazyTables, then stripDeadInternedSpans).
@@ -15,7 +15,7 @@
 
 import { ctx, PTR, LAYOUT, declGlobal } from '../../ctx.js'
 import { i64Hex } from '../../../layout.js'
-import { dataAlign, dataPush, dataLen, dataBytes, dataReset } from '../../static-data.js'
+import { dataAlign, dataPush, dataLen, dataBytes, dataTruncate, dataDropPrefix, boxOffset } from '../../static-data.js'
 import { walkAst } from '../../ast.js'
 
 /**
@@ -66,7 +66,7 @@ export function stripDeadLazyTables(sec) {
   // base globals — both the scope entry and the already-pushed sec.globals IR.
   // spans[0].start is ALREADY the exact byte length of the kept prefix — it was
   // captured by injectTable's dataLen() read at insertion.
-  dataReset(dataBytes().slice(0, spans[0].start))
+  dataTruncate(spans[0].start)
   for (const s of spans) if (!spanLive(s)) setInit(sec, s.global, 0)
   // Shared memory needs this list for start-time rebasing; active memory keeps it
   // until watr's final graph has had one more chance to prove an owner dead.
@@ -115,18 +115,19 @@ function appendLazy(sec, spans) {
  *
  * Unlike lazySpans, a reclaimSpans entry can be addressed either by a global
  * (the schema table, indirected through `__schema_tbl`) OR by literal
- * NaN-boxed bit patterns baked directly into ONE function's body (a thunk's
- * own strBits constants — nothing else can reference them, since nothing else
- * ever calls ctx.core.emit['str'] with that exact text from that exact
- * template). The second shape has no global to repoint if shifted, so —
+ * NaN-boxed bit patterns baked into function bodies (a thunk's own strBits
+ * constants; the `str` emitter interns each text once, so a later function's
+ * literal of the same text shares the bytes, and a span a pointer of live code
+ * names stays though its owner is dead). The second shape has no global to
+ * repoint if shifted, so —
  * unlike stripDeadLazyTables's rebuild-and-repoint — this pass ONLY ever
  * truncates a dead run off the ABSOLUTE TAIL, walking spans in reverse append
  * order and stopping at the first still-live (or non-contiguous) one. A live
  * span is therefore NEVER moved, so no reference — global-indirected or
- * literal-baked — can ever desync. The cost of that safety is precision: a
- * dead span buried before a live one is left as harmless residual weight
- * rather than reclaimed (same accepted trade stripDeadLazyTables documents
- * for shared memory). Must run in the same window as stripDeadLazyTables —
+ * literal-baked — can ever desync. A dead span buried before a live one, and
+ * one whose owner dies only in link or watr, is the final optimizer's
+ * (optimize/watr-tail.js stripDeadLateData), which drops its bytes in place
+ * once no surviving code or data names them. Must run in the same window as stripDeadLazyTables —
  * after optimizeModule (real reachability is final) and before the data
  * segment is serialized into sec.data.
  */
@@ -138,9 +139,14 @@ export function stripDeadInternedSpans(sec) {
     for (const f of arr || []) if (Array.isArray(f) && f[0] === 'func' && typeof f[1] === 'string') byName.set(f[1], f)
   const live = new Set(), liveGlobals = new Set(), work = []
   const mark = (ref) => { if (typeof ref === 'string' && byName.has(ref) && !live.has(ref)) { live.add(ref); work.push(ref) } }
-  const scan = (n) => walkAst(n, { enter: x => {
+  // The pointers live code holds: a later helper's literal can share an earlier
+  // helper's bytes (the `str` emitter interns each text once), so a dead owner
+  // alone leaves its span named.
+  const words = []
+  const scan = (n, own = true) => walkAst(n, { enter: x => {
     if ((x[0] === 'call' || x[0] === 'return_call' || x[0] === 'ref.func') && typeof x[1] === 'string') mark(x[1])
     else if ((x[0] === 'global.get' || x[0] === 'global.set') && typeof x[1] === 'string') liveGlobals.add(x[1].slice(1))
+    if (own) { const w = boxOffset(x); if (w >= 0) words.push(w) }
   } })
   // an exported func is a root, a stdlib one that exports itself too (collection.js __view_data)
   for (const arr of [sec.funcs, sec.stdlib])
@@ -156,9 +162,15 @@ export function stripDeadInternedSpans(sec) {
   for (const f of sec.start) scan(f)
   for (const part of [sec.elem, sec.globals, sec.tags, sec.table]) for (const n of part || []) {
     if (!Array.isArray(n)) continue
-    for (const c of n) { if (typeof c === 'string' && c[0] === '$') mark(c); else scan(c) }
+    for (const c of n) { if (typeof c === 'string' && c[0] === '$') mark(c); else scan(c, part !== sec.globals) }
   }
   while (work.length) scan(byName.get(work.pop()))
+  // a global's initializer names data where the global is read
+  for (const n of sec.globals || [])
+    if (Array.isArray(n) && typeof n[1] === 'string' && liveGlobals.has(n[1].slice(1))) scan(n)
+  words.sort((a, b) => a - b)
+  // (a pointer lies past its literal's header: never at the span's first byte)
+  const named = (s) => { let lo = 0, hi = words.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (words[mid] <= s.start) lo = mid + 1; else hi = mid } return lo < words.length && words[lo] < s.end }
   // The lazy tables (stripDeadLazyTables) are the last appends, each
   // re-pointed through its global: a dead run before them is the tail too,
   // and they are appended again past the cut.
@@ -169,9 +181,10 @@ export function stripDeadInternedSpans(sec) {
     const s = spans[i]
     if (s.end > cut || cut - s.end >= 8) break   // not contiguous with the tail (past the alignment pad) — something else already lives past it
     if (s.fn ? live.has(s.fn) : liveGlobals.has(s.global)) break
+    if (named(s)) break
     cut = s.start
   }
-  if (cut < tail) { dataReset(dataBytes().slice(0, cut)); if (lazy.length) ctx.runtime.lazySpans = appendLazy(sec, lazy) }
+  if (cut < tail) { dataTruncate(cut); if (lazy.length) ctx.runtime.lazySpans = appendLazy(sec, lazy) }
   ctx.runtime.reclaimSpans = []
 }
 
@@ -238,7 +251,7 @@ export function stripStaticDataPrefix(sec) {
     if (s.start >= prefix) s.start -= prefix
     if (s.end >= prefix) s.end -= prefix
   }
-  dataReset(buf.slice(prefix))
+  dataDropPrefix(prefix)
   if (ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = ctx.runtime.staticPtrSlots
     .filter(o => o >= prefix).map(o => o - prefix)
   const shift = (node) => {

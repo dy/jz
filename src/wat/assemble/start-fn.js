@@ -24,7 +24,7 @@ import { emit, emitVoid } from '../../compile/emit.js'
 import { staticArrayPtr, mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
 import { enumView, enumViewsOn, accessorTable } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
-import { dataLen, dataAlign, dataPush, pushStaticSlots } from '../../static-data.js'
+import { dataLen, dataAlign, dataPush, dataRecord, pushStaticSlots } from '../../static-data.js'
 
 const normalizeEmittedIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
 
@@ -248,8 +248,10 @@ function buildSchemaInit() {
       // patches BOXED slots via staticPtrSlots, but a global's declared init
       // needs its own shift (same as __internBase's bespoke re-declare).
       ;(ctx.runtime.staticI32GlobalInits ??= []).push('__schema_tbl')
-      if (!runtimeReserve && dataLen() > schemaDataStart)
+      if (!runtimeReserve && dataLen() > schemaDataStart) {
         ctx.runtime.reclaimSpans.push({ global: '__schema_tbl', start: schemaDataStart, end: dataLen() })
+        dataRecord(schemaDataStart, dataLen(), false)
+      }
       // Enumeration views (module/schema.js enumView) beside the table: per
       // schema, its view keys and its map (viewEntry, one number a position),
       // both boxed static arrays; zeros for a layout without one. A span of
@@ -264,8 +266,10 @@ function buildSchemaInit() {
             const slots = views.flatMap((v, s) => v ? [extractF64Bits(staticArrayPtr(keyBits[s])),
               extractF64Bits(staticArrayPtr(v.map(e => extractF64Bits(['f64.const', viewEntry(e)]))))] : [zero, zero])
             viewTable(pushStaticSlots([...slots, ...Array(runtimeReserve * 2).fill(zero)]), table)
-            if (!runtimeReserve && dataLen() > viewDataStart)
+            if (!runtimeReserve && dataLen() > viewDataStart) {
               ctx.runtime.reclaimSpans.push({ global: table, start: viewDataStart, end: dataLen() })
+              dataRecord(viewDataStart, dataLen(), false)
+            }
           } else schemaInit.push(...viewInitIR(views, nSchemas + runtimeReserve, table))
         }
       }
@@ -324,6 +328,7 @@ function buildRecordTable() {
   ctx.scope.globals.get('__rec_tbl').init = off
   ;(ctx.runtime.staticI32GlobalInits ??= []).push('__rec_tbl')
   ctx.runtime.reclaimSpans.push({ global: '__rec_tbl', start, end: dataLen() })
+  dataRecord(start, dataLen(), false)
 }
 
 export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {

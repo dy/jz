@@ -16,6 +16,7 @@ import { foldWrappedWords, narrowBoxedLocals, narrowFlagLocals } from './int-nar
 import { shareSplitSlots } from './split-slots.js'
 import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { ctx } from '../ctx.js'
+import { constWords } from '../static-data.js'
 import {
   SIMD_PINNED, LANE_PINS, collectReachableGlobalWrites, hoistGlobalPtrOffset,
 } from './index.js'
@@ -426,81 +427,225 @@ function encodeDataBytes(bytes) {
   return out + '"'
 }
 
+const slebSize = (n) => { let size = 1; while (n >= 64 || n < -64) { n = Math.floor(n / 128); size++ } return size }
+
+/** Flat [start, end) pairs sorted by start, overlapping and touching ones merged. */
+function mergeRanges(pairs) {
+  const idx = []
+  for (let i = 0; i < pairs.length; i += 2) idx.push(i)
+  idx.sort((a, b) => pairs[a] - pairs[b])
+  const out = []
+  for (let k = 0; k < idx.length; k++) {
+    const lo = pairs[idx[k]], hi = pairs[idx[k] + 1]
+    if (out.length && lo <= out[out.length - 1]) { if (hi > out[out.length - 1]) out[out.length - 1] = hi }
+    else out.push(lo, hi)
+  }
+  return out
+}
+
+/** Merged `ranges` less merged `minus`, both sorted flat pairs. */
+function subtractRanges(ranges, minus) {
+  const out = []
+  for (let i = 0; i < ranges.length; i += 2) {
+    let lo = ranges[i]
+    const hi = ranges[i + 1]
+    for (let j = 0; j < minus.length && lo < hi; j += 2) {
+      if (minus[j + 1] <= lo || minus[j] >= hi) continue
+      if (minus[j] > lo) out.push(lo, minus[j])
+      lo = Math.max(lo, minus[j + 1])
+    }
+    if (lo < hi) out.push(lo, hi)
+  }
+  return out
+}
+
+/** The first index of `vals[0..n)`, sorted, at or past `v`. */
+function lowerBound(vals, v, n) {
+  let lo = 0, hi = n
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (vals[mid] < v) lo = mid + 1; else hi = mid }
+  return lo
+}
+
 /**
  * Watr can erase a numeric conversion-table or the static number-string seed
  * only after inlining and folding expose its last dead call. Remove those exact
- * ranges when neither their owner nor an inlined address survives. Ranges stay
- * at their original addresses, so no pointer rebasing is needed.
+ * ranges when neither their owner nor an inlined address survives.
+ *
+ * The same holds for every literal the program laid out in the data segment
+ * (`records`, static-data.js dataRecord: a string, a static array or object, a
+ * table): the code that named it may be gone, a helper the link or watr
+ * treeshake dropped, a function watr inlined and folded away. A literal
+ * survives where a constant of the final code, or a word of the data that
+ * survives, names a byte of it (an interior address too: watr folds a header
+ * read into a constant of its own); the bytes of every other go where that
+ * shrinks the module: the run they leave, zeros beside it included, at a
+ * segment's edge, or inside one where it outweighs a segment's header.
+ * Ranges stay at their original addresses, so no pointer rebasing is needed.
  */
-function stripDeadLateData(module, lazySpans, staticSpan) {
+function stripDeadLateData(module, lazySpans, staticSpan, records) {
   const spans = []
   if (lazySpans) for (let i = 0; i < lazySpans.length; i++) spans.push(lazySpans[i])
   if (staticSpan) spans.push(staticSpan)
-  if (!spans.length) return module
+  const recs = records || []
+  if (!spans.length && !recs.length) return module
   const live = new Set()
   // Pow's two tables are addressed at folded interior offsets after inlining;
   // the base-global test below is exact only for EL/Ryū conversion tables.
   for (let i = 0; i < spans.length; i++)
     if (!spans[i].static && spans[i].global !== '__el_tbl' && spans[i].global !== '__ryu_tbl') live.add(spans[i])
-  const scan = node => {
+  // The words below the literals' end the code names, each once.
+  let limit = 0
+  for (let i = 0; i < recs.length; i += 3) if (recs[i + 1] > limit) limit = recs[i + 1]
+  const seen = new Uint8Array(limit), vals = []
+  const add = (w) => { if (w >= 0 && w < limit && !seen[w]) { seen[w] = 1; vals.push(w) } }
+  const scan = (node, parent, at) => {
     if (!Array.isArray(node) || node[0] === 'data') return
-    if (node[0] === 'global' || node[0] === 'global.get' || node[0] === 'global.set') {
+    const op = node[0]
+    if (limit) constWords(node, parent, at, add)
+    if (op === 'global' || op === 'global.get' || op === 'global.set') {
       for (let i = 0; i < spans.length; i++) if (node[1] === '$' + spans[i].global) live.add(spans[i])
-    } else if (node[0] === 'func') {
+    } else if (op === 'func') {
       for (let i = 0; i < spans.length; i++) if (node[1] === spans[i].fn) live.add(spans[i])
-    } else if (node[0] === 'i32.const') {
+    } else if (op === 'i32.const') {
       const n = Number(node[1])
       for (let i = 0; i < spans.length; i++) {
         const s = spans[i], base = s.base == null ? s.start : s.base
         if (!s.static && (n === s.start || n === base)) live.add(s)
       }
-    } else if (staticSpan && typeof node[1] === 'string') {
-      let hex = null
-      if (node[0] === 'f64.const' && node[1].startsWith('nan:0x')) hex = node[1].slice(6)
-      else if (node[0] === 'i64.const' && node[1].startsWith('0x')) hex = node[1].slice(2)
-      if (hex) {
-        if (hex.length < 16) hex = '0000000000000000'.slice(hex.length) + hex
-        else if (hex.length > 16) hex = hex.slice(-16)
-        const hi = parseInt(hex.slice(0, 8), 16) >>> 0
-        const tag = (hi >>> 15) & 15, off = parseInt(hex.slice(8), 16) >>> 0
-        if (((hi >>> 16) & 0xFFF8) === 0x7FF8 && tag === 4 && !(hi & 0x4000) &&
-            off >= staticSpan.start && off < staticSpan.end) live.add(staticSpan)
+    } else if (op === 'f64.const' || op === 'i64.const') {
+      if (staticSpan && typeof node[1] === 'string') {
+        let hex = null
+        if (op === 'f64.const' && node[1].startsWith('nan:0x')) hex = node[1].slice(6)
+        else if (op === 'i64.const' && node[1].startsWith('0x')) hex = node[1].slice(2)
+        if (hex) {
+          if (hex.length < 16) hex = '0000000000000000'.slice(hex.length) + hex
+          else if (hex.length > 16) hex = hex.slice(-16)
+          const hi = parseInt(hex.slice(0, 8), 16) >>> 0
+          const tag = (hi >>> 15) & 15, off = parseInt(hex.slice(8), 16) >>> 0
+          if (((hi >>> 16) & 0xFFF8) === 0x7FF8 && tag === 4 && !(hi & 0x4000) &&
+              off >= staticSpan.start && off < staticSpan.end) live.add(staticSpan)
+        }
       }
     }
-    for (let i = 0; i < node.length; i++) scan(node[i])
+    for (let i = 0; i < node.length; i++) scan(node[i], op, i)
   }
-  scan(module)
-  const dead = []
-  for (let i = 0; i < spans.length; i++) if (!live.has(spans[i])) dead.push({
-    start: spans[i].start,
-    end: spans[i].static ? spans[i].end
-      : (spans[i].base == null ? spans[i].start : spans[i].base) + spans[i].bytes.length,
-  })
-  if (!dead.length) return module
-  dead.sort((a, b) => a.start - b.start)
-  const out = []
+  scan(module, null, 0)
+  // the dead tables and seed: dropped whole
+  const hard = []
+  for (let i = 0; i < spans.length; i++) if (!live.has(spans[i])) hard.push(spans[i].start,
+    spans[i].static ? spans[i].end : (spans[i].base == null ? spans[i].start : spans[i].base) + spans[i].bytes.length)
+  // the active segments, decoded (one undecodable hides what its words name)
+  const segs = []
+  let opaque = false
   for (let ni = 0; ni < module.length; ni++) {
     const node = module[ni]
-    if (!Array.isArray(node) || node[0] !== 'data' || !Array.isArray(node[1]) || node[1][0] !== 'i32.const') {
-      out.push(node); continue
+    if (!Array.isArray(node) || node[0] !== 'data') continue
+    if (!Array.isArray(node[1]) || node[1][0] !== 'i32.const') {
+      if (!(typeof node[1] === 'string' && node[1][0] === '$')) opaque = true
+      continue
     }
-    const start = Number(node[1][1]), bytes = decodeDataBytes(node[2])
-    if (!Number.isFinite(start) || !bytes) { out.push(node); continue }
-    const end = start + bytes.length
-    let cursor = 0, cutAny = false
-    for (let i = 0; i < dead.length; i++) {
-      const cut = dead[i]
-      if (cut.end <= start) continue
-      if (cut.start >= end) break
-      cutAny = true
-      const cutStart = Math.max(0, cut.start - start), cutEnd = Math.min(bytes.length, cut.end - start)
-      if (cutStart > cursor)
-        out.push(['data', ['i32.const', String(start + cursor)], encodeDataBytes(bytes.slice(cursor, cutStart))])
-      if (cutEnd > cursor) cursor = cutEnd
+    const base = Number(node[1][1])
+    let bytes = node.length > 2 ? [] : null
+    for (let i = 2; bytes && i < node.length; i++) {
+      const part = decodeDataBytes(node[i])
+      if (!part) bytes = null
+      else for (let j = 0; j < part.length; j++) bytes.push(part[j])
     }
-    if (!cutAny) out.push(node)
-    else if (cursor < bytes.length)
-      out.push(['data', ['i32.const', String(start + cursor)], encodeDataBytes(bytes.slice(cursor))])
+    if (!Number.isFinite(base) || !bytes) { opaque = true; continue }
+    segs.push({ node, base, bytes })
+  }
+  const hardR = mergeRanges(hard)
+  // the literals nothing that survives names, less the bytes of those it does
+  let softR = []
+  if (recs.length && !opaque) {
+    const inHard = (a) => { for (let i = 0; i < hardR.length; i += 2) if (a >= hardR[i] && a < hardR[i + 1]) return true; return false }
+    const cover = []
+    for (let i = 0; i < recs.length; i += 3) cover.push(recs[i], recs[i + 1])
+    const covered = mergeRanges(cover)
+    const inCover = (a) => (lowerBound(covered, a + 1, covered.length) & 1) === 1
+    // The 4-aligned words the segments hold in [lo, hi). Data is never folded:
+    // a word names a literal by its exact pointer, past a header of 4, 8 or 16
+    // bytes (a string's length, an interned string's hash too, an array's).
+    const held = new Uint8Array(limit + 1)
+    let fresh = 0
+    const words = (lo, hi, unowned) => {
+      for (let si = 0; si < segs.length; si++) {
+        const base = segs[si].base, bytes = segs[si].bytes
+        let a = Math.max(lo, base)
+        const end = Math.min(hi, base + bytes.length)
+        a += (4 - a % 4) % 4
+        for (; a + 4 <= end; a += 4) {
+          if (unowned && (inCover(a) || inHard(a))) continue
+          const i = a - base, w = bytes[i] + bytes[i + 1] * 256 + bytes[i + 2] * 65536 + bytes[i + 3] * 16777216
+          if (w <= limit && !held[w]) { held[w] = 1; fresh++ }
+        }
+      }
+    }
+    const heldIn = (lo, hi) => (lo + 4 <= hi && held[lo + 4]) || (lo + 8 <= hi && held[lo + 8]) || (lo + 16 <= hi && held[lo + 16])
+    // data no literal owns survives: the words it holds name literals
+    words(0, Infinity, true)
+    vals.sort((a, b) => a - b)
+    const alive = new Uint8Array(recs.length / 3)
+    let grew = true
+    while (grew) {
+      fresh = 0
+      for (let r = 0; r < alive.length; r++) {
+        if (alive[r]) continue
+        const lo = recs[r * 3], hi = recs[r * 3 + 1], k = lowerBound(vals, lo, vals.length)
+        if (!(k < vals.length && vals[k] < hi) && !heldIn(lo, hi)) continue
+        alive[r] = 1
+        if (!recs[r * 3 + 2]) words(lo, hi, false)
+      }
+      grew = fresh > 0
+    }
+    const dead = [], kept = []
+    for (let r = 0; r < alive.length; r++) {
+      if (alive[r]) kept.push(recs[r * 3], recs[r * 3 + 1])
+      else dead.push(recs[r * 3], recs[r * 3 + 1])
+    }
+    softR = subtractRanges(mergeRanges(dead), mergeRanges(kept))
+  }
+  if (!hardR.length && !softR.length) return module
+  const out = []
+  let si = 0
+  for (let ni = 0; ni < module.length; ni++) {
+    const node = module[ni]
+    if (si >= segs.length || segs[si].node !== node) { out.push(node); continue }
+    const base = segs[si].base, bytes = segs[si].bytes, len = bytes.length
+    si++
+    // 1: a dead table's byte, 2: a dead literal's
+    const cls = new Uint8Array(len)
+    for (let c = 1; c <= 2; c++) {
+      const rs = c === 1 ? hardR : softR
+      for (let i = 0; i < rs.length; i += 2) {
+        const lo = Math.max(rs[i], base) - base, hi = Math.min(rs[i + 1], base + len) - base
+        for (let j = lo; j < hi; j++) if (!cls[j]) cls[j] = c
+      }
+    }
+    // a run of dead bytes and zeros: a table's goes, a literal's where it pays
+    const cut = new Uint8Array(len)
+    let any = false
+    for (let i = 0; i < len;) {
+      if (!cls[i] && bytes[i] !== 0) { i++; continue }
+      let j = i, table = false, literal = false
+      while (j < len && (cls[j] || bytes[j] === 0)) {
+        if (cls[j] === 1) table = true
+        else if (cls[j] === 2) literal = true
+        j++
+      }
+      const n = j - i
+      const pays = table || literal && (j === len || (i === 0 ? n > slebSize(base + j) - slebSize(base) : n > 5 + slebSize(base + j)))
+      if (pays) { for (let k = i; k < j; k++) cut[k] = 1; any = true }
+      i = j
+    }
+    if (!any) { out.push(node); continue }
+    for (let i = 0; i < len;) {
+      if (cut[i]) { i++; continue }
+      let j = i
+      while (j < len && !cut[j]) j++
+      out.push(['data', ['i32.const', String(base + i)], encodeDataBytes(bytes.slice(i, j))])
+      i = j
+    }
   }
   module.length = 0
   for (let i = 0; i < out.length; i++) module.push(out[i])
@@ -519,7 +664,7 @@ function stripDeadLateData(module, lazySpans, staticSpan) {
  */
 export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
-  lazyDataSpans = [], staticDataSpan = null, stableGlobals = null,
+  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null,
 } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   // A split binding of its predecessor's type takes that slot: the generic optimizer
@@ -561,7 +706,7 @@ export function watrTail(module, cfg, {
   for (const n of optimized) narrowFlagLocals(n)
   // (on the checked reads and stores watr left, before the float literals are pooled)
   if (cfg.forwardChecked !== false) time('forwardChecked', () => forwardCheckedElements(optimized))
-  stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
+  stripDeadLateData(optimized, lazyDataSpans, staticDataSpan, dataRecords)
   // (on the counted loops the optimizer leaves, before their counters become pointer tests)
   if (cfg.ringLaps === true) time('ringLaps', () => ringLaps(optimized))
   // (on the pointers watr's strength reduction left beside their counters)
