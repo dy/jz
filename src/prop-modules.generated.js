@@ -100,6 +100,7 @@ export const DERIVED_PROP_MODULES = Object.assign(Object.create(null), {
   "replace": ["regex", "string"],
   "replaceAll": ["string"],
   "resizable": ["typedarray"],
+  "resize": ["typedarray"],
   "reverse": ["array", "typedarray"],
   "search": ["regex", "string"],
   "set": ["collection", "typedarray"],

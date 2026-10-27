@@ -838,6 +838,9 @@ export function reset(proto, globals, bridge) {
                       // a never-constructed class's `instanceof` folds to compile-time
                       // `false` and never mints/bakes a schema id for it.
     timers: false,          // Set by prepare.js when timer module is included
+    resizable: false,       // A `new ArrayBuffer(n, options)` whose options may name maxByteLength
+                            // (prepare's 'new' handler): views then bound themselves by their
+                            // buffer (module/typedarray.js `$__view_bytes`).
 
     // ANALYSIS — currently no members, see the stratum doc above ctx.abi.
   }

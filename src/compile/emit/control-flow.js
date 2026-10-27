@@ -939,8 +939,10 @@ export const controlFlowOps = {
           const checked = len => absent ? ['if', ['result', 'i64'], isNullish(asF64(emit(recv))),
             ['then', ['i64.const', 0]], ['else', len]] : len
           const aux = plannedTypedStorageInfo(ctx, recv)?.aux
-          // owned or a view, read off a named pointer below; any other form asks __len
-          if (aux == null || aux & TYPED_ELEM_ANY_VIEW_FLAG && typeof recv !== 'string') {
+          // owned or a view, read off a named pointer below; any other form asks __len,
+          // as does a view where the program resizes buffers (its buffer bounds it)
+          if (aux == null || aux & TYPED_ELEM_ANY_VIEW_FLAG && typeof recv !== 'string' ||
+              ctx.features.resizable && aux & (TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG)) {
             inc('__len')
             return checked(['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]])
           }

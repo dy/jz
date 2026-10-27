@@ -462,6 +462,9 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   if (!Array.isArray(c) || (c[0] !== '<' && c[0] !== '<=') || typeof c[1] !== 'string') return null
   if (containsNestedClosure(body)) return null
   if (condRest != null && containsNestedClosure(condRest)) return null
+  // Where the program resizes buffers a call may resize a view's: an extent
+  // read at entry holds only through a loop that calls nothing.
+  if (ctx.features.resizable && [cond, step, body].some(r => some(r, n => n[0] === '()' || n[0] === '?.()' || n[0] === 'new'))) return null
   const iv = c[1], incl = c[0] === '<='
   if (redeclaresName(body, iv)) return null
   // iv start: a static init decl (`for (let i = 0; …)`) folds the lo conjunct;

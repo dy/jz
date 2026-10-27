@@ -72,6 +72,9 @@ const excludedExtent = (L, locals) => {
 
 export function versionableTypedNest(init, cond, step, body, locals) {
   if (containsNestedClosure(body)) return null
+  // Where the program resizes buffers a call may resize a view's: an extent
+  // read at entry holds only through a nest that calls nothing.
+  if (ctx.features.resizable && [cond, step, body].some(r => some(r, n => n[0] === '()' || n[0] === '?.()' || n[0] === 'new'))) return null
   const levels = []
   // RANGE-ONLY level: a loop the canonical-iv analysis rejects (`while (keys[h]
   // !== k)` — no `<` cond, no countable iv) can still guard its hull-bounded

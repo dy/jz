@@ -1042,6 +1042,24 @@ The reader and length helper share the element-count expression over decoded
 offset/aux facts. Bounds use the view descriptor before resolving its data base;
 DataView has no indexed elements. Subarrays use the canonical aux encoder so
 float16, clamped and BigInt flags survive both static and runtime dispatch.
+`new TypedArray(buffer, byteOffset)` views the buffer from the offset to its
+end (`__ta_view`); its type is either form (`.anyview`), since any source but a
+buffer copies as one argument does.
+A resizable buffer (`new ArrayBuffer(n, { maxByteLength })`) reserves its
+maximum: its header holds the length at -8, the maximum at -4 and
+`RESIZABLE_MARK` in the properties word at -16, which a BUFFER never uses
+(layout.js). `resize` rewrites the length and zeroes what growth reveals, so
+nothing moves. Prepare sets `ctx.features.resizable` where options may name
+the maximum; only then does anything below change, so other programs compile
+as before. In such a program a view's length is its buffer's to bound: the
+descriptor's word at 12 says whether it tracks the buffer (made without a
+length), and every length read of a view calls `__view_bytes` (0 out of
+bounds; `__dv_bytes` throws a DataView's TypeError). A one-argument
+`new Uint8Array(x)` reads as `new Uint8Array(x, 0)` there (prepare/entry.js),
+so a typed array over a resizable buffer is always a view, never the buffer's
+own header, whose properties word the mark holds. The decode pass, the loop
+versioning of a nest that calls anything and the descriptor-word motion of
+LICM are off, since a call may resize a view's buffer.
 Array/typed-array `at`, typed-array ranges and buffer slicing capture argument
 values before coercing positions. Omitted or undefined ends use the captured
 length; an object that converts to undefined instead supplies numeric zero.
@@ -5171,7 +5189,10 @@ conversions, pointer/tag accessors, NaN constants, `toModule`, `wrapVal`,
 - Array patterns share lazy pulls, undefined-only defaults and IteratorClose on
   early completion or binding errors. Native Map/Set views are snapshots.
   Indexed values cannot override their iterator.
-- Resizable `ArrayBuffer` (`maxByteLength`, `resize`, `transfer`) is unsupported.
+- `ArrayBuffer.prototype.transfer`/`transferToFixedLength` and growable
+  `SharedArrayBuffer` are unsupported. A typed array whose resizable buffer
+  shrank below it reads as empty, and its methods act on no elements where
+  JavaScript throws a TypeError. A resizable buffer reaches the host as a fixed copy.
 - Async generator functions work; async generator methods and `await using` reject.
 
 ## Commits

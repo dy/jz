@@ -68,6 +68,8 @@ export const prepState = {
   depth: undefined,               // arrow nesting depth (0=top-level, >0=inside function)
   ownerUniq: undefined,
   reassignedTopLevel: undefined,  // see rationale above
+  typedCtorSites: undefined,      // one-argument typed-array constructions (`new Uint8Array(x)`), which a
+                                  // program that resizes buffers views from offset 0 (prepare/entry.js)
 }
 export let scopes         // block scope stack: [{names: Set, renames: Map}]
 export let staticConstScopes  // lexical const facts: [[strings?, arrays?, consts?]]
@@ -154,6 +156,7 @@ export const resetPrepState = () => {
   prepState.ownerUniq = 0
   renameSerial = [0]
   loopLocalNames = new Set()
+  prepState.typedCtorSites = []
 }
 registerResetHook(resetPrepState)
 

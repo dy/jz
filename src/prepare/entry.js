@@ -210,6 +210,13 @@ export default function prepare(node) {
   prepState.reassignedTopLevel = scanReassignedTopLevel(node)
   let ast = prep(node)
   settleModules(prep)
+  // A program that makes a resizable buffer (ctx.features.resizable) cannot tell
+  // from `new Uint8Array(x)` whether x is one, whose view tracks it: each such
+  // construction reads as `new Uint8Array(x, 0)`, the same in JS, which views a
+  // buffer from offset 0 and makes of any other source what one argument makes
+  // (module/typedarray.js); the view bit is read at run time. Every site is known
+  // only once every module is prepared.
+  if (ctx.features.resizable) for (const site of prepState.typedCtorSites) site[2] = [',', site[2], [, 0]]
   ast = wrapBuiltinValues(ast)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
   // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn

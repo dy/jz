@@ -25,7 +25,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
@@ -814,7 +814,15 @@ export const memory = (src) => {
       // holds it (`held`, for the call that returned it, interop `settled`).
       // The host holds the bytes shown: the heap below their end never moves (`_pinAt`, `settle`).
       const held = (at, bytes) => { mem._viewSet?.(); if (at >= mem._above) { mem._held = true; mem._pinAt = Math.max(mem._pinAt, at + bytes); mem._pinSet?.(mem._pinAt) } return at }
-      if (a & DATA_VIEW_FLAG) return new DataView(mem.buffer, held(m.getInt32(off + 4, true), m.getInt32(off, true)), m.getInt32(off, true))
+      // A view's bytes: its descriptor's length, or where its buffer is resizable
+      // (layout.js RESIZABLE_MARK) what the buffer now bounds (module/typedarray.js `$__view_bytes`).
+      const viewBytes = () => {
+        const n = m.getInt32(off, true), root = m.getInt32(off + 8, true)
+        if (root < 16 || m.getBigInt64(root - 16, true) !== BigInt(RESIZABLE_MARK)) return n
+        const len = m.getInt32(root - 8, true), at = m.getInt32(off + 4, true) - root
+        return m.getInt32(off + 12, true) ? (at <= len ? len - at : 0) : (at + n <= len ? n : 0)
+      }
+      if (a & DATA_VIEW_FLAG) { const n = viewBytes(); return new DataView(mem.buffer, held(m.getInt32(off + 4, true), n), n) }
       const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
       const Ctor = (a & 16) ? BigInt64Array
@@ -823,8 +831,8 @@ export const memory = (src) => {
           : (a & 64) ? Uint8ClampedArray
           : [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
       if (a & 8) {
-        const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
-        return new Ctor(mem.buffer, held(dataOff, byteLen), byteLen / stride)
+        const byteLen = viewBytes(), dataOff = m.getInt32(off + 4, true)
+        return new Ctor(mem.buffer, held(dataOff, byteLen), Math.floor(byteLen / stride))
       }
       const byteLen = m.getInt32(off - 8, true)
       return new Ctor(mem.buffer, held(off, byteLen), byteLen / stride)

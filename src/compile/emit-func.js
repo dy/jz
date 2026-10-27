@@ -393,8 +393,9 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
 
   // The locals that hold a view of a buffer: its descriptor is written once,
   // when the view is made, so its words are what they were (optimize/licm.js).
+  // Where the program resizes buffers a view's length is its buffer's to bound, not a word.
   const views = new Set()
-  for (const l of [...ctx.func.locals.keys(), ...sig.params.map(p => p.name)])
+  if (!ctx.features.resizable) for (const l of [...ctx.func.locals.keys(), ...sig.params.map(p => p.name)])
     if (plannedTypedStorageInfo(ctx, l)?.isView) views.add(dollar(l))
   if (views.size) fn.viewNames = views
   if (ctx.func.boundsMotion) fn.hasBoundsOwners = true

@@ -67,6 +67,7 @@ const TESTS = [
   'inline-tiny',
   'lanes',
   'buffer',
+  'resizable-buffer',
   'typed-ctors',
   'workers',
   'generators',

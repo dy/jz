@@ -23,7 +23,7 @@ import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
-import { ptrOffsetFwdWat, deletedMaskWat, SYMBOL_MIN, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex, numTypedWat, numTypedBytesWat, numTypedElemWat, ptrIsWat } from '../layout.js'
+import { ptrOffsetFwdWat, deletedMaskWat, SYMBOL_MIN, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex, numTypedWat, numTypedBytesWat, numTypedBytesRzWat, numTypedElemWat, ptrIsWat } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex, ARRAY_RAW } from '../layout.js'
 import { schemaValueIR, initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
@@ -50,12 +50,16 @@ const HEAP_EXHAUSTED_THROW = `(global.set $__jz_last_err_bits (i64.reinterpret_f
 
 // Element count from a validated TYPED offset and decoded aux bits.
 // Views carry byte length in their descriptor; DataView has no indexed elements.
-const typedLengthWat = `(if (result i32) (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG}))
+// Where the program resizes buffers, a view's buffer bounds it (layout.js numTypedBytesRzWat).
+const typedLengthWat = () => `(if (result i32) (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG}))
   (then (i32.const 0))
   (else (i32.shr_u
-    (i32.load (select (local.get $off) (i32.sub (local.get $off) (i32.const 8))
-      (i32.and (local.get $aux) (i32.const 8))))
+    ${ctx.features.resizable ? numTypedBytesRzWat : `(i32.load (select (local.get $off) (i32.sub (local.get $off) (i32.const 8))
+      (i32.and (local.get $aux) (i32.const 8))))`}
     (call $__typed_shift (i32.and (local.get $aux) (i32.const 7))))))`
+// A view's length helper, where those bodies call it.
+const VIEW_DEPS = () => ctx.features.resizable ? ['__view_bytes'] : []
+const typedBytesWat = () => ctx.features.resizable ? numTypedBytesRzWat : numTypedBytesWat
 
 // A typed array may reach the runtime: the program makes one or takes one from its host.
 const typedLinked = () => ctx.linkDemand.typedarray || ctx.linkDemand.external
@@ -97,7 +101,7 @@ const elemReadHeadWat = () => {
                 (else (f64.promote_f32 (f32.load (local.get $off))))))
               (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
                 (then (f64.convert_i32_u ${load('u')}))
-                (else (f64.convert_i32_s ${load('s')}))))))`)}`
+                (else (f64.convert_i32_s ${load('s')}))))))`, ctx.features.resizable)}`
 }
 
 // A never-relocated (neverGrown) or own-name-current (ownCurrent) array binding
@@ -132,16 +136,16 @@ export default (ctx) => {
     __eq_strict: ['__str_eq', '__ptr_type', '__ptr_offset', '__same_ref'],
     __eq_num: () => ['__ptr_type', ...(representationProgramHasBigint(ctx) ? ['__bigint_eq_num', '__ptr_offset'] : []), ...(ctx.core.stdlib['__to_num'] ? ['__to_num'] : []), ...(ctx.core.stdlib['__to_str'] ? ['__is_object', '__to_prim_dflt'] : [])],
     __typeof: ['__ptr_type', '__is_nullish'],
-    __len: () => leanRuntime() ? LEN_DEPS : ['__len_tail', '__ptr_offset_fwd'],
-    __len_tail: LEN_DEPS,
-    __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
+    __len: () => [...(leanRuntime() ? LEN_DEPS : ['__len_tail', '__ptr_offset_fwd']), ...VIEW_DEPS()],
+    __len_tail: () => [...LEN_DEPS, ...VIEW_DEPS()],
+    __cap: () => ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux', ...VIEW_DEPS()],
     __typed_data: ['__ptr_aux'],
     __arr_value: [],
     __arr_cell: ['__arr_value'],
-    __typed_idx: typedIdxDeps,
-    __typed_idx_tail: TYPED_IDX_TAIL_DEPS,
-    __typed_idx_tagged: () => leanRuntime() ? TYPED_IDX_TAGGED_DEPS : ['__typed_idx_tagged_tail', '__ptr_offset_fwd', '__arr_value', arrCellHelper()],
-    __typed_idx_tagged_tail: TYPED_IDX_TAGGED_DEPS,
+    __typed_idx: () => [...typedIdxDeps(), ...VIEW_DEPS()],
+    __typed_idx_tail: () => [...TYPED_IDX_TAIL_DEPS(), ...VIEW_DEPS()],
+    __typed_idx_tagged: () => [...(leanRuntime() ? TYPED_IDX_TAGGED_DEPS : ['__typed_idx_tagged_tail', '__ptr_offset_fwd', '__arr_value', arrCellHelper()]), ...VIEW_DEPS()],
+    __typed_idx_tagged_tail: () => [...TYPED_IDX_TAGGED_DEPS, ...VIEW_DEPS()],
     __box_bigint: ['__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
     __esc_val: () => ['__esc_at', ...(reachOn() ? ['__root'] : [])],
@@ -165,8 +169,8 @@ export default (ctx) => {
     // string/array-only programs keep the lean undefined arm.
     '__length.value_tail': () => LENGTH_VALUE_DEPS(),
     __length_tail: LENGTH_DEPS,
-    '__length.value': () => leanRuntime() ? LENGTH_VALUE_DEPS() : ['__length.value_tail', '__ptr_offset_fwd', '__str_len'],
-    __length: () => leanRuntime() ? LENGTH_DEPS : ['__length_tail', '__ptr_offset_fwd', '__str_len'],
+    '__length.value': () => [...(leanRuntime() ? LENGTH_VALUE_DEPS() : ['__length.value_tail', '__ptr_offset_fwd', '__str_len']), ...VIEW_DEPS()],
+    __length: () => [...(leanRuntime() ? LENGTH_DEPS : ['__length_tail', '__ptr_offset_fwd', '__str_len']), ...VIEW_DEPS()],
     __length_prop_num: () => ['__to_num',
       ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
     __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
@@ -520,7 +524,7 @@ export default (ctx) => {
       (then (return (f64.const nan:${UNDEF_NAN}))))
     ;; Keep the descriptor offset until the bounds check has consumed its length.
     (local.set $aux (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT}))))
-    (if (i32.ge_u (local.get $i) ${typedLengthWat})
+    (if (i32.ge_u (local.get $i) ${typedLengthWat()})
       (then (return (f64.const nan:${UNDEF_NAN}))))
     ${ctx.linkDemand.typedView ? `(if (i32.and (local.get $aux) (i32.const 8))
       (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))` : ''}
@@ -1597,7 +1601,7 @@ export default (ctx) => {
       (then
         ${followForwardingWat('$off', { lowGuard: false })}
         (return (i32.load (i32.sub (local.get $off) (i32.const 8))))))
-    ${typedLinked() ? numTypedWat(`(return (i32.shr_u ${numTypedBytesWat} (local.get $s)))`) : ''}
+    ${typedLinked() ? numTypedWat(`(return (i32.shr_u ${typedBytesWat()} (local.get $s)))`) : ''}
     (call $__len_tail (local.get $ptr)))`
 
   ctx.core.stdlib['__len_tail'] = () => lenBody('__len_tail')
@@ -1625,13 +1629,13 @@ export default (ctx) => {
             (if (result i32) (i32.eq (local.get $t) (i32.const 3))
               (then
                 (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
-                ${typedLengthWat})
+                ${typedLengthWat()})
               ;; HASH/SET/MAP/BUFFER: re-resolve offset so grown SET/MAP follow the
               ;; forwarding chain (HASH/BUFFER never forward → same inline offset).
               (else (i32.load (i32.sub (call $__ptr_offset (local.get $ptr)) (i32.const 8))))))
           (else (i32.const 0))))))`
 
-  ctx.core.stdlib['__cap'] = `(func $__cap (param $ptr i64) (result i32)
+  ctx.core.stdlib['__cap'] = () => `(func $__cap (param $ptr i64) (result i32)
     (local $t i32) (local $off i32) (local $aux i32)
     (local.set $t (call $__ptr_type (local.get $ptr)))
     (local.set $off (call $__ptr_offset (local.get $ptr)))
@@ -1650,7 +1654,7 @@ export default (ctx) => {
             (local.set $aux (call $__ptr_aux (local.get $ptr)))
             (if (result i32) (i32.and (local.get $aux) (i32.const 8))
               ;; views are non-growable: cap = len (byteLen at [off])
-              (then (i32.shr_u (i32.load (local.get $off))
+              (then (i32.shr_u ${ctx.features.resizable ? '(call $__view_bytes (local.get $off))' : '(i32.load (local.get $off))'}
                                (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))
               (else (i32.shr_u (i32.load (i32.sub (local.get $off) (i32.const 4)))
                                (call $__typed_shift (i32.and (local.get $aux) (i32.const 7)))))))
@@ -2701,7 +2705,7 @@ export default (ctx) => {
       (then
         ${followForwardingWat('$off', { lowGuard: false })}
         (return (f64.convert_i32_s (i32.load (i32.sub (local.get $off) (i32.const 8)))))))
-    ${typedLinked() ? numTypedWat(`(return (f64.convert_i32_s (i32.shr_u ${numTypedBytesWat} (local.get $s))))`) : ''}
+    ${typedLinked() ? numTypedWat(`(return (f64.convert_i32_s (i32.shr_u ${typedBytesWat()} (local.get $s))))`) : ''}
     (if ${ptrIsWat(PTR.STRING)} (then (return (f64.convert_i32_s (call $__str_len (local.get $ptr))))))
     (call $${name}_tail (local.get $ptr)))`
   ctx.core.stdlib['__length.value'] = () => leanRuntime() ? buildLengthHelper('__length.value', false) : lengthHeadHelper('__length.value')

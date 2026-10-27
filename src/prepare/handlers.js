@@ -1659,8 +1659,14 @@ const handlers = {
     if (ctorArgs.length === 1 && Array.isArray(ctorArgs[0]) && ctorArgs[0][0] === ',')
       ctorArgs = ctorArgs[0].slice(1)
 
-    if (builtinCtor && name === 'ArrayBuffer' && ctorArgs.length > 1)
-      err('ArrayBuffer options are not supported; resizable/maxByteLength buffers are outside the JZ memory model')
+    // `new ArrayBuffer(n, options)`: options that may name maxByteLength make a
+    // resizable buffer, and the program then bounds every view by its buffer.
+    // A growable SharedArrayBuffer is another protocol (grow), unsupported.
+    if (builtinCtor && name === 'ArrayBuffer' && ctorArgs.length > 1) {
+      if (ctor === 'SharedArrayBuffer' || Array.isArray(ctor) && ctor[1] === 'SharedArrayBuffer')
+        err('SharedArrayBuffer options are not supported; a growable shared buffer is outside the JZ memory model')
+      if (mayNameMaxByteLength(ctorArgs[1])) setFeature('resizable', true)
+    }
 
     if (builtinCtor && name === 'Array') {
       const literal = prepareArrayConstructor(ctorArgs)
@@ -1696,7 +1702,11 @@ const handlers = {
       : args.length === 1 ? renestSoleCommaArg(args).map(prep)
       : [[',', ...args.map(prep)]]
     if (builtinCtor && includeForRuntimeCtor(name)) {
-      return ['()', `new.${name}`, ...wrapArgs(ctorArgs)]
+      const node = ['()', `new.${name}`, ...wrapArgs(ctorArgs)]
+      // One argument that may be a buffer: where the program resizes buffers it
+      // views the buffer from offset 0 (prepare/entry.js, once every module is prepared).
+      if (ctorArgs.length === 1 && TYPED_ELEM_NAMES_ALL.has(name) && !primitiveArg(node[2])) prepState.typedCtorSites.push(node)
+      return node
     }
 
     const mod = ctx.scope.chain[name]
@@ -1738,6 +1748,25 @@ const handlers = {
     return ['instanceof', prep(lhs), name]
   }
 }
+// An options argument of `new ArrayBuffer` that may carry maxByteLength: any but
+// a literal object naming no such key or naming it undefined.
+const literalEntries = (n) => n.length === 2 && Array.isArray(n[1]) && (n[1][0] === ',' || n[1][0] === ';') ? n[1].slice(1) : n.slice(1).filter(e => e != null)
+function mayNameMaxByteLength(opts) {
+  if (!Array.isArray(opts) || opts[0] !== '{}') return true
+  for (const e of literalEntries(opts)) {
+    if (!Array.isArray(e) || e[0] !== ':') return true
+    const k = typeof e[1] === 'string' ? e[1] : Array.isArray(e[1]) && e[1][0] === 'str' ? e[1][1] : null
+    if (k == null) return true
+    if (k === 'maxByteLength' && !(e[2] === 'undefined' || Array.isArray(e[2]) && e[2][0] == null && e[2][1] === undefined && e[2].length === 2)) return true
+  }
+  return false
+}
+// The typed-array constructors whose single argument may be a buffer, and an
+// argument that cannot be one: a literal, an operator's result, an array literal.
+const TYPED_ELEM_NAMES_ALL = new Set([...TYPED_ELEM_NAMES, 'Uint8ClampedArray', 'Float16Array', 'BigInt64Array', 'BigUint64Array'])
+const PRIMITIVE_ARG_OPS = new Set(['+', '-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>', '~', 'u-', 'u+', '!', 'typeof', '[', 'str'])
+const primitiveArg = (a) => Array.isArray(a) && (a[0] == null || PRIMITIVE_ARG_OPS.has(a[0]))
+
 // The builtin global a bare name denotes, or null: the global itself when no
 // binding took its name, or the one a namespace alias (`const M = Math`) names.
 // Resolves as prep()'s bare-identifier branch does.

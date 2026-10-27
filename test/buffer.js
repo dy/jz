@@ -124,14 +124,14 @@ test('ArrayBuffer allocation evaluates and coerces its length once', () => {
   }
 })
 
-test('unsupported buffer growth rejects cleanly', () => {
+test('a growable SharedArrayBuffer rejects cleanly', () => {
   const { fixed } = jz(`export let fixed = () => {
     let b = new SharedArrayBuffer(8)
     return b.byteLength + b.maxByteLength + (b.growable ? 100 : 0)
   }`).exports
   is(fixed(), 16, 'fixed-length SharedArrayBuffer subset keeps fixed proposal accessors')
-  throws(() => jz('export let f = () => new SharedArrayBuffer(8, { maxByteLength: 16 })'), /ArrayBuffer options are not supported/)
-  throws(() => jz('export let f = () => new ArrayBuffer(8, { maxByteLength: 16 })'), /ArrayBuffer options are not supported/)
+  throws(() => jz('export let f = () => new SharedArrayBuffer(8, { maxByteLength: 16 })'), /SharedArrayBuffer options are not supported/)
+  is(jz('export let f = () => new ArrayBuffer(8, { maxByteLength: 16 }).maxByteLength').exports.f(), 16, 'a resizable ArrayBuffer is supported (test/resizable-buffer.js)')
   const { slice } = jz(`export let slice = () => {
     let b = new ArrayBuffer(8)
     let start = { valueOf: () => '2' }

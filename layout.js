@@ -68,6 +68,18 @@ export const FORWARDING_MASK = (1 << PTR.ARRAY) | (1 << PTR.HASH) | (1 << PTR.SE
 // A hidden property has no enumeration rank. Keep the shared entry width intact.
 export const HIDDEN_PROPERTY_SEQ = 0xffffffff
 
+/** A resizable ArrayBuffer (`new ArrayBuffer(n, { maxByteLength })`) reserves its
+ *  maximum: its header holds the current byte length at -8, the maximum at -4
+ *  (the block's capacity) and this in the properties word at -16. A BUFFER keeps
+ *  its properties in the global table, so the word is free; no properties word
+ *  holds 2 (it is 0, a box, or either with its low bit set). A typed array or
+ *  DataView over such a buffer is always a view, never the buffer's own header. */
+export const RESIZABLE_MARK = 2
+
+/** A view descriptor's word at 12 where the program makes resizable buffers:
+ *  1 for a view whose length tracks its buffer's (made without a length), else 0. */
+export const VIEW_TRACKS = 1
+
 // BigInt views of the NaN-box fields — the carrier is 64-bit, JS bit-ops are 32-bit.
 const TAG_SHIFT = BigInt(LAYOUT.TAG_SHIFT), TAG_MASK = BigInt(LAYOUT.TAG_MASK)
 const AUX_SHIFT = BigInt(LAYOUT.AUX_SHIFT), AUX_MASK = BigInt(LAYOUT.AUX_MASK)
@@ -203,11 +215,15 @@ export const numTypedWat = (body) => `
           (i32.eq (local.get $et) (i32.const 6))))
         ${body}))`
 export const numTypedBytesWat = `(i32.load (select (local.get $off) (i32.sub (local.get $off) (i32.const 8)) (i32.and (local.get $aux) (i32.const 8))))`
+/** numTypedBytesWat where the program makes resizable buffers: a view's byte length
+ *  is its buffer's to bound (`$__view_bytes`, module/typedarray.js). */
+export const numTypedBytesRzWat = `(if (result i32) (i32.and (local.get $aux) (i32.const 8))
+          (then (call $__view_bytes (local.get $off))) (else (i32.load (i32.sub (local.get $off) (i32.const 8)))))`
 
 /** A numeric typed array's element `$i` in bounds: `body` runs with `$off` its address
  *  (numTypedWat's locals besides), and returns or falls through to the tail. */
-export const numTypedElemWat = (body) => numTypedWat(`
-        (if (i32.lt_u (local.get $i) (i32.shr_u ${numTypedBytesWat} (local.get $s)))
+export const numTypedElemWat = (body, resizable = false) => numTypedWat(`
+        (if (i32.lt_u (local.get $i) (i32.shr_u ${resizable ? numTypedBytesRzWat : numTypedBytesWat} (local.get $s)))
           (then
             (if (i32.and (local.get $aux) (i32.const 8))
               (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))

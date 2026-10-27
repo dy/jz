@@ -70,7 +70,7 @@ export const typedStoreHeadWat = (ret) => {
                     (else (if (local.get $s)
                       (then (i32.store16 (local.get $off) ${word}))
                       (else (i32.store8 (local.get $off) ${word})))))
-                  (return ${ret})))))`)
+                  (return ${ret})))))`, ctx.features.resizable)
 }
 
 /** The head of an Array-or-typed element store: an array's element in bounds, behind any
@@ -85,6 +85,9 @@ const elemStoreHeadWat = (ret) => `
             (f64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (local.get $val))
             (return ${ret})))))
     ${typedStoreHeadWat(ret)}`
+
+// Where the program resizes buffers the typed heads bound a view by its buffer (layout.js numTypedBytesRzWat).
+const viewDeps = () => ctx.features.resizable ? ['__view_bytes'] : []
 
 /** Allocate ARRAY (type=1): header + n*8 data. Returns { local, setup, ptr } where local is data offset. */
 function allocArray(len, cap) {
@@ -246,9 +249,9 @@ export default (ctx) => {
     __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __arr_copyWithin: () => ['__ptr_type', '__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
-    __arr_typed_set_idx: () => leanRuntime() ? arrTypedSetDeps() : ['__arr_typed_set_idx_tail', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_typed_set_idx: () => [...(leanRuntime() ? arrTypedSetDeps() : ['__arr_typed_set_idx_tail', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])]), ...viewDeps()],
     __arr_typed_set_idx_tail: () => arrTypedSetDeps(),
-    __arr_typed_obj_set_idx: () => leanRuntime() ? ARR_TYPED_OBJ_SET_DEPS : ['__arr_typed_obj_set_idx_tail', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_typed_obj_set_idx: () => [...(leanRuntime() ? ARR_TYPED_OBJ_SET_DEPS : ['__arr_typed_obj_set_idx_tail', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])]), ...viewDeps()],
     __arr_typed_obj_set_idx_tail: ARR_TYPED_OBJ_SET_DEPS,
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -257,10 +260,10 @@ export default (ctx) => {
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_flat: ['__arr_flat_in', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __arr_flat_in: ['__ptr_offset', '__len', '__ptr_type'],
-    __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
+    __typed_idx: () => [...(ctx.linkDemand.typedarray || ctx.linkDemand.external
       ? ['__typed_idx_tail', '__ptr_offset_fwd', arrCellHelper()]
-      : ['__len', '__ptr_offset', '__ptr_offset_fwd', arrCellHelper()],
-    __typed_idx_tail: () => ['__typed_shift', '__ptr_offset_fwd', arrCellHelper(), ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
+      : ['__len', '__ptr_offset', '__ptr_offset_fwd', arrCellHelper()]), ...viewDeps()],
+    __typed_idx_tail: () => ['__typed_shift', '__ptr_offset_fwd', arrCellHelper(), ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : []), ...viewDeps()],
     __arr_idx_known: () => ['__ptr_offset_fwd', arrCellHelper()],
   })
 

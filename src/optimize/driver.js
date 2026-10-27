@@ -140,8 +140,9 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   }
   // After the lift: the vectorizer reads a conditional update in its branch form.
   if (cfg && cfg.guardedUpdate === true) foldGuardedUpdates(fn)
-  // After the unswitch and the lift: the accesses they left to the helpers.
-  if (cfg && cfg.typedDecode === true) hoistTypedDecode(fn)
+  // After the unswitch and the lift: the accesses they left to the helpers. A
+  // view's length is fixed only where no buffer of the program resizes.
+  if (cfg && cfg.typedDecode === true && !ctx.features.resizable) hoistTypedDecode(fn)
   // Preserve source-unrolled SSA scratch before propagation sinks its single
   // definition into a local.tee. The transform is gated while it matures; when
   // enabled, its moved invariants ride the normal LICM pass once more below.
