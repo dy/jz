@@ -365,7 +365,8 @@ Reads and writes retain the original key for ToPropertyKey unless an integer
 index proof authorizes truncation. A bitwise operator over Numbers (`&`, `|`,
 `^`, a shift, `~`: a Number kind, never a BigInt) yields a 32-bit integer, so it
 is such a key whatever its operands (expr-type.js `wholeKey`), as `+ - *` over
-integers are; a negative one names a property. Integer endpoints of a parameter hull do not
+integers are, and a choice between such keys (`i + 1 < n ? i + 1 : 0`); a
+negative one names a property. Integer endpoints of a parameter hull do not
 prove every argument integral. An i32 parameter ABI can supply integrality,
 but its incoming magnitude is reused only within signed-word bounds and while
 the parameter is never reassigned, including through a nested closure. Wider
@@ -1362,6 +1363,18 @@ zero also become unknown; a magnitude bound alone cannot preserve that value.
 Both `x | 0` and `x >> 0` establish the same signed-word interval after evaluating
 their input. A checked runtime loop bound therefore keeps its counter narrow
 before SIMD lowering, even when the rounded input has no prior interval.
+The `length` of a name the summary holds to arrays, typed arrays and strings is a
+count, 0 to 2^32 − 1, and an array's alone to 2^31 − 1 (its header word, of
+8-byte cells in a 32-bit memory): `a.length >> 1` is a word, the shift reading
+an operand past the word as any word. A loop that holds no consumer of the walk
+still walks where it writes a name declared outside it (the index a scan keeps
+for a call after it). At the loop head, a name the verify pass moves out of the
+join (it follows a name the join widened: `best = j` under `j < n`) takes in
+what the pass left and verifies once more, widening where it still escapes; and
+a name the join widened that only `=` writes holds its entry value or one it was
+assigned, the hull of those a candidate that verifies with every other name in
+one more pass (a widened name's end state includes the head's own value, which
+narrowing alone cannot shed).
 Control-flow snapshots store only known ranges. A separate binding census keeps
 unknown parameters, declarations and writes from revealing cached outer constants;
 joins retain only names known on every edge. Body analysis can request complete

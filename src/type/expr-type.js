@@ -311,6 +311,8 @@ export const wholeKey = (e) => {
   // values are both the name's, whose every definition is integral.
   if (e[0] === 'postfix') return wholeKey(e[1])
   if ((e[0] === '++' || e[0] === '--') && e.length === 2) return wholeKey(e[1])
+  // A choice between integral keys (`i + 1 < n ? i + 1 : 0`, a ring's next index).
+  if (e[0] === '?:' && e.length === 4) return wholeKey(e[2]) && wholeKey(e[3])
   return WHOLE_OPS.has(e[0]) && e.length === 3 && wholeKey(e[1]) && wholeKey(e[2])
 }
 // A key integral wherever its typed reads hit: wholeKey, or names whose miss

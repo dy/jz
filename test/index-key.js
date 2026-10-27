@@ -83,3 +83,24 @@ test('index key: a module array read by an unknown number reads its element as a
   if (belowOpt(2)) return
   ok(!/__typed_idx/.test(funcWat(wat(src, { optimize: 2 }), 'f')), 'no arm for the other kinds')
 })
+
+// A choice between integral keys (`i + 1 < n ? i + 1 : 0`, a ring's next
+// index) is an integral key: the read takes the element path, with no string
+// key's arm, where the array may also hold a property under a number.
+test('index key: a ring\'s next index reads the element as a counter does', () => {
+  const src = `export function f(n, k) {
+  const a = []
+  for (let i = 0; i < n; i++) a.push(i * 3)
+  a[k] = 7
+  let s = 0
+  for (let i = 0; i < a.length; i++) s += a[i + 1 < a.length ? i + 1 : 0]
+  return s
+}`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const actual = run(src, { optimize })
+    for (const [n, k] of [[0, 0], [1, 0], [4, 2], [4, 6], [5, 1.5], [3, -1], [6, NaN]]) is(actual.f(n, k), host.f(n, k), `f(${n}, ${k}), ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  ok(!/__str_idx|__hash_get_local_hm/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), 'no string key arm')
+})

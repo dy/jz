@@ -14,6 +14,7 @@ import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
 import { exprType } from './expr-type.js'
 import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget, maxMovementBudget } from './canonical-bounds.js'
+import { K, bitOf, TAGS, NULL_BITS } from '../summary/kind.js'
 
 // === Static interval proof (typedIdxProven class 5) ===
 // A tiny abstract interpreter over integer INTERVALS for const-bound loop nests —
@@ -29,6 +30,16 @@ import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget
 // between the native and the self-hosted compiler, and a proof must not.
 const fieldAbove = (m) => m <= 0 ? 0 : 2 ** (32 - Math.clz32(m)) - 1
 const ipOk = (v) => v != null && v[0] >= I32_MIN && v[1] <= I32_MAX
+// The most a `length` counts where the summary holds the name to only arrays,
+// typed arrays and strings: a count below 2^32, and an array's below 2^31 (its
+// header word, of 8-byte cells in a 32-bit memory); null for any other name.
+const MAX_COUNT = 2 ** 32 - 1
+const COUNTED = bitOf(K.ARRAY) | bitOf(K.TYPED) | bitOf(K.STRING)
+const countOf = (x) => {
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(x)
+  const t = k == null ? 0 : k & TAGS & ~NULL_BITS
+  return t === 0 || (t & ~COUNTED) !== 0 ? null : t === bitOf(K.ARRAY) ? I32_MAX : MAX_COUNT
+}
 // Initializer roots whose true result can carry range facts through a named const.
 const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
 
@@ -112,6 +123,25 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   }
   const collectNames = (n, set) => someDeep(n, x => { if (typeof x === 'string') set.add(x); return false })
   collectClosureWrites(body, false)
+  // Whether a loop writes a name it does not declare itself.
+  const outerWrites = new Map()
+  const writesOuter = (loop) => {
+    let w = outerWrites.get(loop)
+    if (w !== undefined) return w
+    const own = new Set(), targets = []
+    walkAst(loop, { enter: m => {
+      if (m[0] === '=>') return false
+      if (m[0] === 'let' || m[0] === 'const') for (let k = 1; k < m.length; k++) {
+        const d = m[k]
+        if (typeof d === 'string') own.add(d)
+        else if (Array.isArray(d) && d[0] === '=') collectNames(d[1], own)
+      }
+      if (MUTATE_OPS.has(m[0]) && typeof m[1] === 'string') targets.push(m[1])
+    } })
+    w = targets.some(t => !own.has(t))
+    outerWrites.set(loop, w)
+    return w
+  }
   const activeFacts = new Map()   // name → [lo, hi] theorem stamped by a rewrite pass (peel)
   // Immutable uint32 draws and lexically active increasing counters remain
   // finite nonnegative integers even when their interval exceeds signed i32.
@@ -154,6 +184,18 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     else env.delete(name)
     recordBinding(name, v)
   }
+  // What each name is assigned while an open loop fixpoint walks its loop,
+  // innermost last: a value written by `=` hulls in, a step (`++`, `+=`)
+  // marks the name as riding on itself (loopFixpoint's assigned hulls).
+  const assigned = []
+  const noteAssigned = (name, plain) => {
+    const v = env.get(name) ?? null
+    for (const a of assigned) {
+      if (!plain) { a.steps.add(name); continue }
+      const p = a.values.get(name)
+      a.values.set(name, p === undefined ? v : p && v ? [Math.min(p[0], v[0]), Math.max(p[1], v[1])] : null)
+    }
+  }
   const constInt = (e) => {
     const n = intLiteralValue(e)
     if (n != null) return Object.is(n, -0) ? null : n
@@ -188,6 +230,10 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if ((op === '.' || op === '?.') && e.length === 3 && typeof x === 'string' && e[2] === 'length') {
       const L = lens(x)
       if (L != null) return [L, L]
+      // Any other array's, typed array's or string's length is a count of
+      // its elements (a nullish receiver throws before it reads).
+      const most = op === '.' ? countOf(x) : null
+      if (most != null) return [0, most]
     }
     // Rounding is identity on this domain's present, finite integers. Loop
     // copies round a Number bound before committing its word conversion.
@@ -286,8 +332,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const lo = 2 ** B[0], hi = 2 ** B[1]
       r = [Math.min(A[0] * lo, A[0] * hi), Math.max(A[1] * lo, A[1] * hi)]
     }
-    else if (op === '>>' && B[0] === B[1] && B[0] >= 0 && B[0] <= 31) r = [A[0] >> B[0], A[1] >> B[0]]
-    else if (op === '>>>' && B[0] === B[1] && B[0] >= 0 && A[0] >= 0) r = [A[0] >>> B[0], A[1] >>> B[0]]
+    // (a shift converts its operand: past one signed word, the word wraps to any)
+    else if (op === '>>' && B[0] === B[1] && B[0] >= 0 && B[0] <= 31) {
+      const W = ipOk(A) ? A : [I32_MIN, I32_MAX]
+      r = [W[0] >> B[0], W[1] >> B[0]]
+    }
+    else if (op === '>>>' && B[0] === B[1] && B[0] >= 0 && A[0] >= 0 && A[1] <= MAX_COUNT) r = [A[0] >>> B[0], A[1] >>> B[0]]
     else if (op === '&' && B[0] === B[1] && B[0] >= 0 && B[0] <= 0x7fffffff) r = [0, B[0]]
     // OR / XOR of two known non-negative fields cannot set a bit above either
     // operand's highest possible bit. This covers packed table indices such as
@@ -538,6 +588,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     const entryEnv = new Map(env)
     const prevRec = recording
     recording = false
+    const writes = { values: new Map(), steps: new Set() }
+    assigned.push(writes)
     seedFn(); walkPass()                                // pass A: discovery
     const stepEnv = new Map(env)
     // WIDENING JOIN: an escaping bound widens to the i32 extreme instead of the
@@ -572,6 +624,23 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     const holds = (k2, j) => { const v2 = env.get(k2); return !!(v2 && j && v2[0] >= j[0] && v2[1] <= j[1]) }
     const failed = new Set()
     for (const [k2, j] of joined) if (j && !holds(k2, j)) failed.add(k2)
+    // A name the discovery pass left where it entered, which the verify pass
+    // moves, follows a name the join widened (`best = j` under `j < n`): its
+    // invariant takes in what the verify pass left, and the pass verifies once
+    // more; a name that still escapes widens the way the join widens.
+    for (let round = 0; round < 2 && failed.size; round++) {
+      let moved = false
+      for (const k2 of failed) {
+        const j = joined.get(k2), b = env.get(k2)
+        if (!b) continue
+        joined.set(k2, round ? [b[0] < j[0] ? I32_MIN : j[0], b[1] > j[1] ? I32_MAX : j[1]] : [Math.min(j[0], b[0]), Math.max(j[1], b[1])])
+        moved = true
+      }
+      if (!moved) break
+      restore(joined); seedFn(); walkPass()
+      failed.clear()
+      for (const [k2, j] of joined) if (j && !holds(k2, j)) failed.add(k2)
+    }
     if (fields.size) {
       // The trial state is the sentinel join with the fields substituted, so a
       // name that failed above only because a field name sat at its sentinel
@@ -587,6 +656,24 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       }
     }
     for (const k2 of failed) joined.delete(k2)
+    // ASSIGNED HULLS: a name the join widened (to a word's end, or to a bit
+    // field), written only by `=` (`best = j` under a test), holds its entry
+    // value or one it was assigned. The hull of those over the passes walked is
+    // a candidate; the candidates verify together in one pass, and are adopted
+    // where all hold.
+    assigned.pop()
+    const trial = new Map(joined)
+    let candidates = false
+    for (const [k2, j] of joined) {
+      const a = entryEnv.get(k2), v = writes.values.get(k2)
+      if (!j || !a || !v || writes.steps.has(k2) || (j[0] !== I32_MIN && j[1] !== I32_MAX && !fields.has(k2))) continue
+      const c = [Math.max(j[0], Math.min(a[0], v[0])), Math.min(j[1], Math.max(a[1], v[1]))]
+      if (c[0] > j[0] || c[1] < j[1]) { trial.set(k2, c); candidates = true }
+    }
+    if (candidates) {
+      restore(trial); seedFn(); walkPass()
+      if ([...trial].every(([k2, t]) => !t || holds(k2, t))) for (const [k2, t] of trial) joined.set(k2, t)
+    }
     // NARROWING (≤2 decreasing passes): the widened invariant is sound but
     // loose — a name with no cond conjunct to re-clamp it sits at a word boundary even
     // when the loop's true range is finite (`i = child` copy chains: i only
@@ -1142,7 +1229,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     // Scalar analysis has explicit consumers. An unrelated loop contributes
     // only unknown writes; do not allocate widening states that nobody reads.
-    if (needed && !needed.has(n) && (op === 'for' || op === 'while')) {
+    // A loop that writes a name declared outside it is no unrelated one: what
+    // follows reads the value it leaves (the index a scan keeps, a cursor).
+    if (needed && !needed.has(n) && (op === 'for' || op === 'while') && !writesOuter(n)) {
       killAssigned(n)
       for (const name of env.keys()) if (ctx.scope?.globalTypes?.has(name)) { invalidateBool(name); env.delete(name) }
       symEnv.clear(); coupledEnv.clear()
@@ -1203,6 +1292,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])   // past the increment: window closed
       if (coupledEnv.get(n[1])?.incNode === n) coupledEnv.delete(n[1])
       setEnv(n[1], ev(n[2]))
+      if (assigned.length) noteAssigned(n[1], true)
       return
     }
     if (stores?.has(n) && op === '=' && Array.isArray(n[1]) && n[1][0] === '[]') {
@@ -1229,6 +1319,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         else if (ARITH.has(op.slice(0, -1))) nv = ev([op.slice(0, -1), n[1], n[2]])
         else for (let k = 2; k < n.length; k++) visit(n[k])
         setEnv(n[1], nv)
+        if (assigned.length) noteAssigned(n[1], false)
       }
       else {
         visit(n[1])   // records the member-write access proof (`out[idx] = …`)

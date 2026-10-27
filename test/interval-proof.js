@@ -130,6 +130,63 @@ test('interval proof: signed recurrence budgets preserve unknown and wide initia
   }
 })
 
+// A loop with no consumer of its own that writes a name declared before it hands
+// the value to what follows: the index a scan keeps reaches the call after it.
+// Kept by `=`, the name holds its entry value or one it was assigned (the verify
+// pass hulls it in, or a widened name takes the hull of its assignments); a name
+// that steps itself, or is assigned its own value, stays open past a word.
+test('interval proof: the index a scan keeps reaches the call after the loop', () => {
+  const prior = ctx.func
+  try { for (const [label, keep, expected] of [
+    ['kept counter', ['=', 'best', 'j'], [1, 100]],
+    ['kept offset', ['=', 'best', ['+', 'j', 5]], [1, 105]],
+    ['kept past a bit field', ['=', 'best', ['+', 'j', 1000]], [1, 1100]],
+    ['kept in both arms', ['if', ['<', 'w', 0], ['=', 'best', 'j'], ['=', 'best', ['-', 'j', 3]]], [-2, 100]],
+    ['a step', ['++', 'best'], null],
+    ['its own value', ['=', 'best', ['+', 'best', 'j']], null],
+  ]) {
+    const call = ['()', 'take', ['+', 'best', 1]], calls = new Map([[call, undefined]])
+    const body = [';', ['let', ['=', 'best', 0]],
+      ['for', ['let', ['=', 'j', 0]], ['<', 'j', 100], ['++', 'j'], ['if', ['>', 'v', 0], keep]], call]
+    ctx.func = createActiveFunction({ body })
+    scanIntervalIdx(body, null, () => null, null, calls)
+    is(calls.get(call)?.[0] ?? null, expected, label)
+    // (a counter the loop steps itself: the discovery pass leaves the name where it entered)
+    if (expected?.[0] > -3 && expected[1] <= 105) {
+      const call2 = ['()', 'take', ['+', 'best', 1]], calls2 = new Map([[call2, undefined]])
+      const body2 = [';', ['let', ['=', 'best', 0], ['=', 'j', 0]],
+        ['while', ['<', 'j', 100], [';', ['if', ['>', 'v', 0], keep], ['++', 'j']]], call2]
+      ctx.func = createActiveFunction({ body: body2 })
+      scanIntervalIdx(body2, null, () => null, null, calls2)
+      is(calls2.get(call2)?.[0] ?? null, expected, `${label}, stepped by the body`)
+    }
+  } } finally { ctx.func = prior }
+})
+
+// An array's length counts its elements (a signed header word), so a bound
+// computed from it (`len >> 1`, plus one) and the index a scan below it keeps
+// are words: the callee's parameter receives a word.
+test('interval proof: a count halved from a length and a kept index pass as words', () => {
+  const src = `const take = (dst, src, from, to) => { for (let k = from; k < to; k++) dst.push(src[k * 2]); return dst.length }
+export function f(n) {
+  const src = []
+  for (let i = 0; i < n; i++) src.push((i * 7) % 5, i)
+  const s = src.length >> 1, a = []
+  let best = 0
+  for (let j = 0; j < s; j++) if (src[j * 2] > src[best * 2]) best = j
+  take(a, src, 0, s + 1)
+  take(a, src, best, best + 2)
+  return a.length * 1000 + a[0] + a[a.length - 1]
+}`
+  if (!belowOpt(2)) for (const optimize of [2, 'speed'])
+    ok(/\(param \$to i32\)/.test(funcWat(compile(src, { wat: true, optimize }), 'take')), `O${optimize}: the bound arrives as a word`)
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 3)) {
+    const got = jz(src, { optimize }).exports.f
+    for (const n of [0, 1, 2, 5, 9]) is(got(n), want(n), `O${optimize}, n = ${n}`)
+  }
+})
+
 test('interval proof: returning branches retain only the live continuation range', () => {
   for (const exit of ['return', 'throw']) for (const branch of [2, 3]) {
     const call = ['()', 'take', ['-', 'n', 1]]
