@@ -26,7 +26,7 @@ import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadIn
 import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption, activeBoundsFrame } from '../src/type/canonical-bounds.js'
 import { frameNode } from '../src/function.js'
-import { requireReceiverWat } from './core/error-object.js'
+import { requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { captureCallback, makeCallback, idxArg, sortComparator } from './array/callback.js'
 import { typedStoreHeadWat } from './array.js'
 import { heapScratch, mergeSortIR } from './array/sort.js'
@@ -107,9 +107,21 @@ const staticStoragePtr = (aux, byteLen, slot) => {
 }
 
 
-const throwWat = (code) => `(global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(code)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(code)}))`
+// The errors of a view a buffer cannot hold and of a resizable buffer, each
+// thrown by one shared helper (module/core/error-object.js throwHelperName).
+const VIEW_ERRORS = {
+  offsetBounds: ['RangeError', 'Start offset is outside the bounds of the buffer'],
+  offsetAlign: ['RangeError', 'start offset of a typed array should be a multiple of its element size'],
+  lengthAlign: ['RangeError', 'byte length of a typed array should be a multiple of its element size'],
+  maxLength: ['RangeError', 'Invalid array buffer max length'],
+  resizeLength: ['RangeError', 'ArrayBuffer.prototype.resize: Invalid length parameter'],
+  notResizable: ['TypeError', 'Method ArrayBuffer.prototype.resize called on incompatible receiver'],
+  viewOut: ['TypeError', 'DataView is out of bounds of its ArrayBuffer'],
+}
 
 export default (ctx) => {
+  const thrower = (key) => throwHelperName(ctx, ...VIEW_ERRORS[key])
+  const throwWat = (key) => `(call $${thrower(key)}) (unreachable)`
   // The program makes a resizable buffer (prepare's `new ArrayBuffer(n, options)`):
   // views bound themselves by their buffer (`$__view_bytes`); a program that
   // makes none compiles as if resizing did not exist.
@@ -141,15 +153,15 @@ export default (ctx) => {
     __typed_isort: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __subarray: ['__ptr_aux', '__ptr_offset', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc', '__clamp_idx'],
     __typed_slice_rt: ['__ptr_aux', '__typed_shift', '__typed_data', '__len', '__mkptr', '__alloc_hdr_n', '__clamp_idx'],
-    __ta_view: ['__ptr_offset', '__alloc', '__mkptr'],
+    __ta_view: () => ['__ptr_offset', '__alloc', '__mkptr', thrower('offsetBounds'), thrower('offsetAlign'), thrower('lengthAlign')],
     __byte_length: () => ['__ptr_type', '__ptr_offset', '__ptr_aux', ...(rz() ? ['__view_bytes', '__dv_bytes'] : [])],
-    __dv_bytes: ['__view_out', '__view_bytes'],
+    __dv_bytes: () => ['__view_out', '__view_bytes', thrower('viewOut')],
     __view_offset: ['__view_out'],
     __ab_resizable: ['__ptr_offset'],
     __ab_max: ['__ptr_offset'],
-    __ab_new: ['__alloc_hdr_n', '__mkptr'],
-    __ab_resizable_check: ['__ptr_type', '__ab_resizable'],
-    __ab_resize: ['__ptr_offset'],
+    __ab_new: () => ['__alloc_hdr_n', '__mkptr', thrower('maxLength')],
+    __ab_resizable_check: () => ['__ptr_type', '__ab_resizable', thrower('notResizable')],
+    __ab_resize: () => ['__ptr_offset', thrower('resizeLength')],
   })
 
   // .map/.forEach/.find/.some/.every/.filter/.findIndex invoke with
@@ -285,7 +297,7 @@ export default (ctx) => {
       (i32.gt_u (i32.add (local.get $off) (i32.load (local.get $d))) (local.get $len))
       (i32.load offset=12 (local.get $d))))`
   ctx.core.stdlib['__dv_bytes'] = `(func $__dv_bytes (param $d i32) (result i32)
-    (if (call $__view_out (local.get $d)) (then ${throwWat(ERR.VIEW_OUT_OF_BOUNDS)}))
+    (if (call $__view_out (local.get $d)) (then ${throwWat('viewOut')}))
     (call $__view_bytes (local.get $d)))`
   ctx.core.stdlib['__view_offset'] = `(func $__view_offset (param $d i32) (result i32)
     (select (i32.const 0)
@@ -603,13 +615,27 @@ export default (ctx) => {
       // (InitializeTypedArrayFromArrayBuffer, `__ta_view`), anything else is
       // what the one-argument form makes of it, the offset evaluated and unused.
       if (offsetExpr != null && lenExpr2 == null) {
+        // a source that is no buffer ignores an offset whose evaluation does nothing
+        if (srcType != null && srcType !== VAL.BUFFER && (typeof offsetExpr === 'string' || Array.isArray(offsetExpr) && (offsetExpr[0] == null || offsetExpr[0] === 'str')))
+          return ctx.core.emit[`new.${name}`](lenExpr)
         setLinkDemand('typedView')
         ctx.runtime.throws = true
         inc('__ta_view')
         const viewAux = typedAux(name, true), shiftConst = ['i32.const', SHIFT[elemType]]
         const at = temp('tvo')
+        // ToNumber of the offset: the full conversion links the string formatting
+        // chain, so it serves an offset known to be no number, or a program that
+        // links it already; an offset of open kind in any other converts in place,
+        // as the one-argument size does (a box reads as 0, `true` as 1).
+        const offsetKind = valTypeOf(offsetExpr)
+        const offsetValue = () => {
+          const v = typed(['local.get', `$${at}`], 'f64')
+          if (offsetKind === VAL.NUMBER) return v
+          if (offsetKind != null || ctx.core.includes.has('__to_num')) return toNumF64(at, v)
+          return ['select', v, ['f64.convert_i32_s', ['i64.eq', ['i64.reinterpret_f64', v], ['i64.const', TRUE_NAN]]], ['f64.eq', v, v]]
+        }
         const viewArm = (s) => typed(['call', '$__ta_view', ['i64.reinterpret_f64', ['local.get', `$${s}`]],
-          toNumF64(at, typed(['local.get', `$${at}`], 'f64')), shiftConst, ['i32.const', viewAux]], 'f64')
+          offsetValue(), shiftConst, ['i32.const', viewAux]], 'f64')
         const offsetIR = ['local.set', `$${at}`, asF64(emit(offsetExpr))]
         if (srcType !== VAL.BUFFER) return runtimeSource(lenExpr, viewArm, [offsetIR])
         const s = temp('tvs')
@@ -701,17 +727,17 @@ export default (ctx) => {
     (if (f64.ne (local.get $o) (local.get $o)) (then (local.set $o (f64.const 0))))
     (local.set $o (f64.trunc (local.get $o)))
     (if (i32.or (f64.lt (local.get $o) (f64.const 0)) (f64.ge (local.get $o) (f64.const 2147483640)))
-      (then ${throwWat(ERR.TYPED_OFFSET_BOUNDS)}))
+      (then ${throwWat('offsetBounds')}))
     (local.set $off (i32.trunc_f64_u (local.get $o)))
     (local.set $mask (i32.sub (i32.shl (i32.const 1) (local.get $shift)) (i32.const 1)))
-    (if (i32.and (local.get $off) (local.get $mask)) (then ${throwWat(ERR.TYPED_OFFSET_ALIGN)}))
+    (if (i32.and (local.get $off) (local.get $mask)) (then ${throwWat('offsetAlign')}))
     (local.set $root (call $__ptr_offset (local.get $buf)))
     (local.set $len (i32.load (i32.sub (local.get $root) (i32.const 8))))
     ${rz() ? `;; a resizable buffer's view tracks its length, which need not fill the element grid
     (local.set $track (i64.eq (i64.load (i32.sub (local.get $root) (i32.const 16))) (i64.const ${RESIZABLE_MARK})))
     (if (i32.and (i32.eqz (local.get $track)) (i32.ne (i32.and (local.get $len) (local.get $mask)) (i32.const 0)))
-      (then ${throwWat(ERR.TYPED_LENGTH_ALIGN)}))` : `(if (i32.and (local.get $len) (local.get $mask)) (then ${throwWat(ERR.TYPED_LENGTH_ALIGN)}))`}
-    (if (i32.gt_u (local.get $off) (local.get $len)) (then ${throwWat(ERR.TYPED_OFFSET_BOUNDS)}))
+      (then ${throwWat('lengthAlign')}))` : `(if (i32.and (local.get $len) (local.get $mask)) (then ${throwWat('lengthAlign')}))`}
+    (if (i32.gt_u (local.get $off) (local.get $len)) (then ${throwWat('offsetBounds')}))
     (local.set $desc (call $__alloc (i32.const 16)))
     (i32.store (local.get $desc) (i32.sub (local.get $len) (local.get $off)))
     (i32.store offset=4 (local.get $desc) (i32.add (local.get $root) (local.get $off)))
@@ -789,9 +815,9 @@ export default (ctx) => {
     (if (f64.ne (local.get $max) (local.get $max)) (then (local.set $max (f64.const 0))))
     (local.set $max (f64.trunc (local.get $max)))
     (if (i32.or (f64.lt (local.get $max) (f64.const 0)) (f64.ge (local.get $max) (f64.const 2147483640)))
-      (then ${throwWat(ERR.BUFFER_MAX_LENGTH)}))
+      (then ${throwWat('maxLength')}))
     (local.set $m (i32.trunc_f64_u (local.get $max)))
-    (if (i32.gt_u (local.get $n) (local.get $m)) (then ${throwWat(ERR.BUFFER_MAX_LENGTH)}))
+    (if (i32.gt_u (local.get $n) (local.get $m)) (then ${throwWat('maxLength')}))
     (local.set $p (call $__alloc_hdr_n (local.get $n) (local.get $m) (i32.const 1)))
     (i64.store (i32.sub (local.get $p) (i32.const 16)) (i64.const ${RESIZABLE_MARK}))
     (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $p)))`
@@ -801,14 +827,14 @@ export default (ctx) => {
   // zeroes the bytes it reveals (shrinking left them in the reservation).
   ctx.core.stdlib['__ab_resizable_check'] = `(func $__ab_resizable_check (param $buf i64)
     (if (i32.or (i32.ne (call $__ptr_type (local.get $buf)) (i32.const ${PTR.BUFFER})) (i32.eqz (call $__ab_resizable (local.get $buf))))
-      (then ${throwWat(ERR.BUFFER_NOT_RESIZABLE)})))`
+      (then ${throwWat('notResizable')})))`
   ctx.core.stdlib['__ab_resize'] = `(func $__ab_resize (param $buf i64) (param $v f64)
     (local $off i32) (local $n i32) (local $len i32)
     (local.set $off (call $__ptr_offset (local.get $buf)))
     (if (f64.ne (local.get $v) (local.get $v)) (then (local.set $v (f64.const 0))))
     (local.set $v (f64.trunc (local.get $v)))
     (if (i32.or (f64.lt (local.get $v) (f64.const 0)) (f64.gt (local.get $v) (f64.convert_i32_u (i32.load (i32.sub (local.get $off) (i32.const 4))))))
-      (then ${throwWat(ERR.BUFFER_RESIZE_LENGTH)}))
+      (then ${throwWat('resizeLength')}))
     (local.set $n (i32.trunc_f64_u (local.get $v)))
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (if (i32.gt_u (local.get $n) (local.get $len))
