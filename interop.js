@@ -2009,6 +2009,19 @@ const prepareInterop = (opts) => {
     if (n > 3) args.push(read(a3))
     return invoke(read(fnBig), read(recvBig), args, as)
   }
+  // `new C(...args)` of a host constructor (module/web.js `__host_new`).
+  opts._interp.__ext_construct = (fnBig, argsBig) => {
+    const fn = state.mem.read(fnBig, state.fnOf), args = state.mem.read(argsBig, state.fnOf)
+    return hostRet(state, Reflect.construct(fn, args))
+  }
+  // `v instanceof C` of a host class: a value of the module is no instance of
+  // it, though a C the host cannot test still throws (module/web.js).
+  opts._interp.__ext_instanceof = (vBig, ctorBig) => {
+    const C = state.mem.read(ctorBig, state.fnOf)
+    const v = type(vBig) === PTR.EXTERNAL ? state.extMap[offset(vBig)] : undefined
+    return v instanceof C ? 1 : 0
+  }
+  opts._interp.__ext_callable = (vBig) => typeof state.extMap[offset(vBig)] === 'function' ? 1 : 0
   // Older compiled modules pass receiver/key/arguments to this import. Keep
   // that ABI distinct from the captured callable/receiver/arguments above.
   opts._interp.__ext_call = (objBig, propBig, argsBig) => {
@@ -2245,6 +2258,25 @@ const buildImports = (mod, opts, state) => {
   // external refs. Carrier is i64 so the NaN payload survives V8's boundary
   // canonicalization — wasm side reinterprets to f64 (see asF64 in src/ir.js).
   for (const imp of WebAssembly.Module.imports(mod)) {
+    // A global the program names without declaring it (module/web.js): the
+    // host's value, or the absent marker whose read throws a ReferenceError.
+    if (imp.kind === 'global' && imp.module === 'global') {
+      if (!imports.global) imports.global = {}
+      if (imports.global[imp.name]) continue
+      let bits
+      if (!(imp.name in globalThis)) bits = BigInt.asIntN(64, BigInt(TOMB_NAN))
+      else {
+        const host = globalThis[imp.name]
+        if (host === undefined) bits = UNDEF_NAN
+        else if (typeof host === 'number') bits = f64ToI64(host)
+        else {
+          let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
+          bits = ptr(11, 0, id)
+        }
+      }
+      imports.global[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, bits)
+      continue
+    }
     if (imp.kind === 'global' && imp.module === 'env') {
       const host = globalThis[imp.name]
       if (!imports.env) imports.env = {}

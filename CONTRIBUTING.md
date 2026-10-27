@@ -1806,6 +1806,19 @@ until a member call supplies its receiver, while containers keep their native
 marshalling contract. Raw copy and call-reference reads use `__ext_method` to
 avoid inspecting the returned value. Both share one property-read routine.
 Legacy `__ext_prop` remains supported for previously compiled modules.
+A name no scope of its module declares and the target does not resolve
+(prepare `hostFree`, state.js `hostGlobalName`; ECMA-262's own globals JZ
+lacks, such as `Reflect` and `Intl`, excluded) reads as `__host_global(name)`
+under the JS host: an `(import "global" "name" (global i64))` interop binds to
+the host's value or to the absent marker (`TOMB_NAN`), whose read throws the
+ReferenceError (module/web.js). `typeof` of one is `__host_typeof`, `new` of one
+or of a member of a host global is `__host_new` (jzify keeps the `new`, which
+it drops for the program's own classes), and `instanceof` one is
+`__host_instanceof`: the host answers for an EXTERNAL value, any other value
+is none of its instances. A member of `console`, `crypto`, `navigator` or
+`performance` that no emitter serves reads `globalThis.<ns>.<member>`. A string
+literal's text and a jump's label prepare as data (`str`, `break`, `continue`
+handlers), so no name in them resolves.
 
 Coercion distinguishes absence from an own non-callable value through the
 existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and

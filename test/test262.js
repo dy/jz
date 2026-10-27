@@ -884,8 +884,9 @@ function runTest(src, options = {}) {
   if (options.asyncDone) code = `${ASYNC_DONE_SHIM}\n${options.assertHarness ? ASSERT_HARNESS : ''}\n${code}`
   code = shebang + code
 
+  let result
   try {
-    const result = jz(code, { jzify: true })
+    result = jz(code, { jzify: true })
     if (!result || !result.exports) return { status: 'fail', error: 'no output' }
     if (result.exports._run) result.exports._run()
     if (options.asyncDone) {
@@ -905,6 +906,12 @@ function runTest(src, options = {}) {
     let msg = e.message || ''
     if (!msg && e instanceof WebAssembly.Exception) msg = '[wasm-exception]'
     if (!msg) msg = (typeof e === 'string' ? e : (e?.toString?.() || JSON.stringify(e) || 'unknown'))
+    // A global the test reads that this realm lacks (`asyncTest` of an include
+    // the harness does not load) reads the host's, absent: a ReferenceError at
+    // run time where an undeclared name once failed to compile ('is not in scope').
+    if (result && WebAssembly.Module.imports(result.module).some(i =>
+      i.kind === 'global' && i.module === 'global' && !(i.name in globalThis) && msg === `${i.name} is not defined`))
+      return { status: 'skip', error: msg.slice(0, 80) }
     // Compile-time errors for features jz intentionally doesn't support
     if (msg.includes('Unknown op') || msg.includes('not supported') ||
         // Property descriptors are outside the published v1 contract. The

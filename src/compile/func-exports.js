@@ -47,7 +47,7 @@ export const isExported = f => isExportedIn(ctx.funcs, f)
 /** Query after planning: imports and public parameter carriers are settled.
  *  Helper demand cannot prove ingress; it depends on emission order. */
 export const hasExternalIngress = () => {
-  if (ctx.transform.targetProfile.envImports && ctx.core.hostGlobals.size) return true
+  if (ctx.transform.targetProfile.envImports && (ctx.core.hostGlobals.size || ctx.module.hostFree?.size)) return true
   if (ctx.facts.externalIngress == null) ctx.facts.externalIngress = ctx.transform.targetProfile.envImports && (
     ctx.module.imports.some(i => i[3]?.[0] === 'func') ||
     ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64'))
@@ -93,7 +93,7 @@ const importIngress = () => {
  *  import the program only calls. */
 export const hostValueIngress = () => {
   if (!ctx.transform.targetProfile.envImports) return false
-  if (ctx.facts.hostValueIngress == null) ctx.facts.hostValueIngress = ctx.core.hostGlobals.size > 0 ||
+  if (ctx.facts.hostValueIngress == null) ctx.facts.hostValueIngress = ctx.core.hostGlobals.size > 0 || ctx.module.hostFree?.size > 0 ||
     ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64')) || importIngress()
   return ctx.facts.hostValueIngress
 }

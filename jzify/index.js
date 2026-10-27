@@ -276,6 +276,7 @@ let transform, transformScope, transformParams
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,
   shadowsBuiltin: shadowsJzifyBuiltin,
+  isBound: (name) => scopeHasBuiltin(activeBuiltinScope, name),
   enterBuiltinScope, leaveBuiltinScope,
 }))
 bindTransform(transform)

@@ -1443,7 +1443,7 @@ test('invariant: in-process inspection preserves the selected execution compiler
     _setCompileTarget(() => { calls++; return bytes })
     const result = _compileInProcess('export let inspected = () => 1', {inspect: true})
     assert.ok(result.inspect.functions.inspected)
-    assert.throws(() => _compileInProcess('export let f = () => unknownBinding'))
+    assert.throws(() => _compileInProcess('export let f = () => unknownBinding', {host: 'wasi'}))
     assert.equal(compile('target-only source'), bytes)
     assert.equal(jz('target-only source').exports.f(), 42)
     assert.equal(calls, 2)

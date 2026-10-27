@@ -424,6 +424,9 @@ export function reset(proto, globals, bridge) {
                             // `(import "env" "name" (global $name i64))` at assembly. Same
                             // usage-gated pattern as jsstring — emit records, assembly owns
                             // the ctx.module.imports write.
+    hostFree: new Set(),    // the host's globals a program names without declaring them
+                            // (module/web.js `__host_global`): drained into
+                            // `(import "global" "name" (global $__hg_name i64))` at assembly.
     getters: new Set(), // keys of emit entries that are property getters — the
                         // kernel-safe authority for getter dispatch (a closure-attached
                         // flag was unreadable in the self-compile kernel after a dynamic-key
@@ -466,6 +469,7 @@ export function reset(proto, globals, bridge) {
   ctx.module = {
     imports: [],
     modules: {},
+    hostFree: new Set(),   // the host's globals the program names undeclared (prepare: hostGlobalNode)
     // Names ever passed to a REAL, AST-content-driven includeModule() call
     // (every includeForXxx site in autoload.js, prepare()'s own unconditional
     // includeModule('core')) — as opposed to `modules`, which also goes true

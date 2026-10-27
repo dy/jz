@@ -9,7 +9,7 @@
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import jz from '../index.js'
-import { levels } from './_matrix.js'
+import { levels, onWasi } from './_matrix.js'
 import { oracle } from './util.js'
 
 const agree = (cases) => {
@@ -75,6 +75,9 @@ test('builtin globals: unsupported value uses are rejected naming it', () => {
     ['isNaN', `export let f = () => [1].filter(isNaN)`],
     ['setTimeout', `export let f = () => [setTimeout].length`],
   ]) throws(() => jz(src), new RegExp(`'${name}' as a value is not supported`), `${name}: ${src.split('\n').pop()}`)
-  // A name no builtin holds stays an unresolved reference.
-  throws(() => jz(`export let f = () => [nothing].length`), /'nothing' is not in scope/)
+  // A name no builtin holds and nothing declares is the host's global, a
+  // ReferenceError where the host has none (test/host-globals.js); without a
+  // JS host it stays an unresolved reference.
+  if (!onWasi()) throws(() => jz(`export let f = () => [nothing].length`).exports.f(), /nothing is not defined/)
+  throws(() => jz(`export let f = () => [nothing].length`, { host: 'wasi' }), /'nothing' is not in scope/)
 })

@@ -105,6 +105,9 @@ const CALLEE_VAL = {
   'Object.isSealed': VAL.BOOL,
   'Object.isExtensible': VAL.BOOL,
   'ArrayBuffer.isView': VAL.BOOL,
+  // A host class's instanceof and a host global's typeof (module/web.js).
+  __host_instanceof: VAL.BOOL,
+  __host_typeof: VAL.STRING,
   // Atomics (module/atomics.js): wait → result string, isLockFree → boolean,
   // notify → count. Value ops resolve by RECEIVER width in calleeValType below
   // (Int32Array → NUMBER, BigInt64Array → BIGINT).

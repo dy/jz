@@ -1258,11 +1258,12 @@ function runTest(src, isAsync) {
   }
   if (isAsync) code = `${ASYNC_DONE_SHIM}\n${ASSERT_HARNESS}\n${code}`
 
+  let inst
   try {
     // The CanBlockIsTrue flag asks the harness for a blocking-capable agent.
     // Wasm waits require the module's actual linear memory to be shared.
     const canBlock = /flags:\s*\[[^\]]*\bCanBlockIsTrue\b/.test(src)
-    const inst = jz(code, { jzify: true, ...(canBlock ? {
+    inst = jz(code, { jzify: true, ...(canBlock ? {
       sharedMemory: true, memory: new WebAssembly.Memory({ initial: 4, maximum: 64, shared: true }),
     } : {}) })
     if (inst.exports._run) inst.exports._run()
@@ -1287,6 +1288,11 @@ function runTest(src, isAsync) {
     if (msg.includes('is not in scope')) {
       return { status: 'skip', error: 'unsupported builtin or namespace-as-value' }
     }
+    // Under the JS host such a name reads the host's global: one this realm
+    // lacks (`$262`) throws its ReferenceError at run time instead.
+    if (inst && WebAssembly.Module.imports(inst.module).some(i =>
+      i.kind === 'global' && i.module === 'global' && !(i.name in globalThis) && msg === `${i.name} is not defined`))
+      return { status: 'skip', error: 'unsupported builtin or namespace-as-value' }
     if (msg.includes('Unknown op') || msg.includes('not supported') ||
         msg.includes('prohibited') || msg.includes('Unknown tag') ||
         msg.includes('Unknown func') || msg.includes('Unknown local') ||

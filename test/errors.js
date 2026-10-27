@@ -809,7 +809,8 @@ test('host decode (audit-#8 P1-1): a JSON error caught IN-WASM does not stale-po
 test('unknown global references surface as a clean jz error, not watr "Unknown ..."', () => {
   if (onKernel()) return  // kernel: the watr-error→friendly-message rewrite is host-side (compile() catch), not in compileSelf
   let err
-  try { compile(`export let f = () => SomethingUndefined()`) }
+  // under the JS host an undeclared name is the host's global (test/host-globals.js)
+  try { compile(`export let f = () => SomethingUndefined()`, { host: 'wasi' }) }
   catch (e) { err = e }
   ok(err, 'compile should fail')
   ok(!/Unknown (local|func|global)/.test(err.message),

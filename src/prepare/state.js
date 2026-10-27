@@ -11,9 +11,11 @@
  */
 
 import { ctx, registerResetHook } from '../ctx.js'
-import { TIMER_NAMES } from '../autoload.js'
+import { TIMER_NAMES, HOST_GLOBALS, CTORS } from '../autoload.js'
+import { STD_GLOBALS } from '../std/index.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
+import { reservedWord } from '../early-errors.js'
 
 
 
@@ -70,6 +72,7 @@ export const prepState = {
   reassignedTopLevel: undefined,  // see rationale above
   typedCtorSites: undefined,      // one-argument typed-array constructions (`new Uint8Array(x)`), which a
                                   // program that resizes buffers views from offset 0 (prepare/entry.js)
+  moduleDecls: undefined,         // module AST → every name a declaration of it binds (handlers.js moduleDeclares)
 }
 export let scopes         // block scope stack: [{names: Set, renames: Map}]
 export let staticConstScopes  // lexical const facts: [[strings?, arrays?, consts?]]
@@ -157,6 +160,7 @@ export const resetPrepState = () => {
   renameSerial = [0]
   loopLocalNames = new Set()
   prepState.typedCtorSites = []
+  prepState.moduleDecls = new Map()
 }
 registerResetHook(resetPrepState)
 
@@ -241,6 +245,20 @@ export const GLOBAL_TYPEOF = Object.create(null)
 for (const n of [...Object.keys(GLOBALS), ...NS_CTORS, ...BUILTIN_FNS, 'SharedArrayBuffer', 'URLSearchParams', 'Iterator'])
   GLOBAL_TYPEOF[n] = 'function'
 for (const n of ['Math', 'JSON', 'Atomics', 'console', 'crypto', 'navigator', 'performance', 'fs']) GLOBAL_TYPEOF[n] = 'object'
+// The global object's properties ECMA-262 defines that jz does not provide: a
+// program naming one still meets an unresolvable name (typeof 'undefined'), not
+// the host's, whose operations would act on copies of the program's values.
+const LANGUAGE_GLOBALS = new Set(['Reflect', 'Proxy', 'Intl', 'Temporal', 'FinalizationRegistry', 'AggregateError',
+  'SuppressedError', 'DisposableStack', 'AsyncDisposableStack', 'escape', 'unescape', 'Function', 'eval'])
+// A name under the JS host that no binding of the program and no builtin of the
+// target resolves: the host's global of that name (module/web.js `__host_global`),
+// which a scope check (jzify's, prepare's) confirms no declaration takes.
+// The compiler's own names (`__x`, a module's `prefix$name`) never are, nor a
+// reserved word, which no IdentifierReference is.
+export const hostGlobalName = (name) => typeof name === 'string' && !!ctx.transform.targetProfile?.envImports && !ctx.transform.strict &&
+  (/^[A-Za-z_][\w]*$/.test(name) || /^\$[A-Za-z0-9]*$/.test(name)) && !name.startsWith('__') && !reservedWord(name) && !GLOBAL_TYPEOF[name] && !(name in CONSTANTS) && !(name in F64_CONSTANTS) &&
+  !STD_GLOBALS[name] && !HOST_GLOBALS.has(name) && !TIMER_NAMES.has(name) && !LANGUAGE_GLOBALS.has(name) && !CTORS.includes(name) && name !== 'URL'
+
 /** The builtin global a resolved bare name denotes, or null: the name itself,
  *  or the namespace whose module it names (`math` is Math). */
 export const builtinGlobalOf = key => GLOBAL_TYPEOF[key] ? key

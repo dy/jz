@@ -705,6 +705,12 @@ export function assemble(ast, profiler) {
     // source-level f64 value would emit `(local f64) (local.set … global.get i64)`.
     ctx.scope.globalTypes.set(name, 'i64')
   }
+  // A global the program names without declaring it: the host's of that name,
+  // or the absent marker where it has none (interop.js, module/web.js).
+  for (const name of ctx.core.hostFree) {
+    ctx.module.imports.push(['import', '"global"', `"${name}"`, ['global', `$__hg_${name}`, 'i64']])
+    ctx.scope.globalTypes.set(`__hg_${name}`, 'i64')
+  }
 
   syncImports(sec)
 

@@ -17,11 +17,11 @@
  */
 
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
-import { addSource, ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
+import { addSource, ctx, declGlobal, derive, emitArity, err, setFeature, warn } from '../ctx.js'
 import { INTRINSIC_ARITY } from '../builtin-signatures.js'
 import { createFunction } from '../function.js'
-import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, accessorOf, alwaysReturns, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
-import { isNamedCallee, COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
+import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, accessorOf, alwaysReturns, classifyParam, cloneNode, collectAllBoundNames, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
+import { HOST_GLOBALS, isNamedCallee, COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
 import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
@@ -40,7 +40,7 @@ import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, fol
 import { bindSchema, censusUnknownInitDecl, objLiteralSid } from './schema.js'
 import { importEdge, namespaceValue } from './module-eval.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, withLoopLocalNames } from './scope.js'
-import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, NS_OBJECTS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames, BUILTIN_FNS, GLOBAL_TYPEOF, builtinGlobalOf } from './state.js'
+import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, NS_OBJECTS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames, BUILTIN_FNS, GLOBAL_TYPEOF, builtinGlobalOf, hostGlobalName } from './state.js'
 
 
 // Avoid materializing `node.slice(1)` at every recursive dispatch. Nearly all
@@ -265,6 +265,8 @@ function prepNode(node) {
       if (!shadowsBuiltin(node) && namesTargetFn(node)) return node
       // Cross-module import: mangled name (e.g. __util_js$clone)
       if (resolved && resolved !== node) return resolved
+      // A name nothing of the program declares: the host's global of that name
+      if (!resolved && hostFree(node)) return hostGlobalNode(node)
       // Block scope: resolve renames
       if (scopes.length) return resolveScope(node)
     }
@@ -390,6 +392,11 @@ const handlers = {
     err('delete not supported on a static key: object shape is fixed — use a computed key with a variable (`delete obj[k]`) if the key must vary at runtime')
   },
   'in'(key, obj) { return ['in', prep(key), prep(obj)] },
+  // A string literal's text and a jump's label are data, never a name to resolve.
+  'str'(...data) { return ['str', ...data] },
+  'break'(...label) { return ['break', ...label] },
+  'continue'(...label) { return ['continue', ...label] },
+
   'label'(name, body) {
     const labels = [name]
     while (Array.isArray(body) && body[0] === 'label') { labels.push(body[1]); body = body[2] }
@@ -1057,7 +1064,10 @@ const handlers = {
   // Unresolvable bare refs fold to 'undefined' via staticTypeofString (spec §13.5.3) —
   // the only place a stray identifier doesn't ReferenceError.
   'typeof'(a) {
+    a = ungroup(a)
     if (Array.isArray(a) && a[0] == null && typeof a[1] === 'boolean') { includeForStringOnly(); return ['str', 'boolean'] }
+    // the host's global, or 'undefined' where it has none: no ReferenceError
+    if (hostFree(a)) { includeForStringOnly(); return ['()', '__host_typeof', hostGlobalNode(a)[2]] }
     const known = staticTypeofString(a)
     if (known != null) { includeForStringOnly(); return ['str', known] }
     return ['typeof', prep(a)]
@@ -1611,7 +1621,10 @@ const handlers = {
       // A member the target does not serve of a namespace it does (`Symbol.toStringTag`,
       // a well-known symbol; `Math.frund`) reads as undefined, as a missing property of an
       // object does; a call of it still errs (the call handler names its key itself).
-      if (prop !== 'prototype' && ctx.core.emit[key] === undefined && !includeForNamedCall(key) && ctx.core.emit[key] === undefined) return [, undefined]
+      if (prop !== 'prototype' && ctx.core.emit[key] === undefined && !includeForNamedCall(key) && ctx.core.emit[key] === undefined) {
+        const host = hostNamespaceMember(mod, prop)
+        return host ? prep(host) : [, undefined]
+      }
       if (emitArity(ctx.core.emit[key], key) > 0) includeForCallableValue()
       return sourceBuiltin(key)
     }
@@ -1728,6 +1741,9 @@ const handlers = {
   'instanceof'(lhs, rhs) {
     // A user class lowered to a schema (jzify/classes.js): its brand names it.
     if (isBrand(rhs)) return ['instanceof', prep(lhs), rhs]
+    // A host class (the host's global, or a member of one): the host answers for
+    // a host value, a value of the program is no instance of it (module/web.js).
+    if (hostRooted(rhs)) { includeModule('web'); return ['()', '__host_instanceof', [',', prep(lhs), prep(rhs)]] }
     const rawName = typeof rhs === 'string' ? rhs
       : (Array.isArray(rhs) && rhs[0] === '()' && rhs.length === 2 && typeof rhs[1] === 'string') ? rhs[1]
       : null
@@ -1748,6 +1764,52 @@ const handlers = {
     return ['instanceof', prep(lhs), name]
   }
 }
+// A name the program's module never declares and the target does not resolve:
+// under the JS host, the host's global of that name (state.js hostGlobalName).
+const moduleDeclares = (name) => {
+  const ast = ctx.module.ast
+  let names = prepState.moduleDecls.get(ast)
+  if (!names) {
+    prepState.moduleDecls.set(ast, names = collectAllBoundNames(ast))
+    // a catch clause's parameter, a pattern too, binds as a declaration does, and
+    // a name the module assigns undeclared is its own global, not the host's
+    walkAst(ast, { enter: n => {
+      if (n[0] === 'catch' && n[1] != null) collectParamNames([n[1]], names)
+      else if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') names.add(n[1])
+    } })
+  }
+  return names.has(name)
+}
+export const hostFree = (name) => hostGlobalName(name) && isUnresolvableBareIdent(name) && !moduleDeclares(name) &&
+  !ctx.module.namespaces?.[name] && !shadowsBuiltin(name)
+// The read of a host's global (module/web.js `__host_global`): a ReferenceError
+// where the host has none, which joins the error census before any function emits.
+const hostGlobalNode = (name) => {
+  includeModule('web')
+  includeForStringValue()
+  setFeature('error', true)
+  ;(ctx.features.errorClasses ??= new Set()).add('ReferenceError')
+  if (!ctx.module.hostFree.has(name)) {
+    ctx.module.hostFree.add(name)
+    warn('host-global', `\`${name}\` is declared nowhere in the program: it reads the host's global of that name`, {})
+  }
+  return ['()', '__host_global', ['str', name]]
+}
+// An expression that names a host global: one hostFree takes, a host global the
+// target imports (`globalThis`, `self`), or a member of either (`globalThis.Response`).
+export const hostRooted = (n) => {
+  const g = n => Array.isArray(n) && n[0] === '()' && n.length === 2 && typeof n[1] === 'string' ? g(n[1]) : n
+  n = g(n)
+  if (typeof n === 'string') return hostFree(n) || HOST_GLOBALS.has(n) && !shadowsBuiltin(n) && !(scopes.length && isDeclared(n)) && !!ctx.transform.targetProfile?.envImports && !ctx.transform.strict
+  return Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' && hostRooted(n[1])
+}
+// A member of a namespace the host backs (`crypto.subtle`, `console.trace`) that
+// the target does not serve: under the JS host, the host's own (`globalThis.crypto.subtle`).
+const HOST_NAMESPACES = new Set(['console', 'crypto', 'navigator', 'performance'])
+const hostNamespaceMember = (mod, prop) => HOST_NAMESPACES.has(mod) && typeof prop === 'string' && !!ctx.transform.targetProfile?.envImports &&
+  !ctx.transform.strict && !shadowsBuiltin('globalThis') && ctx.core.emit[mod + '.' + prop] === undefined
+  ? ['.', ['.', 'globalThis', mod], prop] : null
+
 // An options argument of `new ArrayBuffer` that may carry maxByteLength: any but
 // a literal object naming no such key or naming it undefined.
 const literalEntries = (n) => n.length === 2 && Array.isArray(n[1]) && (n[1][0] === ',' || n[1][0] === ';') ? n[1].slice(1) : n.slice(1).filter(e => e != null)
@@ -1788,8 +1850,8 @@ function staticTypeofString(x) {
   // A function of the target the program never declares (`Symbol`, `parseInt`: a feature a library tests
   // for), whether or not its module is in yet.
   if (typeof x === 'string' && isNamedCallee(x) && !shadowsBuiltin(x)) { includeForNamedCall(x); return 'function' }
-  // Spec §13.5.3: unresolvable bare ref → 'undefined'.
-  if (isUnresolvableBareIdent(x)) return 'undefined'
+  // Spec §13.5.3: unresolvable bare ref → 'undefined'. The host's global answers at run time.
+  if (isUnresolvableBareIdent(x) && !hostFree(x)) return 'undefined'
   if (Array.isArray(x) && (x[0] === '.' || x[0] === '[]') &&
       typeof x[1] === 'string' && !shadowsBuiltin(x[1])) {
     const member = x[0] === '.' ? x[2] : staticPropertyKey(x[2])
@@ -1813,10 +1875,14 @@ function staticTypeofString(x) {
   return null
 }
 function resolveTypeof(node) {
-  const [op, a, b] = node
+  // `typeof (x)` is `typeof x`: grouping keeps the reference
+  const bareTypeof = (n) => Array.isArray(n) && n[0] === 'typeof' ? ['typeof', ungroup(n[1])] : n
+  const op = node[0], a = bareTypeof(node[1]), b = bareTypeof(node[2])
   // `typeof` always yields a string, so `==`/`===` (and `!=`/`!==`) are
   // equivalent here — both collapse to the same type check.
   const eqLike = op === '==' || op === '==='
+  // the host's global answers its typeof as a string (`__host_typeof`), not a code
+  if (Array.isArray(a) && a[0] === 'typeof' && hostFree(a[1]) || Array.isArray(b) && b[0] === 'typeof' && hostFree(b[1])) return node
   // typeof x == 'string' → type check
   if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null && typeof b[1] === 'string') {
     const known = staticTypeofString(a[1])
@@ -2808,6 +2874,9 @@ function resolveCallee(callee, args) {
       if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
       return callee
     }
+    // the host's global function, called with no receiver
+    if (!resolved && !INTRINSIC_CALLEES.has(callee) && !hasFunc(callee) && hostFree(callee)) { includeForCallableValue(); return hostGlobalNode(callee) }
+    if (callee.startsWith('__host_') && INTRINSIC_CALLEES.has(callee)) { includeModule('web'); if (callee === '__host_new') includeForArrayLiteral() }
     if (prepState.depth > 0 && !resolved && !INTRINSIC_CALLEES.has(callee) && !ctx.funcs.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
       includeForCallableValue()
     return sourceBuiltin(callee)
@@ -2835,8 +2904,11 @@ function resolveCallee(callee, args) {
     if (key && includeForNamedCall(key)) return sourceBuiltin(key)
     if (includeForGenericMethod(prop)) return prep(callee)
     const mod = namespaceModOf(obj)
-    if (mod)
-      return (includeModule(mod), sourceBuiltin(mod + '.' + prop))
+    if (mod) {
+      includeModule(mod)
+      const host = !includeForNamedCall(mod + '.' + prop) && hostNamespaceMember(mod, prop)
+      return host ? prep(host) : sourceBuiltin(mod + '.' + prop)
+    }
     return prep(callee)
   }
   includeForCallableValue()

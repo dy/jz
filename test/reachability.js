@@ -163,7 +163,8 @@ test('reachability: an empty program, a reference the source cannot satisfy, and
   const empty = instantiate(compile('', { optimize: 0 }))
   is(Object.keys(empty.exports).filter(k => !k.startsWith('_') && k !== 'memory'), [], 'nothing exported')
   is(ctx.plans.programIndex.graphFunctionCount, 0, 'no graph function')
-  throws(() => compile(T + 'export const go = () => missing(1)', { optimize: 0 }), /missing/, 'a call to a name the source never defines rejects at compile')
+  // without a JS host: under one, an undeclared name is the host's global (test/host-globals.js)
+  throws(() => compile(T + 'export const go = () => missing(1)', { optimize: 0, host: 'wasi' }), /missing/, 'a call to a name the source never defines rejects at compile')
   const first = Object.values(PROGRAMS).map(p => [compile(p.src, { optimize: 2, modules: p.modules }), behavior(p, 2)])
   const again = Object.values(PROGRAMS).map(p => [compile(p.src, { optimize: 2, modules: p.modules }), behavior(p, 2)])
   ok(first.every(([bytes, b], i) => bytes.length === again[i][0].length && bytes.every((x, j) => x === again[i][0][j]) && JSON.stringify(b) === JSON.stringify(again[i][1])),

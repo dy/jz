@@ -68,6 +68,7 @@ const TESTS = [
   'lanes',
   'buffer',
   'resizable-buffer',
+  'host-globals',
   'typed-ctors',
   'workers',
   'generators',

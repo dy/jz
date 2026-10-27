@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { adaptI64, levels, belowOpt } from './_matrix.js'
+import { adaptI64, levels, belowOpt, onWasi } from './_matrix.js'
 import { run, oracle } from './util.js'
 
 test('optional chains: grouping preserves chain boundaries, receivers and argument order', () => {
@@ -455,8 +455,11 @@ test('instanceof: native kind predicates evaluate operands once and preserve thr
 })
 
 test('instanceof: unknown constructor rejects instead of guessing from the receiver', () => {
-  throws(() => jz(`export let f = (x) => x instanceof MyClass`), /instanceof/)
-  throws(() => jz(`export let f = () => ({}) instanceof MyClass`), /instanceof/)
+  // without a JS host it is a compile-time rejection; under one, the host's
+  // global, whose read throws where the host has none (test/host-globals.js)
+  throws(() => jz(`export let f = (x) => x instanceof MyClass`, { host: 'wasi' }), /instanceof/)
+  throws(() => jz(`export let f = () => ({}) instanceof MyClass`, { host: 'wasi' }), /instanceof/)
+  if (!onWasi()) throws(() => jz(`export let f = () => ({}) instanceof MyClass`).exports.f(), /MyClass is not defined/)
 })
 
 test('instanceof Object: aliases, nullish values and single evaluation', () => {

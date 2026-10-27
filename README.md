@@ -159,7 +159,7 @@ compacts. `memory.used` reads what the module keeps.
 - **Accessor descriptors:** `Object.defineProperty` with `get`/`set` is unsupported; declare accessors on a class or fixed-layout object literal instead. Data-property definitions and descriptor reads work, with the differences below.
 - **Object accessors:** getters/setters need a fixed property layout; mixing them with runtime-computed keys or a spread of unknown keys is unsupported.
 - **Module dynamics:** top-level `await` other than `await import('./x.js')`, and `import()` of a specifier computed at run time. A literal `import('./x.js')` bundles `x.js`, which evaluates at the first `import()` unless a static import loaded it.
-- **Platform:** DOM, Node modules, `Intl`, `Temporal`.
+- **Platform:** Node modules, `Intl`, `Temporal`. Web APIs (streams, `Response`, the DOM) are the host's, reached as host globals under the JS host.
 - **Builtins as values:** `f(Math)`, `[Map]`, `xs.map(parseInt)`. `typeof Math` answers; members (`xs.map(Math.sqrt)`), `Number`, `Boolean` and the typed-array constructors are values.
 
 Modern JavaScript is supported: classes, generators, async/await, destructuring,
@@ -183,6 +183,7 @@ Where behaviour differs from JS:
 - **No runtime prototype chain.** `Object.create(null)` creates an empty object; `Object.create(obj)` copies supported object layouts instead of linking a prototype. Class inheritance and supported prototype assignments are resolved at compile time.
 - **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver.
 - **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates. A use as a string counts through a copy, a call and a sum: `(s) => (s + s).slice(1)` takes a string.
+- **Host globals bind at instantiation.** A global the program names without declaring it is the host's value when the module is instantiated: one the host defines or replaces later is not seen.
 - **Host methods named like builtins.** A host object the host passes in runs its own method of any name, a string's or an array's included. Where that builtin returns a number, a boolean or a string (`charCodeAt`, `includes`, `toUpperCase`), the call converts the host method's result to that type: an `o.charCodeAt(1)` that returns `'7'` gives 7.
 
 </details>
@@ -212,6 +213,13 @@ detaches if the memory grows). A JZ buffer (`memory.Float64Array(n)`,
 `memory.Float32Array(n)`) is the storage itself, so hand hot loops one of those
 instead of copying per call. A function the module returns, or stores on a host
 object, reaches the host as a function that calls back into it.
+
+Under the JS host a name no declaration of the program binds is the host's
+global: `new Response(text)`, `x instanceof WritableStream` and
+`typeof WebSocket` ask the host, and reading a global the host lacks throws the
+ReferenceError JavaScript throws. A member of `console`, `crypto`, `navigator`
+or `performance` that JZ does not implement (`crypto.subtle`) is the host's.
+The `warnings` sink names each such global; without a JS host it stays an error.
 
 ```js
 const { exports } = jz`

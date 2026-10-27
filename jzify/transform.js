@@ -10,6 +10,8 @@ import { foldPrototypeStores } from './classes.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { TYPED_ELEM_NAMES } from '../layout.js'
+import { hostGlobalName } from '../src/prepare/state.js'
+import { HOST_GLOBALS } from '../src/autoload.js'
 
 const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array',
   'Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray',
@@ -79,6 +81,20 @@ export const bindGenerators = (g) => { _gen = g }
 
 export function createTransform(opts) {
   const { names, lowerArguments, transformPattern, normalizeCaseBody, transformSwitch } = opts
+  // The global a constructor callee is rooted at, through parentheses and member reads.
+  const hostRoot = (n) => {
+    for (;;) {
+      if (Array.isArray(n) && n[0] === '()' && n.length === 2) n = n[1]
+      else if (Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string') n = n[1]
+      else return typeof n === 'string' ? n : null
+    }
+  }
+  const hostCtor = (callee) => {
+    const root = hostRoot(callee)
+    if (root == null || opts.isBound?.(root) || !ctx.transform.targetProfile?.envImports || ctx.transform.strict) return false
+    const bare = typeof callee === 'string' || Array.isArray(callee) && callee[0] === '()' && callee.length === 2 && hostRoot(callee) === root && typeof callee[1] === 'string'
+    return bare ? hostGlobalName(root) : HOST_GLOBALS.has(root) || hostGlobalName(root)
+  }
   // A class lowered to a schema and shared method functions (jzify/classes.js)
   // hoists those functions to the module's statement list; the class value
   // itself stays where the class was.
@@ -575,6 +591,14 @@ export function createTransform(opts) {
       // the call-node form unwraps through the '()' handler below)
       if (name === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && typeof ctor === 'string' && _gen) {
         return ['()', '__usp_new']
+      }
+      // A host constructor (a global no scope of the module declares, or a member
+      // of a host global): constructed on the host (module/web.js `__host_new`).
+      const callee = Array.isArray(ctor) && ctor[0] === '()' && ctor.length > 2 ? ctor[1] : ctor
+      if (hostCtor(callee)) {
+        const argNode = Array.isArray(ctor) && ctor[0] === '()' ? ctor[2] : cargs.length === 1 ? cargs[0] : cargs.length ? [',', ...cargs] : null
+        const items = argNode == null ? [] : Array.isArray(argNode) && argNode[0] === ',' ? argNode.slice(1) : [argNode]
+        return ['()', '__host_new', items.length ? [',', transform(callee), ...items.map(transform)] : transform(callee)]
       }
       if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
       return ['()', transform(ctor), ...(cargs.length ? cargs.map(transform) : [null])]

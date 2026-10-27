@@ -760,7 +760,9 @@ test('frame effects: a builtin called by name is listed by what it keeps', () =>
     'break', 'continue', 'this', 'typeof', 'str', 'strcat', 'delete', 'in', 'navigator.hardwareConcurrency'])
   // the host keeps the callback it schedules and what a request or a file is handed; the rest the emitter alone calls
   const KEEPS = new Set(['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch', 'fs.read', 'fs.write',
-    '__ptr_is', '__throw_method_receiver', '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len'])
+    '__ptr_is', '__throw_method_receiver', '__raw_prop', '__data_prop', '__data_key', '__raw_local', '__iter_arr_ctor', '__typed_len',
+    // a host global and the host's construct, instanceof and typeof of one (module/web.js): calls of the host
+    '__host_global', '__host_typeof', '__host_new', '__host_instanceof'])
   // the park lane's writers and readers keep nothing: a checkpoint taken inside a phase leaves it safe
   ok(['__park_begin', '__park_finish', '__park_rewind', '__park_rewind_to', ...['u8', 'u32', 'f64', 'i64', 'str', 'ref', 'bytes'].flatMap(t => ['__park_write_' + t, '__park_read_' + t])]
     .every(listedBuiltin), 'the park lane is listed')

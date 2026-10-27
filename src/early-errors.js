@@ -19,6 +19,9 @@ const ALWAYS_RESERVED = new Set([
   'function', 'if', 'import', 'in', 'instanceof', 'new', 'null', 'return', 'super',
   'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with',
 ])
+/** A word some goal of a strict program reserves (a module's: `await` too). */
+export const reservedWord = name => ALWAYS_RESERVED.has(name) || STRICT_RESERVED.has(name) ||
+  name === 'let' || name === 'yield' || name === 'await'
 
 // The position under validation, in the parsed source, and where that source
 // starts among the compile's (ctx.js addSource; null for text the compiler wrote).
