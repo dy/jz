@@ -23,7 +23,7 @@ export function summaryQueries(facts, internal = false) {
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
-  const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
+  const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | bitOf(K.TYPED)
   const dictOrObject = k => paramOf(k) !== UNKNOWN && hasTag(k, K.HASH) && tagOf(k) === K.ANY && (k & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0
   const FUNCTION_PROTO = new Set(['call', 'apply', 'bind', 'toString', 'length', 'name', 'prototype', 'constructor'])
   const celled = k => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH || tagOf(k) === K.SET || dictOrObject(k)) && paramOf(k) !== UNKNOWN
@@ -447,7 +447,7 @@ export function summaryQueries(facts, internal = false) {
         if (cellLostObject.has(c)) return ANY
         let k = orAbsent(hashPropOf(r, prop))
         for (const sid of cellShapes.get(c) ?? []) k = merge(k, memberOf(kind(K.OBJECT, sid), prop))
-        for (const tag of [K.NUMBER, K.STRING, K.BOOL, K.BIGINT]) if (hasTag(r, tag)) k = merge(k, ANY)
+        for (const tag of [K.NUMBER, K.STRING, K.BOOL, K.BIGINT, K.TYPED]) if (hasTag(r, tag)) k = merge(k, ANY)
         return k
       }
       if (isCount(prop, r)) return NUMBER

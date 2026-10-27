@@ -115,6 +115,13 @@ const CONVERTING_RESULTS = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '+=', '-=', 
 // starts with a digit, a minus, `I`nfinity or `N`aN, and only those convert.
 const canonicalNumeric = (p) => { const c = p.charCodeAt(0); return (c >= 48 && c <= 57 || c === 45 || c === 73 || c === 78) && String(+p) === p }
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
+// The names a typed array (or a DataView, whose kind it shares) answers through
+// its prototypes: %TypedArray%.prototype's, DataView.prototype's and
+// Object.prototype's. Any other name is an own property of it, or undefined.
+const TYPED_MEMBERS = new Set(['at', 'copyWithin', 'entries', 'every', 'fill', 'filter', 'find', 'findIndex', 'findLast', 'findLastIndex', 'forEach', 'includes', 'indexOf', 'join', 'keys', 'lastIndexOf', 'map', 'reduce', 'reduceRight', 'reverse', 'set', 'slice', 'some', 'sort', 'subarray', 'toLocaleString', 'toReversed', 'toSorted', 'toString', 'values', 'with',
+  'buffer', 'byteLength', 'byteOffset', 'length', 'BYTES_PER_ELEMENT', 'constructor', '@@iterator', '@@toStringTag',
+  ...['Int8', 'Uint8', 'Int16', 'Uint16', 'Int32', 'Uint32', 'Float16', 'Float32', 'Float64', 'BigInt64', 'BigUint64'].flatMap(t => ['get' + t, 'set' + t]),
+  'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'valueOf', '__proto__', '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'])
 const RANGE_BINARY = new Set(['+', '-', '*', '/', '%'])
 const memberBefore = (a, b) => typeof a === typeof b ? a < b : typeof a === 'number'
 
@@ -389,6 +396,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         return (j & ~UNKNOWN) | c
       }
       // A shape beside primitives (`typeof x === 'string' && fn`, `found || false`)
+      // or a typed array (a method of several classes, one returning its buffer)
       // keeps its identity in a cell of its own: a read or store through the
       // join reaches the shape, as through a dictionary that may hold it.
       if ((j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0 && (sidOf(a) !== UNKNOWN || sidOf(b) !== UNKNOWN || tagOf(a) === K.OBJECT && paramOf(a) !== UNKNOWN || tagOf(b) === K.OBJECT && paramOf(b) !== UNKNOWN)) {
@@ -645,9 +653,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // A dictionary joined with an object: the dictionary's cell names the
   // entries, the object's shapes are lost. Its reads join both.
   // A dictionary cell survives a join with objects (their shapes ride on the
-  // cell) and with primitives (nothing reads through a primitive but its own
-  // prototype). Any other tag loses the cell.
-  const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
+  // cell), with primitives (nothing reads through a primitive but its own
+  // prototype) and with typed arrays (whose elements and own properties live
+  // in the typed cells: a read or store through the join reaches those as it
+  // does through a typed array of no known element kind, `typedMember`). Any
+  // other tag loses the cell.
+  const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | bitOf(K.TYPED)
   const PRIMITIVE_TAGS = [K.NUMBER, K.STRING, K.BOOL, K.BIGINT]
   const dictOrObject = (k) => paramOf(k) !== UNKNOWN && hasTag(k, K.HASH) && tagOf(k) === K.ANY && (k & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0
   const celled = (k) => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH || tagOf(k) === K.SET || dictOrObject(k)) && paramOf(k) !== UNKNOWN
@@ -2633,12 +2644,18 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // closure its shapes hold under the name, as a read of it answers (`member`).
     if (dictOrObject(recv)) {
       const fk = member('.', recv, name)
-      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) {
-        // The primitives beside the shape answer with their own builtin (a string's `toUpperCase`).
-        let r = merge(candidates, callClosure(paramOf(fk), base, n, node, recv))
+      // The primitives beside the shape answer with their own builtin (a string's
+      // `toUpperCase`), and a typed array with its own (a name it does not answer
+      // is a call of undefined, which throws).
+      const beside = (r) => {
         for (const tag of PRIMITIVE_TAGS) if (hasTag(recv, tag)) r = merge(r, method(kind(tag), name, base, n, node))
+        if (hasTag(recv, K.TYPED) && tagOf(core(typedMember(name))) !== K.NONE) r = merge(r, method(kind(K.TYPED), name, base, n, node))
         return r
       }
+      if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) return beside(merge(candidates, callClosure(paramOf(fk), base, n, node, recv)))
+      // A typed array's member (`fill`, `subarray`) beside shapes that hold none
+      // of the name: called on one of the shapes it throws.
+      if (hasTag(recv, K.TYPED) && tagOf(core(mixedMember(recv, name))) === K.NONE) return beside(candidates)
     }
     // A proven builtin receiver still permits an own data property to shadow
     // its prototype method. The packed summary does not retain per-instance
@@ -2981,6 +2998,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           dynamic = true
           if (keyedCells.has(c)) { for (const [name, k] of cellProps.get(c) ?? []) put(name, k); wildKind = merge(wildKind, cellWild.get(c) ?? K.NONE) }
           else wildKind = merge(wildKind, elemOf(source))
+          // a typed array beside them spreads its elements and its own properties
+          if (hasTag(source, K.TYPED)) wildKind = merge(wildKind, merge(typedElemKind(kind(K.TYPED)), typedPropsOf(kind(K.TYPED))))
           for (const sid of shapesInCell(c)) { if (openSchemas.has(sid) || lostSchema(sid)) { wildKind = ANY; continue } const entries = ownEntries(sid); for (let j = 0; j < entries.length; j += 2) put(entries[j], entries[j + 1]) }
           continue
         }
@@ -3114,6 +3133,21 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // Replay the two effects once per kind round over late fields and shapes.
   let lostFieldsRead = 0
   const escapeLostFields = (numeric = false) => { lostFieldsRead |= numeric ? 1 : 2 }
+  // A mixed value's dictionary entry of the name, and each of its shapes'
+  // members of it (the primitives and the typed array beside them read apart).
+  const mixedMember = (recv, prop) => {
+    const c = cell(paramOf(recv))
+    let k = orAbsent(hashPropOf(recv, prop))
+    if (cellLostObject.has(c)) k = merge(k, lostObjectRead(prop))
+    for (const sid of shapesInCell(c)) k = merge(k, member('.', kind(K.OBJECT, sid), prop))
+    return k
+  }
+  // A typed array's member of a name, its element kind unknown (a mixed
+  // value's typed array): a name its prototypes answer reads as such a typed
+  // array reads it; any other is an own property, which the typed property
+  // cells hold, or undefined.
+  const typedMember = (prop) => TYPED_MEMBERS.has(prop) || isArrayIndexKey(prop) || canonicalNumeric(prop)
+    ? member('.', kind(K.TYPED), prop) : orAbsent(typedPropsOf(kind(K.TYPED)))
   const member = (op, recv, prop) => {
     const t = tagOf(recv)
     // A read through a nullish receiver throws (the optional form answers undefined).
@@ -3160,11 +3194,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (!prop.endsWith(ACCESSOR_GET) && !prop.endsWith(ACCESSOR_SET)) for (const fn of membersByName.get(prop) ?? NO_MEMBERS) callWith(binderOf(fn), familyOf(fn, prop, recv))
     }
     if (dictOrObject(recv)) {
-      const c = cell(paramOf(recv))
-      let k = orAbsent(hashPropOf(recv, prop))
-      if (cellLostObject.has(c)) k = merge(k, lostObjectRead(prop))
-      for (const sid of shapesInCell(c)) k = merge(k, member('.', kind(K.OBJECT, sid), prop))
+      let k = mixedMember(recv, prop)
       for (const tag of PRIMITIVE_TAGS) if (hasTag(recv, tag)) k = merge(k, member('.', kind(tag), prop))
+      if (hasTag(recv, K.TYPED)) k = merge(k, typedMember(prop))
       return optionalResult(op, recv, k)
     }
     if (t === K.OBJECT) return optionalResult(op, recv, lostObjectRead(prop))
@@ -3350,6 +3382,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (cellLostObject.has(c)) { escapeLostFields(ik === NUMBER); return ANY }
         let k = elemOf(recv)
         for (const sid of shapesInCell(c)) k = merge(k, merge(keyedSlots(sid), anySideOf(sid)))
+        // a typed array beside them: an element or an own property by a Number key, any member by another
+        if (hasTag(recv, K.TYPED) && ik !== K.NONE) k = merge(k, core(ik) === NUMBER ? merge(typedElemKind(kind(K.TYPED)), typedPropsOf(kind(K.TYPED))) : ANY)
         return orAbsent(k)
       }
       if (hasTag(recv, K.OBJECT)) escapeLostFields(ik === NUMBER)
@@ -4479,6 +4513,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // no element kind, or a number of one of several (a Float32Array or a Float64Array).
   const refine = (k, mask) => {
     let r = k & ((mask & TAGS) | UNKNOWN)
+    // a mixed value's parameter names its cell, never a typed array's element kind
+    if (tagOf(r) === K.TYPED && dictOrObject(k)) r = (r & TAGS) | UNKNOWN
     const p = mask & UNKNOWN
     if (p !== 0 && typedAux(r) === UNKNOWN) r = (r & TAGS) | p
     return (r & TAGS) === 0 ? 0 : r
@@ -4613,7 +4649,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (when) { const aux = tag === K.TYPED ? encodeTypedElemAux(c[2], false) : null; refineName(c[1], bitOf(tag) | (aux == null ? 0 : aux | TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG)); return }
       if (tag === K.BUFFER) return
       if (tag === K.TYPED) {
-        const key = keyOf(c[1]), aux = key === null || kinds[key] == null ? UNKNOWN : typedAux(kinds[key])
+        const key = keyOf(c[1]), aux = key === null || kinds[key] == null || tagOf(core(kinds[key])) !== K.TYPED ? UNKNOWN : typedAux(kinds[key])
         if (aux === UNKNOWN || aux & TYPED_ELEM_BIGINT_FLAG || typedCtorName(ctorFromElemAux(aux)) !== c[2]) return
       }
       refineName(c[1], TAGS & ~bitOf(tag))

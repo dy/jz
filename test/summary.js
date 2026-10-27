@@ -1330,6 +1330,65 @@ test('summary: Object.assign onto a shape stores each source slot; a shape besid
   for (const level of levels(0, 2)) is(jz(src, { optimize: level }).exports.f(true), oracle(src).f(true), `O${level}`)
 })
 
+// A method several classes define, one returning its typed buffer and another
+// an object (web-audio-api's `_tick`: a param's Float64Array, a node's
+// AudioBuffer), joins a shape with a typed array. The shape keeps its identity
+// in the join's cell, so its fields keep their kinds: the channel arrays it
+// holds stay typed arrays, and a loop storing into one is versioned by width
+// instead of storing through the receiver-of-any-kind helper.
+test('summary: a shape beside a typed array keeps its identity', () => {
+  const src = `class Buf {
+    #data
+    #ch
+    constructor(nch, n) {
+      this.#data = new Float32Array(nch * n)
+      const ch = this.#ch = new Array(nch)
+      for (let c = 0; c < nch; c++) ch[c] = this.#data.subarray(c * n, (c + 1) * n)
+    }
+    get _channels() { return this.#ch }
+    get count() { return this.#ch.length }
+    getChannelData(c) { return this.#ch[c] }
+  }
+  class Node {
+    constructor(n) { this.out = new Buf(2, n); this.n = n }
+    tick() { return this.out }
+    render(t) {
+      for (let c = 0; c < 2; c++) {
+        const out = this.out.getChannelData(c)
+        for (let i = 0; i < this.n; i++) out[i] = Math.sin(t + i * 0.01 + c)
+      }
+    }
+  }
+  class Wide {
+    constructor(n) { this.out = new Buf(1, n); this.out._channels[0] = new Float64Array(n) }
+    tick() { return this.out }
+  }
+  class Param { constructor(n) { this.buf = new Float64Array(n) } tick() { return this.buf } }
+  export const f = (k, n) => {
+    const node = new Node(n), items = [node, new Param(n), new Wide(n)]
+    const r = items[k % 3].tick()
+    let s = 0
+    if (r instanceof Float64Array) { r.fill(2); s += r[1] * 3 + r.length }
+    else s += r.getChannelData(0).length + r.count + r._channels.length
+    for (let t = 0; t < 4; t++) node.render(t)
+    return s + node.out.getChannelData(1)[n - 1]
+  }`
+  summarize(src)
+  const channels = ctx.summary.fieldKind(layoutFrom(['#data', '#ch']), '#ch')
+  is(tagOf(channels), K.ARRAY, 'the buffer keeps its channel list beside the typed array')
+  is(tagOf(ctx.summary.elemOfKind(channels)), K.TYPED, 'whose channels are typed arrays')
+  const read = ctx.funcs.list.find(f => /getChannelData$/.test(f.name)).name
+  is(tagOf(ctx.summary.resultOf(read)), K.TYPED, 'and a channel read is one')
+  const text = compile(src, { wat: true, optimize: 'speed' })
+  const name = /\(func \$(Node\W*render)[\s)]/u.exec(text)?.[1]
+  ok(name && !funcWat(text, name).includes('$__arr_typed_obj_set_idx'), 'the channel store is a typed array store')
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 3)) {
+    const got = jz(src, { optimize }).exports.f
+    for (const k of [0, 1, 2]) is(got(k, 64), want(k, 64), `O${optimize}: ${k}`)
+  }
+})
+
 test('summary: object stores wait for factory targets and descriptors', () => {
   for (const update of [
     'Object.assign(make(), { silent: true })',
