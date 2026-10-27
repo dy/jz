@@ -24,6 +24,8 @@ export default (ctx) => {
   deps({
     __atomics_addr: ['__typed_data', '__len', '__ptr_type', '__ptr_aux'],
     __atomics_addr64: ['__typed_data', '__len', '__ptr_type', '__ptr_aux'],
+    __atomics_addr_at: ['__typed_data', '__ptr_type', '__ptr_aux'],
+    __atomics_addr64_at: ['__typed_data', '__ptr_type', '__ptr_aux'],
   })
 
   // Element address of an Int32Array. Guards BEFORE touching memory: the boxed
@@ -50,6 +52,19 @@ export default (ctx) => {
     (if (i32.ge_u (local.get $i) (call $__len (local.get $arr)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ATOMICS_INDEX64)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ATOMICS_INDEX64)}))))
     (i32.add (call $__typed_data (local.get $arr)) (i32.shl (local.get $i) (i32.const 3))))`
+
+  // The address against a length read before the index converted (notify in a
+  // program that resizes a buffer, below).
+  const addrAt = (name, elem, flag, shift, recvErr, idxErr) => `(func $${name} (param $arr i64) (param $i i32) (param $n i32) (result i32)
+    (if (i32.or
+          (i32.ne (call $__ptr_type (local.get $arr)) (i32.const ${PTR.TYPED}))
+          (i32.ne (i32.and (call $__ptr_aux (local.get $arr)) (i32.const ${flag ? 23 : 7})) (i32.const ${elem + flag})))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(recvErr)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(recvErr)}))))
+    (if (i32.ge_u (local.get $i) (local.get $n))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(idxErr)}))) (throw $__jz_err (f64.const ${errorCodeLiteral(idxErr)}))))
+    (i32.add (call $__typed_data (local.get $arr)) (i32.shl (local.get $i) (i32.const ${shift}))))`
+  ctx.core.stdlib['__atomics_addr_at'] = () => addrAt('__atomics_addr_at', 4, 0, 2, ERR.ATOMICS_RECEIVER32, ERR.ATOMICS_INDEX32)
+  ctx.core.stdlib['__atomics_addr64_at'] = () => addrAt('__atomics_addr64_at', 7, 16, 3, ERR.ATOMICS_RECEIVER64, ERR.ATOMICS_INDEX64)
 
   // v1 receiver gate: a name whose element ctor is PROVEN Int32Array, or a
   // direct `new Int32Array(...)` expression. Anything else is a clean reject —
@@ -153,10 +168,26 @@ export default (ctx) => {
   }
 
   // notify(arr, i, count?) → number of woken waiters; count defaults to all.
+  // The index is checked against the length the array had before its
+  // conversion ran (ValidateAtomicAccess), and notify, unlike an access, does
+  // not check it again: in a program that resizes a buffer, a valueOf that
+  // shrinks it leaves notify of a non-shared one its 0 (wasm's notify of an
+  // unshared memory). Elsewhere no length can change, and the helper reads it.
   ctx.core.emit['Atomics.notify'] = (arr, i, count) => {
     const w = recvWidth(arr)
-    return typed(['f64.convert_i32_s',
-      ['memory.atomic.notify', addr(arr, i, w), count === undefined ? ['i32.const', -1] : i32val(count)]], 'f64')
+    const n = count === undefined ? ['i32.const', -1] : i32val(count)
+    if (!ctx.features.resizable) return typed(['f64.convert_i32_s', ['memory.atomic.notify', addr(arr, i, w), n]], 'f64')
+    const helper = w === 'i64' ? '__atomics_addr64_at' : '__atomics_addr_at'
+    inc('__len', helper)
+    ctx.runtime.throws = true
+    const ar = temp('atar'), len = `atn${freshId(ctx)}`
+    ctx.func.locals.set(len, 'i32')
+    const recv = ['i64.reinterpret_f64', ['local.get', `$${ar}`]]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${ar}`, asF64(emit(arr))],
+      ['local.set', `$${len}`, ['call', '$__len', recv]],
+      ['f64.convert_i32_s', ['memory.atomic.notify',
+        ['call', `$${helper}`, recv, asI32(toNumF64(i, emit(i))), ['local.get', `$${len}`]], n]]], 'f64')
   }
 
   // isLockFree(n) — wasm i32 atomics are lock-free at 1/2/4 (and 8 via i64).

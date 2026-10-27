@@ -89,3 +89,21 @@ test('a program that makes no resizable buffer compiles as it did', () => {
   ok(!/__view_bytes|__ab_new/.test(jz.compile(src.replace('new ArrayBuffer(n)', 'new ArrayBuffer(n, {})'), { wat: true })), 'options naming no maximum make a fixed buffer')
   ok(/__view_bytes/.test(jz.compile(src.replace('new ArrayBuffer(n)', 'new ArrayBuffer(n, { maxByteLength: 64 })'), { wat: true })), 'a maximum links the view bound')
 })
+
+// ValidateAtomicAccess (ECMA-262 25.4.3.x) reads the length before ToIndex runs
+// the index's valueOf, and Atomics.notify checks it no more, so a valueOf that
+// shrinks a non-shared buffer to nothing still notifies index 0 and answers 0
+// (test262 built-ins/Atomics/notify/retrieve-length-before-index-coercion-non-
+// shared-resize-to-zero.js). V8 rereads the length and throws a RangeError, so
+// that case pins the spec's value; the rest agree with plain JS.
+test('Atomics.notify checks its index against the length before the index converts', () => {
+  const src = `export const shrink = () => {
+      const rab = new ArrayBuffer(4, { maxByteLength: 4 }), ta = new Int32Array(rab)
+      return [Atomics.notify(ta, { valueOf() { rab.resize(0); return 0 } }), rab.byteLength] }
+    const ta = new Int32Array(new ArrayBuffer(8, { maxByteLength: 16 }))
+    export const past = () => tryIt(() => Atomics.notify(ta, 2))
+    export const inside = () => Atomics.notify(ta, 1, 3)
+    export const below = () => tryIt(() => Atomics.notify(ta, -1))`
+  for (const optimize of levels(0, 2, 3, 'size')) is(jz(tryIt + src, { optimize }).exports.shrink(), [0, 0], `O${optimize} the shrunk buffer notifies 0`)
+  agree(src, [['past'], ['inside'], ['below']])
+})
