@@ -1476,6 +1476,14 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
     const op = node[0]
     if (op == null) return
     if (cx.generator && yieldOperand(node)) fail('a yield expression as an operand must stand in parentheses')
+    // a member names its property (§13.3): an IdentifierName after `.`, an
+    // Expression in `[]`. jessie joins a block or a named declaration to the
+    // statement after it (`{}[]`, `function f() {}[]`, see below): that `[]`
+    // may be an array literal.
+    if ((op === '.' || op === '?.') && node.length === 3 && typeof node[2] !== 'string') fail('a property name must follow `.`')
+    if ((op === '[]' || op === '?.[]') && node.length === 3 && node[1] != null && node[2] == null &&
+        !(isNode(node[1]) && (node[1][0] === '{}' || (node[1][0] === 'function' || node[1][0] === 'function*' || node[1][0] === 'class') && node[1][1])))
+      fail('a computed member needs an expression in its brackets')
     for (let i = 1; i < node.length; i++) {
       const value = node[i]
       if (op !== 'class' && typeof value === 'string' && value.startsWith('#') && !cx.privateNames?.has(value))

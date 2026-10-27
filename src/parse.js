@@ -411,17 +411,31 @@ token('NaN', 200, a => !a && ['nan'])
 // head's `using name of` reads here, in the for-of head's own shape
 // (`['of', ['using', name], src]`, which the `for` keeps as it is); any other
 // `using` falls back to subscript's (a declaration, or the name `using`).
+// A name after `using` on its line begins a declaration ([no LineTerminator
+// here]) whose bindings are each `name = init`: subscript backtracks any other
+// to the name `using`, and the statement after it ran on unseparated.
+const USING_OPERAND = new Set(['in', 'instanceof', 'as', 'from'])
+const declarator = n => Array.isArray(n) && n[0] === '=' && typeof n[1] === 'string'
 keyword('using', 200, () => {
   const from = idx
   jessieParse.space()
   const c = cur.charCodeAt(idx)
   if (jessieParse.id(c) && (c < 48 || c > 57) && !word('of')) {
-    const name = next(jessieParse.id)
+    const nameAt = idx, name = next(jessieParse.id)
     jessieParse.space()
     if (word('of')) {
       skip(2)
       const src = expr(10)
       if (src != null) return ['of', ['using', name], src]
+    }
+    let sameLine = true
+    for (let i = from; i < nameAt; i++) if (lineEnd(cur.charCodeAt(i))) sameLine = false
+    if (sameLine && !USING_OPERAND.has(name)) {
+      seek(nameAt)
+      const node = expr(9)
+      if (node?.[0] === ',' ? node.slice(1).every(declarator) : declarator(node))
+        return node[0] === ',' ? ['using', ...node.slice(1)] : ['using', node]
+      err('using declaration requires an initialized identifier binding', nameAt)
     }
   }
   seek(from)

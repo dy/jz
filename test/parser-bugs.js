@@ -1177,3 +1177,22 @@ test('object property names reject member expressions and joined methods', () =>
         is(jz(src, { optimize }).exports.f(), 58, 'computed expressions and literal property names remain valid')
     is(parse(''), '', 'empty parse after rejecting property names')
 })
+
+test('a name after `using` on its line is a binding, `.` takes a name and `[]` an expression (using-declaration-context)', () => {
+    for (const body of ['using x;', 'using x = null, y;', 'using x = null, {} = null;', 'using x = null, [y] = null;'])
+        rejects(`let using = 1, x, y; {\n  ${body}\n}`, 'initialized identifier')
+    rejects('let using = 1, x; while (false) using x;', 'initialized identifier')
+    rejects('let using = 1, x; if (true) using x; else 0', 'initialized identifier')
+    for (const member of ['a[] = 1', 'a?.[]', 'a.""', 'a.1']) rejects(`let a = {}; ${member}`, 'Early error')
+
+    for (const src of [
+        'let using = 1, o = {}; using in o',
+        'let using = 1, O = Object; using instanceof O',
+        'let using = [1]; using[0] = 2',
+        'let using = 1, x = 2; {\n  using\n  x;\n}',
+        'let a = { b: [1] }; a.b[0] + a?.b + a["b"] + a?.["b"] + a.true + a.class',
+        '{}[];\n{ length: 3 }[]',
+        'let f = (src) => { for (using x of src) {} }',
+    ]) ok(Array.isArray(parse(src)), `valid counterpart: ${src}`)
+    is(jz('export let f = () => { using r = null, s = null; return 1 }').exports.f(), 1)
+})
