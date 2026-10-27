@@ -846,7 +846,8 @@ test('Number schema dispatch fast paths preserve the generic carrier contract', 
     const ast=['module',['memory',['export','"memory"'],1],
       ...[...globals].map(([name,type])=>['global',name,['mut',type],[type+'.const',type==='i64'?-1:0]]),normalize,dyn,fn]
     const ex=new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports,mem=new DataView(ex.memory.buffer)
-    ok(JSON.stringify(fn).includes('$__schema_value'),`${form} direct load retains Number-domain conversion`)
+    // the helper, or its NaN canonicalization inline in the arm (`$__dsrn`)
+    ok(/\$__schema_value|\$__dsrn/.test(JSON.stringify(fn)),`${form} direct load retains Number-domain conversion`)
     for(const sid of [...schemas.keys(),...schemas.keys()].filter(i=>schemas[i].includes('value')))
       for(const bits of [0x7ff8000200000000n,0x7ff8800012345678n,0x8000000000000000n,0x3ff0000000000000n]){
         for(let i=0;i<3;i++)mem.setBigUint64(128+i*8,bits,true)

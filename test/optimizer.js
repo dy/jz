@@ -688,6 +688,26 @@ test('devirtSchemaReads: Number bits matching an object tag stay on the generic 
   }
 })
 
+test('devirtSchemaReads: a raw Number slot read by the dispatch canonicalizes its NaN in the arm', () => {
+  // Every schema an arm loads `v` for keeps it a raw Number: the arm turns a
+  // NaN of any payload (here one that reads as a string box, and the
+  // undefined atom's bits) into the canonical NaN, as `__schema_value` does.
+  const src = `const bits = new Float64Array(2), words = new Uint32Array(bits.buffer)
+    words[0] = 16; words[1] = 0x7ffa0001; words[2] = 0; words[3] = 0x7ff80001
+    const odd = bits[0], undefLike = bits[1]
+    const mk = (k, v) => k % 3 === 0 ? { t: k, v } : k % 3 === 1 ? { u: k, w: 2, v } : { a: 1, b: 2, c: 3, v }
+    const list = []
+    for (let i = 0; i < 6; i++) list.push(mk(i, i < 3 ? odd : undefLike))
+    export let f = (i) => { const o = list[i % 6], v = o.v
+      return (typeof v) + ':' + (v !== v) + ':' + (v === undefined) + ':' + String(v) }`
+  ok(!funcWat(jz.compile(src, { wat: true, optimize: 'speed' }), 'f').includes('$__schema_value'), 'the arms convert the slots they load')
+  const ref = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { f } = run(src, { optimize })
+    for (let i = 0; i < 6; i++) is(f(i), ref(i), `O${optimize}, row ${i}`)
+  }
+})
+
 test('devirtSchemaReads: megamorphic property read switches on schemaId to direct slot loads', () => {
   // The shapes-bench class: one access site seeing several record variants —
   // the ~50-op __dyn_get_any_t_h hash probe becomes a br_table on the box's aux
@@ -811,7 +831,10 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
   const gAt = w.indexOf('(func $geo')
   const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
-  ok(/\$__dsrm\d+/.test(geoWat), 'duplicated read tees its i64 into a memo local')
+  // (the memo local may share a slot with another i64 temp once locals coalesce:
+  // count the dispatches, one a read of `t`, `x`-or-`r`, `w`… each)
+  const dispatches = (geoWat.match(/call \$__dyn_get/g) || []).length
+  ok(dispatches <= 3, `the duplicated read reuses the first one's dispatch (${dispatches} dispatches)`)
   is((geoWat.match(/0x7ffa4400000000/g) || []).length <= 3, true,
     'one dispatch per distinct prop key (t, x-or-r…), not per occurrence')
   const geoJs = (o) => { const s = o.t; return s === 0 ? o.x * 2 + o.y : s === 1 ? o.r * (o.r + 3) : o.w * o.h }
@@ -862,6 +885,42 @@ test('devirtSchemaReads: empty and populated branch memos preserve reads and wri
     const optimized = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
     for (const flag of [0, 1, 1, 0]) for (const n of [0, 1, 3]) {
       for (const ex of [original, optimized]) new DataView(ex.memory.buffer).setBigInt64(0, 11n, true)
+      is(optimized.f(0n, flag, n), original.f(0n, flag, n), `flag ${flag}, count ${n}: ${body}`)
+    }
+  }
+})
+
+test('devirtSchemaReads: a receiver local the function writes keeps its reads to one value of it', () => {
+  // The memo follows a written receiver local to its next write: a rebinding,
+  // one in a branch, one a loop makes each end the reads of the value before.
+  const read = '(call $__dyn_get_test (local.get $o))'
+  const bodies = [
+    `(local.set $o (local.get $recv)) (i64.add ${read} ${read})`,
+    `(local.set $o (local.get $recv)) (local.set $sum ${read}) (local.set $o (i64.add (local.get $recv) (i64.const 8))) (i64.add (local.get $sum) ${read})`,
+    `(local.set $o (local.get $recv)) (local.set $sum ${read}) (if (local.get $flag) (then (local.set $o (i64.const 8)))) (i64.add (local.get $sum) ${read})`,
+    `(local.set $o (local.get $recv)) (local.set $sum ${read}) (block $exit (loop $loop
+      (br_if $exit (i32.eqz (local.get $n)))
+      (local.set $sum (i64.add (local.get $sum) (i64.add ${read} ${read})))
+      (local.set $o (i64.add (local.get $o) (i64.const 8)))
+      (local.set $n (i32.sub (local.get $n) (i32.const 1))) (br $loop)))
+      (i64.add (local.get $sum) ${read})`,
+  ]
+  for (const body of bodies) {
+    compile('', { optimize: 'size' })
+    ctx.schema.list.push(['x'])
+    ctx.core.includes.add('__ptr_type')
+    const ast = parseWat(`(module (memory (export "memory") 1)
+      (func $__dyn_get_test (param i64) (result i64) (i64.load (i32.wrap_i64 (local.get 0))))
+      (func $f (export "f") (param $recv i64) (param $flag i32) (param $n i32)
+        (result i64) (local $sum i64) (local $o i64) ${body}))`)
+    const original = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+    const fn = findFunc(ast, '$f')
+    walk(fn, n => { if (n[0] === 'call' && n[1] === '$__dyn_get_test') n.dvProp = 'x' })
+    devirtSchemaReads(fn)
+    if (body === bodies[0]) ok(JSON.stringify(fn).includes('$__dsrm'), 'two reads of one value share a memo')
+    const optimized = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ast))).exports
+    for (const flag of [0, 1]) for (const n of [0, 1, 3]) {
+      for (const ex of [original, optimized]) { const v = new DataView(ex.memory.buffer); for (let i = 0; i < 6; i++) v.setBigInt64(i * 8, BigInt(11 + i * 7), true) }
       is(optimized.f(0n, flag, n), original.f(0n, flag, n), `flag ${flag}, count ${n}: ${body}`)
     }
   }

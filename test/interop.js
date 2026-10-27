@@ -218,6 +218,7 @@ test('interop: host property reads preserve unbound values and method receivers'
     export function read(k){return get()[k]}
     export function named(){return get().run}
     export function same(){const o=get();return o.run===o.run}
+    export function sameOf(o){return o.run===o.run}
     export function held(){const fn=get().run;return fn(arg())}
     export function borrowed(k){const o=get(),fn=o[k];return fn.call(o,arg())}
     export function method(){return get().run(arg())}
@@ -244,6 +245,7 @@ test('interop: host property reads preserve unbound values and method receivers'
       trace='';ok(g.named()===fn,'named function identity');is(trace,'gr','named getter once')
       trace='';ok(g.read('run')===fn,'computed function identity');is(trace,'gr','computed getter once')
       trace='';is(g.same(),true,'repeated property reads retain identity');is(trace,'grr','both reads occur')
+      trace='';is(g.sameOf(object),true,'repeated reads of a parameter retain identity');is(trace,'rr','both reads of a parameter occur')
       trace='';is(g.held(),3,'extracted call has undefined receiver');is(trace,'graf','extracted call order')
       trace='';is(g.borrowed('run'),13,'an extracted function accepts an explicit receiver');is(trace,'graf','explicit receiver call order')
       for(const name of ['method','computed','optional']) {

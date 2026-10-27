@@ -62,16 +62,19 @@ export function devirtSchemaReads(fn) {
   if (!hasReads) return
   let uid = null
   const newDecls = []
-  // receiver expr → { name, bits } for a bare never-written local (f64 local
-  // wrapped in reinterpret, or an already-i64 local), else null (keep the
+  // receiver expr → the local it reads (f64 local wrapped in reinterpret, or
+  // an already-i64 local), else null
+  const recvLocal = (r) => {
+    if (Array.isArray(r) && r[0] === 'i64.reinterpret_f64' &&
+      Array.isArray(r[1]) && r[1][0] === 'local.get' && typeof r[1][1] === 'string') return r[1][1]
+    if (Array.isArray(r) && r[0] === 'local.get' && typeof r[1] === 'string') return r[1]
+    return null
+  }
+  // → { name, bits } for a bare never-written local, else null (keep the
   // per-read spill+guard path)
   const stableRecv = (r) => {
-    if (Array.isArray(r) && r[0] === 'i64.reinterpret_f64' &&
-      Array.isArray(r[1]) && r[1][0] === 'local.get' && typeof r[1][1] === 'string' &&
-      !assigned.has(r[1][1])) return { name: r[1][1], bits: r }
-    if (Array.isArray(r) && r[0] === 'local.get' && typeof r[1] === 'string' &&
-      !assigned.has(r[1])) return { name: r[1], bits: r }
-    return null
+    const name = recvLocal(r)
+    return name !== null && !assigned.has(name) ? { name, bits: r } : null
   }
   const sidCache = new Map()  // receiver local name → sid i32 local
   const sidInit = []
@@ -162,12 +165,24 @@ export function devirtSchemaReads(fn) {
     const recvBits = () => stable ? cloneIR(stable.bits) : ['local.get', rT]
     // Schema loads enter the same generic carrier as the fallback call.
     // Raw Number slots need its domain conversion even when dispatch is inlined.
-    const numberField = withProp.some(({ id }) => ctx.summary?.fieldKind(id, prop) === NUMBER)
-    const slotLoad = slot => {
+    const exactNumber = sid => ctx.summary?.fieldKind(sid, prop) === NUMBER
+    const numberField = withProp.some(({ id }) => exactNumber(id))
+    // `sids`: the schemas an arm loads for. Where they agree the conversion is
+    // known there: none raw, nothing to do; all raw, the NaN canonicalized
+    // inline (what `__schema_value` answers for such a slot).
+    let canonical = null
+    const slotLoad = (slot, sids = null) => {
       const load = ['i64.load', ['i32.add', ['i32.wrap_i64', recvBits()],
         typeof slot === 'number' ? ['i32.const', slot * 8] : ['i32.shl', slot, ['i32.const', 3]]]]
-      return numberField ? ['call', '$__schema_value', recvBits(),
-        typeof slot === 'number' ? ['i32.const', slot] : cloneIR(slot), load] : load
+      if (!numberField || sids && !sids.some(exactNumber)) return load
+      if (sids?.every(exactNumber)) {
+        if (!canonical) { canonical = `$__dsrn${id}`; newDecls.push(['local', canonical, 'i64']) }
+        const value = () => ['f64.reinterpret_i64', ['local.get', canonical]]
+        return ['block', ['result', 'i64'], ['local.set', canonical, load],
+          ['select', ['i64.const', i64Hex(LAYOUT.NAN_PREFIX_BITS)], ['local.get', canonical], ['f64.ne', value(), value()]]]
+      }
+      return ['call', '$__schema_value', recvBits(),
+        typeof slot === 'number' ? ['i32.const', slot] : cloneIR(slot), load]
     }
     const out = `$__dsro${id}`, dflt = `$__dsrd${id}`
     // Inline cache: the generic read records the static schema slot it
@@ -211,7 +226,7 @@ export function devirtSchemaReads(fn) {
       const slot = withProp[0].slot
       const dispatch = ['if', ['result', 'i64'],
         ['i32.lt_u', sidRead(stable), ['i32.const', schemas.length]],
-        ['then', slotLoad(slot)],
+        ['then', slotLoad(slot, withProp.map(p => p.id))],
         ['else', genericCall]]
       parent[i] = teeHoists.length
         ? ['block', out, ['result', 'i64'], ...teeHoists, dispatch]
@@ -226,7 +241,7 @@ export function devirtSchemaReads(fn) {
         const { id: sid, slot } = withProp[k]
         choice = ['if', ['result', 'i64'],
           ['i32.eq', stable ? sidRead(stable) : sidExprFor(recvBits(), node.dvObject === true), ['i32.const', sid]],
-          ['then', slotLoad(slot)],
+          ['then', slotLoad(slot, [sid])],
           ['else', choice]]
       }
       parent[i] = ['block', out, ['result', 'i64'], ...teeHoists,
@@ -256,7 +271,7 @@ export function devirtSchemaReads(fn) {
       inner]
     for (let k = 0; k < slots.length; k++) {
       const slot = slots[k]
-      const arm = ['br', out, slotLoad(slot)]
+      const arm = ['br', out, slotLoad(slot, withProp.filter(p => p.slot === slot).map(p => p.id))]
       const nextLabel = k + 1 < slots.length ? `$__dsr${id}_${slots[k + 1]}` : dflt
       inner = ['block', nextLabel, inner, arm]
     }
@@ -273,9 +288,12 @@ export function devirtSchemaReads(fn) {
   // choice) AND per (receiver, prop) key — only keys read ≥2× tee their result
   // for the duplicate-read memo below (a lone read must not pay a local write)
   const keyReads = new Map()
+  // A read whose receiver may be a host object (`__dyn_get_any…` where no
+  // proof says object) runs the host's getter: each such read stays its own.
   const memoKey = (c) => {
-    const st = stableRecv(c[2])
-    return st && c.dvProp != null ? `${st.name} ${c.dvProp}` : null
+    const name = recvLocal(c[2])
+    if (name === null || c.dvProp == null || (typeof c[1] === 'string' && c[1].startsWith('$__dyn_get_any') && c.dvObject !== true)) return null
+    return `${name} ${c.dvProp}`
   }
   const countScan = (n) => {
     if (n[0] === 'call' && n.dvProp) {
@@ -283,19 +301,21 @@ export function devirtSchemaReads(fn) {
       if (st) {
         recvReads.set(st.name, (recvReads.get(st.name) || 0) + 1)
         recvAllObject.set(st.name, (recvAllObject.get(st.name) ?? true) && n.dvObject === true)
-        const k = `${st.name} ${n.dvProp}`
-        keyReads.set(k, (keyReads.get(k) || 0) + 1)
       }
+      const k = memoKey(n)
+      if (k) keyReads.set(k, (keyReads.get(k) || 0) + 1)
     }
   }
   walkAst(fn, { enter: countScan })
   // Duplicate-read elimination riding the rewrite walk: a SECOND tagged read
-  // of the SAME (stable receiver, prop) in the same straight-line region
+  // of the SAME (receiver local, prop) in the same straight-line region
   // reuses the first read's tee'd i64 — the whole sid-dispatch + slot load
-  // drops (measure()'s `imul(o.r, imul(o.r, 3))` pays one read). Soundness:
-  // the receiver is a never-written local and a jz OBJECT's shape never
-  // changes, so only an intervening WRITE could change the value — any
-  // non-readonly call, store, global.set or memory.grow clears the memo.
+  // drops (measure()'s `imul(o.r, imul(o.r, 3))` pays one read; an event's
+  // `type` read by each of the guards a dispatch inlines, one). Soundness:
+  // a jz OBJECT's shape never changes, so only an intervening WRITE could
+  // change the value — any non-readonly call, store, global.set or
+  // memory.grow clears the memo, and a write of the receiver local ends the
+  // entries it names.
   // Conditional regions (if arms, labeled blocks a br may skip) keep entries
   // born inside them local: snapshot on entry, restore on exit (outer entries
   // stay usable inside — the first read dominates). A LOOP whose body clobbers
@@ -304,8 +324,9 @@ export function devirtSchemaReads(fn) {
   // exactly the pure class rewrite() enforces; tee'd operands refuse (their
   // set would vanish).
   // A receiver-error helper only constructs and throws an error; it cannot
-  // change a cached field on a path that continues to the next read.
-  const READONLY_CALL = /^\$(__dyn_get|__ptr_type$|__throw_property_nullish$|math\.)/
+  // change a cached field on a path that continues to the next read. A string
+  // comparison (`e.type === 'setValue'` past its bit test) only reads.
+  const READONLY_CALL = /^\$(__dyn_get|__ptr_type$|__throw_property_nullish$|math\.|__str_eq)/
   const isClobberNode = (x) => {
     const op = x[0]
     if (op === 'call' && !x.dvProp && typeof x[1] === 'string' && !READONLY_CALL.test(x[1])) return true
@@ -329,16 +350,24 @@ export function devirtSchemaReads(fn) {
   }
   const memo = new Map()
   let clobbers = 0
+  // each local's last write, in walk order: a region restores the entries it
+  // found except those of a receiver it wrote
+  let writes = 0
+  const lastWrite = new Map()
+  const recvOfKey = (k) => k.slice(0, k.indexOf(' '))
+  const forget = (name) => { if (memo.size) for (const k of [...memo.keys()]) if (recvOfKey(k) === name) memo.delete(k) }
+  const isWrite = (x) => (x[0] === 'local.set' || x[0] === 'local.tee') && typeof x[1] === 'string'
   const scoped = n => {
-    const snap = memo.size ? new Map(memo) : null, pre = clobbers
+    const snap = memo.size ? new Map(memo) : null, pre = clobbers, mark = writes
     for (let i = 1; i < n.length; i++) visitChild(n, i)
     memo.clear()
-    if (snap && clobbers === pre) for (const [k, v] of snap) memo.set(k, v)
+    if (snap && clobbers === pre) for (const [k, v] of snap) if (!((lastWrite.get(recvOfKey(k)) ?? 0) > mark)) memo.set(k, v)
   }
   const visitChild = (n, i) => {
     const c = n[i]
     if (!Array.isArray(c)) return
     walkDSR(c)
+    if (isWrite(c)) { forget(c[1]); lastWrite.set(c[1], ++writes); return }
     if (c[0] === 'call' && c.dvProp) {
       seen++
       const key = memoKey(c)
@@ -369,6 +398,8 @@ export function devirtSchemaReads(fn) {
     }
     if (n[0] === 'loop') {
       if (hasClobber(n)) { memo.clear(); clobbers++ }
+      // a receiver the body writes holds another value from the second iteration
+      else if (memo.size) walkAst(n, { enter: x => { if (isWrite(x)) forget(x[1]) } })
       scoped(n)
       return
     }

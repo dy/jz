@@ -69,8 +69,11 @@ export let field = (n) => { const o = plain(n); return (o.type === 'x' || o.type
 test('field cse: the guards of one event read its type once', () => {
   if (belowOpt(2)) return
   // `timeOf` inlines its guards: four tests of `e.type`, one read of it.
+  // The schema dispatch's own read memo reaches the same reads, so it is off
+  // on both sides: the difference is the source cache's.
   const count = (text) => (text.match(/\$__dyn_get/g) || []).length
-  const on = wat(guards, { optimize: 2 }), off = wat(guards, { optimize: { level: 2, loadCSE: false } })
+  const on = wat(guards, { optimize: { level: 2, devirtSchemaReads: false } })
+  const off = wat(guards, { optimize: { level: 2, loadCSE: false, devirtSchemaReads: false } })
   ok(count(on) < count(off), `fewer reads with the cache (${count(on)} against ${count(off)})`)
 })
 
@@ -195,4 +198,59 @@ test('field cse: the cursor and the buffer are read once an iteration', () => {
   const inner = loops.filter(l => !/\(loop/.test(l.slice(5)) && /f64\.store offset=16/.test(l))
   ok(inner.length > 0, 'found the loop over the bank')
   for (const l of inner) ok((l.match(/f64\.load offset=8/g) || []).length === 1, `one read of the cursor, not ${(l.match(/f64\.load offset=8/g) || []).length}`)
+})
+
+// A receiver bound to a local, not a parameter, and read past the source's
+// reach (a guard's test of `type` against two names, `next === undefined ||`
+// before it): the schema dispatch's memo follows the local to its next write
+// (optimize/devirt.js), a string comparison between the reads writing nothing.
+const shapes4 = `const mk = (k) => k % 4 === 0 ? { startTime: k, type: 'setValue', value: k * 2 }
+  : k % 4 === 1 ? { endTime: k + 1, insertTime: k, type: 'linearRampToValue', value: k * 3 }
+  : k % 4 === 2 ? { duration: 2, startTime: k, type: 'setValueCurve', values: [k, k + 1] }
+  : { startTime: k, target: 1, timeConstant: 2, type: 'setTarget' }
+const list = []
+for (let i = 0; i < 12; i++) list.push(mk(i))
+const isSet = (e) => e.type === 'setValue'
+const isLin = (e) => e.type === 'linearRampToValue'
+const isExp = (e) => e.type === 'exponentialRampToValue'
+const isRamp = (e) => isExp(e) || isLin(e)
+const isCurve = (e) => e.type === 'setValueCurve'
+const isTarget = (e) => e.type === 'setTarget'
+`
+const valueAt = `${shapes4}
+export let f = (i, time) => {
+  const next = list[i % 12]
+  const cur = list[(i + 11) % 12]
+  if (cur !== undefined && isTarget(cur) && (next === undefined || !isRamp(next) || next.insertTime > time)) return 1
+  if (cur !== undefined && isSet(cur) && (next === undefined || !isRamp(next))) return 2
+  if (cur !== undefined && isCurve(cur) && (next === undefined || !isRamp(next) || cur.startTime + cur.duration > time)) return 3
+  if (cur !== undefined && isRamp(cur) && (next === undefined || !isRamp(next))) return 4
+  if (next !== undefined && isExp(next)) return 5
+  if (next !== undefined && isLin(next)) return 6
+  return 0
+}
+export let rebind = (i) => {
+  let e = list[i % 12], s = isSet(e) ? 1 : 0
+  e = list[(i + 1) % 12]
+  if (isSet(e)) s += 2
+  if (i > 2) e = list[(i + 2) % 12]
+  if (isRamp(e)) s += 4
+  return s
+}
+export let loop = (i) => {
+  let e = list[i % 12], s = 0
+  const first = isSet(e)
+  for (let k = 0; k < 3; k++) {
+    if (isRamp(e)) s += 1 << k
+    e = list[(i + k + 1) % 12]
+  }
+  return s * 10 + (first ? 1 : 0)
+}`
+
+test('field cse: a bound event read by the guards of a lookup, and rebound', () => {
+  agrees(valueAt, [0, 1, 2, 3, 4, 5, 6, 7, 11].map(i => [i, 1.5]), 'bound')
+  if (belowOpt(2)) return
+  // 18 dispatches where the memo followed parameters alone
+  const reads = (funcWat(wat(valueAt, { optimize: 2 }), 'f').match(/\$__dyn_get/g) || []).length
+  ok(reads <= 13, `${reads} reads of the two events' fields`)
 })
