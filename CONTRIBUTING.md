@@ -1818,7 +1818,8 @@ it drops for the program's own classes), and `instanceof` one is
 is none of its instances. A member of `console`, `crypto`, `navigator` or
 `performance` that no emitter serves reads `globalThis.<ns>.<member>`. A string
 literal's text and a jump's label prepare as data (`str`, `break`, `continue`
-handlers), so no name in them resolves.
+handlers), so no name in them resolves. Interop maps the `@@name` well-known
+symbol keys to the host's symbols.
 
 Coercion distinguishes absence from an own non-callable value through the
 existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and

@@ -403,3 +403,29 @@ test('A host object or function held in a native container reads and calls throu
       is(jz(code, { optimize }).exports.f(arg()), want, `${name}, ${code === src ? 'no closure' : 'closures'}, O${optimize}`)
   }
 })
+
+// The module spells a well-known symbol key `@@name` (`o[Symbol.iterator]` reads
+// '@@iterator', and `Symbol.iterator in o` tests '@@iterator', jzify canonSymbols):
+// on a host object it is the host's symbol (interop.js hostKey).
+// A for await over a host stream read the string key, found no iterator and
+// ended at once; a for of that takes the iterator protocol (in a program that
+// reads Symbol.iterator, as here, or defines a generator) threw over a host
+// iterable. A program with neither indexes its for of (`__iter_arr`), which
+// takes no host iterable still.
+test('A host object answers well-known symbol keys: for await over a host stream, the iterator protocol over a host iterable', async () => {
+  if (onWasi()) return
+  const src = `export const total = async (s) => { let n = 0, t = 0; for await (const c of s) { n++; t += c.length } return [n, t] }
+    export const items = (it) => { const out = []; for (const x of it) out.push(x); return out }
+    export const probe = (o) => [o[Symbol.iterator] === undefined, o[Symbol.asyncIterator] === undefined, Symbol.asyncIterator in o, Symbol.iterator in o]
+    export const own = () => { const o = { [Symbol.iterator]() { return [][Symbol.iterator]() } }
+      return [Symbol.iterator in o, Symbol.asyncIterator in o, Symbol.iterator in { a: 1 }] }`
+  const want = oracle(src)
+  const stream = () => new Response(new Uint8Array(300).fill(1)).body, iterable = () => new Set([1, 'b', 3])
+  for (const optimize of levels(0, 2, 'size')) {
+    const e = jz(src, { optimize }).exports
+    is(await e.total(stream()), await want.total(stream()), `O${optimize} for await over a ReadableStream`)
+    is(e.items(iterable()), want.items(iterable()), `O${optimize} for of over a host Set`)
+    is(e.probe(stream()), want.probe(stream()), `O${optimize} the symbol keys read the host's`)
+    is(e.own(), want.own(), `O${optimize} an own object's symbol key answers in`)
+  }
+})

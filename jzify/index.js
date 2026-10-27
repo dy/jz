@@ -352,6 +352,11 @@ function canonSymbols(node, bindings = false) {
       const prop = symbolProp(node[2])
       if (prop) { node[0] = '.'; node[2] = prop; if (prop === '@@iterator') iterProto.on = true }
     }
+    // membership: ['in', Symbol.X, obj] → ['in', '@@X', obj]
+    if (!shadowsJzifyBuiltin('Symbol') && op === 'in' && node.length === 3) {
+      const prop = symbolProp(node[1])
+      if (prop) node[1] = [, prop]
+    }
     for (let i = 1; i < node.length; i++) canonSymbols(node[i], bindings)
     // Do this before lowerings copy function bodies: the source scope census
     // owns immutable self bindings, including those in async/generator bodies.

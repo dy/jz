@@ -1885,6 +1885,12 @@ const catchingImport = (state, fn) => function (...args) {
   } finally { state.inHost--; state.caught = previous }
 }
 
+// The module spells a well-known symbol key `@@name` (`obj[Symbol.iterator]`
+// reads '@@iterator'): a host object's key is the host's symbol.
+const WELL_KNOWN = { '@@iterator': Symbol.iterator, '@@asyncIterator': Symbol.asyncIterator,
+  '@@toPrimitive': Symbol.toPrimitive, '@@hasInstance': Symbol.hasInstance, '@@toStringTag': Symbol.toStringTag }
+const hostKey = (prop) => typeof prop === 'string' && prop.startsWith('@@') && WELL_KNOWN[prop] || prop
+
 const prepareInterop = (opts) => {
   // the host references of a memory are one table for every module sharing
   // it: an index one module hands out resolves through another's import
@@ -1905,7 +1911,7 @@ const prepareInterop = (opts) => {
     return obj
   }
   const readProperty = (objBig, propBig, legacy = false, raw = false) => {
-    const prop = state.mem.read(propBig)
+    const prop = hostKey(state.mem.read(propBig))
     const obj = extRecv(objBig, prop, 'property read')
     const value = obj[prop]
     // (a method reference the receiver lacks: the invoke that follows names it)
@@ -1951,15 +1957,15 @@ const prepareInterop = (opts) => {
     return bits(state.mem.wrapVal(mode === 3 ? Reflect.ownKeys(obj) : mode === 0 ? Object.keys(obj) : mode === 1 ? Object.values(obj) : Object.entries(obj)))
   }
   opts._interp.__ext_copy_has = (objBig, propBig) => {
-    const prop = state.mem.read(propBig)
+    const prop = hostKey(state.mem.read(propBig))
     return Object.getOwnPropertyDescriptor(extRecv(objBig, prop, 'property copy'), prop)?.enumerable ? 1 : 0
   }
   opts._interp.__ext_has = (objBig, propBig) => {
-    const prop = state.mem.read(propBig)
+    const prop = hostKey(state.mem.read(propBig))
     return (prop in extRecv(objBig, prop, 'membership test')) ? 1 : 0
   }
   opts._interp.__ext_delete = (objBig, propBig) => {
-    const prop = state.mem.read(propBig)
+    const prop = hostKey(state.mem.read(propBig))
     return Reflect.deleteProperty(extRecv(objBig, prop, 'property deletion'), prop) ? 1 : 0
   }
   opts._interp.__ext_set = (objBig, propBig, valBig) => {
@@ -1973,7 +1979,7 @@ const prepareInterop = (opts) => {
     // reads its own. The store keeps a pointer into the heap, so the call
     // around it releases nothing (`_kept`, wrap's leave).
     if (ArrayBuffer.isView(v)) { state.mem._views?.set(v, valBig); state.mem._kept = true }
-    const prop = state.mem.read(propBig)
+    const prop = hostKey(state.mem.read(propBig))
     extRecv(objBig, prop, 'property write')[prop] = v
     return 1
   }
@@ -2025,7 +2031,7 @@ const prepareInterop = (opts) => {
   // Older compiled modules pass receiver/key/arguments to this import. Keep
   // that ABI distinct from the captured callable/receiver/arguments above.
   opts._interp.__ext_call = (objBig, propBig, argsBig) => {
-    const prop = state.mem.read(propBig), obj = extRecv(objBig, prop, 'method call')
+    const prop = hostKey(state.mem.read(propBig)), obj = extRecv(objBig, prop, 'method call')
     const args = state.mem.read(argsBig, state.fnOf)
     return invoke(prop === undefined ? obj : obj[prop], prop === undefined ? undefined : obj, args)
   }
