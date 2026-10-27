@@ -255,7 +255,7 @@ const inDispatcher = () => !!ctx.func?.current?.dispatcher
  */
 export function synthesizeClassDispatchers() {
   if (!classes()?.size) return
-  const { called, read, written } = memberUses()
+  const { called, read, written, passed } = memberUses()
   const byName = new Map()
   for (const f of ctx.funcs.list) byName.set(f.name, f)
   const depth = (e) => { let d = 0; for (let c = e; c.base; c = classes().get(c.base)) d++; return d }
@@ -285,7 +285,8 @@ export function synthesizeClassDispatchers() {
     if (isGet) { if (read.has(prop)) define(dispatcherName(key, 'call'), 0, { key, call: fn => ['()', fn, R] }, ['.', R, prop], prop); continue }
     if (isSet) { if (written.has(prop)) define(dispatcherName(key, 'call'), 1, { key, call: fn => ['()', fn, withR(1)] }, ['=', ['.', R, prop], A(0)], prop); continue }
     if (called.has(key)) {
-      const arity = Math.max(0, ...entries.map(e => { const f = byName.get(e.methods.get(key)); return f ? f.sig.params.length - 1 : 0 }))
+      // every argument a call writes out: a receiver of no class takes them all
+      const arity = Math.max(0, passed.get(key) ?? 0, ...entries.map(e => { const f = byName.get(e.methods.get(key)); return f ? f.sig.params.length - 1 : 0 }))
       define(dispatcherName(key, 'call'), arity, { key, call: fn => ['()', fn, withR(arity)] }, ['()', ['.', R, key], closureArgs(arity)], key)
     }
     if (read.has(key)) define(dispatcherName(key, 'read'), 0, { key, call: fn => ['()', fn + BIND, R] }, ['.', R, key], key)

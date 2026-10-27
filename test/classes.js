@@ -11,7 +11,7 @@
 // `super.x` property semantics, non-constant computed member names.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { onWasi, OPT_LEVEL } from './_matrix.js'
+import { onWasi, OPT_LEVEL, levels } from './_matrix.js'
 import jz, { compile as compileWat } from '../index.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports
@@ -513,6 +513,22 @@ test('class: static fields, methods, and blocks', () => {
 })
 
 // === Classes as structs (jzify/classes.js lowerStruct, src/compile/emit/class-dispatch.js) ===
+
+// A receiver of no class calls the member it holds with every argument the
+// call writes out: the dispatcher of a class member took only as many as the
+// class's method declares, so a host object's `digest('SHA-1', data)` beside a
+// class's `digest(t)` reached the host with one argument.
+test('class dispatch passes a non-class receiver every argument the call writes out', () => {
+  const src = `class E { m(t) { return [t] } }
+    export const mk = () => new E()
+    export const call = (o) => o.m(1, 2, 3)
+    export const own = () => mk().m(5, 6)`
+  for (const optimize of levels(0, 2, 'size')) {
+    const e = jz(src, { optimize }).exports
+    if (!onWasi()) is(e.call({ m: (...a) => a }), [1, 2, 3], `O${optimize} a host object's method takes them all`)
+    is(e.own(), [5], `O${optimize} the class's method takes what it declares`)
+  }
+})
 
 test('class struct: an instance holds its fields alone; a method is a function of the receiver', () => {
   const src = `export class P { constructor(x, y) { this.x = x; this.y = y } len() { return this.x * this.x + this.y * this.y } }

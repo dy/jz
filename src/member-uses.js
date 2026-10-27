@@ -13,9 +13,11 @@ import { ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS } from './ast.js'
 
 const isAccessorSlot = (name) => name.endsWith(ACCESSOR_GET) || name.endsWith(ACCESSOR_SET)
 
-/** The census of the program as it stands: { called, read, written, defined }. */
+/** The census of the program as it stands: { called, read, written, defined },
+ *  and `passed`: the most arguments a call of each member writes out (no spread). */
 export function collectMemberUses() {
-  const called = new Set(), read = new Set(), written = new Set(), defined = new Set()
+  const called = new Set(), read = new Set(), written = new Set(), defined = new Set(), passed = new Map()
+  const count = (args) => args == null ? 0 : Array.isArray(args) && args[0] === ',' ? args.length - 1 : 1
   const define = name => {
     defined.add(name)
     if (typeof name === 'string' && isAccessorSlot(name))
@@ -30,7 +32,12 @@ export function collectMemberUses() {
     const op = n[0], m = n.length > 1 ? memberOf(n[1]) : null
     if (op === ':' && typeof n[1] === 'string') define(n[1])
     // a call through a computed key, or an optional call, reads the member as a value first
-    if ((op === '()' || op === '?.()') && m != null) { (n[1][0] === '[]' || op === '?.()' ? read : called).add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
+    if ((op === '()' || op === '?.()') && m != null) {
+      ;(n[1][0] === '[]' || op === '?.()' ? read : called).add(m)
+      const k = count(n[2])
+      if (k > (passed.get(m) ?? 0)) passed.set(m, k)
+      walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return
+    }
     if (MUTATE_OPS.has(op) && m != null) { written.add(m); if (op !== '=') read.add(m); walk(n[1][1]); for (let i = 2; i < n.length; i++) walk(n[i]); return }
     const own = memberOf(n)
     if (own != null) { read.add(own); walk(n[1]); return }
@@ -41,7 +48,7 @@ export function collectMemberUses() {
   for (const init of ctx.module.moduleInits ?? []) walk(init)
   for (const props of ctx.schema.list) for (const prop of props) define(prop)
   for (const entry of ctx.transform.classes?.values() ?? []) for (const name of entry.methods.keys()) define(name)
-  return { called, read, written, defined }
+  return { called, read, written, defined, passed }
 }
 
 /** One census per compile, also used to activate coercion helpers. */
