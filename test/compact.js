@@ -208,6 +208,8 @@ test('compact: a compaction that may not grow claims the room the props table re
 // string, array or object stays, and every one it replaced goes.
 const LOOPS = {
   prefix: `export const f = n => { let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length * 7 + s.charCodeAt(0) + s.charCodeAt(s.length - 1) }`,
+  // a loop right after another, each carrying its own growing value: each compacts
+  prefixTwice: `export const f = n => { let s = '', t = '', i = 0, j = 0; while (i++ < n) s = (i % 10) + s; while (j++ < n) t = (j % 7) + t; return s.length * 7 + t.length + s.charCodeAt(0) + t.charCodeAt(t.length - 1) }`,
   concat: `export const f = n => { let a = []; for (let i = 0; i < n; i++) { a = a.concat([i]); if (a.length > 50) a = a.slice(25) } return a.length + a[0] + a[a.length - 1] }`,
   object: `export const f = n => { let cur = { x: 0, tag: 'a', list: [1] }; for (let i = 0; i < n; i++) { cur = { x: cur.x + i, tag: cur.tag + (i % 3), list: [...cur.list, i].slice(-4) }; if (cur.tag.length > 20) cur = { ...cur, tag: 'z' } } return cur.x + cur.tag.length + cur.list[0] + cur.list.length }`,
   map: `export const f = n => { let a = [1, 2, 3, 4]; for (let i = 0; i < n; i++) a = a.map(x => x + i); return a[0] + a[3] }`,
@@ -228,12 +230,14 @@ test('compact: a loop keeps what it carries and no more', () => {
   for (const [name, src] of Object.entries(LOOPS)) {
     const want = oracle(src), { exports, memory } = jz(src)
     for (const n of [7, 250, 4000]) is(exports.f(n), want.f(n), `${name} f(${n})`)
-    if ((name === 'prefix' || name === 'concat' || name === 'json') && counted()) {
+    if ((name === 'prefix' || name === 'prefixTwice' || name === 'concat' || name === 'json') && counted()) {
       // unbounded, the prefix string alone would reach 3.6 GB; a loop compacts
       // past 2 MB of slack (34 MB of memory at the former 16), and wasm memory
-      // grows by doubling
+      // grows by doubling. Of two loops in a row, what the first left since its
+      // last compaction lies below the second's mark and stays to the return.
       exports.f(60000)
-      ok(memory.buffer.byteLength <= 8 * 1024 * 1024, `${name}: 60000 iterations stay within 8 MB (${memory.buffer.byteLength >> 10} KB)`)
+      const mb = name === 'prefixTwice' ? 16 : 8
+      ok(memory.buffer.byteLength <= mb * 1024 * 1024, `${name}: 60000 iterations stay within ${mb} MB (${Math.round(memory.buffer.byteLength / 1024)} KB)`)
     }
   }
 })

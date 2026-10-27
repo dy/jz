@@ -258,7 +258,8 @@ export function insertLoopCompacts(funcs, owners) {
           // global here cost a parser five percent.
           list.splice(i, 0, ['local.set', mark, ['global.get', '$__heap']],
             ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', compactSlack()]]])
-          i += 3
+          // past the two, at the loop: the walk goes on with the statement after it (a second loop)
+          i += 2
         }
         visit(n, 1)
       }
