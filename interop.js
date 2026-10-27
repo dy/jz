@@ -1986,6 +1986,24 @@ const prepareInterop = (opts) => {
   // Raw property Get, shared by reads, copies and method references. Do not
   // bind functions: that changes identity/this and observes name/length.
   opts._interp.__ext_method = (objBig, propBig) => readProperty(objBig, propBig, false, true)
+  // A typed array of the module's memory handed to a host call arrives as a
+  // copy, which the host may keep past the call (a view of the memory detaches
+  // when it grows: a stream's queued chunk would read empty); what the host
+  // writes into it during the call is copied back as the call returns.
+  const ownArgs = (args) => {
+    let back = null
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i]
+      if (!ArrayBuffer.isView(a) || a.buffer !== state.mem.buffer) continue
+      const copy = a instanceof DataView ? new DataView(a.buffer.slice(a.byteOffset, a.byteOffset + a.byteLength)) : a.slice()
+      ;(back ??= []).push(a.byteOffset, a.byteLength, copy)
+      args[i] = copy
+    }
+    return back
+  }
+  const copyBack = (back) => {
+    for (let i = 0; i < back.length; i += 3) new Uint8Array(state.mem.buffer, back[i], back[i + 1]).set(new Uint8Array(back[i + 2].buffer, back[i + 2].byteOffset, back[i + 1]))
+  }
   // `as`: a call the module types as its builtin's result (`o.charCodeAt(i)` a
   // Number) takes the host method's value as that type: 1 a Number, 2 a
   // Boolean, 3 a string (kind-traits.js hostResultAs); 0 or absent, as it is.
@@ -1994,7 +2012,9 @@ const prepareInterop = (opts) => {
       const miss = state.methodMiss
       throw new TypeError(miss && miss.obj === obj ? `${String(miss.prop)} is not a function on the host receiver` : 'Host value is not callable')
     }
+    const back = ownArgs(args)
     const value = Reflect.apply(fn, obj, args)
+    if (back) copyBack(back)
     if (as === 1) return hostRet(state, Number(value))
     if (as === 2) return hostRet(state, !!value)
     if (as === 3) return hostRet(state, String(value))
@@ -2018,7 +2038,9 @@ const prepareInterop = (opts) => {
   // `new C(...args)` of a host constructor (module/web.js `__host_new`).
   opts._interp.__ext_construct = (fnBig, argsBig) => {
     const fn = state.mem.read(fnBig, state.fnOf), args = state.mem.read(argsBig, state.fnOf)
-    return hostRet(state, Reflect.construct(fn, args))
+    const back = ownArgs(args), value = Reflect.construct(fn, args)
+    if (back) copyBack(back)
+    return hostRet(state, value)
   }
   // `v instanceof C` of a host class: a value of the module is no instance of
   // it, though a C the host cannot test still throws (module/web.js).

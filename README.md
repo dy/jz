@@ -212,7 +212,9 @@ is a view of the module's memory, read back as the same array (the host's view
 detaches if the memory grows). A JZ buffer (`memory.Float64Array(n)`,
 `memory.Float32Array(n)`) is the storage itself, so hand hot loops one of those
 instead of copying per call. A function the module returns, or stores on a host
-object, reaches the host as a function that calls back into it.
+object, reaches the host as a function that calls back into it. A typed array
+the module hands a host object's method arrives as a copy the host may keep (a
+stream queues it); what the host writes into it during the call is copied back.
 
 Under the JS host a name no declaration of the program binds is the host's
 global: `new Response(text)`, `x instanceof WritableStream` and

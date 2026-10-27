@@ -1819,7 +1819,8 @@ is none of its instances. A member of `console`, `crypto`, `navigator` or
 `performance` that no emitter serves reads `globalThis.<ns>.<member>`. A string
 literal's text and a jump's label prepare as data (`str`, `break`, `continue`
 handlers), so no name in them resolves. Interop maps the `@@name` well-known
-symbol keys to the host's symbols.
+symbol keys to the host's symbols, and copies a typed array of the module's
+memory handed to a host call, copying the host's writes back after the call.
 
 Coercion distinguishes absence from an own non-callable value through the
 existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and

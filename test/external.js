@@ -429,3 +429,30 @@ test('A host object answers well-known symbol keys: for await over a host stream
     is(e.own(), want.own(), `O${optimize} an own object's symbol key answers in`)
   }
 })
+
+// A typed array of the module's memory handed to a host method arrives as a
+// copy (interop.js ownArgs): a stream that queues it reads its bytes after the
+// memory grew, where a view of the memory had detached and read empty; what the
+// host writes into it during the call is copied back as the call returns.
+test('A typed array a host method keeps outlives the memory growing; one it fills comes back filled', async () => {
+  if (onWasi()) return
+  const src = `export const send = async (writer) => {
+      for (let i = 0; i < 3; i++) { const b = new Uint8Array(4).fill(i + 1); writer.write(b) }
+      const big = new Uint8Array(1 << 20); big[0] = 9; writer.write(big.subarray(0, 2))
+      await writer.close()
+    }
+    export const fill = (host) => { const b = new Uint8Array(4); host.fill(b, 7); return [...b] }`
+  const want = oracle(src)
+  const host = { fill: (b, v) => b.fill(v, 1) }
+  const run = async (api) => {
+    const t = new TransformStream(), out = []
+    const reading = (async () => { for await (const c of t.readable) out.push([...c]) })()
+    await api.send(t.writable.getWriter()); await reading
+    return out
+  }
+  for (const optimize of levels(0, 2, 'size')) {
+    const e = jz(src, { optimize }).exports
+    is(await run(e), await run(want), `O${optimize} the queued chunks keep their bytes`)
+    is(e.fill(host), want.fill(host), `O${optimize} the host's writes come back`)
+  }
+})
