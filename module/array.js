@@ -202,6 +202,11 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
 // through its own name with every grow written back, so the local always holds
 // the live pointer and reads through it need no forwarding follow.
 const currentBinding = (name) => ctx.func.localReps?.get(name)?.ownCurrent === true
+// An element read of a boxed array whose present elements are Numbers, where a
+// cell may be a hole (src/summary/query.js arrayNumberElemsOfExpr): the loop
+// specializer's copy reads it as a Number and leaves at anything else
+// (optimize/specialize.js `cellRead`).
+const holeNumberRead = (rd, number) => { if (number) rd.holeNumRead = true; return rd }
 // Whether `obj.key` has a home of fixed layout a store reaches without the
 // dynamic property table: a flattened object's local, or a schema slot by the
 // binding, its pointer, or the summary (emit-assign.js emitPropertyAssign).
@@ -1155,7 +1160,11 @@ export default (ctx) => {
     // a cell the summary holds free of holes (no construction of a count left unfilled, no store past the count) reads without the tomb test
     const elemKind = typeof arr === 'string' ? ctx.summary?.at(ctx.func.current)?.elemKindOf(arr) : null
     const holeFree = elemKind != null && elemKind !== 0 && !hasTag(elemKind, K.ABSENT)
-    const arrayFast = (slow, index = vi, receiver = ptrExpr, proven = provenArray) => {
+    // the elements are Numbers where present: the read is a Number, or undefined
+    // for a hole or a miss, which a specialized loop leaves at (optimize/specialize.js)
+    const holeNumber = !holeFree && ctx.summary?.at(ctx.func.current)?.arrayNumberElemsOfExpr(arr) === true
+    const arrayFast = (slow, index = vi, receiver = ptrExpr, proven = provenArray) => holeNumberRead(arrayFastRead(slow, index, receiver, proven), holeNumber)
+    const arrayFastRead = (slow, index, receiver, proven) => {
       const off = tempI32('ao'), ix = tempI32('ax')
       inc('__ptr_offset_fwd')
       if (proven) return ['block', ['result', 'f64'],
@@ -1309,6 +1318,7 @@ export default (ctx) => {
       const rep = typeof arr === 'string' ? ctx.func.localReps?.get(arr) ?? repOfGlobal(arr) : null
       const dense = ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) === true
       const value = load => dense ? load : arrayValue(load)
+      const holeNumber = !dense && ctx.summary?.at(ctx.func.current).arrayNumberElemsOfExpr(arr) === true
       const fixedLen = ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(arr) ?? (rep?.neverGrown === true ? rep.arrayLen ?? null : null)
       const neverGrown = fixedLen != null || rep?.neverGrown === true
       const arrBase = (pointer = ptrExpr, current = true) => neverGrown || (current && typeof arr === 'string' && currentBinding(arr))
@@ -1429,7 +1439,7 @@ export default (ctx) => {
         // The local holding the key, for a call through the element: a table
         // whose elements never change dispatches on it (optimize/devirt.js).
         if (Array.isArray(vi) && vi[0] === 'local.get') rd.elemKey = vi[1]
-        return rd
+        return holeNumberRead(rd, holeNumber)
       }
       // Known plain array, numeric key, NOT proven in-bounds → inline bounds-checked
       // load: `idx < len ? load : undefined`. Same semantics as __arr_idx_known but
@@ -1463,7 +1473,7 @@ export default (ctx) => {
         // may also be undefined in the hit arm and keeps ordinary coercion.
         if (dense && typeof arr === 'string' && ctx.func.localReps?.get(arr)?.arrayElemValType === VAL.NUMBER)
           rd.checkedNumRead = true
-        return rd
+        return holeNumberRead(rd, holeNumber)
       }
       const baseTmp = temp()
       // A present Number keeps the element path; boxed keys need ToPropertyKey.

@@ -661,6 +661,12 @@ export function summaryQueries(facts, internal = false) {
         const k = kindOfExpr(node), e = elemOf(k)
         return tagOf(k) === K.ARRAY && e !== K.NONE && !hasTag(e, K.ABSENT)
       },
+      // The array's elements are Numbers where they are present: a hole, a
+      // miss and a stored undefined or null aside, every element is a Number.
+      arrayNumberElemsOfExpr: node => {
+        const k = kindOfExpr(node)
+        return tagOf(k) === K.ARRAY && tagOf(core(elemOf(k))) === K.NUMBER
+      },
       arrayElemSidOf: name => { const k = readKind(name); if (tagOf(k) !== K.ARRAY || paramOf(k) === UNKNOWN) return null; const e = elemOf(k); return tagOf(e) === K.OBJECT && !isNullable(e) && publicSid(e) !== UNKNOWN ? publicSid(e) : null },
       /** The name's value is read as a string somewhere it flows: through a copy, a call, a sum. */
       // The count a typed array binding of one definition holds for its life (index.js typedShapeOf).

@@ -433,6 +433,36 @@ test('specialize: the slots of an array hold any value, a hole among them', () =
   for (const count of [0, 1, 4, 5, 16, 17]) agree(holes, 'f', [count])
 })
 
+// An array of Numbers whose cells may be holes (a store the summary cannot bound,
+// a store past the end): its read tests the cell for a hole. The copy reads the
+// cell bare, a Number, and leaves where the cell holds a NaN, which a hole, an
+// undefined, a null and a NaN element all are: the loop as written reads it.
+test('specialize: the cells of an array of Numbers that may hold holes', () => {
+  const src = `const fill = (a, n) => { for (let k = 0; k < n; k++) a[k] = k % 4 === 3 ? NaN : k % 3 }
+const same = (a) => { let c = 0; for (let i = 0; i < a.length; i++) if (a[i] === a[i + 1]) c++; return c }
+export function f(n, gap) {
+  const a = []
+  fill(a, n)
+  if (gap > 0) a.length = n + gap
+  if (gap === -1) a[1] = null
+  if (gap === -2) a[2] = undefined
+  return same(a)
+}`
+  // (the speed tier inlines the hole test the copy reads)
+  const loops = []
+  const walk = (x) => { if (!Array.isArray(x)) return; if (x[0] === 'loop' && /\.f\d+$/.test(x[1])) loops.push(x); x.forEach(walk) }
+  walk(parseWat(wat(src, { optimize: 'speed' })))
+  const self = (c) => Array.isArray(c) && c[0] === 'f64.ne' && (c[1]?.[0] === 'local.get' || c[1]?.[0] === 'local.tee') && c[2]?.[0] === 'local.get' && c[1][1] === c[2][1]
+  const leaves = (x) => Array.isArray(x) && (x[0] === 'br_if' && self(x[2]) || x.some(leaves))
+  const bare = loops.filter(l => !JSON.stringify(l).includes('0x7FF87FFFFFFFFFFF') && leaves(l))
+  ok(bare.length >= 1, 'a copy reads its cells with no hole test, leaving where a cell holds a NaN')
+  const host = oracle(src), speed = run(src, { optimize: 'speed' }), plain = run(src)
+  for (const n of [0, 1, 2, 5, 12]) for (const gap of [0, 1, 3, -1, -2]) {
+    is(speed.f(n, gap), host.f(n, gap), `speed f(${n}, ${gap})`)
+    is(plain.f(n, gap), host.f(n, gap), `f(${n}, ${gap})`)
+  }
+})
+
 // A loop the emitter versioned on its extents keeps its checked twin in the
 // loop as written alone: the copy leaves where the extents fail.
 test('specialize: extents that fail inside a copy', () => {

@@ -3284,7 +3284,13 @@ statement finds live (backward liveness, per statement), and a local the
 stretch read and then wrote is put back from a copy taken where the stretch
 starts. A conditional that tests the kind of a value and calls the runtime in
 the arm a number does not take (`__dyn_get`, `__add_slow`, `__to_num`) leaves
-the same way in place of that arm. An f64 local the copy reads as an integer
+the same way in place of that arm. A read of an array whose present elements are
+Numbers where a cell may be a hole (the summary's `arrayNumberElemsOfExpr`;
+module/array.js marks the read `holeNumRead`) leaves the same way at the cell:
+the copy loads it and leaves where it holds a NaN, which a hole, a stored
+undefined or null and a NaN element all are, so past the leave the cell is a
+Number that is no NaN (int-range.js reads it against itself) and the undefined
+tests of the values it reaches fold. An f64 local the copy reads as an integer
 is tested on entry (it equals its own truncation and its magnitude is within
 2^51), except one whose low word is taken as an address: that is a box. The
 copy's locals are its own (`$name.f<id>`), so the integer pass types them by

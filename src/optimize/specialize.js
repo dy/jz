@@ -58,6 +58,7 @@ import { integerPlan } from './int-narrow.js'
 import { plainNaN, conditional, boundOf, boxBits, constBits, LIMIT } from './int-range.js'
 import { pureKernel } from './pure-funcs.js'
 import { IR_FULL, kernelLoopIR } from '../growth.js'
+import { TOMB_NAN } from '../../layout.js'
 
 const isArr = Array.isArray
 const isLabel = s => typeof s === 'string' && s[0] === '$'
@@ -96,11 +97,30 @@ const clampOf = (n, valid) => isArr(n) && n[0] === 'select' && n.length === 4 &&
   n[3]?.[0] === 'local.get' && n[3][1] === valid
 const hasClamp = (n, valid) => isArr(n) && (clampOf(n, valid) || n.some(c => hasClamp(c, valid)))
 const unclamp = (n, valid) => !isArr(n) ? n : clampOf(n, valid) ? n[1] : Object.assign(n.map(c => unclamp(c, valid)), marks(n))
+// A boxed array's cell read as a value (ir/arrays.js arrayValue), its hole
+// reading as undefined:
+//   (select undefined (local.tee $v (f64.load …)) (i64.eq (i64.reinterpret_f64 (local.get $v)) TOMB))
+// Where the array's present elements are Numbers (module/array.js marks such
+// a read `holeNumRead`), whatever else a cell holds is a NaN's bits (a hole,
+// undefined or null): the copy loads the cell, a Number that is no NaN, and
+// leaves where it is a NaN (a NaN element leaves too: the loop as written
+// reads it). Returns { v, load }, or null.
+const TOMB = BigInt(TOMB_NAN)
+const undefConst = n => nanConst(n) || isArr(n) && n[0] === 'f64.reinterpret_i64' && n.length === 2 && boxBits(constBits(n[1]))
+const cellRead = n => {
+  if (!isArr(n) || n[0] !== 'select' || n.length !== 4 || !undefConst(n[1])) return null
+  const [, , v, test] = n
+  if (!isArr(v) || v[0] !== 'local.tee' || typeof v[1] !== 'string' || !isArr(v[2]) || v[2][0] !== 'f64.load') return null
+  if (!isArr(test) || test[0] !== 'i64.eq' || test.length !== 3 || constBits(test[2]) !== TOMB ||
+      !isArr(test[1]) || test[1][0] !== 'i64.reinterpret_f64' || readOf(test[1][1]) !== v[1] || test[1][1][0] !== 'local.get') return null
+  return { v: v[1], load: v[2] }
+}
 /** A read that may miss: the element or what a miss reads as (a NaN, a
  *  number's or the undefined box; zero where its reader truncates), selected
  *  by its bounds test. Returns { type, valid } (the test's local), { type,
- *  test } (the test itself, of the branch form), or null. */
-const checkedRead = n => {
+ *  test } (the test itself, of the branch form), or null. `cell`: the read
+ *  is of a boxed array of Numbers, whose hit arm may test a hole (`cellRead`). */
+const checkedRead = (n, cell = false) => {
   if (!isArr(n)) return null
   if (n[0] === 'select' && n.length === 4 && n[3]?.[0] === 'local.get' && typeof n[3][1] === 'string' && hasClamp(n[1], n[3][1])) {
     if (nanConst(n[2]) && loads(n[1])) return { type: 'f64', valid: n[3][1] }
@@ -110,6 +130,7 @@ const checkedRead = n => {
   if (n[0] === 'if' && n.length === 5 && n[1]?.[0] === 'result' && n[3]?.[0] === 'then' && n[3].length === 2 &&
       n[4]?.[0] === 'else' && n[4].length === 2 && !writesMemory(n[2])) {
     if (n[1][1] === 'f64' && nanConst(n[4][1]) && loads(n[3][1])) return { type: 'f64', test: n[2] }
+    if (n[1][1] === 'f64' && cell && undefConst(n[4][1]) && cellRead(n[3][1])) return { type: 'f64', test: n[2], cell: cellRead(n[3][1]) }
     if (n[1][1] === 'i32' && zeroConst(n[4][1]) && wordLoad(n[3][1]) && n[2]?.[0] === 'i32.lt_u') return { type: 'i32', test: n[2] }
   }
   return null
@@ -501,17 +522,21 @@ export function specializeLoops(fn) {
     // (`num`: the read is one the emitter marked a number or a miss, on the
     // read itself or on the block it is the value of: a typed element. An
     // array's slot holds any value, a hole among them.)
-    const expr = (n, holder, at, rg, num = false) => {
+    // (`cell`: the read is of a boxed array whose present elements are
+    // Numbers, marked `holeNumRead`: its hit arm may test the cell for a hole.)
+    const expr = (n, holder, at, rg, num = false, cell = false) => {
       if (!isArr(n)) return
       const op = n[0], st = rg.st
       if (n.checkedNumRead === true) num = true
+      if (n.holeNumRead === true) cell = true
       if (op === 'loop') { st.dirty = true; return }   // (a loop inside a statement runs its writes more than once)
       if (op === 'local.get') { if (!st.must.has(n[1])) st.exposed.add(n[1]); return }
       if (op === 'if') {
-        const read = checkedRead(n)
+        const read = checkedRead(n, cell)
         if (!read) { branch(n, rg, null); return }
         expr(n[2], n, 2, rg)
         const by = leaveBy(rg, 'br_if', ['i32.eqz', n[2]])
+        if (by && read.cell) { holder[at] = present(n[3][1], read.cell, by, rg); return }
         if (by) {
           const hit = n[3][1]
           const load = canonOf(hit) ?? hit
@@ -536,10 +561,25 @@ export function specializeLoops(fn) {
           return
         }
       }
-      const value = op === 'block' && num ? n.length - 1 : 0
-      for (let i = 1; i < n.length; i++) expr(n[i], n, i, rg, i === value)
+      const found = op === 'select' && cell ? cellRead(n) : null
+      if (found) { holder[at] = present(n, found, null, rg); return }
+      const value = op === 'block' && (num || cell) ? n.length - 1 : 0
+      for (let i = 1; i < n.length; i++) expr(n[i], n, i, rg, i === value && num, i === value && cell)
       if (op === 'local.set' || op === 'local.tee') { st.must.add(n[1]); st.may.add(n[1]) }
       else if (STORE.test(op) || calls(n)) st.dirty = true
+    }
+    // A cell of an array of Numbers read in the copy (`cellRead`): its address
+    // (whose own reads leave first), the load, and a leave where the cell holds
+    // a NaN, which every value but a Number is; past it the cell is a Number
+    // (int-range.js reads `$v` against itself). `by`: the leave of a miss
+    // before it. Where the stretch cannot leave there, the hole test stays.
+    const present = (hit, c, by, rg) => {
+      const set = ['local.set', c.v, c.load]
+      expr(c.load, set, 2, rg)
+      rg.st.must.add(c.v); rg.st.may.add(c.v)
+      const nan = leaveBy(rg, 'br_if', ['f64.ne', ['local.get', c.v], ['local.get', c.v]])
+      if (!nan) { hit[2][2] = set[2]; return by ? ['block', ['result', 'f64'], by, hit] : hit }
+      return ['block', ['result', 'f64'], ...(by ? [by] : []), set, nan, ['local.get', c.v]]
     }
     // A conditional: its test, then its arms from what the test left. The arm
     // a number does not take, where it calls the runtime, leaves instead.
