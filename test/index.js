@@ -69,6 +69,7 @@ const TESTS = [
   'buffer',
   'resizable-buffer',
   'host-globals',
+  'websocket-server',
   'typed-ctors',
   'workers',
   'generators',
