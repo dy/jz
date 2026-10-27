@@ -1470,6 +1470,23 @@ test('UTF-16 construction evaluates arguments before numeric coercion', () => {
   }
 })
 
+test('UTF-16 construction spreads its arguments, every spread expanded before any converts', () => {
+  const src = `const tryIt = (f) => { try { return f() } catch (e) { return e.name } }
+    export let units = (a) => String.fromCharCode(...a)
+    export let points = (a) => tryIt(() => String.fromCodePoint(...a))
+    export let mixed = (a) => String.fromCodePoint(0x41, ...a, 0x1F600, ...new Uint8Array(a)) + String.fromCharCode(...[], 66)
+    export let order = () => { let log = ''; const v = { valueOf: () => { log += 'v'; return 67 } }
+      const it = { *[Symbol.iterator]() { log += 'i'; yield v; log += 'j' } }
+      return String.fromCharCode(...it, (log += 'a', 68)) + log }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const e = jz(src, { optimize }).exports
+    for (const a of [[], [65, 66], [0xD83D, 0xDE00], [65.9, -1, 70000]]) is(e.units(a), want.units(a), `O${optimize} units ${a}`)
+    for (const a of [[65], [0x10FFFF, 0], [-1], [1.5], [0x110000]]) is(e.points(a), want.points(a), `O${optimize} points ${a}`)
+    is(e.mixed([66, 200]), want.mixed([66, 200]), `O${optimize} spreads among arguments`)
+    is(e.order(), want.order(), `O${optimize} the spread runs out before a value converts`)
+  }
+})
 
 test('UTF-16 strings preserve host values, slices, padding and lookup data', () => {
   const e = run(`

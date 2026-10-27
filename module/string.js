@@ -2355,6 +2355,25 @@ export default (ctx) => {
     const unit = (ir) => charCodes
       ? ['i32.and', toInt32(ir), ['i32.const', 65535]]
       : ['call', '$__codePoint_value', ir]
+    // A spread (`String.fromCodePoint(...bytes)`): the arguments land in one
+    // array, every spread expanded, then each converts in turn.
+    if (codes.some(c => Array.isArray(c) && c[0] === '...')) {
+      inc('__str_concat_raw', '__len', '__typed_idx')
+      const list = temp('cl'), out = temp('cls'), n = tempI32('cln'), i = tempI32('cli'), id = ctx.func.uniq++
+      const at = typed(['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${list}`]], ['local.get', `$${i}`]], 'f64')
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${list}`, asF64(emit(['[', ...codes]))],
+        ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${list}`]]]],
+        ['local.set', `$${out}`, asF64(emit(['str', '']))],
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$cld${id}`, ['loop', `$cll${id}`,
+          ['br_if', `$cld${id}`, ['i32.ge_u', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+          ['local.set', `$${out}`, ['call', '$__str_concat_raw', ['i64.reinterpret_f64', ['local.get', `$${out}`]],
+            ['i64.reinterpret_f64', ['call', `$${make}`, unit(toNumF64(null, at))]]]],
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$cll${id}`]]],
+        ['local.get', `$${out}`]], 'f64')
+    }
     const one = (node, ir) => ['call', `$${make}`, unit(toNumF64(node, ir))]
     if (codes.length === 1) return typed(one(codes[0], emit(codes[0])), 'f64')
     inc('__str_concat_raw')
