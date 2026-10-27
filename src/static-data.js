@@ -104,30 +104,62 @@ export const strPoolBytes = () => {
 
 const WORD = 4294967296
 
+// Literals are read where they lie, a character at a time: the hosted compiler
+// frees nothing within a compile, and a whole module's constants pass through
+// here, so no string is made on the way (a slice per constant ran the
+// self-compile out of memory).
+const hexDigit = (c) => c >= 48 && c <= 57 ? c - 48 : c >= 97 && c <= 102 ? c - 87 : c >= 65 && c <= 70 ? c - 55 : -1
+
+/** A half of the 64-bit word the last sixteen hex digits of `s` from `from`
+ *  spell: the high 32 bits where `high`, else the low. -1 where a character is no digit. */
+export function hexHalf(s, from, high) {
+  let w = 0, place = 1, n = 0
+  for (let i = s.length - 1; i >= from; i--) {
+    const c = s.charCodeAt(i)
+    if (c === 95) continue
+    const d = hexDigit(c)
+    if (d < 0) return -1
+    if (high ? n >= 8 && n < 16 : n < 8) { w += d * place; place *= 16 }
+    n++
+  }
+  return w
+}
+
+/** The low word of the signed integer `s` spells from `from` (decimal or hex): -1 for none. */
+const wordAt = (s, from) => {
+  let i = from, neg = false
+  const sign = s.charCodeAt(i)
+  if (sign === 45 || sign === 43) { neg = sign === 45; i++ }
+  let r = 0
+  if (s.charCodeAt(i + 1) === 120 || s.charCodeAt(i + 1) === 88) {
+    r = hexHalf(s, i + 2, false)
+    if (r < 0) return -1
+  } else for (; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c === 95) continue
+    const d = c - 48
+    if (d < 0 || d > 9) return -1
+    r = (r * 10 + d) % WORD
+  }
+  return neg ? (WORD - r) % WORD : r
+}
+
 /** The low word of an integer literal's two's complement, read from its text
  *  (decimal or hex, signed): -1 for none. No BigInt (the kernel runs this). */
 export function lowWord(v) {
   if (typeof v === 'number') return Number.isInteger(v) ? ((v % WORD) + WORD) % WORD : -1
-  let s = String(v).replace(/_/g, ''), neg = false
-  if (s[0] === '-' || s[0] === '+') { neg = s[0] === '-'; s = s.slice(1) }
-  let r = 0
-  if (s[1] === 'x' || s[1] === 'X') r = parseInt(s.length > 10 ? s.slice(-8) : s.slice(2), 16)
-  else for (let i = 0; i < s.length; i++) {
-    const d = s.charCodeAt(i) - 48
-    if (d < 0 || d > 9) return -1
-    r = (r * 10 + d) % WORD
-  }
-  if (!(r >= 0)) return -1
-  return neg ? (WORD - r) % WORD : r
+  return typeof v === 'string' ? wordAt(v, 0) : v == null ? -1 : wordAt(String(v), 0)
 }
 
 /** The low word of a float literal that can carry an address: a NaN box's
  *  payload, or (`integral`) an integral value. -1 for any other. */
 function floatWord(v, integral) {
-  const s = String(v), at = s.indexOf('nan:0x')
-  if (at >= 0) { const h = s.slice(at + 6); return parseInt(h.length > 8 ? h.slice(-8) : h, 16) }
+  if (typeof v === 'number') return integral && Number.isInteger(v) && v >= 0 && v < WORD ? v : -1
+  if (typeof v !== 'string') return -1
+  const at = v.indexOf('nan:0x')
+  if (at >= 0) return hexHalf(v, at + 6, false)
   if (!integral) return -1
-  const n = Number(s)
+  const n = Number(v)
   return Number.isInteger(n) && n >= 0 && n < WORD ? n : -1
 }
 
@@ -170,7 +202,7 @@ export function constWords(node, parent, at, add) {
     let off = -1, base = -1
     for (let i = 1; i < node.length; i++) {
       const c = node[i]
-      if (typeof c === 'string' && c.startsWith('offset=')) off = lowWord(c.slice(7))
+      if (typeof c === 'string' && c.startsWith('offset=')) off = wordAt(c, 7)
       else if (base < 0 && Array.isArray(c) && c[0] === 'i32.const') base = lowWord(c[1])
     }
     if (off >= 0) { add(off); if (base >= 0) add(base + off) }
@@ -186,13 +218,12 @@ export function boxOffset(node) {
   if (op === 'call' && node[1] === '$__mkptr')
     return Array.isArray(node[4]) && node[4][0] === 'i32.const' ? lowWord(node[4][1]) : -1
   if ((op !== 'f64.const' && op !== 'i64.const') || typeof node[1] !== 'string') return -1
-  const t = node[1]
-  let hex = op === 'f64.const' ? (t.startsWith('nan:0x') ? t.slice(6) : '') : (t.startsWith('0x') ? t.slice(2) : '')
-  if (!hex) return -1
-  hex = hex.length < 16 ? '0000000000000000'.slice(hex.length) + hex : hex.slice(-16)
-  const hi = parseInt(hex.slice(0, 8), 16) >>> 0
+  const t = node[1], from = op === 'f64.const' ? (t.startsWith('nan:0x') ? 6 : -1) : (t.startsWith('0x') ? 2 : -1)
+  if (from < 0) return -1
+  const hi = hexHalf(t, from, true)
+  if (hi < 0) return -1
   const tag = (hi >>> 15) & 15
   if (((hi >>> 16) & 0xFFF8) !== LAYOUT.NAN_PREFIX || tag === PTR.ATOM || tag === PTR.EXTERNAL) return -1
   if (tag === PTR.STRING && (hi & LAYOUT.SSO_BIT)) return -1
-  return parseInt(hex.slice(8), 16) >>> 0
+  return hexHalf(t, from, false)
 }

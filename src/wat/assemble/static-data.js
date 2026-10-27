@@ -142,11 +142,11 @@ export function stripDeadInternedSpans(sec) {
   // The pointers live code holds: a later helper's literal can share an earlier
   // helper's bytes (the `str` emitter interns each text once), so a dead owner
   // alone leaves its span named.
-  const words = []
+  const named = new Uint8Array(dataLen() + 1)
   const scan = (n, own = true) => walkAst(n, { enter: x => {
     if ((x[0] === 'call' || x[0] === 'return_call' || x[0] === 'ref.func') && typeof x[1] === 'string') mark(x[1])
     else if ((x[0] === 'global.get' || x[0] === 'global.set') && typeof x[1] === 'string') liveGlobals.add(x[1].slice(1))
-    if (own) { const w = boxOffset(x); if (w >= 0) words.push(w) }
+    if (own) { const w = boxOffset(x); if (w >= 0 && w < named.length) named[w] = 1 }
   } })
   // an exported func is a root, a stdlib one that exports itself too (collection.js __view_data)
   for (const arr of [sec.funcs, sec.stdlib])
@@ -168,9 +168,8 @@ export function stripDeadInternedSpans(sec) {
   // a global's initializer names data where the global is read
   for (const n of sec.globals || [])
     if (Array.isArray(n) && typeof n[1] === 'string' && liveGlobals.has(n[1].slice(1))) scan(n)
-  words.sort((a, b) => a - b)
   // (a pointer lies past its literal's header: never at the span's first byte)
-  const named = (s) => { let lo = 0, hi = words.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (words[mid] <= s.start) lo = mid + 1; else hi = mid } return lo < words.length && words[lo] < s.end }
+  const pointedInto = (s) => { for (let a = s.start + 1; a < s.end; a++) if (named[a]) return true; return false }
   // The lazy tables (stripDeadLazyTables) are the last appends, each
   // re-pointed through its global: a dead run before them is the tail too,
   // and they are appended again past the cut.
@@ -181,7 +180,7 @@ export function stripDeadInternedSpans(sec) {
     const s = spans[i]
     if (s.end > cut || cut - s.end >= 8) break   // not contiguous with the tail (past the alignment pad) — something else already lives past it
     if (s.fn ? live.has(s.fn) : liveGlobals.has(s.global)) break
-    if (named(s)) break
+    if (pointedInto(s)) break
     cut = s.start
   }
   if (cut < tail) { dataTruncate(cut); if (lazy.length) ctx.runtime.lazySpans = appendLazy(sec, lazy) }

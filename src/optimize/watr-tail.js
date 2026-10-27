@@ -16,7 +16,7 @@ import { foldWrappedWords, narrowBoxedLocals, narrowFlagLocals } from './int-nar
 import { shareSplitSlots } from './split-slots.js'
 import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { ctx } from '../ctx.js'
-import { constWords } from '../static-data.js'
+import { constWords, hexHalf } from '../static-data.js'
 import {
   SIMD_PINNED, LANE_PINS, collectReachableGlobalWrites, hoistGlobalPtrOffset,
 } from './index.js'
@@ -399,32 +399,30 @@ export function legalizeForTarget(module, targetProfile) {
   return module
 }
 
-function hexNibble(c) {
-  return c >= 48 && c <= 57 ? c - 48
-    : c >= 65 && c <= 70 ? c - 55 : c >= 97 && c <= 102 ? c - 87 : -1
-}
+const hexNibble = (c) => c >= 48 && c <= 57 ? c - 48 : c >= 65 && c <= 70 ? c - 55 : c >= 97 && c <= 102 ? c - 87 : -1
 
-function decodeDataBytes(token) {
-  if (typeof token !== 'string' || token.length < 2 || token[0] !== '"') return null
-  const out = []
-  for (let i = 1; i < token.length - 1; i++) {
-    const c = token.charCodeAt(i)
-    if (c !== 92) { out.push(c); continue }
-    const hi = hexNibble(token.charCodeAt(i + 1)), lo = hexNibble(token.charCodeAt(i + 2))
-    if (hi >= 0 && lo >= 0) { out.push((hi << 4) | lo); i += 2; continue }
-    const e = token[++i]
-    out.push(e === 'n' ? 10 : e === 'r' ? 13 : e === 't' ? 9 : e.charCodeAt(0))
+// A data segment's string, read in place (`"…"`, a byte a character or a `\xx`
+// escape): the hosted compiler frees nothing within a compile, so the bytes
+// are decoded once into a typed array and the kept pieces are slices of the
+// string, never re-encoded a byte at a time.
+/** The characters the escape at `i` of `t` takes. */
+const escapeWidth = (t, i) => hexNibble(t.charCodeAt(i + 1)) >= 0 && hexNibble(t.charCodeAt(i + 2)) >= 0 ? 3 : 2
+/** The bytes of a data string, or null for no string. */
+function dataBytesOf(t) {
+  if (typeof t !== 'string' || t.length < 2 || t.charCodeAt(0) !== 34) return null
+  let n = 0
+  for (let i = 1; i < t.length - 1; i += t.charCodeAt(i) === 92 ? escapeWidth(t, i) : 1) n++
+  const out = new Uint8Array(n)
+  n = 0
+  for (let i = 1; i < t.length - 1;) {
+    const c = t.charCodeAt(i)
+    if (c !== 92) { out[n++] = c; i++; continue }
+    const w = escapeWidth(t, i)
+    if (w === 3) out[n++] = hexNibble(t.charCodeAt(i + 1)) * 16 + hexNibble(t.charCodeAt(i + 2))
+    else { const e = t.charCodeAt(i + 1); out[n++] = e === 110 ? 10 : e === 114 ? 13 : e === 116 ? 9 : e }
+    i += w
   }
   return out
-}
-
-function encodeDataBytes(bytes) {
-  let out = '"'
-  for (const c of bytes) {
-    if (c >= 32 && c < 127 && c !== 34 && c !== 92) out += String.fromCharCode(c)
-    else out += '\\' + c.toString(16).padStart(2, '0')
-  }
-  return out + '"'
 }
 
 const slebSize = (n) => { let size = 1; while (n >= 64 || n < -64) { n = Math.floor(n / 128); size++ } return size }
@@ -459,11 +457,11 @@ function subtractRanges(ranges, minus) {
   return out
 }
 
-/** The first index of `vals[0..n)`, sorted, at or past `v`. */
-function lowerBound(vals, v, n) {
-  let lo = 0, hi = n
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (vals[mid] < v) lo = mid + 1; else hi = mid }
-  return lo
+/** Whether `a` lies in one of the sorted, merged ranges. */
+function inRanges(rs, a) {
+  let lo = 0, hi = rs.length >> 1
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (rs[mid * 2 + 1] <= a) lo = mid + 1; else hi = mid }
+  return lo < rs.length >> 1 && rs[lo * 2] <= a
 }
 
 /**
@@ -481,6 +479,7 @@ function lowerBound(vals, v, n) {
  * shrinks the module: the run they leave, zeros beside it included, at a
  * segment's edge, or inside one where it outweighs a segment's header.
  * Ranges stay at their original addresses, so no pointer rebasing is needed.
+ * One pass over the code marks a byte map; nothing is made per node.
  */
 function stripDeadLateData(module, lazySpans, staticSpan, records) {
   const spans = []
@@ -493,11 +492,11 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
   // the base-global test below is exact only for EL/Ryū conversion tables.
   for (let i = 0; i < spans.length; i++)
     if (!spans[i].static && spans[i].global !== '__el_tbl' && spans[i].global !== '__ryu_tbl') live.add(spans[i])
-  // The words below the literals' end the code names, each once.
+  // the bytes below the literals' end a constant of the code names
   let limit = 0
   for (let i = 0; i < recs.length; i += 3) if (recs[i + 1] > limit) limit = recs[i + 1]
-  const seen = new Uint8Array(limit), vals = []
-  const add = (w) => { if (w >= 0 && w < limit && !seen[w]) { seen[w] = 1; vals.push(w) } }
+  const seen = new Uint8Array(limit)
+  const add = (w) => { if (w >= 0 && w < limit) seen[w] = 1 }
   const scan = (node, parent, at) => {
     if (!Array.isArray(node) || node[0] === 'data') return
     const op = node[0]
@@ -507,24 +506,21 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
     } else if (op === 'func') {
       for (let i = 0; i < spans.length; i++) if (node[1] === spans[i].fn) live.add(spans[i])
     } else if (op === 'i32.const') {
-      const n = Number(node[1])
-      for (let i = 0; i < spans.length; i++) {
-        const s = spans[i], base = s.base == null ? s.start : s.base
-        if (!s.static && (n === s.start || n === base)) live.add(s)
+      if (spans.length) {
+        const n = Number(node[1])
+        for (let i = 0; i < spans.length; i++) {
+          const s = spans[i], base = s.base == null ? s.start : s.base
+          if (!s.static && (n === s.start || n === base)) live.add(s)
+        }
       }
     } else if (op === 'f64.const' || op === 'i64.const') {
-      if (staticSpan && typeof node[1] === 'string') {
-        let hex = null
-        if (op === 'f64.const' && node[1].startsWith('nan:0x')) hex = node[1].slice(6)
-        else if (op === 'i64.const' && node[1].startsWith('0x')) hex = node[1].slice(2)
-        if (hex) {
-          if (hex.length < 16) hex = '0000000000000000'.slice(hex.length) + hex
-          else if (hex.length > 16) hex = hex.slice(-16)
-          const hi = parseInt(hex.slice(0, 8), 16) >>> 0
-          const tag = (hi >>> 15) & 15, off = parseInt(hex.slice(8), 16) >>> 0
-          if (((hi >>> 16) & 0xFFF8) === 0x7FF8 && tag === 4 && !(hi & 0x4000) &&
-              off >= staticSpan.start && off < staticSpan.end) live.add(staticSpan)
-        }
+      const t = node[1]
+      const from = !staticSpan || typeof t !== 'string' ? -1 : op === 'f64.const' ? (t.startsWith('nan:0x') ? 6 : -1) : (t.startsWith('0x') ? 2 : -1)
+      if (from >= 0) {
+        const hi = hexHalf(t, from, true), off = hexHalf(t, from, false)
+        const tag = (hi >>> 15) & 15
+        if (hi >= 0 && off >= 0 && ((hi >>> 16) & 0xFFF8) === 0x7FF8 && tag === 4 && !(hi & 0x4000) &&
+            off >= staticSpan.start && off < staticSpan.end) live.add(staticSpan)
       }
     }
     for (let i = 0; i < node.length; i++) scan(node[i], op, i)
@@ -534,7 +530,7 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
   const hard = []
   for (let i = 0; i < spans.length; i++) if (!live.has(spans[i])) hard.push(spans[i].start,
     spans[i].static ? spans[i].end : (spans[i].base == null ? spans[i].start : spans[i].base) + spans[i].bytes.length)
-  // the active segments, decoded (one undecodable hides what its words name)
+  // the active segments, each decoded once (one undecodable hides what its words name)
   const segs = []
   let opaque = false
   for (let ni = 0; ni < module.length; ni++) {
@@ -544,13 +540,7 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
       if (!(typeof node[1] === 'string' && node[1][0] === '$')) opaque = true
       continue
     }
-    const base = Number(node[1][1])
-    let bytes = node.length > 2 ? [] : null
-    for (let i = 2; bytes && i < node.length; i++) {
-      const part = decodeDataBytes(node[i])
-      if (!part) bytes = null
-      else for (let j = 0; j < part.length; j++) bytes.push(part[j])
-    }
+    const base = Number(node[1][1]), bytes = node.length === 3 ? dataBytesOf(node[2]) : null
     if (!Number.isFinite(base) || !bytes) { opaque = true; continue }
     segs.push({ node, base, bytes })
   }
@@ -558,11 +548,9 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
   // the literals nothing that survives names, less the bytes of those it does
   let softR = []
   if (recs.length && !opaque) {
-    const inHard = (a) => { for (let i = 0; i < hardR.length; i += 2) if (a >= hardR[i] && a < hardR[i + 1]) return true; return false }
     const cover = []
     for (let i = 0; i < recs.length; i += 3) cover.push(recs[i], recs[i + 1])
     const covered = mergeRanges(cover)
-    const inCover = (a) => (lowerBound(covered, a + 1, covered.length) & 1) === 1
     // The 4-aligned words the segments hold in [lo, hi). Data is never folded:
     // a word names a literal by its exact pointer, past a header of 4, 8 or 16
     // bytes (a string's length, an interned string's hash too, an array's).
@@ -575,26 +563,28 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
         const end = Math.min(hi, base + bytes.length)
         a += (4 - a % 4) % 4
         for (; a + 4 <= end; a += 4) {
-          if (unowned && (inCover(a) || inHard(a))) continue
+          if (unowned && (inRanges(covered, a) || inRanges(hardR, a))) continue
           const i = a - base, w = bytes[i] + bytes[i + 1] * 256 + bytes[i + 2] * 65536 + bytes[i + 3] * 16777216
           if (w <= limit && !held[w]) { held[w] = 1; fresh++ }
         }
       }
     }
     const heldIn = (lo, hi) => (lo + 4 <= hi && held[lo + 4]) || (lo + 8 <= hi && held[lo + 8]) || (lo + 16 <= hi && held[lo + 16])
+    const named = (lo, hi) => { for (let a = lo; a < hi; a++) if (seen[a]) return true; return false }
     // data no literal owns survives: the words it holds name literals
     words(0, Infinity, true)
-    vals.sort((a, b) => a - b)
     const alive = new Uint8Array(recs.length / 3)
+    for (let r = 0; r < alive.length; r++) if (named(recs[r * 3], recs[r * 3 + 1])) {
+      alive[r] = 1
+      if (!recs[r * 3 + 2]) words(recs[r * 3], recs[r * 3 + 1], false)
+    }
     let grew = true
     while (grew) {
       fresh = 0
       for (let r = 0; r < alive.length; r++) {
-        if (alive[r]) continue
-        const lo = recs[r * 3], hi = recs[r * 3 + 1], k = lowerBound(vals, lo, vals.length)
-        if (!(k < vals.length && vals[k] < hi) && !heldIn(lo, hi)) continue
+        if (alive[r] || !heldIn(recs[r * 3], recs[r * 3 + 1])) continue
         alive[r] = 1
-        if (!recs[r * 3 + 2]) words(lo, hi, false)
+        if (!recs[r * 3 + 2]) words(recs[r * 3], recs[r * 3 + 1], false)
       }
       grew = fresh > 0
     }
@@ -613,39 +603,46 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
     if (si >= segs.length || segs[si].node !== node) { out.push(node); continue }
     const base = segs[si].base, bytes = segs[si].bytes, len = bytes.length
     si++
-    // 1: a dead table's byte, 2: a dead literal's
-    const cls = new Uint8Array(len)
-    for (let c = 1; c <= 2; c++) {
-      const rs = c === 1 ? hardR : softR
-      for (let i = 0; i < rs.length; i += 2) {
-        const lo = Math.max(rs[i], base) - base, hi = Math.min(rs[i + 1], base + len) - base
-        for (let j = lo; j < hi; j++) if (!cls[j]) cls[j] = c
-      }
+    // 1: a dead table's byte, 2: a dead literal's, 0: any other (in increasing order of `i`)
+    let hp = 0, sp = 0
+    const cls = (i) => {
+      const a = base + i
+      while (hp < hardR.length && hardR[hp + 1] <= a) hp += 2
+      if (hp < hardR.length && hardR[hp] <= a) return 1
+      while (sp < softR.length && softR[sp + 1] <= a) sp += 2
+      return sp < softR.length && softR[sp] <= a ? 2 : 0
     }
     // a run of dead bytes and zeros: a table's goes, a literal's where it pays
-    const cut = new Uint8Array(len)
-    let any = false
+    const cuts = []
     for (let i = 0; i < len;) {
-      if (!cls[i] && bytes[i] !== 0) { i++; continue }
+      let c = cls(i)
+      if (!c && bytes[i] !== 0) { i++; continue }
       let j = i, table = false, literal = false
-      while (j < len && (cls[j] || bytes[j] === 0)) {
-        if (cls[j] === 1) table = true
-        else if (cls[j] === 2) literal = true
+      while (j < len && (c || bytes[j] === 0)) {
+        if (c === 1) table = true
+        else if (c === 2) literal = true
         j++
+        if (j < len) c = cls(j)
       }
       const n = j - i
-      const pays = table || literal && (j === len || (i === 0 ? n > slebSize(base + j) - slebSize(base) : n > 5 + slebSize(base + j)))
-      if (pays) { for (let k = i; k < j; k++) cut[k] = 1; any = true }
+      if (table || literal && (j === len || (i === 0 ? n > slebSize(base + j) - slebSize(base) : n > 5 + slebSize(base + j)))) cuts.push(i, j)
       i = j
     }
-    if (!any) { out.push(node); continue }
-    for (let i = 0; i < len;) {
-      if (cut[i]) { i++; continue }
-      let j = i
-      while (j < len && !cut[j]) j++
-      out.push(['data', ['i32.const', String(base + i)], encodeDataBytes(bytes.slice(i, j))])
-      i = j
+    if (!cuts.length) { out.push(node); continue }
+    // the kept pieces, sliced out of the segment's string at their bytes' characters
+    const t = node[2], bounds = []   // the kept [start, end) pairs
+    let from = 0
+    for (let k = 0; k < cuts.length; k += 2) { if (cuts[k] > from) bounds.push(from, cuts[k]); from = cuts[k + 1] }
+    if (from < len) bounds.push(from, len)
+    const chars = []
+    for (let i = 1, n = 0, k = 0; k < bounds.length;) {
+      while (k < bounds.length && bounds[k] === n) { chars.push(i); k++ }
+      if (i >= t.length - 1) break
+      i += t.charCodeAt(i) === 92 ? escapeWidth(t, i) : 1
+      n++
     }
+    for (let k = 0; k + 1 < bounds.length; k += 2)
+      out.push(['data', ['i32.const', String(base + bounds[k])], '"' + t.slice(chars[k], chars[k + 1]) + '"'])
   }
   module.length = 0
   for (let i = 0; i < out.length; i++) module.push(out[i])
