@@ -430,7 +430,20 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 //   element by element, trails (deno and bun 1.00-1.24×, JSC 1.12-1.34×);
 // - fabrik runs ~70 µs a round, so its verdict is V8's tier-up race: the rounds
 //   of one process read 0.50-1.69× its own base build, and 9 of 22 probe runs
-//   saw V8 or deno ahead;
+//   saw V8 or deno ahead; the latest CI reference (EPYC 7763) reads jz 146 µs,
+//   V8 1.339× and deno 1.197× faster. The race is lost before it starts: V8
+//   queues a wasm function's optimizing compile once it has executed about 13 MB
+//   of code (node 25 `--wasm-tiering-budget`), and the solver, inlined into one
+//   9.5 KB function, compiles in 5 ms after that, while the process ends its 26
+//   rounds 2.8 ms after instantiation (Apple M4), so every timed round is
+//   baseline code: 67-75 µs, where optimized code runs 28-32 µs (`--no-liftoff`,
+//   or a second `main()` in one process) and node's JavaScript 38-43 µs. Kept as
+//   functions of their own, `forward` and `backward` compile in 1 ms each and
+//   still land after the last round. The hot loops call no dynamic helper;
+//   17-20% of their operations map a missing element to NaN (the bone arrays
+//   take values from the best-solution array, whose stores at `i * 6 + k` the
+//   summary cannot bound by its length). Leading here takes baseline code faster
+//   than V8's optimized JavaScript;
 // - webaudio (the web-audio-api render): 1.2-1.5× V8 and bun, in the automation
 //   list's per-sample getValue (dynamic event reads, number-to-string keys).
 // Excluded from the strict and band tests and from the corpus-coverage test
