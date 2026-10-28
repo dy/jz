@@ -343,11 +343,13 @@ export function unswitchTypedParamLoop(fn, f16 = false) {
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 
-/** Version a small leaf loop's stable typed receiver by Float32/Float64 width.
+/** Version a small leaf loop on its stable typed receiver being a Float32Array
+ * or a Float64Array: one copy, whose accesses read the width the pointer names
+ * (a test the branch predictor settles), rather than a copy per width.
  * Unlike the polymorphic array-store matcher above, typed stores never relocate
  * the receiver. Keep their bounds and Number proof, including assignment values
- * and f32 rounding. A second numeric read receiver shares one storage-dispatched clone
- * per output width, preserving the single-receiver fallback for other kinds. */
+ * and f32 rounding. A second receiver the loop reads, of any numeric element
+ * type, joins the copy's gate; any other pair runs the loop as it was. */
 function unswitchTypedAccessLoop(fn, f16, large) {
   const start = findBodyStart(fn), locals = []
   if (start < 0) return
@@ -389,33 +391,31 @@ function unswitchTypedAccessLoop(fn, f16, large) {
       if (uses > best) { selected = r; best = uses }
     }
     if (!selected) return
-    const version = (selected, shift, source) => {
+    // `float`: the receiver the loop stores to, a Float32Array or a Float64Array
+    // (element code 6 or 7, owned or a view); otherwise a receiver it only reads,
+    // of any numeric element type: signed and unsigned integers and floats.
+    // BigInt and DataView keep the original reader and its semantics.
+    const version = (selected, float, source) => {
       const bits = () => selected.boxed ? ['i64.reinterpret_f64', get(selected.name)] : get(selected.name)
       const high = () => ['i32.wrap_i64', ['i64.shr_u', bits(), ['i64.const', 32]]]
-      const base = fresh('i32'), len = fresh('i32')
-      const elem = shift == null ? fresh('i32') : null
-      const step = elem ? fresh('i32') : null
-      const half = elem && f16 ? fresh('i32') : null
-      const is32 = shift === 2, width = is32 ? TYPED_ELEM_CODE.Float32Array : TYPED_ELEM_CODE.Float64Array
-      const stride = () => step ? get(step) : ['i32.const', shift]
-      // One numeric input clone covers signed/unsigned integers and floats.
-      // BigInt and DataView retain the original reader and its semantics.
-      const flags = elem ? 7 | TYPED_ELEM_CLAMPED_FLAG | (f16 ? TYPED_ELEM_F16_FLAG : 0) : 0
+      const base = fresh('i32'), len = fresh('i32'), elem = fresh('i32'), step = fresh('i32')
+      const half = !float && f16 ? fresh('i32') : null
+      const flags = float ? 1 : 7 | TYPED_ELEM_CLAMPED_FLAG | (f16 ? TYPED_ELEM_F16_FLAG : 0)
       const gate = ['i32.eq', ['i32.and', high(), ['i32.const', ~(TYPED_ELEM_VIEW_FLAG | flags)]],
-        ['i32.const', encodePtrHi(PTR.TYPED, elem ? 0 : width)]]
+        ['i32.const', encodePtrHi(PTR.TYPED, float ? TYPED_ELEM_CODE.Float32Array : 0)]]
       const view = () => ['i32.and', high(), ['i32.const', TYPED_ELEM_VIEW_FLAG]]
       const setup = [
-        ...(elem ? [
-          ['local.set', elem, ['i32.and', high(), ['i32.const', 7]]],
-          ['local.set', step, ['i32.sub', ['i32.shr_u', get(elem), ['i32.const', 1]], ['i32.eq', get(elem), ['i32.const', 6]]]],
-          ...(half ? [['local.set', half, ['i32.and', high(), ['i32.const', TYPED_ELEM_F16_FLAG]]]] : []),
-        ] : []),
+        ['local.set', elem, ['i32.and', high(), ['i32.const', 7]]],
+        ['local.set', step, ['i32.sub', ['i32.shr_u', get(elem), ['i32.const', 1]], ['i32.eq', get(elem), ['i32.const', 6]]]],
+        ...(half ? [['local.set', half, ['i32.and', high(), ['i32.const', TYPED_ELEM_F16_FLAG]]]] : []),
         ['local.set', base, ['i32.wrap_i64', bits()]],
-        ['local.set', len, ['i32.shr_u', ['i32.load', ['select', get(base), ['i32.sub', get(base), ['i32.const', 8]], view()]], stride()]],
+        ['local.set', len, ['i32.shr_u', ['i32.load', ['select', get(base), ['i32.sub', get(base), ['i32.const', 8]], view()]], get(step)]],
         ['if', view(), ['then', ['local.set', base, ['i32.load', ['i32.add', get(base), ['i32.const', 4]]]]]],
       ]
-      const address = ix => ['i32.add', get(base), ['i32.shl', ix, stride()]]
+      const address = ix => ['i32.add', get(base), ['i32.shl', ix, get(step)]]
       const within = ix => ['i32.lt_u', ix, get(len)]
+      const choose = (cond, yes, no) => ['if', ['result', 'f64'], cond, ['then', yes], ['else', no]]
+      const wide = () => ['i32.eq', get(elem), ['i32.const', 7]]
       const rewrite = n => {
         if (!Array.isArray(n)) return n
         for (let i = 1; i < n.length; i++) n[i] = rewrite(n[i])
@@ -425,32 +425,30 @@ function unswitchTypedAccessLoop(fn, f16, large) {
         if (read(n)) {
           const f32 = () => ['f64.promote_f32', ['f32.load', address(cloneIR(n[3]))]]
           const f64 = () => ['f64.load', address(cloneIR(n[3]))]
-          let load = is32 ? f32() : f64()
-          if (elem) {
-            const choose = (cond, yes, no) => ['if', ['result', 'f64'], cond, ['then', yes], ['else', no]]
+          let load = choose(wide(), f64(), f32())
+          if (!float) {
             const integer = (bits, unsigned) => [`f64.convert_i32_${unsigned ? 'u' : 's'}`,
               [bits === 32 ? 'i32.load' : `i32.load${bits}_${unsigned ? 'u' : 's'}`, address(cloneIR(n[3]))]]
             const signed = bits => choose(['i32.and', get(elem), ['i32.const', 1]], integer(bits, true), integer(bits, false))
             const word = half ? choose(get(half), ['call', '$__f16_to_f64', ['i32.load16_u', address(cloneIR(n[3]))]], signed(16)) : signed(16)
-            load = choose(['i32.ge_u', get(elem), ['i32.const', 6]],
-              choose(['i32.eq', get(elem), ['i32.const', 7]], f64(), f32()),
+            load = choose(['i32.ge_u', get(elem), ['i32.const', 6]], load,
               choose(['i32.ge_u', get(elem), ['i32.const', 4]], signed(32),
                 choose(['i32.ge_u', get(elem), ['i32.const', 2]], word, signed(8))))
           }
           return n[1] === '$__typed_get_idx' ? load : ['if', ['result', 'f64'], within(cloneIR(n[3])),
             ['then', load], ['else', ['f64.const', `nan:${atomNanHex(ATOM.UNDEF)}`]]]
         }
-        if (!store(n) || elem) return n
+        if (!store(n) || !float) return n
         const ix = fresh('i32'), value = fresh('f64')
-        const numeric = numericStoreValue(get(value))
+        const numeric = () => numericStoreValue(get(value))
         return ['block', ['result', 'f64'], ['local.set', ix, n[3]], ['local.set', value, n[4]],
-          ['if', within(get(ix)), ['then', [is32 ? 'f32.store' : 'f64.store', address(get(ix)),
-            is32 ? ['f32.demote_f64', numeric] : numeric]]], get(value)]
+          ['if', within(get(ix)), ['then', ['if', wide(),
+            ['then', ['f64.store', address(get(ix)), numeric()]],
+            ['else', ['f32.store', address(get(ix)), ['f32.demote_f64', numeric()]]]]]], get(value)]
       }
       return { gate, setup, loop: rewrite(cloneIR(source)) }
     }
-    // Cache one further numeric receiver's storage. Keep the original
-    // single-receiver clone for nullish, BigInt and other receivers.
+    // Cache one further numeric receiver's storage.
     let other = null
     const reads = new Map()
     for (const c of calls) if (read(c) && simple(c[3])) {
@@ -461,18 +459,11 @@ function unswitchTypedAccessLoop(fn, f16, large) {
         if (!other || uses > reads.get(other.name)) other = r
       }
     }
-    const arm = shift => {
-      const one = version(selected, shift, loop)
-      if (!other) return { gate: one.gate, body: [...one.setup, one.loop] }
-      const two = version(other, null, one.loop)
-      return { gate: one.gate, body: [...one.setup,
-        ['if', two.gate, ['then', ...two.setup, two.loop], ['else', one.loop]]] }
-    }
     const mark = locals.length
-    const f64 = arm(3), f32 = arm(2)
-    if (large && !(kernelLoopIR(f64.body) && kernelLoopIR(f32.body))) { locals.length = mark; return }
-    parent[index] = ['if', f64.gate, ['then', ...f64.body],
-      ['else', ['if', f32.gate, ['then', ...f32.body], ['else', loop]]]]
+    const one = version(selected, true, loop), two = other && version(other, false, one.loop)
+    const body = two ? [...one.setup, ...two.setup, two.loop] : [...one.setup, one.loop]
+    if (large && !kernelLoopIR(body)) { locals.length = mark; return }
+    parent[index] = ['if', two ? ['i32.and', one.gate, two.gate] : one.gate, ['then', ...body], ['else', loop]]
     return false
   } })
   if (locals.length) fn.splice(start, 0, ...locals)

@@ -11,7 +11,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, funcWat } from './util.js'
 
 const speed = { level: 'speed' }
 const fProcess = (src, opt = speed) => {
@@ -180,6 +180,30 @@ test('unswitch: paired local widths preserve mixed storage, views and nullable r
         is(f(input, output, n, view, same), expected, `${input}/${output}/${n}/${view}/${same}: same and mixed widths`)
         is(f(input, output, n, view, same), expected, 'repeat with the same instance')
       }
+  }
+})
+
+// One layout holding channels of both float widths (web-audio-api's AudioBuffer:
+// Float32Array views beside Float64Array blocks): the loop takes one versioned
+// copy whose stores and reads test the width, not a copy per width, and a
+// second for its input's storage.
+test('unswitch: a store of either float width versions the loop once', () => {
+  const src = `class Buf { constructor(wide, n) { this.ch = wide ? new Float64Array(n) : new Float32Array(n) } }
+    export function f(wo, wi, n) {
+      const out = new Buf(wo, 8).ch, inp = new Buf(wi, 8).ch
+      for (let i = 0; i < 8; i++) inp[i] = i * 0.3 - 1
+      for (let i = -1; i < n; i++) out[i] = inp[i] * 0.5 + 0.1
+      return [out[0], out[3], out[7], out[8]]
+    }`
+  const fw = funcWat(jz.compile(src, { wat: true, optimize: speed }), 'f')
+  ok(fw.includes('$__utw') && fw.includes('f32.store') && fw.includes('f64.store'), 'the version stores either width directly')
+  const loops = (fw.match(/\(loop/g) || []).length
+  ok(loops <= 3, `one versioned copy beside each original loop (${loops} loops)`)
+  const js = oracle(src).f
+  for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
+    const { f } = jz(src, { optimize }).exports
+    for (const wo of [false, true]) for (const wi of [false, true]) for (const n of [-1, 0, 3, 8, 9])
+      is(f(wo, wi, n), js(wo, wi, n), `${wo}/${wi}/${n}: either width, either input, out of bounds`)
   }
 })
 
