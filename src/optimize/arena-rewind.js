@@ -321,8 +321,10 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // Functions whose returned value may derive from a table: a `return`
   // operand or the fall-through value reaches one. A function the module
   // does not define (an import) may return anything. A fixpoint over the
-  // module, since a callee's result feeds its caller's locals.
-  const defined = new Set(), tableResults = new Set(), returnsOf = new Map()
+  // module, since a callee's result feeds its caller's locals: a function is
+  // asked again only when a callee it calls joins the set (the set only
+  // grows, so the order of the asking does not change the fixpoint).
+  const defined = new Set(), tableResults = new Set(), returnsOf = new Map(), callersOf = new Map()
   phase(() => { for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
     const name = text(T.a[f])
@@ -335,16 +337,26 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     for (let c = T.a[f]; c !== NONE; c = T.next[c]) if (T.op[c] >= 0 && !isHeader(c)) last = c
     const values = []
     if (last !== NONE) values.push(last)
-    eachBody(f, (id) => { if (T.op[id] === RETURN && T.a[id] !== NONE) values.push(T.a[id]) })
+    eachBody(f, (id) => {
+      if (T.op[id] === RETURN && T.a[id] !== NONE) values.push(T.a[id])
+      else if (T.op[id] === CALL) {
+        const callee = text(T.a[id])
+        if (callee === null) return
+        const callers = callersOf.get(callee)
+        if (!callers) callersOf.set(callee, [name])
+        else if (callers[callers.length - 1] !== name) callers.push(name)
+      }
+    })
     returnsOf.set(name, { f, values })
   }
-  for (let changed = true; changed;) {
-    changed = false
-    for (const [name, { f, values }] of returnsOf) {
-      if (tableResults.has(name)) continue
-      const tainted = taintedLocals(f)
-      if (values.some(v => reaches(v, tainted))) { tableResults.add(name); changed = true }
-    }
+  const queue = [...returnsOf.keys()], queued = new Set(queue)
+  for (let i = 0; i < queue.length; i++) {
+    const name = queue[i], { f, values } = returnsOf.get(name)
+    queued.delete(name)
+    const tainted = taintedLocals(f)
+    if (!values.some(v => reaches(v, tainted))) continue
+    tableResults.add(name)
+    for (const caller of callersOf.get(name) ?? []) if (!tableResults.has(caller) && !queued.has(caller)) { queued.add(caller); queue.push(caller) }
   } })
   // Whether every value `f` returns is storage it allocated: an allocator's
   // address boxed, growth of such storage (its receiver or fresh storage), or
@@ -592,11 +604,15 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // when the two share a component (the caller calls the callee) or the callee
   // reaches such a function; a callee its caller's census does not call (a
   // runtime helper the census leaves out) takes the search as written.
+  // (the table is one node of the graph, its functions its edges: a function that may run any of
+  // them reaches it, and every path through it is a path through one of them)
+  const TABLE = '\0table'
   const edges = (n) => {
+    if (n === TABLE) return [...table]
     const r = info.get(n)
     if (!r) return []
     const out = [...r.calls]
-    if (r.refs || r.indirect && !r.resolved) out.push(...table)
+    if (r.refs || r.indirect && !r.resolved) out.push(TABLE)
     else if (r.indirect) out.push(...r.targets)
     return out
   }
