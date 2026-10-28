@@ -826,11 +826,14 @@ compilation. Porffor alpha 13 compiles them, but the executables fail at runtime
 These failures retain their diagnostics in `results.json` and do not enter
 speed ratios. Static Hermes remains unavailable on the reference machine.
 
-**No-EH build variant for the native lab rows (`jz-w2c`).** The lab cases'
+**No-EH build variant for the native lab rows (`jz-w2c2`).** The lab cases'
 compiled wasm carries a wasm-exceptions tag section (jz lowers `try`/`catch`/
-bare `throw` through it), which neither `wasm2c` nor `w2c2` translates
-("invalid section code: 13"); the same `NEEDS_EH` gate is documented in the
-`jz-w2c` note above and extended to `jessie`/`jz`/`watr`. `pruneUnusedThrowRuntime`
+bare `throw` through it), which `w2c2` does not translate. `wasm2c` does:
+`scripts/native/compile.mjs` passes `--enable-exceptions` to a WABT that takes
+it (1.0.42 enables it by default), so `jz-w2c` runs `jessie` and `watr`, and
+leaves out only `jz`, whose graph the CLI cannot build. The `NEEDS_EH` gate
+keeps `jessie`/`jz`/`watr` from `jz-w2c2` and from a wasmtime without the
+exceptions proposal. `pruneUnusedThrowRuntime`
 (`src/compile/index.js`) already lowers every throw to `unreachable` and
 drops the tag when NO catch is reachable anywhere — but it only fires when
 `userThrows` is false, and `userThrows` goes true the moment source has ANY

@@ -182,23 +182,26 @@ const NO_WEB = new Set(['watr', 'jessie', 'jz', 'webaudio', 'polytri', 'worley',
 // entirely — see compileJzSelfIsolated / bench/_lib/compile-jz-self.mjs below,
 // which sets its own (much larger) memory and never calls this.
 const caseMemory = () => ({})
-// Cases whose source uses try/catch — jz lowers it to standardized wasm EH
+// Cases whose module catches — jz lowers try/catch to standardized wasm EH
 // (try_table + a tag section). V8/JSC run it; wasmtime 25's loader rejects the
-// tag section and wabt's wasm2c parses it but has no try_table codegen
-// ("unimplemented"). Gate those targets to a skip: a missing toolchain
-// capability, not a case failure. Probe wasmtime's feature list (`-W help`)
-// so a future wasmtime upgrade re-enables the row by itself. (The jz case
-// additionally needs a graph-flattened entry for CLI shell-outs — cli.js does
-// no node_modules resolution — so revisit that path when the gate lifts.)
-// watr joined 2026-07: its jz-compiled module now carries a tag section too
-// (wasm2c: "invalid section code: 13"), the same structural exclusion.
+// tag section, and w2c2 translates no EH. Gate those targets to a skip: a
+// missing toolchain capability, not a case failure. Probe wasmtime's feature
+// list (`-W help`) so a wasmtime upgrade re-enables the row by itself. wasm2c
+// translates try_table and the tag (scripts/native/compile.mjs passes
+// --enable-exceptions to a WABT that takes it, 1.0.42 enables it by default,
+// and links wasm-rt-exceptions-impl.c), so jz-w2c runs these cases; it leaves
+// out only jz, whose graph the CLI shell-out cannot build (no node_modules
+// resolution for self.js's bare `watr` imports). A module that throws and never
+// catches carries the tag too (a98rgb, cam16, hct, hsl, hwb, ipt, jzazbz,
+// jzczhz, munsell and worley's in 2026-10): such a row fails, not skips, on a
+// wasmtime or w2c2 without EH.
 const NEEDS_EH = new Set(['jessie', 'jz', 'watr'])
 const wasmtimeHasEH = (() => {
   let v
   return () => v ??= /\bexceptions\b/.test(spawnSync('wasmtime', ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
 })()
 // optimize `exceptions: false` (src/compile/index.js pruneUnusedThrowRuntime): an
-// opt-in build variant for jz-w2c/jz-w2c2 that lowers every surviving internal
+// opt-in build variant for jz-w2c2 (and jz-w2c, before it took wasm2c's EH) that lowers every surviving internal
 // `throw` to `unreachable` even when source has a bare `throw` with no
 // reachable `try`/`catch` — the common shape that otherwise keeps NEEDS_EH's
 // cases pinned to a live-but-unreachable exceptions tag. It is a strict
@@ -216,7 +219,7 @@ const wasmtimeHasEH = (() => {
 //   watr   — UNSAFE since the iterator runtime's for-of pull catches to close
 //            the iterator (`jz_iter$__it_pull` under a `try_table (catch
 //            $__jz_err)`): watr 5.11's graph has no `try` of its own, yet its
-//            for-of loops keep 63 try_tables under the flag (2026-10: wasm2c
+//            for-of loops keep 63 try_tables under the flag (2026-10: wasm2c without EH,
 //            "invalid section code: 13" on every reference run). Gated until
 //            that close lowers without a catch.
 //   jessie — UNSAFE, stays gated. subscript's switch-statement PARSE feature
@@ -1046,10 +1049,8 @@ const targets = {
   },
   'jz-w2c': {
     name: 'jz → wasm2c → clang -O3',
-    // NEEDS_EH cases stay blocked UNLESS the EH_ABORT_VARIANT verified-safe
-    // list covers them — compileJzW2c passes optimize.exceptions:false for those, so the
-    // wasm this target's wasm2c step receives already has no tag section.
-    available: c => (!NEEDS_EH.has(c.id) || EH_ABORT_VARIANT.has(c.id)) && !w2cTools().error && has('clang'),
+    // wasm2c translates EH (see NEEDS_EH): only jz, which the CLI cannot build, stays out.
+    available: c => c.id !== 'jz' && !w2cTools().error && has('clang'),
     bin: w2cBinPath,
     // The user-facing native path (scripts/native/compile.mjs) with the speed
     // flags above, the memory-base postprocess, and the case's `main` as entry.
