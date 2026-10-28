@@ -150,6 +150,7 @@ const LEVEL_PRESETS = Object.freeze({
     splitFuncs: false,        // a call and its moves per moved arm: the size tier keeps its functions whole
     loopPasses: false,        // a call and its moves per pass of a loop nest: the size tier keeps its functions whole
     refreshGrown: false,      // a forwarding test after each call that may grow an array: the size tier follows the forward on each read
+    hoistForwardHops: false,  // a hop local per loop and a re-resolve after each call that may move a block: the size tier asks at each read
     leanRuntime: true,        // `__str_eq`/`__str_hash` link their plain byte walks (the hot/cold split, the 4-byte chunking and the per-probe hash fast arms are speed-for-size)
 
     inlineToNum: false,      // unknown conversions share __to_num; the per-site number fast path trades bytes for speed

@@ -3026,6 +3026,7 @@ src/
                 plan/object-reads.js: a key a loop reads of an object the function made and only reads, read once where the object is made
                 plan/site-receivers.js: a store's receiver the frame census cannot read again (`map.get(k).push(v)`, `(seen ??= new Set()).add(k)`), read once into a local before the statement, so the escape flag lowers to its address instead of zero
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
+                forward-hops.js (after the loop compaction, before watr: a receiver a loop never rebinds asks whether its block moved once before the loop and again after each of the runtime's cold calls that may move a block, a push's growth among them, not at every read; a block moves only inside a call, and a loop that calls other code keeps its hops);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);

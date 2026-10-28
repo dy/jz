@@ -102,6 +102,7 @@ export const PASS_NAMES = [
   'versionArrayPatterns',     // an array pattern over a value that may be an array reads by position behind Array.isArray, the protocol beside it (plan/index-array-patterns.js)
   'treeshake',
   'refreshGrown',             // after a call that may grow an array, the caller's binding of it takes the new block (compile/emit/call.js), off at the size tier
+  'hoistForwardHops',         // a receiver a loop never rebinds asks whether its block moved before the loop and after each call that may move one (optimize/forward-hops.js), off at the size tier
   'truncChoice',              // a choice of a float's ceiling below zero and its floor above is its truncation (optimize/trunc-choice.js)
   'selectArms',               // a choice whose arms compute one tree: the tree over a select of the leaves they differ in (optimize/select-arms.js)
   'splitFuncs',               // a large function's conditional arms become functions of their own: V8 compiles what runs (optimize/split-funcs.js), speed-only
@@ -141,7 +142,7 @@ export const PASS_NAMES = [
   'selectArmUpdates',         // disjoint-arm update chain → select accumulation — speed-only
   'guardedUpdate',            // a data-dependent last conjunct folds into the update it guards (optimize/guarded-update.js) — speed-only
   'typedDecode',              // a typed receiver of open kind decodes once per loop (optimize/typed-decode.js)
-  'inlinePush',               // a push into an array stores in place where its block has room, the growth a call (module/array.js) — speed-only
+  'inlinePush',               // a push into an array stores in place where its block has room, the growth a call (module/array.js), speed-only
   'shiftRemainder',           // a remainder rebuilt from its shifted quotient is a mask (optimize/shift-remainder.js)
   'narrowFloat32',            // `fround` of an operator over `fround`s runs in single precision (optimize/float32.js)
   // WAT-pipeline passes previously gated only by `undefined !== false` inside

@@ -211,7 +211,7 @@ const TESTS = [
   'inline-pure-leaf',
   'lean-dict',
   'int-narrow', 'reuse-loads',
-  'specialize', 'guards', 'inline-args', 'growth', 'push',
+  'specialize', 'guards', 'inline-args', 'growth', 'push', 'forward-hops',
   'store-int32',
   'present-number',
   'sequence-values', 'bigint-division', 'bigint-tag',

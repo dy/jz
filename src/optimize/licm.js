@@ -47,7 +47,7 @@ const noReturnCall = (callee) => typeof callee === 'string' && callee.startsWith
 // helpers and the inline length/forwarding writes), and a payload store lands
 // inside its own allocation, so these never change a header. A header load
 // with an invariant address is invariant across them.
-const HEADER_STORE_FREE = new Set(['f64.store', 'f32.store', 'i64.store', 'v128.store'])
+export const HEADER_STORE_FREE = new Set(['f64.store', 'f32.store', 'i64.store', 'v128.store'])
 // Globals an allocating helper may move: the runtime's own (`$__heap` and its
 // limits, the durable-reset log, the caches). A user global (a module `const`
 // array) is not among them.

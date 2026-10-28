@@ -24,6 +24,7 @@ import { appendLateStdlib } from './stdlib-pull.js'
 import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
 import { insertLoopCompacts } from '../../optimize/loop-compact.js'
 import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
+import { hoistForwardHops, collectStillFuncs, collectResults } from '../../optimize/forward-hops.js'
 const COMPACT_KERNELS = ['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thresh']
 /**
  * Phase: whole-module + per-function optimization passes.
@@ -118,6 +119,14 @@ export function optimizeModule(sec, profiler) {
   // shapes (optimize/loop-rewind.js); a loop it lifted is a new node this never sees.
   if (ctx.plans.rewindLoopLabels) t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopLabels); ctx.plans.rewindLoopLabels = null })
   if (ctx.plans.compactLoopLabels) t('loopCompacts', () => { insertLoopCompacts(sec.funcs, ctx.plans.compactLoopLabels); ctx.plans.compactLoopLabels = null })
+  // A receiver a loop never rebinds: its forward hop once before the loop and
+  // after each call that may move a block (optimize/forward-hops.js). After the
+  // compaction goes in: a compacted loop is re-entered past the set before it.
+  if (cfg && cfg.hoistForwardHops !== false) t('forwardHops', () => {
+    const funcs = [...sec.funcs, ...sec.stdlib, ...sec.start]
+    const still = collectStillFuncs(funcs), results = collectResults(funcs, ctx.module.imports)
+    for (const fn of funcs) hoistForwardHops(fn, still, results)
+  })
   if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
     // The guarded form necessarily writes a declared v128 local. Keep scalar
