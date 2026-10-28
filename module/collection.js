@@ -3037,6 +3037,14 @@ export default (ctx) => {
     const view = ctx.summary?.at(ctx.func.current)
     const nullish = view?.mayBeNullishExpr(proof) === true
     const vt = valTypeOf(proof), typedArray = vt === VAL.TYPED && view?.typedPayloadCtorOfExpr(proof) != null
+    // Where the program resizes buffers, a typed array its buffer ends before
+    // is a TypeError to iterate, as its iterator's first step throws (module/typedarray.js `$__ta_valid`).
+    const resizable = !!ctx.features.resizable
+    const valid = (t) => (ctx.runtime.throws = true, inc('__ta_valid'), ['call', '$__ta_valid', ['i64.reinterpret_f64', ['local.get', `$${t}`]]])
+    if (!nullish && typedArray && resizable) {
+      const t = temp('iter')
+      return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(emit(src))], valid(t), ['local.get', `$${t}`]], 'f64')
+    }
     if (!nullish && (vt === VAL.ARRAY || typedArray))
       return asF64(emit(src))
     const stringPoints = ir => { ctx.module.include('string'); inc('__str_points'); return ['call', '$__str_points', ['i64.reinterpret_f64', ir]] }
@@ -3057,7 +3065,8 @@ export default (ctx) => {
       ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]]]
     // A source of a known kind that may be missing (a field set on first
     // use): the missing one throws, the present one iterates as its kind.
-    const known = vt === VAL.ARRAY || typedArray ? ['local.get', `$${t}`]
+    const known = vt === VAL.ARRAY ? ['local.get', `$${t}`]
+      : typedArray ? resizable ? ['block', ['result', 'f64'], valid(t), ['local.get', `$${t}`]] : ['local.get', `$${t}`]
       : vt === VAL.STRING ? stringPoints(['local.get', `$${t}`])
       : vt === VAL.SET ? collKeysFromTemp(t, SET_ENTRY) : vt === VAL.MAP ? collEntriesFromTemp(t, MAP_ENTRY) : null
     if (known) return typed(['block', ['result', 'f64'], bind, missing, known], 'f64')
@@ -3085,7 +3094,7 @@ export default (ctx) => {
               ['i32.eq', ptrType(), ['i32.const', PTR.ARRAY]],
               ['i32.and', ['i32.eq', ptrType(), ['i32.const', PTR.TYPED]],
                 ['i32.eqz', ['i32.and', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', DATA_VIEW_FLAG]]]]],
-              ['then', ['local.get', `$${t}`]], ['else', other]]]]]]]]], 'f64')
+              ['then', ...(resizable ? [valid(t)] : []), ['local.get', `$${t}`]], ['else', other]]]]]]]]], 'f64')
   }
 
   ctx.core.emit['__iter_arr'] = iterArray

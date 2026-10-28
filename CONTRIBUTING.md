@@ -1064,7 +1064,13 @@ bounds; `__dv_bytes` throws a DataView's TypeError). A one-argument
 so a typed array over a resizable buffer is always a view, never the buffer's
 own header, whose properties word the mark holds. The decode pass, the loop
 versioning of a nest that calls anything and the descriptor-word motion of
-LICM are off, since a call may resize a view's buffer.
+LICM are off, since a call may resize a view's buffer. Each `.typed:` method
+but an element access and `subarray`, `join`, for-of and spread validate
+their receiver after its arguments evaluate (`__ta_valid`, ValidateTypedArray:
+a view out of bounds is a TypeError). A resize of a buffer the module made at
+its start logs the old length, which `memory.reset()` restores (durable-log.js
+`__durable_fwd_log`), and the host reads the buffer as a copy resizable to the
+same maximum.
 Array/typed-array `at`, typed-array ranges and buffer slicing capture argument
 values before coercing positions. Omitted or undefined ends use the captured
 length; an object that converts to undefined instead supplies numeric zero.
@@ -5281,9 +5287,11 @@ conversions, pointer/tag accessors, NaN constants, `toModule`, `wrapVal`,
   early completion or binding errors. Native Map/Set views are snapshots.
   Indexed values cannot override their iterator.
 - `ArrayBuffer.prototype.transfer`/`transferToFixedLength` and growable
-  `SharedArrayBuffer` are unsupported. A typed array whose resizable buffer
-  shrank below it reads as empty, and its methods act on no elements where
-  JavaScript throws a TypeError. A resizable buffer reaches the host as a fixed copy.
+  `SharedArrayBuffer` are unsupported. A resizable buffer reaches the host as a
+  copy (resizable to the same maximum), and one the host passes in arrives as
+  a fixed copy. A typed array out of bounds of its resizable buffer converts to
+  an empty string (`String(view)`, `view.toString()`) where JavaScript throws a
+  TypeError.
 - Async generator functions work; async generator methods and `await using` reject.
 
 ## Commits

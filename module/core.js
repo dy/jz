@@ -2924,8 +2924,10 @@ export default (ctx) => {
           const et = aux & 7
           const shift = et === 7 ? 3 : et >= 4 ? 2 : et >> 1
           const off = ['local.get', `$${obj}`]
+          // a view of a resizable buffer holds what its buffer bounds (`$__view_bytes`)
+          if (isView && ctx.features.resizable) inc('__view_bytes')
           const byteLen = isView
-            ? ['i32.load', off]
+            ? ctx.features.resizable ? ['call', '$__view_bytes', off] : ['i32.load', off]
             : ['i32.load', ['i32.sub', off, ['i32.const', 8]]]
           const lenI32 = shift === 0
             ? typed(byteLen, 'i32')

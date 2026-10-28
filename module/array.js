@@ -3168,6 +3168,18 @@ export default (ctx) => {
   }
 
   // .join(sep) → concatenate array elements with separator string
-  ctx.core.emit['.join'] = (arr, sep) => (inc('__str_join'),
-    typed(['call', '$__str_join', asI64(emit(arr)), asI64(storedValue(sep == null ? ['str', ','] : sep))], 'f64'))
+  ctx.core.emit['.join'] = (arr, sep) => {
+    inc('__str_join')
+    const join = (recv, s) => typed(['call', '$__str_join', recv, s], 'f64')
+    const vt = valTypeOf(arr)
+    if (!ctx.features.resizable || (vt && vt !== VAL.TYPED)) return join(asI64(emit(arr)), asI64(storedValue(sep == null ? ['str', ','] : sep)))
+    // where the program resizes buffers, a typed array its buffer ends before
+    // throws once the receiver and separator are evaluated (module/typedarray.js `$__ta_valid`)
+    ctx.runtime.throws = true
+    inc('__ta_valid')
+    const r = tempI64('jr'), s = tempI64('js')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${r}`, asI64(emit(arr))], ['local.set', `$${s}`, asI64(storedValue(sep == null ? ['str', ','] : sep))],
+      ['call', '$__ta_valid', ['local.get', `$${r}`]], join(['local.get', `$${r}`], ['local.get', `$${s}`])], 'f64')
+  }
 }

@@ -12,7 +12,8 @@ import print from 'watr/print'
 import { typed, asF64, asI32, asI32Sat, asI64, toInt32, i32Narrowed, i32Word, f64Range, toNumF64, coerceNullishToNum, coerceAtomsToNum, numberNanIR, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, boxBigInt, rawBigInt, deferBigintBox, isBigIntBox, mkPtrIR, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, temp, tempI32, tempI64, undefExpr, throwTypeErrorIR, truthyIR, isLit, isConst, isPureIR, litVal, freshId, readI64, unboxBigInt, maybeUnboxBigInt, fromI64, isNullish, isUndef } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, storedValue, idx, deps, call, positionArgs } from '../src/bridge.js'
-import { strHashLiteral } from './collection.js'
+import { strHashLiteral, durableLenLogIR } from './collection.js'
+import { hasDurableReset } from './collection/durable.js'
 import { valTypeOf } from '../src/kind.js'
 import { K, TAGS, NULL_BITS, NUMBER, STRING, hasTag, tagOf, tagsOf, bitOf, typedElemKind } from '../src/summary/kind.js'
 import { typedIdxProven, typedIdxWhole, idxKey, exprType } from '../src/type.js'
@@ -23,6 +24,7 @@ import { ctx as ctxRef, err, inc, PTR, LAYOUT, HEAP, registerGetter, setLinkDema
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor, plannedTypedStorageInfo, plannedTypedPayloadInfo } from '../src/compile/typed-storage-plan.js'
+import { copyReceiverFacts, isSideEffectFree } from '../src/compile/emit/shared.js'
 import { isNullable } from '../src/summary/kind.js'
 import { activeBoundsAssumption, activeBoundsFrame } from '../src/type/canonical-bounds.js'
 import { frameNode } from '../src/function.js'
@@ -118,6 +120,7 @@ const VIEW_ERRORS = {
   resizeLength: ['RangeError', 'ArrayBuffer.prototype.resize: Invalid length parameter'],
   notResizable: ['TypeError', 'Method ArrayBuffer.prototype.resize called on incompatible receiver'],
   viewOut: ['TypeError', 'DataView is out of bounds of its ArrayBuffer'],
+  arrayOut: ['TypeError', 'Cannot perform a %TypedArray%.prototype method on an out-of-bounds view'],
 }
 
 export default (ctx) => {
@@ -162,7 +165,8 @@ export default (ctx) => {
     __ab_max: ['__ptr_offset'],
     __ab_new: () => ['__alloc_hdr_n', '__mkptr', thrower('maxLength')],
     __ab_resizable_check: () => ['__ptr_type', '__ab_resizable', thrower('notResizable')],
-    __ab_resize: () => ['__ptr_offset', thrower('resizeLength')],
+    __ab_resize: () => ['__ptr_offset', thrower('resizeLength'), ...(hasDurableReset() ? ['__durable_fwd_log'] : [])],
+    __ta_valid: () => ['__ptr_type', '__ptr_aux', '__view_out', thrower('arrayOut')],
   })
 
   // .map/.forEach/.find/.some/.every/.filter/.findIndex invoke with
@@ -297,6 +301,15 @@ export default (ctx) => {
     (select (i32.gt_u (local.get $off) (local.get $len))
       (i32.gt_u (i32.add (local.get $off) (i32.load (local.get $d))) (local.get $len))
       (i32.load offset=12 (local.get $d))))`
+  // ValidateTypedArray: a typed array its resizable buffer ends before is a
+  // TypeError for the %TypedArray%.prototype methods (a view of a DataView or
+  // an owned array never is).
+  ctx.core.stdlib['__ta_valid'] = `(func $__ta_valid (param $p i64)
+    (local $aux i32)
+    (if (i32.ne (call $__ptr_type (local.get $p)) (i32.const ${PTR.TYPED})) (then (return)))
+    (local.set $aux (call $__ptr_aux (local.get $p)))
+    (if (i32.or (i32.and (local.get $aux) (i32.const ${DATA_VIEW_FLAG})) (i32.eqz (i32.and (local.get $aux) (i32.const 8)))) (then (return)))
+    (if (call $__view_out (i32.wrap_i64 (local.get $p))) (then ${throwWat('arrayOut')})))`
   ctx.core.stdlib['__dv_bytes'] = `(func $__dv_bytes (param $d i32) (result i32)
     (if (call $__view_out (local.get $d)) (then ${throwWat('viewOut')}))
     (call $__view_bytes (local.get $d)))`
@@ -840,6 +853,8 @@ export default (ctx) => {
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (if (i32.gt_u (local.get $n) (local.get $len))
       (then (memory.fill (i32.add (local.get $off) (local.get $len)) (i32.const 0) (i32.sub (local.get $n) (local.get $len)))))
+    ;; a buffer the module made at its start takes back its length at memory.reset
+    ${durableLenLogIR('off')}
     (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $n)))`
   ctx.core.emit['.buffer:resize'] = (obj, len) => {
     ctx.runtime.throws = true
@@ -3916,5 +3931,48 @@ export default (ctx) => {
     setLinkDemand('typedarray')
     inc('__hex_from')
     return typed(['call', '$__hex_from', asI64(emit(str))], 'f64')
+  }
+
+  // Where the program resizes buffers, each %TypedArray%.prototype method
+  // validates its receiver first (ValidateTypedArray, `$__ta_valid`): a view its
+  // buffer ends before throws where it would act on no elements. An element
+  // read or write and subarray take such a view as empty, as JavaScript does.
+  // (and the generic ones a typed receiver takes: its iterators, reduceRight)
+  const SHARED = new Set(['.keys', '.values', '.entries', '.reduceRight'])
+  for (const name of Object.keys(ctx.core.emit)) {
+    if (!(name.startsWith('.typed:') || SHARED.has(name)) || name === '.typed:[]' || name === '.typed:[]=' || name === '.typed:subarray') continue
+    const method = ctx.core.emit[name]
+    const validated = (arr, ...args) => {
+      if (!rz()) return method(arr, ...args)
+      const ctor = plannedTypedStorageCtor(ctx, arr)
+      // an owned typed array, or a receiver of another kind, has no buffer to end before it
+      if (ctor?.startsWith('new.') && !ctor.endsWith('view')) return method(arr, ...args)
+      const vt = valTypeOf(arr)
+      if (vt && vt !== VAL.TYPED) return method(arr, ...args)
+      // The receiver, then the arguments, before the check, as JavaScript
+      // evaluates them before the call: a name or a literal reads again, a
+      // callback stays the method's to inline, any other expression is held.
+      const held = [], aliased = [], view = ctx.summary?.at(ctx.func.current)
+      const stay = (n) => n == null || typeof n === 'string' || isSideEffectFree(n) || Array.isArray(n) && n[0] === '=>'
+      const hold = (n) => {
+        if (stay(n)) return n
+        const t = temp('tav')
+        held.push(['local.set', `$${t}`, asF64(emit(n))])
+        copyReceiverFacts(n, t)
+        view?.alias(t, n, false); aliased.push(t)
+        return t
+      }
+      let ir = null, recv = arr
+      try { recv = hold(arr); const given = args.map(hold); ir = method(recv, ...given) }
+      finally { for (const t of aliased) view.unalias(t) }
+      if (ir == null) return ir
+      ctx.runtime.throws = true
+      inc('__ta_valid')
+      const check = ['call', '$__ta_valid', ['i64.reinterpret_f64', recv === arr ? asF64(emit(recv)) : ['local.get', `$${recv}`]]]
+      const type = ir.type && ir.type !== 'void' ? ir.type : null
+      return typed(['block', ...(type ? [['result', type]] : []), ...held, check, ir], ir.type)
+    }
+    validated.argc = method.argc ?? method.length   // the arguments the dispatch hands it (ctx.js emitArity)
+    ctx.core.emit[name] = validated
   }
 }

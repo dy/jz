@@ -872,8 +872,10 @@ export const memory = (src) => {
       return new Ctor(mem.buffer, held(off, byteLen), byteLen / stride)
     }
     if (t === 2) {  // BUFFER
+      // a copy, resizable to the same maximum where the module's is (layout.js RESIZABLE_MARK)
       const byteLen = m.getInt32(off - 8, true)
-      const out = new ArrayBuffer(byteLen)
+      const out = off >= 16 && m.getBigInt64(off - 16, true) === BigInt(RESIZABLE_MARK)
+        ? new ArrayBuffer(byteLen, { maxByteLength: m.getInt32(off - 4, true) }) : new ArrayBuffer(byteLen)
       new Uint8Array(out).set(new Uint8Array(mem.buffer, off, byteLen))
       return out
     }

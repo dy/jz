@@ -107,3 +107,44 @@ test('Atomics.notify checks its index against the length before the index conver
   for (const optimize of levels(0, 2, 3, 'size')) is(jz(tryIt + src, { optimize }).exports.shrink(), [0, 0], `O${optimize} the shrunk buffer notifies 0`)
   agree(src, [['past'], ['inside'], ['below']])
 })
+
+// ValidateTypedArray (ECMA-262 23.2.4.4): a typed array its resizable buffer
+// ends before is a TypeError for %TypedArray%.prototype's methods and its
+// iteration, after the receiver and arguments evaluate; its length, byteLength
+// and byteOffset read 0, an element read undefined, subarray empty.
+test('a typed array its buffer shrank below throws for its methods and iteration, and reads empty', () => {
+  agree(`
+    const b = new ArrayBuffer(8, { maxByteLength: 16 })
+    const fixed = new Uint8Array(b, 0, 8), track = new Uint8Array(b, 4), whole = new Uint8Array(b)
+    export const shrink = (n) => { b.resize(n); return [fixed.length, fixed.byteLength, fixed.byteOffset, track.length, track.byteOffset, whole.length, fixed[0], fixed.subarray(0).length] }
+    export const methods = () => [tryIt(() => fixed.fill(1)), tryIt(() => fixed.indexOf(0)), tryIt(() => fixed.at(0)), tryIt(() => fixed.join()),
+      tryIt(() => fixed.slice().length), tryIt(() => fixed.includes(0)), tryIt(() => fixed.map(x => x).length),
+      tryIt(() => { let n = 0; fixed.forEach(() => n++); return n }), tryIt(() => fixed.set([1])), tryIt(() => fixed.reverse().length),
+      tryIt(() => fixed.sort().length), tryIt(() => fixed.every(x => x)), tryIt(() => [...fixed].length), tryIt(() => { let n = 0; for (const x of fixed) n++; return n }),
+      tryIt(() => whole.fill(2).length)]
+    export const others = () => [tryIt(() => [...fixed.keys()].length), tryIt(() => [...fixed.values()].length), tryIt(() => [...fixed.entries()].length),
+      tryIt(() => fixed.lastIndexOf(0)), tryIt(() => fixed.findLast(x => x)),
+      tryIt(() => fixed.copyWithin(0, 1).length), tryIt(() => fixed.reduce((a, x) => a + x, 0)), tryIt(() => fixed.filter(x => x).length),
+      tryIt(() => fixed.toReversed().length), tryIt(() => fixed.with(0, 1).length)]
+    export const order = () => { const log = []; const r = tryIt(() => fixed.fill((log.push('arg'), 1))); return [r, log.join()] }
+  `, [['shrink', 3], ['methods'], ['others'], ['order'], ['shrink', 10], ['methods'], ['others']])
+})
+
+test('a resizable buffer reaches the host resizable to its maximum, and memory.reset restores its length', () => {
+  const src = `let g = new ArrayBuffer(4, { maxByteLength: 16 })
+    const v = new Uint8Array(g)
+    export const grow = () => { g.resize(12); v[10] = 7; return [g.byteLength, v.length] }
+    export const state = () => [g.byteLength, v.length, v[10]]
+    export const buf = () => g`
+  for (const optimize of levels(0, 2, 'size')) {
+    const { exports, memory } = jz(src, { optimize })
+    is(exports.grow(), [12, 12], `O${optimize} grown`)
+    const host = exports.buf()
+    is([host.byteLength, host.resizable, host.maxByteLength, new Uint8Array(host)[10]], [12, true, 16, 7], `O${optimize} the host's copy is resizable`)
+    host.resize(16)
+    is(exports.state(), [12, 12, 7], `O${optimize} the host resizes its copy`)
+    memory.reset()
+    is(exports.state(), [4, 4, undefined], `O${optimize} reset takes back the length`)
+    is(exports.grow(), [12, 12], `O${optimize} grows again`)
+  }
+})
