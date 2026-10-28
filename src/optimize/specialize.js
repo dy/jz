@@ -331,8 +331,10 @@ const entered = (loop, targets, tag, from, taken) => {
 }
 
 /** Specialize the loops of `fn`. Returns the entry facts of the copies for the
- *  integer pass, or null when nothing changed. */
-export function specializeLoops(fn) {
+ *  integer pass, or null when nothing changed. `left.plan`, where `left` is
+ *  given: the integer plan of the function as it leaves, where nothing changed
+ *  it after the plan was read (the integer pass reads the same intervals). */
+export function specializeLoops(fn, left = null) {
   if (!isArr(fn) || fn[0] !== 'func') return null
   // (the runtime's own functions are written in their types)
   if (typeof fn[1] === 'string' && (fn[1].startsWith('$__') || fn[1].startsWith('$math.'))) return null
@@ -367,7 +369,9 @@ export function specializeLoops(fn) {
     types.set(name, type)
     return d
   }
+  let last = null   // the latest plan, while nothing has changed the function since
   const undo = (b) => {
+    last = null
     b.r.holder[b.r.holder.indexOf(b.whole)] = b.r.region
     assume.delete(b.fast)
     for (const d of b.decls) { fn.splice(fn.indexOf(d), 1); bodyStart--; types.delete(d[1]) }
@@ -375,6 +379,7 @@ export function specializeLoops(fn) {
     budget.room += b.size
   }
   const dropGuard = (b, g) => {
+    last = null
     for (const t of g.tests) b.entry.splice(b.entry.indexOf(t), 1)
     assume.get(b.fast).delete(g.name)
   }
@@ -696,6 +701,7 @@ export function specializeLoops(fn) {
       whole = region === loop ? ['block', done, way, asWritten] : ['block', done, ['block', region[1], way, asWritten]]
     }
     r.holder[r.holder.indexOf(region)] = whole
+    last = null
     const grown = size(whole) - n0
     budget.left -= grown
     budget.room -= grown
@@ -718,7 +724,7 @@ export function specializeLoops(fn) {
   }
   let held = null
   for (let depth = 0; depth < 3 && level.length; depth++) {
-    const plan0 = held ?? integerPlan(fn, assume, everyLoop())
+    const plan0 = held ?? (last = integerPlan(fn, assume, everyLoop()))
     held = null
     if (!plan0) break
     const wanted = new Set(level.map(r => r.region))
@@ -734,7 +740,7 @@ export function specializeLoops(fn) {
     // Which copies narrow anything, and which assumed integers are read as integers.
     let kept = built
     if (built.length) {
-      const plan = integerPlan(fn, assume, everyLoop())
+      const plan = last = integerPlan(fn, assume, everyLoop())
       kept = []
       for (const b of built) {
         if (!plan) { undo(b); continue }
@@ -755,5 +761,6 @@ export function specializeLoops(fn) {
     }
     level = next
   }
+  if (left && last) left.plan = last
   return assume.size ? assume : null
 }

@@ -431,9 +431,10 @@ export function narrowBoxedLocals(fn) {
   return true
 }
 
-export function narrowInts(fn, assume = null, expand = true, words = 'wide') {
+export function narrowInts(fn, assume = null, expand = true, words = 'wide', known = null) {
   if (!isArr(fn) || fn[0] !== 'func') return false
-  const plan = integerPlan(fn, assume)
+  // (`known`: the plan of this function and `assume` as they stand, read by the pass before)
+  const plan = known ?? integerPlan(fn, assume)
   if (!plan) return false
   const { bodyStart, decls, facts, N, early, tally, held, at, whole } = plan
   const { av } = facts

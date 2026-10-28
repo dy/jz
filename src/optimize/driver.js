@@ -165,8 +165,10 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // share their helper for size, `inlineToNum: false`, this one calls its own)
   if ((!cfg || cfg.fusedRewrite !== false) && (!cfg || cfg.inlineToNum !== false)) lowerToInt32Tails(fn)
   if (!cfg || cfg.intNarrow !== false) {
-    const copies = cfg && cfg.specializeLoops === true ? specializeLoops(fn) : null
-    narrowInts(fn, copies, cfg?.inlineToNum !== false, cfg?.wordTruncation ?? 'wide')
+    // (the specializer hands on the plan it read last where it changed nothing after)
+    const left = { plan: null }
+    const copies = cfg && cfg.specializeLoops === true ? specializeLoops(fn, left) : null
+    narrowInts(fn, copies, cfg?.inlineToNum !== false, cfg?.wordTruncation ?? 'wide', left.plan)
     // A wide integer read only for its low word (an element offset) is that word;
     // the addresses it indexes take their constant parts into the memarg again.
     if (cfg?.wrappedWords !== false && narrowWrappedWords(fn)) refoldMemargs(fn)

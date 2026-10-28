@@ -1040,11 +1040,27 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   for (const [name, type] of types) if (type === 'f64' || type === 'i32' || type === 'i64') bind(env, name, params.has(name) ? type === 'i32' ? I32 : null : exact(0))
   const body = fn.slice(bodyStart)
   const walk = () => seq(body, { env: fork(env) })
+  const holdsLoop = (n) => { if (!isArr(n)) return false; if (n[0] === 'loop') return true; for (let i = 1; i < n.length; i++) if (holdsLoop(n[i])) return true; return false }
   // Up: heads grow until a walk moves none (a bound still moving after two
   // walks widens). Down: two walks take back what the loops' tests bound.
   // Then the walk that records.
+  // A function with no loop: its first walk records where it moves no element
+  // (the walks after it repeat it); where one moves, a later walk reads it, and
+  // the records start over with the walks below, as from their second round.
+  const loopy = body.some(holdsLoop)
+  if (!loopy) {
+    provisional = 0
+    phase = 'last'
+    elementsMoved = false
+    walk()
+    if (abort) return null
+    if (!elementsMoved) return { av, types, params, writes, reads, loops, entry }
+    av.clear(); writes.clear(); reads.clear(); loops.clear(); entry.clear()
+    phase = 'up'
+    round = 1
+  }
   provisional = 1
-  for (round = 0, moved = true; moved && !abort; round++) {
+  for (moved = true; moved && !abort; round++) {
     if (round > 24) return null
     moved = false
     elementsMoved = false
@@ -1052,7 +1068,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     if (elementsMoved) moved = true
   }
   phase = 'down'
-  for (let k = 0; k < 2 && !abort; k++) walk()
+  // (what they take back is a loop head's: a function with no loop has none, and its walk repeats the one before)
+  if (loopy) for (let k = 0; k < 2 && !abort; k++) walk()
   phase = 'last'
   provisional = 0
   walk()
