@@ -4,7 +4,8 @@
  * `ref.func`) through `call`, `return_call` and `ref.func`; an unexported
  * global survives when a surviving node reads or writes it (to a fixpoint,
  * since a global's initializer may name another). With `removeDead` off the
- * user's functions and globals are roots and only runtime ones go.
+ * user's functions and globals are roots and only runtime ones go, the
+ * functions of the compiler's `jz:` modules among them.
  *
  * Returns the call count per callee over the reachable functions, which the
  * function order pass uses.

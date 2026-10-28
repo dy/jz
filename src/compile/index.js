@@ -804,7 +804,10 @@ export function assemble(ast, profiler) {
     i64: lateI64,
     hostAbi: lateHostAbi,
     namedExports: lateNamedExports,
-    userFuncs: new Set(programFacts.programIndex.concreteFunctionOrder().map(f => `$${f.name}`)),
+    // the program's functions, not the compiler's `jz:` modules' (sig.std): at O0, which keeps the
+    // program's unreached functions for debugging, a module function nothing reaches goes as the
+    // runtime's do
+    userFuncs: new Set(programFacts.programIndex.concreteFunctionOrder().filter(f => !f.sig?.std).map(f => `$${f.name}`)),
     errorSidEntries: [...ctx.schema.errorSidEntries()],
   }
 

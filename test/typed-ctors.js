@@ -7,9 +7,9 @@
  */
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { agree, oracle } from './util.js'
-import { levels } from './_matrix.js'
+import { levels, onKernel } from './_matrix.js'
 
 const agrees = (rows) => { for (const [label, src] of rows) agree(src, 'f', [], undefined, label) }
 
@@ -69,3 +69,13 @@ test('typed constructors: BYTES_PER_ELEMENT of a constructor and of an instance'
     export const f = () => all.map(g).join()`],
   ['an object\'s own property of the name', `const g = (x) => x.BYTES_PER_ELEMENT; export const f = () => g({ BYTES_PER_ELEMENT: 7 }) + (g({ a: 1 }) === undefined ? 10 : 0)`],
 ]))
+
+// The constructors are a `jz:` module's functions, the compiler's runtime and not the program:
+// O0, which keeps what the program's own code lowered to, links only those something reaches.
+test('typed constructors: O0 links only the constructors the program names', () => {
+  const src = `const C = Float32Array; export const f = (n) => new C(n).length`
+  is(jz(src, { optimize: 0 }).exports.f(3), 3, 'f(3)')
+  if (onKernel()) return
+  const made = [...compile(src, { optimize: 0, wat: true }).matchAll(/\(func \$jz_typed\$(\w+)/g)].map(m => m[1])
+  is(made.join(), '__Float32Array', 'the one constructor named')
+})
