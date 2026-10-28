@@ -278,7 +278,7 @@ test('iterator protocol: for-of over iterator values', () => {
 
 // `using` (ERM, subscript 10.6): scope-exit disposal via [Symbol.dispose] —
 // try/finally lowering, LIFO for multiple resources, null skipped, non-
-// disposable throws at binding. Divergence: no SuppressedError aggregation.
+// disposable throws at binding (jzify/using.js).
 test('using: scope-exit disposal', () => {
   is(j(`let log = ''
         let open = (t) => ({ [Symbol.dispose]: () => { log += 'd' + t } })
@@ -306,6 +306,31 @@ test('using: scope-exit disposal', () => {
         let open = (n) => ({ n, [Symbol.dispose]() { log += this.n } })
         export let f = () => { { using a = open(4), b = open(5); log += 'b' } return log }`), 'b54')
   is(j(`export let f = () => { try { using a = { [Symbol.dispose]: 1 }; return 'no' } catch (e) { return e instanceof TypeError ? 'threw' : e } }`), 'threw')
+})
+
+// A disposal that throws over an earlier throw (the body's, or another
+// disposal's) throws a SuppressedError: `error` the later, `suppressed` the
+// earlier, neither enumerable. A block of one declaration, which the parser
+// keeps as the declaration, is a resource's scope too, in a generator too.
+test('using: SuppressedError and lone declarations', () => {
+  const src = `export let suppressed = () => {
+      try { using a = { [Symbol.dispose]() { throw new Error('dispose') } }; throw new Error('body') }
+      catch (e) { return [e instanceof SuppressedError, e instanceof Error, e.error.message, e.suppressed.message, e.name, e.message].join() }
+    }
+    export let chain = () => {
+      try { using a = { [Symbol.dispose]() { throw 'A' } }, b = { [Symbol.dispose]() { throw 'B' } }; throw 'body' }
+      catch (e) { return [e.error, e.suppressed.error, e.suppressed.suppressed, e.suppressed instanceof SuppressedError].join() }
+    }
+    export let alone = () => { try { using a = { [Symbol.dispose]() { throw new RangeError('r') } }; return 'body' } catch (e) { return e instanceof RangeError && !(e instanceof SuppressedError) } }
+    export let ctor = () => { const e = new SuppressedError('E', 'S'); return [e.message, e.name, e.error, e.suppressed, typeof SuppressedError, JSON.stringify(Object.keys(e)), JSON.stringify(e), e.hasOwnProperty('error')].join('|') }
+    export let lone = () => {
+      const log = []
+      for (let i = 0; i < 2; i++) if (i) { using r = { [Symbol.dispose]() { log.push('d') } } }
+      function* g() { try { using r = { [Symbol.dispose]() { log.push('g') } } } finally { log.push('f') } yield 1 }
+      return [...g()].join() + log.join()
+    }`
+  const want = oracle(src), got = jz(src).exports
+  for (const name of Object.keys(want)) is(got[name](), want[name](), name)
 })
 
 test('using: classic for initializer is disposed on every exit', () => {

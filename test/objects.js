@@ -11,15 +11,17 @@ import { run, oracle, cases } from './util.js'
 
 // A class's methods and accessors are its prototype's, its private names no
 // property, an Error's `name` its class's: hasOwnProperty, Object.hasOwn and
-// getOwnPropertyNames see none of them, enumeration none of them; `in` finds
-// the members.
+// getOwnPropertyNames see none of them, enumeration none of them nor a
+// property a builtin keeps unenumerable (SuppressedError's `error`, a
+// DOMException's `code`); `in` finds the members.
 test('object: own properties of class instances and builtin errors', () => {
   const src = `class M { constructor() { this.x = 1 } m() { return 2 } get g() { return 3 } }
     const ownOf = (o, k) => o.hasOwnProperty(k)
     export let local = () => { class C { #s = 1; constructor() { this.x = 1 } m() { return this.#s } get g() { return 3 } } const c = new C()
       return [c.hasOwnProperty('m'), Object.hasOwn(c, 'g'), 'm' in c, 'g' in c, c.hasOwnProperty('x'), Object.getOwnPropertyNames(c).join(), Object.keys(c).join(), JSON.stringify(c), c.m()].join(';') }
     export let module = () => { const c = new M(); return [c.hasOwnProperty('m'), Object.hasOwn(c, 'g'), 'm' in c, Object.getOwnPropertyNames(c).join(), ['m', 'x', 'y'].map(k => ownOf(c, k)).join()].join(';') }
-    export let errors = () => { const e = new Error('m'); return [e.hasOwnProperty('message'), Object.hasOwn(e, 'name'), 'name' in e, Object.keys(e).length].join() }`
+    export let errors = () => { const e = new Error('m'); return [e.hasOwnProperty('message'), Object.hasOwn(e, 'name'), 'name' in e, Object.keys(e).length].join() }
+    export let builtins = () => { const s = new SuppressedError(1, 2, 'm'), d = new DOMException('m', 'AbortError'); return [JSON.stringify(Object.keys(s)), JSON.stringify(s), JSON.stringify(Object.keys(d)), d.code, d.name].join() }`
   const want = oracle(src), got = run(src)
   for (const name of Object.keys(want)) is(got[name](), want[name](), name)
 })

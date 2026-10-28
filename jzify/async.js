@@ -28,7 +28,7 @@ import { FN_BOUNDARY_OPS, isAccessor, suspendsIn, probe, closingLoop, labeled, b
 import { usesArguments } from './arguments.js'
 import { ASSIGN_OPS, extractParams, withLoc, collectParamName } from '../src/ast.js'
 
-const DECLS = new Set(['let', 'const', 'var', 'using'])
+const DECLS = new Set(['let', 'const', 'var', 'using', 'await using'])
 /** The names a node assigns, counted per name (a destructuring target's, a
  *  bare for-in or for-of head's, an update's), and the property keys it
  *  writes by a static key, deletes, or defines a getter for; through nested
@@ -141,7 +141,7 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
       return mapAwait(desugarForAwait(node[1], node[2], labels))
     return withLoc(node.map((n, i) => i === 0 ? n : mapAwait(n)), node)
   }
-  function isAwait(n) { return n[0] === 'await' || n[0] === 'for await' || n[0] === 'yield' || n[0] === 'yield*' }
+  function isAwait(n) { return n[0] === 'await' || n[0] === 'for await' || n[0] === 'await using' || n[0] === 'yield' || n[0] === 'yield*' }
   function refsAwait(node) { return suspendsIn(node, isAwait) }
 
   // ---- a suspension in expression position → statement position ----
@@ -366,7 +366,7 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     if (op === '()' && st.length === 2) return hoistStmt(st[1])
     if (op === '{}') return [block(hoistList(st[1]))]
     if (isAwaitOf(st)) { const inner = hoistExpr(st[1]); return [...inner.pre, [op, inner.expr]] }
-    if (op === 'let' || op === 'const' || op === 'var') {
+    if (DECLS.has(op)) {
       const out = []
       for (const d of st.slice(1)) {
         if (!Array.isArray(d) || d[0] !== '=' || !refsAwait(d[2])) { out.push([op, d]); continue }

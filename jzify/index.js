@@ -20,6 +20,7 @@ import { settleVars } from './settle-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering, closesOnReturn } from './generators.js'
+import { isResourceDecl } from './using.js'
 import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS, withLoc } from '../src/ast.js'
 import { err } from '../src/ctx.js'
 import { hostGlobalName } from '../src/prepare/state.js'
@@ -134,7 +135,7 @@ const scopeBuilder = (map) => {
       if (Array.isArray(stmt) && stmt[0] === 'default') stmt = stmt[1]
       if (!Array.isArray(stmt)) continue
       const op = stmt[0]
-      if (op === 'let' || op === 'const' || op === 'var' || op === 'using') {
+      if (op === 'let' || op === 'const' || op === 'var' || op === 'using' || op === 'await using') {
         for (let i = 1; i < stmt.length; i++) {
           const d = stmt[i]
           addDeclarator(scope, d)
@@ -268,7 +269,7 @@ const enterMachineScope = (owners, stmts, copies = true) => {
     if (op === 'function' || op === 'function*' || op === '=>' || op === 'class') return
     if (op === ';') declarations(n, machine)
     else if (op === '{}' && (isBlockBody(n) || JZ_BLOCK_OPS.has(n[1]?.[0]))) declarations(n[1], machine)
-    else if (op === 'let' || op === 'const' || op === 'using') declarations(n, machine)
+    else if (op === 'let' || op === 'const' || op === 'using' || op === 'await using') declarations(n, machine)
     else if (op === 'catch') addPatternNames(machine, n[1])
     for (let i = 1; i < n.length; i++) hoist(n[i])
   }
@@ -336,7 +337,7 @@ bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lo
 transformSwitch = createSwitchLowering(transform, names)
 
 
-const WELL_KNOWN = new Map([['iterator', '@@iterator'], ['dispose', '@@dispose'], ['asyncIterator', '@@asyncIterator']])
+const WELL_KNOWN = new Map([['iterator', '@@iterator'], ['dispose', '@@dispose'], ['asyncDispose', '@@asyncDispose'], ['asyncIterator', '@@asyncIterator']])
 const symbolProp = n => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && WELL_KNOWN.get(n[2])
 // Iterator-helper method names (ES2025) — a CALL of one of these on any
 // receiver, in a program that mints iterators, gates decorated generator
@@ -569,20 +570,24 @@ function implicitStdImports(ast) {
  *   (the source-level lowering) keeps every class as per-instance closures.
  * @returns {Array} Transformed AST
  */
+// An `await using` declaration (parsed `['await', ['using', …]]`) is a
+// resource declaration of its own, `['await using', …]` (jzify/using.js).
 // `for (using x of src) body` takes each value in a constant of its own and
 // declares the resource in the iteration's block, `for (const t of src)
 // { using x = t; body }`, which the using lowering disposes as each
-// iteration leaves (a for await's too).
+// iteration leaves (a for await's, and an `await using`'s, too).
+const awaitUsing = (n) => Array.isArray(n) && n[0] === 'await' && Array.isArray(n[1]) && n[1][0] === 'using' ? withLoc(['await using', ...n[1].slice(1)], n) : n
 const forUsing = (n) => {
   if (!Array.isArray(n) || n[0] == null) return n
-  let out = n
-  for (let i = 1; i < n.length; i++) {
-    const c = forUsing(n[i])
-    if (c !== n[i]) { if (out === n) out = withLoc(n.slice(), n); out[i] = c }
+  let out = awaitUsing(n)
+  for (let i = 1; i < out.length; i++) {
+    const c = forUsing(out[i])
+    if (c !== out[i]) { if (out === n) out = withLoc(n.slice(), n); out[i] = c }
   }
-  if ((out[0] !== 'for' && out[0] !== 'for await') || !Array.isArray(out[1]) || out[1][0] !== 'of' || !Array.isArray(out[1][1]) || out[1][1][0] !== 'using') return out
+  const lhs = out[0] === 'for' || out[0] === 'for await' ? Array.isArray(out[1]) && out[1][0] === 'of' && out[1][1] : null
+  if (!isResourceDecl(lhs)) return out
   const t = names.genTemp('us')
-  return withLoc([out[0], ['of', ['const', t], out[1][2]], ['{}', [';', withLoc(['using', ['=', out[1][1][1], t]], out[1]), ...(out[2] == null ? [] : [out[2]])]]], n)
+  return withLoc([out[0], ['of', ['const', t], out[1][2]], ['{}', [';', withLoc([lhs[0], ['=', lhs[1], t]], out[1]), ...(out[2] == null ? [] : [out[2]])]]], n)
 }
 
 export default function jzify(ast, { structs = true, importedBinding = null, std = false } = {}) {

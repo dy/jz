@@ -7,7 +7,7 @@
 // pending ones settle from the after-tick sweep. Pay-per-use: sync programs
 // never link any of it. try/catch across await routes the rejection to the catch.
 // Divergences (documented): job ordering is per-drain-cycle; no unhandled-
-// rejection reporting; no SuppressedError.
+// rejection reporting.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
@@ -664,6 +664,47 @@ test('async: an object literal accessor in a suspending body', async () => {
     export async function locals() { function* g() { const o = { get x() { const y = 2; return y } }; yield o.x; const y = 3; yield y } return [...g()].join() }
     export async function loop() { function* g() { for (let i = 0; i < 3; i++) { const o = { get x() { for (;;) { break } return i } }; yield o.x } } return [...g()].join() }
     export async function agen() { async function* g() { const o = { get x() { return 7 } }; yield o.x } const out = []; for await (const v of g()) out.push(v); return out.join() }`)
+})
+
+// `await using` disposes its resources as its block exits, last first, each
+// [Symbol.asyncDispose]() (else [Symbol.dispose](), unawaited) awaited; a null
+// resource awaits once for its block. A disposal throwing over an earlier
+// throw throws a SuppressedError of the two (ECMA-262 DisposeResources).
+test('async: await using', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`const res = (log, n) => ({ n, async [Symbol.asyncDispose]() { await null; log.push('d' + n) } })
+    export async function basic() { const log = []; { await using a = res(log, 1), b = res(log, 2); log.push('body') } log.push('after'); return log.join() }
+    export async function fallback() { const log = []; { await using a = { [Symbol.dispose]() { log.push('sd'); return { then() { log.push('awaited') } } } } } return log.join() }
+    export async function invalid() { try { await using a = { x: 1 }; return 'no' } catch (e) { return e instanceof TypeError }
+    }
+    export async function suppressed() {
+      try { await using a = { async [Symbol.asyncDispose]() { throw new Error('dispose') } }; throw new Error('body') }
+      catch (e) { return [e instanceof SuppressedError, e.error.message, e.suppressed.message, e.name, e.message].join() }
+    }
+    export async function rejects() { try { await using a = { [Symbol.asyncDispose]() { return Promise.reject(new Error('rej')) } } } catch (e) { return e.message } }
+    export async function flow() {
+      const log = []
+      for (let i = 0; i < 4; i++) { await using r = res(log, i); if (i === 1) continue; if (i === 2) break; log.push('b' + i) }
+      const f = async () => { await using r = res(log, 9); return 'ret' }
+      log.push(await f())
+      for (let i = 0; i < 2; i++) if (i) { await using r = res(log, 'lone') }
+      return log.join()
+    }
+    export async function ticks() {
+      const log = []
+      const s = n => ({ [Symbol.dispose]() { log.push('s' + n) } })
+      const p = (async () => { using x = s(1); await using y = res(log, 2); using z = s(3); await using w = null, v = null; log.push('body') })()
+      const q = (async () => { for (let i = 0; i < 6; i++) { log.push('t' + i); await null } })()
+      await p; await q
+      return log.join()
+    }
+    export async function heads() {
+      const log = []
+      for (await using r of [res(log, 1), res(log, 2)]) log.push(r.n)
+      async function* src() { yield res(log, 3) }
+      for await (await using r of src()) log.push(r.n)
+      return log.join()
+    }`)
 })
 
 // `for (using x of src)` and `for await (using x of src)` in an async body

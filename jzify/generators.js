@@ -43,8 +43,10 @@
 
 import { walkAst, some, TDZ, withLoc, noted, collectParamName, extractParams } from '../src/ast.js'
 import { ctx } from '../src/ctx.js'
+import { isResourceDecl, resourceScope, resourceSteps } from './using.js'
 
-const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*' || n[0] === 'await')
+// a suspension: an await or a yield, or an `await using`, whose disposals await at its block's end
+const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*' || n[0] === 'await' || n[0] === 'await using')
 /** A desugar's own call of a well-known member it has probed (`v['@@iterator']()`
  *  after `v['@@iterator'] != null`): a member call the iterator rewrite
  *  (transform.js) leaves alone, where a program's call is `__it_from(v)`. */
@@ -144,7 +146,7 @@ const leavesLoop = (n, depth = 0) => {
 /** Whether a generator body's return() does more than end the machine: a
  *  finally or a `using` to run, a yield* delegate or a for-of suspended in its
  *  body to close. A loop over a generator that does none has nothing to close. */
-export const closesOnReturn = (body) => some(body, n => n[0] === 'finally' || n[0] === 'yield*' || n[0] === 'using' ||
+export const closesOnReturn = (body) => some(body, n => n[0] === 'finally' || n[0] === 'yield*' || isResourceDecl(n) ||
   n[0] === 'for' && Array.isArray(n[1]) && n[1][0] === 'of' && hasYield(n[2]), { boundary: fnBoundary })
 
 /** A for-of head's binding of one value: a declaration, or an assignment to its target. */
@@ -508,27 +510,17 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     }
     return { fns, rest }
   }
-  // `using x = r` binds r and reads its [Symbol.dispose] method, a TypeError
-  // unless a present resource has one, and runs the rest of its list in a try
-  // whose finally calls it, as transform.js lowerUsing does where a list
-  // lowers whole: the machine runs that finally however the rest leaves, a
-  // return() at a yield in it too. Resources dispose last first.
-  const usingList = (stmts) => {
-    const i = stmts.findIndex(st => Array.isArray(st) && st[0] === 'using')
+  // A `using` or `await using` declaration runs the rest of its list in a
+  // try whose finally disposes its resources (jzify/using.js), as
+  // transform.js lowerUsing does where a list lowers whole: the machine runs
+  // that finally however the rest leaves, a return() at a yield in it too.
+  // The list's declarations share its disposal state (`scope`).
+  const usingList = (stmts, scope) => {
+    const i = stmts.findIndex(isResourceDecl)
     if (i < 0) return stmts
-    const nul = () => [null, null], decls = stmts[i].slice(1)
-    let rest = usingList(stmts.slice(i + 1))
-    for (let k = decls.length - 1; k >= 0; k--) {
-      const [, name, init] = decls[k], method = genTemp('dsp')
-      rest = [
-        withLoc(['let', ['=', name, init]], stmts[i]),
-        ['let', ['=', method, ['?', ['!=', name, nul()], ['.', name, '@@dispose'], nul()]]],
-        ['if', ['&&', ['!=', name, nul()], ['!==', ['typeof', method], [null, 'function']]],
-          ['throw', ['new', ['()', 'TypeError', [null, 'using: value has no [Symbol.dispose]() method']]]]],
-        ['try', ['{}', [';', ...rest]], ['finally', ['{}', [';', ['if', ['!=', name, nul()], ['()', ['.', method, 'call'], name]]]]]],
-      ]
-    }
-    return [...stmts.slice(0, i), ...rest]
+    const first = scope === undefined
+    if (first) scope = resourceScope(stmts, genTemp)
+    return [...stmts.slice(0, i), ...resourceSteps(stmts[i], usingList(stmts.slice(i + 1), scope), scope, first, genTemp)]
   }
   const flatList = (stmts) => { const { fns, rest } = declarations(stmts.map(st => prepared(st))); return [...fns, ...usingList(rest)] }
   // the body as the machine splits it: its lists' declarations bound, its
@@ -536,7 +528,8 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
   const prepared = (st, labels = null) => withLoc(preparedAt(st, labels), st)
   const preparedAt = (st, labels) => {
     if (!Array.isArray(st)) return st
-    const op = st[0], each = (b) => prepared(b)
+    // a body the parser keeps as its lone statement is a block: a resource declaration's scope
+    const op = st[0], each = (b) => prepared(isResourceDecl(b) ? ['{}', b] : b)
     // a block in a list the machine flattens flattens too
     if (op === ';') return [';', ...flatList(st.slice(1))]
     if (op === '{}') return ['{}', [';', ...flatList(ownStmts(st))]]

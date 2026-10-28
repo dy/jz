@@ -249,7 +249,7 @@ for (const n of ['Math', 'JSON', 'Atomics', 'console', 'crypto', 'navigator', 'p
 // program naming one still meets an unresolvable name (typeof 'undefined'), not
 // the host's, whose operations would act on copies of the program's values.
 const LANGUAGE_GLOBALS = new Set(['Reflect', 'Proxy', 'Intl', 'Temporal', 'FinalizationRegistry', 'AggregateError',
-  'SuppressedError', 'DisposableStack', 'AsyncDisposableStack', 'escape', 'unescape', 'Function', 'eval'])
+  'DisposableStack', 'AsyncDisposableStack', 'escape', 'unescape', 'Function', 'eval'])
 // A name under the JS host that no binding of the program and no builtin of the
 // target resolves: the host's global of that name (module/web.js `__host_global`),
 // which a scope check (jzify's, prepare's) confirms no declaration takes.

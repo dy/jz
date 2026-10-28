@@ -392,6 +392,7 @@ const parse = (src, sourceType = 'jz', base = 0) => {
   opens.length = 0
   try {
     ast = jessieParse(parseSource)
+    if (parseSource.includes('using')) awaitUsingHeads(ast)
     validateEarlyErrors(ast, src, sourceType, base)
     if (joinedAt >= 0) err('Expected ; or a line break before this statement', joinedAt)
   } catch (e) {
@@ -405,6 +406,22 @@ const parse = (src, sourceType = 'jz', base = 0) => {
 }
 
 token('NaN', 200, a => !a && ['nan'])
+
+// `for (await using x of src)`: the `await` prefix took the for-of head the
+// `using` keyword read below (`['await', ['of', ['using', x], src]]`). The
+// head declares an `await using` resource in the declaration statement's
+// shape, `['of', ['await', ['using', x]], src]`.
+function awaitUsingHeads(n) {
+  if (!Array.isArray(n)) return
+  const head = (n[0] === 'for' || n[0] === 'for await') && n[1]
+  if (Array.isArray(head) && head[0] === 'await' && Array.isArray(head[1]) && head[1][0] === 'of' && Array.isArray(head[1][1]) && head[1][1][0] === 'using') {
+    const of = head[1], decl = ['await', of[1]]
+    decl.loc = head.loc
+    n[1] = ['of', decl, of[2]]
+    n[1].loc = of.loc
+  }
+  for (let i = 1; i < n.length; i++) awaitUsingHeads(n[i])
+}
 
 // `for (using x of src)`: a using declaration binds each value a for-of
 // takes (ERM). subscript's `using` commits only to `name = init`; a for

@@ -12,6 +12,7 @@ import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { TYPED_ELEM_NAMES, PTR } from '../layout.js'
 import { hostGlobalName } from '../src/prepare/state.js'
 import { HOST_GLOBALS } from '../src/autoload.js'
+import { isResourceDecl, resourceSteps } from './using.js'
 
 const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array',
   'Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray',
@@ -181,27 +182,13 @@ export function createTransform(opts) {
     return decl
   }
 
-  // `using x = res` (ERM): bind, read [Symbol.dispose] once up front (a
-  // TypeError unless a non-null resource's is callable — spec checks at
-  // binding), then wrap the REST of the scope in try/finally calling that
-  // method on the resource. Multiple resources nest — LIFO disposal falls out
-  // of the nesting. Divergence (documented): if both the body and a dispose
-  // throw, the dispose error propagates (no SuppressedError aggregation).
-  function lowerUsing(declarators, remaining) {
-    const NULL = [null, null]
-    let inner = remaining.length ? transformScope([';', ...remaining]) : null
-    for (let k = declarators.length - 1; k >= 0; k--) {
-      const [, name, init] = declarators[k]
-      const method = names.genTemp('dsp')
-      inner = [';',
-        ['let', ['=', name, transform(init)]],
-        ['let', ['=', method, ['?:', ['!=', name, NULL], ['.', name, '@@dispose'], NULL]]],
-        ['if', ['&&', ['!=', name, NULL], ['!==', ['typeof', method], [null, 'function']]],
-          ['throw', ['new', ['()', 'TypeError', [null, 'using: value has no [Symbol.dispose]() method']]]]],
-        ['try', inner ?? ['{}', null], ['finally', ['if', ['!=', name, NULL], ['()', ['.', method, 'call'], name]]]],
-      ]
-    }
-    return inner
+  // A `using` declaration (ERM) lowers over the REST of its scope: a try whose
+  // finally disposes its resources, last first, however the scope exits
+  // (jzify/using.js). An `await using` belongs to an async body, which the
+  // machine lowers (generators.js usingList): one reaching here is a module's.
+  function lowerUsing(decl, remaining) {
+    if (decl[0] === 'await using') err('`await using` outside an async function is not supported: it would need top-level await')
+    return transformScope([';', ...resourceSteps(decl, remaining, null, true, names.genTemp)])
   }
 
   // A control body is a statement position even when it contains only one
@@ -211,6 +198,8 @@ export function createTransform(opts) {
       return withLoc(['label', node[1], transformStatement(node[2])], node)
     if (Array.isArray(node) && node[0] === '{}' && node.length === 2 && node[1]?.[0] === ':')
       return transform(withLoc(['{}', [';', node[1]]], node))
+    // a block of one resource declaration, which the parser keeps as the declaration
+    if (isResourceDecl(node)) return withLoc(['{}', lowerUsing(node, [])], node)
     return transform(node)
   }
 
@@ -235,7 +224,7 @@ export function createTransform(opts) {
     if (op === 'async' && Array.isArray(args[0]) && args[0][0] === 'function*' && args[0][1] && _gen?.lowerAsyncGen)
       return bindFn(args[0][1], transform(_gen.lowerAsyncGen(args[0][2], args[0][3])), node)
     if (op === 'class' && args[0]) return lowerClassDecl(...args)
-    if (op === 'using') return lowerUsing(args, [])
+    if (op === 'using' || op === 'await using') return lowerUsing([op, ...args], [])
 
     if (op === ';') {
       const hoisted = [], rest = []
@@ -269,8 +258,8 @@ export function createTransform(opts) {
         }
         // `using` consumes the REST of the scope into its try body (disposal
         // runs at scope exit however the scope exits).
-        if (Array.isArray(stmt) && stmt[0] === 'using') {
-          rest.push(lowerUsing(stmt.slice(1), stmts.slice(i + 1)))
+        if (isResourceDecl(stmt)) {
+          rest.push(lowerUsing(stmt, stmts.slice(i + 1)))
           break
         }
         // Labeled BLOCK in statement position (`lbl: { … }`): unambiguous here —
@@ -704,8 +693,8 @@ export function createTransform(opts) {
       // protocol fork (probe once, drive next() lazily, else indexed path).
       if (_gen && _gen.iterProto?.on && Array.isArray(head) && head[0] === 'of')
         return transform(_gen.desugarForOfProtocol(head[1], head[2], body, names.genTemp))
-      if (Array.isArray(head) && head[0] === ';' && Array.isArray(head[1]) && head[1][0] === 'using')
-        return lowerUsing(head[1].slice(1), [['for', [';', null, head[2], head[3]], body]])
+      if (Array.isArray(head) && head[0] === ';' && isResourceDecl(head[1]))
+        return lowerUsing(head[1], [['for', [';', null, head[2], head[3]], body]])
       if (Array.isArray(head) && head[0] === ';')
         return ['for', [';', ...head.slice(1).map(s => s == null ? s : transform(s))], transformStatement(body)]
       // for-in with a DESTRUCTURING decl head (`for (let [x, y = d] in o)` —

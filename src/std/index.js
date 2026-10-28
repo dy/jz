@@ -25,12 +25,13 @@ import iterArr from './iter-arr.js'
 import iterHelpers from './iter-helpers.js'
 import usp from './usp.js'
 import typed from './typed.js'
+import suppressed from './suppressed.js'
 
 export const STD_SOURCES = {
   'jz:events': events, 'jz:weakref': weakref, 'jz:domexception': domexception,
   'jz:async': asyncRt, 'jz:asyncgen': asyncgen,
   'jz:iter': iter, 'jz:iter-arr': iterArr, 'jz:iter-helpers': iterHelpers,
-  'jz:usp': usp, 'jz:typed': typed,
+  'jz:usp': usp, 'jz:typed': typed, 'jz:suppressed': suppressed,
 }
 
 export const STD_HOST_EXPORTS = { 'jz:async': ['__mt_drain', '__p_state', '__p_value', '__p_make', '__p_finish'] }

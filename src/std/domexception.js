@@ -1,6 +1,7 @@
 /**
  * `jz:domexception` – DOMException as readable jz source: an Error carrying
- * the WebIDL `name` and its legacy `code` (0 for names without one).
+ * the WebIDL `name` and its legacy `code` (0 for names without one), which
+ * does not enumerate (a getter of DOMException.prototype in JS).
  *
  * @module std/domexception
  */
@@ -19,6 +20,7 @@ export class DOMException extends Error {
     super(message)
     this.name = name
     this.code = __dom_codes[name] ?? 0
+    __hide_member(this, 'code')
   }
 }
 `

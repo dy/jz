@@ -5294,7 +5294,7 @@ conversions, pointer/tag accessors, NaN constants, `toModule`) and the memory's
   a fixed copy. A typed array out of bounds of its resizable buffer converts to
   an empty string (`String(view)`, `view.toString()`) where JavaScript throws a
   TypeError.
-- Async generator functions work; async generator methods and `await using` reject.
+- Async generator functions work; async generator methods reject.
 
 ## Commits
 

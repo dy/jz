@@ -770,7 +770,6 @@ function shouldSkipBase(content, rel = '') {
   } else if (rel.includes('/statements/using/')) {
     // `using` landed (jzify try/finally + [Symbol.dispose], subscript 10.6).
     // Narrow exclusions; the rest RUN.
-    if (/await|asyncDispose/i.test(codeContent)) return 'await using / asyncDispose outside the sync dispose model'
     if (/getOwnProperty|defineProperty|propertyHelper|\bProxy\b/i.test(codeContent)) return 'descriptor reflection outside jz scope'
     // fall through to the generic filters below
   } else if (isGeneratorTest(rel)) {

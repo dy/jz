@@ -31,6 +31,8 @@ const fail = message => {
   err(`Early error: ${message}`)
 }
 const isNode = n => Array.isArray(n)
+// a resource declaration: `using …`, `await using …` (parsed `['await', ['using', …]]`)
+const isResourceDecl = n => isNode(n) && (n[0] === 'using' || n[0] === 'await' && isNode(n[1]) && n[1][0] === 'using')
 const isSeq = n => isNode(n) && n[0] === ';'
 const statements = n => n == null ? [] : isSeq(n) ? n.slice(1).filter(x => x != null) : [n]
 
@@ -561,7 +563,19 @@ const validateLexicalSource = (src, strict) => {
           while (isWhitespaceCode(src.charCodeAt(k))) k++
           declaration = src.slice(k, k + 8) === 'function' && !isIdentCode(src.charCodeAt(k + 8))
         }
-        if (declaration) fail(`${word} declaration requires a block in statement position`)
+        // `using x`, `await using x`: a name after `using` on its line binds
+        // (no LineTerminator between), where `using` alone is an identifier
+        const wordAt = (k) => {
+          while (src[k] === ' ' || src[k] === '\t') k++
+          const from = k, c = src.charCodeAt(k)
+          if (!isIdentCode(c) || c >= 48 && c <= 57) return null
+          while (isIdentCode(src.charCodeAt(k))) k++
+          return { name: src.slice(from, k), end: k }
+        }
+        const binds = (k) => { const w = wordAt(k); return !!w && w.name !== 'in' && w.name !== 'instanceof' }
+        if (word === 'using') declaration = binds(i)
+        if (word === 'await') { const w = wordAt(i); declaration = w?.name === 'using' && binds(w.end) }
+        if (declaration) fail(`${word === 'await' ? 'await using' : word} declaration requires a block in statement position`)
         expectStatement = false
       }
       if (!(pendingControl === 'for' && word === 'await'))
@@ -1669,6 +1683,8 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
       if (leftEdgeIsLetBracket(item)) fail("a labelled statement cannot start with 'let ['")
       const labels = new Map(cx.labels)
       labels.set(node[1], isIteration(item) ? 'loop' : 'other')
+      // a resource declaration is no LabelledItem (a labelled block keeps its braces)
+      if (isResourceDecl(item)) fail('a using declaration cannot be labelled')
       walk(item, { ...cx, labels }, true, soleStmt)
       return
     }
@@ -1749,7 +1765,8 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
       }
       const dup = duplicateName(names)
       if (dup) fail(`duplicate arrow parameter '${dup}'`)
-      const fnCx = { ...cx, strict, async: isAsync, generator: false, functionDepth: cx.functionDepth + 1,
+      // the body is ConciseBody[~Await]: `await` names a binding there even in a static block
+      const fnCx = { ...cx, strict, async: isAsync, generator: false, staticBlock: false, functionDepth: cx.functionDepth + 1,
         loop: 0, switchDepth: 0, labels: new Map() }
       validateScopeNames(fnBody, fnCx, 'function', names)
       walk(fnBody, fnCx, true)
@@ -1810,7 +1827,7 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
         fail('await using declaration requires initialized identifier bindings')
     }
 
-    if (op === 'using' || op === 'await' && isNode(node[1]) && node[1][0] === 'using') {
+    if (isResourceDecl(node)) {
       const decl = op === 'using' ? node : node[1]
       if (cx.functionDepth === 0 && !cx.module) fail('using declaration is not allowed at Script top level')
       for (let i = 1; i < decl.length; i++) {
@@ -1970,10 +1987,12 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz', sourceBase =
           if (lhs[0] !== 'var' && boundNames(lhs[1]).some(name => decodeIdentifier(name) === 'let'))
             fail("for-in/of lexical declaration cannot bind 'let'")
           walk(lhs, { ...cx, forBinding: true })
-        } else if (isNode(lhs) && lhs[0] === 'using' && head[0] === 'of') {
-          // `for (using x of src)`: one identifier, bound as `let` binds it
-          if (lhs.length !== 2 || typeof lhs[1] !== 'string') fail('for-of using declaration must bind one identifier')
-          checkBindingName(lhs[1], { ...cx, lexical: true })
+        } else if (isNode(lhs) && head[0] === 'of' && (lhs[0] === 'using' || lhs[0] === 'await' && isNode(lhs[1]) && lhs[1][0] === 'using')) {
+          // `for (using x of src)`, `for (await using x of src)`: one
+          // identifier, bound as `let` binds it
+          const decl = lhs[0] === 'using' ? lhs : lhs[1]
+          if (decl.length !== 2 || typeof decl[1] !== 'string') fail('for-of using declaration must bind one identifier')
+          checkBindingName(decl[1], { ...cx, lexical: true })
         } else if (isNode(lhs) && lhs.length === 2 && (lhs[0] === '[]' || lhs[0] === '{}')) {
           if (patternHasTrailingRestComma(lhs, source, head.loc))
             fail('rest element in a for-in/of assignment pattern cannot have a trailing comma')
