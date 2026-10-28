@@ -3,7 +3,7 @@
  * @module jzify/classes
  */
 
-import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, withLoc } from '../src/ast.js'
+import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, T, withLoc, collectParamNames, collectAllBoundNames } from '../src/ast.js'
 import { ctx, err, warn } from '../src/ctx.js'
 import { usesArguments } from './arguments.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
@@ -43,7 +43,7 @@ export function createClassLowering({ transform, names, JC, constStrings, atModu
 // `.length` on those keeps its lowering.
 //
 // Out of scope (rejected with a clear message): full `super.foo` property
-// semantics, non-constant computed member names. Private `#name` members are
+// semantics, a getter or setter with a computed name. Private `#name` members are
 // kept as the literal key string `#name` (jz allows it).
 const DEFAULT_DERIVED_CTOR_ARITY = 8
 
@@ -152,6 +152,30 @@ function usesThis(node) {
   return node.some(usesThis)
 }
 
+// The names a constructor binds in the scope its body runs in: its parameters
+// and its declarations (those of nested scopes too: a superset).
+function ctorBinds(params, body) {
+  const out = collectParamNames(extractParams(arrowParams(params ?? null)))
+  collectAllBoundNames(body, out)
+  const decls = (n) => {
+    if (!Array.isArray(n)) return
+    const d = n[0] === 'async' && Array.isArray(n[1]) ? n[1] : n
+    if ((d[0] === 'function' || d[0] === 'function*' || d[0] === 'class') && typeof d[1] === 'string' && d[1]) out.add(d[1])
+    for (let i = 1; i < n.length; i++) decls(n[i])
+  }
+  decls(body)
+  return out
+}
+
+// Whether `code` (a member's: a field initializer, a method) reads a name the
+// constructor binds: in the constructor's scope it would read the constructor's.
+function readsCtorBinding(params, body, code) {
+  if (params == null && body == null) return false
+  for (const name of ctorBinds(params, body))
+    if (code.some(c => c != null && refsName(c, name, REFS_IN_EXPR))) return true
+  return false
+}
+
 function hasSuperProp(node) {
   if (!Array.isArray(node)) return false
   if ((node[0] === '.' || node[0] === '?.') && node[1] === 'super') return true
@@ -247,7 +271,7 @@ function splitCtorSuper(body) {
 
 // Object methods read `this` at invocation; arrows keep their lexical receiver.
 function objectMethodUsesThis(prop) {
-  if (!Array.isArray(prop) || prop[0] !== ':' || typeof prop[1] !== 'string') return false
+  if (!Array.isArray(prop) || prop[0] !== ':') return false
   const fn = memberFn(prop[2])
   return fn != null && (usesThis(fn[3]) || usesThis(fn[2]))
 }
@@ -270,15 +294,18 @@ function lowerObjectLiteralThis(args) {
   // a shorthand `n` is the property `n: n`
   const props = objectLiteralEntries(args).map(p => typeof p === 'string' ? [':', p, p] : p)
   if (props.length === 0 || !props.some(objectMethodUsesThis)) return null
-  if (!props.every(p => Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string')) return null
+  // a method's receiver is the call's whatever its key: a name, a literal, a computed one
+  const computedKey = (k) => Array.isArray(k) && k[0] === '[]' && k.length === 2
+  if (!props.every(p => Array.isArray(p) && (p[0] === '...' || p[0] === ':' && (typeof p[1] === 'string' || literalStringKey(p[1]) != null || computedKey(p[1]))))) return null
 
   const litProps = props.map(p => {
-    const value = p[2]
+    if (p[0] === '...') return ['...', transform(p[1])]
+    const value = p[2], key = computedKey(p[1]) ? ['[]', transform(p[1][1])] : p[1]
     if (objectMethodUsesThis(p)) {
       const fn = memberFn(value)
-      return [':', p[1], methodValue(fn[2], fn[3], memberKind(value, fn))]
+      return [':', key, methodValue(fn[2], fn[3], memberKind(value, fn))]
     }
-    return [':', p[1], transform(value)]
+    return [':', key, transform(value)]
   })
   return ['{}', litProps.length === 1 ? litProps[0] : [',', ...litProps]]
 }
@@ -302,7 +329,7 @@ const recordAccessor = (key, dynamic) => {
 // [kind, key, params, body] → [slot, params, body] (a method entry)
 function accessorMethod(it, constStrings, dynamic = false) {
   const key = typeof it[1] === 'string' ? it[1] : constStringKey(it[1], constStrings)
-  if (key == null) jzifyError(JC.computedMember)
+  if (key == null) jzifyError(JC.computedAccessor)
   recordAccessor(key, dynamic)
   return [accessorSlot(it[0], key), it[2] ?? null, it[3]]
 }
@@ -474,7 +501,14 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
     if (superArgs.includes(null)) jzifyError('a derived class constructor with a destructured parameter must call super(…) itself')
     initStmts.push(['()', base ? base.init : nativeCollection === 'Map' ? '__it_map_into' : '__it_set_into', [',', self, ...superArgs]])
   }
-  for (const [fname, init] of fields) if (init != null || nativeCollection) initStmts.push(['=', ['.', self, fname], init ?? UNDEF])
+  // The field initializers run in the class's scope: where the constructor
+  // binds a name one reads, in a function of their own.
+  const fieldInits = fields.filter(([, init]) => init != null || nativeCollection).map(([fname, init]) => ['=', ['.', self, fname], init ?? UNDEF])
+  if (fieldInits.length && readsCtorBinding(ctorParams, ctorBody, fields.map(([, init]) => init))) {
+    const fieldsFn = methodFn(cls, CLASS_T + 'fields')
+    hoists.push(['let', ['=', fieldsFn, transform(['=>', ['()', self], ['{}', [';', ...rewrite(fieldInits)]]])]])
+    initStmts.push(['()', fieldsFn, self])
+  } else initStmts.push(...fieldInits)
   if (split.body != null) {
     let cb = split.body
     if (Array.isArray(cb) && cb[0] === '{}') cb = cb[1]
@@ -548,6 +582,19 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
 function lowerClass(name, heritage, body, hoists, trailers) {
   let ctorParams = null, ctorBody = null
   const methods = [], fields = [], statics = []
+  // A computed member name (`[expr]`) is evaluated once, where the class is
+  // defined, in member order (ClassDefinitionEvaluation): a temp each, bound
+  // after the heritage and before the static parts. The member then names it
+  // `{ computed: temp }`. An accessor's name stays constant: the emitter
+  // dispatches accessors by the names reads spell.
+  const keyDecls = []
+  const keyOf = (node) => {
+    const key = constStringKey(node, constStrings)
+    if (key != null || !Array.isArray(node) || node[0] !== '[]' || node.length !== 2) return key
+    const t = names.genTemp('ck')
+    keyDecls.push(['let', ['=', t, ['()', T + 'key', transform(node[1])]]])
+    return { computed: t }
+  }
   const items = classBodyItems(normalizeClassIdioms(body, typeof heritage === 'string' ? heritage : null))
   for (let ix = 0; ix < items.length; ix++) {
     const it = items[ix]
@@ -557,18 +604,18 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     if (it[0] === 'static' && Array.isArray(it[1]) && (it[1][0] === 'get' || it[1][0] === 'set')) {
       const acc = it[1]
       const key = constStringKey(acc[1], constStrings)
-      if (key == null) jzifyError(JC.computedStaticMember)
+      if (key == null) jzifyError(JC.computedAccessor)
       recordAccessor(key, true)
       statics.push([accessorSlot(acc[0], key), ['function', null, acc[2], acc[3]], true])
       continue
     }
     if (it[0] === 'get' || it[0] === 'set') { methods.push(accessorMethod(it, constStrings)); continue }
-    const bareFieldName = constStringKey(it, constStrings)
-    if (bareFieldName != null) { fields.push([bareFieldName, null]); continue }
+    // a bare field: `'x';`, `[k];`
+    if (literalStringKey(it) != null || it[0] === '[]' && it.length === 2) { fields.push([keyOf(it), null]); continue }
     // A method `m() {}`, `async m() {}`, `*g() {}`, `async *g() {}`: the value
     // is a function node (memberFn); `this` is renamed like any method's.
     if (it[0] === ':' && memberFn(it[2])) {
-      const key = constStringKey(it[1], constStrings)
+      const key = keyOf(it[1])
       if (key == null) jzifyError(JC.computedMember)
       const fn = memberFn(it[2]), kind = memberKind(it[2], fn)
       if (key === 'constructor' && typeof it[1] === 'string') {
@@ -581,30 +628,27 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     if (it[0] === '=') {
       const lhs = it[1]
       if (Array.isArray(lhs) && lhs[0] === 'static') {
-        const key = constStringKey(lhs[1], constStrings)
+        const key = keyOf(lhs[1])
         if (key == null) jzifyError(JC.computedStaticField)
         statics.push([key, it[2]])
         continue
       }
-      const key = constStringKey(lhs, constStrings)
+      const key = keyOf(lhs)
       if (key == null) jzifyError(JC.computedField)
       fields.push([key, it[2]])
       continue
     }
-    if (it[0] === 'static') {
-      const key = constStringKey(it[1], constStrings)
+    // a bare static field: `static x;`, `static [k];`
+    if (it[0] === 'static' && !(Array.isArray(it[1]) && (it[1][0] === ':' || it[1][0] === '{}'))) {
+      const key = keyOf(it[1])
       if (key != null) {
         statics.push([key, null])
         continue
       }
     }
-    if (it[0] === 'static' && typeof it[1] === 'string') {
-      statics.push([it[1], null])
-      continue
-    }
     // `static m() {}` and its async/generator forms: [key, function node, kind]
     if (it[0] === 'static' && Array.isArray(it[1]) && it[1][0] === ':' && memberFn(it[1][2])) {
-      const key = constStringKey(it[1][1], constStrings)
+      const key = keyOf(it[1][1])
       if (key == null) jzifyError(JC.computedStaticMember)
       const fn = memberFn(it[1][2])
       statics.push([key, fn, memberKind(it[1][2], fn) ?? true])
@@ -636,28 +680,46 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   const base = typeof heritage === 'string' ? resolveClass(heritage) : null
   const nativeCollection = base?.nativeCollection ??
     ((heritage === 'Map' || heritage === 'Set') && !shadowsBuiltin(heritage) ? heritage : null)
+  // a member named at run time is no slot of a schema
+  const computed = keyDecls.length > 0
+  if (computed && nativeCollection) jzifyError(`a computed member name is not supported on a class extending ${nativeCollection}`)
   if (nativeCollection && hoists && (statics.length === 0 || trailers))
     return lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
-  if (structsOn && hoists && atModuleScope() && (heritage == null || base && !base.nominal) && (statics.length === 0 || trailers))
+  if (structsOn && hoists && atModuleScope() && (heritage == null || base && !base.nominal) && (statics.length === 0 || trailers) && !computed)
     return lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
   // The advisory names what kept the class from its schema lowering (`why`):
   // a class of closures reads and calls its members through the runtime.
   if (structsOn) warn('class-generic', `class ${name ?? '(anonymous)'} is lowered to closures, not a schema: ${
-    !atModuleScope() ? 'it is declared inside a function' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members need a declaration, not an expression'}`, { fn: name ?? undefined })
+    !atModuleScope() ? 'it is declared inside a function' : computed ? 'a member of it has a computed name' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members need a declaration, not an expression'}`, { fn: name ?? undefined })
   const self = names.classSelf()
   const UNDEF = []                                  // jessie's node for `undefined`
-  // Object literal: every declared field (its initializer inline when it doesn't
-  // touch `this`, else `undefined` and assigned below), every method as its
-  // self-capturing arrow. Declaring all fields up front fixes the object shape.
+  const memberRef = (obj, key) => typeof key === 'string' ? ['.', obj, key] : ['[]', obj, key.computed]
+  const hide = (obj, key) => ['()', '__hide_member', [',', obj, typeof key === 'string' ? ['str', key] : key.computed]]
+  // The members run in the class's scope, not the constructor's: where the
+  // constructor binds a name a field initializer or a method reads, the
+  // factory makes the instance with a function of the class scope (`members`).
+  const members = readsCtorBinding(ctorParams, ctorBody, [...fields.map(([, init]) => init), ...methods.flatMap(([, mparams, mbody]) => [mparams, mbody])])
+    ? names.genTemp('cm') : null
+  // Object literal: every declared field, every method as its self-capturing
+  // arrow; declaring all fields up front fixes the object shape. The field
+  // initializers run in declaration order: inline, up to the first that reads
+  // `this` or is named at run time, then assigned below. A field after a
+  // computed one is no slot either: the instance's keys keep their order.
   const litProps = [], deferred = []
+  const anyComputedField = fields.some(([f]) => typeof f !== 'string')
+  let inline = true, named = true
   for (const [fname, init] of fields) {
-    if (init != null && !usesThis(init)) litProps.push([':', fname, transform(init)])
-    else { litProps.push([':', fname, UNDEF]); if (init != null) deferred.push([fname, init]) }
+    if (typeof fname !== 'string') named = false
+    if (!named || init != null && usesThis(init)) inline = false
+    if (inline) litProps.push([':', fname, init == null ? UNDEF : transform(init)])
+    else if (named) { litProps.push([':', fname, UNDEF]); if (init != null) deferred.push([fname, init]) }
+    else deferred.push([fname, init])
   }
   // Fields the constructor, an initializer or a method assigns without a
   // declaration: declared `undefined` here, in that order, so the instance
-  // keeps one shape and its keys the order JS gives them.
-  if (heritage == null) {
+  // keeps one shape and its keys the order JS gives them (after a computed
+  // field, where the fields are no slots, they are added as assigned).
+  if (heritage == null && !anyComputedField) {
     const assigned = []
     assignedThisFields(ctorBody, assigned)
     for (const [, init] of fields) assignedThisFields(init, assigned)
@@ -667,8 +729,11 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   for (const it of items)
     if (Array.isArray(it) && (it[0] === 'get' || it[0] === 'set'))
       (ctx.transform.literalAccessorNames ??= new Set()).add(typeof it[1] === 'string' ? it[1] : constStringKey(it[1], constStrings))
+  // a method named at run time is a hidden property of the instance, as a derived class's methods are
+  const installs = []
   for (const [mname, mparams, mbody, kind] of methods)
-    litProps.push([':', mname, methodValue(mparams, mbody, kind, self)])
+    if (typeof mname === 'string') litProps.push([':', mname, methodValue(mparams, mbody, kind, self)])
+    else installs.push(['=', memberRef(self, mname), methodValue(mparams, mbody, kind, self)], hide(self, mname))
   // `o.constructor` is the instance's class: the factory, bound below for the slot to hold.
   const ctorMember = readsConstructor()
   const cls = name || names.classStatic()
@@ -691,7 +756,8 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   // enumeration hides (module/schema.js ctx.schema.hidden).
   if (heritage == null && (methods.length || ctorMember)) {
     const brand = BRAND + (ctx.transform.classId = (ctx.transform.classId ?? 0) + 1)
-    ;(ctx.transform.classMembers ??= new Map()).set(brand, new Set(ctorMember ? [...methods.map(([mname]) => mname), 'constructor'] : methods.map(([mname]) => mname)))
+    const slots = methods.map(([mname]) => mname).filter(m => typeof m === 'string')
+    ;(ctx.transform.classMembers ??= new Map()).set(brand, new Set(ctorMember ? [...slots, 'constructor'] : slots))
     litProps.push([':', brand, UNDEF])
   }
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
@@ -699,6 +765,8 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   const dynamicBase = heritage != null && typeof heritage !== 'string'
   const baseRef = heritage == null ? null : dynamicBase ? names.classBase() : heritage
   const stmts = []
+  // the function of the class scope that makes or completes the instance (`members`)
+  let membersFn = null
   if (heritage != null) {
     const split = splitCtorSuper(ctorBody)
     ctorBody = split.body
@@ -720,30 +788,36 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       superMethodVars.set(mname, v)
       stmts.push(['let', ['=', v, ['.', self, mname]]])
     }
-    for (const [fname, init] of fields)
-      stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(rewriteSuperMethodCalls(init, superMethodVars, self, true), self)) : UNDEF])
+    // The class's own members on the instance: its methods (the prototype's,
+    // there before any field initializer runs), then its fields in order.
+    const own = []
     for (const [mname, mparams, mbody, kind] of methods) {
-      if (mname.endsWith(ACCESSOR_GET) || mname.endsWith(ACCESSOR_SET)) recordAccessor(mname.slice(0, -ACCESSOR_GET.length), true)
-      stmts.push(['=', ['.', self, mname], methodValue(mparams, rewriteSuperMethodCalls(mbody, superMethodVars, self, true), kind, self)])
-      stmts.push(['()', '__hide_member', [',', self, ['str', mname]]])
+      if (typeof mname === 'string' && (mname.endsWith(ACCESSOR_GET) || mname.endsWith(ACCESSOR_SET))) recordAccessor(mname.slice(0, -ACCESSOR_GET.length), true)
+      own.push(['=', memberRef(self, mname), methodValue(mparams, rewriteSuperMethodCalls(mbody, superMethodVars, self, true), kind, self)], hide(self, mname))
     }
-    if (ctorMember) {
-      stmts.push(['=', ['.', self, 'constructor'], cls])
-      stmts.push(['()', '__hide_member', [',', self, ['str', 'constructor']]])
-    }
+    if (ctorMember) own.push(['=', ['.', self, 'constructor'], cls], hide(self, 'constructor'))
+    for (const [fname, init] of fields)
+      own.push(['=', memberRef(self, fname), init != null ? transform(renameThis(rewriteSuperMethodCalls(init, superMethodVars, self, true), self)) : UNDEF])
+    if (members) {
+      const receiver = superMethodVars.size ? [',', self, ...superMethodVars.values()] : self
+      membersFn = ['=>', ['()', receiver], ['{}', [';', ...own]]]
+      stmts.push(['()', members, receiver])
+    } else stmts.push(...own)
     ctorBody = rewriteSuperMethodCalls(ctorBody, superMethodVars, self, true)
     if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
   } else {
-    stmts.push(['let', ['=', self, lit]])
+    // the instance, its methods named at run time, and the field initializers
+    // that run after the literal, in declaration order, before the ctor
+    const make = [['let', ['=', self, lit]], ...installs,
+      ...deferred.map(([fname, init]) => ['=', memberRef(self, fname), init == null ? UNDEF : transform(renameThis(init, self))])]
+    if (members) {
+      membersFn = ['=>', ['()', null], ['{}', [';', ...make, ['return', self]]]]
+      stmts.push(['let', ['=', self, ['()', members, null]]])
+    } else stmts.push(...make)
   }
   if (nominal) {
     stmts.push(['=', ['.', self, nominal], [null, 1]])
     stmts.push(['()', '__hide_member', [',', self, ['str', nominal]]])
-  }
-  // `this`-dependent field initializers run, in declaration order, before the ctor.
-  if (heritage == null) {
-    for (const [fname, init] of deferred)
-      stmts.push(['=', ['.', self, fname], transform(renameThis(init, self))])
   }
   if (ctorBody != null) {
     let cb = transform(renameThis(ctorBody, self))
@@ -753,10 +827,13 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   }
   stmts.push(['return', self])
   const factory = ['=>', arrowParams(params), ['{}', [';', ...stmts]]]
-  if (!dynamicBase && statics.length === 0 && !ctorMember) return factory
+  if (!dynamicBase && statics.length === 0 && !ctorMember && !computed && !membersFn) return factory
 
+  // the heritage, then the computed names, then the class and its static parts
   const staticStmts = []
   if (dynamicBase) staticStmts.push(['let', ['=', baseRef, transform(heritage)]])
+  staticStmts.push(...keyDecls)
+  if (membersFn) staticStmts.push(['let', ['=', members, membersFn]])
   staticStmts.push(['let', ['=', cls, factory]])
   for (const [sname, value, kind] of statics) {
     if (kind === 'block') {
@@ -768,7 +845,7 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     }
     const rhs = kind ? methodValue(value[2], value[3], kind === true ? undefined : kind, cls)
       : value == null ? UNDEF : transform(renameThis(value, cls))
-    staticStmts.push(['=', ['.', cls, sname], rhs])
+    staticStmts.push(['=', memberRef(cls, sname), rhs])
   }
   staticStmts.push(['return', cls])
   return ['()', ['()', ['=>', null, ['{}', [';', ...staticStmts]]]], null]

@@ -45,10 +45,11 @@ export const REJECT_IDENTS = Object.assign(Object.create(null), {
 
 /** jzify-only errors for class lowering (no prepare counterpart). */
 export const JZIFY_CLASS_ERRORS = {
-  computedMember: 'non-constant computed class member names are not supported — use a literal name',
-  computedStaticField: 'non-constant computed static class fields are not supported — use a literal name',
-  computedField: 'non-constant computed/destructured class fields are not supported — use a literal field name',
-  computedStaticMember: 'non-constant computed static class member names are not supported — use a literal name',
+  computedMember: 'this class member name is not supported: name a member with an identifier, a string or a computed `[expression]`',
+  computedAccessor: 'a getter or setter with a computed name is not supported: jz dispatches accessors by the name a read spells',
+  computedStaticField: 'this static class field name is not supported: name a field with an identifier, a string or a computed `[expression]`',
+  computedField: 'this class field name is not supported: name a field with an identifier, a string or a computed `[expression]` (a destructuring pattern is no field)',
+  computedStaticMember: 'this static class member name is not supported: name a member with an identifier, a string or a computed `[expression]`',
   staticMember: 'this `static` member shape is not supported (static fields, methods and blocks are)',
   superProp: '`super` property access is not supported: no class inheritance',
   prototypeStore: 'a store to a class\'s prototype names a member of the class only as a statement of the scope that declares the class, or of its static block, under a literal name that holds either functions or other values — move it there, or declare the member in the class',

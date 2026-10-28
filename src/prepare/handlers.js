@@ -1341,8 +1341,10 @@ const handlers = {
         if (Array.isArray(p) && p[0] === ':') {
           const staticKey = typeof p[1] === 'string' ? p[1] : staticPropertyKey(p[1])
           if (staticKey != null) return ['=', ['[]', tmp, [, staticKey]], p[2]]
+          // a literal's key is a property key before its value is evaluated
+          // (ToPropertyKey, a toString it calls included); an assignment's is at the store
           const keyExpr = Array.isArray(p[1]) && p[1][0] === '[]' ? p[1][1] : p[1]
-          return ['=', ['[]', tmp, keyExpr], p[2]]
+          return ['=', ['[]', tmp, ['()', T + 'key', keyExpr]], p[2]]
         }
         if (Array.isArray(p) && (p[0] === 'get' || p[0] === 'set'))
           err('object getter/setter not supported — jz objects have no accessors; use a method or a plain property + function')

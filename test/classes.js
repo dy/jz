@@ -8,14 +8,66 @@
 // are per-instance arrows capturing it. `this` is renamed to the instance,
 // `new C(a)` becomes `C(a)`, `get x()`/`set x(v)` become the `x__get`/`x__set`
 // members the property reader and store dispatch through. Rejected: full
-// `super.x` property semantics, non-constant computed member names.
+// `super.x` property semantics, a getter or setter with a computed name.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi, onKernel, OPT_LEVEL, levels } from './_matrix.js'
+import { oracle } from './util.js'
 import jz, { compile as compileWat } from '../index.js'
 import { instantiate } from '../interop.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports
+// every export, called without arguments, answers as the same program run by node
+const agrees = (src) => { const want = oracle(src), got = jz(src).exports; for (const name of Object.keys(want)) is(got[name](), want[name](), name) }
+
+// A computed member name is evaluated once, where the class is defined, in
+// member order: the heritage first, then every key (instance and static,
+// methods and fields), then the static initializers; the instance fields'
+// initializers at each construction. A member named at run time is the
+// instance's (or the class's) property of that name.
+test('class: computed member names evaluate in source order', () => {
+  agrees(`export let members = () => {
+      const log = [], k = s => (log.push(s), s)
+      class C { [k('m1')]() { return 1 } static [k('s1')]() { return 2 } [k('f1')] = k('fv1'); static [k('sf')] = k('sfv'); [k('m2')]() { return 3 } }
+      log.push('|'); const c = new C()
+      return log.join() + c.m1() + C.s1() + c.f1 + C.sf + c.m2()
+    }
+    export let heritage = () => { const log = [], k = s => (log.push(s), s); class B {} class C extends (log.push('ext'), B) { [k('m')]() { return 1 } } return log.join() + new C().m() }
+    export let fields = () => { const log = [], k = s => (log.push(s), s); class C { constructor() { log.push('ctor') } [k('a')] = k('va'); [k('b')]() { return 2 } [k('c')] = k('vc') } log.push('|'); const c = new C(); return log.join() + c.a + c.c + c.b() }
+    export let keys = () => { const k = 'kk'; class C { a = 1; [k] = 2; b = 3; constructor() { this.c = 4 } } return Object.keys(new C()).join() + JSON.stringify(new C()) }
+    export let overridden = () => { const k = () => 'a'; class C { [k()]() { return 'A' } [k()]() { return 'B' } } return new C().a() }
+    export let throwing = () => { const log = []; try { class C { [(log.push('k1'), 'a')]() {} [(() => { throw 'boom' })()]() {} [log.push('k3')]() {} } } catch (e) { log.push(e) } return log.join() }
+    export let generator = () => { const k = 'it'; class C { *[k]() { yield 1; yield 2 } } return [...new C().it()].join() }
+    export let number = () => { class C { [1 + 1]() { return 'two' } } return new C()[2]() }
+    export let derived = () => { const k = 'hi'; class A { base() { return 'b' } } class B extends A { [k]() { return 'h' + this.base() } [k + '2'] = 5 } const b = new B(); return b.hi() + b.hi2 + Object.keys(b).join() }`)
+  agrees(`const KEY = ['dyn', 'amic'].join('')
+    class M { [KEY]() { return 'ok' } static [KEY + 'S'] = 1 }
+    export let module = () => new M().dynamic() + M.dynamicS`)
+})
+
+// Field initializers run in declaration order, those reading `this` among
+// them, after the methods exist; members run in the class's scope, never
+// reading a binding of the constructor's (a parameter, a declaration).
+test('class: field order and member scope', () => {
+  agrees(`export let order = () => { const log = [], L = s => (log.push(s), s); class C { a = L('a'); b = (L('b'), this.a); c = L('c') } new C(); return log.join() }
+    export let param = () => { const x = 'outer'; class C { a = x; constructor(x) { this.b = x } m() { return x } } const c = new C('param'); return [c.a, c.b, c.m()].join() }
+    export let local = () => { const y = 'outer'; class C { a = y; constructor() { const y = 'local'; this.b = y } m() { return y } } const c = new C(); return [c.a, c.b, c.m()].join() }
+    export let derivedParam = () => { const x = 'outer'; class A {} class B extends A { a = x; constructor(x) { super(); this.b = x } } const b = new B('param'); return b.a + ',' + b.b }
+    export let fieldCallsMethod = () => { class A {} class B extends A { x = this.m(); m() { return 9 } } return new B().x }`)
+  agrees(`const x = 'outer', y = 'outer'
+    class C { a = x; constructor(x) { this.b = x } }
+    class D { a = y; constructor() { const y = 'local'; this.b = y } }
+    export let module = () => { const c = new C('param'), d = new D(); return [c.a, c.b, d.a, d.b].join() }`)
+})
+
+// An object literal's computed key is a property key before its value is
+// evaluated (a toString it calls included); a method under any key reads its
+// receiver as `this`.
+test('object literal: computed keys and methods under them', () => {
+  agrees(`export let toKey = () => { const log = [], key = { toString() { log.push('ts'); return 'k' } }; const o = { [key]: (log.push('v'), 1) }; return log.join() + Object.keys(o).join() }
+    export let method = () => { const log = [], k = s => (log.push(s), s); const o = { a: k('va'), [k('m')]() { return this.a }, [k('b')]: k('vb') }; return log.join() + '|' + o.m() + '|' + Object.keys(o).join() }
+    export let literal = () => { const o = { v: 3, 'a-b'() { return this.v * 2 } }; return o['a-b']() }`)
+})
 
 test('derived closure class methods stay hidden through property growth and copying', () => {
   const prefix = `function make(x){class B{x;constructor(v){this.x=v}m(){return this.x}}
@@ -450,8 +502,11 @@ test('accessor: a derived class inherits the base getter', () => {
   `)
   is(run(), 15)
 })
-test('rejects dynamic computed class fields', () => rejects(`let key = "x"; class A { [key] = 1 } export let run = () => 1`, /computed/))
-test('rejects dynamic computed class methods', () => rejects(`let key = "x"; class A { [key]() { return 1 } } export let run = () => 1`, /computed/))
+// a member under a computed name is defined (see 'computed member names evaluate in source order'); an accessor is not
+test('rejects a getter or setter under a computed name', () => {
+  rejects(`let key = "x"; class A { get [key]() { return 1 } } export let run = () => 1`, /computed name/)
+  rejects(`let key = "x"; export let run = () => { const o = { set [key](v) {} }; return 1 }`, /computed name/)
+})
 
 // Computed class member names from module-scope const bindings: jzify's entry
 // prepass collects `const K = 'str'`, class lowering folds `[K]` (const

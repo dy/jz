@@ -643,9 +643,6 @@ function shouldSkipBase(content, rel = '') {
   if (rel.endsWith('/expressions/void/S11.4.2_A2_T2.js')) return 'strict-mode undeclared reference outside current jz scope'
   // reserved-words tests using hasOwnProperty + dictionary keys with global names ('undefined', 'NaN', etc.).
   if (/\/reserved-words\/ident-name-(global-property|reserved-word-literal)-(memberexpr|memberexpr-str|prop-name)\.js$/.test(rel)) return 'hasOwnProperty + dictionary keys outside fixed-shape subset'
-  // Computed property method shorthand (`{ [k]() {} }`) — method shorthand outside jz scope.
-  if (/\/computed-property-names\/object\/method\/(number|string)\.js$/.test(rel)) return 'computed method shorthand outside current jz scope'
-  if (rel.endsWith('/computed-property-names/to-name-side-effects/object.js')) return 'computed method shorthand outside current jz scope'
   // Regex literal in statement list — regex outside jz scope.
   if (/\/statementList\/block-(regexp-literal|with-statment-regexp-literal)(-flags)?\.js$/.test(rel)) return 'regexp literal outside current jz scope'
   // Compound-assignment strict-mode undeclared-reference + RHS-evaluation-order (ReferenceError before RHS eval).
@@ -741,7 +738,6 @@ function shouldSkipBase(content, rel = '') {
     // static fields/methods/blocks are lowered (post-decl closure props); only
     // shapes the collectors below can't express still skip via their own gates
     if (/(^|[};{)\s])get\s+[\w$#'"\d.\[]/.test(codeContent) || /(^|[};{)\s])set\s+[\w$#'"\d.\[]/.test(codeContent)) return 'class accessors outside fixed-shape subset'
-    if (/(^|\n)\s*(static\s+)?\*?\s*\[[^\]\n]+\]\s*(=|;|\(|$)/m.test(codeContent)) return 'computed class member name outside fixed-shape subset'
     if (/(^|\n)\s*\*\s*[\w$\[]/m.test(codeContent)) return 'generator method outside jzify subset'
     if (/#\w+\s*\(/.test(codeContent)) return 'private method outside jzify subset'
     if (/static\s+#|#\w+\s*[=;]/.test(codeContent)) return 'private field semantics outside jzify subset'
