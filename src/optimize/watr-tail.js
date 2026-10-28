@@ -730,7 +730,11 @@ export function watrTail(module, cfg, {
   // (after every pass that reads a function whole, the inliner above all, which would splice a
   // single-caller arm back)
   // (the same: an inliner would splice a pass back into the function that runs once)
-  if (cfg.loopPasses === true) time('loopPasses', () => loopPasses(optimized, { user: name => ctx.funcs.map.has(name.slice(1)) }))
+  // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
+  // the body it calls once is inlined there)
+  if (cfg.loopPasses === true) time('loopPasses', () => loopPasses(optimized, {
+    user: name => ctx.funcs.map.has(name.slice(1)) || name.endsWith('$exp') && ctx.funcs.map.has(name.slice(1, -4)),
+  }))
   if (cfg.splitFuncs === true) time('splitFuncs', () => splitFuncs(optimized, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm }))
   return optimized
 }

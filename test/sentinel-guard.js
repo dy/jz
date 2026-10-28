@@ -60,7 +60,10 @@ const LITERALS = { level: 'speed', poolFloats: false }
 const GUARDS_OFF = { ...LITERALS, sentinelGuards: false }
 /** Checked element reads: each yields undefined (or NaN, consumed by arithmetic) on its miss arm. */
 const missArms = (wat) => (wat.match(/\(else \(f64\.const nan\b/g) || []).length
-const kernelOf = (wat) => funcWat(wat, 'edt1d') || funcWat(wat, 'run') || funcWat(wat, 'run$exp')
+// edt1d is inlined into run's export, whose passes over a few constant rows run as calls of their own
+// (split-funcs.js loopPasses): the kernel is that body and the pieces moved out of it
+const kernelOf = (wat) => funcWat(wat, 'edt1d') ||
+  `(module ${[funcWat(wat, 'run'), ...[...wat.matchAll(/\(func \$(run(?:\$exp)?\$s\d+)[\s)]/g)].map(m => funcWat(wat, m[1]))].join('\n')})`
 
 test('sentinel guard: a cached missing integer becomes numeric NaN before a floating store', () => {
   const src = `function pop(f,v,z) {

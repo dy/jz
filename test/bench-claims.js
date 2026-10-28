@@ -422,10 +422,18 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // Cases the claims do not yet cover: a library's own code added to the corpus
 // that jz does not lead on every runner yet (AGENTS.md's "tracked as todo in the
 // gate until jz takes the lead — never silently accepted"):
-// - stdlib-exp leads V8, bun and JSC on every runner sampled (Neoverse-N2, EPYC
-//   7763/9V45/9V74, Xeon 8370C/8573C) and every engine on an Apple M4, and trails
-//   deno 2.9.8 on x64 (1.20-1.61×), whose V8 runs its JavaScript 1.6-2.0× faster
-//   there than node 24's;
+// - stdlib-exp led V8, bun and JSC on every runner sampled (Neoverse-N2, EPYC
+//   7763/9V45/9V74, Xeon 8370C/8573C) and every engine on an Apple M4, and trailed
+//   deno 2.9.8 on x64 (1.20-1.61×). deno 2.9.8 embeds V8 15.0, node 24 V8 13.6, and
+//   runs the kernel's JavaScript 1.65-2.2× faster on arm64 (Neoverse-N2, 29.2 ms
+//   against 48.2) as on x64: the newer engine's gain, not the ISA's, with no work
+//   skipped (each of the 2^20 results is stored to a Float64Array the checksum reads).
+//   jz's own gap: its loop ran as V8's baseline code, since V8 replaces code between
+//   calls only and the void export's boundary wrapper hid the once-entered function
+//   from loopPasses (split-funcs.js); optimized, it runs 0.49× that time on an M4
+//   (5.8 ms against 11.7). Before the wrapper, with its passes split, jz ran 26.0 ms
+//   against deno's 30.0 on an EPYC 7763 and 42.3 against 28.5 on a Xeon 8370C: the
+//   case leaves this set once an x64 probe of the split build shows it ahead;
 // - polytri's triangulation leads, its decomposition, polygons split and pushed
 //   element by element, trails (deno and bun 1.00-1.24×, JSC 1.12-1.34×);
 // - fabrik runs ~70 µs a round, so its verdict is V8's tier-up race: the rounds

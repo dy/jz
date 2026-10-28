@@ -410,8 +410,14 @@ test('LSR (watr): speed tier advances record and summed-index addresses as point
     for (let i = 0; i < w * h; i++) s = (s * 31 + dst[i]) | 0
     return s
   }`
-  // the body is the export's own function, or inlined into its boundary wrapper
-  const body = tree => ['func', findFunc(tree, '$f') || [], findFunc(tree, '$f$exp') || []]
+  // the body is the export's own function, or inlined into its boundary wrapper, the passes of
+  // its few-pass loop in functions of their own (split-funcs.js loopPasses)
+  const body = tree => {
+    const out = ['func']
+    const w = n => { if (!Array.isArray(n)) return; if (n[0] === 'func' && /^\$f(\$exp)?(\$s\d+)?$/.test(n[1])) { out.push(n); return } for (const c of n) w(c) }
+    w(tree)
+    return out
+  }
   const pointers = fn => count(fn, n => n[0] === 'local' && /^\$__lsr\d/.test(n[1]))
   const recFn = body(parse(rec, 'speed'))
   ok(pointers(recFn) > 0, 'the record loop reads through a pointer')

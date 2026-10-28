@@ -3283,7 +3283,8 @@ function runs once (the `loopPasses` pass, same file, speed tier): V8 replaces a
 code only between its calls, so a function its caller enters once runs as baseline code for
 as long as that call lasts, a driver's rounds and the kernel spliced into them included
 (stdlib-ddot's timed rounds). A function runs once when it is an export of the program's own
-that no function calls, or its one call sits outside every loop of a function that runs once;
+that no function calls, its boundary wrapper (`$name$exp`, a void export's among them) too, or
+its one call sits outside every loop of a function that runs once;
 an outer loop of it that holds a loop and runs a few passes (`fewPasses`: a counter stepped by
 one, from zero or above on entry, to a constant of at most 256) gives up its longest run of
 whole statements holding the inner loop, branching only inside the run, its locals moving as

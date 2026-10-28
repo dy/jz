@@ -450,3 +450,28 @@ test('loop passes: the speed tier moves a driver\'s rounds and answers as the so
   for (const level of [2, 'size'])
     ok(!/\(func \$main\$s\d+/.test(compile(NEST_SRC(), { optimize: { level }, wat: true })), `${level} keeps it`)
 })
+
+// A void export crosses through its boundary wrapper (`$main$exp`, compile/boundary-wrap.js),
+// which the body it calls once is inlined into: the wrapper is the function that runs once.
+const VOID_SRC = `const out = new Float64Array(12)
+export let main = (n) => {
+  const xs = new Float64Array(64)
+  for (let i = 0; i < 64; i++) xs[i] = (i * 7) % 13 - 6
+  for (let r = 0; r < 12; r++) {
+    let s = 0
+    for (let i = 0; i < 64; i++) s += xs[i] * (r + n)
+    out[r] = s
+  }
+}
+export let read = (r) => out[r]
+`
+
+test('loop passes: a void export\'s rounds move out of its boundary wrapper', () => {
+  const native = oracle(VOID_SRC), { exports } = jz(VOID_SRC, { optimize: { level: 'speed' } })
+  for (const n of [0, 3, 40]) {
+    is(exports.main(n), native.main(n), `main(${n}) returns undefined`)
+    for (const r of [0, 5, 11]) is(exports.read(r), native.read(r), `n=${n}: read(${r})`)
+  }
+  if (onKernel()) return
+  ok(/\(func \$main\$exp\$s\d+/.test(compile(VOID_SRC, { optimize: { level: 'speed' }, wat: true })), 'the rounds\' pass is a function')
+})
