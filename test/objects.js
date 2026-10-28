@@ -9,6 +9,60 @@ import { i64ToF64 } from '../interop.js'
 import { onWasi, belowOpt, levels } from './_matrix.js'
 import { run, oracle, cases } from './util.js'
 
+// A class's methods and accessors are its prototype's, its private names no
+// property, an Error's `name` its class's: hasOwnProperty, Object.hasOwn and
+// getOwnPropertyNames see none of them, enumeration none of them; `in` finds
+// the members.
+test('object: own properties of class instances and builtin errors', () => {
+  const src = `class M { constructor() { this.x = 1 } m() { return 2 } get g() { return 3 } }
+    const ownOf = (o, k) => o.hasOwnProperty(k)
+    export let local = () => { class C { #s = 1; constructor() { this.x = 1 } m() { return this.#s } get g() { return 3 } } const c = new C()
+      return [c.hasOwnProperty('m'), Object.hasOwn(c, 'g'), 'm' in c, 'g' in c, c.hasOwnProperty('x'), Object.getOwnPropertyNames(c).join(), Object.keys(c).join(), JSON.stringify(c), c.m()].join(';') }
+    export let module = () => { const c = new M(); return [c.hasOwnProperty('m'), Object.hasOwn(c, 'g'), 'm' in c, Object.getOwnPropertyNames(c).join(), ['m', 'x', 'y'].map(k => ownOf(c, k)).join()].join(';') }
+    export let errors = () => { const e = new Error('m'); return [e.hasOwnProperty('message'), Object.hasOwn(e, 'name'), 'name' in e, Object.keys(e).length].join() }`
+  const want = oracle(src), got = run(src)
+  for (const name of Object.keys(want)) is(got[name](), want[name](), name)
+})
+
+// The host reads a class instance by its own properties: a private name stays
+// inside, and an exported class's instance is still its handle (interop.js).
+test('object: the host reads a class instance without its private names', () => {
+  const src = `class P { #s = 1; constructor() { this.x = 2 } m() { return this.#s } }
+    const make = (k) => class { #s = k; constructor() { this.y = k } m() { return this.#s } }
+    export let module = () => new P()
+    export let closure = () => new (make(3))()`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 'size')) {
+    const got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) is(Object.entries(got[name]()), Object.entries(want[name]()), `O${optimize} ${name}`)
+  }
+})
+
+// A private name asks for a view of its layout only where a reader of the
+// view tables may meet its objects (summary/query.js `enumerable`): a key
+// listing, a deep reader, a shape the summary loses, the host. Each path
+// answers as JavaScript does; a layout none of them meets adds no view.
+test('object: a private name asks for a view only where enumeration meets its layout', () => {
+  const A = `class A { #s = 1; constructor() { this.x = 2 } m() { return this.#s } }`
+  const src = `${A}
+    const names = (o) => Object.keys(o).join()
+    const fs = [(o) => Object.keys(o).join(), (o) => JSON.stringify(o)]
+    export let keys = () => names(new A()) + ';' + names({ z: 1 })
+    export let forIn = () => { const out = []; for (const k in new A()) out.push(k); return out.join() }
+    export let spread = () => JSON.stringify({ ...new A() })
+    export let deep = () => JSON.stringify({ a: [new A()] })
+    export let lost = (k) => { const box = {}; box[k] = new A(); return JSON.stringify(box) + Object.keys(box[k]).join() }
+    export let escaped = (i) => fs[i](new A()) + fs[1 - i]({ q: [new A()] })
+    export let own = () => Object.getOwnPropertyNames(new A()).join() + ';' + Object.hasOwn(new A(), '#s')`
+  const want = oracle(src), args = { lost: ['k'], escaped: [0] }
+  for (const optimize of levels(0, 2, 'size')) {
+    const got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) is(got[name](...(args[name] ?? [])), want[name](...(args[name] ?? [])), `O${optimize} ${name}`)
+  }
+  const unread = compile(`${A} export let f = () => [new A().m(), Object.keys({ a: 1 }).length].join()`, { wat: true })
+  ok(!/__view_data/.test(unread), 'a layout no reader meets carries no view')
+})
+
 test('object enumeration preserves BigInt identity and ordinary field values', () => {
   const fields = `const o = {a:1n, b:0n, c:-1n, d:0x7FF8000500000000n,
     e:5e-324, f:false, g:null, h:undefined};`

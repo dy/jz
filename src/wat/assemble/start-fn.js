@@ -22,7 +22,7 @@ import { mintRepresentationPlan, representationProgramHasBigint } from '../../co
 import { mintTypedStoragePlan } from '../../compile/typed-storage-plan.js'
 import { emit, emitVoid } from '../../compile/emit.js'
 import { staticArrayPtr, mkPtrIR, findBodyStart, extractF64Bits, asF64 } from '../../ir.js'
-import { enumView, enumViewsOn, accessorTable } from '../../../module/schema.js'
+import { rowView, memberView, enumViewsOn, ownViewsOn, accessorTable } from '../../../module/schema.js'
 import { strHashLiteral } from '../../../module/collection.js'
 import { dataLen, dataAlign, dataPush, dataRecord, pushStaticSlots } from '../../static-data.js'
 
@@ -82,13 +82,17 @@ function analyzeStartForEmit(ast) {
 /** A view entry as one exact number: its slot, kind and setter slot + 1. */
 const viewEntry = (e) => e.slot + e.kind * 2 ** 24 + (e.set + 1) * 2 ** 26
 
-/** The enumeration views of the program's layouts (module/schema.js enumView)
- *  when enumeration may meet one (enumViewsOn), else null. */
-function viewsOf(own = false) {
-  if (!enumViewsOn()) return null
-  const views = ctx.schema.list.map(names => enumView(names, own))
+/** The views of the program's layouts a table holds (module/schema.js), else
+ *  null: enumeration's (`__schema_view`) and property lookup's
+ *  (`__schema_member_view`) when enumeration may meet one (enumViewsOn),
+ *  own-name reflection's (`__schema_own_view`) when it may (ownViewsOn). */
+function viewsOf(table = '__schema_view') {
+  if (table === '__schema_own_view' ? !ownViewsOn() : !enumViewsOn()) return null
+  const views = ctx.schema.list.map(names => table === '__schema_member_view' ? memberView(names) : rowView(names, table === '__schema_own_view'))
   return views.some(Boolean) ? views : null
 }
+/** The view tables the program reads: enumeration's, and the others where code reads them. */
+const viewTables = () => ['__schema_view', ...['__schema_own_view', '__schema_member_view'].filter(t => ctx.scope.globals.has(t) || accessorTable() === t)]
 
 /** Bind `__schema_view` to the view table at `off` in static data. */
 function viewTable(off, table = '__schema_view') {
@@ -252,13 +256,13 @@ function buildSchemaInit() {
         ctx.runtime.reclaimSpans.push({ global: '__schema_tbl', start: schemaDataStart, end: dataLen() })
         dataRecord(schemaDataStart, dataLen(), false)
       }
-      // Enumeration views (module/schema.js enumView) beside the table: per
+      // Enumeration views (module/schema.js rowView) beside the table: per
       // schema, its view keys and its map (viewEntry, one number a position),
       // both boxed static arrays; zeros for a layout without one. A span of
       // their own: the host reads them without the table (interop decoding
       // through __view_data), and a live view span keeps the table before it.
-      for (const table of ['__schema_view', ...(ctx.scope.globals.has('__schema_own_view') || accessorTable() === '__schema_own_view' ? ['__schema_own_view'] : [])]) {
-        const views = viewsOf(table === '__schema_own_view')
+      for (const table of viewTables()) {
+        const views = viewsOf(table)
         if (views) {
           const zero = '0x0000000000000000', viewDataStart = dataLen()
           const keyBits = views.map(v => v?.map(e => extractF64Bits(asF64(emit(['str', String(e.key)])))))
@@ -303,8 +307,8 @@ function buildSchemaInit() {
           ['f64.store', ['i32.add', ['local.get', `$${stbl}`], ['i32.const', s * 8]],
             mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${sarr}`])])
       }
-      for (const table of ['__schema_view', ...(ctx.scope.globals.has('__schema_own_view') || accessorTable() === '__schema_own_view' ? ['__schema_own_view'] : [])]) {
-        const views = viewsOf(table === '__schema_own_view')
+      for (const table of viewTables()) {
+        const views = viewsOf(table)
         if (views) schemaInit.push(...viewInitIR(views, nSchemas + runtimeReserve, table))
       }
     }

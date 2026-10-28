@@ -620,6 +620,39 @@ test('async: a promise enumerates no keys', async () => {
     export async function settled() { const p = g(); const s = JSON.stringify(p); return s + (await p) + ('then' in p) }`)
 })
 
+// A promise holds no own property: `then`, `catch` and `finally` are
+// Promise.prototype's, its state none at all. Own-property checks answer as
+// JS does by literal key, by a key known at run time and on a receiver of
+// unknown kind; `in` finds the methods; the tag is the class's.
+test('async: a promise has no own properties', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`const own = (o, k) => Object.hasOwn(o, k)
+    const tag = (x) => Object.prototype.toString.call(x)
+    export function literal() { const p = Promise.resolve(1); return [p.hasOwnProperty('then'), Object.hasOwn(p, 'catch'), 'then' in p, typeof p.finally].join() }
+    export function names() { const p = new Promise(r => r(1)); let s = ''; for (const k in p) s += k; return Object.getOwnPropertyNames(p).length + s }
+    export function runtime() { const p = Promise.resolve(1); return ['then', 'catch', 'x'].map(k => p.hasOwnProperty(k) + '/' + (k in p)).join() }
+    export function unknown() { return [own(Promise.resolve(1), 'then'), own({ then: 1 }, 'then'), own(Promise.reject(1).catch(() => 0), 'catch')].join() }
+    export function tags() { return [tag(Promise.resolve(1)), tag(new Error('e')), tag(new Date(0)), tag({})].join() }`)
+})
+
+// A thenable's `then` is read once, a throw of its getter rejecting, and
+// called on it in a job; a promise resolved with itself rejects; an await of
+// a thenable takes the jobs JS takes.
+test('async: a thenable is read once and called on itself', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`export async function getter() { let n = 0; const t = { get then() { n++; return r => r(n) } }; const v = await t; const xs = await Promise.all([t]); return [v, xs[0], n].join() }
+    export async function throwing() { const t = { get then() { throw new Error('g') } }; try { await t; return 'no' } catch (e) { return e.message } }
+    export async function receiver() { const t = { v: 9, then(r) { r(this.v) } }; return await t }
+    export async function cycle() { let res; const p = new Promise(r => { res = r }); res(p); try { await p; return 'no' } catch (e) { return e instanceof TypeError } }
+    export async function order() {
+      const log = [], t = { then(r) { log.push('then'); r() } }
+      const a = (async () => { await t; log.push('a') })()
+      const b = (async () => { await null; log.push('b1'); await null; log.push('b2'); await null; log.push('b3') })()
+      await a; await b
+      return log.join()
+    }`)
+})
+
 // An object literal's accessor in an async body or a generator is a function
 // of its own: its `return` and its declarations are its own, and a method or
 // an accessor ahead of a later await keeps its place in the literal.

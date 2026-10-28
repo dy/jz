@@ -92,6 +92,11 @@ const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.entries', '
 // written, never read (a store to a declared key and to a missing one leave
 // the same object).
 const KEY_TARGETS = new Set(['Object.assign', 'Object.defineProperty', 'Object.defineProperties'])
+// The calls that list the keys of every object their arguments reach, and read
+// its values: a serialization, a deep copy, a console method (the host prints
+// what it is handed).
+const DEEP_READERS = new Set(['JSON.stringify', 'structuredClone'])
+const deepReader = (callee) => DEEP_READERS.has(callee) || callee.startsWith('console.')
 
 const BIND = CLASS_T + 'bind'
 // The runtime's helpers the summary answers at their call nodes: an iterator
@@ -188,6 +193,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   schemas = schemas.map(props => props.slice())
   const layoutCount = schemas.length, layouts = schemas.map((_, sid) => sid)
   const sites = new Map(), objectKinds = new Map(), sitesByLayout = new Map()
+  const untracked = new Set()        // layouts a construction made past the site capacity: objects no kind names
   const tops = [...inits, ast]
   const kinds = []                   // binding id (keyOf) → kind
   // Initializer contexts. A class initializer (`C⟨init⟩(self, …)`,
@@ -245,7 +251,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     let ids = sitesByLayout.get(layout)
     if (!ids) sitesByLayout.set(layout, ids = [])
     sid = ids.length ? schemas.length : layout
-    if (sid >= SET_BASE) { poisonSchema(layout); return -1 }  // retain conservative storage at capacity
+    if (sid >= SET_BASE) { poisonSchema(layout); untracked.add(layout); return -1 }  // retain conservative storage at capacity
     if (ids.length) {
       schemas.push(schemas[layout]); layouts.push(layout)
       schemas[sid].forEach((p, i) => byProp.get(p).push([sid, i]))
@@ -583,6 +589,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // (plan/declare-unseen-keys.js). A lost shape's key set is read by code
   // the summary cannot see (lostSchema).
   const keysSeen = new Set()
+  // The shapes a deep reader (deepReader) meets: the argument's and every
+  // one its values reach.
+  const deepRead = new Set()
   const copiedSchemas = new Set() // fields copied without their original slot identity
   const wildProps = new Map()   // literal name → the values stored under it through a receiver of unknown shape
   const lostSchema = (sid) => opaqueSchemas.has(sid) || hostSchemas.has(sid)
@@ -2962,6 +2971,29 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       for (const sid of shapesInCell(cell(paramOf(k)))) cloneReads(kind(K.OBJECT, sid), seen)
     } else if (hasTag(k, K.OBJECT)) escapeLostFields()
   }
+  // The shapes a deep reader meets (deepRead), along the kinds a value holds,
+  // each cell and shape once. An object of no shape the summary names is a
+  // lost one's, which the readers of the facts count already.
+  const readDeep = (k, seen) => {
+    k = canon(core(k))
+    if (seen.has(k)) return
+    seen.add(k)
+    if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) {
+      for (const sid of shapesOf(paramOf(k))) {
+        deepRead.add(sid)
+        for (const v of slots(sid)) readDeep(v, seen)
+        for (const v of sideProps.get(sid)?.values() ?? []) readDeep(v, seen)
+        readDeep(sideWild.get(sid) ?? K.NONE, seen)
+      }
+    } else if (celled(k)) {
+      const c = cell(paramOf(k))
+      readDeep(elems[c] ?? K.NONE, seen)
+      if (tagOf(k) === K.MAP) readDeep(mapKeys.get(c) ?? K.NONE, seen)
+      for (const v of cellProps.get(c)?.values() ?? []) readDeep(v, seen)
+      readDeep(cellWild.get(c) ?? K.NONE, seen)
+      for (const sid of shapesInCell(c)) readDeep(kind(K.OBJECT, sid), seen)
+    }
+  }
   const viewed = (source) => tagOf(source) === K.OBJECT && paramOf(source) !== UNKNOWN &&
     shapesOf(paramOf(source)).some(sid => viewOf(sid))
   /** A literal with a spread or a computed key, walked by its sources. */
@@ -3414,6 +3446,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (KEY_READERS.has(callee)) for (let i = KEY_TARGETS.has(callee) ? 1 : 0; i < count; i++) seeKeys(ks[base + i])
       if (callee === 'Object.assign') for (let i = 0; i < count; i++) copyFields(ks[base + i])
       if (callee === 'structuredClone' && count) cloneReads(ks[base], new Set())
+      if (typeof callee === 'string' && count && deepReader(callee)) { const seen = new Set(); for (let i = 0; i < count; i++) readDeep(ks[base + i], seen) }
       let r
       // An optional call: a callee of no kind yet calls nothing, a nullish one answers undefined.
       let optional = null
@@ -4924,9 +4957,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const queryFacts = {
     kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
-    schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey,
+    schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
-    numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen,
+    numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
     mapKeys, heldKeys, absentStored,
     held,
@@ -5373,7 +5406,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.length = 0; stores.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); copiedSchemas.clear()
+    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
     if (unnamed.size && discover) return { discovered: [...unnamed.values()] }

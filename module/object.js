@@ -19,8 +19,8 @@ import { ctx, err, inc, PTR, LAYOUT, declGlobal, setLinkDemand } from '../src/ct
 import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder, spreadExclusions, accessorOf } from '../src/ast.js'
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
-import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex } from '../layout.js'
-import { schemaValueIR, enumView, enumKeys, ownKeys, viewsOn, enumViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
+import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
+import { schemaValueIR, enumView, enumKeys, ownKeys, inheritingSids, viewsOn, enumViewsOn, ownViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
 import { isGlobal } from '../src/ir/vars.js'
@@ -555,7 +555,8 @@ export default (ctx) => {
           ['drop', asF64(emit(obj))],
           ['i32.const', has ? 1 : 0]], 'i32')
       }
-      if (!ctx.types.anyDelete && typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
+      // a slot is an own property, unless some layout holds it as none (module/schema.js ownKeys)
+      if (!ctx.types.anyDelete && typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0 && !inheritingSids(litKey).length)
         return typed(['i32.const', 1], 'i32')
     }
     if (stringValType(obj)) return stringHasOwn(obj, key)
@@ -583,17 +584,38 @@ export default (ctx) => {
   // is known at compile time the tag folds to a static string load; otherwise the
   // runtime path dispatches on NaN-box bits: a number that is one, the number NaN,
   // null and undefined, a truth value's atom, then the pointer's type.
+  // A builtin whose instances are OBJECT layouts of their own reports its
+  // class's tag: a promise's (Symbol.toStringTag), an Error's, a Date's. The
+  // Error classes are those the program constructs (instanceof.js's census).
+  const builtinTags = () => {
+    const tags = []
+    if (ctx.schema.promiseSid != null) tags.push([ctx.schema.promiseSid, '[object Promise]'])
+    // a Date's layout, minted where it is first made, is minted here when the Date module is in
+    const dateSid = ctx.schema.dateSid ?? ctx.schema.ensureDateSid?.()
+    if (dateSid != null) tags.push([dateSid, '[object Date]'])
+    for (const c of ERR_CLASS_NAMES) if (ctx.features.errorClasses?.has(c)) tags.push([ctx.schema.errorSid(c), '[object Error]'])
+    return tags
+  }
   ctx.core.emit['__object_toString'] = (obj) => {
     const emitTag = value => asF64(emit(['str', value]))
-    const tag = objectToStringTagForVal(obj)
+    const tags = builtinTags()
+    let tag = objectToStringTagForVal(obj)
+    // an object's tag is its layout's: known, or read at run time
+    if (tags.length && (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.OBJECT) {
+      const sid = typeof obj === 'string' ? ctx.schema.idOf(obj) : null
+      tag = sid == null ? null : tags.find(([s]) => s === sid)?.[1] ?? tag
+    }
     if (tag) return block64(['drop', asF64(emit(obj))], emitTag(tag))
 
     const value = temp('otag'), type = tempI32('otagt')
     const bits = ['i64.reinterpret_f64', ['local.get', `$${value}`]]
     if (ctx.module.demanded.has('regex')) { ctx.module.include('regex'); inc('__is_regexp') }
-    const objectTag = ctx.module.demanded.has('regex')
+    let objectTag = ctx.module.demanded.has('regex')
       ? ['if', ['result', 'f64'], ['call', '$__is_regexp', bits], ['then', emitTag('[object RegExp]')], ['else', emitTag('[object Object]')]]
       : emitTag('[object Object]')
+    for (const [sid, t] of tags) objectTag = ['if', ['result', 'f64'],
+      ['i64.eq', ['i64.and', bits, ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
+      ['then', emitTag(t)], ['else', objectTag]]
     const byType = dispatchByPtrType(type, [
       [PTR.STRING,  emitTag('[object String]')],
       [PTR.ARRAY,   emitTag('[object Array]')],
@@ -1923,7 +1945,7 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro, dynOnly = fal
   const out = tempI32('oeo'), i = tempI32('oei'), o = tempI32('oej')
   // Under a view (viewRowIR) the schema stream's position and slot differ;
   // only an accessor's gives a slot a kind other than data.
-  const map = (own ? viewsOn() : enumViewsOn()) ? tempI32('oemap') : null
+  const map = (own ? ownViewsOn() : enumViewsOn()) ? tempI32('oemap') : null
   const viewTable = own ? '__schema_own_view' : '__schema_view'
   const row = map ? tempI32('oerow') : i, kind = map && viewsOn() ? tempI32('oekind') : null
   if (map && !ctx.scope.globals.has(viewTable)) declGlobal(viewTable, 'i32')

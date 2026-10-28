@@ -22,7 +22,7 @@ import { VAL, lookupValType } from '../src/reps.js'
 import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, FORWARDING_MASK, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
-import { OBJECT_SCHEMA_HI_MASK, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY, nanPrefixHex, nanPrefixMaskHex } from '../layout.js'
+import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY, nanPrefixHex, nanPrefixMaskHex } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat, requireObjectWat, throwErrorWat } from './core/error-object.js'
@@ -30,7 +30,7 @@ import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { captureCallback } from './array/callback.js'
 import { demandHostReceiver, mayHoldHostValue } from '../src/compile/func-exports.js'
-import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, accessorTable } from './schema.js'
+import { ENUM_DATA, ENUM_GET, ownKeys, presentKeys, inheritingSids, viewsOn, accessorTable } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -268,6 +268,8 @@ export default (ctx) => {
     __schema_slot: ['__key_eq', '__str_hash'],
     __schema_slot_h: ['__key_eq'],
     __view_find: ['__key_eq'],
+    __own_lacks: ['__ptr_type', '__is_str_key', '__to_key', '__keys_have'],
+    __keys_have: ['__key_eq'],
     __view_get: ['__view_find'],
     __view_set: ['__view_find'],
     __view_del: ['__view_find'],
@@ -1604,6 +1606,36 @@ export default (ctx) => {
   }
   ctx.core.stdlib['__schema_slot'] = () => schemaSlotBody('__schema_slot', false)
   ctx.core.stdlib['__schema_slot_h'] = () => schemaSlotBody('__schema_slot_h', true)
+  // Whether `key` names a slot of an OBJECT's layout that the layout's
+  // own-name view leaves out (module/schema.js enumView): a slot that is no
+  // own property (a promise's state, a class's member). The view table is
+  // declared where the probe is emitted, before start-fn builds the tables.
+  ctx.core.stdlib['__own_lacks'] = () => {
+    if (!ctx.scope.globals.has('__schema_tbl')) declGlobal('__schema_tbl', 'i32')
+    return `(func $__own_lacks (param $obj i64) (param $key i64) (result i32)
+    (local $sid i32) (local $row i32)
+    (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${PTR.OBJECT})) (then (return (i32.const 0))))
+    (if (i32.eqz (global.get $__schema_own_view)) (then (return (i32.const 0))))
+    (local.set $sid (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (local.set $row (i32.add (global.get $__schema_own_view) (i32.shl (local.get $sid) (i32.const 4))))
+    (if (i64.eqz (i64.load (local.get $row))) (then (return (i32.const 0))))
+    (if (i32.eqz (call $__is_str_key (local.get $key))) (then (local.set $key (call $__to_key (local.get $key)))))
+    (i32.and
+      (call $__keys_have (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3)))) (local.get $key))
+      (i32.eqz (call $__keys_have (i64.load (local.get $row)) (local.get $key)))))`
+  }
+  // Whether the boxed array of keys `keys` holds `key`.
+  ctx.core.stdlib['__keys_have'] = `(func $__keys_have (param $keys i64) (param $key i64) (result i32)
+    (local $at i32) (local $n i32) (local $i i32)
+    (local.set $at (i32.wrap_i64 (local.get $keys)))
+    (local.set $n (i32.load (i32.sub (local.get $at) (i32.const 8))))
+    (block $done (loop $scan
+      (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+      (if (call $__key_eq (i64.load (i32.add (local.get $at) (i32.shl (local.get $i) (i32.const 3)))) (local.get $key))
+        (then (return (i32.const 1))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $scan)))
+    (i32.const 0))`
   // A computed key naming an object literal's accessor (module/schema.js
   // enumView) misses the schema search, whose rows hold the accessor's slots
   // `x__get`/`x__set`: the layout's property view (start-fn.js) lists it
@@ -2826,6 +2858,13 @@ export default (ctx) => {
     return typed(['call', '$__dyn_del', asI64(storedValue(obj)), asI64(storedValue(key))], 'i32')
   }
 
+  // `key` (a non-literal key's value) names a slot `obj` holds as no own property (__own_lacks)
+  const ownLacks = (obj, key) => {
+    if (!ctx.scope.globals.has('__schema_own_view')) declGlobal('__schema_own_view', 'i32')
+    inc('__own_lacks')
+    return ['call', '$__own_lacks', ['i64.reinterpret_f64', obj], ['i64.reinterpret_f64', key]]
+  }
+
   // === `in` operator: key in obj → HASH key existence check ===
   // `own` is the own-property probe of Object.hasOwn/hasOwnProperty: its
   // receiver passes through ToObject, so only a nullish one throws and a
@@ -2833,9 +2872,9 @@ export default (ctx) => {
   ctx.core.emit['in'] = (key, obj, own = false) => {
     const objType = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
     // A class member (jzify/classes.js): an instance of a class with it has it,
-    // as through a prototype; a store under the name on any receiver is an own
-    // property the ordinary probe finds.
-    if (Array.isArray(key) && key[0] === 'str' && !key.memberProbe && !key.accessorProbe && !key[1].endsWith(ACCESSOR_GET) && !key[1].endsWith(ACCESSOR_SET)
+    // as through a prototype, not as its own; a store under the name on any
+    // receiver is an own property the ordinary probe finds.
+    if (!own && Array.isArray(key) && key[0] === 'str' && !key.memberProbe && !key.accessorProbe && !key[1].endsWith(ACCESSOR_GET) && !key[1].endsWith(ACCESSOR_SET)
         && (objType == null || objType === VAL.OBJECT) && classHasMember(key[1])) {
       const raw = Object.assign(['str', key[1]], { memberProbe: true })
       let recv = obj
@@ -2882,8 +2921,8 @@ export default (ctx) => {
       break
     }
     // its own properties: an accessor is present by its name, a hidden slot as
-    // itself (module/schema.js ownKeys)
-    const members = schema && ownKeys(schema)
+    // itself (module/schema.js ownKeys); `in` finds its prototype's members too
+    const members = schema && (own ? ownKeys(schema) : presentKeys(schema))
     let compareCost = 0
     if (members) for (const prop of members) {
       compareCost += ctx.features.sso && ssoEncode(String(prop)) ? 1 : 3
@@ -2935,7 +2974,7 @@ export default (ctx) => {
         return typed(['i32.const', 1], 'i32')
 
       const schemaIdx = present && objType === VAL.OBJECT ? ctx.schema.slotOf(obj, prop) : -1
-      if (!ctx.types.anyDelete && schemaIdx >= 0)
+      if (!ctx.types.anyDelete && schemaIdx >= 0 && !(own && inheritingSids(prop).length))
         return typed(['i32.const', 1], 'i32')
       // A schema MISS does not prove absence: an OBJECT can carry off-schema
       // dynamic props (`o.z = …` → __dyn_set's propsPtr), and under the self-compile
@@ -2981,6 +3020,15 @@ export default (ctx) => {
     const ext = demandHostReceiver()
     if (ext) inc('__ext_has')
     const dynHas = () => ['call', '$__dyn_has', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]
+    // An own-property probe: the probe finds a slot some layout holds as no
+    // own property (module/schema.js ownKeys), which a receiver of that layout
+    // lacks: a literal key's layouts by their ids, any other key by the
+    // layout's own-name view (__own_lacks).
+    const layoutIs = (sid) => ['i64.eq', ['i64.and', ['i64.reinterpret_f64', objVal], ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]]
+    const sids = own && Array.isArray(key) && key[0] === 'str' ? inheritingSids(key[1]) : null
+    const lacks = !own ? null : sids ? (sids.length ? sids.map(layoutIs).reduce((a, b) => ['i32.or', a, b]) : null)
+      : ctx.schema.inherited.size ? ownLacks(objVal, keyVal) : null
+    const answer = lacks ? ['i32.and', ['local.get', `$${outTmp}`], ['i32.eqz', lacks]] : ['local.get', `$${outTmp}`]
 
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${keyTmp}`, asF64(storedValue(key))],
@@ -3019,7 +3067,7 @@ export default (ctx) => {
         ['then', ['local.set', `$${outTmp}`, ['call', '$__ext_has',
           ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]]]]] : []),
 
-      ['local.get', `$${outTmp}`]], 'i32')
+      answer], 'i32')
   }
 
   // === iterable normalization: Set/Map → dense Array ===

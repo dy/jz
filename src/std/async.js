@@ -58,16 +58,21 @@ export let __p_fin = (p, st, v) => {
 export let __p_settle = (p, st, v) => {
   if (p.st > 0 || p.rs === 1) return
   if (st === 1 && v != null && typeof v === 'object') {
+    // a promise resolved with itself rejects (27.2.1.3.2 step 7)
+    if (v === p) { __p_fin(p, 2, new TypeError('Chaining cycle detected for promise')); return }
     if (v.__p === 1) { p.rs = 1; __p_sub(v, (st2, v2) => __p_fin(p, st2, v2)); return }
-    // plain-object thenable (spec: any object with callable then) – adopt in a
-    // job; the resolve/reject pair shares one already-called latch, and a
-    // then() throw after that latch is ignored (25.4.1.3.2).
-    if (typeof v.then === 'function') {
+    // plain-object thenable (spec: any object with callable then): \`then\` is
+    // read once, a throw of its getter rejecting, and called on the object in
+    // a job; the resolve/reject pair shares one already-called latch, and a
+    // then() throw after that latch is ignored (27.2.1.3.2, 27.2.2.2).
+    let then = undefined
+    try { then = v.then } catch (e) { __p_fin(p, 2, e); return }
+    if (typeof then === 'function') {
       p.rs = 1
       __mt.push(() => {
         let done = 0
         try {
-          v.then(
+          then.call(v,
             (x) => { if (done) return; done = 1; p.rs = 0; __p_settle(p, 1, x) },
             (e) => { if (done) return; done = 1; __p_fin(p, 2, e) })
         } catch (e2) { if (done === 0) __p_fin(p, 2, e2) }
@@ -77,8 +82,10 @@ export let __p_settle = (p, st, v) => {
   }
   __p_fin(p, st, v)
 }
+// An object awaited is resolved as a promise is (its \`then\` read there, once);
+// any other value resumes the machine a job later.
 export let __await = (v, ok, err) => {
-  if (v != null && typeof v === 'object' && (v.__p === 1 || typeof v.then === 'function'))
+  if (v != null && typeof v === 'object')
     __p_sub(__p_resolve(v), (st, x) => { if (st === 1) ok(x); else err(x) })
   else { __mt.push(() => ok(v)) }
 }

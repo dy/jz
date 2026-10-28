@@ -17,9 +17,13 @@ import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { PROMISE_KEYS } from '../src/std/async.js'
 
 // A promise (std/async.js) keeps its state in slots, none its own property
-// in JS: enumeration sees none of them (JSON.stringify gives `{}`), in a
-// program whose code enumerates (`enumerates`); one that never does pays nothing.
+// in JS (`then`, `catch` and `finally` are Promise.prototype's): own-property
+// reflection sees none of them (ctx.schema.inherited), nor does enumeration
+// (JSON.stringify gives `{}`) in a program whose code enumerates
+// (`enumerates`); one that never does pays nothing.
 const PROMISE_KEY = schemaKey(canonicalKeyOrder(PROMISE_KEYS))
+// A class's private name (`#x`) is a slot of its instances' layout, no property.
+const isPrivateName = (n) => typeof n === 'string' && n[0] === '#'
 const hidePromise = () => {
   const names = ctx.schema.list[ctx.schema.promiseSid]
   ctx.schema.hidden.set(names, new Set(names))
@@ -44,14 +48,40 @@ export function schemaValueIR(obj, slot, value, sid = -1) {
  *  JSON.stringify see an object literal's accessor as the
  *  one property it defines, and none of the slots the layout hides
  *  (ctx.schema.hidden: an Error's `message` and `name`). Null for a layout
- *  with neither. `includeHidden` retains non-enumerable slots for property
- *  lookup and own-name reflection. */
-export const enumView = (names, includeHidden = false) => layoutView(names, ctx.transform.literalAccessorNames, includeHidden ? null : ctx.schema.hidden.get(names))
+ *  with neither. `own` is own-name reflection's view instead: it retains the
+ *  non-enumerable slots and leaves out those that are no own property
+ *  (ctx.schema.inherited). */
+export const enumView = (names, own = false) => layoutView(names, ctx.transform.literalAccessorNames, (own ? ctx.schema.inherited : ctx.schema.hidden).get(names))
+
+/** Property lookup's view: every slot, an accessor by its name. */
+export const memberView = (names) => layoutView(names, ctx.transform.literalAccessorNames, null)
+
+/** A layout's row in a runtime view table (src/wat/assemble/start-fn.js, the
+ *  host's `jz:views`): its view, less what its private names alone ask for
+ *  where no reader of the table meets its objects (ctx.schema.unread). */
+export const rowView = (names, own = false) => {
+  if (!ctx.schema.unread.has(names)) return enumView(names, own)
+  let rest = null
+  for (const n of (own ? ctx.schema.inherited : ctx.schema.hidden).get(names) ?? []) if (!isPrivateName(n)) (rest ??= new Set()).add(n)
+  return layoutView(names, ctx.transform.literalAccessorNames, rest)
+}
 
 /** Property lookup includes class accessors hidden from enumeration. */
 export const accessorTable = () => ctx.transform.literalAccessorNames?.size && [...ctx.schema.hidden].some(([names, slots]) =>
   names.some(name => slots.has(name) && accessorOf(name, ctx.transform.literalAccessorNames)))
-  ? '__schema_own_view' : '__schema_view'
+  ? '__schema_member_view' : '__schema_view'
+
+/** Whether own-name reflection needs a view: some layout has an accessor or a
+ *  slot that is no own property, beside the private names of one no reader
+ *  meets (rowView). */
+export const ownViewsOn = () => {
+  if (ctx.schema.views) return true
+  for (const [names, slots] of ctx.schema.inherited) {
+    if (!ctx.schema.unread.has(names)) return true
+    for (const n of slots) if (!isPrivateName(n)) return true
+  }
+  return false
+}
 
 /** Whether code the program lowers builds an object literal with an accessor:
  *  the runtime view table (`__schema_view`, src/wat/assemble/start-fn.js), every
@@ -71,14 +101,24 @@ export const enumViewsOn = () => ctx.schema.views || ctx.schema.hiddenViews
 export function settleViews(roots) {
   const acc = ctx.transform.literalAccessorNames
   ctx.schema.views = !!acc?.size && roots.some(r => buildsView(r, acc))
-  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || roots.some(seesHidden)
+  // A class's private names ask for a view of its layout where a reader of
+  // the view tables may meet its objects (summary/query.js `enumerable`).
+  const enumerable = ctx.summary?.enumerable, unread = ctx.schema.unread
+  unread.clear()
+  let privateViews = false
+  ctx.schema.list.forEach((names, sid) => {
+    if (!ctx.schema.brandOf(sid) || !names.some(isPrivateName)) return
+    if (enumerable && !enumerable(sid)) unread.add(names)
+    else privateViews = true
+  })
+  ctx.schema.hiddenViews = !!ctx.transform.classMembers?.size || roots.some(seesHidden) || privateViews
   ctx.schema.enumerates = roots.some(enumerates)
   if (ctx.schema.enumerates && ctx.schema.promiseSid != null) hidePromise()
 }
 
-// Code that lists an object's own keys: a for-in, an object spread or rest,
-// the builtins that enumerate.
-const ENUMERATING = /^(JSON\.stringify|Object\.(keys|values|entries|assign|getOwnPropertyNames)|structuredClone)$/
+// Code that lists an object's own keys: a for-in (prepared: its keys are
+// `__keys_ro`'s), an object spread or rest, the builtins that enumerate.
+const ENUMERATING = /^(JSON\.stringify|Object\.(keys|values|entries|assign|getOwnPropertyNames)|structuredClone|__keys_ro)$/
 const enumerates = (n) => {
   if (!Array.isArray(n)) return false
   if (n[0] === 'for' && Array.isArray(n[1]) && n[1][0] === 'in') return true
@@ -113,14 +153,39 @@ const buildsView = (n, acc) => {
  *  is the one key it defines, a hidden slot none). */
 export const enumKeys = (names) => enumView(names)?.map(e => e.key) ?? names
 
-/** A layout's own properties, what `in` and hasOwnProperty answer for: the
- *  keys it enumerates and those it hides, an accessor's by its name. */
+// The property a slot holds: an accessor's slot holds its name's.
+const slotKey = (n) => n.endsWith(ACCESSOR_GET) ? n.slice(0, -ACCESSOR_GET.length) : n.endsWith(ACCESSOR_SET) ? n.slice(0, -ACCESSOR_SET.length) : n
+
+/** A layout's own properties, what hasOwnProperty answers for: the keys it
+ *  enumerates and those it hides, an accessor's by its name, none of the
+ *  slots that are no own property (ctx.schema.inherited). */
 export const ownKeys = (names) => {
-  const hidden = ctx.schema.hidden.get(names)
-  if (!hidden) return enumKeys(names)
+  const hidden = ctx.schema.hidden.get(names), inherited = ctx.schema.inherited.get(names)
+  if (!hidden && !inherited) return enumKeys(names)
   const own = new Set(enumKeys(names))
-  for (const n of names) if (hidden.has(n)) own.add(n.endsWith(ACCESSOR_GET) ? n.slice(0, -ACCESSOR_GET.length) : n.endsWith(ACCESSOR_SET) ? n.slice(0, -ACCESSOR_SET.length) : n)
+  if (hidden) for (const n of names) if (hidden.has(n)) own.add(slotKey(n))
+  if (inherited) for (const n of inherited) own.delete(slotKey(n))
   return [...own]
+}
+
+/** The keys `in` finds on a layout: its own and its prototype's members. */
+export const presentKeys = (names) => {
+  const inherited = ctx.schema.inherited.get(names)
+  if (!inherited) return ownKeys(names)
+  const keys = new Set(ownKeys(names))
+  for (const n of inherited) if (!isPrivateName(n)) keys.add(slotKey(n))
+  return [...keys]
+}
+
+/** The schema ids whose layouts hold the property `key` (its slot, or an
+ *  accessor's) as no own property. */
+export const inheritingSids = (key) => {
+  const sids = []
+  for (let sid = 0; sid < ctx.schema.list.length; sid++) {
+    const inherited = ctx.schema.inherited.get(ctx.schema.list[sid])
+    if (inherited && (inherited.has(key) || inherited.has(key + ACCESSOR_GET) || inherited.has(key + ACCESSOR_SET))) sids.push(sid)
+  }
+  return sids
 }
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
@@ -142,7 +207,11 @@ export function initSchema(ctx) {
     if (existing != null) return existing
     const id = ctx.schema.list.push(props) - 1
     byKey.set(key, id)
-    if (key === PROMISE_KEY) { ctx.schema.promiseSid = id; if (ctx.schema.enumerates) hidePromise() }
+    if (key === PROMISE_KEY) {
+      ctx.schema.promiseSid = id
+      ctx.schema.inherited.set(props, new Set(props))
+      if (ctx.schema.enumerates) hidePromise()
+    }
     for (let i = 0; i < props.length; i++) {
       const p = props[i]
       let bucket = byProp.get(p)
@@ -153,8 +222,15 @@ export function initSchema(ctx) {
     // schema is the class's own, found again from the id.
     if (salt && isBrand(salt)) {
       brandBySid.set(id, salt); sidByBrand.set(salt, id)
-      const members = ctx.transform.classMembers?.get(salt)
-      if (members) ctx.schema.hidden.set(ctx.schema.list[id], members)
+      // its members are the prototype's, its private names no property:
+      // neither enumerates nor is an own property of the instance
+      const members = ctx.transform.classMembers?.get(salt), privates = props.filter(isPrivateName)
+      if (members || privates.length) {
+        const slots = privates.length ? new Set([...(members ?? []), ...privates]) : members
+        ctx.schema.hidden.set(props, slots)
+        ctx.schema.inherited.set(props, slots)
+        if (privates.length) ctx.schema.hiddenViews = true
+      }
     }
     return id
   }
@@ -189,8 +265,9 @@ export function initSchema(ctx) {
     let id = errorSidByClass.get(className)
     if (id == null) {
       id = ctx.schema.register(ERR_SCHEMA_PROPS, className)
-      // `message` and `name` are an Error's own or inherited, not enumerable
+      // `message` is an Error's own, `name` its class's; neither enumerates
       ctx.schema.hidden.set(ctx.schema.list[id], new Set(ERR_SCHEMA_PROPS))
+      ctx.schema.inherited.set(ctx.schema.list[id], new Set(['name']))
       errorSidByClass.set(className, id)
       errorClassBySid.set(id, className)
     }

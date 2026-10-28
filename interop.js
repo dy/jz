@@ -704,13 +704,14 @@ export const memory = (src) => {
     }
     if (t === 5) return m.getBigInt64(off, true)  // BIGINT
     if (t === 6) {  // OBJECT
+      const keys = mem.schemas[a], fns = mem._fns
+      // an instance of a class the module exports: the host's handle on it,
+      // even where its layout hides a slot (a private name's) from the copy below
+      const proto = keys && fnOf?.classes?.get(a)
+      if (proto) return mem.handle(p, proto, fnOf)
       // an object literal with an accessor reads through it: the module copies its data
       if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a) && !mem.regexOfSid?.has(a)) return mem.read(mem.viewData(p), fnOf)
-      const keys = mem.schemas[a], fns = mem._fns
       if (!keys) { if (off >= mem._above) mem._held = true; return p }
-      // an instance of a class the module exports: the host's handle on it
-      const proto = fnOf?.classes?.get(a)
-      if (proto) return mem.handle(p, proto, fnOf)
       const re = mem.regexOfSid?.get(a), obj = re ? new RegExp(re[0], re[1]) : {}
       // a deleted slot's bit (layout.js deletedSlotWat; from 31 on one bit for the undefined ones)
       const mask = mem.objDeleted ? mem.objDeleted(p) : 0

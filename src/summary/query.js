@@ -825,6 +825,14 @@ export function summaryQueries(facts, internal = false) {
     // the names stored beside its layout in the order the walk met them, and
     // the sets of sites values join (a shape set, a cell's shapes).
     literalSites: node => { const k = objectKinds.get(node); return k !== undefined && tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? shapesOf(paramOf(k)) : [] },
+    // Whether a reader of the view tables (src/wat/assemble/start-fn.js) may
+    // meet an object of the layout: a site whose keys an operation lists or
+    // tests, or a deep reader reaches, or whose shape the summary loses (at a
+    // join, to the host), which code it cannot see may enumerate. A layout no
+    // walked code constructs has no objects; one registered after the summary,
+    // or constructed past the site capacity, may have any.
+    enumerable: sid => sid >= facts.layoutCount || facts.untracked.has(sid) || (sitesByLayout.get(sid) ?? []).some(s =>
+      facts.keysSeen.has(s) || facts.deepRead.has(s) || facts.opaqueSchemas.has(s) || facts.hostSchemas.has(s)),
     keysUnseen: sid => !facts.keysSeen.has(sid) && !facts.opaqueSchemas.has(sid) && !facts.hostSchemas.has(sid) && !facts.deletable.has(sid) &&
       !indexedSchemas.has(sid) && (sideWild.get(sid) ?? K.NONE) === K.NONE && !facts.foldedLayouts.has(layouts[sid]),
     sideKeys: sid => [...(sideProps.get(sid)?.keys() ?? [])],

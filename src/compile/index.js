@@ -71,7 +71,7 @@ import { synthesizeClassDispatchers, synthesizeClassExports, hostClassTable } fr
 import { synthesizeToPrimitive } from './emit/to-primitive.js'
 import { synthesizeAccessorCall } from './emit/accessor-call.js'
 import { synthesizeToJSON } from './emit/to-json.js'
-import { settleViews, enumView } from '../../module/schema.js'
+import { settleViews, rowView } from '../../module/schema.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
 import { paramValueOnly } from './param-numeric.js'
@@ -1170,7 +1170,7 @@ export function assemble(ast, profiler) {
     // with the host's pin where no loop compacts either.
     compact: compactOn(), compactLoops: !!ctx.plans.hasCompactLoops,
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(), regexSids: [...ctx.schema.regexSids],
-    viewSids: ctx.schema.list.flatMap((names, sid) => enumView(names) ? [sid] : []),
+    viewSids: ctx.schema.list.flatMap((names, sid) => rowView(names) ? [sid] : []),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false, throwHelpers: ctx.runtime.throwHelpers,
   } }

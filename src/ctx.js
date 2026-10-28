@@ -577,6 +577,8 @@ export function reset(proto, globals, bridge) {
     namedUses: [],
     views: false,          // code the program lowers builds an object literal with an accessor (module/schema.js viewsOn)
     hidden: new Map(),     // a registered name list → the slots its layout owns but does not enumerate (module/schema.js enumView)
+    inherited: new Map(),  // a registered name list → the slots its layout holds that are no own property: a prototype's members, a promise's state (module/schema.js ownKeys)
+    unread: new Set(),     // the name lists of the layouts whose private names no reader of a view table meets (module/schema.js rowView)
     hiddenViews: false,    // enumeration may meet such a layout: the code constructs or catches an Error (module/schema.js enumViewsOn)
     promiseSid: null,      // the promise layout's id, once registered (module/schema.js hidePromise)
     enumerates: false,     // code the program lowers lists an object's keys (module/schema.js settleViews)
