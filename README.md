@@ -33,7 +33,8 @@ exports.square(7) // 49
 <details>
 <summary><strong>Options</strong></summary><br>
 
-`jz(source, opts)`, `compile(source, opts)` and `instantiate(wasm, opts)` share one option set:
+`jz(source, opts)` compiles and instantiates. `compile(source, opts)` returns the wasm, and
+`instantiate(wasm, { imports, memory })` runs it, also from `jz/interop` without the compiler.
 
 | Option | Use |
 |---|---|
@@ -486,8 +487,8 @@ Adoption is ejectable: remove the JZ build step and the source remains JavaScrip
 
 ## Stability
 
-Pre-1.0. The package entry points `jz`, `compile`, `instantiate` and
-`jz/interop` and `jz/strict`, the options above and the CLI flags are the contract; removing or
+Pre-1.0. The entry points `jz` (the default export with `jz.memory`, `compile`
+and `instantiate`), `jz/interop` and `jz/strict`, the options above and the CLI flags are the contract; removing or
 changing them takes a major version. Error classes and codes are stable within
 a major. Accepted programs preserve JavaScript values, exceptions and
 evaluation order at every optimization level, outside the differences listed

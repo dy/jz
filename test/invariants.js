@@ -1434,20 +1434,22 @@ test('invariant: in-process inspection preserves the selected execution compiler
   const { spawnSync } = await import('node:child_process')
   const script = `
     import assert from 'node:assert/strict'
-    import jz, {compile, _compileInProcess, _setCompileTarget} from './index.js'
+    import jz, {compile} from './index.js'
+    import {setCompileTarget} from './src/compiler.js'
+    import {compileInProcess} from './test/util.js'
     import {compileViaKernel} from './test/kernel-target.js'
     assert.throws(() => compileViaKernel('', {inspect: true}), /in-process compiler/)
     assert.throws(() => compileViaKernel('', {profile: {}}), /in-process compiler/)
-    const bytes = _compileInProcess('export let f = () => 42')
+    const bytes = compileInProcess('export let f = () => 42')
     let calls = 0
-    _setCompileTarget(() => { calls++; return bytes })
-    const result = _compileInProcess('export let inspected = () => 1', {inspect: true})
+    setCompileTarget(() => { calls++; return bytes })
+    const result = compileInProcess('export let inspected = () => 1', {inspect: true})
     assert.ok(result.inspect.functions.inspected)
-    assert.throws(() => _compileInProcess('export let f = () => unknownBinding', {host: 'wasi'}))
+    assert.throws(() => compileInProcess('export let f = () => unknownBinding', {host: 'wasi'}))
     assert.equal(compile('target-only source'), bytes)
     assert.equal(jz('target-only source').exports.f(), 42)
     assert.equal(calls, 2)
-    _setCompileTarget(null)
+    setCompileTarget(null)
     assert.equal(jz('export let f = () => 7').exports.f(), 7)
   `
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {

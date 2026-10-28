@@ -19,9 +19,9 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { _compileInProcess } from '../index.js'
+import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { run, oracle } from './util.js'
+import { run, oracle, compileInProcess } from './util.js'
 import { initSchema } from '../module/schema.js'
 import { levels } from './_matrix.js'
 
@@ -132,7 +132,7 @@ test('slot-hazards: an increment of a slot keeps it integral', () => {
 export let run = (reps) => { let s = 0; for (let r = 0; r < reps; r++) { s += c.buf[c.i]; c.buf[c.i] = r * 0.5; if (++c.i >= c.n) c.i = 0 } return s + c.i++ }`
   const js = oracle(src)
   for (const optimize of LEVELS) is(run(src, { optimize }).run(40), js.run(40), `O${optimize}`)
-  _compileInProcess(src, { optimize: 2 })
+  compileInProcess(src, { optimize: 2 })
   const sid = ctx.schema.list.findIndex(l => l.join() === 'i,n,buf')
   ok(ctx.schema.slotIntLevels.get(sid)?.[0] >= 1, 'the counter slot is integral')
 })
@@ -184,11 +184,11 @@ export let main = () => {
     is(run(src, { optimize }).main(), 'oops!', `O${optimize}: pointsTo==='ALL' still gates the slot-KIND read (concat dispatch, not raw NUMBER arithmetic on a string box)`)
 
   // Unrelated unknown writes must not invent a uniform nested-object kind.
-  jz.compile(src, { optimize: 0 })
+  compile(src, { optimize: 0 })
   ok(ctx.schema.slotWriteHazards?.pointsTo === 'ALL', 'corrupt receiver is unresolved by the range analysis')
   for (const initial of ['0', '{ q: 0 }']) {
     const chainSrc = src.replace('const f = new Foo()', `const f = new Foo()\n  const r = { p: ${initial} }\n  r.p = { q: 1 }`)
-    jz.compile(chainSrc, { optimize: 0 })
+    compile(chainSrc, { optimize: 0 })
     const rSid = ctx.schema.list.findIndex(props => props?.length === 1 && props[0] === 'p')
     const qSid = ctx.schema.list.findIndex(props => props?.length === 1 && props[0] === 'q')
     ok(rSid >= 0 && qSid >= 0, 'nested schemas registered')
@@ -223,7 +223,7 @@ export let main = () => {
   for (const optimize of LEVELS)
     is(run(src, { optimize }).main(), '3000000001,4294967291,5', `O${optimize}: no i32 saturation`)
   // Level verdicts via the compiler's schema state: only the bitwise slot is strict.
-  jz.compile(src, { optimize: 2 })
+  compile(src, { optimize: 2 })
   const arr = [...ctx.schema.slotI32Certain.values()].find(a => a.length === 5)
   ok(arr, 'census ran on the 5-slot schema')
   is(arr.join(','), 'false,false,false,false,true', 'only the & slot is strict-i32')
@@ -261,7 +261,7 @@ const init = () => {
 }
 export let main = () => step(init())`
   // `main` releases what it made as it returns, so its call of `step` is one watr inlines: the kernel is read before watr
-  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const wat = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const stepBody = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
   // A checked cursor may retain the undefined box before projection. It is
   // the numeric slots and their consumers that must stay on the word path.
@@ -315,7 +315,7 @@ export let main = (n) => {
   }
   return t
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 2 })
+  const wat = compile(src, { wat: true, optimize: 2 })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
   ok(!/call \$__to_num/.test(m), 'shaped record field reads pay no __to_num')
   is(run(src, { optimize: 2 }).main(4), 4 * (2 * 3.5 + 1), 'value exact')
@@ -409,7 +409,7 @@ test('slot-hazards: unique-bound literal name keeps the vars-channel devirt', ()
   // through the schema slot (structural pin: no dyn dispatcher for the read).
   const src = `
 export let main = () => { const cfg = { mode: 3, bias: 4 }; return cfg.mode + cfg.bias }`
-  const wat = jz.compile(src, { wat: true, optimize: 2 })
+  const wat = compile(src, { wat: true, optimize: 2 })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
   ok(!/__dyn_get/.test(m), 'unique literal binding stays slot-resolved')
   is(run(src, { optimize: 2 }).main(), 7, 'value exact')
@@ -459,7 +459,7 @@ test('slot-hazards: unrelated same-named param must not deopt another function\'
   // are different bindings — the bare-name poison here was a measured 1.57×
   // SIZE cliff (rename-dependent codegen). Same-length rename must be
   // byte-count-identical, and the shared name must compile to the LEAN form.
-  const jzc = jz.compile
+  const jzc = compile
   const A = `
 const use = (o) => o.x
 const other = () => { let o; o = { x: 1 }; return o.x + use({ x: 2 }) }

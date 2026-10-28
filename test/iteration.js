@@ -338,7 +338,7 @@ test('collection constructors honor iterator overrides, generators and shadowed 
     is(got.argumentOrder(), want.argumentOrder(), 'ignored arguments finish before the iterator method is read')
   }
   const plain = `const a = new Map([['a', 1]]), b = new Set([1,2]);export function f(){return [new Map(a).size,new Set(b).size]}`
-  is(jz.compile(plain, {wat:true, optimize:0}).includes('__it_open'), false, 'a later native-only compilation does not link protocol records')
+  is(compile(plain, {wat:true, optimize:0}).includes('__it_open'), false, 'a later native-only compilation does not link protocol records')
   is(jz(plain).exports.f(), oracle(plain).f(), 'native copies remain exact after compiling protocol users')
 })
 
@@ -351,7 +351,7 @@ test('array patterns over a rest parameter read by index and keep no records', (
     export let g = (n) => inner(n, 2) + inner(n, 2, 3)`
   for (const optimize of levels(0, 2, 3, 'size')) {
     // O0 is the reference tier: it keeps the protocol.
-    if (optimize !== 0) is(/jz_iter\$/.test(jz.compile(src, { wat: true, optimize })), false, `O${optimize}: no protocol call or record pool`)
+    if (optimize !== 0) is(/jz_iter\$/.test(compile(src, { wat: true, optimize })), false, `O${optimize}: no protocol call or record pool`)
     const got = jz(src, { optimize }).exports, want = oracle(src)
     for (const args of [[1, 2], ['a', 'b'], [], [4]]) is(got.f(...args), want.f(...args), `O${optimize}: f(${args})`)
     for (const n of [0, 1, 5]) is(got.g(n), want.g(n), `O${optimize}: g(${n})`)
@@ -718,13 +718,13 @@ test('computed collection method demand resets across retained compiles', () => 
     const got=jz(shadow,{optimize}).exports,want=oracle(shadow)
     for(const n of [0,0,1,0])is(got.f(n),want.f(n),`shadowed String O${optimize}, ${n}`)
     for(const src of [b,`export function f(k){const m=new Map();return m[+k]}`]){
-      const wat=jz.compile(src,{optimize,wat:true,watr:false})
+      const wat=compile(src,{optimize,wat:true,watr:false})
       is(wat.includes('br_computed'),false,`unrelated key domain has no computed reader O${optimize}`)
       is(wat.includes('_Map_get'),false,`unrelated key domain has no method wrapper O${optimize}`)
       is(wat.includes('(export "__call_closure")'),false,`inactive readers have no host closure bridge O${optimize}`)
       is(wat.includes('(param $__this '),false,`inactive readers do not widen closure receiver ABI O${optimize}`)
     }
-    const closures=jz.compile(`export function f(k){const fs=[x=>x+1,x=>x*2];return fs[k&1](k)}`,{optimize,wat:true,watr:false})
+    const closures=compile(`export function f(k){const fs=[x=>x+1,x=>x*2];return fs[k&1](k)}`,{optimize,wat:true,watr:false})
     is(closures.includes('(param $__this '),false,`source closures keep their ABI after inactive readers O${optimize}`)
   }
 })
@@ -755,7 +755,7 @@ test('computed collection readers retain bridges for module-init and returned cl
 test('inactive collection readers add no runtime error or BigInt demand', () => {
   const src=`export function f(i){const a=[1,2];return a[i|0]}`
   for(const optimize of levels(0,1,2,3,'size')){
-    const wat=jz.compile(src,{optimize,wat:true})
+    const wat=compile(src,{optimize,wat:true})
     is(wat.includes('(tag '),false,`inactive brand error has no exception tag O${optimize}`)
     is(wat.includes('i\\00n\\00c\\00o\\00m'),false,`inactive brand error has no message data O${optimize}`)
     is(wat.includes('__bigint'),false,`inactive tag predicate has no BigInt runtime O${optimize}`)

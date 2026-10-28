@@ -4,7 +4,7 @@
 // (module/typedarray.js __typed_sort), in every element kind.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle, run } from './util.js'
 
@@ -166,5 +166,5 @@ test('typed sort: a range sorted through a view nobody reads', () => {
   for (const n of [0, 1, 2, 3, 7, 15, 100]) is(run(src).f(n), host(n), `n=${n}`)
   // the views made only to be sorted are not allocated: one view is read, one is made
   const views = text => (text.match(/\(call \$__alloc \(i32\.const 16\)\)/g) || []).length
-  ok(views(jz.compile(src, { wat: true })) <= 1, 'one view is made')
+  ok(views(compile(src, { wat: true })) <= 1, 'one view is made')
 })

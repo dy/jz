@@ -6,12 +6,12 @@
 // self-compile mother bug.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { run, oracle } from './util.js'
 import { onKernel, levels } from './_matrix.js'
 
 const fn = (code) => run(code).f
-const wat = (code) => jz.compile(code, { wat: true, optimize: { watr: false } })
+const wat = (code) => compile(code, { wat: true, optimize: { watr: false } })
 // A boolean-returning export boxes its 0/1 carrier into a FALSE/TRUE NaN atom —
 // `(i32.or (i32.const 4) <bit>)` fed to `$__mkptr` — inside its `$f$exp` boundary
 // wrapper, the boolean carrier's only footprint. A number-returning export has no
@@ -217,7 +217,7 @@ test('bool: a value && or || tests its left operand by the kind the summary prov
     export function g(i, x) { let fn; return ((fn = tbl[i | 0]) && fn(x)) || -1 }`
   // the generic test, inlined at the speed tier, compares with the empty string
   const body = (text, name) => { const at = text.indexOf(`(func $${name}`); return text.slice(at, text.indexOf('\n  (func ', at + 1)) }
-  const text = jz.compile(src, { wat: true, optimize: 'speed' })
+  const text = compile(src, { wat: true, optimize: 'speed' })
   for (const name of ['f', 'g']) ok(!/0x7FFA400000000000|__is_truthy/i.test(body(text, name)), `${name}: the closure-or-nothing operand skips the generic test`)
   const host = oracle(src)
   for (const optimize of levels(0, 2, 'speed', 'size')) {
@@ -237,7 +237,7 @@ test('bool: a string or nothing, and a number or a string, test by kind', () => 
     const box = (i) => i === 1 ? [0] : i === 2 ? { a: 0 } : i === 3 ? [] : i === 4 ? null : undefined
     export function k(i) { return box(i | 0) ? 4 : 5 }`
   const body = (text, name) => { const at = text.indexOf(`(func $${name}`); return text.slice(at, text.indexOf('\n  (func ', at + 1)) }
-  const text = jz.compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false } })
+  const text = compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false } })
   for (const name of ['f', 'g', 'k']) ok(!/0x7FFA400000000000[^]*0x7FF8000100000000|__is_truthy/i.test(body(text, name)), `${name}: no generic test`)
   const host = oracle(src)
   for (const optimize of levels(0, 2, 'speed', 'size')) {

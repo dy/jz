@@ -6,7 +6,7 @@
 // `console.trace`) is the host's own. Each program runs under jz and as plain JS.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels, onWasi } from './_matrix.js'
 import { oracle } from './util.js'
 
@@ -57,7 +57,7 @@ test('new of a constructor a binding holds constructs a host one on the host and
   const held = `class A { constructor(o) { this.v = o.a * 2 } }
     class B { constructor(o) { this.v = o.a * 3 } }
     export const f = (x, flag) => { const K = flag ? A : B; return new K({ a: x }).v }`
-  ok(!/__ext_construct/.test(jz.compile(held, { wat: true })), 'a const of classes constructs by call')
+  ok(!/__ext_construct/.test(compile(held, { wat: true })), 'a const of classes constructs by call')
 })
 
 test('typeof a host function is function, of a host object object', async () => {
@@ -89,7 +89,7 @@ test('for-of over a host iterable pulls its iterator a value per step', async ()
   }
   const want = drive(oracle(src))
   for (const optimize of levels(0, 2, 3, 'size')) is(drive(jz(src, { optimize }).exports), want, `O${optimize}`)
-  ok(!/__ext_iter/.test(jz.compile('export const f = () => { let s = 0; for (const x of [1, 2]) s += x; return s }', { wat: true })), 'a source of the program is iterated as before')
+  ok(!/__ext_iter/.test(compile('export const f = () => { let s = 0; for (const x of [1, 2]) s += x; return s }', { wat: true })), 'a source of the program is iterated as before')
 })
 
 test('a host global the host lacks throws a ReferenceError where read, and types as undefined', async () => {
@@ -123,6 +123,6 @@ test('without a JS host, or in the strict subset, an undeclared name stays a com
   throws(() => jz('export const f = () => new Response("x")', { strict: true }), /not in scope/)
   // a reserved word the parser read as a name is no IdentifierReference
   for (const word of ['catch', 'finally', 'await']) throws(() => jz(`let x; export const f = () => x = ${word}`), new RegExp(`'${word}'`))
-  ok(!/__host_global|"global"/.test(jz.compile('export const f = (v) => v + 1', { wat: true })), 'a program naming no host global imports none')
-  if (!onWasi()) ok(/import "global" "Response"/.test(jz.compile('export const f = () => new Response("x")', { wat: true })), 'a host global is one import by its name')
+  ok(!/__host_global|"global"/.test(compile('export const f = (v) => v + 1', { wat: true })), 'a program naming no host global imports none')
+  if (!onWasi()) ok(/import "global" "Response"/.test(compile('export const f = () => new Response("x")', { wat: true })), 'a host global is one import by its name')
 })

@@ -191,7 +191,7 @@ test('self-compile: schema index capacities and backward offsets retain all i64 
     export function main(n){const o=n&1?A:B;return o['k'+(n%42)]}`
   for (const level of [1, 2]) {
     const s = instantiate(selfBytes(), { memory: 8192 })
-    const native = jz.compile(src, { optimize: level })
+    const native = compile(src, { optimize: level })
     for (let again = 0; again < 2; again++) {
       const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level })))
       const bytes = new Uint8Array(s.memory.read(out))
@@ -212,7 +212,7 @@ test('self-compile: runtime exports tied with user functions keep native byte or
   for (const level of [1, 2]) {
     const s = instantiate(selfBytes(), { memory: 8192 })
     for (const i of [0, 0, 1, 0]) {
-      const src = sources[i], native = jz.compile(src, { optimize: level })
+      const src = sources[i], native = compile(src, { optimize: level })
       const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level })))
       const bytes = new Uint8Array(s.memory.read(out))
       ok(bytes.length === native.length && bytes.every((v, j) => v === native[j]), `O${level}: source ${i} matches native`)
@@ -375,8 +375,8 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
   const a2 = compileWarm(EQ_ZERO_KERNEL)
   const b = compileWarm(EQ_ZERO_REUSE_B)
   const a3 = compileWarm(EQ_ZERO_KERNEL)
-  const nativeA = jz.compile(EQ_ZERO_KERNEL, { optimize: 2 })
-  const nativeB = jz.compile(EQ_ZERO_REUSE_B, { optimize: 2 })
+  const nativeA = compile(EQ_ZERO_KERNEL, { optimize: 2 })
+  const nativeB = compile(EQ_ZERO_REUSE_B, { optimize: 2 })
 
   ok(same(a1, a2), 'A→A on one hosted compiler instance is byte-identical')
   ok(!same(a1, b), 'A→B on one hosted compiler instance produces B, not stale A')

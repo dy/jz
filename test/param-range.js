@@ -7,11 +7,11 @@
 // ToInt32 of `floor(y) + gy` inside a sampler needs no infinity guard.
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { _compileInProcess as compile } from '../index.js'
+
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, funcWat, wat } from './util.js'
+import { agree, funcWat, wat, compileInProcess as compile } from './util.js'
 
 const ranges = (src, name) => {
   compile(src, { optimize: 0 })

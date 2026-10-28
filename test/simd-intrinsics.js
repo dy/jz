@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
-import jz from '../index.js'
+import { compile } from '../index.js'
 
 // Source-level f32x4 / i32x4 intrinsics (module/simd.js) lowering to wasm SIMD (v128).
 // The point: v128 must flow through user locals (let v = f32x4.…), survive
@@ -235,7 +235,7 @@ test('simd: f64x2.log_v is a true poly, not extract-scalar repack', () => {
   // Regression guard: log_v must evaluate one fdlibm poly across both lanes — frexp via i64x2 bit-ops
   // and s=f/(f+2) via f64x2.div — NOT extract both lanes and call scalar $math.log twice. A revert to
   // the old extract-scalar mirror (no transcendental speedup) would drop these ops.
-  const w = jz.compile(`export let f = (a, b) => f64x2.lane(f64x2.log(f64x2.lanes(a, b)), 0)`, { wat: true })
+  const w = compile(`export let f = (a, b) => f64x2.lane(f64x2.log(f64x2.lanes(a, b)), 0)`, { wat: true })
   ok(/i64x2\.shr_u/.test(w), 'log_v extracts the exponent with i64x2.shr_u (true frexp, 2-wide)')
   ok(/f64x2\.div/.test(w), 'log_v computes s = f/(f+2) with f64x2.div (true 2-wide poly)')
 })

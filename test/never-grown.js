@@ -10,13 +10,13 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { _compileInProcess } from '../index.js'
-import { run, oracle } from './util.js'
+import jz, { compile } from '../index.js'
+import { run, oracle, compileInProcess } from './util.js'
 import { levels } from './_matrix.js'
 import { scanBindingUses, invalidateBindingUsesCache, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, USE } from '../src/compile/analyze-scans.js'
 
 test('binding census: declaration demand retains forward uses and outer captures', () => {
-  _compileInProcess('export function empty(){return 0}')
+  compileInProcess('export function empty(){return 0}')
   const init = 'source'
   const body = [';', ['()', 'external', [',', 'late', 'never']],
     ['let', ['=', 'capturing', ['=>', 'p', [';',
@@ -57,7 +57,7 @@ test('binding census: declaration demand retains forward uses and outer captures
 })
 
 test('array census: reads, calls, writes and escapes have distinct safety policies', () => {
-  _compileInProcess('export const empty = () => 0')
+  compileInProcess('export const empty = () => 0')
   const index = (key = [null, 0]) => ['[]', 'a', key]
   const prop = key => ['.', 'a', key]
   const call = (callee, arg = [null, 1]) => ['()', callee, arg]
@@ -92,7 +92,7 @@ test('array census: reads, calls, writes and escapes have distinct safety polici
 })
 
 test('binding census: only discarded indexed assignments record a word-store candidate', () => {
-  _compileInProcess('export const empty = () => 0')
+  compileInProcess('export const empty = () => 0')
   const target=['[]','a','i'], store=['=',target,'v']
   const rows=[
     [[';',store],true], [['{}',store],true], [['if','p',store],true],
@@ -134,7 +134,7 @@ export let main = () => {
 
 test('never-grown: read-only array param reads raw base (no __ptr_offset per read)', () => {
   const src = KERNEL()
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(body, 'kernel emitted')
   const loop = body.slice(body.indexOf('(loop'))
@@ -161,7 +161,7 @@ export let main = () => { const a = new SH(), basis = [0, 0, 0, 0, 0, 0, 0, 0, 0
   SH.fill9(new V(0, 0.6, 0.8), basis); a.toArray(arr)
   return s3(new SH().fromArray(arr).coefficients[8]) }`
   for (const optimize of [1, 2, 'speed']) is(run(src, { optimize }).main(), oracle(src).main(), `value exact (optimize:${optimize})`)
-  const wat = jz.compile(src, { wat: true, optimize: { level: 2, sourceInline: false, watr: false } })
+  const wat = compile(src, { wat: true, optimize: { level: 2, sourceInline: false, watr: false } })
   const body = wat.split('(func ').find(c => /^\$V\S*fromArray\b/.test(c)) || ''
   ok(body, 'V.fromArray emitted outlined (no source or WAT inlining)')
   ok(/__ptr_offset_fwd|call \$__ptr_offset\b/.test(body), 'its reads of the parameter follow forwarding')
@@ -175,7 +175,7 @@ test('never-grown: a builder\'s result and an own-name-current local arrive live
 const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i * 3); return a }
 const kernel = (xs, ys) => { let s = 0; for (let i = 0; i < 8; i++) s = (s + xs[i] * ys[i]) | 0; return s }
 export let main = () => { const xs = build(8), ys = []; for (let i = 0; i < 8; i++) ys.push(i + 1); return kernel(xs, ys) }`
-  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false, watr: false } })
+  const wat = compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false, watr: false } })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(body, 'kernel emitted outlined')
   ok(!/__ptr_offset/.test(body.slice(body.indexOf('(loop'))), 'the loop resolves no array base')
@@ -199,7 +199,7 @@ export let main = () => {
   const out = []
   return kernel(words, out) + out.length
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(/call \$__(?:ptr_offset|arr_typed_(?:obj_)?set_idx)\b|__inl\d|__poff\d/.test(body), 'forwarding-aware base resolution kept')
   is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'value exact')
@@ -219,7 +219,7 @@ export let main = () => {
   for (let i = 0; i < 8; i++) words.push('w' + i)
   return kernel(words)
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(/call \$__ptr_offset\b|call \$__typed_idx\b|__inl\d|__poff\d/.test(body), 'callee growth keeps forwarding-aware reads')
   is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'value exact')
@@ -241,7 +241,7 @@ export let main = () => {
   for (let i = 0; i < 8; i++) words.push('w' + i)
   return kernel(words)
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
   ok(/call \$__ptr_offset\b|__inl\d|__poff\d/.test(body), 'escaping param keeps forwarding-aware reads')
   is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'value exact')
@@ -290,7 +290,7 @@ export let stacked = () => { const stack = [[0, 1]], done = []
     }
   }
   // the binding's new block: its box's high word over the forwarded offset
-  const refreshes = (src, name) => (jz.compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false, watr: false } })
+  const refreshes = (src, name) => (compile(src, { wat: true, optimize: { level: 'speed', sourceInline: false, watr: false } })
     .split('(func ').find(c => c.startsWith('$' + name)) || '').includes('0xFFFFFFFF00000000')
   ok(refreshes(grown, 'local') && refreshes(grown, 'module'), 'a local and a module binding read the grown array after the call')
   ok(!refreshes(keyed, 'keyed'), 'a key of a Map keeps its address')

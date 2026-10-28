@@ -2,13 +2,13 @@ import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { summarize, K, kind, join, hasTag, CARRIER, PRESENCE, contractVal } from '../src/summary/index.js'
 import { VAL } from '../src/reps.js'
-import { compile, _compileInProcess } from '../index.js'
+import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { instantiate } from '../interop.js'
 import { execFileSync } from 'node:child_process'
 import { onKernel, levels } from './_matrix.js'
 import { BRAND } from '../src/ast.js'
-import { oracle } from './util.js'
+import { oracle, compileInProcess } from './util.js'
 
 const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
@@ -1214,8 +1214,8 @@ test('summary containers: enum values and entry tuples feed numeric Map payloads
     const pack = (mask, flag) => mask | (flag ? 8 : 0)
     export const f = () => pack(7 & ~bit(tags.b), true)`
   for (const optimize of levels(0, 1, 2, 3)) {
-    const binary = _compileInProcess(src, { optimize })
-    _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
+    const binary = compileInProcess(src, { optimize })
+    compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
     is(ctx.summary.resultOf('bit'), kind(K.NUMBER), 'Map construction retains entry value kinds')
     is(instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f(), 13, `O${optimize}`)
   }
@@ -1229,7 +1229,7 @@ test('summary containers: mapped entry payloads settle after missing callback re
       const src = `const tags = ${tags}
         const bits = new Map(Object.values(tags).map((name, i) => [name, ${value}]))
         export function f() { return [bits.get('a'), bits.get('b'), bits.get('missing')] }`
-      const binary = _compileInProcess(src, { optimize: { level: optimize, sourceInline: false } })
+      const binary = compileInProcess(src, { optimize: { level: optimize, sourceInline: false } })
       if (tags !== '{}') {
         is(ctx.summary.at(null).elemKindOf('bits'), kind(payload), `${value}: the completed entry supplies its payload`)
         if (!retained) retained = ctx.summary
@@ -1289,9 +1289,9 @@ test('summary spreads: pending sources retain known sibling shapes', () => {
     export function f(){return make().number.x+make().carriers.array.x}`
   for (const optimize of levels(0, 1, 2, 3)) {
     // the summary read is of the program the plan rewrote: with the inliner on, `make` is spliced into `f` and reached no more
-    _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
+    compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
     is(ctx.summary.resultVal('make'), VAL.OBJECT, 'spread settles to a record without escaping siblings')
-    const binary = _compileInProcess(src, { optimize })
+    const binary = compileInProcess(src, { optimize })
     const f = instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f
     is(f(), 5, `O${optimize}`)
     is(f(), 5, 'repeated call')
@@ -1306,7 +1306,7 @@ test('summary modules: default values declare their imported object and callable
     './scale.js': 'const scale=x=>x*3; export default scale',
   }
   for (const optimize of levels(0, 1, 2, 3)) {
-    const binary = _compileInProcess(src, { optimize, modules })
+    const binary = compileInProcess(src, { optimize, modules })
     is(ctx.summary.resultVal('f'), VAL.NUMBER, 'default imports participate in analysis')
     const f = instantiate(onKernel() ? compile(src, { optimize, modules }) : binary).exports.f
     is(f(), 21, `O${optimize}`)
@@ -1322,9 +1322,9 @@ test('summary shapes: bounded joins and their overflow keep BigInt fields readab
       function read(k){return pick(k).value} export function f(k){return read(k)}`
     for (const optimize of levels(0, 1, 2, 3)) {
       // `read` answers as a function where the plan keeps it one: from O1 up it splices into `f`
-      _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
+      compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
       if (count <= 16) is(ctx.summary.resultOf('read'), kind(K.BIGINT), 'retained shapes agree on the field kind')
-      const binary = _compileInProcess(src, { optimize })
+      const binary = compileInProcess(src, { optimize })
       const f = instantiate(onKernel() ? compile(src, { optimize }) : binary).exports.f
       for (const k of [0, 0, count - 1, 1, -1, 0])
         is(f(k), BigInt(k < 0 ? 0 : k), `${count} shapes, O${optimize}, input ${k}`)
@@ -1405,9 +1405,9 @@ test('summary objects: testing or discarding a callable does not open its argume
     export function f(flag){return read(flag)}`
   for (const optimize of levels(0, 1, 2, 3)) {
     // the summary read is of the program the plan rewrote: with the inliner on, `read` is spliced into `f` and reached no more
-    _compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
+    compileInProcess(src, { optimize: { level: optimize, sourceInline: false, inlineFns: false } })
     is(ctx.summary.resultOf('read'), kind(K.NUMBER), 'a discarded join creates no unknown caller')
-    const binary = _compileInProcess(src, {optimize})
+    const binary = compileInProcess(src, {optimize})
     const f = instantiate(onKernel() ? compile(src, {optimize}) : binary).exports.f
     for (const flag of [0, 0, 1, 0]) is(f(flag), 7)
   }

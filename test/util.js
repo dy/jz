@@ -2,9 +2,15 @@
 // Internal representation is analysis-driven; tests assert behaviour and IR
 // shape, not preset names. Boundary variants belong on `opts.host`.
 import jz, { compile } from '../index.js'
+import { compileInProcess as compileNative } from '../src/compiler.js'
+import jzify from '../jzify/index.js'
 import { is } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import printWat from 'watr/print'
+
+/** The in-process compiler past any test compile target, for tests that read analysis state.
+ *  Options pass as given: no normalization of the public `memory`/`optimize` objects. */
+export const compileInProcess = (code, opts = {}) => compileNative(code, opts, jzify)
 
 /** Evaluate a JS expression via jz → WASM. */
 export async function evaluate(code) {

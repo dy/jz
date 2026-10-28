@@ -1077,7 +1077,7 @@ test('closure-unbox: codegen — local declared as i32', () => {
   `
   // Value numbering off: it computes the boxed closure once for both calls, which leaves
   // `$g` one use and lets propagation dissolve the slot this pin reads.
-  const w = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, sourceInline: false, valueNumber: false } })
+  const w = compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, sourceInline: false, valueNumber: false } })
   const body = fnBody(w, 'f')
   ok(body, '$f present')
   // The unboxed closure is an i32 local the calls box on the way in: `$g`, or its
@@ -1155,7 +1155,7 @@ test('closure-unbox: trivial closure-call program stays compact (post-watr fused
     let g = (x) => x + 1
     export let f = () => g(41)
   `
-  const bytes = jz.compile(src).length
+  const bytes = compile(src).length
   ok(bytes <= 260, `closure-call probe ${bytes}b — rebox/unbox roundtrip likely re-introduced (>260b)`)
 })
 
@@ -1312,7 +1312,7 @@ export let f = () => lex('x')`
 lex.next = () => 7`,
   }
   is(run(code, { modules }).f(), 14)
-  const w = jz.compile(code, { modules, wat: true })
+  const w = compile(code, { modules, wat: true })
   ok(!/__dyn_set/.test(w), 'no __dyn_set for a cross-module single-write only-called slot')
   ok(!/__dyn_get/.test(w), 'the call devirtualizes too — no __dyn_get left to read a dropped write')
 })
@@ -1424,7 +1424,7 @@ test('devirt: two-candidate closure local calls each candidate directly, runtime
       for (let i = 0; i < n; i++) s += f(i)
       return s
     }`
-  const w = jz.compile(src, { wat: true, optimize: 3 })
+  const w = compile(src, { wat: true, optimize: 3 })
   ok(!/call_indirect/.test(w), 'no indirect call: the chosen function is called directly')
   const { main } = run(src, { optimize: 3 })
   is(main(100, 1), 9900)   // 2*Σ0..99
@@ -1440,9 +1440,9 @@ test('devirt: size preset calls the chosen function directly too, in fewer bytes
       let f = m > 0 ? dbl : sqr
       return f(x)
     }`
-  const w = jz.compile(src, { wat: true, optimize: 'size' })
+  const w = compile(src, { wat: true, optimize: 'size' })
   ok(!/\(call \$\S*tramp/.test(w) && !/call_indirect/.test(w), 'no trampoline, no indirect call')
-  ok(jz.compile(src, { optimize: 'size' }).length < jz.compile(src, { optimize: { level: 'size', callChosenFunctions: false } }).length, 'smaller than the table and its trampolines')
+  ok(compile(src, { optimize: 'size' }).length < compile(src, { optimize: { level: 'size', callChosenFunctions: false } }).length, 'smaller than the table and its trampolines')
   const { main } = run(src, { optimize: 'size' })
   is(main(1, 21), 42)
   is(main(-1, 5), 25)

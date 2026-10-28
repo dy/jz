@@ -482,7 +482,7 @@ export let f = () => new V(5).scaled(3).get()`), 15)
 function Q(x) { this.x = x }
 export let f = () => new Q(6).get()`), 6)  // methods BEFORE the ctor (decls hoist) still fold
   let err
-  try { jz.compile(`function P() { this.x = 1 }
+  try { compileWat(`function P() { this.x = 1 }
 P.prototype.m = () => 5
 export let f = () => 1`) } catch (e) { err = e }
   ok(err && /this/.test(err.message), 'arrow-valued prototype member stays out (lexical this)')
@@ -497,7 +497,7 @@ test('class: Object.assign(prototype) batch folds', () => {
 Object.assign(V.prototype, { get: function () { return this.x }, dbl: function () { return this.x * 2 } })
 export let f = () => new V(7).dbl() + new V(1).get()`), 15)
   let err
-  try { jz.compile(`function P() { this.x = 1 }
+  try { compileWat(`function P() { this.x = 1 }
 Object.assign(P.prototype, { m: function () { return this.x }, k: 5 })
 export let f = () => 1`) } catch (e) { err = e }
   ok(err && /this/.test(err.message), 'mixed batch stays out')
@@ -541,10 +541,10 @@ test('class struct: an instance holds its fields alone; a method is a function o
   // level 2: below it the member's dispatcher, dead here, is not shaken
   if (OPT_LEVEL === 2) {
     const inside = src.replace('export class', 'class')
-    ok(!/__dyn_get|__hash|__str_concat|__closure/.test(jz.compile(src, { wat: true })), 'a direct call: no dynamic read, no closure, no string path')
-    ok(jz.compile(inside).length < 1200, `the struct's size class (${jz.compile(inside).length} B)`)
+    ok(!/__dyn_get|__hash|__str_concat|__closure/.test(compileWat(src, { wat: true })), 'a direct call: no dynamic read, no closure, no string path')
+    ok(compileWat(inside).length < 1200, `the struct's size class (${compileWat(inside).length} B)`)
     // exported, the class takes the host's view of its member: one export of the method
-    ok(jz.compile(src).length < 1300, `the exported struct's size class (${jz.compile(src).length} B)`)
+    ok(compileWat(src).length < 1300, `the exported struct's size class (${compileWat(src).length} B)`)
   }
 })
 
@@ -753,7 +753,7 @@ test('a class accessor name does not make reads on other layouts dynamic', () =>
 export let other = () => new Node().type.length
 const mk = (v) => ({ type: 'a', value: v })
 export let main = (n) => { const evs = [mk(1), mk(2), mk(3)]; let s = 0; for (let i = 0; i < evs.length; i++) { const e = evs[i]; if (e.type === 'a') s += e.value } return s }`
-  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const w = compileWat(src, { wat: true, optimize: 'speed' })
   const main = w.slice(w.indexOf('(func $main'), w.indexOf('\n  (func $', w.indexOf('(func $main') + 5))
   ok(!/__dyn_get|dispatch|type__get/.test(main), 'literal-shaped reads stay slot reads')
   is(jz(src).exports.main(3), 6)
@@ -776,7 +776,7 @@ test('classes: a class extending a class of another module keeps the schema lowe
   const warnings = { entries: [] }
   // The whole-module pin needs DCE: opt0 retains unused generic dispatch helpers.
   // Runtime correctness below still follows the active matrix level.
-  const wat = jz.compile(src, { modules, warnings, wat: true, optimize: 2 })
+  const wat = compileWat(src, { modules, warnings, wat: true, optimize: 2 })
   is(warnings.entries.filter(e => e.code === 'class-generic').length, 0, 'both classes are schemas')
   ok(!/\$__dyn_get/.test(wat), 'the inherited method reads its fields as slots')
   is(jz(src, { modules }).exports.f(4), 6 * 10 * 0.5 + 6 * 1)

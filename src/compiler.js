@@ -165,7 +165,7 @@ const appendFunctionNames = (wasm, module) => {
 }
 
 /**
- * Public option objects → internal flags (see jz.compile's doc). Idempotent; the
+ * Public option objects → internal flags (index.d.ts names them). Idempotent; the
  * caller's object is never mutated. Every advanced knob lives inside `memory` and
  * `optimize`, so the top-level surface stays eleven keys.
  */

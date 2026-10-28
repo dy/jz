@@ -8,7 +8,7 @@
 // module-seeded sid maps feeding the typed-param arg lattice.
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import {
   TYPED_CTOR_CONFLICT, TYPED_SOURCE_NAME, TYPED_SOURCE_CALL, TYPED_SOURCE_FIELD, TYPED_SOURCE_INDEX,
   typedStorageFact,
@@ -51,7 +51,7 @@ const kernelOf = (w, fn = 'go') => {
 
 for (const [name, src] of Object.entries(EDGES)) {
   test(`provenance: ${name} edge keeps the typed element path`, () => {
-    const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+    const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
     const body = kernelOf(w)
     ok(!/__typed_idx|__dyn_get|__arr_idx/.test(body), `${name}: no dynamic dispatch in the kernel`)
   })
@@ -68,7 +68,7 @@ for (const [name, src] of Object.entries({
   map: `const mk = (n) => new Float64Array(n)\nconst cache = new Map()\nconst get = (n) => { let p = cache.get(n); if (p === undefined) { p = mk(n); cache.set(n, p) }; return p }\nexport let go = (n) => { const T = get(1024); let s = 0; for (let i = 0; i < n; i++) s += T[i & 1023]; return s }`,
 })) {
   test(`provenance: ${name} edge stays dynamic (known-open, unsound to trust unguarded)`, () => {
-    const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+    const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
     ok(/__typed_idx|__dyn_get|shr_u/.test(kernelOf(w)), `${name}: runtime dispatch retained`)
   })
 }
@@ -139,7 +139,7 @@ test('provenance: a written field prop disables the slot-ctor trust', () => {
 const P = mk(1024)
 export let poke = (x) => { P.wre = x; return 1 }
 export let go = (n) => { let s = 0; for (let i = 0; i < n; i++) s += P.wre[i & 1023]; return s }`
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   // the kernel must NOT bake a Float64Array element width for a rewritable field
   const body = kernelOf(w)
   ok(/__typed_idx|__dyn_get|shr_u/.test(body), 'written prop keeps runtime dispatch')

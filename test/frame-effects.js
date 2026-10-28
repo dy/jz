@@ -10,7 +10,7 @@
 // (`kept on a call that runs an escape: …`, the first the frame may reach).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile, _compileInProcess } from '../index.js'
+import jz, { compile } from '../index.js'
 import { resetTape, fromWat, toWat } from '../src/ir/tape.js'
 import { arenaRewind } from '../src/optimize/arena-rewind.js'
 import { listedBuiltin, transitiveFrameEffects } from '../src/compile/analyze/frame-effects.js'
@@ -18,7 +18,7 @@ import { includeAllMods } from '../src/autoload.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { ctx } from '../src/ctx.js'
 import { levels, onKernel, belowOpt } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, compileInProcess } from './util.js'
 
 const TAPE = { optimize: { watr: false } }   // the pass's own output, before watr folds dead allocations away
 const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}\n`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }
@@ -39,7 +39,7 @@ test('frame effects: census scratch survives nested walks, errors and changed pr
   const src = `let kept;
     export function f(n) { const a=[]; const add=()=>a.push(n); add(); kept=a; return a[0] }
     export function clean(n) { let s=0; for(let i=0;i<n;i++){const a=new Float64Array(i);s+=a.length} return s }`
-  _compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
+  compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
   const funcs = ctx.funcs.list, summary = ctx.summary
   const facts = result => [...result].map(([name, f]) => [name, f.writesOuter, f.arenaUnsafe,
     f.keeps, f.flagged, f.unsited, f.allocates, f.callsUnknown, [...f.callees], [...f.sites],
@@ -63,11 +63,11 @@ test('frame effects: census scratch survives nested walks, errors and changed pr
   try { throws(() => transitiveFrameEffects(funcs), /census probe/, 'query errors release census scratch') }
   finally { ctx.summary = summary }
   is(facts(transitiveFrameEffects(funcs)), expected, 'A repeats after a failed census')
-  _compileInProcess('export const f=n=>n+1')
+  compileInProcess('export const f=n=>n+1')
   transitiveFrameEffects(ctx.funcs.list)
   is(facts(retained), expected, 'B preserves published facts from A')
   is(transitiveFrameEffects([]).size, 0, 'empty function list has no effects')
-  _compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
+  compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
   is(facts(transitiveFrameEffects(ctx.funcs.list)), expected, 'A repeats after B and an empty census')
 })
 
@@ -80,7 +80,7 @@ test('frame effects: planning omits loop proofs without changing function effect
     export function write(n) { for (let i=0;i<n;i++) touch(i); return kept }
     export function callback(f, n) { for (let i=0;i<n;i++) f?.(i) }
     export function accessor(n) { const o = {get x(){touch(n);return n}}; return o.x }`
-  _compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
+  compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
   const full = transitiveFrameEffects(ctx.funcs.list), planning = transitiveFrameEffects(ctx.funcs.list, null, false)
   is([...planning.keys()], [...full.keys()], 'both modes cover the same functions')
   for (const [name, f] of full) {
@@ -753,7 +753,7 @@ test('frame effects: a receiver the emitter cannot read again is kept as it is e
 
 test('frame effects: a builtin called by name is listed by what it keeps', () => {
   // One the census does not list is an escape with no address at every call of it: the calls it sits in keep their memory.
-  _compileInProcess('export let f = () => 1')
+  compileInProcess('export let f = () => 1')
   includeAllMods()
   // what the emitter dispatches by these names is syntax, no callee
   const SYNTAX = new Set(['let', 'const', 'export', 'block', 'throw', 'catch', 'finally', 'return', 'u+', 'u-', 'postfix', 'instanceof', 'void', 'if', 'for', 'while', 'label',
@@ -1425,7 +1425,7 @@ test('frame effects: Map entry getters retain their writes and published values'
       try {const n = seed(); return [before, n, a[0]]} catch(e){return [before, e.message, a[0]]}}
     export function churn(){const b = new Float64Array(32); return saved.x + b.length}`
   if (!onKernel()) {
-    _compileInProcess(src, { sourceInline: false })
+    compileInProcess(src, { sourceInline: false })
     const frames = transitiveFrameEffects(ctx.funcs.list), facts = frames.get('seed')
     ok(facts.writesOuter && facts.runsAccessor, 'constructor entry reads contribute implicit getter effects')
     for (const name of ['plain', 'copy']) ok(!frames.get(name).runsAccessor, `${name} keeps its direct constructor path`)
@@ -1445,11 +1445,11 @@ test('frame effects: computed collection readers retain fallback getter effects'
     export function read(){return saved[1]}
     export function churn(){return new Float64Array(100).length}`
   if(!onKernel()){
-    _compileInProcess(src,{optimize:0,sourceInline:false})
+    compileInProcess(src,{optimize:0,sourceInline:false})
     const reader=ctx.funcs.builtinMethodReaders.get(null)
     const effects=transitiveFrameEffects(ctx.funcs.list).get(reader.name)
     ok(effects.writesOuter && effects.runsAccessor, 'raw computed fallback retains accessor effects')
-    _compileInProcess(`function read(obj,key){return obj[key]}
+    compileInProcess(`function read(obj,key){return obj[key]}
       export function f(obj,key){key=String(key);return read(obj,key)}
       export function native(){return read(new Map(),'size')}`,{optimize:0,sourceInline:false})
     const hostReader=ctx.funcs.builtinMethodReaders.get(null)
@@ -1469,7 +1469,7 @@ test('frame effects: computed collection readers retain fallback getter effects'
 
 test('frame effects: inactive native readers do not manufacture source effects', () => {
   if(onKernel()) return
-  _compileInProcess(`export function f(i){const a=[1,2];return a[i|0]}`,{optimize:0})
+  compileInProcess(`export function f(i){const a=[1,2];return a[i|0]}`,{optimize:0})
   is(ctx.runtime.userThrows,false,'runtime brand guards are not user-authored throws')
   is(representationProgramHasBigint(ctx),false,'runtime tag predicates are not source typeof probes')
 })

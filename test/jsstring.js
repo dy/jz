@@ -22,12 +22,12 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi } from './_matrix.js'
-import jz from '../index.js'
+import { compile } from '../index.js'
 import { run } from './util.js'
 
 test('jsstring opt-in: bounded charCodeAt + length flips to externref', () => {
   if (onWasi()) return  // wasi: jsstring externref interop
-  const wat = jz.compile(`
+  const wat = compile(`
     export const sum = (s) => {
       let n = 0
       for (let i = 0; i < s.length; i++) n += s.charCodeAt(i)
@@ -51,7 +51,7 @@ test('jsstring opt-in: a getter that changes the loop index keeps checked reads'
     }
     return -1
   }`
-  const wat=jz.compile(src,{wat:true,optimize:{watr:false}})
+  const wat=compile(src,{wat:true,optimize:{watr:false}})
   ok(!/\(param \$s externref\)/.test(wat), 'source accessor effects are checked before boundary carriers are chosen')
   const {read}=run(src)
   for(const s of ['', 'a', 'a', 'abcdefgh', '', 'x'])
@@ -78,7 +78,7 @@ test('jsstring opt-in: .length alone stays polymorphic (number → undefined)', 
   // `.length` alone is not string-discriminating: arrays/typed-arrays have it
   // too. The narrower keeps this f64 / __length path so `f(42).length` still
   // returns undefined (the tolerant pre-opt-in semantic).
-  const wat = jz.compile(`
+  const wat = compile(`
     export const len = (s) => s.length
   `, { wat: true, optimize: { watr: false } })
   ok(!/\(func \$len[\s\S]*?\(param \$s externref\)/.test(wat),
@@ -90,7 +90,7 @@ test('jsstring opt-in: .length alone stays polymorphic (number → undefined)', 
 test('jsstring opt-in: unbounded charCodeAt stays SSO (trap risk)', () => {
   // `.charCodeAt(i)` with an unbounded `i` would trap under wasm:js-string
   // (JS spec returns NaN). The narrower refuses to flip in this case.
-  const wat = jz.compile(`
+  const wat = compile(`
     export const at = (s, i) => s.charCodeAt(i)
   `, { wat: true, optimize: { watr: false } })
   ok(!/\(func \$at[\s\S]*?\(param \$s externref\)/.test(wat),
@@ -98,7 +98,7 @@ test('jsstring opt-in: unbounded charCodeAt stays SSO (trap risk)', () => {
 })
 
 test('jsstring opt-in: reassignment rejects', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const f = (s) => {
       s = 'x'
       return s.length
@@ -109,7 +109,7 @@ test('jsstring opt-in: reassignment rejects', () => {
 })
 
 test('jsstring opt-in: closure capture rejects', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const f = (s) => {
       const cb = () => s.length
       return cb()
@@ -120,7 +120,7 @@ test('jsstring opt-in: closure capture rejects', () => {
 })
 
 test('jsstring opt-in: param escape (concat) rejects', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const f = (s) => s + 'x'
   `, { wat: true, optimize: { watr: false } })
   ok(!/\(func \$f[\s\S]*?\(param \$s externref\)/.test(wat),
@@ -132,7 +132,7 @@ test('jsstring opt-in: string-literal default is string-discriminating proof', (
   // `s = ''` declares intent — even without `.charCodeAt`, the explicit string
   // default proves the param is meant to be a string. Flip to externref; the
   // interop wrapper substitutes the default JS-side when caller passes undef.
-  const wat = jz.compile(`
+  const wat = compile(`
     export const len = (s = '') => s.length
   `, { wat: true, optimize: { watr: false } })
   ok(/\(func \$len[\s\S]*?\(param \$s externref\)/.test(wat),
@@ -153,7 +153,7 @@ test('jsstring opt-in: string default substituted JS-side on undefined', () => {
 
 test('jsstring opt-in: non-string default still skips opt-in', () => {
   // A numeric default would need a different boundary carrier — don't try.
-  const wat = jz.compile(`
+  const wat = compile(`
     export const f = (n = 0) => n + 1
   `, { wat: true, optimize: { watr: false } })
   ok(!/\(func \$f[\s\S]*?\(param \$n externref\)/.test(wat),

@@ -2552,7 +2552,7 @@ test('dictionary RMW fusion: computed-key counters accumulate exactly', () => {
   // cap load (-1 sentinel → cold $__ptr_offset_fwd): the per-probe
   // $__ptr_offset call is gone from every collection probe/upsert (wordcount
   // −8%). The fwd helper itself must stay linked for the growth hop.
-  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const wat = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const slotAt = wat.indexOf('(func $__hash_slot')
   ok(slotAt >= 0, 'fused RMW probe present')
   const slotWat = wat.slice(slotAt, wat.indexOf('(func $', slotAt + 1))

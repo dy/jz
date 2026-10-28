@@ -3,7 +3,7 @@
 // buf.slice, DataView aliasing.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
 import { oracle, funcWat } from './util.js'
 import encodeWat from 'watr/compile'
@@ -64,7 +64,7 @@ test('DataView arguments finish before offset and value conversion', () => {
 })
 
 test('DataView ToIndex preserves the unsigned wasm32 offset before bounds', () => {
-  const text = jz.compile('export function f(x){return new DataView(new ArrayBuffer(8)).getUint8(x)}', { wat: true, optimize: 0 })
+  const text = compile('export function f(x){return new DataView(new ArrayBuffer(8)).getUint8(x)}', { wat: true, optimize: 0 })
   const bytes = encodeWat(`(module (tag $__jz_err (param f64)) (global $__jz_last_err_bits (mut i64) (i64.const 0))
     ${funcWat(text,'__dv_index')} (export "index" (func $__dv_index)))`)
   const {index} = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports
@@ -662,7 +662,7 @@ test('generic typed indexing: one layout decode across owned, view and empty sto
     for (const which of order) for (const i of [-1, 0, 1, 2, 3, 4, 2147483647, 0])
       is(read(which, i), expected(which, i), `O${optimize}, storage ${which}, index ${i}`)
   }
-  const wat = jz.compile(src, { optimize: { level: 2, watr: false }, wat: true })
+  const wat = compile(src, { optimize: { level: 2, watr: false }, wat: true })
   // (the head answers a numeric element in line; its tail is the whole reader)
   const body = funcWat(wat, '__typed_idx') + funcWat(wat, '__typed_idx_tail')
   ok(body.includes('call $__typed_shift'), 'generic reader uses the decoded element kind')
@@ -1172,7 +1172,7 @@ test('typed helpers decode fixed storage directly across widths and views', () =
       return Array.from(a)
     }`
   const host = oracle(src)
-  const text = jz.compile(src, { wat: true, optimize: 0 })
+  const text = compile(src, { wat: true, optimize: 0 })
   for (const name of ['__typed_get_idx', '__typed_set_idx']) {
     const body = funcWat(text, name)
     ok(body.includes('i32.wrap_i64'), `${name} decodes the stable offset`)

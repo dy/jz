@@ -12,7 +12,7 @@
 // guard MISS still computes the exact JS result through the original.
 import test from 'tst'
 import { ok, is, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle } from './util.js'
 
@@ -61,7 +61,7 @@ export let go = (n) => {
 }`
 
 test('summary: cached plan fields prove a typed kernel directly', () => {
-  const w = jz.compile(PLAN_SRC, opts)
+  const w = compile(PLAN_SRC, opts)
   const i = w.indexOf('func $kernel\n')
   ok(i >= 0, 'kernel emitted')
   const body = w.slice(i, w.indexOf('\n  (func', i + 5))
@@ -87,7 +87,7 @@ const P = mk(16)
 const sum = (tw, n) => { let s = 0; for (let i = 0; i < n; i++) s += tw[i]; return s }
 export let fast = (n) => sum(P.tw, n)
 export let slow = (n) => { const a = [1, 2, 3, 4]; return sum(a, n) }`
-  const w = jz.compile(src, opts)
+  const w = compile(src, opts)
   ok(w.includes('$sum$spec'), 'clone exists despite the mixed site (guard handles it)')
   const { exports } = jz(src)
   is(exports.fast(16), 120)   // Σ 0..15 — typed fast path
@@ -119,7 +119,7 @@ export let go = (n) => {
   h = edge(d, h)
   return h
 }`
-  const w = jz.compile(src, opts)
+  const w = compile(src, opts)
   // The summary follows the arrow: every argument to `edge` is a Float64Array
   // (a call's result, a field, a Map's value, a memo), so `kernel`'s tw is
   // proven typed and takes the pointer ABI outright; no guarded clone is needed.
@@ -139,7 +139,7 @@ const P = mk(16)
 export let poke = (x) => { P.tw = x; return 1 }
 const sum = (tw, n) => { let s = 0; for (let i = 0; i < n; i++) s += tw[i]; return s }
 export let go = (n) => sum(P.tw, n)`
-  const w = jz.compile(src, opts)
+  const w = compile(src, opts)
   ok(!w.includes('$sum$spec'), 'no clone for a rewritable field')
 })
 

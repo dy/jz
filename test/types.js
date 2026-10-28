@@ -28,7 +28,7 @@ const runHost = (code) => jz(code).exports
 // dissolve non-exported helpers into their lone caller and erase them, so the
 // `(func $mk …)` regex no longer matches. Compile without watr's post-pass to
 // inspect what jz actually emits.
-const wat = (src) => jz.compile(src, { wat: true, optimize: { watr: false } })
+const wat = (src) => compile(src, { wat: true, optimize: { watr: false } })
 const fnBody = (w, name) => {
   const re = new RegExp(`\\(func \\$${name}(?:\\s|$)`)
   const m = w.match(re)
@@ -140,7 +140,7 @@ test('bitwise: "42" ^ 0xFF → 213', () => {
 })
 
 test('bitwise: numeric fast path emits no __to_num call', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (n) => (n | 0) + (n & 0xFF) + (n >> 1) + (n << 1) + (n >>> 0)
   `, { wat: true })
   is((wat.match(/\$__to_num/g) || []).length, 0, 'numeric-only operands skip __to_num wrapper')
@@ -620,7 +620,7 @@ function localVal(locals, name) {
 }
 
 test('array-destructure kind: BIGINT element survives `let [a, b] = [1, BigInt(v)]`', () => {
-  if (onKernel()) return   // kernel: jz.compile routes through the kernel, which never returns `inspect` (see _matrix.js onKernel)
+  if (onKernel()) return   // kernel: compile routes through the kernel, which never returns `inspect` (see _matrix.js onKernel)
   const locals = inspectLocals('export let f = (v) => { let [a, b] = [1, BigInt(v)]; return b }')
   is(localVal(locals, 'a'), VAL.NUMBER)
   is(localVal(locals, 'b'), VAL.BIGINT)
@@ -729,7 +729,7 @@ test('array-destructure behavior: destructured nullable-bigint element keeps kin
 // ============================================================================
 
 test('array-elem kind census: BigInt array literal element carries arrayElemValType BIGINT at the 2^62 boundary', () => {
-  if (onKernel()) return   // kernel: inspect never reaches through jz.compile (see array-destructure note above)
+  if (onKernel()) return   // kernel: inspect never reaches through compile (see array-destructure note above)
   const HI = 4611686018427387903n // 2^62 - 1, host-JS-authority
   // (read at a position only the run knows, the list stays a list)
   const locals = inspectLocals(`export let f = () => { let a = [${HI}n]; return a[0] + a[a.length - 1] }`)
@@ -868,7 +868,7 @@ test('typed-narrow: owned typed-array byteOffset is constant zero', () => {
 
 test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
   if (belowOpt(2)) return  // size pin: needs post-watr fusedRewrite (optimize >= 2)
-  if (onKernel()) return   // kernel: jz.compile uses the optimize:false byte leg, so the byte count can't meet an opt-2 size pin (same as the other byte-leg size pins)
+  if (onKernel()) return   // kernel: compile uses the optimize:false byte leg, so the byte count can't meet an opt-2 size pin (same as the other byte-leg size pins)
   // Threshold tracks recorded baseline with headroom.
   const src = `
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
@@ -877,7 +877,7 @@ test('typed-narrow: bytes — narrowed helper + static load is compact', () => {
   // 900→930: the index param `i` rides the i64 boundary carrier (its numericity isn't proven
   // before `a`'s typed-ness is known), so `f` gets a boundary thunk + a jz:i64exp section —
   // metadata, zero runtime cost. Headroom kept for the narrowing/fusedRewrite regression guard.
-  const bytes = jz.compile(src).length
+  const bytes = compile(src).length
   ok(bytes <= 930, `typed helper probe ${bytes}b — narrowing or fusedRewrite likely regressed (>930b)`)
 })
 
@@ -914,7 +914,7 @@ test('typed-narrow: receiver unbox after .map on TYPED', () => {
 
 test('typed-narrow: codegen — .map receiver is i32 + static load', () => {
   // coalescing off: a slot shared with a temp would name the receiver otherwise
-  const w = jz.compile(`
+  const w = compile(`
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
     export let f = (i) => {
       let a = mk()
@@ -1367,7 +1367,7 @@ test('summary presence: aliases retain missing reads and arithmetic removes abse
 // --- param propagation (narrow.js narrowSignatures, whole-program fixpoint) ---
 
 test('mayBeUndefined param: a call-site arg tracing to a census read flags the callee param', () => {
-  if (onKernel()) return   // kernel: jz.compile routes through the kernel, which never returns `inspect`
+  if (onKernel()) return   // kernel: compile routes through the kernel, which never returns `inspect`
   // sourceInline:false — useIt's trivial pass-through body is an inlining
   // candidate; inlined away, there is no separate function left to narrow.
   const insp = compile(`

@@ -17,7 +17,7 @@ import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import jz from '../index.js'
+import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
@@ -346,7 +346,7 @@ const measure = (categories = Object.keys(CATEGORIES)) => {
     let sum = 0, entered = 0
     for (let s = 1; s <= SEEDS; s++) {
       try {
-        const tree = parseWat(jz.compile(genProgram(cat, s), { optimize: 2, wat: true }))
+        const tree = parseWat(compile(genProgram(cat, s), { optimize: 2, wat: true }))
         sum += loopBodyOps(tree)
         const calls = NUMERIC_CALLS[cat] ?? ARRAY_CALLS[cat]?.()
         if (calls) entered += enteredLoopOps(tree, calls)

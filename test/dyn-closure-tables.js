@@ -9,12 +9,12 @@
 // call_indirect kept as the always-sound default arm.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { run, oracle } from './util.js'
 import { levels } from './_matrix.js'
 
 const SPEED = { level: 'speed', watr: false }
-const wat = (src, opts = SPEED) => jz.compile(src, { wat: true, optimize: opts })
+const wat = (src, opts = SPEED) => compile(src, { wat: true, optimize: opts })
 const callIndirectCount = (w) => (w.match(/call_indirect/g) || []).length
 const brTableCount = (w) => (w.match(/br_table/g) || []).length
 

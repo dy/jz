@@ -230,10 +230,10 @@ const TRACKED_BUILTIN_PATHS = [
   'Iterator',
   // Atomics/SharedArrayBuffer pool wired 2026-07-13: SharedArrayBuffer
   // canonicalizes to ArrayBuffer (within one module the buffer IS jz's linear
-  // memory — sharedness is a jz.pool LINKING concern, not an object property);
+  // memory — sharedness is a pool.js LINKING concern, not an object property);
   // Atomics map to wasm atomic ops on proven Int32Array views (module/
   // atomics.js). $262.agent multi-thread tests need the agent harness over
-  // jz.pool — a recorded follow-up; they absorb as skips meanwhile.
+  // pool.js — a recorded follow-up; they absorb as skips meanwhile.
   'Atomics',
   'SharedArrayBuffer',
 ]
@@ -1182,8 +1182,8 @@ function shouldSkip(raw, rel) {
   // reflection machinery — they patch methods on the $262 host object, use
   // .bind/this.setTimeout/Date.now — the family jz sheds by design. The
   // CAPABILITY they exercise (cross-thread atomicity + wait/notify blocking
-  // over shared memory) is proven end-to-end by test/workers.js over jz.pool.
-  if (codeOnly && /\$262\b/.test(raw)) return '$262.agent harness — host reflection surface (capability proven by test/workers.js over jz.pool)'
+  // over shared memory) is proven end-to-end by test/workers.js over pool.js.
+  if (codeOnly && /\$262\b/.test(raw)) return '$262.agent harness — host reflection surface (capability proven by test/workers.js over pool.js)'
   const content = codeOnly ? raw.replace(/\/\*---[\s\S]*?---\*\//, '') : raw
   if (codeOnly) {
     // compareArray.js is implemented by ASSERT_HARNESS — only OTHER helpers skip.

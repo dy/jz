@@ -2,15 +2,16 @@
 // Contract: shared TYPED ARRAYS + scalars; Atomics on PROVEN Int32Array
 // receivers (proof via inference or the default-arg annotation
 // `arr = new Int32Array(0)`, backed by __atomics_addr's runtime tag+elem
-// guard); strings/objects stay thread-local. jz.pool spawns node
+// guard); strings/objects stay thread-local. pool.js spawns node
 // worker_threads over ONE WebAssembly.Memory({shared:true}) — every worker
 // runs fn(workerIndex, threads, ...args); boxed args cross as exact i64 bits
 // (jz:i64exp lanes).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
 import { oracle } from './util.js'
+import pool from '../pool.js'
 
 const sharedMem = () => new WebAssembly.Memory({ initial: 4, maximum: 64, shared: true })
 const run = (code) => jz(code, { sharedMemory: true, memory: sharedMem() }).exports
@@ -46,7 +47,7 @@ test('atomics: isLockFree, notify with no waiters, OOB throws, guard throws', ()
 
 test('atomics: unproven receiver rejects at compile', () => {
   let err
-  try { jz.compile('export let f = (x) => Atomics.load(x, 0)', { sharedMemory: true }) } catch (e) { err = e }
+  try { compile('export let f = (x) => Atomics.load(x, 0)', { sharedMemory: true }) } catch (e) { err = e }
   ok(err && /proven Int32Array/.test(err.message), 'unproven receiver → clean compile reject')
 })
 
@@ -75,7 +76,7 @@ test('atomics: shared-memory stringify (static region relocates)', () => {
 
 test('pool: SPMD contention + per-worker cells + wait/notify handshake', async () => {
   if (onWasi() || onKernel()) return
-  const p = await jz.pool(`
+  const p = await pool(`
     export let bump = (tid, threads, arr = new Int32Array(0)) => {
       for (let k = 0; k < 1000; k++) Atomics.add(arr, 0, 1)
       Atomics.store(arr, 1 + tid, tid * 10)
@@ -131,7 +132,7 @@ test('atomics: BigInt64Array — i64 ops, BigInt values in and out', () => {
   is(e.f(), '41,42,7,1')
   // number values on an i64 receiver reject at compile
   let err
-  try { jz.compile('export let f = () => { let a = new BigInt64Array(2); return Number(Atomics.store(a, 0, 5)) }', { sharedMemory: true }) } catch (x) { err = x }
+  try { compile('export let f = () => { let a = new BigInt64Array(2); return Number(Atomics.store(a, 0, 5)) }', { sharedMemory: true }) } catch (x) { err = x }
   ok(err && /BigInt values/.test(err.message), 'number value on BigInt64Array receiver rejects')
 })
 

@@ -5169,12 +5169,15 @@ the corpus *is* the guarantee, so widen it toward the code you actually ship.
 ## Public contract and ABI
 
 The public surface is deliberately small (README owns it): the root exports
-`jz`, `compile`, `instantiate` and `jz.memory`; the `jz/interop` subpath with
+`jz` (default, with `jz.memory`), `compile` and `instantiate`; the `jz/interop` subpath with
 `instantiate` and `memory`; the compile options in `index.d.ts`; and the
 CLI flags in `jz --help`. Everything else is internal and may change without a
-major version, including `jz.pool` (experimental SPMD worker pool, node only).
+major version: `pool.js` (experimental SPMD worker pool, node only, not
+exported), `setCompileTarget` in src/compiler.js (the test harness's compiler
+switch) and `compileInProcess` in test/util.js (the in-process compiler for
+tests that read analysis state).
 
-`normalizeOptions` in index.js folds the public `memory` and `optimize` objects
+`normalizeOptions` in src/compiler.js folds the public `memory` and `optimize` objects
 onto the internal flags. Tests and scripts may pass those flags directly:
 
 | Internal option | Public spelling | Notes |

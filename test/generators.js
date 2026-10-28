@@ -7,7 +7,7 @@
 // for-of/for-in bodies over values not known to be generators.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { oracle, batch } from './util.js'
 
 const j = (code) => jz(code).exports.f()
@@ -146,7 +146,7 @@ test('generators: expression form + nested generator for-of', () => {
 
 test('generators: v1 rejections are precise', () => {
   const rejects = (src, needle) => {
-    let e; try { jz.compile(src) } catch (x) { e = x }
+    let e; try { compile(src) } catch (x) { e = x }
     ok(e && e.message.includes(needle), `${needle}: got ${e?.message?.slice(0, 90)}`)
   }
   rejects(`export let f = () => { let y = yield 1; return y }`, 'yield outside a generator')
@@ -630,7 +630,7 @@ test('generators: yield* of a module generator call takes the protocol only', ()
   function* g() { const r = yield* h(); yield r }
   export let all = () => [...g()].join()
   export let early = () => { const it = g(); it.next(); log.length = 0; const r = it.return(7); return JSON.stringify(r) + log.join() }`
-  for (const optimize of [2, 'size']) is(/\$__str_points\b/.test(jz.compile(src, { wat: true, optimize })), false, `O${optimize}: no indexed arm`)
+  for (const optimize of [2, 'size']) is(/\$__str_points\b/.test(compile(src, { wat: true, optimize })), false, `O${optimize}: no indexed arm`)
   return agreeAll(src)
 })
 

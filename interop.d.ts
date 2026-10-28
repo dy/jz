@@ -1,4 +1,5 @@
 import type {
+  InteropOptions,
   JzCarrier,
   JzExports,
   JzInstance,
@@ -7,17 +8,7 @@ import type {
   JzScalarMemory,
 } from './index.js'
 
-export type { JzCarrier, JzExports, JzInstance, JzMemory, JzPointer, JzScalarMemory }
-
-export interface InteropOptions {
-  /** Host modules for the module's `import { fn } from "mod"` declarations. */
-  imports?: Record<string, unknown>
-  /** Memory to link instead of the module's own export. */
-  memory?: WebAssembly.Memory | JzMemory
-  /** WASI stdout/stderr and stdin for `host: 'wasi'` modules. */
-  write?: (fd: number, text: string) => void
-  read?: (fd: number, buffer: Uint8Array) => number | void
-}
+export type { InteropOptions, JzCarrier, JzExports, JzInstance, JzMemory, JzPointer, JzScalarMemory }
 
 export type MemoryInstanceSource =
   | JzInstance

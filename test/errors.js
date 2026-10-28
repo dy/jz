@@ -1434,12 +1434,12 @@ test('runtime throws: a constant error is thrown by one shared helper, every sit
     export const b = (v) => { let n = 0; for (const x of v) n += x; return n }
     export const c = (v, w) => [...v, ...w].length`
   for (const optimize of [0, 2, { level: 'size' }]) {
-    const wat = jz.compile(src, { optimize, wat: true })
+    const wat = compile(src, { optimize, wat: true })
     const defs = (wat.match(/\(func \$__throw_TypeError_value_is_not_iterable\b/g) || []).length
     const calls = (wat.match(/\(call \$__throw_TypeError_value_is_not_iterable\)/g) || []).length
     is(defs, 1, `${JSON.stringify(optimize)}: one thrower`)
     ok(calls >= 3, `${JSON.stringify(optimize)}: every site calls it (${calls})`)
-    const { exports } = instantiate(jz.compile(src, { optimize }))
+    const { exports } = instantiate(compile(src, { optimize }))
     is(exports.a([1, 2, 3]), 3)
     is(exports.c([1], [2, 3]), 3)
     for (const f of ['a', 'b', 'c']) {
@@ -1461,8 +1461,8 @@ test('catch: a spread of a value that may not iterate keeps its try', () => {
     export const obj = (v) => { let r = 0; try { r = Object.keys({ ...v }).length } catch (e) { r = 7 } return r }
     export const known = (v) => { let r = 0; try { const a = [...[v, v]]; r = a.length } catch (e) { r = 7 } return r }`
   for (const optimize of [0, 2]) {
-    const wat = jz.compile(src, { optimize, wat: true })
-    const { exports } = instantiate(jz.compile(src, { optimize }))
+    const wat = compile(src, { optimize, wat: true })
+    const { exports } = instantiate(compile(src, { optimize }))
     is(exports.lit(5), 7, `${optimize}: a spread of a number is caught`)
     is(exports.lit([1, 2, 3]), 3)
     is(exports.call(5), 7, `${optimize}: a call spread of a number is caught`)

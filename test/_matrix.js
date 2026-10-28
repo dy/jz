@@ -141,7 +141,7 @@ export const withBigintStrict = (fn) => {
 
 /** True when execution compiles through the Wasm kernel. The adapter forwards
  *  supported compiler options (test/kernel-target.js). Tests that inspect ctx,
- *  profiles, or analysis snapshots use _compileInProcess explicitly; their
+ *  profiles, or analysis snapshots use compileInProcess (test/util.js) explicitly; their
  *  execution checks can still use the selected target. Host-only imports and
  *  runtime facilities need their own onKernel guard. */
 export const onKernel = () => process.env.JZ_TEST_TARGET === 'jz.wasm'

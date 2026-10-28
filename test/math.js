@@ -47,11 +47,11 @@ test('canon-strip: sqrt/min/max feeding f64 arithmetic sheds the NaN-canon selec
   // propagates the NaN identically and re-canon-izes on escape — so the per-op select +
   // f64.ne is dead. Stripping it is the difference between ~1.2x and parity vs V8 on
   // sqrt-heavy kernels (julia, raymarcher, boids).
-  const wat = jz.compile(`export const f = (s) => Math.sqrt(s + 1.0) + Math.sqrt(s + 2.0)`, { wat: true })
+  const wat = compile(`export const f = (s) => Math.sqrt(s + 1.0) + Math.sqrt(s + 2.0)`, { wat: true })
   const selects = (wat.match(/select/g) || []).length
   is(selects, 0, 'no NaN-canon select when the sqrt result feeds f64.add')
   // log(log(x)): inner log canon also stripped (math-call arg is ToNumber'd + NaN-safe).
-  const wlog = funcWat(jz.compile(`export const f = (x) => Math.log(Math.log(x))`, { wat: true }), 'f')
+  const wlog = funcWat(compile(`export const f = (x) => Math.log(Math.log(x))`, { wat: true }), 'f')
   is((wlog.match(/select/g) || []).length, 0, 'no canon select for log feeding log')
 })
 
@@ -87,7 +87,7 @@ test('canon-strip: a compound assignment sheds its operand\'s NaN guard as the b
     }
   }
   if (belowOpt(2)) return
-  const wat = funcWat(jz.compile(`export const f = (n) => { let s = 0, q = 1; for (let i = 0; i < n; i++) { const x = (i % 200) * 0.37 - 30; s += Math.sqrt(x); q *= -x } return s + q }`, { wat: true }), 'f')
+  const wat = funcWat(compile(`export const f = (n) => { let s = 0, q = 1; for (let i = 0; i < n; i++) { const x = (i % 200) * 0.37 - 30; s += Math.sqrt(x); q *= -x } return s + q }`, { wat: true }), 'f')
   is((wat.match(/f64\.const nan/g) || []).length, 0, 'no NaN guard on s += Math.sqrt(x) or q *= -x')
 })
 

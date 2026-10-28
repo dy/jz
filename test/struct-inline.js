@@ -12,7 +12,7 @@
  */
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { run, oracle } from './util.js'
 import { levels, onKernel } from './_matrix.js'
@@ -61,7 +61,7 @@ export let main = () => {
 test('struct-inline: replace store engages the packed i32 layout (values + wat)', () => {
   const src = KERNEL()
   both(src)
-  const wat = jz.compile(src, { wat: true, optimize: true })
+  const wat = compile(src, { wat: true, optimize: true })
   const body = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
   ok(body, 'step emitted')
   const loop = body.slice(body.indexOf('(loop'))
@@ -75,7 +75,7 @@ test('struct-inline: float fields stay on f64 cells, replace store still engages
   // non-int fields — inlineCellI32 must refuse; the store is still cell writes
   const src = KERNEL('x: nx + 0.5, y: ny, vx: wx, vy: wy', 'x: ((s >>> 2) & 255) + 0.5, y: (s >>> 5) & 255, vx: (1 + (s & 3)) | 0, vy: (1 + ((s >>> 9) & 3)) | 0')
   both(src)
-  const wat = jz.compile(src, { wat: true, optimize: true })
+  const wat = compile(src, { wat: true, optimize: true })
   const body = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
   const loop = body.slice(body.indexOf('(loop'))
   ok(/f64\.store offset=24/.test(loop), 'f64 cells: last field at +24')

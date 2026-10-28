@@ -10,7 +10,7 @@
 // rejection reporting; no SuppressedError.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { batch, oracle } from './util.js'
 import { onWasi, onKernel } from './_matrix.js'
 
@@ -272,7 +272,7 @@ test('async: bare fetch binds from the JS host — Response methods await in tur
 
 test('fetch: host wasi warns (bind env.fetch yourself)', () => {
   const warnings = { entries: [] }
-  jz.compile('async function g() { let r = await fetch("x"); return r } export let f = () => g()', { host: 'wasi', warnings })
+  compile('async function g() { let r = await fetch("x"); return r } export let f = () => g()', { host: 'wasi', warnings })
   ok(warnings.entries.some(w => w.code === 'host-global'), 'wasi warning present')
 })
 

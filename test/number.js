@@ -5,7 +5,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, cases, wat, funcWat, oracle } from './util.js'
 import { levels, onWasi, onKernel } from './_matrix.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import encodeWat from 'watr/compile'
 import { numberNanIR, truthyIR } from '../src/ir/sentinels.js'
 
@@ -819,7 +819,7 @@ test('Number schema dispatch fast paths preserve the generic carrier contract', 
   const {ctx}=await import('../src/ctx.js'),{devirtSchemaReads}=await import('../src/optimize/devirt.js')
   const {NUMBER,STRING}=await import('../src/summary/kind.js'),{objectSchemaGuardHex}=await import('../layout.js')
   for(const form of ['single','dense','sparse','cache']){
-    jz.compile('',{optimize:{level:1,watr:false}})
+    compile('',{optimize:{level:1,watr:false}})
     const count=form==='single'?1:form==='cache'?30:form==='sparse'?12:3
     const schemas=[]
     for(let i=0;i<count;i++)schemas.push(form==='sparse'&&i%3?['other'+i]:

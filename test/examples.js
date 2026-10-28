@@ -1,6 +1,6 @@
 import test from 'tst';
 import { is, ok, throws } from 'tst/assert.js';
-import jz from '../index.js';
+import jz, { compile } from '../index.js';
 import { instantiate } from '../interop.js';
 import fs from 'fs';
 import { basename, join } from 'node:path';
@@ -84,7 +84,7 @@ test('example: ulam renders the requested view across repeated calls', async () 
 // kernel still emits SIMD under the exact options the build uses (so dropping `speed` fails here).
 test('example: build options keep kernels vectorized (SIMD)', () => {
     let src = fs.readFileSync(new URL('../examples/burningship/burningship.js', import.meta.url), 'utf8');
-    let wat = jz.compile(src, { ...OPT, wat: true });
+    let wat = compile(src, { ...OPT, wat: true });
     ok(/f64x2\./.test(wat), `burningship must vectorize under the examples build options (OPT=${JSON.stringify(OPT)})`);
 });
 
@@ -99,7 +99,7 @@ test('example: build options keep kernels vectorized (SIMD)', () => {
 // NO kernel change), mandelbrot (escape-at-top).
 test('example: escape-time fractals take the break-on-first FAST path (beats V8)', () => {
     for (const name of ['burningship', 'julia', 'mandelbrot']) {
-        let wat = jz.compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
+        let wat = compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
         ok(/f64x2\./.test(wat), `${name}: must vectorize (f64x2) under the examples build options`);
         ok(!/v128\.bitselect/.test(wat), `${name}: must take the FAST path — no per-iteration freeze (v128.bitselect)`);
         ok(/\$__esc\d+_tb\d+/.test(wat), `${name}: must emit the break-on-first scalar tail`);
@@ -117,7 +117,7 @@ test('example: escape-time fractals take the break-on-first FAST path (beats V8)
 // so it must take the OUTER-STRIP path ($__os) and lift the reduction to f64x2 there. The
 // bit-exactness gate lives in test/simd.js.
 test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/sqrt)', () => {
-    const w = (name) => jz.compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
+    const w = (name) => compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
     const ch = w('chladni');
     ok(/\$__ppc\d+/.test(ch), 'chladni must take the per-pixel-color path');
     ok(/call \$math\.cos2/.test(ch), 'chladni per-pixel Math.cos → f64x2 $math.cos2');
@@ -135,7 +135,7 @@ test('example: per-pixel-color kernels vectorize (chladni cos, interference sin/
 // BIT-EXACT to the scalar pipeline end-to-end — a lane-parallel stencil reorders nothing per lane.
 test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/watercolor/watercolor.js', import.meta.url), 'utf8');
-    const watText = jz.compile(src, { ...OPT, wat: true });
+    const watText = compile(src, { ...OPT, wat: true });
     const frame = funcWat(watText, 'frame');
     // RECOVERED (audit-#8 P1-2 follow-up, c8700daa's own named lever): `w`/`h`
     // trace to a resize(w,h) runtime param — genuinely unbounded statically, so
@@ -192,8 +192,8 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
 // field is a stencil too; the reflection shading reads it as a per-pixel map and stays scalar.
 test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
-    const base = (jz.compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
-    const sten = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+    const base = (compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
+    const sten = (compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
     // Keep the recovered SIMD floor; later rewrites may add vector operations. (43 since the
     // reflection render replaced the caustic splat, whose blur passes were stencils too.)
     ok(sten >= 43 && sten > base, `waves frame: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
@@ -225,8 +225,8 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
 test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/metaballs/metaballs.js', import.meta.url), 'utf8');
     // outerStrip is now default-on at speed; SCALAR baseline turns it explicitly off.
-    const base = (jz.compile(src, { ...OPT, outerStrip: false, wat: true }).match(/f64x2\./g) || []).length;
-    const os = (jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
+    const base = (compile(src, { ...OPT, outerStrip: false, wat: true }).match(/f64x2\./g) || []).length;
+    const os = (compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
     // Root F's nest versioning hands the LANE vectorizer the canonical scaffold at
     // BOTH tiers (36 lanes vs the old strip-only 21) — outer-strip no longer has
     // headroom to add here. The pin now guards the stronger property: the field
@@ -255,8 +255,8 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
 // via the outerStrip toggle (the iterated-reduce gate).
 test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/lyapunov/lyapunov.js', import.meta.url), 'utf8');
-    const base = (jz.compile(src, { ...OPT, outerStrip: false, wat: true }).match(/f64x2\./g) || []).length;
-    const wat = jz.compile(src, { ...OPT, wat: true });
+    const base = (compile(src, { ...OPT, outerStrip: false, wat: true }).match(/f64x2\./g) || []).length;
+    const wat = compile(src, { ...OPT, wat: true });
     ok((wat.match(/f64x2\./g) || []).length > base && /\$math\.log_v/.test(wat), `lyapunov iterated-reduce adds f64x2 + log_v (${base} → ${(wat.match(/f64x2\./g) || []).length})`);
     const run = (opts) => {
         const { exports } = jz(src, opts);
@@ -276,7 +276,7 @@ test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit
 // compiler regression that drops it fails CI immediately, not via a user's slow demo. (Bit-exactness
 // of each lift is gated in test/simd.js + the differential fuzz; here we guard the perf cause.)
 test('example: regressed kernels keep their vectorization (byte-fade / pmax / narrow)', () => {
-    const watOf = (name) => jz.compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
+    const watOf = (name) => compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
     // nbody + boids: the in-place u8 trail fade `(ink[i]*k)>>8` lifts 16-wide (i16x8 widen → byte pack).
     for (const name of ['nbody', 'boids']) {
         const w = watOf(name);
@@ -331,8 +331,8 @@ export let run = () => {
 test('example: schrodinger float-index + f32-widening stencil vectorizes and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/schrodinger/schrodinger.js', import.meta.url), 'utf8');
     // stencil is now default-on at speed; SCALAR baseline turns it explicitly off.
-    const base = (jz.compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
-    const wat = jz.compile(src, { ...OPT, wat: true });
+    const base = (compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
+    const wat = compile(src, { ...OPT, wat: true });
     const sten = (wat.match(/f64x2\./g) || []).length;
     // Keep the recovered SIMD floor; later rewrites may add vector operations.
     ok(sten >= 27 && sten > base, `schrodinger stepR/stepI: stencil pass recovers under the Root-F magnitude guard (${base} → ${sten} f64x2)`);
@@ -395,7 +395,7 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
     ];
     for (const { name, want, drive } of cases) {
         const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
-        const watText = jz.compile(src, { ...OPT, wat: true }), sten = (watText.match(/f64x2\./g) || []).length;
+        const watText = compile(src, { ...OPT, wat: true }), sten = (watText.match(/f64x2\./g) || []).length;
         if (typeof want === 'function') ok(want(watText), `${name} wrap-stencil lifts in every sweep (${sten} f64x2)`);
         else is(sten, want, `${name} wrap-stencil recovers under the f64-domain wrap-select lever (${sten} f64x2)`);
         const run = (opts) => drive(jz(src, { ...opts, randomSeed: 42 }).exports);
@@ -420,7 +420,7 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
 // lift itself (asserted above) and bit-exactness against the scalar path (below).
 test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)', () => {
     const src = fs.readFileSync(new URL('../examples/plasma/plasma.js', import.meta.url), 'utf8');
-    const wat = jz.compile(src, { ...OPT, wat: true });
+    const wat = compile(src, { ...OPT, wat: true });
     ok((wat.match(/f64x2\./g) || []).length > 80, `plasma vectorizes (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
     ok((wat.match(/\$math\.sin2/g) || []).length >= 6, 'fbm sines lift to $math.sin2');
     const run = (opts) => { const { exports } = jz(src, opts); const px = exports.resize(48, 32); for (let f = 0; f < 4; f++) exports.frame(f * 0.1); return [...px]; };
@@ -434,7 +434,7 @@ test('example: plasma fbm inlines into the per-pixel-color lift (sin → sin2)',
 // achievement-ratcheted escape fractals (break-on-first fast path) are untouched. BIT-EXACT.
 test('example: newton divergent-escape tracks per-lane outcomes (f64x2) bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/newton/newton.js', import.meta.url), 'utf8');
-    ok((jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'newton vectorizes');
+    ok((compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'newton vectorizes');
     // frame is (t, are, aim, vcx, vcy, vscale) — the gallery pan/zoom refactor added the view + the
     // animated polynomial coefficient (are≈1.32, aim≈0 at the home phase). Driving frame(0) alone
     // leaves are/aim/view undefined→NaN → an all-black field, which makes the bit-exact check vacuous
@@ -482,8 +482,8 @@ test('example: log-tonemap (fern/attractors) vectorizes mixed-lane f64x2 + bit-e
     for (const { name, drive } of cases) {
         const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
         // toneMap is default-on at speed; the SCALAR baseline turns it explicitly off.
-        const base = (jz.compile(src, { ...OPT, toneMap: false, wat: true }).match(/f64x2\./g) || []).length;
-        const wat = jz.compile(src, { ...OPT, wat: true });
+        const base = (compile(src, { ...OPT, toneMap: false, wat: true }).match(/f64x2\./g) || []).length;
+        const wat = compile(src, { ...OPT, wat: true });
         const tm = (wat.match(/f64x2\./g) || []).length;
         ok(tm > base, `${name} tonemap vectorizes (${base} → ${tm} f64x2)`);
         ok(/call \$math\.log_v/.test(wat), `${name} lifts Math.log → the f64x2 mirror $math.log_v`);
@@ -564,7 +564,7 @@ let golSrc = fs.readFileSync(new URL('../examples/game-of-life/game-of-life.js',
 // suite runs), so a disk read fails in CI and from a clean checkout. This tests the
 // real property — each floatbeat lowers to deployable wasm — order-independently.
 for (const { name, body } of FLOATBEATS) test(`example: jukebox ${name} compiles to deployable wasm`, async () => {
-    const bytes = jz.compile(moduleSrc(body), { optimize: 3 });
+    const bytes = compile(moduleSrc(body), { optimize: 3 });
     is(bytes[0], 0x00);
     is(bytes[1], 0x61);
     is(bytes[2], 0x73);
@@ -596,7 +596,7 @@ test('example: jukebox floatbeats stay box-free (V8-parity ratchet)', () => {
         'Digital Rain': 14, 'Neo-Noir Jazz Lounge': 0, 'Celesta Dreams': 0,
     };
     for (const fb of FLOATBEATS) {
-        const wat = jz.compile(moduleSrc(fb.body), { optimize: 3, wat: true });
+        const wat = compile(moduleSrc(fb.body), { optimize: 3, wat: true });
         let fn = '', n = 0;
         for (const line of wat.split('\n')) {
             const m = line.match(/\(func (\$[\w.]+)/); if (m) fn = m[1];
@@ -691,7 +691,7 @@ test('example: game-of-life output natively matches WASM', () => {
 // once f64.convert_i32_s(invariant) splats. Both are bit-exact by construction.
 test('example: domain-color atan2/hypot mirrors vectorize and stay bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/domain-color/domain-color.js', import.meta.url), 'utf8');
-    const wat = jz.compile(src, { ...OPT, wat: true });
+    const wat = compile(src, { ...OPT, wat: true });
     ok((wat.match(/f64x2\./g) || []).length > 20, `domain-color vectorizes via the per-pixel-color pass (${(wat.match(/f64x2\./g) || []).length} f64x2)`);
     ok(/\$math\.atan2_2/.test(wat) && /\$math\.hypot_2/.test(wat), 'atan2 → $math.atan2_2, hypot → $math.hypot_2');
     // Pass a REAL constant c (cx,cy ≠ 0) AND a finite scale — frame(0) alone left every pixel 0
@@ -707,7 +707,7 @@ test('example: domain-color atan2/hypot mirrors vectorize and stay bit-exact', (
 
 test('example: rfft cepstrum map vectorizes via convert-splat', () => {
     const src = fs.readFileSync(new URL('../examples/rfft/rfft.js', import.meta.url), 'utf8');
-    ok((jz.compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'rfft gains f64x2 (cep[i]=x[i]/N maps once convert(N) splats)');
+    ok((compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length > 0, 'rfft gains f64x2 (cep[i]=x[i]/N maps once convert(N) splats)');
 });
 
 test('example: game-of-life self-drives (in-module rAF loop)', async () => {

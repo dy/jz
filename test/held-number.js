@@ -7,11 +7,11 @@
 // first, or an export the host can store to keeps its global.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { _compileInProcess as compile } from '../index.js'
+
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
-import { funcWat, oracle, run, wat } from './util.js'
+import { funcWat, oracle, run, wat, compileInProcess as compile } from './util.js'
 
 // The number the compiler folds `name` to; null when it reads the global.
 const folded = (src, name, opts) => {

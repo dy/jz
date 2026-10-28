@@ -5,9 +5,9 @@
 import test from 'tst'
 import parseWat from 'watr/parse'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { _compileInProcess } from '../index.js'
+import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat, funcWat, run } from './util.js'
+import { oracle, wat, funcWat, run, compileInProcess } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { T, TYPEOF, walkAst } from '../src/ast.js'
 import { createActiveFunction } from '../src/compile/active-function.js'
@@ -664,7 +664,7 @@ const loopWide = (text) => {
   walk(parseWat(text))
   return k
 }
-const planned = (src, name) => { _compileInProcess(src, { optimize: 'speed' }); return ctx.funcs.list.find(f => f.name === name)?.body }
+const planned = (src, name) => { compileInProcess(src, { optimize: 'speed' }); return ctx.funcs.list.find(f => f.name === name)?.body }
 const countNodes = (node, pred) => { let k = 0; walkAst(node, { enter: n => { if (pred(n)) k++ } }); return k }
 const isWordOf = (n, pred) => Array.isArray(n) && n[0] === '|' && n.length === 3 && Array.isArray(n[2]) && n[2][0] == null && n[2][1] === 0 && pred(n[1])
 

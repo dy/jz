@@ -7,7 +7,7 @@
 // `memory.reset()` still returns the module to its start.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels, onWasi, belowOpt } from './_matrix.js'
 import { oracle } from './util.js'
 
@@ -259,7 +259,7 @@ test('compact: a site roots the locals live at the loop, not every pointer the f
   const src = `export const f = n => { const a = [n], b = 'x' + n, c = { v: n }; let t = a.length + b.length + c.v; let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length + t }`
   const want = oracle(src), { exports } = jz(src)
   for (const n of [5, 3000]) is(exports.f(n), want.f(n), `f(${n})`)
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   const sites = wat.split('call $__gc_begin').slice(1).map(site => (site.slice(0, site.indexOf('call $__gc_walk')).match(/call \$__gc_mark/g) ?? []).length)
   ok(sites.length > 0, 'the loop has a compaction site')
   ok(/\(global\.get \$__g_cost\)/.test(wat), 'a site takes what the compaction walked as the next trigger')
@@ -333,7 +333,7 @@ const CLOSURE_LOOPS = {
 test('compact: a loop in a closure compacts what it keeps', () => {
   if (onWasi() || !counted()) return
   for (const [name, src] of Object.entries(CLOSURE_LOOPS)) {
-    ok((jz.compile(src, { wat: true }).match(/call \$__gc_begin/g) ?? []).length > 0, `${name}: the closure's loop has a site`)
+    ok((compile(src, { wat: true }).match(/call \$__gc_begin/g) ?? []).length > 0, `${name}: the closure's loop has a site`)
     const want = oracle(src), { exports, memory } = jz(src)
     for (const n of [7, 60000]) is(exports.f(n), want.f(n), `${name} f(${n})`)
     ok(memory.buffer.byteLength <= 64 * 1024 * 1024, `${name}: 60000 iterations stay within 64 MB (${memory.buffer.byteLength >> 10} KB)`)

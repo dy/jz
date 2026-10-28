@@ -5028,13 +5028,13 @@ test('vectorizer pass names: legacy experimental* keys stay accepted as aliases'
     for (let i = 0; i < n; i++) s += out[i]
     return s
   }`
-  const on = jz.compile(src, { optimize: { level: 3 }, wat: true })
-  const canon = jz.compile(src, { optimize: { level: 3, stencil: false, slp: false }, wat: true })
-  const legacy = jz.compile(src, { optimize: { level: 3, experimentalStencil: false, experimentalSlp: false }, wat: true })
+  const on = compile(src, { optimize: { level: 3 }, wat: true })
+  const canon = compile(src, { optimize: { level: 3, stencil: false, slp: false }, wat: true })
+  const legacy = compile(src, { optimize: { level: 3, experimentalStencil: false, experimentalSlp: false }, wat: true })
   is(canon, legacy, 'legacy alias produces byte-identical output to canonical key')
   // Liveness proof for the plumbing itself: noSimd (which clears slp via the same
   // normalized cfg) must differ from the default build on this SIMD-heavy source.
-  const scalar = jz.compile(src, { optimize: { level: 3 }, noSimd: true, wat: true })
+  const scalar = compile(src, { optimize: { level: 3 }, noSimd: true, wat: true })
   ok(on !== scalar, 'cfg plumbing is live (noSimd changes output)')
 })
 

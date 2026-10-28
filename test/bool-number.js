@@ -14,7 +14,7 @@ import test from 'tst'
 import { is } from 'tst/assert.js'
 import { levels } from './_matrix.js'
 import { run, oracle } from './util.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 
 // What each export returns of the value at `v`.
 const OPS = {
@@ -106,7 +106,7 @@ export let f = (x) => { let b = x > 1, o = { a: b }; keep.push(o)
 // The binding stays a number where every read converts, and a Boolean where
 // every store is one: the atoms cost nothing there.
 test('bool or number: a binding every read of which converts keeps the raw carrier', () => {
-  const wat = jz.compile(`export let f = (k, n) => { let v = k > 0 && n; return v * 2 + (v | 0) }`, { wat: true })
+  const wat = compile(`export let f = (k, n) => { let v = k > 0 && n; return v * 2 + (v | 0) }`, { wat: true })
   is(/nan:0x7FF800050/.test(wat) || /nan:0x7FF800040/.test(wat), false, 'no Boolean atom in a numeric-only binding')
 })
 
@@ -128,7 +128,7 @@ export let miss = (i) => { const b = i > 2 ? undefined : i > 1 ? null : i > 0; r
     is(got.mix(200), want.mix(200), `mix at ${optimize}`)
     for (const i of [0, 1, 2, 3]) is(got.miss(i), want.miss(i), `miss(${i}) at ${optimize}`)
   }
-  is(/__add_slow|__str_concat/.test(jz.compile(src, { wat: true, optimize: 'speed' })), false, 'no generic sum and no concatenation')
+  is(/__add_slow|__str_concat/.test(compile(src, { wat: true, optimize: 'speed' })), false, 'no generic sum and no concatenation')
 })
 
 // @audio/encode-wav's header, reduced (bench/_audiojs/repro/bool-or-number.js):
@@ -161,7 +161,7 @@ const WAV = `export default async function wav(opts) {
   function free() {}
 }`
 test('bool or number: the reduced encode-wav header compiles and writes RIFF', async () => {
-  jz.compile(WAV)
+  compile(WAV)
   const entry = `import wav from './wav.js'
 let enc = null
 export let open = async () => { enc = await wav({ sampleRate: 44100, stream: true }); return 1 }

@@ -5,11 +5,11 @@
 // count are the cell's own load and store; every result is the host's.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { _compileInProcess as compile } from '../index.js'
+import jz from '../index.js'
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, oracle, run, wat, funcWat } from './util.js'
+import { agree, oracle, run, wat, funcWat, compileInProcess as compile } from './util.js'
 import parseWat from 'watr/parse'
 import { walk } from '../scripts/wat-probe.mjs'
 

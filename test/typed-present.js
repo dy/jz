@@ -7,12 +7,12 @@
 // the count stays number-or-undefined, and the callee sees the undefined.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { _compileInProcess as compile } from '../index.js'
+import jz from '../index.js'
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { K, hasTag, tagOf } from '../src/summary/kind.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
-import { agree, funcWat, wat } from './util.js'
+import { agree, funcWat, wat, compileInProcess as compile } from './util.js'
 
 // The kind the callee's parameter is bound to, as the summary holds it: 'number' or 'number|undefined'.
 const paramKind = (src, fn = 'g', param = 'v') => {

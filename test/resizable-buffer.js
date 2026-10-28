@@ -3,7 +3,7 @@
 // under jz and as plain JS, and the two must agree.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle } from './util.js'
 
@@ -85,9 +85,9 @@ test('a program that resizes buffers still copies, sizes and views as before', (
 test('a program that makes no resizable buffer compiles as it did', () => {
   const src = `export const f = (n) => { const b = new ArrayBuffer(n), u = new Uint8Array(b), d = new DataView(b)
     u[0] = 1; return u.length + d.byteLength + d.getUint8(0) + u.subarray(1).length }`
-  ok(!/__view_bytes|__ab_new/.test(jz.compile(src, { wat: true })), 'no resizable machinery is linked')
-  ok(!/__view_bytes|__ab_new/.test(jz.compile(src.replace('new ArrayBuffer(n)', 'new ArrayBuffer(n, {})'), { wat: true })), 'options naming no maximum make a fixed buffer')
-  ok(/__view_bytes/.test(jz.compile(src.replace('new ArrayBuffer(n)', 'new ArrayBuffer(n, { maxByteLength: 64 })'), { wat: true })), 'a maximum links the view bound')
+  ok(!/__view_bytes|__ab_new/.test(compile(src, { wat: true })), 'no resizable machinery is linked')
+  ok(!/__view_bytes|__ab_new/.test(compile(src.replace('new ArrayBuffer(n)', 'new ArrayBuffer(n, {})'), { wat: true })), 'options naming no maximum make a fixed buffer')
+  ok(/__view_bytes/.test(compile(src.replace('new ArrayBuffer(n)', 'new ArrayBuffer(n, { maxByteLength: 64 })'), { wat: true })), 'a maximum links the view bound')
 })
 
 // ValidateAtomicAccess (ECMA-262 25.4.3.x) reads the length before ToIndex runs

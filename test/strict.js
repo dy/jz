@@ -1,9 +1,10 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import strict, { compile as compileStrict } from '../strict.js'
-import { compile, _setCompileTarget } from '../index.js'
+import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { levels } from './_matrix.js'
+import { setCompileTarget } from '../src/compiler.js'
 
 test('strict export: the canonical subset shares the main compiler pipeline', () => {
   is(strict, compileStrict)
@@ -49,13 +50,13 @@ test('strict export: public optimizer and memory options, maps and repeated call
 test('strict export: compiler targets and frontend state are shared with the main entry', () => {
   const bytes = new Uint8Array([1,2,3])
   let observed
-  const previous = _setCompileTarget((source, options) => { observed = [source, options]; return bytes })
+  const previous = setCompileTarget((source, options) => { observed = [source, options]; return bytes })
   try {
     is(strict('probe', { strict: false, optimize: { simd: false } }), bytes)
     is(observed[0], 'probe')
     is(observed[1].strict, true)
     is(observed[1].noSimd, true)
-  } finally { _setCompileTarget(previous) }
+  } finally { setCompileTarget(previous) }
   const source = 'export function f(x) { return x*x }'
   throws(() => strict(source))
   is(instantiate(compile(source)).exports.f(3), 9)

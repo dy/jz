@@ -395,12 +395,12 @@ if (list) { console.log(selected.join('\n')); process.exit(0) }
 
 // JZ_TEST_TARGET=jz.wasm — run the whole suite against the self-compiled jz.wasm
 // kernel instead of the in-process compiler. Set the target BEFORE importing any
-// test file (they import jz from ../index.js — the same module singleton).
+// test file (their compiles all pass through src/compiler.js — the same module singleton).
 if (onKernelTarget) {
-  const [{ _setCompileTarget }, { compileViaKernel }] = await Promise.all([
-    import('../index.js'), import('./kernel-target.js'),
+  const [{ setCompileTarget }, { compileViaKernel }] = await Promise.all([
+    import('../src/compiler.js'), import('./kernel-target.js'),
   ])
-  _setCompileTarget(compileViaKernel)
+  setCompileTarget(compileViaKernel)
 }
 
 const result = await runFiles(selected.map(name => new URL(`./${name}.js`, import.meta.url).href))

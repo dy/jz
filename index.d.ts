@@ -170,22 +170,33 @@ export interface MemoryFactory {
   (instance: JzInstance): JzMemory | JzScalarMemory
 }
 
+/** Compile and instantiate: `jz(source, opts)` or ``jz`source` ``; `jz.memory()` makes a memory modules share. */
 export interface Jz {
   (code: string, opts?: CompileOptions & { wat?: false }): JzInstance
   (strings: TemplateStringsArray, ...values: unknown[]): JzInstance
-  compile: typeof compile
   memory: MemoryFactory
 }
 
 declare const jz: Jz
 export default jz
-export { jz }
 
 export function compile(code: string, opts: CompileOptions & { wat: true }): string
 export function compile(code: string, opts?: CompileOptions & { wat?: false }): CompiledWasm
 export function compile(code: string, opts?: CompileOptions): CompiledWasm | string
 
+/** Options of `instantiate`. */
+export interface InteropOptions {
+  /** Host modules for the module's `import { fn } from "mod"` declarations. */
+  imports?: Record<string, unknown>
+  /** Memory to link instead of the module's own export. */
+  memory?: WebAssembly.Memory
+  /** WASI stdout/stderr and stdin for `host: 'wasi'` modules. */
+  write?: (fd: number, text: string) => void
+  read?: (fd: number, buffer: Uint8Array) => number | void
+}
+
+/** Instantiate prebuilt jz wasm: marshals values, decodes errors, links WASI when present. */
 export function instantiate(
-  module: WebAssembly.Module | Uint8Array | ArrayBuffer,
-  opts?: CompileOptions,
+  wasm: WebAssembly.Module | Uint8Array | ArrayBuffer,
+  opts?: InteropOptions,
 ): JzInstance

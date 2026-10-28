@@ -6,7 +6,7 @@
 // on its own hot paths (a query view, a dynamic method call).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
 import { firstRefKind, MUTATE_OPS, extractParams, classifyParam, collectParamName, collectParamNames } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze-scans.js'
@@ -117,7 +117,7 @@ test('allocation: a growable private dictionary updates existing slots without r
     const k = keys[n]; d[k] = (d[k] | 0) + 1
     return [used, sum, d[k] | 0]
   }`
-  ok(/call \$__hash_slot_eph\b/.test(jz.compile(source, { wat: true, optimize: { level: 3, watr: false } })), 'the changing key domain uses the growable private probe')
+  ok(/call \$__hash_slot_eph\b/.test(compile(source, { wat: true, optimize: { level: 3, watr: false } })), 'the changing key domain uses the growable private probe')
   const ref = oracle(source.replaceAll('__heap_mark()', '0'))
   for (const level of levels(0, 1, 2, 3, 'size')) for (const compact of [false, true]) {
     const ex = jz(source, { optimize: { level, hashSmallInitCap: 2 }, _compactCollections: compact }).exports

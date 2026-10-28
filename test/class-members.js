@@ -127,7 +127,7 @@ test('class members: a field stored under another class\'s accessor name keeps i
     const w = new V(1, 2), a = new Float32Array([5, 6, 7])
     export const f = () => { const v = new V().fromArray(a, 1); v.min(w); const q = new Q(); q.x = 4; const b = new B().expand(v); return v.x * 100 + v.y * 10 + q.x + b.min.x * 1000 }`
   agrees([['a field under an accessor name', src]])
-  const w = jz.compile(src, { wat: true, optimize: 2 }), at = w.indexOf('(func $f\n'), body = w.slice(at, w.indexOf('\n  )\n', at))
+  const w = compile(src, { wat: true, optimize: 2 }), at = w.indexOf('(func $f\n'), body = w.slice(at, w.indexOf('\n  )\n', at))
   is((body.match(/__hash_set/g) || []).length, 0, 'every store of f is a slot store')
 })
 
@@ -145,7 +145,7 @@ test('class members: a compound store through a spliced receiver keeps its class
       for (let i = 0; i < n; i++) { if (r.hitAt(i - 2, hit) !== null) acc += hit.z }
       return acc }`
   agree(src, 'f', [7], undefined, 'the compound stores land')
-  const w = jz.compile(src, { wat: true, optimize: 2 }), at = w.indexOf('(func $f\n'), body = w.slice(at, w.indexOf('\n  )\n', at))
+  const w = compile(src, { wat: true, optimize: 2 }), at = w.indexOf('(func $f\n'), body = w.slice(at, w.indexOf('\n  )\n', at))
   is((body.match(/dispatch|__hash_set|__dyn_set|__add_slow/g) || []).length, 0, 'the stores of f are slot stores, the adds numeric')
 })
 

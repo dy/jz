@@ -1,7 +1,7 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { onWasi, levels } from './_matrix.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { compile as nativeCompile } from 'watr'
 import { readFileSync, readdirSync } from 'fs'
 import { fileURLToPath } from 'url'
@@ -339,7 +339,7 @@ test('jz: bigint param loop-reassigned through a sink keeps one representation',
   // producer (BigInt(s)), so the parameter stays a raw i64 through its
   // reassignment (n >> 7n) and its ToNumber (Number(n) reads the plan's
   // carrier): no box is allocated in either function.
-  const wat = jz.compile(src, { jzify: true, optimize: false, wat: true })
+  const wat = compile(src, { jzify: true, optimize: false, wat: true })
   const bodyOf = name => {
     const start = wat.indexOf(`(func $${name}`)
     const end = wat.indexOf('\n  (func ', start + 1)

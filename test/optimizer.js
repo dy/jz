@@ -11,7 +11,7 @@
  */
 import test from 'tst'
 import { almost, is, ok, throws } from 'tst/assert.js'
-import jz, { _compileInProcess } from '../index.js'
+import jz from '../index.js'
 import { onKernel, levels } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
 import { fusedRewrite, lowerToInt32Tails, foldLoadCasts } from '../src/optimize/peephole.js'
@@ -40,7 +40,7 @@ import { ringLaps } from '../src/optimize/ring-laps.js'
 import { earlyStores } from '../src/optimize/early-stores.js'
 import { leadChains } from '../src/optimize/lead-chains.js'
 import { issueOrder } from '../src/optimize/issue-order.js'
-import { foldWords, funcWat, run, oracle } from './util.js'
+import { foldWords, funcWat, run, oracle, compileInProcess } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 
@@ -569,7 +569,7 @@ test('LICM: actually fires for invariant cell read in non-call loop', () => {
   // mutates the captured `i` via a heap cell — otherwise inlineLocalLambdas
   // would splice it away and `i` would just be a plain wasm local.
   // Inspect jz output without watr — `coalesceLocals` would rename `$__li<N>`.
-  const wat = jz.compile(`
+  const wat = compile(`
     let sink
     const keep = (f) => (sink = f, f)
     export const main = () => {
@@ -585,7 +585,7 @@ test('LICM: actually fires for invariant cell read in non-call loop', () => {
 })
 
 test('LICM: does not fire when loop contains calls', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       let i = 0
       const inc = () => { i = i + 1; return 0 }
@@ -671,7 +671,7 @@ test('devirtSchemaReads: sparse fields remain specialized past 24 module schemas
   const src = `const rows=[{wanted:7},${Array.from({length:30}, (_,i)=>`{field${i}:${i}}`).join(',')},{padding:1,wanted:9}]
     function get(o){return o.wanted}
     export function f(k){return get(rows[k])}`
-  const w = jz.compile(src, { wat: true, optimize: { level: 1, watr: false } })
+  const w = compile(src, { wat: true, optimize: { level: 1, watr: false } })
   const start = w.indexOf('(func $get\n'), body = w.slice(start, w.indexOf('(func', start + 1))
   ok(start >= 0 && (body.match(/i64\.load/g) || []).length === 2, 'unrelated schemas do not disable specialization')
   ok(!body.includes('br_table'), 'sparse schema ids do not allocate a wide jump table')
@@ -700,7 +700,7 @@ test('devirtSchemaReads: a raw Number slot read by the dispatch canonicalizes it
     for (let i = 0; i < 6; i++) list.push(mk(i, i < 3 ? odd : undefLike))
     export let f = (i) => { const o = list[i % 6], v = o.v
       return (typeof v) + ':' + (v !== v) + ':' + (v === undefined) + ':' + String(v) }`
-  ok(!funcWat(jz.compile(src, { wat: true, optimize: 'speed' }), 'f').includes('$__schema_value'), 'the arms convert the slots they load')
+  ok(!funcWat(compile(src, { wat: true, optimize: 'speed' }), 'f').includes('$__schema_value'), 'the arms convert the slots they load')
   const ref = oracle(src).f
   for (const optimize of levels(0, 2, 3, 'size')) {
     const { f } = run(src, { optimize })
@@ -715,7 +715,7 @@ test('devirtSchemaReads: megamorphic property read switches on schemaId to direc
   const src = `const mk = (k, a, b) => k === 0 ? { t: k, x: a, y: b } : k === 1 ? { t: k, r: a } : { t: k, w: a, h: b }
   const geo = (o, sel) => sel === 0 ? o.x + o.y : sel === 1 ? o.r * 3 : o.w * o.h
   export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += geo(mk(i % 3, i + 1, i + 2), i % 3); return s }`
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const { f } = run(src, { optimize: 'speed' })
   const mk = (k, a, b) => k === 0 ? { t: k, x: a, y: b } : k === 1 ? { t: k, r: a } : { t: k, w: a, h: b }
   const geoJs = (o, sel) => sel === 0 ? o.x + o.y : sel === 1 ? o.r * 3 : o.w * o.h
@@ -750,7 +750,7 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
   export let f = () => { const rows = mkRows(); let acc = 0; for (let i = 0; i < rows.length; i++) acc += geo(rows[i]); return acc }`
   // `geo` is a hot leaf the speed tier would splice into f's loop; the pass
   // under test needs it as its own function, so keep it out of the inliner.
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
   const gAt = w.indexOf('(func $geo')
   ok(gAt >= 0, 'geo compiles as its own function pre-watr')
   const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
@@ -798,7 +798,7 @@ test('schema discriminant hint narrows one guard but preserves alien-schema fall
     const alien = (k) => ({ k: k, z: 41 })
     export const f = (useAlien) => visit(useAlien ? alien(0) : expected(0))
   `
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const at = w.indexOf('(func $visit')
   const visitWat = w.slice(at, w.indexOf('(func', at + 1))
   ok((visitWat.match(/i64\.eq/g) || []).length >= 3, 'each predicted branch keeps an exact runtime SID guard')
@@ -828,7 +828,7 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   const geo = (o) => { const s = o.t; return s === 0 ? o.x * 2 + o.y : s === 1 ? ${body} : o.w * o.h }
   export let f = () => { const rows = mkRows(); let acc = 0; for (let i = 0; i < rows.length; i++) acc += geo(rows[i]); return acc }`
   const src = mkSrc('o.r * (o.r + 3)')
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
   const gAt = w.indexOf('(func $geo')
   const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
   // (the memo local may share a slot with another i64 temp once locals coalesce:
@@ -847,7 +847,7 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   for (let i = 0; i < rows.length; i++) ref += geoJs(rows[i])
   const { f } = run(src, { optimize: 'speed' })
   is(f(), ref, 'memoized read bit-matches the generic path')
-  const size = jz.compile(src, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
+  const size = compile(src, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
   const at = size.indexOf('(func $geo'), geoSize = size.slice(at, size.indexOf('(func', at + 1))
   ok(/\$__dsrm\d+/.test(geoSize), 'size mode retains duplicate-read reuse')
   ok(!/\$__dsr[os]\d+/.test(geoSize), 'size mode adds no schema dispatch arms or receiver cache')
@@ -938,7 +938,7 @@ test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct
     (x, k) => (k - x) | 0,
   ]
   export let f = (sel, x, k) => ops[sel & 3](x, k)`
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   ok(/br_table/.test(w), 'indexed const-fn-array call dispatches via br_table')
   ok(/call_indirect/.test(w), 'the generic call_indirect stays as the default arm')
   const { f } = run(src, { optimize: 'speed' })
@@ -974,7 +974,7 @@ test('hoistIndexedConstLiterals: `[consts][i]` reads one shared data segment —
     let c3 = [2, 4, 2, 9][(k + 1) & 3]
     return c1 * 100 + c2 * 10 + c3
   }`
-  const w = jz.compile(src, { wat: true, optimize: 3 })
+  const w = compile(src, { wat: true, optimize: 3 })
   ok(!/call \$__alloc\b/.test(w.split(/(?=\(func \$)/).find(p => p.startsWith('(func $f')) || 'call $__alloc'),
     'no allocation in the reading function')
   const { f } = run(src, { optimize: 3 })
@@ -1052,7 +1052,7 @@ test('rotateLoops: semantics preserved across continue / break / nested / match-
 test('arrayElemValType: typed-array .map elides __to_num in callback', () => {
   // Float64Array elements have known type NUMBER → __to_num coercion can be
   // elided in the inlined .map callback param.
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       const a = new Float64Array([1, 2, 3, 4])
       const b = a.map(x => x * 2)
@@ -1106,7 +1106,7 @@ test('escape analysis: local object property reads scalarize literal', () => {
       return obj.a + obj["b"]
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(!/\(call \$__alloc_hdr\b/.test(wat), 'non-escaping object literal should not allocate')
   is(run(src).main(4), 9)
 })
@@ -1122,7 +1122,7 @@ test('escape analysis: monotonically-extended object scalarizes', () => {
       return o.c
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(!/\(call \$__alloc_hdr\b/.test(wat), 'extended non-escaping object should not allocate')
   is(run(src).main(4), 9)
 })
@@ -1138,7 +1138,7 @@ test('escape analysis: extension field read before write yields undefined', () =
       return o.b
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(!/\(call \$__alloc_hdr\b/.test(wat), 'conditionally-extended object should not allocate')
   is(run(src).main(1), 5)
   is(run(src).main(0), undefined)  // unwritten extension field reads undefined
@@ -1152,7 +1152,7 @@ test('escape analysis: bracket-key extension scalarizes', () => {
       return o.x + o['y']
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(!/\(call \$__alloc_hdr\b/.test(wat), 'bracket-key-extended object should not allocate')
   is(run(src).main(1), 8)
 })
@@ -1160,7 +1160,7 @@ test('escape analysis: bracket-key extension scalarizes', () => {
 test('escape analysis: extended object that escapes still heap allocates', () => {
   // Inspect jz output without watr — `inlineOnce`+`treeshake` may erase the
   // `__alloc_hdr` import once the allocating helper has been fused inline.
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (x) => {
       const obj = { a: x }
       obj.b = x + 1
@@ -1171,7 +1171,7 @@ test('escape analysis: extended object that escapes still heap allocates', () =>
 })
 
 test('escape analysis: returned object still heap allocates', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (x) => {
       const obj = { a: x }
       return obj
@@ -1186,7 +1186,7 @@ test('escape analysis: call-passed object still heap allocates', () => {
   // disappears, and scalarizing obj becomes correct (no escape). The callee
   // uses the object whole: one that only read fields would take them as lanes
   // (plan/lanes.js) and the object would rightly dissolve.
-  const wat = jz.compile(`
+  const wat = compile(`
     const get = (obj) => obj
     export const main = (x) => {
       const obj = { a: x }
@@ -1216,7 +1216,7 @@ test('inline: large multi-caller leaf folds at speed (transitive candidacy + exp
   if (!onWasi()) is(jz(SRC, { optimize: { level: 'speed' } }).exports.f(50),
                     jz(SRC, { optimize: 2 }).exports.f(50), 'speed == level 2 (bit-exact)')
   if (onKernel()) return  // call-shape is a host-codegen assertion; bit-exactness above is portable
-  const calls = (opt) => (jz.compile(SRC, { wat: true, optimize: opt }).match(/call \$mix/g) || []).length
+  const calls = (opt) => (compile(SRC, { wat: true, optimize: opt }).match(/call \$mix/g) || []).length
   is(calls({ level: 'speed' }), 0, 'speed: transitive+hoist fully inlines the multi-caller leaf')
   ok(calls(2) >= 1, 'level 2: strict policy keeps the multi-caller leaf outlined for tier-up')
 })
@@ -1274,7 +1274,7 @@ test('inline: unreachable callers do not consume the duplication budget', () => 
     for (const n of [0, 1, 4, 9]) is(f(n), n * n + 2 * n, `nested loop, n=${n}, O${optimize}`)
   }
   if (onKernel()) return
-  ok(!/call \$__alloc/.test(jz.compile(src, { optimize: 'speed', wat: true })), 'the live setter inlines and the receiver scalarizes')
+  ok(!/call \$__alloc/.test(compile(src, { optimize: 'speed', wat: true })), 'the live setter inlines and the receiver scalarizes')
 })
 
 test('inline: a method\'s synthesized dispatcher and binder are no sites of it', () => {
@@ -1349,7 +1349,7 @@ test('inline: expression-position hoist preserves evaluation order of side effec
   // When everything preceding is pure / hoistable, the candidate DOES fold (0 calls) and order holds.
   const ALL_CAND = NONCAND_FIRST.replace('let a = () => { let s = 0; for (let i = 0; i < 1; i = i + 1) s = s + 1; log[n] = 1', 'let a = () => { log[n] = 1')
   is(order(ALL_CAND), 610000123, 'all-candidate chain: order a,helper,b preserved')
-  if (!onKernel()) is((jz.compile(ALL_CAND, { wat: true, optimize: { level: 'speed' } }).match(/call \$helper/g) || []).length, 0, 'helper still inlines when nothing effectful precedes it')
+  if (!onKernel()) is((compile(ALL_CAND, { wat: true, optimize: { level: 'speed' } }).match(/call \$helper/g) || []).length, 0, 'helper still inlines when nothing effectful precedes it')
 
   // A READ before the call sees the value before the callee's store: `s.v * 1000 + bump(s)`
   // reads 99, then bump stores 100 (the hoist would have read 100). A callee that stores
@@ -1368,7 +1368,7 @@ test('inline: expression-position hoist preserves evaluation order of side effec
 })
 
 test('known numeric coercions elide __to_num', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (buf) => {
       const a = new Float64Array(buf)
       return Number(a[0]) + +(a[1] + 1) + isNaN(a[2]) + isFinite(a[3])
@@ -1385,7 +1385,7 @@ test('cross-call param narrowing: local typed-array elem arg narrows callee para
   // the param stays f64, `1 << n` coerces via __to_num, and that single call
   // transitively links the ENTIRE string↔number stdlib (__ftoa/__dec_to_f64/…)
   // — ~8 KB of otherwise-dead code. Pins the local-typed-elem overlay fix.
-  const wat = jz.compile(`
+  const wat = compile(`
     const countN = (n) => (1 << n) - 1
     export const main = () => {
       const sizes = new Int32Array(20)
@@ -1501,7 +1501,7 @@ test('shared optimizer: eq-zero keeps dense-switch lowering and non-switch value
 })
 
 test('unknown coercions still use __to_num', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (x) => Number(x) + +x + isNaN(x) + isFinite(x)
   `, { wat: true })
   ok(/\(call \$__to_num\b/.test(wat))
@@ -1510,7 +1510,7 @@ test('unknown coercions still use __to_num', () => {
 test('dynamic prop reads reuse receiver type tag', () => {
   if (onWasi()) return  // wasi: external object WAT name differs
   if (belowOpt(2)) return  // receiver-tag CSE/hoisting runs at optimize >= 2
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (o) => {
       return o.a + o.b + o.c
     }
@@ -1532,7 +1532,7 @@ test('monomorphic schema-slot devirtualization: singleton-schema dot-read compil
   // optimize:0 keeps the emitted shape stable regardless of the outer test run's
   // JZ_TEST_OPTIMIZE leg — this pins module/core.js's emit-time lever itself, not
   // a watr optimizer pass.
-  const wat = jz.compile(`
+  const wat = compile(`
     const mk = () => ({ a: 1, b: 2, c: 3 })
     export const build = () => mk()
     export const getA = (o) => o.a
@@ -1559,7 +1559,7 @@ test('polymorphic object prop reads use typed object dispatch', () => {
     export const hx = (w) => { const o = w == 0 ? left() : right(); return o.x }
     export const hy = (w) => { const o = w == 0 ? left() : right(); return o.y }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(/\(i32\.const 3\)[\s\S]*?\(call \$__dyn_get_expr_t/.test(wat), 'expected OBJECT-typed dynamic slot dispatch')
   const { hx, hy } = run(src)
   is(hx(0), 11)
@@ -1580,14 +1580,14 @@ test('small const-count for-loop unrolls', () => {
       return acc | 0
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(!/\(loop\b/.test(wat), 'expected small constant loop to unroll')
   const { main } = run(src)
   is(main(), 30)
 })
 
 test('small const-count for-loop respects optimize:false', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       let acc = 0
       for (let s = 0; s < 4; s++) acc += s
@@ -1598,7 +1598,7 @@ test('small const-count for-loop respects optimize:false', () => {
 })
 
 test('small const-count for-loop does not unroll with break', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       let acc = 0
       for (let s = 0; s < 4; s++) {
@@ -1624,14 +1624,14 @@ test('small const-count for-loop keeps outer nested loops compact', () => {
     }
   `
   // Pin level 2 — opt:3 unrolls aggressively, which this asserts is gated off.
-  const wat = jz.compile(src, { wat: true, optimize: 2 })
+  const wat = compile(src, { wat: true, optimize: 2 })
   ok(/\(loop\b/.test(wat), 'outer nested loops should not fully unroll')
   const { main } = run(src, { optimize: 2 })
   is(main(), 288)
 })
 
 test('nested small const-count typed-array loops auto-unroll', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       const a = new Float64Array(16)
       const b = new Float64Array(16)
@@ -1804,7 +1804,7 @@ test('fixed Float64Array locals scalar-replace static slots', () => {
       return a[1] + a.length
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
   const mainWat = wat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || ''
   ok(!/\$__alloc\b/.test(mainWat), 'local fixed Float64Array should not allocate')
   ok(!/f64\.(?:load|store)\b/.test(mainWat), 'local fixed Float64Array slots should stay in locals')
@@ -1857,7 +1857,7 @@ test('fixed Float64Array internal params scalar-replace unrolled slots', () => {
       return out[0]
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
   const useWat = wat.match(/\(func \$use[\s\S]*?^  \)/m)?.[0] || ''
   is((useWat.match(/\(loop\b/g) || []).length, 0)
   is((useWat.match(/f64\.load\b/g) || []).length, 32)
@@ -1917,7 +1917,7 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   // Inspect jz's sourceInline + cross-function scalar replacement. Run watr's
   // inlining out — otherwise `inlineOnce` reshapes `$main` and confuses the
   // function-boundary regex below.
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   const mainWat = wat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || ''
   ok(!/\(call \$multiplyMany\b/.test(mainWat), 'fixed typed-array callee should inline into exported caller')
   ok(!/\$__alloc\b/.test(mainWat), 'cross-function scalar replacement should remove fixed typed-array allocations')
@@ -1936,7 +1936,7 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   // faster than the pack/extract SIMD form, beating rust-wasm. The reassociation (invariant
   // terms summed first) is ULP-level, so it is gated to speed; the level-2 path above keeps
   // the bit-exact f64x2 dot pairs.
-  const speedWat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false } })
+  const speedWat = compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false } })
   ok(/\$__rinv_/.test(speedWat), 'speed tier hoists loop-invariant dot partials into $__rinv locals')
   ok(!/f64x2\./.test(speedWat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || speedWat), 'hoisted dots drop the f64x2 pack/extract')
   const speed = run(src, { optimize: 'speed' })
@@ -1956,7 +1956,7 @@ test('fixed integer typed-array locals scalar-replace with element coercion', ()
       return lut[0] + lut[1] + lut[2] + lut[3] + tape[0] + tape[1] + tape[2]
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false, sourceInline: false } })
   const mainWat = wat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || ''
   ok(!/\$__alloc\b/.test(mainWat), 'local fixed integer typed arrays should not allocate')
   ok(!/i32\.(?:load|store)\b/.test(mainWat), 'local fixed integer typed-array slots should stay in locals')
@@ -1979,13 +1979,13 @@ test('escaping integer typed array keeps its allocation (no unsound mirror)', ()
     }
   `
   // (static placement, test/static-locals.js, would make it a static block: the heap path is pinned here)
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false, sourceInline: false, staticLocals: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false, sourceInline: false, staticLocals: false } })
   ok(/\$__alloc_hdr_n\b/.test(wat), 'escaping integer typed array must stay heap-allocated')
   is(run(src).main(), 6)
 })
 
 test('nested small const-count for-loop unroll is opt-in', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       let acc = 0
       for (let r = 0; r < 4; r++) {
@@ -2004,7 +2004,7 @@ test('typed-array address fusion: arr[i + k] uses one base plus offsets', () => 
   // bare loads the fusion peephole matches survive Root F's checked-by-default
   // typed indexing (unprovable single accesses now emit branchless checked selects,
   // which have no shared-base contract).
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (idx) => {
       const a = new Float64Array(64)
       const i = idx & 31
@@ -2032,7 +2032,7 @@ test('typed-array address fusion: arr[i + k] uses one base plus offsets', () => 
 })
 
 test('known array at reads header length directly', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       const a = [10, 20, 30]
       return a.at(-1)
@@ -2050,7 +2050,7 @@ test('known array at reads header length directly', () => {
 })
 
 test('array shift stays O(1)', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       const a = []
       for (let i = 0; i < 16; i++) a.push(i)
@@ -2068,7 +2068,7 @@ test('array map/filter reuse receiver pointer for sizing and iteration', () => {
   // Float literals keep the array ARRAY-shaped (int-only would auto-promote
   // to TYPED via plan.js's promoteIntArrayLiterals and route through .typed:map
   // / .typed:filter, which DO call $__len).
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = () => {
       const a = [1.5, 2.5, 3.5, 4.5]
       const b = a.map(x => x + 1)
@@ -2090,7 +2090,7 @@ test('array map/filter reuse receiver pointer for sizing and iteration', () => {
 })
 
 test('known array numeric index skips generic array tag dispatch', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (a) => {
       if (Array.isArray(a)) return a[0]
       return 0
@@ -2115,7 +2115,7 @@ test('known array numeric index skips generic array tag dispatch', () => {
 })
 
 test('known array spread skips string/typed item dispatch', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     const copy = (a) => [...a]
     export const main = () => copy([1, 2, 3])[1]
   `, { wat: true, optimize: { watr: false, sourceInline: false } })
@@ -2141,7 +2141,7 @@ test('sourceInline: early void returns preserve guards and argument effects', ()
   const { main } = run(src, { optimize: 3 })
   is(main(), [5, 4])
   is(main(), [10, 8])
-  if (!belowOpt(2)) ok(!/\(call \$update\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+  if (!belowOpt(2)) ok(!/\(call \$update\b/.test(compile(src, { wat: true, optimize: 3 })))
 })
 
 test('sourceInline: early value returns join the caller loop without evaluating the other arm', () => {
@@ -2168,7 +2168,7 @@ test('sourceInline: early value returns join the caller loop without evaluating 
     is(main(1), [0, 12], `${optimize}: only early return`)
     ok(Object.is(zero(1), -0), `${optimize}: returned signed zero`)
   }
-  if (!belowOpt(3)) ok(!/\(call \$choose\b/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'early value helper inlines at its loop call sites')
+  if (!belowOpt(3)) ok(!/\(call \$choose\b/.test(compile(src, { wat: true, optimize: 'speed' })), 'early value helper inlines at its loop call sites')
 })
 
 test('sourceInline: early boolean results keep their identity in locals and mixed returns', () => {
@@ -2243,7 +2243,7 @@ test('sourceInline: small loop helpers inline across several speed-tier sites', 
   is(main(-3), 0)
   is(main(2), 19)
   is(main(3), 31)
-  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(compile(src, { wat: true, optimize: 3 })))
 })
 
 test('sourceInline: small helpers join existing exported loops', () => {
@@ -2255,7 +2255,7 @@ test('sourceInline: small helpers join existing exported loops', () => {
   is(main(0), 0)
   is(main(4), 64)
   is(main(-1), 0)
-  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(compile(src, { wat: true, optimize: 3 })))
 })
 
 test('sourceInline: leaf substitution retains reads around coercion and later arguments', () => {
@@ -2319,7 +2319,7 @@ test('sourceInline: mutable parameters retain private storage and argument order
   const { main } = run(src, { optimize: 3 })
   is(main(), [6, 3, 0, 3, 1, 21])
   is(main(), [6, 3, 0, 3, 1, 2121])
-  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(jz.compile(src, { wat: true, optimize: 3 })))
+  if (!belowOpt(3)) ok(!/\(call \$count\b/.test(compile(src, { wat: true, optimize: 3 })))
 })
 
 test('sourceInline: expression flattening preserves writable parameters and locals', () => {
@@ -2361,7 +2361,7 @@ test('sourceInline: exported loop budget includes expanded callees', () => {
   is(f(1), [29, 0, 0])
   is(f(1024), [29, 4493, 4020029])
   if (!belowOpt(3)) {
-    const wat = jz.compile(src, { wat: true, optimize: { level: 3, watr: false } })
+    const wat = compile(src, { wat: true, optimize: { level: 3, watr: false } })
     ok(/\(call \$(?:fill|repeat)\b/.test(funcWat(wat, 'f')), 'bulk loop remains callable for tier-up')
   }
 })
@@ -2378,7 +2378,7 @@ test('sourceInline: inlines returnless hot internal helper calls', () => {
       return a[3] | 0
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: 3 })
+  const wat = compile(src, { wat: true, optimize: 3 })
   ok(!/\(call \$hot\b/.test(wat), 'expected hot helper call to be inlined')
   ok(!/\(func \$hot\b/.test(wat), 'expected inlined helper to treeshake away')
   const { main } = run(src, { optimize: 3 })
@@ -2386,7 +2386,7 @@ test('sourceInline: inlines returnless hot internal helper calls', () => {
 })
 
 test('sourceInline: enabled by default at level 2 — inlines void hot helper', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     const hot = (a, n) => {
       for (let i = 0; i < n; i++) a[i] = i + 1
     }
@@ -2415,7 +2415,7 @@ test('sourceInline: trailing-return helper inlines into `let X = call(...)` init
       return runKernel(a)
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(!/\(call \$sum\b/.test(wat), 'expected trailing-return sum to be inlined at expr-position call')
   const { main } = run(src)
   is(main(), 10)
@@ -2436,7 +2436,7 @@ test('sourceInline: trailing-return helper inlines into `X = call(...)` assignme
       return runKernel(a)
     }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(!/\(call \$acc\b/.test(wat), 'expected trailing-return acc to be inlined at assignment-rhs')
   const { main } = run(src)
   is(main(), 61)
@@ -2460,7 +2460,7 @@ test('sourceInline: nested calls flatten — lerp(grad(a), grad(b), t) fully inl
     const run = (perm) => { let s = 0.0; for (let i = 0; i < 256; i++) s = s + perlin(perm, i * 0.1, i * 0.2); return s }
     export const main = () => { const perm = new Int32Array(512); for (let i = 0; i < 512; i++) perm[i] = (i * 31) & 255; return run(perm) }
   `
-  const wat = jz.compile(src, { wat: true })
+  const wat = compile(src, { wat: true })
   ok(!/\(call \$grad\b/.test(wat) && !/\(call \$lerp\b/.test(wat), 'nested grad/lerp calls fully inlined (perlin flattens)')
   ok(!/\(func \$grad\b/.test(wat) && !/\(func \$lerp\b/.test(wat), 'inlined leaves treeshake away')
   // Bit-exact: inlining + temp-binding must not change the result.
@@ -2482,7 +2482,7 @@ test('sourceInline: trailing-return helper inlines into indexed `out[i] = call(.
       return out[1]
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   const fillFn = wat.match(/\(func \$fill[\s\S]*?\n  \)/)?.[0] || ''
   ok(!/call \$beat/.test(fillFn), 'expected beat inlined into fill loop')
   const { beat, main } = run(src)
@@ -2503,7 +2503,7 @@ test('sourceInline: does NOT inline ordinary hot loop into exported entry', () =
   // jz's sourceInline declines (skip-into-export rule); but watr's `inlineOnce`
   // is single-callsite based and would happily inline `hot` itself. Disable
   // watr to verify jz's own decision.
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   ok(/\(call \$hot\b/.test(wat), 'expected call kept inside exported entry (skip-into-export rule)')
   const { main } = run(src)
   is(main(), 10)
@@ -2533,7 +2533,7 @@ test('sourceInline: does NOT inline nested typed-array kernel unless all typed a
     }
     export const main = () => runKernel()
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   ok(/\(func \$cascade\b/.test(wat), 'nested kernel should stay callable')
   ok(/\(call \$cascade\b/.test(wat), 'nested kernel call should be preserved')
   const { main } = run(src)
@@ -2541,7 +2541,7 @@ test('sourceInline: does NOT inline nested typed-array kernel unless all typed a
 })
 
 test('sourceInline: disabled by optimize:false', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     const hot = (a, n) => {
       for (let i = 0; i < n; i++) a[i] = i + 1
     }
@@ -2555,7 +2555,7 @@ test('sourceInline: disabled by optimize:false', () => {
 })
 
 test('typed-array assignment statement does not materialize assigned value', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (x) => {
       const a = new Uint32Array(1)
       a[0] = x | 0
@@ -2588,7 +2588,7 @@ test('byte transform `out[i] = table[in[j]]` stores i32 directly — no f64 roun
       return out[3] | 0
     }
   `
-  const wat = jz.compile(SRC, { wat: true })
+  const wat = compile(SRC, { wat: true })
   // xform inlines into main$exp; the whole user function (transform + fills) is integer-only.
   const start = wat.indexOf('(func $main')
   const body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
@@ -2617,7 +2617,7 @@ test('integer === integer compares in i32 — no f64.eq widen', () => {
   // eqcount is called twice with distinct arguments → stays its own function (value numbering
   // computes one call for two identical ones, and watr inlines a function with one caller).
   // (words folded: the guarded ToInt32 of the counter has an `else` of its own)
-  const wat = foldWords(jz.compile(SRC, { wat: true }))
+  const wat = foldWords(compile(SRC, { wat: true }))
   const start = wat.indexOf('(func $eqcount')
   let body = wat.slice(start, wat.indexOf('\n  (func ', start + 10) + 1 || undefined)
   // Root F versions the param-bound loops: the cold checked twin legitimately
@@ -2656,12 +2656,12 @@ test('if-conversion: `if (cond) x = cheapPure` → branchless select (speed tier
   // Root F versioning wraps the loop in a guard `if` with a cold checked twin —
   // the if-conversion contract holds within the FAST arm.
   const fastArm = (fn) => fn.includes('(else') ? fn.slice(0, fn.indexOf('(else')) : fn
-  const fn = fastArm(grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })))
+  const fn = fastArm(grab(compile(SRC, { wat: true, optimize: { level: 'speed' } })))
   ok(/\bselect\b/.test(fn), 'guarded update lowered to select at speed tier')
   is(/\(if\b\s*$|\(if\s+\(/m.test(fn.slice(fn.indexOf('(loop'))), false, 'no branch left for the guarded update')
   // Default tier keeps the branch (select is speed-only). Pin level 2 so
   // JZ_TEST_OPTIMIZE=3 can't flip this half to speed (cf. test/perf.js threshold pin).
-  const fnD = grab(jz.compile(SRC, { wat: true, optimize: 2 }))
+  const fnD = grab(compile(SRC, { wat: true, optimize: 2 }))
   ok(/\(if\b/.test(fnD), 'default tier keeps the branch (select is a speed-tier trade)')
   // Bit-exact regardless of tier.
   const ref = (() => { const xs = []; let s = 12345 | 0; for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; xs[i] = (s >>> 8) & 0x3ff }
@@ -2690,9 +2690,9 @@ test('if→select: load-bearing condition + postfix x++ → branchless select (h
     }
   `
   const grab = (wat) => wat.slice(wat.indexOf('(func $pick'), wat.indexOf('\n  (func ', wat.indexOf('(func $pick') + 10) + 1 || undefined)
-  const fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
+  const fn = grab(compile(SRC, { wat: true, optimize: { level: 'speed' } }))
   ok(/\bselect\b/.test(fn), 'load-bearing child-pick lowered to select at speed tier')
-  const fnD = grab(jz.compile(SRC, { wat: true, optimize: 2 }))
+  const fnD = grab(compile(SRC, { wat: true, optimize: 2 }))
   ok(/\(if\b/.test(fnD), 'default tier keeps the branch (select is a speed-tier trade)')
   const ref = (() => { const a = []; let s = 1 | 0; for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; a[i] = (s >>> 8) & 0xff }
     const pick = (n) => { let hits = 0; for (let i = 0; i < n - 1; i++) { let c = i; if (a[c] < a[c + 1]) c++; hits = hits + c } return hits }; return (pick(64) + pick(63)) | 0 })()
@@ -2719,7 +2719,7 @@ test('if→select: a condition that MUTATES a var the value arm reads is NOT con
   const grab = (wat) => wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 4) + 1 || undefined)
   // fast arm only: the versioned checked twin reads via branchless selects — the
   // reorder-safety contract is about the guarded UPDATE in the hot loop
-  let fn = grab(jz.compile(SRC, { wat: true, optimize: { level: 'speed' } }))
+  let fn = grab(compile(SRC, { wat: true, optimize: { level: 'speed' } }))
   if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
   is(/\bselect\b/.test(fn), false, 'side-effecting condition keeps the branch (not folded to select)')
   const ref = (() => { const a = []; for (let i = 0; i < 32; i++) a[i] = (i * 7) & 31
@@ -2740,7 +2740,7 @@ test('if→select: f64 ternary with pure arms+cond → branchless select (sign/c
       return (s * 1000) | 0
     }
   `
-  const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })   // grad (small leaf) inlines into main
+  const wat = compile(SRC, { wat: true, optimize: { level: 'speed' } })   // grad (small leaf) inlines into main
   const m = wat.slice(wat.indexOf('(func $main'), wat.indexOf('\n  (func ', wat.indexOf('(func $main') + 10) + 1 || undefined)
   ok(/\bselect\b/.test(m), 'gradient sign-select lowered to branchless select')
   is(/\(if \(result f64\)/.test(m), false, 'no f64 conditional branch left')
@@ -2771,8 +2771,8 @@ test('Math.floor(bounded)|0 → one exact word, no +∞ guard', () => {
     const f = (buf, out, n) => { for (let i = 0; i < n; i++) out[i] = (Math.floor(buf[i] * 0.5) | 0) & 255 }
     export const main = () => { const buf = new Uint8Array(8), out = new Int32Array(8); for (let i = 0; i < 8; i++) buf[i] = i * 31; f(buf, out, 8); f(buf, out, 8); return out[3] | 0 }
   `
-  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(jz.compile(SRC, { wat: true, optimize: 2 })), 'the default tier: the i64 truncation, wrapped')
-  const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })
+  ok(/i32\.wrap_i64\s*\(i64\.trunc_sat_f64_s/.test(compile(SRC, { wat: true, optimize: 2 })), 'the default tier: the i64 truncation, wrapped')
+  const wat = compile(SRC, { wat: true, optimize: { level: 'speed' } })
   ok(/6755399441055744/.test(wat) && !/trunc_sat_f64_s/.test(wat), 'the speed tier: the add, no truncation')
   is(/i32\.trunc_sat_f64_s/.test(wat), false, 'no bare i32 trunc_sat for the bounded floor')
   is(/f64\.const inf/.test(wat), false, 'no +∞ guard for the bounded floor')
@@ -2924,7 +2924,7 @@ test('fractional recurrence IR uses trip bounds or finite steps and rejects nume
 test('vectorized single-caller helper still participates in inlineOnce', () => {
   const src = `const map=(a,o)=>{for(let i=0;i<64;i++)o[i]=a[i]+1}
     export let f=()=>{const a=new Float64Array(64),o=new Float64Array(64);map(a,o);return o[3]}`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   ok(/v128/.test(wat), 'helper loop vectorizes')
   ok(!/\(func \$map\b|call \$map\b/.test(wat), 'cosmetic SIMD markers do not pin an internal helper')
   is(run(src, { optimize: 'speed' }).f(), 1, 'inlined SIMD helper stays exact')
@@ -2945,7 +2945,7 @@ test('param-distinctness LICM: invariant load from a proven-distinct param hoist
       return (dst[255] * 1000) | 0
     }
   `
-  const wat = jz.compile(SRC, { wat: true, optimize: { level: 'speed' } })
+  const wat = compile(SRC, { wat: true, optimize: { level: 'speed' } })
   let fn = wat.slice(wat.indexOf('(func $proc'), wat.indexOf('\n  (func ', wat.indexOf('(func $proc') + 10) + 1 || undefined)
   // fast arm only: the versioned checked twin keeps in-loop checked loads by design
   if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
@@ -2986,7 +2986,7 @@ test('param-distinctness: a function returning what it allocates hands each call
       return (dst[255] * 1000) | 0
     }`
   const hoisted = (src) => {
-    const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+    const wat = compile(src, { wat: true, optimize: 'speed' })
     let fn = wat.slice(wat.indexOf('(func $proc'), wat.indexOf('\n  (func ', wat.indexOf('(func $proc') + 10) + 1 || undefined)
     if (fn.includes('(else')) fn = fn.slice(0, fn.indexOf('(else'))
     return !/f64\.load/.test(fn.slice(fn.indexOf('(loop')))
@@ -3050,7 +3050,7 @@ test('charCodeAt: returns i32 — no f64 widen/truncate of the char code itself'
   // so it's not reproduced here). The trade is one `i64.trunc_sat_f64_s` at
   // the final `n|0` (was 0) instead of a same-signed local the whole way —
   // `c` itself, this test's actual subject, is unaffected.
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (s) => {
       let n = 0
       for (let i = 0; i < s.length; i++) {
@@ -3110,7 +3110,7 @@ test('charCodeAt: digit parse stays exact past i32 range without a truncating si
 })
 
 test('single-char string index equality skips materialized char string', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (x) => x[0] === '$'
   `, { wat: true, optimize: { watr: false } })
   const mainBody = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
@@ -3133,7 +3133,7 @@ test('single-char string index equality keeps array fallback semantics', () => {
 })
 
 test('single-char index equality: non-literal int index (loop variable)', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export const main = (s) => {
       let i = 0
       while (i < s.length && s[i] === ' ') i++
@@ -3158,10 +3158,10 @@ test('single-char index equality: the unit read answers alone, inline, for every
     }`
   is(run(src).main(), oracle(src).main())
   // `at` inlines into main; no other code of the module reads a string
-  const body = jz.compile(src, { wat: true, optimize: { level: 2, watr: false } })
+  const body = compile(src, { wat: true, optimize: { level: 2, watr: false } })
   is((body.match(/call \$__char_at\b/g) || []).length, 1, 'only the NUL literal reads through __char_at')
   is((body.match(/call \$__str_length\b/g) || []).length, 1, 'only the NUL literal tests the length')
-  const lean = jz.compile(src, { wat: true, optimize: { level: 'size', watr: false } })
+  const lean = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
   is((lean.match(/call \$__char_at\b/g) || []).length, 4, 'the size tier reads each unit by one call')
   is((lean.match(/call \$__str_length\b/g) || []).length, 1, 'the size tier tests a length for NUL alone')
   is(run(src, { optimize: 'size' }).main(), oracle(src).main(), 'the size tier agrees')
@@ -3290,8 +3290,8 @@ test('opts.optimize: false produces correct output (semantics preserved)', () =>
 
 test('opts.optimize: size preset shrinks the scalar loop', () => {
   const src = `export const main = (n) => { let s = 0; for (let i = 0; i < n; i++) s = s + i*2; return s | 0 }`
-  const off = jz.compile(src, { optimize: false })
-  const on = jz.compile(src, { optimize: 'size' })
+  const off = compile(src, { optimize: false })
+  const on = compile(src, { optimize: 'size' })
   ok(off.length >= on.length, `expected optimize:false (${off.length}) >= optimize:size (${on.length})`)
 })
 
@@ -3301,8 +3301,8 @@ test('opts.optimize: object override gates per-pass', () => {
     const dead = () => 42
     export const main = (n) => n + 1
   `
-  const sized = jz.compile(src, { optimize: { treeshake: false } })
-  const shaken = jz.compile(src, { optimize: true })
+  const sized = compile(src, { optimize: { treeshake: false } })
+  const shaken = compile(src, { optimize: true })
   ok(sized.length >= shaken.length, `treeshake:false (${sized.length}) ≥ treeshake:true (${shaken.length})`)
 })
 
@@ -3364,7 +3364,7 @@ test('inliner: expr-bodied arrow with arg-forwarding candidate', () => {
 
 const compileMain = (src, passes = {}) => {
   // Representation pins name the original locals, before slot allocation.
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, ...passes } })
+  const wat = compile(src, { wat: true, optimize: { watr: false, coalesceLocals: false, ...passes } })
   return wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
 }
 
@@ -3790,7 +3790,7 @@ test('captureIntCertain: intCertain propagates across capture (Math.floor elides
     }
     export const main = (n) => make(n)()
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   // Find the closure body (JZ uses U+E000 as identifier prefix).
   const closRe = /\(func \$\u{e000}closure[0-9]+[\s\S]*?\n  \)/u
   const body = wat.match(closRe)?.[0] || ''
@@ -3812,7 +3812,7 @@ test('captureIntCertain: intCertain skips __to_num in arithmetic on captures', (
     }
     export const main = (n) => make(n)()
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   const closRe = /\(func \$\u{e000}closure[0-9]+[\s\S]*?\n  \)/u
   const body = wat.match(closRe)?.[0] || ''
   ok(body, 'closure body emitted')
@@ -3833,7 +3833,7 @@ test('captureIntCertain: float capture does NOT enable elision', () => {
     }
     export const main = (n) => make(n)()
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   const closRe = /\(func \$\u{e000}closure[0-9]+[\s\S]*?\n  \)/u
   const body = wat.match(closRe)?.[0] || ''
   ok(body, 'closure body emitted')
@@ -3853,7 +3853,7 @@ test('schemaSlotIntCertain: Math.floor elides on intCertain slot', () => {
       return Math.floor(p.x) + Math.floor(p.y)
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   const body = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
   ok(body, 'main body emitted')
   ok(!body.includes('f64.floor'), 'Math.floor elided on intCertain slot reads')
@@ -3868,7 +3868,7 @@ test('schemaSlotIntCertain: float slot keeps f64.floor', () => {
       return Math.floor(p.x)
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   const body = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
   ok(body, 'main body emitted')
   ok(body.includes('f64.floor'), 'non-int slot retains f64.floor')
@@ -3888,7 +3888,7 @@ test('schemaSlotIntCertain: later non-int assign poisons slot', () => {
     }
     export const main = (n) => Math.floor(make(n).x)
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   const body = wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
   ok(body, 'main body emitted')
   // Verify Math.floor is emitted *somewhere* in the produced module — could be
@@ -3908,7 +3908,7 @@ test('schemaSlotIntCertain: int slot via local intCertain binding', () => {
       return Math.floor(p.v)
     }
   `
-  const wat = jz.compile(src, { wat: true, optimize: { watr: false } })
+  const wat = compile(src, { wat: true, optimize: { watr: false } })
   // Math.floor must be elided anywhere it would have been emitted for p.v.
   ok(!wat.includes('f64.floor'), 'Math.floor elided via local→slot intCertain transit')
   is(run(src).main(5.9), 5)
@@ -4016,7 +4016,7 @@ test('bounded loop copy: Number export-param bound compares in i32, trunc hoiste
 })
 
 test('narrowLoopBound: unlocks lane-vectorizer for the naive (ptr, n) DSP shape', () => {
-  const wat = jz.compile(
+  const wat = compile(
     `export let sum = (ptr, n) => { let a = new Float64Array(ptr); let s = 0; for (let i = 0; i < n; i++) s += a[i]; return s }`,
     { wat: true, optimize: 3, alloc: false },
   )
@@ -4046,7 +4046,7 @@ test('bounded loop copy: negative starts preserve NaN zero-work behavior', () =>
 // at Math.min(N, s.length) lets the bound proof fire in the main loop.
 
 test('splitCharScan: main loop narrows the char carrier to i32', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     export let count = (s, n) => {
       let hits = 0
       for (let i = 0; i < n; i++) {
@@ -4066,7 +4066,7 @@ test('splitCharScan: main loop narrows the char carrier to i32', () => {
 // char it reads is a raw word too (static.js topOf; lost between 8a84ee53 and 9b2826b7,
 // when tokenizer ran its scan on a Number counter with the NaN arm per char).
 test('splitCharScan: the main loop counts in a word and reads a raw char', () => {
-  const wat = jz.compile(`
+  const wat = compile(`
     const count = (s, n) => {
       let hits = 0
       for (let i = 0; i < n; i++) {
@@ -4135,7 +4135,7 @@ test('splitCharScan: the tail reads no character past a string\'s end', () => {
       for (let i = 0; i < n; i++) s = s + 'let a_1 = b + 23; '
       return (scan(s, s.length + k) ^ scan(s, s.length - 1)) >>> 0
     }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const fn = /\(func \$scan[\s\S]*?\n  \)/.exec(wat)?.[0] ?? ''
   ok(fn.length > 0, 'scan stays a function')
   ok(!/f64\.(ge|le)\b/.test(fn), 'no character is classified as a Number (`c >= 48 && c <= 57` reads no float)')
@@ -4171,7 +4171,7 @@ test('for-bound snapshot: read-only builtin calls do not block the .length hoist
     }
     return h >>> 0
   }`
-  const wat = jz.compile(src, { wat: true, optimize: { jsstring: false } })
+  const wat = compile(src, { wat: true, optimize: { jsstring: false } })
   const fa = wat.indexOf('func $main')
   const fn = wat.slice(fa, wat.indexOf('(func', fa + 1))
   const loop = fn.slice(fn.indexOf('loop'))
@@ -4377,7 +4377,7 @@ test('narrowI32: const-divisor div/mod/mul loops run pure i32', () => {
       for (let i = 0; i < n; i++) ${stmt}
       return s
     }`
-    const wat = jz.compile(src, { wat: true, optimize: 3 })
+    const wat = compile(src, { wat: true, optimize: 3 })
     const fi = wat.indexOf('(func $f')
     let body = wat.slice(fi, wat.indexOf('\n  (func', fi + 5))
     // Root F versioning: the cold checked twin (else arm) legitimately round-trips
@@ -4517,12 +4517,12 @@ test('range-check fusion: x>=LO && x<=HI on an i32 → single unsigned compare',
   // compare instead of two signed compares, an AND, and a short-circuit branch. Fires
   // only for an i32 operand (`d` via `|0`; a `charCodeAt` byte in real scanners) — a
   // fractional f64 would mis-fuse, so untyped operands keep the ordered-compare form.
-  const wat = jz.compile(`export let f = (c) => { let d = c | 0; return (d >= 48 && d <= 57) ? 1 : 0 }`, { wat: true, optimize: 'speed' })
+  const wat = compile(`export let f = (c) => { let d = c | 0; return (d >= 48 && d <= 57) ? 1 : 0 }`, { wat: true, optimize: 'speed' })
   ok(/i32\.le_u/.test(wat), 'expected fused unsigned compare')
-  const watOr = jz.compile(`export let f = (c) => { let d = c | 0; return (d < 48 || d > 57) ? 1 : 0 }`, { wat: true, optimize: 'speed' })
+  const watOr = compile(`export let f = (c) => { let d = c | 0; return (d < 48 || d > 57) ? 1 : 0 }`, { wat: true, optimize: 'speed' })
   ok(/i32\.gt_u/.test(watOr), 'expected fused unsigned outside-range compare')
   // Untyped f64 operand must NOT fuse (fractional values would be mis-classified).
-  const watF64 = jz.compile(`export let f = (c) => (c >= 48 && c <= 57) ? 1 : 0`, { wat: true, optimize: 'speed' })
+  const watF64 = compile(`export let f = (c) => (c >= 48 && c <= 57) ? 1 : 0`, { wat: true, optimize: 'speed' })
   ok(!/i32\.le_u/.test(watF64), 'untyped f64 keeps the ordered compare (no unsigned fuse)')
 })
 
@@ -4550,14 +4550,14 @@ test('range-check fusion: recurses across a left-deep &&/|| chain — every adja
   // its two signed compares + i32.and. This is the 2D-bounds-check shape from trace.js
   // and any scanner/raster code with more than one range test chained
   // (.work/archive/todo.md §deletion-sweep, rival-wat TRANSFERABLE item 1, LANDED).
-  const wat = jz.compile(
+  const wat = compile(
     `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && yi >= 0 && yi < H) ? 1 : 0 }`,
     { wat: true, optimize: 'speed' })
   is((wat.match(/i32\.le_u/g) || []).length, 2, 'both x-pair and y-pair fused to one i32.le_u each')
   ok(!/i32\.ge_s|i32\.lt_s/.test(wat), 'no leftover signed range compares once both pairs fuse')
 
   // || twin: x<0 || x>=W || y<0 || y>=H (the outside-range complement).
-  const watOr = jz.compile(
+  const watOr = compile(
     `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi < 0 || xi >= W || yi < 0 || yi >= H) ? 1 : 0 }`,
     { wat: true, optimize: 'speed' })
   is((watOr.match(/i32\.gt_u/g) || []).length, 2, 'both x-pair and y-pair fused to one i32.gt_u each (|| twin)')
@@ -4566,7 +4566,7 @@ test('range-check fusion: recurses across a left-deep &&/|| chain — every adja
   // 3-conjunct: an x-pair plus one trailing unpaired comparison (yi>=0 alone, no
   // partner) — the unpaired conjunct must NOT force-fuse with anything and must stay
   // a plain signed compare, ANDed onto the fused x-pair.
-  const wat3 = jz.compile(
+  const wat3 = compile(
     `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0; return (xi >= 0 && xi < W && yi >= 0) ? 1 : 0 }`,
     { wat: true, optimize: 'speed' })
   is((wat3.match(/i32\.le_u/g) || []).length, 1, 'only the x-pair fuses')
@@ -4577,7 +4577,7 @@ test('range-check fusion: recurses across a left-deep &&/|| chain — every adja
   // reordered, and must not block fusion of the pairs that remain adjacent to each
   // other on either side of it.
   const srcInterleaved = `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && (yi|0)!==999 && yi >= 0 && yi < H) ? 1 : 0 }`
-  const watI = jz.compile(srcInterleaved, { wat: true, optimize: 'speed' })
+  const watI = compile(srcInterleaved, { wat: true, optimize: 'speed' })
   is((watI.match(/i32\.le_u/g) || []).length, 2, 'both range pairs fuse around the interleaved non-range conjunct')
   const { f: fI } = run(srcInterleaved, { optimize: 'speed' })
   const jsI = (x, y) => { const xi = x | 0, yi = y | 0; return (xi >= 0 && xi < 512 && (yi | 0) !== 999 && yi >= 0 && yi < 512) ? 1 : 0 }
@@ -4604,7 +4604,7 @@ test('range-check fusion: untyped f64 chain never fuses, even across a multi-pai
   // preserve that restriction at every level, not just the first pair: an untyped f64
   // 4-conjunct chain must keep every comparison in its ordered signed/f64 form.
   const src = `export let f = (x, y) => (x >= 0 && x < 512 && y >= 0 && y < 512) ? 1 : 0`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   ok(!/i32\.le_u/.test(wat), 'f64 chain never fuses to the unsigned form, at any chain depth')
   const { f } = run(src, { optimize: 'speed' })
   const js = (x, y) => (x >= 0 && x < 512 && y >= 0 && y < 512) ? 1 : 0
@@ -4616,7 +4616,7 @@ test('LICM: nested-loop invariant arithmetic is hoisted (V8 wasm under-hoists it
   // A subexpression invariant w.r.t. an INNER loop (`(a-b)*K` recomputed every `j`)
   // is hoisted out of it — the per-pixel cost in nested rasterizers/convolutions
   // (penrose, waves). Top-level loops still defer plain arithmetic to V8's own LICM.
-  const wat = jz.compile(
+  const wat = compile(
     `export let f = (a, b, n, m) => { let s = 0; for (let i=0;i<n;i++) for (let j=0;j<m;j++) s = s + (a-b)*3.5 + j; return s }`,
     { wat: true, optimize: 'speed' })
   ok(/local \$__li/.test(wat), 'expected a hoisted snap local')
@@ -4901,14 +4901,14 @@ test('poolFloats: nonzero float literals read immutable globals at speed, bit fo
   const host = oracle(src).f
   for (const optimize of ['speed', 2, 'size']) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 100]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const body = wat.slice(wat.indexOf('(func $f'))
   ok(/\(global \$__ff\d+ f64\s+\(f64\.const 28\)/.test(wat), 'a literal the loop reads is an immutable global')
   is((body.match(/f64\.const (?!0\b|0\))/g) ?? []).length, 0, 'no nonzero float literal left in the function')
   ok(/f64\.const 0\b/.test(body) || !/f64\.const/.test(body), 'zero stays inline')
   // two doubles nine printed digits cannot tell apart stay two globals
   ok(/f64\.const 0\.041666666666666664\)/.test(wat) && /f64\.const 0\.04166666666666667\)/.test(wat), 'neighbouring literals keep their own bits')
-  ok(!/\$__ff/.test(jz.compile(src, { wat: true, optimize: 'size' })), 'the size tier keeps its literals')
+  ok(!/\$__ff/.test(compile(src, { wat: true, optimize: 'size' })), 'the size tier keeps its literals')
 })
 
 // x64 V8 branches around a float select; a condition the data decides (a hash bit picking a
@@ -4935,7 +4935,7 @@ test('selectBits: a float select the data decides picks the operands\' bits at s
   const host = oracle(src).f
   for (const optimize of ['speed', 2]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 6, 64, 1000]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
-  const ast = parseWat(jz.compile(src, { wat: true, optimize: 'speed' }))
+  const ast = parseWat(compile(src, { wat: true, optimize: 'speed' }))
   let bits = 0, plain = 0
   walk(ast, n => {
     if (n[0] === 'f64.reinterpret_i64' && Array.isArray(n[1]) && n[1][0] === 'select') bits++
@@ -4979,7 +4979,7 @@ test('maskOperands: a byte mask over `^`/`|` moves onto the operand it narrows',
   if (onKernel()) return
   const masked = (optimize) => {
     let moved = 0
-    walk(parseWat(jz.compile(src, { wat: true, optimize })), n => {
+    walk(parseWat(compile(src, { wat: true, optimize })), n => {
       if ((n[0] === 'i32.xor' || n[0] === 'i32.or') && Array.isArray(n[1]) && n[1][0] === 'i32.and' && Array.isArray(n[2]) && (n[2][0] === 'i32.load8_u' || n[2][0] === 'i32.load16_u')) moved++
     })
     return moved
@@ -5043,7 +5043,7 @@ test('searchLoops: a loop whose body is a guarded loop scans for its guard in a 
   if (onKernel()) return
   const scans = (optimize) => {
     let k = 0
-    walk(findFunc(parseWat(jz.compile(src, { wat: true, optimize })), '$f'), n => { if (n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$search')) k++ })
+    walk(findFunc(parseWat(compile(src, { wat: true, optimize })), '$f'), n => { if (n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$search')) k++ })
     return k
   }
   ok(scans('speed') >= 2, `the pixel scan and the sieve scan for their guards (${scans('speed')})`)
@@ -5133,7 +5133,7 @@ test('pointerExits: a loop keeping a counter only to stop stops by the pointer s
   const want = oracle(src).f()
   for (const optimize of ['speed', { level: 'speed', pointerExits: false }, 2]) is(run(src, { optimize }).f(), want, JSON.stringify(optimize))
   if (onKernel()) return
-  const ends = (optimize) => count(parseWat(jz.compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__pe'))
+  const ends = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__pe'))
   ok(ends('speed') >= 1, `the record loop stops by its pointer (${ends('speed')})`)
   is(ends({ level: 'speed', pointerExits: false }), 0, 'pointerExits: false keeps the counter')
 })
@@ -5242,7 +5242,7 @@ test('ringLaps: a counted loop stepping a cursor around a ring runs a lap at a t
       is(run(src(w), { optimize }).f(n, calls), want(n, calls), `window ${w}, ${n} samples, ${calls} calls, ${JSON.stringify(optimize)}`)
   }
   if (onKernel()) return
-  const laps = (optimize) => count(parseWat(jz.compile(src(16), { wat: true, optimize })), n => n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$__rl'))
+  const laps = (optimize) => count(parseWat(compile(src(16), { wat: true, optimize })), n => n[0] === 'loop' && typeof n[1] === 'string' && n[1].startsWith('$__rl'))
   ok(laps('speed') >= 2, `the window's sample loop runs in laps (${laps('speed')} lap loops)`)
   is(laps({ level: 'speed', ringLaps: false }), 0, 'ringLaps: false keeps the loop as written')
 })
@@ -5308,7 +5308,7 @@ test('earlyStores: a store ready before a long computation it does not read goes
   const ahead = (optimize) => {
     // the loop with the most stores: the sections'
     let loop = null, most = 0
-    walk(parseWat(jz.compile(src, { wat: true, optimize })), n => {
+    walk(parseWat(compile(src, { wat: true, optimize })), n => {
       if (n[0] !== 'loop') return
       const k = n.filter(s => Array.isArray(s) && s[0] === 'f64.store').length
       if (k > most) { most = k; loop = n }
@@ -5391,7 +5391,7 @@ test('leadChains: a cascade computes its output chain ahead of the state updates
   const want = oracle(src).f(500)
   for (const optimize of ['speed', { level: 'speed', leadChains: false }, 2]) is(run(src, { optimize }).f(500), want, JSON.stringify(optimize))
   if (onKernel()) return
-  const fresh2 = (optimize) => count(parseWat(jz.compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && /\$l\d+$/.test(n[1]))
+  const fresh2 = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && /\$l\d+$/.test(n[1]))
   ok(fresh2('speed') >= 4, `the sections' outputs lead (${fresh2('speed')} fresh locals)`)
   is(fresh2({ level: 'speed', leadChains: false }), 0, 'leadChains: false keeps the sections as written')
 })
@@ -5569,7 +5569,7 @@ test('rec-unroll: a recurrence storing an expression carries it, a Math call not
   }
   if (onKernel()) return
   const src = `export let f=(n)=>{ const u=new Float64Array(70), x=new Float64Array(70); for(let k=0;k<70;k++)x[k]=k; for(let j=1;j<n;j++){ const d=x[j]-x[j-1]; u[j]=u[j-1]+Math.sqrt(d*d+1) } return u[n-1] }`
-  _compileInProcess(src, { optimize: 'speed' })
+  compileInProcess(src, { optimize: 'speed' })
   let carried = false
   walkAst(ctx.funcs.list.find(f => f.name === 'f').body, { enter: n => { if ((n[0] === 'let' || n[0] === 'const') && n.slice(1).some(d => Array.isArray(d) && typeof d[1] === 'string' && d[1].startsWith('u' + T) && /rec\d+$/.test(d[1]))) carried = true } })
   ok(carried, 'the previous cell is a carried local')
@@ -5606,7 +5606,7 @@ test('rec-unroll: fires (carry declared at speed, absent when disabled)', () => 
   // the carry is declared after its array (`a` + the renaming separator + `rec<id>`) in the planned
   // body (the sums' copy reads it through a declaration of its own, which the optimizer may fold)
   const carried = (optimize) => {
-    _compileInProcess(src, { optimize })
+    compileInProcess(src, { optimize })
     let found = false
     walkAst(ctx.funcs.list.find(f => f.name === 'f').body, { enter: n => { if ((n[0] === 'let' || n[0] === 'const') && n.slice(1).some(d => Array.isArray(d) && typeof d[1] === 'string' && d[1].startsWith('a' + T) && /rec\d+$/.test(d[1]))) found = true } })
     return found
@@ -5646,7 +5646,7 @@ test('rec-unroll: the pair loop computes in integers (the plan sweep declares th
       return dist(a, b, prev)
     }`
   // (the loop as written, where a cell leaves the word, replaced by a trap: the copies remain)
-  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', coldTrap: true } })
+  const wat = compile(src, { wat: true, optimize: { level: 'speed', coldTrap: true } })
   // (the kernel splices into its caller: its carry keeps the array's name)
   ok(/prev\S*rec\d+/.test(wat), 'the carry is declared after its array')
   // every loop over the row computes in integers: no float arithmetic, no truncation
@@ -5658,7 +5658,7 @@ test('rec-unroll: the pair loop computes in integers (the plan sweep declares th
 test('a bare let assigned on every path before its reads is typed by its assignments', () => {
   if (onKernel() || belowOpt(2)) return
   const src = 'export let f = (n) => { let sum = 0; for (let i = 0; i < 1000; i++) { let x; if ((i & 1) === 0) x = (i + 1) | 0; else x = Math.imul(i, 3); sum = (sum + x) | 0 } return sum }'
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   is(loopCount(parseWat(wat), n => /^f64\./.test(n[0])), 0, 'the loop computes in i32')
   is(run(src, { optimize: 'speed' }).f(0), oracle(src).f(0))
   // a read some path reaches unassigned keeps its undefined
@@ -5678,7 +5678,7 @@ test('inline: a callee returning a Math call splices into its loop site (a pure 
       for (let i = 0; i < rows.length; i++) sum = (sum + measure(rows[i])) | 0
       return sum
     }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   ok(!/\(func \$measure/.test(wat), 'the callee is spliced away')
   // the spliced result is a number: no undefined-sentinel test turns it into a NaN before the sum
   is(loopCount(parseWat(wat), n => n[0] === 'i64.const' && /7FF80002/i.test(String(n[1]))), 0, 'no absent test on the spliced result')
@@ -5691,11 +5691,11 @@ test('int-div-lower: (a/b)|0 with i32 a,b → i32.div_s, bit-exact incl b=0 / IN
   // except b=0 (→0, div_s traps) and INT_MIN/-1 (→INT_MIN wrap, div_s traps) — guarded.
   const constSrc = `export let f = (x0) => { let x = x0|0; return (x/9)|0 }`
   const runSrc = `export let f = (x0, v0) => { let x = x0|0, v = v0|0; return (x/v)|0 }`
-  ok(/i32\.div_s/.test(jz.compile(constSrc, { wat: true, optimize: 'speed' })), 'constant divisor → i32.div_s')
-  ok(/i32\.div_s/.test(jz.compile(runSrc, { wat: true, optimize: 'speed' })), 'runtime divisor → guarded i32.div_s')
-  ok(!/i32\.div_s/.test(jz.compile(runSrc, { wat: true, optimize: { level: 'speed', intDivLower: false } })), 'off when disabled')
+  ok(/i32\.div_s/.test(compile(constSrc, { wat: true, optimize: 'speed' })), 'constant divisor → i32.div_s')
+  ok(/i32\.div_s/.test(compile(runSrc, { wat: true, optimize: 'speed' })), 'runtime divisor → guarded i32.div_s')
+  ok(!/i32\.div_s/.test(compile(runSrc, { wat: true, optimize: { level: 'speed', intDivLower: false } })), 'off when disabled')
   // f64 dividend must NOT lower (could be fractional) — stays f64.div
-  ok(!/i32\.div_s/.test(jz.compile(`export let f = (x) => (x/9)|0`, { wat: true, optimize: 'speed' })), 'f64 operand not lowered')
+  ok(!/i32\.div_s/.test(compile(`export let f = (x) => (x/9)|0`, { wat: true, optimize: 'speed' })), 'f64 operand not lowered')
 
   const { f } = run(runSrc, { optimize: 'speed' })
   const IM = -2147483648, IX = 2147483647
@@ -5709,7 +5709,7 @@ test('local-const fold: a chained const divisor becomes a literal (magic-multipl
   // a compile-time i32, so the int-divide lowering hands the wasm backend a CONSTANT
   // divisor (i32.const) — which V8 magic-multiplies — instead of a runtime `local.get`.
   const chain = `export let f = (x0) => { let x = x0|0; const rr = 4|0; const win = 2*rr+1; return (x/win)|0 }`
-  const w = jz.compile(chain, { wat: true, optimize: 'speed' })
+  const w = compile(chain, { wat: true, optimize: 'speed' })
   ok(/i32\.div_s\s+\([^)]*\)\s*\(i32\.const 9\)|i32\.const 9/.test(w), 'win folds to the literal 9')
   ok(!/i32\.div_s\s+\([^)]*\)\s*\(local\.get \$win/.test(w), 'divisor is not a runtime local')
   const { f } = run(chain, { optimize: 'speed' })
@@ -5755,7 +5755,7 @@ test('int-div-lower: a bounded-product chain (mask → ternary → sum-of-produc
       return acc
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: exactToInt32('speed') })
+  const w = compile(src, { wat: true, optimize: exactToInt32('speed') })
   ok(/i32\.shr_u/.test(w), 'power-of-two divisor with a proven-nonneg dividend strength-reduces to i32.shr_u')
   // i64.trunc_sat_f64_s is the ordinary NaN-boxed param-unboxing ABI boundary (n0's
   // own coercion) — unrelated to the div lever. Only the i32 form is the round-trip
@@ -5805,7 +5805,7 @@ test('Pass-D range-proof exemption: bare-literal-only bounded chain stays i32 (d
       return acc
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: exactToInt32('speed') })
+  const w = compile(src, { wat: true, optimize: exactToInt32('speed') })
   ok(/i32\.shr_u/.test(w), 'power-of-two divisor over a range-proven bare-literal chain strength-reduces to i32.shr_u')
   ok(!/i32\.trunc_sat_f64_s/.test(w), 'no f64 round-trip survives for the div')
   const { f } = run(src, { optimize: 'speed' })
@@ -5871,7 +5871,7 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
       return cs
     }
   `
-  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const w = compile(src, { wat: true, optimize: 'speed' })
   ok(/\(local \$\S*op i32\)/.test(w), 'op local promoted to i32 storage')
   // No f64 round-trip on any `local.get $…op` use specifically (module-wide
   // trunc_sat_f64_s isn't itself a signal — an unrelated stdlib helper can carry
@@ -5909,7 +5909,7 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
     }
     export let f = (src, out) => encode(src, out)
   `
-  const wCond = jz.compile(condStep, { wat: true, optimize: 'speed' })
+  const wCond = compile(condStep, { wat: true, optimize: 'speed' })
   ok(/\(local \$\S*op i32\)/.test(wCond), 'conditional differing-delta accumulator takes the arm-max budget (i32)')
   {
     const src3 = new Uint8Array(N); for (let i = 0; i < N; i++) src3[i] = (i * 7 + 3) & 0xff
@@ -5930,7 +5930,7 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
     }
     export let f = (src, out) => encode(src, out)
   `
-  const wOutside = jz.compile(outsideWrite, { wat: true, optimize: 'speed' })
+  const wOutside = compile(outsideWrite, { wat: true, optimize: 'speed' })
   ok(/\(local \$\S*op f64\)/.test(wOutside), 'accumulator written outside the loop stays f64 (no fact)')
 
   // Negative control 3: unbounded trip count (a dynamic, unproven loop bound) —
@@ -5943,7 +5943,7 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
     }
     export let f = (src, out, m) => encode(src, out, m)
   `
-  const wUnbounded = jz.compile(unboundedTrip, { wat: true, optimize: 'speed' })
+  const wUnbounded = compile(unboundedTrip, { wat: true, optimize: 'speed' })
   ok(/\(local \$\S*op f64\)/.test(wUnbounded), 'unbounded-trip loop accumulator stays f64 (no fact)')
 
   // Negative control 4: overflow-adjacent — init + step*trips exceeds i32 range.
@@ -5957,7 +5957,7 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
     }
     export let f = (src, out) => encode(src, out)
   `
-  const wOverflow = jz.compile(overflowAdjacent, { wat: true, optimize: 'speed' })
+  const wOverflow = compile(overflowAdjacent, { wat: true, optimize: 'speed' })
   ok(/\(local \$\S*op f64\)/.test(wOverflow), 'overflow-adjacent accumulator stays f64 (no unsound admission)')
 })
 
@@ -6180,7 +6180,7 @@ test('dead helper does not leak the Eisel-Lemire decimal table', () => {
   // The pre-watr lazy-span pass drops it when no live code parses decimals at runtime.
   const lib = `export let used = (h, x) => ((h ^ (x | 0)) * 16777619) | 0
 export let dead = (arr) => { let h = 0; for (let i = 0; i < arr.length; i++) h = used(h, arr[i]); return h }`
-  const bytes = jz.compile(
+  const bytes = compile(
     `import { used } from './lib.js'\nexport let main = () => { let z = new Int32Array(4); z[0] = 7; return used(0, z[0]) }`,
     { modules: { './lib.js': lib }, optimize: 'size', alloc: false })
   ok(bytes.length < 1024, `module is ${bytes.length} B — decimal table (10.4 KB) leaked from a dead helper`)
@@ -6206,7 +6206,7 @@ test('post-watr dead conversion owners leave no orphaned numeric tables', async 
     words.push('a')
     return run(words)
   }`
-  const bytes = jz.compile(src, { optimize: 'size', alloc: false })
+  const bytes = compile(src, { optimize: 'size', alloc: false })
   ok(bytes.length < 6000, `module is ${bytes.length} B — post-watr numeric tables leaked`)
   const { instance } = await WebAssembly.instantiate(bytes)
   is(instance.exports.main(), 1, 'stripping orphaned ranges preserves the live HASH result')
@@ -6216,7 +6216,7 @@ test('live runtime decimal parsing keeps the Eisel-Lemire table (no false strip)
   // The dual: Number() on a runtime string IS live, so __dec_to_f64 must keep its table.
   // The module carries the 10.4 KB table and instantiates.
   const src = `let toNum = (s) => Number(s)\nexport let main = (s) => { let a = new Float64Array(2); a[0] = toNum(s); return a[0] }`
-  const bytes = jz.compile(src, { optimize: 'size', alloc: false })
+  const bytes = compile(src, { optimize: 'size', alloc: false })
   ok(bytes.length > 2048, `module is ${bytes.length} B — table wrongly stripped from live Number()`)
   new WebAssembly.Module(bytes)   // throws if the strip left a dangling reference
 })
@@ -6483,7 +6483,7 @@ test('versioning: mirror store a[N−k] joins the guard — raw in the fast arm'
       fill(spec, inp, n, n >> 1)
       return inp[3] * 1000 + (m > n - 3 ? inp[n - 3] : 0)
     }`
-  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  const wat = compile(src, { optimize: 'speed', wat: true })
   // fast arm: a loop body with two f64 stores and NO in-loop header length
   // re-read (i32.load of base−8). The checked twin keeps per-site guards.
   const loops = [...wat.matchAll(/\(loop \$[^\s)]+[\s\S]*?f64\.store[\s\S]*?f64\.store[\s\S]*?br(_if)? \$/g)].map(m => m[0])
@@ -6526,7 +6526,7 @@ test('versioning: len == bound while-loop takes the fast arm at runtime', () => 
     }`
   // Structural: the versioned guard must NOT compare the raw exclusive bound
   // against len — maxIv arrives as bound−1 (an i64.add … -1 feeding the tvq set).
-  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  const wat = compile(src, { optimize: 'speed', wat: true })
   ok(/local\.tee \$tvq\d*[\s\S]{0,120}i64\.const -1|i64\.add[\s\S]{0,80}i64\.const -1/.test(wat),
     'maxIv computed as bound−1')
   // Behavioral: values exact through the fast arm.
@@ -6547,7 +6547,7 @@ test('interval walk: downward for-loop proves its reads', () => {
       for (let r = 62; r >= 0; r--) s += a[r + 1]
       return s
     }`
-  const wat = jz.compile(src, { optimize: { level: 'size' }, wat: true })
+  const wat = compile(src, { optimize: { level: 'size' }, wat: true })
   // -Os with static len: a proven read is a bare f64.load — no checked-read
   // else-arm (undef NaN const/global) may survive in go.
   const go = wat.slice(wat.indexOf('(func $go'))
@@ -6582,7 +6582,7 @@ test('versioning: &&-cond match-scan while takes the fast arm', () => {
       for (let i = 0; i < 64; i++) buf[i] = (i * 7) & 15
       return scan(buf, n | 0)
     }`
-  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  const wat = compile(src, { optimize: 'speed', wat: true })
   // a fast-arm scan loop exists: byte loads + eq with NO undef else-arm inside
   const loops = [...wat.matchAll(/\(loop \$[^\s)]+[\s\S]*?i32\.load8_u[\s\S]*?i32\.load8_u[\s\S]*?br(_if)? \$/g)].map(m => m[0])
   ok(loops.length >= 1, 'byte-compare loops exist')
@@ -6619,7 +6619,7 @@ test('versioning: bound-not-first &&-cond stays checked (fail-closed)', () => {
       while (a[len] < 9 && len < n) len++
       return len * 10 + (a[len] | 0)
     }`
-  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  const wat = compile(src, { optimize: 'speed', wat: true })
   const go = wat.slice(wat.indexOf('(func $go'))
   ok(/i32\.(lt_u|ge_u)/.test(go), 'checked integer comparison retains its bounds guard')
   const { exports } = jz(src, { optimize: 'speed' })
@@ -6639,7 +6639,7 @@ test('versioning: ||-cond never versions (accesses run past the bound)', () => {
       while (len < n || a[len] < 3) len++
       return len
     }`
-  const wat = jz.compile(src, { optimize: 'speed', wat: true })
+  const wat = compile(src, { optimize: 'speed', wat: true })
   const go = wat.slice(wat.indexOf('(func $go'))
   ok(/i32\.(lt_u|ge_u)/.test(go), '||-cond retains the integer read bounds guard')
   const { exports } = jz(src, { optimize: 'speed' })
@@ -6693,7 +6693,7 @@ export let main = () => {
   for (let i = 0; i < 64; i++) s += a[i] * (i + 1)
   return s
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
   is((m.match(/nan:0x7FF80002/g) || []).length, 0, 'every heapsort read/write proven — no undef arms')
   const exportsJs = oracle(src)
@@ -6718,7 +6718,7 @@ export let main = (g) => {
   return s
 }`
   // (the miss arm is read by its NaN literal, kept inline: the speed tier pools float literals otherwise)
-  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', poolFloats: false } })
+  const wat = compile(src, { wat: true, optimize: { level: 'speed', poolFloats: false } })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
   // the miss arm folds to CANONICAL nan (toNumF64's checkedNumRead seam via
   // the += accumulator) — the checked arm itself must survive
@@ -6786,7 +6786,7 @@ export let main = () => {
   for (let i = 0; i < 64; i++) table[i] = i + 1
   return pack(input, table, out) + out[0] + out[7]
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
   ok((m.match(/i32\.lt_u/g) || []).length <= 1, 'codec accesses need no checks (only allocator growth may retain lt_u)')
   const exportsJs = oracle(src)
@@ -6806,7 +6806,7 @@ export let main = (i) => {
   step(a, i, 9)
   return a[0] ^ a[1] ^ a[2] ^ a[3]
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
   is((m.match(/i32\.lt_u/g) || []).length, 3, 'one guard per RMW — no read+write pairs')
   const exportsJs = oracle(src)
@@ -6872,7 +6872,7 @@ export let main = () => {
   return exec(code, reg)
 }`
   // the tables' heap path: static placement gives them constant bases (test/static-locals.js)
-  const wat = jz.compile(src, { wat: true, optimize: preWatr({ level: 'speed', staticLocals: false }) })
+  const wat = compile(src, { wat: true, optimize: preWatr({ level: 'speed', staticLocals: false }) })
   const execWat = wat.split('(func ').find(c => /^\$exec\b/.test(c)) || ''
   ok(execWat.length > 0, 'inspect the fetch worker before backend inlining')
   ok(!/\$[^ )]*tbg/.test(execWat), 'known length and pc hull retire the fetch guard entirely')
@@ -6881,7 +6881,7 @@ export let main = () => {
   'adjacent fetches share one raw base address')
   is(run(src, { optimize: 'speed' }).main(), 37, 'interpreter result exact')
   const tooShort = src.replace('new Int32Array(9)', 'new Int32Array(8)')
-  ok(!/\$[^ )]*tbg/.test(jz.compile(tooShort, { wat: true, optimize: { level: 'speed', staticLocals: false } })), 'undersized code table stays independently checked')
+  ok(!/\$[^ )]*tbg/.test(compile(tooShort, { wat: true, optimize: { level: 'speed', staticLocals: false } })), 'undersized code table stays independently checked')
 })
 
 test('typedLen: static length flows through param hops and inline aliases', () => {
@@ -6906,7 +6906,7 @@ export let main = () => {
   for (let i = 0; i < 32; i++) src[i] = i
   return runKernel(a, src)
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || ''
   is((m.match(/nan:0x7FF80002/g) || []).length, 0, 'geometric-cursor reads proven via the alias-carried static len')
   const exportsJs = oracle(src)
@@ -6915,7 +6915,7 @@ export let main = () => {
 
 test('pure boolean chains lower eagerly while effectful RHS stays short-circuited', () => {
   const pure = `export let f=(a,b,c)=>a>0&&b>0&&c>0`
-  const wat = jz.compile(pure, { wat: true, optimize: { level: 'speed', watr: false } })
+  const wat = compile(pure, { wat: true, optimize: { level: 'speed', watr: false } })
   const fw = wat.split('(func $f')[1]?.split('(func ')[0] || ''
   ok((fw.match(/i32\.and/g) || []).length >= 2, 'pure boolean chain uses branchless i32.and')
   ok(!/\(if/.test(fw), 'pure chain has no short-circuit control frame')
@@ -7044,7 +7044,7 @@ test('all-false SIMD masks guard large pure producer suffixes', () => {
 test('typed postfix index keeps the old index without add/sub cancellation', () => {
   const src = `export let f=()=>{const a=new Uint8Array(1);let i=0;a[i++]=7;a[i++]=9;return a[0]*10+i}`
   is(run(src, { optimize: 'speed' }).f(), 72, 'first store lands, OOB second store is ignored, cursor advances twice')
-  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const wat = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const fw = wat.split('(func $f')[1]?.split('(func ')[0] || ''
   ok(!/i32\.add[\s\S]{0,100}i32\.sub/.test(fw), 'postfix address does not increment then subtract one')
 })
@@ -7053,7 +7053,7 @@ test('monotone cursor budget proves mutually-exclusive codec reads', () => {
   const src = `const dec=(inp,out)=>{let ip=0;for(let p=0;p<4;p++){const tag=inp[ip++];let v=tag;if((tag&1)===0){v+=inp[ip++];v+=inp[ip++];v+=inp[ip++]}else if((tag&2)===0){v+=inp[ip++]}out[p]=v}return ip}
     export let f=()=>{const inp=new Uint8Array(20),out=new Uint8Array(4);for(let i=0;i<20;i++)inp[i]=i;return dec(inp,out)+out[0]+out[3]}`
   const decWat = (s) => {
-    const wat = jz.compile(s, { wat: true, optimize: { level: 'speed', watr: false } })
+    const wat = compile(s, { wat: true, optimize: { level: 'speed', watr: false } })
     return wat.split('(func $dec')[1]?.split('(func ')[0] || ''
   }
   is((decWat(src).match(/i32\.lt_u/g) || []).length, 0,
@@ -7066,7 +7066,7 @@ test('monotone cursor budget proves mutually-exclusive codec reads', () => {
   const rle = `const enc=(inp,out)=>{let op=0,run=0;for(let p=0;p<8;p++){const x=inp[p];if(x===0)run++;else{if(run>0){out[op++]=run;run=0}out[op++]=x;out[op++]=1}}return op}
     export let f=()=>{const inp=new Uint8Array(8),out=new Uint8Array(16);inp[0]=0;inp[1]=3;inp[2]=4;return enc(inp,out)+out[0]+out[1]+out[2]}`
   const encWat = (s) => {
-    const wat = jz.compile(s, { wat: true, optimize: { level: 'speed', watr: false } })
+    const wat = compile(s, { wat: true, optimize: { level: 'speed', watr: false } })
     return wat.split('(func $enc')[1]?.split('(func ')[0] || ''
   }
   is((encWat(rle).match(/i32\.lt_u/g) || []).length, 0,
@@ -7080,7 +7080,7 @@ test('decomposed charCodeAt unswitches SSO vs heap outside leaf byte loops', () 
   const src = `const scan=(s,n)=>{let h=0;for(let i=0;i<n;i++)h=(h+s.charCodeAt(i))|0;return h}
     export let small=()=>scan('abc',3)
     export let heap=()=>{let s='';for(let i=0;i<16;i++)s=s+'ab';return scan(s,s.length)}`
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   const sw = w.split('(func $scan')[1]?.split('\n  (func ')[0] || ''
   ok(/\$s\$ccsso/.test(sw), 'string parameter is decomposed once at entry')
   is((sw.match(/\(local\.get \$s\$ccsso\)/g) || []).length, 2,
@@ -7099,11 +7099,11 @@ test('decomposed charCodeAt loads no length where every read is in bounds', () =
   const src = `const make=()=>{let s='';for(let i=0;i<64;i++)s=s+'let a1 = b + 12;';return s}
     const scan=(src,len)=>{let h=0;for(let i=0;i<len;i++){const c=src.charCodeAt(i);if(c>32)h=(h*31+c)|0}return h}
     export let f=()=>{const src=make(),n=src.length;let h=scan(src,n);for(let i=0;i<8;i++)h=(h+scan(src,n-(i&7)))|0;return h}`
-  const sw = jz.compile(src, { wat: true, optimize: 'size' }).split('(func $scan')[1]?.split('\n  (func ')[0] || ''
+  const sw = compile(src, { wat: true, optimize: 'size' }).split('(func $scan')[1]?.split('\n  (func ')[0] || ''
   ok(/\$src\$ccsso/.test(sw), 'the receiver is decomposed at entry')
   ok(!/\(i32\.load\s/.test(sw), 'no read tests the length: none is loaded')
   const checked = src.replace('src.charCodeAt(i)', 'src.charCodeAt(i+1)')
-  const cw = jz.compile(checked, { wat: true, optimize: 'size' }).split('(func $scan')[1]?.split('\n  (func ')[0] || ''
+  const cw = compile(checked, { wat: true, optimize: 'size' }).split('(func $scan')[1]?.split('\n  (func ')[0] || ''
   ok(/\(i32\.load\s/.test(cw), 'a read past the proven range keeps the heap length')
   for (const s of [src, checked]) is(run(s, { optimize: 'size' }).f(), oracle(s).f(), 'reads stay exact')
 })
@@ -7133,7 +7133,7 @@ test('small strided outer control loop specializes nested typed kernels', () => 
   const src = `const pass=(a,out)=>{for(let shift=0;shift<32;shift+=8){for(let i=0;i<16;i++)out[i]=(a[i]>>>shift)&255}}
     export let f=()=>{const a=new Uint32Array(16),out=new Uint32Array(16);a[0]=0x12345678;pass(a,out);return out[0]}`
   // the arrays' heap path: static placement folds their bases into the byte loads' offsets
-  const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, staticLocals: false } })
+  const wat = compile(src, { wat: true, optimize: { level: 'speed', watr: false, staticLocals: false } })
   const pw = wat.split('(func $pass')[1]?.split('(func ')[0] || ''
   ok(!/local\.get \$shift/.test(pw), 'outer induction is fully specialized')
   // each variant fixes its byte: a constant shift, or the byte's own load (narrowByteLoads)
@@ -7151,7 +7151,7 @@ test('typed value hulls fail closed on wraparound, aliases, and closure writes',
       export let f=()=>{const idx=new Int32Array(1),t=new Int32Array(32);const set=()=>{idx[0]=999};set();t[0]=7;return get(t,idx[0])}`,
   }
   for (const [name, src] of Object.entries(cases)) {
-    const wat = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+    const wat = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
     // the read stands in `get`, or in `f` once the element argument substitutes into `get`'s pure body
     const getWat = wat.split('(func $get')[1]?.split('(func ')[0] || wat.split('(func $f')[1]?.split('(func ')[0] || ''
     ok(/i32\.lt_u/.test(getWat), `${name}: unproven element hull keeps the bounds check`)
@@ -7162,7 +7162,7 @@ test('typed value hulls fail closed on wraparound, aliases, and closure writes',
 test('plain-array length proofs reject conditional growth, aliases, and extending writes', () => {
   const conditional = `const build=(x)=>{const a=[];if(x)a.push(7);return a}
     const get=(a)=>a[0]|0;export let f=(x)=>get(build(x))`
-  const wat = jz.compile(conditional, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
+  const wat = compile(conditional, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
   const getWat = wat.split('(func $get')[1]?.split('(func ')[0] || ''
   ok(/i32\.lt_u/.test(getWat), 'conditional push cannot become a fixed returned length')
   const c = run(conditional, { optimize: 'speed' }).f
@@ -7180,8 +7180,8 @@ test('finite-domain hash probe requires an immutable domain length', () => {
     export let f=()=>{const keys=['a','b','a'];return count(keys)}`
   const grow = `const count=(keys)=>{const d={};for(let i=0;i<8;i++){keys.push('k'+i);const k=keys[i];d[k]=(d[k]|0)+1}return d[keys[0]]|0}
     export let f=()=>{const keys=['a'];return count(keys)}`
-  const safeWat = jz.compile(safe, { wat: true, optimize: { level: 'speed', watr: false } })
-  const growWat = jz.compile(grow, { wat: true, optimize: { level: 'speed', watr: false } })
+  const safeWat = compile(safe, { wat: true, optimize: { level: 'speed', watr: false } })
+  const growWat = compile(grow, { wat: true, optimize: { level: 'speed', watr: false } })
   ok(/call \$__hash_slot_eph_fixed/.test(safeWat), 'immutable finite key domain uses the no-growth probe')
   ok(!/call \$__hash_slot_eph_fixed/.test(growWat) && /call \$__hash_slot_eph\b/.test(growWat),
     'growing key source retains the growable probe')
@@ -7216,14 +7216,14 @@ export let main = (tag) => {
   if ((tag & 192) === 0) return table[tag]
   return -1
 }`
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
   is((m.match(/nan:0x7FF80002/g) || []).length, 0, 'masked equality proves the 64-slot table read')
   const wasm = run(src, { optimize: 'speed' }).main
   for (const tag of [-1, 0, 1, 63, 64, 127, 255, 256, 0x12340])
     is(wasm(tag), ((tag & 255) < 64 ? (tag & 255) * 3 : -1), `tag=${tag} exact`)
   const negated = src.replace('=== 0', '!== 0')
-  ok(/nan:0x7FF80002/.test(jz.compile(negated, { wat: true, optimize: 'speed' })),
+  ok(/nan:0x7FF80002/.test(compile(negated, { wat: true, optimize: 'speed' })),
     'non-contiguous negated class stays checked')
 })
 
@@ -7298,7 +7298,7 @@ export let run = (n, nStages) => {
     almost(r, jsExports.run(64, 8), 1e-9, `O${optimize}: cascade values JS-exact`)
   }
   // Structural: the guarded fast arm carries ZERO checked-read sentinels.
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   // proc inlines into run (single caller), so the cascade lives in `run` itself.
   // Named, not "whichever function has the most f64.mul": the math helpers this
   // program also pulls in (Math.sin seeds the input) carry long polynomials, and
@@ -7359,7 +7359,7 @@ export let main = () => {
   const jsExports = oracle(src)
   // `main`, not `run`: `run` is the reserved void WASI command entry (_matrix.js).
   for (const optimize of levels(0, 2, 'speed')) is(run(src, { optimize }).main(), jsExports.main(), `O${optimize}: scan total JS-exact`)
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const fn = wat.split('(func ').find(f => f.includes('load8_u')) || ''
   ok(/i64\.l[te]_s/.test(fn), 'versioned guard present')
   // The guard sits at the `j` nest's entry (once per `ip`), so the loop that
@@ -7420,7 +7420,7 @@ export let run = (n, len) => {
   }
   // Structural: the guarded fast arm's cursor reads are bare loads (no bounds
   // check idiom); the checked twin keeps its guarded reads.
-  const wat = jz.compile(src, { wat: true, optimize: preWatr({ level: 'speed', specializeLoops: false }) })
+  const wat = compile(src, { wat: true, optimize: preWatr({ level: 'speed', specializeLoops: false }) })
   const fn = wat.split('(func ').find(f => f.startsWith('$cursorScan')) || ''
   ok(fn.length > 0, 'inspect the cursor worker before backend inlining')
   // Find the complete guarded loop, not the first wide comparison: exact
@@ -7469,7 +7469,7 @@ export let crc = (len) => {
       is(run(src, { optimize }).crc(n), jsExports.crc(n), `O${optimize} n=${n}: crc exact (tail + pair arms)`)
   // Structural: at speed, the paired main loop carries TWO chained table
   // lookups between backedges (the ×2 unroll fired).
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const hot = wat.split('(func ').sort((a, b) =>
     (b.match(/i32\.xor/g) || []).length - (a.match(/i32\.xor/g) || []).length)[0] || ''
   const loops = hot.split('(loop')
@@ -7541,7 +7541,7 @@ export let f = (p) => {
     for (const p of [0, 1, 0xffff, 0x10000, 0x1ffff, 0x20000, -1, -123456, 2147483647])
       is(f(p), jsF(p), `O${optimize} p=${p}: q16 split exact`)
   }
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const fn = wat.split('(func ').find(c => c.startsWith('$f')) || ''
   ok(!/f64\.div|i32\.div/.test(fn), 'no divides anywhere in the chain')
   ok(/i32\.add\b/.test(fn) && /i32\.mul\b/.test(fn), 'd itself (DMIN*65536 + t*DSPAN) still computes in native i32')
@@ -7567,7 +7567,7 @@ test('f64 power-of-two division folds to exact reciprocal multiply', () => {
   const { f } = run(src, { optimize: 2 })
   for (const x of [0, -0, 1, 3.7, -5.25, 1e300, -1e-300, NaN, Infinity, -Infinity])
     is(Object.is(f(x), x / 1024), true, `x=${x} exact`)
-  const wat = jz.compile(src, { wat: true, optimize: 2 })
+  const wat = compile(src, { wat: true, optimize: 2 })
   const fn = wat.split('(func ').find(c => c.startsWith('$f')) || ''
   ok(!/f64\.div/.test(fn) && /f64\.mul/.test(fn), 'div-by-2^k emitted as multiply')
 })
@@ -7721,7 +7721,7 @@ test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def b
   // At the speed tier (hoistNestedCalls active), the negation arms must be canon-guard-free
   // (bare `f64.neg`, no `local.tee`-guarded NaN normalization) — the guard is dead because
   // the caller's own `*` re-canons on its escape were it ever to matter for `===`/typeof.
-  const wat = jz.compile(src, { wat: true, optimize: 'speed' })
+  const wat = compile(src, { wat: true, optimize: 'speed' })
   const fn = wat.split('(func ').find(c => c.startsWith('$render')) || ''
   ok(!/local\.tee[\s\S]{0,40}f64\.neg/.test(fn), 'no tee-guarded NaN-canon wrapper survives around f64.neg')
 })
@@ -7790,7 +7790,7 @@ test('devirtSchemaReads: past the dispatch budget a read site keeps an inline ca
     export const f = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = mk(i); t += o.x } return t }
     export const g = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = i % 2 ? mk(3) : mk(7); t += o.x } return t }
     export const h = (n) => { let t = 0; for (let i = 0; i < n; i++) { const o = i % 5 ? mk(4) : 12; t += o.x === undefined ? 100 : o.x } return t }`
-  const w = jz.compile(src, { wat: true, optimize: { level: 1, watr: false } })
+  const w = compile(src, { wat: true, optimize: { level: 1, watr: false } })
   ok((w.match(/global\.get \$__ic_hi\d+/g) || []).length >= 3, 'each over-budget read site owns an inline cache')
   ok(!w.slice(w.indexOf('(func $f')).includes('br_table'), 'no jump table past the budget')
   const { f, g, h } = run(src, { optimize: { level: 1, snapshotInit: true } })
@@ -8102,7 +8102,7 @@ test('a record of several shapes held by a local is read as the pointer, boxed o
   const js = oracle(src)
   for (const optimize of levels(0, 2, 'speed')) for (const n of [1, 3, 10]) is(run(src, { optimize }).main(n), js.main(n), `${n} at ${optimize}`)
   if (onKernel() || belowOpt(2)) return
-  const w = jz.compile(src, { wat: true, optimize: 'speed' })
+  const w = compile(src, { wat: true, optimize: 'speed' })
   const kernel = funcWat(w, 'runKernel')
   ok(kernel, 'the kernel is a function of its own')
   // (the innermost loops read the fields; a loop around a version reads the list's length through its box once a round)
@@ -8142,7 +8142,7 @@ test('a word converted to a Number and rounded back is the word; a flag of liter
   const js = oracle(src)
   for (const optimize of levels(0, 2, 'speed')) for (const n of [0, 5, 300]) is(run(src, { optimize }).main(n), js.main(n), `${n} at ${optimize}`)
   if (onKernel() || belowOpt(2)) return
-  const w = funcWat(jz.compile(src, { wat: true, optimize: 'speed' }), 'main')
+  const w = funcWat(compile(src, { wat: true, optimize: 'speed' }), 'main')
   is(loopCount(parseWat(w), n => n[0] === 'f64.const' && String(n[1]) === '6755399441055744'), 0, 'no rounding of a word in the loops')
   is(loopCount(parseWat(w), n => /^(?:f64|i64)\./.test(n[0])), 0, 'the loops compute in words')
 })

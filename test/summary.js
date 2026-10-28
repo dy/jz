@@ -5,13 +5,13 @@
 // factory result, a class instance, a method closure over the instance.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile, _compileInProcess } from '../index.js'
+import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { phaseCheckpointEmulation } from '../src/debug.js'
 import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
 import { onKernel, OPT_LEVEL, levels, belowOpt } from './_matrix.js'
-import { funcWat, oracle } from './util.js'
+import { funcWat, oracle, compileInProcess } from './util.js'
 
 // Bindings carry prepare's scope suffix; find one by function and bare name.
 const binding = (fn, bare) => {
@@ -31,7 +31,7 @@ const layoutFrom = (props) => ctx.schema.list.findLastIndex(s => props.every((p,
 // pin the source's own functions, so the inliner is off (the speed tier splices callees)
 // and so is the record-parameter lane pass (it replaces a field-reading callee).
 // The kinds read here are the summary's own: no source inlining, no clone per argument kind (a parameter is the join of every call site's argument)
-const summarize = (src) => { _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false, aliases: false } }); return ctx.summary }
+const summarize = (src) => { compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false, aliases: false } }); return ctx.summary }
 
 test('summary: closure queries retain settled object unions through result and own-property projections', () => {
   for (const own of [false, true]) {
@@ -39,7 +39,7 @@ test('summary: closure queries retain settled object unions through result and o
       function second() { return { y: 1, x: 7n } }
       ${own ? 'first.data = { x: 3n }; second.data = { y: 1, x: 8n }' : ''}
       export function f(flag) { const read = flag ? first : second; return ${own ? 'read.data.x' : 'read().x'} }`
-    _compileInProcess(src, { optimize: 0 })
+    compileInProcess(src, { optimize: 0 })
     const summary = ctx.summary, read = binding('f', 'read')
     is(summary.at('f').kindOfExpr(['.', own ? ['.', read, 'data'] : ['()', read, null], 'x']), kind(K.BIGINT),
       'read-only projection agrees with the solver result')
@@ -173,7 +173,7 @@ test('summary: field predicates retain getter effects and escaping or reassigned
 test('summary: imported constant initializers are folded before analysis', () => {
   const source = `import { PI, EPSILON } from 'constants'; export const probe = x => x * PI + EPSILON`
   const modules = { constants: 'export const PI = Math.PI, EPSILON = Number.EPSILON' }
-  _compileInProcess(source, { modules })
+  compileInProcess(source, { modules })
   const view = ctx.summary.at('')
   is(tagOf(view.kindOf('constants$PI')), K.NUMBER)
   is(tagOf(view.kindOf('constants$EPSILON')), K.NUMBER)
@@ -266,7 +266,7 @@ test('summary: a conditional joining one binding keeps another it assigned as th
   // the loop's version is the alias pass's (plan/alias.js), off under summarize
   // and below the speed tiers
   if (!belowOpt(2)) {
-    _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
+    compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
     const f = ctx.funcs.list.find(f => f.name === 'avg'), names = new Set()
     const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
     walk(f.body)
@@ -317,7 +317,7 @@ test('summary: a ring cursor versioned as an index keeps its hull below the arra
     export const go = () => { const p = { memory: 4 }; const d = new Float64Array([1, 2, 3, 4, 5, 6]); avg(d, p); return avg(d, p) }`
   // (the version is the integral-loop plan's, a speed tier's)
   if (!belowOpt(2)) {
-    _compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
+    compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } })
     const f = ctx.funcs.list.find(f => f.name === 'avg'), names = new Set(), view = ctx.summary.at('avg')
     const walk = (n) => { if (typeof n === 'string') names.add(n); else if (Array.isArray(n)) n.forEach(walk) }
     walk(f.body)
@@ -727,7 +727,7 @@ test('summary: delete, a host import, for-of, a binding read before its assignme
   ok(isNullable(kindOf('later', 'v')), 'and as possibly absent, since the delete may have removed it')
   is(tagOf(kindOf('g', 'o')), K.OBJECT, 'a function declared after its caller binds through the fixpoint')
   is(tagOf(ctx.summary.resultOf('later')), K.NUMBER)
-  _compileInProcess(`import { log } from 'host'\nconst mk = () => ({ a: new Float32Array(2) })\nexport const f = () => { const o = mk(); log(o); return o.a[0] }`,
+  compileInProcess(`import { log } from 'host'\nconst mk = () => ({ a: new Float32Array(2) })\nexport const f = () => { const o = mk(); log(o); return o.a[0] }`,
     { imports: { host: { log: { params: 1 } } } })
   is(ctx.summary.fieldTypedCtor(sidOf(['a']), 'a'), 'new.Float32Array', 'an object passed to a host import keeps its field kinds (the boundary is a contract)')
 })
@@ -935,7 +935,7 @@ test('summary: a module global is the join of every store; the declaration\'s cl
     const mk = (k) => ({ x: new Float32Array(k), y: k })
     export const init = (w) => { W = w; mem = new Float64Array(W * 2) }
     export const at = (i) => mem[i] + P.x[0] + P.y + n`
-  _compileInProcess(src)
+  compileInProcess(src)
   is(ctx.scope.globalTypedElem.get('mem'), 'new.Float64Array'); ok(ctx.scope.globalReps.get('mem').nullable)
   is(ctx.scope.globalValTypes.get('W'), 'number', 'a host parameter every read of which converts is a number')
   is(ctx.schema.vars.get('P'), ctx.schema.list.findIndex(s => s.join() === 'x,y'))
@@ -947,7 +947,7 @@ test('summary: a numeric-compatible parameter arrives as a number (README.md#exp
   // `row += W` is a `+` operand, `xi < W` a compare against a number: W is a number and so is `w`.
   const src = `let W = 0, H = 0; export let resize = (w, h) => { W = w; H = h }
     export let area = () => { let row = 0, y = 0; while (y < H) { let x = 0; while (x < W) x++; row += W; y++ } return row }`
-  _compileInProcess(src); is(ctx.scope.globalValTypes.get('W'), 'number')
+  compileInProcess(src); is(ctx.scope.globalValTypes.get('W'), 'number')
   if (OPT_LEVEL === 2) ok(!/__to_str|__str_concat/.test(compile(src, { wat: true })), 'no string machinery')
   const m = jz(src); m.exports.resize(3, 4); is(m.exports.area(), 12)
   // A typed array's size: ToIndex of a number; a negative or heap-sized count traps, on both the
@@ -998,7 +998,7 @@ test('summary: flow facts unwind across branches and reset across functions', ()
 })
 
 test('summary: a binding is keyed by its function; a specialized variant has its own kinds', () => {
-  _compileInProcess(`const sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
+  compileInProcess(`const sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
     export const f = () => sum(new Float32Array(4)) + sum(new Float64Array(4))`)
   const variants = ctx.funcs.list.filter(fn => fn.name.startsWith('sum$'))
   is(variants.length, 2, 'the bimorphic typed split made two variants')
@@ -1009,12 +1009,12 @@ test('summary: a binding is keyed by its function; a specialized variant has its
 })
 
 test('summary: the parameter records take their value kinds from the summary (narrow/index.js seedParamKinds)', () => {
-  if (onKernel()) return   // kernel: jz.compile routes through the kernel, which never returns `inspect`
+  if (onKernel()) return   // kernel: compile routes through the kernel, which never returns `inspect`
   // A parameter's record: the kind's value, schema, constructor and element facts, the tag set, the nullish tags.
   const src = `const mk = () => ({ v: 1 })
     const takes = (o, t, rows, mixed, maybe, arr) => o.v + t[0] + rows[0].v + (mixed ? 1 : 0) + (maybe == null ? 0 : maybe.v) + arr.length
     export const run = (k) => { const rows = [mk(), mk()]; return takes(mk(), new Float32Array(2), rows, k ? 1 : true, k ? mk() : null, [1, 2]) + takes(mk(), new Float32Array(1), rows, 0, mk(), [3]) }`
-  const insp = _compileInProcess(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
+  const insp = compileInProcess(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
   const P = insp.functions.takes.callerReps, sid = sidOf(['v'])
   is(P[0].val, 'object'); is(P[0].schemaId, sid)
   is(P[1].val, 'typed'); is(P[1].typedCtor, 'new.Float32Array')
@@ -1025,7 +1025,7 @@ test('summary: the parameter records take their value kinds from the summary (na
   is(jz(src).exports.run(0), 9)
   // Nullish narrowing: a guard proves its name on the path it guards (`if (out) write(out)`,
   // `if (x == null) return`, `x && f(x)`), so the callee's parameter keeps the kind alone.
-  const guarded = _compileInProcess(`const write = (buf, x) => { buf.push(x); return buf }
+  const guarded = compileInProcess(`const write = (buf, x) => { buf.push(x); return buf }
     const relay = (buf, v, out) => { buf.push(v); if (out) write(out, v); return buf }
     const early = (o) => { if (o == null) return 0; return write(o, 1).length }
     const both = (o) => o && write(o, 2)
@@ -1045,7 +1045,7 @@ test('summary: the parameter records take their value kinds from the summary (na
 })
 
 test('summary: the result kinds are the summary\'s (narrow/results.js seedResultKinds); a map\'s values, a typeof guard, a try that returns', () => {
-  if (onKernel()) return   // kernel: jz.compile routes through the kernel, which never returns `inspect`
+  if (onKernel()) return   // kernel: compile routes through the kernel, which never returns `inspect`
   const src = `const cache = new Map()
     const mk = (n) => ({ tw: new Float64Array(n) })
     const plan = (n) => { let p = cache.get(n); if (p === undefined) { p = mk(n); cache.set(n, p) } return p }
@@ -1054,7 +1054,7 @@ test('summary: the result kinds are the summary\'s (narrow/results.js seedResult
     const caught = (x) => { try { if (x) throw new TypeError('t') ; return x > 0 } catch (e) { return e instanceof TypeError } }
     const first = (a) => a[0]
     export const run = (n) => sum(plan(n).tw, n) + Number(norm(2) + norm(3n)) + (caught(1) ? 1 : 0) + first([7])`
-  const insp = _compileInProcess(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
+  const insp = compileInProcess(src, { wat: true, inspect: true, optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false } }).inspect
   const F = insp.functions
   is(F.plan.valResult, 'object', 'a map\'s value cell: get reads what set stored (with the miss as presence)')
   is(F.sum.callerReps[0].typedCtor, 'new.Float64Array', 'the plan\'s field reaches the kernel typed')
@@ -1210,7 +1210,7 @@ test('summary: fresh numeric properties stay precise until an import or retained
     } else is(tagOf(summary.resultOf('read')),K.ANY,'a retained host array admits later arbitrary writes')
     ok(tagOf(saved.resultOf('make'))===K.OBJECT,'later summaries preserve the earlier result reader')
   }
-  _compileInProcess(`import edit from 'host';export function read(key){const a=[1,2];edit(a);return a[+key]}`,
+  compileInProcess(`import edit from 'host';export function read(key){const a=[1,2];edit(a);return a[+key]}`,
     {host:'js',optimize:{level:0,sourceInline:false},imports:{host:{default:()=>0}}})
   is(tagOf(ctx.summary.resultOf('read')),K.ANY,'an import may change numeric properties during the call')
 })
@@ -1866,7 +1866,7 @@ const core = { deps: {} }
 const fill = () => Object.assign(core.deps, make())
 const pick = (name) => { const e = core.deps[name]; return e === undefined ? -1 : e * 10 }
 export let f = (k) => { fill(); return pick(k > 0 ? 'b' : 'a') }`
-  _compileInProcess(src, { optimize: 0, imports: { host: { make: { params: 0 } } } })
+  compileInProcess(src, { optimize: 0, imports: { host: { make: { params: 0 } } } })
   is(tagOf(kindOf('pick', 'e')), K.ANY, 'the read holds anything')
 })
 

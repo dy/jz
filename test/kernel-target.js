@@ -1,6 +1,6 @@
 // Self-compiled compile target for `JZ_TEST_TARGET=jz.wasm node test/index.js`.
 //
-// Routes every jz.compile (and thus jz() / the named `compile`) through a kernel
+// Routes every `compile` (and thus jz()) through a kernel
 // — jz's whole pipeline (parse → jzify → prepare → compile → watr-encode) compiled to
 // wasm BY jz. The wasm takes a source string and returns wasm bytes; the host only
 // marshals the string in and reads the bytes out. Running the whole suite this way is

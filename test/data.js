@@ -2,10 +2,10 @@
 // Adapted from old arch tests + new NaN-boxing architecture
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
-import jz, { compile, _compileInProcess } from '../index.js'
+import jz, { compile } from '../index.js'
 import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
-import { cases, oracle } from './util.js'
+import { cases, oracle, compileInProcess } from './util.js'
 import parseWat from 'watr/parse'
 
 // Prepared method readers can own the generic fallback for a source read.
@@ -5404,7 +5404,7 @@ test('DictKindIndex: a non-constant (reassignable) source object: the read of a 
   // never written: the summary reads it as absent (ABSENT beside the
   // entries' array kind), the parameter carries the presence, and reading
   // through that missing receiver must throw, just as `undefined[0]` does.
-  const insp = _compileInProcess(src, { optimize: false, wat: true, inspect: true }).inspect
+  const insp = compileInProcess(src, { optimize: false, wat: true, inspect: true }).inspect
   ok(insp.functions.id.callerReps[1].mayBeUndefined, 'O0: the entry may be absent')
   throws(() => jz(src, { optimize: false }).exports.main(), TypeError)
 })

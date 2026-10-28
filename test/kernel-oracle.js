@@ -38,7 +38,7 @@
  */
 import test from 'tst'
 import { is, not, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { CORPUS } from './_kernel-corpus.js'
 import { compileViaKernel } from './kernel-target.js'
 import { instantiate } from '../interop.js'
@@ -767,7 +767,7 @@ test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDIN
   // 0 (number) where JS says false — see the comment block above for the fix.
   // NOT the minimal `const g = () => v; return g()` shape (no array) — that
   // isn't a native/kernel split (PROBED 2026-08-21, falsifying this test's
-  // prior "devirtualization eligibility differs" claim: jz.compile vs
+  // prior "devirtualization eligibility differs" claim: compile vs
   // compileViaKernel emit byte-identical WAT for it, both legs, zero
   // call_indirect). `g`'s only reference is its own call, so plan/inline.js's
   // inlineLocalLambdas deletes the closure entirely and splices its body in,

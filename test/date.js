@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { batch } from './util.js'
 import { onWasi, levels } from './_matrix.js'
 
@@ -214,7 +214,7 @@ test('Date object: unresolved host Date falls through to external method dispatc
 })
 
 test('Date object: unresolved argument-taking Date methods preserve args and discriminate', () => {
-  throws(() => jz.compile('export let f = (x, args) => x.setTime(...args)'),
+  throws(() => compile('export let f = (x, args) => x.setTime(...args)'),
     /Spread arguments on Date method \.setTime/, 'dynamic setter spread rejects instead of guessing optional-argument arity')
   const src = `export let f = (which, n) => {
     let items = [new Date(0), [111]]
@@ -304,7 +304,7 @@ test('Date UTC getters', () => {
 })
 
 test('Date UTC full year compile includes transitive date helpers', () => {
-  ok(jz.compile('export let f = () => new Date(0).getUTCFullYear()'))
+  ok(compile('export let f = () => new Date(0).getUTCFullYear()'))
 })
 
 test('Date UTC getters: NaN date', () => {

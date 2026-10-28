@@ -27,7 +27,11 @@ const tuned: Uint8Array = compile('export let f = () => 1', { ...opts, wat: fals
 const result = jz('export let f = () => 1')
 const shared = jz('export let f = () => 1', { memory: jz.memory() })
 const wrapped = instantiateInterop(bytes)
-const again = instantiate(bytes, { optimize: 'size' })
+const again = instantiate(bytes, { imports: { host: { log: console.log } } })
+// @ts-expect-error instantiate takes no compile options
+instantiate(bytes, { optimize: 'size' })
+// @ts-expect-error compile is the named export alone
+jz.compile('export let f = () => 1')
 
 void [decoded, wat, tuned, result, shared, wrapped, again]
 

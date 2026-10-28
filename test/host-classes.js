@@ -6,7 +6,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { inspect } from 'node:util'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels, onWasi } from './_matrix.js'
 import { oracle } from './util.js'
 
@@ -99,6 +99,6 @@ test('the host prints an instance by its fields, and a member called on another 
 })
 
 test('without a JS host an exported class exports its factory alone', () => {
-  const wat = jz.compile(COUNTER, { host: 'wasi', wat: true })
+  const wat = compile(COUNTER, { host: 'wasi', wat: true })
   ok(!/jz:class/.test(wat), 'no class table under WASI')
 })

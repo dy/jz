@@ -5,7 +5,7 @@
 // on fresh module state.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels, belowOpt } from './_matrix.js'
 import { oracle, wat } from './util.js'
 
@@ -130,7 +130,7 @@ test('param defaults: a default runs where a call lets it, and only there', () =
     ['a factory forwarding undefined to the initializer', `class V { constructor(x = 3, y = x * 2) { this.x = x; this.y = y } }\nexport const value = () => { const a = new V(), b = new V(1); return a.x + a.y * 10 + b.x * 100 + b.y * 1000 }`, []],
     ['a specialized variant keeps the default that reassigns', `const f = (a, b = (a = new Int8Array(9))) => { let s = 0; for (let i = 0; i < a.length; i++) s += 1; return s }\nexport const value = (n) => f(new Int8Array(3)) + f(new Int8Array(3), 0) * 100 + n`, [0]],
   ])
-  const w = jz.compile(`class V { constructor() { this.x = 1; this.y = 2 } toArray(array = [], offset = 0) { array[offset] = this.x; array[offset + 1] = this.y; return array } }\nexport const value = () => { const a = new Float32Array(4); new V().toArray(a, 2); return a[2] * 10 + a[3] }`, { wat: true, optimize: 'speed' })
+  const w = compile(`class V { constructor() { this.x = 1; this.y = 2 } toArray(array = [], offset = 0) { array[offset] = this.x; array[offset + 1] = this.y; return array } }\nexport const value = () => { const a = new Float32Array(4); new V().toArray(a, 2); return a[2] * 10 + a[3] }`, { wat: true, optimize: 'speed' })
   is((w.match(/__arr_set_idx_ptr/g) || []).length, 0, 'a typed array every caller passes is stored as a typed array')
 })
 
@@ -144,7 +144,7 @@ test('param defaults: a constructor argument left out arrives as the default, no
     class B { constructor(min = new V(3), max = new V(4)) { this.min = min; this.max = max } clone() { return new this.constructor() } sum() { return this.min.x + this.max.x } }
     export const value = () => { const c = new B().clone(); return c.sum() * 10 + new B(new V(1)).sum() }`
   agree([['left out', src, []]])
-  const w = jz.compile(src, { wat: true, optimize: 2 })
+  const w = compile(src, { wat: true, optimize: 2 })
   is((w.match(/__throw_property_nullish/g) || []).length, 0, 'the fields are read as objects, never tested for a nullish value')
 })
 
@@ -164,7 +164,7 @@ test('param defaults: a parameter no call passes decides its undefined test', ()
     ['never passed, against null', `const f = (a, b) => (b === null ? 1 : 2) + (b == null ? 10 : 20)\nexport const value = () => f(1)`, []],
     ['the dead arm reads a member', `const f = (a, b) => { if (b !== undefined) return b.length; return a }\nexport const value = () => f(7)`, []],
   ])
-  const w = jz.compile(`class M { constructor(n11, n12) { this.e = [1, 0]; if (n11 !== undefined) this.set(n11, n12) } set(a, b) { const te = this.e; te[0] = a; te[1] = b; return this } }
+  const w = compile(`class M { constructor(n11, n12) { this.e = [1, 0]; if (n11 !== undefined) this.set(n11, n12) } set(a, b) { const te = this.e; te[0] = a; te[1] = b; return this } }
     export const value = () => { const m = new M(); m.set(3, 4); return m.e[0] + m.e[1] * 10 }`, { wat: true, optimize: 2 })
   is((w.match(/__to_num/g) || []).length, 0, 'the elements hold numbers alone: the guarded set never runs with the constructor\'s missing parameters')
 })
@@ -186,7 +186,7 @@ test('param defaults: a call that leaves an argument out splices with the defaul
     ['a default reading an earlier parameter, left out', `const f = (a, b = a * 2, c = b + 1) => a + b + c\nexport const value = () => f(1) + f(1, 5) * 100 + f(1, 5, 0) * 10000`, []],
     ['more arguments than parameters keep the call', `const f = (a, b = 1) => a + b\nexport const value = () => f(1, 2, 3)`, []]])
   if (belowOpt(2)) return
-  const w = jz.compile(src, { wat: true, optimize: 2 })
+  const w = compile(src, { wat: true, optimize: 2 })
   const run = w.slice(w.indexOf('(func $value'), w.indexOf('\n  (func $', w.indexOf('(func $value') + 10))
   is((run.match(/f64\.store/g) || []).length, 0, 'a and b are locals: their factories spliced with x, y, z bound to 0, and nothing of them escapes')
   is(/call \$[^\s)]*V[^\s)]*\s/.test(run), false, 'the site passing a value that may be undefined for a defaulted parameter splices too, its default a test at the site')
@@ -197,7 +197,7 @@ test('param defaults: a function whose defaults never run inlines', () => {
     export const value = (n) => { const a = new Float32Array(n * 2), b = new Float32Array(n * 2), v = new V(); for (let i = 0; i < n; i++) v.fromArray(a, i * 2).toArray(b, i * 2); let s = 0; for (let i = 0; i < b.length; i++) s += b[i]; return s }`
   agree([['every call passes both', src, [4]]])
   if (belowOpt(2)) return
-  const w = jz.compile(src, { wat: true, optimize: 2 })
+  const w = compile(src, { wat: true, optimize: 2 })
   is((w.match(/call \$[^\s)]*(fromArray|toArray)/g) || []).length, 0, 'no call to either remains: both are spliced into the loop')
 })
 

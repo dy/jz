@@ -14,7 +14,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { run, oracle } from './util.js'
 import { levels } from './_matrix.js'
 
@@ -66,7 +66,7 @@ test('inplace-store: field updates reuse a proven object pointer', () => {
     const f = jz(src, {optimize}).exports.f
     for (const n of [0, 1, 9, 1]) is(f(n), expected(n), `O${optimize}: ${n} objects`)
     if (optimize) {
-      const wat = jz.compile(src, {optimize, wat:true})
+      const wat = compile(src, {optimize, wat:true})
       // The small step function may inline into the exported driver.
       const body = wat.split(/\(func /).find(s => /^\$(?:step|f)\s/.test(s))
       ok(body && !/call \$__ptr_offset\b/.test(body), 'field stores do not decode freshly boxed pointers')
@@ -79,7 +79,7 @@ test('inplace-store: field updates reuse a proven object pointer', () => {
 const PRE_WATR = { level: 'speed', watr: false }
 
 test('inplace-store: fires on the immutable-update kernel and bit-matches JS', () => {
-  const wat = jz.compile(KERNEL, { wat: true, optimize: PRE_WATR })
+  const wat = compile(KERNEL, { wat: true, optimize: PRE_WATR })
   // The transform's signature, either strength: the masked OBJECT|sid runtime
   // guard, or — when the tracked alias is ptr-narrowed to this schema — the
   // statically-discharged raw form, whose tell is the step loop allocating
@@ -97,7 +97,7 @@ test('inplace-store: loop-invariant array base hoists out of the step loop', () 
   // With it whitelisted (NON_MUTATING_CALLS), hoistInvariantLoop lifts the
   // `__ptr_offset(ps)` base resolution to the loop preheader: the inner loop
   // body must not re-resolve the array base per iteration.
-  const wat = jz.compile(KERNEL, { wat: true, optimize: PRE_WATR })
+  const wat = compile(KERNEL, { wat: true, optimize: PRE_WATR })
   const stepBody = wat.split(/\(func /).find(c => /^\$step\b/.test(c)) || ''
   ok(stepBody, 'step function present')
   const innerLoop = stepBody.slice(stepBody.lastIndexOf('(loop '))
@@ -110,7 +110,7 @@ test('inplace-store: a cursor its next statement projects stays a raw cell addre
   // so p holds the packed cell's address, not a box, and the replace store
   // derives the array base from it — no per-iteration receiver dispatch.
   for (const optimize of [PRE_WATR, { level: 2, watr: false }]) {
-    const wat = jz.compile(KERNEL, { wat: true, optimize })
+    const wat = compile(KERNEL, { wat: true, optimize })
     const stepBody = wat.split(/\(func /).find(c => /^\$step\b/.test(c)) || ''
     const innerLoop = stepBody.slice(stepBody.lastIndexOf('(loop '))
     ok(innerLoop, 'step loop present')

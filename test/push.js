@@ -5,7 +5,7 @@
 // receiver lands where JS puts it.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { levels, onKernel } from './_matrix.js'
 import { funcWat, oracle, wat } from './util.js'
 
@@ -64,7 +64,7 @@ test('push: an index store at the length appends; past it, holes', () => {
 test('push: appends call only to grow', async () => {
   if (onKernel()) return  // kernel WAT shape differs; the in-process leg owns shape checks
   const counts = async (src, n) => {
-    const { instance } = await WebAssembly.instantiate(jz.compile(src, { optimize: 'speed', helperCounters: true, alloc: false }))
+    const { instance } = await WebAssembly.instantiate(compile(src, { optimize: 'speed', helperCounters: true, alloc: false }))
     const e = instance.exports
     e.__helper_counts_reset()
     const r = e.f(n)

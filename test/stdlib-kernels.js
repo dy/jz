@@ -6,7 +6,7 @@
 // same source (`agree`, or `host` for a module graph), never a literal.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { agree, wat, oracle, run } from './util.js'
 import { ownedLevels } from './_matrix.js'
 
@@ -16,7 +16,7 @@ const count = (text, re) => (text.match(re) || []).length
 const shape = (src, modules) => wat(src, { ...SPEED, modules })
 // an export whose parameters and result are plain f64 takes a number unwrapped
 const takesF64 = (src) => {
-  const raw = new WebAssembly.Instance(new WebAssembly.Module(jz.compile(src, SPEED)), {}).exports
+  const raw = new WebAssembly.Instance(new WebAssembly.Module(compile(src, SPEED)), {}).exports
   try { return typeof raw.f(0.5) === 'number' } catch { return false }
 }
 
@@ -152,7 +152,7 @@ test('stdlib: feature detection sees a builtin before its first use', () => {
     'Math', 'JSON', 'Math.PI', 'Math.random', 'Date.now', 'console', 'console.log', 'performance', 'performance.now', 'parseInt', 'isNaN']
   const source = `export let f = () => [${names.map(name => `typeof ${name}`).join(',')}]`
   is(run(source).f(), oracle(source).f(), 'builtins have their declared types without a call')
-  const imports = WebAssembly.Module.imports(new WebAssembly.Module(jz.compile(source)))
+  const imports = WebAssembly.Module.imports(new WebAssembly.Module(compile(source)))
   ok(!imports.some(i => /rng|clock|time/i.test(i.name)), 'typeof does not request random numbers or read the clock')
 })
 
@@ -224,11 +224,11 @@ test('stdlib: a parameter returned under a numeric guard keeps the f64 export', 
 // returns the parameter under a test of another value (`ix`, its high word): a
 // string would come back as itself, so the export stays boxed by design.
 test('stdlib: x !== x on a parameter stays numeric', () => {
-  ok(jz.compile(`export let f = (x) => (x !== x) ? 0 : x * 2`, SPEED).byteLength < 400)
+  ok(compile(`export let f = (x) => (x !== x) ? 0 : x * 2`, SPEED).byteLength < 400)
 })
 test('stdlib: x === K against an imported numeric constant stays numeric', () => {
   const modules = { './p.js': `var P = Number.POSITIVE_INFINITY\nexport default P` }
-  ok(jz.compile(`import P from './p.js'\nexport let f = (x) => (x === P) ? 0 : x * 2`, { ...SPEED, modules }).byteLength < 400)
+  ok(compile(`import P from './p.js'\nexport let f = (x) => (x === P) ? 0 : x * 2`, { ...SPEED, modules }).byteLength < 400)
 })
 test('stdlib: an isnan guard before arithmetic keeps the f64 export', () => {
   ok(takesF64(`function isnan(x) { return (x !== x) }
@@ -294,7 +294,7 @@ test('stdlib: module var typed array written once needs no nullish guard', () =>
 // compile time. Live: number/float64/base/to-float32 picks Math.fround this
 // way, and the whole float32 family (asinf, atanf, …) calls it per operation.
 test('stdlib: builtin-or-polyfill selection folds to the builtin', () => {
-  ok(jz.compile(`var b = (typeof Math.fround === 'function') ? Math.fround : null
+  ok(compile(`var b = (typeof Math.fround === 'function') ? Math.fround : null
     function poly(x) { return x }
     var fr
     if (typeof b === 'function') { fr = b } else { fr = poly }

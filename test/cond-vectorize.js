@@ -9,11 +9,11 @@
 // vectorizes as i32x4 (the narrowing held — an f64x2 body would be a lost narrowing).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 
 const runF = (src, o) => jz(src, { optimize: o }).exports.run()
 const watRun = (src) => {
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed' } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed' } })
   const i = w.indexOf('(func $run')
   return w.slice(i, w.indexOf('\n  (func ', i + 8))
 }
@@ -84,7 +84,7 @@ test('cond-vectorize: an integer comparison selects float64 lanes', () => {
   // (`mask`: the scalar test compares integers; a u16 against `k` compares as float64 there)
   for (const [T, cond, mask] of [['Uint8Array', 'a[i] === 1', true], ['Int8Array', 'a[i] < -3', true], ['Uint16Array', 'a[i] >= k', false], ['Int32Array', 'a[i] !== k', true]]) {
     const s = src(T, cond)
-    const w = jz.compile(s, { wat: true, optimize: { level: 'speed' } })
+    const w = compile(s, { wat: true, optimize: { level: 'speed' } })
     const f = w.slice(w.indexOf('(func $run'), w.indexOf('\n  (func ', w.indexOf('(func $run') + 8))
     ok(/v128\.bitselect/.test(f), `${T} ${cond}: the map runs in f64x2 lanes`)
     if (mask) ok(/i64x2\.extend_low_i32x4_s/.test(f), `${T} ${cond}: its mask is the integer comparison widened`)
@@ -100,7 +100,7 @@ test('cond-vectorize: an integer comparison selects float64 lanes', () => {
 // The speed build's WAT of function `name` (the kernels inline into `go`: WASI reserves `run` for its void command entry), and the module run
 // at every level beside the host.
 const funcWatOf = (src, name, extra = {}) => {
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', ...extra } })
+  const w = compile(src, { wat: true, optimize: { level: 'speed', ...extra } })
   const i = w.indexOf(`(func $${name}`)
   return i < 0 ? '' : w.slice(i, w.indexOf('\n  (func ', i + 8))
 }

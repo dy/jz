@@ -4,14 +4,14 @@
 // declaration some read can find unassigned stays absent.
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { _compileInProcess as compile } from '../index.js'
+
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
 import { definitelyAssigned } from '../src/summary/definite.js'
 import { K, hasTag } from '../src/summary/kind.js'
 import { T } from '../src/ast.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, oracle, run, wat } from './util.js'
+import { agree, oracle, run, wat, compileInProcess as compile } from './util.js'
 
 // [name, source, args, the bare declarations assigned before every read]
 const programs = [

@@ -5,14 +5,14 @@
 // (a missed view = packing aliased memory = miscompile, the watr self-compile class).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { onWasi } from './_matrix.js'
 
 // The arrays stay in memory: a module array only constant indices reach would be
 // locals of the kernel (plan/scratch.js), with no store left to pack.
 const speed = { level: 'speed', moduleScratch: false }
 const speedNoSimd = { level: 'speed', noSimd: true, moduleScratch: false }
-const fires = (src) => (jz.compile(src, { wat: true, optimize: speed }).match(/v128\.store/g) || []).length
+const fires = (src) => (compile(src, { wat: true, optimize: speed }).match(/v128\.store/g) || []).length
 
 // Run the same source SIMD vs scalar; assert byte-identical numeric result.
 function bitExact(name, src) {
@@ -124,7 +124,7 @@ test('slp: bails on a within-iteration read-after-write (forward shift)', () => 
       for (let k = 0; k < 96; k += 3) { o[k+1] = o[k]; o[k+2] = o[k+1] }
       let s = 0.0; for (let i = 0; i < 99; i++) s = s + o[i]; return s
     }`
-  const unforwarded = jz.compile(src, { wat: true, optimize: { ...speed, forwardStores: false } })
+  const unforwarded = compile(src, { wat: true, optimize: { ...speed, forwardStores: false } })
   is((unforwarded.match(/v128\.store/g) || []).length, 0, 'forward-shift RAW → SLP bails (no v128 store)')
   bitExact('forward shift', src)
   // ground-truth: a regressed guard would re-pack and diverge from plain JS

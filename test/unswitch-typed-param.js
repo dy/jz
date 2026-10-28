@@ -9,13 +9,13 @@
 // for Float64Array (owned + view), and EVERY other type / shape falls back bit-exact.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { onWasi } from './_matrix.js'
 import { oracle, funcWat } from './util.js'
 
 const speed = { level: 'speed' }
 const fProcess = (src, opt = speed) => {
-  const wat = jz.compile(src, { wat: true, optimize: opt })
+  const wat = compile(src, { wat: true, optimize: opt })
   const fi = wat.indexOf('(func $process')
   return wat.slice(fi, wat.indexOf('\n  (func ', fi + 10))
 }
@@ -134,7 +134,7 @@ test('unswitch: local typed widths preserve bounds, rounding and assignment valu
     for (let i = -1; i < n; i++) sum += (a[i] = i * 0.1)
     return [sum, a[0], a[3], a[7], a[8], storage[0], storage[7]]
   }`
-  const wat = jz.compile(src, { wat: true, optimize: speed })
+  const wat = compile(src, { wat: true, optimize: speed })
   ok(wat.includes('$__utw'), 'stable local receiver gets width versions')
   ok(wat.includes('f32.store') && wat.includes('f64.store'), 'both floating widths have direct stores')
   const js = oracle(src).f
@@ -195,7 +195,7 @@ test('unswitch: a store of either float width versions the loop once', () => {
       for (let i = -1; i < n; i++) out[i] = inp[i] * 0.5 + 0.1
       return [out[0], out[3], out[7], out[8]]
     }`
-  const fw = funcWat(jz.compile(src, { wat: true, optimize: speed }), 'f')
+  const fw = funcWat(compile(src, { wat: true, optimize: speed }), 'f')
   ok(fw.includes('$__utw') && fw.includes('f32.store') && fw.includes('f64.store'), 'the version stores either width directly')
   const loops = (fw.match(/\(loop/g) || []).length
   ok(loops <= 3, `one versioned copy beside each original loop (${loops} loops)`)
@@ -284,7 +284,7 @@ test('unswitch: coercing values and changing receivers retain their fallback', (
     for (let i = 0; i < 2; i++) { a[i] = 0.1; a = b }
     return [a[0], a[1]]
   }`
-  ok(!jz.compile(src, { wat: true, optimize: speed }).includes('$__utw'), 'reassigned local has no width version')
+  ok(!compile(src, { wat: true, optimize: speed }).includes('$__utw'), 'reassigned local has no width version')
   const { f } = jz(src, { optimize: speed }).exports
   for (const which of [true, false]) is(f(which), oracle(src).f(which))
   consistent('coercion hooks', `export function run() {
