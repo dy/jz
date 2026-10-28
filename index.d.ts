@@ -48,11 +48,6 @@ export interface OptimizeOptions {
   alloc?: boolean
   /** Compact what the module keeps as each outermost call returns (owned memory). Default on. */
   compact?: boolean
-  /** Entries of the stub log a loop's compaction reads: the blocks older than the loop that grew (default 65536, a megabyte of address space). */
-  compactStubs?: number
-  stencil?: boolean
-  outerStrip?: boolean
-  toneMap?: boolean
   [pass: string]: unknown
 }
 
@@ -89,8 +84,8 @@ export interface CompileOptions {
   memory?: number | WebAssembly.Memory | JzMemory | MemoryOptions
   /** `true` (default) balanced, `'speed'`, `'size'`, `false` off, or an object. */
   optimize?: boolean | 'size' | 'speed' | OptimizeOptions
-  /** Fixed seed for a reproducible `Math.random`; `true` requests host entropy. */
-  randomSeed?: number | boolean
+  /** Fixed seed for a reproducible `Math.random`; without it the host's entropy seeds it. */
+  randomSeed?: number
   /** Emit the wasm `name` section for profilers and debuggers. */
   names?: boolean
   /** Statement source map and function names. Selects optimize: false; other tiers reject. */

@@ -1650,13 +1650,13 @@ test('compile profile reports timings without changing output bytes', () => {
   ok(profile.totals.compile >= profile.totals.plan, 'compile timing should include plan timing')
 })
 
-test('compile profile.names emits wasm function name section', () => {
-  if (onKernel()) return  // kernel: host {profile:{names}} option doesn't reach the single-source self-compile
+test('compile names emits wasm function name section', () => {
+  if (onKernel()) return  // kernel: the host names option doesn't reach the single-source self-compile
   const src = 'let helper = (x) => x <= 0 ? 1 : helper(x - 1) + 1; export let add = (a, b) => helper(a) + b'
   const plain = compile(src)
   is(WebAssembly.Module.customSections(new WebAssembly.Module(plain), 'name').length, 0)
 
-  const named = compile(src, { profile: { names: true } })
+  const named = compile(src, { names: true })
   const names = functionNames(named).map(([, name]) => name)
   // `add` has a dynamic (i64) param so it's boundary-wrapped: the exported entry is the
   // `$add$exp` thunk (the inner single-use body inlines into it). Either name proves the

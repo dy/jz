@@ -206,12 +206,6 @@ export function resolveOptimize(opt) {
     return { ...p }
   }
   if (typeof opt === 'object') {
-    // Legacy aliases: the four vectorizer passes shipped default-on under an
-    // `experimental*` prefix; canonical names dropped it. Old keys stay accepted
-    // (normalized here, before validation) so existing configs keep working.
-    for (const [legacy, canon] of [['experimentalStencil', 'stencil'], ['experimentalOuterStrip', 'outerStrip'], ['experimentalToneMap', 'toneMap'], ['experimentalSlp', 'slp']])
-      if (legacy in opt && !(canon in opt)) { opt = { ...opt, [canon]: opt[legacy] }; delete opt[legacy] }
-      else if (legacy in opt) { opt = { ...opt }; delete opt[legacy] }
     const baseLevel = typeof opt.level === 'number' || typeof opt.level === 'string' ? opt.level : 2
     const base = LEVEL_PRESETS[String(baseLevel)]
     if (!base) throw new Error(`Unknown optimize level '${opt.level}' — valid: 0, 1, 2, 3, 'size', 'speed', 'fast'`)

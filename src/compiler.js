@@ -188,6 +188,8 @@ export const normalizeOptions = (opts) => {
   const opt = o.optimize
   if (opt && typeof opt === 'object') {
     const { simd, tailCall, exceptions, alloc, ...passes } = opt
+    // `level` takes the values `optimize` takes: false is off, true the default
+    if (typeof passes.level === 'boolean') passes.level = passes.level ? 2 : 0
     if (simd === false) o.noSimd = true
     if (tailCall === false) o.noTailCall = true
     if (exceptions === false) o.noEhAbort = true
@@ -299,8 +301,8 @@ const setupCtx = (code, opts, jzify) => {
   if (opts._compactCollections) ctx.transform.compactCollections = true
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.randomSeed !== undefined) {
-    if (opts.randomSeed !== true && !Number.isFinite(opts.randomSeed))
-      err(`opts.randomSeed must be a finite number (fixed seed — reproducible) or true (seed Math.random from host entropy on first use); got ${typeof opts.randomSeed}`)
+    if (!Number.isFinite(opts.randomSeed))
+      err(`opts.randomSeed must be a finite number, the seed of a reproducible Math.random (without it Math.random seeds from host entropy); got ${typeof opts.randomSeed}`)
     ctx.transform.randomSeed = opts.randomSeed
   }
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
@@ -367,19 +369,6 @@ const compilePipeline = (code, opts = {}, jzify) => {
 
   configureDiagnostics(opts)
 
-  // opts.stencil: the neighbour-load stencil vectorizer (a[i±1] / 2-D 5-point).
-  // Now default-on at optimize:'speed' (proven bit-exact corpus-wide); the opt is two-way so an
-  // explicit `false` can still disable it (e.g. to A/B against the scalar path).
-  { const v = opts.stencil !== undefined ? opts.stencil : opts.experimentalStencil; if (v !== undefined && ctx.transform.optimize) ctx.transform.optimize.stencil = !!v }
-
-  // opts.outerStrip: the outer-loop strip-mine vectorizer (2 adjacent pixels in f64x2
-  // lanes over an inner reduction). Default-on at speed; two-way like stencil.
-  { const v = opts.outerStrip !== undefined ? opts.outerStrip : opts.experimentalOuterStrip; if (v !== undefined && ctx.transform.optimize) ctx.transform.optimize.outerStrip = !!v }
-
-  // opts.toneMap: the mixed-lane log-tonemap vectorizer (i32 dens[i] → f64 log →
-  // i32 pack → px[i], 2-wide f64x2 island). Default-on at speed; two-way like the others.
-  { const v = opts.toneMap !== undefined ? opts.toneMap : opts.experimentalToneMap; if (v !== undefined && ctx.transform.optimize) ctx.transform.optimize.toneMap = !!v }
-
   const module = time('compile', () => compile(ast, profiler))
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-compile')
 
@@ -429,9 +418,8 @@ const compilePipeline = (code, opts = {}, jzify) => {
     }
     const wasm = snapshot instanceof Uint8Array ? snapshot : time('watrCompile', () => watrCompile(optimized))
     let bytes = wasm
-    // opts.names emits a wasm `name` custom section (symbols for profilers/
-    // debuggers). opts.profile.names is the older spelling — still honored.
-    if (opts.names || opts.profile?.names || mapOptions) bytes = appendFunctionNames(bytes, optimized)
+    // opts.names emits a wasm `name` custom section (symbols for profilers/debuggers).
+    if (opts.names || mapOptions) bytes = appendFunctionNames(bytes, optimized)
     if (mapOptions) {
       const map = completeSourceMap(wasm.sourceMap, mapContents)
       if (mapOptions.url !== false) bytes = sourceMapURL(bytes, mapOptions.url ?? 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(map)))

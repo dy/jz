@@ -287,3 +287,4 @@ standing performance claims still require fresh reference measurements.
 - `jz/interop` exports `instantiate` alone (instantiate.js over the interop.js runtime): `memory()` is `jz.memory()`, a module compiled once is the result's `.module`, and `wrap`, `toModule`, `coerce`, the bit conversions, the NaN constants and the pointer accessors stay internal.
 - `jz/strict` exports the named `compile` alone, as the root does: `import { compile } from 'jz/strict'`.
 - `warnings` takes a callback, `(warning) => …`, and refuses the `{ entries }` sink; `jz()` no longer adds `.warnings` to its result, and `why` reports only to a callback.
+- `randomSeed` takes a number only (`true` was the default spelled out); the top-level `stencil`, `outerStrip` and `toneMap`, the `experimental*` pass aliases and `profile.names` are gone for `optimize: { stencil, … }` and `names`; `optimize: { level: false }` compiles unoptimized, where it compiled at the default level.

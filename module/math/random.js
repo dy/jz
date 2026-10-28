@@ -16,9 +16,9 @@ import { ctx, declGlobal } from '../../src/ctx.js'
 export const registerMathRandom = () => {
   // Math.random seeding. DEFAULT: entropy-seeded once from the host on first use (crypto under
   // host:'js', `random_get` under WASI), so randomness "just works" and isn't silently reproducible.
-  // `randomSeed: <n>` picks a fixed seed for a reproducible sequence; `true` forces entropy explicitly.
+  // `randomSeed: <n>` picks a fixed seed for a reproducible sequence.
   // Either way jz emits the randomness syscall only when `Math.random` is actually used.
-  const rngEntropy = ctx.transform.randomSeed === undefined || ctx.transform.randomSeed === true
+  const rngEntropy = ctx.transform.randomSeed === undefined
   const rngSeedConst = typeof ctx.transform.randomSeed === 'number'
     ? ((ctx.transform.randomSeed >>> 0) || 1)   // xorshift dies on 0 → floor at 1
     : 12345

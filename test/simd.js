@@ -1,5 +1,5 @@
 import test from 'tst'
-import { is, ok, almost } from 'tst/assert.js'
+import { is, ok, almost, throws } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -3816,7 +3816,7 @@ test('SIMD reduce - offset-indexed dot (matmul A[off+i]*B[off+i]) folds the inva
 // address-preserving (each f64.load → v128.load at the SAME address ⇒ the δ-shifted
 // pair), so it's BIT-EXACT vs the scalar oracle (a lane-parallel map reorders nothing
 // within a lane — unlike a horizontal reduction). Opt-in behind stencil.
-const STENCIL = { optimize: 'speed', stencil: true }
+const STENCIL = { optimize: { level: 'speed', stencil: true } }
 // Oracle: SAME pipeline with the stencil pass OFF (its loop stays scalar) — so the
 // shared checksum-reduction vectorizes identically in both and cancels; only the
 // stencil loop differs. (vs optimize:false the checksum would reassociate ⇒ ulp noise.)
@@ -5015,11 +5015,9 @@ test('SIMD cost model - a real if-converted stencil (enough per-lane work) still
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar')
 })
 
-test('vectorizer pass names: legacy experimental* keys stay accepted as aliases', () => {
-  // The four vectorizer passes renamed experimental* → canonical (stencil/outerStrip/
-  // toneMap/slp). Old keys must keep working: same source compiled with the LEGACY
-  // disable key must match the CANONICAL disable key byte-for-byte, and differ from
-  // the default (pass-on) build.
+test('vectorizer pass names: canonical keys switch their passes, retired experimental* keys are refused', () => {
+  // The four vectorizer passes dropped their experimental* names (stencil/outerStrip/
+  // toneMap/slp); an old key is an unknown optimize key now.
   const src = `export const main = (n=64) => {
     const a = new Float64Array(n), out = new Float64Array(n)
     for (let i = 0; i < n; i++) a[i] = i * 0.5
@@ -5030,8 +5028,9 @@ test('vectorizer pass names: legacy experimental* keys stay accepted as aliases'
   }`
   const on = compile(src, { optimize: { level: 3 }, wat: true })
   const canon = compile(src, { optimize: { level: 3, stencil: false, slp: false }, wat: true })
-  const legacy = compile(src, { optimize: { level: 3, experimentalStencil: false, experimentalSlp: false }, wat: true })
-  is(canon, legacy, 'legacy alias produces byte-identical output to canonical key')
+  for (const key of ['experimentalStencil', 'experimentalOuterStrip', 'experimentalToneMap', 'experimentalSlp'])
+    throws(() => compile(src, { optimize: { level: 3, [key]: false } }), /Unknown optimize key/, key)
+  ok(canon !== on, 'the canonical keys switch the passes off')
   // Liveness proof for the plumbing itself: noSimd (which clears slp via the same
   // normalized cfg) must differ from the default build on this SIMD-heavy source.
   const scalar = compile(src, { optimize: { level: 3 }, noSimd: true, wat: true })

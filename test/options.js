@@ -160,6 +160,13 @@ test('options: warnings takes a callback and refuses a sink object', () => {
   ok(compile(DEP, { warnings: undefined }).byteLength > 0, 'an absent callback is no callback')
 })
 
+test('options: optimize level takes optimize\'s values; randomSeed takes a number', () => {
+  is(compile(LOOP, { optimize: { level: false } }), compile(LOOP, { optimize: false }), 'level:false is off')
+  is(compile(LOOP, { optimize: { level: true } }), compile(LOOP), 'level:true is the default')
+  throws(() => compile(HEAP, { randomSeed: true }), /finite number/)
+  throws(() => compile(LOOP, { optimize: { level: 'speed', experimentalStencil: false } }), /Unknown optimize key/)
+})
+
 test('options: the caller\'s option object is left untouched', () => {
   const opts = { memory: { initial: 2 }, optimize: { simd: false } }
   compile(HEAP, opts)

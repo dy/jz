@@ -5187,7 +5187,6 @@ onto the internal flags. Tests and scripts may pass those flags directly:
 | `noEhAbort` | `optimize: { exceptions: false }` | trap on throw in catch-free modules; the w2c bench lane uses it per case |
 | `alloc: false` | `optimize: { alloc: false }` | raw standalone ABI: no allocator/reset exports, no decoded-error metadata |
 | `whyNotSimd`, `whyNotRewind` | `why: true` | reports go to the `warnings` callback |
-| `stencil`, `outerStrip`, `toneMap` | `optimize: { stencil, … }` | pass names, validated by `resolveOptimize` |
 | `strict` | none | test-only: skips jzify and rejects the forms it lowers plus dynamic fallbacks |
 | `sourceType` | none | parse goal for test262 (`script`/`module`); the default `jz` goal keeps export-as-ABI |
 | `nativeTimers` | none | blocking `__timer_loop` in `_start` for the wasmtime CLI; a command-module auto rule is the intended replacement |

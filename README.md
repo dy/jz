@@ -46,7 +46,7 @@ exports.square(7) // 49
 | `optimize` | `true` (default), `'speed'`, `'size'`, `false`, or an object: `{ level, simd, tailCall, exceptions, alloc }` for engines without SIMD or tail calls and for raw standalone modules. |
 | `randomSeed` | Number for a reproducible `Math.random`. |
 | `names` | Emit the wasm name section for profilers and debuggers. |
-| `sourceMap` | Debug build with statement locations and function names, through the JavaScript API or CLI. `true` embeds the map; `{ source, url }` names the entry and an external map URL. The returned bytes also expose `.sourceMap`. Selects `optimize: false`; optimized maps and maps from the Wasm-hosted compiler are not supported. |
+| `sourceMap` | Debug build with statement locations and function names: `true` embeds the map; `{ source, url }` names the entry and an external map URL. The returned bytes also expose `.sourceMap`. Selects `optimize: false`. |
 | `wat` | Return WAT text instead of bytes. |
 | `warnings` | Callback for advisories: dynamic fallbacks, heap growth. |
 | `why` | Also report to `warnings` each loop the vectorizer and each arena the rewind declined. |
@@ -134,7 +134,7 @@ comes back.
    heap below them. Make those before the state that churns; drop them to
    let the memory go. `memory.reset()` returns the module to its start.
 
-What a program holds, at `optimize: 3`:
+What a program holds, at `optimize: 'speed'`:
 
 | program | memory held |
 |---|---|
@@ -171,7 +171,7 @@ Where behaviour differs from JS:
 
 - **No GC.** A call releases what it allocated on return, except what it stored into something older than itself and what lies below that in the heap; what a call keeps lives until `memory.reset()`, and what it replaces is not freed. `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
 - **In-place array arguments.** An exported function that stores into an array argument and reads it back takes a Float64Array, a Float32Array or an Array there, which round as JS rounds them; another kind throws a TypeError.
-- **Float sums in lanes.** From optimize level 2, a loop that sums floats may add in two lanes: the last digits of the sum can differ.
+- **Float sums in lanes.** At the default level and `'speed'`, a loop that sums floats may add in two lanes: the last digits of the sum can differ.
 - **Constant arithmetic.** Compile-time `+ - * /` chains use exact rationals and round once: `0.1 + 0.2 - 0.3` becomes `2.7755575615628914e-17`. Set `optimize: { rationalConst: false }` for JavaScript's per-operation rounding.
 - **Bitwise operands under 2^63.** `|`, `&`, `^`, `~`, the shifts and `Math.imul` convert an operand of magnitude under 2^63 as JS does. A larger one reads as -1, or as 0 when negative, where JS takes it modulo 2^32: `1e300 | 0` is -1. A store to an integer typed array converts exactly at any magnitude.
 - **Math within 50 ulp of V8.** Measured against V8's results: `sin`, `cos`, `tan` up to 49 ulp, `asin`, `acos` 1, `atan`, `atan2` 10, exponentials, logarithms, hyperbolics and `hypot` 5, `pow` 11, a constant `** 2.4`-style exponent 40; `sqrt` and `cbrt` agree. A test comparing them bit for bit needs a tolerance. `x ** 0.5` is `Math.sqrt(x)`, so `(-Infinity) ** 0.5` is NaN.
@@ -359,7 +359,7 @@ numeric indexed accesses and length reads; escaping buffers retain their normal
 allocation and cannot pass the fixed-memory check. Storage belongs to one
 instance, so imported and shared memories are rejected.
 
-In module-owned memory, optimized builds (level 2 and up, not `'size'`) place
+In module-owned memory, optimized builds (the default level and `'speed'`) place
 such arrays in any function, without a check: where nothing between an array's
 construction and its last use can enter the function again (a host import, a
 closure value, a callback, a suspension), the array is static storage, and a

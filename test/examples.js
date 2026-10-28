@@ -179,7 +179,7 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
         for (let f = 0; f < 30; f++) exports.frame(f);
         return Array.from(px);
     };
-    const simd = run({ ...OPT }), scal = run({ ...OPT, stencil: false });
+    const simd = run({ ...OPT }), scal = run({ optimize: { level: OPT.optimize, stencil: false } });
     is(simd.length, scal.length);
     ok(simd.filter(v => v & 0xffffff).length > 300, `watercolor renders a live field (${simd.filter(v => v & 0xffffff).length} lit) — bit-exact below isn't vacuous`);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'watercolor SIMD stencils bit-exact vs scalar (3072 px, 30 frames)');
@@ -192,7 +192,7 @@ test('example: watercolor fluid stencils vectorize f64x2 and stay bit-exact', ()
 // field is a stencil too; the reflection shading reads it as a per-pixel map and stays scalar.
 test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/waves/waves.js', import.meta.url), 'utf8');
-    const base = (compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
+    const base = (compile(src, { optimize: { level: OPT.optimize, stencil: false }, wat: true }).match(/f64x2\./g) || []).length;
     const sten = (compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
     // Keep the recovered SIMD floor; later rewrites may add vector operations. (43 since the
     // reflection render replaced the caustic splat, whose blur passes were stencils too.)
@@ -206,7 +206,7 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
         for (let f = 0; f < 60; f++) exports.frame(f / 60, 30 + f, 48, 1.0, 240);   // dragged stick
         return Array.from(px);
     };
-    const simd = run({ ...OPT }), scal = run({ ...OPT, stencil: false });
+    const simd = run({ ...OPT }), scal = run({ optimize: { level: OPT.optimize, stencil: false } });
     is(simd.length, scal.length);
     // non-vacuous: the reflection must show real contrast — bright ripples where slopes catch the
     // studio lights AND still water mirroring the dark ceiling
@@ -225,7 +225,7 @@ test('example: waves wave-equation stencil vectorizes f64x2 and stays bit-exact'
 test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/metaballs/metaballs.js', import.meta.url), 'utf8');
     // outerStrip is now default-on at speed; SCALAR baseline turns it explicitly off.
-    const base = (compile(src, { ...OPT, outerStrip: false, wat: true }).match(/f64x2\./g) || []).length;
+    const base = (compile(src, { optimize: { level: OPT.optimize, outerStrip: false }, wat: true }).match(/f64x2\./g) || []).length;
     const os = (compile(src, { ...OPT, wat: true }).match(/f64x2\./g) || []).length;
     // Root F's nest versioning hands the LANE vectorizer the canonical scaffold at
     // BOTH tiers (36 lanes vs the old strip-only 21) — outer-strip no longer has
@@ -240,7 +240,7 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
         for (let f = 0; f < 15; f++) exports.frame(f);
         return Array.from(px);
     };
-    const simd = run({ ...OPT }), scal = run({ ...OPT, outerStrip: false });
+    const simd = run({ ...OPT }), scal = run({ optimize: { level: OPT.optimize, outerStrip: false } });
     is(simd.length, scal.length);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'metaballs outer-strip bit-exact vs scalar (1536 px, 15 frames)');
 });
@@ -255,7 +255,7 @@ test('example: metaballs inner reduction outer-strips to f64x2 and stays bit-exa
 // via the outerStrip toggle (the iterated-reduce gate).
 test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/lyapunov/lyapunov.js', import.meta.url), 'utf8');
-    const base = (compile(src, { ...OPT, outerStrip: false, wat: true }).match(/f64x2\./g) || []).length;
+    const base = (compile(src, { optimize: { level: OPT.optimize, outerStrip: false }, wat: true }).match(/f64x2\./g) || []).length;
     const wat = compile(src, { ...OPT, wat: true });
     ok((wat.match(/f64x2\./g) || []).length > base && /\$math\.log_v/.test(wat), `lyapunov iterated-reduce adds f64x2 + log_v (${base} → ${(wat.match(/f64x2\./g) || []).length})`);
     const run = (opts) => {
@@ -265,7 +265,7 @@ test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit
         for (let f = 0; f < 10; f++) exports.frame(f, 0.1, 0.2, 1.5);
         return Array.from(px);
     };
-    const simd = run({ ...OPT }), scal = run({ ...OPT, outerStrip: false });
+    const simd = run({ ...OPT }), scal = run({ optimize: { level: OPT.optimize, outerStrip: false } });
     is(simd.length, scal.length);
     ok(simd.filter(v => v & 0xffffff).length > 50, `lyapunov renders a real field (${simd.filter(v => v & 0xffffff).length} lit) — bit-exact below isn't vacuous`);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'lyapunov iterated-reduce bit-exact vs scalar (6144 px, 10 frames)');
@@ -331,7 +331,7 @@ export let run = () => {
 test('example: schrodinger float-index + f32-widening stencil vectorizes and stays bit-exact', () => {
     const src = fs.readFileSync(new URL('../examples/schrodinger/schrodinger.js', import.meta.url), 'utf8');
     // stencil is now default-on at speed; SCALAR baseline turns it explicitly off.
-    const base = (compile(src, { ...OPT, stencil: false, wat: true }).match(/f64x2\./g) || []).length;
+    const base = (compile(src, { optimize: { level: OPT.optimize, stencil: false }, wat: true }).match(/f64x2\./g) || []).length;
     const wat = compile(src, { ...OPT, wat: true });
     const sten = (wat.match(/f64x2\./g) || []).length;
     // Keep the recovered SIMD floor; later rewrites may add vector operations.
@@ -344,7 +344,7 @@ test('example: schrodinger float-index + f32-widening stencil vectorizes and sta
         for (let f = 0; f < 12; f++) exports.frame(f);
         return Array.from(px);
     };
-    const simd = run({ ...OPT }), scal = run({ ...OPT, stencil: false });
+    const simd = run({ ...OPT }), scal = run({ optimize: { level: OPT.optimize, stencil: false } });
     is(simd.length, scal.length);
     is(simd.filter((v, i) => v !== scal[i]).length, 0, 'schrodinger float-index stencil bit-exact vs scalar (1536 px, 12 frames)');
 });
@@ -482,13 +482,13 @@ test('example: log-tonemap (fern/attractors) vectorizes mixed-lane f64x2 + bit-e
     for (const { name, drive } of cases) {
         const src = fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8');
         // toneMap is default-on at speed; the SCALAR baseline turns it explicitly off.
-        const base = (compile(src, { ...OPT, toneMap: false, wat: true }).match(/f64x2\./g) || []).length;
+        const base = (compile(src, { optimize: { level: OPT.optimize, toneMap: false }, wat: true }).match(/f64x2\./g) || []).length;
         const wat = compile(src, { ...OPT, wat: true });
         const tm = (wat.match(/f64x2\./g) || []).length;
         ok(tm > base, `${name} tonemap vectorizes (${base} → ${tm} f64x2)`);
         ok(/call \$math\.log_v/.test(wat), `${name} lifts Math.log → the f64x2 mirror $math.log_v`);
         const run = (opts) => drive(jz(src, { ...opts, randomSeed: 7 }).exports);
-        const simd = run({ ...OPT }), scal = run({ ...OPT, toneMap: false });
+        const simd = run({ ...OPT }), scal = run({ optimize: { level: OPT.optimize, toneMap: false } });
         is(simd.length, scal.length);
         ok(simd.filter(v => v & 0xffffff).length > 50, `${name} renders a real field (${simd.filter(v => v & 0xffffff).length} lit), not blank — bit-exact below isn't vacuous`);
         is(simd.filter((v, i) => v !== scal[i]).length, 0, `${name} mixed-lane tonemap bit-exact vs scalar (${cases.find(c => c.name === name).w * cases.find(c => c.name === name).h} px)`);
