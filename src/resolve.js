@@ -74,11 +74,24 @@ export function resolveModuleGraph(entryFile, { resolveNode = false, external = 
     } catch {}
   }
 
-  const resolveBareModule = (specifier, fromDir) => execFileSync(
-    process.execPath,
-    ['--input-type=module', '-e', 'process.stdout.write(import.meta.resolve(process.argv[1]))', specifier],
-    { cwd: fromDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-  ).trim()
+  // (a process per specifier and directory: the modules of one directory ask it once)
+  const bareResolved = new Map()
+  const resolveBareModule = (specifier, fromDir) => {
+    const key = fromDir + '\0' + specifier
+    let resolved = bareResolved.get(key)
+    if (resolved === undefined) {
+      try {
+        resolved = execFileSync(
+          process.execPath,
+          ['--input-type=module', '-e', 'process.stdout.write(import.meta.resolve(process.argv[1]))', specifier],
+          { cwd: fromDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+        ).trim()
+      } catch (e) { resolved = e }
+      bareResolved.set(key, resolved)
+    }
+    if (resolved instanceof Error) throw resolved
+    return resolved
+  }
   const resolveAbsPath = (specifier, fromDir) => {
     if (isExternal(specifier)) return null
     if (pkgImports[specifier]) return pkgImports[specifier]
