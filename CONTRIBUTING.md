@@ -1919,6 +1919,9 @@ address whose fields read and write the slots live, passed back as the
 instance (`mem._handles`); the host holds it by address, so it pins the heap
 below it. A method on an instance whose class overrides it throws a
 TypeError: the member export dispatches on the instance.
+A static of an exported class is an export of the arguments: M a method, V
+and W a field's read and write, G and S an accessor's (jzify records which in
+`entry.statics`), which interop pairs into one accessor of the constructor.
 
 Coercion distinguishes absence from an own non-callable value through the
 existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and

@@ -102,3 +102,19 @@ test('without a JS host an exported class exports its factory alone', () => {
   const wat = compile(COUNTER, { host: 'wasi', wat: true })
   ok(!/jz:class/.test(wat), 'no class table under WASI')
 })
+
+// A static field is the class's own, written as it is read; a static getter
+// and setter run the class's (the getter read undefined, the field had no setter).
+test('a static field of an exported class reads and writes the class, its accessors run', async () => {
+  if (onWasi()) return
+  await agree(`export class C { static n = 1; static s = 'a'; static get g() { return C.n * 10 } static set g(v) { C.n = v / 10 }
+      static get ro() { return 7 } static inc() { return ++C.n } }
+    export const readN = () => C.n`, ({ C, readN }) => {
+    const out = [C.n, C.s, C.g, C.ro]
+    C.n = 5; out.push(C.n, readN())
+    C.g = 90; out.push(C.n, readN(), C.g)
+    try { C.ro = 1; out.push('assigned') } catch (e) { out.push(e.constructor.name) }
+    out.push(C.inc(), C.n, Object.keys(C).join())
+    return out
+  })
+})

@@ -543,12 +543,14 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
     ['let', ['=', self, lit]], ...install,
     ['()', entry.init, [',', self, ...fargs]],
     ['return', self]]]]
-  // The static members the host reads off an exported class (compile/emit/class-dispatch.js
-  // synthesizeClassExports): a method, or a value read where the host reads it (a field, a getter).
+  // The static members the host reads and writes off an exported class
+  // (compile/emit/class-dispatch.js synthesizeClassExports): a method, a field
+  // (a writable value), a getter or a setter.
   for (const [sname, value, kind] of statics) {
-    if (kind === true && (sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET))) entry.staticAccessors.add(sname)
-    if (kind !== 'block' && !sname.endsWith(ACCESSOR_SET)) entry.statics.push(sname.endsWith(ACCESSOR_GET) && kind === true
-      ? [sname.slice(0, -ACCESSOR_GET.length), 'value'] : [sname, kind ? 'method' : 'value'])
+    const accessor = kind === true && (sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET))
+    if (accessor) entry.staticAccessors.add(sname)
+    if (kind !== 'block') entry.statics.push(accessor ? [sname.slice(0, -ACCESSOR_GET.length), sname.endsWith(ACCESSOR_GET) ? 'get' : 'set']
+      : [sname, kind ? 'method' : 'field'])
     if (kind === 'block') {
       let b = transform(renameThis(value, cls))
       if (Array.isArray(b) && b[0] === '{}') b = b[1]

@@ -1394,11 +1394,21 @@ const hostClasses = (table, exports, fnOf, mem) => {
       for (const k of Object.keys(this)) o[k] = this[k]
       return inspect ? inspect(o, options) : o
     } })
-    if (C) for (const [key, kind] of c.statics) {
-      const f = take(MARK + c.tag + MARK + kind + key)
-      if (key === 'prototype') continue
-      if (kind === 'M') Object.defineProperty(C, key, { value: { [key](...args) { return f(...args) } }[key], writable: true, configurable: true })
-      else Object.defineProperty(C, key, { get: () => f(), enumerable: true, configurable: true })
+    // a static field is the class's own, read and written where it lives, as a
+    // getter and a setter pair are; a field is enumerable, an accessor not
+    if (C) {
+      const access = new Map()
+      for (const [key, kind] of c.statics) {
+        const f = take(MARK + c.tag + MARK + kind + key)
+        if (key === 'prototype') continue
+        if (kind === 'M') { Object.defineProperty(C, key, { value: { [key](...args) { return f(...args) } }[key], writable: true, configurable: true }); continue }
+        const d = access.get(key) ?? { configurable: true, enumerable: false }
+        if (kind === 'V' || kind === 'G') d.get = () => f()
+        else d.set = (v) => { f(v) }
+        if (kind === 'V' || kind === 'W') d.enumerable = true
+        access.set(key, d)
+      }
+      for (const [key, d] of access) Object.defineProperty(C, key, d)
     }
     if (c.sid != null) (fnOf.classes ??= new Map()).set(c.sid, proto)
     if (C) exports[c.name] = C

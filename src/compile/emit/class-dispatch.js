@@ -326,8 +326,8 @@ export function synthesizeClassDispatchers() {
  * exported class is a function of the arguments that reads or calls it on the
  * class. A private member (`#x`) stays inside. Each export is named
  * `⟨tag⟩<letter><key>`: a member (m method, g getter, s setter) or a static (M
- * method, V value); the tag is the class's export, or its brand where the host
- * only holds its instances.
+ * method, V and W a field's read and write, G getter, S setter); the tag is
+ * the class's export, or its brand where the host only holds its instances.
  */
 export function synthesizeClassExports() {
   ctx.transform.hostClasses = null
@@ -377,11 +377,18 @@ export function synthesizeClassExports() {
       const p = paramsOf(fn, 1)
       define(entry.members, key, 'm', [R, ...p.names], p.rest, guarded(['()', ['.', R, key], argsOf(p)]))
     }
+    // a field reads (V) and writes (W) on the class, a getter (G) and a setter (S) run the class's own
     if (pub != null) for (const [key, kind] of e.statics ?? []) {
       if (key[0] === '#') continue
-      if (kind === 'value') { define(entry.statics, key, 'V', [], null, ['return', ['.', e.factory, key]]); continue }
-      const p = paramsOf(e.factory + '$' + key, 0)
-      define(entry.statics, key, 'M', p.names, p.rest, ['return', ['()', ['.', e.factory, key], argsOf(p)]])
+      if (kind === 'field') {
+        define(entry.statics, key, 'V', [], null, ['return', ['.', e.factory, key]])
+        define(entry.statics, key, 'W', [A(0)], null, ['=', ['.', e.factory, key], A(0)])
+      } else if (kind === 'get') define(entry.statics, key, 'G', [], null, ['return', ['()', ['.', e.factory, key + ACCESSOR_GET], null]])
+      else if (kind === 'set') define(entry.statics, key, 'S', [A(0)], null, ['()', ['.', e.factory, key + ACCESSOR_SET], A(0)])
+      else {
+        const p = paramsOf(e.factory + '$' + key, 0)
+        define(entry.statics, key, 'M', p.names, p.rest, ['return', ['()', ['.', e.factory, key], argsOf(p)]])
+      }
     }
     hosted.push(entry)
   }
