@@ -18,12 +18,6 @@ export interface WarningEntry {
   column?: number
 }
 
-export interface WarningSink {
-  entries?: WarningEntry[]
-  /** Called with each entry as it is recorded. */
-  onWarning?: (warning: WarningEntry) => void
-}
-
 /**
  * Owned memory: `initial` pages of 64 KiB, an optional growth `maximum`.
  * `shared` links a threads memory (atomic heap); `import` takes `env.memory`
@@ -103,9 +97,9 @@ export interface CompileOptions {
   sourceMap?: boolean | SourceMapOptions
   /** Return WAT text instead of the binary. */
   wat?: boolean
-  /** Sink or callback for compiler advisories. */
-  warnings?: WarningSink | ((warning: WarningEntry) => void)
-  /** Also report every loop the vectorizer and every arena the rewind declined. */
+  /** Called with each compiler advisory once the compilation is over. */
+  warnings?: (warning: WarningEntry) => void
+  /** Also report to `warnings` every loop the vectorizer and every arena the rewind declined. */
   why?: boolean
 }
 
@@ -159,8 +153,6 @@ export interface JzInstance<E extends JzExports = JzExports> {
   memory: JzMemory | null
   instance: WebAssembly.Instance
   module: WebAssembly.Module
-  /** Present when the caller supplied a warning sink or `why`. */
-  warnings?: WarningEntry[]
 }
 
 export interface MemoryFactory {

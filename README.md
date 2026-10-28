@@ -48,8 +48,8 @@ exports.square(7) // 49
 | `names` | Emit the wasm name section for profilers and debuggers. |
 | `sourceMap` | Debug build with statement locations and function names, through the JavaScript API or CLI. `true` embeds the map; `{ source, url }` names the entry and an external map URL. The returned bytes also expose `.sourceMap`. Selects `optimize: false`; optimized maps and maps from the Wasm-hosted compiler are not supported. |
 | `wat` | Return WAT text instead of bytes. |
-| `warnings` | Sink `{ entries }` or callback for advisories: dynamic fallbacks, heap growth. |
-| `why` | Also report each loop the vectorizer and each arena the rewind declined; a `warnings` sink alone reports each property read left dynamic, each class kept as closures and the first cause an object shape is lost by. |
+| `warnings` | Callback for advisories: dynamic fallbacks, heap growth. |
+| `why` | Also report to `warnings` each loop the vectorizer and each arena the rewind declined. |
 </details>
 
 ## Strict compiler
@@ -235,7 +235,7 @@ or parameter holds, `typeof` of a host function (`'function'`) and a for-of
 over a host iterable, which takes its iterator's values one per step. A member
 of `console`, `crypto`, `navigator` or `performance` that JZ does not
 implement (`crypto.subtle`) is the host's, and `console.log` hands each
-argument to the host's console as the value it is. The `warnings` sink names
+argument to the host's console as the value it is. The `warnings` callback names
 each such global; without a JS host it stays an error.
 
 ```js
@@ -284,7 +284,7 @@ it; a loop whose iterations keep nothing does the same per iteration. A value
 the call returns is the caller's: the host takes a copy of a string, an
 array, an object or a collection, and the call's memory goes; a typed array
 is a view of the module's memory, and a call that returns one it made keeps
-what it allocated (`heap-return` in the `warnings` sink). A call that does keep a value keeps what the value reaches
+what it allocated (`heap-return` in `warnings`). A call that does keep a value keeps what the value reaches
 and whatever it allocated before it: the heap goes back to the end of the
 highest block kept, so state made first and temporaries after it cost the
 state alone (at `optimize: 'size'` such a call keeps all it allocated).
@@ -309,7 +309,7 @@ earlier pointer: a binding, an array, a collection and an object the module
 made as it started read as they started (an object's field that holds a number
 keeps it). Imported/shared memory resets the entire arena; instantiate the module
 again before calling it. `memory.used` reads the bytes above the reset mark, so a host can see a call
-that keeps memory; the `warnings` sink names each export that keeps memory on
+that keeps memory; `warnings` names each export that keeps memory on
 every call and why at compile time (`heap-per-call`).
 
 ```js

@@ -271,9 +271,9 @@ test('async: bare fetch binds from the JS host — Response methods await in tur
 })
 
 test('fetch: host wasi warns (bind env.fetch yourself)', () => {
-  const warnings = { entries: [] }
-  compile('async function g() { let r = await fetch("x"); return r } export let f = () => g()', { host: 'wasi', warnings })
-  ok(warnings.entries.some(w => w.code === 'host-global'), 'wasi warning present')
+  const warnings = []
+  compile('async function g() { let r = await fetch("x"); return r } export let f = () => g()', { host: 'wasi', warnings: w => warnings.push(w) })
+  ok(warnings.some(w => w.code === 'host-global'), 'wasi warning present')
 })
 
 // Async generators — the same sync machine with TAGGED yields ({a:1}=await,

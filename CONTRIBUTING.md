@@ -3925,7 +3925,7 @@ counts each as a call, and load CSE keeps a body's loads across one
 function (`src/compile/emit/accessor-call.js`), a value's `toJSON` through
 another (`src/compile/emit/to-json.js`, only in a program that names JSON), an
 own property shadowing its class's method. `why: true` and any
-`warnings` sink report `shape-lost` with the first cause a layout was lost by;
+`warnings` callback report `shape-lost` with the first cause a layout was lost by;
 the census is the first thing to read when a library compiles dynamic.
 
 A method shorthand parses as a function: `m(p) { body }` is
@@ -5186,7 +5186,7 @@ onto the internal flags. Tests and scripts may pass those flags directly:
 | `noSimd`, `noTailCall` | `optimize: { simd: false, tailCall: false }` | |
 | `noEhAbort` | `optimize: { exceptions: false }` | trap on throw in catch-free modules; the w2c bench lane uses it per case |
 | `alloc: false` | `optimize: { alloc: false }` | raw standalone ABI: no allocator/reset exports, no decoded-error metadata |
-| `whyNotSimd`, `whyNotRewind` | `why: true` | reports go to the `warnings` sink |
+| `whyNotSimd`, `whyNotRewind` | `why: true` | reports go to the `warnings` callback |
 | `stencil`, `outerStrip`, `toneMap` | `optimize: { stencil, … }` | pass names, validated by `resolveOptimize` |
 | `strict` | none | test-only: skips jzify and rejects the forms it lowers plus dynamic fallbacks |
 | `sourceType` | none | parse goal for test262 (`script`/`module`); the default `jz` goal keeps export-as-ABI |
@@ -5194,7 +5194,7 @@ onto the internal flags. Tests and scripts may pass those flags directly:
 | `importMetaUrl` | none | the CLI sets it from the entry file |
 | `profile`, `inspect`, `helperCounters`, `_eagerStdlib`, `_interp` | none | instrumentation and self-compile hooks |
 
-Advisories reach any `warnings` sink, one per site (the source offset when the
+Advisories reach the `warnings` callback, one per site (the source offset when the
 node kept one, else the message): `heap-return`, `heap-loop`, `deopt-generic`,
 `deopt-dyn-read`, `deopt-dyn-write`, `deopt-method`, `deopt-prop-read` (how the
 read lowered and the receiver's candidate shapes), `class-generic` (a class

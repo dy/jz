@@ -58,13 +58,13 @@ const rows = []
 for (const id of cases) {
   if (only && id !== only) continue
   const src = readFileSync(join(BENCH, id, `${id}.js`), 'utf8')
-  const warnings = { entries: [] }
+  const warnings = []
   let wat
   try {
     wat = compile(src, {
       optimize: 'speed',
       whyNotSimd: true,
-      warnings,
+      warnings: w => warnings.push(w),
       wat: true,
       modules: { '../_lib/benchlib.js': benchlib },
     })
@@ -74,8 +74,8 @@ for (const id of cases) {
   }
   if (only) { console.log(wat); process.exit(0) }
   const prof = loopProfile(wat)
-  const whyNot = warnings.entries.filter(w => w.code === 'simd-why-not')
-  const deopt = warnings.entries.filter(w => /^deopt/.test(w.code || ''))
+  const whyNot = warnings.filter(w => w.code === 'simd-why-not')
+  const deopt = warnings.filter(w => /^deopt/.test(w.code || ''))
   rows.push({ id, ...prof, whyNot, deopt })
 }
 

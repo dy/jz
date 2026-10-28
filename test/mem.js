@@ -1404,9 +1404,9 @@ test('arena: a per-iteration rewind holds a render loop flat', () => {
     }
     return acc
   }`
-  const warnings = { entries: [] }
-  const wat = compile(src, { optimize: REWOUND, wat: true, why: true, warnings })
-  is(warnings.entries.filter(e => e.code === 'rewind-why-not').map(e => e.message), [], 'the loop and the function rewind')
+  const warnings = []
+  const wat = compile(src, { optimize: REWOUND, wat: true, why: true, warnings: w => warnings.push(w) })
+  is(warnings.filter(e => e.code === 'rewind-why-not').map(e => e.message), [], 'the loop and the function rewind')
   ok(loopRestores(wat) > 0, 'the loop restores the heap pointer per iteration')
   ok(!/global\.set \$__heap \(local\.get \$[^\s()]+\)\)\s*\(global\.set \$__heap \(local\.get \$[^\s()]+\)/.test(wat), 'a loop met through its block restores once')
   const inst = jz(src, { optimize: REWOUND })
@@ -1482,8 +1482,8 @@ test('arena: a loop destructuring a callee\'s tuple runs in constant memory', ()
       for (let i = 0; i < n; i++) { const [t, v] = ends(e, i); s += t + v }
       return s
     }`
-  const warnings = { entries: [] }
-  const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings })
+  const warnings = []
+  const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings: w => warnings.push(w) })
   ok(!/__it_open/.test(wat), 'the tuple is read by index')
   ok(loopRestores(wat) > 0, 'the loop rewinds per iteration')
   const inst = jz(src, { optimize: 'speed' })
@@ -1514,11 +1514,11 @@ test('arena: a loop rewinds around a method of a class receiver that may be null
     for (let i = 0; i < n; i++) { const blk = src.block(i); s += blk[3] }
     return s
   }`
-  const warnings = { entries: [] }
-  const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings })
+  const warnings = []
+  const wat = compile(src, { optimize: 'speed', wat: true, why: true, warnings: w => warnings.push(w) })
   ok(loopRestores(wat) > 0, 'the loop rewinds per iteration')
   ok(/call_indirect/.test(wat), 'the function itself calls through a table')
-  is(warnings.entries.filter(e => e.code === 'rewind-why-not' && /loop:/.test(e.message)).map(e => e.message), [], 'no loop marker was dropped')
+  is(warnings.filter(e => e.code === 'rewind-why-not' && /loop:/.test(e.message)).map(e => e.message), [], 'no loop marker was dropped')
   const inst = jz(src, { optimize: 'speed' })
   const before = inst.memory.buffer.byteLength
   const s = inst.exports.sum(1, 20000, null)
@@ -1534,7 +1534,7 @@ test('arena: a loop rewinds around a method of a class receiver that may be null
 // that may also hold a string; the tape pass keeps the heap's globals, the
 // property caches and bindings that only ever hold numbers alone).
 test('arena: a loop marker dropped at link reports the loop\'s reason', () => {
-  const warnings = { entries: [] }
+  const warnings = []
   compile(`let count = 0
     export const label = () => { count = 'n/a' }
     const tick = () => ++count
@@ -1542,8 +1542,8 @@ test('arena: a loop marker dropped at link reports the loop\'s reason', () => {
       let s = 0
       for (let i = 0; i < n; i++) { const b = new Float64Array(128); for (let k = 0; k < 128; k++) b[k] = i + k; s += b[1] + tick() }
       return s
-    }`, { optimize: REWOUND, why: true, warnings })
-  const loop = warnings.entries.filter(e => e.code === 'rewind-why-not' && /\$each: loop:/.test(e.message)).map(e => e.message)
+    }`, { optimize: REWOUND, why: true, warnings: w => warnings.push(w) })
+  const loop = warnings.filter(e => e.code === 'rewind-why-not' && /\$each: loop:/.test(e.message)).map(e => e.message)
   ok(loop.length > 0 && loop.every(m => /loop: tape: .*global\.set/.test(m)), 'the loop\'s tape is the reason: ' + loop.join(' | '))
 })
 

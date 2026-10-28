@@ -4986,10 +4986,10 @@ test('SIMD cost model - degenerate masked-store (constant value, cheap condition
     for (let i = 0; i < n; i++) h = (h ^ out[i]) | 0
     return h
   }`
-  const warnings = { entries: [] }
-  const w = compile(src, { optimize: { vectorizeLaneLocal: true, watr: true, whyNotSimd: true }, warnings, wat: true })
+  const warnings = []
+  const w = compile(src, { optimize: { vectorizeLaneLocal: true, watr: true, whyNotSimd: true }, warnings: w => warnings.push(w), wat: true })
   ok(!/v128\.bitselect/.test(w), 'no bitselect — cost model declines (vector cost/lane ≥ scalar cost)')
-  ok(warnings.entries.some(e => e.code === 'simd-why-not' && /not profitable/.test(e.message)),
+  ok(warnings.some(e => e.code === 'simd-why-not' && /not profitable/.test(e.message)),
     '--why-not-simd reports the profitability decline, not a generic precondition failure')
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar (declined loop still correct)')
 })

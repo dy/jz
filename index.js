@@ -77,6 +77,5 @@ export default function jz(code, ...args) {
   const inspected = out && typeof out === 'object' && 'wasm' in out
   const result = instantiate(inspected ? out.wasm : out, callOpts)
   if (inspected) result.inspect = out.inspect
-  if (callOpts.warnings) result.warnings = callOpts.warnings.entries
   return result
 }

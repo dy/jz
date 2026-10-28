@@ -294,9 +294,9 @@ test('URLSearchParams: sort, escaping, inits, iteration', () => {
 test('navigator.hardwareConcurrency: ≥1 on js host; wasi warns + folds to 1', () => {
   if (onKernel()) return // warnings-sink channel class (KERNEL_EXCLUDE 'warnings')
   ok(run(`export let f = () => navigator.hardwareConcurrency`) >= 1)
-  const w = { entries: [] }
-  jz(`export let f = () => navigator.hardwareConcurrency`, { host: 'wasi', warnings: w })
-  ok(w.entries.some(e => /hardwareConcurrency/.test(e.message)), 'wasi warns about the fold')
+  const w = []
+  jz(`export let f = () => navigator.hardwareConcurrency`, { host: 'wasi', warnings: e => w.push(e) })
+  ok(w.some(e => /hardwareConcurrency/.test(e.message)), 'wasi warns about the fold')
 })
 
 // === Float16Array ===

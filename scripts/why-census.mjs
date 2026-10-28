@@ -28,9 +28,9 @@ if (GRAPH_CASES.has(id)) {
   code = readFileSync(c.js, 'utf8')
   modules = { '../_lib/benchlib.js': benchlib, ...(id === 'watr' ? watrSources() : {}) }
 }
-const warnings = { entries: [] }
-compile(code, { jzify: GRAPH_CASES.has(id) || id === 'watr', modules, imports: { ...hostImports, env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } }, optimize: 'speed', alloc: false, warnings })
-const by = (code) => warnings.entries.filter(e => e.code === code)
+const warnings = []
+compile(code, { jzify: GRAPH_CASES.has(id) || id === 'watr', modules, imports: { ...hostImports, env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } }, optimize: 'speed', alloc: false, warnings: w => warnings.push(w) })
+const by = (code) => warnings.filter(e => e.code === code)
 const fn = (e) => (e.fn ?? '?').replace(//g, '.').replace(/^m\d+_/, '')
 const T = ''
 const lost = by('shape-lost')

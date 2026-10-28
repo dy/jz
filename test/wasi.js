@@ -791,9 +791,9 @@ test('fs: a node:fs reader passed as a callback fills a typed array, no dynamic 
       }
     }
     export let _start = () => serve(nodeFsRead, nodeFsWrite)`
-  const warnings = { entries: [] }
-  const wat = compile(src, { host: 'wasi', wat: true, warnings })
-  is(warnings.entries.map(e => e.code), [], 'no deopt advisory')
+  const warnings = []
+  const wat = compile(src, { host: 'wasi', wat: true, warnings: w => warnings.push(w) })
+  is(warnings.map(e => e.code), [], 'no deopt advisory')
   ok(!/__dyn_set|__dyn_get/.test(wat), 'no dynamic property access')
   const frame = (v) => { const b = Buffer.from(JSON.stringify(v)), h = Buffer.alloc(4); h.writeUInt32LE(b.length); return Buffer.concat([h, b]) }
   const input = Buffer.concat([frame({ a: 1 }), frame('é😀'.repeat(70)), frame([1, 'x']), Buffer.alloc(4), frame('unread')])

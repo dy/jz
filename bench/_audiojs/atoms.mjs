@@ -87,7 +87,7 @@ async function one(fam, pkg, key) {
   const t0 = performance.now(), warnings = []
   try {
     const { code, modules } = resolveModuleGraph(join(tmp, 'shim.js'), { resolveNode: true })
-    wasm = compile(code, { modules, warnings: { entries: warnings } })
+    wasm = compile(code, { modules, warnings: w => warnings.push(w) })
   } catch (e) { done({ stage: 'compile', error: first(e) }) }
   rec.compileMs = Math.round(performance.now() - t0); rec.bytes = wasm.length
   rec.imports = WebAssembly.Module.imports(new WebAssembly.Module(wasm)).map(i => i.name)

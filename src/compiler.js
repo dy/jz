@@ -194,11 +194,14 @@ export const normalizeOptions = (opts) => {
     if (alloc === false) o.alloc = false
     o.optimize = passes
   }
-  if (typeof o.warnings === 'function') o.warnings = { entries: [], onWarning: o.warnings }
-  if (o.why) {
+  // The callback becomes the session's sink; `why` reports through it alone.
+  if (o.warnings != null) {
+    if (typeof o.warnings !== 'function') throw new TypeError('opts.warnings takes a callback, (warning) => …')
+    o.warnings = { entries: [], onWarning: o.warnings }
+  }
+  if (o.why && o.warnings) {
     o.whyNotSimd = true
     o.whyNotRewind = true
-    if (!o.warnings) o.warnings = { entries: [] }
   }
   return o
 }

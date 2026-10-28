@@ -270,9 +270,9 @@ test('fixed length: a counted read of an array of one shape reads slots and cell
     const body = funcWat(wat(src, { optimize }), 'f')
     ok(!/__dyn_get|__ptr_offset|__throw_property_nullish/.test(body), `no lookup, follow or check at ${optimize}`)
   }
-  const warnings = { entries: [] }
-  compile(src, { warnings, optimize: 2 })
-  ok(!warnings.entries.some(e => e.code === 'deopt-prop-read'), 'no dynamic property read')
+  const warnings = []
+  compile(src, { warnings: w => warnings.push(w), optimize: 2 })
+  ok(!warnings.some(e => e.code === 'deopt-prop-read'), 'no dynamic property read')
 })
 
 // A name a statement checked (an element or a field read threw for a missing

@@ -50,7 +50,7 @@ export function build(source, { name = 'entry.js', dir = scratch(), files = {}, 
   const { code, modules } = resolveModuleGraph(file, { resolveNode: true })
   const warnings = []
   const t = performance.now()
-  const wasm = compile(code, { warnings: { entries: warnings }, ...(Object.keys(modules).length && { modules }), ...opts })
+  const wasm = compile(code, { warnings: w => warnings.push(w), ...(Object.keys(modules).length && { modules }), ...opts })
   return { file, wasm, warnings, compileMs: performance.now() - t, modules: Object.keys(modules).length }
 }
 

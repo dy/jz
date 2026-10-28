@@ -38,7 +38,7 @@ for (const optimize of levels(0, 2, 3, 'size'))
 
 test('kind tests: the arm a decided test never takes loses no shape', () => {
   const entries = []
-  compile(src, { warnings: { entries } })
+  compile(src, { warnings: w => entries.push(w) })
   const lost = entries.filter(e => e.code === 'shape-lost' && /factor|frameSize/.test(e.message))
   ok(!lost.length, lost.map(e => e.message).join('; '))
 })
@@ -61,7 +61,7 @@ test('kind tests: typeof and a name decide their tests where the kinds do', () =
     for (const k of [0, 1]) is(mod.kinds(k), host.kinds(k), `kinds(${k}) at ${optimize}`)
   }
   const entries = []
-  compile(hooks, { warnings: { entries } })
+  compile(hooks, { warnings: w => entries.push(w) })
   ok(!entries.some(e => e.code === 'shape-lost'), entries.filter(e => e.code === 'shape-lost').map(e => e.message).join('; '))
 })
 

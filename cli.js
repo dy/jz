@@ -112,9 +112,8 @@ function main() {
   const { code, modules } = resolveModuleGraph(inputFile, { resolveNode: true })
   if (process.env.JZ_DEBUG_MODULES === '1') console.error('modules:', Object.keys(modules))
 
-  const warnings = { entries: [] }
   const result = compile(code, {
-    wat, warnings, why, names,
+    wat, why, names, warnings: w => console.warn(formatWarning(w)),
     ...(sourceMap && { sourceMap: { source: pathToFileURL(resolve(inputFile)).href, ...(outputFile !== '-' && !wat && { url: basename(outputFile) + '.map' }) } }),
     importMetaUrl: pathToFileURL(resolve(inputFile)).href,
     ...(optimize !== undefined && { optimize }),
@@ -125,7 +124,6 @@ function main() {
     ...(noTailCall && { noTailCall: true }),
     ...(Object.keys(modules).length && { modules }),
   })
-  for (const w of warnings.entries) console.warn(formatWarning(w))
 
   if (outputFile === '-') process.stdout.write(result)
   else {

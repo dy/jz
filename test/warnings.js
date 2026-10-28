@@ -5,9 +5,9 @@ import { belowOpt, levels, onWasi } from './_matrix.js'
 import jz, { compile } from '../index.js'
 
 function warningsFor(code, opts = {}) {
-  const warnings = { entries: [] }
-  compile(code, { ...opts, warnings })
-  return warnings.entries
+  const warnings = []
+  compile(code, { ...opts, warnings: w => warnings.push(w) })
+  return warnings
 }
 
 test('fixed length: the advisory names the first cause an array keeps its checks by', () => {
@@ -185,11 +185,11 @@ test('warnings: alloc:false modules stay quiet', () => {
   is(ws.length, 0)
 })
 
-test('warnings: jz() surfaces advisories on the runtime result', () => {
-  const warnings = { entries: [] }
-  const { warnings: surfaced } = jz('export let f = () => { let a = new Float64Array(1); return a }', { warnings })
-  is(surfaced.length, 1)
-  is(surfaced[0].code, 'heap-return')
+test('warnings: jz() reports advisories through the callback', () => {
+  const warnings = []
+  jz('export let f = () => { let a = new Float64Array(1); return a }', { warnings: w => warnings.push(w) })
+  is(warnings.length, 1)
+  is(warnings[0].code, 'heap-return')
 })
 
 // Pre-audit-#8 (2026-08-03), jzify's default-mode 'instanceof' lowering answered
@@ -327,9 +327,9 @@ test('warnings: shape-lost names the first cause an object shape is lost by', ()
 
 test('warnings: shape-loss reports layouts for distinct construction sites', () => {
   const source = 'export const f = flag => { const a={x:1}, b={x:2}; return flag?a:b }'
-  const quiet = compile(source), warnings = {entries: []}
-  is(compile(source,{warnings}),quiet,'diagnostics preserve emitted bytes')
-  const lost = warnings.entries.filter(w => w.code === 'shape-lost')
+  const quiet = compile(source), warnings = []
+  is(compile(source,{warnings: w => warnings.push(w)}),quiet,'diagnostics preserve emitted bytes')
+  const lost = warnings.filter(w => w.code === 'shape-lost')
   is(lost.length,1,'the two construction sites share one reported layout')
   is(lost[0].sid,0)
   ok(/\{x\}/.test(lost[0].message),'the report uses the registered field names')
@@ -373,9 +373,9 @@ test('warnings: shape-loss diagnostics leave emitted code unchanged across compi
   const hosted = 'const o = { items: [1], call: x => x, next: null }; o.next = o; export const f = () => o'
   for (const code of ['', joined, joined, 'export let f = () => 3', hosted, hosted, joined]) {
     const quiet = compile(code)
-    const warnings = { entries: [] }
-    is(compile(code, { warnings }), quiet, 'enabling advisories preserves the complete module')
-    const losses = warnings.entries.filter(e => e.code === 'shape-lost')
+    const warnings = []
+    is(compile(code, { warnings: w => warnings.push(w) }), quiet, 'enabling advisories preserves the complete module')
+    const losses = warnings.filter(e => e.code === 'shape-lost')
     is(losses.length, code === joined || code === hosted ? 1 : 0, 'each compile owns its diagnostic state')
     if (code === joined) is(losses[0].why, 'joined with an unknown value')
     if (code === hosted) is(losses[0].why, 'handed to the host', 'cyclic references keep the root cause')

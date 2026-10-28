@@ -142,16 +142,22 @@ test('options: optimize object — level and pass keys, unknown key refused', ()
   throws(() => compile(LOOP, { optimize: { levle: 'size' } }), /Unknown optimize key/)
 })
 
-test('options: why reports declined loops through warnings, sink or callback', () => {
+test('options: why reports declined loops to the warnings callback', () => {
   if (belowOpt(2)) return
-  const warnings = { entries: [] }
-  compile(DEP, { why: true, warnings })
-  ok(warnings.entries.some(w => w.code === 'simd-why-not' || w.code === 'rewind-why-not'), warnings.entries.map(w => w.code).join(','))
   const seen = []
   compile(DEP, { why: true, warnings: w => seen.push(w.code) })
-  ok(seen.length > 0, 'a warnings callback receives each entry')
-  const { warnings: entries } = jz(DEP, { why: true })
-  ok(Array.isArray(entries) && entries.length > 0, 'jz() exposes the entries it collected')
+  ok(seen.some(c => c === 'simd-why-not' || c === 'rewind-why-not'), seen.join(','))
+  const quiet = []
+  compile(DEP, { warnings: w => quiet.push(w.code) })
+  ok(!quiet.some(c => c === 'simd-why-not' || c === 'rewind-why-not'), 'declined loops stay unreported without why')
+  const r = jz(DEP, { why: true, warnings: () => {} })
+  ok(!('warnings' in r), 'jz() leaves the advisories with the callback')
+})
+
+test('options: warnings takes a callback and refuses a sink object', () => {
+  throws(() => compile(DEP, { warnings: { entries: [] } }), /callback/)
+  throws(() => jz(DEP, { warnings: [] }), /callback/)
+  ok(compile(DEP, { warnings: undefined }).byteLength > 0, 'an absent callback is no callback')
 })
 
 test('options: the caller\'s option object is left untouched', () => {
@@ -168,7 +174,7 @@ test('options: warning callbacks run after compilation; a nested compile during 
   const seen = []
   const wasm = compile(src, { warnings: (w) => { seen.push(w.code); compile('export let g = () => 1') } })
   ok(wasm.length > 0 && seen.length > 0, 'the callback compiled again once its own compilation was over')
-  const again = compile(src, { warnings: { entries: [] } })
+  const again = compile(src, { warnings: () => {} })
   is(again.length, wasm.length, 'the nested compile left the outer output intact')
   let error
   try { compile('let kept=[];export let f=n=>{kept.push([n]);return kept.length}', { optimize: 'speed', whyNotRewind: () => { compile('export let g = () => 1') } }) } catch (e) { error = e }
