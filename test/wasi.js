@@ -168,6 +168,32 @@ test('host:js console prints each argument as the host console prints it', () =>
   for (const optimize of levels(0, 2, 'size')) is(capture(() => jz(src, { host: 'js', optimize }).exports.f(3, { h: 1 })), want, `O${optimize}`)
 })
 
+// A console method passed as a value takes every argument its caller gives
+// (`xs.forEach(console.log)`, `p.catch(console.warn)`), and a spread that ends
+// the call prints its last value as a value, not joined to the line's end.
+test('host:js console methods as values and a trailing spread print as the host console prints them', async () => {
+  const src = `export const f = async (xs, o, p) => {
+    xs.forEach(console.log)
+    const log = console.info
+    o.cb = console.debug
+    o.cb(1, 'two', { a: 3 })
+    console.log(...[5, { b: 1 }])
+    console.log(...[])
+    console.log('a', ...xs)
+    await p.catch(console.warn)
+    await Promise.resolve([7]).then(log)
+  }`
+  const capture = async (f) => {
+    const out = [], saved = { ...console }
+    for (const m of ['log', 'warn', 'error', 'info', 'debug']) console[m] = (...a) => out.push(m + ' ' + format(...a))
+    try { await f() } finally { Object.assign(console, saved) }
+    return out
+  }
+  const args = () => [['p', { q: 1 }], {}, Promise.reject('no')]
+  const want = await capture(() => oracle(src).f(...args()))
+  for (const optimize of levels(0, 2, 'size')) is(await capture(() => jz(src, { host: 'js', optimize }).exports.f(...args())), want, `O${optimize}`)
+})
+
 // A print line is the host's to format: a template (or a `'a=' + x` chain)
 // whose parts are strings, numbers and booleans crosses as its parts, so the
 // binary never links __to_str / ryu / __itoa / __str_concat for it. A part

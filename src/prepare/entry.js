@@ -32,6 +32,7 @@
  */
 
 import { ctx, emitArity, PTR } from '../ctx.js'
+import { INTRINSIC_VARIADIC } from '../builtin-signatures.js'
 import { TIMER_NAMES, includeForCallableValue, includeForTimerRuntime, includeModule } from '../autoload.js'
 import { T, MUTATE_OPS, walkAst } from '../ast.js'
 import { MUTATING_ARRAY_METHODS } from './const-fold.js'
@@ -122,14 +123,17 @@ const wrapBuiltinValues = (ast) => {
     ctx.funcs.builtinMethodReaders.set(null, reader)
     return reader
   }
+  // A console method takes every argument (`p.catch(console.log)`,
+  // `xs.forEach(console.log)`): its wrapper forwards them as a rest parameter.
+  const restValue = (s) => s.startsWith('console.') && INTRINSIC_VARIADIC.has(s)
   const isBuiltinValue = (s) => typeof s === 'string' && s.indexOf('.') > 0
-    && ctx.core.emit[s] != null && emitArity(ctx.core.emit[s], s) > 0 && !ctx.funcs.names.has(s)
+    && ctx.core.emit[s] != null && (emitArity(ctx.core.emit[s], s) > 0 || restValue(s)) && !ctx.funcs.names.has(s)
   const wrapperFor = (name) => {
     let w = wrappers.get(name)
     if (w) return w
     w = `${T}bw${wrappers.size}_${name.replace(/\W/g, '_')}`
     const n = emitArity(ctx.core.emit[name], name)
-    const params = Array.from({ length: n }, (_, i) => `${T}a${i}`)
+    const params = restValue(name) ? [['...', `${T}a`]] : Array.from({ length: n }, (_, i) => `${T}a${i}`)
     const args = params.length === 1 ? params[0] : [',', ...params]
     const decl = prep(['const', ['=', w, ['=>', ['()', args], ['()', name, args]]]])
     if (decl != null) inits.push(decl)

@@ -34,7 +34,8 @@ import { dataAlign, dataLen, dataPush } from '../src/static-data.js'
 
 // Arguments holding a spread (`console.warn(msg, ...params)`) are as many
 // values as the run decides: they print from the array they build, `one(bits,
-// last)` each element with a space after all but the last, `end()` the newline.
+// last)` each element with a space after all but the last, `end(n)` the newline
+// (`n` the element count).
 const isSpread = (a) => Array.isArray(a) && a[0] === '...'
 const printSpread = (ctx, args, one, end) => {
   inc('__ptr_offset', '__len')
@@ -51,7 +52,7 @@ const printSpread = (ctx, args, one, end) => {
         ['i32.ge_s', ['i32.add', at, ['i32.const', 1]], ['local.get', `$${n}`]]),
       ['local.set', `$${i}`, ['i32.add', at, ['i32.const', 1]]],
       ['br', `$ploop${id}`]]],
-    ...end(),
+    ...end(['local.get', `$${n}`]),
     ['f64.const', 0]], 'f64')
 }
 
@@ -283,8 +284,9 @@ const setupJsHost = (ctx) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
       needPrint()
       if (args.some(isSpread)) return printSpread(ctx, args,
-        (bits, last) => [['call', '$__print', bits, ['i32.const', fd], ['select', ['i32.const', 0], ['i32.const', 32], last]]],
-        () => [['call', '$__print', ['i64.reinterpret_f64', emptyStr()], ['i32.const', fd], ['i32.const', 10]]])
+        // the last value ends the line, as a direct call's does; an empty spread prints one
+        (bits, last) => [['call', '$__print', bits, ['i32.const', fd], ['select', ['i32.const', 10], ['i32.const', 32], last]]],
+        (n) => [['if', ['i32.eqz', n], ['then', ['call', '$__print', ['i64.reinterpret_f64', emptyStr()], ['i32.const', fd], ['i32.const', 10]]]]])
       // Each segment carries its trailing separator (0=none, 32=space, 10=newline).
       // Template-concat chains (`a${x}b`) flatten to per-`${}` segments — the host
       // stringifies, so jz drops __str_concat/__to_str entirely.
