@@ -34,7 +34,7 @@ import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperNam
 import { registerDurableLog } from './core/durable-log.js'
 import { registerReach, registerIterRelease, reachOn, belowLog, REACH_DEPS } from './core/reach.js'
 import { registerCompact, COMPACT_DEPS, compactOn, declarePin } from './core/compact.js'
-import { hasExternalIngress } from '../src/compile/func-exports.js'
+import { hasExternalIngress, mayHoldHostValue } from '../src/compile/func-exports.js'
 import { arrayRecordSlot } from '../src/compile/array-records.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
@@ -3263,9 +3263,13 @@ export default (ctx) => {
     // then reads as "number" even on the branch that's really `false`/`true`.
     // emitIdentitySafe re-emits the merge with that arm boxed to its atom first.
     const av = hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : emit(a)
+    // A host value: the host answers whether it can call it (interop `__ext_callable`).
+    if (!ctx.runtime.typeofHost && mayHoldHostValue(ctx.summary?.at(ctx.func.current).kindOfExpr(a))) { ctx.runtime.typeofHost = true; setLinkDemand('external'); inc('__ext_callable') }
     return typed(['call', '$__typeof', asI64(av)], 'f64')
   }
 
+  // whether the host can call a host object (interop.js): `typeof` of a host value
+  ctx.core.stdlib['__ext_callable'] = '(import "env" "__ext_callable" (func $__ext_callable (param i64) (result i32)))'
   ctx.core.stdlib['__typeof'] = () => {
     const stringTest = `(i32.eq (local.get $t) (i32.const ${PTR.STRING}))`
     const closureArm = ctx.linkDemand.closure
@@ -3299,6 +3303,8 @@ export default (ctx) => {
     ;; "object" default every other unrecognized-shape pointer falls to.
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (global.get $__tof_bigint))))
+    ${ctx.runtime.typeofHost ? `(if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
+      (then (return (select (global.get $__tof_function) (global.get $__tof_object) (call $__ext_callable (local.get $v))))))` : ''}
     (if (i32.eqz (local.get $t))
       (then (return (global.get $__tof_symbol))))
     (global.get $__tof_object))`

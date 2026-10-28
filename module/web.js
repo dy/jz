@@ -113,6 +113,4 @@ export default (ctx) => {
 
   ctx.core.stdlib['__ext_construct'] = '(import "env" "__ext_construct" (func $__ext_construct (param i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_instanceof'] = '(import "env" "__ext_instanceof" (func $__ext_instanceof (param i64 i64) (result i32)))'
-  // whether the host can call a host object (interop.js): a host global's typeof
-  ctx.core.stdlib['__ext_callable'] = '(import "env" "__ext_callable" (func $__ext_callable (param i64) (result i32)))'
 }

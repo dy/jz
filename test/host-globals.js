@@ -60,6 +60,14 @@ test('new of a constructor a binding holds constructs a host one on the host and
   ok(!/__ext_construct/.test(jz.compile(held, { wat: true })), 'a const of classes constructs by call')
 })
 
+test('typeof a host function is function, of a host object object', async () => {
+  if (onWasi()) return
+  await agree(`
+    export const kinds = (v, o) => [typeof v, typeof o, typeof o.m, typeof o.n, typeof v === 'function', typeof o === 'object']
+    export const held = () => { const R = Response; return [typeof R, typeof crypto.subtle.digest, typeof console.log] }
+  `, [['kinds', () => 1, { m() {}, n: 1 }], ['kinds', class {}, []], ['held']])
+})
+
 test('a host global the host lacks throws a ReferenceError where read, and types as undefined', async () => {
   if (onWasi()) return
   globalThis.jzTestDouble = (a) => a * 2

@@ -227,10 +227,11 @@ that the program does not export reaches the host with its own overrides.
 Under the JS host a name no declaration of the program binds is the host's
 global: `new Response(text)`, `x instanceof WritableStream` and
 `typeof WebSocket` ask the host, and reading a global the host lacks throws the
-ReferenceError JavaScript throws. So does `new C()` of a constructor a
-variable or parameter holds. A member of `console`, `crypto`, `navigator` or
-`performance` that JZ does not implement (`crypto.subtle`) is the host's.
-The `warnings` sink names each such global; without a JS host it stays an error.
+ReferenceError JavaScript throws. So do `new C()` of a constructor a variable
+or parameter holds and `typeof` of a host function (`'function'`). A member
+of `console`, `crypto`, `navigator` or `performance` that JZ does not
+implement (`crypto.subtle`) is the host's. The `warnings` sink names each such
+global; without a JS host it stays an error.
 
 ```js
 const { exports } = jz`

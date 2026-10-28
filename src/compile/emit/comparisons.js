@@ -7,7 +7,8 @@
 
 import { i64Hex } from '../../../layout.js'
 import { T, TYPEOF } from '../../ast.js'
-import { LAYOUT, PTR, ctx, inc, ssoBitI64Hex } from '../../ctx.js'
+import { LAYOUT, PTR, ctx, inc, setLinkDemand, ssoBitI64Hex } from '../../ctx.js'
+import { mayHoldHostValue } from '../func-exports.js'
 import {
   applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, boxedPtrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
@@ -37,6 +38,16 @@ const liveUnaliased = (n) => {
   return r?.neverGrown === true || r?.ownCurrent === true ||
     (ctx.summary?.at(ctx.func.current)?.fixedLenOfExpr(n) ?? -1) >= 0
 }
+
+/** Whether a typeof operand may be a host value, whose callability the host
+ *  answers (interop `__ext_callable`): a function where it can call it. */
+const hostTypeof = (e) => {
+  if (!mayHoldHostValue(ctx.summary?.at(ctx.func.current).kindOfExpr(e))) return false
+  setLinkDemand('external'); inc('__ext_callable')
+  return true
+}
+const hostCallableIR = (tag, bits) => ['if', ['result', 'i32'], ['i32.eq', tag, ['i32.const', PTR.EXTERNAL]],
+  ['then', ['call', '$__ext_callable', bits]], ['else', ['i32.const', 0]]]
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
 function emitTypeofCmp(a, b, cmpOp) {
@@ -110,9 +121,17 @@ function emitTypeofCmp(a, b, cmpOp) {
       ['i32.and',
         ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.ATOM]],
         ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.BIGINT]]]]
-    return wrap(['i32.and', isPtr, ['i32.or', isNull(['local.get', `$${t}`]), heapKind]])
+    const kind = hostTypeof(typeofExpr)
+      ? ['i32.and', heapKind, ['i32.eqz', hostCallableIR(['local.get', `$${tt}`], ['i64.reinterpret_f64', ['local.get', `$${t}`]])]] : heapKind
+    return wrap(['i32.and', isPtr, ['i32.or', isNull(['local.get', `$${t}`]), kind]])
   }
-  if (code === TYPEOF.function) return isPtrKind(PTR.CLOSURE)
+  if (code === TYPEOF.function) {
+    if (!hostTypeof(typeofExpr)) return isPtrKind(PTR.CLOSURE)
+    inc('__ptr_type')
+    const bits = ['i64.reinterpret_f64', ['local.get', `$${t}`]]
+    return wrap(['i32.or', boxedPtrTypeEq(['local.tee', `$${t}`, va], PTR.CLOSURE),
+      ['i32.and', ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]], hostCallableIR(['call', '$__ptr_type', bits], bits)]])
+  }
   if (code === TYPEOF.bigint) {
     const fold = staticFold(VAL.BIGINT); if (fold) return fold
     // A BigInt that reaches an operand the plan could not resolve is a

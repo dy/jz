@@ -718,6 +718,7 @@ export function reset(proto, globals, bridge) {
     staticPtrSlots: null,  // [byteOffset] data-segment slots holding NaN-boxed ptrs (host relocates); lazy-init in ir.js
     staticDataLen: 0,      // byte length of the address-0 static string block (seeded by module/number staticStr)
     typeofStrs: null,      // [str] interned typeof result strings; lazy-init in module/core `typeof`
+    typeofHost: false,     // a dynamic typeof may see a host value: $__typeof asks the host (`__ext_callable`)
     // Trailing-reclaim spans — {start,end,fn?,global?} per byte range a COARSE
     // pre-treeshake step interned speculatively (buildStartFn's whole-schema-list
     // table, a stdlib thunk's own strBits calls). src/wat/assemble.js's
