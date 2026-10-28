@@ -418,36 +418,58 @@ export const isNull = (f64expr) => matchF64Bits(f64expr,
   bits => constI32(bits === NULL_NAN),
   (e) => typed(['i64.eq', ['i64.reinterpret_f64', e], ['i64.const', NULL_NAN]], 'i32'))
 
+// A name outside the modeled classes (btoa's InvalidCharacterError) still
+// brands as Error, so `instanceof Error` holds as it does on the host,
+// while the stored name keeps the real one the host also reports.
+const errorClassSid = name => ctx.schema.errorSid(ERR_CLASS_NAMES.includes(name) ? name : 'Error')
+const CATCH_ERROR_PASS = '(func $__catch_error (param $v f64) (result f64) (local.get $v))'
+
 /** Catch is the only Wasm boundary where coded transport becomes observable.
- *  Build one demanded decoder; ordinary thrown values pass through unchanged. */
+ *  Call one demanded decoder; ordinary thrown values pass through unchanged.
+ *  It passes every value until stdlib-pull, with the program's code whole,
+ *  gives it an arm per code the program can raise (catchErrorFunc). */
 export function materializeErrorIR(value) {
   ctx.module.include('string')
   if (!ctx.core.stdlib.__catch_error) {
-    const arms = Object.entries(ERR_INFO).map(([code, info]) => {
-      // A name outside the modeled classes (btoa's InvalidCharacterError) still
-      // brands as Error, so `instanceof Error` holds as it does on the host,
-      // while the stored name keeps the real one the host also reports.
-      const sid = ctx.schema.errorSid(ERR_CLASS_NAMES.includes(info.name) ? info.name : 'Error')
-      ctx.schema.namedUses.push({ sid, funcName: '__catch_error' })
-      const msg = print(ctx.core.emit.str(info.message))
-      const name = print(ctx.core.emit.str(info.name))
-      return `(if (i32.eq (local.get $code) (i32.const ${code})) (then
+    // The classes' ids are minted here, where the emitted code's are: the
+    // start function's schema tables are written before stdlib-pull.
+    for (const info of Object.values(ERR_INFO)) errorClassSid(info.name)
+    ctx.core.stdlib.__catch_error = CATCH_ERROR_PASS
+  }
+  inc('__catch_error', '__alloc_hdr', '__mkptr')
+  return typed(['call', '$__catch_error', value], 'f64')
+}
+
+/** The error codes `text` raises, added to `into`: every code crosses as the
+ *  f64 literal errorCodeLiteral spells. */
+export const errorCodesIn = (text, into) => {
+  for (const lit of text.match(/nan:0x80003[0-9a-f]{8}/g) || []) into.add(parseInt(lit.slice(11), 16))
+  return into
+}
+
+/** `__catch_error` with an arm for each code of `codes`: the Error of the
+ *  code's class and message. With no code it passes every value. */
+export function catchErrorFunc(codes) {
+  const arms = [...codes].filter(code => ERR_INFO[code]).sort((a, b) => a - b).map(code => {
+    const info = ERR_INFO[code], sid = errorClassSid(info.name)
+    ctx.schema.namedUses.push({ sid, funcName: '__catch_error' })
+    const msg = print(ctx.core.emit.str(info.message))
+    const name = print(ctx.core.emit.str(info.name))
+    return `(if (i32.eq (local.get $code) (i32.const ${code})) (then
         (local.set $msg ${msg}) (local.set $name ${name})
         (local.set $sid (i32.const ${sid})) (br $found)))`
-    }).join('')
-    ctx.core.stdlib.__catch_error = `(func $__catch_error (param $v f64) (result f64)
+  })
+  if (!arms.length) return CATCH_ERROR_PASS
+  return `(func $__catch_error (param $v f64) (result f64)
       (local $code i32) (local $sid i32) (local $p i32) (local $msg f64) (local $name f64)
       (if (i32.ne (i32.wrap_i64 (i64.shr_u (i64.reinterpret_f64 (local.get $v)) (i64.const 32)))
                  (i32.const ${ERROR_CODE_HI})) (then (return (local.get $v))))
       (local.set $code (i32.wrap_i64 (i64.reinterpret_f64 (local.get $v))))
-      (block $found ${arms} (return (local.get $v)))
+      (block $found ${arms.join('')} (return (local.get $v)))
       (local.set $p (call $__alloc_hdr (i32.const 0) (i32.const ${ctx.abi.object.ops.allocSlots(2)})))
       (f64.store (local.get $p) (local.get $msg))
       (f64.store offset=8 (local.get $p) (local.get $name))
       (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid) (local.get $p)))`
-  }
-  inc('__catch_error', '__alloc_hdr', '__mkptr')
-  return typed(['call', '$__catch_error', value], 'f64')
 }
 
 /** Throw a schema-branded Error using the ordinary constructor and transport.

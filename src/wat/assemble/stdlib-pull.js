@@ -16,6 +16,7 @@ import { ctx, inc, resolveIncludes, err, declGlobal } from '../../ctx.js'
 import { walkAst, some } from '../../ast.js'
 import { dataAlign, dataPush, dataLen, strPoolLen } from '../../static-data.js'
 import { MEM_OPS, findBodyStart } from '../../ir.js'
+import { catchErrorFunc, errorCodesIn } from '../../ir/sentinels.js'
 import { DYN_CACHE_EMPTY } from '../../../layout.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 import { ROOT_LOG_BYTES } from '../../../module/core/reach.js'
@@ -136,12 +137,40 @@ function collapseTwins(sec) {
   for (const fn of sec.start) walkAst(fn, { enter: rewrite })
 }
 
+/** The catch decoder's arms (ir/sentinels.js catchErrorFunc): one per error code
+ *  the code the program runs can raise, its own functions' and the helpers they
+ *  reach, the decoder aside. Its arms allocate, which may reach a helper raising
+ *  one more code (the allocator's out-of-memory): the codes grow to a fixpoint.
+ *  Before the shared string pool is finalized: the arms intern their messages. */
+function catchErrorArms(sec) {
+  const own = new Set()
+  const scanIR = (node) => { for (const x of node) if (typeof x === 'string' && x.startsWith('nan:')) errorCodesIn(x, own) }
+  for (const fn of sec.funcs) walkAst(fn, { enter: scanIR })
+  for (const fn of sec.start) walkAst(fn, { enter: scanIR })
+  const raised = () => {
+    const codes = new Set(own)
+    for (const name of reachableStdlib(sec)) {
+      if (name === '__catch_error') continue
+      const v = ctx.core.stdlib[name]
+      let text = ''
+      try { text = typeof v === 'function' ? v() : v } catch { text = '' }
+      if (typeof text === 'string') errorCodesIn(text, codes)
+    }
+    return codes
+  }
+  for (let codes = raised(), n = -1; codes.size !== n; codes = raised()) {
+    n = codes.size
+    ctx.core.stdlib.__catch_error = catchErrorFunc(codes)
+  }
+}
+
 /**
  * Phase: pull stdlib + memory.
  */
 export function pullStdlib(sec) {
   installHelperCounters()
   resolveIncludes()
+  if (ctx.core.includes.has('__catch_error')) catchErrorArms(sec)
   // Helper templates can intern literals. Finalize the shared pool after
   // their realization, before reachability and the post-init heap snapshot.
   if (strPoolLen()) {

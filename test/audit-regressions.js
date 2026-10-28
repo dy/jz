@@ -7,6 +7,7 @@ import { funcWat, oracle, agree } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dictCapacity } from '../src/static.js'
 import { stringHash } from '../src/string-data.js'
+import { ERR } from '../err-codes.js'
 import parseWat from 'watr/parse'
 
 const TIERS = levels(0, 2, 'speed', 'size')
@@ -1176,6 +1177,25 @@ test('audit: catch without a binding does not materialize an Error', () => {
     for (const s of ['', '', '{}', '{', '{}']) is(f(s), s==='{}' ? 1 : 7, 'empty/repeated/error/success recovery')
     if (!onKernel()) ok(!compile(src, {optimize,wat:true}).includes('$__catch_error'), 'no error materializer')
   }
+})
+
+// The decoder's arms are the codes the program's code raises (wat/assemble/stdlib-pull.js
+// catchErrorArms): radix's RangeError and both of BigInt's parse failures, not the JSON codes.
+test('audit: a caught runtime error decodes from an arm for each code the program can raise', () => {
+  const src = `export let radix = (r) => { try { return (255).toString(r) } catch (e) { return e.name + ': ' + e.message } }
+    export let big = (s) => { try { return String(BigInt(s)) } catch (e) { return e.name } }`
+  const want = oracle(src)
+  for (const optimize of TIERS) {
+    const got = jz(src, { optimize }).exports
+    for (const r of [16, 1, 40]) is(got.radix(r), want.radix(r), `O${optimize}: radix(${r})`)
+    for (const s of ['12', '1x', '0x', '-', '']) is(got.big(s), want.big(s), `O${optimize}: big('${s}')`)
+  }
+  if (onKernel()) return
+  const wat = compile(src, { optimize: 0, wat: true })
+  const at = wat.indexOf('(func $__catch_error'), decoder = wat.slice(at, wat.indexOf('\n  (func', at))
+  const arms = new Set([...decoder.matchAll(/\(local\.get \$code\) \(i32\.const (\d+)\)/g)].map(m => +m[1]))
+  for (const code of [ERR.NUMBER_RADIX, ERR.BIGINT_PARSE_DIGIT, ERR.BIGINT_PARSE_EMPTY]) ok(arms.has(code), `an arm for ${code}`)
+  for (const code of [ERR.JSON_CIRCULAR, ERR.URI_BAD_HEX, ERR.CRYPTO_QUOTA]) ok(!arms.has(code), `no arm for ${code}`)
 })
 
 test('audit: typed local storage preserves missing values through copies and gathers', () => {

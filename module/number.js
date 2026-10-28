@@ -2018,9 +2018,14 @@ export default (ctx) => {
     (call $__str_to_bigint (local.get $v))
     (local.set $status)
     (local.set $result)
+    ;; The status is the code, raised as its literal: the catch decoder reads
+    ;; the codes a program raises off their literals (stdlib-pull catchErrorArms).
     (if (local.get $status)
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.reinterpret_i64 (i64.or (i64.const 0x7ff8000300000000) (i64.extend_i32_u (local.get $status))))))
-        (throw $__jz_err (f64.reinterpret_i64 (i64.or (i64.const 0x7ff8000300000000) (i64.extend_i32_u (local.get $status)))))))
+      (then
+        (local.set $f (select (f64.const ${errorCodeLiteral(ERR.BIGINT_PARSE_DIGIT)}) (f64.const ${errorCodeLiteral(ERR.BIGINT_PARSE_EMPTY)})
+          (i32.eq (local.get $status) (i32.const ${ERR.BIGINT_PARSE_DIGIT}))))
+        (global.set $__jz_last_err_bits (i64.reinterpret_f64 (local.get $f)))
+        (throw $__jz_err (local.get $f))))
     (f64.reinterpret_i64 (local.get $result)))`
 
   // ToBigInt used by BigInt typed storage differs from BigInt(): Numbers

@@ -1801,6 +1801,10 @@ has no error-code lookup: caught errors use the same fields and class checks as
 constructed errors. Canonical TypeErrors share lazy runtime helpers, so dead
 guards can shed both their code and message data. A catch without a binding
 consumes the transport directly, without constructing an unobservable Error.
+The decoder a bound catch calls carries a class and message for each code the
+program can raise, read off the code literals of its functions and the helpers
+they reach once the program's code is whole (stdlib-pull `catchErrorArms`); a
+code is raised only as its literal (`errorCodeLiteral`).
 Unused generated error signals disappear at link; explicit source throws retain
 the host channel. Generated Wasm and interop must
 be rebuilt together when this internal transport changes.
