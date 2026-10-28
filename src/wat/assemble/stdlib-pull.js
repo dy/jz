@@ -27,6 +27,22 @@ import { compactOn, gcTableBytes, declarePin, declareSites, stubLogBytes } from 
 // have no user source locations to retain.
 const parseTemplate = src => parseWat(src, { loc: false })
 
+/** The names the emitted code reaches by itself, in the order it names them: its
+ *  `call`/`return_call`/`ref.func` sites in the user funcs and `__start`, then the
+ *  closure table's bare `$fn` refs. */
+function codeSeeds(sec) {
+  const seeds = []
+  const scanIR = (node) => {
+    if ((node[0] === 'call' || node[0] === 'return_call' || node[0] === 'ref.func') &&
+        typeof node[1] === 'string' && node[1][0] === '$') seeds.push(node[1].slice(1))
+  }
+  for (const fn of sec.funcs) walkAst(fn, { enter: scanIR })
+  for (const fn of sec.start) walkAst(fn, { enter: scanIR })
+  for (const e of sec.elem)               // closure table: bare `$fn` func refs
+    if (Array.isArray(e)) for (const c of e) if (typeof c === 'string' && c[0] === '$') seeds.push(c.slice(1))
+  return seeds
+}
+
 /**
  * Stdlib funcs actually reachable from the emitted program. Seeds from real
  * `call`/`return_call`/`ref.func` sites in the user funcs, `__start`, and the elem
@@ -36,21 +52,14 @@ const parseTemplate = src => parseWat(src, { loc: false })
  * memory/allocator decision on it. An eagerly-`inc`'d helper that nothing calls is
  * absent, which is the whole point.
  */
-function reachableStdlib(sec) {
+function reachableStdlib(sec, seeds = codeSeeds(sec)) {
   const stdlib = ctx.core.stdlib
   const reach = new Set(), stack = []
   // Track every reached name (module-namespace `math.sin` included), but only follow
   // those with a stdlib template. Names match `$foo`, `$__foo`, `$math.sin` — the
   // dotted module funcs are the ones the `$__`-only regex used to miss, pruning live code.
   const add = (name) => { if (!reach.has(name)) { reach.add(name); if (stdlib[name] != null) stack.push(name) } }
-  const scanIR = (node) => {
-    if ((node[0] === 'call' || node[0] === 'return_call' || node[0] === 'ref.func') &&
-        typeof node[1] === 'string' && node[1][0] === '$') add(node[1].slice(1))
-  }
-  for (const fn of sec.funcs) walkAst(fn, { enter: scanIR })
-  for (const fn of sec.start) walkAst(fn, { enter: scanIR })
-  for (const e of sec.elem)               // closure table: bare `$fn` func refs
-    if (Array.isArray(e)) for (const c of e) if (typeof c === 'string' && c[0] === '$') add(c.slice(1))
+  for (const name of seeds) add(name)
   // A stdlib func that self-exports (`(export "__invoke_closure")`) is a host-facing
   // entry point — the JS host calls it directly, so it's a root even when nothing in
   // the wasm calls it. Mirrors treeshake's inline-export rooting.
@@ -147,9 +156,11 @@ function catchErrorArms(sec) {
   const scanIR = (node) => { for (const x of node) if (typeof x === 'string' && x.startsWith('nan:')) errorCodesIn(x, own) }
   for (const fn of sec.funcs) walkAst(fn, { enter: scanIR })
   for (const fn of sec.start) walkAst(fn, { enter: scanIR })
+  // (the code it reaches by itself is the same each round: the decoder is the stdlib's)
+  const seeds = codeSeeds(sec)
   const raised = () => {
     const codes = new Set(own)
-    for (const name of reachableStdlib(sec)) {
+    for (const name of reachableStdlib(sec, seeds)) {
       if (name === '__catch_error') continue
       const v = ctx.core.stdlib[name]
       let text = ''
