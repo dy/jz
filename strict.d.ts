@@ -5,4 +5,3 @@ import type { CompileOptions, CompiledWasm } from './index.js'
 export function compile(source: string, options: CompileOptions & { wat: true }): string
 export function compile(source: string, options?: CompileOptions & { wat?: false }): CompiledWasm
 export function compile(source: string, options?: CompileOptions): CompiledWasm | string
-export default compile

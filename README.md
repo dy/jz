@@ -54,13 +54,13 @@ exports.square(7) // 49
 
 ## Strict compiler
 
-`jz/strict` exports `compile` (also the default export). It accepts the canonical
+`jz/strict` exports `compile`. It accepts the canonical
 subset: `let`/`const`, arrow functions and structured control flow. It rejects
 `var`, function declarations, classes, `switch` and unresolved dynamic fallbacks.
 Use `jz/interop` to instantiate its output.
 
 ```js
-import compile from 'jz/strict'
+import { compile } from 'jz/strict'
 import { instantiate } from 'jz/interop'
 
 const wasm = compile('export const square = x => x * x')
@@ -70,7 +70,8 @@ exports.square(7) // 49
 
 It shares the main compiler's options, diagnostics and optimization pipeline.
 The standalone `dist/strict.js` excludes the JavaScript lowering layer and host
-runtime. Its current bundle is about 2.65 MiB minified / 758 KiB gzip.
+runtime. Its current bundle is about 3.5 MiB minified / 1,026 KiB gzip, against
+3.7 MiB / 1,082 KiB for `dist/jz.js`.
 
 ## CLI
 
@@ -488,7 +489,7 @@ Adoption is ejectable: remove the JZ build step and the source remains JavaScrip
 ## Stability
 
 Pre-1.0. The entry points `jz` (the default export with `jz.memory`, `compile`
-and `instantiate`), `jz/interop` (`instantiate`) and `jz/strict`, the options above and the CLI flags are the contract; removing or
+and `instantiate`), `jz/interop` (`instantiate`) and `jz/strict` (`compile`), the options above and the CLI flags are the contract; removing or
 changing them takes a major version. Error classes and codes are stable within
 a major. Accepted programs preserve JavaScript values, exceptions and
 evaluation order at every optimization level, outside the differences listed

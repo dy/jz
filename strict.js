@@ -4,5 +4,3 @@ import { compileSource } from './src/compiler.js'
 export function compile(source, options = {}) {
   return compileSource(source, { ...options, strict: true })
 }
-
-export default compile

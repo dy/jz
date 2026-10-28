@@ -1,13 +1,12 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import strict, { compile as compileStrict } from '../strict.js'
+import { compile as strict } from '../strict.js'
 import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { levels } from './_matrix.js'
 import { setCompileTarget } from '../src/compiler.js'
 
 test('strict export: the canonical subset shares the main compiler pipeline', () => {
-  is(strict, compileStrict)
   const programs = [
     ['export const f = x => x*x + 1', [7]],
     ['export const f = n => { let x = 0; for (let i=0; i<n; i++) x += i; return x }', [17]],

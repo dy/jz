@@ -27,7 +27,7 @@ import { stripWatTemplates } from './wat-strip.mjs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
-import strictCompile from '../strict.js'
+import { compile as strictCompile } from '../strict.js'
 import { gzipSync } from 'node:zlib'
 import { specializeInvariants, resolveSelfCompileBuild } from './build-profile.mjs'
 
