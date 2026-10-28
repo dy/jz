@@ -12,7 +12,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import * as interop from '../interop.js'
 import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
-import { HEAP } from '../layout.js'
+import { HEAP, symbolCountMax } from '../layout.js'
 import { oracle } from './util.js'
 import { compile as wasm } from 'watr'
 
@@ -1294,12 +1294,14 @@ test('interop: Symbol property keys marshal through explicit dictionaries and ho
 test('interop: memoryless Symbol codecs retain identity and reject numeric field carriers', () => {
   if(onKernel())return
   const source=String.raw`(module
-    (global $id (export "__symbol_id") (mut i64) (i64.const 0x7ff8001000000000))
+    (global $id (export "__symbol_id") (mut i64) (i64.const 0))
     (func (export "fresh") (result i64)
-      (global.set $id (i64.add (global.get $id) (i64.const 1))) (global.get $id))
+      (global.set $id (i64.add (global.get $id) (i64.const 1)))
+      (i64.add (i64.const 0x7ff8001000000000) (i64.add (i64.shl (global.get $id) (i64.const 1)) (i64.const 1))))
     (func (export "echo") (param i64) (result i64) (local.get 0))
     (func (export "registry") (result i64) (i64.const 0x7ff8001000000000))
     (@custom "jz:symbols" "[[\"jz:memoryless\",16]]")
+    (@custom "jz:symbol-slots" "[1,null]")
     (@custom "jz:i64exp" "[{\"name\":\"fresh\",\"r\":true},{\"name\":\"echo\",\"p\":[0],\"r\":true},{\"name\":\"registry\",\"r\":true}]"))`
   const a=interop.instantiate(wasm(source)),b=interop.instantiate(wasm(source)),f=a.exports
   is(a.memory,null,'fixture has no linear memory')
@@ -1312,7 +1314,7 @@ test('interop: memoryless Symbol codecs retain identity and reject numeric field
   is(interop.memory(a).read(raw),held,'rebuilding a memoryless adapter reuses its codec')
   is(interop.wrap(a).echo(first),first,'another export wrapper shares identity')
   ok(f.fresh()!==host,'host ingress advances the runtime counter')
-  a.instance.exports.__symbol_id.value=0x7ff87ffffffffffen
+  a.instance.exports.__symbol_id.value=symbolCountMax(1)
   for(let i=0;i<2;i++)throws(()=>f.echo(Symbol()),RangeError,'host identity exhaustion never wraps')
   is(f.echo(first),first,'known identities remain usable after allocation errors')
   for(const optimize of levels(0,1,2,3,'size')){

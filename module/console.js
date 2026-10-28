@@ -31,6 +31,7 @@ import { exprType } from '../src/type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 import { dataAlign, dataLen, dataPush } from '../src/static-data.js'
+import { symbolFork } from './symbol.js'
 
 // Arguments holding a spread (`console.warn(msg, ...params)`) are as many
 // values as the run decides: they print from the array they build, `one(bits,
@@ -221,8 +222,9 @@ const setupWasi = (ctx) => {
             ir.push(['call', '$__write_num', ['i32.const', fd], asF64(emit(part))])
           }
         } else {
+          // (a Symbol prints its descriptive string, module/symbol.js)
           inc('__write_val')
-          ir.push(['call', '$__write_val', ['i32.const', fd], asI64(emit(part))])
+          ir.push(['call', '$__write_val', ['i32.const', fd], asI64(symbolFork(part, t => typed(['local.get', `$${t}`], 'f64')) ?? emit(part))])
         }
       }
       for (let i = 0; i < args.length; i++) {

@@ -4,8 +4,9 @@ import { is, ok } from 'tst/assert.js'
 import jz, { compile, instantiate } from '../index.js'
 import { compile as wasm } from 'watr'
 import { run, oracle } from './util.js'
-import { levels, onWasi, onKernel } from './_matrix.js'
-import { ptrBits, PTR } from '../layout.js'
+import { levels, onWasi, onKernel, adaptI64 } from './_matrix.js'
+import { wasi } from '../wasi.js'
+import { ptrBits, PTR, symbolCountMax } from '../layout.js'
 
 test('Symbol: interned-only modules do not export an unused identity counter', () => {
   const source = `export function f(){return Symbol.for('shared')}`
@@ -36,25 +37,27 @@ test('Symbol: factory and loop invocations retain distinct identities across cal
   }
 })
 
-test('Symbol: identity carry skips interned atoms and exhaustion never wraps', () => {
+// A fresh identity counts the instance's identities (`__symbol_id`) above its
+// description slot (layout.js symbolCountMax): its offset is never zero, the
+// interned domain, at any count, and the last count stays below the tombstone.
+test('Symbol: a fresh identity never equals an interned one and exhaustion never wraps', () => {
   if(onWasi() || onKernel())return
   const wat=compile(`export function f(){return Symbol()===Symbol.for('same')?0:1}`,{wat:true,optimize:0})
   // Expose only the counter in this fixture to reach its otherwise impractical boundaries.
   const mod=instantiate(wasm(wat.replace(/\)\s*$/, '(export "__test_id" (global $__symbol_id)))')))
-  const counter=mod.instance.exports.__test_id
-  for(const start of [0x7ff8001000000000n,0x7ff80010fffffffen,0x7ff80010ffffffffn,
-    0x7ff8001200000008n,0x7ff8400000000008n]) {
+  const counter=mod.instance.exports.__test_id, max=symbolCountMax(1)
+  for(const start of [0n,0x7fffffffn,0xffffffffn,0x100000000n,max>>1n]) {
     counter.value=start
     is(mod.exports.f(),1,'a fresh runtime atom never equals an interned one')
-    is(counter.value,start+((start&0xffffffffn)===0xffffffffn?2n:1n),'carry reserves the zero-offset domain')
+    is(counter.value,start+1n,'each identity advances the count by one')
   }
-  counter.value=0x7ff87ffffffffffdn
+  counter.value=max-1n
   is(mod.exports.f(),1,'the last usable identity remains valid')
   for(let i=0;i<2;i++) {
     let error
     try{mod.exports.f()}catch(e){error=e}
     is(error?.name,'RangeError','exhaustion throws, including repeated calls')
-    is(counter.value,0x7ff87ffffffffffen,'neither the tombstone nor a wrapped identity is issued')
+    is(counter.value,max,'neither the tombstone nor a wrapped identity is issued')
   }
 })
 
@@ -311,4 +314,50 @@ test('Symbol property keys never treat identity payloads as string addresses', (
     for(const [a,b] of [[0,1],[0,1],[2,3],[1,0],[0,2],[0,1]])
       is(mod.memory.read(mod.instance.exports.f(keys[a],keys[b])),expected,`raw identity O${optimize}, ${a}/${b}`)
   }
+})
+
+// A Symbol keeps its description (jz:symbol): String(), toString() and
+// .description read it as JavaScript does, ToString of one throws, and the
+// host reads a symbol the module made with its description, as the module
+// reads one the host made. The description was dropped: String(s) was "NaN".
+test('Symbol: description, String, toString and ToString agree with the host', () => {
+  const src = `const kept = Symbol('kept'), fromFor = Symbol.for('reg')
+    const desc = (s) => s.description, str = (s) => String(s), call = (s) => s.toString()
+    const thrown = (f) => { try { return f() } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }
+    export let local = () => { const s = Symbol('d'); return [String(s), s.toString(), s.description, Symbol('e').toString(), Symbol(1n).description, Symbol(true).toString(16)] }
+    export let none = () => [String(Symbol()), Symbol().description, String(Symbol(undefined)), Symbol('').description, String(Symbol(''))]
+    export let dynamic = (n) => { const s = Symbol('v' + n); return [desc(s), str(s), call(s)] }
+    export let number = () => [Symbol(42).description, String(Symbol(4.5))]
+    export let registry = () => [fromFor.description, String(fromFor), Symbol.for('reg') === fromFor, String(Symbol.for('other'))]
+    export let toStr = () => [thrown(() => '' + kept), thrown(() => \`\${kept}\`), thrown(() => [kept].join())]
+    export let objects = () => { const o = { description: 'own', toString() { return 'obj' } }; return [o.description, String(o), o.toString(), desc(o), str(o), call(o)] }
+    export let made = () => kept
+    export let read = (s) => [desc(s), str(s), s === kept]`
+  for (const optimize of levels(0, 2, 'size')) {
+    const host = oracle(src), mod = jz(src, { optimize }).exports
+    for (const name of ['local', 'none', 'registry', 'toStr', 'objects', 'number']) is(mod[name](), host[name](), `${name} at ${optimize}`)
+    is(mod.dynamic(7), host.dynamic(7), `dynamic at ${optimize}`)
+    if (onWasi() || onKernel()) continue
+    const s = mod.made()
+    is([s.toString(), s.description, mod.made() === s], ['Symbol(kept)', 'kept', true], `a module symbol on the host at ${optimize}`)
+    is(mod.read(s), ['kept', 'Symbol(kept)', true], `a module symbol back at ${optimize}`)
+    is(mod.read(Symbol('hosted')), ['hosted', 'Symbol(hosted)', false], `a host symbol in the module at ${optimize}`)
+  }
+})
+
+test('Symbol: console.log prints the description under the JS host and WASI', () => {
+  const src = `export let f = () => { console.log(Symbol('d'), Symbol(), Symbol.for('k'), 'x' + String(Symbol('e'))) }`
+  if (onKernel()) return
+  if (!onWasi()) {
+    const seen = [], log = console.log
+    console.log = (...a) => seen.push(a.map(v => typeof v === 'symbol' ? v.toString() : v).join(' '))
+    try { jz(src).exports.f() } finally { console.log = log }
+    is(seen, ['Symbol(d) Symbol() Symbol(k) xSymbol(e)'])
+  }
+  const out = [], imports = wasi({ write: (fd, text) => out.push(text) })
+  const mod = new WebAssembly.Module(compile(src, { host: 'wasi' })), inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
+  exps.f()
+  is(out.join(''), 'Symbol(d) Symbol() Symbol(k) xSymbol(e)\n')
 })

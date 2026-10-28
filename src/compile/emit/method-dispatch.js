@@ -560,7 +560,16 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
     const own = () => typed(['local.get', `$${t}`], 'f64')
     const boolean = method === 'toString' ? typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])),
       ['i64.eq', ['i64.reinterpret_f64', own()], ['i64.const', TRUE_NAN]]], 'f64') : method === 'valueOf' ? own() : missing
-    const atom = numEmitter && mayBe(K.BOOL) ? typed(['if', ['result', 'f64'], isBoolAtom(own()), ['then', boolean], ['else', primitive]], 'f64') : primitive
+    let atom = numEmitter && mayBe(K.BOOL) ? typed(['if', ['result', 'f64'], isBoolAtom(own()), ['then', boolean], ['else', primitive]], 'f64') : primitive
+    // So is a Symbol, in a program that makes them: its toString is its
+    // descriptive string (module/symbol.js), after the arguments it ignores.
+    if (method === 'toString' && numEmitter && ctx.features.symbols) {
+      inc('__is_symbol', '__sym_string')
+      atom = typed(['if', ['result', 'f64'], ['call', '$__is_symbol', ['i64.reinterpret_f64', own()]],
+        ['then', block64(...parsed.normal.map(arg => ['drop', asF64(emit(arg))]),
+          ['f64.reinterpret_i64', ['call', '$__sym_string', ['i64.reinterpret_f64', own()]]])],
+        ['else', atom]], 'f64')
+    }
     if (mayBe(K.NUMBER) || mayBe(K.BOOL) || mayBeUndef) cases.push([PTR.ATOM, atom])
     if (!bigintEmitter && mayBe(K.BIGINT)) cases.push([PTR.BIGINT, objectMethod ? generic : missing])
     let boxed = dispatchByPtrType(tt, cases, fallback)

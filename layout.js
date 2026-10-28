@@ -51,6 +51,15 @@ export const FIELD = { NUMBER: 1 << 12, BOOL: 1 << 13, NULLISH: 1 << 14, ANY: (1
  *  (err-codes.js), materialized before a source catch observes it. */
 export const ATOM = { NULL: 1, UNDEF: 2, FALSE: 4, TRUE: 5 }
 export const SYMBOL_MIN = 16  // first user Symbol atom id
+/** A Symbol a call makes is the atom payload `SYMBOL_MIN·2^32 + (count << k) + slot`:
+ *  `count` the instance's such identities so far (its `__symbol_id`, the host's
+ *  among them), `slot` (1 ≤ slot < 2^k) the description it was made with, 1
+ *  for none the program fixes (module/symbol.js). Its offset is never zero, the
+ *  domain of interned ones. The largest count whose identities all stay below
+ *  the absent-slot marker: */
+export const symbolCountMax = (k) => ((((1n << 47n) - 1n - (BigInt(SYMBOL_MIN) << 32n)) >> BigInt(k)) - 1n)
+/** The slot bits `k` of a program that makes Symbols with `literals` distinct description literals: room for slot 1 and one slot each. */
+export const symbolSlotBits = (literals) => 32 - Math.clz32(literals + 1)
 
 /** Private absent-slot marker; no JavaScript value encodes this atom. */
 export const TOMB_NAN = '0x7FF87FFFFFFFFFFF'

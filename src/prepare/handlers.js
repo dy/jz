@@ -31,7 +31,7 @@ import { TYPED_ELEM_NAMES } from '../../layout.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { hasFunc, isFuncValueLocal, isUnresolvableBareIdent, renameFunc, shadowsBuiltin } from './closure-lift.js'
 import { liftIIFEs } from './lift-iife.js'
-import { STD_HOST_EXPORTS } from '../std/index.js'
+import { STD_HOST_EXPORTS, STD_PRIMITIVE_EXPORTS, STD_RUNTIME_ROOTS } from '../std/index.js'
 import { MUTATING_ARRAY_METHODS, alwaysFalsy, alwaysTruthy, dropDeadPostfix, foldConstIf, stringValue, stripBoolNot, truncateUnreachable } from './const-fold.js'
 import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternItems, substPattern } from './destructure.js'
 import { mintLocal, scanReassignedTopLevel, writtenNames } from './ident-purity.js'
@@ -97,6 +97,11 @@ function prepNode(node) {
   // NaN-only check (see .work/archive/todo.md).
   if (Array.isArray(node) && (node[0] === 'bigint' || (node[0] === '()' && node[1] === 'BigInt')))
     setFeature('bigint', true)
+  // Whole-program "does a Symbol ever get made" flag, order-independent as the
+  // bigint one: a `Symbol(…)` or `Symbol.for(…)` call (jz:symbol's own among them).
+  if (Array.isArray(node) && node[0] === '()' && (node[1] === 'Symbol' ||
+      Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Symbol' && node[1][2] === 'for'))
+    setFeature('symbols', true)
   // Whole-program "does a jz Error object ever get constructed" flag — mirrors the
   // bigint flag immediately above (order-independence for the same reason: a
   // template literal stringifying a caught Error, ir.js's toStrI64 Error-schema
@@ -3389,8 +3394,12 @@ function prepareModule(specifier, source) {
   // a std module's host-boundary contract (`__mt_drain`, `__p_state`, …)
   // is read off the instance by plain name: re-export it from the program
   // from whichever module pulled the runtime in
-  for (const name of STD_HOST_EXPORTS[specifier] ?? [])
+  for (const name of STD_HOST_EXPORTS[specifier] ?? []) {
     if (!(name in ctx.module.rootExports)) ctx.module.rootExports[name] = moduleExports.get(name)
+    if (STD_PRIMITIVE_EXPORTS.has(name)) ctx.funcs.primitiveArgs.add(moduleExports.get(name))
+  }
+  // and the ones the emitters call by name (std/index.js STD_RUNTIME_ROOTS)
+  for (const name of STD_RUNTIME_ROOTS[specifier] ?? []) ctx.funcs.runtimeRoots.add(moduleExports.get(name))
   return result
   } finally {
     // ALWAYS restore caller state (FE-6): if `prep(ast)` or a recursive import threw

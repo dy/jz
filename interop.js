@@ -12,7 +12,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_NAMES, encodeTypedElemAux, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, symbolCountMax, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_NAMES, encodeTypedElemAux, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
@@ -144,26 +144,37 @@ const decodeSSO = (b) => {
 // A Symbol belongs to one compiled instance. Host inputs and compiled factories
 // draw from the same counter; interned ids resolve through the host registry.
 // Keep this table across arena resets: Symbols have identity but no heap storage.
+// A runtime identity's low bits are the slot of its description (layout.js
+// symbolCountMax): a literal of the program (`jz:symbol-slots`), else slot 1,
+// one `jz:symbol` keeps by the number the identity reads as (its `__sym_desc`
+// export, once wrapped) or none. The host's own are slot 1.
 const symbolCodecs = new WeakMap()
+const SYMBOL_KEY_MASK = 0x00007FFFFFFFFFFFn
 const symbolsOf = (owner, mod, raw) => {
   let codec = symbolCodecs.get(owner)
   if (codec) return codec
   const values = new Map(), ids = new Map(), counter = raw?.__symbol_id
-  let next = ptr(PTR.ATOM, SYMBOL_MIN, 0)
+  let next = 0n
   const remember = (id, value) => { values.set(id, value); ids.set(value, id); return value }
   for (const [key, id] of (mod && jsonSection(mod, 'jz:symbols')) || [])
     remember(ptr(PTR.ATOM, id, 0), Symbol.for(key))
+  const slots = (mod && jsonSection(mod, 'jz:symbol-slots')) || [1]
+  const k = BigInt(slots[0]), max = symbolCountMax(slots[0]), base = ptr(PTR.ATOM, SYMBOL_MIN, 0)
+  const key = (id) => Number(id & SYMBOL_KEY_MASK)
   codec = {
-    read(id) { return values.has(id) ? values.get(id) : remember(id, Symbol()) },
+    describe: null,
+    read(id) {
+      if (values.has(id)) return values.get(id)
+      const slot = Number(id & ((1n << k) - 1n))
+      return remember(id, Symbol(slot > 1 ? slots[slot] : codec.describe?.(key(id))))
+    },
     write(value) {
       if (ids.has(value)) return ids.get(value)
-      let id = (counter ? counter.value : next) + 1n
-      if (!(id & MASK32)) id++
-      if (id >= TOMB_BITS) throw new RangeError('Symbol identity space exhausted')
-      if (counter) counter.value = id
-      else next = id
-      remember(id, value)
-      return id
+      const n = (counter ? counter.value : next) + 1n
+      if (n > max) throw new RangeError('Symbol identity space exhausted')
+      if (counter) counter.value = n
+      else next = n
+      return ids.get(remember(base + (n << k) + 1n, value))
     },
   }
   symbolCodecs.set(owner, codec)
@@ -859,6 +870,8 @@ export const wrap = (src, state) => {
   const liveValues = (exports) => {
     if (values) for (const name of values)
       if (typeof exports[name] === 'function') Object.defineProperty(exports, name, { get: exports[name], enumerable: true, configurable: false })
+    // A description computed at run time crosses through the module's own export (jz:symbol)
+    if (exports.__sym_desc) symbolsOf(realInst, mod, realInst.exports).describe = exports.__sym_desc
     return exports
   }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
@@ -1632,6 +1645,8 @@ const prepareInterop = (opts) => {
       return (type(vBig) === PTR.EXTERNAL ? state.extMap[offset(vBig)] : undefined) instanceof C ? 1 : 0
     },
     __ext_callable: (vBig) => typeof state.extMap[offset(vBig)] === 'function' ? 1 : 0,
+    // the description of a Symbol the module holds none of its own for: one the host made (module/symbol.js)
+    __ext_sym_desc: (vBig) => bits(state.mem.wrapVal(state.mem._symbols.read(vBig).description)),
     // older binaries pass receiver, key and arguments
     __ext_call: (objBig, propBig, argsBig) => {
       const prop = keyOf(propBig), obj = extRecv(objBig, prop, 'method call'), args = read(argsBig)

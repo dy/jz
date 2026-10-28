@@ -412,6 +412,14 @@ export function createTransform(opts) {
         }
         err('jzify: `Object.defineProperties(o, map)` lowers to one `Object.defineProperty` per key, so `map` must be an object literal with literal keys – spell the calls out otherwise')
       }
+      // A description no literal fixes rides the jz-source std module
+      // `jz:symbol` (src/std/symbol.js), which makes the identity itself; a
+      // literal one is a constant of the identity (module/symbol.js).
+      if (callee === 'Symbol' && _gen && !_gen.iterProto?.std && !shadowsBuiltin('Symbol')) {
+        const first = Array.isArray(rest[0]) && rest[0][0] === ',' ? rest[0][1] : rest[0]
+        if (first != null && first !== 'undefined' && !(Array.isArray(first) && first[0] == null && first.length === 2))
+          return ['()', '__sym_new', ...rest.map(a => a == null ? a : transform(a))]
+      }
       // URLSearchParams rides the jz-source std module `jz:usp` (src/std/usp.js);
       // `new URLSearchParams(x)` unwraps to this same call via the `new` handler.
       if (callee === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && _gen) {

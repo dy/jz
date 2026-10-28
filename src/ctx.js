@@ -110,6 +110,7 @@ function createFunctions() {
     builtinWrapped: null,   // a builtin's value wrapper (prepare/entry.js) → the builtin key it forwards to
     builtinMethodReaders: null, // property name → prepared native method-value reader and receiver sites
     runtimeRoots: new Set(), // prepared functions called by runtime kernels
+    primitiveArgs: new Set(), // std exports the host calls with primitives only (std/index.js STD_PRIMITIVE_EXPORTS)
     // Fixed-rest variants precede ProgramIndex: { variant, origin, kind }.
     // ProgramIndex consumes this queue once; later variants register directly.
     pendingVariants: [],
@@ -848,6 +849,8 @@ export function reset(proto, globals, bridge) {
                       // a never-constructed class's `instanceof` folds to compile-time
                       // `false` and never mints/bakes a schema id for it.
     timers: false,          // Set by prepare.js when timer module is included
+    symbols: false,         // A Symbol is made anywhere (a `Symbol(…)` or `Symbol.for(…)` call, prep()'s
+                            // scan): the readers that tell one apart fork (module/symbol.js symbolFork)
     resizable: false,       // A `new ArrayBuffer(n, options)` whose options may name maxByteLength
                             // (prepare's 'new' handler): views then bound themselves by their
                             // buffer (module/typedarray.js `$__view_bytes`).

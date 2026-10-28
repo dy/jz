@@ -34,6 +34,7 @@ import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { stringBytes, stringHash } from '../src/string-data.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { registerUri } from './string/uri.js'
+import { symbolFork } from './symbol.js'
 import { registerBase64 } from './string/base64.js'
 import { registerEncoding } from './string/encoding.js'
 
@@ -242,7 +243,8 @@ export default (ctx) => {
     __key_eq: ['__str_eq'],
     __to_key: ['__is_symbol', '__to_str'],
     __to_str: () => [...(ctx.schema.regexSids.size ? ['__is_regexp', '__regex_string'] : []), '__ftoa', '__static_str', '__str_join', '__mkptr',
-      ...(ctx.module.modules.date && ctx.schema.dateSid != null ? ['__ptr_aux', '__date_to_string'] : [])],
+      ...(ctx.module.modules.date && ctx.schema.dateSid != null ? ['__ptr_aux', '__date_to_string'] : []),
+      ...(symbolsMade() ? ['__is_symbol', symbolToStringThrow()] : [])],
     __str_length: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
 
@@ -1093,6 +1095,14 @@ export default (ctx) => {
     (if (result i64) (call $__is_symbol (local.get $val))
       (then (local.get $val)) (else (call $__to_str (local.get $val)))))`)
 
+  // A program that makes Symbols converts one by ToString to a TypeError; any
+  // other program holds none of its own.
+  const symbolsMade = () => ctx.features.symbols
+  const symbolToStringThrow = () => {
+    ctx.runtime.throws = true
+    return ctx.core.throwHelper('TypeError', 'Cannot convert a Symbol value to a string')
+  }
+
   // Coerce value to string: numbers → __ftoa, nullish → static strings,
   // plain NaN → "NaN", arrays → join(","), other string-like pointers pass through.
   // The body is realized at link: a BigInt program's arm formats a boxed
@@ -1116,6 +1126,8 @@ export default (ctx) => {
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 4))))))
     (if (i64.eq (local.get $val) (i64.const ${TRUE_NAN}))
       (then (return (i64.reinterpret_f64 (call $__static_str (i32.const 3))))))
+    ${symbolsMade() ? `;; ToString of a Symbol throws (ECMA-262 7.1.17 step 2)
+    (if (call $__is_symbol (local.get $val)) (then (call $${symbolToStringThrow()}) (unreachable)))` : ''}
     (local.set $type (call $__ptr_type (local.get $val)))
     ;; Plain NaN (type=0) → "NaN" string
     (if (i32.eqz (local.get $type))
@@ -1878,10 +1890,12 @@ export default (ctx) => {
     inc('__to_str')
     return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(emit(val))]], 'f64')
   })
-  bind('.toString', (val, ...ignored) => {
+  const toStringOf = (node) => {
     inc('__to_str')
-    return withIgnoredArgs(val, ignored, node => typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(storedValue(node))]], 'f64'))
-  })
+    return typed(['f64.reinterpret_i64', ['call', '$__to_str', asI64(storedValue(node))]], 'f64')
+  }
+  bind('.toString', (val, ...ignored) =>
+    withIgnoredArgs(val, ignored, node => symbolFork(node, toStringOf) ?? toStringOf(node)))
   // Object.prototype.valueOf returns the receiver (per ES2024 20.1.3.7).
   // Array/Object inherit this; only primitive wrappers (Number/Boolean/String)
   // override to return the primitive — strings already covered by .string:valueOf.
@@ -2283,8 +2297,7 @@ export default (ctx) => {
     return typed(['call', '$__codepoint_at', asI64(emit(str)), posIndex(idx)], 'f64')
   })
 
-  bind('String', (value) => {
-    if (value === undefined) return emit(['str', ''])
+  const stringOf = (value) => {
     const v = argIR(value)
     // A numeric element kind alone does not prove an indexed value exists.
     if (!hasAmbiguousBoolMerge(value) && isPresentNumber(ctx, value)) {
@@ -2292,7 +2305,10 @@ export default (ctx) => {
       return typed(['call', '$__ftoa', asF64(v), ['i32.const', 0], ['i32.const', 0]], 'f64')
     }
     return typed(['f64.reinterpret_i64', toStrI64(value, v)], 'f64')
-  })
+  }
+  // `String(symbol)` is its descriptive string, where ToString throws (ECMA-262 22.1.1.1 step 2a).
+  bind('String', (value) => value === undefined ? emit(['str', ''])
+    : symbolFork(value, stringOf) ?? stringOf(value))
 
   // 1-byte string from a raw byte: SSO when ASCII (<0x80, fits the 7-bit codec),
   // else a heap 1-byte string (the 7-bit SSO can't represent bytes ≥0x80).

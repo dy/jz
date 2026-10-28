@@ -26,15 +26,20 @@ import iterHelpers from './iter-helpers.js'
 import usp from './usp.js'
 import typed from './typed.js'
 import suppressed from './suppressed.js'
+import symbol from './symbol.js'
 
 export const STD_SOURCES = {
   'jz:events': events, 'jz:weakref': weakref, 'jz:domexception': domexception,
   'jz:async': asyncRt, 'jz:asyncgen': asyncgen,
   'jz:iter': iter, 'jz:iter-arr': iterArr, 'jz:iter-helpers': iterHelpers,
-  'jz:usp': usp, 'jz:typed': typed, 'jz:suppressed': suppressed,
+  'jz:usp': usp, 'jz:typed': typed, 'jz:suppressed': suppressed, 'jz:symbol': symbol,
 }
 
-export const STD_HOST_EXPORTS = { 'jz:async': ['__mt_drain', '__p_state', '__p_value', '__p_make', '__p_finish'] }
+export const STD_HOST_EXPORTS = { 'jz:async': ['__mt_drain', '__p_state', '__p_value', '__p_make', '__p_finish'], 'jz:symbol': ['__sym_desc'] }
+/** Those the host calls with primitives only (a number key): no host value enters through them (src/compile/func-exports.js hostArguments). */
+export const STD_PRIMITIVE_EXPORTS = new Set(['__sym_desc'])
+/** The functions of a std module the runtime calls by name (module/symbol.js `__sym_described`): roots of the program (src/compile/program-index.js). */
+export const STD_RUNTIME_ROOTS = { 'jz:symbol': ['__sym_desc'] }
 
 /** global name → the `jz:` module exporting it (prototype-less: `constructor` is a plain identifier) */
 export const STD_GLOBALS = Object.create(null)

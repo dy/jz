@@ -219,9 +219,26 @@ instead of duplicating it at each call. The compact string hash classifies
 atoms once; its remaining canonical property keys are strings. String/Symbol
 hash values and the speed tier's inline shortcuts stay unchanged.
 Symbol factories evaluate every argument before converting the description;
-conversion getters, fallback methods and errors follow the string hint even
-though descriptions are not retained. Ignored arguments keep their effects.
-The host adapter maps each instance's Symbol identities in both directions.
+conversion getters, fallback methods and errors follow the string hint.
+Ignored arguments keep their effects. A Symbol has no storage: a description
+the program writes as a literal (`Symbol('done')`, `Symbol(42)`) is a constant
+of the identity, which carries the literal's slot in its low bits above the
+instance's count of identities (`__sym_make`, layout.js `symbolCountMax`), and
+an interned one's is its registry key. `__sym_described` reads either from a
+table of static strings realized at link, once the slots are all known; their
+count fixes the slot bits. jzify routes `Symbol(x)` of any other argument
+through `jz:symbol`'s `__sym_new`, whose Map keeps the description by the
+number the identity reads as (`__sym_key`); a store into that module binding
+is an escape the frame census keeps. Its `__sym_desc`, an export the host
+calls with a number, brings no host value in (std/index.js
+`STD_PRIMITIVE_EXPORTS`, func-exports `hostValueIngress`). `String(x)`, `x.toString()`, `x.description` and a WASI
+print of a value the summary cannot bound fork in place on `__is_symbol` in a
+program that makes Symbols (module/symbol.js `symbolFork`, prepare's
+`features.symbols` scan); there ToString of a
+Symbol throws (`__to_str`).
+The host adapter maps each instance's Symbol identities in both directions,
+reading a description from `jz:symbol-slots` (or `__sym_desc`) as one first
+crosses out; the module asks the host for a host Symbol's (`__ext_sym_desc`).
 Interned names travel in metadata; fresh host inputs advance the same counter
 as compiled factories. Arena reset restores source globals but never reissues
 an identity. These maps and counters remain local to an instance.
@@ -5281,6 +5298,7 @@ no independent version marker and is not frozen: NaN-box layouts, `_alloc`/`_cle
 the closure table, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
 `jz:errcls`, `jz:brand`, `jz:class` and its members' exports, `jz:values`
 and its getters, schema IDs,
+`jz:symbols` and `jz:symbol-slots` with the identity layout they decode,
 `memory.fieldContracts` and the `_`-prefixed exports are all current-toolchain
 policy, regression-tested in `test/abi.js` but not cross-release-stable. Use
 `jz/interop`'s `instantiate()` or pin the exact compiler version when

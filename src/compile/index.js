@@ -34,7 +34,7 @@ import { collectMemberUses, definesToPrimitive } from '../member-uses.js'
 import { ctx, checkpointed, err, PTR, HEAP, getFactStore, declGlobal, inc } from '../ctx.js'
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
-import { FIELD } from '../../layout.js'
+import { FIELD, symbolSlotBits } from '../../layout.js'
 import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import {
   structInlinePass, unionInlinePass, clearBodyFacts,
@@ -926,6 +926,12 @@ export function assemble(ast, profiler) {
   // Fresh identities share the exported counter with host argument marshaling.
   if (ctx.runtime.atom?.table.size)
     sec.customs.push(['@custom', '"jz:symbols"', `"${JSON.stringify([...ctx.runtime.atom.table]).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+  // A fresh identity's description slots: their bit count, then each slot's literal (module/symbol.js)
+  if (ctx.scope.globals.has('__symbol_id')) {
+    const slots = [symbolSlotBits(ctx.runtime.atom.slots.size), null]
+    for (const [text, slot] of ctx.runtime.atom.slots) slots[slot] = text
+    sec.customs.push(['@custom', '"jz:symbol-slots"', `"${JSON.stringify(slots).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+  }
 
   // Custom section: rest params for exported functions (JS-side wrapping).
   // Entry per JS-visible export name (not per internal func name) — host's

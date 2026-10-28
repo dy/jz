@@ -44,13 +44,18 @@ export const isExportedIn = (funcs, f) => {
 }
 export const isExported = f => isExportedIn(ctx.funcs, f)
 
+/** Whether the host may call `f` with values of its own: an export with a
+ *  boxed parameter, other than a std contract export the host calls with
+ *  primitives only (std/index.js STD_PRIMITIVE_EXPORTS). */
+const hostArguments = f => !ctx.funcs.primitiveArgs.has(f.name) && isExported(f) && f.sig?.params?.some(p => p.type === 'f64')
+
 /** Query after planning: imports and public parameter carriers are settled.
  *  Helper demand cannot prove ingress; it depends on emission order. */
 export const hasExternalIngress = () => {
   if (ctx.transform.targetProfile.envImports && (ctx.core.hostGlobals.size || ctx.module.hostFree?.size)) return true
   if (ctx.facts.externalIngress == null) ctx.facts.externalIngress = ctx.transform.targetProfile.envImports && (
     ctx.module.imports.some(i => i[3]?.[0] === 'func') ||
-    ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64'))
+    ctx.funcs.list.some(hostArguments)
   )
   return ctx.facts.externalIngress
 }
@@ -94,7 +99,7 @@ const importIngress = () => {
 export const hostValueIngress = () => {
   if (!ctx.transform.targetProfile.envImports) return false
   if (ctx.facts.hostValueIngress == null) ctx.facts.hostValueIngress = ctx.core.hostGlobals.size > 0 || ctx.module.hostFree?.size > 0 ||
-    ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64')) || importIngress()
+    ctx.funcs.list.some(hostArguments) || importIngress()
   return ctx.facts.hostValueIngress
 }
 

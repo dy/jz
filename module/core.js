@@ -32,6 +32,7 @@ import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
 import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
+import { symbolFork } from './symbol.js'
 import { registerReach, registerIterRelease, reachOn, belowLog, REACH_DEPS } from './core/reach.js'
 import { registerCompact, COMPACT_DEPS, compactOn, declarePin } from './core/compact.js'
 import { hasExternalIngress, mayHoldHostValue } from '../src/compile/func-exports.js'
@@ -2807,10 +2808,15 @@ export default (ctx) => {
     return emitDynGetAnyTyped(storedValue(obj), asI64(storedValue(key)), null)
   }
   ctx.core.emit['.'] = (obj, prop) => dotRead(obj, prop, false)
-  const dotRead = (obj, prop, raw) => {
+  const dotRead = (obj, prop, raw, symbolRead) => {
     // A rest slot view's length is its argument count (compile/rest-view.js).
     if (prop === 'length' && typeof obj === 'string' && ctx.func.restView?.has(obj))
       return restViewLength(ctx.func.restView.get(obj))
+    // A Symbol's description, where the receiver may be one (module/symbol.js).
+    if (!raw && !symbolRead && prop === 'description') {
+      const symbol = symbolFork(obj, t => dotRead(t, prop, false, true), '__sym_described')
+      if (symbol) return symbol
+    }
     if (!raw && ctx.transform.accessorNames?.has(prop)) {
       const acc = accessorRead(obj, prop)
       if (acc) return acc
