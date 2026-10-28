@@ -84,6 +84,17 @@ test('mem.write: capacity overflow throws', async () => {
   ok(threw)
 })
 
+test('mem.write: a typed array takes its own element kind', () => {
+  const m = jz.memory()
+  const f64 = m.Float64Array([0, 0])
+  m.write(f64, [1.5, -2.25])
+  is([...m.read(f64)], [1.5, -2.25])
+  if (!globalThis.Float16Array || !DataView.prototype.setFloat16) return
+  const f16 = m.Float16Array([0, 0])
+  m.write(f16, [1.5, -2.25])
+  is([...m.read(f16)], [1.5, -2.25], 'f16 elements, not their integer parts')
+})
+
 // ============================================
 // String: JS → WASM → JS roundtrip
 // ============================================

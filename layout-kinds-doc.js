@@ -80,7 +80,7 @@ const PROSE = {
     childPointers: 'none (leaf bytes) for all three shapes',
     forwarding: 'fixed storage after construction; SLICE aliases its parent storage',
     identityNote: 'CONTENT identity — the one kind $__eq/$__eq_strict/$__same_value_zero special-case: bit-equal ⇒ trivially equal (SSO and canonical-interned strings), bit-different NaN-boxed STRING pair ⇒ __str_eq byte compare (skipped only when BOTH sides are STR_INTERN_BIT-marked, since two distinct canonicals can never be content-equal — $__eq only). Both consumers now re-verify EACH operand is an actual NaN bit-pattern (f64.ne(f,f)) before trusting its extracted tag as STRING — see FINDINGS[identity-arm-divergence] for why $__same_value_zero\'s copy of this guard is load-bearing, not redundant',
-    interopDecode: 'mem.read t===4: SSO_BIT → decodeSSO (7-bit-per-char unpack); else TEXT_DEC.decode over [off, off+len) read from the -4 header',
+    interopDecode: 'mem.read t===4: SSO_BIT → decodeSSO (7-bit-per-char unpack); else the UTF-16 code units at off, the count in the -4 header (in aux for a SLICE)',
     typeofArm: '"string" — $__typeof\'s stringTest arm ($__ptr_type(v) === PTR.STRING)',
     findings: ['identity-arm-divergence'],
   },

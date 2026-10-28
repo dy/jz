@@ -171,7 +171,7 @@ memory.reset()</code></pre>
 npx jz kernel.js -O3           # fastest; -Os smallest
 npx jz kernel.js --host wasi   # standalone WASI module
 npx jz kernel.js --why         # what kept a loop scalar</code></pre>
-      <pre class="terminal" tabindex="0" aria-label="JavaScript: load a prebuilt module"><code class="language-javascript">import { instantiate } from 'jz/interop' // 19 kB gzip
+      <pre class="terminal" tabindex="0" aria-label="JavaScript: load a prebuilt module"><code class="language-javascript">import { instantiate } from 'jz/interop' // 20 kB gzip
 
 const wasm = await fetch('kernel.wasm').then(r =&gt; r.arrayBuffer())
 const { exports } = instantiate(wasm)</code></pre>

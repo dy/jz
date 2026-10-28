@@ -1,62 +1,26 @@
 /**
- * Host runtime — the boundary codec behind `jz/interop`.
+ * Host runtime: instantiates prebuilt jz wasm and marshals values across its
+ * boundary. `jz/interop` (instantiate.js) exposes `instantiate`, index.js
+ * `memory` as `jz.memory`; the rest serves the tests. No compiler, parser or
+ * watr: only host linking, layout, error metadata and UTF-8 decoding.
  *
- * Runs prebuilt jz wasm without the compiler, parser, or watr. The package
- * subpath `jz/interop` (instantiate.js) exposes `instantiate` alone; the rest
- * serves index.js and the tests. Dependencies contain only host linking,
- * layout, errors and text decoding.
- *
- * Marshals NaN-boxed `f64` values across the boundary: bump-allocated heap
- * blobs (strings, arrays, typed arrays, objects), schema transport for
- * fixed-shape objects, host-object externrefs.
- *
- * Exports:
- *   UNDEF_NAN, NULL_NAN, coerce          — null/undefined sentinels
- *   i64ToF64, f64ToI64                    — bit-cast across the i64 boundary
- *   ptr / offset / type / aux             — NaN-boxed pointer codec
- *   memory(src)                           — enhance a WebAssembly.Memory with read/write/String/Array/…
- *   wrap(memSrc, inst?)                   — adapt raw wasm exports to JS calling convention
- *   instantiate(wasm, opts?)              — instantiate prebuilt wasm bytes + wrap
- *
- * One boundary codec per binary: a jz wasm picks its host shape at compile
- * time (`opts.host`). There is no runtime "driver sniff" — the host loading
- * the binary knows which variant it asked for.
+ * Values cross NaN-boxed, carried as i64 bits: heap blobs (strings, arrays,
+ * typed arrays, objects), fixed-shape objects by schema, host objects by
+ * reference. A module picks its host shape at compile time (`opts.host`).
  *
  * @module interop
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_NAMES, encodeTypedElemAux, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
-// UTF-8 codecs for Wasm metadata. String values use lossless UTF-16 marshalling.
-const TEXT_DEC = { decode: decodeUtf8 }
-
-// ── WASI linking ────────────────────────────────────────────────────────────
-
-const linkWasi = (mod, opts) => {
-  const needsWasi = WebAssembly.Module.imports(mod).some(i => i.module === 'wasi_snapshot_preview1')
-  return { needsWasi, wasiImports: needsWasi ? wasi(opts) : null }
-}
-
-const envFuncNames = (mod) =>
-  new Set(WebAssembly.Module.imports(mod)
-    .filter(i => i.module === 'env' && i.kind === 'function').map(i => i.name))
-
-// ── Allocator wiring ────────────────────────────────────────────────────────
-// Heap pointer: the exported `$__heap` global when the module has one (non-shared
-// memory), else memory[1020] (shared memory — globals are per-instance, so
-// threads must share a pointer cell in linear memory). 8-byte aligned bump on
-// the JS side; wasm `_alloc` takes over if exported.
-
-// Every i32 heap address that crosses the wasm boundary — a `$__heap` Global's `.value`,
-// or a DataView 32-bit read — comes back through JS as a SIGNED int32 (WebAssembly JS API
-// spec: i32 is observable as ToInt32, range -2^31..2^31-1), regardless of what the address
-// actually represents (offsets are conceptually unsigned, 0..4GiB). `>>> 0` reinterprets
-// the bit pattern back to unsigned. Skipping this is harmless below 2 GiB (same value
-// either way) and silently wrong past it — a "negative" address then poisons every
-// downstream `+`/comparison, and a DataView write at a negative offset throws RangeError.
+// ── Allocator ───────────────────────────────────────────────────────────────
+// The heap top: the exported `$__heap` global, or for a shared memory the cell
+// at 1020 (globals are per instance, threads share the cell). An 8-byte aligned
+// bump; the module's `_alloc` takes over where it exports one. An i32 address
+// crosses into JS signed: `>>> 0` reads it unsigned past 2 GiB.
 const makeJsAllocator = (mem, heapGlobal) => {
   const dv = () => new DataView(mem.buffer)
   const getPtr = heapGlobal ? () => heapGlobal.value >>> 0 : () => dv().getUint32(HEAP.PTR_ADDR, true)
@@ -68,9 +32,7 @@ const makeJsAllocator = (mem, heapGlobal) => {
   // hands a kernel do not share their low address bits (4K aliasing).
   let color = 0
   const alloc = (bytes) => {
-    // Align up to 8 without `& ~7` — a JS bitwise op ToInt32-truncates its RESULT too,
-    // so `(x + 7) & ~7` would re-introduce the same sign flip past 2 GiB even with a
-    // correctly-unsigned `getPtr()`. Plain arithmetic has no such ceiling.
+    // aligned by arithmetic: `& ~7` would read the address signed again
     const ptr = getPtr()
     let aligned = Math.ceil(ptr / 8) * 8
     if (bytes >= 4096) { aligned += (color - aligned % 4096 + 4096) % 4096; color = (color + 1024) % 4096 }
@@ -83,8 +45,7 @@ const makeJsAllocator = (mem, heapGlobal) => {
     return aligned
   }
   const reset = () => setPtr(base)
-  // The global is initialized by wasm at module load; only the memory cell needs
-  // a JS-side nudge in case it underflows the heap start.
+  // the module sets its global; a memory's cell may still read below the heap start
   const initHeapPtr = () => {
     if (heapGlobal) return
     const d = dv()
@@ -106,74 +67,45 @@ const customSection = (mod, name) => {
   const secs = WebAssembly.Module.customSections(mod, name)
   return secs.length ? new Uint8Array(secs[0]) : null
 }
+// A JSON section's value, or null where the module has none or it does not parse.
+const jsonSection = (mod, name) => {
+  const bytes = customSection(mod, name)
+  try { return bytes && JSON.parse(decodeUtf8(bytes)) } catch { return null }
+}
 
+// A binary section: bytes, LEB128 counts, length-prefixed UTF-8 strings.
 const sectionReader = (bytes) => {
-  const td = TEXT_DEC
   let i = 0
-  return {
-    pos: () => i,
-    seek: (p) => { i = p },
-    eof: () => i >= bytes.length,
-    u8: () => bytes[i++],
-    varint: () => {
-      let r = 0, s = 0
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const x = bytes[i++]
-        r |= (x & 0x7F) << s
-        if (!(x & 0x80)) return r
-        s += 7
-      }
-    },
-    str: (n) => { const s = td.decode(bytes.subarray(i, i + n)); i += n; return s },
-    bytes: (n) => { const r = bytes.subarray(i, i + n); i += n; return r },
+  const varint = () => {
+    let r = 0, s = 0, x
+    do { x = bytes[i++]; r |= (x & 0x7F) << s; s += 7 } while (x & 0x80)
+    return r
   }
+  return { u8: () => bytes[i++], varint, str: () => { const n = varint(), t = decodeUtf8(bytes.subarray(i, i + n)); i += n; return t } }
 }
 
 // ── NaN-box codec ───────────────────────────────────────────────────────────
 
-// NaN-box codec — integer / BigInt based. A box NEVER becomes a JS number: JSC (Safari)
-// canonicalizes a NaN payload the instant it materializes as f64 (boundary return,
-// Float64Array read, getFloat64), so a box is carried in JS-land as a BigInt (the i64
-// bits) and decoded with integer ops. Only genuine (non-NaN) numbers ever touch f64.
+// A box never becomes a JS number: JSC canonicalizes a NaN payload the moment
+// it materializes as f64, so a box is a BigInt (its i64 bits) decoded with
+// integer ops, and only genuine numbers touch f64. The bits cross through one
+// 8-byte cell: shifting a BigInt allocates at every step.
 const MASK32 = 0xffffffffn
-// Reinterpret for GENUINE numbers (and freshly-built boxes leaving JS): `_f64` only ever
-// holds a real number here, never a live NaN-box, so there is nothing for JSC to purify.
-// The bits cross through one 8-byte cell (a BigInt stored takes its value mod 2^64):
-// shifting and masking a BigInt allocates at every step, several per argument.
 const _buf = new ArrayBuffer(8), _u32 = new Uint32Array(_buf), _f64 = new Float64Array(_buf), _u64 = new BigUint64Array(_buf)
 export const f64ToI64 = (n) => { _f64[0] = n; return _u64[0] }
 export const i64ToF64 = (b) => { _u64[0] = b; return _f64[0] }
 
 const hi32 = (b) => { _u64[0] = b; return _u32[1] }
 const lo32 = (b) => { _u64[0] = b; return _u32[0] }
-// A NaN-box is a sign-0 quiet NaN — high u32 carries jz's 0x7FF8 prefix. The
-// mask MUST include the sign bit (0xFFF80000, not 0x7FF80000): a plain host
-// BigInt's 64-bit two's-complement sign-extension sets hi32's top 12 prefix
-// bits (0x7FF8's own span, bits 30-19) to 1 for any negative value whose
-// magnitude keeps them saturated (every -1n..-2^51n verified live) — with
-// the sign bit (bit 31, 0x80000000) left out of the mask, isBox(-5n) read
-// true, so i64Arg's `!isBox(x)` gate and wrapVal's `isBox(v)` gate both
-// treated a raw negative host BigInt as an ALREADY-BUILT box and skipped
-// mem.BigInt's allocation entirely. The unboxed bits then reached
-// __to_bigint's (module/number.js) tag dispatch inside wasm, whose
-// $__ptr_type read a garbage tag off the non-box pattern (not PTR.BIGINT)
-// and fell to the "not a box, not a string" 0n default — negative host
-// BigInt ingress silently computed from magnitude 0 instead of throwing or
-// computing correctly (`f(-5n)` where `f=(v)=>parse(v)+1n` read back `1n`,
-// not `-4n`). module/core.js's $__typeof already gates the identical
-// distinction correctly (its own `0xFFF0000000000000` mask: "negative-NaN
-// bit patterns (sign bit set) don't match NAN_PREFIX so are uniquely
-// numeric") — this brings isBox into agreement with that reference. A
-// GENUINE box always has sign=0 (ptrBits/encodePtrHi never set bit 63), so
-// this tightening never rejects a real box — it only excludes negative bit
-// patterns no legitimate box can ever produce.
+// A box is a sign-0 quiet NaN: its high word carries the 0x7FF8 prefix. The
+// mask takes the sign bit too, so a negative host BigInt (whose sign extension
+// fills the prefix bits) is no box, as module/core.js $__typeof reads it.
 const BOX_HI = LAYOUT.NAN_PREFIX << 16, BOX_HI_MASK = BOX_HI | 0x80000000
 const isBox = (b) => (hi32(b) & BOX_HI_MASK) === BOX_HI
-// i64 bits for a wrapVal result (BigInt box, or number → its f64 bits): memory staging + i64 params.
+// A marshalled value's i64 bits: a box as it is, a number by its f64 bits.
 const bits = (v) => typeof v === 'bigint' ? v : f64ToI64(v)
 
-// Reserved atoms (type=ATOM, offset=0): aux 1/2/4/5 → null/undefined/false/true. BigInt boxes.
+// The reserved atoms (type ATOM, offset 0): aux 1/2/4/5 null/undefined/false/true.
 export const NULL_NAN = BigInt(ATOM_HI[ATOM.NULL]) << 32n
 export const UNDEF_NAN = BigInt(ATOM_HI[ATOM.UNDEF]) << 32n
 export const FALSE_NAN = BigInt(ATOM_HI[ATOM.FALSE]) << 32n
@@ -181,15 +113,12 @@ export const TRUE_NAN = BigInt(ATOM_HI[ATOM.TRUE]) << 32n
 // Absent array cells have no own index; present undefined keeps UNDEF_NAN.
 const TOMB_BITS = BigInt(TOMB_NAN)
 
-// Semantic JS values enter the tagged lane here. Numbers cannot carry handles;
-// canonicalize NaNs before their payload can be mistaken for an atom or pointer.
+// A scalar into the tagged lane: a NaN canonical, so its payload reads as no atom or pointer.
 export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN : v !== v ? NaN : v
 
-// SSO-encode a string ≤6 ASCII chars to a NaN-box BigInt (no heap needed).
-// Mirrors mem.String's SSO branch. Used when marshaling a string into an i64-carrier
-// param of a memoryless module (no linear memory, so only self-contained bit encodings
-// like SSO can survive the boundary). Non-SSO strings throw clearly rather than silently
-// becoming NaN.
+// A string of up to six ASCII characters lives in its box (module/string.js):
+// char i at payload bit i*7, the length at bits 42-44. No heap needed.
+const ssoFits = (s) => s.length <= LAYOUT.MAX_SSO && /^[\x00-\x7f]*$/.test(s)
 const encodeSSO = (s) => {
   let p = 0n
   for (let i = 0; i < s.length; i++) p |= BigInt(s.charCodeAt(i)) << BigInt(i * 7)
@@ -197,15 +126,13 @@ const encodeSSO = (s) => {
   return ptr(4, Number(p >> 32n) | LAYOUT.SSO_BIT, Number(p & 0xFFFFFFFFn))
 }
 
-// Accept either the i64 carrier (BigInt, canonical) or a legacy f64 NaN-box (intact on V8 —
-// e.g. an adaptI64 result, or user code holding a pre-i64 pointer) — normalize before decode.
+// The i64 carrier, or a legacy f64 NaN-box (intact on V8).
 const asBits = (p) => typeof p === 'bigint' ? p : f64ToI64(p)
 export const ptr = (type, aux, offset) => { _u32[1] = encodePtrHi(type, aux); _u32[0] = offset; return _u64[0] }
 export const offset = (p) => lo32(asBits(p))
 export const type = (p) => decodePtrType(hi32(asBits(p)))
 export const aux = (p) => decodePtrAux(hi32(asBits(p)))
 
-// SSO string decode from i64 bits: 7-bit ASCII, char i at payload bit i*7, len at bits 42-44.
 const decodeSSO = (b) => {
   const a = decodePtrAux(hi32(b)), len = (a >>> 10) & 7
   const payload = (BigInt(a) << 32n) | BigInt(Number(b & MASK32))
@@ -224,8 +151,7 @@ const symbolsOf = (owner, mod, raw) => {
   const values = new Map(), ids = new Map(), counter = raw?.__symbol_id
   let next = ptr(PTR.ATOM, SYMBOL_MIN, 0)
   const remember = (id, value) => { values.set(id, value); ids.set(value, id); return value }
-  const section = mod && customSection(mod, 'jz:symbols')
-  if (section) for (const [key, id] of JSON.parse(TEXT_DEC.decode(section)))
+  for (const [key, id] of (mod && jsonSection(mod, 'jz:symbols')) || [])
     remember(ptr(PTR.ATOM, id, 0), Symbol.for(key))
   codec = {
     read(id) { return values.has(id) ? values.get(id) : remember(id, Symbol()) },
@@ -244,16 +170,14 @@ const symbolsOf = (owner, mod, raw) => {
   return codec
 }
 
-// Memory-free decode of an i64-bits boundary value: numbers pass through, a box becomes
-// its atom / SSO string. Exactly the forms a *memoryless* module can carry (no linear
-// memory → no heap string/array/object). Heap-carrying modules route through `mem.read`.
-// `fnOf` reads a closure as a JS function (wrap's reader): a module with no
-// heap holds closures too, one that captures nothing needs none.
+// A value read from its bits alone: the forms a module without memory carries
+// (numbers, atoms, SSO strings, Symbols, closures through wrap's `fnOf`).
+// A module with memory reads through `mem.read`.
 const decode = (v, fnOf = null, symbols = null) => {
-  if (Array.isArray(v)) return v.map(x => decode(x, fnOf, symbols))   // multi-value tuple, each lane an i64-carrier (memoryless)
-  if (typeof v === 'number') { if (v === v) return v; v = f64ToI64(v) }  // f64 NaN-box (intact on V8) → bits
-  else if (typeof v !== 'bigint') return v     // already-decoded JS value
-  if (!isBox(v)) return i64ToF64(v)            // non-NaN bits → number
+  if (Array.isArray(v)) return v.map(x => decode(x, fnOf, symbols))   // a tuple of results
+  if (typeof v === 'number') { if (v === v) return v; v = f64ToI64(v) }
+  else if (typeof v !== 'bigint') return v     // already a JS value
+  if (!isBox(v)) return i64ToF64(v)
   if (type(v) === 4 && (aux(v) & LAYOUT.SSO_BIT)) return decodeSSO(v)
   if (type(v) === 10 && fnOf) return fnOf(v)
   if (symbols && type(v) === PTR.ATOM && aux(v) >= SYMBOL_MIN && v !== TOMB_BITS) return symbols.read(v)
@@ -263,18 +187,13 @@ const decode = (v, fnOf = null, symbols = null) => {
     if (v === FALSE_NAN) return false
     if (v === TRUE_NAN) return true
   }
-  return i64ToF64(v)                            // canonical NaN-number / unknown
+  return i64ToF64(v)                            // the canonical NaN
 }
 
-// An export's result that crosses as a Number is one by its contract: the
-// boundary wrapper (src/compile/boundary-wrap.js) hands every result that may
-// be another value, undefined and null among them, to the host as its i64
-// bits, and a void export has no result. A NaN reads as NaN whatever payload
-// the computation left in it.
-// A host NaN argument spelling the undefined or null box, of either sign and
-// quiet or signaling (an operation may set a NaN's sign and quiets it),
-// enters with the canonical bits: no Number a host call passes reads as one
-// of those inside, or comes back as one. Any other payload enters as it is.
+// A Number argument whose NaN payload spells the undefined or null box (of
+// either sign, quiet or not) enters as the canonical NaN; any other as it is.
+// A result crossing as a Number is one (src/compile/boundary-wrap.js sends any
+// other value as i64 bits): a NaN of any payload reads as NaN.
 const numberArg = (x) => {
   if (x === x || typeof x !== 'number') return x
   const b = f64ToI64(x) & 0x7FFFFFFFFFFFFFFFn | 0x0008000000000000n
@@ -282,114 +201,75 @@ const numberArg = (x) => {
 }
 const numberRet = (v) => v === v ? v : NaN
 
-// Decode a boundary value arriving as i64 bits (BigInt). Heap modules go through mem.read.
-const readArgBits = (state, big) => state.mem ? state.mem.read(big) : decode(big)
-
-// Typed element metadata: [elemId, byteStride, DataView getter, DataView setter]
-const ELEMS = {
-  Int8Array: [0, 1, 'getInt8', 'setInt8'],
-  Uint8Array: [1, 1, 'getUint8', 'setUint8'],
-  Int16Array: [2, 2, 'getInt16', 'setInt16'],
-  Uint16Array: [3, 2, 'getUint16', 'setUint16'],
-  Int32Array: [4, 4, 'getInt32', 'setInt32'],
-  Uint32Array: [5, 4, 'getUint32', 'setUint32'],
-  Float32Array: [6, 4, 'getFloat32', 'setFloat32'],
-  Float64Array: [7, 8, 'getFloat64', 'setFloat64'],
-  // flag-carrying kinds: elemId = base code | flag (16 = BigInt,
-  // 32 = f16, 64 = clamped). BigInt64/BigUint64 share the compiler's raw
-  // two's-complement storage tag; decoding follows JZ's documented signed-i64
-  // BigInt contract.
-  BigInt64Array: [23, 8, 'getBigInt64', 'setBigInt64'],
-  BigUint64Array: [23, 8, 'getBigUint64', 'setBigUint64'],
-  Float16Array: [35, 2, 'getFloat16', 'setFloat16'],
-  Uint8ClampedArray: [65, 1, 'getUint8', 'setUint8'],
+// The typed element kinds by constructor name and by the aux code of an owned
+// array (layout.js encodeTypedElemAux: element code | 16 BigInt | 32 f16 | 64
+// clamped): code, byte stride, DataView setter. BigInt64Array and
+// BigUint64Array share one code, which reads back as signed.
+const KINDS = {}, KIND_OF = []
+for (const name of [...TYPED_ELEM_NAMES, 'BigInt64Array', 'BigUint64Array', 'Float16Array', 'Uint8ClampedArray']) {
+  const code = encodeTypedElemAux(name)
+  KINDS[name] = { name, code, stride: [1, 1, 2, 2, 4, 4, 4, 8][code & 7], set: 'set' + (code & 64 ? 'Uint8' : name.slice(0, -5)) }
+  KIND_OF[code] ??= KINDS[name]
 }
-// Pre-built lookup by element ID (avoids Object.values on each access)
-const ELEM_BY_ID = Object.values(ELEMS)
+// A typed pointer's kind, the view flag aside; its constructor where the host has one
+const kindOfAux = (a) => KIND_OF[a & ~(TYPED_ELEM_VIEW_FLAG | DATA_VIEW_FLAG)]
+const ctorOf = (kind) => kind && globalThis[kind.name]
 
 const _enhanced = new WeakSet()
 
+// A block that grew forwards to its new one (its capacity -1, the new offset before it)
+const forward = (m, off) => { while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true); return off }
+
+// A host value's box: its index in the table of host references a memory's modules share
+const external = (map, value) => {
+  let id = map.indexOf(value)
+  if (id === -1) { id = map.length; map.push(value) }
+  return ptr(PTR.EXTERNAL, 0, id)
+}
+// A host import's argument as the host takes it; before the module's memory is
+// wired (its start function), decoded from the bits alone
+const readHost = (state, v) => state.mem ? state.mem.read(v, state.fnOf) : decode(v, state.fnOf)
+
 /**
- * The tables a module declares for the memory it links to, read from its
- * custom sections (the jz:schema writer in compile/index.js): the Error class
- * and the user-class brand by schema id, the field contracts and the property
- * lists by position (entry index === compile-time schema id). A schema entry
- * is { type, payload }: type 0 a null (computed or missing key), type 1 a
- * nested [null, name] (synthetic shape), type 3 a JSON-escaped property name
- * without its quotes, type 2 legacy text.
+ * The tables a module declares for the memory it links to (compile/index.js
+ * writes them): by schema id the Error class, the class brand and the RegExp,
+ * the field contracts and the property lists. A property is 0 null (a computed
+ * or missing key), 1 a nested [null, name], 3 a JSON-escaped name, 2 text.
  */
 const NO_TABLES = { errorClasses: new Map(), brands: new Map(), regexes: new Map(), fields: [], schemas: [], views: new Set() }
 const moduleTables = (mod) => {
-  const errorClasses = new Map(), brands = new Map(), regexes = new Map(), fields = [], schemas = [], views = new Set()
+  // A section's count of entries, each read by `entry` from its reader
+  const list = (name, entry) => {
+    const bytes = customSection(mod, name), out = []
+    if (bytes) { const r = sectionReader(bytes); for (let j = 0, n = r.varint(); j < n; j++) out.push(entry(r)) }
+    return out
+  }
+  const bySid = (name, value) => new Map(list(name, r => [r.varint(), value(r)]))
   // the schemas with an object literal's accessor: read through the module's data copy (`__view_data`)
-  const viewBytes = customSection(mod, 'jz:views')
-  if (viewBytes) {
-    const r = sectionReader(viewBytes), n = r.varint()
-    for (let j = 0; j < n; j++) views.add(r.varint())
+  const views = new Set(list('jz:views', r => r.varint()))
+  const errorClasses = bySid('jz:errcls', r => r.str()), brands = bySid('jz:brand', r => r.str())
+  const regexes = bySid('jz:regexp', r => [JSON.parse(r.str()), r.str()])
+  const fields = list('jz:fields', r => Array.from({ length: r.varint() }, () => {
+    const header = r.varint()
+    return [header >>> 3, header & 1 ? r.varint() : -1, header & 2 ? r.varint() : 0, header & 4 ? Number(r.str()) : null]
+  }))
+  const prop = (r) => {
+    const t = r.u8()
+    return t === 0 ? null : t === 1 ? [null, prop(r)] : t === 3 ? JSON.parse('"' + r.str() + '"') : r.str()
   }
-  const errClsBytes = customSection(mod, 'jz:errcls')
-  if (errClsBytes) {
-    const r = sectionReader(errClsBytes), n = r.varint()
-    for (let j = 0; j < n; j++) { const sid = r.varint(); errorClasses.set(sid, r.str(r.varint())) }
-  }
-  const brandBytes = customSection(mod, 'jz:brand')
-  if (brandBytes) {
-    const r = sectionReader(brandBytes), n = r.varint()
-    for (let j = 0; j < n; j++) { const sid = r.varint(); brands.set(sid, r.str(r.varint())) }
-  }
-  const regexBytes = customSection(mod, 'jz:regexp')
-  if (regexBytes) {
-    const r = sectionReader(regexBytes), n = r.varint()
-    for (let j = 0; j < n; j++) { const sid = r.varint(); regexes.set(sid, [JSON.parse(r.str(r.varint())), r.str(r.varint())]) }
-  }
-  const fieldBytes = customSection(mod, 'jz:fields')
-  if (fieldBytes) {
-    const r = sectionReader(fieldBytes), count = r.varint()
-    for (let sid = 0; sid < count; sid++) {
-      const row = [], n = r.varint()
-      for (let i = 0; i < n; i++) {
-        const header = r.varint()
-        row.push([header >>> 3, header & 1 ? r.varint() : -1, header & 2 ? r.varint() : 0, header & 4 ? Number(r.str(r.varint())) : null])
-      }
-      fields.push(row)
-    }
-  }
-  const schemaBytes = customSection(mod, 'jz:schema')
-  if (schemaBytes) {
-    const r = sectionReader(schemaBytes)
-    const dec = () => {
-      const t = r.u8()
-      if (t === 0) return null
-      if (t === 1) return [null, dec()]
-      const name = r.str(r.varint())
-      return t === 3 ? JSON.parse('"' + name + '"') : name
-    }
-    const n = r.varint()
-    for (let j = 0; j < n; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); schemas.push(props) }
-  }
+  const schemas = list('jz:schema', r => Array.from({ length: r.varint() }, () => prop(r)))
   return { errorClasses, brands, regexes, fields, schemas, views }
 }
 
 /**
- * A module's tables merged into a memory's, on copies: the memory's own tables
- * do not change, so a rejected module leaves no trace, and `instantiate` runs
- * the merge before a module links to the memory it would share, where its
- * start function and data would already have written. The enhancer commits
- * the result. The first module's numbering is authoritative: a sid already
- * known keeps its class and brand.
- *
- * A pointer carries the schema id its module compiled with, so every schema
- * must bind at that id here: a module whose schema would bind at another id
- * is rejected. Modules sharing a memory agree on their ids (one compilation,
- * or the same module again) or take memories of their own. The dedup key
- * mirrors ctx.schema.register's compile-time key (module/schema.js): the
- * property list as JSON (a separator could not tell `a\u0001b, c` from
- * `a, b\u0001c`) salted with the module's own class name for the schema (all
- * seven built-in Error classes share the props ['message', 'name'] and are
- * distinct only by their salt; two user classes of one field list likewise).
- * `_schemaKeyToId` remembers the salted key per id across merges: `schemas`
- * itself stays the plain list of property names that `read` indexes by sid,
- * from which a salted key cannot be recovered.
+ * A module's tables merged into a memory's, on copies, so a rejected module
+ * leaves no trace; `instantiate` merges before the module's start function can
+ * write into the memory it shares. A pointer carries the schema id its module
+ * compiled with, so each schema must bind at that id: modules sharing a memory
+ * agree on their ids (one compilation, the same module again) or are refused.
+ * The key mirrors module/schema.js: the property list as JSON, salted with the
+ * class (the seven Error classes share one list). `_schemaKeyToId` keeps the
+ * salted keys across merges; `schemas` stays the plain lists `read` indexes.
  */
 const mergeTables = (mem, t) => {
   const errorSidToClass = new Map(mem.errorSidToClass), brandOfSid = new Map(mem.brandOfSid), regexOfSid = new Map(mem.regexOfSid)
@@ -413,38 +293,26 @@ const mergeTables = (mem, t) => {
 }
 
 /**
- * Enhance WebAssembly.Memory with jz read/write methods (monkey-patch).
- * - memory() → create new Memory, patch, return
- * - memory({ initial: N }) → create with options, patch, return
- * - memory(wasmMemory) → patch existing, return same object
- * - memory(instanceResult) → bind to instance (patch its memory, bind alloc/schemas/extMap)
+ * A memory with the jz codec on it (`jz.memory`): created from nothing or a
+ * descriptor, an existing WebAssembly.Memory enhanced in place, or an instance
+ * result's memory bound to its module (allocator, schemas, host references).
+ * A module without memory gets a reader of the values its bits carry.
  */
 export const memory = (src) => {
-  // Already enhanced — return as-is (idempotent)
   if (src instanceof WebAssembly.Memory && _enhanced.has(src)) return src
-
-  // Create new Memory from nothing or options
   if (!src || (typeof src === 'object' && !(src instanceof WebAssembly.Memory) && !src.instance && !src.exports && !src.memory)) {
     const mem = new WebAssembly.Memory({ initial: src?.initial || 1, ...(src?.maximum ? { maximum: src.maximum } : {}), ...(src?.shared ? { shared: src.shared } : {}) })
     return memory(mem)
   }
 
-  // Resolve the WebAssembly.Memory object
-  let mem, wasmExports, extMap, mod, symbols
+  let mem, wasmExports = null, extMap = null, mod = null, symbols
   if (src instanceof WebAssembly.Memory) {
     mem = src
-    wasmExports = null
-    extMap = null
-    mod = null
     symbols = symbolsOf(mem, null, null)
   } else {
-    // Instance result: { module, instance, exports, extMap }
+    // an instance result: { module, instance, exports, extMap }
     const raw = src?.instance?.exports || src?.exports || src
     mem = src?.exports?.memory || raw.memory
-    // Memoryless module (SSO strings / atoms / numbers only — no linear memory):
-    // hand back a minimal reader instead of null so callers can still decode its
-    // boundary values from bits. `read`/`wrapVal` cover the value forms that exist
-    // without memory; `scalar` flags the fast path that skips heap marshaling.
     symbols = symbolsOf(src.instance || src, src.module, raw)
     if (!mem) return {
       read: (v, fnOf) => decode(v, fnOf, symbols),
@@ -458,12 +326,7 @@ export const memory = (src) => {
 
   const dv = () => new DataView(mem.buffer)
 
-  // Allocator scaffold: bumps the exported `$__heap` global (or memory[1020] for
-  // shared memory). Wasm `_alloc` takes over when exported; `_clear`/jsReset rewinds.
   const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, base, markBase } = makeJsAllocator(mem, wasmExports?.__heap)
-  // `_alloc`'s i32 result crosses the wasm→JS boundary SIGNED (same ToInt32 rule as any
-  // other i32 — see makeJsAllocator's comment); `>>> 0` restores the true unsigned address
-  // once the heap grows past 2 GiB, matching jsAlloc's own already-unsigned return.
   const wasmAlloc = wasmExports?._alloc && (bytes => wasmExports._alloc(bytes) >>> 0)
   // No call of the module runs while the host allocates for itself (`_busy`,
   // kept by the call wrappers below): that storage a compaction never moves,
@@ -473,10 +336,8 @@ export const memory = (src) => {
   const reset = wasmExports?._clear || jsReset
   initHeapPtr()
 
-  // Write 16-byte header matching WASM `__alloc_hdr`:
-  // [propsPtr@+0(i64=0), len@+8, cap@+12], return data offset (raw+16).
-  // Read paths (ARRAY at off-8/-4, BUFFER at off-8) and the propsPtr slot at
-  // off-16 then work uniformly on JS- and WASM-allocated values.
+  // A block with the module's 16-byte header (`__alloc_hdr`: properties, length,
+  // capacity), at its data's offset
   const hdr = (len, cap, bytes) => {
     const raw = alloc(16 + bytes)
     const m = dv()
@@ -494,16 +355,19 @@ export const memory = (src) => {
   if (wasmExports?.__obj_deleted) mem.objDeleted = wasmExports.__obj_deleted
 
   mem._symbols = symbols
+  // The compiled reset owns the post-init mark and durable state; a memory of
+  // no module rewinds. What the host held by address (views it was handed,
+  // class instances) names storage a reset frees.
+  const resetAll = () => { mem._views = new WeakMap(); mem._handles = new WeakMap(); mem._instances = new Map(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
 
-  // If already enhanced, just update bindings (new module compiled into same memory)
+  // another module in a memory already enhanced: its allocator and reset
   if (_enhanced.has(mem)) {
     if (wasmAlloc) { alloc = pinned(wasmAlloc); mem.alloc = alloc }
-    mem.reset = () => { mem._views = new WeakMap(); mem._handles = new WeakMap(); mem._instances = new Map(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
+    mem.reset = resetAll
     if (extMap) mem._extMap = extMap
     return mem
   }
 
-  // Patch methods onto the Memory instance
   mem._extMap = extMap
   // Bytes the heap holds above the mark `memory.reset()` returns to: what calls
   // allocated and kept, and what the host allocated. A host that sees it climb
@@ -526,26 +390,22 @@ export const memory = (src) => {
   mem._pinAt = 0     // the end of the highest block a decode handed the host as a view or a closure
   mem._fns = 0       // closures decoded, so an object read with its methods is known to carry some
 
+  // Elements staged as i64 bits, never as JS Numbers (an array of NaN-payload
+  // doubles may canonicalize them), and committed once all marshal: marshalling
+  // can grow the memory, and a failure leaves the destination as it was.
+  const staged = (data, wrap) => {
+    const n = data.length, source = Object(data), out = new BigInt64Array(n)
+    for (let i = 0; i < n; i++) out[i] = i in source ? bits(wrap(source[i], i)) : TOMB_BITS
+    return out
+  }
   mem.Array = (data) => {
-    const n = data.length, off = hdr(n, n, n * 8), source = Object(data)
-    // Stage as i64 bits, not as JS Numbers: V8 may transition a JS Array holding
-    // NaN-payload doubles to HOLEY_DOUBLE_ELEMENTS, which canonicalizes the NaN
-    // payload to 0x7FF8000000000000 — destroying the type/offset bits.
-    const wrapped = new BigInt64Array(n)
-    for (let i = 0; i < n; i++) wrapped[i] = i in source ? bits(mem.wrapVal(source[i])) : TOMB_BITS
-    const dst = new BigInt64Array(mem.buffer, off, n)
-    for (let i = 0; i < n; i++) dst[i] = wrapped[i]
+    const n = data.length, off = hdr(n, n, n * 8), cells = staged(data, mem.wrapVal)
+    new BigInt64Array(mem.buffer, off, n).set(cells)
     return ptr(1, 0, off)
   }
 
   mem.String = (str) => {
-    if (str.length <= 6 && /^[\x00-\x7f]*$/.test(str)) {
-      // 7-bit ASCII SSO: char i at payload bit i*7, len at bits 42-44 (see module/string.js codec).
-      let p = 0n
-      for (let i = 0; i < str.length; i++) p |= BigInt(str.charCodeAt(i)) << BigInt(i * 7)
-      p |= BigInt(str.length) << 42n
-      return ptr(4, Number(p >> 32n) | LAYOUT.SSO_BIT, Number(p & 0xFFFFFFFFn))  // STRING + SSO_BIT
-    }
+    if (ssoFits(str)) return encodeSSO(str)
     const n = str.length, raw = alloc(4 + n * 2), m = dv()
     m.setInt32(raw, n, true)
     const off = raw + 4
@@ -577,15 +437,9 @@ export const memory = (src) => {
     if (typeof v === 'boolean') return v ? TRUE_NAN : FALSE_NAN
     if (typeof v === 'string') return mem.String(v)
     if (typeof v === 'symbol') return mem._symbols.write(v)
-    // A BigInt that is a NaN-box (jz's i64 carrier — e.g. a value pre-built via memory.String/
-    // ptr/BigInt) passes straight through. A plain bigint VALUE has no per-slot host-ABI
-    // evidence to consult here — wrapVal is the GENERAL memory.*/mem.Array/mem.Hash/host-import-
-    // return marshalling entry, not the export-argument path (i64Arg, below, consults
-    // jz:hostabi per param; the rest-element path consults its `rest` flag per element) — so
-    // this refuses loudly instead of the phase-c-C4b-killed silent-wrong fallback
-    // (`mem.String(v.toString())`, a decimal string a wasm numeric parser happens to accept —
-    // every consumer expecting a real BigInt got a corrupted value instead with no error, the
-    // worst class).
+    // A BigInt that is a box (memory.String, memory.BigInt) is itself. A plain
+    // one has no BigInt evidence here (an export's slots consult jz:hostabi):
+    // refused, where a decimal string would read as a wrong number.
     if (typeof v === 'bigint') {
       if (isBox(v)) return v
       throw new TypeError(`jz: plain BigInt ${v}n passed to memory marshaling (memory.Array/memory.Object/memory.Hash/a host-import return/…) with no BigInt evidence — box it explicitly: mem.BigInt(${v}n)`)
@@ -600,37 +454,25 @@ export const memory = (src) => {
       return ptr(3, DATA_VIEW_AUX, off)
     }
     const typedName = v?.constructor?.name
-    // An erased host slot has no source-level proof that downstream code uses
-    // the BigInt element domain. Keep ordinary numeric TypedArrays zero-copy-
-    // compatible, but reject evidence-free BigInt typed ingress rather than
-    // forcing every numeric hot loop onto the tagged/boxing path. Programs
-    // that construct BigInt typed storage internally retain full support.
+    // A BigInt, f16 or clamped array has no proof here that the module reads
+    // that element kind (a program that makes one inside keeps it)
     if (typedName === 'BigInt64Array' || typedName === 'BigUint64Array' ||
         typedName === 'Float16Array' || typedName === 'Uint8ClampedArray')
       throw new TypeError(`jz: host ${typedName} at an untyped boundary is not supported — construct it inside the compiled source so its element storage policy is provable`)
-    if (typedName && ELEMS[typedName]) return mem[typedName](v)
+    if (KINDS[typedName]) return mem[typedName](v)
     if (typeof v === 'object' || typeof v === 'function') return mem.External(v)
     return UNDEF_NAN
   }
 
   mem.External = function(obj) {
     if (obj === null || obj === undefined) return coerce(obj)
-    const map = mem._extMap
-    if (!map) return UNDEF_NAN
-    let id = map.indexOf(obj)
-    if (id === -1) { id = map.length; map.push(obj) }
-    return ptr(11, 0, id)
+    return mem._extMap ? external(mem._extMap, obj) : UNDEF_NAN
   }
 
-  // First-class jz HASH from a plain JS object — the schema-less marshal. Builds the
-  // kernel's exact open-addressed table ([seq<<32|hash:i64][key:f64][val:f64] × cap,
-  // home slot = hash & (cap-1), linear probe, len/cap header at -8/-4) so every
-  // wasm-side dyn op — reads, writes, NEW props, growth, delete, iteration — runs
-  // natively with stable identity. The External reflection path decodes/re-marshals
-  // per access, so nested container mutation (`params.P[i][j] = …`) lands on
-  // marshaling copies and silently vanishes — a params-bag must be a real hash.
-  // Hash twins of module/collection.js (clampHash / ssoMix / unitFnv) — MUST agree
-  // with __str_hash or wasm probes start at the wrong home slot and miss.
+  // A plain object no compiled schema fits, as the module's own dictionary
+  // (module/collection.js: [seq<<32|hash][key][value] × cap, linear probe, then
+  // the hash lane), so every dynamic operation runs natively on it. The hashes
+  // are __str_hash's, or a probe starts at the wrong slot.
   const clampHash = (h) => ((h >>> 0) <= 1 ? (h + 2) | 0 : h)
   const jzStrHash = (box) => {
     const b = bits(box)
@@ -656,24 +498,19 @@ export const memory = (src) => {
       if (Object.prototype.propertyIsEnumerable.call(source, key)) entries.push([key, source[key]])
     let cap = 8
     while (entries.length * 4 >= cap * 3) cap <<= 1   // stay under the 75% grow trigger
-    // cap × (24-B entry + 4-B probe hash lane) — collection.js's exact layout;
-    // the lane (after the entries) is what wasm probes walk
     const off = hdr(entries.length, cap, cap * 28)
-    // Stage every slot as i64 bits (empty = 0) — same NaN-canonicalization dodge as mem.Array.
-    const staged = new BigInt64Array(cap * 3)
-    const lane = new Int32Array(cap)
+    const slots = new BigInt64Array(cap * 3), lane = new Int32Array(cap)   // as i64 bits, an empty slot 0
     entries.forEach(([k, v], seq) => {
       const keyBox = typeof k === 'symbol' ? mem._symbols.write(k) : mem.String(k)
       const h = jzStrHash(keyBox)
       let idx = h & (cap - 1)
-      while (staged[idx * 3] !== 0n) idx = (idx + 1) & (cap - 1)
-      staged[idx * 3] = (BigInt(seq) << 32n) | BigInt(h >>> 0)
-      staged[idx * 3 + 1] = bits(keyBox)
-      staged[idx * 3 + 2] = bits(mem.wrapVal(v))
+      while (slots[idx * 3] !== 0n) idx = (idx + 1) & (cap - 1)
+      slots[idx * 3] = (BigInt(seq) << 32n) | BigInt(h >>> 0)
+      slots[idx * 3 + 1] = bits(keyBox)
+      slots[idx * 3 + 2] = bits(mem.wrapVal(v))
       lane[idx] = h | 0
     })
-    const dst = new BigInt64Array(mem.buffer, off, cap * 3)
-    dst.set(staged)
+    new BigInt64Array(mem.buffer, off, cap * 3).set(slots)
     new Int32Array(mem.buffer, off + cap * 24, cap).set(lane)
     return ptr(7, 0, off)
   }
@@ -686,7 +523,7 @@ export const memory = (src) => {
     if (rule?.[2] === 8) throw new TypeError('jz: field ' + mem.schemas[sid][i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
     let wrapped = rule && (rule[0] & (1 << PTR.OBJECT)) && value?.constructor === Object
       ? mem.Object(value)
-      : rule && (rule[0] & (1 << PTR.TYPED)) && ArrayBuffer.isView(value) && ELEMS[value.constructor.name]
+      : rule && (rule[0] & (1 << PTR.TYPED)) && ArrayBuffer.isView(value) && KINDS[value.constructor.name]
         ? mem[value.constructor.name](value) : mem.wrapVal(value)
     if (!rule) return wrapped
     const [mask, detail, integer, constant] = rule
@@ -733,26 +570,14 @@ export const memory = (src) => {
     const sid = pick(matches)
     if (sid === -2) throw Error(`Ambiguous schema for {${key}} — ${matches.length} compiled shapes match this key set; pass keys in one of these orders: ${matches.map(i => schemas[i].join(',')).join(' | ')}`)
     if (sid === -1) return mem.Hash(obj)   // no compiled schema: first-class hash (External loses nested-mutation identity)
-    const schema = schemas[sid], n = schema.length, raw = alloc(n * 8)
-    // Stage as i64 bits so V8 can't canonicalize NaN-payload pointers across
-    // recursive allocations. See mem.Array for the same pattern — and route
-    // every property value through mem.wrapVal the same way mem.Array/
-    // mem.Hash do: this loop used to hand-roll a partial null/string/array
-    // dispatch and fall through to bare `bits(v)` for everything else
-    // (numbers were incidentally fine; a plain BIGINT property value was
-    // not — silently stored as raw unmarked bits, no BigInt tag, instead of
-    // wrapVal's post-C4b typed throw. Nested plain objects/typed arrays/
-    // buffers/functions were equally unhandled). One dispatch, no duplicate
-    // logic to drift out of sync with wrapVal's.
-    const wrapped = new BigInt64Array(n)
-    for (let i = 0; i < n; i++) wrapped[i] = bits(wrapField(sid, i, obj[schema[i]]))
-    const dst = new BigInt64Array(mem.buffer, raw, n)
-    for (let i = 0; i < n; i++) dst[i] = wrapped[i]
+    const schema = schemas[sid], raw = alloc(schema.length * 8), slots = schema.map((k, i) => bits(wrapField(sid, i, obj[k])))
+    new BigInt64Array(mem.buffer, raw, slots.length).set(slots)
     return ptr(6, sid, raw)
   }
 
   // The live entries of a HASH (7), SET (8) or MAP (9) at `off` in insertion
   // order, as __coll_order walks them: a durable-heap tombstone is no key.
+  // A pair: its key and value read.
   const liveSlots = (off, t) => {
     const m = dv(), cap = m.getInt32(off - 4, true), stride = t === 8 ? 16 : 24, slots = []
     for (let i = 0; i < cap; i++) {
@@ -762,13 +587,11 @@ export const memory = (src) => {
     }
     return slots.sort((a, b) => a[0] - b[0]).map(([, slot]) => slot)
   }
-  // A dictionary's [key, value] pairs, the box followed past a grow.
-  const hashEntries = (bits, fnOf = null) => {
-    const m = dv()
-    let off = offset(bits)
-    while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
-    return liveSlots(off, 7).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)])
-  }
+  const pairs = (off, t, fnOf) => { const m = dv(); return liveSlots(off, t).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)]) }
+
+  // The heap below the end of what the host was handed by address never moves (`settle`)
+  const pinAt = (end) => { mem._pinAt = Math.max(mem._pinAt, end); mem._pinSet?.(mem._pinAt) }
+  const blockEnd = (m, off) => off + 8 * m.getInt32(off - 4, true)
 
   // The value an object's slot `i` holds, by its field's compiled contract.
   const slotValue = (sid, off, i, fnOf) => {
@@ -788,10 +611,10 @@ export const memory = (src) => {
     const off = offset(p), sid = aux(p)
     const known = mem._instances.get(off)?.deref()
     if (known !== undefined && mem._handles.get(known) === p) return known
-    const end = off + 8 * dv().getInt32(off - 4, true)
+    const end = blockEnd(dv(), off)
     if (off >= mem._above) mem._held = true
     else mem._pin = Math.max(mem._pin, end)
-    mem._pinAt = Math.max(mem._pinAt, end); mem._pinSet?.(mem._pinAt)
+    pinAt(end)
     const obj = Object.create(proto), keys = mem.schemas[sid]
     for (let i = 0; i < keys.length; i++) {
       if (typeof keys[i] !== 'string' || keys[i][0] === '#') continue
@@ -804,24 +627,21 @@ export const memory = (src) => {
     return obj
   }
 
-  // `fnOf` reads a closure as a JS function that calls it (wrap's per-instance
-  // reader: a closure's table index names a function of the module that made it).
+  // A value from its bits. `fnOf` (wrap's, per instance) reads a closure as a
+  // function calling it. What the host is handed by address marks the call
+  // that returned it as holding its memory (`_held`, above the call's mark).
   mem.read = function(p, fnOf = null) {
-    if (Array.isArray(p)) return p.map(v => mem.read(v, fnOf))  // multi-value tuple
+    if (Array.isArray(p)) return p.map(v => mem.read(v, fnOf))  // a tuple of results
     if (typeof p === 'number') {
-      if (p === p) return p              // genuine number passthrough (NaN fails ===)
-      p = f64ToI64(p)                    // f64 NaN-box (intact on V8) → bits; decode below
-    } else if (typeof p !== 'bigint') {
-      return p                           // already a decoded JS value (string/object/…) — passthrough
-    }
-    // p is now i64 bits (BigInt). Decode with integer ops — never materialize as f64.
-    if (!isBox(p)) return i64ToF64(p)    // non-NaN bits → genuine number
+      if (p === p) return p
+      p = f64ToI64(p)                    // a legacy f64 box
+    } else if (typeof p !== 'bigint') return p   // already a JS value
+    if (!isBox(p)) return i64ToF64(p)
     const m = dv(), t = type(p), a = aux(p)
     let off = offset(p)
     if (t === PTR.ATOM && a >= SYMBOL_MIN && p !== TOMB_BITS) return mem._symbols.read(p)
     // Arrays and collections retain their identity when storage grows.
-    if (t === 1 || t >= 7 && t <= 9)
-      while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+    if (t === 1 || t >= 7 && t <= 9) off = forward(m, off)
     if (t === 0 && off === 0) {
       if (a === 0) return NaN
       if (a === 1) return null
@@ -831,7 +651,7 @@ export const memory = (src) => {
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
     if (t === 10 && typeof fnOf === 'function') {
-      if (off >= mem._above) { mem._held = true; mem._fns++; if (off >= 16) { mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true)); mem._pinSet?.(mem._pinAt) } }
+      if (off >= mem._above) { mem._held = true; mem._fns++; if (off >= 16) pinAt(blockEnd(m, off)) }
       return fnOf(p)
     }
     if (t === 1) {  // ARRAY
@@ -844,13 +664,9 @@ export const memory = (src) => {
       }
       return out
     }
-    if (t === 3) {  // TYPED
-      // A view of the module's memory: the bytes it shows stay while the host
-      // holds it (`held`, for the call that returned it, interop `settled`).
-      // The host holds the bytes shown: the heap below their end never moves (`_pinAt`, `settle`).
-      const held = (at, bytes) => { mem._viewSet?.(); if (at >= mem._above) { mem._held = true; mem._pinAt = Math.max(mem._pinAt, at + bytes); mem._pinSet?.(mem._pinAt) } return at }
-      // A view's bytes: its descriptor's length, or where its buffer is resizable
-      // (layout.js RESIZABLE_MARK) what the buffer now bounds (module/typedarray.js `$__view_bytes`).
+    if (t === 3) {  // TYPED: a view of the module's memory, its bytes held
+      const held = (at, bytes) => { mem._viewSet?.(); if (at >= mem._above) { mem._held = true; pinAt(at + bytes) } return at }
+      // a view's bytes: its descriptor's length, or what a resizable buffer now bounds ($__view_bytes)
       const viewBytes = () => {
         const n = m.getInt32(off, true), root = m.getInt32(off + 8, true)
         if (root < 16 || m.getBigInt64(root - 16, true) !== BigInt(RESIZABLE_MARK)) return n
@@ -858,14 +674,9 @@ export const memory = (src) => {
         return m.getInt32(off + 12, true) ? (at <= len ? len - at : 0) : (at + n <= len ? n : 0)
       }
       if (a & DATA_VIEW_FLAG) { const n = viewBytes(); return new DataView(mem.buffer, held(m.getInt32(off + 4, true), n), n) }
-      const elem = a & 7
-      const [, stride] = ELEM_BY_ID[elem]
-      const Ctor = (a & 16) ? BigInt64Array
-        : (a & 32)
-          ? (globalThis.Float16Array ?? (() => { throw new Error('decoding a Float16Array result needs a host with Float16Array (Node ≥ 24 / modern browsers)') })())
-          : (a & 64) ? Uint8ClampedArray
-          : [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
-      if (a & 8) {
+      const kind = kindOfAux(a), { stride } = kind, Ctor = ctorOf(kind)
+      if (!Ctor) throw new Error('decoding a Float16Array result needs a host with Float16Array (Node ≥ 24 / modern browsers)')
+      if (a & TYPED_ELEM_VIEW_FLAG) {
         const byteLen = viewBytes(), dataOff = m.getInt32(off + 4, true)
         return new Ctor(mem.buffer, held(dataOff, byteLen), Math.floor(byteLen / stride))
       }
@@ -891,12 +702,9 @@ export const memory = (src) => {
       }
       return chunks.join('')
     }
-    // A boxed BigInt's 8-byte payload is the raw two's-complement i64.
     if (t === 5) return m.getBigInt64(off, true)  // BIGINT
     if (t === 6) {  // OBJECT
-      // An object literal's accessor reads through its getter: the module
-      // copies such an object's data into a dictionary, decoded below.
-      // Error transport reads its stored message before constructing the host Error.
+      // an object literal with an accessor reads through it: the module copies its data
       if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a) && !mem.regexOfSid?.has(a)) return mem.read(mem.viewData(p), fnOf)
       const keys = mem.schemas[a], fns = mem._fns
       if (!keys) { if (off >= mem._above) mem._held = true; return p }
@@ -904,135 +712,105 @@ export const memory = (src) => {
       const proto = fnOf?.classes?.get(a)
       if (proto) return mem.handle(p, proto, fnOf)
       const re = mem.regexOfSid?.get(a), obj = re ? new RegExp(re[0], re[1]) : {}
-      // A deleted slot keeps undefined and a bit of the mask (layout.js
-      // deletedSlotWat): from slot 31 on one sticky bit covers the undefined ones.
+      // a deleted slot's bit (layout.js deletedSlotWat; from 31 on one bit for the undefined ones)
       const mask = mem.objDeleted ? mem.objDeleted(p) : 0
       for (let i = 0; i < keys.length; i++) {
         if (mask && (i < 31 ? (mask >>> i) & 1 : (mask >>> 31) & 1 && m.getBigInt64(off + i * 8, true) === UNDEF_NAN)) continue
         obj[keys[i]] = slotValue(a, off, i, fnOf)
       }
-      // A property stored outside the layout (through an alias, a destructuring
-      // target, a helper's parameter) is in the object's dictionaries: its
-      // header's, then the one a durable object's offset keys (module
-      // __obj_props). A later one's value replaces an earlier one's in place.
+      // properties stored outside the layout: its header's dictionary, then the
+      // durable one by its offset (__obj_props), a later value replacing in place
       if (mem.objProps) for (const which of [0, 1]) {
         const d = mem.objProps(p, which)
-        if (d) for (const [key, value] of hashEntries(d, fnOf)) obj[key] = value
+        if (d) for (const [key, value] of pairs(forward(dv(), offset(d)), 7, fnOf)) obj[key] = value
       }
       fnOf?.owners.set(obj, p)
-      if (fnOf && mem._fns !== fns && off >= mem._above) { mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true)); mem._pinSet?.(mem._pinAt) }
+      if (fnOf && mem._fns !== fns && off >= mem._above) pinAt(blockEnd(m, off))
       return obj
     }
     if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.
       if (t === 8) return new Set(liveSlots(off, t).map(slot => mem.read(m.getBigInt64(slot + 8, true), fnOf)))
-      const entries = liveSlots(off, t).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)])
+      const entries = pairs(off, t, fnOf)
       if (t !== 7) return new Map(entries)
       const out = Object.fromEntries(entries)
       fnOf?.owners.set(out, p)
       return out
     }
-    // a handle on the module's memory, held as the view of a typed array is
+    // a handle on the module's memory is held as a view is
     if (t !== 0 && off >= mem._above) mem._held = true
-    return i64ToF64(p)  // canonical NaN-number, a CLOSURE without a reader, unknown: reinterpret to f64
+    return i64ToF64(p)  // the canonical NaN, a closure without a reader
   }
 
   mem.write = function(p, data) {
     const t = type(p)
     let off = offset(p), m = dv()
     if (t === 1) {
-      while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+      off = forward(m, off)
       const cap = m.getInt32(off - 4, true), length = data.length
       if (!Number.isSafeInteger(length) || length < 0) throw new RangeError('mem.write: invalid array length')
       if (length > cap) throw Error(`mem.write: ${data.length} elements exceeds this array's capacity of ${cap} — allocate it with a larger capacity, or write ${cap} or fewer elements`)
-      // Recursive marshalling can grow memory. Commit only after all values
-      // marshal, then reacquire the destination view. Failed staging leaves
-      // destination contents/length intact; allocations are reclaimed by reset.
-      const staged = new BigInt64Array(length), source = Object(data)
-      for (let i = 0; i < length; i++) staged[i] = i in source ? bits(mem.wrapVal(source[i])) : TOMB_BITS
-      m = dv()
-      for (let i = 0; i < staged.length; i++) m.setBigInt64(off + i * 8, staged[i], true)
-      m.setInt32(off - 8, staged.length, true)
+      const cells = staged(data, mem.wrapVal)   // before the view: marshalling may grow the memory
+      new BigInt64Array(mem.buffer, off, length).set(cells)
+      dv().setInt32(off - 8, length, true)
     } else if (t === 3) {
-      const a2 = aux(p), elem = a2 & 7
-      const [, stride, , setter] = (a2 & 16) ? ELEMS.BigInt64Array : ELEM_BY_ID[elem]
+      const a2 = aux(p), { stride, set: setter } = kindOfAux(a2)
       const byteLen = data.length * stride
-      if (a2 & 8) {
-        const viewByteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
+      if (a2 & TYPED_ELEM_VIEW_FLAG) {
+        const viewByteLen = m.getInt32(off, true)
         if (byteLen > viewByteLen) throw Error(`mem.write: ${byteLen} bytes exceeds this typed array view's size of ${viewByteLen} bytes — allocate a larger view, or write fewer elements`)
-        for (let i = 0; i < data.length; i++) m[setter](dataOff + i * stride, data[i], true)
+        off = m.getInt32(off + 4, true)
       } else {
         const byteCap = m.getInt32(off - 4, true)
         if (byteLen > byteCap) throw Error(`mem.write: ${byteLen} bytes exceeds this typed array's capacity of ${byteCap} bytes — allocate it with a larger capacity, or write fewer elements`)
         m.setInt32(off - 8, byteLen, true)
-        for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
       }
+      for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
     } else if (t === 6) {
       const schema = mem.schemas[aux(p)]
       if (!schema) throw Error(`mem.write: this pointer's schema id (${aux(p)}) has no compiled OBJECT schema — write to a pointer returned by mem.Object() for a schema this program compiled`)
-      const staged = []
+      const slots = []
       for (const k of Object.keys(data)) {
         const i = schema.indexOf(k)
-        if (i >= 0) staged.push([i, bits(wrapField(aux(p), i, data[k]))])
+        if (i >= 0) slots.push([i, bits(wrapField(aux(p), i, data[k]))])
       }
       m = dv()
-      for (const [i, value] of staged) m.setBigInt64(off + i * 8, value, true)
+      for (const [i, value] of slots) m.setBigInt64(off + i * 8, value, true)
     } else {
       throw Error(`mem.write only supports ARRAY, TYPED array, and OBJECT pointers — this pointer is a different kind (type tag ${t})`)
     }
   }
 
   mem.alloc = alloc
-  // The compiled reset owns the post-init mark, cache invalidation and durable
-  // state healing. A JS-only memory has no runtime state and just rewinds. The
-  // views the module left on host objects (`__ext_set`) name storage a reset frees.
+  // the views the module left on host objects (`__ext_set`); the class instances
+  // the host holds (`mem.handle`) by their host object, and those by address
   mem._views = new WeakMap()
-  // A class instance the host holds (`mem.handle`): the instance's bits by its
-  // host object, and the host object by the instance's address.
   mem._handles = new WeakMap()
   mem._instances = new Map()
-  mem.reset = () => { mem._views = new WeakMap(); mem._handles = new WeakMap(); mem._instances = new Map(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
+  mem.reset = resetAll
 
-  // TypedArray constructors: memory.Float64Array(data), etc.
-  // Bulk-copy path: when input is a TypedArray whose element type matches
-  // the target (same stride), use .set() for a fast memcpy instead of
-  // per-element DataView writes. Falls back to DataView for mismatched types.
-  const TA = [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array]
-  TA[65] = Uint8ClampedArray
-  if (globalThis.Float16Array) TA[35] = globalThis.Float16Array
-  for (const [name, [elemId, stride, , setter]] of Object.entries(ELEMS)) {
+  // memory.Float64Array(data) and its kin: the elements converted to the kind
+  // first (a view of this growable memory snapshotted), then copied in one
+  // `set`. BigInt kinds and a host without Float16Array write element by element.
+  for (const kind of Object.values(KINDS)) {
+    const { name, code, stride, set } = kind, C = code & 16 ? null : ctorOf(kind)
     mem[name] = (data) => {
-      // Coerce before allocating, and snapshot views over our growable buffer.
-      if (TA[elemId] && (!(data instanceof TA[elemId]) || data.buffer === mem.buffer)) data = new TA[elemId](data)
+      if (C && (!(data instanceof C) || data.buffer === mem.buffer)) data = new C(data)
       const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes)
-      // Same-type source → native memcpy via `.set` (incl. stride-1 Uint8Array:
-      // a multi-MB file copied byte-by-byte through DataView dominates decode).
-      if (TA[elemId] && data instanceof TA[elemId]) {
-        new TA[elemId](mem.buffer, off, n).set(data)
-      } else {
-        const m = dv()
-        for (let i = 0; i < n; i++) m[setter](off + i * stride, data[i], true)
-      }
-      return ptr(3, elemId, off)
+      if (C) new C(mem.buffer, off, n).set(data)
+      else { const m = dv(); for (let i = 0; i < n; i++) m[set](off + i * stride, data[i], true) }
+      return ptr(3, code, off)
     }
   }
 
-  // Zero-copy input: reserve a typed-array region in wasm memory and return BOTH
-  // a live `view` over it and the NaN-box `box` pointer to pass as an argument.
-  // The caller fills `view` directly (one I/O-side copy, no second JS→wasm copy)
-  // and hands `box` to the export, which reads the bytes in place. Decoded typed
-  // arrays already come back as views (mem.read), so a decode can be copy-free
-  // end-to-end. LIFETIME: `view` is detached by any mem.grow() (alloc past the
-  // current buffer) and clobbered by mem.reset()/the next decode — re-derive a
-  // fresh view with mem.read(box) after growth, or copy out what must persist.
-  // Back the module with a shared memory (WebAssembly.Memory{shared:true}) to
-  // keep views valid across grow and to hand them to a worker/AudioWorklet.
+  // A typed array of n elements in the module's memory: the `view` the host fills
+  // and the `box` an export reads in place. A grow detaches the view (re-read it
+  // from the box), a reset frees it; a shared memory keeps it across grows.
   mem.allocTyped = (Ctor, n) => {
-    const meta = ELEMS[Ctor?.name]
-    if (!meta) throw Error(`mem.allocTyped: ${Ctor?.name ?? Ctor} is not a supported typed array constructor — pass one of ${Object.keys(ELEMS).join(', ')}`)
-    const [elemId, stride] = meta
-    const bytes = n * stride, off = hdr(bytes, bytes, bytes)
+    const kind = KINDS[Ctor?.name]
+    if (!kind) throw Error(`mem.allocTyped: ${Ctor?.name ?? Ctor} is not a supported typed array constructor — pass one of ${Object.keys(KINDS).join(', ')}`)
+    const bytes = n * kind.stride, off = hdr(bytes, bytes, bytes)
     mem._viewSet?.()
-    return { view: new Ctor(mem.buffer, off, n), box: ptr(3, elemId, off) }
+    return { view: new Ctor(mem.buffer, off, n), box: ptr(3, kind.code, off) }
   }
 
   _enhanced.add(mem)
@@ -1040,97 +818,42 @@ export const memory = (src) => {
 }
 
 /**
- * Wrap raw WASM exports with JS calling convention adaptation.
- * Handles: undefined → sentinel NaN for defaults, rest-param array packing.
+ * Adapt raw exports to the JS calling convention: arguments marshalled in by
+ * their compiled lanes, results decoded, throws decoded, the call's heap
+ * released. `src` is an instance result ({ module, instance, exports }).
  */
-export const wrap = (memSrc, inst, state) => {
-  const restFuncs = new Map()
-  const mod = inst ? memSrc : memSrc.module || memSrc
-  const realInst = inst || memSrc.instance || memSrc
-  const td = TEXT_DEC
-  const restBytes = customSection(mod, 'jz:rest')
-  if (restBytes) {
-    try {
-      for (const entry of JSON.parse(td.decode(restBytes)))
-        restFuncs.set(typeof entry === 'string' ? entry : entry.name, typeof entry === 'string' ? 0 : entry.fixed)
-    } catch (e) { /* ignore */ }
-  }
-  // externref-param exports: positions where the wasm side takes an externref
-  // (jsstring carrier — js-host only). JS values at these positions pass through
-  // unchanged — no `mem.wrapVal` (would NaN-box into f64, defeating the point).
-  // `def` (optional) maps idx → default-string for jsstring params whose
-  // default substitution happens JS-side (the wasm side never sees null).
-  const extExp = new Map()
-  const extBytes = customSection(mod, 'jz:extparam')
-  if (extBytes) {
-    try {
-      for (const e of JSON.parse(td.decode(extBytes))) {
-        const idx = new Set(e.p)
-        // Hang the defaults off the Set as a property so call-sites that only
-        // check membership stay unchanged; the slow path reads `extInfo.def`.
-        if (e.d) idx.def = new Map(Object.entries(e.d).map(([k, v]) => [Number(k), v]))
-        extExp.set(e.name, idx)
-      }
-    } catch { /* ignore */ }
-  }
-  // i64-carrier map: per export, which params ride i64 and whether a result
-  // takes generic tagged decode. A proven raw BigInt result has no result flag.
-  const i64Exp = new Map()
-  const i64Bytes = customSection(mod, 'jz:i64exp')
-  if (i64Bytes) {
-    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r, t: e.t || null, k: new Set(e.k || []), v: e.v || null }) }
-    catch { /* ignore */ }
-  }
-  // jz:hostabi — the ONE authority for per-slot host-BigInt ingress policy
-  // (phase-c C4b, audit P0 #1/#2). Per export: `raw` = i64 param indices the
-  // plan proved ALWAYS bigint (plain bigint crosses with no box —
-  // architecturally unreachable at the export boundary today, see
-  // src/compile/index.js's jz:hostabi doc for the reachability proof; the
-  // field is real and consulted below, just never populated by the current
-  // compiler). `tag` = indices the plan proved MAY be bigint — box via
-  // mem.BigInt (the one reachable evidenced state, formerly jz:bigintbox's
-  // sole content). `val` = the `tag` slots whose function reads the parameter
-  // only as a scalar value (never a receiver, a callee, an argument, a stored
-  // or returned value): EVERY BigInt there is a value and is boxed, whatever
-  // its bits, so a handle cannot be passed at a `val` slot and a value whose
-  // bits carry the NaN-box prefix crosses as itself. `rest` = truthy only
-  // when the plan can prove bigint evidence for this export's rest-parameter
-  // elements (never true today — no evidence source exists for host-populated
-  // rest elements). A slot in neither `raw` nor `tag` has no evidence of any
-  // kind: i64Arg (below) rejects a plain bigint there instead of guessing
-  // from the absence. `skip` names slots the complete binding-use census
-  // never observes: they cross without conversion, preserving only undefined
-  // so a default initializer still runs when due.
-  // jz:release — exports whose calls keep nothing they allocate or are handed
-  // (optimize/arena-rewind.js): the wrapper rewinds the heap to where it stood
-  // before the arguments were copied in. `flag`: those whose frames run escape
-  // sites, released only when the call left the exported escape flag down.
-  // `host`: those of them whose frame releases nothing by itself: the
-  // wrapper's rewind is the only one.
-  // `ask`: those whose result may be a heap value, which the frame keeps and
-  // the wrapper releases once it holds a copy.
-  const releases = new Set(), flagged = new Set(), hostReleased = new Set(), numberResult = new Set()
-  const releaseBytes = customSection(mod, 'jz:release')
-  if (releaseBytes) {
-    try {
-      const r = JSON.parse(td.decode(releaseBytes))
-      for (const n of r.release) releases.add(n)
-      for (const n of r.flag ?? []) flagged.add(n)
-      for (const n of [...r.host ?? [], ...r.ask ?? []]) hostReleased.add(n)
-      for (const n of r.number ?? []) { releases.add(n); hostReleased.add(n); numberResult.add(n) }
-    } catch { /* ignore */ }
-  }
+export const wrap = (src, state) => {
+  const mod = src.module || src, realInst = src.instance || src
+  // A JSON section's entries by export name
+  const byName = (name, entry) => new Map((jsonSection(mod, name) || []).map(e => [e.name, entry(e)]))
+  const set = (xs) => new Set(xs || [])
+  // jz:rest: the exports with a rest parameter, by their count of fixed ones
+  const restFuncs = new Map((jsonSection(mod, 'jz:rest') || []).map(e => typeof e === 'string' ? [e, 0] : [e.name, e.fixed]))
+  // jz:extparam: the slots that take an externref (a js-string), passed as they
+  // are, with the default a missing one takes (`def`, by slot)
+  const extExp = byName('jz:extparam', e => Object.assign(new Set(e.p), e.d && { def: new Map(Object.entries(e.d).map(([k, v]) => [Number(k), v])) }))
+  // jz:i64exp: the slots that ride the i64 lane (`p`), a result decoded as a
+  // tagged value (`r`), typed slots (`t`) and those the body stores into and
+  // reads back (`k`), the variants of other kinds (`v`)
+  const i64Exp = byName('jz:i64exp', e => ({ p: set(e.p), r: !!e.r, t: e.t || null, k: set(e.k), v: e.v || null }))
+  // jz:hostabi, the BigInt policy of each slot (src/compile/index.js): `raw` an
+  // always-BigInt slot passed unboxed, `tag` a maybe-BigInt slot a BigInt is
+  // boxed at (`val`: whatever its bits, the parameter read only as a value),
+  // `rest` the rest elements' evidence. A BigInt at a slot of neither has no
+  // evidence and is refused. `skip`: slots the body never reads, which cross
+  // unconverted, keeping undefined for a default.
+  const hostAbiExp = byName('jz:hostabi', e => ({ raw: set(e.raw), tag: set(e.tag), val: set(e.val), skip: set(e.skip), rest: !!e.rest }))
+  // jz:release (optimize/arena-rewind.js): the exports whose calls keep nothing
+  // they allocate or are handed, rewound to the mark before their arguments;
+  // `flag` those released only when no escape ran, `host` those whose frame
+  // releases nothing by itself, `ask` those whose heap result is released once
+  // copied, `number` those released when the result is a Number.
+  const release = jsonSection(mod, 'jz:release') || {}, number = set(release.number)
+  const releases = set([...release.release ?? [], ...number]), flagged = set(release.flag)
+  const hostReleased = set([...release.host ?? [], ...release.ask ?? [], ...number]), numberResult = number
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
   const compact = realInst.exports.__compact, pinGlobal = realInst.exports.__pin, cost = realInst.exports.__g_cost, viewed = realInst.exports.__viewed
-  const hostAbiExp = new Map()
-  const hostAbiBytes = customSection(mod, 'jz:hostabi')
-  if (hostAbiBytes) {
-    try {
-      for (const e of JSON.parse(td.decode(hostAbiBytes)))
-        hostAbiExp.set(e.name, { raw: new Set(e.raw || []), tag: new Set(e.tag || []), val: new Set(e.val || []), skip: new Set(e.skip || []), rest: !!e.rest })
-    } catch { /* ignore */ }
-  }
-  const mem = memory(memSrc)
+  const mem = memory(src)
   // The module's pin (module/core/compact.js `__pin`): the heap below the
   // highest block the host holds by address never moves, in a compaction the
   // host asks for or one a loop runs inside a call. Raised as values decode.
@@ -1141,22 +864,15 @@ export const wrap = (memSrc, inst, state) => {
   // allocations alone grow it. The buffer the view shows marks how long:
   // once the program's allocation grew the memory past it (`settle`).
   if (viewed && mem) mem._viewSet = () => { viewed.value = 1; mem._viewBuf = mem.buffer }
-  // Async boundary: a program with async source anywhere in its graph exports
-  // __mt_drain / __p_state / __p_value (the `jz:async` std module's contract,
-  // re-exported by prepare). Every export call ends
-  // the "turn" — the microtask queue drains — and a promise-shaped return
-  // adopts into a HOST Promise: settled ones immediately, pending ones (parked
-  // on a timer) settle from the after-tick sweep. Sync modules: finishRet is
-  // pass-through, zero overhead beyond one truthiness check.
+  // An async program exports __mt_drain, __p_state and __p_value (`jz:async`):
+  // each export call ends a turn (the microtasks drain) and a promise result
+  // becomes a host Promise, a pending one settled by the after-tick sweep.
   const mtDrain = realInst.exports.__mt_drain
   const pState = realInst.exports.__p_state
   const pValue = realInst.exports.__p_value
   const asyncMod = !!(mtDrain && pState && pValue)
   const pending = []
-  // Match the raw ret's carrier to the reader's param lane (i64Exp filled
-  // below); a reader's own result may ride the i64 lane too — __p_state's
-  // NUMBER comes back as f64 bits (reinterpret), __p_value's BOX stays raw
-  // bits for mem.read.
+  // a promise reader called on its own lanes (jz:i64exp)
   const pcall = (fn, name, raw) => {
     const lane = i64Exp.get(name)
     return fn(typeof raw === 'bigint' ? (lane?.p?.has(0) ? raw : i64ToF64(raw)) : (lane?.p?.has(0) ? bits(raw) : raw))
@@ -1189,8 +905,7 @@ export const wrap = (memSrc, inst, state) => {
   }
   if (asyncMod && state) {
     state.afterTick = sweep
-    // Async host imports: a thenable returned by a host import becomes a jz
-    // promise (made + settled through the runtime's exports, lane-matched).
+    // a thenable a host import returns becomes the module's promise
     const mk = realInst.exports.__p_make, fin = realInst.exports.__p_finish
     if (mk && fin) {
       const lanes = i64Exp.get('__p_finish')
@@ -1207,38 +922,13 @@ export const wrap = (memSrc, inst, state) => {
   const hostOf = (writeBack, raw) => {
     if (typeof raw === 'bigint') for (const [back, b] of writeBack) if (b === raw && back.to) return back.to
   }
-  // `raw` may arrive as either a genuine i64 BigInt (heap-module exports with
-  // an i64-carrier result) or a NaN-boxed f64 number (the legacy carrier) —
-  // same two shapes `mem.read` itself normalizes at its own entry (line
-  // ~500). Only a NaN bit pattern can ever be a pointer; a real number can't,
-  // so a non-NaN f64 short-circuits to null with no BigInt conversion.
-  const rawBoxBits = (raw) =>
-    typeof raw === 'bigint' ? raw : (typeof raw === 'number' && raw !== raw ? f64ToI64(raw) : null)
-  // Error-class sid lookup shared by the escaping-throw path (decodeThrown,
-  // below) and the ordinary RETURN-value path (readRet, below) — audit-#10
-  // finding-4: a RETURNED (not thrown) Error previously decoded as a plain
-  // {message,name} object via mem.read's generic OBJECT case with no upgrade
-  // at all, because only decodeThrown ever consulted `mem.errorSidToClass`
-  // (error-object-design.md (git history) §"Interop consequence" / audit-#9 P0-2's
-  // 'jz:errcls' custom section, read into this map at instantiation, above).
-  // Gated the same way on both ends: `raw` must be a genuine NaN-boxed OBJECT
-  // pointer (`isBox` + `type === 6`) before its aux bits are trusted as a sid
-  // — a coincidental aux value on some OTHER pointer type can never spoof a
-  // class this way.
+  // The Error class an object's schema id names (jz:errcls), for a result or
+  // a throw: an object pointer's sid, which no source write can forge. A
+  // returned Error, or each of a tuple's, is the host's Error of that class.
   const errorSidClassOf = (raw) => {
-    const b = rawBoxBits(raw)
+    const b = typeof raw === 'bigint' ? raw : typeof raw === 'number' && raw !== raw ? f64ToI64(raw) : null
     return b != null && isBox(b) && type(b) === 6 ? (mem.errorSidToClass?.get(aux(b)) ?? null) : null
   }
-  // The RETURN side of finding-4's fix: `finishRet(ret, readRet)` replaces
-  // `finishRet(ret, r => mem.read(r))` at both heap-module export wrappers
-  // below. A returned Error upgrades the SAME way a thrown one does
-  // (errorSidClassOf + `new Ctor(message)`), minus `.cause`/`.thrown` — there
-  // is no host-side exception to attach a cause to on a plain return. Only
-  // the top-level result (and each element of a top-level multi-value tuple,
-  // mirroring mem.read's own `Array.isArray(p)` recursion at its entry) is
-  // checked — an Error nested inside a returned array/object/Map property
-  // still decodes as a plain {message,name} object, same as it did before
-  // this fix (not the named repro, not chased here).
   const readRet = (r) => {
     if (Array.isArray(r)) return r.map(readRet)
     const decoded = mem.read(r, fnOf)
@@ -1247,103 +937,44 @@ export const wrap = (memSrc, inst, state) => {
   }
   // an export's result: one crossing as a Number is a Number (numberRet), a closure's is any value
   const exportRet = (r) => typeof r === 'number' ? numberRet(r) : readRet(r)
+  // The thrown value's bits (`__jz_last_err_bits`), consumed at each decode so a
+  // later foreign trap cannot read a stale one. The optimizer makes the global
+  // immutable where nothing writes it, and a write to it then throws: probed once.
   const lastErrBits = realInst.exports.__jz_last_err_bits
-  // audit-#8 P1-1: `__jz_last_err_bits` is declared `(mut i64)` at the jz source
-  // level (src/compile/index.js ensureThrowRuntime), but watr's OWN generic
-  // optimizer (the external `watr/optimize`, run after jz's pipeline — see
-  // src/optimize/watr-tail.js) independently downgrades an unwritten global to
-  // immutable as a size win: when every throw site referencing it folds away for
-  // a GIVEN compiled module (e.g. an all-literal `typeof BigInt("1")` — no
-  // dynamic input can ever reach a throw), no `global.set` survives anywhere in
-  // that module, and watr emits a plain (const) global instead of `(mut i64)`.
-  // Setting `.value` on a const `WebAssembly.Global` throws TypeError
-  // unconditionally per the JS API spec, regardless of the value written — so
-  // BOTH decodeThrown's existing per-decode reset (below) and the wrapper-entry
-  // belt-and-braces reset (each export wrapper, further down) must check this
-  // FIRST. Probed once per instance (mutability can't change afterward): set the
-  // global to its own current value inside try/catch — a const global rejects
-  // that identically to any other write, so a caught TypeError there means
-  // read-only. (Reaching decodeThrown here at all with an immutable global means
-  // the RuntimeError/Exception came from something OTHER than jz's own $__jz_err
-  // machinery — genuinely nothing to decode from this marker.)
   let lastErrBitsWritable = false
-  if (lastErrBits) { try { lastErrBits.value = lastErrBits.value; lastErrBitsWritable = true } catch { /* const global — leave false */ } }
+  if (lastErrBits) { try { lastErrBits.value = lastErrBits.value; lastErrBitsWritable = true } catch {} }
   const decodeThrown = error => {
+    // A module without exception handling traps where it throws, having marked
+    // the value: a trap with no mark is a foreign one (bounds, stack), as it is.
     const isException = error instanceof WebAssembly.Exception
-    // A no-user-EH module lowers every internal `throw` to `unreachable` (kept in
-    // the wasm MVP — see pruneUnusedThrowRuntime) but still writes
-    // __jz_last_err_bits immediately before it traps. A RuntimeError with a
-    // nonzero marker is that same trap, decodable exactly like the Exception
-    // path below; a RuntimeError with a ZERO marker is a genuine foreign trap
-    // (OOB, stack overflow, …) that no throw site marked — rethrow undecoded.
-    const isMarkedTrap = !isException && error instanceof WebAssembly.RuntimeError &&
-      lastErrBits && lastErrBits.value !== 0n
-    if (!isException && !isMarkedTrap) throw error
-    if (!lastErrBits) throw error
-    const errBits = lastErrBits.value  // i64 bits (BigInt)
-    // Consume the marker on EVERY decode (Exception path included), not just the
-    // trap path: an Exception leaves it nonzero too, and a later genuine foreign
-    // trap on the SAME instance would otherwise read that stale value and
-    // misdecode as the earlier, already-handled error. Nothing else reads this
-    // global (host- or wasm-side) between throws, so the reset is safe. Skipped
-    // when watr proved the global const (see lastErrBitsWritable above) — an
-    // immutable marker can't be stale (it was never written), and writing to it
-    // would throw.
+    if (!lastErrBits || !isException && !(error instanceof WebAssembly.RuntimeError && lastErrBits.value !== 0n)) throw error
+    const errBits = lastErrBits.value
     if (lastErrBitsWritable) lastErrBits.value = 0n
-    // Memoryless module: the thrown value is a number/atom/SSO string — decode it
-    // from bits. (A heap Error/string can only exist when the module has memory.)
+    // An internal error crosses as its code (err-codes.js), which only the
+    // private transport tag marks: a user's number stays a thrown number.
     const code = Number(errBits >> 32n) === ERROR_CODE_HI ? Number(errBits & 0xffffffffn) : null
     const info = code == null ? undefined : ERR_INFO[code]
     const value = code == null ? (mem ? mem.read(errBits) : decode(errBits)) : code
     if (value instanceof Error) throw value
-    // A real jz Error object (audit-#9 P0-2 brand redesign, error-object-
-    // design.md §1: PTR.OBJECT, schema ['message','name']) decodes via
-    // mem.read's generic OBJECT case (line ~508) to a plain JS object
-    // {message, name} — never `instanceof Error` on this side, since it's a
-    // schema-shaped dict, not a host Error. Class identity is NOT decodable
-    // from the object's own fields (unlike the old __errcls__-slot design):
-    // it lives in the pointer's schema id (aux bits), a REAL hidden brand no
-    // source-level write can reach or forge — read it straight off the raw
-    // bits BEFORE any property decode, gated on the module's 'jz:errcls' sid
-    // map (mem.errorSidToClass, populated above) so a plain user-thrown
-    // object coincidentally shaped `{name:'Array', message:'x'}` can never
-    // upgrade (its sid, whatever it is, was never minted by errorSid — trust
-    // requires the type tag to be OBJECT too, not just any aux value that
-    // happens to numerically coincide with a minted error sid).
-    if (mem) {
-      const errClassName = errorSidClassOf(errBits)
-      if (errClassName != null && value != null) {
-        const Ctor = globalThis[errClassName] ?? Error
-        const wrapped = new Ctor(value.message)
-        wrapped.cause = error
-        wrapped.thrown = value
-        if (state?.inHost) (state.caught ??= new WeakMap()).set(wrapped, errBits)
-        throw wrapped
-      }
-    }
-    // Only the private transport tag identifies an internal code. A user
-    // number, including a colliding code, retains the generic thrown-value API.
-    const Ctor = info ? (globalThis[info.name] ?? Error) : Error
-    const wrapped = info ? new Ctor(info.message)
+    // A jz Error object decodes as {message, name}: its class is its sid.
+    const errClassName = mem && value != null ? errorSidClassOf(errBits) : null
+    const wrapped = errClassName != null ? new (globalThis[errClassName] ?? Error)(value.message)
+      : info ? new (globalThis[info.name] ?? Error)(info.message)
       : new Error(typeof value === 'string' ? value : String(value))
     wrapped.cause = error
     wrapped.thrown = value
     if (state?.inHost) (state.caught ??= new WeakMap()).set(wrapped, errBits)
     throw wrapped
   }
-  // A closure the host holds (an export's result, a host call's argument)
-  // reads as a JS function calling it through the module's trampoline, as an
-  // export call runs: arguments wrapped, the result read, a throw decoded, a
-  // promise adopted. Called as a method of an object read from the module,
-  // it takes that object as `this`. Past the inline lanes a rest parameter
-  // reads the whole argument list from an array.
+  // A closure the host holds reads as a function calling it through the
+  // module's trampoline as an export call runs; called as a method of an object
+  // read from the module it takes that object as `this`. Arguments past the
+  // inline lanes spill into an array.
   const callClosure = mem ? realInst.exports.__call_closure : null
-  const classBytes = mem && !mem.scalar ? customSection(mod, 'jz:class') : null
+  const classes = mem && !mem.scalar ? jsonSection(mod, 'jz:class') : null
   const lanes = callClosure ? callClosure.length - 4 : 0
   const closureArg = (v) => typeof v === 'bigint' && !isBox(v) && mem.BigInt ? mem.BigInt(v) : numberArg(v)
-  // The call keeps its heap as an export that releases nothing does (a closure
-  // has no `jz:release` of its own), and what it kept holds the heap of the
-  // call around it (`enter`/`leave` below); a module with no heap has neither.
+  // It releases nothing, as an export without `jz:release`.
   const fnOf = callClosure ? Object.assign((clos) => function (...args) {
     const mark = mem.scalar ? null : enter(false)
     let returned = false
@@ -1358,18 +989,14 @@ export const wrap = (memSrc, inst, state) => {
     } catch (error) {
       decodeThrown(error)
     } finally { if (mark) leave(mark, false, false, returned) }
-  }, { owners: new WeakMap(), classes: null }) : classBytes ? { owners: new WeakMap(), classes: null } : null
+  }, { owners: new WeakMap(), classes: null }) : classes ? { owners: new WeakMap(), classes: null } : null
   if (state) state.fnOf = fnOf
   const exports = {}
-  // A call that crosses as it is. Every parameter is a number on its own lane
-  // (no slot of the i64, externref or host-BigInt lanes, no typed slot, no
-  // rest), so the engine's ToNumber is the whole marshalling, as it is on the
-  // general path. A BigInt argument, which a number lane refuses by name or
-  // reads as a handle, takes the general path; a result that is no number
-  // takes its decoding (`settle`). Written out by arity: the call allocates
-  // nothing. `begin` answers whether the call may cross so (a call made while
-  // another runs tells it what it kept: the general path), `end` runs after
-  // it, a throw included.
+  // A call that crosses as it is: every slot a number, so the engine's ToNumber
+  // is all the marshalling. A BigInt argument takes the general path, a result
+  // that is no number its decoding (`settle`). Written out by arity so the call
+  // allocates nothing; `begin` answers whether it may cross so (not inside
+  // another call), `end` runs after it, a throw included.
   const plainLanes = (ie, ext, hostAbi) => !ext && !(hostAbi && (hostAbi.raw.size || hostAbi.tag.size || hostAbi.rest)) && !(ie && (ie.p.size || ie.t || ie.v))
   const crossing = (fn, general, settle, begin, end, skip) => {
     const big = (x) => typeof x === 'bigint'
@@ -1409,58 +1036,29 @@ export const wrap = (memSrc, inst, state) => {
     }
   }
   const always = () => true, idle = () => {}
-  // Per-position arg marshaller. Externref slots (jsstring carrier) pass the JS
-  // value straight through, substituting a jsstring literal default for a missing
-  // arg. An i64-carrier param (per jz:i64exp) gets the box bits: `coerce` for
-  // pure-scalar modules, `mem.wrapVal` for heap modules. The box never materializes
-  // as f64, so JSC can't canonicalize it.
+  // One argument by its slot's lane: an externref slot as it is (its default
+  // where missing), an f64 slot as the engine converts it, an i64 slot as its
+  // box's bits (`coerce` without memory, `mem.wrapVal` with), typed slots
+  // converted to their kind and, where the body writes them, copied back.
+  const noEvidence = (i, name) => { throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`) }
   const i64Arg = (ie, ext, box, hostAbi, name, writeBack, shared = writeBack && new Map()) => (x, i) => {
     // An unused slot still distinguishes missing/undefined for its default.
     // No read means no ToNumber, boxing, getter or backing-store copy is due.
     if (hostAbi?.skip.has(i)) return ie?.p.has(i) ? x === undefined ? UNDEF_NAN : 0n : x === undefined ? undefined : 0
     if (ext?.has(i)) return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
     x = numberArg(x)
-    // A BigInt is a value at a `val` slot whatever its bits (the function reads
-    // the parameter only as a scalar, so no handle belongs there); elsewhere
-    // the NaN-box prefix marks a jz-minted handle passed back raw.
+    // A BigInt is a value at a `val` slot whatever its bits; elsewhere the box
+    // prefix marks a handle the module minted, passed back.
     const plainBigint = typeof x === 'bigint' && (hostAbi?.val?.has(i) || !isBox(x))
-    // f64 slot: proven numeric (every box-capable param takes the i64 lane, per
-    // jz:i64exp), so the JS-API's own ToNumber at the call is the exact JS coercion
-    // for every host value: null → 0, undefined → NaN, "8" → 8, valueOf objects.
-    // A jz-minted box reinterprets to its bits; a plain BigInt is a TypeError in
-    // JS too, named here with the remedies instead of the engine's message.
+    // An f64 slot is proven numeric: the engine's ToNumber is JS's own (a
+    // handle reads as its bits; a BigInt is refused with the remedies).
     if (!(ie && ie.p.has(i))) {
-      if (plainBigint) throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`)
+      if (plainBigint) noEvidence(i, name)
       return typeof x === 'bigint' ? i64ToF64(x) : x
     }
-    // Phase-C C4b (correct-or-reject, audit P0 #1: dispatch on jz:hostabi's
-    // own per-slot enum — never a boolean guess from the absence of a
-    // different signal). A plain JS BigInt VALUE (not a jz-built NaN-box
-    // pointer — isBox check first, those pass through as always) has exactly
-    // ONE authority for what happens at THIS slot:
-    //   - raw: the plan proved the slot ALWAYS bigint — passes straight
-    //     through with no box (wasm's native BigInt→i64 ToWebAssemblyValue
-    //     coercion takes it from here). Architecturally unreachable at the
-    //     export boundary today (src/compile/index.js's jz:hostabi doc has
-    //     the reachability proof) — reserved, not guessed-into.
-    //   - tag: the plan proved the slot MAY be bigint — box via mem.BigInt,
-    //     wasm dispatches by tag (the one reachable evidenced state). A
-    //     `val` slot is a tag slot where the prefix test above is off: every
-    //     BigInt is a value and takes this box, so a value whose bits carry
-    //     the prefix (0x7FF8000000000000n, the largest positive i64) crosses
-    //     as itself instead of as a handle. A tag slot not in `val` keeps
-    //     the prefix test: a host may still hand it a raw handle.
-    //   - neither: no BigInt evidence of any kind — the legacy decimal-
-    //     string accident only "worked" for typeof-guarded normalization
-    //     params and silently garbled every numeric one (the dyn-keys
-    //     zero-evidence pin) — refuses loudly with both remedies named
-    //     instead.
-    // A slot the compiler proved a numeric array-like (`t`, per jz:i64exp) is
-    // normalized to that typed array before boxing: the body reads typed
-    // storage. Element conversion is ToNumber, as the numeric reads would apply.
-    // A `+` suffix marks a slot the body writes: the storage is copied back into
-    // the host value after the call (the host array itself is never a view).
-    // `Array+` is a plain array the body may store into: it crosses as itself.
+    // A typed slot (`t`) takes its kind, converted element by element; a `+`
+    // marks one the body writes, copied back after the call; `Array+` a plain
+    // array the body may store into, which crosses as itself.
     const typedSlot = ie?.t?.[i]
     // Where the call's copy of an array argument goes back after the call
     // (copyBack below), or null: nothing comes back.
@@ -1481,50 +1079,25 @@ export const wrap = (memSrc, inst, state) => {
     } else if (typedSlot) {
       const writes = typedSlot.endsWith('+')
       const Ctor = globalThis[key]
-      // An owned jz buffer of the slot's kind is the storage itself (zero
-      // copy). A subarray of one (its box holds a descriptor, not the
-      // elements) or a buffer of another kind converts through its view like
-      // any host array, and what the call writes goes back into that buffer.
-      // Explicit buffers use the public bigint pointer carrier. A Number NaN
-      // remains a Number even when its payload happens to resemble a pointer.
+      // A jz buffer of the slot's kind is the storage itself; a subarray of one
+      // or another kind converts through its view, written back into it.
       if (jzBuffer) {
-        // its kind is in its box: a view is made only to convert it
         if (argKind(x) !== key || (aux(x) & TYPED_ELEM_VIEW_FLAG)) { if (writes) back = { box: x }; x = Ctor.from(mem.read(x)) }
       } else {
         if (writes && x != null && typeof x === 'object') back = hostBack(x)
         x = x instanceof Ctor ? x : Ctor.from(x)
       }
     }
-    let w
-    if (plainBigint) {
-      if (hostAbi?.raw?.has(i)) w = x
-      else if (hostAbi?.tag?.has(i)) w = mem.BigInt(x)
-      else throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`)
-    } else {
-      w = box(x)
-    }
-    // i64-carrier slot: a raw JS boolean must cross as its TRUE_NAN/FALSE_NAN
-    // atom, matching how the SAME slot already boxes null/undefined (via
-    // coerce/mem.wrapVal, both already BigInt by the time `w` is built here).
-    // Neither `coerce` nor `mem.wrapVal` special-case booleans — `box(x)`
-    // leaves a boolean as a plain JS boolean (scalar module) or Number-
-    // converts it (heap module) — so falling through to `bits(w)` below
-    // would reinterpret ToNumber(x)'s float bits (1.0/0.0), indistinguishable
-    // from a genuine number at typeof/===. This is the argument-side mirror
-    // of the return-boxing gap (audit #5 item 2, ledger "KERNEL LEG ZERO
-    // FAILS" boolconst row): same collision, opposite direction of the JS↔
-    // wasm boundary. Checked on the ORIGINAL arg `x` (not `w`) — deliberately
-    // independent of whatever coerce/wrapVal did to it.
+    // A BigInt: unboxed at a `raw` slot, boxed at a `tag` one, else refused
+    const w = !plainBigint ? box(x) : hostAbi?.raw?.has(i) ? x : hostAbi?.tag?.has(i) ? mem.BigInt(x) : noEvidence(i, name)
+    // a boolean crosses as its atom (boxing would read it as the number 1 or 0)
     if (typeof x === 'boolean') return x ? TRUE_NAN : FALSE_NAN
-    // i64-carrier slot: a string that coerce() left raw (scalar/memoryless module)
-    // must be NaN-box encoded. SSO handles ≤6 ASCII chars without heap memory; longer
-    // or non-ASCII strings need a heap that this module lacks — throw clearly.
+    // without memory a string lives only in its box
     if (typeof w === 'string') {
-      if (w.length > 6 || !/^[\x00-\x7f]*$/.test(w))
-        throw new Error('jz: string arg too long or non-ASCII for memoryless module — compile with a string operation to enable heap marshaling')
+      if (!ssoFits(w)) throw new Error('jz: string arg too long or non-ASCII for memoryless module — compile with a string operation to enable heap marshaling')
       return encodeSSO(w)
     }
-    const b = bits(w)                                // i64 param: pass the box bits
+    const b = bits(w)
     // A host array's nested arrays (a worklet's channel buffers) are copies
     // too: which element copies it made, to copy back those still in place.
     if (back?.to && Array.isArray(orig) && type(b) === PTR.ARRAY) back.cells = cellsOf(b, 0)
@@ -1537,11 +1110,10 @@ export const wrap = (memSrc, inst, state) => {
   // the view, and the elements stay where they were).
   const hostBack = (x) => ArrayBuffer.isView(x) && x.buffer === mem.buffer
     ? { region: [x.constructor, x.byteOffset, x.length] } : { to: x }
-  // After the call: copy each array argument's copy back where it came from,
-  // both read now, after anything the call grew. A typed target takes the
-  // elements through `set` (converting to its own kind); a plain array takes
-  // the numbers, element by element, and the length the module left it: its
-  // non-numeric elements stay in the module, as README documents.
+  // After the call, each array argument's copy goes back where it came from,
+  // both read after anything the call grew: a typed target takes the elements
+  // (converted to its kind) up to its length, a plain array its numbers.
+  const setPrefix = (dst, src) => dst.set(src.length > dst.length ? src.subarray(0, dst.length) : src)
   const copyBack = (writeBack) => {
     for (const [back, b] of writeBack) {
       if (back.box !== undefined && type(back.box) === PTR.ARRAY) {
@@ -1554,16 +1126,14 @@ export const wrap = (memSrc, inst, state) => {
         : back.region ? new back.region[0](mem.buffer, back.region[1], back.region[2]) : back.to
       if (type(b) === PTR.TYPED) {
         const src = mem.read(b)
-        if (ArrayBuffer.isView(dst)) dst.set(src.length > dst.length ? src.subarray(0, dst.length) : src)
+        if (ArrayBuffer.isView(dst)) setPrefix(dst, src)
         else for (let i = 0; i < dst.length && i < src.length; i++) dst[i] = src[i]
       } else if (type(b) === PTR.ARRAY) backArray(dst, b, back.cells)
     }
   }
-  // A plain host array takes back its numbers at the length the module left it (a
-  // store past the end grew it, a `length` store shrank it: the host array is the
-  // one the function mutated), and the writes into each nested array or typed
-  // array the call's copy still holds where it was made (one the module replaced
-  // stays in the module, as a changed element does).
+  // A plain host array takes back its numbers at the length the module left it,
+  // and the writes into each nested array the copy still holds where it was made
+  // (one the module replaced stays in the module, as a changed element does).
   const backArray = (dst, b, cells) => {
     const { m, off, n } = arrayCells(b)
     if (Array.isArray(dst) && dst.length !== n) dst.length = n
@@ -1579,7 +1149,7 @@ export const wrap = (memSrc, inst, state) => {
       if (type(e) === 0 && aux(e) === 0 && offset(e) === 0) { dst[i] = NaN; continue }
       const c = cells?.[i], d = dst[i]
       if (!c || c.e !== e || d == null || typeof d !== 'object') continue
-      if (type(e) === PTR.TYPED) { if (ArrayBuffer.isView(d)) { const src = mem.read(e); d.set(src.length > d.length ? src.subarray(0, d.length) : src) } }
+      if (type(e) === PTR.TYPED) { if (ArrayBuffer.isView(d)) setPrefix(d, mem.read(e)) }
       else if (Array.isArray(d)) backArray(d, e, c.kids)
     }
   }
@@ -1597,45 +1167,27 @@ export const wrap = (memSrc, inst, state) => {
   }
   // A jz array's element cells, past any forwarding its growth left.
   const arrayCells = (box) => {
-    const m = new DataView(mem.buffer)
-    let off = offset(box)
-    while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+    const m = new DataView(mem.buffer), off = forward(m, offset(box))
     return { m, off, n: m.getInt32(off - 8, true) }
   }
 
-  // A call's heap: `enter` marks where the heap stood before the arguments
-  // were copied in; `leave` rewinds to it when the export keeps nothing
-  // (`jz:release`) and no call made inside it (a host import calling back into
-  // the module) kept anything either. `mem._kept` carries that, per nesting.
-  // An export whose frame runs escape sites (`flag`) releases only a call that
-  // returned with no escape written below the mark: the escape flag holds the
-  // lowest address one wrote into (all ones while none ran), saved and cleared
-  // around the call as a conditional frame does it (optimize/arena-rewind.js).
-  // A call that threw releases nothing.
+  // A call's heap: `enter` marks where it stood before the arguments were
+  // copied in; `leave` rewinds to the mark when the export keeps nothing
+  // (`jz:release`) and no call inside it (a host import calling back) kept
+  // anything (`mem._kept`, per nesting). An export whose frame runs escapes
+  // (`flag`) releases only where none wrote below the mark (the escape flag,
+  // saved and cleared around the call, optimize/arena-rewind.js); a call that
+  // threw releases nothing. `__base` sets the outermost frame's mark and
+  // answers the mark of a frame running around this call, or all ones.
   // JZ_DEBUG_POISON=1: a release overwrites what it frees, as a rewound frame does.
   const POISON = typeof process !== 'undefined' && process.env?.JZ_DEBUG_POISON === '1'
-  // `__base` sets the mark of the outermost frame reading the flag and
-  // answers what it held: the mark of a frame of the module that runs around
-  // this call (a host function it called calls back), or all ones.
   const NO_MARK = -1 >>> 0
   let depth = 0
-  // As the outermost call returns, the module keeps what its roots reach and
-  // no more (`__compact`, module/core/compact.js): the memory above the floor
-  // is compacted once it holds twice what the last compaction walked (what it
-  // kept above the floor, and what the module keeps below that it reached:
-  // `__g_cost`), and a page besides. The floor stands above the host's own allocations and
-  // above every closure and view of the module's memory a call handed the
-  // host (`held`), which the host may hold by address.
-  // The heap is measured every sixteenth call (a global read a call would tax
-  // the cheapest exports). A call that handed the host a view of the module's
-  // memory, a closure, or an object with methods (`held`: the decode of a
-  // result, of a host import's argument, of a value stored into a host object
-  // marks it and notes the block's end, `_pinAt`) pins the heap below that
-  // end, above whatever the host may now hold by address.
-  // Compact once the memory above the floor holds twice what the last walk
-  // reached and a page besides; or, as the heap nears the address space (less
-  // an eighth of itself and 64 MB for the kernel's scratch), once it holds an
-  // eighth of that and a page, when the first rule would land past the end.
+  // As the outermost call returns, every sixteenth, the module keeps what its
+  // roots reach (`__compact`, module/core/compact.js) once the memory above the
+  // floor holds twice what the last walk reached (`__g_cost`) and a page, or,
+  // near the end of the address space, an eighth of that. The floor stands above
+  // what the host allocated and what it was handed by address (`_pinAt`).
   const COMPACT_MIN = 65536, CAP = 2 ** 32, MARGIN = 64 << 20
   const settle = (returned, held) => {
     if (!compact || mem.scalar) return
@@ -1644,16 +1196,16 @@ export const wrap = (memSrc, inst, state) => {
     const floor = Math.max(mem._base(), mem._pin), at = mem._top()
     const since = at - floor, need = 2 * mem._live + COMPACT_MIN
     if (since <= need && !(CAP - at < at / 8 + MARGIN + need - since && since > mem._live / 8 + COMPACT_MIN)) return
-    // Once the program's own allocation grew the memory (`allocTyped`'s
-    // LIFETIME), the views handed before are detached: the scratch may grow
-    // it again, as under a memory maximum, where each grow fits exactly, the
-    // garbage must still go.
+    // views handed out before the program's own allocation grew the memory are
+    // detached: the walk's scratch may grow it again
     if (viewed && viewed.value && mem._viewBuf !== mem.buffer) viewed.value = 0
     const to = compact(floor | 0) >>> 0
     mem._live = Math.max(to - floor, cost ? cost.value >>> 0 : 0)
   }
+  // the outermost call over: what it handed the host settles the floor
+  const done = (returned, handed) => { mem._busy = false; mem._above = Infinity; mem._held = false; settle(returned, handed) }
   const running = () => depth === 0 && (depth = 1) === 1 && (mem._busy = true) && ((mem._above = 0), (mem._held = false), true)
-  const ran = (threw) => { depth = 0; mem._busy = false; if (threw && setBase) setBase(-1); const handed = mem._held; mem._above = Infinity; mem._held = false; settle(!threw, handed) }
+  const ran = (threw) => { depth = 0; if (threw && setBase) setBase(-1); done(!threw, mem._held) }
   const enter = (flag) => {
     // no frame of the module runs around the first call: a mark a call that threw left behind goes
     if (setBase && depth === 0) setBase(-1)
@@ -1670,10 +1222,9 @@ export const wrap = (memSrc, inst, state) => {
     }
     return mark
   }
-  // The result as the host takes it: a copy (a string, an array, an object,
-  // a collection), or a value that names the module's memory (a typed array's
-  // view, a closure's handle, a promise read as it settles). One that names
-  // memory above the call's mark holds what the call allocated (`mark.held`).
+  // The result as the host takes it: a copy, or a value naming the module's
+  // memory (a view, a closure, a promise read as it settles), which above the
+  // call's mark holds what the call allocated (`mark.held`).
   const settled = (mark, ret) => {
     const above = mem._above, held = mem._held
     mem._above = mark.top; mem._held = false
@@ -1696,50 +1247,32 @@ export const wrap = (memSrc, inst, state) => {
     if (setBase && mark.base !== null) setBase(mark.base | 0)
     // a call that threw left the frames of the module without their epilogues: no mark stays past the outermost
     if (--depth === 0 && !returned && setBase) setBase(-1)
-    if (depth === 0) { mem._busy = false; const handed = held || mem._held; mem._above = Infinity; mem._held = false; settle(returned, handed) }
+    if (depth === 0) done(returned, held || mem._held)
   }
 
-  // Pure scalar module (no memory): pass f64 values directly, no marshaling
+  // A module without memory: values cross by their bits, no heap to release
   if (!mem || mem.scalar) {
     for (const [name, fn] of Object.entries(realInst.exports)) {
       if (typeof fn !== 'function') { exports[name] = fn; continue }
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
       const hostAbi = hostAbiExp.get(name)
-      const len = fn.length
+      const len = fn.length, arg = i64Arg(ie, ext, mem.wrapVal, hostAbi, name)
+      // A proven raw-BigInt result stays raw; a tagged one (`r`) is decoded
+      const result = (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : typeof ret === 'number' ? numberRet(ret) : mem.read(ret, fnOf)
       const general = (...args) => {
-        if (args.length > len) args.length = len
-        while (args.length < len) args.push(undefined)
-        // audit-#8 P1-1 belt-and-braces: decodeThrown already consumes the marker
-        // on every decode, and every in-wasm catch/finally now consumes it too
-        // (src/compile/emit.js) — this is defense-in-depth against a raw-instance
-        // reuse or any as-yet-unknown in-wasm path that misses that consume, so a
-        // fresh call never starts with a stale marker from a PRIOR call.
-        if (lastErrBitsWritable) lastErrBits.value = 0n
-        try {
-          const ret = fn(...args.map(i64Arg(ie, ext, mem.wrapVal, hostAbi, name)))
-          // A proven raw-BigInt result stays raw; tagged results set `r` and
-          // take the generic decoder.
-          if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return typeof ret === 'number' ? numberRet(ret) : mem.read(ret, fnOf)
-        } catch (e) { decodeThrown(e) }
+        const a = new Array(len)
+        for (let i = 0; i < len; i++) a[i] = arg(args[i], i)
+        if (lastErrBitsWritable) lastErrBits.value = 0n   // a fresh call starts with no stale mark
+        try { return result(fn(...a)) } catch (e) { decodeThrown(e) }
       }
-      exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : typeof ret === 'number' ? numberRet(ret) : mem.read(ret, fnOf), always, idle, hostAbi?.skip) : general
+      exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod ? crossing(fn, general, result, always, idle, hostAbi?.skip) : general
     }
     return exports
   }
   const memWrapVal = mem.wrapVal.bind(mem)
-  // Rest-element policy (audit P0 #2: the rest path bypassed i64Arg entirely —
-  // `mem.Array(args.slice(fixed))` ran every element through mem.wrapVal, so a
-  // plain-bigint rest element tripped the SAME silent decimal-string accident
-  // wrapVal itself now refuses instead of committing). Applied BEFORE
-  // mem.Array, element-by-element: a jz-built NaN-box bigint (isBox) always
-  // passes through; a plain bigint VALUE dispatches on THIS export's
-  // jz:hostabi `rest` flag exactly like a fixed slot dispatches on raw/tag —
-  // tag it if the plan proved rest elements may be bigint, else refuse loudly
-  // (always today — no evidence source exists yet for host-populated rest
-  // elements, see jz:hostabi's doc above).
+  // A rest element: a handle as it is, a BigInt boxed where the export's
+  // `rest` evidence allows, else refused.
   const restElemArg = (hostAbi, name) => (x) => {
     if (typeof x !== 'bigint' || isBox(x)) return x
     if (hostAbi?.rest) return mem.BigInt(x)
@@ -1747,71 +1280,42 @@ export const wrap = (memSrc, inst, state) => {
   }
   for (const [name, fn] of Object.entries(realInst.exports)) {
     if (fn === setBase || fn === survive || name === '__root_reset') continue   // the host's own handles on the module, no exports of the program
-    if (restFuncs.has(name) && typeof fn === 'function') {
-      const fixed = restFuncs.get(name)
-      const ext = extExp.get(name)
-      const ie = i64Exp.get(name)
-      const hostAbi = hostAbiExp.get(name)
-      const release = releases.has(name), flag = flagged.has(name), numeric = numberResult.has(name)
-      exports[name] = (...args) => {
-        const writeBack = [], mark = enter(flag)
-        let returned = false, scalar = !numeric
-        try {
-          const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
-          while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : undefined) }
-          const restArr = hostAbi?.skip.has(fixed) ? 0n : mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))
-          a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
-          // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
-          if (lastErrBitsWritable) lastErrBits.value = 0n
-          const ret = fn.apply(null, a)
-          if (numeric) { const n = typeof ret === 'bigint' ? i64ToF64(ret) : ret; scalar = typeof n === 'number' && n === n }
-          returned = true
-          if (writeBack.length) copyBack(writeBack)
-          const host = hostOf(writeBack, ret)
-          if (host) return host
-          if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return settled(mark, ret)
-        } catch (error) {
-          decodeThrown(error)
-        } finally { leave(mark, release && scalar, flag, returned) }
-      }
-    } else if (typeof fn === 'function') {
-      const ext = extExp.get(name)
-      const ie = i64Exp.get(name)
-      const hostAbi = hostAbiExp.get(name)
-      const len = fn.length
-      const release = releases.has(name), flag = flagged.has(name), numeric = numberResult.has(name)
-      const general = (...args) => {
-        if (args.length > len) args.length = len
-        while (args.length < len) args.push(undefined)
-        const writeBack = [], mark = enter(flag)
-        let returned = false, scalar = !numeric
-        try {
-          const a = args.map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
-          // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
-          if (lastErrBitsWritable) lastErrBits.value = 0n
-          const ret = fn.apply(null, a)
-          if (numeric) { const n = typeof ret === 'bigint' ? i64ToF64(ret) : ret; scalar = typeof n === 'number' && n === n }
-          returned = true
-          if (writeBack.length) copyBack(writeBack)
-          const host = hostOf(writeBack, ret)
-          if (host) return host
-          if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
-          return settled(mark, ret)
-        } catch (error) {
-          decodeThrown(error)
-        } finally { leave(mark, release && scalar, flag, returned) }
-      }
-      // Numbers only, and nothing for the host to release: no copy of an
-      // argument, and a frame that gives back what it allocated by itself, or
-      // keeps it by the module's own verdict. No call runs around it, which
-      // would have to know what it kept; it counts as one that runs (a host
-      // function it calls may call back), and one that threw leaves no mark.
-      exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod && !(release && hostReleased.has(name))
-        ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : exportRet(ret), running, ran, hostAbi?.skip) : general
-    } else {
-      exports[name] = fn
+    if (typeof fn !== 'function') { exports[name] = fn; continue }
+    const ext = extExp.get(name), ie = i64Exp.get(name), hostAbi = hostAbiExp.get(name)
+    const release = releases.has(name), flag = flagged.has(name), numeric = numberResult.has(name)
+    const rest = restFuncs.has(name), fixed = rest ? restFuncs.get(name) : fn.length
+    // The arguments by their lanes: a missing fixed one undefined, the rest an array
+    const lanesOf = (args, writeBack) => {
+      const arg = i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack)
+      if (!rest) { const a = new Array(fixed); for (let i = 0; i < fixed; i++) a[i] = arg(args[i], i); return a }
+      const a = args.slice(0, fixed).map(arg)
+      while (a.length < fixed) a.push(ie && ie.p.has(a.length) ? UNDEF_NAN : undefined)
+      const restArr = hostAbi?.skip.has(fixed) ? 0n : mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))
+      a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
+      return a
     }
+    const general = (...args) => {
+      const writeBack = [], mark = enter(flag)
+      let returned = false, scalar = !numeric
+      try {
+        const a = lanesOf(args, writeBack)
+        if (lastErrBitsWritable) lastErrBits.value = 0n
+        const ret = fn.apply(null, a)
+        if (numeric) { const n = typeof ret === 'bigint' ? i64ToF64(ret) : ret; scalar = typeof n === 'number' && n === n }
+        returned = true
+        if (writeBack.length) copyBack(writeBack)
+        const host = hostOf(writeBack, ret)
+        if (host) return host
+        if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
+        return settled(mark, ret)
+      } catch (error) {
+        decodeThrown(error)
+      } finally { leave(mark, release && scalar, flag, returned) }
+    }
+    // Numbers only, and nothing for the host to release (the frame releases or
+    // keeps by itself): the call crosses as it is, counted as one that runs.
+    exports[name] = !rest && plainLanes(ie, ext, hostAbi) && !asyncMod && !(release && hostReleased.has(name))
+      ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : exportRet(ret), running, ran, hostAbi?.skip) : general
   }
   // An export whose typed slots take other kinds in variants (`v`, hidden
   // exports of the same body) calls the one the arguments fit.
@@ -1821,7 +1325,7 @@ export const wrap = (memSrc, inst, state) => {
     exports[name] = kindDispatch(name, cands.map(n => [exports[n], slotsOf(i64Exp.get(n))]))
     for (const n of ie.v) delete exports[n]
   }
-  if (classBytes) hostClasses(JSON.parse(td.decode(classBytes)), exports, fnOf, mem)
+  if (classes) hostClasses(classes, exports, fnOf, mem)
   return exports
 }
 
@@ -1890,7 +1394,6 @@ const hostClasses = (table, exports, fnOf, mem) => {
 // The slots a variant is chosen by: the typed ones. `Array+` marks a slot that may
 // be a plain array the body stores into; it takes whatever arrives, as itself.
 const slotsOf = (ie) => Object.entries(ie?.t ?? {}).filter(([, t]) => t !== 'Array+').map(([i, t]) => [+i, t.replace('+', ''), ie.k.has(+i)])
-const ELEM_NAMES = ['Int8Array', 'Uint8Array', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array', 'Float32Array', 'Float64Array']
 // The element kind an argument brings: a typed array's own (a host one, or a
 // jz buffer by its box), 'Array' for any other object (Array.from reads it as
 // an array-like), null for anything else.
@@ -1898,8 +1401,7 @@ const argKind = (x) => {
   if (typeof x === 'bigint' && isBox(x)) {
     const t = type(x), a = aux(x)
     if (t === PTR.ARRAY) return 'Array'
-    if (t !== PTR.TYPED || (a & DATA_VIEW_FLAG)) return null
-    return a & 16 ? 'BigInt64Array' : a & 32 ? 'Float16Array' : a & 64 ? 'Uint8ClampedArray' : ELEM_NAMES[a & 7]
+    return t !== PTR.TYPED || (a & DATA_VIEW_FLAG) ? null : kindOfAux(a).name
   }
   if (x == null || typeof x !== 'object') return null
   if (ArrayBuffer.isView(x)) return x instanceof DataView ? null : x.constructor.name
@@ -1996,122 +1498,32 @@ const prepareInterop = (opts) => {
   // the host references of a memory are one table for every module sharing
   // it: an index one module hands out resolves through another's import
   const state = { extMap: opts.memory instanceof WebAssembly.Memory && opts.memory._extMap ? opts.memory._extMap : [null], mem: null }
-  opts._interp = opts._interp || {}
-  // __ext_* receive NaN-boxed pointers across the env boundary as i64 (BigInt
-  // in JS) — see module/collection.js header for rationale. f64 returns are
-  // wrapped back to BigInt so the wasm side reinterprets a non-canonicalized
-  // bit pattern.
-  // A dynamic member op can reach the host with a receiver that is NOT an
-  // external handle (extMap[0] is null — e.g. a builtin's placeholder value, or
-  // a number that inference couldn't type whose method jz doesn't implement).
-  // Without the guard that surfaces as a bare host TypeError ("Cannot read
-  // properties of null") — a mystery. Name the actual failure instead.
+  // The host's side of the module's dynamic operations (module/collection.js,
+  // module/web.js), values crossing as i64 bits. A receiver that is no host
+  // object (extMap[0] is null: an unsupported builtin method, an untyped
+  // receiver) is named, not left to fail as "Cannot read properties of null".
   const extRecv = (objBig, prop, what) => {
     const obj = state.extMap[offset(objBig)]
     if (obj == null) throw new Error(`'${String(prop)}' — jz dispatched this ${what} to the host, but the receiver is not a host object (an unsupported builtin method, or a receiver type jz couldn't resolve)`)
     return obj
   }
+  // a value the module hands the host, closures read as functions; a property key
+  const read = (v) => state.mem.read(v, state.fnOf), keyOf = (propBig) => hostKey(state.mem.read(propBig))
+  // a BigInt a host BigInt64Array or BigUint64Array holds is a value (boxed); any other has no evidence
+  const bigTyped = (obj, value) => typeof value === 'bigint' && (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
+  // A property Get, the getter run once. `raw` (a method reference) and a
+  // function by `__ext_get` cross by identity; `legacy` (`__ext_prop`, of
+  // older binaries) binds a method to its receiver.
   const readProperty = (objBig, propBig, legacy = false, raw = false) => {
-    const prop = hostKey(state.mem.read(propBig))
-    const obj = extRecv(objBig, prop, 'property read')
-    const value = obj[prop]
+    const prop = keyOf(propBig), obj = extRecv(objBig, prop, 'property read'), value = obj[prop]
     // (a method reference the receiver lacks: the invoke that follows names it)
     if (raw && typeof value !== 'function') state.methodMiss = { obj, prop }
     if (raw || !legacy && typeof value === 'function') return bits(hostValue(state, value))
-    // An explicitly-external BigInt64Array/BigUint64Array still carries exact
-    // runtime BigInt evidence (ordinary host values use the typed-memory codec).
-    // Box it instead of routing a plain bigint through evidence-free wrapVal.
-    // `value` is cached above, so a getter executes exactly once.
-    const bigTyped = typeof value === 'bigint' &&
-      (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
-    const wrapped = bigTyped ? state.mem.BigInt(value)
-      : state.mem.wrapVal(legacy && typeof value === 'function' ? value.bind(obj) : value)
-    return bits(wrapped)
+    return bits(bigTyped(obj, value) ? state.mem.BigInt(value) : state.mem.wrapVal(legacy && typeof value === 'function' ? value.bind(obj) : value))
   }
-  // New reads preserve the native container codec but never bind functions.
-  // The older import keeps its bound-method behavior for existing binaries.
-  opts._interp.__ext_prop = (objBig, propBig) => readProperty(objBig, propBig, true)
-  opts._interp.__ext_get = (objBig, propBig) => readProperty(objBig, propBig)
-  // for-of over a host iterable (module/collection.js `__iter_arr`): the loop
-  // reads its source's length, then the element at its counter, each step. The
-  // view answers from the iterator one value at a time: a length read pulls the
-  // next value where none waits (one past the count while one does, the count
-  // once the iterator is done), the element read takes it. A spread (`all`)
-  // takes every value at once, as an array of the module.
-  opts._interp.__ext_iter = (vBig, all) => {
-    const v = extRecv(vBig, Symbol.iterator, 'for-of')
-    if (typeof v[Symbol.iterator] !== 'function') throw new TypeError('value is not iterable')
-    if (all) return bits(state.mem.wrapVal(Array.from(v)))
-    const it = v[Symbol.iterator]()
-    let count = 0, waiting = false, value, done = false
-    return bits(hostValue(state, new Proxy({}, { get: (_, key) => {
-      if (key === 'length') {
-        if (!waiting && !done) { const r = it.next(); if (r.done) done = true; else { value = r.value; waiting = true } }
-        return count + (waiting ? 1 : 0)
-      }
-      if (waiting && key === String(count)) { waiting = false; count++; return value }
-      return undefined
-    } })))
-  }
-  opts._interp.__ext_has_iterator = objBig => {
-    const obj = extRecv(objBig, Symbol.iterator, 'iterator-method test')
-    const method = obj[Symbol.iterator]
-    return method == null ? 0 : 1
-  }
-  opts._interp.__ext_is_error = (objBig, kind) => {
-    const Ctor = globalThis[ERR_CLASS_NAMES[kind]]
-    return state.extMap[offset(objBig)] instanceof Ctor ? 1 : 0
-  }
-  // JSON.stringify's walker met a host object: the host's text, each line
-  // indented to the walker's depth, or undefined where the host writes none.
-  opts._interp.__ext_json = (objBig, gapPtr, gapLen, depth) => {
-    const obj = extRecv(objBig, 'toJSON', 'serialization')
-    const gap = String.fromCharCode(...new Uint16Array(state.mem.buffer, gapPtr, gapLen))
-    const text = JSON.stringify(obj, null, gap)
-    return text === undefined ? bits(UNDEF_NAN) : bits(state.mem.wrapVal(gap ? text.replace(/\n/g, '\n' + gap.repeat(depth)) : text))
-  }
-  opts._interp.__ext_json_omits = (objBig) => {
-    const obj = state.extMap[offset(objBig)]
-    return typeof obj === 'function' || typeof obj === 'symbol' ? 1 : 0
-  }
-  opts._interp.__ext_enum = (objBig, mode) => {
-    const obj = extRecv(objBig, 'keys', 'enumeration')
-    return bits(state.mem.wrapVal(mode === 3 ? Reflect.ownKeys(obj) : mode === 0 ? Object.keys(obj) : mode === 1 ? Object.values(obj) : Object.entries(obj)))
-  }
-  opts._interp.__ext_copy_has = (objBig, propBig) => {
-    const prop = hostKey(state.mem.read(propBig))
-    return Object.getOwnPropertyDescriptor(extRecv(objBig, prop, 'property copy'), prop)?.enumerable ? 1 : 0
-  }
-  opts._interp.__ext_has = (objBig, propBig) => {
-    const prop = hostKey(state.mem.read(propBig))
-    return (prop in extRecv(objBig, prop, 'membership test')) ? 1 : 0
-  }
-  opts._interp.__ext_delete = (objBig, propBig) => {
-    const prop = hostKey(state.mem.read(propBig))
-    return Reflect.deleteProperty(extRecv(objBig, prop, 'property deletion'), prop) ? 1 : 0
-  }
-  opts._interp.__ext_set = (objBig, propBig, valBig) => {
-    const v = state.mem.read(valBig, state.fnOf)
-    // A typed array (or DataView) the module stores on a host object keeps its
-    // identity: the property holds a live view of the module's storage, and a
-    // read of it back into the module (wrapVal) is that storage again, so
-    // state kept on a host object (`p.state ??= new Float64Array(n)`) carries
-    // from call to call as in JS. A view of wasm memory detaches when the
-    // memory grows: the host then reads an empty array, and the module still
-    // reads its own. The store keeps a pointer into the heap, so the call
-    // around it releases nothing (`_kept`, wrap's leave).
-    if (ArrayBuffer.isView(v)) { state.mem._views?.set(v, valBig); state.mem._kept = true }
-    const prop = hostKey(state.mem.read(propBig))
-    extRecv(objBig, prop, 'property write')[prop] = v
-    return 1
-  }
-  // Raw property Get, shared by reads, copies and method references. Do not
-  // bind functions: that changes identity/this and observes name/length.
-  opts._interp.__ext_method = (objBig, propBig) => readProperty(objBig, propBig, false, true)
   // A typed array of the module's memory handed to a host call arrives as a
-  // copy, which the host may keep past the call (a view of the memory detaches
-  // when it grows: a stream's queued chunk would read empty); what the host
-  // writes into it during the call is copied back as the call returns.
+  // copy the host may keep past the call (a view detaches as the memory grows);
+  // what the host writes into it during the call is copied back.
   const ownArgs = (args) => {
     let back = null
     for (let i = 0; i < args.length; i++) {
@@ -2134,69 +1546,104 @@ const prepareInterop = (opts) => {
       const miss = state.methodMiss
       throw new TypeError(miss && miss.obj === obj ? `${String(miss.prop)} is not a function on the host receiver` : 'Host value is not callable')
     }
-    const back = ownArgs(args)
-    const value = Reflect.apply(fn, obj, args)
+    const back = ownArgs(args), value = Reflect.apply(fn, obj, args)
     if (back) copyBack(back)
-    if (as === 1) return hostRet(state, Number(value))
-    if (as === 2) return hostRet(state, !!value)
-    if (as === 3) return hostRet(state, String(value))
-    const bigTyped = typeof value === 'bigint' &&
-      (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
-    return hostRet(state, value, bigTyped)
+    return hostRet(state, as === 1 ? Number(value) : as === 2 ? !!value : as === 3 ? String(value) : value, !as && bigTyped(obj, value))
   }
-  opts._interp.__ext_invoke = (fnBig, recvBig, argsBig) => invoke(
-    state.mem.read(fnBig, state.fnOf), state.mem.read(recvBig, state.fnOf), state.mem.read(argsBig, state.fnOf))
-  opts._interp.__ext_invoke_as = (fnBig, recvBig, argsBig, as) => invoke(
-    state.mem.read(fnBig, state.fnOf), state.mem.read(recvBig, state.fnOf), state.mem.read(argsBig, state.fnOf), as)
-  // Up to four arguments inline, their count first: the module builds no array.
-  opts._interp.__ext_invoke_inline = (fnBig, recvBig, n, as, a0, a1, a2, a3) => {
-    const read = v => state.mem.read(v, state.fnOf), args = []
-    if (n > 0) args.push(read(a0))
-    if (n > 1) args.push(read(a1))
-    if (n > 2) args.push(read(a2))
-    if (n > 3) args.push(read(a3))
-    return invoke(read(fnBig), read(recvBig), args, as)
-  }
-  // `new C(...args)` of a host constructor (module/web.js `__host_new`).
-  opts._interp.__ext_construct = (fnBig, argsBig) => {
-    const fn = state.mem.read(fnBig, state.fnOf), args = state.mem.read(argsBig, state.fnOf)
-    const back = ownArgs(args), value = Reflect.construct(fn, args)
-    if (back) copyBack(back)
-    return hostRet(state, value)
-  }
-  // `v instanceof C` of a host class: a value of the module is no instance of
-  // it, though a C the host cannot test still throws (module/web.js).
-  opts._interp.__ext_instanceof = (vBig, ctorBig) => {
-    const C = state.mem.read(ctorBig, state.fnOf)
-    const v = type(vBig) === PTR.EXTERNAL ? state.extMap[offset(vBig)] : undefined
-    return v instanceof C ? 1 : 0
-  }
-  opts._interp.__ext_callable = (vBig) => typeof state.extMap[offset(vBig)] === 'function' ? 1 : 0
-  // Older compiled modules pass receiver/key/arguments to this import. Keep
-  // that ABI distinct from the captured callable/receiver/arguments above.
-  opts._interp.__ext_call = (objBig, propBig, argsBig) => {
-    const prop = hostKey(state.mem.read(propBig)), obj = extRecv(objBig, prop, 'method call')
-    const args = state.mem.read(argsBig, state.fnOf)
-    return invoke(prop === undefined ? obj : obj[prop], prop === undefined ? undefined : obj, args)
-  }
+  const invokeAs = (fnBig, recvBig, argsBig, as) => invoke(read(fnBig), read(recvBig), read(argsBig), as)
+  Object.assign(opts._interp ||= {}, {
+    __ext_prop: (objBig, propBig) => readProperty(objBig, propBig, true),
+    __ext_get: (objBig, propBig) => readProperty(objBig, propBig),
+    // a raw Get, for reads, copies and method references: a function unbound
+    __ext_method: (objBig, propBig) => readProperty(objBig, propBig, false, true),
+    // for-of over a host iterable (`__iter_arr`) reads a length, then the
+    // element at its counter, each step: the view pulls the next value at a
+    // length read where none waits, the element read takes it. A spread
+    // (`all`) takes every value at once, as an array of the module.
+    __ext_iter: (vBig, all) => {
+      const v = extRecv(vBig, Symbol.iterator, 'for-of')
+      if (typeof v[Symbol.iterator] !== 'function') throw new TypeError('value is not iterable')
+      if (all) return bits(state.mem.wrapVal(Array.from(v)))
+      const it = v[Symbol.iterator]()
+      let count = 0, waiting = false, value, done = false
+      return bits(hostValue(state, new Proxy({}, { get: (_, key) => {
+        if (key === 'length') {
+          if (!waiting && !done) { const r = it.next(); if (r.done) done = true; else { value = r.value; waiting = true } }
+          return count + (waiting ? 1 : 0)
+        }
+        if (waiting && key === String(count)) { waiting = false; count++; return value }
+        return undefined
+      } })))
+    },
+    __ext_has_iterator: (objBig) => extRecv(objBig, Symbol.iterator, 'iterator-method test')[Symbol.iterator] == null ? 0 : 1,
+    __ext_is_error: (objBig, kind) => state.extMap[offset(objBig)] instanceof globalThis[ERR_CLASS_NAMES[kind]] ? 1 : 0,
+    // JSON.stringify's walker met a host object: the host's text, each line
+    // indented to the walker's depth, or undefined where the host writes none.
+    __ext_json: (objBig, gapPtr, gapLen, depth) => {
+      const obj = extRecv(objBig, 'toJSON', 'serialization')
+      const gap = String.fromCharCode(...new Uint16Array(state.mem.buffer, gapPtr, gapLen))
+      const text = JSON.stringify(obj, null, gap)
+      return text === undefined ? bits(UNDEF_NAN) : bits(state.mem.wrapVal(gap ? text.replace(/\n/g, '\n' + gap.repeat(depth)) : text))
+    },
+    __ext_json_omits: (objBig) => { const t = typeof state.extMap[offset(objBig)]; return t === 'function' || t === 'symbol' ? 1 : 0 },
+    __ext_enum: (objBig, mode) => {
+      const obj = extRecv(objBig, 'keys', 'enumeration')
+      return bits(state.mem.wrapVal(mode === 3 ? Reflect.ownKeys(obj) : mode === 0 ? Object.keys(obj) : mode === 1 ? Object.values(obj) : Object.entries(obj)))
+    },
+    __ext_copy_has: (objBig, propBig) => { const prop = keyOf(propBig); return Object.getOwnPropertyDescriptor(extRecv(objBig, prop, 'property copy'), prop)?.enumerable ? 1 : 0 },
+    __ext_has: (objBig, propBig) => { const prop = keyOf(propBig); return prop in extRecv(objBig, prop, 'membership test') ? 1 : 0 },
+    __ext_delete: (objBig, propBig) => { const prop = keyOf(propBig); return Reflect.deleteProperty(extRecv(objBig, prop, 'property deletion'), prop) ? 1 : 0 },
+    // A typed array the module stores on a host object is a live view of its
+    // storage, which a read back into the module is again (`_views`), so state
+    // kept on a host object carries from call to call. The store keeps a
+    // pointer into the heap: the call around it releases nothing (`_kept`).
+    __ext_set: (objBig, propBig, valBig) => {
+      const v = read(valBig)
+      if (ArrayBuffer.isView(v)) { state.mem._views?.set(v, valBig); state.mem._kept = true }
+      const prop = keyOf(propBig)
+      extRecv(objBig, prop, 'property write')[prop] = v
+      return 1
+    },
+    __ext_invoke: invokeAs,
+    __ext_invoke_as: invokeAs,
+    // up to four arguments inline, their count first: the module builds no array
+    __ext_invoke_inline: (fnBig, recvBig, n, as, ...inline) => invoke(read(fnBig), read(recvBig), inline.slice(0, n).map(read), as),
+    // `new C(...args)` of a host constructor (module/web.js `__host_new`)
+    __ext_construct: (fnBig, argsBig) => {
+      const fn = read(fnBig), args = read(argsBig)
+      const back = ownArgs(args), value = Reflect.construct(fn, args)
+      if (back) copyBack(back)
+      return hostRet(state, value)
+    },
+    // `v instanceof C` of a host class: a value of the module is no instance of
+    // it, though a C the host cannot test still throws (module/web.js).
+    __ext_instanceof: (vBig, ctorBig) => {
+      const C = read(ctorBig)
+      return (type(vBig) === PTR.EXTERNAL ? state.extMap[offset(vBig)] : undefined) instanceof C ? 1 : 0
+    },
+    __ext_callable: (vBig) => typeof state.extMap[offset(vBig)] === 'function' ? 1 : 0,
+    // older binaries pass receiver, key and arguments
+    __ext_call: (objBig, propBig, argsBig) => {
+      const prop = keyOf(propBig), obj = extRecv(objBig, prop, 'method call'), args = read(argsBig)
+      return invoke(prop === undefined ? obj : obj[prop], prop === undefined ? undefined : obj, args)
+    },
+  })
   return state
 }
 
-// Default JS-host wiring for env.print + env.now — auto-installed when the wasm
-// imports them (host: 'js' mode lowering in module/console.js). Caller-provided
-// opts.imports.env entries take precedence.
+// The env functions a JS-host module imports (console, clocks, entropy,
+// timers, web globals), where the caller's `imports.env` does not give them.
 const installDefaultEnvImports = (mod, imports, state) => {
-  const envFns = envFuncNames(mod)
+  const envFns = new Set(WebAssembly.Module.imports(mod).filter(i => i.module === 'env' && i.kind === 'function').map(i => i.name))
   if (!envFns.size) return
   if (!imports.env) imports.env = {}
-  // Web globals (fetch, …): the module imported them because bare calls were
-  // lowered by module/web.js — bind from globalThis with full marshalling;
-  // thenables adopt into jz promises. opts.imports.env overrides win.
+  const provide = (name, fn) => { if (envFns.has(name) && !imports.env[name]) imports.env[name] = fn }
+  // web globals a bare call lowered to an import (module/web.js), from globalThis
   for (const name of envFns) {
     if (imports.env[name] || !WEB_GLOBALS.has(name)) continue
     const host = globalThis[name]
     if (typeof host !== 'function') continue
-    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a, state.fnOf))))
+    imports.env[name] = (...args) => hostRet(state, host(...args.map(a => readHost(state, a))))
   }
   if (envFns.has('print') && !imports.env.print) {
     // A line per console method (module/console.js codes: log 1, error 2, warn
@@ -2211,11 +1658,9 @@ const installDefaultEnvImports = (mod, imports, state) => {
       ;(console[name] ?? console.log)(...line[fd])
       line[fd] = []
     }
-    // env.print's val param is i64 to dodge V8's f64 NaN canonicalization
-    // across the wasm→JS boundary (see module/console.js header). Reinterpret
-    // the BigInt's bits as f64 here so mem.read sees the original NaN-box.
+    // printed before the memory is wired (the start function): held until then
     const write = (valBig, fd, sep) => {
-      const v = state.mem ? state.mem.read(valBig, state.fnOf) : decode(valBig, state.fnOf), args = line[fd]
+      const v = readHost(state, valBig), args = line[fd]
       if (joined[fd]) args[args.length - 1] = String(args[args.length - 1]) + String(v)
       else args.push(v)
       joined[fd] = sep === 0
@@ -2230,192 +1675,91 @@ const installDefaultEnvImports = (mod, imports, state) => {
       pending.length = 0
     }
   }
-  if (envFns.has('now') && !imports.env.now) {
-    imports.env.now = (clock) =>
-      clock === 1 ? (typeof performance !== 'undefined' ? performance.now() : Date.now()) : Date.now()
+  const now = () => typeof performance !== 'undefined' ? performance.now() : Date.now()
+  provide('now', (clock) => clock === 1 ? now() : Date.now())
+  // entropy, from crypto where the host has it: a seed for Math.random, the
+  // bytes of crypto.getRandomValues (a view made per call: the memory may grow)
+  const entropy = (view) => {
+    if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(view)
+    else for (let i = 0; i < view.length; i++) view[i] = Math.random() * 2 ** (8 * view.BYTES_PER_ELEMENT)
+    return view
   }
-  // One i32 of entropy to seed Math.random — only present when compiled with
-  // { randomSeed: true }. Prefers crypto; falls back to Math.random.
-  if (envFns.has('rngSeed') && !imports.env.rngSeed) {
-    imports.env.rngSeed = () => {
-      const a = new Uint32Array(1)
-      if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(a)
-      else a[0] = (Math.random() * 0x100000000) >>> 0
-      return a[0] | 0
-    }
-  }
-  // Byte-fill entropy for crypto.getRandomValues/randomUUID (module/crypto.js).
-  // Fills wasm linear memory directly; the view is created per call — never
-  // cached — so a Memory.grow between calls can't leave a detached view.
-  if (envFns.has('random') && !imports.env.random) {
-    imports.env.random = (off, len) => {
-      const view = new Uint8Array(state.mem.buffer, off, len)
-      if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(view)
-      else for (let i = 0; i < len; i++) view[i] = (Math.random() * 256) >>> 0
-    }
-  }
-  if (envFns.has('hardwareConcurrency') && !imports.env.hardwareConcurrency) {
-    imports.env.hardwareConcurrency = () => globalThis.navigator?.hardwareConcurrency ?? 1
-  }
-  if (envFns.has('parseFloat') && !imports.env.parseFloat) {
-    imports.env.parseFloat = (valBig) => {
-      const s = readArgBits(state, valBig)
-      return parseFloat(s)
-    }
-  }
-  if (envFns.has('parseInt') && !imports.env.parseInt) {
-    imports.env.parseInt = (valBig, radix) => {
-      const s = readArgBits(state, valBig)
-      return parseInt(s, radix || undefined)
-    }
-  }
-  // host: 'js' timer wiring. Wasm calls env.setTimeout/clearTimeout; we call
-  // the callback back as any closure the host holds (state.fnOf, read at the
-  // first fire: a timer armed by the module's init runs before wrap sets it).
-  // Each id maps to a cancel thunk so set/clear share state without tagging.
-  // env.setTimeout receives cbPtr as i64 bits (BigInt), see module/timer.js.
-  if (envFns.has('setTimeout') || envFns.has('clearTimeout')) {
+  provide('rngSeed', () => entropy(new Uint32Array(1))[0] | 0)
+  provide('random', (off, len) => { entropy(new Uint8Array(state.mem.buffer, off, len)) })
+  provide('hardwareConcurrency', () => globalThis.navigator?.hardwareConcurrency ?? 1)
+  // the argument read without a closure reader: a string
+  const text = (valBig) => state.mem ? state.mem.read(valBig) : decode(valBig)
+  provide('parseFloat', (valBig) => parseFloat(text(valBig)))
+  provide('parseInt', (valBig, radix) => parseInt(text(valBig), radix || undefined))
+  // Each scheduled callback by its id, as the thunk that cancels it. A
+  // callback runs as any closure the host holds (state.fnOf, read at the first
+  // fire: a timer the module's init arms runs before wrap sets it), then the
+  // microtasks drain and promises parked on async exports settle (afterTick).
+  const schedule = () => {
     const cancel = new Map()
-    let nextId = 1
-    if (envFns.has('setTimeout') && !imports.env.setTimeout) imports.env.setTimeout = (cbBig, delayMs, repeat) => {
-      const id = nextId++
-      // after each timer callback: drain microtasks + settle host promises
-      // parked on async exports (state.afterTick set by wrap for async modules)
-      let cb
-      const fire = () => { (cb ??= state.fnOf?.(cbBig))?.(); state.afterTick?.() }
-      if (repeat) {
-        const h = setInterval(fire, delayMs)
-        cancel.set(id, () => clearInterval(h))
-      } else {
-        const h = setTimeout(() => { cancel.delete(id); fire() }, delayMs)
-        cancel.set(id, () => clearTimeout(h))
-      }
-      return id
-    }
-    if (envFns.has('clearTimeout') && !imports.env.clearTimeout) imports.env.clearTimeout = (id) => {
-      const c = cancel.get(id)
-      if (c) { c(); cancel.delete(id) }
-      return 0
-    }
+    let next = 1
+    return { cancel, id: () => next++, clear: (id) => { cancel.get(id)?.(); cancel.delete(id); return 0 } }
   }
-  // requestAnimationFrame wiring: real rAF where the host has one; a 16 ms
-  // timer elsewhere (Node) so frame-driven modules still run — the callback
-  // receives a real timestamp either way.
-  if (envFns.has('requestAnimationFrame') || envFns.has('cancelAnimationFrame')) {
-    const cancel = new Map()
-    let nextId = 1
-    if (envFns.has('requestAnimationFrame') && !imports.env.requestAnimationFrame) imports.env.requestAnimationFrame = (cbBig) => {
-      const id = nextId++
-      const fire = (t) => { cancel.delete(id); state.fnOf?.(cbBig)(t); state.afterTick?.() }
-      const raf = globalThis.requestAnimationFrame
-      if (typeof raf === 'function') {
-        const h = raf(fire)
-        cancel.set(id, () => globalThis.cancelAnimationFrame?.(h))
-      } else {
-        const h = setTimeout(() => fire(typeof performance !== 'undefined' ? performance.now() : Date.now()), 16)
-        cancel.set(id, () => clearTimeout(h))
-      }
-      return id
-    }
-    if (envFns.has('cancelAnimationFrame') && !imports.env.cancelAnimationFrame) imports.env.cancelAnimationFrame = (id) => {
-      const c = cancel.get(id)
-      if (c) { c(); cancel.delete(id) }
-      return 0
-    }
-  }
+  const timers = schedule(), frames = schedule()
+  provide('setTimeout', (cbBig, delayMs, repeat) => {
+    const id = timers.id()
+    let cb
+    const fire = () => { (cb ??= state.fnOf?.(cbBig))?.(); state.afterTick?.() }
+    if (repeat) { const h = setInterval(fire, delayMs); timers.cancel.set(id, () => clearInterval(h)) }
+    else { const h = setTimeout(() => { timers.cancel.delete(id); fire() }, delayMs); timers.cancel.set(id, () => clearTimeout(h)) }
+    return id
+  })
+  provide('clearTimeout', timers.clear)
+  // the host's frames, or a 16 ms timer where it has none (Node): a timestamp either way
+  provide('requestAnimationFrame', (cbBig) => {
+    const id = frames.id(), raf = globalThis.requestAnimationFrame
+    const fire = (t) => { frames.cancel.delete(id); state.fnOf?.(cbBig)(t); state.afterTick?.() }
+    if (typeof raf === 'function') { const h = raf(fire); frames.cancel.set(id, () => globalThis.cancelAnimationFrame?.(h)) }
+    else { const h = setTimeout(() => fire(now()), 16); frames.cancel.set(id, () => clearTimeout(h)) }
+    return id
+  })
+  provide('cancelAnimationFrame', frames.clear)
 }
 
-// JS-side polyfills for `wasm:js-string` builtins. Used when the engine does
-// NOT honor `new WebAssembly.Module(buf, { builtins: ['js-string'] })` — older
-// V8, Hermes, JSC pre-18.4, etc. With native builtins the engine inlines
-// these calls to direct string accesses; with the polyfill each call is a
-// wasm→JS hop (still correct, just no boundary win).
+// The `wasm:js-string` builtins a module imports, as host functions. (A probe
+// for the engine's own builtins never succeeded: its module was malformed.)
 const JSS_POLYFILL = {
   length:     (s) => s.length,
   charCodeAt: (s, i) => s.charCodeAt(i),
 }
 
-// Probe once: does this engine honor the `{ builtins: ['js-string'] }` option
-// on WebAssembly.Module? Compiles a tiny module that imports a wasm:js-string
-// fn; if instantiation succeeds with no imports object, native is available.
-let jssNativeProbed = false
-let jssNativeSupported = false
-const jssProbeNative = () => {
-  if (jssNativeProbed) return jssNativeSupported
-  jssNativeProbed = true
-  try {
-    // Minimal module: (module (import "wasm:js-string" "length" (func (param externref) (result i32))))
-    const bytes = new Uint8Array([
-      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,        // header
-      0x01, 0x06, 0x01, 0x60, 0x01, 0x6f, 0x01, 0x7f,        // type: (externref)→i32
-      0x02, 0x18, 0x01,                                       // import section
-      0x0f, ...Array.from('wasm:js-string', c => c.charCodeAt(0)),             // mod name
-      0x06, ...Array.from('length', c => c.charCodeAt(0)),                     // name
-      0x00, 0x00,                                             // kind=func, type=0
-    ])
-    const mod = new WebAssembly.Module(bytes, { builtins: ['js-string'] })
-    new WebAssembly.Instance(mod, {})
-    jssNativeSupported = true
-  } catch {
-    jssNativeSupported = false
-  }
-  return jssNativeSupported
-}
-
 const buildImports = (mod, opts, state) => {
-  const { needsWasi, wasiImports } = linkWasi(mod, opts)
-  const imports = wasiImports || {}
+  const moduleImports = WebAssembly.Module.imports(mod)
+  const needsWasi = moduleImports.some(i => i.module === 'wasi_snapshot_preview1')
+  const imports = needsWasi ? wasi(opts) : {}
   if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
+  for (const imp of moduleImports)
+    if (imp.module === 'wasm:js-string' && JSS_POLYFILL[imp.name]) (imports['wasm:js-string'] ??= {})[imp.name] = JSS_POLYFILL[imp.name]
 
-  // `wasm:js-string` polyfills — only attach when native builtins aren't honored
-  // by this engine. With `{ builtins: ['js-string'] }` the import slots are
-  // already filled by the engine; supplying a JS function would error or just
-  // be ignored. Without native support, polyfill the names this module imports.
-  if (!jssProbeNative()) {
-    for (const imp of WebAssembly.Module.imports(mod)) {
-      if (imp.module === 'wasm:js-string' && JSS_POLYFILL[imp.name]) {
-        if (!imports['wasm:js-string']) imports['wasm:js-string'] = {}
-        imports['wasm:js-string'][imp.name] = JSS_POLYFILL[imp.name]
-      }
-    }
-  }
-
-  // Host imports: decode NaN-boxed args for JS and wrap JS returns back into jz
-  // values. Args/return ride i64 across the boundary (Step 2c) so V8 cannot
-  // canonicalize the NaN payload — convert BigInt↔f64 via reinterpret bits.
+  // The caller's host functions: arguments read as JS values, the result marshalled back
   if (opts.imports) for (const [modName, fns] of Object.entries(opts.imports)) {
     if (!imports[modName]) imports[modName] = {}
     for (const name of Object.getOwnPropertyNames(fns)) {
       const spec = fns[name]
       const fn = typeof spec === 'function' ? spec : (spec && typeof spec === 'object' ? spec.fn : null)
-      if (typeof fn === 'function')
-        imports[modName][name] = (...args) => {
-          // i64 carrier: args arrive as BigInt bits (box) or number; decode with integer
-          // ops — never materialize a box as f64. Return the i64 bits of the wrapped result.
-          const decoded = args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a, state.fnOf))
-          return hostRet(state, fn.call(fns, ...decoded))
-        }
+      if (typeof fn === 'function') imports[modName][name] = (...args) => hostRet(state, fn.call(fns, ...args.map(a => readHost(state, a))))
     }
   }
 
   installDefaultEnvImports(mod, imports, state)
-  // Shared memory: normalize (auto-wrap raw Memory), pass as import.
-  // Numeric opts.memory is a compile-time page count shorthand, not an import.
+  // A memory to share, enhanced; a module whose schemas would bind at other ids
+  // is refused before its start function writes into it. (A page count is the
+  // compiler's, not an import.)
   if (opts.memory instanceof WebAssembly.Memory) {
-    // Auto-wrap raw WebAssembly.Memory → enhanced memory
     if (!_enhanced.has(opts.memory)) opts.memory = memory(opts.memory)
-    // A module whose schemas would bind at other ids is rejected here, before
-    // its start function and data segments write into the memory it shares
     else mergeTables(opts.memory, moduleTables(mod))
     if (!imports.env) imports.env = {}
     imports.env.memory = opts.memory
   }
-  // Auto-imported host globals: provide as WebAssembly.Global wrapping NaN-boxed
-  // external refs. Carrier is i64 so the NaN payload survives V8's boundary
-  // canonicalization — wasm side reinterprets to f64 (see asF64 in src/ir.js).
-  for (const imp of WebAssembly.Module.imports(mod)) {
-    // A global the program names without declaring it (module/web.js): the
-    // host's value, or the absent marker whose read throws a ReferenceError.
+  // Host globals the module imports, boxed in i64 globals. One the program names
+  // without declaring it (module/web.js): the host's value, or the absent
+  // marker whose read throws a ReferenceError.
+  for (const imp of moduleImports) {
     if (imp.kind === 'global' && imp.module === 'global') {
       if (!imports.global) imports.global = {}
       if (imports.global[imp.name]) continue
@@ -2423,12 +1767,7 @@ const buildImports = (mod, opts, state) => {
       if (!(imp.name in globalThis)) bits = BigInt.asIntN(64, BigInt(TOMB_NAN))
       else {
         const host = globalThis[imp.name]
-        if (host === undefined) bits = UNDEF_NAN
-        else if (typeof host === 'number') bits = f64ToI64(host)
-        else {
-          let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
-          bits = ptr(11, 0, id)
-        }
+        bits = host === undefined ? UNDEF_NAN : typeof host === 'number' ? f64ToI64(host) : external(state.extMap, host)
       }
       imports.global[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, bits)
       continue
@@ -2436,17 +1775,14 @@ const buildImports = (mod, opts, state) => {
     if (imp.kind === 'global' && imp.module === 'env') {
       const host = globalThis[imp.name]
       if (!imports.env) imports.env = {}
-      // A global this host lacks (`self` in Node, `process` in a browser) is undefined: a
-      // library selects its global object by testing them, and the arm it does not take
-      // still names the value.
-      if (host === undefined) { imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, UNDEF_NAN); continue }
-      let id = state.extMap.indexOf(host); if (id === -1) { id = state.extMap.length; state.extMap.push(host) }
-      imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, ptr(11, 0, id))
+      // one this host lacks (`self` in Node) is undefined: a library tests for them
+      imports.env[imp.name] = new WebAssembly.Global({ value: 'i64', mutable: false }, host === undefined ? UNDEF_NAN : external(state.extMap, host))
     }
   }
+  // every host function throws into the module as a source throw does
   if (WebAssembly.Module.exports(mod).some(e => e.name === '__jz_throw_host')) {
     const wrapped = new Map()
-    for (const imp of WebAssembly.Module.imports(mod)) if (imp.kind === 'function') {
+    for (const imp of moduleImports) if (imp.kind === 'function') {
       const ns = imports[imp.module], fn = ns?.[imp.name]
       if (typeof fn !== 'function') continue
       let names = wrapped.get(ns)
@@ -2461,70 +1797,34 @@ const buildImports = (mod, opts, state) => {
 
 const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   if (needsWasi) imports._setMemory(inst.exports.memory)
-  // WASI reactor convention: a `host: 'wasi'` module ships its init as the standard
-  // `_initialize` export (never a wasm start section — WASI calls there would fire
-  // before _setMemory above). Called for ANY module exporting it, imports or not:
-  // a hostless wasi module (no console/Date use) still needs its init run. A JS-host
-  // module whose init reaches the host (a host global, a member of a host value)
-  // ships the same export, called below once its memory is readable.
-
-  // Drive WASM timer queue via JS scheduling (non-blocking, no-op if absent).
   attachTimers(inst)
-
-  // For shared memory, resolve memory from import; for own memory, from export.
+  // A module whose init reaches the host (a WASI one, one reading host values)
+  // exports it as `_initialize` (a start section would run before the memory
+  // is readable): called once the exports are wrapped.
   const rawMemory = opts.memory instanceof WebAssembly.Memory ? opts.memory : inst.exports.memory
-  const memSrc = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap: state.extMap }
-  const enhanced = memory(memSrc)
+  const src = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap: state.extMap }
+  const enhanced = memory(src)
   state.mem = enhanced
   state.raise = inst.exports.__jz_throw_host
   state.errTag = inst.exports.__jz_err
-  // Install closure decoding before init too: an initializer can call a host
-  // function which synchronously invokes a compiled callback.
-  const exports = wrap(memSrc, undefined, state)
+  const exports = wrap(src, state)   // before init: an initializer may call a host function that calls back
   state.flushPrint?.()
   if (inst.exports._initialize) {
     exports._initialize()
     enhanced._markBase?.()
   }
-  // A memoryless module keeps a minimal reader internally (state.mem, for decoding
-  // its SSO/atom boundary values), but the result's `.memory` stays null — the
-  // module genuinely exposes no linear memory. `memory(result)` still hands back
-  // a usable reader on demand.
+  // A memoryless module's reader stays internal: the result's `.memory` is null.
   return { exports, memory: enhanced?.scalar ? null : enhanced, instance: inst, module: mod }
 }
 
+export const toModule = (wasm) => wasm instanceof WebAssembly.Module ? wasm : new WebAssembly.Module(wasm)
+
 /**
- * Instantiate prebuilt jz wasm and wrap exports (WASI imports, rest-params,
- * host-object externrefs, default env.print/now wiring, optional shared memory).
- *
- * Compile-and-instantiate is the caller's job — pass already-compiled bytes:
- *   import { instantiate } from 'jz/interop'
- *   const { exports, memory } = instantiate(wasmBytes)
- *
- * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm  prebuilt wasm
- * @param {object} [opts]  host options: imports, memory, _interp, host-shape flags
+ * Instantiate prebuilt jz wasm: WASI and host imports linked, exports wrapped.
+ * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm
+ * @param {{ imports?, memory?, write?, read? }} [opts]
  * @returns {{ exports, memory, instance, module }}
  */
-/**
- * Compile wasm bytes to a `WebAssembly.Module`, preferring native
- * `wasm:js-string` builtins when the engine honors the option (V8 17+/Safari
- * 18.4+; older engines throw or ignore it — try-fallback handles both). A
- * `WebAssembly.Module` passed in is returned as-is. Factor it out so callers
- * can compile once and instantiate many times without re-validating the bytes
- * (`instantiate(toModule(wasm))` skips the per-call compile on hot loops).
- *
- * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm
- * @returns {WebAssembly.Module}
- */
-export const toModule = (wasm) => {
-  if (wasm instanceof WebAssembly.Module) return wasm
-  if (jssProbeNative()) {
-    try { return new WebAssembly.Module(wasm, { builtins: ['js-string'] }) }
-    catch { return new WebAssembly.Module(wasm) }
-  }
-  return new WebAssembly.Module(wasm)
-}
-
 export const instantiate = (wasm, opts = {}) => {
   const state = prepareInterop(opts)
   const mod = toModule(wasm)
