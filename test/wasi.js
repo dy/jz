@@ -1,12 +1,13 @@
 // WASI and console.log tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run } from './util.js'
+import { run, oracle } from './util.js'
 import { adaptI64, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
+import { format } from 'node:util'
 import { targetProfileFor } from '../src/session.js'
 import { ctx } from '../src/ctx.js'
 import { legalizeForTarget } from '../src/optimize/watr-tail.js'
@@ -131,13 +132,40 @@ test('host:js top-level console.log decodes after memory attaches', () => {
   const originalLog = console.log
   const logged = []
   try {
-    console.log = (...args) => logged.push(args.join(' '))
+    console.log = (...args) => logged.push(format(...args))   // as the host's console prints them
     jz(`console.log("boot", undefined, null); export let f = () => 1`, { host: 'js' })
   } finally {
     console.log = originalLog
   }
   is(logged.length, 1, `expected 1 console.log call, got ${logged.length}: ${JSON.stringify(logged)}`)
   is(logged[0], 'boot undefined null', `logged=${JSON.stringify(logged)}`)
+})
+
+// Under the JS host each argument reaches the host's console as the value it
+// is, which the console formats as it formats its own: an object, an array, a
+// collection, a typed array, -0, a format string, a BigInt, by the method called.
+test('host:js console prints each argument as the host console prints it', () => {
+  const src = `export const f = (x, o) => {
+    console.log(); console.log('')
+    console.log(-0, 0, NaN, 1e21, 0.1 + 0.2)
+    console.log(\`t=\${x}!\`, \`\${x}\${x}\`, 'a=' + x + ' b', true, false, null, undefined)
+    console.log('%s|%d', 'str', 7)
+    console.warn({ w: [1, 'two'] })
+    console.error('e', [o, { k: o }])
+    console.info(new Map([[1, { a: [] }]]), new Set(['s']))
+    const xs = [1, 2]
+    console.log(...xs, 'end')
+    console.debug(new Float64Array([1.5, -0]), [[1, [2, [3, [4]]]]], { s: 'q"uote', n: { m: { k: { deep: 1 } } } })
+    console.log(10n, () => 1)
+  }`
+  const capture = (f) => {
+    const out = [], saved = { ...console }
+    for (const m of ['log', 'warn', 'error', 'info', 'debug']) console[m] = (...a) => out.push(m + ' ' + format(...a))
+    try { f() } finally { Object.assign(console, saved) }
+    return out
+  }
+  const want = capture(() => oracle(src).f(3, { h: 1 }))
+  for (const optimize of levels(0, 2, 'size')) is(capture(() => jz(src, { host: 'js', optimize }).exports.f(3, { h: 1 })), want, `O${optimize}`)
 })
 
 // A print line is the host's to format: a template (or a `'a=' + x` chain)

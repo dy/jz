@@ -18,13 +18,14 @@
  *   Output runs natively on wasmtime/wasmer/deno and on browsers/Node via the
  *   WASI polyfill in wasi.js, auto-applied by the `jz()` runtime.
  *
- * console.log/warn/error: variadic. fd=1 for log, fd=2 for warn/error.
+ * console.log/warn/error: variadic. Under WASI fd=1 for log, fd=2 for
+ * warn/error; under the JS host the code names the host's console method.
  *
  * @module console
  */
 
-import { typed, asF64, asI64, carrierF64Narrow, mkPtrIR, temp, tempI32, freshId, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
-import { emit, bool, deps, reg, wat, hostImport } from '../src/bridge.js'
+import { typed, asF64, asI64, mkPtrIR, temp, tempI32, freshId, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
+import { emit, bool, deps, reg, wat, hostImport, storedValue } from '../src/bridge.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { exprType } from '../src/type.js'
 import { VAL } from '../src/reps.js'
@@ -273,9 +274,10 @@ const setupJsHost = (ctx) => {
 
   // Empty SSO string ("") for zero-arg console.log() — host reads as "".
   const emptyStr = () => mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
-  // A print slot is an observation site: a BOOL part rides the 0/1 carrier and
-  // must cross as its TRUE/FALSE atom so the host prints "true", not "1".
-  const asI64Bits = (e) => ['i64.reinterpret_f64', carrierF64Narrow(e, emit(e))]
+  // A print slot is an observation site: a part crosses as the value it is, a
+  // BOOL as its TRUE/FALSE atom (the host prints "true", not "1"), a raw
+  // BigInt boxed (the host prints 10n, not its bits as a number).
+  const asI64Bits = (e) => ['i64.reinterpret_f64', storedValue(e)]
 
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
@@ -314,11 +316,13 @@ const setupJsHost = (ctx) => {
     }
   }
 
+  // the host's console method by its code (interop.js env.print): log 1,
+  // error 2, warn 3, info 4, debug 5
   makeConsole('log', 1)
-  makeConsole('warn', 2)
   makeConsole('error', 2)
-  makeConsole('info', 1)   // spec/Node: info & debug are log-level -> stdout
-  makeConsole('debug', 1)
+  makeConsole('warn', 3)
+  makeConsole('info', 4)
+  makeConsole('debug', 5)
 
   reg('Date.now', [], () => {
     needNow()

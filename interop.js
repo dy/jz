@@ -2196,21 +2196,27 @@ const installDefaultEnvImports = (mod, imports, state) => {
     imports.env[name] = (...args) => hostRet(state, host(...args.map(a => state.mem ? state.mem.read(a, state.fnOf) : decode(a, state.fnOf))))
   }
   if (envFns.has('print') && !imports.env.print) {
-    const buf = ['', '', '']  // fd 0/1/2 line buffers
+    // A line per console method (module/console.js codes: log 1, error 2, warn
+    // 3, info 4, debug 5): the values of one call, each formatted by the host's
+    // console as it formats its own arguments; a part printed with no separator
+    // after it (a template's) joins the next as a string.
+    const METHODS = ['log', 'log', 'error', 'warn', 'info', 'debug']
+    const line = METHODS.map(() => []), joined = METHODS.map(() => false)
     const pending = []
     const flush = (fd) => {
-      const out = fd === 2 ? console.error : console.log
-      out(buf[fd])
-      buf[fd] = ''
+      const name = METHODS[fd] ?? 'log'
+      ;(console[name] ?? console.log)(...line[fd])
+      line[fd] = []
     }
     // env.print's val param is i64 to dodge V8's f64 NaN canonicalization
     // across the wasm→JS boundary (see module/console.js header). Reinterpret
     // the BigInt's bits as f64 here so mem.read sees the original NaN-box.
     const write = (valBig, fd, sep) => {
-      const v = readArgBits(state, valBig)
-      buf[fd] += String(v)
-      if (sep === 32) buf[fd] += ' '
-      else if (sep === 10) flush(fd)
+      const v = state.mem ? state.mem.read(valBig, state.fnOf) : decode(valBig, state.fnOf), args = line[fd]
+      if (joined[fd]) args[args.length - 1] = String(args[args.length - 1]) + String(v)
+      else args.push(v)
+      joined[fd] = sep === 0
+      if (sep === 10) flush(fd)
     }
     imports.env.print = (val, fd, sep) => {
       if (!state.mem) pending.push([val, fd, sep])

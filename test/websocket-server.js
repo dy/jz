@@ -53,7 +53,7 @@ const session = async (Connection, chunks, after) => {
   return hex(written)
 }
 
-// console.log/trace of the specimen go quiet: jz formats an object its own way.
+// console.log/trace of the specimen go quiet.
 const quiet = async (f) => {
   const { log, trace } = console
   console.log = console.trace = () => {}

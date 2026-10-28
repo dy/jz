@@ -232,8 +232,9 @@ ReferenceError JavaScript throws. So do `new C()` of a constructor a variable
 or parameter holds, `typeof` of a host function (`'function'`) and a for-of
 over a host iterable, which takes its iterator's values one per step. A member
 of `console`, `crypto`, `navigator` or `performance` that JZ does not
-implement (`crypto.subtle`) is the host's. The `warnings` sink names each such
-global; without a JS host it stays an error.
+implement (`crypto.subtle`) is the host's, and `console.log` hands each
+argument to the host's console as the value it is. The `warnings` sink names
+each such global; without a JS host it stays an error.
 
 ```js
 const { exports } = jz`
