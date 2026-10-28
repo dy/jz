@@ -1858,6 +1858,20 @@ literal's text and a jump's label prepare as data (`str`, `break`, `continue`
 handlers), so no name in them resolves. Interop maps the `@@name` well-known
 symbol keys to the host's symbols, and copies a typed array of the module's
 memory handed to a host call, copying the host's writes back after the call.
+A class the entry exports reaches the host as a class (class-dispatch.js
+`synthesizeClassExports`, `jz:class`, interop `hostClasses`): the factory is
+its constructor, and each member a class the host holds defines anew is an
+export `⟨tag⟩<letter><key>` of the receiver and the arguments, `if (r
+instanceof C) return r.m(…)`. Under that test flow-types refines `r` to C's
+one layout (a class no other derives from), so the access is a direct call,
+while the summary calls each class's member with its own receiver: exporting
+a class leaves its methods' receivers typed. A class deriving from an exported
+one the program does not export takes a host prototype of its own. Interop
+decodes an instance of a held class (`mem.handle`) as one host object per
+address whose fields read and write the slots live, passed back as the
+instance (`mem._handles`); the host holds it by address, so it pins the heap
+below it. A method on an instance whose class overrides it throws a
+TypeError: the member export dispatches on the instance.
 
 Coercion distinguishes absence from an own non-callable value through the
 existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and
@@ -5233,7 +5247,7 @@ forged pointers bypass these checks.
 Prebuilt Wasm must use matching compiler and interop revisions. The raw ABI has
 no independent version marker and is not frozen: NaN-box layouts, `_alloc`/`_clear`,
 the closure table, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
-`jz:errcls`, `jz:brand`, schema IDs,
+`jz:errcls`, `jz:brand`, `jz:class` and its members' exports, schema IDs,
 `memory.fieldContracts` and the `_`-prefixed exports are all current-toolchain
 policy, regression-tested in `test/abi.js` but not cross-release-stable. Use
 `jz/interop`'s `instantiate()` or pin the exact compiler version when

@@ -67,7 +67,7 @@ import { summarize, K, hasTag, tagOf, tagsOf, paramOf, UNKNOWN } from '../summar
 import { bitOf, NULL_BITS, ANY } from '../summary/kind.js'
 import { programPins } from '../optimize/watr-tail.js'
 import { stablePtrGlobalNames } from '../optimize/globals.js'
-import { synthesizeClassDispatchers } from './emit/class-dispatch.js'
+import { synthesizeClassDispatchers, synthesizeClassExports, hostClassTable } from './emit/class-dispatch.js'
 import { synthesizeToPrimitive } from './emit/to-primitive.js'
 import { synthesizeAccessorCall } from './emit/accessor-call.js'
 import { synthesizeToJSON } from './emit/to-json.js'
@@ -164,6 +164,7 @@ export function assemble(ast, profiler) {
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
   // Populate known function names + lookup map on ctx.func for direct call detection
   ctx.module.entryInit = ast   // the entry module's own statements, beside `moduleInits`
+  synthesizeClassExports()       // an exported class's members as exports of their own, before the census the dispatchers take
   synthesizeToPrimitive()        // OrdinaryToPrimitive for user toString/valueOf, called by the coercion kernels
   synthesizeAccessorCall()       // a literal's getter or setter, called by the enumeration and property kernels
   synthesizeToJSON()             // a value's toJSON, called by JSON.stringify's walker
@@ -1010,6 +1011,13 @@ export function assemble(ast, profiler) {
   const hostAbiExports = lateFacts.hostAbi
   if (hostAbiExports.length)
     sec.customs.push(['@custom', '"jz:hostabi"', `"${JSON.stringify(hostAbiExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
+  // jz:class: each class the host holds, which interop builds a constructor (or
+  // a prototype) of handles from: its export, name, tag, layout, base, and its
+  // members' and statics' keys (class-dispatch.js synthesizeClassExports).
+  const hostClasses = hostClassTable()
+  if (hostClasses)
+    sec.customs.push(['@custom', '"jz:class"', `"${JSON.stringify(hostClasses).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Named export aliases: export { name } or export { source as alias }. A `run`/`_start`
   // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (TargetProfile

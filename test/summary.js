@@ -920,7 +920,9 @@ test('summary codegen: a method called through an array of instances, an exporte
   // The `jz:brand` custom section names the exported class for interop: 2072 → 2084 B.
   // The constructor argument's array arm converts each element: 2084 → 2171 B.
   // The conditional arena cleanup adds 205 B and releases 80 B per call.
-  if (OPT_LEVEL === 2) ok(compile(cls).length < 2450, `bytes: ${compile(cls).length}`)
+  // The host constructs the exported class (`jz:class`): `process` is an export
+  // of its own too, so it stays a function where `run` inlined it: 2325 → 2603 B.
+  if (OPT_LEVEL === 2) ok(compile(cls).length < 2730, `bytes: ${compile(cls).length}`)
 })
 
 test('summary: a module global is the join of every store; the declaration\'s claim yields', () => {

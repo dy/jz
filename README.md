@@ -184,6 +184,7 @@ Where behaviour differs from JS:
 - **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver.
 - **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates. A use as a string counts through a copy, a call and a sum: `(s) => (s + s).slice(1)` takes a string.
 - **Host globals bind at instantiation.** A global the program names without declaring it is the host's value when the module is instantiated: one the host defines or replaces later is not seen.
+- **Exported classes dispatch on the instance.** A method taken from an exported class and called on an instance whose class overrides it (`Base.prototype.m.call(derived)`) throws a TypeError, and a host class extending an exported one constructs the exported class's instance.
 - **Host methods named like builtins.** A host object the host passes in runs its own method of any name, a string's or an array's included. Where that builtin returns a number, a boolean or a string (`charCodeAt`, `includes`, `toUpperCase`), the call converts the host method's result to that type: an `o.charCodeAt(1)` that returns `'7'` gives 7.
 
 </details>
@@ -215,6 +216,13 @@ instead of copying per call. A function the module returns, or stores on a host
 object, reaches the host as a function that calls back into it. A typed array
 the module hands a host object's method arrives as a copy the host may keep (a
 stream queues it); what the host writes into it during the call is copied back.
+
+A class the program exports is a class on the host: `new mod.C(…)` runs its
+constructor in the module and returns the instance, whose fields read and
+write the instance as it stands and whose methods, getters and setters run in
+the module; handed back to the module it is the instance itself, and the
+host's console prints it by its fields. An instance of a class deriving from it
+that the program does not export reaches the host with its own overrides.
 
 Under the JS host a name no declaration of the program binds is the host's
 global: `new Response(text)`, `x instanceof WritableStream` and

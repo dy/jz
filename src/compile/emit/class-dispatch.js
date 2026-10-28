@@ -314,6 +314,93 @@ export function synthesizeClassDispatchers() {
 }
 
 /**
+ * A class the entry exports (an export naming a class's factory) reaches a JS
+ * host as a constructor of handles on the module's instances (interop.js,
+ * `jz:class`); a class deriving from one that it does not export, as a
+ * prototype of its own for its instances the host is handed. Each member a
+ * class defines anew (none of its base's does the same) is an export of its
+ * own, synthesized before the dispatchers: a function of the receiver and the
+ * arguments that tests `r instanceof C`, under which the access is the class's
+ * function (flow-types.js refines the receiver to C's layout) while the
+ * summary calls each class's member with its own receiver. A static of an
+ * exported class is a function of the arguments that reads or calls it on the
+ * class. A private member (`#x`) stays inside. Each export is named
+ * `⟨tag⟩<letter><key>`: a member (m method, g getter, s setter) or a static (M
+ * method, V value); the tag is the class's export, or its brand where the host
+ * only holds its instances.
+ */
+export function synthesizeClassExports() {
+  ctx.transform.hostClasses = null
+  if (!classes()?.size || !ctx.transform.targetProfile.envImports) return
+  const byFactory = new Map(), byName = new Map(), pubOf = new Map()
+  for (const e of classes().values()) if (!e.nominal) byFactory.set(e.factory, e)
+  for (const f of ctx.funcs.list) byName.set(f.name, f)
+  for (const pub of Object.keys(ctx.funcs.exports)) {
+    const v = ctx.funcs.exports[pub], e = byFactory.get(v === true ? pub : v)
+    if (e && !pubOf.has(e.brand)) pubOf.set(e.brand, pub)
+  }
+  if (!pubOf.size) return
+  // a class the host holds: one the entry exports, or one deriving from such
+  const held = (e) => { for (let c = e; c; c = c.base ? classes().get(c.base) : null) if (pubOf.has(c.brand)) return true; return false }
+  const R = CLASS_T + 'r', A = (i) => CLASS_T + 'a' + i
+  const list = (xs) => xs.length === 0 ? null : xs.length === 1 ? xs[0] : [',', ...xs]
+  // the parameters a function of `fn`'s takes past its first `skip`: its arguments, the last a rest where fn has one
+  const paramsOf = (fn, skip) => {
+    const f = byName.get(fn)
+    if (!f) return { names: [A(0)], rest: A(0) }
+    const n = f.sig.params.length - skip, names = Array.from({ length: Math.max(0, n) }, (_, i) => A(i))
+    return { names, rest: f.rest != null && n > 0 ? names[n - 1] : null }
+  }
+  const argsOf = (p) => list(p.names.map(a => a === p.rest ? ['...', a] : a))
+  const hosted = []
+  for (const e of classes().values()) {
+    if (e.nominal || !held(e)) continue
+    const pub = pubOf.get(e.brand) ?? null, base = e.base ? classes().get(e.base) : null
+    const entry = { pub, brand: e.brand, name: e.name, base: base && held(base) ? base.brand : null, members: [], statics: [] }
+    const tag = pub ?? e.brand
+    const define = (into, key, kind, names, rest, access) => {
+      const name = CLASS_T + tag + CLASS_T + kind + key
+      if (byName.has(name)) return
+      const params = names.map(n => ({ name: n, type: 'f64' }))
+      const func = createFunction(name, ['{}', [';', access]], { params, results: ['f64'] }, false, null, rest)
+      ctx.funcs.list.push(func); byName.set(name, func)
+      ctx.funcs.exports[name] = name
+      into.push([key, kind])
+    }
+    const guarded = (access) => ['if', ['instanceof', R, e.brand], ['return', access]]
+    for (const [key, fn] of e.methods) {
+      if (key === 'constructor' || key[0] === '#' || key.startsWith(CLASS_T)) continue
+      // a member the base the host holds resolves to the same function is the base's
+      if (entry.base && base.methods.get(key) === fn) continue
+      if (key.endsWith(ACCESSOR_GET)) { const prop = key.slice(0, -ACCESSOR_GET.length); if (prop[0] !== '#') define(entry.members, prop, 'g', [R], null, guarded(['.', R, prop])); continue }
+      if (key.endsWith(ACCESSOR_SET)) { const prop = key.slice(0, -ACCESSOR_SET.length); if (prop[0] !== '#') define(entry.members, prop, 's', [R, A(0)], null, guarded(['=', ['.', R, prop], A(0)])); continue }
+      const p = paramsOf(fn, 1)
+      define(entry.members, key, 'm', [R, ...p.names], p.rest, guarded(['()', ['.', R, key], argsOf(p)]))
+    }
+    if (pub != null) for (const [key, kind] of e.statics ?? []) {
+      if (key[0] === '#') continue
+      if (kind === 'value') { define(entry.statics, key, 'V', [], null, ['return', ['.', e.factory, key]]); continue }
+      const p = paramsOf(e.factory + '$' + key, 0)
+      define(entry.statics, key, 'M', p.names, p.rest, ['return', ['()', ['.', e.factory, key], argsOf(p)]])
+    }
+    hosted.push(entry)
+  }
+  ctx.transform.hostClasses = hosted
+}
+
+/** `jz:class`, what the host builds each class it holds from: its export (null
+ *  for a class it only holds instances of), name, the tag its member exports
+ *  carry, layout, the position of its base in the table, and the members' and
+ *  statics' `[key, letter]`. Null when the entry exports no class. */
+export function hostClassTable() {
+  const hosted = ctx.transform.hostClasses
+  if (!hosted) return null
+  const at = new Map(hosted.map((h, i) => [h.brand, i]))
+  return hosted.map(h => ({ name: h.pub, cls: /^[A-Za-z_$][\w$]*$/.test(h.name) ? h.name : h.pub ?? 'Object',
+    tag: h.pub ?? h.brand, sid: sidOf(classes().get(h.brand)), base: h.base ? at.get(h.base) ?? null : null, members: h.members, statics: h.statics }))
+}
+
+/**
  * The class functions the program can reach: the dispatchers of the members
  * it calls, reads or stores, and each dispatcher's targets through them; a
  * class function a resolved site calls is reached as any direct callee.

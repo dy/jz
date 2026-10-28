@@ -497,7 +497,7 @@ export const memory = (src) => {
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
     if (wasmAlloc) { alloc = pinned(wasmAlloc); mem.alloc = alloc }
-    mem.reset = () => { mem._views = new WeakMap(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
+    mem.reset = () => { mem._views = new WeakMap(); mem._handles = new WeakMap(); mem._instances = new Map(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
     if (extMap) mem._extMap = extMap
     return mem
   }
@@ -571,7 +571,7 @@ export const memory = (src) => {
     if (v === null || v === undefined) return coerce(v)
     // A view the module left on a host object (`__ext_set`) is the module's own
     // storage, read back as itself.
-    if (typeof v === 'object') { const own = mem._views?.get(v); if (own !== undefined) return own }
+    if (typeof v === 'object') { const own = mem._views?.get(v) ?? mem._handles?.get(v); if (own !== undefined) return own }
     if (typeof v === 'number') return coerce(v)
     if (typeof v === 'boolean') return v ? TRUE_NAN : FALSE_NAN
     if (typeof v === 'string') return mem.String(v)
@@ -769,6 +769,40 @@ export const memory = (src) => {
     return liveSlots(off, 7).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)])
   }
 
+  // The value an object's slot `i` holds, by its field's compiled contract.
+  const slotValue = (sid, off, i, fnOf) => {
+    const rule = mem.fieldContracts[sid]?.[i], raw = dv().getBigInt64(off + i * 8, true)
+    if (rule?.[2] === 8) throw new TypeError('jz: field ' + mem.schemas[sid][i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
+    const value = rule?.[2] === 4 ? raw : mem.read(raw, fnOf)
+    return value != null && rule && (rule[0] & ~FIELD.NULLISH) === FIELD.BOOL ? !!value : value
+  }
+
+  // A class instance the host holds (an exported class's, wrap's `jz:class`):
+  // one host object per instance, of the class's prototype, whose fields read
+  // and write the instance's slots as they stand. Handed back to the module it
+  // is the instance (`wrapVal`). The host holds it by address, so the heap below
+  // it never moves, and a call that made it keeps what it allocated. A private
+  // field (`#x`) stays inside.
+  mem.handle = (p, proto, fnOf) => {
+    const off = offset(p), sid = aux(p)
+    const known = mem._instances.get(off)?.deref()
+    if (known !== undefined && mem._handles.get(known) === p) return known
+    const end = off + 8 * dv().getInt32(off - 4, true)
+    if (off >= mem._above) mem._held = true
+    else mem._pin = Math.max(mem._pin, end)
+    mem._pinAt = Math.max(mem._pinAt, end); mem._pinSet?.(mem._pinAt)
+    const obj = Object.create(proto), keys = mem.schemas[sid]
+    for (let i = 0; i < keys.length; i++) {
+      if (typeof keys[i] !== 'string' || keys[i][0] === '#') continue
+      Object.defineProperty(obj, keys[i], { enumerable: true, configurable: true,
+        get: () => slotValue(sid, off, i, fnOf),
+        set: (v) => { const b = bits(wrapField(sid, i, v)); dv().setBigInt64(off + i * 8, b, true) } })
+    }
+    mem._handles.set(obj, p)
+    mem._instances.set(off, new WeakRef(obj))
+    return obj
+  }
+
   // `fnOf` reads a closure as a JS function that calls it (wrap's per-instance
   // reader: a closure's table index names a function of the module that made it).
   mem.read = function(p, fnOf = null) {
@@ -795,7 +829,7 @@ export const memory = (src) => {
       if (a === 5) return true
     }
     if (t === 11 && mem._extMap) return mem._extMap[off]
-    if (t === 10 && fnOf) {
+    if (t === 10 && typeof fnOf === 'function') {
       if (off >= mem._above) { mem._held = true; mem._fns++; if (off >= 16) { mem._pinAt = Math.max(mem._pinAt, off + 8 * m.getInt32(off - 4, true)); mem._pinSet?.(mem._pinAt) } }
       return fnOf(p)
     }
@@ -863,17 +897,16 @@ export const memory = (src) => {
       if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a) && !mem.regexOfSid?.has(a)) return mem.read(mem.viewData(p), fnOf)
       const keys = mem.schemas[a], fns = mem._fns
       if (!keys) { if (off >= mem._above) mem._held = true; return p }
+      // an instance of a class the module exports: the host's handle on it
+      const proto = fnOf?.classes?.get(a)
+      if (proto) return mem.handle(p, proto, fnOf)
       const re = mem.regexOfSid?.get(a), obj = re ? new RegExp(re[0], re[1]) : {}
       // A deleted slot keeps undefined and a bit of the mask (layout.js
       // deletedSlotWat): from slot 31 on one sticky bit covers the undefined ones.
       const mask = mem.objDeleted ? mem.objDeleted(p) : 0
       for (let i = 0; i < keys.length; i++) {
-        const rule = mem.fieldContracts[a]?.[i], raw = m.getBigInt64(off + i * 8, true)
-        if (mask && (i < 31 ? (mask >>> i) & 1 : (mask >>> 31) & 1 && raw === UNDEF_NAN)) continue
-        if (rule?.[2] === 8) throw new TypeError('jz: field ' + keys[i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
-        let value = rule?.[2] === 4 ? raw : mem.read(raw, fnOf)
-        if (value != null && rule && (rule[0] & ~FIELD.NULLISH) === FIELD.BOOL) value = !!value
-        obj[keys[i]] = value
+        if (mask && (i < 31 ? (mask >>> i) & 1 : (mask >>> 31) & 1 && m.getBigInt64(off + i * 8, true) === UNDEF_NAN)) continue
+        obj[keys[i]] = slotValue(a, off, i, fnOf)
       }
       // A property stored outside the layout (through an alias, a destructuring
       // target, a helper's parameter) is in the object's dictionaries: its
@@ -950,7 +983,11 @@ export const memory = (src) => {
   // state healing. A JS-only memory has no runtime state and just rewinds. The
   // views the module left on host objects (`__ext_set`) name storage a reset frees.
   mem._views = new WeakMap()
-  mem.reset = () => { mem._views = new WeakMap(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
+  // A class instance the host holds (`mem.handle`): the instance's bits by its
+  // host object, and the host object by the instance's address.
+  mem._handles = new WeakMap()
+  mem._instances = new Map()
+  mem.reset = () => { mem._views = new WeakMap(); mem._handles = new WeakMap(); mem._instances = new Map(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
 
   // TypedArray constructors: memory.Float64Array(data), etc.
   // Bulk-copy path: when input is a TypedArray whose element type matches
@@ -1298,6 +1335,7 @@ export const wrap = (memSrc, inst, state) => {
   // it takes that object as `this`. Past the inline lanes a rest parameter
   // reads the whole argument list from an array.
   const callClosure = mem ? realInst.exports.__call_closure : null
+  const classBytes = mem && !mem.scalar ? customSection(mod, 'jz:class') : null
   const lanes = callClosure ? callClosure.length - 4 : 0
   const closureArg = (v) => typeof v === 'bigint' && !isBox(v) && mem.BigInt ? mem.BigInt(v) : numberArg(v)
   // The call keeps its heap as an export that releases nothing does (a closure
@@ -1317,7 +1355,7 @@ export const wrap = (memSrc, inst, state) => {
     } catch (error) {
       decodeThrown(error)
     } finally { if (mark) leave(mark, false, false, returned) }
-  }, { owners: new WeakMap() }) : null
+  }, { owners: new WeakMap(), classes: null }) : classBytes ? { owners: new WeakMap(), classes: null } : null
   if (state) state.fnOf = fnOf
   const exports = {}
   // A call that crosses as it is. Every parameter is a number on its own lane
@@ -1780,7 +1818,67 @@ export const wrap = (memSrc, inst, state) => {
     exports[name] = kindDispatch(name, cands.map(n => [exports[n], slotsOf(i64Exp.get(n))]))
     for (const n of ie.v) delete exports[n]
   }
+  if (classBytes) hostClasses(JSON.parse(td.decode(classBytes)), exports, fnOf, mem)
   return exports
+}
+
+// A class the module exports (`jz:class`, compile/emit/class-dispatch.js) is a
+// constructor of handles on the module's instances (`mem.handle`): called with
+// `new`, it runs the class's factory. A class deriving from one it exports is a
+// prototype for the instances of it the host is handed. A member a class
+// defines anew is an export of the module that takes the instance first, put
+// on the prototype, one it inherits its base's; a static, an export put on the
+// constructor. The module dispatches a method on the instance, so one reached
+// through a base's prototype on an instance whose class overrides it
+// (`Base.prototype.m.call(derived)`) is a TypeError. The member exports leave
+// the namespace.
+const INSPECT = Symbol.for('nodejs.util.inspect.custom'), MARK = '\uE003'
+const hostClasses = (table, exports, fnOf, mem) => {
+  const protos = [], ctors = []
+  const take = (name) => { const f = exports[name]; delete exports[name]; return f }
+  for (const c of table) {
+    const factory = c.name == null ? null : exports[c.name]
+    const C = typeof factory === 'function' ? { [c.cls]: function (...args) {
+      if (new.target === undefined) throw new TypeError(`Class constructor ${c.cls} cannot be invoked without 'new'`)
+      return factory(...args)
+    } }[c.cls] : null
+    const proto = C ? C.prototype : {}
+    const self = (o, key) => { if (!mem._handles.has(o)) throw new TypeError(`${c.cls}.prototype.${key} called on an object that is not an instance of ${c.cls}`); return o }
+    for (const [key, kind] of c.members) {
+      const f = take(MARK + c.tag + MARK + kind + key), had = Object.getOwnPropertyDescriptor(proto, key)
+      if (kind === 'm') {
+        const method = { [key](...args) {
+          if (self(this, key)[key] !== method) throw new TypeError(`${c.cls}.prototype.${key} called on an instance whose class overrides it`)
+          return f(this, ...args)
+        } }[key]
+        Object.defineProperty(proto, key, { value: method, writable: true, configurable: true })
+      } else Object.defineProperty(proto, key, { configurable: true,
+        get: kind === 'g' ? function () { return f(self(this, key)) } : had?.get,
+        set: kind === 's' ? function (v) { f(self(this, key), v) } : had?.set })
+    }
+    // node prints an instance's fields as they stand, not as accessors: a
+    // snapshot of the class (its prototype below one that hides this printer)
+    const snapshot = Object.create(proto, { [INSPECT]: { value: undefined } })
+    Object.defineProperty(proto, INSPECT, { configurable: true, value(depth, options, inspect) {
+      const o = Object.create(snapshot)
+      for (const k of Object.keys(this)) o[k] = this[k]
+      return inspect ? inspect(o, options) : o
+    } })
+    if (C) for (const [key, kind] of c.statics) {
+      const f = take(MARK + c.tag + MARK + kind + key)
+      if (key === 'prototype') continue
+      if (kind === 'M') Object.defineProperty(C, key, { value: { [key](...args) { return f(...args) } }[key], writable: true, configurable: true })
+      else Object.defineProperty(C, key, { get: () => f(), enumerable: true, configurable: true })
+    }
+    if (c.sid != null) (fnOf.classes ??= new Map()).set(c.sid, proto)
+    if (C) exports[c.name] = C
+    protos.push(proto); ctors.push(C)
+  }
+  table.forEach((c, i) => {
+    if (c.base == null) return
+    Object.setPrototypeOf(protos[i], protos[c.base])
+    if (ctors[i] && ctors[c.base]) Object.setPrototypeOf(ctors[i], ctors[c.base])
+  })
 }
 
 // ── Typed slots: which of an export's variants an argument list fits ────────

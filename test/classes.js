@@ -537,11 +537,14 @@ test('class struct: an instance holds its fields alone; a method is a function o
   const { f, P } = jz(src).exports
   is(f(4), 30)
   is(jz(src + `\nexport const keys = () => Object.keys(new P(1, 2)).join()`).exports.keys(), 'x,y', 'no method slots')
-  if (!onWasi()) is(JSON.stringify(P(3, 4)), '{"x":3,"y":4}', 'the host sees the fields alone')
+  if (!onWasi()) is(JSON.stringify(new P(3, 4)), '{"x":3,"y":4}', 'the host sees the fields alone')
   // level 2: below it the member's dispatcher, dead here, is not shaken
   if (OPT_LEVEL === 2) {
+    const inside = src.replace('export class', 'class')
     ok(!/__dyn_get|__hash|__str_concat|__closure/.test(jz.compile(src, { wat: true })), 'a direct call: no dynamic read, no closure, no string path')
-    ok(jz.compile(src).length < 1200, `the struct's size class (${jz.compile(src).length} B)`)
+    ok(jz.compile(inside).length < 1200, `the struct's size class (${jz.compile(inside).length} B)`)
+    // exported, the class takes the host's view of its member: one export of the method
+    ok(jz.compile(src).length < 1300, `the exported struct's size class (${jz.compile(src).length} B)`)
   }
 })
 

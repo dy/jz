@@ -19,7 +19,7 @@
 
 import { ctx, getFactStore } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { isReassigned, TYPEOF, typeofPredicate, isNumberGuard, walkAst, MUTATE_OPS } from '../ast.js'
+import { isReassigned, TYPEOF, typeofPredicate, isNumberGuard, walkAst, MUTATE_OPS, isBrand } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 
@@ -109,8 +109,22 @@ export function extractRefinements(cond, out, sense = true) {
   if (op === 'instanceof' && sense && typeof cond[1] === 'string' && typeof cond[2] === 'string') {
     const val = instanceofRefinement(cond[2])
     if (val != null) { mergeRefinement(out, cond[1], { val }); return out }
+    // `x instanceof C` of a class lowered to a schema: x carries C's schema id or
+    // a deriving class's (class-dispatch.js classInstanceof). A class no other
+    // derives from is one layout: x reads as an instance of it, its members
+    // direct calls, its fields slots.
+    const sid = classLayout(cond[2])
+    if (sid != null) mergeRefinement(out, cond[1], { val: VAL.OBJECT, schemaId: sid, notNullish: true })
   }
   return out
+}
+
+/** The one layout a class brand's instances have, or null: the class has a schema and no class derives from it. */
+function classLayout(brand) {
+  const entry = isBrand(brand) ? ctx.transform.classes?.get(brand) : null
+  if (!entry || entry.nominal) return null
+  for (const e of ctx.transform.classes.values()) if (e.base === brand) return null
+  return ctx.schema.sidOfBrand(brand)
 }
 
 /** The kinds the type tests of a condition assert on its `sense` arm (`typeof

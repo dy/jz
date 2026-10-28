@@ -401,7 +401,7 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
   for (const [, , mbody] of methods) assignedThisFields(mbody, assigned)
   for (const f of assigned) if (!own.includes(f)) own.push(f)
   const allFields = base ? [...base.fields, ...own.filter(f => !base.fields.includes(f))] : own
-  const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls, init: methodFn(cls, INIT), fields: allFields, methods: new Map(base?.methods), base: base?.brand ?? null, staticAccessors: new Set(base?.staticAccessors) }
+  const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls, init: methodFn(cls, INIT), fields: allFields, methods: new Map(base?.methods), base: base?.brand ?? null, staticAccessors: new Set(base?.staticAccessors), statics: [] }
   if (nativeCollection) { entry.nativeCollection = nativeCollection; entry.nominal = CLASS_T + 'instance' + id }
   // An own descriptor replaces the inherited descriptor as a whole. Clear
   // siblings before adding this class's methods so its own getter/setter pair stays paired.
@@ -509,8 +509,12 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
     ['let', ['=', self, lit]], ...install,
     ['()', entry.init, [',', self, ...fargs]],
     ['return', self]]]]
+  // The static members the host reads off an exported class (compile/emit/class-dispatch.js
+  // synthesizeClassExports): a method, or a value read where the host reads it (a field, a getter).
   for (const [sname, value, kind] of statics) {
     if (kind === true && (sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET))) entry.staticAccessors.add(sname)
+    if (kind !== 'block' && !sname.endsWith(ACCESSOR_SET)) entry.statics.push(sname.endsWith(ACCESSOR_GET) && kind === true
+      ? [sname.slice(0, -ACCESSOR_GET.length), 'value'] : [sname, kind ? 'method' : 'value'])
     if (kind === 'block') {
       let b = transform(renameThis(value, cls))
       if (Array.isArray(b) && b[0] === '{}') b = b[1]
