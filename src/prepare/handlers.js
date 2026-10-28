@@ -3021,6 +3021,31 @@ function defFunc(name, node) {
   return true
 }
 
+/** An export of a value binding (`export const K = 'abc'`, `export let n`,
+ *  `export default 42`) reads as the binding's current value, as an ES
+ *  module's live binding does: a function exported under its name returns
+ *  it, crossing the boundary as any result does, and interop reads that
+ *  function as an accessor of the exports object (`jz:values`). The host
+ *  cannot write the binding, as an importer cannot. Run once the entry
+ *  module is prepared, when every export's target is known. */
+export function defineValueExports() {
+  const getters = new Map()
+  for (const name of Object.keys(ctx.funcs.exports)) {
+    const val = ctx.funcs.exports[name], target = val === true ? name : val
+    // (a numeric host constant re-exported, `import { PI } from 'math'; export { PI }`, is its literal)
+    if (typeof target !== 'string' || hasFunc(target) ||
+        !ctx.scope.globals.has(target) && ctx.scope.hostConsts?.[target] === undefined) continue
+    let getter = getters.get(target)
+    if (getter == null) {
+      getter = `${T}get$${target}`
+      if (!defFunc(getter, prep(['=>', ['()', null], target]))) continue
+      getters.set(target, getter)
+    }
+    ctx.funcs.exports[name] = getter
+    ;(ctx.funcs.valueExports ??= new Set()).add(name)
+  }
+}
+
 // Multi-value threshold: ≤8 elements = tuple (multi-value return), >8 = memory array
 const MAX_MULTI = 8
 

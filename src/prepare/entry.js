@@ -36,7 +36,7 @@ import { INTRINSIC_VARIADIC } from '../builtin-signatures.js'
 import { TIMER_NAMES, includeForCallableValue, includeForTimerRuntime, includeModule } from '../autoload.js'
 import { T, MUTATE_OPS, walkAst } from '../ast.js'
 import { MUTATING_ARRAY_METHODS } from './const-fold.js'
-import { prep } from './handlers.js'
+import { defineValueExports, prep } from './handlers.js'
 import { scanReassignedTopLevel } from './ident-purity.js'
 import { hoistIndexedConstLiterals, seedStaticGlobalAssignments } from './literals.js'
 import { validateCoalesceMixing } from './module-resolve.js'
@@ -214,6 +214,7 @@ export default function prepare(node) {
   prepState.reassignedTopLevel = scanReassignedTopLevel(node)
   let ast = prep(node)
   settleModules(prep)
+  defineValueExports()
   // A program that makes a resizable buffer (ctx.features.resizable) cannot tell
   // from `new Uint8Array(x)` whether x is one, whose view tracks it: each such
   // construction reads as `new Uint8Array(x, 0)`, the same in JS, which views a
@@ -276,7 +277,8 @@ export default function prepare(node) {
     // is invisible to this scan, ctx.closure.table never gets set up, and the
     // importing module's `T.x2(n)` call reaches emit with no table to index into.
     if (!needs && ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) if (visit(mi)) { needs = true; break }
-    if (!needs) for (const f of ctx.funcs.list) if (f.body && visit(f.body)) { needs = true; break }
+    // (an arrow's expression body may be the name alone: `() => f`)
+    if (!needs) for (const f of ctx.funcs.list) if (f.body && (typeof f.body === 'string' ? isFuncValueName(f.body) : visit(f.body))) { needs = true; break }
     if (!needs && ctx.module.initFacts?.hasFuncValue) needs = true
     if (needs) includeForCallableValue()
   }

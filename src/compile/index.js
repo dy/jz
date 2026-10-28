@@ -1019,6 +1019,12 @@ export function assemble(ast, profiler) {
   if (hostClasses)
     sec.customs.push(['@custom', '"jz:class"', `"${JSON.stringify(hostClasses).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
+  // jz:values: the exports of value bindings, each a function returning the
+  // binding's current value (prepare defineValueExports): interop reads it as
+  // an accessor of the exports object, a live binding the host cannot write.
+  if (ctx.funcs.valueExports?.size)
+    sec.customs.push(['@custom', '"jz:values"', `"${JSON.stringify([...ctx.funcs.valueExports]).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
   // Named export aliases: export { name } or export { source as alias }. A `run`/`_start`
   // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (TargetProfile
   // stage, src/optimize/watr-tail.js) rewrites it into the () -> () wrapper afterward, keyed

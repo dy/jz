@@ -1096,9 +1096,10 @@ test('inferModuleGlobalValTypes: a global written only inside a closure resolves
   is(ex.getFirst(), 'h', 'closure-proven global reads correctly')
 })
 
-test('module global kinds: an exported let keeps its kind; the host stores a number through its export', () => {
-  // The wasm JS API stores only a number into an f64 global, which a number global
-  // takes; no other jz kind has a host value to store (src/summary).
+test('module global kinds: an exported let keeps its kind; the host reads it and cannot store into it', () => {
+  // An exported binding reads as a getter of the exports object (interop.js
+  // jz:values), as an ES module's live binding: the program's stores alone
+  // decide its kind.
   const src = `
     export let g = undefined
     export let setG = () => { g = 'x' }
@@ -1109,8 +1110,9 @@ test('module global kinds: an exported let keeps its kind; the host stores a num
   ex.setG()
   is(ex.getFirst(), 'x')
   const num = run(`export let n = 0; export let bump = () => { n = n + 1 }; export let twice = () => n * 2`)
-  num.bump(); is(num.twice(), 2)
-  num.n.value = 20; is(num.twice(), 40, 'the host stores a number')
+  num.bump(); is([num.n, num.twice()], [1, 2])
+  throws(() => { num.n = 20 }, TypeError, 'the host cannot store into it')
+  is([num.n, num.twice()], [1, 2], 'the binding stands')
 })
 
 // A literal term must not force proven integer index arithmetic through f64.
@@ -3254,8 +3256,9 @@ test('Map summary: soundness carve-out — an unregistered key still identity-co
 
 test('Map summary: numeric addition retains missing-key semantics and escaping fallback', () => {
   if (onKernel()) return  // white-box: ctx.types.nameEscapes (see section note above)
+  // (an exported Map is read by the host, through its getter: it escapes)
   const nonEscaping = `
-    export let OPCODE = new Map(), code = 0
+    let OPCODE = new Map(), code = 0
     export let register = (nm) => { OPCODE.set(nm, code++) }
     export let bigOp = (nm) => OPCODE.get(nm) + 1
     register('add')

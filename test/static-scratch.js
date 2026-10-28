@@ -144,8 +144,8 @@ test('static scratch: an exported array keeps its stores', () => {
     const m = run(src, { optimize }), host = oracle(src)
     for (const x of FLOATS) {
       is(m.f(x), host.f(x), `low word of ${x} at ${optimize}`)
-      // The export is the array's address; the host reads the elements there.
-      const F = new Float64Array(m.memory.buffer, m.F.value, 2)
+      // The export reads as the array, a view of the module's memory.
+      const F = m.F
       is(F[0], host.F[0], `the array's first element after f(${x}) at ${optimize}`)
       is(F[1], host.F[1], `the array's second element after f(${x}) at ${optimize}`)
     }

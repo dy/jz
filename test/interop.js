@@ -1322,3 +1322,32 @@ test('interop: memoryless Symbol codecs retain identity and reject numeric field
     is(generic.read(generic.Object({value:host})).value,host,'an unknown field admits Symbol identity')
   }
 })
+
+// An export that is not a function reads as the binding's value, a live
+// binding the host cannot assign (an ES module namespace's), where it was a
+// raw WebAssembly.Global of the module's own representation (a NaN-box, an
+// i32 address, a boolean's 1, a BigInt's raw bits).
+test('interop: value exports read as the binding, live and read-only', () => {
+  const src = `import { PI } from 'math'
+    export const K = 'abc', N = 42, F = 1.5, B = true, U = undefined, Z = null, BI = 5n
+    export const O = { a: 1, b: 'x' }, A = [1, 'two'], T = new Float64Array([1, 2])
+    export let n = 0, s = 'one', big = 1n, later
+    export const bump = () => { n++; s += '!'; big *= 3n; later = [n]; return n }
+    let f = (x) => x * 2
+    export let g = f
+    export { n as count, PI }
+    export default { tag: 'd' }`
+  const host = { math: { PI: Math.PI } }
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    for (const e of [jz(src, { optimize, imports: host }).exports, interop.instantiate(compile(src, { optimize, imports: host }), { imports: host }).exports]) {
+      is(e.K, 'abc'); is(e.N, 42); is(e.F, 1.5); is(e.B, true); is(e.U, undefined); is(e.Z, null); is(e.BI, 5n)
+      is(e.O, { a: 1, b: 'x' }); is(e.A, [1, 'two']); ok(e.T instanceof Float64Array); is([...e.T], [1, 2])
+      is(e.g(21), 42); is(e.PI, Math.PI); is(e.default, { tag: 'd' })
+      is([e.n, e.count, e.s, e.big, e.later], [0, 0, 'one', 1n, undefined])
+      e.bump()
+      is([e.n, e.count, e.s, e.big, e.later], [1, 1, 'one!', 3n, [1]], `live after a call at ${optimize}`)
+      throws(() => { 'use strict'; e.n = 5 }, TypeError)
+      is(e.n, 1)
+    }
+  }
+})

@@ -6,7 +6,7 @@
 // name with a second write, a write the walk cannot value, a read that can come
 // first, or an export the host can store to keeps its global.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 
 // These probes inspect the in-process summary; runtime checks still use the matrix target.
 import { ctx } from '../src/ctx.js'
@@ -106,14 +106,17 @@ test('held number: a var a read can find unassigned keeps its global', () => {
   }
 })
 
-test('held number: an exported name reads what the host stored', () => {
+// An exported binding is a live binding the host reads and cannot assign, as
+// an importer of an ES module (interop.js jz:values): the module's value stands.
+test('held number: an exported name reads as the binding, which the host cannot store into', () => {
   if (onWasi()) return
-  const src = 'export let K = 1\nexport let get = () => K + 1'
-  is(folded(src, 'K'), null, 'K does not fold')
+  const src = 'export let K = 1\nexport let get = () => K + 1\nexport let set = (v) => { K = v }'
   for (const optimize of levels(0, 2, 3)) {
     const m = run(src, { optimize })
-    is(m.get(), 2, `before the host's store at ${optimize}`)
-    m.K.value = 7
-    is(m.get(), 8, `after the host's store at ${optimize}`)
+    is([m.K, m.get()], [1, 2], `before a store at ${optimize}`)
+    throws(() => { m.K = 7 }, TypeError, `the host's store is refused at ${optimize}`)
+    is([m.K, m.get()], [1, 2], `after the host's refused store at ${optimize}`)
+    m.set(7)
+    is([m.K, m.get()], [7, 8], `after the module's store at ${optimize}`)
   }
 })

@@ -1874,6 +1874,12 @@ for-of or spread over such a value hands an EXTERNAL source to `__ext_iter`,
 whose host view pulls the iterator a value per step as the index loop reads
 its length, then its element (collection.js `__iter_arr`).
 
+An export of a value binding is a function returning the binding
+(`\uE000get$name`, prepare `defineValueExports`), listed in `jz:values`, which
+interop defines as a getter of the exports object: the host reads the live
+binding as any result, and the global is no longer a Wasm export it could
+write.
+
 A class the entry exports reaches the host as a class (class-dispatch.js
 `synthesizeClassExports`, `jz:class`, interop `hostClasses`): the factory is
 its constructor, and each member a class the host holds defines anew is an
@@ -5265,7 +5271,8 @@ forged pointers bypass these checks.
 Prebuilt Wasm must use matching compiler and interop revisions. The raw ABI has
 no independent version marker and is not frozen: NaN-box layouts, `_alloc`/`_clear`,
 the closure table, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
-`jz:errcls`, `jz:brand`, `jz:class` and its members' exports, schema IDs,
+`jz:errcls`, `jz:brand`, `jz:class` and its members' exports, `jz:values`
+and its getters, schema IDs,
 `memory.fieldContracts` and the `_`-prefixed exports are all current-toolchain
 policy, regression-tested in `test/abi.js` but not cross-release-stable. Use
 `jz/interop`'s `instantiate()` or pin the exact compiler version when

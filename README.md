@@ -206,6 +206,12 @@ the module; handed back to the module it is the instance itself, and the
 host's console prints it by its fields. An instance of a class deriving from it
 that the program does not export reaches the host with its own overrides.
 
+An export that is not a function reads as the binding's current value, as an
+ES module's live binding does: `export let n` reads what the module last
+assigned to it, and the host cannot assign it (strict code throws a
+TypeError). The value crosses as a function's result does: an object or an
+array is a fresh copy at each read, a typed array a view.
+
 Under the JS host a name no declaration of the program binds is the host's
 global: `new Response(text)`, `x instanceof WritableStream` and
 `typeof WebSocket` ask the host, and reading a global the host lacks throws the

@@ -105,6 +105,7 @@ function createFunctions() {
     map: new Map(),
     multiProp: new Map(), // obj.prop → lifted implementations, including reassignments
     exports: Object.create(null), // export names may shadow Object.prototype
+    valueExports: null, // export names of value bindings, each read through its getter (prepare defineValueExports)
     globalDevirt: null,
     builtinWrapped: null,   // a builtin's value wrapper (prepare/entry.js) → the builtin key it forwards to
     builtinMethodReaders: null, // property name → prepared native method-value reader and receiver sites

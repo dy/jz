@@ -852,6 +852,15 @@ export const wrap = (src, state) => {
   const release = jsonSection(mod, 'jz:release') || {}, number = set(release.number)
   const releases = set([...release.release ?? [], ...number]), flagged = set(release.flag)
   const hostReleased = set([...release.host ?? [], ...release.ask ?? [], ...number]), numberResult = number
+  // jz:values: the exports of value bindings (`export const K = 'abc'`,
+  // `export let n`), each a function returning the binding's current value,
+  // read as an accessor: a live binding the host cannot write, as an ES module's
+  const values = jsonSection(mod, 'jz:values')
+  const liveValues = (exports) => {
+    if (values) for (const name of values)
+      if (typeof exports[name] === 'function') Object.defineProperty(exports, name, { get: exports[name], enumerable: true, configurable: false })
+    return exports
+  }
   const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
   const compact = realInst.exports.__compact, pinGlobal = realInst.exports.__pin, cost = realInst.exports.__g_cost, viewed = realInst.exports.__viewed
   const mem = memory(src)
@@ -1269,7 +1278,7 @@ export const wrap = (src, state) => {
       }
       exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod ? crossing(fn, general, result, always, idle, hostAbi?.skip) : general
     }
-    return exports
+    return liveValues(exports)
   }
   const memWrapVal = mem.wrapVal.bind(mem)
   // A rest element: a handle as it is, a BigInt boxed where the export's
@@ -1327,7 +1336,7 @@ export const wrap = (src, state) => {
     for (const n of ie.v) delete exports[n]
   }
   if (classes) hostClasses(classes, exports, fnOf, mem)
-  return exports
+  return liveValues(exports)
 }
 
 // A class the module exports (`jz:class`, compile/emit/class-dispatch.js) is a

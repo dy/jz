@@ -321,7 +321,7 @@ test('clearTimeout: prevents callback', async () => {
   `)
   is(result.exports.start(), 1)
   await new Promise(r => setTimeout(r, 50))
-  is(result.exports.fired.value, 0)
+  is(result.exports.fired, 0)
 })
 
 test('setInterval: returns timer ID', () => {
@@ -355,11 +355,11 @@ test('clearInterval: stops interval', async () => {
   try {
     is(result.exports.start(), 1)
     const deadline = Date.now() + 5000
-    while (result.exports.count.value < 3 && Date.now() < deadline)
+    while (result.exports.count < 3 && Date.now() < deadline)
       await new Promise(r => setTimeout(r, 10))
-    is(result.exports.count.value, 3)
+    is(result.exports.count, 3)
     await new Promise(r => setTimeout(r, 50))
-    is(result.exports.count.value, 3, 'no callbacks after clearInterval')
+    is(result.exports.count, 3, 'no callbacks after clearInterval')
   } finally { result.exports.stop() }
 })
 
@@ -374,7 +374,7 @@ test('timer callback captures outer scope', async () => {
   `)
   is(result.exports.start(), 1)
   await new Promise(r => setTimeout(r, 50))
-  is(result.exports.result.value, 42)
+  is(result.exports.result, 42)
 })
 
 test('multiple simultaneous timers', async () => {
@@ -388,8 +388,8 @@ test('multiple simultaneous timers', async () => {
   `)
   is(result.exports.start(), 1)
   await new Promise(r => setTimeout(r, 50))
-  is(result.exports.a.value, 1)
-  is(result.exports.b.value, 2)
+  is(result.exports.a, 1)
+  is(result.exports.b, 2)
 })
 
 // host: 'js' setTimeout/setInterval lower to env imports + the __call_closure

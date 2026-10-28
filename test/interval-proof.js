@@ -95,11 +95,8 @@ test('interval proof: module element hulls reject public views and module aliase
     'const DX=new Int32Array([1,0,-1,0]);export function table(){return DX}',
   ]){
     const src=exported+walk, got=jz(src,{optimize}), want=oracle(src)
-    const key=want.DX?'DX':'table', read=()=>{
-      if(typeof got.exports[key]==='function')return got.exports[key]()
-      const v=got.exports[key].value
-      return Number.isInteger(v)?new Int32Array(got.memory.buffer,v,4):got.memory.read(v)
-    }
+    // (an exported binding reads as its value, a view of the module's memory)
+    const key=want.DX?'DX':'table', read=()=>typeof got.exports[key]==='function'?got.exports[key]():got.exports[key]
     for(const n of [1,1,2147483647,-2147483648,0,1]){
       read()[0]=n
       ;(typeof want[key]==='function'?want[key]():want[key])[0]=n
