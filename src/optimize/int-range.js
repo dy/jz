@@ -425,9 +425,35 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     // (a store of a wider element than the load reads gives the bytes the load's kind reads: any)
     return h.lo >= range[0] && h.hi <= range[1] ? h : null
   }
-  for (const start of feeds.keys()) {
-    const seen = new Set(), stack = [...feeds.get(start)]
-    while (stack.length) { const x = stack.pop(); if (x === start) { cyclic.add(start); break } if (seen.has(x)) continue; seen.add(x); for (const y of feeds.get(x) ?? []) stack.push(y) }
+  // A local is on a cycle where it feeds itself or shares a strong component of
+  // the feeds with another: the components, taken once (Tarjan, iteratively).
+  {
+    const index = new Map(), low = new Map(), onStack = new Set(), comp = []
+    let next = 0
+    for (const start of feeds.keys()) {
+      if (index.has(start)) continue
+      const frames = [[start, [...feeds.get(start)], 0]]
+      index.set(start, next); low.set(start, next++); comp.push(start); onStack.add(start)
+      while (frames.length) {
+        const fr = frames[frames.length - 1], x = fr[0]
+        if (fr[2] < fr[1].length) {
+          const y = fr[1][fr[2]++]
+          if (y === x) cyclic.add(x)
+          if (!index.has(y)) {
+            index.set(y, next); low.set(y, next++); comp.push(y); onStack.add(y)
+            frames.push([y, [...(feeds.get(y) ?? [])], 0])
+          } else if (onStack.has(y) && index.get(y) < low.get(x)) low.set(x, index.get(y))
+          continue
+        }
+        frames.pop()
+        if (frames.length) { const up = frames[frames.length - 1][0]; if (low.get(x) < low.get(up)) low.set(up, low.get(x)) }
+        if (low.get(x) !== index.get(x)) continue
+        const members = []
+        let m
+        do { m = comp.pop(); onStack.delete(m); members.push(m) } while (m !== x)
+        if (members.length > 1) for (const v of members) cyclic.add(v)
+      }
+    }
   }
   const av = new Map(), writes = new Map(), reads = new Map(), loops = new Map(), entry = new Map()
   const labels = [], stack = []

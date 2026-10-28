@@ -1304,28 +1304,28 @@ function writesOutsideLoop(root, exclude, name) {
   return false
 }
 
-/** The unique `let`/`const NAME = initExpr` declarator's initializer,
+/** Each name's unique `let`/`const NAME = initExpr` declarator's initializer,
  *  searched anywhere in `root` OUTSIDE `exclude`'s subtree — the
  *  co-induction candidate's OWN declaration (temporal-dead-zone scoping in
  *  valid JS guarantees it textually precedes any use, so no separate
- *  position check is needed). Returns null for zero OR more-than-one match
- *  (ambiguous — possibly a real shadow in a disjoint block; this compiler's
- *  flat per-function local model makes that rare, but bail rather than
- *  guess) and for an uninitialized `let NAME` (nothing to prove a range
- *  from). */
-function findOuterDeclInit(root, exclude, name) {
-  let found, count = 0
+ *  position check is needed). Null for more than one match (ambiguous —
+ *  possibly a real shadow in a disjoint block; this compiler's flat
+ *  per-function local model makes that rare, but bail rather than guess);
+ *  an uninitialized `let NAME` is no match (nothing to prove a range from).
+ *  One walk answers every name a loop asks about. */
+function outerDeclInits(root, exclude) {
+  const inits = new Map()
   ;(function walk(n) {
     if (!Array.isArray(n) || n === exclude) return
     if (n[0] === 'let' || n[0] === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
-        if (Array.isArray(d) && d[0] === '=' && d[1] === name) { found = d[2]; count++ }
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') inits.set(d[1], inits.has(d[1]) ? null : d[2])
       }
     }
     for (let i = 1; i < n.length; i++) walk(n[i])
   })(root)
-  return count === 1 ? found : null
+  return inits
 }
 
 // Find an initializer on the lexical path to this loop, in the current
@@ -1421,14 +1421,35 @@ function assignedStepRange(node, name, rangeOf, write) {
   return { P: Math.max(0, hi), N: Math.max(0, -lo) }
 }
 
-// A name written inside any closure of `body` can change at any call.
-const closureWrites = (body, name) => some(body, n => n[0] === '=>' && isReassigned(n, name))
+// A name written inside any closure of `body` can change at any call: the
+// names every outermost closure writes, gathered in one walk for a body the
+// caller does not rewrite while it asks.
+const closureAssignedNames = (body) => {
+  const out = new Set()
+  const visit = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === '=>') { collectAssignedNames(n, out); return }
+    for (let i = 1; i < n.length; i++) visit(n[i])
+  }
+  visit(body)
+  return out
+}
+// The census's queries of one body that no caller rewrites while it asks:
+// which names a closure writes, and which hold their one initializer for good.
+const bodyQueries = (body) => {
+  let closures = null, assigned = null
+  return {
+    closureWrites: (name) => (closures ??= closureAssignedNames(body)).has(name),
+    singleInitializer: (name) => scanBindingUses(body).get(name)?.[BINDING_USE_DECLS] === 1 && !(assigned ??= collectAssignedNames(body, new Set())).has(name),
+  }
+}
 
 /** A counter a `for` declares and only its step moves holds its guard's test
  *  range wherever it is visible: the initial value, then a body value one step
  *  on. Stamped before the body is typed, so its declarations see the bound. */
 export function stampLoopCounterRanges(body) {
   let decls = null
+  const { closureWrites, singleInitializer } = bodyQueries(body)
   walkAst(body, { enter: node => {
     if (node[0] === '=>') return false   // a closure's loops are typed with its own body
     if (node[0] !== 'for' || node.length !== 5) return
@@ -1451,12 +1472,12 @@ export function stampLoopCounterRanges(body) {
         }
       } })
     }
-    if (decls.get(name) !== 1 || isReassigned(loopBody, name) || isReassigned(cond, name) || closureWrites(body, name)) return
+    if (decls.get(name) !== 1 || isReassigned(loopBody, name) || isReassigned(cond, name) || closureWrites(name)) return
     const entry = own ? null : !isReassigned(init, name) && !writesOutsideLoop(body, new Set([node]), name) ? dominatingLoopInit(body, node, name) : null
     if (!own && entry == null) return
     const rangeOf = e => intExprRange(e, n => {
       const binding = scanBindingUses(body).get(n)
-      return hasSingleInitializer(body, n) ? intExprRange(binding[BINDING_USE_INIT]) : null
+      return singleInitializer(n) ? intExprRange(binding[BINDING_USE_INIT]) : null
     })
     const range = forCounterBounds(own ? init : ['let', ['=', name, entry]], cond, step, name, rangeOf)
     if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
@@ -1469,7 +1490,7 @@ export function stampLoopCounterRanges(body) {
     for (const decl of lets) if (Array.isArray(decl) && decl[0] === 'let') for (let i = 1; i < decl.length; i++) {
       const d = decl[i], other = Array.isArray(d) && d[0] === '=' ? d[1] : null
       if (typeof other !== 'string' || other === name || decls.get(other) !== 1 ||
-          isReassigned(loopBody, other) || isReassigned(cond, other) || closureWrites(body, other)) continue
+          isReassigned(loopBody, other) || isReassigned(cond, other) || closureWrites(other)) continue
       const entry = counterInit(init, other), start = entry != null ? rangeOf(entry) : null
       const delta = start && collectStepRange(step, other, rangeOf)
       if (!delta || !Number.isInteger(start[0]) || !Number.isInteger(start[1]) ||
@@ -1509,6 +1530,7 @@ function fractionalLoopRange(body, name, init, trips) {
 
 export function stampBodyRanges(body, readPresent, typedLens) {
   const fractional = new Map()
+  const { closureWrites, singleInitializer } = bodyQueries(body)
   const rangeOf = (n, at) => {
     // The occurrence proof is available before the all-writers fixpoint below
     // publishes local ranges. An immutable copy keeps that exact read's value;
@@ -1516,7 +1538,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     if (at && typeof n === 'string' && !repOf(n)?.range) {
       const init = scanBindingUses(body).get(n)?.[BINDING_USE_INIT]
       if (Array.isArray(init) && init[0] === '[]' && readPresent?.has(init) &&
-          hasSingleInitializer(body, n) && dominatingLoopInit(body, at, n) === init) return rangeOf(init)
+          singleInitializer(n) && dominatingLoopInit(body, at, n) === init) return rangeOf(init)
     }
     if (Array.isArray(n) && typeof n[1] === 'string') {
       if (n[0] === '|' && constIntExpr(n[2]) === 0) {
@@ -1623,7 +1645,7 @@ export function stampBodyRanges(body, readPresent, typedLens) {
         const init = op === 'for' ? counterInit(node[1], name) : dominatingLoopInit(regions[regions.length - 1], node, name)
         if (init != null && binding[BINDING_USE_INIT] === init && !(short && isReassigned(condition[1], name)) &&
             !isReassigned(loopBody, name) && !(op === 'for' && isReassigned(node[3], name)) &&
-            !closureWrites(body, name) && !writesOutsideLoop(body, new Set([node]), name))
+            !closureWrites(name) && !writesOutsideLoop(body, new Set([node]), name))
           (countdowns ||= []).push([name, init, post])
       }
     }
@@ -1631,13 +1653,14 @@ export function stampBodyRanges(body, readPresent, typedLens) {
       const [, init, cond, step, loopBody] = node
       const counterName = guardCounterName(cond)
       const counterRange = counterName ? forCounterRange(init, cond, step, counterName, rangeOf) : null
-      if (counterRange && counterRange.step > 0 && !isReassigned(loopBody, counterName) && !closureWrites(body, counterName)) {
+      if (counterRange && counterRange.step > 0 && !isReassigned(loopBody, counterName) && !closureWrites(counterName)) {
         const trips = Math.floor((counterRange[1] - counterRange[0]) / counterRange.step) + 1
         // Every write target in the body is a candidate; nested, conditional and
         // shadowed writes are filtered by collectStepRange/writesOutsideLoop below.
+        let outer = null
         if (trips > 0) for (const name of collectAssignedNames(loopBody, new Set())) {
-          if (name === counterName || repOf(name)?.range || closureWrites(body, name)) continue
-          const initExpr = findOuterDeclInit(regions[regions.length - 1], loopBody, name)
+          if (name === counterName || repOf(name)?.range || closureWrites(name)) continue
+          const initExpr = (outer ??= outerDeclInits(regions[regions.length - 1], loopBody)).get(name)
           if (initExpr == null) continue
           const initRange = intExprRange(initExpr)
           const delta = collectStepRange(loopBody, name, rangeOf)

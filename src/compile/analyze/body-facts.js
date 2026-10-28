@@ -8,7 +8,7 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { commaList, isReassigned, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, meetRange, updateRep } from '../../reps.js'
@@ -20,7 +20,7 @@ import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, narrowWordLocals,
   scanObjectArrayFacts, isFreshArrayCtor, stampBodyRanges, stampLoopCounterRanges,
-  scanBindingUses, hasSingleInitializer, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
+  scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
 } from '../analyze-scans.js'
 import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
@@ -162,7 +162,7 @@ function finalizeLocals(body, locals, valTypes, presentNodes) {
   // retyped decl may feed the next). Initializers processDecl types by
   // their own shape (`>>>`, a typed read) are left as they are.
   if (unsignedLocals.size) {
-    let narrowed = new Set(unsignedLocals)
+    let narrowed = new Set(unsignedLocals), assigned = null   // the names the body writes, gathered once: these walks rewrite nothing
     while (narrowed.size) {
       const next = new Set()
       walkAst(body, { enter: n => {
@@ -174,7 +174,7 @@ function finalizeLocals(body, locals, valTypes, presentNodes) {
           const [name, rhs] = [d[1], d[2]]
           if (locals.get(name) !== 'f64' || rhs[0] === '>>>' || rhs[0] === '[]' || unsignedLocals.has(name)) continue
           if (!some(rhs, x => x.some(c => typeof c === 'string' && narrowed.has(c)))) continue
-          if (n[0] === 'let' && isReassigned(body, name)) continue
+          if (n[0] === 'let' && (assigned ??= collectAssignedNames(body, new Set())).has(name)) continue
           // a proven SIGNED hull only: a bare uint32 name flowing through (`c ? h : h2`)
           // keeps its magnitude in f64 storage
           const r = intExprRange(rhs)
@@ -304,8 +304,12 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
   // copy of the loop): one initializer in every declaration and no assignment,
   // so its hull is the initializer's wherever it is read.
   const declInits = new Map()
-  const sameInitializers = (body, name) => {
-    if (isReassigned(body, name)) return false
+  // The names the body writes, gathered once: this walk rewrites nothing.
+  let assigned = null
+  const reassigned = (name) => (assigned ??= collectAssignedNames(body, new Set())).has(name)
+  const singleInitializer = (name) => scanBindingUses(body).get(name)?.[BINDING_USE_DECLS] === 1 && !reassigned(name)
+  const sameInitializers = (name) => {
+    if (reassigned(name)) return false
     if (!declInits.size) walkAst(body, { enter: n => {
       if (n[0] === '=>') return false
       if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { let l = declInits.get(d[1]); if (!l) declInits.set(d[1], l = []); l.push(d[2]) } }
@@ -352,7 +356,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     const hull = summary?.hullOf?.(name)
     if (hull && Number.isInteger(hull[0]) && Number.isInteger(hull[1]))
       declRange = declRange ? [Math.max(declRange[0], hull[0]), Math.min(declRange[1], hull[1])] : hull
-    if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && declRange[0] <= declRange[1] && (hull || hasSingleInitializer(body, name) || sameInitializers(body, name)))
+    if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && declRange[0] <= declRange[1] && (hull || singleInitializer(name) || sameInitializers(name)))
       updateRep(name, { range: declRange })
 
     // val type (valTypes slice)

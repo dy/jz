@@ -1,5 +1,5 @@
 import { ctx } from '../ctx.js'
-import { T, isBlockBody, isReassigned, walkAst, MUTATE_OPS, ACCESSOR_GET, callArgs } from '../ast.js'
+import { T, isBlockBody, isReassigned, collectAssignedNames, walkAst, MUTATE_OPS, ACCESSOR_GET, callArgs } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { intLevelMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
@@ -548,13 +548,14 @@ function seedLocalIntConsts(body) {
   // Seed immutable local integer facts with the shared numeric evaluator.
   // Binding eligibility and the i32 storage limit belong to this analysis.
   const decls = []
+  let assigned = null   // the names the body writes, gathered once: the walk rewrites nothing
   walkAst(body, { enter: node => {
     const op = node[0]
     if (op === '=>') return false
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
-        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && !isReassigned(body, decl[1])) decls.push(decl)
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && !(assigned ??= collectAssignedNames(body, new Set())).has(decl[1])) decls.push(decl)
       }
       return false
     }

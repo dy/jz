@@ -288,21 +288,52 @@ function analyze(body, scope) {
     for (let i = 1; i < node.length; i++) if (mentions(node[i], set)) return true
     return false
   }
+  // The declarations that name each string, gathered once: a reach grows along
+  // them, the declarations that name one it holds, until none is left to add.
+  let namedBy = null
+  const namesIn = (node, out) => {
+    if (typeof node === 'string') { out.add(node); return }
+    if (!Array.isArray(node) || node[0] == null) return
+    for (let i = 1; i < node.length; i++) namesIn(node[i], out)
+  }
+  const reachOf = (start) => {
+    if (!namedBy) {
+      namedBy = new Map()
+      for (const [name, fn] of fnDecls) {
+        const names = new Set()
+        namesIn(fn, names)
+        for (const x of names) { const l = namedBy.get(x); if (l) l.push(name); else namedBy.set(x, [name]) }
+      }
+    }
+    const reach = new Set(start), work = [...start]
+    while (work.length) for (const name of namedBy.get(work.pop()) ?? []) if (!reach.has(name)) { reach.add(name); work.push(name) }
+    return reach
+  }
+  // A statement list's strings → the first statement naming each (a declaration
+  // hoisted with its name aside), once per list.
+  const firstNamed = new Map()
+  const firstNamedIn = (list) => {
+    let first = firstNamed.get(list)
+    if (first) return first
+    firstNamed.set(list, first = new Map())
+    for (let i = 1; i < list.length; i++) {
+      const s = list[i]
+      if (isFnDecl(s) && fnDecls.get(s[1]) === s) continue
+      const names = new Set()
+      namesIn(s, names)
+      for (const x of names) if (!first.has(x)) first.set(x, i)
+    }
+    return first
+  }
   for (const c of cands.values()) {
     if (!c.ok || !(c.def || c.loops)) { c.ok = false; continue }
     if (c.loops) { if (c.captured || c.hoisted) c.ok = false; continue }   // a closure would share one binding across iterations
     if ((c.captured || c.hoisted) && !c.def.top) { c.ok = false; continue }
     if (!c.hoisted) continue
-    const reach = new Set(c.hoisted)
-    for (let grew = true; grew;) {
-      grew = false
-      for (const [name, fn] of fnDecls) if (!reach.has(name) && mentions(fn, reach)) { reach.add(name); grew = true }
-    }
+    const reach = reachOf(c.hoisted)
     if (mentions(c.def.init, reach)) { c.ok = false; continue }   // its own value runs ahead of it too
-    for (let i = 1; i < c.def.idx && c.ok; i++) {
-      const s = c.def.list[i]
-      if (!(isFnDecl(s) && fnDecls.get(s[1]) === s) && mentions(s, reach)) c.ok = false
-    }
+    const first = firstNamedIn(c.def.list)
+    for (const name of reach) if ((first.get(name) ?? Infinity) < c.def.idx) { c.ok = false; break }
   }
   // one head declares all its counters or none
   for (let again = true; again;) {
