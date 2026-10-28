@@ -2029,6 +2029,27 @@ const prepareInterop = (opts) => {
   // The older import keeps its bound-method behavior for existing binaries.
   opts._interp.__ext_prop = (objBig, propBig) => readProperty(objBig, propBig, true)
   opts._interp.__ext_get = (objBig, propBig) => readProperty(objBig, propBig)
+  // for-of over a host iterable (module/collection.js `__iter_arr`): the loop
+  // reads its source's length, then the element at its counter, each step. The
+  // view answers from the iterator one value at a time: a length read pulls the
+  // next value where none waits (one past the count while one does, the count
+  // once the iterator is done), the element read takes it. A spread (`all`)
+  // takes every value at once, as an array of the module.
+  opts._interp.__ext_iter = (vBig, all) => {
+    const v = extRecv(vBig, Symbol.iterator, 'for-of')
+    if (typeof v[Symbol.iterator] !== 'function') throw new TypeError('value is not iterable')
+    if (all) return bits(state.mem.wrapVal(Array.from(v)))
+    const it = v[Symbol.iterator]()
+    let count = 0, waiting = false, value, done = false
+    return bits(hostValue(state, new Proxy({}, { get: (_, key) => {
+      if (key === 'length') {
+        if (!waiting && !done) { const r = it.next(); if (r.done) done = true; else { value = r.value; waiting = true } }
+        return count + (waiting ? 1 : 0)
+      }
+      if (waiting && key === String(count)) { waiting = false; count++; return value }
+      return undefined
+    } })))
+  }
   opts._interp.__ext_has_iterator = objBig => {
     const obj = extRecv(objBig, Symbol.iterator, 'iterator-method test')
     const method = obj[Symbol.iterator]

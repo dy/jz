@@ -222,7 +222,7 @@ function stageSpreadSource(expr, ranges = false) {
           ['then', ['call', '$__str_len', srcI64()]],
           ['else', ['call', '$__len', srcI64()]]])
   const ir = [
-    ['local.set', `$${local}`, n ? materializeMulti(expr) : asF64(emit(srcExpr))],
+    ['local.set', `$${local}`, n ? materializeMulti(expr) : asF64(ctx.core.emit['__iter_arr'](expr, expr, true))],
     ['local.set', `$${lenLocal}`, lenIR],
   ]
   return { local, lenLocal, val, ir }

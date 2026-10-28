@@ -1863,7 +1863,10 @@ memory handed to a host call, copying the host's writes back after the call.
 `__ptr_is(X, EXTERNAL) ? __host_new(X, …) : X(…)`; the summary decides the
 test false for a callee it bounds, so the plan drops the host arm. A dynamic
 `typeof` of a value the summary cannot bound asks `__ext_callable` for an
-EXTERNAL (`$__typeof`'s arm, `emitTypeofCmp`'s function and object tests).
+EXTERNAL (`$__typeof`'s arm, `emitTypeofCmp`'s function and object tests). A
+for-of or spread over such a value hands an EXTERNAL source to `__ext_iter`,
+whose host view pulls the iterator a value per step as the index loop reads
+its length, then its element (collection.js `__iter_arr`).
 
 A class the entry exports reaches the host as a class (class-dispatch.js
 `synthesizeClassExports`, `jz:class`, interop `hostClasses`): the factory is

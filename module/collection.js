@@ -29,7 +29,7 @@ import { requireReceiverWat, requireObjectWat, throwErrorWat } from './core/erro
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { captureCallback } from './array/callback.js'
-import { demandHostReceiver } from '../src/compile/func-exports.js'
+import { demandHostReceiver, mayHoldHostValue } from '../src/compile/func-exports.js'
 import { ENUM_DATA, ENUM_GET, ownKeys, viewsOn, accessorTable } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
@@ -439,6 +439,8 @@ export default (ctx) => {
   ctx.core.stdlib['__ext_get'] = '(import "env" "__ext_get" (func $__ext_get (param i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_is_error'] = '(import "env" "__ext_is_error" (func $__ext_is_error (param i64 i32) (result i32)))'
   ctx.core.stdlib['__ext_has_iterator'] = '(import "env" "__ext_has_iterator" (func $__ext_has_iterator (param i64) (result i32)))'
+  // a host iterable's view for an index loop (interop.js): for-of over a host value
+  ctx.core.stdlib['__ext_iter'] = '(import "env" "__ext_iter" (func $__ext_iter (param i64) (param i32) (result i64)))'
   ctx.core.stdlib['__ext_delete'] = '(import "env" "__ext_delete" (func $__ext_delete (param i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param i64 i64) (result i32)))'
   // A current own enumerable descriptor, without invoking its getter.
@@ -3030,7 +3032,8 @@ export default (ctx) => {
   // (no copy). `valTypeOf(['()','__iter_arr',x])` (src/kind.js) mirrors this:
   // Set/Map → ARRAY, everything else → x's own type, so the downstream `arr[i]`
   // / `.length` dispatch stays statically typed.
-  const iterArray = (src, proof = src) => {
+  // `all`: a spread, which takes every value before it goes on (call-args.js stageSpreadSource)
+  const iterArray = (src, proof = src, all = false) => {
     const view = ctx.summary?.at(ctx.func.current)
     const nullish = view?.mayBeNullishExpr(proof) === true
     const vt = valTypeOf(proof), typedArray = vt === VAL.TYPED && view?.typedPayloadCtorOfExpr(proof) != null
@@ -3061,6 +3064,14 @@ export default (ctx) => {
     // Unknown receiver: resolve the kind once at runtime (loop-invariant).
     inc('__ptr_aux')
     const ptrType = () => ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
+    // A host iterable is iterated by its protocol: the host's view of it pulls
+    // one value per step, as the loop reads its length (interop `__ext_iter`);
+    // a spread takes all of them at once, an array of the module.
+    const notIterable = throwErrorIR('TypeError', 'value is not iterable')
+    const host = mayHoldHostValue(view?.kindOfExpr(proof))
+    if (host) { setLinkDemand('external'); inc('__ext_iter') }
+    const other = host ? ['if', ['result', 'f64'], ['i32.eq', ptrType(), ['i32.const', PTR.EXTERNAL]],
+      ['then', ['f64.reinterpret_i64', ['call', '$__ext_iter', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', all ? 1 : 0]]]], ['else', notIterable]] : notIterable
     return typed(['block', ['result', 'f64'], bind, missing,
       ['if', ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
         ['then', ['drop', throwErrorIR('TypeError', 'value is not iterable')]]],
@@ -3074,7 +3085,7 @@ export default (ctx) => {
               ['i32.eq', ptrType(), ['i32.const', PTR.ARRAY]],
               ['i32.and', ['i32.eq', ptrType(), ['i32.const', PTR.TYPED]],
                 ['i32.eqz', ['i32.and', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', DATA_VIEW_FLAG]]]]],
-              ['then', ['local.get', `$${t}`]], ['else', throwErrorIR('TypeError', 'value is not iterable')]]]]]]]]], 'f64')
+              ['then', ['local.get', `$${t}`]], ['else', other]]]]]]]]], 'f64')
   }
 
   ctx.core.emit['__iter_arr'] = iterArray

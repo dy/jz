@@ -184,6 +184,7 @@ Where behaviour differs from JS:
 - **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver.
 - **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates. A use as a string counts through a copy, a call and a sum: `(s) => (s + s).slice(1)` takes a string.
 - **Host globals bind at instantiation.** A global the program names without declaring it is the host's value when the module is instantiated: one the host defines or replaces later is not seen.
+- **Host iterators stay open.** A for-of over a host iterable that leaves early (`break`, `return`, a throw) does not call the iterator's `return()`, unless the program makes iterators of its own.
 - **Exported classes dispatch on the instance.** A method taken from an exported class and called on an instance whose class overrides it (`Base.prototype.m.call(derived)`) throws a TypeError, and a host class extending an exported one constructs the exported class's instance.
 - **Host methods named like builtins.** A host object the host passes in runs its own method of any name, a string's or an array's included. Where that builtin returns a number, a boolean or a string (`charCodeAt`, `includes`, `toUpperCase`), the call converts the host method's result to that type: an `o.charCodeAt(1)` that returns `'7'` gives 7.
 
@@ -228,7 +229,8 @@ Under the JS host a name no declaration of the program binds is the host's
 global: `new Response(text)`, `x instanceof WritableStream` and
 `typeof WebSocket` ask the host, and reading a global the host lacks throws the
 ReferenceError JavaScript throws. So do `new C()` of a constructor a variable
-or parameter holds and `typeof` of a host function (`'function'`). A member
+or parameter holds, `typeof` of a host function (`'function'`) and a for-of
+over a host iterable, which takes its iterator's values one per step. A member
 of `console`, `crypto`, `navigator` or `performance` that JZ does not
 implement (`crypto.subtle`) is the host's. The `warnings` sink names each such
 global; without a JS host it stays an error.

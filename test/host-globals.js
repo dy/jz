@@ -68,6 +68,30 @@ test('typeof a host function is function, of a host object object', async () => 
   `, [['kinds', () => 1, { m() {}, n: 1 }], ['kinds', class {}, []], ['held']])
 })
 
+// A for-of over a host iterable takes its iterator's values one per step, the
+// body running between them, in a program that makes no iterator of its own.
+test('for-of over a host iterable pulls its iterator a value per step', async () => {
+  if (onWasi()) return
+  const src = `
+    export const order = (it, note) => { let n = 0; for (const x of it) { note('body' + x); n++ } return n }
+    export const pairs = (m) => { let s = ''; for (const [k, v] of m) s += k + '=' + v + ';'; return s }
+    export const count = (it) => { let n = 0; for (const x of it) { n++; if (n > 4) break } return n }
+    export const strings = (it) => { const out = []; for (const s of it) out.push(s.toUpperCase()); return out.join() }
+    export const nested = (outer) => { let s = 0; for (const inner of outer) for (const x of inner) s += x; return s }
+    export const spread = (it) => [...it].length
+    export const bad = (v) => { try { for (const x of v) return x } catch (e) { return e.name } }`
+  const drive = (m) => {
+    const log = []
+    const gen = function* () { try { for (let i = 1; i < 4; i++) { log.push('yield' + i); yield i } } finally { log.push('done') } }
+    return [m.order(gen(), (s) => log.push(s)), log.join(), m.pairs(new Map([['a', 1], ['b', 2]])),
+      m.count((function* () { let i = 0; for (;;) yield i++ })()), m.strings(new Set(['x', 'y'])),
+      m.nested([new Set([1, 2]), [3]]), m.spread(new Set([1, 2, 3]).values()), m.bad({})]
+  }
+  const want = drive(oracle(src))
+  for (const optimize of levels(0, 2, 3, 'size')) is(drive(jz(src, { optimize }).exports), want, `O${optimize}`)
+  ok(!/__ext_iter/.test(jz.compile('export const f = () => { let s = 0; for (const x of [1, 2]) s += x; return s }', { wat: true })), 'a source of the program is iterated as before')
+})
+
 test('a host global the host lacks throws a ReferenceError where read, and types as undefined', async () => {
   if (onWasi()) return
   globalThis.jzTestDouble = (a) => a * 2
