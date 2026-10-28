@@ -1649,10 +1649,13 @@ const prepareInterop = (opts) => {
       return hostRet(state, value)
     },
     // `v instanceof C` of a host class: a value of the module is no instance of
-    // it, though a C the host cannot test still throws (module/web.js).
+    // it, though a C the host cannot test still throws (module/web.js). An
+    // instance of a class the module exports is its handle, of that class's prototype.
     __ext_instanceof: (vBig, ctorBig) => {
-      const C = read(ctorBig)
-      return (type(vBig) === PTR.EXTERNAL ? state.extMap[offset(vBig)] : undefined) instanceof C ? 1 : 0
+      const C = read(ctorBig), boxed = isBox(vBig)
+      const v = boxed && type(vBig) === PTR.EXTERNAL ? state.extMap[offset(vBig)]
+        : boxed && type(vBig) === PTR.OBJECT && state.fnOf?.classes?.has(aux(vBig)) ? read(vBig) : undefined
+      return v instanceof C ? 1 : 0
     },
     __ext_callable: (vBig) => typeof state.extMap[offset(vBig)] === 'function' ? 1 : 0,
     // the description of a Symbol the module holds none of its own for: one the host made (module/symbol.js)

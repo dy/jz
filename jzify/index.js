@@ -148,6 +148,18 @@ const declaredNonCtor = (callee, from = activeBuiltinScope, depth = 0) => {
   }
   return false
 }
+// The nearest declaration of `name` binds an ordinary function (a declaration,
+// a `function` expression), which nothing in the module reassigns: `new` of
+// one calls it, so jz models none of its instances.
+const declaredFunction = (name) => {
+  if (census.names.has(name)) return false
+  for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) {
+    if (s.fns.has(name)) return true
+    const value = s.inits.get(name)
+    return Array.isArray(value) && value[0] === 'function' && value[1] !== null
+  }
+  return false
+}
 // The nearest declaration of `name` binds a value (`var OBJECT = Object`, a
 // parameter): its spelling names no constructor.
 const declaredValue = (name) => {
@@ -190,7 +202,7 @@ const functionNameWrite = name => {
 // made a parameter in one function suppress unrelated builtin lowering in
 // every other function. The builder scopes nodes into `map`.
 const scopeBuilder = (map) => {
-  const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), consts: new Map(), inits: new Map(), nonCtors: new Set(), nonCtorMembers: new Map(), protoNonCtors: new Map(), strict: parent?.strict ?? false, self: null })
+  const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), fns: new Set(), consts: new Map(), inits: new Map(), nonCtors: new Set(), nonCtorMembers: new Map(), protoNonCtors: new Map(), strict: parent?.strict ?? false, self: null })
   const functionDecls = new WeakSet()
   const strictBody = body => {
     if (Array.isArray(body) && body[0] === '{}') body = body[1]
@@ -223,6 +235,7 @@ const scopeBuilder = (map) => {
         addBuiltinName(scope, stmt[1])
         if (op === 'class') { scope.classes.add(stmt[1]); addClassMembers(scope, stmt[1], stmt[3]) }
         if (op === 'function*') scope.nonCtors.add(stmt[1])
+        if (op === 'function') scope.fns.add(stmt[1])
         functionDecls.add(stmt)
       } else if (op === 'async' && Array.isArray(stmt[1]) &&
           (stmt[1][0] === 'function' || stmt[1][0] === 'function*')) {
@@ -373,6 +386,7 @@ let transform, transformScope, transformParams
   classBrand: (name) => classBrand(name),
   classStaticAccessor: (name, slot) => classStaticAccessor(name, slot),
   isClass: declaredClass,
+  ordinaryFunction: (name) => declaredFunction(name),
   isValue: declaredValue,
   programCallable: (name) => programCallable(name),
   nonConstructor: (callee) => declaredNonCtor(callee),

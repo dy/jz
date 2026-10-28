@@ -166,6 +166,19 @@ export function createTransform(opts) {
   // as one in the body does. Pattern targets stay as they are.
   const transformParams = (params) => inFunction(() =>
     Array.isArray(params) && params[0] === '()' ? ['()', transformPattern(params[1])] : transformPattern(params))
+  // An arrow, a method or an async function has no `prototype` (ECMA-262
+  // 10.2.4 MakeConstructor runs for function declarations and expressions,
+  // classes and generators): its parameter list says so, and the closure it
+  // makes keeps that (compile/emit/class-dispatch.js valueInstanceof). A
+  // factory of a function that has one (an async generator's) says `proto`.
+  // A list that is no node (a method's none, an arrow's one bare name, whose
+  // shape later passes read) leaves the mark to the body.
+  const prototypeless = (arrow, src) => {
+    if (Array.isArray(src) && src.proto) return arrow
+    if (Array.isArray(arrow[1])) arrow[1].noProto = true
+    else if (Array.isArray(arrow[2])) arrow[2].noProto = true
+    return arrow
+  }
   // A function body stands where its source did: the position a fault in the function falls back to (ctx.js here).
   function wrapArrowBody(body) { return withLoc(arrowBodyBlock(body), body) }
   function arrowBodyBlock(body) {
@@ -490,7 +503,9 @@ export function createTransform(opts) {
 
     'function'(name, params, body) {
       const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
+      // (a method's shorthand parses with no name: it has no `prototype`)
       const arrow = ['=>', transformParams(p2), wrapArrowBody(b2)]
+      if (name === null) prototypeless(arrow, params)
       // The name of a named function expression binds only inside its body. A
       // body that never mentions it (`fn.coefs = function coefs () {}`, named
       // for stack traces) is the plain arrow, which keeps the property lift.
@@ -510,7 +525,7 @@ export function createTransform(opts) {
         }
       }
       const [p2, b2] = lowerArguments(params, b)
-      return ['=>', transformParams(p2), inFunction(() => transform(b2))]
+      return prototypeless(['=>', transformParams(p2), inFunction(() => transform(b2))], params)
     },
 
     'class'(name, heritage, body) { return lowerClass(name, heritage, body) },
@@ -526,7 +541,7 @@ export function createTransform(opts) {
       if (!_gen) return
       const prior = enterBuiltinScope(body)
       let value
-      try { value = _gen.lowerGenerator(params, body, agen === 'async') } finally { leaveBuiltinScope(prior) }
+      try { value = _gen.lowerGenerator(params, body, agen === 'async', agen != null) } finally { leaveBuiltinScope(prior) }
       return name && (mentions(body, name) || mentions(params, name)) ? namedFunction(name, value) : value
     },
 
@@ -642,6 +657,11 @@ export function createTransform(opts) {
       // A known user class keeps its identity even when named like a builtin.
       const brand = typeof rawName === 'string' ? opts.classBrand(rawName) : null
       if (brand) return ['instanceof', transform(val), brand]
+      // One whose instances jz does not model: an ordinary function the module
+      // declares (`new F()` calls it) or a class it lowers to plain objects (a
+      // nested one, one of a dynamic base): nothing tells its instances apart.
+      if (typeof rawName === 'string' && (opts.isClass(rawName) || opts.ordinaryFunction?.(rawName)))
+        err(`instanceof: unsupported right-hand side (got "${rawName}"); jz models no instances of ${opts.isClass(rawName) ? 'a class it lowers to plain objects' : 'an ordinary function: `new` of one calls it'}`)
       // Other shadowed values have no builtin prototype authority.
       if (typeof rawName === 'string' && shadowsBuiltin(rawName))
         return ['instanceof', transform(val), transform(ctor)]

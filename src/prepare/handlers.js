@@ -1027,6 +1027,8 @@ const handlers = {
     if (Array.isArray(preparedBody) && preparedBody.loc == null) preparedBody.loc = Array.isArray(body) && body.loc != null ? body.loc : ctx.error.loc
     const inner = nextParams.length === 0 ? null : nextParams.length === 1 ? nextParams[0] : [',', ...nextParams]
     const result = ['=>', Array.isArray(params) && params[0] === '()' ? ['()', inner] : inner, preparedBody]
+    // a function with no `prototype` (jzify transform.js prototypeless) stays one
+    if (params?.noProto || body?.noProto) (Array.isArray(result[1]) ? result[1] : preparedBody).noProto = true
     popScope()
     ownerStack.pop()
     renameSerial.pop()
@@ -1763,6 +1765,14 @@ const handlers = {
     // summary/narrowing knows the input; emission rejects object/unknown inputs.
     if (!shadowed && !ctx.transform.strict && PRIMITIVE_CTORS.has(name))
       return ['instanceof', prep(lhs), name]
+    // A constructor a binding or an expression yields (a parameter, `const R =
+    // globalThis.URL`, `pick(k)`): asked of the value at run time
+    // (compile/emit/class-dispatch.js valueInstanceof), as `new` of one is.
+    if ((rawName == null || shadowed || isDeclared(rawName) || ctx.scope.globals.has(rawName) || hasFunc(rawName)) && !ctx.transform.strict) {
+      if (ctx.transform.targetProfile?.envImports) includeModule('web')
+      setFeature('ctorValues', true)
+      return ['instanceof', prep(lhs), ['__ctor_value', prep(rhs)]]
+    }
     if (name == null || shadowed || !INSTANCEOF_ALLOW.has(name))
       err(`instanceof: unsupported right-hand side (got ${JSON.stringify(rawName ?? rhs)}); ` +
           `jz has no prototype chain; instanceof works only for Array, Map, Set, ` +
@@ -3021,6 +3031,7 @@ function defFunc(name, node) {
   const exported = !!ctx.funcs.exports[name] && ctx.module.moduleStack.length === 0
   if (ctx.module.inStd) sig.std = true
   const funcInfo = createFunction(name, body, sig, exported, hasDefaults ? defaults : null, hasRest[0] ?? null)
+  if (rawParams?.noProto || node[2]?.noProto) ctx.funcs.noProto.add(name)
   ctx.funcs.list.push(funcInfo)
   ctx.funcs.names.add(name)
   return true

@@ -35,9 +35,11 @@ export function cloneWithSubst(node, subst, rename = null, closures = false) {
 }
 // A versioned declaration's notes (prepare/split-bindings.js versionRest): the
 // guard it reads under, the hull its guard proves, the array its index stays
-// below, named anew with the clone's bindings.
+// below, named anew with the clone's bindings; a function's kind (jzify).
 function carryNotes(node, out, renamed) {
   if (node.guarded) out.guarded = true
+  // a function's parameter list or body: it has no `prototype` (jzify transform.js prototypeless)
+  if (node.noProto) out.noProto = true
   if (node.lo != null) out.lo = node.lo
   if (node.hi != null) out.hi = node.hi
   if (node.bound != null) out.bound = renamed(node.bound)

@@ -1304,7 +1304,8 @@ test('instanceof: primitive wrapper probes fold only for proven primitive inputs
   }
   for (const name of ['Number', 'Boolean', 'String']) {
     throws(`export let f = () => ({}) instanceof ${name}`, 'instanceof', 'object wrappers need a supported representation')
-    throws(`export let f = () => { const ${name} = 4; return 1 instanceof ${name} }`, 'instanceof', 'a shadowed name cannot fold')
+    // a shadowed name is the binding's value, no function: the TypeError at run time
+    is(jz(`export let f = () => { const ${name} = 4; try { return 1 instanceof ${name} } catch (e) { return e.name } }`).exports.f(), 'TypeError', 'a shadowed name cannot fold')
   }
   is(jz(`export let f = () => { const B = Boolean, N = Number; return [0,1,2].filter(B).map(N) }`).exports.f(), [1,2], 'local aliases remain usable callbacks')
 })
@@ -1328,24 +1329,47 @@ test('instanceof: primitive wrapper probes include nullish values and primitive 
 
 // A binding that holds a constructor (`var OBJECT = Object`, `const Q = K`)
 // names none by its spelling: `({}) instanceof OBJECT` folded to false.
-// Namespace aliases retain their known constructor. Other aliases reject;
-// neither a primitive LHS nor `new C() instanceof C` proves an answer for an
-// arbitrary RHS (it may be noncallable, or the constructor may return an object).
+// Namespace aliases retain their known constructor. A binding of the program's
+// own value is asked at run time (class-dispatch.js valueInstanceof): a class
+// answers for its instances, a value that is no function throws. An alias of a
+// builtin constructor rejects: its instances are not told apart by a run-time
+// test, as an ordinary function's (`new` of one calls it) are not.
 test('instanceof: a binding holding a constructor is not told apart by its spelling', () => {
   for (const [src, want] of [
     [`export let f = () => { const O = Object; return 'o' instanceof O }`, false],
     [`var OBJECT = Object\nexport let f = () => ({}) instanceof OBJECT`, true],
     [`export let f = () => { var OBJECT = Object; var OBJECT = Object; return ({}) instanceof OBJECT }`, true],
+    [`class K { constructor() { this.a = 1 } }\nconst Q = K\nexport let f = () => new K() instanceof Q`, true],
+    [`const E = 4\nexport let f = () => { try { return 1 instanceof E } catch (e) { return e.name } }`, 'TypeError'],
   ]) for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), want, `${src.split('\n').pop()} O${optimize}`)
   for (const src of [
     `const E = TypeError\nexport let f = () => new E('x') instanceof E`,
     `const E = TypeError\nexport let f = () => 1 instanceof E`,
-    `const E = 4\nexport let f = () => 1 instanceof E`,
-    `function C() { return {} }\nexport let f = () => new C() instanceof C`,
     `const A = Array\nexport let f = () => [1] instanceof A`,
     `const E = TypeError\nexport let f = () => new TypeError('x') instanceof E`,
-    `class K { constructor() { this.a = 1 } }\nconst Q = K\nexport let f = () => new K() instanceof Q`,
+    `function C() { return {} }\nexport let f = () => new C() instanceof C`,
+    `const C = function () {}\nexport let f = () => ({}) instanceof C`,
+    `export let f = () => { class N {}\nreturn new N() instanceof N }`,
   ]) throws(src, 'instanceof: unsupported right-hand side', src.split('\n').pop())
+})
+
+// A function value answers as OrdinaryHasInstance does with its `prototype`
+// (ECMA-262 7.3.22): a generator's objects, sync or async, are its own (the
+// mark its factory puts on them, jzify/generators.js genMark), also through
+// a class's generator method read as a value; a function with no `prototype`
+// (an arrow, a method, an async function) throws the TypeError for an object
+// and answers false for a primitive. `g() instanceof g` answered false.
+test('instanceof: a function value answers by its prototype', () => {
+  const t = `const t = (x, C) => { try { return x instanceof C } catch (e) { return e.name } }\n`
+  for (const [src, want] of [
+    [`${t}function* g() {}\nconst h = function* () {}\nexport let f = () => [g() instanceof g, h() instanceof g, t(h(), h), t({}, g), t(1, g)]`, [true, false, true, false, false]],
+    [`${t}async function* ag() {}\nasync function* bg() {}\nexport let f = () => [ag() instanceof ag, t(ag(), bg), t({}, ag)]`, [true, false, false]],
+    [`${t}export let f = () => { function* g() { yield 1 }\nconst mk = (n) => function* () { yield n }, a = mk(1)\nreturn [t(g(), g), t(a(), a), t(a(), g)] }`, [true, true, false]],
+    [`${t}function* g() { yield 1; yield 2 }\nexport let f = () => { const it = g(), m = it.map(x => x * 2)\nreturn [t(it, g), t(m, g), m.toArray()] }`, [true, false, [2, 4]]],
+    [`${t}const o = { m() {}, a: () => 1, async am() {} }\nexport let f = () => [t({}, o.m), t({}, o.a), t({}, o.am), t(1, o.m), t({}, () => 1), t(null, x => x), t([], async () => 1)]`,
+      ['TypeError', 'TypeError', 'TypeError', false, 'TypeError', false, 'TypeError']],
+    [`${t}class K { *g() { yield 1 } m() { return 1 } static *s() {} }\nconst k = new K()\nexport let f = () => [t(k.g(), k.g), t({}, k.m), t(1, k.m), t(K.s(), K.s)]`, [true, 'TypeError', false, true]],
+  ]) for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(), want, `${src.split('\n').pop()} O${optimize}`)
 })
 
 // Side effects in the LHS still run even when the boolean answer is folded to

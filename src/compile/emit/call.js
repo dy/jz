@@ -481,6 +481,7 @@ export const callOps = {
   // Arrow as value → closure
   '=>': (rawParams, body) => {
     if (!ctx.closure.make) err('Closures require fn module (auto-included)')
+    const noProto = rawParams?.noProto === true || body?.noProto === true
 
     const raw = extractParams(rawParams)
     const params = [], defaults = {}
@@ -514,7 +515,7 @@ export const callOps = {
     for (const def of Object.values(defaults)) findFreeVars(def, paramSet, captures)
 
     // Pass closure info including rest param and defaults.
-    const closureInfo = { params, body, captures, restParam, scope: rawParams }   // scope: the summary's key for this closure (src/summary at)
+    const closureInfo = { params, body, captures, restParam, scope: rawParams, noProto }   // scope: the summary's key for this closure (src/summary at)
     if (Object.keys(defaults).length) closureInfo.defaults = defaults
     return ctx.closure.make(closureInfo)
   },

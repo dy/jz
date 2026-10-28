@@ -1892,7 +1892,24 @@ module's assignment census rules out a reassigned name or a written key.
 `new X(…)` of a variable or parameter that is not a program class or function
 (jzify `programCallable`: a const of classes and functions is one) is
 `__ptr_is(X, EXTERNAL) ? __host_new(X, …) : X(…)`; the summary decides the
-test false for a callee it bounds, so the plan drops the host arm. A dynamic
+test false for a callee it bounds, so the plan drops the host arm. `x
+instanceof R` of a right-hand side a binding or an expression yields is
+`['instanceof', x, ['__ctor_value', R]]` (prepare): an EXTERNAL R asks
+`__ext_instanceof`, which reads an instance of a class the host holds as its
+handle first; a closure resolves by its table entry once the table is whole,
+as OrdinaryHasInstance does with its `prototype` (class-dispatch.js
+`__closure_instanceof`): a class factory's trampoline tests the schemas of the
+class and those deriving from it, a `jz:typed` function the element code, a
+generator's factory (a class's generator method read as a value included) the
+mark it puts on its objects where a program asks this of a value
+(`__gen_mark`, jzify/generators.js `genMark`, `features.ctorValues`), and a
+function with no `prototype` (an arrow, a method, an async function: jzify
+marks its parameter list, or a method's body, `noProto`, which copies keep)
+throws the TypeError for an object; any other function answers false, and any
+other value throws the TypeError, so a `try` around it keeps its catch
+(statements.js `canThrow`). jzify rejects an ordinary function the module
+declares as the right-hand side (`new` of one calls it) and a class it lowers
+to plain objects. A dynamic
 `typeof` of a value the summary cannot bound asks `__ext_callable` for an
 EXTERNAL (`$__typeof`'s arm, `emitTypeofCmp`'s function and object tests). A
 for-of or spread over such a value hands an EXTERNAL source to `__ext_iter`,

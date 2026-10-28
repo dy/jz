@@ -103,7 +103,7 @@ export default (ctx) => {
    * @param {{ params: string[], body, captures: string[], restParam: string|null }} info
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.closure.make = ({ params, body, captures, restParam, defaults, scope }) => {
+  ctx.closure.make = ({ params, body, captures, restParam, defaults, scope, noProto }) => {
     const fixedN = params.length - (restParam ? 1 : 0)
     if (fixedN > MAX_CLOSURE_ARITY) err(`Closure with ${fixedN} fixed params exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     if (restParam && fixedN >= MAX_CLOSURE_ARITY) err(`Closure with rest param needs at least one free slot — ${fixedN} fixed params leaves none (MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY})`)
@@ -236,6 +236,7 @@ export default (ctx) => {
     ctx.closure.bodies.push(bodyFn)
 
     const tableIdx = ctx.closure.mint(fnName, functionLength(params, defaults, restParam))
+    if (noProto) (ctx.closure.noProto ??= new Set()).add(tableIdx)
 
     // At call site: allocate env, store captured values, return NaN-boxed pointer.
     // Tag IR with .closureBodyName so emitDecl can register the binding for direct dispatch

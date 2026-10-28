@@ -16,7 +16,7 @@ import { VAL, repOf } from '../../reps.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
 import { storedValue } from '../../bridge.js'
-import { classInstanceof } from './class-dispatch.js'
+import { classInstanceof, valueInstanceof } from './class-dispatch.js'
 import { isBrand } from '../../ast.js'
 import { hasExternalIngress } from '../func-exports.js'
 
@@ -172,6 +172,7 @@ function emitErrorInstanceof(a, rhs) {
 
 export function emitInstanceof(a, rhs) {
   if (isBrand(rhs)) return classInstanceof(a, rhs)
+  if (Array.isArray(rhs) && rhs[0] === '__ctor_value') return valueInstanceof(a, rhs[1])
   if (rhs === 'Number' || rhs === 'Boolean' || rhs === 'String') {
     const vt = valTypeOf(a)
     const tags = tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(a) ?? 0)

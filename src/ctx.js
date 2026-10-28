@@ -111,6 +111,7 @@ function createFunctions() {
     builtinMethodReaders: null, // property name → prepared native method-value reader and receiver sites
     runtimeRoots: new Set(), // prepared functions called by runtime kernels
     primitiveArgs: new Set(), // std exports the host calls with primitives only (std/index.js STD_PRIMITIVE_EXPORTS)
+    noProto: new Set(),     // functions with no `prototype` (an arrow, a method, an async function: jzify prototypeless)
     // Fixed-rest variants precede ProgramIndex: { variant, origin, kind }.
     // ProgramIndex consumes this queue once; later variants register directly.
     pendingVariants: [],
@@ -678,6 +679,8 @@ export function reset(proto, globals, bridge) {
     types: null,
     table: null,
     lengths: null,        // source arity per table slot, independent of body deduplication
+    noProto: null,        // Set<table slot>: closures of functions with no `prototype` (jzify prototypeless)
+    instanceofArms: null, // __closure_instanceof's answers per table slot, realized once at link (class-dispatch.js)
     lengthData: null,     // demand-built static byte table
     bodies: null,
     make: null,
@@ -851,6 +854,8 @@ export function reset(proto, globals, bridge) {
     timers: false,          // Set by prepare.js when timer module is included
     symbols: false,         // A Symbol is made anywhere (a `Symbol(…)` or `Symbol.for(…)` call, prep()'s
                             // scan): the readers that tell one apart fork (module/symbol.js symbolFork)
+    ctorValues: false,      // An `x instanceof R` asks a value at run time (prepare's `__ctor_value`): a
+                            // generator's objects carry its mark then (jzify/generators.js genMark)
     resizable: false,       // A `new ArrayBuffer(n, options)` whose options may name maxByteLength
                             // (prepare's 'new' handler): views then bound themselves by their
                             // buffer (module/typedarray.js `$__view_bytes`).

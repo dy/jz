@@ -41,7 +41,7 @@
  * @module jzify/generators
  */
 
-import { walkAst, some, TDZ, withLoc, noted, collectParamName, extractParams } from '../src/ast.js'
+import { walkAst, some, TDZ, withLoc, noted, collectParamName, extractParams, CLASS_T } from '../src/ast.js'
 import { ctx } from '../src/ctx.js'
 import { isResourceDecl, resourceScope, resourceSteps } from './using.js'
 
@@ -67,6 +67,13 @@ export const FN_BOUNDARY_OPS = new Set(['=>', 'function', 'function*', 'class', 
 export const isAccessor = (n) => n[0] === 'get' || n[0] === 'set'
 
 const fnBoundary = (n) => FN_BOUNDARY_OPS.has(n[0])
+
+/** The statements a generator function's factory runs on the object it makes,
+ *  named `obj`: its mark, a hidden property of a name of its own, which
+ *  `x instanceof g` reads where a program asks that of a function value
+ *  (`__gen_mark`, compile/emit/class-dispatch.js valueInstanceof): the
+ *  object's prototype is g's (ECMA-262 27.5.3.1). */
+export const genMark = (obj) => ['()', '__gen_mark', [',', obj, ['str', CLASS_T + 'gen' + (ctx.transform.classId = (ctx.transform.classId ?? 0) + 1)]]]
 /** Whether `n` holds a node `is` names that this body evaluates: not in a
  *  nested function form, in an accessor's computed key. */
 export const suspendsIn = (n, is) => some(n, m => is(m) || isAccessor(m) && suspendsIn(m[1], is), { boundary: fnBoundary })
@@ -558,11 +565,12 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
 
   // `agen`: the body of an async generator, whose driver reads tagged yields.
   // Its suspensions hoist knowing what the body assigns (jzify/async.js enterBody).
-  function lowerGenerator(params, rawBody, agen = false) {
+  // `internal`: the machine an async function or an async generator runs, whose objects the program never sees
+  function lowerGenerator(params, rawBody, agen = false, internal = false) {
     const prior = enterBody?.(params, rawBody)
-    try { return lowerMachine(params, rawBody, agen) } finally { if (enterBody) leaveBody(prior) }
+    try { return lowerMachine(params, rawBody, agen, internal) } finally { if (enterBody) leaveBody(prior) }
   }
-  function lowerMachine(params, rawBody, agen) {
+  function lowerMachine(params, rawBody, agen, internal) {
     // the function's own scope, as its source declared it
     const owners = [rawBody, params]
     const lowered = lowerArguments(params, rawBody, true)
@@ -1195,11 +1203,12 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
 
     // Helper-bearing programs mint through __it_mk (decorated iterator —
     // map/filter/… as value-position methods); others keep the bare record.
+    const iterator = genTemp('iterator')
     if (iterProto?.helpers) {
       return ['=>', transformParams(params), ['{}', [';', ...paramInit, ...decls,
-        ['return', ['()', '__it_mk', [',', nextFn, returnFn, throwFn]]]]]]
+        ['const', ['=', iterator, ['()', '__it_mk', [',', nextFn, returnFn, throwFn]]]],
+        ...(internal ? [] : [genMark(iterator)]), ['return', iterator]]]]
     }
-    const iterator = genTemp('iterator')
     const genObj = ['{}', [',',
       [':', 'next', nextFn],
       [':', 'return', returnFn],
@@ -1208,7 +1217,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     ]]
 
     return ['=>', transformParams(params), ['{}', [';', ...paramInit, ...decls,
-      ['const', ['=', iterator, genObj]], ['return', iterator]]]]
+      ['const', ['=', iterator, genObj]], ...(internal ? [] : [genMark(iterator)]), ['return', iterator]]]]
   }
 
   // ---- ES2025 iterator-helper chain fusion ----

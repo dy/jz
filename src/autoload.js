@@ -209,6 +209,7 @@ const CALL_MODULES = dict({
   Function: ['core'],
   'Symbol.for': ['core', 'symbol'],
   '__sym_key': ['core', 'symbol'],
+  '__gen_mark': ['core'],
   'String.fromCodePoint': ['core', 'string'],
   'Uint8Array.fromBase64': ['core', 'typedarray', 'string'],
   'Uint8Array.fromHex': ['core', 'typedarray', 'string'],

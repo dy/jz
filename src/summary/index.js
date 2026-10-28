@@ -83,7 +83,7 @@ const flatDepth = (a) => {
 const PURE_BUILTINS = /^(Object\.(keys|values|entries|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|JSON\.stringify|Array\.isArray|console\.\w+|Math\.\w+|Number(\.\w+)?|String(\.\w+)?|Boolean|BigInt|Symbol(\.\w+)?|isNaN|isFinite|parseInt|parseFloat|structuredClone)$/
 // A builtin that neither stores its arguments nor runs a method of theirs:
 // they keep their shapes. `Object.freeze` is the identity (module/object.js).
-const KEEPING_BUILTINS = /^(Object\.(keys|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|Array\.isArray|Boolean|Symbol(\.\w+)?)$/
+const KEEPING_BUILTINS = /^(Object\.(keys|freeze|isFrozen|getOwnPropertyNames|getPrototypeOf|hasOwn|is)|Array\.isArray|Boolean|Symbol(\.\w+)?|__gen_mark)$/
 // The calls that read an object's own key set, or make it another's (a copy's
 // keys, a prototype's), without handing it on (the rest escape it).
 const KEY_READERS = new Set(['Object.keys', 'Object.values', 'Object.entries', 'Object.getOwnPropertyNames', 'Object.hasOwn', 'Object.freeze', 'Object.isFrozen', 'Object.isSealed', 'Object.isExtensible',

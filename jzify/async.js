@@ -24,7 +24,7 @@
  * @module jzify/async
  */
 
-import { FN_BOUNDARY_OPS, isAccessor, suspendsIn, probe, closingLoop, labeled, bindTo } from './generators.js'
+import { FN_BOUNDARY_OPS, isAccessor, suspendsIn, probe, closingLoop, labeled, bindTo, genMark } from './generators.js'
 import { usesArguments } from './arguments.js'
 import { ASSIGN_OPS, extractParams, withLoc, collectParamName } from '../src/ast.js'
 
@@ -429,7 +429,7 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     const prior = enterBody(params, body)
     let hoisted
     try { hoisted = hoistSuspensions(body) } finally { leaveBody(prior) }
-    const machine = ['function*', null, params, mapAwait(hoisted)], list = extractParams(params)
+    const machine = ['function*', null, params, mapAwait(hoisted), 'machine'], list = extractParams(params)
     const own = usesArguments(body) || usesArguments(params) ? [['...', genTemp('aa')]]
       : list.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? ['...', genTemp('aa')] : genTemp('ap'))
     const seq = (l) => l.length === 0 ? null : l.length === 1 ? l[0] : [',', ...l]
@@ -447,11 +447,13 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
   // machine (generators.js, its async mode) suspends at awaits and yields
   // alike, tagging which for the driver, and lowers yield*.
   function lowerAsyncGen(params, body) {
-    const aa = genTemp('ag'), prior = enterBody(params, body)
+    const aa = genTemp('ag'), ag = genTemp('agen'), prior = enterBody(params, body)
     let hoisted
     try { hoisted = hoistSuspensions(awaitReturns(body)) } finally { leaveBody(prior) }
-    return ['=>', ['()', ['...', aa]],
-      ['()', '__ag_run', ['()', ['function*', null, params, mapAwait(hoisted), 'async'], ['...', aa]]]]
+    // (an async generator has a prototype: its objects are marked as a generator's, genMark)
+    return ['=>', Object.assign(['()', ['...', aa]], { proto: true }), ['{}', [';',
+      ['const', ['=', ag, ['()', '__ag_run', ['()', ['function*', null, params, mapAwait(hoisted), 'async'], ['...', aa]]]]],
+      genMark(ag), ['return', ag]]]]
   }
 
   return {

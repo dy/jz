@@ -9,19 +9,25 @@
  * @module compile/emit/class-dispatch
  */
 
-import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../../../layout.js'
-import { ctx, inc } from '../../ctx.js'
+import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_VIEW_FLAG, encodeTypedElemAux } from '../../../layout.js'
+
+// The bits of the Number 1: a generator mark's value (jzify/generators.js genMark).
+const ONE_BITS = '0x3FF0000000000000'
+import { ctx, inc, PTR, LAYOUT, setLinkDemand } from '../../ctx.js'
+import { TYPED_CTORS } from '../../std/typed.js'
 import { createFunction } from '../../function.js'
 import { memberUses } from '../../member-uses.js'
-import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET } from '../../ast.js'
-import { asF64, asI64, boolBoxIR, isNullish, isUndef, ptrOffsetIR, rawBigInt, temp, tempI32, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
+import { CLASS_T, ACCESSOR_GET, ACCESSOR_SET, T } from '../../ast.js'
+import { asF64, asI64, boolBoxIR, boxedPtrTypeEq, isNullish, isUndef, ptrOffsetIR, rawBigInt, temp, tempI32, throwErrorIR, throwTypeErrorIR, typed, MAX_CLOSURE_ARITY } from '../../ir.js'
 import { hasDurableReset } from '../../../module/collection/durable.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { callContractOf } from '../representation-plan.js'
 import { CARRIER } from '../../summary/contract.js'
 import { K, tagOf, isNullable } from '../../summary/index.js'
-import { emit } from '../../bridge.js'
+import { emit, storedValue } from '../../bridge.js'
+import { dataLen } from '../../static-data.js'
+import print from 'watr/print'
 import { isPresentArrayElement } from './shared.js'
 
 const BIND = CLASS_T + 'bind'
@@ -243,6 +249,103 @@ export function classInstanceof(a, brand) {
   if (!sids.length || notAnObject(a)) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(a))], ['i32.const', 0]], 'i32')
   const test = sids.map(sid => typed(tagEq(t, sid), 'i32')).reduce((x, y) => typed(['i32.or', x, y], 'i32'))
   return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(emit(a))], test], 'i32')
+}
+
+/** `v instanceof R` for a constructor a variable or parameter holds (jzify): the
+ *  host answers for one of the host's, as for a host global (module/web.js); a
+ *  function of the program answers by its table entry, resolved once the table
+ *  is whole (`__closure_instanceof`), as OrdinaryHasInstance does with its
+ *  `prototype` (ECMA-262 7.3.22): a class's instance carries its layout or a
+ *  deriving class's, a generator's object its mark (jzify/generators.js
+ *  genMark), a typed array the element kind of the constructor `jz:typed`
+ *  makes a function of; a function with no `prototype` (an arrow, a method,
+ *  an async function) throws the TypeError for an object; any other function
+ *  has no instance among the module's values (`new` of one calls it), and a
+ *  primitive is no instance of any. A value that is no function throws. */
+export function valueInstanceof(val, ctor) {
+  const v = temp('viv'), c = temp('vic')
+  const bits = (n) => ['i64.reinterpret_f64', ['local.get', `$${n}`]]
+  ctx.core.stdlib.__closure_instanceof ??= () => closureInstanceof().wat
+  ctx.core.stdlibDeps.__closure_instanceof ??= () => closureInstanceof().deps
+  inc('__closure_instanceof', '__ptr_type', '__ptr_aux')
+  let test = ['if', ['result', 'i32'], boxedPtrTypeEq(['local.get', `$${c}`], PTR.CLOSURE),
+    ['then', ['call', '$__closure_instanceof', bits(v), bits(c)]],
+    ['else', ['block', ['result', 'i32'], ['drop', throwErrorIR('TypeError', "Right-hand side of 'instanceof' is not callable")], ['i32.const', 0]]]]
+  if (ctx.transform.targetProfile.envImports) {
+    setLinkDemand('external')
+    inc('__ext_instanceof')
+    test = ['if', ['result', 'i32'], boxedPtrTypeEq(['local.get', `$${c}`], PTR.EXTERNAL),
+      ['then', ['call', '$__ext_instanceof', bits(v), bits(c)]], ['else', test]]
+  }
+  return typed(['block', ['result', 'i32'],
+    ['local.set', `$${v}`, asF64(storedValue(val))],
+    ['local.set', `$${c}`, asF64(emit(ctor))], test], 'i32')
+}
+
+// A generator factory's mark: the `__gen_mark` its body runs on the object it returns.
+const genMarkOf = (body) => {
+  const stmts = Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';' ? body[1].slice(1) : []
+  for (const st of stmts) {
+    if (!Array.isArray(st) || st[0] !== '()' || st[1] !== '__gen_mark') continue
+    const args = st.length > 3 ? st.slice(2) : Array.isArray(st[2]) && st[2][0] === ',' ? st[2].slice(1) : [st[2]]
+    if (Array.isArray(args[1]) && args[1][0] === 'str') return args[1][1]
+  }
+  return null
+}
+// A class's method read as a value: the closure its binder makes, `(…a) =>
+// m(self, …a)` (jzify/classes.js), whose function is the method's; null for
+// any other body. The method is the value (ECMA-262 7.3.22 follows a bound
+// function to its target): one with no `prototype`, or a generator's.
+const boundMethod = (body) => {
+  if (Array.isArray(body) && body[0] === '{}' && Array.isArray(body[1]) && body[1][0] === ';' && body[1].length === 2 && Array.isArray(body[1][1]) && body[1][1][0] === 'return') body = body[1][1][1]
+  if (!Array.isArray(body) || body[0] !== '()' || typeof body[1] !== 'string') return null
+  for (const e of classes()?.values() ?? []) for (const fn of e.methods.values()) if (fn === body[1]) return ctx.funcs.map.get(fn) ?? null
+  return null
+}
+// The table's answers, realized once the table is whole (the WAT and its demand alike).
+const closureInstanceof = () => {
+  if (ctx.closure.instanceofArms) return ctx.closure.instanceofArms
+  const tramp = T + 'tramp_', byFactory = new Map(), arms = [], deps = new Set()
+  for (const e of classes()?.values() ?? []) if (!e.nominal) byFactory.set(e.factory, e)
+  const bodies = new Map((ctx.closure.bodies ?? []).map(b => [b.name, b.body]))
+  const schema = (sid) => `(i64.eq (i64.and (local.get $v) (i64.const ${OBJECT_SCHEMA_HI_MASK})) (i64.const ${objectSchemaGuardHex(sid)}))`
+  const start = dataLen()
+  let noProto = null
+  ;(ctx.closure.table ?? []).forEach((name, idx) => {
+    const top = name.startsWith(tramp), fn = top ? name.slice(tramp.length) : name
+    const e = byFactory.get(fn), typedName = fn.startsWith('jz_typed$__') ? fn.slice(11) : null
+    let test = null
+    if (e) {
+      const derives = (d) => { for (let x = d; x; x = x.base ? classes().get(x.base) : null) if (x === e) return true; return false }
+      const sids = [...classes().values()].filter(derives).map(sidOf).filter(sid => sid != null)
+      test = sids.length ? sids.map(schema).reduce((a, b) => `(i32.or ${a} ${b})`) : '(i32.const 0)'
+    } else if (typedName && TYPED_CTORS.has(typedName))
+      test = `(if (result i32) (i32.and (f64.ne (f64.reinterpret_i64 (local.get $v)) (f64.reinterpret_i64 (local.get $v)))
+          (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.TYPED})))
+        (then (i32.eq (i32.and (call $__ptr_aux (local.get $v)) (i32.const ${~TYPED_ELEM_VIEW_FLAG})) (i32.const ${encodeTypedElemAux(typedName, false)})))
+        (else (i32.const 0)))`
+    else {
+      const own = top ? ctx.funcs.map.get(fn)?.body : bodies.get(name), method = top ? null : boundMethod(own)
+      const mark = genMarkOf(method ? method.body : own)
+      if (mark) {
+        deps.add('__is_object').add('__dyn_get_any')
+        test = `(if (result i32) (call $__is_object (local.get $v))
+        (then (i64.eq (call $__dyn_get_any (local.get $v) (i64.reinterpret_f64 ${print(ctx.core.emit['str'](mark))})) (i64.const ${ONE_BITS})))
+        (else (i32.const 0)))`
+      } else if (method || (top ? ctx.funcs.noProto.has(fn) : ctx.closure.noProto?.has(idx))) {
+        ctx.runtime.throws = true
+        noProto ??= ctx.core.throwHelper('TypeError', "Function has non-object prototype 'undefined' in instanceof check")
+        deps.add('__is_object').add(noProto)
+        test = `(if (result i32) (call $__is_object (local.get $v)) (then (call $${noProto}) (unreachable)) (else (i32.const 0)))`
+      }
+    }
+    if (test) arms.push(`(if (i32.eq (local.get $i) (i32.const ${idx})) (then (return ${test})))`)
+  })
+  if (dataLen() > start) ctx.runtime.reclaimSpans.push({ fn: '$__closure_instanceof', start, end: dataLen() })
+  return ctx.closure.instanceofArms = { deps: [...deps], wat: `(func $__closure_instanceof (param $v i64) (param $c i64) (result i32) (local $i i32)
+    (local.set $i (i32.wrap_i64 (i64.and (i64.shr_u (local.get $c) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    ${arms.join('\n    ')}
+    (i32.const 0))` }
 }
 
 /** `['__own', r, ['str', prop]]`: whether `r` carries an own property `prop` where the

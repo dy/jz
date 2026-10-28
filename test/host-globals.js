@@ -126,3 +126,26 @@ test('without a JS host, or in the strict subset, an undeclared name stays a com
   ok(!/__host_global|"global"/.test(compile('export const f = (v) => v + 1', { wat: true })), 'a program naming no host global imports none')
   if (!onWasi()) ok(/import "global" "Response"/.test(compile('export const f = () => new Response("x")', { wat: true })), 'a host global is one import by its name')
 })
+
+// A constructor a binding or an expression yields is asked of its value at run
+// time, where it was a compile-time rejection: the host answers for one of its
+// own (an exported class's handle included), the program by its classes and
+// typed-array constructors, and a value that is no function throws.
+test('instanceof a constructor a binding holds asks its value: the host for the host\'s, the program for its own', async () => {
+  if (onWasi()) return
+  await agree(`
+    export class P { constructor() { this.p = 1 } }
+    class Q {} class Z extends Q {}
+    const pick = (k) => k ? Q : P, R = globalThis.URL
+    export const is = (x, C) => { try { return x instanceof C } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }
+    export const mk = () => new P()
+    export const local = (k) => [new Z() instanceof pick(k), new P() instanceof pick(k), new Q() instanceof (k ? Z : Q)]
+    export const typedArg = (k) => { const T = k ? Float64Array : Int8Array; return [new Float64Array(2) instanceof T, new Int8Array(1) instanceof T] }
+    export const url = (x) => x instanceof R
+  `, [['is', new Map(), Map], ['is', [], Map], ['is', new URL('http://a'), URL], ['is', {}, URL], ['is', 1, 5], ['is', {}, {}],
+    ['local', 1], ['local', 0], ['typedArg', 1], ['typedArg', 0], ['url', new URL('http://b')], ['url', 1]])
+  const mod = jz(`export class P { constructor() { this.p = 1 } }
+    export const is = (x, C) => x instanceof C
+    export const mk = () => new P()`).exports
+  is([mod.is(mod.mk(), mod.P), mod.is(new mod.P(), mod.P), mod.is({}, mod.P)].join(), 'true,true,false', 'an exported class answers for its instances')
+})

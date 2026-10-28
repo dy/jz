@@ -218,8 +218,12 @@ array is a fresh copy at each read, a typed array a view.
 Under the JS host a name no declaration of the program binds is the host's
 global: `new Response(text)`, `x instanceof WritableStream` and
 `typeof WebSocket` ask the host, and reading a global the host lacks throws the
-ReferenceError JavaScript throws. So do `new C()` of a constructor a variable
-or parameter holds, `typeof` of a host function (`'function'`) and a for-of
+ReferenceError JavaScript throws. So do `new C()` and `x instanceof C` of a
+constructor a variable or parameter holds (a class of the program answers for
+its own instances, a generator function for its objects, though two that one
+expression makes answer for each other's; `instanceof` of an ordinary function
+the program declares rejects, as `new` of one calls it), `typeof` of a host
+function (`'function'`) and a for-of
 over a host iterable, which takes its iterator's values one per step. A member
 of `console`, `crypto`, `navigator` or `performance` that JZ does not
 implement (`crypto.subtle`) is the host's, and `console.log` hands each

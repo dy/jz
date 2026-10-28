@@ -5,7 +5,7 @@
 
 import {
   handlerArgs, rewriteChildren, JZ_BLOCK_OPS, bindingOf, cloneNode, nodeEqual, descriptorProps,
-  literalString, collectBareRefs, moduleStmts, someDeep, isZeroLiteral, extractParams, withLoc,
+  literalString, collectBareRefs, moduleStmts, someDeep, isZeroLiteral, extractParams, withLoc, noted,
 } from '../src/ast.js'
 
 export function foldStaticExportHelpers(ast) {
@@ -175,7 +175,7 @@ function rewriteBundlerAliasesNode(node, aliases, interopBindings) {
 
   if (node[0] === '.' || node[0] === '?.') return [node[0], rec(node[1]), node[2]]
   if (node[0] === ':') return [node[0], node[1], rec(node[2])]
-  return node.map((part, i) => i === 0 ? part : rec(part))
+  return noted(node, node.map((part, i) => i === 0 ? part : rec(part)))
 }
 
 function replaceInteropReads(node, bindings) { return withLoc(replaceInteropReadsNode(node, bindings), node) }
@@ -191,7 +191,7 @@ function replaceInteropReadsNode(node, bindings) {
     return node[2] === 'default' ? mod : [node[0], mod, node[2]]
   }
   if (node[0] === ':') return [node[0], node[1], replaceInteropReads(node[2], bindings)]
-  return node.map((part, i) => i === 0 ? part : replaceInteropReads(part, bindings))
+  return noted(node, node.map((part, i) => i === 0 ? part : replaceInteropReads(part, bindings)))
 }
 
 function isGetPrototypeOfCall(node, aliases) {
@@ -286,7 +286,7 @@ function replaceStaticExportReadsNode(node, rewrites) {
     if (value) return cloneNode(value)
   }
   if (node[0] === ':') return [node[0], node[1], replaceStaticExportReads(node[2], rewrites)]
-  return node.map((part, i) => i === 0 ? part : replaceStaticExportReads(part, rewrites))
+  return noted(node, node.map((part, i) => i === 0 ? part : replaceStaticExportReads(part, rewrites)))
 }
 
 export function canonicalizeObjectIdioms(node) {

@@ -2797,6 +2797,16 @@ export default (ctx) => {
     ['drop', asF64(emit(obj))], asF64(emit(['{}']))], 'f64'))
 
   ctx.core.emit['__raw_prop'] = (obj, prop) => dotRead(obj, prop, true)
+  // A generator function's mark on an object it makes (jzify/generators.js
+  // genMark): a hidden property where the program asks `instanceof` of a
+  // value (class-dispatch.js valueInstanceof), as a nominal class's instance
+  // carries its mark; nothing anywhere else.
+  ctx.core.emit['__gen_mark'] = (obj, key) => {
+    if (!ctx.features.ctorValues) return typed(['nop'], 'void')
+    ctx.module.include('collection'); ctx.module.include('array'); ctx.module.include('string')
+    return typed(['block', ['drop', asF64(emit(['=', ['.', obj, key[1]], [null, 1]]))],
+      ['drop', asF64(emit(['()', '__hide_member', [',', obj, key]]))]], 'void')
+  }
   // The native method-value readers have already checked own membership;
   // their fallback reads data without recursively selecting a method value.
   ctx.core.emit['__data_prop'] = (obj, prop) => emitPropAccess(emit(obj), obj, prop[1])

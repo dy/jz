@@ -22,7 +22,7 @@ export const rewriteChildren = (node, visit, state) => {
   let out = null
   for (let i = 1; i < node.length; i++) {
     const child = visit(node[i], state)
-    if (child !== node[i] && !out) { out = node.slice(0, i); if (node.loc != null) out.loc = node.loc }
+    if (child !== node[i] && !out) { out = node.slice(0, i); if (node.loc != null) out.loc = node.loc; if (node.noProto) out.noProto = true }
     if (out) out.push(child)
   }
   return copyLoc(node, out || node)
@@ -33,6 +33,8 @@ export const copyLoc = (from, to) => {
   if (Array.isArray(to)) {
     if (to.loc == null && from?.loc != null) to.loc = from.loc
     if (to.sourceLoc == null && from?.sourceLoc != null) to.sourceLoc = from.sourceLoc
+    // (a function's parameter list or body that says it has no `prototype`, jzify transform.js prototypeless)
+    if (from?.noProto) to.noProto = true
   }
   return to
 }

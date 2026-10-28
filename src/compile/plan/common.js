@@ -73,7 +73,13 @@ export const mutatesAny = (node, names, opts) => some(node, n => {
 }, opts)
 
 /** Deep-clone array-tree AST. Plain values pass through by identity. */
-export const clonePlain = node => Array.isArray(node) ? node.map(clonePlain) : node
+export const clonePlain = node => {
+  if (!Array.isArray(node)) return node
+  const out = node.map(clonePlain)
+  // (a function's parameter list or body: it has no `prototype`, jzify transform.js prototypeless)
+  if (node.noProto) out.noProto = true
+  return out
+}
 
 /** AST index of a `for` loop's body, or null if `stmt` isn't a `for`.
  *  Handles both `['for', cond, body]` (3-arg while-like) and the full
