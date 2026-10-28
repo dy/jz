@@ -42,6 +42,24 @@ test('new of a host constructor constructs on the host, its arguments evaluated 
     ['wasm', new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 5, 1, 0x60, 0, 1, 0x7f, 3, 2, 1, 0, 7, 5, 1, 1, 0x66, 0, 0, 0x0a, 6, 1, 4, 0, 0x41, 0x2a, 0x0b])]])
 })
 
+test('new of a constructor a binding holds constructs a host one on the host and calls a class of the program', async () => {
+  if (onWasi()) return
+  await agree(`
+    class A { constructor(o) { this.v = o.a * 2 } }
+    class B { constructor(o) { this.v = o.a * 3 } }
+    export const local = (x, flag) => { const K = flag ? A : B; return new K({ a: x }).v }
+    export const alias = async (s) => { const R = Response; const r = new R(s); return [r instanceof Response, await r.text()] }
+    export const param = (C, s) => new C(s).pathname
+    export const later = async (s) => { let M = null; M = Response; return await new M(s).text() }
+    export const order = () => { const log = [], R = Response; try { new R(log.push('arg')) } catch {} return log.join() }
+  `, [['local', 2, true], ['local', 2, false], ['alias', 'abc'], ['param', URL, 'http://x.y/z'], ['later', 'def'], ['order']])
+  // a class of the program held in a const compiles as its call, with no host arm
+  const held = `class A { constructor(o) { this.v = o.a * 2 } }
+    class B { constructor(o) { this.v = o.a * 3 } }
+    export const f = (x, flag) => { const K = flag ? A : B; return new K({ a: x }).v }`
+  ok(!/__ext_construct/.test(jz.compile(held, { wat: true })), 'a const of classes constructs by call')
+})
+
 test('a host global the host lacks throws a ReferenceError where read, and types as undefined', async () => {
   if (onWasi()) return
   globalThis.jzTestDouble = (a) => a * 2

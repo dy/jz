@@ -22,6 +22,8 @@ import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering, closesOnReturn } from './generators.js'
 import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS, MUTATE_OPS, withLoc } from '../src/ast.js'
 import { err } from '../src/ctx.js'
+import { hostGlobalName } from '../src/prepare/state.js'
+import { HOST_GLOBALS } from '../src/autoload.js'
 
 const names = createNames()
 const SHADOW_SENSITIVE = new Set([
@@ -76,6 +78,26 @@ const declaredValue = (name) => {
   for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.values.has(name) && !s.classes.has(name)
   return false
 }
+// Whether `n`, read in scope `from`, is a value the program makes: a class, a
+// function, an import, a builtin the target resolves (`Function`, `Map`), a
+// const holding one, or one chosen among them (`const K = cond ? A : B`). A
+// parameter, a variable or a host global may hold the host's.
+const programCallable = (n, from = activeBuiltinScope, depth = 0) => {
+  while (Array.isArray(n) && n[0] === '()' && n.length === 2) n = n[1]
+  if (depth > 8) return false
+  if (typeof n === 'string') {
+    for (let s = from; s; s = s.parent) if (s.names.has(n)) {
+      if (!s.values.has(n) || s.classes.has(n)) return true
+      return s.consts.has(n) && programCallable(s.consts.get(n), s, depth + 1)
+    }
+    return !hostGlobalName(n) && !HOST_GLOBALS.has(n)
+  }
+  if (!Array.isArray(n)) return false
+  if (n[0] === '?' || n[0] === '?:') return programCallable(n[2], from, depth + 1) && programCallable(n[3], from, depth + 1)
+  if (n[0] === '||' || n[0] === '??' || n[0] === '&&') return programCallable(n[1], from, depth + 1) && programCallable(n[2], from, depth + 1)
+  const lit = n[0] === 'async' && Array.isArray(n[1]) ? n[1][0] : n[0]
+  return lit === '=>' || lit === 'function' || lit === 'function*' || lit === 'class'
+}
 // A node's builtin scope is entered around its own rewrite and left after
 // it: a pair, not a wrapper taking a closure, so a walk allocates nothing
 // per node (the self-compile makes a closure record for each).
@@ -92,7 +114,7 @@ const functionNameWrite = name => {
 // made a parameter in one function suppress unrelated builtin lowering in
 // every other function. The builder scopes nodes into `map`.
 const scopeBuilder = (map) => {
-  const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), strict: parent?.strict ?? false, self: null })
+  const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), consts: new Map(), strict: parent?.strict ?? false, self: null })
   const functionDecls = new WeakSet()
   const strictBody = body => {
     if (Array.isArray(body) && body[0] === '{}') body = body[1]
@@ -118,6 +140,8 @@ const scopeBuilder = (map) => {
           addDeclarator(scope, d)
           // a class expression's binding names a class too (`const C = class {}`)
           if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === 'class') scope.classes.add(d[1])
+          // a const's value, which `programCallable` reads
+          if (op === 'const' && Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') scope.consts.set(d[1], d[2])
         }
       } else if ((op === 'function' || op === 'function*' || op === 'class') && typeof stmt[1] === 'string') {
         addBuiltinName(scope, stmt[1])
@@ -272,6 +296,7 @@ let transform, transformScope, transformParams
   classStaticAccessor: (name, slot) => classStaticAccessor(name, slot),
   isClass: declaredClass,
   isValue: declaredValue,
+  programCallable: (name) => programCallable(name),
   assigned: (name) => census.names.has(name),
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,

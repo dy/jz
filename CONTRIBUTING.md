@@ -1858,6 +1858,11 @@ literal's text and a jump's label prepare as data (`str`, `break`, `continue`
 handlers), so no name in them resolves. Interop maps the `@@name` well-known
 symbol keys to the host's symbols, and copies a typed array of the module's
 memory handed to a host call, copying the host's writes back after the call.
+`new X(…)` of a variable or parameter that is not a program class or function
+(jzify `programCallable`: a const of classes and functions is one) is
+`__ptr_is(X, EXTERNAL) ? __host_new(X, …) : X(…)`; the summary decides the
+test false for a callee it bounds, so the plan drops the host arm.
+
 A class the entry exports reaches the host as a class (class-dispatch.js
 `synthesizeClassExports`, `jz:class`, interop `hostClasses`): the factory is
 its constructor, and each member a class the host holds defines anew is an

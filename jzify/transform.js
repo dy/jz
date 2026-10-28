@@ -9,7 +9,7 @@ import { isDestructurePat } from './hoist-vars.js'
 import { foldPrototypeStores } from './classes.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
-import { TYPED_ELEM_NAMES } from '../layout.js'
+import { TYPED_ELEM_NAMES, PTR } from '../layout.js'
 import { hostGlobalName } from '../src/prepare/state.js'
 import { HOST_GLOBALS } from '../src/autoload.js'
 
@@ -599,6 +599,17 @@ export function createTransform(opts) {
         const argNode = Array.isArray(ctor) && ctor[0] === '()' ? ctor[2] : cargs.length === 1 ? cargs[0] : cargs.length ? [',', ...cargs] : null
         const items = argNode == null ? [] : Array.isArray(argNode) && argNode[0] === ',' ? argNode.slice(1) : [argNode]
         return ['()', '__host_new', items.length ? [',', transform(callee), ...items.map(transform)] : transform(callee)]
+      }
+      // A constructor a variable or parameter holds (`const R = Response`, a
+      // class the host passes in): the host constructs one that is a host
+      // value, as `new` does; a value of the program (a class's factory) is
+      // called. Each arm evaluates the arguments once, after the callee.
+      if (typeof callee === 'string' && opts.isValue?.(callee) && !opts.classBrand(callee) && !opts.programCallable?.(callee) && ctx.transform.targetProfile?.envImports && !ctx.transform.strict) {
+        const argNode = Array.isArray(ctor) && ctor[0] === '()' ? ctor[2] : cargs.length === 1 ? cargs[0] : cargs.length ? [',', ...cargs] : null
+        const items = argNode == null ? [] : Array.isArray(argNode) && argNode[0] === ',' ? argNode.slice(1) : [argNode]
+        return ['?', ['__ptr_is', callee, [null, PTR.EXTERNAL]],
+          ['()', '__host_new', [',', callee, ...items.map(transform)]],
+          ['()', callee, items.length ? [',', ...items.map(transform)] : null]]
       }
       if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
       return ['()', transform(ctor), ...(cargs.length ? cargs.map(transform) : [null])]

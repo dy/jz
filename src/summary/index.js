@@ -50,7 +50,7 @@
  */
 import { SPAN_BINARY, spanBinary } from './span.js'
 import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, T as SEP } from '../ast.js'
-import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
+import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
 import { VAL } from '../reps.js'
@@ -2293,6 +2293,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return a === !stop && b === !stop ? !stop : undefined
     }
     if (op === 'instanceof' && typeof c[1] === 'string' && typeof c[2] === 'string') return instanceTest(c[1], c[2])
+    // `__ptr_is(x, EXTERNAL)` (a constructor a binding holds, jzify `new`):
+    // false where every value of x is the program's, a kind the summary bounds
+    if (op === '__ptr_is' && typeof c[1] === 'string' && Array.isArray(c[2]) && c[2][1] === PTR.EXTERNAL) {
+      const key = keyOf(c[1])
+      if (key === null) return undefined
+      const k = kinds[key]
+      if (k == null || tagOf(k) === K.NONE) return paramKeys.has(key) ? 'pending' : undefined
+      return (tagsOf(k) | NULL_BITS) === TAGS ? undefined : false
+    }
     const tp = typeofPredicateOf(c)
     if (tp) { const t = typeofTest(tp.name, typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]); return typeof t === 'boolean' && !tp.eq ? !t : t }
     if (op === '()' && c.length === 3 && c[1] === 'Array.isArray' && typeof c[2] === 'string') return instanceTest(c[2], 'Array')
