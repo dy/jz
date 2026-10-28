@@ -58,10 +58,17 @@ export const probe = (v, prop) => Object.assign(['.', v, prop], { probe: true })
 // hasYield) misrouted nested function declarations/expressions: their inner
 // `return` forced statement decomposition and then read as a machine return
 // ("yield inside `function`" rejections for previously-supported bodies).
-export const FN_BOUNDARY_OPS = new Set(['=>', 'function', 'function*', 'class', 'async'])
+// An object literal's accessor (`['get' | 'set', key, params, body]`) is a
+// function form too; its key, when computed (`['[]', e]`), is evaluated by
+// the enclosing body, so a suspension there is the body's.
+export const FN_BOUNDARY_OPS = new Set(['=>', 'function', 'function*', 'class', 'async', 'get', 'set'])
+export const isAccessor = (n) => n[0] === 'get' || n[0] === 'set'
 
 const fnBoundary = (n) => FN_BOUNDARY_OPS.has(n[0])
-const hasYield = (n) => some(n, isYield, { boundary: fnBoundary })
+/** Whether `n` holds a node `is` names that this body evaluates: not in a
+ *  nested function form, in an accessor's computed key. */
+export const suspendsIn = (n, is) => some(n, m => is(m) || isAccessor(m) && suspendsIn(m[1], is), { boundary: fnBoundary })
+const hasYield = (n) => suspendsIn(n, isYield)
 
 // A break/continue that would bind OUTSIDE this statement (its target was
 // decomposed into states, so the raw op would bind my dispatch while(1) instead).
@@ -125,7 +132,7 @@ export const closingLoop = (loop, open, close, abort, error, body) => ['try', ['
 const leavesLoop = (n, depth = 0) => {
   if (!Array.isArray(n)) return false
   const op = n[0]
-  if (FN_BOUNDARY_OPS.has(op)) return false
+  if (FN_BOUNDARY_OPS.has(op)) return isAccessor(n) && leavesLoop(n[1], depth)
   if (op === 'return' || op === 'yield' || op === 'yield*') return true
   if (op === 'break') return n[1] != null || depth === 0
   if (op === 'continue') return n[1] != null
@@ -424,8 +431,8 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       const op = n[0]
       if (op === 'str' || op === '//' || op === 'break' || op === 'continue') return n.slice()
       if (op === '.' || op === '?.') return [op, expr(n[1], s), n[2]]
+      if (isAccessor(n)) { const f = scope(n, 'f', s, { fn: true }); return [op, key(n[1], s), fnParams(n[2], f), block(n[3], f, false)] }
       if (FN_BOUNDARY_OPS.has(op)) return fn(n, s, false)
-      if (op === 'get' || op === 'set') { const f = scope(n, 'f', s, { fn: true }); return [op, key(n[1], s), fnParams(n[2], f), block(n[3], f, false)] }
       if (op === ':') return [':', key(n[1], s), expr(n[2], s)]
       if (op === '{}') return object(n, s, (x) => expr(x, s))
       return n.map((c, i) => i === 0 ? c : expr(c, s))

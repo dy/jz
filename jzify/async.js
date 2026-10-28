@@ -24,9 +24,9 @@
  * @module jzify/async
  */
 
-import { FN_BOUNDARY_OPS, probe, closingLoop, labeled, bindTo } from './generators.js'
+import { FN_BOUNDARY_OPS, isAccessor, suspendsIn, probe, closingLoop, labeled, bindTo } from './generators.js'
 import { usesArguments } from './arguments.js'
-import { some, ASSIGN_OPS, extractParams, withLoc, collectParamName } from '../src/ast.js'
+import { ASSIGN_OPS, extractParams, withLoc, collectParamName } from '../src/ast.js'
 
 const DECLS = new Set(['let', 'const', 'var', 'using'])
 /** The names a node assigns, counted per name (a destructuring target's, a
@@ -47,9 +47,9 @@ export const assignCensus = (node, deep, names = new Map(), props = new Set()) =
   const walk = (n) => {
     if (!Array.isArray(n) || n[0] == null) return
     const op = n[0]
-    if (!deep && FN_BOUNDARY_OPS.has(op)) return
-    if (DECLS.has(op)) { for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=') walk(n[i][2]); return }
     if (op === 'get' && typeof n[1] === 'string') props.add(n[1])
+    if (!deep && FN_BOUNDARY_OPS.has(op)) { if (isAccessor(n)) walk(n[1]); return }
+    if (DECLS.has(op)) { for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=') walk(n[i][2]); return }
     if (ASSIGN_OPS.has(op) || op === '++' || op === '--' || op === 'delete') target(n[1])
     else if (op === 'for' && Array.isArray(n[1]) && (n[1][0] === 'of' || n[1][0] === 'in') && !(Array.isArray(n[1][1]) && DECLS.has(n[1][1][0]))) target(n[1][1])
     for (let i = 1; i < n.length; i++) walk(n[i])
@@ -141,9 +141,8 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
       return mapAwait(desugarForAwait(node[1], node[2], labels))
     return withLoc(node.map((n, i) => i === 0 ? n : mapAwait(n)), node)
   }
-  function fnBoundary(n) { return FN_OPS.has(n[0]) }
   function isAwait(n) { return n[0] === 'await' || n[0] === 'for await' || n[0] === 'yield' || n[0] === 'yield*' }
-  function refsAwait(node) { return some(node, isAwait, { boundary: fnBoundary }) }
+  function refsAwait(node) { return suspendsIn(node, isAwait) }
 
   // ---- a suspension in expression position → statement position ----
   // The machine suspends at statements only (generators.js: a yield or an
@@ -228,8 +227,10 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
   }
   // `within`: the literal or the call a `,` list stands in
   function hoistExprNode(e, within) {
-    if (!Array.isArray(e) || FN_OPS.has(e[0]) || !refsAwait(e)) return { pre: [], expr: e }
+    if (!Array.isArray(e) || !refsAwait(e)) return { pre: [], expr: e }
     const op = e[0]
+    // an accessor suspends in its computed key alone: the key hoists, the accessor stays
+    if (isAccessor(e)) { const k = hoistExpr(e[1][1]); return { pre: k.pre, expr: [op, ['[]', k.expr], e[2], e[3]] } }
     if (isAwaitOf(e)) {
       const inner = hoistExpr(e[1]), t = genTemp('aw')
       return { pre: [...inner.pre, ['let', ['=', t, [op, inner.expr]]]], expr: t }
@@ -254,7 +255,9 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     let last = 1, recv = null
     for (let i = 1; i < e.length; i++) if (refsAwait(e[i])) last = i
     const temp = (x) => { const t = genTemp('aw'); pre.push(['let', ['=', t, x]]); return t }
-    const settleVal = (x) => isSettled(x) ? x : temp(x)
+    // a function made later is the same function: making one reads nothing
+    // (a class runs its static parts, a method keeps its literal and its `this`)
+    const settleVal = (x) => isSettled(x) || Array.isArray(x) && FN_OPS.has(x[0]) && x[0] !== 'class' ? x : temp(x)
     // a computed key reads before what follows it
     const settleKey = (k) => Array.isArray(k) && k[0] === '[]' && k.length === 2 ? ['[]', settleVal(k[1])] : k
     // a callee read before its arguments, a method on its receiver (`(o.m)()`
@@ -276,6 +279,7 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
       if (typeof x === 'string') { const v = settleVal(x); return inObject && v !== x ? [':', x, v] : v }
       if (isSimple(x)) return x
       if (x[0] === ':') return [':', settleKey(x[1]), settleVal(x[2])]
+      if (isAccessor(x)) return [x[0], settleKey(x[1]), x[2], x[3]]
       // a spread iterates before what follows it
       if (x[0] === '...') return ['...', temp(inObject ? ['{}', ['...', x[1]]] : ['[]', ['...', x[1]]])]
       return settleVal(x)
@@ -420,7 +424,7 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     // parameters are then its callers' arguments, as a plain function's are. A
     // function reading `arguments` takes them all, `(...aa)`, keeping their count.
     // An async function is no generator: its machine would take a yield for a suspension.
-    if (some([null, params, body], n => n[0] === 'yield' || n[0] === 'yield*', { boundary: fnBoundary }))
+    if (suspendsIn([null, params, body], n => n[0] === 'yield' || n[0] === 'yield*'))
       err('yield outside a generator body: an async function yields nothing, an `async function*` does')
     const prior = enterBody(params, body)
     let hoisted

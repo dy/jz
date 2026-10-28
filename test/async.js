@@ -620,6 +620,19 @@ test('async: a promise enumerates no keys', async () => {
     export async function settled() { const p = g(); const s = JSON.stringify(p); return s + (await p) + ('then' in p) }`)
 })
 
+// An object literal's accessor in an async body or a generator is a function
+// of its own: its `return` and its declarations are its own, and a method or
+// an accessor ahead of a later await keeps its place in the literal.
+test('async: an object literal accessor in a suspending body', async () => {
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`export async function getter() { const o = { get x() { return 5 } }; await null; return o.x }
+    export async function setter() { let s = 0; const o = { set x(v) { s = v; return }, y: await 3 }; o.x = o.y; return s }
+    export async function method() { const o = { m() { return this.y }, y: await 2 }; return o.m() }
+    export async function locals() { function* g() { const o = { get x() { const y = 2; return y } }; yield o.x; const y = 3; yield y } return [...g()].join() }
+    export async function loop() { function* g() { for (let i = 0; i < 3; i++) { const o = { get x() { for (;;) { break } return i } }; yield o.x } } return [...g()].join() }
+    export async function agen() { async function* g() { const o = { get x() { return 7 } }; yield o.x } const out = []; for await (const v of g()) out.push(v); return out.join() }`)
+})
+
 // `for (using x of src)` and `for await (using x of src)` in an async body
 // dispose each iteration's resource as the iteration leaves, after its awaits.
 test('async: for (using x of src) disposes each iteration', async () => {
