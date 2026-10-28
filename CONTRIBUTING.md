@@ -4745,36 +4745,55 @@ log 4.1 and 3.0 (3.1), sin 4.2 and 2.4 (6.3), atan 2.9 and 2.2 (2.6).
 
 jz's Math is not V8's bit for bit: it keeps within 50 ulp of it, for 9% more
 time on the floatbeat corpus than the fast kernels it replaced, where porting
-V8's fdlibm exactly (branch `audiojs-math`) took 75% more. The budget is spent
-on the polynomials, never on the argument reduction. `sin`, `cos` and
-`tan` reduce x to n·π/2 + r, |r| ≤ π/4, and take sin(r) or cos(r) by n's
-parity (a branch; a phase keeps it predicted), negated by n's second bit.
-An |x| ≤ π/4 (the double below it; x·2/π rounds to ½ and ties to n = 0) is its
-own remainder and skips the reduction, the same bits: an LFO or a pan angle in
-[0, 0.7] ran at 0.73 (sin) and 0.57 (cos) of V8's speed and now 1.26 and 1.21,
-where an argument across [−30, 44] pays the test (2.2 to 1.9 times V8).
-Below 2^24 the reduction is inline Cody–Waite: n from x·2/π rounded by adding
-and removing 1.5·2^52 (whose low word is then n), r = x − n·H1 − n·H2 − n·H3 −
-n·H4 with π/2 in 29, 29, 29 and 53-bit parts, each truncated so −0 stays −0.
-Every n·Hk but the last is exact and every subtraction that cancels is exact,
-so r is within an ulp of the true remainder even at the double nearest a
-multiple of π/2 (an exhaustive search of k < 2^24 finds the worst at k =
-9206271, |r| = 2^-59), where three parts (111 bits) would err by 6e6 ulp.
-Past 2^24 `$math.rem_pio2` is Payne–Hanek in integer arithmetic: x's 53-bit
-significand times the 192 bits of 2/π its exponent selects (a read-only
-table, fdlibm's ipio2 bits in 64-bit words), the product mod 2^192 giving n
-mod 4 and a 128-bit fraction, within 1.3 ulp of the true remainder, the
-worst double of all (6381956970095103·2^797, |r| = 2^-61) included; no loop
-and no scratch memory, where fdlibm's version keeps a working array in
-linear memory. The kernels (`trig-tables.js`, fitted by
-`scripts/minimax-trig.mjs`'s Remez exchange in 256-bit fixed point) are the
-lowest degree the budget allows: sin(r) = r·(1 + t·P(t)) of degree 11 (45 ulp
-minimax, 38 as evaluated; degree 9 is 46000) and cos(r) of degree 12 (0.8 and
-2.2; degree 10 is 1071). `sin2`/`cos2` do the same two lanes wide, one
-kernel when both lanes' parities agree, bit-identical with the scalar; a lane
-past 2^24 sends both to it. The constant folder mirrors the kernels below
-2^24 and leaves a larger literal argument for run time (the compiler compiled
-by itself has 64-bit BigInt, which cannot mirror the 192-bit product).
+V8's fdlibm exactly (branch `audiojs-math`) took 75% more. `sin`, `cos` and
+`tan` have since taken fdlibm's reduction and polynomials at that corpus time
+(1.00× the kernels before them, the median of six paired rounds, 0.92 to 1.17;
+`trig-tables.js` has the constants and their bounds): x = n·π/2 + r − e,
+|r| ≤ π/4 and e the tail below
+r's last place, then sin(r − e) or cos(r − e) by n's parity (a branch; a phase
+keeps it predicted), negated by n's second bit. An |x| ≤ π/4 (the double below
+it; x·2/π rounds to ½ and ties to n = 0) is its own remainder and skips the
+reduction. Below 2^24 the first Cody–Waite round is inline: n from x·2/π
+rounded by adding and removing 1.5·2^52 (whose low word is then n), r = (x −
+n·H1) − n·T1 with H1 π/2's leading 27 bits (so x − n·H1 is exact) and T1 the
+double nearest the rest, and e that subtraction's rounding error, exact by
+Fast2Sum. One rounding of n·T1 leaves r − e within |x|·2^-83 of the true
+remainder, 2^-57 relatively while |r| ≥ |x|·2^-26. A smaller r, every |x| ≥
+2^24 (its r stays below that bound) and a NaN go out of line to
+`$math.rem_pio2`: below 2^24 the second round, n·H2 exact and its error carried
+by TwoSum into n·T2 (|x|·2^-111), then Payne–Hanek in integer arithmetic for
+what still cancels and for everything past 2^24: x's 53-bit significand times
+the 192 bits of 2/π its exponent selects (a read-only table, fdlibm's ipio2
+bits in 64-bit words), the product mod 2^192 giving n mod 4 and a 128-bit
+fraction, whose top 64 bits times π/2·2^63 give r and e within 2^-60 of the
+remainder, the worst double of all (6381956970095103·2^797, |r| = 2^-61)
+included; no loop and no scratch memory. The kernels are fdlibm's polynomials
+(k_sin.c S1..S6, k_cos.c C1..C6, 2^-58 each) in a form that sums the small
+terms before the one rounding at the head's magnitude: sin = r − (e + z·r·P),
+cos = 1 − (z·(1/2 + z·P) − r·e), z = r², P the negated polynomial, which also
+keeps sin(−0) = −0. One P serves both, its coefficients read from a table of the
+two interleaved at the offset the parity picks, evaluated as even + z·odd halves
+(`polySplit`, k_sin.c's order): 11 operations, 7 of them in a chain, where
+Horner takes 10 and 10 and the tree 12 and 6. A loop of independent calls is
+bound by the first number, a hash of a sine or an LFO into an oscillator by the
+second. `tan` is sin/cos (−cos/sin for an odd quadrant) without the
+tail, its sine r·(1 + z·S) and cosine 1 − z/2 + z²·C each one Horner chain, so
+the head is added once. The inline part is what V8 inlines into a loop that
+calls it, and only while the callee fits the caller's budget (about the
+caller's own size again: 317 bytes for a one-line loop over an array); `sin` is
+283 bytes, `cos` 288, `tan` 290, where the four-part kernels they replaced were
+297, 302 and 297. A first version of these, with fdlibm's tan kernel and the
+second round inline, reached 461 bytes and lost the inlining: 2.4× the time in
+that loop. The reduction's
+fast path leaves its block by `br_if` and the call falls through to the end: an
+if/else around the call made V8 reload the loop's counter, bounds and memory
+base from the stack every iteration. `sin2`/`cos2` do the same two lanes wide,
+bit-identical with the scalar: one kernel when both lanes' parities agree, and
+otherwise head − (tail + m·Q) with each term and each lane's coefficient pair
+(one load and a swizzle) picked by its parity; a lane whose first round
+cancels sends both to the scalar. The constant folder mirrors both rounds and
+leaves an argument Payne–Hanek reduces for run time (the compiler compiled by
+itself has 64-bit BigInt, which cannot mirror the 192-bit product).
 `atan` reduces |x| by three intervals and at most one division (as is, π/4 +
 atan((|x| − 1)/(|x| + 1)), π/2 + atan(−1/|x|)) to |t| ≤ tan(π/8) and a
 degree-19 odd polynomial (8.8 ulp minimax); `atan2` divides and calls it, and
@@ -4790,8 +4809,9 @@ and log1p, each the one that cancels nothing in its range; `log1p` takes the
 ratio x/(u − 1) before the product that overflowed past 2.5e305. Measured
 against V8 (`node scripts/math-ulp.mjs`: the floatbeat corpus's arguments,
 the doubles nearest k·π/2 to k = 1e6 with their ±4-ulp neighbours, 200k
-log-uniform arguments a function, the edges): sin 40, cos 39, tan 49,
-atan and atan2 10, sinh 5, cosh 3, tanh 5, asinh 4, acosh 5,
+log-uniform arguments a function, the edges): sin 1, cos 1, tan 3 (1.3,
+1.3 and 3.2 from the true value, which `test/math-ulp.js` computes with
+1400-bit π), atan and atan2 10, sinh 5, cosh 3, tanh 5, asinh 4, acosh 5,
 atanh 4, exp 1, expm1 3, log 4, log1p 4, log2 4, log10 2, cbrt 0, hypot 2,
 pow 11, a k/5 exponent 40; sin(π) is 1.2246467991473532e-16 and the kπ/2
 set stays within 2 ulp. `test/math-ulp.js` pins each bound with the lanes and

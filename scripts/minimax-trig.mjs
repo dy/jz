@@ -1,5 +1,5 @@
-// The kernels' polynomials (module/math/trig-tables.js SIN_C, COS_C, ATAN_C),
-// plus the former asin fit for comparison with its current fdlibm kernel:
+// The atan kernel's polynomial (module/math/trig-tables.js ATAN_C), plus the former sin,
+// cos and asin fits for comparison with the fdlibm kernels that replaced them:
 // minimax fits of the function's relative error on the reduced interval, by the Remez
 // exchange in 256-bit fixed point, the coefficients rounded to the nearest double. Each is
 // then measured as the kernels evaluate it (polyTree, binary64) against the same
@@ -124,8 +124,8 @@ const measure = (kernel, F, X) => {
 
 const PIO4 = Math.PI / 4 * (1 + 2 ** -20), TPIO8 = (Math.SQRT2 - 1) * (1 + 2 ** -30)   // a hair past the reduction's bound
 const fits = [
-  ['SIN_C', SIN, (x) => x, 3, 4, PIO4, (c) => [1, ...c], (cs, r) => r * polyTree(cs, r * r)],
-  ['COS_C', COS, (x) => ONE - mul(x, x) / 2n, 4, 4, PIO4, (c) => [1, -0.5, ...c], (cs, r) => polyTree(cs, r * r)],
+  ['SIN_FIT', SIN, (x) => x, 3, 4, PIO4, (c) => [1, ...c], (cs, r) => r * polyTree(cs, r * r)],
+  ['COS_FIT', COS, (x) => ONE - mul(x, x) / 2n, 4, 4, PIO4, (c) => [1, -0.5, ...c], (cs, r) => polyTree(cs, r * r)],
   ['ATAN_C', ATAN, (x) => x, 3, 8, TPIO8, (c) => [1, ...c], (cs, r) => r * polyTree(cs, r * r)],
   ['ASIN_C', ASIN, (x) => x, 3, 9, 0.5, (c) => [1, ...c], (cs, r) => r * polyTree(cs, r * r)],
 ]

@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from '../../module/math/trig-tables.js'
+import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, RED_FIRST, RED_SECOND, SIN_C, COS_C, SINCOS_TAB, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, polyHorner, polySplit, fifthFold } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -61,37 +61,59 @@ function nearest(x) {
 const horner = (cs, v) => polyTree(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, v)
 
 
-// $math.sin, $math.cos and $math.tan: x = n·π/2 + r by the four-part Cody–Waite
-// reduction, then sin(r) or cos(r) by n's parity, negated by its second bit. Past 2^24
-// the runtime reduces by Payne–Hanek in 64-bit integer arithmetic, which the compiler
-// compiled by itself (its BigInt is 64-bit) could not mirror: a call there is left
-// for run time (undefined), as is any argument that is no number.
-const [H1, H2, H3, H4] = PIO2_CW
-let RK = 0, RR = 0
-function reduceTrig(x) {
+// $math.sin, $math.cos and $math.tan (module/math.js): x = n·π/2 + r − e by the Cody–Waite
+// rounds, then the kernel of r − e by n's parity, negated by its second bit. Past 2^24,
+// or where the rounds leave too few bits, the runtime reduces by Payne–Hanek in 64-bit
+// integer arithmetic, which the compiler compiled by itself (its BigInt is 64-bit)
+// could not mirror: a call there is left for run time (undefined), as is any argument
+// that is no number.
+const [H1, T1, H2, T2] = PIO2_CW
+let RK = 0, RR = 0, RY = 0
+// the first round, inline in the kernels (its tail for sin and cos, not tan), else
+// $math.rem_pio2's second; false where only Payne–Hanek reduces x
+function reduceTrig(x, tail) {
+  const ax = Math.abs(x)
+  RK = 0; RR = x; RY = 0
+  if (ax <= PI / 4) return true
   const t = x * INV_PIO2 + ROUND_MAGIC, n = t - ROUND_MAGIC
-  RR = x - n * H1 - n * H2 - n * H3 - n * H4
+  let u = x - n * H1, w = n * T1
   RK = n & 3
+  RR = u - w
+  if (Math.abs(RR) >= ax * RED_FIRST) { if (tail) RY = w - (u - RR); return true }
+  if (!(ax < CW_LIMIT)) return false
+  w = n * H2
+  const f = u - w, h = f - u
+  w = n * T2 - ((u - (f - h)) + (-w - h))
+  u = f
+  RR = u - w
+  if (!(Math.abs(RR) >= ax * RED_SECOND)) return false
+  RY = w - (u - RR)
+  return true
 }
-function quadrant(k, r) {
-  const z = r * r
-  const v = k & 1 ? horner(COS_C, z) : r * horner(SIN_C, z)
+// sin(r − e) = r − (e + z·r·P) and cos(r − e) = 1 − (z·(1/2 + z·P) − r·e), P the
+// negated polynomial (module/math/trig-tables.js)
+const SIN_N = SINCOS_TAB.filter((_, i) => !(i & 1)), COS_N = SINCOS_TAB.filter((_, i) => i & 1)
+const splitOf = (cs, z) => polySplit(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, z)
+const sinOf = (r, e, z) => r - (e + (z * r) * splitOf(SIN_N, z))
+const cosOf = (r, e, z) => 1 - (z * (0.5 + z * splitOf(COS_N, z)) - r * e)
+function quadrant(k, r, y) {
+  const z = r * r, v = k & 1 ? cosOf(r, y, z) : sinOf(r, y, z)
   return k & 2 ? -v : v
 }
 function sin(x) {
-  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
-  reduceTrig(x)
-  return quadrant(RK, RR)
+  if (!reduceTrig(x, true)) return x - x === 0 ? undefined : NaN
+  return quadrant(RK, RR, RY)
 }
 function cos(x) {
-  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
-  reduceTrig(x)
-  return quadrant(RK + 1, RR)
+  if (!reduceTrig(x, true)) return x - x === 0 ? undefined : NaN
+  return quadrant(RK + 1, RR, RY)
 }
+// tan's kernels, each one Horner chain: r·(1 + z·S(z)) and 1 − z/2 + z²·C(z) (module/math.js)
+const TAN_S = [1, ...SIN_C], TAN_C = [1, -0.5, ...COS_C]
+const hornerOf = (cs, z) => polyHorner(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, z)
 function tan(x) {
-  if (!(Math.abs(x) < CW_LIMIT)) return x - x === 0 ? undefined : NaN
-  reduceTrig(x)
-  const z = RR * RR, s = RR * horner(SIN_C, z), c = horner(COS_C, z)
+  if (!reduceTrig(x, false)) return x - x === 0 ? undefined : NaN
+  const z = RR * RR, s = RR * hornerOf(TAN_S, z), c = hornerOf(TAN_C, z)
   return RK & 1 ? -c / s : s / c
 }
 

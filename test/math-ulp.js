@@ -13,7 +13,7 @@ import { MATH_KERNEL, powRuntime } from '../src/prepare/math-kernel.js'
 
 // the bound, in ulps, each function keeps against the host (measured maximum in the comment)
 const BOUND = {
-  sin: 48, cos: 48, tan: 56,            // 40, 39, 49: the degree-11 sine and degree-12 cosine
+  sin: 2, cos: 2, tan: 4,               // 1, 1, 3: fdlibm's reduction and polynomials
   asin: 1, acos: 1,                     // fdlibm rational kernels
   atan: 16, atan2: 16,                  // 10, 10
   sinh: 8, cosh: 8, tanh: 8,            // 5, 3, 5
@@ -157,4 +157,72 @@ test('Math: the Payne–Hanek table is 2/π', async () => {
   is(TWO_OVER_PI_HEX.length, 20 * 16)
   is(word(0), 0n, 'a zero word first')
   for (let w = 1; w < 20; w++) is(word(w), (twoOverPi >> (Q - 64n * BigInt(w))) & ((1n << 64n) - 1n), `word ${w}`)
+})
+
+test('Math: the trigonometric kernels\' constants are fdlibm\'s words and π/2\'s parts', async () => {
+  const { SIN_C, COS_C, PIO2_CW, PIO2_C63 } = await import('../module/math/trig-tables.js')
+  const hex = (x) => { F[0] = x; return U[0].toString(16).padStart(16, '0') }
+  // k_sin.c S1..S6 and k_cos.c C1..C6, the words the sources give beside each constant
+  const S = ['bfc5555555555549', '3f8111111110f8a6', 'bf2a01a019c161d5', '3ec71de357b1fe7d', 'be5ae5e68a2b9ceb', '3de5d93a5acfd57c']
+  const C = ['3fa555555555554c', 'bf56c16c16c15177', '3efa01a019cb1590', 'be927e4f809c52ad', '3e21ee9ebdb4b1c4', 'bda8fae9be8838d4']
+  S.forEach((w, i) => is(hex(SIN_C[i]), w, `S${i + 1}`))
+  C.forEach((w, i) => is(hex(COS_C[i]), w, `C${i + 1}`))
+  // [H1, T1, H2, T2]: π/2 (Machin, above) cut after its leading 29 bits, the double nearest
+  // the rest, that rest cut after 29 bits, the double nearest what is left
+  const fx = (x) => { F[0] = x; const b = U[0], e = Number(b >> 52n) - 1075, m = (b & 0xfffffffffffffn) | 0x10000000000000n; return e + Number(P) >= 0 ? m << BigInt(e + Number(P)) : m >> BigInt(-e - Number(P)) }
+  const head = (v) => { const sh = BigInt(v.toString(2).length) - 29n; return Number(v >> sh) * 2 ** Number(sh - P) }
+  const [H1, T1, H2, T2] = PIO2_CW
+  is(H1, head(PIO2))
+  is(T1, nearestTo(PIO2 - fx(H1)))
+  is(H2, head(PIO2 - fx(H1)))
+  is(T2, nearestTo(PIO2 - fx(H1) - fx(H2)))
+  is(BigInt(PIO2_C63), (PIO2 * (1n << 63n) + (ONE >> 1n)) >> P, 'π/2·2^63 rounded')
+})
+
+// The true sin, cos and tan of a double, host aside: x − k·π/2 against π at 1400 bits
+// (Machin), so any double's remainder holds 300 bits or more, then each series at 400
+// bits, the value v·2^-400. err(d, v) is d's distance from it in d's own ulps.
+const W = 400n, TQ = 1400n
+const tAt = (m) => { let s = 0n, t = (1n << TQ) / m, k = 1n, sg = 1n; while (t) { s += sg * t / k; t /= m * m; k += 2n; sg = -sg } return s }
+const TPIO2 = (16n * tAt(5n) - 4n * tAt(239n)) / 2n
+const bits = (d) => { F[0] = Math.abs(d); const b = U[0], be = Number(b >> 52n); return [be ? (b & 0xfffffffffffffn) | 0x10000000000000n : b & 0xfffffffffffffn, (be || 1) - 1075] }
+const trueTrig = (x) => {
+  const [m, e] = bits(x)
+  let X = m << BigInt(e + Number(TQ))
+  if (x < 0) X = -X
+  let k = X / TPIO2, r = X - k * TPIO2
+  if (2n * r > TPIO2) { k++; r -= TPIO2 } else if (2n * r < -TPIO2) { k--; r += TPIO2 }
+  r >>= TQ - W
+  const z = (r * r) >> W
+  let s = 0n, c = 0n
+  for (let t = r, i = 1n; t; i += 2n) { s += t; t = -((t * z) >> W) / ((i + 1n) * (i + 2n)) }
+  for (let t = 1n << W, i = 0n; t; i += 2n) { c += t; t = -((t * z) >> W) / ((i + 1n) * (i + 2n)) }
+  const q = Number(((k % 4n) + 4n) % 4n), sin = [s, c, -s, -c][q], cos = [c, -s, -c, s][q]
+  return { sin, cos, tan: (sin << W) / cos }
+}
+const err = (d, v) => {
+  const [m, e] = bits(d), sh = BigInt(e) + W
+  const D = (sh >= 0n ? m << sh : m >> -sh) * (d < 0 ? -1n : 1n), diff = D > v ? D - v : v - D
+  return sh >= 0n ? Number((diff << 32n) >> sh) / 2 ** 32 : Number(diff << -sh)
+}
+
+test('Math.sin/cos/tan: within 1.5, 1.5 and 3.5 ulp of the true value', () => {
+  const { s, c, t } = run(`export let s = (x) => Math.sin(x)
+export let c = (x) => Math.cos(x)
+export let t = (x) => Math.tan(x)`, { optimize: { level: 2, noSimd: true } })
+  // log-uniform up to 2^30 and on to 2^1023 (Payne–Hanek), and the doubles nearest the
+  // multiples of π/2 that cancel the most (above), where the reduction carries the error
+  const xs = [...Array.from({ length: 2500 }, () => sgn(logU(-20, 30))), ...Array.from({ length: 500 }, () => sgn(logU(30, 1023))),
+    ...[...KPI2].slice(0, 300), 6381956970095103 * 2 ** 797]
+  const worst = { s: [0], c: [0], t: [0] }
+  for (const x of xs) {
+    const ref = trueTrig(x)
+    for (const [key, f, v] of [['s', s, ref.sin], ['c', c, ref.cos], ['t', t, ref.tan]]) {
+      const u = err(f(x), v)
+      if (u > worst[key][0]) worst[key] = [u, x]
+    }
+  }
+  ok(worst.s[0] <= 1.5, `sin: ${worst.s[0]} ulp at ${worst.s[1]}`)
+  ok(worst.c[0] <= 1.5, `cos: ${worst.c[0]} ulp at ${worst.c[1]}`)
+  ok(worst.t[0] <= 3.5, `tan: ${worst.t[0]} ulp at ${worst.t[1]}`)
 })

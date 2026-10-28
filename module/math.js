@@ -21,7 +21,7 @@ import { roundedQuotient } from '../src/static.js'
 import { exprType, isUnsignedI32Expr } from '../src/type/expr-type.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
 import { powFold, powLog } from '../src/prepare/math-kernel.js'
-import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, PIO2_LO, TWO_OVER_PI_HEX, SIN_C, COS_C, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from './math/trig-tables.js'
+import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, RED_FIRST, RED_SECOND, PIO2_C63, TWO_OVER_PI_HEX, SIN_C, COS_C, SINCOS_TAB, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, polyHorner, polySplit, fifthFold } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
@@ -483,6 +483,12 @@ export default (ctx) => {
   // constant offset is one instruction (exp's dozen literals had cost more than its
   // arithmetic, log's and sin's polynomials a third of their time).
   const MATH_KC = []
+  // doubles as a data table's little-endian bytes
+  const f64Bytes = (vs) => {
+    const b = new Uint8Array(vs.length * 8), v = new DataView(b.buffer)
+    for (let i = 0; i < vs.length; i++) v.setFloat64(i * 8, vs[i], true)
+    return b
+  }
   const kc = (v) => {
     let i = MATH_KC.findIndex(c => Object.is(c, v))
     if (i < 0) i = MATH_KC.push(v) - 1
@@ -542,68 +548,102 @@ export default (ctx) => {
     add: (a, b) => `(f64.add ${a} ${b})`,
   }, `(local.get ${v})`)
 
-  // sin, cos and tan: x = n·π/2 + r with |r| ≤ π/4 (the constants and their bounds are
-  // module/math/trig-tables.js's), then sin(r) or cos(r) by n's parity, negated by its
-  // second bit. Below 2^24 the reduction is inline Cody–Waite: n from x·2/π rounded by
-  // ROUND_MAGIC, whose low word then holds n, and r = x − n·π/2 in four parts, every
-  // cancelling step exact, so r stays within an ulp of the true remainder at the
-  // doubles closest to a multiple of π/2 (sin(π) is 1.2246467991473532e-16, as in V8).
-  // Past 2^24 $math.rem_pio2 does Payne–Hanek. A NaN or an infinity (x − x is NaN)
-  // returns the canonical NaN. One kernel runs, chosen by a branch on n's parity: a
-  // phase advancing less than π/2 a step keeps it predicted.
-  const [H1, H2, H3, H4] = PIO2_CW
-  // |x| ≤ π/4 (the double below it, where x·2/π rounds to ½ and ties to n = 0) is its own
-  // remainder: n = 0, r = x, k = 0, what the reduction gives, without it
-  const reduceTrig = `
-    (if (f64.le (f64.abs (local.get $x)) (f64.const ${PI / 4}))
-      (then (local.set $r (local.get $x)))
-      (else (if (f64.lt (f64.abs (local.get $x)) (f64.const ${CW_LIMIT}))
-        (then
-          (local.set $t (f64.add (f64.mul (local.get $x) (f64.const ${INV_PIO2})) (f64.const ${ROUND_MAGIC})))
-          (local.set $n (f64.sub (local.get $t) (f64.const ${ROUND_MAGIC})))
-          (local.set $r (f64.sub (f64.sub (f64.sub (f64.sub (local.get $x)
-            (f64.mul (local.get $n) (f64.const ${H1}))) (f64.mul (local.get $n) (f64.const ${H2})))
-            (f64.mul (local.get $n) (f64.const ${H3}))) (f64.mul (local.get $n) (f64.const ${H4}))))
-          (local.set $k (i32.wrap_i64 (i64.reinterpret_f64 (local.get $t)))))
-        (else
-          (if (f64.ne (f64.sub (local.get $x) (local.get $x)) (f64.const 0)) (then (return (f64.const nan))))
-          (local.set $k (local.set $r (call $math.rem_pio2 (local.get $x))))))))`
-  const trigLocals = '(local $t f64) (local $n f64) (local $r f64) (local $z f64) (local $k i32)'
-  // sin(r) for an even quadrant, cos(r) for an odd one, then the sign by the second bit
+  // sin, cos and tan with fdlibm's polynomials and reduction (module/math/trig-tables.js
+  // has the constants, their bounds and the sources): x = n·π/2 + r − e with |r| ≤ π/4
+  // and e the tail below r's last place, negated. |x| ≤ π/4 (the double below it, where
+  // x·2/π rounds to ½ and ties to n = 0) is its own remainder: n = 0, r = x, e = +0, what
+  // the reduction gives, without it. The first Cody–Waite round is inline: n from x·2/π
+  // rounded by ROUND_MAGIC, whose low word then holds n, and r = (x − n·H1) − n·T1, the
+  // first term exact below 2^24, e the subtraction's rounding error (exact by Fast2Sum,
+  // |n·T1| being far below |r| there). An r that cancelled below |x|·RED_FIRST goes to
+  // $math.rem_pio2 (the second round or Payne–Hanek), and so does every |x| ≥ 2^24, whose
+  // r stays within π/4 + |x|·2^-52 while |x|·RED_FIRST is 4 or more, and a NaN or an
+  // infinity, whose r is NaN; those two return the canonical NaN first (x − x is NaN).
+  // The inline part stays under 300 bytes: V8 inlines it into a loop that calls it only
+  // while the two fit its budget together, about the caller's own size again (317 bytes
+  // for a one-line loop over an array). The fast path leaves the block by br_if and the
+  // call falls through to its end: the shape in which V8 keeps the loop's registers
+  // spilled only around the call (an if/else around it spilled them every iteration).
+  const [H1, T1, H2, T2] = PIO2_CW
+  const reduceTrig = (tail) => `
+    (block $red
+      (if (f64.le (local.tee $ax (f64.abs (local.get $x))) (f64.const ${PI / 4})) (then (local.set $r (local.get $x)) (br $red)))
+      (local.set $t (f64.add (f64.mul (local.get $x) (f64.const ${INV_PIO2})) (f64.const ${ROUND_MAGIC})))
+      (local.set $n (f64.sub (local.get $t) (f64.const ${ROUND_MAGIC})))
+      (local.set $u (f64.sub (local.get $x) (f64.mul (local.get $n) (f64.const ${H1}))))
+      (local.set $w (f64.mul (local.get $n) (f64.const ${T1})))
+      (local.set $r (f64.sub (local.get $u) (local.get $w)))
+      (local.set $k (i32.wrap_i64 (i64.reinterpret_f64 (local.get $t))))${tail ? `
+      (local.set $y (f64.sub (local.get $w) (f64.sub (local.get $u) (local.get $r))))` : ''}
+      (br_if $red (f64.ge (f64.abs (local.get $r)) (f64.mul (local.get $ax) (f64.const ${RED_FIRST}))))
+      (if (f64.ne (f64.sub (local.get $x) (local.get $x)) (f64.const 0)) (then (return (f64.const nan))))
+      (local.set $k (local.set $r (local.set $y (call $math.rem_pio2 (local.get $x))))))`
+  const trigLocals = '(local $ax f64) (local $t f64) (local $n f64) (local $u f64) (local $w f64) (local $r f64) (local $y f64) (local $z f64) (local $k i32)'
+  // The kernels' polynomial in z = r² (trig-tables.js polySplit), its coefficients
+  // SINCOS_TAB's from the address `tb`: the sine's at +0, the cosine's at +8 (the two
+  // interleave)
+  ctx.runtime.sincosTable = f64Bytes(SINCOS_TAB)
+  const sincosP = (tb, off = 0) => polySplit([0, 1, 2, 3, 4, 5], {
+    konst: (i) => `(f64.load offset=${16 * i + off} ${tb})`,
+    mul: (a, b) => `(f64.mul ${a} ${b})`,
+    add: (a, b) => `(f64.add ${a} ${b})`,
+  }, '(local.get $z)')
+  // sin(r − e) = r − (e + z·r·P) and cos(r − e) = 1 − (z·(1/2 + z·P) − r·e), P the
+  // polynomial (trig-tables.js), given z = r² and e in $y
+  const sinOf = (P) => `(f64.sub (local.get $r) (f64.add (local.get $y) (f64.mul (f64.mul (local.get $z) (local.get $r)) ${P})))`
+  const cosOf = (P) => `(f64.sub (f64.const 1) (f64.sub (f64.mul (local.get $z) (f64.add (f64.const 0.5) (f64.mul (local.get $z) ${P})))
+      (f64.mul (local.get $r) (local.get $y))))`
+  // sin(r − e) for an even quadrant, cos(r − e) for an odd one, then the sign by the
+  // second bit: one polynomial, its coefficients at the offset n's parity picks, and a
+  // branch on the parity for the terms around it (a phase advancing less than π/2 a
+  // step keeps it predicted)
   const quadrant = `
     (local.set $z (f64.mul (local.get $r) (local.get $r)))
-    (local.set $r (if (result f64) (i32.and (local.get $k) (i32.const 1))
-      (then ${horner(COS_C, '$z')})
-      (else (f64.mul (local.get $r) ${horner(SIN_C, '$z')}))))
-    (select (f64.neg (local.get $r)) (local.get $r) (i32.and (local.get $k) (i32.const 2)))`
+    (local.set $n ${sincosP(`(i32.add (global.get $math.sincos_tbl) (i32.shl (i32.and (local.get $k) (i32.const 1)) (i32.const 3)))`)})
+    (local.set $t (if (result f64) (i32.and (local.get $k) (i32.const 1)) (then ${cosOf('(local.get $n)')}) (else ${sinOf('(local.get $n)')})))
+    (select (f64.neg (local.get $t)) (local.get $t) (i32.and (local.get $k) (i32.const 2)))`
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
-    ${trigLocals}${reduceTrig}${quadrant})`)
+    ${trigLocals}${reduceTrig(true)}${quadrant})`)
   // cos(x) = sin(x + π/2): the next quadrant
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
-    ${trigLocals}${reduceTrig}
+    ${trigLocals}${reduceTrig(true)}
     (local.set $k (i32.add (local.get $k) (i32.const 1)))${quadrant})`)
-  // tan(x) = sin(r)/cos(r) for an even quadrant, −cos(r)/sin(r) for an odd one
+  // tan(r) = sin/cos for an even quadrant, −cos/sin for an odd one, sin as r·(1 + z·S(z))
+  // (−0 stays −0) and cos as 1 − z/2 + z²·C(z), each one Horner chain (trig-tables.js
+  // polyHorner), without the tail: sin's and cos's forms, tail and all, move tan's error
+  // against V8's by no ulp, for seven operations more
+  const hornerK = (cs) => polyHorner(cs, {
+    konst: (c) => `(f64.const ${c})`,
+    mul: (a, b) => `(f64.mul ${a} ${b})`,
+    add: (a, b) => `(f64.add ${a} ${b})`,
+  }, '(local.get $z)')
   wat('math.tan', `(func $math.tan (param $x f64) (result f64)
-    ${trigLocals} (local $s f64) (local $c f64)${reduceTrig}
+    ${trigLocals} (local $s f64)${reduceTrig(false)}
     (local.set $z (f64.mul (local.get $r) (local.get $r)))
-    (local.set $s (f64.mul (local.get $r) ${horner(SIN_C, '$z')}))
-    (local.set $c ${horner(COS_C, '$z')})
+    (local.set $s (f64.mul (local.get $r) ${hornerK([1, ...SIN_C])}))
+    (local.set $t ${hornerK([1, -0.5, ...COS_C])})
     (if (result f64) (i32.and (local.get $k) (i32.const 1))
-      (then (f64.div (f64.neg (local.get $c)) (local.get $s)))
-      (else (f64.div (local.get $s) (local.get $c)))))`)
+      (then (f64.div (f64.neg (local.get $t)) (local.get $s)))
+      (else (f64.div (local.get $s) (local.get $t)))))`)
 
-  // Payne–Hanek for a finite |x| ≥ 2^24: the quadrant (in the low bits of the i32) and
-  // r = x − n·π/2, |r| ≤ π/4. x = m·2^E with m its 53-bit significand; x·2/π mod 4 is
-  // m times the 2/π bits from 2^1 down, the bits of higher weight contributing multiples
-  // of 4. The 192 of them from bit E − 1 (module/math/trig-tables.js TWO_OVER_PI, a
-  // word pad first so E ≥ −28 never indexes before the table) multiply m in 64-bit
-  // pieces, the product kept mod 2^192: its top two bits are n mod 4, the next 128 the
-  // fraction, rounded to the nearest quadrant and scaled back by π/2. Every step is
-  // integer and exact up to the fraction's conversion; r lands within 1.3 ulp of the
-  // true remainder (the smallest any double has, 2^-61 at x = 6381956970095103·2^797,
-  // leaves the fraction's high word at least 5, so the normalization below never
-  // sees it zero). No loop and no scratch memory: the table is read-only.
+  // The reduction past the inline round, for a finite |x| > π/4: the quadrant (in the
+  // low bits of the i32) and x − n·π/2 = r − e, |r| ≤ π/4, e the tail negated. Below 2^24
+  // the second Cody–Waite round, unless that too cancels; then, and from 2^24 up,
+  // Payne–Hanek, good for any |x| ≥ 2^-10. x = m·2^E with m its 53-bit significand; x·2/π mod 4
+  // is m times the 2/π bits from 2^1 down, the bits of higher weight contributing
+  // multiples of 4. The 192 of them from bit E − 1 (module/math/trig-tables.js
+  // TWO_OVER_PI, a word pad first so E ≥ −62 never indexes before the table) multiply m
+  // in 64-bit pieces, the product kept mod 2^192: its top two bits are n mod 4, the next
+  // 128 the fraction, rounded to the nearest quadrant. Its top 64 bits from the leading
+  // one, times π/2·2^63 (PIO2_C63), give the remainder's top 64 bits, from three of the
+  // four 32×32 products: the fourth and the low halves dropped leave the word at most 2
+  // below the true one, which is 2^62 or more. r is their nearest double and e the rest
+  // negated, within 2^-60 of the remainder relatively. The smallest remainder any double has, 2^-61 at
+  // x = 6381956970095103·2^797, leaves the fraction's high word at least 5, so the
+  // normalization below never sees it zero. No loop and no scratch memory: the table is
+  // read-only.
   const M32 = '(i64.const 0xffffffff)'
+  const C63 = BigInt(PIO2_C63), C63H = `(i64.const 0x${(C63 >> 32n).toString(16)})`, C63L = `(i64.const 0x${(C63 & 0xffffffffn).toString(16)})`
   // hi:lo = m·w for m < 2^53 (split in $mh:$ml), w < 2^64, from four 32×32 products
   const mul128 = (w, hi, lo) => `
     (local.set $ll (i64.mul (local.get $ml) (i64.and ${w} ${M32})))
@@ -618,10 +658,28 @@ export default (ctx) => {
   const window = (off) => `(i64.or (i64.shl (i64.load offset=${off} (local.get $tb)) (local.get $sh))
       (i64.shr_u (i64.shr_u (i64.load offset=${off + 8} (local.get $tb)) (i64.const 1)) (i64.sub (i64.const 63) (local.get $sh))))`
   ctx.runtime.pio2Table = hexBytes(TWO_OVER_PI_HEX)
-  wat('math.rem_pio2', `(func $math.rem_pio2 (param $x f64) (result i32 f64)
+  wat('math.rem_pio2', `(func $math.rem_pio2 (param $x f64) (result i32 f64 f64)
     (local $b i64) (local $e i32) (local $tb i32) (local $sh i64) (local $ml i64) (local $mh i64) (local $w i64)
     (local $ll i64) (local $lh i64) (local $hl i64) (local $mid i64) (local $a1 i64) (local $a0 i64) (local $b1 i64) (local $b0 i64)
-    (local $p1 i64) (local $p2 i64) (local $fh i64) (local $fl i64) (local $s i64) (local $k i32) (local $neg i32) (local $f f64)
+    (local $p1 i64) (local $p2 i64) (local $fh i64) (local $fl i64) (local $s i64) (local $k i32) (local $neg i32) (local $h f64) (local $f f64) (local $g f64)
+    (local $n f64) (local $u f64)
+    ;; below 2^24, the second Cody–Waite round: u − n·H2 = f + d (TwoSum, h the part of f
+    ;; that came from u), then the rest g = n·T2 − d, within |x|·2^-111 of the remainder
+    (if (f64.lt (f64.abs (local.get $x)) (f64.const ${CW_LIMIT}))
+      (then
+        (local.set $f (f64.add (f64.mul (local.get $x) (f64.const ${INV_PIO2})) (f64.const ${ROUND_MAGIC})))
+        (local.set $k (i32.wrap_i64 (i64.reinterpret_f64 (local.get $f))))
+        (local.set $n (f64.sub (local.get $f) (f64.const ${ROUND_MAGIC})))
+        (local.set $u (f64.sub (local.get $x) (f64.mul (local.get $n) (f64.const ${H1}))))
+        (local.set $g (f64.mul (local.get $n) (f64.const ${H2})))
+        (local.set $f (f64.sub (local.get $u) (local.get $g)))
+        (local.set $h (f64.sub (local.get $f) (local.get $u)))
+        (local.set $g (f64.sub (f64.mul (local.get $n) (f64.const ${T2}))
+          (f64.add (f64.sub (local.get $u) (f64.sub (local.get $f) (local.get $h))) (f64.sub (f64.neg (local.get $g)) (local.get $h)))))
+        (local.set $u (local.get $f))
+        (local.set $f (f64.sub (local.get $u) (local.get $g)))
+        (if (f64.ge (f64.abs (local.get $f)) (f64.mul (f64.abs (local.get $x)) (f64.const ${RED_SECOND})))
+          (then (return (local.get $k) (local.get $f) (f64.sub (local.get $g) (f64.sub (local.get $u) (local.get $f))))))))
     (local.set $b (i64.reinterpret_f64 (local.get $x)))
     (local.set $ml (i64.or (i64.and (local.get $b) (i64.const 0xfffffffffffff)) (i64.const 0x10000000000000)))
     (local.set $mh (i64.shr_u (local.get $ml) (i64.const 32)))
@@ -646,18 +704,27 @@ export default (ctx) => {
         (local.set $k (i32.add (local.get $k) (i32.const 1)))
         (local.set $fh (i64.add (i64.xor (local.get $fh) (i64.const -1)) (i64.extend_i32_u (i64.eqz (local.get $fl)))))
         (local.set $fl (i64.sub (i64.const 0) (local.get $fl)))))
-    ;; |fraction| to a double: its top 64 bits normalized, scaled by 2^-(64 + s)
+    ;; |fraction|·2^(64 + s): its top 64 bits from the leading one; times π/2·2^63, the
+    ;; product's high word is |r|·2^(63 + s), 2^62 or more
     (local.set $s (i64.clz (local.get $fh)))
-    (local.set $f (f64.mul
-      (f64.convert_i64_u (i64.or (i64.shl (local.get $fh) (local.get $s))
-        (i64.shr_u (i64.shr_u (local.get $fl) (i64.const 1)) (i64.sub (i64.const 63) (local.get $s)))))
-      (f64.reinterpret_i64 (i64.shl (i64.sub (i64.const 959) (local.get $s)) (i64.const 52)))))
-    (local.set $f (f64.add (f64.mul (local.get $f) (f64.const ${HALF_PI})) (f64.mul (local.get $f) (f64.const ${PIO2_LO}))))
+    (local.set $w (i64.or (i64.shl (local.get $fh) (local.get $s))
+      (i64.shr_u (i64.shr_u (local.get $fl) (i64.const 1)) (i64.sub (i64.const 63) (local.get $s)))))
+    (local.set $mh (i64.shr_u (local.get $w) (i64.const 32)))
+    (local.set $ml (i64.and (local.get $w) ${M32}))
+    (local.set $p1 (i64.add (i64.add (i64.mul (local.get $mh) ${C63H})
+      (i64.shr_u (i64.mul (local.get $mh) ${C63L}) (i64.const 32))) (i64.shr_u (i64.mul (local.get $ml) ${C63H}) (i64.const 32))))
+    ;; its bits above the low 11 and those 11, each exact as a double, summed to r − e
+    (local.set $h (f64.mul (f64.convert_i64_u (i64.shr_u (local.get $p1) (i64.const 11)))
+      (f64.reinterpret_i64 (i64.shl (i64.sub (i64.const 971) (local.get $s)) (i64.const 52)))))
+    (local.set $g (f64.mul (f64.convert_i64_u (i64.and (local.get $p1) (i64.const 0x7ff)))
+      (f64.reinterpret_i64 (i64.shl (i64.sub (i64.const 960) (local.get $s)) (i64.const 52)))))
+    (local.set $f (f64.add (local.get $h) (local.get $g)))
+    (local.set $g (f64.sub (f64.sub (local.get $f) (local.get $h)) (local.get $g)))
     ;; the sign: the rounding's and x's
     (if (i32.ne (local.get $neg) (i32.wrap_i64 (i64.shr_u (local.get $b) (i64.const 63))))
-      (then (local.set $f (f64.neg (local.get $f)))))
+      (then (local.set $f (f64.neg (local.get $f))) (local.set $g (f64.neg (local.get $g)))))
     (if (i64.lt_s (local.get $b) (i64.const 0)) (then (local.set $k (i32.sub (i32.const 0) (local.get $k)))))
-    (local.get $k) (local.get $f))`)
+    (local.get $k) (local.get $f) (local.get $g))`)
 
   registerMathSimd()
 
@@ -1590,8 +1657,6 @@ export default (ctx) => {
 
 
   // $math.kc: the constants the kernels above named, and the kernels that read them
-  const kcBytes = new Uint8Array(MATH_KC.length * 8), kcView = new DataView(kcBytes.buffer)
-  for (let i = 0; i < MATH_KC.length; i++) kcView.setFloat64(i * 8, MATH_KC[i], true)
-  ctx.runtime.mathKc = kcBytes
+  ctx.runtime.mathKc = f64Bytes(MATH_KC)
   ctx.runtime.mathKcUsers = Object.keys(ctx.core.stdlib).filter(n => typeof ctx.core.stdlib[n] === 'string' && ctx.core.stdlib[n].includes('$math.kc'))
 }

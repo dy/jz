@@ -8,17 +8,19 @@
  */
 import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
-import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, SIN_C, COS_C, ATAN_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, polyTree } from './trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, RED_FIRST, ATAN_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, SINCOS_TAB, polyTree, polySplit } from './trig-tables.js'
 
 export const registerMathSimd = () => {
   const crPow = !!ctx.transform.optimize?.crPow
 
   // ── f64x2 sin/cos: both lanes through the scalar kernel's operations ─────────
-  // $math.sin/$math.cos (module/math.js) two lanes wide: the same Cody–Waite reduction,
-  // each lane taking sin(r) or cos(r) by its quadrant's parity and the sign by its
-  // second bit (an xor into the sign bit).
-  // Every lane is bit-identical with the scalar kernel. A lane past 2^24, NaN or
-  // infinite sends both lanes to the scalar kernel (Payne–Hanek, the NaN).
+  // $math.sin/$math.cos (module/math.js) two lanes wide: the same Cody–Waite first
+  // round, each lane taking sin(r − e) or cos(r − e) by its quadrant's parity and the
+  // sign by its second bit (an xor into the sign bit). A lane of |x| ≤ π/4 rounds n to
+  // 0, which leaves r = x and e = +0, the scalar kernel's own remainder for it.
+  // Every lane is bit-identical with the scalar kernel. A lane whose remainder cancelled
+  // below |x|·RED_FIRST, as every lane past 2^24, NaN or infinite does (module/math.js),
+  // sends both lanes to the scalar kernel (its second round, Payne–Hanek, the NaN).
   const splat = (c) => `(f64x2.splat (f64.const ${c}))`
   const i64s = (v) => `(i64x2.splat (i64.const ${v}))`
   // The shared evaluation tree in 2-wide WAT: bit-exact with the scalar builder
@@ -28,28 +30,54 @@ export const registerMathSimd = () => {
     mul: (a, b) => `(f64x2.mul ${a} ${b})`,
     add: (a, b) => `(f64x2.add ${a} ${b})`,
   }, `(local.get ${v})`)
-  const [H1, H2, H3, H4] = PIO2_CW
+  const [H1, T1] = PIO2_CW
+  // the scalar kernels (module/math.js quadrant), op for op: sin(r − e) and cos(r − e)
+  // with their own coefficients where both lanes' parities agree (a phase's neighbouring
+  // samples mostly share a quadrant), and where not, head − (tail + m·P) with each term
+  // picked by the lane's parity: each lane's coefficient pair (−S_i, −C_i) one load, its
+  // lane picked by $sel (the bytes 0–7 or 8–15)
+  const split2 = (cs, konst = splat) => polySplit(cs, {
+    konst,
+    mul: (a, b) => `(f64x2.mul ${a} ${b})`,
+    add: (a, b) => `(f64x2.add ${a} ${b})`,
+  }, '(local.get $z)')
+  const sincosP2 = split2([0, 1, 2, 3, 4, 5], (i) => `(i8x16.swizzle (v128.load offset=${16 * i} (global.get $math.sincos_tbl)) (local.get $sel))`)
+  const sin2K = `(f64x2.sub (local.get $r) (f64x2.add (local.get $y)
+              (f64x2.mul (f64x2.mul (local.get $z) (local.get $r)) ${split2(SINCOS_TAB.filter((_, i) => !(i & 1)))})))`
+  const cos2K = `(f64x2.sub ${splat(1)} (f64x2.sub
+              (f64x2.mul (local.get $z) (f64x2.add ${splat(0.5)} (f64x2.mul (local.get $z) ${split2(SINCOS_TAB.filter((_, i) => i & 1))})))
+              (f64x2.mul (local.get $r) (local.get $y))))`
+  // head − (tail + m·Q): sin r − (e + z·r·P), cos 1 − (−r·e + z·(1/2 + z·P))
+  const mixed2K = `(f64x2.sub
+              (v128.bitselect ${splat(1)} (local.get $r) (local.get $odd))
+              (f64x2.add
+                (v128.bitselect (f64x2.neg (f64x2.mul (local.get $r) (local.get $y))) (local.get $y) (local.get $odd))
+                (f64x2.mul (v128.bitselect (local.get $z) (f64x2.mul (local.get $z) (local.get $r)) (local.get $odd))
+                  (v128.bitselect (f64x2.add ${splat(0.5)} (f64x2.mul (local.get $z) (local.tee $w ${sincosP2}))) (local.get $w) (local.get $odd)))))`
   // $t holds x·2/π + ROUND_MAGIC, whose low bits are each lane's quadrant; cos is the next quadrant
   const trig2 = (name, next) => wat(`math.${name}2`, `(func $math.${name}2 (param $x v128) (result v128)
-    (local $t v128) (local $n v128) (local $r v128) (local $z v128) (local $odd v128)
-    (if (result v128) (i64x2.all_true (f64x2.lt (f64x2.abs (local.get $x)) ${splat(CW_LIMIT)}))
+    (local $ax v128) (local $t v128) (local $n v128) (local $u v128) (local $w v128) (local $r v128) (local $y v128)
+    (local $z v128) (local $odd v128) (local $sel v128)
+    (local.set $ax (f64x2.abs (local.get $x)))
+    (local.set $t (f64x2.add (f64x2.mul (local.get $x) ${splat(INV_PIO2)}) ${splat(ROUND_MAGIC)}))
+    (local.set $n (f64x2.sub (local.get $t) ${splat(ROUND_MAGIC)}))
+    (local.set $u (f64x2.sub (local.get $x) (f64x2.mul (local.get $n) ${splat(H1)})))
+    (local.set $w (f64x2.mul (local.get $n) ${splat(T1)}))
+    (local.set $r (f64x2.sub (local.get $u) (local.get $w)))
+    (if (result v128) (i64x2.all_true (f64x2.ge (f64x2.abs (local.get $r)) (f64x2.mul (local.get $ax) ${splat(RED_FIRST)})))
       (then
-        (local.set $t (f64x2.add (f64x2.mul (local.get $x) ${splat(INV_PIO2)}) ${splat(ROUND_MAGIC)}))
-        (local.set $n (f64x2.sub (local.get $t) ${splat(ROUND_MAGIC)}))
-        (local.set $r (f64x2.sub (f64x2.sub (f64x2.sub (f64x2.sub (local.get $x)
-          (f64x2.mul (local.get $n) ${splat(H1)})) (f64x2.mul (local.get $n) ${splat(H2)}))
-          (f64x2.mul (local.get $n) ${splat(H3)})) (f64x2.mul (local.get $n) ${splat(H4)})))${next ? `
+        (local.set $y (f64x2.sub (local.get $w) (f64x2.sub (local.get $u) (local.get $r))))${next ? `
         (local.set $t (i64x2.add (local.get $t) ${i64s(1)}))` : ''}
         (local.set $z (f64x2.mul (local.get $r) (local.get $r)))
-        ;; odd lanes take the cosine: one kernel where the lanes' parities agree (a phase's
-        ;; neighbouring samples mostly share a quadrant), both and a bitselect where not
         (local.set $odd (i64x2.ne (v128.and (local.get $t) ${i64s(1)}) ${i64s(0)}))
         (v128.xor
           (if (result v128) (i64x2.all_true (local.get $odd))
-            (then ${horner2(COS_C)})
+            (then ${cos2K})
             (else (if (result v128) (v128.any_true (local.get $odd))
-              (then (v128.bitselect ${horner2(COS_C)} (f64x2.mul (local.get $r) ${horner2(SIN_C)}) (local.get $odd)))
-              (else (f64x2.mul (local.get $r) ${horner2(SIN_C)})))))
+              (then
+                (local.set $sel (v128.or (v128.and (local.get $odd) ${i64s('0x0808080808080808')}) ${i64s('0x0706050403020100')}))
+                ${mixed2K})
+              (else ${sin2K}))))
           (i64x2.shl (v128.and (local.get $t) ${i64s(2)}) (i32.const 62))))
       (else
         (f64x2.replace_lane 1

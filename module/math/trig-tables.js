@@ -1,35 +1,51 @@
 /** Shared coefficients and reduction constants for scalar/f64x2 math and folding.
- *  Trig coefficients are fitted by scripts/minimax-trig.mjs; each consumer
- *  evaluates the same table in the same order. */
+ *  The atan polynomial is fitted by scripts/minimax-trig.mjs; sin, cos and tan
+ *  are fdlibm's. Each consumer evaluates the same table in the same order. */
 
-// sin, cos and tan reduce x to x = n·π/2 + r, |r| ≤ π/4, and take sin(r) or cos(r)
-// by n's parity, negated by its second bit. Up to CW_LIMIT = 2^24 the reduction is
-// Cody–Waite: n = the integer nearest x·2/π (ROUND_MAGIC = 1.5·2^52 added and taken
-// away rounds it in the last place, and leaves n mod 2^32 in the low word), then
-// r = x − n·H1 − n·H2 − n·H3 − n·H4 with PIO2_CW = H1..H4 the leading 29, 29, 29 and
-// 53 bits of π/2 (each truncated, so each is positive and −0 stays −0). |n| < 2^24,
-// so every n·Hk but the last is exact and every subtraction that cancels is exact;
-// the parts hold π/2 to 2^-141, which keeps r within an ulp of the true remainder
-// even for the double closest to a multiple of π/2 below 2^24 (x = 1.446e7, k/|r|
-// = 2^82 at k = 9206271, found by exhaustive search).
-export const PIO2_CW = [1.570796325802803, 9.920935774287987e-10, 2.2517417706346578e-18, 3.5215598651832e-27]
+// sin, cos and tan with fdlibm's reduction and polynomials (Sun Microsystems;
+// e_rem_pio2.c, k_sin.c, k_cos.c): x = n·π/2 + r − e with |r| ≤ π/4 and e the tail of
+// r below its last place, negated, then sin(r − e) or cos(r − e) by n's parity, negated
+// by its second bit. Up to CW_LIMIT = 2^24 the reduction is Cody–Waite: n = the integer
+// nearest x·2/π (ROUND_MAGIC = 1.5·2^52 added and taken away rounds it in the last
+// place, and leaves n mod 2^32 in the low word), then r = (x − n·H1) − n·T1 with
+// PIO2_CW = [H1, T1, H2, T2]: H1 and H2 the leading 27 and the next 29 bits of π/2, T1
+// the double nearest π/2 − H1, T2 the one nearest π/2 − H1 − H2. |n| < 2^24, so n·H1
+// and n·H2 are exact, and x − n·H1 is too (Sterbenz). n·T1 rounds once, which leaves
+// r − e within |x|·2^-83 of the true remainder: relatively 2^-57 or less while
+// |r| ≥ |x|·2^-26 (RED_FIRST), which an argument below 10^5 fails one time in five
+// hundred. A smaller r takes the second round ($math.rem_pio2, out of line): n·H2 exact,
+// its subtraction's error carried into the rest, n·T2, holding it to |x|·2^-111, 2^-61
+// while |r| ≥ |x|·2^-50 (RED_SECOND). Smaller still, the cancellation fdlibm's third
+// round covers, takes Payne–Hanek, exact at every scale.
+export const PIO2_CW = [1.570796325802803, 9.920935796805404e-10, 9.920935774287987e-10, 2.2517417741562176e-18]
 export const INV_PIO2 = 0.6366197723675814, ROUND_MAGIC = 6755399441055744, CW_LIMIT = 16777216
-// Past 2^24, Payne–Hanek ($math.rem_pio2): x·2/π mod 4 as an integer product of
-// x's 53-bit significand with the 192 bits of 2/π its exponent selects, the 128
-// fraction bits scaled back by π/2 = HALF_PI + PIO2_LO. TWO_OVER_PI_HEX is 2/π's
-// bits in 64-bit words as the data table's little-endian bytes, a zero word first,
-// then 0xa2f9836e4e441529 and on: the 1216 bits fdlibm's ipio2 table (e_rem_pio2.c)
-// holds in 24-bit pieces, which test/math-ulp.js re-derives.
-export const PIO2_LO = 6.123233995736766e-17
+export const RED_FIRST = 2 ** -26, RED_SECOND = 2 ** -50
+// Payne–Hanek ($math.rem_pio2): x·2/π mod 4 as an integer product of x's 53-bit
+// significand with the 192 bits of 2/π its exponent selects, the top 64 of its 128
+// fraction bits times PIO2_C63 = π/2·2^63 (rounded, as an i64) in 64-bit integer
+// arithmetic, split into r − e: within 2^-60 of the remainder relatively. TWO_OVER_PI_HEX
+// is 2/π's bits in 64-bit words as the data table's little-endian bytes, a zero word
+// first, then 0xa2f9836e4e441529 and on: the 1216 bits fdlibm's ipio2 table
+// (e_rem_pio2.c) holds in 24-bit pieces, which test/math-ulp.js re-derives.
+export const PIO2_C63 = '0xc90fdaa22168c235'
 export const TWO_OVER_PI_HEX = '00000000000000002915444e6e83f9a2c0dd34f5d15727fc4190433c999562db61c5bbdeab6351fee0d24d423a6e24b71c92d109ea2e49063ea729b11ceb1dfe8444bb2ef53582e8417e5fb426709ce9f439538339d691393b28f9bd8b5f849c0f9805deff97f81f1f6d0a5a8b112fefb709cb27cf7e366d2dea5f9e663f464f7bf1e5ebc7ba2775ea92528af739073d085d8d1fb15ffb6bab6b7bfc46300356'
-// The kernels on the reduced argument, minimax in the relative error
-// (scripts/minimax-trig.mjs; each degree the lowest whose error stays well inside
-// the 100 ulp jz's Math keeps against V8). sin(r) = r·(1 + t·P(t)), t = r², on
-// |r| ≤ π/4: 45 ulp minimax, 38 measured as evaluated. cos(r) = 1 − t/2 + t²·Q(t):
-// 0.8 minimax, 2.2 measured. atan(r) = r·(1 + t·A(t)) on |r| ≤ tan(π/8): 8.8 and
-// 10.4. asin and acos use the fdlibm rational constants below.
-export const SIN_C = [1, -0.1666666666663035, 0.008333333325077711, -0.0001984126372859909, 0.0000027555339648890704, -2.4760454010150433e-8]
-export const COS_C = [1, -0.5, 0.04166666666659654, -0.001388888887761173, 0.000024801580707294864, -2.7555523105456954e-7, 2.064511860388919e-9]
+// The kernels on [−π/4, π/4], fdlibm's polynomials (the values are the words the
+// sources give; test/math-ulp.js checks them), with z = r²:
+//   sin(r − e) = r − (e + z·r·P(z)),            P = −(S1..S6)  (k_sin.c: 2^-58)
+//   cos(r − e) = 1 − (z·(1/2 + z·P(z)) − r·e),  P = −(C1..C6)  (k_cos.c: 2^-58)
+// e and r·e the tail's first-order terms; summing the small terms before the head
+// leaves one rounding at the head's magnitude. The negated polynomial keeps
+// sin(−0) = −0 (−0 − (+0 + −0)). One polynomial evaluates both (polySplit), its
+// coefficients read from SINCOS_TAB, −S_i and −C_i interleaved, at an offset the
+// quadrant's parity picks, and a two-lane kernel takes each lane's pair with one load.
+// tan(r) = sin/cos, or −cos/sin for an odd quadrant, with sin as r·(1 + z·S(z)), cos as
+// 1 − z/2 + z²·C(z) (polyHorner) and no tail.
+export const SIN_C = [-0.16666666666666632, 0.00833333333332249, -0.0001984126982985795, 0.0000027557313707070068, -2.5050760253406863e-8, 1.58969099521155e-10]
+export const COS_C = [0.0416666666666666, -0.001388888888887411, 0.00002480158728947673, -2.7557314351390663e-7, 2.087572321298175e-9, -1.1359647557788195e-11]
+export const SINCOS_TAB = SIN_C.flatMap((s, i) => [-s, -COS_C[i]])
+// atan(r) = r·(1 + t·A(t)) on |r| ≤ tan(π/8), minimax in the relative error
+// (scripts/minimax-trig.mjs): 8.8 ulp minimax, 10.4 measured as evaluated. asin and
+// acos use the fdlibm rational constants below.
 export const ATAN_C = [1, -0.33333333333260085, 0.199999999826836, -0.14285712872906356, 0.11111054409758879, -0.0908961506872619, 0.07674318783147892, -0.06510249112422438, 0.050374261173853706, -0.025474359253691407]
 /**
  * The polynomial evaluation tree THREE evaluators share — the scalar WAT builder
@@ -64,6 +80,38 @@ export const polyTree = (cs, ops, x) => {
     pow = mul(pow, pow)
   }
   return terms[0]
+}
+
+/**
+ * Horner's scheme over the same constructors, shared the same way: one multiply-add per
+ * coefficient, in a chain. tan's two polynomials take it, sin as r·(1 + z·S(z)) and cos as
+ * 1 − z/2 + z²·C(z): the chain ends in the one addition at the head's magnitude, where the
+ * tree adds its leading pair to the rest and rounds there twice (an ulp more of tan's error).
+ */
+export const polyHorner = (cs, ops, x) => {
+  const { konst, mul, add } = ops
+  let acc = konst(cs[cs.length - 1])
+  for (let i = cs.length - 2; i >= 0; i--) acc = add(konst(cs[i]), mul(x, acc))
+  return acc
+}
+
+/**
+ * The even/odd split, shared the same way: c0 + c2·w + c4·w² + … and c1 + c3·w + … by
+ * Horner in w = x², joined as even + x·odd (k_sin.c evaluates its sine so). The sine and
+ * cosine kernels take it: on six terms it is 11 operations, 7 of them in a chain, where
+ * Horner is 10 and 10 and the tree 12 and 6. A loop of independent calls is bound by the
+ * operations, one that feeds a result into the next call (a hash of a sine, an LFO into
+ * an oscillator's frequency) by the chain.
+ */
+export const polySplit = (cs, ops, x) => {
+  const { konst, mul, add } = ops
+  const w = mul(x, x)
+  const half = (lo) => {
+    let i = lo + ((cs.length - 1 - lo) & ~1), acc = konst(cs[i])
+    for (i -= 2; i >= lo; i -= 2) acc = add(konst(cs[i]), mul(w, acc))
+    return acc
+  }
+  return add(half(0), mul(x, half(1)))
 }
 
 // atanh's series for log: log((1+s)/(1-s)) = 2s * (1 + s^2/3 + s^4/5 + …), the

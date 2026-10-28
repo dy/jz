@@ -120,9 +120,11 @@ test('A program carries the constants of its own kernels only', () => {
 
 test('sin, cos and tan take an argument within π/4 as its own remainder', () => {
   if (belowOpt(2)) return
+  // the first branch's (then …) arm, to its matching parenthesis
+  const arm = (s, at) => { for (let d = 0, j = at; at >= 0 && j < s.length; j++) { d += s[j] === '(' ? 1 : s[j] === ')' ? -1 : 0; if (!d) return s.slice(at, j + 1) } return '' }
   for (const fn of ['sin', 'cos', 'tan']) {
     const k = funcWat(wat(`export let f = (x) => Math.${fn}(x)`), 'math.' + fn)
-    const first = k.slice(k.indexOf('(then'), k.indexOf('(else'))
+    const first = arm(k, k.indexOf('(then'))
     ok(first.length > 0 && !/f64\.mul/.test(first), `$math.${fn}: the first arm reduces nothing`)
   }
 })
