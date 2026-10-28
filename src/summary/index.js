@@ -2738,7 +2738,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (name === 'at') return orAbsent(typedElemKind(recv))
       if (name === 'indexOf' || name === 'lastIndexOf') return NUMBER
       if (name === 'includes') return BOOL
-      if (name === 'reduce') return reduceResult(recv, base, n)
+      if (name === 'reduce' || name === 'reduceRight') return reduceResult(recv, base, n)
     }
     if (t === K.STRING) {
       // `replace`/`replaceAll` call a function argument the summary does not model.

@@ -1641,7 +1641,7 @@ function liftOptionalChain(node, condition = false, receiver = null, missing = n
   // kind: `a?.reduce(() => 42, 0)` on a BigInt64Array is a Number), and
   // optional chaining adds an undefined arm: box inside the successful branch
   // before the carriers join.
-  const boxedTypedReduce = opt[0] === '?.' && opt[2] === 'reduce' && optIdx >= 1 && path[optIdx - 1][0] === '()' &&
+  const boxedTypedReduce = opt[0] === '?.' && (opt[2] === 'reduce' || opt[2] === 'reduceRight') && optIdx >= 1 && path[optIdx - 1][0] === '()' &&
     summaryTagOf(summaryCore(ctx.summary?.at(ctx.func.current)?.kindOfExpr(path[optIdx - 1]) ?? 0)) === K.BIGINT &&
     ctx.summary.at(ctx.func.current).typedPayloadCtorOfExpr(opt[1]) != null
   let head = opt[1], callReceiver = null

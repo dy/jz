@@ -95,7 +95,7 @@ export const DERIVED_PROP_MODULES = Object.assign(Object.create(null), {
   "prototype": ["core"],
   "push": ["array"],
   "reduce": ["array", "typedarray"],
-  "reduceRight": ["array"],
+  "reduceRight": ["array", "typedarray"],
   "repeat": ["string"],
   "replace": ["regex", "string"],
   "replaceAll": ["string"],

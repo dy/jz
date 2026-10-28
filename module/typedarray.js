@@ -3363,9 +3363,10 @@ export default (ctx) => {
       ['f64.const', 0]], 'f64')
   }
 
-  // .reduce: callback (acc, item, index, typedArray) → acc. Without init,
-  // slot 0 seeds acc and the callback skips on iteration 0.
-  ctx.core.emit['.typed:reduce'] = (arr, fn, init) => {
+  // .reduce / .reduceRight: callback (acc, item, index, typedArray) → acc.
+  // Without init, the first element visited (index 0, or len-1 walking right
+  // to left) seeds acc and the callback skips it.
+  const reduceCommon = (arr, fn, init, reverse) => {
     const cbLoc = temp('trc'), acc = temp('trv'), seeded = init !== undefined
     const callback = captureCallback(fn, cbLoc)
     // The accumulator lives in the closure ABI's any slot the whole loop (the
@@ -3375,20 +3376,21 @@ export default (ctx) => {
     // carrier every reader of a typed method result expects (ir/bigint.js
     // isBoxedStorageMethodRead), every other value passing as itself.
     const inDomain = value => fromI64(maybeUnboxBigInt(value))
-    const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, receiver, argOf) => {
+    const loop = typedLoop(arr, (load, i, len, _ptr, _exit, receiver, argOf) => {
       const step = ['local.set', `$${acc}`, asF64(ctx.closure.call(
         typed(['local.get', `$${cbLoc}`], 'f64'),
         [typed(['local.get', `$${acc}`], 'f64'), argOf(load()),
           typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver]))]
       if (seeded) return [step]
-      // Unseeded: iteration 0 just stashes the value into acc.
+      // Unseeded: the first iteration just stashes the value into acc.
       return [
-        ['if', ['i32.eqz', ['local.get', `$${i}`]],
+        ['if', reverse ? ['i32.eq', ['local.get', `$${i}`], ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]]]
+          : ['i32.eqz', ['local.get', `$${i}`]],
           ['then', ['local.set', `$${acc}`, argOf(load())]],
           ['else', step]]]
-    })
+    }, reverse)
     if (!loop) return null
-    return typed(['block', ['result', 'f64'],
+    const out = typed(['block', ['result', 'f64'],
       loop.setup[0], // receiver before callback and initial-value arguments
       callback.setup,
       ['local.set', `$${acc}`, seeded ? asF64(ctx.closure.argIR(init)) : undefExpr()],
@@ -3397,7 +3399,13 @@ export default (ctx) => {
       ...(!seeded ? [['if', ['i32.eqz', ['local.get', `$${loop.len}`]],
         ['then', ['drop', throwTypeErrorIR()]]]] : []),
       inDomain(typed(['local.get', `$${acc}`], 'f64'))], 'f64')
+    // A receiver of no static element kind (the runtime fork's typed arm, a
+    // BigInt64Array) hands a consumer of tagged values the accumulator as the
+    // closure ABI holds it, a BigInt boxed (ir/bigint.js deferBigintBox).
+    return loop.et == null ? deferBigintBox(out, () => typed([...out.slice(0, -1), typed(['local.get', `$${acc}`], 'f64')], 'f64')) : out
   }
+  ctx.core.emit['.typed:reduce'] = (arr, fn, init) => reduceCommon(arr, fn, init, false)
+  ctx.core.emit['.typed:reduceRight'] = (arr, fn, init) => reduceCommon(arr, fn, init, true)
 
   // .indexOf: scalar value-equality search. Returns -1 on miss. Compare on f64
   // — Array.prototype.indexOf uses strict equality (NaN ≠ NaN).
@@ -3511,30 +3519,36 @@ export default (ctx) => {
   const findCommon = (arr, fn, returnIndex, reverse, thisArg) => {
     const cbLoc = temp('tfc'), result = temp('tfr'), foundIdx = tempI32('tfi')
     const callback = captureCallback(fn, cbLoc, thisArg)
-    const loop = typedLoop(arr, (load, i, _len, _ptr, exit, receiver, argOf) => {
+    // (no static element kind: a hit also marks its index, for the boxed recipe below)
+    let elemArg = null
+    const loop = typedLoop(arr, (load, i, _len, ptr, exit, receiver, argOf) => {
       const itemLoc = temp('tfit')
+      if (ptr == null) elemArg = argOf
       return [
         ['local.set', `$${itemLoc}`, load()],
         ['if', truthyIR(callback.call(
           [argOf(typed(['local.get', `$${itemLoc}`], 'f64')),
            typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64'), receiver])),
           ['then',
-            returnIndex
-              ? ['local.set', `$${foundIdx}`, ['local.get', `$${i}`]]
-              : ['local.set', `$${result}`, typed(['local.get', `$${itemLoc}`], 'f64')],
+            ...(returnIndex || elemArg ? [['local.set', `$${foundIdx}`, ['local.get', `$${i}`]]] : []),
+            ...(returnIndex ? [] : [['local.set', `$${result}`, typed(['local.get', `$${itemLoc}`], 'f64')]]),
             ['br', exit]]]
       ]
     }, reverse)
     if (!loop) return null
-    return typed(['block', ['result', 'f64'],
+    const out = typed(['block', ['result', 'f64'],
       loop.setup[0], callback.setup, callback.check,
-      returnIndex
-        ? ['local.set', `$${foundIdx}`, ['i32.const', -1]]
-        : ['local.set', `$${result}`, undefExpr()],
+      ...(returnIndex || elemArg ? [['local.set', `$${foundIdx}`, ['i32.const', -1]]] : []),
+      ...(returnIndex ? [] : [['local.set', `$${result}`, undefExpr()]]),
       ...loop.setup.slice(1),
       returnIndex
         ? typed(['f64.convert_i32_s', ['local.get', `$${foundIdx}`]], 'f64')
         : typed(['local.get', `$${result}`], 'f64')], 'f64')
+    // A receiver of no static element kind hands a consumer of tagged values a
+    // found element in its closure-argument form, a BigInt boxed (deferBigintBox).
+    return returnIndex || !elemArg ? out : deferBigintBox(out, () => typed([...out.slice(0, -1),
+      typed(['if', ['result', 'f64'], ['i32.ge_s', ['local.get', `$${foundIdx}`], ['i32.const', 0]],
+        ['then', elemArg(typed(['local.get', `$${result}`], 'f64'))], ['else', typed(['local.get', `$${result}`], 'f64')]], 'f64')], 'f64'))
   }
   ctx.core.emit['.typed:find'] = (arr, fn, thisArg) => findCommon(arr, fn, false, false, thisArg)
   ctx.core.emit['.typed:findIndex'] = (arr, fn, thisArg) => findCommon(arr, fn, true, false, thisArg)
@@ -3733,9 +3747,10 @@ export default (ctx) => {
   }
 
   // .toSorted(fn?) — a sorted COPY (receiver unchanged): slice-copy, then sort in place.
+  // The copy owns its data whether or not the receiver is a view.
   ctx.core.emit['.typed:toSorted'] = (arr, fn) => {
-    const copy = ctx.core.emit['.typed:slice'](arr)
-    return copy ? emitTypedSort(copy, fn, resolveElem(arr)) : null
+    const copy = ctx.core.emit['.typed:slice'](arr), r = resolveElem(arr)
+    return copy ? emitTypedSort(copy, fn, r && { ...r, isView: false }) : null
   }
 
   // .with(index, value) — a COPY with one element replaced (receiver unchanged). Negative
@@ -3937,8 +3952,8 @@ export default (ctx) => {
   // validates its receiver first (ValidateTypedArray, `$__ta_valid`): a view its
   // buffer ends before throws where it would act on no elements. An element
   // read or write and subarray take such a view as empty, as JavaScript does.
-  // (and the generic ones a typed receiver takes: its iterators, reduceRight)
-  const SHARED = new Set(['.keys', '.values', '.entries', '.reduceRight'])
+  // (and the generic ones a typed receiver takes: its iterators)
+  const SHARED = new Set(['.keys', '.values', '.entries'])
   for (const name of Object.keys(ctx.core.emit)) {
     if (!(name.startsWith('.typed:') || SHARED.has(name)) || name === '.typed:[]' || name === '.typed:[]=' || name === '.typed:subarray') continue
     const method = ctx.core.emit[name]
@@ -3970,7 +3985,9 @@ export default (ctx) => {
       inc('__ta_valid')
       const check = ['call', '$__ta_valid', ['i64.reinterpret_f64', recv === arr ? asF64(emit(recv)) : ['local.get', `$${recv}`]]]
       const type = ir.type && ir.type !== 'void' ? ir.type : null
-      return typed(['block', ...(type ? [['result', type]] : []), ...held, check, ir], ir.type)
+      const out = typed(['block', ...(type ? [['result', type]] : []), ...held, check, ir], ir.type)
+      // (a result a tagged consumer takes boxed keeps that recipe, ir/bigint.js deferBigintBox)
+      return ir.bigintBox ? deferBigintBox(out, () => typed(['block', ...(type ? [['result', type]] : []), ...held, check, ir.bigintBox()], ir.type)) : out
     }
     validated.argc = method.argc ?? method.length   // the arguments the dispatch hands it (ctx.js emitArity)
     ctx.core.emit[name] = validated
