@@ -325,8 +325,8 @@ can catch; after a `memory.reset()` the module runs again.
 Host Number values remain numbers, including NaNs with custom payloads (one
 whose bits spell the undefined or null box enters as the canonical NaN). Pass
 allocated memory by its bigint handle from `memory.Array`, `memory.Float64Array`
-or the other constructors. Raw `memory.read` and pointer codec helpers also
-accept legacy floating-point carriers; ordinary argument and value marshaling
+or the other constructors. `memory.read` also
+accepts legacy floating-point carriers; ordinary argument and value marshaling
 does not interpret Number payloads as handles. An export's Number result reads
 as a Number whatever its payload; one that may be undefined or null, and a void
 export's undefined, read as those on every engine.
@@ -488,7 +488,7 @@ Adoption is ejectable: remove the JZ build step and the source remains JavaScrip
 ## Stability
 
 Pre-1.0. The entry points `jz` (the default export with `jz.memory`, `compile`
-and `instantiate`), `jz/interop` and `jz/strict`, the options above and the CLI flags are the contract; removing or
+and `instantiate`), `jz/interop` (`instantiate`) and `jz/strict`, the options above and the CLI flags are the contract; removing or
 changing them takes a major version. Error classes and codes are stable within
 a major. Accepted programs preserve JavaScript values, exceptions and
 evaluation order at every optimization level, outside the differences listed

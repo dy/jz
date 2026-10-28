@@ -1,9 +1,10 @@
 /**
- * jz/interop — host-side boundary codec.
+ * Host runtime — the boundary codec behind `jz/interop`.
  *
- * Importable as `jz/interop` without pulling the compiler, parser, or watr —
- * use this to run prebuilt jz wasm from a host that doesn't need to compile.
- * Dependencies contain only host linking, layout, errors and text decoding.
+ * Runs prebuilt jz wasm without the compiler, parser, or watr. The package
+ * subpath `jz/interop` (instantiate.js) exposes `instantiate` alone; the rest
+ * serves index.js and the tests. Dependencies contain only host linking,
+ * layout, errors and text decoding.
  *
  * Marshals NaN-boxed `f64` values across the boundary: bump-allocated heap
  * blobs (strings, arrays, typed arrays, objects), schema transport for
@@ -21,7 +22,7 @@
  * time (`opts.host`). There is no runtime "driver sniff" — the host loading
  * the binary knows which variant it asked for.
  *
- * @module jz/interop
+ * @module interop
  */
 
 import { wasi, attachTimers } from './wasi.js'
@@ -2401,7 +2402,7 @@ const buildImports = (mod, opts, state) => {
   // Shared memory: normalize (auto-wrap raw Memory), pass as import.
   // Numeric opts.memory is a compile-time page count shorthand, not an import.
   if (opts.memory instanceof WebAssembly.Memory) {
-    // Auto-wrap raw WebAssembly.Memory → enhanced jz.memory
+    // Auto-wrap raw WebAssembly.Memory → enhanced memory
     if (!_enhanced.has(opts.memory)) opts.memory = memory(opts.memory)
     // A module whose schemas would bind at other ids is rejected here, before
     // its start function and data segments write into the memory it shares
@@ -2487,7 +2488,7 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   }
   // A memoryless module keeps a minimal reader internally (state.mem, for decoding
   // its SSO/atom boundary values), but the result's `.memory` stays null — the
-  // module genuinely exposes no linear memory. `jz.memory(result)` still hands back
+  // module genuinely exposes no linear memory. `memory(result)` still hands back
   // a usable reader on demand.
   return { exports, memory: enhanced?.scalar ? null : enhanced, instance: inst, module: mod }
 }

@@ -37,8 +37,8 @@
  * Capability hooks (ctx.schema.register, ctx.closure.make) are installed by capability modules.
  *
  * Interop host layer (memory marshaling, wrap, instantiate) lives in
- * interop.js — also exported as the standalone `jz/interop` subpath for
- * hosts that want to run prebuilt jz wasm without pulling the compiler.
+ * interop.js; the `jz/interop` subpath (instantiate.js) exposes its
+ * `instantiate` to hosts that run prebuilt jz wasm without the compiler.
  *
  * @module jz/compiler
  */

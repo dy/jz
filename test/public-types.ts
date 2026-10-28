@@ -1,8 +1,8 @@
 import jz, { compile, instantiate, type CompileOptions, type JzPointer } from 'jz'
-import { memory, instantiate as instantiateInterop } from 'jz/interop'
+import { instantiate as instantiateInterop } from 'jz/interop'
 import strict, { compile as compileStrict } from 'jz/strict'
 
-const mem = memory()
+const mem = jz.memory()
 const pointer: JzPointer = mem.String('jz')
 const floats: JzPointer = mem.Float64Array([1, 2, 3])
 mem.write(pointer, ['updated'])
@@ -27,6 +27,8 @@ const tuned: Uint8Array = compile('export let f = () => 1', { ...opts, wat: fals
 const result = jz('export let f = () => 1')
 const shared = jz('export let f = () => 1', { memory: jz.memory() })
 const wrapped = instantiateInterop(bytes)
+// @ts-expect-error the subpath exports instantiate alone
+import('jz/interop').then(m => m.memory())
 const again = instantiate(bytes, { imports: { host: { log: console.log } } })
 // @ts-expect-error instantiate takes no compile options
 instantiate(bytes, { optimize: 'size' })

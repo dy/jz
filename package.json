@@ -12,7 +12,7 @@
     },
     "./interop": {
       "types": "./interop.d.ts",
-      "default": "./interop.js"
+      "default": "./instantiate.js"
     },
     "./strict": {
       "types": "./strict.d.ts",
@@ -25,6 +25,7 @@
     "strict.js",
     "strict.d.ts",
     "interop.d.ts",
+    "instantiate.js",
     "cli.js",
     "wasi.js",
     "utf8.js",

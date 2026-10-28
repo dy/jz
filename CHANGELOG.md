@@ -284,3 +284,4 @@ standing performance claims still require fresh reference measurements.
 ### Breaking changes
 
 - The root entry exports the default `jz` (with `jz.memory`), `compile` and `instantiate` and nothing else: `jz.compile` is `compile`, the named `jz` is the default export, and `jz.pool`, `_compileInProcess` and `_setCompileTarget` move to internal paths (`pool.js`, `test/util.js`, `src/compiler.js`).
+- `jz/interop` exports `instantiate` alone (instantiate.js over the interop.js runtime): `memory()` is `jz.memory()`, a module compiled once is the result's `.module`, and `wrap`, `toModule`, `coerce`, the bit conversions, the NaN constants and the pointer accessors stay internal.

@@ -5170,7 +5170,7 @@ the corpus *is* the guarantee, so widen it toward the code you actually ship.
 
 The public surface is deliberately small (README owns it): the root exports
 `jz` (default, with `jz.memory`), `compile` and `instantiate`; the `jz/interop` subpath with
-`instantiate` and `memory`; the compile options in `index.d.ts`; and the
+`instantiate` (instantiate.js over the interop.js runtime); the compile options in `index.d.ts`; and the
 CLI flags in `jz --help`. Everything else is internal and may change without a
 major version: `pool.js` (experimental SPMD worker pool, node only, not
 exported), `setCompileTarget` in src/compiler.js (the test harness's compiler
@@ -5277,9 +5277,9 @@ The wrapper supplies neutral carriers without reading or converting those
 arguments, preserving undefined for default initializers. It also skips unused
 rest packing and arguments beyond a non-rest function's arity. Defaults and
 captured reads participate in the census (`test/interop.js`). Kernel byte identity is not
-promised across releases. The low-level interop helpers (`wrap`, `coerce`, bit
-conversions, pointer/tag accessors, NaN constants, `toModule`, `wrapVal`,
-`alloc`, `allocTyped`) exist at runtime but are not declared in the public types.
+promised across releases. The runtime's other exports (`memory`, `wrap`, `coerce`, bit
+conversions, pointer/tag accessors, NaN constants, `toModule`) and the memory's
+`wrapVal`, `alloc` and `allocTyped` serve index.js and the tests; `jz/interop` does not expose them.
 
 ### Known limitations
 

@@ -6,8 +6,8 @@
  *   dist/jz.js   — minified single-file ESM bundle of the JS compiler (index.js
  *                  + its src/ graph + the subscript parser + watr backend). Drop
  *                  it anywhere with a JS runtime: `import jz from './jz.js'`.
- *   dist/interop.js — minified jz/interop bridge (host runtime: instantiate +
- *                  value marshalling, no compiler). ~15 kB / ~6 kB gzipped.
+ *   dist/interop.js — minified jz/interop bridge (instantiate.js over the host
+ *                  runtime: value marshalling, no compiler).
  *   assets/sprae.js — minified bundle of sprae (a WEB asset, not compiler dist):
  *                  the landing binds its live bench figures with sprae `:text`
  *                  directives. Resolved from the npm package or a sibling dy/sprae.
@@ -114,7 +114,7 @@ console.log('wrote dist/strict.js', kb(strictOut), `(${(gzipSync(readFileSync(st
 // ── dist/interop.js — minified jz/interop bridge (host runtime, no compiler) ──
 const interopOut = resolve(OUT, 'interop.js')
 await build({
-  entryPoints: [resolve(ROOT, 'interop.js')],
+  entryPoints: [resolve(ROOT, 'instantiate.js')],
   bundle: true,
   minify: true,
   format: 'esm',

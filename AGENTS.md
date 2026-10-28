@@ -86,7 +86,7 @@ These are compiler/build output — edit the source, then regenerate:
 |---|---|---|
 | `examples/**/*.wasm` | `npm run build:examples` | the example's `*.js` |
 | `examples/thumbs/*.webp` | `node examples/gen-thumb.mjs <name>` | the example |
-| `dist/jz.js`, `dist/interop.js` | `npm run build` | `index.js` / `interop.js` + `src/` |
+| `dist/jz.js`, `dist/interop.js` | `npm run build` | `index.js` / `instantiate.js` + `src/` |
 | `assets/sprae.js` | `npm run build` | the `sprae` package (web asset for the landing, not compiler dist) |
 | `assets/grid-current.wasm` | `npm run build` | `assets/grid-current.js` (the landing's header animation) |
 | `bench/bench.svg`, `bench/results.json` | `npm run bench` | the bench corpus |

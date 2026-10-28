@@ -1,17 +1,16 @@
 // jz/interop — standalone host-side boundary bridge.
 //
-// Validates that prebuilt jz wasm bytes can be instantiated and called using
-// ONLY the `jz/interop` subpath (no compiler / parser / watr dep). The wasm is
-// produced once via the full jz pipeline, then handed to the subpath as bytes.
-//
-// We import the subpath via its package specifier (`jz/interop`) — Node
-// resolves it through the package.json exports map, exactly as a downstream
-// consumer would. That doubles as a check that the exports map is correct.
+// Validates that prebuilt jz wasm bytes can be instantiated and called through
+// the host runtime (interop.js) with no compiler / parser / watr dep. The wasm is
+// produced once via the full jz pipeline, then handed to the runtime as bytes.
+// The runtime's codec and wrapper are white-box imports; the `jz/interop`
+// package specifier, resolved through the exports map as a downstream consumer
+// would, exposes `instantiate` alone (checked below).
 
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import * as interop from 'jz/interop'
+import * as interop from '../interop.js'
 import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
 import { HEAP } from '../layout.js'
 import { oracle } from './util.js'
@@ -370,11 +369,13 @@ test('interop: grown collections decode live entries in insertion order', () => 
   }
 })
 
-test('interop: subpath surface matches expected exports', () => {
-  for (const name of ['instantiate', 'toModule', 'memory', 'wrap', 'ptr', 'offset', 'type', 'aux',
-                      'i64ToF64', 'f64ToI64', 'coerce', 'NULL_NAN', 'UNDEF_NAN']) {
-    ok(name in interop, `jz/interop missing export: ${name}`)
-  }
+test('interop: the subpath exposes instantiate alone, the runtime its codec', async () => {
+  const pub = await import('jz/interop')
+  is(Object.keys(pub), ['instantiate'])
+  is(pub.instantiate, interop.instantiate)
+  for (const name of ['toModule', 'memory', 'wrap', 'ptr', 'offset', 'type', 'aux',
+                      'i64ToF64', 'f64ToI64', 'coerce', 'NULL_NAN', 'UNDEF_NAN'])
+    ok(name in interop, `interop.js missing internal export: ${name}`)
 })
 
 test('interop: instantiate works on baseline wasm', () => {
@@ -407,7 +408,10 @@ test('interop: subpath stays compiler-free with only host and codec dependencies
   // Compiler dependencies must never enter this path.
   const { readFileSync } = await import('node:fs')
   const url = await import.meta.resolve('jz/interop')
-  const src = readFileSync(new URL(url), 'utf8')
+  const sourceOf = (u) => readFileSync(new URL(u), 'utf8')
+  const reexports = [...sourceOf(url).matchAll(/^export\s.*?from\s+['"]([^'"]+)['"]/gm)].map(m => m[1])
+  is(reexports, ['./interop.js'], 'the subpath re-exports the runtime')
+  const src = sourceOf(new URL(reexports[0], url))
   const imports = [...src.matchAll(/^import\s.*?from\s+['"]([^'"]+)['"]/gm)].map(m => m[1])
   const allowed = new Set(['./wasi.js', './layout.js', './err-codes.js', './utf8.js'])
   for (const imp of imports) {
