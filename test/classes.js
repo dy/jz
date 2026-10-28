@@ -871,3 +871,40 @@ test('classes: accessors of derived classes, literals and static pairs on receiv
   const setter = jz(`class B { v = 0 }\nclass D extends B { set x(a) { this.v = a + 1 } }\nexport let f = (w) => { const o = w ? new D() : new B(); o.x = 5; return o.v }`, { optimize: 'speed' })
   is(setter.exports.f(1), 6); is(setter.exports.f(0), 0)
 })
+
+// `new` of a function that is no constructor throws a TypeError once the callee
+// and the arguments are evaluated (ECMA-262 13.3.5.1.1), where it ran the
+// function as a call; constructors construct, shadowed or reassigned names
+// stay calls.
+test('new: a callee that is no constructor throws a TypeError, a constructor constructs', () => {
+  const cases = {
+    arrow: `let A = () => 1; new A(log.push('arg'))`,
+    arrowTop: `new Top()`,
+    literal: `new (() => 1)()`,
+    method: `const o = { m() { return 1 } }; new o.m(log.push('a'))`,
+    methodAlias: `const o = { m() { return 1 } }; const M = o.m; new M()`,
+    classMethod: `class C { m() { return 1 } }; const c = new C(); new c.m()`,
+    classStatic: `class C { static s() { return 1 } static *g() {} }; new C.s()`,
+    asyncFn: `async function af() { return 1 }; new af()`,
+    asyncArrow: `const af = async () => 1; new af()`,
+    generator: `function* g() { yield 1 }; new g()`,
+    bound: `const A = () => 1; const B = A.bind(null); new B()`,
+    spread: `const A = () => 1; const xs = [1, 2]; new A(...xs, log.push('after'))`,
+    builtins: `for (const make of [() => new Math.max(), () => new Symbol(), () => new BigInt(1), () => new JSON.parse('1'), () => new Math]) try { make() } catch (e) { log.push(e instanceof TypeError) }`,
+    classOk: `class C { constructor() { this.x = 1 } }; log.push(new C().x)`,
+    functionOk: `function F() { return { a: 2 } }; log.push(new F().a)`,
+    staticClassOk: `class C { static make = class { constructor() { this.y = 3 } } }; log.push(new C.make().y)`,
+    shadowOk: `class A { constructor() { this.v = 6 } }; let B = A; { let A = () => 1; log.push(new B().v) }`,
+    // (the census of assignments is the module's: any `R = …` keeps every `R` a call)
+    reassignedOk: `let R = () => 1; R = class { constructor() { this.q = 7 } }; log.push(new R().q)`,
+    writtenOk: `const o = { w() { return 1 } }; o.w = class { constructor() { this.r = 8 } }; log.push(new o.w().r)`,
+    returnedOk: `class C { constructor() { return { m: function () { return { s: 9 } } } } m() { return 0 } }; const c = new C(); log.push(new c.m().s)`,
+    shadowedMathOk: `const Math = { max: class { constructor() { this.k = 12 } } }; log.push(new Math.max().k)`,
+  }
+  const src = `const Top = (x) => x\n` + Object.entries(cases).map(([name, body]) =>
+    `export let ${name} = () => { let log = []; try { ${body}; return 'ok:' + log.join() } catch (e) { return (e instanceof TypeError ? 'TypeError' : 'other') + ':' + log.join() } }`).join('\n')
+  for (const optimize of levels(0, 2, 'size')) {
+    const host = oracle(src), mod = jz(src, { optimize }).exports
+    for (const name of Object.keys(cases)) is(mod[name](), host[name](), `${name} at ${optimize}`)
+  }
+})

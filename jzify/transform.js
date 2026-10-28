@@ -23,6 +23,13 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int3
 const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', 'DataView', 'RegExp', ...TYPED_ELEM_NAMES, 'Float16Array', 'Uint8ClampedArray', ...ERR_CLASS_NAMES])
 
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
+// Builtins `new` rejects (builtinNonCtor in createTransform): the namespaces
+// themselves are no functions at all.
+const NON_CTOR_GLOBALS = new Set(['Symbol', 'BigInt', 'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+  'encodeURI', 'encodeURIComponent', 'decodeURI', 'decodeURIComponent', 'escape', 'unescape',
+  'Math', 'JSON', 'Reflect', 'Atomics'])
+const NON_CTOR_MEMBER_ROOTS = new Set(['Math', 'JSON', 'Reflect', 'Atomics', 'Number', 'Object', 'Array',
+  'String', 'Symbol', 'BigInt', 'Promise', 'Date', 'ArrayBuffer'])
 const groupedName = node => typeof node === 'string' ? node
   : Array.isArray(node) && node[0] === '()' && node.length === 2 ? groupedName(node[1]) : null
 
@@ -95,6 +102,19 @@ export function createTransform(opts) {
     if (root == null || opts.isBound?.(root) || !ctx.transform.targetProfile?.envImports || ctx.transform.strict) return false
     const bare = typeof callee === 'string' || Array.isArray(callee) && callee[0] === '()' && callee.length === 2 && hostRoot(callee) === root && typeof callee[1] === 'string'
     return bare ? hostGlobalName(root) : HOST_GLOBALS.has(root) || hostGlobalName(root)
+  }
+  // A builtin that is no constructor: a global function (ECMA-262 19.2, `Symbol`
+  // and `BigInt`) or any member of a namespace or of a constructor that holds
+  // only functions and constants (`Math.max`, `JSON.parse`, `Array.from`).
+  const builtinNonCtor = (n) => {
+    while (Array.isArray(n) && n[0] === '()' && n.length === 2) n = n[1]
+    if (typeof n === 'string') return NON_CTOR_GLOBALS.has(n) && !opts.isBound?.(n)
+    return Array.isArray(n) && n[0] === '.' && typeof n[1] === 'string' && n[2] !== 'prototype' &&
+      NON_CTOR_MEMBER_ROOTS.has(n[1]) && !opts.isBound?.(n[1])
+  }
+  const calleeText = (n) => {
+    while (Array.isArray(n) && n[0] === '()' && n.length === 2) n = n[1]
+    return typeof n === 'string' ? n : Array.isArray(n) && n[0] === '.' && typeof n[2] === 'string' ? `${calleeText(n[1])}.${n[2]}` : 'expression'
   }
   // A class lowered to a schema and shared method functions (jzify/classes.js)
   // hoists those functions to the module's statement list; the class value
@@ -584,22 +604,27 @@ export function createTransform(opts) {
       // A host constructor (a global no scope of the module declares, or a member
       // of a host global): constructed on the host (module/web.js `__host_new`).
       const callee = Array.isArray(ctor) && ctor[0] === '()' && ctor.length > 2 ? ctor[1] : ctor
-      if (hostCtor(callee)) {
-        const argNode = Array.isArray(ctor) && ctor[0] === '()' ? ctor[2] : cargs.length === 1 ? cargs[0] : cargs.length ? [',', ...cargs] : null
-        const items = argNode == null ? [] : Array.isArray(argNode) && argNode[0] === ',' ? argNode.slice(1) : [argNode]
+      const argNode = Array.isArray(ctor) && ctor[0] === '()' ? ctor[2] : cargs.length === 1 ? cargs[0] : cargs.length ? [',', ...cargs] : null
+      const items = argNode == null ? [] : Array.isArray(argNode) && argNode[0] === ',' ? argNode.slice(1) : [argNode]
+      if (hostCtor(callee))
         return ['()', '__host_new', items.length ? [',', transform(callee), ...items.map(transform)] : transform(callee)]
-      }
+      // A callee that is no constructor (an arrow, a method, an async function,
+      // a generator, a builtin function) throws a TypeError once the callee
+      // and the arguments are evaluated (ECMA-262 13.3.5.1.1 EvaluateNew).
+      // (a builtin is read with no effect: not evaluated)
+      const builtin = builtinNonCtor(callee)
+      if (builtin || opts.nonConstructor?.(callee))
+        return ['()', ['=>', ['()', null], ['{}', [';', ...(builtin ? [] : [transform(callee)]),
+          ...items.map(a => Array.isArray(a) && a[0] === '...' ? ['[', transform(a)] : transform(a)),
+          ['throw', ['new', ['()', 'TypeError', [null, `${calleeText(callee)} is not a constructor`]]]]]]], null]
       // A constructor a variable or parameter holds (`const R = Response`, a
       // class the host passes in): the host constructs one that is a host
       // value, as `new` does; a value of the program (a class's factory) is
       // called. Each arm evaluates the arguments once, after the callee.
-      if (typeof callee === 'string' && opts.isValue?.(callee) && !opts.classBrand(callee) && !opts.programCallable?.(callee) && ctx.transform.targetProfile?.envImports && !ctx.transform.strict) {
-        const argNode = Array.isArray(ctor) && ctor[0] === '()' ? ctor[2] : cargs.length === 1 ? cargs[0] : cargs.length ? [',', ...cargs] : null
-        const items = argNode == null ? [] : Array.isArray(argNode) && argNode[0] === ',' ? argNode.slice(1) : [argNode]
+      if (typeof callee === 'string' && opts.isValue?.(callee) && !opts.classBrand(callee) && !opts.programCallable?.(callee) && ctx.transform.targetProfile?.envImports && !ctx.transform.strict)
         return ['?', ['__ptr_is', callee, [null, PTR.EXTERNAL]],
           ['()', '__host_new', [',', callee, ...items.map(transform)]],
           ['()', callee, items.length ? [',', ...items.map(transform)] : null]]
-      }
       if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
       return ['()', transform(ctor), ...(cargs.length ? cargs.map(transform) : [null])]
     },

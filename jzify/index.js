@@ -52,6 +52,54 @@ const addDeclarator = (scope, d) => {
   if (typeof d[1] !== 'string' || !Array.isArray(d[2])) return
   const lit = d[2][0] === 'async' && Array.isArray(d[2][1]) ? d[2][1][0] : d[2][0]
   if (lit === 'class' || lit === 'function' || lit === 'function*' || lit === '=>') scope.values.delete(d[1])
+  const init = d[2]
+  scope.inits.set(d[1], init)
+  if (callableNonCtor(init)) scope.nonCtors.add(d[1])
+  else if (init[0] === '{}') {
+    // an object literal's members that are such functions (`{ m() {}, f: () => 1 }`)
+    const keys = new Set()
+    for (const p of init[1]?.[0] === ',' ? init[1].slice(1) : [init[1]])
+      if (Array.isArray(p) && p[0] === ':' && typeof p[1] === 'string' && callableNonCtor(p[2])) keys.add(p[1])
+    if (keys.size) scope.nonCtorMembers.set(d[1], keys)
+  }
+  else if (init[0] === 'class') addClassMembers(scope, d[1], init[3])
+}
+// A class's methods and arrow fields: its own members (`static`) and its
+// instances' (inherited ones are not followed).
+// A key any other member of the same name holds stays unknown, and an instance
+// is the class's own only where its constructor returns no other object.
+const addClassMembers = (scope, name, body) => {
+  const own = new Set(), proto = new Set(), other = new Set()
+  let instance = true
+  for (const m of Array.isArray(body) && body[0] === ';' ? body.slice(1) : [body]) {
+    if (!Array.isArray(m)) continue
+    const stat = m[0] === 'static', e = stat ? m[1] : m
+    if (!Array.isArray(e)) continue
+    const fieldStatic = e[0] === '=' && Array.isArray(e[1]) && e[1][0] === 'static'
+    const key = e[0] === ':' ? e[1] : e[0] === '=' ? (fieldStatic ? e[1][1] : e[1]) : e[0] === 'get' || e[0] === 'set' ? e[1] : null
+    if (key === 'constructor' && e[0] === ':' && Array.isArray(e[2]) && returnsValue(e[2][3])) instance = false
+    if (typeof key !== 'string' || key === 'constructor') continue
+    if (e[0] !== 'get' && e[0] !== 'set' && callableNonCtor(e[2])) (stat || fieldStatic ? own : proto).add(key)
+    else other.add(key)
+  }
+  for (const k of other) { own.delete(k); proto.delete(k) }
+  if (own.size) scope.nonCtorMembers.set(name, own)
+  if (proto.size && instance) scope.protoNonCtors.set(name, proto)
+}
+// A function body's `return` of a value, nested functions aside.
+const returnsValue = (n) => {
+  if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'function' || n[0] === 'function*' || n[0] === 'class') return false
+  if (n[0] === 'return' && n[1] != null) return true
+  for (let i = 1; i < n.length; i++) if (returnsValue(n[i])) return true
+  return false
+}
+// A function that is no constructor (ECMA-262 10.2.4 MakeConstructor runs for
+// function declarations, expressions and classes alone): an arrow, a method
+// (an object literal's or a class's shorthand, parsed with no name), an async
+// function or a generator of any form. `new` of one throws a TypeError.
+const callableNonCtor = (n) => {
+  while (Array.isArray(n) && n[0] === '()' && n.length === 2) n = n[1]
+  return Array.isArray(n) && (n[0] === '=>' || n[0] === 'async' || n[0] === 'function*' || n[0] === 'function' && n[1] === null)
 }
 const addImportBindings = (scope, node) => {
   if (typeof node === 'string') { addBuiltinName(scope, node); return }
@@ -71,6 +119,33 @@ const atModuleScope = () => activeBuiltinScope != null && activeBuiltinScope.par
 // The nearest declaration of `name` from the active scope is a class.
 const declaredClass = (name) => {
   for (let s = activeBuiltinScope; s; s = s.parent) if (s.names.has(name)) return s.classes.has(name)
+  return false
+}
+// `new` of a callee that is no constructor: a function literal of such a form,
+// a name whose nearest declaration binds one, or an object literal's member of
+// one, where nothing in the module assigns the name or writes the member.
+// A binding's value (`const M = o.m`, `let B = A.bind(null)`, `const c = new
+// C()`), which nothing reassigns, resolves from that declaration's scope
+// (`from`); a bound function is a constructor only of a constructor
+// (ECMA-262 10.4.1.3 BoundFunctionCreate).
+const declaredNonCtor = (callee, from = activeBuiltinScope, depth = 0) => {
+  while (Array.isArray(callee) && callee[0] === '()' && callee.length === 2) callee = callee[1]
+  if (callableNonCtor(callee)) return true
+  if (depth > 8 || !Array.isArray(callee) && typeof callee !== 'string') return false
+  if (callee[0] === '()') return Array.isArray(callee[1]) && callee[1][0] === '.' && callee[1][2] === 'bind' && declaredNonCtor(callee[1][1], from, depth + 1)
+  const member = Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' && typeof callee[2] === 'string'
+  const name = member ? callee[1] : callee
+  if (typeof name !== 'string' || census.names.has(name) || member && census.props.has(callee[2])) return false
+  for (let s = from; s; s = s.parent) if (s.names.has(name)) {
+    const value = s.inits.get(name)
+    if (!member) return s.nonCtors.has(name) || value !== undefined && declaredNonCtor(value, s, depth + 1)
+    if (s.nonCtorMembers.get(name)?.has(callee[2])) return true
+    // an instance of a class whose constructor returns no other object
+    const made = Array.isArray(value) && value[0] === 'new' ? (Array.isArray(value[1]) && value[1][0] === '()' ? value[1][1] : value[1]) : null
+    if (typeof made !== 'string' || census.names.has(made)) return false
+    for (let c = s; c; c = c.parent) if (c.names.has(made)) return c.protoNonCtors.get(made)?.has(callee[2]) === true
+    return false
+  }
   return false
 }
 // The nearest declaration of `name` binds a value (`var OBJECT = Object`, a
@@ -115,7 +190,7 @@ const functionNameWrite = name => {
 // made a parameter in one function suppress unrelated builtin lowering in
 // every other function. The builder scopes nodes into `map`.
 const scopeBuilder = (map) => {
-  const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), consts: new Map(), strict: parent?.strict ?? false, self: null })
+  const childScope = parent => ({ parent, names: new Set(), values: new Set(), classes: new Set(), consts: new Map(), inits: new Map(), nonCtors: new Set(), nonCtorMembers: new Map(), protoNonCtors: new Map(), strict: parent?.strict ?? false, self: null })
   const functionDecls = new WeakSet()
   const strictBody = body => {
     if (Array.isArray(body) && body[0] === '{}') body = body[1]
@@ -146,11 +221,13 @@ const scopeBuilder = (map) => {
         }
       } else if ((op === 'function' || op === 'function*' || op === 'class') && typeof stmt[1] === 'string') {
         addBuiltinName(scope, stmt[1])
-        if (op === 'class') scope.classes.add(stmt[1])
+        if (op === 'class') { scope.classes.add(stmt[1]); addClassMembers(scope, stmt[1], stmt[3]) }
+        if (op === 'function*') scope.nonCtors.add(stmt[1])
         functionDecls.add(stmt)
       } else if (op === 'async' && Array.isArray(stmt[1]) &&
           (stmt[1][0] === 'function' || stmt[1][0] === 'function*')) {
         addBuiltinName(scope, stmt[1][1])
+        scope.nonCtors.add(stmt[1][1])
         functionDecls.add(stmt[1])
       } else if (op === 'import' || op === 'from' ||
           op === ',' && Array.isArray(stmt[1]) && stmt[1][0] === 'import') addImportBindings(scope, stmt)
@@ -298,6 +375,7 @@ let transform, transformScope, transformParams
   isClass: declaredClass,
   isValue: declaredValue,
   programCallable: (name) => programCallable(name),
+  nonConstructor: (callee) => declaredNonCtor(callee),
   assigned: (name) => census.names.has(name),
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
   lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,

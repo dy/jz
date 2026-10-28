@@ -1864,6 +1864,14 @@ literal's text and a jump's label prepare as data (`str`, `break`, `continue`
 handlers), so no name in them resolves. Interop maps the `@@name` well-known
 symbol keys to the host's symbols, and copies a typed array of the module's
 memory handed to a host call, copying the host's writes back after the call.
+`new` of a function that is no constructor throws its TypeError in place
+once the callee and the arguments are evaluated (jzify): an arrow, a method,
+an async function, a generator or a builtin function, written there or named
+through the scope builder's records (`nonCtors`, an object literal's or a
+class's `nonCtorMembers`, `protoNonCtors` for a class whose constructor
+returns no other object, and each declarator's value in `inits`, which
+`declaredNonCtor` follows through an alias, a `bind` and a `new C()`); the
+module's assignment census rules out a reassigned name or a written key.
 `new X(…)` of a variable or parameter that is not a program class or function
 (jzify `programCallable`: a const of classes and functions is one) is
 `__ptr_is(X, EXTERNAL) ? __host_new(X, …) : X(…)`; the summary decides the
