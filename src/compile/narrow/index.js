@@ -33,7 +33,7 @@ import { inferArrElemSchemaSet } from '../infer.js'
 import { assertValKindConsistent, buildCallerTypedLenCtx, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
 import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, substituteIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
 import { narrowI32Results, seedResultKinds, narrowPointerResults, narrowReturnArrayElemSets } from './results.js'
-import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength, inferNumericRanges, inferElementParamRanges } from './summaries.js'
+import { inferInternalArrayLengths, inferTypedValueRanges, boundedByCallerLength, callerBodyNames, inferNumericRanges, inferElementParamRanges } from './summaries.js'
 import { proveElementBounds } from './element-bounds.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { isExported } from '../func-exports.js'
@@ -571,15 +571,19 @@ export default function narrowSignatures(programFacts, ast) {
   // receiver, keeping whichever (if any) EVERY site agrees on
   // (mergeParamFact's ordinary exact-agreement poison) — one direct hard
   // pass, no transitive/soft pre-pass.
+  // (each caller body's names read once: the lattice rewrites no body)
+  const callerNames = new Map()
   runCallsiteLattice([mergeRule('lenBoundOf', (arg, k, state) => {
     const body = state.callerFunc?.body
     if (!body) return null
     const { argList } = state
+    let names = null
     for (let r = 0; r < argList.length; r++) {
       if (r === k) continue
       const recvArg = argList[r]
       if (typeof recvArg !== 'string') continue
-      if (boundedByCallerLength(arg, recvArg, body)) return r
+      if (!names && !(names = callerNames.get(body))) callerNames.set(body, names = callerBodyNames(body))
+      if (boundedByCallerLength(arg, recvArg, body, null, names)) return r
     }
     return null
   })])

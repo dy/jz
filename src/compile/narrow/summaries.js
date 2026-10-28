@@ -13,7 +13,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  returnExprs, alwaysReturns, hasBareReturn, isBlockBody, callArgs, ASSIGN_OPS, MUTATE_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned,
+  returnExprs, alwaysReturns, hasBareReturn, isBlockBody, callArgs, ASSIGN_OPS, MUTATE_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, isReassigned, collectAssignedNames,
 } from '../../ast.js'
 import {
   staticArrayElems, staticArrayLen, hull, typedValueLiteral, typedValueExprRange,
@@ -887,17 +887,32 @@ function singleDeclInit(body, name) {
  *  never re-entered, so recursion terminates even on a cyclic chain instead
  *  of stack-overflowing — an unusual input still fails closed, it never
  *  crashes. */
-export function boundedByCallerLength(expr, recvName, body, seen = null) {
+export function boundedByCallerLength(expr, recvName, body, seen = null, names = null) {
   if (Array.isArray(expr) && expr.length === 3 && expr[0] === '.' && expr[2] === 'length' && expr[1] === recvName) return true
   if (typeof expr === 'string') {
-    if (expr === recvName || isReassigned(body, expr)) return false
+    if (expr === recvName || (names ? names.written.has(expr) : isReassigned(body, expr))) return false
     if (seen?.has(expr)) return false
-    const init = singleDeclInit(body, expr)
-    return init != null && boundedByCallerLength(init, recvName, body, (seen ??= new Set()).add(expr))
+    const init = names ? names.inits.get(expr) : singleDeclInit(body, expr)
+    return init != null && boundedByCallerLength(init, recvName, body, (seen ??= new Set()).add(expr), names)
   }
   if (Array.isArray(expr) && expr.length === 3 && expr[0] === '-') {
     const nonneg = typedValueExprRange(expr[2])
-    return nonneg != null && nonneg[0] >= 0 && boundedByCallerLength(expr[1], recvName, body, seen)
+    return nonneg != null && nonneg[0] >= 0 && boundedByCallerLength(expr[1], recvName, body, seen, names)
   }
   return false
+}
+
+/** What boundedByCallerLength asks of a body's names, for a caller asking at
+ *  every site of a body it does not rewrite meanwhile: the names written, and
+ *  each name's one initializer (null where declared again), from one walk each. */
+export function callerBodyNames(body) {
+  const inits = new Map()
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      if (Array.isArray(d) && d[0] === '=') inits.set(d[1], inits.has(d[1]) ? null : d[2])
+    }
+  } })
+  return { written: collectAssignedNames(body, new Set()), inits }
 }
