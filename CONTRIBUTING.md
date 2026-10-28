@@ -1939,6 +1939,10 @@ TypeError: the member export dispatches on the instance.
 A static of an exported class is an export of the arguments: M a method, V
 and W a field's read and write, G and S an accessor's (jzify records which in
 `entry.statics`), which interop pairs into one accessor of the constructor.
+Where the module links the dictionary runtime (`__obj_props`) a handle is a
+Proxy over its field accessors that reads, lists and writes in place the
+properties stored outside the layout, each slot found afresh (a compaction
+may move a dictionary); a property the host adds stays the handle's own.
 
 Coercion distinguishes absence from an own non-callable value through the
 existing property-presence probe. Only absence selects an inherited method. Calls evaluate their receiver, property and

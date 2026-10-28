@@ -118,3 +118,18 @@ test('a static field of an exported class reads and writes the class, its access
     return out
   })
 })
+
+// What the program stores on an instance outside its fields lives in its
+// dictionaries: the handle lists and reads it as it stands, and writes one in place.
+test('an instance shows the properties the program stored outside its fields, live', async () => {
+  if (onWasi()) return
+  await agree(`export class C { constructor(x) { this.x = x } }
+    export const make = () => { const c = new C(1); c.extra = 'e'; c['dyn' + 1] = 2; return c }
+    export const add = (c) => { c.later = 3 }
+    export const read = (c) => [c.x, c.extra, c.dyn1, c.later].join()`, ({ make, add, read }) => {
+    const c = make(), out = [Object.keys(c).join(), c.extra, c.dyn1, 'later' in c]
+    add(c); out.push(c.later, Object.keys(c).join(), 'later' in c)
+    c.extra = 'E'; out.push(read(c), JSON.stringify(c))
+    return out
+  })
+})

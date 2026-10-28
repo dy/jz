@@ -208,6 +208,8 @@ host's console prints it by its fields. An instance of a class deriving from it
 that the program does not export reaches the host with its own overrides.
 The class's static fields read and write the class, and its static methods,
 getters and setters run in the module.
+A property the program stores on an instance outside its fields reads, lists
+and writes as it stands too; one the host adds stays on the host's object.
 
 An export that is not a function reads as the binding's current value, as an
 ES module's live binding does: `export let n` reads what the module last

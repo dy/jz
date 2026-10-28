@@ -626,16 +626,47 @@ export const memory = (src) => {
     if (off >= mem._above) mem._held = true
     else mem._pin = Math.max(mem._pin, end)
     pinAt(end)
-    const obj = Object.create(proto), keys = mem.schemas[sid]
+    const fields = Object.create(proto), keys = mem.schemas[sid]
     for (let i = 0; i < keys.length; i++) {
       if (typeof keys[i] !== 'string' || keys[i][0] === '#') continue
-      Object.defineProperty(obj, keys[i], { enumerable: true, configurable: true,
+      Object.defineProperty(fields, keys[i], { enumerable: true, configurable: true,
         get: () => slotValue(sid, off, i, fnOf),
         set: (v) => { const b = bits(wrapField(sid, i, v)); dv().setBigInt64(off + i * 8, b, true) } })
     }
+    // A module that stores properties outside a layout (its dictionaries,
+    // mem.read's object arm) shows an instance's as they stand: read, listed
+    // and written in place, found afresh at each access (a compaction may
+    // move a dictionary). One the host adds stays the handle's own.
+    const obj = mem.objProps ? new Proxy(fields, {
+      get: (t, k, r) => { const slot = k in t ? undefined : extraSlots(p).get(k); return slot === undefined ? Reflect.get(t, k, r) : mem.read(dv().getBigInt64(slot + 16, true), fnOf) },
+      has: (t, k) => k in t || extraSlots(p).has(k),
+      ownKeys: (t) => { const own = Reflect.ownKeys(t); for (const k of extraSlots(p).keys()) if (!own.includes(k)) own.push(k); return own },
+      getOwnPropertyDescriptor: (t, k) => {
+        const own = Reflect.getOwnPropertyDescriptor(t, k), slot = own ? undefined : extraSlots(p).get(k)
+        return slot === undefined ? own : { value: mem.read(dv().getBigInt64(slot + 16, true), fnOf), writable: true, enumerable: true, configurable: true }
+      },
+      set: (t, k, v, r) => {
+        const slot = k in t ? undefined : extraSlots(p).get(k)
+        if (slot === undefined) return Reflect.set(t, k, v, r)
+        dv().setBigInt64(slot + 16, bits(mem.wrapVal(v)), true)
+        return true
+      },
+    }) : fields
     mem._handles.set(obj, p)
     mem._instances.set(off, new WeakRef(obj))
     return obj
+  }
+  // The properties an object holds outside its layout, by key: the slot that holds each now.
+  const extraSlots = (p) => {
+    const out = new Map(), m = dv()
+    for (const which of [0, 1]) {
+      const d = mem.objProps(p, which)
+      if (!d) continue
+      let off = offset(d)
+      while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
+      for (const slot of liveSlots(off, 7)) out.set(mem.read(m.getBigInt64(slot + 8, true)), slot)
+    }
+    return out
   }
 
   // A value from its bits. `fnOf` (wrap's, per instance) reads a closure as a
