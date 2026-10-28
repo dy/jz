@@ -141,6 +141,7 @@ export const PASS_NAMES = [
   'selectArmUpdates',         // disjoint-arm update chain → select accumulation — speed-only
   'guardedUpdate',            // a data-dependent last conjunct folds into the update it guards (optimize/guarded-update.js) — speed-only
   'typedDecode',              // a typed receiver of open kind decodes once per loop (optimize/typed-decode.js)
+  'inlinePush',               // a push into an array stores in place where its block has room, the growth a call (module/array.js) — speed-only
   'shiftRemainder',           // a remainder rebuilt from its shifted quotient is a mask (optimize/shift-remainder.js)
   'narrowFloat32',            // `fround` of an operator over `fround`s runs in single precision (optimize/float32.js)
   // WAT-pipeline passes previously gated only by `undefined !== false` inside

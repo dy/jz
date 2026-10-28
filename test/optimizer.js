@@ -8189,7 +8189,8 @@ export let at = (i) => o.xs[i] + o.xs.length`,
 export let fill = (k) => { for (let i = 0; i < k; i++) for (let j = 0; j < 3; j++) rows[j].push(i) }
 export let at = (i) => rows[1][i] + rows[1].length`,
   }
-  const grow = m => m[0] === 'call' && /^\$__arr_grow/.test(m[1])
+  // (a push stored in place grows through `__arr_room`, module/array.js)
+  const grow = m => m[0] === 'call' && /^\$__arr_(?:grow|room)/.test(m[1])
   const has = (n, pred) => { let f = false; walk(n, m => { if (pred(m)) f = true }); return f }
   for (const [name, src] of Object.entries(srcs)) {
     // a void export's body inlines into its boundary entry

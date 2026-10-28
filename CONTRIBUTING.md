@@ -1087,6 +1087,22 @@ mutating it, then grow and copy in bulk. A trailing spread stages its scalar
 prefix in locals; prepend shifts the tail once and reads self-aliased values
 from that moved range without a temporary allocation. Pointer write-back is
 conditional on the source binding still naming the captured receiver.
+A push of listed values computes each value that runs anything into a local
+before it reads the length (`a.push(a.push(1))`, a call that grows or shifts
+the receiver). At the speed tier (`inlinePush`) a push into a known array reads
+its header at the pointer's own offset, length and capacity as one word: where
+the capacity holds the cells the values go straight in and the length is
+bumped; a forward stub's capacity, -1, is below every length, so a stale
+pointer takes the call a full block takes (`__arr_room`: the forward followed,
+the live block grown where it is full), and the binding is written back there
+alone. An index store at or past the length (`out[n++] = v`) calls
+`__arr_set_idx_ptr`, which grows only where the index is past the live
+block's room: an append into room stores and bumps the length there, at
+every tier, with no inline arm at each store site (stdlib bundles hold
+thousands of index stores that rarely append). A grow whose array ends at
+the heap top, above the reset mark, extends it in place (`arrGrow`); a module
+without the host allocator (`alloc: false`) bumps the same `$__heap`, and
+extends too but at the size tier, which keeps the relocation alone.
 Earlier spread sections snapshot their elements only before later potentially
 effectful expressions; the existing IR purity query supplies that decision.
 A slice read only as a spread source keeps its array and a range

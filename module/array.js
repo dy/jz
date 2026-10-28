@@ -198,6 +198,16 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
             (global.set $__enumc_epoch (i32.add (global.get $__enumc_epoch) (i32.const 1)))
             (i64.store (i32.sub (local.get $newOff) (i32.const 16)) ${DYN_PROPS_GLOBAL_SENTINEL}))))) ` : ''
 
+// Whether evaluating `ir` may change an array: a call (the program's code, a
+// helper that grows, shifts or shortens one) or a write to memory or a global.
+const runsAnything = (ir) => {
+  if (!Array.isArray(ir)) return false
+  const op = ir[0]
+  if (typeof op === 'string' && (op.startsWith('call') || op.startsWith('return_call') || op === 'global.set' || op === 'throw' ||
+      op.startsWith('memory.') || op.includes('.store') || op.includes('.atomic.'))) return true
+  for (let i = 1; i < ir.length; i++) if (runsAnything(ir[i])) return true
+  return false
+}
 // An own-name-current array binding (scanObjectArrayFacts): grown only
 // through its own name with every grow written back, so the local always holds
 // the live pointer and reads through it need no forwarding follow.
@@ -259,6 +269,7 @@ export default (ctx) => {
     __arr_typed_obj_set_idx: () => [...(leanRuntime() ? ARR_TYPED_OBJ_SET_DEPS : ['__arr_typed_obj_set_idx_tail', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])]), ...viewDeps()],
     __arr_typed_obj_set_idx_tail: ARR_TYPED_OBJ_SET_DEPS,
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_room: ['__arr_grow_known', '__ptr_offset_fwd'],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', '__to_num', '__to_int32', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -503,7 +514,9 @@ export default (ctx) => {
     // and lies above the reset mark: extend it in place. No copy, no
     // forwarding header, and a push loop leaves one capacity in the arena,
     // not every doubling's (the same bump-extend a string at the heap top
-    // takes). Anything else relocates.
+    // takes). Anything else relocates. A module without the host allocator
+    // (`alloc: false`) bumps the same `$__heap`: there the extension is speed
+    // for size, and the size tier keeps the relocation alone.
     const extend = `
         (if (i32.or
               (i32.ne (i32.add (local.get $off) (i32.shl (local.get $oldCap) (i32.const 3))) (global.get $__heap))
@@ -567,7 +580,7 @@ export default (ctx) => {
       (local.get $minCap)
       (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1))
       (i32.gt_s (local.get $minCap) (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1)))))
-    ${!ctx.memory.shared && ctx.transform.alloc !== false ? `${room}${slide}
+    ${!ctx.memory.shared && (ctx.transform.alloc !== false || !leanRuntime()) ? `${room}${slide}
     (i32.store (i32.sub (local.get $base) (i32.const 4)) (local.get $newCap))
     ${grownPtrWat('(local.get $base)')})` : `${relocateWat()})`}`
   }
@@ -595,8 +608,12 @@ export default (ctx) => {
     (local.set $oldLen (i32.load (i32.sub (local.get $base) (i32.const 8))))
     (if (i32.ge_u (local.get $i) (local.get $oldLen))
       (then
-        (local.set $p (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
-        (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))
+        ;; past the length: the live block (the base the forward resolved, whose
+        ;; cap is its own) grows only where the index is past its room
+        (if (i32.ge_s (local.get $i) (i32.load (i32.sub (local.get $base) (i32.const 4))))
+          (then
+            (local.set $p (call $__arr_grow (local.get $ptr) (i32.add (local.get $i) (i32.const 1))))
+            (local.set $base (call $__ptr_offset (i64.reinterpret_f64 (local.get $p))))))
         (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $i) (i32.const 1)))
         ;; gap slots [oldLen, i) are holes — fill with undefined, not zero
         (local.set $k (local.get $oldLen))
@@ -691,6 +708,16 @@ export default (ctx) => {
     (f64.store (i32.add (local.get $base) (i32.shl (local.get $len) (i32.const 3))) (local.get $val))
     (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $len) (i32.const 1)))
     (local.get $p))`
+
+  // The cold arm of a push stored in place (the `.push` emitter's in-place arm):
+  // room for `n` more cells in the live block, the forward a stale pointer names
+  // followed. Answers the pointer the receiver's binding keeps, the one it held
+  // where the live block had the room, the grown block's where it had not.
+  ctx.core.stdlib['__arr_room'] = () => `(func $__arr_room (param $ptr i64) (param $n i32) (result f64)
+    (local $off i32)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ${followForwardingWat('$off', { lowGuard: true })}
+    (call $__arr_grow_known (local.get $ptr) (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (local.get $n))))`
 
   // Reserve one element of `strideB` bytes on a known ARRAY whose header len
   // counts physical 8-byte cells: grow if needed, bump len to ⌈(n+1)·strideB/8⌉
@@ -1701,10 +1728,13 @@ export default (ctx) => {
     // Union: ⌈elems·strideB/8⌉ — a safe over-reserve (ceil(a+b) ≤ ceil a + ceil b).
     const pushCells = unionB ? Math.ceil((vals.length / inlUnion.stride) * unionB / 8)
       : inlPacked ? inlCpe * (vals.length / inlK) : vals.length
+    // A push stored in place where the block has room, the growth out of line
+    // (speed tier, `inlinePush`): see the in-place arm below.
+    const inPlace = !reserved && !unionB && !inlPacked && ctx.transform.optimize?.inlinePush === true
     // Out-of-line fast path: single value, named known-ARRAY receiver. One call +
     // var update instead of ~30 inlined instructions — the dominant size cost of
     // push-heavy code (e.g. watr's WASM emitter).
-    if (!reserved && vals.length === 1 && typeof arr === 'string' && lookupValType(arr) === VAL.ARRAY && !ctx.func.fieldCaches?.has(arr)) {
+    if (!inPlace && !reserved && vals.length === 1 && typeof arr === 'string' && lookupValType(arr) === VAL.ARRAY && !ctx.func.fieldCaches?.has(arr)) {
       inc('__arr_push1')
       const box = ctx.func.boxed?.get(arr)
       const isGlobal = !box && ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr)
@@ -1756,6 +1786,17 @@ export default (ctx) => {
     // unreachable here: .push on a nullish var is a JS error before we get here.
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const inlineLen = vt === VAL.ARRAY
+    // Every argument is evaluated before the push reads the length (23.1.3.23):
+    // a value that runs anything may grow, shift or shorten the receiver
+    // (`a.push(a.push(1))`), so it is computed into a local, in order, ahead of
+    // the header read. One that only reads is read where it is stored.
+    const staged = []
+    const stage = (ir) => {
+      if (!runsAnything(ir)) return ir
+      const i32 = ir.type === 'i32', v = i32 ? tempI32('pv') : temp('pv')
+      staged.push(['local.set', `$${v}`, ir])
+      return typed(['local.get', `$${v}`], i32 ? 'i32' : 'f64')
+    }
 
     // Multi-cell element (structInline / union) on a known ARRAY pushed from
     // several sites of this function: __arr_push_slot reserves the element out
@@ -1771,8 +1812,9 @@ export default (ctx) => {
       const lanes = unionB ? inlUnion.stride : inlK
       const laneB = unionB || inlPacked ? 4 : 8
       const slot = tempI32('ps')
-      const body = [['local.set', `$${t}`, va]]
       const isZeroLit = (v) => Array.isArray(v) && v[0] == null && v[1] === 0
+      const lane = vals.map(v => stage(laneB === 4 ? asI32(emit(v)) : taggedStoredValue(v)))
+      const body = [['local.set', `$${t}`, va], ...staged]
       for (let e = 0; e < vals.length; e += lanes) {
         // A union member's padding lanes are literal zeros: the helper clears
         // the element and the site skips them.
@@ -1782,8 +1824,7 @@ export default (ctx) => {
         for (let j = 0; j < lanes; j++) {
           if (zero && isZeroLit(vals[e + j])) continue
           const addr = j === 0 ? ['local.get', `$${slot}`] : ['i32.add', ['local.get', `$${slot}`], ['i32.const', j * laneB]]
-          body.push(laneB === 4 ? ['i32.store', addr, asI32(emit(vals[e + j]))]
-            : ['f64.store', addr, taggedStoredValue(vals[e + j])])
+          body.push([laneB === 4 ? 'i32.store' : 'f64.store', addr, lane[e + j]])
         }
       }
       writeBack(body)
@@ -1796,19 +1837,43 @@ export default (ctx) => {
     }
 
     const grow = inlineLen ? '__arr_grow_known' : '__arr_grow'
-    if (!reserved) inc(grow)
+    if (!reserved && !(inlineLen && inPlace)) inc(grow)
 
+    const lane = vals.map(v => stage(unionB || inlPacked ? asI32(emit(v)) : elemStoredValue(arr, v)))
     const body = [
       ['local.set', `$${t}`, va],
+      ...staged,
     ]
     const pushBase = tempI32('pb')
     // An own-name-current receiver holds the live pointer (and a grow's result
     // is fresh), so its base is the raw offset; anything else follows forwarding.
     const current = typeof arr === 'string' && currentBinding(arr)
-    const baseOf = () => current
-      ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.OFFSET_MASK]]]
-      : ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
-    if (inlineLen) {
+    const rawOffset = () => ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.OFFSET_MASK]]]
+    const baseOf = () => current ? rawOffset() : ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
+    if (inlineLen && inPlace) {
+      // In place: the header at the pointer's own offset, its len and cap words
+      // read as one. Where the cap holds the cells, the values go straight in.
+      // A forward stub's cap is -1, below every length, so a stale pointer
+      // takes the call as a full block does: `__arr_room` follows the forward
+      // and grows where the live block is full, and the base is read again.
+      // The binding changes only where the block did, so it is written there.
+      inc('__arr_room', '__ptr_offset_fwd')
+      const hdr = tempI64('ph')
+      const cold = [
+        ['local.set', `$${t}`, ['call', '$__arr_room', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', pushCells]]],
+        ['local.set', `$${pushBase}`, ['call', '$__ptr_offset_fwd', rawOffset()]],
+        ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]]]],
+        ...rebindSlot()]
+      writeBack(cold)
+      body.push(
+        ['local.set', `$${pushBase}`, rawOffset()],
+        ['local.set', `$${len}`, ['i32.wrap_i64', ['local.tee', `$${hdr}`,
+          ['i64.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]]]]]],
+        ['if',
+          ['i64.lt_s', ['i64.shr_s', ['local.get', `$${hdr}`], ['i64.const', 32]],
+            ['i64.add', ['i64.extend_i32_u', ['local.get', `$${len}`]], ['i64.const', pushCells]]],
+          ['then', ...cold]])
+    } else if (inlineLen) {
       // Hoist offset once; reuse for len load, cap-fits check, store base, and
       // post-grow rebase. On cap-fits (the common path) we skip __arr_grow's call
       // dispatch and prologue entirely; on grow we re-extract offset because the
@@ -1866,7 +1931,7 @@ export default (ctx) => {
         for (let j = 0; j < nl; j++)
           body.push(['i32.store',
             j === 0 ? ['local.get', `$${ubc}`] : ['i32.add', ['local.get', `$${ubc}`], ['i32.const', j * 4]],
-            asI32(emit(vals[e + j]))])
+            lane[e + j]])
         body.push(
           ['local.set', `$${ubc}`, ['i32.add', ['local.get', `$${ubc}`], ['i32.const', unionB]]],
           ['local.set', `$${ulg}`, ['i32.add', ['local.get', `$${ulg}`], ['i32.const', 1]]])
@@ -1881,14 +1946,13 @@ export default (ctx) => {
       for (let e = 0; e < vals.length; e += inlK) {
         for (let j = 0; j < inlK; j++) {
           const off = ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]]
-          body.push(['i32.store', j === 0 ? off : ['i32.add', off, ['i32.const', j * 4]], asI32(emit(vals[e + j]))])
+          body.push(['i32.store', j === 0 ? off : ['i32.add', off, ['i32.const', j * 4]], lane[e + j]])
         }
         body.push(['local.set', `$${len}`, ['i32.add', ['local.get', `$${len}`], ['i32.const', inlCpe]]])
       }
     } else {
       // Store each value and increment len
-      for (const val of vals) {
-        const vv = elemStoredValue(arr, val)
+      for (const vv of lane) {
         body.push(
           ['f64.store',
             ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
@@ -1902,7 +1966,7 @@ export default (ctx) => {
     // skips __set_len's tag/forward dispatch), update source variable (pointer
     // may have changed from grow), return new length
     body.push(['i32.store', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]], ['local.get', `$${len}`]])
-    writeBack(body)
+    if (!(inlineLen && inPlace)) writeBack(body)
     if (void_) return typed(['block', ...body], 'void')
     // structInline: `len` counts physical cells — `.push` returns the JS array
     // length, i.e. the logical element count (byte-stride unions carry it in

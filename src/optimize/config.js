@@ -65,7 +65,7 @@ const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
 const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, pointerExits: true, ringLaps: true, earlyStores: true, leadChains: true, issueOrder: true, jamItems: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, inlineTiny: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
-const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false, loopPasses: false, pairIterations: false })
+const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, inlinePush: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false, loopPasses: false, pairIterations: false })
 
 const LEVEL_PRESETS = Object.freeze({
   0: ALL_OFF,
@@ -123,6 +123,7 @@ const LEVEL_PRESETS = Object.freeze({
     selectArmUpdates: false,  // latency-for-predictability trade — speed-only
     guardedUpdate: false,     // latency-for-predictability trade — speed-only
     typedDecode: false,       // an inline load or store beside each helper call: speed-for-size
+    inlinePush: false,        // a push stores in place beside its growth call: speed-for-size
     forInUnroll: false,       // one body copy per schema key — speed-only
     clampPeel: false,         // edge-clamp peel triples a stencil loop (clamp-free interior + 2 edges) to vectorize — speed-only
     sentinelGuards: false,    // a sentinel guard copies its loop or block suffix — speed-only
