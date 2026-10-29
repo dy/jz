@@ -76,7 +76,8 @@ What this implies for HOW we optimize:
 - `npm run test:262` / `test:262:builtins` — conformance subset.
 - `npm run test:three` — three.js's math layer (the `three` devDependency, unmodified):
   every module compiles, `test/three/api.js` and `test/three/kernels.js` answer what
-  Node answers, the kernels' V8 ratios print (a bar under `JZ_THREE_PIN=1`). A group
+  Node answers, the kernels' V8 ratios print, a bar at `LEAD` (1.2×) for the kernels
+  jz leads by it (`PINNED`) and at parity for every kernel under `JZ_THREE_PIN=1`. A group
   jz gets wrong is listed in `KNOWN` there with its cause; the gate fails when it
   starts to agree.
 
