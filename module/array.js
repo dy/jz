@@ -883,6 +883,8 @@ export default (ctx) => {
 
   // === Index read ===
 
+  // set while the plain arm of a computed read beside the method-value reader emits
+  let plainComputed = false
   ctx.core.emit['[]'] = (arr, idx, node = null) => {
     // A rest slot view reads the argument slot (compile/rest-view.js).
     if (typeof arr === 'string' && ctx.func.restView?.has(arr)) return restViewRead(ctx.func.restView.get(arr), idx)
@@ -1126,8 +1128,29 @@ export default (ctx) => {
     if (litKey != null && vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING)
       return emit(['.', arr, litKey])
     const methodReader = ctx.funcs.builtinMethodReaders?.get(null)
-    if (!strictCode() && methodReader?.active && !numericKey && (vt == null || vt === VAL.MAP || vt === VAL.SET))
+    // (the size tier keeps the one call: the plain arm below is a copy of a
+    // computed read at every such site)
+    const lean = !!ctx.transform.optimize?.leanRuntime
+    if (!strictCode() && methodReader?.active && !numericKey && (vt === VAL.MAP || vt === VAL.SET || vt == null && lean))
       return emit(['()', methodReader.name, [',', arr, idx]])
+    // A receiver of no known kind asks the reader of collection method values
+    // only where it is a Map or a Set: an array's, a typed array's or an
+    // object's key reads as any other computed read does, inline where it
+    // can, where the reader's call, its own tests and its generic read stood
+    // before every such read (a compiler's AST walk, a byte table by a key of
+    // no proven kind).
+    if (!strictCode() && methodReader?.active && !numericKey && vt == null && !plainComputed && !lean) {
+      const r = temp('bcr'), k = temp('bck'), rG = typed(['local.get', `$${r}`], 'f64')
+      const collection = ['i32.or', ptrTypeEq(rG, PTR.MAP), ptrTypeEq(rG, PTR.SET)]
+      plainComputed = true
+      let plain
+      try { plain = asF64(ctx.core.emit['[]'](r, k, node)) } finally { plainComputed = false }
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${r}`, asF64(emit(arr))], ['local.set', `$${k}`, asF64(storedValue(idx))],
+        ['if', ['result', 'f64'], collection,
+          ['then', asF64(emit(['()', methodReader.name, [',', r, k]]))],
+          ['else', plain]]], 'f64')
+    }
     // emitIndex (not bare asI32(emit)) narrows integer index arithmetic — incl. a
     // literal term like the `+1` of `a[i*W + x + 1]` — to i32 ops instead of the
     // f64 convert/trunc round-trip. Non-i32 keys (string dispatch) fall back to

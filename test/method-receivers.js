@@ -373,3 +373,26 @@ test('method receiver: grouped optional methods preserve chain boundaries and ar
     }
   }
 })
+
+// Where a Map's or a Set's method is read by a computed key somewhere, a
+// computed read on a receiver of no known kind asks the method-value reader
+// only for a Map or a Set (module/array.js, the speed tier): an array, a typed
+// array, an object or a string reads its key as any computed read does.
+test('method receiver: a computed read beside a collection method reader takes the plain read for other receivers', () => {
+  const SRC = `const m = new Map([['a', 1]]), st = new Set([3])
+  const recvs = [m, st, [10, 20, 30], new Uint8Array([7, 8, 9]), new Float64Array([1.5, 2.5]), { a: 5, get: 9, 0: 'zero' }, 'str', 42]
+  const keys = ['get', 'has', 'size', 'a', 0, 1, '1', 'length', 'add', 'nope', 2]
+  export const reads = (n) => { let out = ''
+    for (let i = 0; i < recvs.length; i++) { const r = recvs[(i + n) % recvs.length]
+      for (const k of keys) { let v; try { v = r[k] } catch (e) { v = 'throw' } out += (typeof v === 'function' ? 'fn' : String(v)) + ',' } }
+    return out.length + ':' + out.slice(n * 3, n * 3 + 80) }
+  export const call = (n) => { const r = n % 2 ? m : st, k = n % 2 ? 'get' : 'has'; return String(r[k].call(r, n % 2 ? 'a' : 3)) }
+  export const sum = (n) => { const t = n % 2 ? new Uint8Array([1, 2, 3, 4]) : [5, 6, 7, 8], idx = ['0', 1, '2', 3]; let s = 0; for (let i = 0; i < 4; i++) s += t[idx[i]]; return s }`
+  const host = oracle(SRC)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const ex = jz(SRC, { optimize }).exports
+    for (const n of [0, 1, 2, 5]) for (const f of ['reads', 'call', 'sum']) is(ex[f](n), host[f](n), `O${optimize}: ${f}(${n})`)
+  }
+  const sum = funcWat(compile(SRC, { optimize: 3, wat: true }), 'sum')
+  ok(/br_computed/.test(sum) && /__typed_idx|__dyn_get|__arr_prop/.test(sum), 'speed: the reader for a collection, the plain read beside it')
+})
