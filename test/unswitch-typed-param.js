@@ -135,8 +135,8 @@ test('unswitch: local typed widths preserve bounds, rounding and assignment valu
     return [sum, a[0], a[3], a[7], a[8], storage[0], storage[7]]
   }`
   const wat = compile(src, { wat: true, optimize: speed })
-  ok(wat.includes('$__utw'), 'stable local receiver gets width versions')
-  ok(wat.includes('f32.store') && wat.includes('f64.store'), 'both floating widths have direct stores')
+  // a copy per constructor the local may hold (plan/kind-split.js), each storing its own width
+  ok(wat.includes('f32.store') && wat.includes('f64.store') && wat.includes('i32.store8'), 'each width has direct stores')
   const js = oracle(src).f
   for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
     const { f } = jz(src, { optimize }).exports
@@ -184,10 +184,11 @@ test('unswitch: paired local widths preserve mixed storage, views and nullable r
 })
 
 // One layout holding channels of both float widths (web-audio-api's AudioBuffer:
-// Float32Array views beside Float64Array blocks): the loop takes one versioned
-// copy whose stores and reads test the width, not a copy per width, and a
-// second for its input's storage.
-test('unswitch: a store of either float width versions the loop once', () => {
+// Float32Array views beside Float64Array blocks): the kind split runs a copy per
+// width, and per pairing of the two names' widths (plan/kind-split.js), each
+// storing its width directly; the loop as written, the copy for any other
+// value, takes one versioned copy whose stores test the width.
+test('unswitch: a store of either float width runs a copy per width', () => {
   const src = `class Buf { constructor(wide, n) { this.ch = wide ? new Float64Array(n) : new Float32Array(n) } }
     export function f(wo, wi, n) {
       const out = new Buf(wo, 8).ch, inp = new Buf(wi, 8).ch
@@ -196,9 +197,16 @@ test('unswitch: a store of either float width versions the loop once', () => {
       return [out[0], out[3], out[7], out[8]]
     }`
   const fw = funcWat(compile(src, { wat: true, optimize: speed }), 'f')
-  ok(fw.includes('$__utw') && fw.includes('f32.store') && fw.includes('f64.store'), 'the version stores either width directly')
-  const loops = (fw.match(/\(loop/g) || []).length
-  ok(loops <= 3, `one versioned copy beside each original loop (${loops} loops)`)
+  const inner = []
+  for (let at = fw.indexOf('(loop'); at >= 0; at = fw.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = fw[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < fw.length)
+    inner.push(fw.slice(at, end))
+  }
+  const direct = inner.filter(l => !/\$__utw|\$__typed/.test(l))
+  ok(direct.some(l => l.includes('f32.store') && !l.includes('f64.store')) && direct.some(l => l.includes('f64.store') && !l.includes('f32.store')), 'a copy stores each width directly')
+  ok(fw.includes('$__utw'), 'the loop as written takes a versioned copy')
+  ok(inner.length <= 12, `the copies stay bounded (${inner.length} loops)`)
   const js = oracle(src).f
   for (const optimize of [speed, { level: 'speed', unswitchTypedParamLoop: false }, 0]) {
     const { f } = jz(src, { optimize }).exports
