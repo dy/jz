@@ -23,7 +23,7 @@ import { BIGINT_REP_BOXED, BIGINT_REP_RAW, mintRepresentationPlan, representatio
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
-import { cseLoads, hoistLoopFields, UNTYPED, ARRAY } from './cse-load.js'
+import { cseLoads, hoistLoopFields, UNTYPED, ARRAY, TYPED_ANY } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
 import { carryElements } from './carry-elements.js'
@@ -35,7 +35,7 @@ import { invalidateLocalsCache } from './analyze/body-facts.js'
 import { runsConversion } from './analyze/frame-effects.js'
 import { frameNode } from '../function.js'
 import { viewsOn } from '../../module/schema.js'
-import { K, bitOf, tagsOf } from '../summary/kind.js'
+import { K, bitOf, tagsOf, tagOf, core, hasTag } from '../summary/kind.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
 // inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
@@ -328,10 +328,6 @@ export function analyzeFuncForEmit(func, programFacts) {
     const k = summary?.kindOfExpr(recv)
     return k == null || tagsOf(k) === 0 || (tagsOf(k) & ~ELEMENT_ONLY) !== 0
   }
-  // A loop's invariant field reads move before it first: a read hoisted there
-  // is then one the straight-line cache below can share.
-  const hoistedFields = loadsCached && fieldRead
-    ? hoistLoopFields(body, cacheName, fieldRead, n => summary.mayBeNullishExpr(n) === false, readonlyCall, userCode, fieldStore, summary.objectsDisjoint) : 0
   // Two parameters every call passes its own fresh typed array hold two buffers
   // while the body keeps them (plan/literals.js analyzeParamDistinctness).
   const distinct = func.distinctParams ? new Set([...func.distinctParams].filter(n => !isReassigned(frameNode(func), n))) : null
@@ -341,6 +337,27 @@ export function analyzeFuncForEmit(func, programFacts) {
     const ca = summary.arrayCellOf(a), cb = summary.arrayCellOf(b)
     return ca != null && cb != null && ca !== cb
   }
+  // A loop's invariant field and element reads move before it first: a read
+  // hoisted there is then one the straight-line cache below can share. Its
+  // temp holds what the read yields: an array element the summary holds to
+  // Numbers, a missing one too (the f64 temp keeps the miss), or to arrays.
+  // An array's element read moves where it tests what it reads (a cell that
+  // may be a hole or missing, an index the length may not hold): a dense
+  // array's element inside its fixed length is a load alone, which a register
+  // held through the loop would only cost (a mat4 product's 31 coefficients
+  // read each pass ran 0.8× held). A typed array's elements stay where they
+  // are, the emitter's to hoist with its bounds proofs; one of a constructor
+  // not yet known stores into no array's storage.
+  const hoistStorage = (n, read) => {
+    const s = loadStorage(n)
+    if (s == null && !read && valTypeOf(n) === VAL.TYPED) return TYPED_ANY
+    if (s !== ARRAY || !read) return read ? null : s
+    const k = summary?.kindOfExpr(read), at = typeof read[2] === 'number' ? read[2] : read[2]?.[1]
+    const tests = k == null || hasTag(k, K.ABSENT) || hasTag(k, K.NULLISH) || summary?.arrayDenseOfExpr(n) !== true || !(summary?.fixedLenOfExpr(n) > at)
+    return tests && (k != null && tagOf(core(k)) === K.NUMBER || summary?.arrayCellOf(read) != null) ? s : null
+  }
+  const hoistedFields = loadsCached && fieldRead
+    ? hoistLoopFields(body, cacheName, fieldRead, n => summary.mayBeNullishExpr(n) === false, readonlyCall, userCode, fieldStore, summary.objectsDisjoint, hoistStorage, disjointArrays, n => valTypeOf(n) === VAL.NUMBER) : 0
   if ((loadsCached && (typedLoads || fieldRead)
       && cseLoads(body, loadStorage, cacheName, n => valTypeOf(n) === VAL.NUMBER, readonlyCall, userCode, fieldRead, fieldStore,
         disjointArrays, summary?.objectsDisjoint) > 0) || hoistedFields > 0)

@@ -4228,6 +4228,12 @@ a cached load only when it cannot reach the element: storage that never holds ty
 elements, or the same element grid (the same binding, or two non-view typed arrays of
 one constructor) at a provably different index. A view or another element type over the
 same buffer shifts or splits the grid, so an index inequality proves nothing there.
+By the same rule a loop's invariant reads move before it (`hoistLoopFields`): a field
+of a present receiver, and an array's element at a constant index whose read tests
+what it reads (a cell that may be a hole or missing, an index the length may not
+hold), through the binding or a `const` the loop copies it into (a spliced method's
+`const e = m.elements`), where no store of the loop reaches it and none of a
+`length`; a dense array's element inside its fixed length stays a load.
 A loop's bound is positive inside its body when the counter its test names starts at
 zero or above and its step adds one, the one part of a comma step that writes it
 included (`j++, k += step` beside `j < half`: the fft butterfly's `re[a]` survives the

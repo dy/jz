@@ -8325,6 +8325,45 @@ export let g = (n) => { let s = 0; for (let k = 0; k < n; k++) { s += chain.xs[k
   }
 })
 
+test('an element a loop only reads is read once, before it', () => {
+  // A matrix applied to every point of a buffer as three.js applies one
+  // (`const e = this.elements`, then `e[3]`, `e[7]`, … per point), its cells
+  // filled by a `fromArray` that may read past its source's end: each read
+  // tests for a missing cell. The loop stores only into the Float32Array,
+  // storage of the other family, so each element is read once before it, its
+  // test with it. A loop that stores into the matrix reads it each time; one
+  // storing into an array of another construction cell does not.
+  if (onKernel()) return
+  const src = `class M {
+  constructor() { this.elements = [1, 0.1, 0, 0, 0, 1, 0.2, 0, 0, 0, 1, 0, 0.5, 0.25, 0, 1] }
+  fromArray(a, o) { for (let i = 0; i < 16; i++) this.elements[i] = a[i + o]; return this }
+  apply(a, i) {
+    const e = this.elements, x = a[i], y = a[i + 1], z = a[i + 2]
+    const w = 1 / (e[3] * x + e[7] * y + e[11] * z + e[15])
+    a[i] = (e[0] * x + e[4] * y + e[8] * z + e[12]) * w
+    a[i + 1] = (e[1] * x + e[5] * y + e[9] * z + e[13]) * w
+    a[i + 2] = (e[2] * x + e[6] * y + e[10] * z + e[14]) * w
+  }
+}
+const m = new M(), other = [0, 0], a = new Float32Array(30)
+for (let i = 0; i < a.length; i++) a[i] = i / 7
+export let load = (o) => { m.fromArray(a, o); return m.elements[15] }
+export let f = () => { for (let i = 0; i < a.length; i += 3) m.apply(a, i); return a[3] + a[28] }
+export let g = () => { for (let i = 0; i < a.length; i += 3) { m.apply(a, i); m.elements[12] = a[i] * 0.5 } return a[3] + a[28] + m.elements[12] }
+export let h = () => { for (let i = 0; i < a.length; i += 3) { m.apply(a, i); other[1] = a[i + 1] } return a[3] + a[28] + other[1] }`
+  const loads = (name) => loopCount(findFunc(parse(src, { level: 'speed' }), name), n => n[0] === 'f64.load')
+  is(loads('$f'), 0, 'no element of the matrix is read in the loop')
+  is(loads('$h'), 0, 'nor where the loop stores into an array of another cell')
+  ok(loads('$g') > 0, 'a loop storing into the matrix reads it each pass')
+  for (const level of [0, 2, 'speed']) {
+    const e = jz(src, { optimize: { level } }).exports, want = oracle(src)
+    for (const k of ['f', 'g', 'h', 'f']) is(e[k](), want[k](), `${k} O${level}`)
+    // a matrix a read past the source's end left missing cells in: NaN through the loop
+    is(e.load(20), want.load(20), `load past the end O${level}`)
+    for (const k of ['f', 'h']) is(e[k](), want[k](), `${k} after it O${level}`)
+  }
+})
+
 test('a holey cell read as a number is tested once', () => {
   // A hole reads undefined and undefined converts to NaN: both are NaNs, so a
   // numeric read keeps the cell as stored and tests it once for NaN, hit arm

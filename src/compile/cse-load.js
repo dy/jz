@@ -50,9 +50,11 @@ import { unitIncVar } from './loop-model.js'
 import { counterInit, intExprRange } from '../static.js'
 import { typedCtorView } from '../typed-provenance.js'
 
-/** Receiver storage families; typed receivers use their constructor name. */
+/** Receiver storage families; typed receivers use their constructor name,
+ *  or TYPED_ANY for a typed array of a constructor not known. */
 export const UNTYPED = 'untyped'
 export const ARRAY = 'array'
+export const TYPED_ANY = 'typed'
 
 const isArr = (x) => Array.isArray(x)   // arrow, not a bare builtin alias — jz can't self-compile a builtin as a first-class value
 const isName = (x) => typeof x === 'string'
@@ -196,6 +198,18 @@ const pureHeads = (stmt) => {
   return out
 }
 
+/** Whether a store `recv[idx2]` leaves a cached element `e` ({ arr, ctor, idxNode })
+ *  intact (see the soundness note): `recv` holds an object, or storage of the
+ *  other family, or an array the summary proves apart, or the same grid at an
+ *  index provably unequal. */
+const storeLeaves = (storageOf, disjointArrays, F) => {
+  const typedCtor = (name) => { const s = storageOf(name); return s != null && s !== UNTYPED ? s : null }
+  return (e, recv, idx2, scope) => isName(recv) && (storageOf(recv) === UNTYPED ||
+    disjointArrays?.(e.arr, recv) ||
+    (typedCtor(recv) != null && (typedCtor(recv) === ARRAY) !== (e.ctor === ARRAY)) ||
+    (recv === e.arr || typedCtorView(e.ctor) === false && typedCtor(recv) === e.ctor) && provablyDiffer(e.idxNode, idx2, F, scope))
+}
+
 /**
  * @param body        function-body AST (mutated in place)
  * @param storageOf   (name, read?) => the receiver's typed constructor (`new.Float64Array`, a
@@ -223,11 +237,7 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
   const F = indexFacts(body)
   let eliminated = 0
   const typedCtor = (name, read) => { const s = storageOf(name, read); return s != null && s !== UNTYPED ? s : null }
-  // Whether a store `recv[idx2]` leaves the cached element `e` intact (see the soundness note).
-  const survives = (e, recv, idx2, scope) => isName(recv) && (storageOf(recv) === UNTYPED ||
-    disjointArrays?.(e.arr, recv) ||
-    (typedCtor(recv) != null && (typedCtor(recv) === ARRAY) !== (e.ctor === ARRAY)) ||
-    (recv === e.arr || typedCtorView(e.ctor) === false && typedCtor(recv) === e.ctor) && provablyDiffer(e.idxNode, idx2, F, scope))
+  const survives = storeLeaves(storageOf, disjointArrays, F)
 
   // A branch arm that leaves the sequence and stores nothing: the statements
   // after an `if (C) break` run only when C ran and fell through.
@@ -471,14 +481,15 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
 }
 
 /**
- * A field a loop reads and nothing in it can write is read once, before it.
+ * A field or an element a loop reads and nothing in it can write is read
+ * once, before it.
  *
  * `for (…) s += at(chain, i)` with `at` spliced in reads `chain.bones` every
  * iteration: a load, then the array's forwarding and length words, all of it
  * on the path to the element. Read once before the loop the array is a local,
  * and the words it guards hoist with it (optimize/licm.js).
  *
- * The read is the one `cseLoads` caches: a slot of every layout the summary
+ * The field read is the one `cseLoads` caches: a slot of every layout the summary
  * lists for its receiver, no accessor (`fieldOf`). It holds through the loop
  * on the same terms a cached read holds through a statement list: the loop
  * (its head and step with its body) stores no field of that name into an
@@ -490,6 +501,16 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
  * reach the read: a read of a slot runs no code, and the receiver must be
  * present (a missing one throws where the loop first reads it).
  *
+ * So is an element at a constant index (`e[3]` of a matrix's sixteen, a
+ * vertex transform's coefficients; an index the counter of an outer loop
+ * names is the emitter's to hoist, typed by then): an array or a typed array
+ * `storageOf` names, read through the binding or a `const` of the loop that
+ * copies it (a spliced method's `const e = m.elements`), where no element
+ * store of the loop reaches it (`cseLoads`' rule: storage of the other family,
+ * an array of another construction cell, the same grid at another constant
+ * index) and, for an array, no store of a `length` may resize it. A read
+ * past the end is undefined ahead of the loop as in it.
+ *
  * Inner loops go first, so a read hoisted out of one is again a read of the
  * loop around it.
  *
@@ -497,24 +518,31 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
  * @param freshName   (read) => string — a fresh local for the read's value
  * @param fieldOf, isReadonlyCall, runsUserCode, mayStoreField, objectsDisjoint — as for `cseLoads`
  * @param present     (name) => boolean: the binding never holds null or undefined
+ * @param storageOf, disjointArrays, isNumeric — as for `cseLoads`; without `storageOf` no element moves
  * @returns number of reads hoisted
  */
-export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCall = null, runsUserCode = null, mayStoreField = null, objectsDisjoint = null) {
-  if (!isArr(body) || !fieldOf) return 0
+export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCall = null, runsUserCode = null, mayStoreField = null, objectsDisjoint = null, storageOf = null, disjointArrays = null, isNumeric = null) {
+  if (!isArr(body) || !fieldOf && !storageOf) return 0
   const loops = []   // [statement list, loop], outer loops before the loops they hold
   walkAst(body, { enter: n => {
     if (n[0] === '=>') return false
     if (n[0] === ';') for (let i = 1; i < n.length; i++) if (isArr(n[i]) && (n[i][0] === 'for' || n[i][0] === 'do')) loops.push([n, n[i]])
   } })
+  const F = storageOf ? indexFacts(body) : null
+  const leaves = storageOf ? storeLeaves(storageOf, disjointArrays, F) : null
   let hoisted = 0
   for (let k = loops.length - 1; k >= 0; k--) {
     const [seq, loop] = loops[k]
     const at = seq.indexOf(loop)
     if (at < 0) continue
     const reads = new Map()     // `recv.field` → occurrences [{ parent, idx }]
+    const elems = new Map()     // `recv|index` → { recv, idx, occ: [{ parent, idx }] }
     const written = new Set()   // names the loop declares or assigns
+    const assigned = new Set()  // names the loop assigns past their declaration
+    const copies = new Map()    // `const a = b` of the loop: a → b
     const stores = []           // [receiver, field name | null for any]: field stores of the loop
-    let opaque = false
+    const elemStores = []       // [receiver, index]: element stores of the loop
+    let opaque = false, resizes = false   // a store of a length into what may be an array
     const scan = (n, parent, pi) => {
       if (opaque || !isArr(n) || n[0] == null || n[0] === 'str') return
       const op = n[0]
@@ -524,17 +552,25 @@ export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCal
         for (let i = 1; i < n.length; i++) {
           const d = n[i]
           if (isName(d)) written.add(d)
-          else if (isArr(d) && d[0] === '=' && isName(d[1])) { written.add(d[1]); scan(d[2], d, 2) }
+          else if (isArr(d) && d[0] === '=' && isName(d[1])) {
+            written.add(d[1])
+            if (op === 'const' && isName(d[2])) copies.set(d[1], d[2])
+            scan(d[2], d, 2)
+          }
           else { opaque = true; return }
         }
         return
       }
       if (ASSIGN.has(op)) {
         const lhs = n[1]
-        if (isName(lhs)) written.add(lhs)
-        else if (isArr(lhs) && (lhs[0] === '.' || lhs[0] === '?.') && isName(lhs[2])) { stores.push([lhs[1], lhs[2]]); scan(lhs[1], lhs, 1) }
+        if (isName(lhs)) { written.add(lhs); assigned.add(lhs) }
+        else if (isArr(lhs) && (lhs[0] === '.' || lhs[0] === '?.') && isName(lhs[2])) {
+          stores.push([lhs[1], lhs[2]]); scan(lhs[1], lhs, 1)
+          if (lhs[2] === 'length' && storageOf?.(lhs[1]) !== UNTYPED) resizes = true
+        }
         else if (isArr(lhs) && lhs[0] === '[]') {
           scan(lhs[1], lhs, 1); scan(lhs[2], lhs, 2)
+          elemStores.push([lhs[1], lhs[2]])
           if (!mayStoreField || mayStoreField(lhs[1])) stores.push([lhs[1], isArr(lhs[2]) && lhs[2][0] === 'str' ? lhs[2][1] : null])
         }
         else { opaque = true; return }
@@ -542,11 +578,18 @@ export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCal
         for (let i = 2; i < n.length; i++) scan(n[i], n, i)
         return
       }
-      if (op === '.' && isName(n[1]) && isName(n[2]) && !((parent[0] === '()' || parent[0] === '?.()') && pi === 1) && fieldOf(n)) {
+      if (fieldOf && op === '.' && isName(n[1]) && isName(n[2]) && !((parent[0] === '()' || parent[0] === '?.()') && pi === 1) && fieldOf(n)) {
         const key = `${n[1]}.${n[2]}`
         const occ = reads.get(key) ?? []
         occ.push({ parent, idx: pi })
         reads.set(key, occ)
+        return
+      }
+      if (storageOf && op === '[]' && n.length === 3 && isName(n[1]) && cval(n[2]) != null && !runsUserCode?.(n)) {
+        const key = `${n[1]}|${idxKey(n[2])}`
+        const e = elems.get(key) ?? { recv: n[1], idx: n[2], occ: [] }
+        e.occ.push({ parent, idx: pi })
+        elems.set(key, e)
         return
       }
       for (let i = 1; i < n.length; i++) scan(n[i], n, i)
@@ -554,7 +597,9 @@ export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCal
       else if (runsUserCode?.(n)) opaque = true
     }
     for (let i = 1; i < loop.length; i++) scan(loop[i], loop, i)
-    if (opaque || !reads.size) continue
+    if (opaque || !reads.size && !elems.size) continue
+    // the binding a name of the loop copies, where the loop writes it nowhere else
+    const source = (name) => { while (copies.has(name) && !assigned.has(name)) name = copies.get(name); return name }
     const decls = []
     for (const [key, occ] of reads) {
       const dot = key.indexOf('.'), recv = key.slice(0, dot), field = key.slice(dot + 1)
@@ -562,8 +607,24 @@ export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCal
       if (stores.some(([r, f]) => (f == null || f === field) && !objectsDisjoint?.(recv, r))) continue
       const read = ['.', recv, field], temp = freshName(read)
       decls.push(['const', ['=', temp, read]])
-      for (const o of occ) o.parent[o.idx] = temp
+      // (a name of the loop the read initialized copies the temp: `const e = m.elements`)
+      for (const o of occ) { o.parent[o.idx] = temp; if (o.parent[0] === '=' && o.idx === 2 && isName(o.parent[1])) copies.set(o.parent[1], temp) }
       hoisted += occ.length
+    }
+    for (const e of elems.values()) {
+      const recv = source(e.recv)
+      if (written.has(recv) || !present(recv)) continue
+      const read = ['[]', recv, e.idx], ctor = storageOf(recv, read)
+      if (ctor == null || ctor === UNTYPED || ctor === ARRAY && resizes) continue
+      const entry = { arr: recv, ctor, idxNode: e.idx }
+      if (!elemStores.every(([r, idx2]) => isName(r) && leaves(entry, source(r), idx2, null))) continue
+      // read once as the number every use of it converts it to (a missing cell
+      // is NaN to each), the read's own test once before the loop
+      const numeric = e.occ.every(o => NUMERIC_BINARY_OPS.includes(o.parent[0]) || NUMERIC_UNARY_OPS.has(o.parent[0]) || o.parent[0] === '+' && isNumeric?.(o.parent))
+      const value = numeric ? ['u+', read] : read, temp = freshName(value)
+      decls.push(['const', ['=', temp, value]])
+      for (const o of e.occ) o.parent[o.idx] = temp
+      hoisted += e.occ.length
     }
     if (decls.length) seq.splice(at, 0, ...decls)
   }
