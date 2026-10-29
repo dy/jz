@@ -246,6 +246,7 @@ export default (ctx) => {
 
   deps({
     __arr_idx: () => ['__ptr_offset_fwd', arrCellHelper()],
+    __arr_prop: ['__ptr_offset_fwd', '__dyn_get_expr'],
     __arr_grow: arrayGrowDeps(false),
     __arr_grow_known: arrayGrowDeps(true),
     __arr_shift: () => [
@@ -348,6 +349,23 @@ export default (ctx) => {
     const single = kind == null ? ['if', ['result', 'f64'], ['i32.or', ['f64.eq', vGet, vGet], numberNanIR(vGet)], ['then', sized], ['else', asF64(emit(['[', ['__raw_local', v]]))]] : sized
     return typed(['block', ['result', 'f64'], ['local.set', `$${v}`, asF64(emit(len))], single], 'f64')
   }
+
+  // An array's property under a Number that is no index (`events[i]` past a
+  // findIndex miss, i = -1): a props table alone holds one, and an array whose
+  // word at -16 is zero has none (dynGetExpr's own first answer, module/collection.js),
+  // so the read is undefined without the generic lookup's dispatch.
+  ctx.core.stdlib['__arr_prop'] = () => `(func $__arr_prop (param $obj i64) (param $key i64) (result i64)
+    (local $off i32)
+    (local.set $off (i32.wrap_i64 (local.get $obj)))
+    (if (i32.and (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))
+          (i32.ge_u (local.get $off) (i32.const 16)))
+      (then
+        (if (i32.eq (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const -1))
+          (then (local.set $off (call $__ptr_offset_fwd (local.get $off)))))
+        (if (i32.ge_u (local.get $off) (i32.const 16))
+          (then (if (i64.eqz (i64.load (i32.sub (local.get $off) (i32.const 16))))
+            (then (return (i64.const ${UNDEF_NAN}))))))))
+    (call $__dyn_get_expr (local.get $obj) (local.get $key)))`
 
   // ARRAY-only indexed read. Inline forwarding-follow + bounds check + load — avoids
   // the redundant double pass through __len then __ptr_offset that both follow forwarding.
@@ -1230,7 +1248,8 @@ export default (ctx) => {
         ['local.set', `$${recv}`, ptrExpr], ['local.set', `$${kt}`, key],
         ['if', ['result', 'f64'], ['i32.ge_s', ['local.tee', `$${ki}`, keyIndex(k)], ['i32.const', 0]],
           ['then', arrayFast(ix => ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', r], ix], ['local.get', `$${ki}`], r)],
-          ['else', opaqueDynExprLoad(r, k)]]]
+          ['else', ensureHostOpaqueGet() ? opaqueDynExprLoad(r, k)
+            : (inc('__arr_prop'), ['f64.reinterpret_i64', ['call', '$__arr_prop', ['i64.reinterpret_f64', r], ['i64.reinterpret_f64', k]]])]]]
     }
     if (vt === VAL.ARRAY && keyType !== VAL.STRING && numericProps)
       return typed(arrayPropertyLoad(storedValue(idx)), 'f64')

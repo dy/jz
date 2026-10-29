@@ -223,6 +223,26 @@ test('ordinary array Number keys read own properties without truncation', () => 
   }
 })
 
+test('a Number key that is no index reads the props table only where the array has one', () => {
+  // `list[list.length - 1] = v` may store the property "-1", so a read past a
+  // findIndex miss keeps its property arm: an array whose props word is zero
+  // answers undefined (module/array.js `__arr_prop`), one holding "-1" its value.
+  const src = `const list = []
+    export let add = (v) => { list.push({ v }); return list.length }
+    export let last = (v) => { list[list.length - 1] = { v }; return list.length }
+    export let find = (t) => { const i = list.findIndex(e => e.v > t); const e = list[i]; return e === undefined ? -1 : e.v }
+    export let before = (t) => { const i = list.findIndex(e => e.v > t); const e = list[i - 1]; return e === undefined ? -1 : e.v }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const host = oracle(src), mod = jz(src, { optimize }).exports
+    const both = (name, ...a) => is(mod[name](...a), host[name](...a), `${name}(${a}) at ${optimize}`)
+    both('last', 9)                       // an empty list: the property "-1"
+    for (const t of [0, 5, 10]) { both('find', t); both('before', t) }
+    for (const v of [1, 4, 8]) both('add', v)
+    for (const t of [0, 3, 5, 9]) { both('find', t); both('before', t) }
+    if (!belowOpt(2) && optimize !== 'size') ok(compile(src, { optimize, wat: true }).includes('$__arr_prop'), `the props-word read at ${optimize}`)
+  }
+})
+
 test('ordinary array Number keys write elements and named properties through aliases', () => {
   const src = `export function f(k,mode){k=+k;const a=[0,0,0],alias=a;
     const values=[7,'saved',9n,false,{x:13}],value=values[mode];

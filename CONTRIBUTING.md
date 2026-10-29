@@ -4398,6 +4398,10 @@ keys retain ordinary key conversion. The existing checked string reader handles
 empty, SSO, heap and sliced strings. This avoids formatting numeric keys on every
 generic string read, including allocating long decimal keys for out-of-bounds
 reads; it does not infer an index from receiver tag bits alone.
+An array read under a Number that is no index (a negative one: `events[i]` past
+a `findIndex` miss) asks the array's properties word first (module/array.js
+`__arr_prop`): a zero word holds no property, so the read is undefined without
+the generic reader's dispatch.
 The known-string emitter uses the same boxed-key dispatch as array reads: a
 settled receiver kind does not prove that the key is numeric or skips its hooks.
 
