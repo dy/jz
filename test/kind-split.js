@@ -131,3 +131,61 @@ export let run = (color, n) => { const out = new Float32Array(n); proc(color, n,
     ok(loops.some(l => /f32\.load/.test(l) && !/call \$__typed_idx/.test(l)) && loops.some(l => /f64\.load/.test(l) && !/call \$__typed_idx/.test(l)), 'a copy reads each kind')
   }
 })
+
+// An AudioBuffer-like container: its channels are views of one Float32Array,
+// and a parameter's mix swaps a Float64Array into a channel (web-audio-api's
+// AudioBuffer `_channels`). The summary keeps the pair of widths through the
+// join (summary/kind.js TYPED_FLOAT), so a loop over channels of either width
+// runs a copy for each width they all may hold, and the vectorizer lifts the
+// copies; a mix of widths runs the loop as written.
+const channels = `const BLOCK = 64
+class Buf {
+  #n
+  #data
+  #channels
+  constructor(nch, len) {
+    this.#n = nch
+    this.#data = new Float32Array(len * nch)
+    const channels = this.#channels = new Array(nch)
+    for (let c = 0; c < nch; c++) channels[c] = this.#data.subarray(c * len, (c + 1) * len)
+  }
+  get _channels() { return this.#channels }
+  getChannelData(c) {
+    if (c < 0 || c >= this.#n) throw new Error('channel')
+    return this.#channels[c]
+  }
+}
+const scale = (inBuf, outBuf, k) => {
+  const inp = inBuf.getChannelData(0), out = outBuf.getChannelData(0)
+  for (let i = 0; i < BLOCK; i++) out[i] = inp[i] * k
+}
+const mix = (inBuf, outBuf) => {
+  const inp = inBuf.getChannelData(0), out = outBuf.getChannelData(0)
+  for (let i = 0; i < BLOCK; i++) out[i] += inp[i]
+}
+export let f = (n) => {
+  const a = new Buf(1, BLOCK), b = new Buf(1, BLOCK), w = new Buf(1, BLOCK), v = new Buf(1, BLOCK)
+  w._channels[0] = new Float64Array(BLOCK)
+  v._channels[0] = new Float64Array(BLOCK)
+  for (let i = 0; i < BLOCK; i++) { a.getChannelData(0)[i] = i / 7 + n; v.getChannelData(0)[i] = 1 / (i + 3) }
+  // the graph's edges, as a renderer walks them: each pair of either width
+  const bufs = [a, b, w, v], edges = [0, 1, 1, 2, 3, 2, 0, 1, 3, 2]
+  let h = 0
+  for (let r = 0; r < 3; r++) {
+    for (let e = 0; e < edges.length; e += 2) {
+      const from = bufs[edges[e]], to = bufs[edges[e + 1]]
+      if (e % 4 === 0) scale(from, to, 0.5 + r)
+      else mix(from, to)
+    }
+    h += b.getChannelData(0)[r + 5] + w.getChannelData(0)[r * 3] * 1e-3
+  }
+  return h
+}`
+
+test('kind split: channels of either float width run a copy for each width they share', () => {
+  agrees(channels, [['f', 0], ['f', 2], ['f', -1]])
+  if (belowOpt(2)) return
+  const text = wat(channels, { optimize: 2 })
+  ok(/f32x4\./.test(text), 'the Float32 copies are lifted')
+  ok(/f64x2\./.test(text), 'the Float64 copies are lifted')
+})

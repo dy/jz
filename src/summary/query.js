@@ -10,7 +10,7 @@ import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, valBesidePresence, kindOfVal, core, UNKNOWN,
-  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind,
+  ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedCtorsOf, typedElemKind, typedMethodKind, logicalMask, selectKind,
   TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind, emptySpreadKind, continuesOptional } from './kind.js'
 // Names every object has from its prototype: a read of one is never undefined.
 const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf',
@@ -758,6 +758,8 @@ export function summaryQueries(facts, internal = false) {
       },
       typedCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
       typedPayloadCtorOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED && typedAux(k) !== UNKNOWN ? ctorFromElemAux(typedAux(k)) : null },
+      // The constructors a typed array of several may be of: a Float32Array or a Float64Array; null where unknown.
+      typedCtorsOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.TYPED ? typedCtorsOf(k) : null },
       // A call of a name that holds one of several functions (`colors[c](n)`): the
       // typed array constructor each of them returns, null for one that returns another kind.
       callResultCtors: e => {

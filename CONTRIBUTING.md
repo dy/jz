@@ -1067,6 +1067,11 @@ float16, clamped and BigInt flags survive both static and runtime dispatch.
 `new TypedArray(buffer, byteOffset)` views the buffer from the offset to its
 end (`__ta_view`); its type is either form (`.anyview`), since any source but a
 buffer copies as one argument does.
+Two typed kinds of different element types join to "several numeric
+constructors", whose readers dispatch on the element code at run time; a
+Float32Array beside a Float64Array (owned or views: a sample buffer of either
+width) joins to `TYPED_FLOAT` instead, the same to every reader of the aux bits
+but naming its two constructors to the kind split (`typedCtorsOfExpr`).
 A resizable buffer (`new ArrayBuffer(n, { maxByteLength })`) reserves its
 maximum: its header holds the length at -8, the maximum at -4 and
 `RESIZABLE_MARK` in the properties word at -16, which a BUFFER never uses
@@ -3100,7 +3105,7 @@ src/
                 plan/forward-conditions.js: a boolean declared once from a condition for the `if` right after it (`const inside = x >= 0 && … ; if (inside)`), the `if` testing the condition itself, so its arms refine by the conjuncts
                 plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
                 plan/reciprocal-loops.js: a kernel loop dividing by a name it never writes (`sum / m`, `/ span`), a copy multiplying by the reciprocal where the divisor is a positive int32 power of two (exact: `a * 2^-k` is `a / 2^k` for every `a`), the loop as written the other arm; a quotient made an integer (`| 0`, `Math.floor`) is loop-divmod.js's
-                plan/kind-split.js: a loop reading a name of several kinds, a typed array among them, a copy over that array where `instanceof` says the name holds it (the constructor from the name's values and its callers' arguments)
+                plan/kind-split.js: a loop reading a name of several kinds, a typed array among them, a copy over that array where `instanceof` says the name holds it (the constructor from the name's values and its callers' arguments, or the two of a typed array of either float width, summary/kind.js `TYPED_FLOAT`); names of several constructors, stored into or read, a copy for each constructor they all may hold (channels of either width: an all-Float32 copy and an all-Float64 copy the vectorizer lifts, a mix of widths the loop as written)
                 loop-divmod.js (`strengthReduceLoopDivMod`): a dividend affine in a loop counter divided by an invariant (`i % w`, `(base - k) / up`), a copy stepping its floored quotient and remainder; where every pass the remainder test `E % w === 0` turns away does nothing (a resampler's gather, a decimation's every w-th pass), the copy runs only the passes it admits, the counter stepped by w from the first value that divides
                 loop-jam.js (`jamLoopItems`, speed tier): two items of a loop over independent items whose inner loops carry chains of their own, the inner loops side by side where a test finds the elements one writes apart from those the other touches; the arrays distinct buffers (fresh allocations, or parameters every call passes fresh ones)
                 loop-recurrence.js (`unrollRecurrences`, after the versioning: the pairs are of the copies): a unit-stride loop storing `arr[j]` and reading `arr[j-1]` (a row recurrence), the read a scalar carried from the store, two cells a pass of a counted loop stepped by 2 (the second under the loop's test one cell on), under a guard that the range is not empty; a `break` leaves the pair loop as it leaves the loop

@@ -1,7 +1,7 @@
 /** The summary's kind lattice and pure scalar transfer rules. No solver state. */
 import { COMPARE_OPS } from '../ast.js'
 import { VAL } from '../reps.js'
-import { TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, DATA_VIEW_FLAG } from '../../layout.js'
+import { TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, DATA_VIEW_FLAG, TYPED_ELEM_F16_FLAG, TYPED_ELEM_CLAMPED_FLAG, TYPED_ELEM_CODE } from '../../layout.js'
 
 export const K = {
   NONE: 0, NUMBER: 1, STRING: 2, BOOL: 3, BIGINT: 4, NULLISH: 5, TYPED: 6, ARRAY: 7,
@@ -13,8 +13,17 @@ const PARAM_BITS = 16
 export const UNKNOWN = (1 << PARAM_BITS) - 1
 // Private summary aux: several numeric constructors, never a storage width.
 const TYPED_NUMBER = UNKNOWN - 1
-export const typedAux = k => paramOf(k) === TYPED_NUMBER ? UNKNOWN : paramOf(k)
-const numberAux = aux => aux === TYPED_NUMBER || aux !== UNKNOWN && !(aux & (TYPED_ELEM_BIGINT_FLAG | DATA_VIEW_FLAG))
+// Private summary aux: a Float32Array or a Float64Array, owned or a view (a
+// sample buffer of either width). Its element and flag bits are TYPED_NUMBER's,
+// so a reader of those bits takes it for one; typedCtorsOf names the two.
+export const TYPED_FLOAT = TYPED_NUMBER & ~0x200
+const several = aux => aux === TYPED_NUMBER || aux === TYPED_FLOAT
+export const typedAux = k => several(paramOf(k)) ? UNKNOWN : paramOf(k)
+const numberAux = aux => several(aux) || aux !== UNKNOWN && !(aux & (TYPED_ELEM_BIGINT_FLAG | DATA_VIEW_FLAG))
+const floatAux = aux => aux === TYPED_FLOAT || numberAux(aux) && !several(aux) && !(aux & (TYPED_ELEM_F16_FLAG | TYPED_ELEM_CLAMPED_FLAG)) &&
+  ((aux & 7) === TYPED_ELEM_CODE.Float32Array || (aux & 7) === TYPED_ELEM_CODE.Float64Array)
+/** The typed array constructors a TYPED kind's values may be of, or null where they are unknown. */
+export const typedCtorsOf = k => paramOf(k) === TYPED_FLOAT ? ['Float32Array', 'Float64Array'] : null
 export const bitOf = tag => 1 << (PARAM_BITS + tag - 1)
 export const TAGS = ~UNKNOWN, NULL_BITS = bitOf(K.NULLISH) | bitOf(K.ABSENT)
 const TAGS_NOT_NULL = TAGS & ~NULL_BITS
@@ -39,7 +48,7 @@ export const orAbsent = k => withTag(k, K.ABSENT)
 
 const VIEW_BITS = TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG
 /** Two element auxes of one kind, owned or a view: the kind, its view bit read at run time. */
-const anyView = (pa, pb) => numberAux(pa) && numberAux(pb) && pa !== TYPED_NUMBER && pb !== TYPED_NUMBER &&
+const anyView = (pa, pb) => numberAux(pa) && numberAux(pb) && !several(pa) && !several(pb) &&
   (pa & ~VIEW_BITS) === (pb & ~VIEW_BITS) ? pa | pb | VIEW_BITS : null
 
 /** Union of tag sets. Typed widths may disagree while their Number domain survives. */
@@ -50,7 +59,7 @@ export function join(a, b) {
   if ((mn & (mn - 1)) !== 0) return m | UNKNOWN
   const pa = a & mn ? paramOf(a) : undefined, pb = b & mn ? paramOf(b) : undefined
   return m | (pa === undefined ? pb : pb === undefined || pa === pb ? pa
-    : mn === bitOf(K.TYPED) && numberAux(pa) && numberAux(pb) ? anyView(pa, pb) ?? TYPED_NUMBER : UNKNOWN)
+    : mn === bitOf(K.TYPED) && numberAux(pa) && numberAux(pb) ? anyView(pa, pb) ?? (floatAux(pa) && floatAux(pb) ? TYPED_FLOAT : TYPED_NUMBER) : UNKNOWN)
 }
 
 export const typedElemKind = k => paramOf(k) === UNKNOWN ? join(NUMBER, BIGINT)
@@ -62,7 +71,7 @@ export const typedMethodKind = (name, recv) => {
   if (!TYPED_SAME.has(name)) return null
   if (name === 'set') return NULLISH
   const aux = paramOf(recv)
-  return kind(K.TYPED, aux === UNKNOWN || aux === TYPED_NUMBER ? aux
+  return kind(K.TYPED, aux === UNKNOWN || several(aux) ? aux
     : name === 'subarray' ? aux & ~TYPED_ELEM_ANY_VIEW_FLAG | TYPED_ELEM_VIEW_FLAG : TYPED_FRESH.has(name) ? aux & ~VIEW_BITS : aux)
 }
 

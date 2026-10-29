@@ -81,6 +81,9 @@ const ctorsOf = (e, cx, out, depth = 0) => {
   for (const [view, x, site] of sources(e, cx, new Set())) {
     const c = ctorName(view.typedPayloadCtorOfExpr(x))
     if (c) { out.add(c); continue }
+    // a sample buffer of either float width (summary/kind.js TYPED_FLOAT)
+    const pair = view.typedCtorsOfExpr?.(x)
+    if (pair) { for (const n of pair) out.add(n); continue }
     // a call of one of several functions: what each returns
     const called = view.callResultCtors(x)
     if (called) { for (const r of called) { const n = ctorName(r); if (n) out.add(n) } continue }
@@ -179,8 +182,7 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
     // does) where the loop only reads that name's elements: a loop storing into it is versioned by
     // width after emission (optimize/unswitch.js), one copy per width instead of one per constructor
     const storedInto = (n) => some(bare, m => ASSIGN_OPS.has(m[0]) && Array.isArray(m[1]) && m[1][0] === '[]' && m[1][1] === n)
-    const split = []
-    let multi = null
+    const split = [], several = []
     for (const n of receivers(bare)) {
       if (!(locals.has(n) || own.has(n)) || inner.has(n) || writes.has(n) || captured.has(n) || ctx.funcs.names.has(n)) continue
       const k = view.kindOf(n)
@@ -189,11 +191,20 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
       sites ??= programFacts?.callSites.filter(cs => cs.callee === func.name && !cs.synthetic && func.body === body) ?? []
       ctorsOf(n, { view, params, rest, sites, func, body, programFacts }, ctors)
       if (ctors.size === 1) split.push([n, [...ctors][0]])
-      else if (ctors.size > 1 && ctors.size <= MAX_CTORS && !multi && !storedInto(n)) multi = [n, [...ctors]]
+      else if (ctors.size > 1 && ctors.size <= MAX_CTORS) several.push([n, ctors])
     }
-    if (!split.length && !multi) continue
-    // a copy per constructor of the one name, each under its own test beside the others'; the loop last
-    const arms = multi ? multi[1].map(c => [...split, [multi[0], c]]) : [split]
+    // The names of several constructors run a copy for each constructor they all
+    // may hold (channels of one container, all Float32 or all Float64: a copy
+    // the vectorizer lifts); a mix of them runs the loop, each store versioned by
+    // width after emission (optimize/unswitch.js). Where they share none, a copy
+    // per constructor of one name the loop only reads.
+    const common = several.length ? [...several[0][1]].filter(c => several.every(([, cs]) => cs.has(c))) : []
+    const reader = several.find(([n]) => !storedInto(n))
+    const multi = common.length ? null : reader ? [reader[0], [...reader[1]]] : null
+    if (!split.length && !multi && !common.length) continue
+    // a copy per constructor, each under its own test beside the others'; the loop last
+    const arms = common.length ? common.map(c => [...split, ...several.map(([n]) => [n, c])])
+      : multi ? multi[1].map(c => [...split, [multi[0], c]]) : [split]
     let choice = ['{}', [';', bare]]
     for (const arm of arms.reverse()) {
       const fresh = new Map([...arm.map(([n]) => n), ...inner].map(n => [n, `${n}${T}k${freshId(ctx)}`]))
