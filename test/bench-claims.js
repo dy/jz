@@ -434,19 +434,10 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 //   17-20% of their operations map a missing element to NaN (the bone arrays
 //   take values from the best-solution array, whose stores at `i * 6 + k` the
 //   summary cannot bound by its length). Leading here takes baseline code faster
-//   than V8's optimized JavaScript;
-// - threecull (three.js's frustum culling and raycast) leads V8 and deno 1.18-1.20×
-//   and bun and JSC by 1.02×, paired (3 rounds, Apple M-series, 2026-10-29), a
-//   margin one unpaired run read as 0.97× JSC: no lead the gate can hold;
-// - threegeom (three.js's buffer-geometry passes) trails every engine, V8 and
-//   deno 0.75×, bun and JSC 0.51× (same run). Each vertex goes through a
-//   module-level Vector3, as three's own `_vector` scratch is: jz stores its
-//   fields and loads them back every pass, the undefined test on each load, and
-//   those stores keep the transform's sixteen matrix elements from leaving the
-//   loop; the same applyMatrix4 pass with its scratch a local runs 2.5× faster.
+//   than V8's optimized JavaScript.
 // Excluded from the strict and band tests and from the corpus-coverage test
 // until the todo below flips; a case leaves this set the commit it leads.
-const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'threecull', 'threegeom'])
+const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik'])
 const caseRatios = (rivals, ids = null, source = cases) => {
   const out = []
   for (const [id, c] of Object.entries(source)) {
