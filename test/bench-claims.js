@@ -451,12 +451,10 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 //   17-20% of their operations map a missing element to NaN (the bone arrays
 //   take values from the best-solution array, whose stores at `i * 6 + k` the
 //   summary cannot bound by its length). Leading here takes baseline code faster
-//   than V8's optimized JavaScript;
-// - webaudio (the web-audio-api render): 1.2-1.5× V8 and bun, in the automation
-//   list's per-sample getValue (dynamic event reads, number-to-string keys).
+//   than V8's optimized JavaScript.
 // Excluded from the strict and band tests and from the corpus-coverage test
 // until the todo below flips; a case leaves this set the commit it leads.
-const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'webaudio'])
+const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik'])
 const caseRatios = (rivals, ids = null) => {
   const out = []
   for (const [id, c] of Object.entries(cases)) {
