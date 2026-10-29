@@ -17,7 +17,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
 
 export function summaryQueries(facts, internal = false) {
-  const { kinds, incoming, fields, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
+  const { kinds, incoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
@@ -571,6 +571,22 @@ export function summaryQueries(facts, internal = false) {
         if (as.some(lostSchema) || bs.some(lostSchema)) return false
         return as.every(x => bs.every(y => x !== y &&
           (layouts[x] !== layouts[y] || !foldedLayouts.has(layouts[x]))))
+      },
+      // The string literals `e.prop` reads, by layout: a Set where every store
+      // into the slot of each construction site of `e` was one, null for a
+      // layout whose slot took another value. Null where `e` may hold anything
+      // but objects of named sites, or a layout of them has no slot `prop`.
+      slotLiteralsOfExpr: (e, prop) => {
+        const k = kindOfExpr(e)
+        if (tagOf(core(k)) !== K.OBJECT || paramOf(k) === UNKNOWN) return null
+        const out = new Map()
+        for (const site of shapesOf(paramOf(k))) {
+          const i = schemas[site]?.indexOf(prop) ?? -1
+          if (i < 0) return null
+          const layout = layouts[site], lits = lostSchema(site) ? null : slotLits?.[site]?.[i] ?? null, prev = out.get(layout)
+          out.set(layout, prev === undefined ? lits && new Set(lits) : prev && lits ? (lits.forEach(l => prev.add(l)), prev) : null)
+        }
+        return out
       },
       // The construction sites an object expression's value comes from; null when unknown. Two values of disjoint sites are two objects.
       sitesOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? shapesOf(paramOf(k)) : null },

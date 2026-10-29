@@ -222,6 +222,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   let activeCtx = null               // the context whose walk is in progress
   const opaqueSchemas = new Set() // schemas whose identity is lost at a value join
   const fields = []                  // dense construction sid → kind[]
+  // The string literals stored in each slot, per construction sid: absent where
+  // nothing is stored yet, null once a store of any other value reaches it.
+  const slotLits = []
   const results = new Map()          // function name or closure id → kind
   const closures = new Map()         // `=>` node → closure id
   const closureParams = []           // closure id → param names
@@ -522,7 +525,25 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k, shape = null) => { raiseSlotShape(sid, i, k, shape); if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinAt(mixedSlots, sid, i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k)) } }
+  const raiseSlot = (sid, i, k, shape = null, lit) => { noteLits(sid, i, k, lit); raiseSlotShape(sid, i, k, shape); if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinAt(mixedSlots, sid, i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k, null, lit)) } }
+  // A store of nothing (a definite initializer's placeholder) leaves the set;
+  // a string literal joins it; any other value ends it. A folded layout's
+  // sites hold one set, whether or not the store changed the slot's kind.
+  const noteLit = (sid, i, k, lit) => {
+    if (k === K.NONE) return
+    const row = slotLits[sid] ??= [], cur = row[i]
+    if (cur === null) return
+    if (typeof lit !== 'string') row[i] = null
+    else if (cur === undefined) row[i] = new Set([lit])
+    else cur.add(lit)
+  }
+  const noteLits = (sid, i, k, lit) => {
+    noteLit(sid, i, k, lit)
+    const l = layouts[sid]
+    if (!foldedLayouts.has(l)) return
+    if (sid !== l) noteLit(l, i, k, lit)
+    for (const site of sitesByLayout.get(l) ?? []) if (site !== sid && site !== l) noteLit(site, i, k, lit)
+  }
   // A layout with more construction sites than a shape set holds is one shape:
   // its sites fold into it, and a fact raised on any of them reaches them all.
   const foldedLayouts = new Set()
@@ -3132,7 +3153,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       let name, value
       if (typeof p === 'string') { name = p; value = expr(p) }
       else { if (isBrand(p[1])) continue; name = p[1]; value = init?.has(p[1]) && isNullishLit(p[2]) ? K.NONE : expr(p[2]) }
-      if (sid === NO_SID) { foreignProps.add(name); escape(value) } else raiseSlot(sid, schemas[sid].indexOf(name), value, hasTag(value, K.TYPED) ? typedShapeOf(current ?? MODULE, typeof p === 'string' ? p : p[2]) : null)
+      if (sid === NO_SID) { foreignProps.add(name); escape(value) } else raiseSlot(sid, schemas[sid].indexOf(name), value, hasTag(value, K.TYPED) ? typedShapeOf(current ?? MODULE, typeof p === 'string' ? p : p[2]) : null, typeof p !== 'string' ? literalKeyOf(p[2]) ?? undefined : undefined)
     }
     // A static literal has its own shape even when the registry has not named it.
     if (sid === NO_SID) return kind(K.OBJECT)
@@ -3551,11 +3572,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   /** A store of `prop` into one shape: its slot, its class setter, or its
    *  sidecar (a name outside the shape: the shape is open, its fields keep
    *  their kinds). */
-  const storeMember = (sid, prop, v) => {
+  const storeMember = (sid, prop, v, lit) => {
     const i = schemas[sid].indexOf(prop), setter = i < 0 ? classOfSid(sid)?.methods.get(setterOf(prop)) ?? null : null
     const si = schemas[sid].indexOf(setterOf(prop))
     // a slot under a member's name is called in the member's place, by callers the summary does not pair with it
-    if (i >= 0) { raiseSlot(sid, i, v); if (classOfSid(sid)?.methods.has(prop)) escape(v) }
+    if (i >= 0) { raiseSlot(sid, i, v, null, lit); if (classOfSid(sid)?.methods.has(prop)) escape(v) }
     else if (si >= 0) {
       const s = slots(sid)[si], b = sp
       pushK(v)
@@ -3598,11 +3619,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (typeof prop !== 'string') { poisonAll(recv, expr(prop), v); escape(v); return v }
       markBuiltinOwn(t, prop)
       if (hasTag(recv, K.TYPED)) raise(elems, typedPropsCellOf(recv), v)
-      if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) for (const sid of shapesOf(paramOf(recv))) storeMember(sid, prop, v)
+      const lit = op === '=' ? literalKeyOf(value) ?? undefined : undefined
+      if (t === K.OBJECT && paramOf(recv) !== UNKNOWN) for (const sid of shapesOf(paramOf(recv))) storeMember(sid, prop, v, lit)
       else if (dictOrObject(recv)) {
         const c = cell(paramOf(recv))
         raiseProp(recv, prop, v)
-        for (const sid of shapesInCell(c)) storeMember(sid, prop, v)
+        for (const sid of shapesInCell(c)) storeMember(sid, prop, v, lit)
         if (cellLostObject.has(c)) { const b = sp; pushK(v); callCandidates(recv, setterOf(prop), b, 1); sp = b; poisonProp(prop, v) }
         dynamicProps.add(prop)
       }
@@ -4959,7 +4981,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (cls) methods.set(sid, new Map(cls.methods))
   }
   const queryFacts = {
-    kinds, incoming, fields, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
+    kinds, incoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
@@ -5408,7 +5430,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const seeded = [...seedable].filter(p => (entryNumeric.has(p) || isCompatible(p)) && tagOf(kinds[p] ?? K.NONE) === K.ANY)
   if (seeded.length) {
     if (losses) losses.length = 0
-    kinds.length = 0; incoming.length = 0; fields.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
+    kinds.length = 0; incoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.length = 0; stores.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)

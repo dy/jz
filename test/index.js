@@ -159,6 +159,7 @@ const TESTS = [
   'shift-precedence',
   'loop-step',
   'field-cse',
+  'tag-literals',
   'scalar-record',
   'array-load-cse',
   'guarded-read',

@@ -69,11 +69,18 @@ export let field = (n) => { const o = plain(n); return (o.type === 'x' || o.type
 test('field cse: the guards of one event read its type once', () => {
   if (belowOpt(2)) return
   // `timeOf` inlines its guards: four tests of `e.type`, one read of it.
+  // A tag only ever a literal is the layout's answer (test/tag-literals.js), so
+  // the shapes take their tags from their callers here: their tests read the field.
   // The schema dispatch's own read memo reaches the same reads, so it is off
   // on both sides: the difference is the source cache's.
+  const open = guards.replace('const mk = (k) =>', 'const mk = (k, s, l, c) =>')
+    .replace("type: 'setValue'", 'type: s').replace("type: 'linearRampToValue'", 'type: l').replace("type: 'cancelAndHold' }", 'type: c }')
+    .replace('list.push(mk(i + n))', "list.push(mk(i + n, n > 99 ? 'x' : 'setValue', n > 99 ? 'y' : 'linearRampToValue', n > 99 ? 'z' : 'cancelAndHold'))")
+  ok(!/type: '/.test(open) && open.includes("'z'"), 'every tag is a value')
+  agrees(open, [[0], [1], [2]], 'open tag')
   const count = (text) => (text.match(/\$__dyn_get/g) || []).length
-  const on = wat(guards, { optimize: { level: 2, devirtSchemaReads: false } })
-  const off = wat(guards, { optimize: { level: 2, loadCSE: false, devirtSchemaReads: false } })
+  const on = wat(open, { optimize: { level: 2, devirtSchemaReads: false } })
+  const off = wat(open, { optimize: { level: 2, loadCSE: false, devirtSchemaReads: false } })
   ok(count(on) < count(off), `fewer reads with the cache (${count(on)} against ${count(off)})`)
 })
 

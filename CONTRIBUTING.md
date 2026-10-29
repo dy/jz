@@ -4230,6 +4230,18 @@ arms inherit their test's cached field and plain-array reads; the join retains o
 both arms, including when source inlining lowered returns to result assignments.
 Typed-element loads retain their existing control boundaries so checked-load conversions
 do not hide conditional reductions from the vectorizer.
+The summary keeps, per construction site and slot, the string literals stored there
+(`slotLits`, `raiseSlot`'s `lit`): a literal's own value or an `=` of a literal adds
+one, any other store (a copy, a computed key, a store the summary sees only as a kind,
+a lost or host-visible identity) ends the set. A tag test of a discriminated union,
+`o.p === 'lit'` or `==`, `!==`, `!=`, either side, a read or its field cache, is the
+receiver's layout's answer where the summary lists every site the receiver's objects
+come from and each holds the slot with no getter of the name
+(`slotLiteralsOfExpr`, `emit/comparisons.js` `emitSlotLiteralEq`): true where a
+layout's sites stored only 'lit', false where none stored it, the schema id the
+pointer carries deciding between them, and the compare where a layout stored 'lit'
+beside other strings (two tags of one layout), its slot read direct under the
+refinement to that layout. A nullish receiver's read still throws before the test.
 A function whose fresh allocation is stored into module state used to rewind
 and hand out a dangling pointer; the census is what makes the rewind sound.
 The same census runs per loop with the loop body as its scope: an iteration

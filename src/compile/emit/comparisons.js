@@ -6,14 +6,14 @@
  */
 
 import { i64Hex } from '../../../layout.js'
-import { T, TYPEOF } from '../../ast.js'
+import { ACCESSOR_GET, T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, setLinkDemand, ssoBitI64Hex } from '../../ctx.js'
 import { mayHoldHostValue } from '../func-exports.js'
 import {
-  applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, boxedPtrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, toNumF64, truthyIR, typed, unboxBigInt,
+  applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, boxedPtrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, throwTypeErrorIR, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
-import { K, NUMBER, core, hasTag, tagOf } from '../../summary/kind.js'
+import { K, NUMBER, core, hasTag, isNullable, tagOf } from '../../summary/kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from '../../reps.js'
 import { foldIntCompare } from '../../ir/numeric.js'
 import { nonNegIntLiteral } from '../../static.js'
@@ -25,6 +25,7 @@ import { emitInstanceof } from './instanceof.js'
 import { representationProvesBigint, representationStorageWriteAction } from '../representation-plan.js'
 import { REF_EQ_KINDS, foldOperandPure, stringOps } from './shared.js'
 import { positionArgs } from '../../bridge.js'
+import { withRefinements } from '../flow-types.js'
 
 // The kinds whose storage moves as it grows (layout.js FORWARDING_MASK; a
 // HASH compares through the dynamic helpers).
@@ -424,11 +425,69 @@ function effectFoldSeq(operands, constIR) {
 
 const HEAP_EQ_KINDS = new Set([VAL.ARRAY, VAL.OBJECT, VAL.TYPED, VAL.MAP, VAL.SET, VAL.HASH, VAL.DATE, VAL.CLOSURE, VAL.BUFFER])
 const PRIM_EQ_KINDS = new Set([VAL.NUMBER, VAL.STRING, VAL.BOOL])
+// `o.p === 'lit'` where each object `o` may hold is of a construction site
+// whose slot `p` only ever took string literals (summary slotLiteralsOfExpr):
+// a discriminated union's tag test. A layout whose sites stored only 'lit'
+// answers true and one that never stored it false, by the schema id the
+// pointer carries; a layout that stored 'lit' beside other strings keeps the
+// comparison, its slot read direct. Loose equality of two strings is strict
+// equality. The read of a nullish `o` still throws; a cached read
+// (compile/cse-load.js) threw where it was loaded.
+let tagFoldOff = false
+function emitSlotLiteralEq(a, b, negate, strict) {
+  if (tagFoldOff) return null
+  const [operand, lit] = isLiteralStr(b) ? [a, b] : isLiteralStr(a) ? [b, a] : []
+  const cached = typeof operand === 'string' ? ctx.func.fieldCaches?.get(operand) : null
+  const read = cached ?? operand
+  if (!Array.isArray(read) || read[0] !== '.' || typeof read[1] !== 'string' || typeof read[2] !== 'string') return null
+  const [, recv, prop] = read
+  const held = ctx.func.refinements?.get(recv)
+  if (held?.schemaIds?.length || ctx.transform.dynamicAccessorNames?.has(prop)) return null
+  const view = ctx.summary?.at(ctx.func.current), byLayout = view?.slotLiteralsOfExpr(recv, prop)
+  if (!byLayout?.size) return null
+  // a layout that holds a getter of the name reads through it (core.js accessorRead)
+  const getter = prop + ACCESSOR_GET
+  for (const layout of byLayout.keys())
+    if (ctx.schema.list[layout]?.includes(getter) || ctx.transform.classes?.get(ctx.schema.brandOf?.(layout))?.methods.has(getter)) return null
+  const v = emit(recv)
+  if (v?.type !== 'f64' || v.ptrKind != null || v.cellI32) return null
+  const yes = [], no = [], test = []
+  for (const [layout, lits] of byLayout)
+    (lits && !lits.has(lit[1]) ? no : lits?.size === 1 ? yes : test).push(layout)
+  // no layout answers: the compare as it was, one for all
+  if (!yes.length && !no.length) return null
+  const k = view.kindOfExpr(recv), setup = []
+  if (!cached && isNullable(k) && !held?.notNullish)
+    setup.push(['if', (hasTag(k, K.NULLISH) ? isNullish : isUndef)(typed(emit(recv), 'f64')), ['then', ['drop', throwTypeErrorIR()]]])
+  const answer = r => typed(['i32.const', r === negate ? 0 : 1], 'i32')
+  const done = r => setup.length ? typed(['block', ['result', 'i32'], ...setup, r], 'i32') : r
+  if (!test.length && (!yes.length || !no.length)) return done(answer(yes.length > 0))
+  const sid = tempI32('lsid')
+  setup.push(['local.set', `$${sid}`, ['i32.and', ['i32.wrap_i64', ['i64.shr_u', asI64(v), ['i64.const', LAYOUT.AUX_SHIFT]]], ['i32.const', LAYOUT.AUX_MASK]]])
+  const among = ids => ids.map(id => ['i32.eq', ['local.get', `$${sid}`], ['i32.const', id]]).reduce((x, y) => ['i32.or', x, y])
+  // The closed union's remaining layouts take the larger constant class.
+  const [rest, other] = no.length >= yes.length ? [false, yes] : [true, no]
+  let chain = answer(rest)
+  if (other.length) chain = ['if', ['result', 'i32'], among(other), ['then', answer(!rest)], ['else', chain]]
+  if (test.length) {
+    // one compare for the layouts that hold the literal beside others; one such layout's slot reads direct
+    const one = test.length === 1 && !cached ? test[0] : null
+    const fact = one == null ? null : { val: VAL.OBJECT, schemaId: one, schemaIds: [one], schemaIdSet: [one], schemaSlots: new Map([[prop, ctx.schema.list[one].indexOf(prop)]]), notNullish: true }
+    tagFoldOff = true
+    let cmp
+    try { cmp = fact ? withRefinements(new Map([[recv, fact]]), read, () => emitLooseEq(a, b, negate, strict)) : emitLooseEq(a, b, negate, strict) }
+    finally { tagFoldOff = false }
+    chain = ['if', ['result', 'i32'], among(test), ['then', cmp], ['else', chain]]
+  }
+  return done(typed(chain, 'i32'))
+}
+
 function emitLooseEq(a, b, negate, strict) {
   const eqOp = negate ? 'ne' : 'eq'
   const sentinel = emitNum(negate ? 1 : 0)
   const charCmp = emitSingleCharIndexCmp(a, b, negate); if (charCmp) return charCmp
   const subCmp = emitSubstringEqCmp(a, b, negate); if (subCmp) return subCmp
+  const tagCmp = emitSlotLiteralEq(a, b, negate, strict); if (tagCmp) return tagCmp
   // A name beside itself is one value, unequal only as a NaN (`x !== x`):
   // any NaN of a present Number, a numeric NaN of any other carrier.
   if (typeof a === 'string' && a === b) {
