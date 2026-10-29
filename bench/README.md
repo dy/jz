@@ -42,6 +42,10 @@ an existing reference checksum. Entity's initial oracle is 1275530752, verified
 against native C, Node, JZ, Go-Wasm and Porffor.
 Failed measurements retain their reference; an older snapshot that lost it
 falls back to the canonical checksum before classifying a recovered result.
+The self-compile case (`jz`) is the exception: it checksums the bytes the
+compiler under test emits, so its answer moves with every codegen change. Its
+oracle is that compiler's source run on the harness's Node, once per run and
+apart from the rows it scores (`SOURCE_ORACLE`).
 
 `FMA_CHECKSUMS` accepts independently verified alternate checksums when a backend
 fuses floating-point operations. Resample has distinct native Go and Porffor

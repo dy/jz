@@ -183,6 +183,20 @@ test('bench: a new case uses its pinned oracle without replacing an existing ref
   ok(changed.ref === 0 && changed.targets.v8.parity === 'DIFF', 'a stored reference is never replaced by the fallback or the latest result')
 })
 
+test('bench: the self-compile case is scored against its source under node, never a stored checksum', () => {
+  // Its checksum hashes the bytes the compiler under test emits: a stored
+  // answer goes stale with the next codegen change and turns every row DIFF.
+  const scratch = freshCopy()
+  const seed = JSON.parse(readFileSync(scratch, 'utf8'))
+  seed.cases.jz = { ...seed.cases.jz, ref: 1 }
+  writeFileSync(scratch, JSON.stringify(seed))
+  const out = run(['--cases=jz', '--targets=v8', `--json=${scratch}`, '--merge', '--allow-unanchored'])
+  const oracle = +out.match(/\[oracle\] jz source under node → cs=(\d+)/)?.[1]
+  const jz = JSON.parse(readFileSync(scratch, 'utf8')).cases.jz
+  ok(oracle > 1 && jz.ref === oracle, `jz.ref ${jz.ref} is not this run's source oracle ${oracle}`)
+  ok(jz.targets.v8.parity === 'ok', `v8 row reads ${jz.targets.v8.parity} against the source oracle`)
+})
+
 test('bench: without --merge, a full --json run is schema-identical to the pre-merge shape (no measuredAt/partial/anchors)', () => {
   const scratch = freshCopy()
   run(['--cases=mat4', '--targets=jz', `--json=${scratch}`])

@@ -1393,11 +1393,26 @@ const SVG_TARGETS = [
   { id: 'nat', label: 'native C', sub: 'clang -O3, ref' },
 ]
 
+// The self-compile case checksums the bytes the compiler under test emits, so
+// every codegen change moves its answer and no stored checksum can be its
+// oracle (at a841739a every engine read DIFF against September's bytes). Its
+// oracle is the compiler's source run as JS on this harness's Node (valid jz is
+// valid JS): one run per case, apart from the rows it scores. A failed run
+// leaves the rows unclassified, never scored against the stale bytes.
+const SOURCE_ORACLE = new Set(['jz'])
+const sourceOracle = c => {
+  const r = runProc([process.execPath, join(LIB, 'run-v8.mjs'), c.js])
+  if (r.error) console.log(`[oracle] ${c.id} FAIL: ${r.error}`)
+  else console.log(`[oracle] ${c.id} source under node → cs=${r.checksum}`)
+  return r.error ? null : r.checksum
+}
+
 for (const cid of selectedCases) {
   const c = caseById[cid]
-  // A failed measurement cannot erase its oracle or make a later result its own reference.
-  const refCs = PREV?.cases?.[cid]?.ref ?? CANONICAL?.cases?.[cid]?.ref ?? REFERENCE_CHECKSUMS[cid] ?? null
   console.log(`\n# ${c.name} (${c.id})`)
+  // A failed measurement cannot erase its oracle or make a later result its own reference.
+  const refCs = SOURCE_ORACLE.has(cid) ? sourceOracle(c)
+    : PREV?.cases?.[cid]?.ref ?? CANONICAL?.cases?.[cid]?.ref ?? REFERENCE_CHECKSUMS[cid] ?? null
   const results = []
   // Targets that were AVAILABLE (toolchain present + source exists) but failed to
   // compile or run — the honest "did not compile" signal. Distinct from a skip
