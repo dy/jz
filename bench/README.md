@@ -271,6 +271,10 @@ and string kernels; WABT additionally checks the multi-value tokenizer kernel.
 `jz-w2c` builds through `scripts/native/compile.mjs`, the generic native path,
 which accepts source and installed WABT layouts; the w2c2 adapter reads w2c2's
 generated header to match its symbol naming. CI pins the tested w2c2 revision.
+A case whose host build replaces modules (webaudio's device and codec adapters,
+its worklet stub; `OWN_GRAPH` in `_lib/graph.js`) builds its standalone wasm
+from that same graph (`compileJzWasi`), each adapter a module that throws,
+rather than through the CLI, which would compile the real adapters.
 
 ### Parity classes
 

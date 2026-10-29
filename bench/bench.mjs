@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { NATIVE_ARENA_SHIM, NATIVE_ARENA_RE } from '../scripts/native-arena.js'
 import { sysroot, toolchain as nativeToolchain, wasm2native } from '../scripts/native/compile.mjs'
-import { compileJzAt, compileJzSelf, watrModuleSources } from './_lib/compile.js'
-import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, graphSources } from './_lib/graph.js'
+import { compileJzAt, compileJzSelf, compileJzWasi, watrModuleSources } from './_lib/compile.js'
+import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, OWN_GRAPH, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
@@ -525,6 +525,7 @@ const compileJz = c => {
   // This build KEEPS tail calls on — wasmtime/wasmer/deno all ship the proposal
   // (src/session.js TARGET_PROFILES.wasi: noTailCall false). jz-w2c/jz-w2c2 do
   // NOT read this wasm — see compileJzW2c below, which they use instead.
+  if (OWN_GRAPH.has(c.id)) return writeFileSync(wasmPath(c), compileJzWasi(c, 'speed'))
   execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O3', '-o', wasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }
 
@@ -551,6 +552,7 @@ const compileJz = c => {
 const w2cWasmPath = c => join(caseBuild(c), `${c.id}nt.wasm`)
 const compileJzW2c = c => {
   const optimize = { level: 'speed', tailCall: false, ...(EH_ABORT_VARIANT.has(c.id) ? { exceptions: false } : {}) }
+  if (OWN_GRAPH.has(c.id)) return writeFileSync(w2cWasmPath(c), compileJzWasi(c, optimize))
   execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O', JSON.stringify(optimize), '-o', w2cWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }
 

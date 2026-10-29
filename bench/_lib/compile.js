@@ -66,6 +66,19 @@ export const compileJzAt = (c, optimize, compiler = compile) => {
   })
 }
 
+// A graph case's standalone (`--host wasi`) build, for the wasmtime and native
+// lanes: the module graph the host build compiles, each host adapter a module
+// whose exports throw (a native binary imports nothing but WASI), the real
+// benchlib printing through fd_write. The CLI resolves the graph without the
+// case's adapters and stubs: webaudio's reached the codec packages.
+export const compileJzWasi = (c, optimize, compiler = compile) => {
+  const { code, modules, imports } = graphSources(c, resolveModuleGraph)
+  for (const [spec, names] of Object.entries(imports))
+    modules[spec] = `const unavailable = () => { throw new Error('${spec} is a host adapter') }\n` +
+      Object.keys(names).map(n => n === 'default' ? 'export default unavailable\n' : `export const ${n} = unavailable\n`).join('')
+  return compiler(code, { host: 'wasi', jzify: true, modules, optimize })
+}
+
 // The compiler graph can exhaust V8's heap. Both harnesses isolate its build
 // so a crash is a failed row and the remaining cases can still be measured.
 export const compileJzSelf = (hostOut, sizeOut) => {

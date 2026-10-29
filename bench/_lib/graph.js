@@ -15,6 +15,10 @@ export class AudioWorkletNode { constructor() { throw new Error('AudioWorkletNod
 export class AudioWorklet { constructor(context) { this.context = context } addModule() { return Promise.resolve() } }
 ` } }
 
+// The cases whose graph is not the one the CLI resolves (adapters, stubs): a
+// standalone lane builds them through compileJzWasi (compile.js).
+export const OWN_GRAPH = new Set([...Object.keys(EXTERNALS), ...Object.keys(SOURCES)])
+
 // Offline rendering never calls the device/codec adapters.
 // Pass the resolver from the measured checkout, including when auditing a ref.
 export function graphSources(c, resolveModuleGraph) {
