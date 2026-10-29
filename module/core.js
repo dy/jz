@@ -879,8 +879,9 @@ export default (ctx) => {
   // (`next > __heap_end` → slow __memgrow call) replaces a per-alloc call whose
   // page math always concluded "no grow" (jessie: 1.1M entries/run). __memgrow
   // updates it after any growth; stale-LOW is safe (one extra slow call) and
-  // wasm memory never shrinks. 65536-page (4 GiB) memories wrap the shl to 0 —
-  // every alloc slow-paths there, still correct. Seeded 0: first alloc pays once.
+  // wasm memory never shrinks. A 65536-page (4 GiB) memory, whose end wraps
+  // the shl to 0, holds the top address instead: an allocation's end never
+  // passes it. Seeded 0: first alloc pays once.
   declGlobal('__heap_end', 'i32', 0)
   // i64 twin of __heap_end, for the CORRECTNESS-sensitive forwarding-chase bound
   // (layout.js's followForwardingWat/ptrOffsetFwdWat, and their inline collection.js
@@ -941,7 +942,11 @@ export default (ctx) => {
         (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))
           (then (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1))
             (then ${HEAP_EXHAUSTED_THROW}))))))
-    (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
+    ;; a 4 GiB memory's end does not fit an i32: the top address stands for it,
+    ;; which no allocation's end exceeds (its own wraparound test throws first);
+    ;; the size tier keeps the wrap, every allocation there asking
+    (global.set $__heap_end ${ctx.transform.optimize?.leanRuntime ? '(i32.shl (memory.size) (i32.const 16))'
+      : '(select (i32.const -1) (i32.shl (memory.size) (i32.const 16)) (i32.ge_u (memory.size) (i32.const 65536)))'})
     (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
 
   if (ctx.memory.shared) {

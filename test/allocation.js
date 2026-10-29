@@ -560,3 +560,23 @@ test('allocation: blocks of 4 KiB or more start a quarter page apart mod 4096', 
   const offs = [0, 1, 2, 3].map(() => offset(memory.Float64Array(new Float64Array(1024))) % 4096)
   is([1, 2, 3].map(k => (offs[k] - offs[k - 1] + 4096) % 4096), [1024, 1024, 1024], 'host-allocated 8 KiB arrays')
 })
+
+// The memory-growth helper runs only past the memory's end (module/core.js
+// `__memgrow`): a 4 GiB memory, the wasm32 maximum, whose end wrapped an i32
+// to 0, sent every allocation through it, and an in-place string extension
+// called it on every append whatever the room.
+test('allocation: the growth helper runs only where an allocation passes the memory end', async () => {
+  const src = `export let f = (n) => { let s = '', kept = []
+    for (let i = 0; i < n; i++) { kept.push([i, i + 1]); s += 'ab' }
+    return kept.length + s.length + kept[n - 1][1] }
+  export let g = (n) => { let s = 'start:'; for (let i = 0; i < n; i++) s += 'abcdefgh'; return s.length }`
+  for (const memory of [undefined, 65536]) {
+    const { instance } = await WebAssembly.instantiate(compile(src, { optimize: 'speed', helperCounters: true, ...(memory ? { memory } : {}) }))
+    const e = instance.exports
+    e.__helper_counts_reset?.()
+    is(e.f(2000), 2000 + 4000 + 2000, `result, memory ${memory ?? 'default'}`)
+    is(e.g(2000), 6 + 16000, `appends, memory ${memory ?? 'default'}`)
+    const grows = Number(e.__hc_memgrow?.value ?? 0)
+    ok(grows <= 8, `memory ${memory ?? 'default'}: ${grows} growth calls for 4000 allocations and 4000 appends`)
+  }
+})

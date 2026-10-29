@@ -172,6 +172,8 @@ const internProbeWat = () => ctx.scope.globals.has('__internBase') ? `
 export default (ctx) => {
   // Size tier: the runtime walks link their plain bodies (see `__str_eq`).
   const lean = !!ctx.transform.optimize?.leanRuntime
+  // memory for an in-place extension's end: the helper runs only past the memory's end (the size tier asks always)
+  const growTo = (v) => lean ? `(call $__memgrow (local.get ${v}))` : `(if (i32.gt_u (local.get ${v}) (global.get $__heap_end)) (then (call $__memgrow (local.get ${v}))))`
   deps({
     __str_concat: ['__to_str', '__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_concat_raw: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
@@ -1295,7 +1297,7 @@ export default (ctx) => {
       (then
         (local.set $newHeap
           (i32.and (i32.add (i32.add (local.get $aoff) (i32.shl (local.get $total) (i32.const 1))) (i32.const 7)) (i32.const -8)))
-        (call $__memgrow (local.get $newHeap))
+        ${growTo('$newHeap')}
         (call $__str_copy (local.get $b)
           (i32.add (local.get $aoff) (i32.shl (local.get $alen) (i32.const 1)))
           (local.get $blen))
@@ -1346,7 +1348,7 @@ export default (ctx) => {
           (then
             (local.set $newHeap
               (i32.and (i32.add (i32.add (local.get $aoff) (i32.shl (local.get $alen) (i32.const 1))) (i32.const 8)) (i32.const -8)))
-            (call $__memgrow (local.get $newHeap))
+            ${growTo('$newHeap')}
             (i32.store16 (i32.add (local.get $aoff) (i32.shl (local.get $alen) (i32.const 1))) (local.get $byte))
             (i32.store (i32.sub (local.get $aoff) (i32.const 4)) (i32.add (local.get $alen) (i32.const 1)))
             ;; bytes changed in place — drop the cached hash (cell exists iff HCACHE bit)

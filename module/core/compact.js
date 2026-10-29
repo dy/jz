@@ -195,7 +195,7 @@ export const registerCompact = () => {
         (local.set $pages (i32.add (i32.wrap_i64 (i64.shr_u (i64.sub (i64.add (i64.extend_i32_u (local.get $need)) (i64.const 65535)) (local.get $have)) (i64.const 16))) (i32.const 1)))
         (if (i32.eq (memory.grow (local.get $pages)) (i32.const -1)) (then (return (i32.const 0))))
         (local.set $have (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16)))
-        (global.set $__heap_end (i32.wrap_i64 (local.get $have)))
+        (global.set $__heap_end (select (i32.const -1) (i32.wrap_i64 (local.get $have)) (i64.ge_u (local.get $have) (i64.const 0x0000000100000000))))
         (global.set $__heap_end64 (local.get $have))))
     (global.set $__g_lim (select (i32.const -8) (i32.wrap_i64 (local.get $have)) (i64.gt_u (local.get $have) (i64.const 0xFFFFFFF8))))
     ${has('__park_base') ? `(if (global.get $__park_base) (then (if (i32.gt_u (global.get $__g_lim) (i32.sub (global.get $__park_base) (i32.const 8)))
