@@ -4225,7 +4225,9 @@ A computed-key store into a receiver that may be an object ends every field it
 may reach, and a call that may write outer
 storage, a user conversion or a reassignment of the receiver flushes as for elements;
 an element store into an array or a typed array leaves fields alone, whatever
-expression names the array (`c.b[c.p] = v`). Conditional
+expression names the array (`c.b[c.p] = v`), and so does one into a receiver of
+no val type the summary names only arrays, typed arrays or primitives of (a
+method's result: an AudioBuffer's channel). Conditional
 arms inherit their test's cached field and plain-array reads; the join retains only reads surviving
 both arms, including when source inlining lowered returns to result assignments.
 Typed-element loads retain their existing control boundaries so checked-load conversions

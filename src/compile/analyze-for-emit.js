@@ -34,12 +34,15 @@ import { invalidateLocalsCache } from './analyze/body-facts.js'
 import { runsConversion } from './analyze/frame-effects.js'
 import { frameNode } from '../function.js'
 import { viewsOn } from '../../module/schema.js'
+import { K, bitOf, tagsOf } from '../summary/kind.js'
 
 // Monotonic across all functions so a CSE temp never collides (even after later
 // inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
 // freshLoopId pattern): a module-level counter made warm-process WAT text
 // history-dependent (`cse0/1` then `cse2/3` for the same program).
 const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
+// Kinds an element store reaches no object field through: elements, or nothing (a primitive, a nullish receiver).
+const ELEMENT_ONLY = [K.TYPED, K.ARRAY, K.STRING, K.NUMBER, K.BOOL, K.BIGINT, K.NULLISH, K.ABSENT].reduce((m, t) => m | bitOf(t), 0)
 // Kinds whose storage never holds typed elements: a store into one leaves cached typed loads intact.
 const UNTYPED_KINDS = new Set([VAL.ARRAY, VAL.OBJECT, VAL.HASH, VAL.STRING, VAL.SET, VAL.MAP])
 // `value` is the only value ever written to `name` (its declaration aside).
@@ -318,7 +321,15 @@ export function analyzeFuncForEmit(func, programFacts) {
   const readonlyCall = n => n[0] === '()' && typeof n[1] === 'string' && (ctx.funcs.map.get(n[1])?.frame?.writesOuter === false ||
     n[1].startsWith('math.') && callArgs(n).every(a => valTypeOf(a) === VAL.NUMBER))
   const userCode = n => runsConversion(summary, n)
-  const fieldStore = recv => { const vt = valTypeOf(recv); return vt !== VAL.ARRAY && vt !== VAL.TYPED && vt !== VAL.STRING }
+  // An element store into an array, a typed array or a string (or a primitive
+  // or nullish receiver) writes no field: by its val type or, where the emitter
+  // has none (a method's result), by every kind the summary names.
+  const fieldStore = recv => {
+    const vt = valTypeOf(recv)
+    if (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.STRING) return false
+    const k = summary?.kindOfExpr(recv)
+    return k == null || tagsOf(k) === 0 || (tagsOf(k) & ~ELEMENT_ONLY) !== 0
+  }
   // A loop's invariant field reads move before it first: a read hoisted there
   // is then one the straight-line cache below can share.
   const hoistedFields = loadsCached && fieldRead

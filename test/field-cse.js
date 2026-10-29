@@ -261,3 +261,58 @@ test('field cse: a bound event read by the guards of a lookup, and rebound', () 
   const reads = (funcWat(wat(valueAt, { optimize: 2 }), 'f').match(/\$__dyn_get/g) || []).length
   ok(reads <= 13, `${reads} reads of the two events' fields`)
 })
+
+// A channel a method returns (an array of typed views, an AudioBuffer's
+// getChannelData) has no val type at the store, but the summary names only
+// typed arrays: an element store into it writes no field, so the offset field
+// read in the copy loop moves before the loop.
+const views = `class Buffer {
+  #n
+  #data
+  #channels
+  constructor(nch, len) {
+    this.#n = nch
+    this.#data = new Float32Array(len * nch)
+    const channels = this.#channels = new Array(nch)
+    for (let c = 0; c < nch; c++) channels[c] = this.#data.subarray(c * len, (c + 1) * len)
+  }
+  getChannelData(ch) {
+    if (ch < 0 || ch >= this.#n) throw new Error('channel')
+    return this.#channels[ch]
+  }
+}
+const st = { w: 0 }
+const buf = new Buffer(2, 4096)
+const put = (count) => {
+  for (let c = 0; c < 2; c++) {
+    const dst = buf.getChannelData(c)
+    for (let i = 0; i < count; i++) dst[st.w + i] = i * 0.25 + c
+  }
+  st.w += count
+}
+export let f = (n) => { st.w = 0; for (let k = 0; k < 9; k++) put(100 + (n & 7)); return st.w }
+export let at = (c, i) => buf.getChannelData(c & 1)[i | 0]`
+
+test('field cse: an element store into a method\'s typed array keeps the field read out of the loop', () => {
+  const host = oracle(views)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const mod = jz(views, { optimize }).exports
+    for (const n of [0, 3]) {
+      ok(mod.f(n) === host.f(n), `f(${n}) at ${optimize}`)
+      for (const [c, i] of [[0, 5], [1, 99], [0, 400], [1, 811]]) ok(mod.at(c, i) === host.at(c, i), `at(${c}, ${i}) at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  for (const optimize of levels(2, 3)) {
+    const text = wat(views, { optimize })
+    const inner = []
+    for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+      let depth = 0, end = at
+      do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+      const l = text.slice(at, end)
+      if (!/\(loop/.test(l.slice(5)) && /f32\.store/.test(l)) inner.push(l)
+    }
+    ok(inner.length > 0, `found the copy loops at ${optimize}`)
+    for (const l of inner) ok(!/f64\.load/.test(l), `the offset is read before the copy loop at ${optimize}`)
+  }
+})
