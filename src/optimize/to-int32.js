@@ -107,18 +107,32 @@ const keyTest = n => {
   return null
 }
 
+// `(f64.eq (f64.convert_i64_s (local.get w)) (local.get x))`, either way round: { w, x, conv }
+const wideTest = n => {
+  if (!isArr(n) || n[0] !== 'f64.eq' || n.length !== 3) return null
+  for (const [c, b] of [[n[1], n[2]], [n[2], n[1]]]) {
+    if (!isArr(c) || c[0] !== 'f64.convert_i64_s' || !isArr(c[1]) || c[1][0] !== 'local.get' || !isArr(b) || b[0] !== 'local.get') continue
+    return { w: c[1][1], x: b[1], conv: c }
+  }
+  return null
+}
+
 const exactKeys = fn => {
   // each local's writes, and the reads with their parents
   const writes = new Map(), reads = new Map(), tests = []
+  const wide = []   // a wide key's tests
   const walk = (n, parent) => {
     if (!isArr(n)) return
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.set(n[1], [...writes.get(n[1]) ?? [], n])
     else if (n[0] === 'local.get' && typeof n[1] === 'string') reads.set(n[1], [...reads.get(n[1]) ?? [], parent])
     const t = keyTest(n)
     if (t) tests.push({ ...t, test: n, held: (parent?.[0] === 'local.set' || parent?.[0] === 'local.tee') && parent[2] === n ? parent[1] : null })
+    const k = wideTest(n)
+    if (k) wide.push(k)
     for (const c of n) walk(c, n)
   }
   for (let i = 2; i < fn.length; i++) walk(fn[i], fn)
+  const wideKeys = new Set(wide.map(k => k.w)), wideTests = new Set(wide.map(k => k.conv))
   // (a word and its test's local travel together, loop copies included: every
   // write of either is such a test, and every read of the word selects on it)
   const paired = (word, held) => held != null &&
@@ -127,6 +141,20 @@ const exactKeys = fn => {
     (reads.get(word) ?? []).every(p => p?.[0] === 'select' && p[1]?.[0] === 'local.get' && p[1][1] === word && p[3]?.[0] === 'local.get' && p[3][1] === held)
   for (const t of tests) if (t.word == null || paired(t.word, t.held))
     t.holder[t.at] = ['i32.wrap_i64', ['i64.reinterpret_f64', ['f64.add', t.x, MAGIC()]]]
+  // A checked access's wide key (emit/dispatch.js emitIndex): `w = trunc(x)`,
+  // tested by `convert(w) == x` and met against the length in i64, its word
+  // the address under both. Where both hold, w is x, whichever integer stands
+  // in for a key no integer equals, so x plus 1.5·2^52 read as bits, less the
+  // bias, serves: exact within ±2^51; past it, or for a fraction or NaN, a w
+  // whose conversion is not x, or which no length admits. (The test reads the
+  // value the write truncated; watr may have the two read it through different
+  // locals, a copy or a shared slot, so the pair is told by w alone: written
+  // only so, read only by these.)
+  for (const [w, ws] of writes) {
+    if (!wideKeys.has(w) || !ws.every(n => isArr(n[2]) && n[2][0] === 'i64.trunc_sat_f64_s' && isArr(n[2][1]) && (n[2][1][0] === 'local.get' || n[2][1][0] === 'local.tee'))) continue
+    if (!(reads.get(w) ?? []).every(p => p?.[0] === 'i32.wrap_i64' || p?.[0] === 'i64.lt_u' && p[1]?.[0] === 'local.get' && p[1][1] === w || wideTests.has(p))) continue
+    for (const n of ws) n[2] = ['i64.sub', ['i64.reinterpret_f64', ['f64.add', n[2][1], MAGIC()]], ['i64.const', '0x4338000000000000']]
+  }
 }
 
 // Whether `n` holds a conversion the lowering rewrites.

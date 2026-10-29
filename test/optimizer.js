@@ -6808,7 +6808,8 @@ export let main = (i) => {
 }`
   const wat = compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
-  is((m.match(/i32\.lt_u/g) || []).length, 3, 'one guard per RMW — no read+write pairs')
+  // (a host's key of unknown integrality meets the length as its truncation, in i64)
+  is((m.match(/i(32|64)\.lt_u/g) || []).length, 3, 'one guard per RMW — no read+write pairs')
   const exportsJs = oracle(src)
   const wasm = run(src, { optimize: 'speed' }).main
   for (const i of [-1, 0, 2, 3, 4, 99]) is(wasm(i), exportsJs.main(i), `RMW i=${i} exact including OOB`)

@@ -31,6 +31,10 @@ const RESULT = n => isArr(n) && n[0] === 'result' ? n[1] : null
 const copy = n => Object.assign([], n)
 const CMP = { 'f64.eq': 'eq', 'f64.ne': 'ne', 'f64.lt': 'lt_s', 'f64.le': 'le_s', 'f64.gt': 'gt_s', 'f64.ge': 'ge_s' }
 const TEST = new Set([...Object.keys(CMP), 'i64.eq', 'i64.ne', 'i32.eq', 'i32.ne', 'i32.eqz', 'i32.lt_s', 'i32.le_s', 'i32.gt_s', 'i32.ge_s', 'i32.lt_u', 'i32.le_u', 'i32.gt_u', 'i32.ge_u'])
+// (every comparison answers 0 or 1)
+const BOOLEAN = new Set([...TEST, ...['i64.eqz', 'i64.lt_s', 'i64.le_s', 'i64.gt_s', 'i64.ge_s', 'i64.lt_u', 'i64.le_u', 'i64.gt_u', 'i64.ge_u']])
+// a comparison, or a block whose value is one
+const answersBit = e => isArr(e) && (BOOLEAN.has(e[0]) || e[0] === 'block' && RESULT(e[1]) === 'i32' && answersBit(e[e.length - 1]))
 const ARITH = { 'f64.add': 'add', 'f64.sub': 'sub', 'f64.mul': 'mul' }
 const ROUND = new Set(['f64.floor', 'f64.ceil', 'f64.trunc', 'f64.nearest'])
 const TRUNC = new Set(['i64.trunc_sat_f64_s', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u'])
@@ -468,6 +472,30 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide', kno
   }
   const divisor = (x, k) => widthOf(x) === 'i32' && Math.abs(k) < 2 ** 31 ? 'i32' : 'i64'
   const answered = n => { const c = at(n); return c && c.lo === c.hi && pure(n) ? c.lo : null }
+  // A checked key's integer (emit/dispatch.js emitIndex): `w = trunc(t)`,
+  // the only write of w, right after the only write of t. Nothing runs between
+  // the two and both start at zero, so w is t's truncation wherever it is read:
+  // w → the read of t its write truncates.
+  const truncOf = new Map()
+  const once = name => facts.writes.get(name)?.length === 1
+  const pairs = (n, from) => {
+    for (let i = from; i < n.length; i++) {
+      const a = n[i], b = n[i + 1]
+      if (!isArr(a)) continue
+      pairs(a, 1)
+      if (a[0] !== 'local.set' || !isArr(b) || b[0] !== 'local.set' || !isArr(b[2]) || b[2][0] !== 'i64.trunc_sat_f64_s') continue
+      const read = b[2][1]
+      if (isArr(read) && read[0] === 'local.get' && read[1] === a[1] && once(a[1]) && once(b[1])) truncOf.set(b[1], read)
+    }
+  }
+  pairs(fn, bodyStart)
+  // w's word where t is an integer of the word, not negative: t's own where t
+  // narrows to one, else w's low word.
+  const truncWord = n => {
+    const read = isArr(n) && n[0] === 'local.get' ? truncOf.get(n[1]) : null, v = read && at(read)
+    if (!v || !whole(read) || v.lo < 0 || !fitsI32(v)) return null
+    return N.get(read[1]) === 'i32' ? ['local.get', read[1]] : ['i32.wrap_i64', n]
+  }
 
   /** The integer form of `e` in width `w`: the value when it fits, its low
    *  word otherwise (sums and products keep the low word). `e` is an integer
@@ -732,6 +760,24 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide', kno
       if (words === 'add' && fitsI32(truncation(at(n[1])))) return conversion(truncated(F(n[1]), 'i32', n[1]))
     }
     if (op === 'i32.trunc_sat_f64_u' && fitsI32(at(n[1])) && at(n[1]).lo >= 0 && takes(n[1])) { did = true; return I(n[1], 'i32') }
+    // The truncation of an integer is the integer: a key's integer test
+    // (`convert(w) == t`) holds, and the key tests and addresses as a word
+    // where it is one, not negative.
+    if ((op === 'f64.eq' || op === 'f64.ne') && n.length === 3) {
+      for (const [k, o] of [[1, 2], [2, 1]]) {
+        const c = n[k], x = n[o]
+        if (!isArr(c) || c[0] !== 'f64.convert_i64_s' || !isArr(c[1]) || c[1][0] !== 'local.get' || !isArr(x) || x[0] !== 'local.get') continue
+        if (truncOf.get(c[1][1])?.[1] === x[1] && whole(x)) { did = true; return ['i32.const', op === 'f64.eq' ? 1 : 0] }
+      }
+    }
+    if (op === 'i64.lt_u' && isArr(n[2]) && n[2][0] === 'i64.extend_i32_u') {
+      const k = truncWord(n[1])
+      if (k) { did = true; return ['i32.lt_u', k, F(n[2][1])] }
+    }
+    if (op === 'i32.wrap_i64') {
+      const k = truncWord(n[1])
+      if (k) { did = true; return k }
+    }
     if (op in CMP && whole(n[1]) && whole(n[2]) && takes(n[1], n[2])) {
       const x = widthOf(n[1], n[2])
       did = true
@@ -758,6 +804,9 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide', kno
     }
     const out = copy(n)
     for (let i = 1; i < out.length; i++) out[i] = F(out[i])
+    // A conjunct its rewrite decided true (a key's integer test) leaves the other test.
+    if (op === 'i32.and' && out.length === 3) for (const [k, o] of [[1, 2], [2, 1]])
+      if (isArr(out[k]) && out[k][0] === 'i32.const' && out[k][1] === 1 && answersBit(out[o])) return out[o]
     return out
   }
 

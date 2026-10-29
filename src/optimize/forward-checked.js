@@ -180,18 +180,22 @@ function forwardIn(fn, callsOut) {
   // `(i32.lt_u IDX (i32.shr_u (i32.load H) (i32.const 2)))`, alone or the last conjunct of an
   // `i32.and`, H the base's header (base − 8): the bound check of a 4-byte element at
   // `(i32.add BASE (i32.shl IDX (i32.const 2)))` → the header's key, else null
+  // A wide key (emit/dispatch.js emitIndex) checks as `(i64.lt_u W (i64.extend_i32_u LEN))`
+  // and addresses by W's word.
   const boundedHeader = (cond, addr) => {
     const b = isArr(cond) && cond[0] === 'i32.and' && cond.length === 3 ? cond[2] : cond
-    if (!isArr(b) || b[0] !== 'i32.lt_u' || b.length !== 3) return null
-    const len = b[2]
+    if (!isArr(b) || (b[0] !== 'i32.lt_u' && b[0] !== 'i64.lt_u') || b.length !== 3) return null
+    const wide = b[0] === 'i64.lt_u'
+    if (wide && (!isArr(b[2]) || b[2][0] !== 'i64.extend_i32_u' || b[2].length !== 2)) return null
+    const len = wide ? b[2][1] : b[2]
     if (!isArr(len) || len[0] !== 'i32.shr_u' || len.length !== 3 || keyOf(len[2]) !== num('i32.const 2')) return null
     const ld = len[1]
     if (!isArr(ld) || ld[0] !== 'i32.load' || ld.length !== 2) return null
     if (!isArr(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return null
     const sh = addr[2]
     if (!isArr(sh) || sh[0] !== 'i32.shl' || sh.length !== 3 || keyOf(sh[2]) !== num('i32.const 2')) return null
-    const base = keyOf(addr[1]), idx = keyOf(sh[1]), hdr = keyOf(ld[1])
-    return base && idx && idx === keyOf(b[1]) && hdr === num(`i32.sub ${base} ${num('i32.const 8')}`) ? hdr : null
+    const base = keyOf(addr[1]), idx = keyOf(sh[1]), hdr = keyOf(ld[1]), key = keyOf(b[1])
+    return base && idx && key && idx === (wide ? num(`i32.wrap_i64 ${key}`) : key) && hdr === num(`i32.sub ${base} ${num('i32.const 8')}`) ? hdr : null
   }
   // what a construct wrote: its locals hold new values, a write to memory starts new memory
   const forget = (n) => {

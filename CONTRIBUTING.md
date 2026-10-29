@@ -4450,7 +4450,19 @@ too. Per conversion, the add costs 1.41 ns on a Xeon 8370C against 2.30 for
 `i32.trunc_sat_f64_s` and 1.77 for the guarded add, 0.98 / 1.51 / 1.52 on an
 EPYC 7763, 0.94 / 1.11 / 1.30 on a Neoverse-N2 and 0.40 / 0.49 / 0.52 on an
 Apple M4, so the speed tier takes the add over the 32-bit truncation wherever an
-interval allows it. The range
+interval allows it.
+A checked typed access tests a key of no known integrality as the integer its
+truncation is (`compile/emit/dispatch.js` `emitIndex`): `w = trunc(key)` in
+i64, the key an element's where `convert(w) == key` and `w <u length` in i64,
+addressed by w's word. Where integer narrowing proves the key an integer it
+reads the pair back (`optimize/int-narrow.js`): the test holds, and a key
+within the word, not negative, compares and addresses as the word; past 2^31
+(a planar offset `(i % seg) * ch + ~~(i / seg)`) the one unsigned compare
+stays, where the word form paid a fit test, a select of -1 and their
+conjunction. Where the key stays a Number the lowering takes w by the add with
+no test (`exactKeys`), the test rejecting whatever word stands in for a key no
+integer equals, and `forwardChecked` reads the i64 bound check as it reads the
+word's. The range
 is flow-sensitive (`optimize/flow-range.js`): a comparison bounds the local in
 the arm it guards, the arms hull at their join, and a loop's written locals
 are unknown at its head, so a clamp (`if (v > K) v = K; else if (v < L) v = L`)

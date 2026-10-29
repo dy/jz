@@ -35,6 +35,8 @@ const check = (src, inputs, label) => {
   }
 }
 const gatherWat = src => funcWat(compile(src, { optimize: { level: 2, sourceInline: false, watr: false }, wat: true }), 'gather')
+// a bounds check: a word against the length, or a key of unknown integrality as its truncation, in i64
+const checked = text => /\bi(32|64)\.lt_u\b/.test(text)
 
 test('element bounds: escaped size receivers cannot establish equal allocation lengths', () => {
   if (onKernel()) return
@@ -57,7 +59,7 @@ test('element bounds: escaped size receivers cannot establish equal allocation l
   // A typed array's storage length is immutable, but its JS .length property
   // can be shadowed. This proof must reject an escaped receiver independently
   // of the emitter's current typed-property reflection behavior.
-  ok(gatherWat(src).includes('i32.lt_u'), 'a repeated .length syntax is not a stable allocation count after escape')
+  ok(checked(gatherWat(src)), 'a repeated .length syntax is not a stable allocation count after escape')
 })
 
 test('element bounds: runtime-sized index buffers flow through direct helpers', () => {
@@ -67,21 +69,21 @@ test('element bounds: runtime-sized index buffers flow through direct helpers', 
     if (onKernel()) continue
     const body = gatherWat(src)
     ok(body.includes('f64.load'), `${ctor}: gather remains a load`)
-    ok(!body.includes('i32.lt_u'), `${ctor}: matching dynamic lengths remove dependent bounds checks`)
+    ok(!checked(body), `${ctor}: matching dynamic lengths remove dependent bounds checks`)
   }
 })
 
 test('element bounds: same-buffer copies include missing-read zero', () => {
   const src = kernel('Int32Array', 'indices[0] = indices[value | 0]')
   check(src, [[0, -1], [1, -1], [4, 0], [4, 3], [4, 4], [4, -1], [1, 0]], 'copy')
-  if (!onKernel()) ok(!gatherWat(src).includes('i32.lt_u'), 'copies preserve the index-buffer invariant')
+  if (!onKernel()) ok(!checked(gatherWat(src)), 'copies preserve the index-buffer invariant')
 })
 
 test('element bounds: own-index writes preserve bounds only through actual elements', () => {
   const src = kernel('Int32Array', 'const key = +value; indices[key] = key')
   const keys = [-1, -0, 0, Number.MIN_VALUE, 0.5, 1, 3, 4, NaN, Infinity, -Infinity, 4294967296]
   check(src, keys.flatMap(key => [[0, key], [4, key]]), 'element key')
-  if (!onKernel()) ok(!gatherWat(src).includes('i32.lt_u'), 'invalid numeric keys cannot add a non-index element')
+  if (!onKernel()) ok(!checked(gatherWat(src)), 'invalid numeric keys cannot add a non-index element')
 })
 
 test('element bounds: incompatible writers, aliases and lengths retain checked reads', () => {
@@ -98,7 +100,7 @@ test('element bounds: incompatible writers, aliases and lengths retain checked r
   ]
   for (let i = 0; i < sources.length; i++) {
     check(sources[i], [[0, 0], [1, -1], [4, 3], [4, 4], [4, 511], [257, -1], [1, 0]], `reject ${i}`)
-    if (!onKernel()) ok(gatherWat(sources[i]).includes('i32.lt_u'), `reject ${i}: dependent read remains checked`)
+    if (!onKernel()) ok(checked(gatherWat(sources[i])), `reject ${i}: dependent read remains checked`)
   }
 })
 
@@ -109,7 +111,7 @@ test('element bounds: an unbounded incoming path and an unseen caller open the p
   const exported = kernel().replace('function gather(', 'export function gather(')
   for (const src of [mismatch, exported]) {
     check(src, [[0, 0], [4, 0], [4, 1], [1, 1], [4, 0]], 'open call')
-    if (!onKernel()) ok(gatherWat(src).includes('i32.lt_u'), 'every incoming receiver must establish the length relation')
+    if (!onKernel()) ok(checked(gatherWat(src)), 'every incoming receiver must establish the length relation')
   }
 })
 
@@ -126,7 +128,7 @@ test('element bounds: recursive alias components close writers but supply no cir
     }`).replace('return forward(values, indices)', 'return forward(values, indices, 2)')
   for (const src of [written, circular]) {
     check(src, [[0, 0], [1, -1], [4, 3], [4, 4], [4, 511], [1, 0]], 'recursive aliases')
-    if (!onKernel()) ok(gatherWat(src).includes('i32.lt_u'), 'the unresolved recursive relation remains checked')
+    if (!onKernel()) ok(checked(gatherWat(src)), 'the unresolved recursive relation remains checked')
   }
 })
 
@@ -137,7 +139,7 @@ test('element bounds: zero-work initializers supply no presence or equal-length 
     'const values = new Float64Array(size); var size = n & 511; const indices = new Int32Array(size)')
   for (const src of [skippedRead, laterSize]) {
     check(src, [[0, 0], [1, 0], [4, 0], [0, 0], [1, 0]], 'skipped definition')
-    if (!onKernel()) ok(gatherWat(src).includes('i32.lt_u'), 'a definition alone supplies no occurrence proof')
+    if (!onKernel()) ok(checked(gatherWat(src)), 'a definition alone supplies no occurrence proof')
   }
 })
 

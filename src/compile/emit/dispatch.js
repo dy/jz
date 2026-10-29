@@ -228,7 +228,8 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
   // walk models integer values only).
   // A constant folds exactly in keyIndex; a runtime value saturates (asI32's
   // ToInt32 would wrap 2^32 + 1 to 1).
-  if ((whole || missable) && !(Array.isArray(value) && value[0] === 'f64.const')) {
+  const constant = Array.isArray(value) && value[0] === 'f64.const'
+  if ((whole || missable) && !constant) {
     if (proven) return typed(['i32.trunc_sat_f64_s', asF64(value)], 'i32')
     // An integer-certain name may hold NaN (`Math.floor` of one, `Infinity -
     // Infinity`, a missed typed read), which names no element, where the
@@ -237,6 +238,23 @@ export const emitIndex = (index, whole = false, wide = false, bounded = false) =
     const out = typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(value)],
       ['select', ['i32.trunc_sat_f64_s', get], ['i32.const', -1], ['f64.eq', get, get]]], 'i32')
     out.indexValid = ['f64.eq', get, get]
+    return out
+  }
+  // A key of no known integrality, for a checked typed access: its truncation
+  // (exact below 2^63, saturated past it) is the key where it equals the key,
+  // and that integer meets the length unsigned, in i64. Narrowed to an i32
+  // word first (keyIndex), a key the integer pass proves past 2^31 (`r * ch +
+  // q`, a planar sample's offset) paid a fit test, a select of -1 and their
+  // conjunction around every bounds test; this form leaves the one unsigned
+  // compare (optimize/int-narrow.js reads the truncation pair back).
+  if (wide && !constant && !value?.indexValid && !(Array.isArray(value) && (value[0] === 'f64.convert_i32_s' || value[0] === 'f64.convert_i32_u'))) {
+    const t = temp('ix'), w = tempI64('ixw'), get = ['local.get', `$${t}`]
+    const out = typed(['block', ['result', 'i32'],
+      ['local.set', `$${t}`, asF64(value)],
+      ['local.set', `$${w}`, ['i64.trunc_sat_f64_s', get]],
+      ['i32.wrap_i64', ['local.get', `$${w}`]]], 'i32')
+    out.indexWide = ['local.get', `$${w}`]
+    out.indexValid = ['f64.eq', ['f64.convert_i64_s', ['local.get', `$${w}`]], get]
     return out
   }
   return keyIndex(value)

@@ -134,6 +134,51 @@ test('typed wide index: absent, fractional and rounded keys keep element semanti
   }`, WORDS.map(n => [n]))
 })
 
+test('typed wide index: a key of unknown integrality meets the length as its truncation', () => {
+  // the key reaches emission as a Number: a stride the host passes, a fraction, NaN
+  const KEYS = [-Infinity, -4294967296, -2147483649, -1, -0.5, -0, 0, 0.5, 1, 2.5, 7, 2147483647, 2147483648,
+    4294967295, 4294967296, 4294967297, 2 ** 51 + 3, 2 ** 53, 2 ** 63, 2 ** 64, Infinity, NaN]
+  const source = `export function f(k, len) {
+    const a = new Float64Array(len), b = new Int16Array(len)
+    for (let i = 0; i < len; i++) { a[i] = i + 0.25; b[i] = i * 3 - 7 }
+    const r0 = a[k], r1 = b[k], r2 = a[k * 2 - k], r3 = b[k + 1]
+    a[k] = 19; b[k - 1] = 23
+    let s = 0
+    for (let i = 0; i < 4; i++) s += a[i * k + 1] + b[i * k]
+    return [r0, r1, r2, r3, s, a, b]
+  }`
+  const expected = oracle(source)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const actual = run(source, { optimize })
+    for (const k of KEYS) for (const len of [0, 1, 8]) is(actual.f(k, len), expected.f(k, len), `k=${k}, len=${len}, ${optimize}`)
+  }
+})
+
+test('typed wide index: a planar offset the integer pass proves wide is one unsigned compare', () => {
+  // `(i % seg) * ch + ~~(i / seg)` over the counter's divmod: an integer past
+  // 2^31 by its interval, a key of unknown integrality where emission met it.
+  // Narrowed to a word first it paid a fit test, a select of -1 and their
+  // conjunction around every bounds test.
+  const source = `const CH = 2
+  let dei = (s, ch, out) => { const len = s.length, seg = Math.floor(len / ch)
+    for (let i = 0; i < len; i++) { const si = (i % seg) * ch + ~~(i / seg); out[i] = s[si] } }
+  export let f = (n, reps) => { const s = new Int16Array(n), o = new Float64Array(n)
+    for (let i = 0; i < n; i++) s[i] = i * 7 - 3
+    let h = 0
+    for (let r = 0; r < reps; r++) { dei(s, CH, o); h += o[r % n] + o[n - 1 - r % n] }
+    return h }`
+  const expected = oracle(source)
+  for (const optimize of levels(2, 'speed')) {
+    const actual = run(source, { optimize })
+    for (const [n, reps] of [[1, 1], [2, 3], [7, 4], [480, 5]]) is(actual.f(n, reps), expected.f(n, reps), `n=${n}, reps=${reps}, ${optimize}`)
+  }
+  if (belowOpt(2) || onKernel()) return
+  const text = wat(source, { optimize: 'speed' })
+  ok(!/i64\.eq\s*\(\s*i64\.extend_i32_s\s*\(\s*(?:local\.tee \S+\s*)?\(?\s*i32\.wrap_i64/.test(text), 'no fit test of the key\'s word')
+  ok(!/select\s*\(\s*local\.get \S+\)\s*\(\s*i32\.const -1\)/.test(text), 'no select of -1 for a key that does not fit')
+  ok(/i64\.lt_u/.test(text), 'the key meets the length unsigned, in i64')
+})
+
 test('typed wide index: views, missing receivers and throwing values keep their boundaries', () => {
   compare(`function fail() { throw 7 }
   export function f(n, len, missing) {
