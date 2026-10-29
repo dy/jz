@@ -136,6 +136,7 @@ const TESTS = [
   'offset-bound',
   'select-order',
   'pointer-join',
+  'union-kinds',
   'typed-rebound',
   'late-field',
   'index-key',

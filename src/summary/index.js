@@ -66,7 +66,7 @@ import {
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind, outsideKind, emptySpreadKind,
-  continuesOptional } from './kind.js'
+  continuesOptional, primArray } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
 /** The depth `flat(depth)` flattens to (ToIntegerOrInfinity, at least 0): 1 when
@@ -122,6 +122,18 @@ const CONVERTING_RESULTS = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '+=', '-=', 
 // starts with a digit, a minus, `I`nfinity or `N`aN, and only those convert.
 const canonicalNumeric = (p) => { const c = p.charCodeAt(0); return (c >= 48 && c <= 57 || c === 45 || c === 73 || c === 78) && String(+p) === p }
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
+// The names a primitive's prototypes hold, Object.prototype's among them: a
+// union of builtin kinds asks a primitive member only for one of these.
+const OBJECT_PROTO_NAMES = ['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', 'toString', 'valueOf']
+const PROTO_NAMES = {
+  [K.STRING]: new Set([...OBJECT_PROTO_NAMES, '@@iterator', 'at', 'charAt', 'charCodeAt', 'codePointAt', 'concat', 'endsWith', 'includes', 'indexOf', 'isWellFormed',
+    'lastIndexOf', 'localeCompare', 'match', 'matchAll', 'normalize', 'padEnd', 'padStart', 'repeat', 'replace', 'replaceAll', 'search', 'slice', 'split',
+    'startsWith', 'substr', 'substring', 'toLocaleLowerCase', 'toLocaleUpperCase', 'toLowerCase', 'toUpperCase', 'toWellFormed', 'trim', 'trimEnd',
+    'trimStart', 'trimLeft', 'trimRight', 'anchor', 'big', 'blink', 'bold', 'fixed', 'fontcolor', 'fontsize', 'italics', 'link', 'small', 'strike', 'sub', 'sup']),
+  [K.NUMBER]: new Set([...OBJECT_PROTO_NAMES, 'toExponential', 'toFixed', 'toPrecision']),
+  [K.BOOL]: new Set(OBJECT_PROTO_NAMES),
+  [K.BIGINT]: new Set(OBJECT_PROTO_NAMES),
+}
 // The names a typed array (or a DataView, whose kind it shares) answers through
 // its prototypes: %TypedArray%.prototype's, DataView.prototype's and
 // Object.prototype's. Any other name is an own property of it, or undefined.
@@ -394,12 +406,20 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // from then on (`unify`), so a store through either reaches both.
   const merge = (a, b, quiet = false) => {
     a = canon(a); b = canon(b)
-    if (tagOf(a) === tagOf(b) && paramOf(a) !== UNKNOWN && paramOf(b) !== UNKNOWN && paramOf(a) !== paramOf(b) && (celled(a) || tagOf(a) === K.CLOSURE || tagOf(a) === K.OBJECT)) {
+    if (tagOf(a) === tagOf(b) && paramOf(a) !== UNKNOWN && paramOf(b) !== UNKNOWN && paramOf(a) !== paramOf(b) && primArray(a) === primArray(b) && (celled(a) || tagOf(a) === K.CLOSURE || tagOf(a) === K.OBJECT)) {
       const shared = celled(a) ? unify(paramOf(a), paramOf(b)) : tagOf(a) === K.CLOSURE ? unionClosures(paramOf(a), paramOf(b)) : unionShapes(paramOf(a), paramOf(b))
       if (shared !== UNKNOWN) { a = (a & ~UNKNOWN) | shared; b = (b & ~UNKNOWN) | shared }
     }
     const j = join(a, b)
     if (paramOf(j) === UNKNOWN && !quiet) {
+      // A primitive beside an array (a parser's token or node) keeps the
+      // array's cell: a read through the join reaches the elements, a store
+      // the cell, as through the array (`primArray`); two arrays share theirs.
+      if ((j & TAGS & ~NULL_BITS & ~(PRIM_BITS | bitOf(K.ARRAY))) === 0 && hasTag(j, K.ARRAY) && (j & PRIM_BITS) !== 0) {
+        const ca = arrayCell(a), cb = arrayCell(b)
+        const c = ca !== UNKNOWN && cb !== UNKNOWN ? unify(ca, cb) : ca !== UNKNOWN && !hasTag(b, K.ARRAY) ? ca : cb !== UNKNOWN && !hasTag(a, K.ARRAY) ? cb : UNKNOWN
+        if (c !== UNKNOWN) return (j & ~UNKNOWN) | c
+      }
       const da = isDict(a), db = isDict(b)
       if ((da || db) && (j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0) {
         const c = da && db ? unify(paramOf(a), paramOf(b)) : cell(paramOf(da ? a : b))
@@ -488,6 +508,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     let arrays = table.get(key)
     if (arrays) {
       if (mixedArray(k)) { if (!arrays.includes(k)) arrays.push(k); return true }
+      // a primitive beside an array (`primArray`): its array joins the mix
+      if (primArray(k)) { const a = kind(K.ARRAY, paramOf(k)); if (!arrays.includes(a)) arrays.push(a); return true }
       if (primitiveOnly(k) || primArrayJoin(k) || (k & TAGS) === 0) return true
       // a value of another kind joins: the binding is no longer the mix the reads above follow
       table.delete(key)
@@ -691,9 +713,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // does through a typed array of no known element kind, `typedMember`). Any
   // other tag loses the cell.
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | bitOf(K.TYPED)
+  const PRIM_BITS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
+  // the cell of an array, alone or beside primitives, or UNKNOWN
+  const arrayCell = (k) => (tagOf(k) === K.ARRAY || primArray(k)) && paramOf(k) !== UNKNOWN ? cell(paramOf(k)) : UNKNOWN
+  // the array part of a primitive beside an array
+  const arrayPart = (k) => kind(K.ARRAY, paramOf(k)) | (k & NULL_BITS)
   const PRIMITIVE_TAGS = [K.NUMBER, K.STRING, K.BOOL, K.BIGINT]
+  // the tags whose union `method` answers kind by kind
+  const BUILTIN_UNION = PRIMITIVE_TAGS.reduce((m, t) => m | bitOf(t), bitOf(K.ARRAY) | bitOf(K.TYPED) | NULL_BITS)
   const dictOrObject = (k) => paramOf(k) !== UNKNOWN && hasTag(k, K.HASH) && tagOf(k) === K.ANY && (k & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0
-  const celled = (k) => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH || tagOf(k) === K.SET || dictOrObject(k)) && paramOf(k) !== UNKNOWN
+  const celled = (k) => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH || tagOf(k) === K.SET || dictOrObject(k) || primArray(k)) && paramOf(k) !== UNKNOWN
   const isDict = (k) => celled(k) && hasTag(k, K.HASH)
   // The object shapes a dictionary-or-object cell carries, and whether it
   // also holds objects of unknown shape: a read joins the dictionary's entry
@@ -1419,7 +1448,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (celled(k)) {
       openLen(k, losing ?? 'held where the summary cannot see')
       invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (setCells.has(id)) enumerateKeys(id); if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) }
-      if (tagOf(k) === K.ARRAY || hasTag(k, K.HASH)) {
+      if (tagOf(k) === K.ARRAY || primArray(k) || hasTag(k, K.HASH)) {
         const w = cellWild.get(id) ?? K.NONE
         if (w !== ANY) {
           // Named/numeric properties can point back to this cell too. Mark
@@ -1472,7 +1501,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       for (const sid of shapesInCell(c)) escapeToHost(kind(K.OBJECT, sid), seen)
       if (t === K.MAP || setCells.has(c)) { for (const k of heldKeys.get(c) ?? []) escapeToHost(k, seen); enumerateKeys(c) }
       if (t === K.MAP) escapeToHost(mapKeys.get(c) ?? K.NONE, seen)
-      if (t === K.ARRAY) {
+      if (t === K.ARRAY || primArray(k)) {
         for (const v of cellProps.get(c)?.values() ?? []) escapeToHost(v, seen)
         escapeToHost(cellNumeric.get(c) ?? K.NONE, seen)
         escapeToHost(cellWild.get(c) ?? K.NONE, seen)
@@ -2085,7 +2114,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         siteResults.set(node, r)
         return r
       }
-      if (callee === '__keys_ro' || callee === '__keys_dyn') return kind(K.ARRAY)
+      // for…in's key list: property keys, strings, in an array of the call's own
+      if (callee === '__keys_ro' || callee === '__keys_dyn') { if (!node) return kind(K.ARRAY); const out = arrayOf(node, K.NONE); raiseElem(out, STRING); return out }
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
       if (callee === '__object_toString') return STRING // the class of a value, `[object X]` (module/object.js)
       const f = funcByName.get(callee)
@@ -2201,6 +2231,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const forwards = new Map()      // callable id → Set of forwarded parameter indices
   const fwdSites = new Map()      // a returned call node → { fn, calleeParam, argParams: Map(position → parameter index) }
   const siteResults = new Map()   // a call of a forwarding callable → its result there, for the read layer
+  // A member call on a receiver of several kinds → its result. A cell one
+  // kind's method built at the node (an array's `slice`, a string's `split`)
+  // is not the call's value, which the read layer takes from here.
+  const joinedCalls = new Map()
   const fwdScanned = new Set()
   const addForward = (id, i) => { let l = forwards.get(id); if (!l) forwards.set(id, l = new Set()); if (!l.has(i)) { l.add(i); changed = true } }
   const argList = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
@@ -2919,11 +2953,32 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         escapeArgs(base, n); escape(elemOf(recv)); return NULLISH
       }
     }
+    // A union of builtin kinds (a parser's token or node, STRING|ARRAY): each
+    // kind's own method, joined. A primitive owns no member, so a name its
+    // prototypes lack is, where an array or a typed array answers it, a call
+    // of undefined there (it throws and adds nothing); an array or a typed
+    // array may own any name, as its own case decides.
+    if (t === K.ANY && (recv & TAGS & ~BUILTIN_UNION) === 0) {
+      let r = K.NONE
+      for (const tag of PRIMITIVE_TAGS) {
+        if (!hasTag(recv, tag)) continue
+        if (PROTO_NAMES[tag].has(name)) r = merge(r, method(kind(tag), name, base, n, node))
+        else if (!ARRAY_METHODS.has(name) && !TYPED_MEMBERS.has(name)) { r = ANY; break }
+      }
+      if (r !== ANY) {
+        if (hasTag(recv, K.ARRAY)) r = merge(r, method(primArray(recv) ? arrayPart(recv) : kind(K.ARRAY), name, base, n, node))
+        if (hasTag(recv, K.TYPED)) r = merge(r, method(kind(K.TYPED), name, base, n, node))
+        if (node) joinedCalls.set(node, r)
+        return r
+      }
+    }
     // An argument the summary hands to code it cannot see loses its schema
     // (`escape`); a store through that code reaches it as a lost schema.
     escapeArgs(base, n)
     if (t === K.OBJECT || t === K.HASH || t === K.ANY || t === K.ARRAY) escapeObject(recv)
-    return builtinMethodResult(recv, name)
+    const r = builtinMethodResult(recv, name)
+    if (node && t === K.ANY) joinedCalls.set(node, r)
+    return r
   }
   const literalKind = (v) => v == null ? NULLISH : typeof v === 'number' ? NUMBER : typeof v === 'string' ? STRING : typeof v === 'boolean' ? BOOL : typeof v === 'bigint' ? BIGINT : ANY
   // The receiver of a member access: a function's property (`parse.enter`, a
@@ -3263,6 +3318,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (hasTag(recv, K.TYPED)) k = merge(k, typedMember(prop))
       return optionalResult(op, recv, k)
     }
+    if (primArray(recv)) {
+      let k = member('.', arrayPart(recv), prop)
+      for (const tag of PRIMITIVE_TAGS) if (hasTag(recv, tag)) k = merge(k, member('.', kind(tag), prop))
+      return optionalResult(op, recv, k)
+    }
     if (t === K.OBJECT) return optionalResult(op, recv, lostObjectRead(prop))
     // A value of several kinds may be an object of a shape the join lost: a
     // lost shape's value of the name read through it leaves the summary.
@@ -3417,6 +3477,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         return member('.', recv, String(typeof idx === 'number' ? idx : idx[1]))
       const ik = expr(idx)
       if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return K.NONE
+      if (primArray(recv)) {
+        let k = orAbsent(entryOf(arrayPart(recv), ik))
+        if (hasTag(recv, K.STRING)) k = merge(k, orAbsent(STRING))
+        if (recv & PRIM_BITS & ~bitOf(K.STRING)) k = merge(k, core(ik) === NUMBER ? ABSENT : ANY)
+        return k
+      }
       if (t === K.TYPED) return ik === K.NONE ? K.NONE : !typedElementKey(idx, ik === NUMBER) ? core(ik) === NUMBER ? orAbsent(merge(typedElemKind(recv), typedPropsOf(recv))) : ANY
         : typedPresentAt(n) ? typedElemKind(recv) : orAbsent(typedElemKind(recv))
       if (t === K.HASH) return orAbsent(elemOf(recv))
@@ -3566,7 +3632,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A spread reads its source's elements (an array's, a typed array's, a
     // string's characters); a source of another kind is iterated by code the summary does not model.
     // A spread of nothing, or of a nullish value (a TypeError), contributes no element.
-    if (op === '...') { const k = expr(n[1]), t = tagOf(k); if ((t === K.ARRAY || t === K.SET) && celled(k)) return elemOf(k); if (t === K.MAP && celled(k)) { const pair = tuplePair(n, keysOf(k), elemOf(k)); return pair } if (t === K.TYPED) return typedElemKind(k); if (t === K.STRING) return STRING; if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return K.NONE; escape(k); return ANY }
+    if (op === '...') { const k = expr(n[1]), t = tagOf(k); if ((t === K.ARRAY || t === K.SET) && celled(k)) return elemOf(k); if (primArray(k)) return hasTag(k, K.STRING) ? merge(elemOf(k), STRING) : elemOf(k); if (t === K.MAP && celled(k)) { const pair = tuplePair(n, keysOf(k), elemOf(k)); return pair } if (t === K.TYPED) return typedElemKind(k); if (t === K.STRING) return STRING; if (t === K.NONE || t === K.NULLISH || t === K.ABSENT) return K.NONE; escape(k); return ANY }
     for (let i = 1; i < n.length; i++) stmt(n[i])
     return ANY
   }
@@ -3963,7 +4029,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   /** Whether iterating a value of this kind can yield anything: arrays, typed arrays, strings,
    *  maps, sets, objects (an iterator of their own) and unknown values; nullish and the other primitives throw. */
   const iterable = (k) => { const t = tagOf(k); return t === K.ANY || t === K.ARRAY || t === K.TYPED && (typedAux(k) === UNKNOWN || !(typedAux(k) & DATA_VIEW_FLAG)) || t === K.STRING || t === K.MAP || t === K.SET || t === K.OBJECT }
-  const iterElemOf = (it) => !iterable(it) ? K.NONE : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING : ANY
+  const iterElemOf = (it) => !iterable(it) ? K.NONE : tagOf(it) === K.ARRAY ? elemOf(it) : tagOf(it) === K.TYPED ? typedElemKind(it) : tagOf(it) === K.STRING ? STRING
+    : primArray(it) ? (hasTag(it, K.STRING) ? merge(elemOf(it), STRING) : elemOf(it)) : ANY
   const rowOf = (src) => tagOf(src) === K.ARRAY && paramOf(src) !== UNKNOWN ? tuples.get(cell(paramOf(src))) : null
   const elemAt = (src, i) => { const row = rowOf(src); return row ? row[i] ?? ABSENT : orAbsent(iterElemOf(src)) }
 
@@ -4587,6 +4654,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const p = mask & UNKNOWN, a = typedAux(r)
     if (p !== 0 && a === UNKNOWN) r = (r & TAGS) | p
     else if (p !== 0 && p !== UNKNOWN && tagOf(r) === K.TYPED && (a & ~TYPED_VIEW_BITS) !== (p & ~TYPED_VIEW_BITS)) return 0
+    if (primArray(k) && !hasTag(r, K.ARRAY)) r = (r & TAGS) | UNKNOWN
     return (r & TAGS) === 0 ? 0 : r
   }
   // A member path (`params.coefs`: a binding and literal keys) a test refines
@@ -4987,7 +5055,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (cls) methods.set(sid, new Map(cls.methods))
   }
   const queryFacts = {
-    kinds, incoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, receivers,
+    kinds, incoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, joinedCalls, receivers,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,

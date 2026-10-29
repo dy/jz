@@ -53,7 +53,13 @@ test('fixed length: a holder out of sight opens it', () => {
   is(fixedLen(`export const out = [0, 0, 0]\nexport const f = (k) => { out[0] = k; return out[0] }`, null, 'out'), null, 'an exported binding')
   is(fixedLen(`import { sink } from 'host'\nconst a = [1, 2, 3]\nexport const f = () => { sink(a); return a[0] }`, null, 'a'), null, 'passed to an import')
   is(fixedLen(`const a = [1, 2, 3]\nexport const f = (o) => { o.held = a; return a[0] }`, null, 'a'), null, 'stored under an unknown receiver')
-  is(fixedLen(`const a = [1, 2, 3]\nexport const f = (c) => { const v = c ? a : 5; return v === 5 ? 0 : v[0] }`, null, 'a'), null, 'joined with a number')
+  // A join with a primitive keeps the array's cell (summary `primArray`): the
+  // count holds until a resize through the join reaches the cell.
+  is(fixedLen(`const a = [1, 2, 3]\nexport const f = (c) => { const v = c ? a : 5; return v === 5 ? 0 : v[0] }`, null, 'a'), 3, 'joined with a number')
+  is(fixedLen(`const a = [1, 2, 3]\nexport const f = (c) => { const v = c ? a : 5; if (v !== 5) v.push(1); return a[0] }`, null, 'a'), null, 'pushed through the join')
+  is(fixedLen(`const a = [1, 2, 3]\nexport const f = (c) => { const v = c ? a : 'x'; if (typeof v !== 'string') v.length = 0; return a[0] }`, null, 'a'), null, 'resized through the join')
+  is(fixedLen(`const a = [1, 2, 3]\nconst g = (v) => { if (Array.isArray(v)) v.pop(); return 0 }\nexport const f = (c) => g(c ? a : 7) + a[0]`, null, 'a'), null, 'popped by a callee the join reaches')
+  is(fixedLen(`const a = [1, 2, 3]\nconst holder = []\nexport const f = (c) => { holder.push(c ? a : 'q'); const h = holder[0]; if (Array.isArray(h)) h.length = 1; return a[0] }`, null, 'a'), null, 'resized out of an element')
 })
 
 test('fixed length: arrays that meet share one count or none', () => {

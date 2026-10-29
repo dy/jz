@@ -11,13 +11,13 @@ import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, valBesidePresence, kindOfVal, core, UNKNOWN,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedCtorsOf, typedElemKind, typedMethodKind, logicalMask, selectKind,
-  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind, emptySpreadKind, continuesOptional } from './kind.js'
+  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind, emptySpreadKind, continuesOptional, primArray } from './kind.js'
 // Names every object has from its prototype: a read of one is never undefined.
 const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf',
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
 
 export function summaryQueries(facts, internal = false) {
-  const { kinds, incoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults,
+  const { kinds, incoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
@@ -27,7 +27,10 @@ export function summaryQueries(facts, internal = false) {
   const dictOrObject = k => paramOf(k) !== UNKNOWN && hasTag(k, K.HASH) && tagOf(k) === K.ANY && (k & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0
   const FUNCTION_PROTO = new Set(['call', 'apply', 'bind', 'toString', 'length', 'name', 'prototype', 'constructor'])
   const celled = k => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH || tagOf(k) === K.SET || dictOrObject(k)) && paramOf(k) !== UNKNOWN
-  const canon = k => celled(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
+  // A primitive beside an array (index.js `primArray`) holds the array's cell:
+  // its reads stay ANY here, but its cell is canonical and reaches what it holds.
+  const holdsCell = k => celled(k) || primArray(k)
+  const canon = k => holdsCell(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
   const elemOf = k => celled(k) ? elems[cell(paramOf(k))] : ANY
   // The length of the array a value holds, where no array it can be changes
   // length (index.js `lens`): the literals' count, every stored index under it.
@@ -114,7 +117,7 @@ export function summaryQueries(facts, internal = false) {
   // join that loses a cell escapes it, and an escaped cell's elements are ANY.
   const reachCells = (k, out, seen) => {
     if (k == null || paramOf(k) === UNKNOWN) return
-    if (celled(k)) {
+    if (holdsCell(k)) {
       const c = cell(paramOf(k))
       if (seen.has(-1 - c)) return
       seen.add(-1 - c); out.add(c)
@@ -333,6 +336,9 @@ export function summaryQueries(facts, internal = false) {
       }
       // A construction site owns its cell (the solver's cellOf): an array literal, a `new Map`, an
       // array constructor, `JSON.parse`, and the array methods that build a fresh array.
+      // A method call on a receiver of several kinds (index.js `joinedCalls`):
+      // a cell at the node is one kind's construction, the value the solver's join.
+      if (op === '()' && cells.has(n) && joinedCalls.has(n)) return canon(joinedCalls.get(n))
       if (op === '[' || (op === '()' || op === '{}') && cells.has(n)) { const c = cells.get(n), t = op === '{}' ? K.HASH : n[1] === 'new.Map' ? K.MAP : n[1] === 'new.Set' ? K.SET : K.ARRAY; return c === undefined || c >= UNKNOWN ? kind(t) : canon(kind(t, c)) }
       if (op === '{}' && objectKinds.has(n)) return objectKinds.get(n)
       if (op === '()' && n[1] === 'JSON.parse' && jsonKinds.has(n)) return canon(jsonKinds.get(n))

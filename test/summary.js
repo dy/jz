@@ -1095,6 +1095,22 @@ test('summary: an absent tag joins a union without widening it; a callback drops
   is(tagOf(v.elemKindOf(binding('f', 'm'))), K.BIGINT, 'and the mapped cell is the callback result')
 })
 
+// A parser's token or node, STRING|ARRAY: the join keeps the array's cell, a
+// method on it answers kind by kind, and a walker's parameter holds the node.
+test('summary: a primitive beside an array keeps the array\'s cell; a method on the union answers kind by kind', () => {
+  summarize(`const tok = (i) => i % 3 ? 'ab' : ['a', ['b']]
+  const walk = (node) => typeof node === 'string' ? node.length : node.length + walk(node[0])
+  export const f = (i) => { const x = tok(i), t = x.slice(1), p = x.indexOf('a'); let s = 0; for (const k in { a: 1 }) s += k.length; return walk(x) + t.length + p + s }`)
+  const x = kindOf('f', 'x'), t = kindOf('f', 't')
+  ok(hasTag(x, K.STRING) && hasTag(x, K.ARRAY) && paramOf(x) !== UNKNOWN, 'the token-or-node keeps its cell')
+  ok(hasTag(t, K.STRING) && hasTag(t, K.ARRAY) && paramOf(t) !== UNKNOWN && paramOf(t) !== paramOf(x), 'slice answers a string or an array of its own')
+  is(tagOf(kindOf('f', 'p')), K.NUMBER, 'indexOf answers a number on either')
+  is(tagOf(kindOf('f', 'k')), K.STRING, 'a for...in key is a string')
+  const node = kindOf('walk', 'node')
+  ok(hasTag(node, K.STRING) && hasTag(node, K.ARRAY) && paramOf(node) !== UNKNOWN, 'the walker\'s parameter is the node, an element of a node included')
+  ok(!hasTag(node, K.OBJECT) && !hasTag(node, K.CLOSURE), 'and no other kind')
+})
+
 test('summary: a one-parameter arrow answers through its parameter name; a string method escapes its arguments', () => {
   summarize(`const up = (m) => m.toUpperCase()
     export const f = (k) => { const p = k ? v => BigInt(String(v)) : v => +v; const r = p('300'); return String(typeof r) + 'ab'.replace(/a/, up) }`)

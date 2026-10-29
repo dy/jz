@@ -27,6 +27,14 @@ export const typedCtorsOf = k => paramOf(k) === TYPED_FLOAT ? ['Float32Array', '
 export const bitOf = tag => 1 << (PARAM_BITS + tag - 1)
 export const TAGS = ~UNKNOWN, NULL_BITS = bitOf(K.NULLISH) | bitOf(K.ABSENT)
 const TAGS_NOT_NULL = TAGS & ~NULL_BITS
+// The tags whose kind carries a parameter (an element kind, a cell, a shape,
+// a closure): a kind left with none of them keeps none.
+const PARAM_TAGS = bitOf(K.TYPED) | bitOf(K.ARRAY) | bitOf(K.OBJECT) | bitOf(K.CLOSURE) | bitOf(K.MAP) | bitOf(K.SET) | bitOf(K.HASH)
+/** A primitive beside an array (a parser's token or node, STRING|ARRAY): the
+ *  array's cell survives the join (summary `merge`), the kind's one parameter. */
+export const PRIMITIVE_BITS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
+export const primArray = k => (k & bitOf(K.ARRAY)) !== 0 && (k & UNKNOWN) !== UNKNOWN && (k & TAGS_NOT_NULL & PRIMITIVE_BITS) !== 0 &&
+  (k & TAGS_NOT_NULL & ~(PRIMITIVE_BITS | bitOf(K.ARRAY))) === 0
 export const kind = (tag, param = UNKNOWN) => tag === K.NONE ? 0 : tag === K.ANY ? TAGS | UNKNOWN : bitOf(tag) | (param & UNKNOWN)
 /** The one non-nullish tag, ANY for several, or the nullish/empty tag. */
 export const tagOf = k => { const m = k & TAGS_NOT_NULL; return m === 0 ? (k & bitOf(K.NULLISH) ? K.NULLISH : k & bitOf(K.ABSENT) ? K.ABSENT : K.NONE) : (m & (m - 1)) !== 0 ? K.ANY : 32 - Math.clz32(m) - PARAM_BITS }
@@ -163,7 +171,7 @@ export const selectKind = (k, mask) => {
   if (!(mask & 4)) bits &= ~NULL_BITS
   if (!(mask & 1)) bits &= ~COERCION_UNKNOWN
   if (!(mask & 3)) bits &= NULL_BITS
-  return bits ? bits | (k & UNKNOWN) : K.NONE
+  return !bits ? K.NONE : bits & PARAM_TAGS ? bits | (k & UNKNOWN) : bits | UNKNOWN
 }
 
 /** Whether an access continues an optional chain: its receiver node is an
