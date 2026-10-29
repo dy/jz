@@ -81,3 +81,32 @@ export let pick = (k) => k > 0 ? (x) => x + 1 : (x) => x - 1`
     is([typeof g, g(3), g(0.5), e.pick(1)(10), e.pick(-1)(10)], ['function', want.make()(3), want.make()(0.5), want.pick(1)(10), want.pick(-1)(10)], `at ${optimize}`)
   }
 })
+
+// A host function is a function to `typeof`, and no closure of the module: the
+// test proves a closure only of a value the host cannot hand in (flow-types.js
+// typeofVal, the summary's typeof refinement). Proven by the test, the host's
+// function is called, called on a receiver, handed on, stored and called from
+// there as itself, as a thenable's `then` read off a host promise is.
+test('host closure: a host function a typeof test proves is called as the host function', async () => {
+  if (onWasi()) return
+  const src = `
+const h = (f) => f(3)
+let cb = null
+export let direct = (g) => typeof g === 'function' ? g(2) : 0
+export let onRecv = (g) => typeof g === 'function' ? g.call({ k: 1 }, 2) : 0
+export let applied = (g) => typeof g === 'function' ? g.apply({ k: 2 }, [5]) : 0
+export let bound = (g) => typeof g === 'function' ? g.bind(null, 6)() : 0
+export let handed = (g) => typeof g === 'function' ? h(g) : 0
+export let stored = (g) => { if (typeof g !== 'function') return 0; const o = { cb: g }; return o.cb(4) }
+export let kept = (g) => { cb = typeof g === 'function' ? g : null; return cb ? cb(8) : 0 }
+export let inClosure = (g) => typeof g === 'function' ? [1].map(() => g(9))[0] : 0
+export let then = (p) => { const t = p.then; return typeof t === 'function' ? t.call(p, (v) => v + 1) : 0 }`
+  const want = oracle(src)
+  const host = function add(a, b = 0) { return (this?.k ?? 0) + a * 10 + b }
+  for (const optimize of levels(0, 2, 'size')) {
+    const e = run(src, { optimize })
+    for (const name of ['direct', 'onRecv', 'applied', 'bound', 'handed', 'stored', 'kept', 'inClosure'])
+      is(e[name](host), want[name](host), `O${optimize} ${name}`)
+    is(await e.then(Promise.resolve(41)), await want.then(Promise.resolve(41)), `O${optimize} then`)
+  }
+})

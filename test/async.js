@@ -12,7 +12,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { batch, oracle } from './util.js'
-import { onWasi, onKernel } from './_matrix.js'
+import { onWasi, onKernel, levels } from './_matrix.js'
 
 const val = async (src, ...args) => {
   const r = jz(src).exports.f(...args)
@@ -845,4 +845,28 @@ test('async: a promise without an executor is a TypeError', async () => {
     await m.start()
     is(m.check(), 11, `O${optimize}: both the call and the await reject with a TypeError`)
   }
+})
+
+// A host promise awaited is resolved through its own `then`, a host function
+// (std/async.js __p_settle): the host promise an export is handed, one a host
+// getter returns (`writer.ready`), and one a host method returns, its `catch`
+// chained, from an async method: what guest271314's WebSocket server does
+// with every frame (jz#111).
+test('async: a host promise is awaited through its own then', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `
+class Writer { writer; constructor(ws) { this.writer = ws.getWriter() }
+  async write(x) { await this.writer.ready; return this.writer.write(x).catch(console.log) } }
+export let awaited = async (p) => (await p) + 1
+export let ready = async (ws) => { const w = ws.getWriter(); await w.ready; await w.write(new Uint8Array([7])); return 'ready' }
+export let frame = async (ws) => { const w = new Writer(ws); await w.write(new Uint8Array([1, 2])); await w.write(new Uint8Array([3])); return 'written' }
+export let rejected = async (p) => { try { await p } catch (e) { return 'caught ' + e } }`
+  const want = oracle(src)
+  const sink = () => { const got = []; return { got, ws: new WritableStream({ write(c) { got.push([...c]) } }) } }
+  const drive = async (m) => {
+    const a = sink(), b = sink()
+    return [await m.awaited(Promise.resolve(41)), await m.ready(a.ws), a.got, await m.frame(b.ws), b.got, await m.rejected(Promise.reject('no'))]
+  }
+  const expected = await drive(want)
+  for (const optimize of levels(0, 2, 'size')) is(await drive(jz(src, { optimize }).exports), expected, `O${optimize}`)
 })

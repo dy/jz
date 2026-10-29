@@ -57,7 +57,7 @@ import { VAL } from '../reps.js'
 import { typedElementKey, typedCtorName } from '../typed-provenance.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { summaryQueries } from './query.js'
-import { buildResultContracts, unbounded } from './contract.js'
+import { buildResultContracts, unbounded, unboundedPresent } from './contract.js'
 import { assignedByCalls, definitelyAssigned } from './definite.js'
 export { CARRIER, PRESENCE, contractVal, unbounded } from './contract.js'
 
@@ -4701,11 +4701,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (tp) {
       const bits = TYPEOF_TAGS[typeof tp.code === 'string' ? tp.code : TYPEOF_NAME[tp.code]]
       if (bits !== undefined) {
+        const holds = tp.eq === when
+        // A host function is a function too, and no closure kind names it: a
+        // binding the summary cannot bound stays so where `function` holds.
+        if (holds && bits === TYPEOF_TAGS.function && unboundedPresent(kinds[keyOf(tp.name)] ?? K.NONE)) return
         // NULLISH conflates null (`typeof` object) and undefined. A negative
         // test against either category cannot remove that shared tag: one of
         // its runtime members still takes the branch.
         const inverse = (TAGS & ~bits) | (bits & bitOf(K.NULLISH))
-        refineName(tp.name, tp.eq === when ? bits : inverse)
+        refineName(tp.name, holds ? bits : inverse)
       }
       return
     }

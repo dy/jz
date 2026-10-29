@@ -10,6 +10,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { Duplex } from 'node:stream'
 import jz from '../index.js'
 import { levels, onWasi } from './_matrix.js'
 import { WebSocketConnection } from './fixtures/websocket-server/websocket-server.js'
@@ -36,8 +38,17 @@ const frame = (opcode, payload, key = [0x37, 0xfa, 0x21, 0x3d]) => {
 const text = (s) => new TextEncoder().encode(s)
 const hex = (chunks) => chunks.map(c => Buffer.from(c).toString('hex'))
 
+// A connection that stops reading errors its streams with no reason, and the
+// runner takes a rejection with `undefined` for a pass; one that never answers
+// leaves the test waiting: both fail here, by name.
+const settles = (p, what, ms = 5000) => {
+  let timer
+  return Promise.race([p, new Promise((_, no) => { timer = setTimeout(() => no(new Error(`${what} did not settle`)), ms) })])
+    .catch((e) => { throw e instanceof Error ? e : new Error(`${what} failed: ${String(e)}`) }).finally(() => clearTimeout(timer))
+}
+
 // Feed `chunks` to one connection, let it answer, and return every chunk it wrote.
-const session = async (Connection, chunks, after) => {
+const session = (Connection, chunks, after) => settles((async () => {
   const input = new TransformStream(), output = new TransformStream()
   const conn = new Connection(input.readable, output.writable)
   const written = []
@@ -51,6 +62,36 @@ const session = async (Connection, chunks, after) => {
   await new Promise(r => setTimeout(r, 20))
   void reading
   return hex(written)
+})(), 'the session')
+
+// A client of Node's own talks to the connection over TCP, as guest271314's
+// node.js serves it: the handshake on the upgrade, the socket's streams handed
+// to the class. It sends a text frame, a binary one on its echo (the server
+// takes one frame from each chunk it reads, and two sends at once arrive as
+// one chunk), closes on the second echo, and the round trip answers what it
+// got and how it closed.
+const roundTrip = async (Connection) => {
+  const server = createServer()
+  server.on('upgrade', async (req, socket) => {
+    try {
+      const { readable, writable } = Duplex.toWeb(socket)
+      await Connection.hashWebSocketKey(req.headers['sec-websocket-key'], writable)
+      new Connection(readable, writable).processWebSocketStream()
+    } catch { socket.destroy() }
+  })
+  await new Promise(r => server.listen(0, '127.0.0.1', r))
+  try {
+    return await settles(new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${server.address().port}`), got = []
+      ws.binaryType = 'arraybuffer'
+      ws.onopen = () => ws.send('hello from client')
+      ws.onmessage = (e) => {
+        got.push(typeof e.data === 'string' ? e.data : [...new Uint8Array(e.data)])
+        if (got.length === 1) ws.send(new Uint8Array([1, 2, 3]).buffer); else ws.close(1000, 'bye')
+      }
+      ws.onclose = (e) => resolve([got, e.code, e.reason])
+    }), 'the round trip')
+  } finally { server.close() }
 }
 
 // console.log/trace of the specimen go quiet.
@@ -117,4 +158,11 @@ test('the handshake answers through crypto.subtle, or the bundled SHA-1 without 
       is(got, want, `O${optimize} the bundled SHA-1, a writer`)
     } finally { Object.defineProperty(globalThis, 'crypto', crypto) }
   }
+})
+
+test('a WebSocket client round trips a text and a binary frame through the server compiled by jz, over TCP', { timeout: 120000 }, async () => {
+  if (onWasi() || typeof WebSocket !== 'function') return
+  const want = await quiet(() => roundTrip(WebSocketConnection))
+  is(want, [['hello from client', [1, 2, 3]], 1000, 'bye'], 'the plain server echoes both frames and closes')
+  for (const optimize of levels(0, 2, 'size')) is(await quiet(() => roundTrip(compiledAt(optimize))), want, `O${optimize}`)
 })

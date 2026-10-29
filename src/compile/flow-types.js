@@ -22,6 +22,7 @@ import { VAL } from '../reps.js'
 import { isReassigned, TYPEOF, typeofPredicate, isNumberGuard, walkAst, MUTATE_OPS, isBrand } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
+import { mayHoldHostValue } from './func-exports.js'
 
 // `bigint`: BigInt is the one VAL kind with no runtime NaN-box tag (see
 // kind.js VT['?:']'s own comment on this), but `typeof x === 'bigint'` still
@@ -32,6 +33,10 @@ import { TYPED_ELEM_NAMES } from '../../layout.js'
 // BigInt-vs-Number (watr's uleb/limits `v => { if (typeof v === 'bigint')
 // return v; … return BigInt(str) }`).
 const TYPEOF_CODE_TO_VAL = { [TYPEOF.number]: VAL.NUMBER, [TYPEOF.string]: VAL.STRING, [TYPEOF.function]: VAL.CLOSURE, [TYPEOF.bigint]: VAL.BIGINT }
+// `typeof x === 'function'` holds for a host function too (module/core.js
+// `__ext_callable`), which a closure call cannot reach: the test proves a
+// closure only where x, of summary kind `k`, holds no host value.
+const typeofVal = (code, k) => code === TYPEOF.function && mayHoldHostValue(k) ? undefined : TYPEOF_CODE_TO_VAL[code]
 
 /** Walk a boolean condition gathering refinements implied for the `sense` branch
  *  (sense=true = then-branch, sense=false = else-branch). `out` is a Map mutated
@@ -78,7 +83,7 @@ export function extractRefinements(cond, out, sense = true) {
     if (tp) {
       const wantPositive = tp.eq ? sense : !sense
       if (wantPositive) {
-        const val = TYPEOF_CODE_TO_VAL[tp.code]
+        const val = typeofVal(tp.code, ctx.summary?.at(ctx.func.current)?.kindOfExpr(tp.name))
         if (val) mergeRefinement(out, tp.name, { val })
       } else if (tp.code === 'string' || tp.code === TYPEOF.string) {
         // Negative branch of typeof-string guard (e.g. post `if (typeof x === 'string') return`)
@@ -138,7 +143,7 @@ export function typeTests(cond, out, sense = true) {
   if (op === '!') return typeTests(cond[1], out, !sense)
   if (op === '&&' && sense || op === '||' && !sense) { typeTests(cond[1], out, sense); typeTests(cond[2], out, sense); return out }
   const tp = typeofPredicate(cond)
-  if (tp) { const val = (tp.eq ? sense : !sense) ? TYPEOF_CODE_TO_VAL[tp.code] : undefined; if (val) out.set(tp.name, val); return out }
+  if (tp) { const val = (tp.eq ? sense : !sense) ? typeofVal(tp.code, null) : undefined; if (val) out.set(tp.name, val); return out }
   if (!sense) return out
   const val = op === '()' && typeof cond[2] === 'string' ? predicateRefinement(cond[1])
     : op === 'instanceof' && typeof cond[1] === 'string' && typeof cond[2] === 'string' ? instanceofRefinement(cond[2]) : null
