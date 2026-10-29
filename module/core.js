@@ -2841,6 +2841,11 @@ export default (ctx) => {
     // An element read the interval prover puts in bounds is present: absence
     // is the one nullishness an in-range read of an array of objects carries.
     const receiverKind = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+    // Functions carry no name (prepare rejects `.name` of a function it can
+    // name): a read the summary finds on a function value (a static, a method,
+    // a function's property) rejects the same way, where it read undefined.
+    if (prop === 'name' && (summaryTagOf(receiverKind) === K.CLOSURE || typeof obj === 'string' && repOf(obj)?.val === VAL.CLOSURE))
+      err('.name is not supported on a function value: jz has no general function-object reflection')
     const inRange = Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' && inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])
     // A name a statement of this block already checked is present (dispatch.js emitBlockBody).
     if (isNullable(inRange ? receiverKind & ~bitOf(K.ABSENT) : receiverKind) &&

@@ -244,6 +244,26 @@ test('function reflection rejects resolved Promise helpers and namespace aliases
   is(run('export let f = () => Number.foo').f(), undefined, 'an unserved member of a constructor namespace')
 })
 
+// A function value the summary knows (a static, a method taken off an
+// instance or the class its constructor reads, a function's property, a
+// literal's method) carries no name either: `.name` rejects there as it does
+// on a function named bare, where it read undefined.
+test('function reflection rejects .name of a function value the summary knows', () => {
+  const rows = {
+    static: 'class C { static m(a, b) { return a } }; export let f = () => C.m.name',
+    method: 'class C { m(a) { return a } }; export let f = () => new C().m.name',
+    constructorStatic: 'class C { static m(a) { return a } g() { return this.constructor.m.name } }; export let f = () => new C().g()',
+    property: 'function g() {} g.p = function h(a) { return a }; export let f = () => g.p.name',
+    literal: 'const o = { m(a) { return a } }; export let f = () => o.m.name',
+    held: 'class C { static m(a) { return a } }; export let f = () => { const h = C.m; return h.name }',
+  }
+  for (const optimize of levels(0, 2, 'speed'))
+    for (const [label, src] of Object.entries(rows)) throws(src, 'not supported on a function value', `${label} O${optimize}`, { optimize })
+  // a name the program stores on its objects is theirs to read
+  is(run('class C { constructor() { this.name = "c" } }; export let f = () => new C().name').f(), 'c')
+  is(run('const o = { name: "o", m() { return this.name } }; export let f = () => o.m()').f(), 'o')
+})
+
 test('dynamic method arms share a block callback body and its nested closures', () => {
   const src = `const apply = a => {
     let n = 0
