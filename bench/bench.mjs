@@ -6,7 +6,7 @@ import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, graphSources } from './_lib/
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { compile } from '../index.js'
@@ -33,7 +33,11 @@ const W2C_POSTPROCESS = join(ROOT, 'scripts', 'native', 'postprocess-watr.awk')
 // Its builds run in a process of their own (_lib/build-jz.mjs): two compilers in
 // one process share their dependencies' module state, and both parse wrong.
 const JZ_BASE_ROOT = process.env.JZ_BASE_ROOT ? resolve(process.env.JZ_BASE_ROOT) : null
-const buildBase = (c, level, path) => execFileSync(process.execPath, [join(LIB, 'build-jz.mjs'), JZ_BASE_ROOT, c.id, c.js, level, path], { stdio: 'pipe' })
+// The base builds its own copy of the case: a module-graph case resolves its
+// benchlib (the host patch the base's _lib/compile.js keys by its own path) and
+// its dependencies from the case file, which this tree's copy took from here.
+const baseCasePath = c => join(JZ_BASE_ROOT, relative(ROOT, c.js))
+const buildBase = (c, level, path) => execFileSync(process.execPath, [join(LIB, 'build-jz.mjs'), JZ_BASE_ROOT, c.id, baseCasePath(c), level, path], { stdio: 'pipe' })
 const gitHead = cwd => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd, encoding: 'utf8' }).trim() } catch { return null } }
 // Native-speed profile. Guard-page mmap makes the hoisted memory base stable
 // across memory.grow and preserves OOB trapping after the postprocessor removes
@@ -979,7 +983,7 @@ const targets = {
   'jz-base': {
     name: 'jz at base → V8 wasm',
     // The self-compile cell stays with `jz`: its prep is a child process of this tree.
-    available: c => !!JZ_BASE_ROOT && c.id !== 'jz' && has('node'),
+    available: c => !!JZ_BASE_ROOT && c.id !== 'jz' && has('node') && existsSync(baseCasePath(c)),
     bin: jzBaseSizeWasmPath,
     run: c => tryRun('jz-base', c,
       () => { buildBase(c, 'speed', jzBaseWasmPath(c)); buildBase(c, 'size', jzBaseSizeWasmPath(c)) },
@@ -1160,7 +1164,7 @@ const TARGET_CMDS = {
   perry: 'perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary',
   tov: 'tov build <case>.tov -o <case>-tov (default -O3, checked integer overflow; C via clang -ffp-contract=off) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
-  'jz-base': 'the same builds by the compiler at JZ_BASE_ROOT (meta.base) → node (V8 wasm)',
+  'jz-base': 'the same builds by the checkout at JZ_BASE_ROOT, of its copy of the case (meta.base) → node (V8 wasm)',
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
   'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',

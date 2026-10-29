@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { compile } from '../index.js'
@@ -194,4 +194,27 @@ test('bench build: an isolated compiler crash preserves the failure and later si
   ok(result.stderr.includes('jz: jz compilation failed: compiler benchmark build terminated by SIGABRT: heap exhausted'), 'case, signal and cause survive')
   ok(result.stdout.includes('SIZE jz jz= '), 'the crashed case remains in the results')
   ok(/SIZE lz jz=\d+ /.test(result.stdout), 'the following case still compiles')
+})
+
+// jz-base builds a case through the checkout at JZ_BASE_ROOT, from that
+// checkout's copy of the case: a module-graph case resolves its benchlib (the
+// host patch the base's bench build keys by its own path) and its dependencies
+// from the case file, and this tree's copy took them from here.
+test('bench build: jz-base builds the base checkout\'s own copy of a case', () => {
+  const base = mkdtempSync(join(tmpdir(), 'jz-bench-base-')), build = mkdtempSync(join(tmpdir(), 'jz-bench-build-'))
+  try {
+    mkdirSync(join(base, 'bench/_lib'), { recursive: true })
+    mkdirSync(join(base, 'bench/jessie'), { recursive: true })
+    writeFileSync(join(base, 'bench/jessie/jessie.js'), '')
+    // the base's bench build answers the case file it was handed
+    writeFileSync(join(base, 'bench/_lib/compile.js'), 'export const compileJzAt = c => new TextEncoder().encode(c.js)\n')
+    spawnSync(process.execPath, [join(ROOT, 'bench/bench.mjs'), '--targets=jz-base', '--cases=jessie'], {
+      env: { ...process.env, JZ_BASE_ROOT: base, JZ_BENCH_BUILD_DIR: build }, encoding: 'utf8', timeout: 120000,
+    })
+    is(readFileSync(join(build, 'jessie/jessie-base-host.wasm'), 'utf8'), join(base, 'bench/jessie/jessie.js'), 'the speed build')
+    is(readFileSync(join(build, 'jessie/jessie-base-size.wasm'), 'utf8'), join(base, 'bench/jessie/jessie.js'), 'the size build')
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+    rmSync(build, { recursive: true, force: true })
+  }
 })
