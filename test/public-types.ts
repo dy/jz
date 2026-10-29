@@ -1,6 +1,5 @@
 import jz, { compile, instantiate, type CompileOptions, type JzPointer } from 'jz'
 import { instantiate as instantiateInterop } from 'jz/interop'
-import { compile as strict } from 'jz/strict'
 
 const mem = jz.memory()
 const pointer: JzPointer = mem.String('jz')
@@ -37,9 +36,3 @@ jz.compile('export let f = () => 1')
 
 void [decoded, wat, tuned, result, shared, wrapped, again]
 
-const strictBytes: Uint8Array = strict('export const f = x => x*x', { optimize: 'speed' })
-const strictWat: string = strict('export const f = x => x*x', { wat: true })
-const strictMap: string[] | undefined = strict('export const f = x => x*x', { sourceMap: true }).sourceMap?.sources
-// @ts-expect-error the strict entry has no default export
-import('jz/strict').then(m => m.default)
-void [strictBytes, strictWat, strictMap]

@@ -6,7 +6,6 @@ const TESTS = [
   'bench-build',
   'errors',
   'source-map',
-  'strict',
   'error-location',
   'identifiers',
   'to-primitive',
@@ -315,7 +314,7 @@ const { suite, list, files: argFilters } = suiteArgs(process.argv.slice(2), proc
 //   json shaped-parser asserts cleared with the elemOrigin fix; what's left
 //   above is hang-bisection debt and leg-mismatch classes, not value bugs.)
 const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
-  'runner', 'bench-build', 'source-map', 'strict', // JS entry/CLI options and debug metadata are outside the kernel ABI
+  'runner', 'bench-build', 'source-map', // JS entry/CLI options and debug metadata are outside the kernel ABI
   'guide', // runs the guide's examples against the browser bundle web-smoke builds, not the kernel
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
@@ -362,7 +361,6 @@ const LEG_INVARIANT = new Set([
   'runner', 'test-infrastructure', // host test-runner lifecycle; no compiler inputs
   'bench-build', // fixed host and size options, CLI subprocess
   'source-map', // fixed debug build, V8 debugger and CLI in the JS host
-  'strict', // public JS entry options, bundled modules and byte/WAT parity
   'pmath', // the benchmark's fixed JS host and speed build on every leg
   'self-checkpoint', 'self-build', 'self-compile-source', 'kernel-marks', 'eager-stdlib-parity',
   'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-perry', 'bench-competitors', 'bench-memory', 'bench-svg', 'cli', 'native-lowering',

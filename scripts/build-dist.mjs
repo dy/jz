@@ -27,7 +27,6 @@ import { stripWatTemplates } from './wat-strip.mjs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
-import { compile as strictCompile } from '../strict.js'
 import { gzipSync } from 'node:zlib'
 import { specializeInvariants, resolveSelfCompileBuild } from './build-profile.mjs'
 
@@ -89,27 +88,6 @@ console.log('wrote dist/jz.js  ', kb(jsOut))
   }
   console.log('  wat-strip parity: 3 probes byte-identical')
 }
-
-// The strict entry owns no host runtime or full-JavaScript lowering code.
-const strictOut = resolve(OUT, 'strict.js')
-const strictBuild = await build({
-  entryPoints: [resolve(ROOT, 'strict.js')], bundle: true, minify: true,
-  format: 'esm', platform: 'neutral', target: 'es2022', legalComments: 'none',
-  plugins: [releaseSource], metafile: true, outfile: strictOut,
-})
-for (const path of Object.keys(strictBuild.metafile.inputs)) {
-  if (/(^|\/)jzify\/|(^|\/)interop\.js$/.test(path))
-    throw new Error(`strict compiler includes an excluded layer: ${path}`)
-}
-const strictDist = (await import(strictOut)).compile
-for (const source of [
-  'export const f = x => x * x + 1',
-  'export const f = n => { const a = new Float64Array(32); for (let i = 0; i < 32; i++) a[i] = i * n; return a[3] }',
-]) {
-  const a = strictCompile(source), b = strictDist(source)
-  if (Buffer.compare(Buffer.from(a), Buffer.from(b))) throw new Error('strict bundle differs from its source')
-}
-console.log('wrote dist/strict.js', kb(strictOut), `(${(gzipSync(readFileSync(strictOut)).length / 1024).toFixed(1)} kB gzip); 2 parity probes pass`)
 
 // ── dist/interop.js — minified jz/interop bridge (host runtime, no compiler) ──
 const interopOut = resolve(OUT, 'interop.js')
