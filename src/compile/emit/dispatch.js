@@ -18,7 +18,7 @@ import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullis
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
 import { constIntExpr, staticPropertyKey, staticArrayElems, staticObjectProps, intExprRange } from '../../static.js'
 import { functionLength } from '../../function.js'
-import { exprType, wholeKey, wholeOrMissKey, isTerminator } from '../../type.js'
+import { exprType, wholeKey, wholeOrMissKey, isTerminator, containsDeclOf } from '../../type.js'
 import {
   BINDING_USE_COMPUTED, BINDING_USE_DECLS, BINDING_USE_KEY, BINDING_USE_KIND, BINDING_USE_OPTIONAL, BINDING_USE_USES, USE, scanBindingUses,
 } from '../analyze-scans.js'
@@ -33,7 +33,8 @@ import { SITE, allocatesNothing } from '../analyze/frame-effects.js'
 import { reachOn } from '../../../module/core/reach.js'
 import { GLOBAL_TYPEOF, builtinGlobalOf } from '../../prepare/state.js'
 import { CMP_SET, boolEagerBody, copyReceiverFacts, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
-import { K, NUMBER, hasTag, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
+import { K, NUMBER, hasTag, isNullable, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
+import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
 
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
@@ -1320,12 +1321,56 @@ const projectedNext = (s, next) => {
   return k == null || hasTag(k, K.NULLISH) ? null : init
 }
 
+/** The arrays a block stores into that a reset must save, each where the
+ *  block binds it: index → names to save after statement `index` (-1: before
+ *  the first). A block storing elements of a fixed-length array older than the
+ *  round (three's `te[0] = …` after `const te = this.elements` in Matrix4's
+ *  compose) saves it before its first store; saved there, a branch to the
+ *  save's call stands where the store's operands are live, and V8 keeps every
+ *  one of them across the call it never makes (compose and multiplyMatrices
+ *  ran 0.4 ms of a 4.6 ms scene update so). Saved where the pointer is bound,
+ *  before the operands are computed, the array is the same (nothing resizes or
+ *  moves a fixed-length array) and a store of another between reads it saved:
+ *  what the round's first store would save. The store skips its own save
+ *  (emit-assign.js storeFixedElement reads the `saved` refinement). */
+const blockSaves = (stmts) => {
+  const frame = ctx.func, view = ctx.summary?.at(frame.current), at = new Map()
+  if (!hasDurableReset() || !view || !frame.body) return at
+  // (the statement that binds it, a list a splice left included; -1 for a binding of the code around)
+  const declaredAt = (name) => stmts.findIndex(s => Array.isArray(s) && containsDeclOf(s, name))
+  const done = new Set()
+  for (let j = 0; j < stmts.length; j++) {
+    for (const [name, stored] of elementUses(stmts[j], new Map())) {
+      if (!stored || done.has(name)) continue
+      done.add(name)
+      if (frame.boxed?.has(name) || frame.flatObjects?.has(name) || frame.refinements?.get(name)?.saved) continue
+      if (isGlobal(name) ? !ctx.scope.consts?.has(name) : isReassigned(frame.body, name)) continue
+      if (view.fixedLenOf(name) == null || isNullable(view.kindOfExpr(name))) continue
+      const k = declaredAt(name)
+      if (k > j) continue
+      ;(at.get(k) ?? at.set(k, []).get(k)).push(name)
+    }
+  }
+  return at
+}
+
 export function emitBlockBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
   const out = []
   const accumulated = []
   const frame = ctx.func
+  const saves = blockSaves(stmts)
+  const save = (names) => {
+    for (const name of names) {
+      const b = tempI32('bsb'), bits = () => ['i64.reinterpret_f64', asF64(emit(name))]
+      out.push(['local.set', `$${b}`, ['i32.wrap_i64', bits()]], durableArrSnapNode(b, bits()))
+      inc('__durable_arr_snap')
+      const cur = ctx.func.refinements?.get(name)
+      accumulated.push([name, cur])
+      ;(ctx.func.refinements ??= new Map()).set(name, { ...cur, saved: true })
+    }
+  }
   const prevValOverlay = frame.localValTypesOverlay
   frame.localValTypesOverlay = new Map(prevValOverlay || [])
   // Loop-reachable-write blocklist for this block (setFlowVal's whole-block
@@ -1346,6 +1391,7 @@ export function emitBlockBody(node) {
   const view = ctx.summary?.at(frame.current), presented = []
   const markPresent = (name) => { if (view?.present && !view.isPresent(name)) { view.present(name); presented.push(name) } }
   try {
+    if (saves.has(-1)) save(saves.get(-1))
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i]
       if (s == null || typeof s === 'number') continue
@@ -1360,6 +1406,7 @@ export function emitBlockBody(node) {
       const prevThrow = frame.throwAbsent, absent = projectedNext(s, stmts[i + 1])
       if (absent) frame.throwAbsent = absent
       try { out.push(...emitVoid(s)) } finally { frame.throwAbsent = prevThrow }
+      if (saves.has(i)) save(saves.get(i))
       // A receiver the statement read an element of or stored one into on
       // every path, and checked (the emitter threw for a missing one), holds
       // an object for the rest of this block: a binding of the function

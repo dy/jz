@@ -171,6 +171,37 @@ test('fixed length: a reset restores a durable array stored to directly', () => 
   }
 })
 
+// A block storing a durable fixed-length array (three's Matrix4.compose: `const
+// te = this.elements`, sixteen products, then `te[0] = …`) saves it where it
+// binds it, before the products: the save's call no longer stands among their
+// live values. The reset restores what module init left, a round building on
+// the last.
+test('fixed length: a block saves its durable array where it binds it', () => {
+  const src = `class M {
+    constructor() { this.elements = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }
+    scale(s, t) {
+      const te = this.elements
+      const a = te[0] * s, b = te[5] * s, c = te[10] * s, d = te[12] + t, e = te[13] + t
+      te[0] = a; te[5] = b; te[10] = c; te[12] = d; te[13] = e
+      return this
+    }
+  }
+  const m = new M()
+  export const f = (s, t) => { m.scale(s, t); const e = m.elements; return e[0] + e[5] + e[10] + e[12] + e[13] }`
+  for (const optimize of levels(0, 2)) {
+    const { exports } = jz(src, { optimize })
+    is(exports.f(2, 1), 2 + 2 + 2 + 1 + 1, `round 1 at ${optimize}`)
+    is(exports.f(2, 1), 4 + 4 + 4 + 2 + 2, 'a second call builds on the first')
+    exports._clear()
+    is(exports.f(2, 1), 2 + 2 + 2 + 1 + 1, 'round 2 starts from what module init left')
+  }
+  if (belowOpt(2)) return
+  // (the method spliced into `f`, or a function of its own; the save's test reads the bitmap of saved arrays)
+  const text = wat(src, { optimize: 2 }), body = text.split(/\n(?=  \(func )/).find(fn => /f64\.mul/.test(fn) && /__durable_arr_seen/.test(fn)) ?? ''
+  const save = body.indexOf('__durable_arr_seen'), product = body.indexOf('f64.mul')
+  ok(save > 0 && product > save, 'the save comes before the first product')
+})
+
 // An array frozen after module init: built at a count and grown only by pushes
 // at the module's top level through its own const name, inside counted loops.
 // Its const binding holds the final pointer, so reads through it after init
