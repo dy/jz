@@ -1,6 +1,7 @@
 // Library workloads share one graph/host contract across timing and audit tools.
-// The pmndrs/math cases import the vendored library (`_lib/pmath`): a module graph too.
-export const GRAPH_CASES = new Set(['jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul'])
+// The pmndrs/math cases import the vendored library (`_lib/pmath`), the three.js
+// cases three's own math modules out of node_modules: module graphs too.
+export const GRAPH_CASES = new Set(['jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul', 'threescene', 'threeanim', 'threecull', 'threegeom'])
 // A library's own code bundled into one file (stdlib's packages, scripts/stdlib-probe.mjs
 // bench): ES5 `var` and function declarations, so jz lowers it with jzify like a graph case.
 export const LOWERED_CASES = new Set(['stdlib-special', 'stdlib-dists', 'stdlib-exp', 'stdlib-gamma', 'stdlib-erf', 'stdlib-pow', 'stdlib-ddot'])

@@ -12,6 +12,8 @@
  *     answers and is timed against V8. The ratios print on every run; a kernel
  *     jz leads by LEAD is pinned there (PINNED), and JZ_THREE_PIN=1 asks every
  *     kernel for jz no slower than V8.
+ *  4. The three.js bench cases (bench/three*), built as the bench builds them,
+ *     answer what Node answers, call after call.
  *
  * A group jz gets wrong is listed in KNOWN with its cause, and the gate fails
  * when a listed group starts to agree: the entry is then removed.
@@ -26,6 +28,7 @@ import { readdirSync } from 'node:fs'
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { instantiate } from '../interop.js'
+import { compileJzAt } from '../bench/_lib/compile.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MATH = join(ROOT, 'node_modules/three/src/math')
@@ -78,7 +81,8 @@ const KERNELS = [['sceneUpdate', 10000, 20], ['transformPositions', 100000, 4], 
 // measures it below LEAD fails. The others print until they clear it, then
 // join PINNED. V8 runs the seven kernels in one process over the same classes,
 // as an application calls them, and its inline caches see every shape the
-// kernels pass: a kernel alone in a process runs faster in V8 than here.
+// kernels pass: a kernel alone in a process runs faster in V8 than here
+// (bench/three*, one case a process, is that comparison).
 const LEAD = 1.2
 const PINNED = new Set(['transformPositions', 'cull', 'raycast', 'slerp', 'normals'])
 // Processor time, the least of several runs: wall time on a busy machine measures the machine.
@@ -105,4 +109,28 @@ test('three: the hot paths of a frame answer what Node answers, timed against V8
     if (PIN) ok(jz <= v8, `${name}: jz ${jz.toFixed(2)} ms, V8 ${v8.toFixed(2)} ms`)
   }
   console.log(`  ${'geomean'.padEnd(38)}${(Math.exp(sum / KERNELS.length).toFixed(2) + '×').padStart(9)}`)
+})
+
+// The bench cases' checksums (bench/bench.mjs REFERENCE_CHECKSUMS): node, deno, bun, jsc and jz agree.
+const BENCH = { threescene: 2202287547, threeanim: 1484561098, threecull: 1233517740, threegeom: 2972009138 }
+for (const [id, checksum] of Object.entries(BENCH)) test(`three: the ${id} bench case agrees with Node across repeated calls`, async () => {
+  const entry = join(ROOT, 'bench', id, `${id}.js`)
+  let wa, js
+  const { exports: wasm } = instantiate(compileJzAt({ id, js: entry }, { level: 'speed' }), { imports: {
+    env: { logResult: (us, sum, samples, stages, runs) => { wa = [sum >>> 0, samples, stages, runs] } },
+    performance: { now: () => performance.now() },
+  } })
+  const node = await import(entry)
+  const runJS = () => {
+    const log = console.log
+    console.log = line => { js = /checksum=(\d+) samples=(\d+) stages=(\d+) runs=(\d+)$/.exec(line)?.slice(1).map(Number) }
+    try { node.main() } finally { console.log = log }
+  }
+  // the case's state carries from call to call: both sides run the same rounds
+  for (let round = 0; round < 2; round++) {
+    wa = js = null
+    runJS(); wasm.main()
+    if (!round) is(js?.[0], checksum, `${id}: the fixed workload's checksum`)
+    is(wa, js, `${id} round ${round}: checksum and workload agree`)
+  }
 })

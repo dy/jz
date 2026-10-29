@@ -62,7 +62,9 @@ per engine checks its output with `checksumF64Near` (`_lib/benchlib.js`): each
 value hashed at single precision, a relative tolerance of 2^-24. Engines a few
 ulp apart agree; a wrong result does not. color-space's kernels are checked so
 (munsell, hsl, hwb, jzazbz, jzczhz, cam16, hct, a98rgb, ipt: V8, Deno, bun and
-JZ agree on each, where munsell's exact bits gave three checksums).
+JZ agree on each, where munsell's exact bits gave three checksums), and so are
+the three.js cases, whose rotations go through `Math.sin`, `cos` and `acos`
+(V8, Deno, bun, jsc and JZ agree on each).
 
 ## Run
 
@@ -220,6 +222,10 @@ all prep steps to run.
 | [`worley`](worley/worley.js) | Worley (cellular) noise field, 2-D + 3-D (pmndrs/math) — `perm[Math.floor(x) + g & 255]` byte-table gathers through a `{ perm }` record, 9 + 27 feature distances per sample, a running minimum: the hash-noise kernel |
 | [`fabrik`](fabrik/fabrik.js) | FABRIK inverse kinematics, ten bones (pmndrs/math) — forward/backward passes over an array of bone objects holding `start`/`end` arrays and a `joint` record, directions normalized into module scratch arrays, the best solution saved and restored: the object-graph kernel |
 | [`quatmul`](quatmul/quatmul.js) | quaternion products, inverses and normalizations over arrays of four-element plain arrays (pmndrs/math) — one out-parameter, pointer chasing between the elements: the fixed-size linear-algebra kernel |
+| [`threescene`](threescene/threescene.js) | Object3D.updateMatrixWorld over ten thousand chained nodes ([three.js](https://threejs.org)'s math classes, unmodified, from `node_modules`) – `Matrix4.compose` from a Vector3, a Quaternion and a Vector3 held in arrays of class instances, `multiplyMatrices` by the parent's world matrix, `elements` arrays of sixteen: the scene-graph kernel |
+| [`threeanim`](threeanim/threeanim.js) | QuaternionLinearInterpolant's slerp of ten thousand bones (three.js) – the static `Quaternion.slerpFlat` over flat Float32Array keyframe buffers at an offset, an acos and three sines per bone: the animation-mixer kernel |
+| [`threecull`](threecull/threecull.js) | WebGLRenderer.projectObject's frustum test of ten thousand bounding spheres as the camera orbits, and Mesh.raycast against twenty thousand triangles (three.js) – `lookAt`, `invert`, a Frustum's planes, `intersectsSphere`, `intersectTriangle` through Vector3 scratch: the culling and picking kernel |
+| [`threegeom`](threegeom/threegeom.js) | BufferAttribute.applyMatrix4, computeBoundingBox/Sphere and computeVertexNormals over Float32Array position buffers (three.js) – each vertex read into a module-level Vector3, chained methods, written back: the buffer-geometry kernel |
 
 The **`lab` rows** — the self-referential `watr`/`jessie`/`jz` (JZ or its deps
 compiling code) and the JS-only intrinsic probes `colorconv`/`colorlch`/

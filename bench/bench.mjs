@@ -164,6 +164,10 @@ const CASE_NAMES = {
   worley: 'Worley noise field (pmndrs/math)',
   fabrik: 'FABRIK inverse kinematics (pmndrs/math)',
   quatmul: 'quaternion product + inverse (pmndrs/math)',
+  threescene: 'scene graph matrix update (three.js)',
+  threeanim: 'animation slerp of bone rotations (three.js)',
+  threecull: 'frustum culling + raycast (three.js)',
+  threegeom: 'buffer geometry transform, bounds, normals (three.js)',
 }
 
 const HOST_STUB = join(BENCH_DIR, '_lib', 'host-stub.js')
@@ -179,8 +183,8 @@ const HIDDEN_FROM_GEOMEAN = LAB
 // (jz.wasm embeds the whole compiler). The color* lab kernels stay playable in-page.
 // webaudio stays out too: its host-adapter imports need the stubs
 // run-jz-host.mjs wires, which the page's instantiate does not. The pmndrs/math
-// cases import a vendored module graph the page does not serve.
-const NO_WEB = new Set(['watr', 'jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul'])
+// cases import a vendored module graph, the three.js cases node_modules: the page serves neither.
+const NO_WEB = new Set(['watr', 'jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul', 'threescene', 'threeanim', 'threecull', 'threegeom'])
 // Non-jz cases get the 1-page wasm default — plenty for a bench kernel's own
 // data. The `jz` CASE (self-compile: jz compiling itself) is its own path
 // entirely — see compileJzSelfIsolated / bench/_lib/compile-jz-self.mjs below,
@@ -1364,6 +1368,9 @@ const REFERENCE_CHECKSUMS = {
   // x64 NaN carries and an arm64 one does not.
   'stdlib-dists': 377214261,
   polytri: 84696351, worley: 4117862664, fabrik: 2711562489, quatmul: 3862405384,
+  // three.js's math classes (checksumF64Near where sin, cos or acos feed the result):
+  // node 25, deno, bun, jsc and jz agree
+  threescene: 2202287547, threeanim: 1484561098, threecull: 1233517740, threegeom: 2972009138,
   // (native C, V8 and jz agree: clang -O3, node 25, jz e93a9cd3)
   sosfilter: 3613342271, movavg: 4274945053, upfirdn: 2901183035, pcmconvert: 1465809949,
   // color-space's kernels (checksumF64Near, single precision): V8, Deno, bun and jz agree
