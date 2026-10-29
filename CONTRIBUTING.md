@@ -2662,7 +2662,15 @@ reached (`__g_cost`, the bytes of every block `__gc_keep` was handed), and
 that cost sets the next trigger, for the host's `settle` and for a loop's
 site alike: a module holding a million objects compacts a loop's churn once
 per several times their size, not once per two megabytes, and the walks
-stay a bounded share of the allocation they reclaim. The cost saturates at a
+stay a bounded share of the allocation they reclaim. A loop's site weighs the
+cost by what the walk freed: its next trigger is past twice the cost times r,
+r = 8·above / (8·freed + above) of the memory above the floor, held to 1…8.
+A loop that drops what it made (a carried string replaced every pass) frees
+most of it and keeps r = 1; one that keeps it (a builder pushing fresh
+records into an array older than the loop) frees little and walks up to
+eight times less often: a builder of 400,000 records walked twice, not four
+times (4.9 million words to 1.8). Either way the garbage between two walks
+stays within twice the last one's cost. The cost saturates at a
 gibibyte (`COST_CAP`), so twice it fits an i32. A second rule serves the
 memory's cap (`ctx.memory.max` in pages, else the address space; the host
 takes the address space): when the room left, less an eighth of the heap and

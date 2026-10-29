@@ -281,18 +281,30 @@ export const registerCompact = () => {
     (i64.store offset=8 (local.get $at) (local.get $box))
     (global.set $__stubn (i32.add (local.get $n) (i32.const 1))))`
 
-  // A loop site's threshold (optimize/loop-compact.js): the heap address past
-  // which the loop compacts, from its mark, what the last compaction walked
-  // (\`cost\`, 0 before one) and the memory's cap less one. The amortizing
-  // rule fires past mark + 2·cost + slack; the pressure rule, once the room
-  // to the cap less an eighth of the heap and a margin is short of that,
-  // past mark + cost/8 + slack: heap > min(mark + need, max(8·room, mark + low)).
+  // A loop site's threshold (optimize/loop-compact.js), asked right after its
+  // compaction moved: the heap address past which the loop compacts, from its
+  // mark, what the compaction walked (\`cost\`) and the memory's cap less one.
+  // The amortizing rule fires past mark + 2·cost·r + slack, r the walk's
+  // yield: 8·above / (8·freed + above) of the memory above the floor
+  // (\`__g_floor\` to \`__g_top\`, \`__heap\` where the move left it), held to
+  // 1…8. A loop that drops what it made (a string carried and replaced)
+  // frees most of it, r = 1; one that keeps it (a builder pushing fresh
+  // objects into a container older than the loop) frees little, and its next
+  // walk waits up to eight times as long: either way the garbage between two
+  // walks stays within twice the last one's cost. The pressure rule, once the
+  // room to the cap less an eighth of the heap and a margin is short of that,
+  // fires past mark + cost/8 + slack: heap > min(mark + need, max(8·room, mark + low)).
   ctx.core.stdlib['__gc_thresh'] = `(func $__gc_thresh (param $mark i32) (param $cost i32) (param $cap1 i32) (result i32)
-    (local $need i64) (local $low i64) (local $m i64) (local $room i64) (local $p i64) (local $t i64)
+    (local $need i64) (local $low i64) (local $m i64) (local $room i64) (local $p i64) (local $t i64) (local $above i64) (local $r i64)
     (local.set $m (i64.extend_i32_u (local.get $mark)))
     ${has('__park_base') ? `;; a parked lane caps the heap where it starts
     (if (global.get $__park_base) (then (local.set $cap1 (i32.sub (global.get $__park_base) (i32.const 9)))))` : ''}
-    (local.set $need (i64.add (i64.shl (i64.extend_i32_u (local.get $cost)) (i64.const 1)) (i64.const ${compactSlack()})))
+    (local.set $above (i64.extend_i32_u (i32.sub (global.get $__g_top) (global.get $__g_floor))))
+    (local.set $r (i64.div_u (i64.shl (local.get $above) (i64.const 3))
+      (i64.add (i64.add (i64.shl (i64.extend_i32_u (i32.sub (global.get $__g_top) (global.get $__heap))) (i64.const 3)) (local.get $above)) (i64.const 1))))
+    (if (i64.eqz (local.get $r)) (then (local.set $r (i64.const 1))))
+    (if (i64.gt_u (local.get $r) (i64.const 8)) (then (local.set $r (i64.const 8))))
+    (local.set $need (i64.add (i64.mul (i64.shl (i64.extend_i32_u (local.get $cost)) (i64.const 1)) (local.get $r)) (i64.const ${compactSlack()})))
     (local.set $low (i64.add (i64.shr_u (i64.extend_i32_u (local.get $cost)) (i64.const 3)) (i64.const ${PRESSURE_SLACK})))
     ;; 8 · (cap − 1 − mark − margin − need), the heap past which the pressure rule holds
     (local.set $room (i64.sub (i64.sub (i64.sub (i64.extend_i32_u (local.get $cap1)) (local.get $m)) (i64.const ${MARGIN})) (local.get $need)))

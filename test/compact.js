@@ -8,7 +8,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { levels, onWasi, belowOpt } from './_matrix.js'
+import { levels, onWasi, onKernel, belowOpt } from './_matrix.js'
+import { execFileSync } from 'node:child_process'
 import { oracle } from './util.js'
 
 // Calls `step(i)` on both the module and the oracle, comparing each result;
@@ -310,6 +311,31 @@ test('compact: compactions amortize what they walk, not only what they keep abov
   let last = 0, compactions = 0
   for (let i = 0; i < 4000; i++) { is(exports.step(i), want.step(i), `step(${i})`); if (memory.used < last) compactions++; last = memory.used }
   ok(compactions >= 1 && compactions <= 3, `4000 small steps beside 20000 kept objects compact a few times, not every page (${compactions})`)
+})
+
+// A loop's next walk waits on what its last one freed (module/core/compact.js
+// `__gc_thresh`): a builder that pushes fresh records into an array older than
+// the loop frees nothing, and walks once per eight times what it walked last,
+// where a carried string replaced every pass is still walked as often as it
+// churns. The counts are the debug build's (`JZ_DEBUG_GC=1` exports
+// `__g_runs`), which reads the flag as the compiler loads: a process of its own.
+test('compact: a loop that keeps what it makes walks less often than one that drops it', () => {
+  if (onWasi() || onKernel() || !counted()) return
+  const script = `import jz from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+const run = (src, n) => { const { exports, instance } = jz(src); const r = exports.f(n); return [r, instance.exports.__g_runs.value, instance.exports.__g_walked.value >>> 0] }
+console.log(JSON.stringify({
+  builder: run(${JSON.stringify(`export const f = n => { const a = []; for (let i = 0; i < n; i++) a.push({ x: i, y: [i, i + 1] }); return a.length + a[n - 1].y[1] }`)}, 400000),
+  churn: run(${JSON.stringify(LOOPS.prefix)}, 20000),
+}))`
+  const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: { ...process.env, JZ_DEBUG_GC: '1' }, encoding: 'utf8' })
+  const { builder: [b, bRuns, bWords], churn: [c, cRuns] } = JSON.parse(out.trim().split('\n').pop())
+  is(b, 800000, 'the builder answers')
+  is(c, oracle(LOOPS.prefix).f(20000), 'the churning loop answers')
+  // 400000 records and their arrays, 32 MB: walked at 2 MB and once more past
+  // up to sixteen times that walk, where twice it gave four walks of 4.9 million words
+  ok(bRuns <= 2, `the builder walks ${bRuns} times`)
+  ok(bWords < 2_500_000, `the builder walks ${bWords} words in all`)
+  ok(cRuns >= 100, `the carried string is still walked as it churns (${cRuns} times)`)
 })
 
 test('compact: dynamic properties on a static literal, replaced call after call, at every level', () => {

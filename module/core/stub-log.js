@@ -38,7 +38,7 @@ export const stubLogBytes = () => stubEntries() * 16
 /** A walk's cost saturates here (a gibibyte): twice it still fits an i32, and
  *  past it the pressure rule, not the amortizing one, times compactions. */
 export const COST_CAP = 1 << 30
-/** A loop site's slack past twice the walked cost, and the margin it keeps
+/** A loop site's slack past twice the walked cost (times the walk's yield, 1…8: module/core/compact.js `__gc_thresh`), and the margin it keeps
  *  from the memory's cap for the kernel's scratch (optimize/loop-compact.js).
  *  Two megabytes keep a loop's churn within the cache: a parse loop's fresh
  *  objects at sixteen ran 1.6× its time (json on x64), the walks it saves

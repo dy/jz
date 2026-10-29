@@ -14,7 +14,9 @@
  * name a new value), so its cost, not the memory above the mark it kept,
  * sets the next trigger: a module holding a million objects compacts a
  * loop's churn once per several times their size, not once per sixteen
- * megabytes.
+ * megabytes. What the walk freed weighs it (`__gc_thresh`): a loop that keeps
+ * what it makes, a builder pushing fresh records into an array older than it,
+ * walks up to eight times less often than one that drops it.
  *
  * Roots: the f64 parameters and f64 locals live at the loop's top (a value
  * in one either names a block, which the kernel forwards, or is a number,
@@ -53,8 +55,10 @@ import { compactSlack } from '../../module/core/stub-log.js'
 const HEADER = new Set(['export', 'param', 'result', 'local'])
 const written = (label) => typeof label === 'string' ? label.replace(/(?:\.f\d+)+$/, '') : label
 /** A compaction pays off once the kept memory holds the slack (`SLACK`,
- *  `optimize.compactSlack`) beyond twice what the last one walked: a walk
- *  costs what it reaches, so the slack is megabytes, not a page, and a loop
+ *  `optimize.compactSlack`) beyond twice what the last one walked, times
+ *  what it freed of the memory above the floor (1 for a walk that freed most
+ *  of it, up to 8 for one that freed nothing: a builder keeping what it made):
+ *  a walk costs what it reaches, so the slack is megabytes, not a page, and a loop
  *  whose iterations keep a growing value pays a walk per few megabytes
  *  allocated, one whose live data is large pays one per several times that. Under pressure, as the memory's
  *  cap nears (less an eighth of the heap and `MARGIN` for the kernel's
