@@ -29,7 +29,7 @@ import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, isPresentNumber
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { dataAlign, dataPush, dataLen, dataRecord, strPoolPush } from '../src/static-data.js'
-import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
+import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT, i64Hex } from '../layout.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { stringBytes, stringHash } from '../src/string-data.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
@@ -40,6 +40,7 @@ import { registerEncoding } from './string/encoding.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 const SLICE_BIT_I64 = sliceBitI64Hex()
+const INTERN_BIT_I64 = i64Hex(BigInt(STR_INTERN_BIT) << BigInt(LAYOUT.AUX_SHIFT))
 const HCACHE_BIT_I64 = hcacheBitI64Hex()
 // (SSO_BIT | SLICE_BIT) << AUX_SHIFT as i64 hex — BigInt-free (self-compile runs this)
 const SSO_SLICE_I64 = '0x' + (LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT).toString(16) + '00000000'
@@ -475,10 +476,17 @@ export default (ctx) => {
         (if (i32.ne (local.get $len) ${heapLenExpr('$b', '$offB')})
           (then (return (i32.const 0))))))
     (call $__str_eq_cold (local.get $offA) (local.get $offB) (local.get $len)))`
+  // The head answers the compares a compiler's or a parser's tokens make most,
+  // in reach of the engine's inlining: one string, a short one (SSO), and two
+  // canonical ones (interned statics and the slices the intern index resolved
+  // to them, layout.js STR_INTERN_BIT: unequal bits, unequal content).
   wat('__str_eq', () => lean || !ctx.features.sso ? strEqBody('__str_eq') : `(func $__str_eq (param $a i64) (param $b i64) (result i32)
     (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 1))))
     (if (i64.ne (i64.and (i64.or (local.get $a) (local.get $b)) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+      (then (return (i32.const 0))))
+    (if (i64.eq (i64.or (i64.and (i64.and (local.get $a) (local.get $b)) (i64.const ${INTERN_BIT_I64}))
+          (i64.and (i64.or (local.get $a) (local.get $b)) (i64.const ${SLICE_BIT_I64}))) (i64.const ${INTERN_BIT_I64}))
       (then (return (i32.const 0))))
     (call $__str_eq_tail (local.get $a) (local.get $b)))`)
   wat('__str_eq_tail', () => strEqBody('__str_eq_tail'))

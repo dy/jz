@@ -1744,3 +1744,33 @@ test('string concat: a chain over a number-or-string element stays a concatenati
     ['in a loop', `export const f = () => { const a = []; a[0] = 'k'; a[1] = 2; let s = ''; for (let i = 0; i < 3; i++) s = s + (a[0] + a[1] + i); return s }`],
   ]) for (const optimize of levels(0, 2)) agree(src, 'f', [], { optimize }, `${label}, O${optimize}`)
 })
+
+// A compare against a long literal (a canonical static under the intern index)
+// answers a canonical other side by its bits inline, and the equality helper's
+// head answers two canonical strings (compile/emit/comparisons.js `canonLit`,
+// module/string.js `__str_eq`): a token resolved to a literal, a literal, a
+// string built at run time, a short one, a value of another kind.
+test('string equality: a canonical string against a long literal is answered by its bits', () => {
+  const src = `const src = 'local.get i32.const local.set i32.add local.get-x  i32.const'
+  const toks = src.split(' ')
+  const built = (i) => ['local', 'i32', 'local'][i % 3] + ['.get', '.const', '.set'][i % 3]
+  const vals = [...toks, 'local.get', built(0), built(1), built(2), 'x', '', 12, null, undefined, [1], { a: 1 }, 'local.ge', 'local.gets']
+  export const known = (n) => { let s = 0
+    for (let i = 0; i < toks.length; i++) { const t = toks[i].slice(0), b = built(i + n)
+      s = (s * 3 + (t === 'local.get') + 2 * (t === 'i32.const') + 4 * (b === 'local.get') + 8 * ('i32.const' !== b) + 16 * (t.slice(0, 9) === 'local.get')) % 1000003 }
+    return s }
+  export const unknown = (n) => { let s = 0
+    for (let i = 0; i < vals.length; i++) { const v = vals[(i + n) % vals.length]; s = (s * 5 + (v === 'local.get') + 2 * ('i32.const' === v) + 4 * (v !== 'local.set')) % 1000003 }
+    return s }
+  export const keys = (n) => { const m = new Map([['local.get', 1], ['i32.const', 2], ['local.set', 3]]); let s = 0
+    for (const t of toks) s += m.get(t) ?? 0
+    for (let i = 0; i < 3; i++) s += m.get(built(i + n)) ?? 0
+    return s }`
+  const ref = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const ex = jz(src, { optimize }).exports
+    for (const n of [0, 1, 2, 7]) for (const f of ['known', 'unknown', 'keys']) is(ex[f](n), ref[f](n), `${f}(${n}) O${optimize}`)
+  }
+  const known = funcWat(compile(src, { optimize: 'speed', wat: true }), 'known')
+  ok(/i64\.and[\s\S]{0,80}0x0*200100000000/.test(known), 'speed: a canonical-bit test guards the equality call')
+})

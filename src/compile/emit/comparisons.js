@@ -5,12 +5,12 @@
  * @module compile/emit/comparisons
  */
 
-import { i64Hex } from '../../../layout.js'
+import { i64Hex, STR_INTERN_BIT } from '../../../layout.js'
 import { ACCESSOR_GET, T, TYPEOF } from '../../ast.js'
 import { LAYOUT, PTR, ctx, inc, setLinkDemand, ssoBitI64Hex } from '../../ctx.js'
 import { mayHoldHostValue } from '../func-exports.js'
 import {
-  applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, boxedPtrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, throwTypeErrorIR, toNumF64, truthyIR, typed, unboxBigInt,
+  applyBigintRepresentationAction, asF64, asI32, asI64, carrierF64, cloneIR, emitNum, freshId, isBoolAtom, isLit, isLiteralStr, isNull, isNullish, isNullishLit, isPlanRawBigint, isPlanTaggedBigint, isUndef, litVal, nullableBoolBoxIR, numberNanIR, ptrTypeEq, boxedPtrTypeEq, readI64, resolveValType, temp, tempI32, tempI64, throwTypeErrorIR, toNumF64, truthyIR, typed, unboxBigInt,
 } from '../../ir.js'
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { K, NUMBER, core, hasTag, isNullable, tagOf } from '../../summary/kind.js'
@@ -676,6 +676,31 @@ function emitLooseEq(a, b, negate, strict) {
   if ((aStr || bStr) && (rawA == null || aStr) && (rawB == null || bStr) && (ssoLit(a) || ssoLit(b))) {
     return typed([`i64.${negate ? 'ne' : 'eq'}`, asI64(va), asI64(vb)], 'i32')
   }
+  // A long literal is a canonical static under the intern index (module/string.js
+  // `str`, layout.js STR_INTERN_BIT): another canonical string equals it only by
+  // its bits, so a token the index resolved, or a literal, is answered without
+  // the call (an operator or opcode name against its tags, a compiler's own loop).
+  const canonLit = (n) => isLiteralStr(n) && !ssoLit(n) && !!ctx.transform.optimize?.internStrings && !ctx.memory.shared
+  const internSlice = ['i64.const', i64Hex((BigInt(STR_INTERN_BIT) | BigInt(LAYOUT.SLICE_BIT)) << BigInt(LAYOUT.AUX_SHIFT))]
+  const internBit = ['i64.const', i64Hex(BigInt(STR_INTERN_BIT) << BigInt(LAYOUT.AUX_SHIFT))]
+  const canonical = (g) => ['i64.eq', ['i64.and', g, internSlice], internBit]
+  const plainRead = (ir) => Array.isArray(ir) && (ir[0] === 'local.get' || ir[0] === 'global.get' || ir[0] === 'i64.const' ||
+    (ir[0] === 'i64.reinterpret_f64' || ir[0] === 'f64.reinterpret_i64') && plainRead(ir[1]) || ir[0] === 'f64.const')
+  if (aStr && bStr && (canonLit(a) || canonLit(b))) {
+    inc('__str_eq')
+    const [ui, li] = canonLit(b) ? [asI64(va), asI64(vb)] : [asI64(vb), asI64(va)]
+    const guard = (uG, lG) => ['if', ['result', 'i32'], ['i64.eq', uG, lG], ['then', ['i32.const', 1]],
+      ['else', ['if', ['result', 'i32'], canonical(cloneIR(uG)), ['then', ['i32.const', 0]],
+        ['else', ['call', '$__str_eq', cloneIR(uG), cloneIR(lG)]]]]]
+    // operands read where they stand (a local, a constant) keep the call's
+    // arguments the reads a loop-invariant hoist sees (optimize/licm.js)
+    if (plainRead(ui) && plainRead(li)) return strEqResult(typed(guard(ui, li), 'i32'))
+    const u = tempI64('seq'), l = tempI64('seq'), uG = ['local.get', `$${u}`], lG = ['local.get', `$${l}`]
+    const sets = canonLit(b)
+      ? [['local.set', `$${u}`, ui], ['local.set', `$${l}`, li]]
+      : [['local.set', `$${l}`, li], ['local.set', `$${u}`, ui]]
+    return strEqResult(typed(['block', ['result', 'i32'], ...sets, guard(uG, lG)], 'i32'))
+  }
   if (aStr && bStr) {
     inc('__str_eq')
     return strEqResult(typed(['call', '$__str_eq', asI64(va), asI64(vb)], 'i32'))
@@ -688,13 +713,17 @@ function emitLooseEq(a, b, negate, strict) {
     // above) — one inline bit test skips the __is_str_key/__str_eq tail. Sound
     // for a non-string u too: the test only ever short-circuits to "not equal",
     // and a non-string never equals a string.
+    // a canonical-looking other side against a canonical literal differs by its
+    // bits from it, a string or not (a non-string never equals a string)
+    const probe = ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
+      ['then', ['call', '$__str_eq', uG, lG]],
+      ['else', ['i32.const', 0]]]
+    const strTail = canonLit(bStr ? b : a) ? ['if', ['result', 'i32'], canonical(uG), ['then', ['i32.const', 0]], ['else', probe]] : probe
     const tail = ctx.features.sso
       ? ['if', ['result', 'i32'],
           ['i64.ne', ['i64.and', ['i64.or', uG, lG], ['i64.const', ssoBitI64Hex()]], ['i64.const', 0]],
           ['then', ['i32.const', 0]],
-          ['else', ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
-            ['then', ['call', '$__str_eq', uG, lG]],
-            ['else', ['i32.const', 0]]]]]
+          ['else', strTail]]
       : ['if', ['result', 'i32'], ['call', '$__is_str_key', uG],
           ['then', ['call', '$__str_eq', uG, lG]],
           ['else', ['i32.const', 0]]]
