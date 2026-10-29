@@ -189,3 +189,62 @@ test('kind split: channels of either float width run a copy for each width they 
   ok(/f32x4\./.test(text), 'the Float32 copies are lifted')
   ok(/f64x2\./.test(text), 'the Float64 copies are lifted')
 })
+
+// A parameter's input mix (web-audio-api's AudioInput): its buffer is made
+// lazily and a closure swaps a Float64Array into its channel, so the summary
+// meets the channels as Float32Array views a round before it meets the
+// Float64Array. The copy under `instanceof Float64Array` must read Float64
+// elements still: a test that kept the Float32Array kind of the early round
+// joined it with the later Float64Array to an element kind no test proves,
+// and the copy ran the generic width dispatch.
+const paramMix = `const BLOCK = 64
+class Buf {
+  #n
+  #data
+  #channels
+  constructor(nch, len) {
+    this.#n = nch
+    this.#data = new Float32Array(len * nch)
+    const channels = this.#channels = new Array(nch)
+    for (let c = 0; c < nch; c++) channels[c] = this.#data.subarray(c * len, (c + 1) * len)
+  }
+  get _channels() { return this.#channels }
+  getChannelData(c) {
+    if (c < 0 || c >= this.#n) throw new Error('channel')
+    return this.#channels[c]
+  }
+}
+const mix = (inBuf, outBuf) => {
+  const inp = inBuf.getChannelData(0), out = outBuf.getChannelData(0)
+  for (let i = 0; i < BLOCK; i++) out[i] += inp[i]
+}
+class Input {
+  constructor(wide) { this.wide = wide; this.widen = b => { b._channels[0] = new Float64Array(BLOCK) } }
+  tick(src) {
+    if (!this.buf) { this.buf = new Buf(1, BLOCK); if (this.wide) this.widen(this.buf) }
+    mix(src, this.buf)
+    return this.buf
+  }
+}
+export let f = (n) => {
+  const src = new Buf(1, BLOCK), p = new Input(true), q = new Input(false), r = new Input(true)
+  src.getChannelData(0).fill(n + 0.25)
+  let h = 0
+  for (let k = 0; k < 3; k++) {
+    const w = p.tick(src)
+    h += w.getChannelData(0)[k] + q.tick(src).getChannelData(0)[k + 1]
+    mix(w, r.tick(q.tick(src)))
+    h += r.buf.getChannelData(0)[k + 2]
+  }
+  return h
+}`
+// innermost loops storing elements without the generic typed helpers or a width dispatch
+const directStores = (text) => loopsOf(text).filter(l => !/\(loop[\s\S]*\(loop/.test(l.slice(5)) && /f(32|64)\.store/.test(l) &&
+  !/call \$__(typed|dyn)|__utw/.test(l) && !(/f32\.store/.test(l) && /f64\.store/.test(l)))
+
+test('kind split: a Float64Array test over channels first met as Float32Array views reads them as Float64Array', () => {
+  agrees(paramMix, [['f', 0], ['f', 1.5], ['f', -2]])
+  if (belowOpt(2)) return
+  const loops = directStores(wat(paramMix, { optimize: 2 }))
+  ok(loops.some(l => /f64\.store/.test(l) && !/f32\.load/.test(l)), 'a copy stores and reads Float64 elements directly')
+})

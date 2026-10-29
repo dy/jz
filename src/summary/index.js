@@ -113,6 +113,8 @@ const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', '
 const STRING_BOOL_METHODS = new Set(['includes', 'startsWith', 'endsWith'])
 // Closure sets and shape sets: a set's id is interned above SET_BASE; `membersOf` reads either form.
 const SET_BASE = 1 << 15
+// A typed array's view bits: owned, a view, or either, of one element kind.
+const TYPED_VIEW_BITS = TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG
 // The operators that convert their operands to primitives (and answer one):
 // arithmetic, comparison, concatenation and their compound assignments.
 const CONVERTING_RESULTS = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '<', '>', '<=', '>=', '==', '!=', 'strcat', '`'])
@@ -4575,12 +4577,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // A mask's tags keep those of the kind; its own parameter, where it has one
   // (a typed array's element kind a class test proves), fills an unknown one:
   // no element kind, or a number of one of several (a Float32Array or a Float64Array).
+  // A known element kind the test's is not passes none: the fixpoint may see a
+  // name's Float32Arrays before its Float64Arrays, and a Float64Array test kept
+  // them, which joined with what came later to an element kind no test proves.
   const refine = (k, mask) => {
     let r = k & ((mask & TAGS) | UNKNOWN)
     // a mixed value's parameter names its cell, never a typed array's element kind
     if (tagOf(r) === K.TYPED && dictOrObject(k)) r = (r & TAGS) | UNKNOWN
-    const p = mask & UNKNOWN
-    if (p !== 0 && typedAux(r) === UNKNOWN) r = (r & TAGS) | p
+    const p = mask & UNKNOWN, a = typedAux(r)
+    if (p !== 0 && a === UNKNOWN) r = (r & TAGS) | p
+    else if (p !== 0 && p !== UNKNOWN && tagOf(r) === K.TYPED && (a & ~TYPED_VIEW_BITS) !== (p & ~TYPED_VIEW_BITS)) return 0
     return (r & TAGS) === 0 ? 0 : r
   }
   // A member path (`params.coefs`: a binding and literal keys) a test refines

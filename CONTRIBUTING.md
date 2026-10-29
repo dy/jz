@@ -1072,6 +1072,11 @@ constructors", whose readers dispatch on the element code at run time; a
 Float32Array beside a Float64Array (owned or views: a sample buffer of either
 width) joins to `TYPED_FLOAT` instead, the same to every reader of the aux bits
 but naming its two constructors to the kind split (`typedCtorsOfExpr`).
+A typed constructor's class test narrows a name's kind to that constructor's
+element kind where the kind's is unknown or one of several, and to nothing
+where it is another's (summary/index.js `refine`): the fixpoint may meet a
+name's Float32Array views a round before its Float64Arrays, and a Float64Array
+test that kept them joined them with the later kind to one no test proves.
 A resizable buffer (`new ArrayBuffer(n, { maxByteLength })`) reserves its
 maximum: its header holds the length at -8, the maximum at -4 and
 `RESIZABLE_MARK` in the properties word at -16, which a BUFFER never uses
