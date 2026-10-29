@@ -13,7 +13,7 @@ import { T, ACCESSOR_GET, isLeaf, isReassigned } from '../../ast.js'
 import { RESOLVED_PROP_MODULES, includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
 import { LAYOUT, PTR, ctx, emitArity, err, strictCode, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
 import {
-  BOXED_MUTATORS, TRUE_NAN, UNDEF_NAN, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isBoolAtom, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, sidecarOverride, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
+  BOXED_MUTATORS, TRUE_NAN, UNDEF_NAN, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isBoolAtom, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
 import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { hostResultAs, methodValType } from '../../kind-traits.js'
@@ -25,6 +25,7 @@ import { buildArrayWithSpreads, callMaybeHost, emitMethodCallSpread, emitNonCall
 import { emit } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { copyReceiverFacts, isPresentArrayElement, stringOps } from './shared.js'
+import { sidecarOverride } from './own-method.js'
 
 
 // Internal index hooks and property getters share the emitter table with
@@ -397,7 +398,7 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
       // (see its own doc) only ever engages on the `!vt` arm, same carve-out
       // as tryRuntimePtrTypeFork below.
       const onFallback = (o) => asF64(vt ? callMethod(o, builtin) : dateAuxFallback(o, method, callMethod, callMethod(o, builtin)))
-      return sidecarOverride(emit(obj), asI64(emit(['str', method])),
+      return sidecarOverride(emit(obj), method,
         (p, o) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), [], false, false, typed(['local.get', `$${o}`], 'f64')),  // CALL the override
         onFallback)                                                          // else the builtin method
     }
@@ -421,7 +422,7 @@ function tryStaticDispatch({ obj, method, parsed, vt, callMethod }) {
     const value = materializeDeferredBigint(callMethod(receiver, emitter))
     return methodValType(method, null, vt, ctx) === VAL.BOOL ? boolBoxIR(value) : asF64(value)
   }
-  return sidecarOverride(emit(obj), asI64(emit(['str', method])), callOverride, callBuiltin)
+  return sidecarOverride(emit(obj), method, callOverride, callBuiltin)
 }
 
 // 8. Unknown receiver with registered family emitters → runtime
@@ -524,7 +525,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod, optional }
       // One override probe serves both builtin and plain-object receivers.
       // No probe is needed when the summary proves this name is never stored.
       generic = canShadowProbe && ownMethodPossible
-        ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
+        ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), method,
             (p, o) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed, false, typed(['local.get', `$${o}`], 'f64')),
             () => inherited)
         : inherited
@@ -622,7 +623,7 @@ function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
       // (`x.toFixed` on null/undefined), before any call happens. A real (non-nullish)
       // pointer without an override still reads `undefined` (own-property-not-found is
       // out of this fix's scope — the pre-existing, unchanged behavior).
-      ['else', sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
+      ['else', sidecarOverride(typed(['local.get', `$${t}`], 'f64'), method,
         (p, o) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal, false, false, typed(['local.get', `$${o}`], 'f64')),
         (o) => mayBeUndef ? typed(['if', ['result', 'f64'],
           isNullish(typed(['local.get', `$${o}`], 'f64')),
@@ -799,7 +800,7 @@ function tryGenericEmitter(c) {
       // module-global string receiver reaches the ABI op as `global.get` and
       // the charCodeAt shape-1b entry decomposition can fire (the layered-
       // parser `cur.charCodeAt(idx)` hot shape; a local temp would hide it).
-      return sidecarOverride(emit(obj), asI64(emit(['str', method])),
+      return sidecarOverride(emit(obj), method,
         (p, o) => ownMethodCall(typed(['local.get', `$${p}`], 'f64'), parsed, false, typed(['local.get', `$${o}`], 'f64')),
         (o) => {
           const value = materializeDeferredBigint(callFlat(typeof obj === 'string' ? obj : o))
@@ -859,7 +860,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
           ['i64.eq', ['i64.and', bits, ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
           ['then', slotLoad()],
           ['else', throwTypeErrorIR('read')]], 'f64')
-      // Primitive receivers skip the override probe — see sidecarOverride (ir.js).
+      // Primitive receivers skip the override probe — see sidecarOverride (own-method.js).
       : typed(['if', ['result', 'f64'],
           ['i32.and',
             ['f64.ne', ['local.get', `$${objTmp}`], ['local.get', `$${objTmp}`]],

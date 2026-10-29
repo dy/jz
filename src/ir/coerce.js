@@ -1,7 +1,7 @@
 /**
  * ToNumber/ToString/ToPrimitive coercion: toNumF64/toStrI64 (the two big
  * dispatch chains), the OrdinaryToPrimitive method-fallback machinery
- * (objectToPrimitive/sidecarOverride), the nullish-sentinel
+ * (objectToPrimitive), the nullish-sentinel
  * coercion pair (coerceNullishToNum/Str), the Error-schema toString special
  * case (coerceRest/errToStringIR/ssoStrI64), and cloneIR (the IR-aliasing-safe
  * duplication these all lean on).
@@ -20,50 +20,11 @@ import { K, bitOf, hasTag, tagOf, NULL_BITS, TAGS, NUMBER_OPS } from '../summary
 import { COMPOUND_NUMERIC_OPS } from '../kind-traits.js'
 import { COMPARE_OPS } from '../ast.js'
 import { typed } from './tag.js'
-import { temp, tempI32, tempI64, block64 } from './locals.js'
-import { ptrTypeEq } from './pointers.js'
+import { temp, tempI32, tempI64 } from './locals.js'
 import { asF64, asI64 } from './numeric.js'
 import { isPlanTaggedBigint, isPlanRawBigint, materializeDeferredBigint, readI64 } from './bigint.js'
-import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, undefExpr, truthyIR, nullableBoolBoxIR } from './sentinels.js'
+import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, truthyIR, nullableBoolBoxIR } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
-
-const TAG_MASK_HEX = i64Hex(BigInt(LAYOUT.TAG_MASK) << BigInt(LAYOUT.TAG_SHIFT))
-const STRING_TAG_HEX = i64Hex(BigInt(PTR.STRING) << BigInt(LAYOUT.TAG_SHIFT))
-
-/** ToPrimitive sidecar probe (ES2024 7.1.1): an own `valueOf`/`toString` data
- *  property shadows the builtin. Reads the dynamic-prop sidecar slot keyed by
- *  `nameIR` (an emitted i64 string key) off receiver `objIR`; if it holds a
- *  closure, yields `onOverride($p)`, else `onFallback($o)` (both f64). Shared by
- *  the member-READ path (module/core.js — onOverride returns the closure value,
- *  onFallback calls the arity-≤1 builtin) and the method-CALL path (emit.js —
- *  onOverride invokes the closure, onFallback calls the builtin method). */
-export function sidecarOverride(objIR, nameIR, onOverride, onFallback) {
-  const o = temp('vo'), p = temp('vp')
-  inc('__dyn_get_expr', '__ptr_type')
-  // Primitive receivers can never carry an own property that shadows a
-  // builtin (numbers: no props at all; strings: property writes drop —
-  // module/collection.js STRING arms), so the override probe is statically
-  // futile for them. One inline number test + tag test skips the 3-frame
-  // __dyn_get_expr chain — parser loops calling s.charCodeAt through an
-  // unproven receiver were paying it per character (jessie: 1.19M/run at
-  // one site). The or's second operand reads garbage tag bits when the
-  // first is true (real number) — harmless, the or is already decided.
-  return block64(
-    ['local.set', `$${o}`, asF64(objIR)],
-    ['local.set', `$${p}`, ['if', ['result', 'f64'],
-      ['i32.and',
-        ['f64.ne', ['local.get', `$${o}`], ['local.get', `$${o}`]],
-        ['i64.ne',
-          ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['i64.const', TAG_MASK_HEX]],
-          ['i64.const', STRING_TAG_HEX]]],
-      ['then', ['f64.reinterpret_i64',
-        ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ['local.get', `$${o}`]], nameIR]]],
-      ['else', undefExpr()]]],
-    ['if', ['result', 'f64'],
-      ptrTypeEq(['local.get', `$${p}`], PTR.CLOSURE),
-      ['then', onOverride(p, o)],
-      ['else', onFallback(o)]])
-}
 
 /** Object coercion uses the same prepared OrdinaryToPrimitive functions as
  * runtime kernels. A program without user methods needs only the inherited tag. */

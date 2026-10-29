@@ -2,6 +2,32 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onWasi, levels } from './_matrix.js'
+import { oracle, funcWat } from './util.js'
+
+// A builtin-named method through a receiver of no known kind: an own property
+// of the name shadows the builtin, on an array (also one a growth relocated),
+// an object or a dictionary; a plain array takes the builtin without a lookup,
+// and the speed tier looks the rest up by a prehashed key.
+test('method receiver: own properties shadow an array builtin through an unknown receiver', () => {
+  const SRC = `const put = (out, x) => { out.push(x); return out.length }
+  const mk = () => { const b = { n: 0, length: 0 }; b.push = (x) => { b.n += x; return ++b.length }; return b }
+  const pick = (k) => {
+    if (k === 0) return []
+    if (k === 1) { const a = [1, 2]; a.loc = 7; return a }
+    if (k === 2) { const a = []; a.push = (x) => 100 + x; return a }
+    if (k === 3) { const a = []; for (let i = 0; i < 40; i++) a.push(i); a.push = (x) => 200 + x; return a }
+    if (k === 4) return mk()
+    const d = {}; d['push'] = (x) => 300 + x; d.length = 0; return d
+  }
+  export const f = (k) => { const r = pick(k); let s = 0; for (let i = 0; i < 3; i++) s += put(r, i); return s * 1000 + r.length }`
+  const host = oracle(SRC)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const ex = jz(SRC, { optimize }).exports
+    for (let k = 0; k <= 5; k++) is(ex.f(k), host.f(k), `O${optimize}: receiver ${k}`)
+  }
+  const put = funcWat(compile(SRC, { optimize: 3, wat: true }), 'put')
+  ok(put.includes('$__dyn_get_expr_t_h') && !/\$__dyn_get_expr[\s)]/.test(put), 'speed: one prehashed probe, no key hash per call')
+})
 
 test('method receiver: internal emitter keys and getter names are ordinary callable properties', () => {
   if (onWasi()) return // host callbacks use the JS interop boundary

@@ -12,7 +12,7 @@ import print from 'watr/print'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, sidecarOverride, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR, numberCarrierIR } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR, numberCarrierIR } from '../src/ir.js'
 import { emit, emitReference, emitIdentitySafe, storedValue, deps, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
@@ -42,6 +42,7 @@ import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
 import { unbounded } from '../src/summary/contract.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
+import { sidecarOverride } from '../src/compile/emit/own-method.js'
 
 const NAN_BITS = nanPrefixHex()
 // The RangeError of an allocation linear memory cannot hold: the code goes to
@@ -3028,7 +3029,7 @@ export default (ctx) => {
       if (builtin && emitArity(builtin) <= 1) {
         ctx.module.include('collection')
         ctx.module.include('array')
-        return sidecarOverride(emit(obj), asI64(emit(['str', prop])),
+        return sidecarOverride(emit(obj), prop,
           (p) => ['local.get', `$${p}`],          // READ: yield the override closure value
           (o) => asF64(builtin(o)))               // else the arity-≤1 builtin's value
       }
