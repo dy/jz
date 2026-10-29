@@ -197,6 +197,22 @@ test('function length uses source parameters, including runtime keys and dedupli
   is([first('length', 4), second('length', 6), first('length', 7)], [1,3,2], 'arity bytes relocate with each module in shared memory')
 })
 
+// The arity bytes are a lazy data table under a base global: a strip of dead
+// interned data at the tail, which re-lays the tables after it, moves them
+// with it. Laid out bare, a class's static read through `this.constructor`
+// (whose dispatch interns names the strip then drops) read another table's byte.
+test('function length of a static read through the constructor survives the data tail strip', () => {
+  const src = `class C { static m(a, b) { return a } static z() { return 0 } g() { return this.constructor.m.length } h() { const K = this.constructor; return K.z.length } }
+    class D { static m(a, b, c) { return a } k() { const h = this.constructor.m; return h.length } }
+    function g() {} g.p = (a, b, c, d) => a
+    const all = [C, D, g]
+    export let f = () => [new C().g(), new C().h(), new D().k(), all[2].p.length, C.m.length, D.m.length]`
+  const want = oracle(src).f()
+  for (const optimize of [0, 2, 'speed']) is(jz(src, { optimize }).exports.f(), want, `O${optimize}`)
+  const memory = new WebAssembly.Memory({ initial: 32, maximum: 128, shared: true })
+  is(jz(src, { sharedMemory: true, memory }).exports.f(), want, 'shared memory')
+})
+
 const throws = (code, match, msg, opts) => {
   let error
   try { compile(code, opts) } catch (e) { error = e }

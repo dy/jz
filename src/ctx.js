@@ -681,7 +681,6 @@ export function reset(proto, globals, bridge) {
     lengths: null,        // source arity per table slot, independent of body deduplication
     noProto: null,        // Set<table slot>: closures of functions with no `prototype` (jzify prototypeless)
     instanceofArms: null, // __closure_instanceof's answers per table slot, realized once at link (class-dispatch.js)
-    lengthData: null,     // demand-built static byte table
     bodies: null,
     make: null,
     call: null,

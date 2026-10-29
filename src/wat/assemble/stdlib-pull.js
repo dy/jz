@@ -310,13 +310,13 @@ export function pullStdlib(sec) {
   // later static-prefix strip shifts them like every other static offset.
   ctx.runtime.lazySpans = []
   // `fn` owns the table, or a list of functions that each read it: it lands when one is in,
-  // and stays while any is live
-  const injectTable = (fn, global, bytes) => {
+  // and stays while any is live; `align`: its bytes' alignment (8 for the word tables)
+  const injectTable = (fn, global, bytes, align = 8) => {
     const fns = Array.isArray(fn) ? fn : [fn]
     const owner = fns.find(f => ctx.core.includes.has(f))
     if (!owner || !bytes) return false
     const start = dataLen()
-    dataAlign(8)
+    dataAlign(align)
     // Shared memory: the table lands via memory.init at a runtime base, so the
     // global is MUTABLE and re-pointed at start (compile/index.js); its declared
     // init meanwhile holds the offset WITHIN the static region.
@@ -325,7 +325,7 @@ export function pullStdlib(sec) {
     if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
     dataPush(bytes)
     ;(ctx.runtime.staticI32GlobalInits ??= []).push(global)
-    ctx.runtime.lazySpans.push({ fn: '$' + owner, fns: fns.map(f => '$' + f), global, start, base, bytes })
+    ctx.runtime.lazySpans.push({ fn: '$' + owner, fns: fns.map(f => '$' + f), global, start, base, bytes, align })
     return true
   }
   // prevent double-injection on re-entry (null-sentinel; jz forbids delete)
@@ -361,6 +361,9 @@ export function pullStdlib(sec) {
     if (at.size) injectTable(users, 'math.kc', bytes)
     ctx.runtime.mathKc = null
   }
+  // each closure table slot's source arity (`fn.length`, module/function.js), the table whole by
+  // now: bytes, after the word tables, so none of them pads past it
+  injectTable('__closure_length', '__closure_len_tbl', ctx.closure.lengths && new Uint8Array(ctx.closure.lengths), 1)
   // a table injected above is static data the shared-memory start copies into __alloc'd
   // space too, where the program had none of its own (Math.exp alone)
   if (ctx.memory.shared && dataLen() > 0) needsAlloc = true

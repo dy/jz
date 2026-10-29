@@ -86,7 +86,7 @@ function setInit(sec, name, off) {
 /** Append the lazy tables at the data segment's tail, each re-pointed; answers them. */
 function appendLazy(sec, spans) {
   for (const s of spans) {
-    dataAlign(8)
+    dataAlign(s.align)
     s.start = dataLen()
     s.base = s.start
     setInit(sec, s.global, s.base)

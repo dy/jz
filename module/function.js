@@ -22,7 +22,6 @@ import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, registerGetter } from
 import { reachOn } from './core/reach.js'
 import { compactOn } from './core/compact.js'
 import { functionLength } from '../src/function.js'
-import { dataLen, dataPush } from '../src/static-data.js'
 
 const topLevelIntConsts = (body, captures) => {
   if (!captures.length) return null
@@ -65,15 +64,13 @@ export default (ctx) => {
     return idx
   }
 
+  // A slot's source arity, one byte per table slot: a lazy table
+  // (wat/assemble/stdlib-pull.js injectTable) laid out once the table is
+  // whole, its base global re-pointed wherever a later strip moves data.
   ctx.core.stdlib.__closure_length = () => {
-    if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
-    if (ctx.closure.lengthData == null) {
-      ctx.closure.lengthData = dataLen()
-      dataPush(new Uint8Array(ctx.closure.lengths))
-    }
-    const base = ctx.memory.shared ? `(i32.add (global.get $__staticBase) (i32.const ${ctx.closure.lengthData}))` : `(i32.const ${ctx.closure.lengthData})`
+    if (!ctx.scope.globals.has('__closure_len_tbl')) declGlobal('__closure_len_tbl', 'i32')
     return `(func $__closure_length (param $fn i64) (result i32)
-      (i32.load8_u (i32.add ${base}
+      (i32.load8_u (i32.add (global.get $__closure_len_tbl)
         (i32.wrap_i64 (i64.and (i64.shr_u (local.get $fn) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))))`
   }
   // The host's call of a closure it holds (interop.js reads one as a JS
