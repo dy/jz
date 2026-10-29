@@ -19,6 +19,7 @@ import { throwErrorWat } from './core/error-object.js'
 import { TOMB_NAN, TRUE_NAN, FALSE_NAN } from '../src/ir/sentinels.js'
 import { replacementHasPatterns } from './string.js'
 import { memberUses } from '../src/member-uses.js'
+import { REGEX_FLAG_PROPS } from '../src/evaluation-effects.js'
 
 const fullUnicode = flags => flags.includes('u') || flags.includes('v')
 const nextIndex = (str, index, unicode) => {
@@ -1155,8 +1156,7 @@ export default (ctx) => {
   // Regex literal: ['//','pattern','flags?'] → compile + fresh OBJECT instance.
   // Immutable prototype getters are shared by direct and computed reads.
   // Own fields still use the ordinary schema/sidecar path first.
-  const flagProps = [['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'],
-    ['dotAll', 's'], ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v']]
+  const flagProps = REGEX_FLAG_PROPS
   const flagString = flags => [...'dgimsuvy'].filter(c => flags.includes(c)).join('')
   const sourceString = pattern => {
     let out = ''

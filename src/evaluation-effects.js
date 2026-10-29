@@ -1,11 +1,16 @@
-/** Whether evaluating a prepared expression invokes user code implicitly.
- * Shared by frame-effect and bounds proofs; imports no IR emitters. */
-import { RELATIONAL_OPS } from './ast.js'
+/** Whether evaluating a prepared expression invokes user code implicitly, or
+ * throws where no call or `throw` stands. Shared by frame-effect and bounds
+ * proofs and the catch emitter; imports no IR emitters. */
+import { RELATIONAL_OPS, ASSIGN_OPS } from './ast.js'
 import { ctx } from './ctx.js'
 import { COMPOUND_NUMERIC_OPS } from './kind-traits.js'
 import { K, tagOf, tagsOf, hasTag, bitOf, NUMBER_OPS } from './summary/kind.js'
 
 export const TO_PRIMITIVE = { string: '__jz_tp_str', number: '__jz_tp_num' }
+/** RegExp.prototype's flag accessors and the flag each answers (module/regex.js). */
+export const REGEX_FLAG_PROPS = [['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'],
+  ['dotAll', 's'], ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v']]
+const REGEX_ACCESSORS = new Set(['source', 'flags', ...REGEX_FLAG_PROPS.map(([name]) => name)])
 const CONVERTING_OPS = new Set([...NUMBER_OPS, ...COMPOUND_NUMERIC_OPS, ...RELATIONAL_OPS, 'u-', 'u+', '+', '+=', 'strcat', '==', '!='])
 const PRIMITIVE_BITS = [K.NUMBER, K.STRING, K.BOOL, K.BIGINT, K.NULLISH, K.ABSENT].reduce((m, t) => m | bitOf(t), 0)
 const isArr = Array.isArray
@@ -89,6 +94,16 @@ function nonStringPrimitive(view, key) {
   let k
   try { k = view.kindOfExpr(key) } catch { return false }
   return k != null && tagsOf(k) !== 0 && (tagsOf(k) & ~(PRIMITIVE_BITS & ~bitOf(K.STRING))) === 0
+}
+
+/** Whether the store or update `node` may reject: a RegExp's accessors have no
+ *  setter, so a store of their name, or by a computed key, on a receiver that
+ *  may be a RegExp throws (module/regex.js `__throw_regex_readonly`). */
+export function storeMayReject(view, node) {
+  if (!isArr(node) || !(ASSIGN_OPS.has(node[0]) || node[0] === '++' || node[0] === '--')) return false
+  const target = node[1]
+  if (!isArr(target) || !(target[0] === '[]' || target[0] === '.' && REGEX_ACCESSORS.has(target[2]))) return false
+  return mayHaveTag(view, target[1], K.REGEX)
 }
 
 /** The receiver may hold a typed array, whose element store converts the value. */

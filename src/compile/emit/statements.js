@@ -18,7 +18,7 @@ import { representationProgramHasBigint, representationReturnAction } from '../r
 import { bindTuple, emit, emitBlockBody, emitDecl, emitIdentitySafe, emitVoid, toBool } from './dispatch.js'
 import { storedValue, storedValueNarrow } from '../../bridge.js'
 import { numericArrayExpr } from '../numeric-arrays.js'
-import { runsAccessor } from '../../evaluation-effects.js'
+import { runsAccessor, runsConversion, storeMayReject } from '../../evaluation-effects.js'
 import { frameNode } from '../../function.js'
 
 
@@ -52,6 +52,10 @@ function canThrow(body, seen = new Set(), view = ctx.summary?.at(ctx.func.curren
   if (op === 'delete') return true
   // Membership rejects primitive receivers before converting its key.
   if (op === 'in') return true
+  // A key or an operand converted by the program's toString or valueOf may throw
+  // in it (a computed key's ToPropertyKey among them), and a store of a RegExp
+  // accessor's name has no setter to take it.
+  if (runsConversion(view, body) || storeMayReject(view, body)) return true
   // A constructor a binding yields may be no function, or the host's, which
   // runs its own test (class-dispatch.js valueInstanceof).
   if (op === 'instanceof' && Array.isArray(body[2]) && body[2][0] === '__ctor_value') return true

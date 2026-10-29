@@ -2616,6 +2616,33 @@ test('audit #10: kind-specific member access on a genuinely-undefined census rea
   let e5 = null; try { numFixed() } catch (e) { e5 = e }
   ok(e5 instanceof TypeError, "JS: TypeError reading 'toFixed' off undefined (NUMBER census)")
 })
+// A member access throws where the source has no call or `throw`: a computed
+// key the program's toString converts (ToPropertyKey), and a store of a
+// RegExp accessor's name, which has no setter. A `try` around either keeps its
+// catch (compile/emit/statements.js canThrow, evaluation-effects.js); a body
+// proven unable to throw still drops it.
+test('try: a key conversion or a RegExp accessor store throws into the catch', () => {
+  const SRC = `const bad = { toString() { throw 5 } }
+  export const store = () => { const o = { a: 1 }; try { o[bad] = 1; return 0 } catch (e) { return e } }
+  export const read = () => { const o = { a: 1 }; let t = 0; try { t = o[bad] } catch (e) { t = e } return t }
+  export const index = () => { const a = [1, 2]; let t = 0; try { t = a[bad] } catch (e) { t = e } return t }
+  export const accessor = (k) => { const r = /b/i; let t = 0; try { r[k] = 1 } catch (e) { t = e instanceof TypeError ? 1 : 2 } return t }
+  export const named = () => { const r = /b/i; let t = 0; try { r.source = 'c' } catch (e) { t = 1 } return t }
+  export const update = (k) => { const r = /b/i; let t = 0; try { r[k]++ } catch (e) { t = 1 } return t }
+  export const writable = () => { const r = /b/g; let t = 0; try { r.lastIndex = 3; t = r.lastIndex } catch (e) { t = -1 } return t }`
+  const host = oracle(SRC)
+  for (const optimize of levels(0, 2, 3)) {
+    const ex = jz(SRC, { optimize }).exports
+    for (const name of ['store', 'read', 'index', 'named', 'writable']) is(ex[name](), host[name](), `O${optimize}: ${name}`)
+    for (const key of ['source', 'flags', 'global']) {
+      is(ex.accessor(key), host.accessor(key), `O${optimize}: store of ${key}`)
+      is(ex.update(key), host.update(key), `O${optimize}: update of ${key}`)
+    }
+  }
+  const plain = compile(`export const f = (n) => { const a = [1, 2, 3, 4]; let s = 0; try { for (let i = 0; i < n; i++) s += a[i & 3] } catch (e) { s = -1 } return s }`, { optimize: 2, wat: true })
+  ok(!plain.includes('try_table'), 'a numeric index into an array that cannot throw drops the catch')
+})
+
 test('audit #10: the same nullish-receiver checks are catchable IN-WASM, e instanceof TypeError', () => {
   const arrLen = jz(`export let f = () => { const m = new Map(); m.set('present', [1, 2]); try { m.get('missing').length; return false } catch (e) { return e instanceof TypeError } }`, { jzify: true }).exports.f
   is(arrLen(), true, 'catch(e){ e instanceof TypeError } — ARRAY census .length')
