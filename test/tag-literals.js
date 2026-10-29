@@ -10,7 +10,7 @@ import test from 'tst'
 import { ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { funcWat, oracle, wat } from './util.js'
 
 const agrees = (src, args, label) => {
   const host = oracle(src)
@@ -102,5 +102,36 @@ export let isSet = (e) => e.type === 'setValue' ? 1 : 0`
     ok(isSet(e) === 1, `a made setValue reads true at ${optimize}`)
     ok(isSet({ startTime: 0, type: 'other', value: 1 }) === 0, `a host object of its layout reads its own tag at ${optimize}`)
     throws(() => isSet(undefined), /undefined/, `a missing event throws at ${optimize}`)
+  }
+})
+
+test('tag literals: an || of tag tests of one read is one test of the set', () => {
+  // The two ramps share a layout, which stored both literals: neither compare
+  // alone is its answer, their `||` is (emitTagSet), and so is the `&&` of the
+  // negations; a nullish event still throws at the first read.
+  const guards = `${events}
+const isExp = (e) => e.type === 'exponentialRampToValue'
+const isLin = (e) => e.type === 'linearRampToValue'
+const isRamp = (e) => isExp(e) || isLin(e)
+`
+  const src = `${guards}
+const list = []
+export let add = (n) => { list.push(mk(n)); return list.length }
+export let ramps = () => { let h = 0; for (const e of list) h = h * 3 + (isRamp(e) ? 1 : 2); return h }
+export let flat = () => { let h = 0; for (const e of list) h = h * 3 + (e.type !== 'linearRampToValue' && e.type !== 'exponentialRampToValue' ? 1 : 2); return h }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const host = oracle(src), mod = jz(src, { optimize }).exports
+    for (let n = 0; n < 9; n++) { host.add(n); mod.add(n) }
+    ok(mod.ramps() === host.ramps() && mod.flat() === host.flat(), `the set tests at ${optimize}: ${mod.ramps()}, ${mod.flat()} for ${host.ramps()}, ${host.flat()}`)
+  }
+  agrees(`${guards}
+export let probe = (n) => { const l = [mk(1), mk(2), mk(4)]; try { return isRamp(l[n]) ? 1 : 0 } catch { return -1 } }`, [[0], [1], [2], [3]], 'nullish set')
+  if (belowOpt(2)) return
+  for (const optimize of levels(2, 3)) {
+    const text = wat(src, { optimize })
+    for (const name of ['ramps', 'flat']) {
+      const body = funcWat(text, name)
+      ok(body && !/\$__str_eq/.test(body), `${name} compares no string at ${optimize}`)
+    }
   }
 })

@@ -434,13 +434,46 @@ const PRIM_EQ_KINDS = new Set([VAL.NUMBER, VAL.STRING, VAL.BOOL])
 // equality. The read of a nullish `o` still throws; a cached read
 // (compile/cse-load.js) threw where it was loaded.
 let tagFoldOff = false
-function emitSlotLiteralEq(a, b, negate, strict) {
-  if (tagFoldOff) return null
-  const [operand, lit] = isLiteralStr(b) ? [a, b] : isLiteralStr(a) ? [b, a] : []
+// The member read a tag test compares (`o.p`, or the field cache that holds it), or null.
+const tagRead = (operand) => {
   const cached = typeof operand === 'string' ? ctx.func.fieldCaches?.get(operand) : null
   const read = cached ?? operand
-  if (!Array.isArray(read) || read[0] !== '.' || typeof read[1] !== 'string' || typeof read[2] !== 'string') return null
-  const [, recv, prop] = read
+  return Array.isArray(read) && read[0] === '.' && typeof read[1] === 'string' && typeof read[2] === 'string' ? { read, cached } : null
+}
+function emitSlotLiteralEq(a, b, negate, strict) {
+  const [operand, lit] = isLiteralStr(b) ? [a, b] : isLiteralStr(a) ? [b, a] : []
+  return lit ? slotLiteralTest(operand, [lit[1]], negate, () => emitLooseEq(a, b, negate, strict)) : null
+}
+// `o.p === 'a' || o.p === 'b'`, an `||` of tag tests of one read (after
+// inlining, a guard of guards: `isA(e) || isB(e)`), or an `&&` of their
+// negations: one test of the set, so a layout that stored only literals of
+// the set answers true, one that stored none of them false.
+export function emitTagSet(node, or) {
+  if (tagFoldOff) return null
+  const tests = []
+  const walk = (n) => {
+    if (Array.isArray(n) && n[0] === (or ? '||' : '&&')) return walk(n[1]) && walk(n[2])
+    if (!Array.isArray(n) || !(or ? n[0] === '===' || n[0] === '==' : n[0] === '!==' || n[0] === '!=')) return false
+    const [x, l] = isLiteralStr(n[2]) ? [n[1], n[2]] : isLiteralStr(n[1]) ? [n[2], n[1]] : []
+    if (!l) return false
+    tests.push([x, l[1]])
+    return true
+  }
+  if (!walk(node) || tests.length < 2) return null
+  const first = tagRead(tests[0][0])
+  if (!first || !tests.every(([x]) => { const r = tagRead(x); return r && r.read[1] === first.read[1] && r.read[2] === first.read[2] && !r.cached === !first.cached })) return null
+  // the layouts that keep a compare test the chain as written (a boolean: two compares joined)
+  const asWritten = () => { const r = emit(node); return r?.type === 'i32' ? r : null }
+  return slotLiteralTest(tests[0][0], tests.map(([, l]) => l), !or, asWritten)
+}
+// The test of `operand` (a tag read) against the literals `lits` (true where it
+// is one of them, or the reverse under `negate`); `compare` emits the test as
+// written for the layouts that stored one of them beside other strings.
+function slotLiteralTest(operand, lits, negate, compare) {
+  if (tagFoldOff) return null
+  const at = tagRead(operand)
+  if (!at) return null
+  const { read, cached } = at, [, recv, prop] = read
   const held = ctx.func.refinements?.get(recv)
   if (held?.schemaIds?.length || ctx.transform.dynamicAccessorNames?.has(prop)) return null
   const view = ctx.summary?.at(ctx.func.current), byLayout = view?.slotLiteralsOfExpr(recv, prop)
@@ -452,8 +485,8 @@ function emitSlotLiteralEq(a, b, negate, strict) {
   const v = emit(recv)
   if (v?.type !== 'f64' || v.ptrKind != null || v.cellI32) return null
   const yes = [], no = [], test = []
-  for (const [layout, lits] of byLayout)
-    (lits && !lits.has(lit[1]) ? no : lits?.size === 1 ? yes : test).push(layout)
+  for (const [layout, stored] of byLayout)
+    (stored && !lits.some(l => stored.has(l)) ? no : stored && [...stored].every(l => lits.includes(l)) ? yes : test).push(layout)
   // no layout answers: the compare as it was, one for all
   if (!yes.length && !no.length) return null
   const k = view.kindOfExpr(recv), setup = []
@@ -475,8 +508,9 @@ function emitSlotLiteralEq(a, b, negate, strict) {
     const fact = one == null ? null : { val: VAL.OBJECT, schemaId: one, schemaIds: [one], schemaIdSet: [one], schemaSlots: new Map([[prop, ctx.schema.list[one].indexOf(prop)]]), notNullish: true }
     tagFoldOff = true
     let cmp
-    try { cmp = fact ? withRefinements(new Map([[recv, fact]]), read, () => emitLooseEq(a, b, negate, strict)) : emitLooseEq(a, b, negate, strict) }
+    try { cmp = fact ? withRefinements(new Map([[recv, fact]]), read, compare) : compare() }
     finally { tagFoldOff = false }
+    if (!cmp) return null
     chain = ['if', ['result', 'i32'], among(test), ['then', cmp], ['else', chain]]
   }
   return done(typed(chain, 'i32'))

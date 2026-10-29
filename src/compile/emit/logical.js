@@ -17,6 +17,7 @@ import { extractRefinements, withRefinements } from '../flow-types.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../representation-plan.js'
 import { tagFnArrayDispatch } from './call.js'
 import { emit, markDropped, toBool, kindTruthyIR } from './dispatch.js'
+import { emitTagSet } from './comparisons.js'
 // The left operand's truth where its value is the result: by the summary's
 // kind of `node` where the IR alone asks the generic test (a closure or
 // nothing tests only for nothing), as a condition's does (toBool).
@@ -375,6 +376,9 @@ export const logicalOps = {
     // form) matches the original's twice-read, side-effect-free semantics.
     const fused = fuseRangeCheck(a, b)
     if (fused) return fused
+    // `o.p !== 'a' && o.p !== 'b'`: one test of the tag set (comparisons.js)
+    const tags = emitTagSet(self, false)
+    if (tags) return tags
     const va = emit(a)
     // Constant-folded literal: pre-bind under truthy refinements (b runs only when a was truthy).
     if (isLit(va)) {
@@ -503,6 +507,9 @@ export const logicalOps = {
     // compare `(x - LO) >u (HI - LO)`. Common in validation (`if (c < 'a' || c > 'z') …`).
     const fusedOr = fuseRangeCheckOr(a, b)
     if (fusedOr) return fusedOr
+    // `o.p === 'a' || o.p === 'b'`: one test of the tag set (comparisons.js)
+    const tags = emitTagSet(self, true)
+    if (tags) return tags
     const va = emit(a)
     // Constant-folded literal: pre-bind under falsy refinements (b runs only when a was falsy).
     if (isLit(va)) {

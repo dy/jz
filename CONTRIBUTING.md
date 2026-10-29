@@ -4254,6 +4254,12 @@ layout's sites stored only 'lit', false where none stored it, the schema id the
 pointer carries deciding between them, and the compare where a layout stored 'lit'
 beside other strings (two tags of one layout), its slot read direct under the
 refinement to that layout. A nullish receiver's read still throws before the test.
+An `||` of such tests of one read (after inlining, a guard of guards:
+`isExp(e) || isLin(e)`), or an `&&` of their negations, is one test of the
+literal set (`emitTagSet`, beside the range-check fusions of emit/logical.js):
+a layout that stored only literals of the set answers true, one that stored
+none of them false, so two tags sharing a layout need no compare where a test
+takes both.
 A function whose fresh allocation is stored into module state used to rewind
 and hand out a dangling pointer; the census is what makes the rewind sound.
 The same census runs per loop with the loop body as its scope: an iteration
