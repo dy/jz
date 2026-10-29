@@ -13,7 +13,7 @@ import { emit, deps } from '../src/bridge.js'
 import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal, registerResetHook } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
-import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
+import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, encodePtrHi } from '../layout.js'
 import print from 'watr/print'
 import { throwErrorWat } from './core/error-object.js'
 import { TOMB_NAN, TRUE_NAN, FALSE_NAN } from '../src/ir/sentinels.js'
@@ -1147,10 +1147,27 @@ export default (ctx) => {
     ctx.schema.hiddenViews = true
     return sid
   }
+  // A regex is an OBJECT of one of the literals' layouts: its pointer's high
+  // word, less the layout bits, is an OBJECT's, and a jump table over the
+  // layout ids answers which are a literal's, in constant time however many
+  // literals the program holds (a test per literal was paid by every dynamic
+  // store and missed read, `__regex_prop`, and every string conversion).
   ctx.core.stdlib.__is_regexp = () => {
-    const tests = [...ctx.schema.regexSids.keys()].map(sid =>
-      `(i64.eq (i64.and (local.get $v) (i64.const ${OBJECT_SCHEMA_HI_MASK})) (i64.const ${objectSchemaGuardHex(sid)}))`)
-    return `(func $__is_regexp (param $v i64) (result i32) ${tests.length ? tests.reduce((a,b) => `(i32.or ${a} ${b})`) : '(i32.const 0)'})`
+    const sids = [...ctx.schema.regexSids.keys()]
+    if (!sids.length) return `(func $__is_regexp (param $v i64) (result i32) (i32.const 0))`
+    if (sids.length === 1) return `(func $__is_regexp (param $v i64) (result i32)
+      (i64.eq (i64.and (local.get $v) (i64.const ${OBJECT_SCHEMA_HI_MASK})) (i64.const ${objectSchemaGuardHex(sids[0])})))`
+    const lo = Math.min(...sids), hi = Math.max(...sids), set = new Set(sids), labels = []
+    for (let sid = lo; sid <= hi; sid++) labels.push(set.has(sid) ? '$yes' : '$no')
+    return `(func $__is_regexp (param $v i64) (result i32) (local $hi i32)
+      (local.set $hi (i32.wrap_i64 (i64.shr_u (local.get $v) (i64.const 32))))
+      (if (i32.ne (i32.and (local.get $hi) (i32.const ${~LAYOUT.AUX_MASK})) (i32.const ${encodePtrHi(PTR.OBJECT, 0) | 0}))
+        (then (return (i32.const 0))))
+      (block $yes
+        (block $no
+          (br_table ${labels.join(' ')} $no (i32.sub (i32.and (local.get $hi) (i32.const ${LAYOUT.AUX_MASK})) (i32.const ${lo}))))
+        (return (i32.const 0)))
+      (i32.const 1))`
   }
 
   // Regex literal: ['//','pattern','flags?'] → compile + fresh OBJECT instance.
@@ -1169,12 +1186,12 @@ export default (ctx) => {
   }
   const stringWat = value => print(asI64(emit(['str', value])))
   const sidTest = sid => `(i64.eq (i64.and (local.get $obj) (i64.const ${OBJECT_SCHEMA_HI_MASK})) (i64.const ${objectSchemaGuardHex(sid)}))`
-  deps({ __regex_prop: ['__str_eq', '__is_str_key'], __regex_string: [], __throw_regex_readonly: ['__alloc_hdr', '__mkptr'] })
+  deps({ __regex_prop: ['__is_regexp', '__str_eq', '__is_str_key'], __regex_string: [], __throw_regex_readonly: ['__alloc_hdr', '__mkptr'] })
   ctx.core.stdlib.__throw_regex_readonly = () => throwErrorWat(ctx, '__throw_regex_readonly', 'TypeError', 'Cannot set a getter-only RegExp property')
   // Every dynamic store and missed read asks; a receiver of another layout
   // (the common one) answers by its tag and schema bits before the key is read.
   ctx.core.stdlib.__regex_prop = () => `(func $__regex_prop (param $obj i64) (param $key i64) (result i64)
-    (if (i32.eqz ${[...ctx.schema.regexSids.keys()].map(sidTest).reduce((a, b) => `(i32.or ${a} ${b})`)}) (then (return (i64.const ${TOMB_NAN}))))
+    (if (i32.eqz (call $__is_regexp (local.get $obj))) (then (return (i64.const ${TOMB_NAN}))))
     (if (i32.eqz (call $__is_str_key (local.get $key))) (then (return (i64.const ${TOMB_NAN}))))
     ${[...ctx.schema.regexSids].map(([sid, [pattern, flags]]) => `(if ${sidTest(sid)} (then
       ${[['source', sourceString(pattern)], ['flags', flagString(flags)], ...flagProps.map(([key, flag]) => [key, flags.includes(flag)])].map(([key, value]) =>

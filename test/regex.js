@@ -1003,3 +1003,26 @@ test('regex: alternatives retry the continuation and retain capture boundaries',
     for (const s of [...inputs, 'abc', 'abc', 'ac']) is(f(s), re.exec(s) ? Array.from(re.exec(s)) : null, `${re}: ${s}`)
   }
 })
+
+// A regex is a literal's layout among many: one jump table over the layout ids
+// answers it (module/regex.js `__is_regexp`), not a test per literal, which
+// every dynamic store, missed read and string conversion paid.
+test('regex: a receiver is tested as a regex in one lookup, however many literals', () => {
+  const src = `const rs = [/a+/g, /b(c)?/i, /^d$/m, /e/s, /f/y, /g/u, /x/gimsuy]
+  const objs = [{ source: 'not' }, [1, 2], 'str', 5, { flags: 'zz', lastIndex: 3 }]
+  const keys = ['source', 'flags', 'global', 'ignoreCase', 'multiline', 'dotAll', 'sticky', 'unicode', 'hasIndices', 'lastIndex', 'other']
+  export const reads = (n) => { let out = ''; for (const r of rs) for (const k of keys) out += k + '=' + String(r[k]) + ';'; for (const o of objs) for (const k of keys) out += String(o?.[k]) + ','; return out.slice(n, n + 60) + out.length }
+  export const tests = (n) => { let s = ''; for (const r of [...rs, ...objs]) s += (r instanceof RegExp) + Object.prototype.toString.call(r); return s.slice(n) }
+  export const writes = (n) => { let ok = 0, threw = 0; const k = n % 2 ? 'source' : 'global'
+    for (const r of rs) { try { r[k] = 'x'; ok++ } catch (e) { threw++ } r['lastIndex'] = n; r['mine' + n] = 1 }
+    for (const o of objs) { try { if (typeof o === 'object') o[k] = 'y'; ok++ } catch (e) { threw++ } }
+    return ok * 100 + threw * 10 + rs[0].lastIndex + (rs[1]['mine' + n] ?? 0) }`
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const ex = jz(src, { optimize }).exports, ref = oracle(src)
+    // one module on each side, called in the same order: the writes persist
+    for (const n of [0, 1, 7]) for (const f of ['reads', 'tests', 'writes']) is(ex[f](n), ref[f](n), `${f}(${n}) O${optimize}`)
+  }
+  const wat = compile(src, { optimize: 2, wat: true })
+  const isRe = wat.split(/\n(?=  \(func )/).find(p => /\(func \$__is_regexp\b/.test(p)) ?? ''
+  is(isRe.includes('br_table') && (isRe.match(/i64\.eq/g) ?? []).length === 0, true, 'one jump table, no equality per literal')
+})
