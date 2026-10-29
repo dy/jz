@@ -15,14 +15,21 @@ These are the product's promises. They are CI-gated (`test/bench.js`), not aspir
    jz may not be slower or larger on any comparable case and must lead on both geomeans
    (committed evidence).
    A case where another *wasm* target wins is a bug to fix, tracked as `todo` in the gate
-   until jz takes the lead — never silently accepted.
+   until jz takes the lead — never silently accepted (`vm`, whose same code leads or trails
+   by CPU, is the one named exception below).
 2. **Faster than V8-family JITs, everywhere; faster than bun/JSC, almost everywhere.**
-   jz beats V8-family engines (Node, Deno) on every case, no exception. It beats bun/JSC
-   too, except the documented tight-integer-loop class (`vm`, `dict`, `crc32`) — JSC's
-   adaptive JIT out-executing an AOT wasm module on its own turf, not a jz codegen gap
-   (the WAT there is already proven optimal; see `test/bench-claims.js`). Those cases are
-   held to a 1.5× sanity band instead of a leadership bar — a regression tripwire, not a
-   claim.
+   jz beats V8-family engines (Node, Deno) on every case. It beats bun/JSC too, except
+   the tight-integer-loop class (`vm`, `dict`, `crc32`), where JSC's adaptive JIT
+   out-executes an AOT wasm module on code already shown optimal.
+
+The exceptions are one table, `CLAIM_EXCEPTIONS` in `bench/claims.mjs`: case, claim
+class, band, a one-line measured cause and an evidence pointer. An entry is earned by
+measurement only: the same code shown optimal against that class, or the same machine
+code leading on some CPUs and trailing on others (`vm` against the wasm class: 0.75× on
+Zen 4, 0.76× on the M4, 1.07× on Zen 3, 1.10× on Zen 5). A codegen gap is never an exception,
+however hard; it stays red until fixed. The gate (`test/bench-claims.js`) holds an
+excepted case to its band instead of leadership and fails past it: every exception is a
+tripwire, not a claim, removed the commit jz leads on every runner.
 
 Evidence comes from the lean reference protocol, not a full matrix: `bench.yml`'s
 manual reference run (and `node bench/bench.mjs --contenders --paired=6 --json=…`)

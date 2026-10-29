@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CLAIM_CLASSES, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { CLAIM_CLASSES, exceptionsOf, WASM_BAND_TOL } from '../bench/claims.mjs'
 import { MEMORY_CASES } from '../test/_memory-floor.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -82,8 +82,9 @@ const worst = (us, rivals) => {
 }
 const claimWorst = (id, us) => {
   let best = null
-  for (const [, rivals, exempt] of CLAIM_CLASSES) {
-    if (exempt.includes(id)) continue
+  // (a class's named exceptions answer to their bands, not to this column)
+  for (const [label, rivals] of CLAIM_CLASSES) {
+    if (exceptionsOf(label).has(id)) continue
     const w = worst(us, rivals)
     if (w && (!best || w[0] > best[0])) best = w
   }

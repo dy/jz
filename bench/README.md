@@ -306,6 +306,23 @@ Per case the gate distinguishes three verdicts, printed with every run:
 microbench jitter, tolerated but never called a lead), **red** (> 1.05 — a
 rival leads; fails the gate). A "band" row is a statistical tie, not a win.
 
+### Named exceptions
+
+One table, `CLAIM_EXCEPTIONS` in `bench/claims.mjs`, names every case a
+claim class (`wasm`, `v8`, `jsc`) holds to a band instead of leadership. Each
+entry carries the case, the class, the band (jz over the class's fastest
+rival, by the reference medians), the measured cause in one line and where it
+was measured. Measurement earns an entry, never a deadline: the case's code
+shown optimal against that class, or the same code leading on some CPUs and
+trailing on others. An excepted case leaves its class's strict and band tests
+and answers to its band in `test/bench-claims.js`; past the band the gate
+fails. Every exception is a tripwire, not a claim, and goes the commit jz leads
+on every runner. The table today: `vm` against the wasm class at 1.12×
+(identical `run_kernel` code: 0.75× on an EPYC 9V74, 0.76× on an Apple M4,
+1.07× on an EPYC 7763, 1.10× on an EPYC 9V45), and `vm`, `dict` and `crc32`
+against bun/JSC at 1.5×. A codegen gap, however hard, earns none: the `jz`
+self-compile case and `watr` trail the JIT classes and stay red until fixed.
+
 Performance evidence describes the machine recorded in its metadata. The
 current `bench/results.json` records darwin/arm64, Apple M4 Max. Ordinary CI
 runs publish their separate measurements as `bench/results-ci.json`, visible

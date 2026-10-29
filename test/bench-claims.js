@@ -28,7 +28,7 @@ import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
-import { CLAIM_CLASSES, CLAIM_RIVALS, contenders, JIT_RIVALS, JSC_EXCEPTION_BAND_TOL, JSC_FAMILY_RIVALS, TIGHT_INT_LOOP_CASES, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, contenders, exceptionsOf, JIT_RIVALS, JSC_FAMILY_RIVALS, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The named rivals of the claim. Unlike test/bench.js's availability-filtered
@@ -41,28 +41,11 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // held 19 JIT losses across 9 cases that no test surfaced). Every JS-runtime
 // lane in the reference dataset counts; absence of a lane is a coverage hole,
 // not a pass (same COVERAGE_FLOOR as the wasm rivals).
-// V8-family engines (node's V8, Deno's V8) get the full strict-leadership claim on
-// every case, no exception. Bun and JSC (both JavaScriptCore) carry the scoped
-// exception below — split out so a lane's engine family, not its runtime name,
-// decides which claim it's held to.
-// DECIDED CLAIM SCOPING 2026-08-01 (.work/archive/todo.md "DECISIONS EXECUTED 2026-08-01" +
-// evidence "VM + DICT DISSECTED: HARD TAILS, ~0% CLOSABLE" 2026-07-31): the
-// tight-integer-loop class (register-VM dispatch, hash-probe chains, checksum
-// accumulation) is where JSC's adaptive JIT specializes hot integer loops beyond
-// what an AOT-compiled wasm module can match at this size. Dissected exhaustively —
-// WAT already optimal (vm's opcode chain is O(1) br_table, fully inlined, pure i32;
-// dict's probe chain carries zero bounds checks, AND-mask proven; Liftoff/tier-up
-// tiering confound ruled out) — and on every one of these cases jz still leads
-// EVERY V8-family engine and EVERY AOT wasm rival (c/rust/go/zig/AS/MoonBit). This
-// is JSC's rival EXECUTION MODEL winning on its own turf (adaptive JIT on JS source
-// vs AOT wasm in V8), not a jz codegen deficiency — no emission lever exists at the
-// WAT level. Precedent: the same honest-boundary discipline the M4-reference-
-// machine scoping above already applies to the whole suite (name the scope a claim
-// holds over instead of quietly excluding what falls outside it). These (case,
-// rival) pairs are exempt from strict leadership below but still gated by a sanity
-// band (JSC_EXCEPTION_BAND_TOL) — a regression tripwire, not a claim.
-// Not a leadership bar. If a bun/jsc lead on these cases ever widens past 1.5×
-// that's a real jz regression, not just the standing rival-execution-model gap.
+// V8-family engines (node's V8, Deno's V8) and bun/JSC (both JavaScriptCore) are
+// separate classes, so a lane's engine family, not its runtime name, decides which
+// claim it is held to. A case a class excepts by name (bench/claims.mjs
+// CLAIM_EXCEPTIONS: its measured cause and evidence) leaves that class's strict and
+// band tests and answers to its own band instead: a tripwire, not a claim.
 // Minimum per-rival coverage as a FRACTION of the corpus (audit 2026-07-28:
 // the old ">=5 rows" floor let 5 successes from a 60-case corpus count as
 // "contested"). 0.7 is set from real corpus portability, not convenience: the
@@ -417,8 +400,8 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 })
 
 // Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who]. `ids`
-// (optional Set) restricts which cases are considered — used to carve the
-// JSC tight-integer-loop exception out of the general bun/jsc claim.
+// (optional Set) restricts which cases are considered — used to carve a
+// class's named exceptions out of its claim; `source` is the evidence.
 // Cases the claims do not yet cover: a library's own code added to the corpus
 // that jz does not lead on every runner yet (AGENTS.md's "tracked as todo in the
 // gate until jz takes the lead — never silently accepted"):
@@ -455,9 +438,9 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // Excluded from the strict and band tests and from the corpus-coverage test
 // until the todo below flips; a case leaves this set the commit it leads.
 const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik'])
-const caseRatios = (rivals, ids = null) => {
+const caseRatios = (rivals, ids = null, source = cases) => {
   const out = []
-  for (const [id, c] of Object.entries(cases)) {
+  for (const [id, c] of Object.entries(source)) {
     if (ids ? !ids.has(id) : PENDING_CASES.has(id)) continue
     const jz = c.targets?.jz
     if (!timedBenchmarkRow(jz)) continue
@@ -493,17 +476,18 @@ const bandTest = (label, rivals, ids = null, tol = WASM_BAND_TOL) => test(`claim
   ok(red.length === 0, `red cases void the ${label} claim: ${red.join(', ')}`)
 })
 
-strictTest('wasm rival', CLAIM_RIVALS)
-bandTest('wasm rival', CLAIM_RIVALS)
-
-// JIT claim, split by engine family (DECIDED CLAIM SCOPING 2026-08-01, see
-// TIGHT_INT_LOOP_CASES above): V8-family gets the unscoped claim over the full
-// corpus; bun/jsc get it everywhere EXCEPT the documented tight-integer-loop
-// exception, which instead gets its own sanity-band tripwire below.
-// (the pending library cases stay out of this claim as they stay out of the V8-family one: PENDING_CASES)
-const nonExceptionIds = new Set(Object.keys(cases).filter(id => !TIGHT_INT_LOOP_CASES.includes(id) && !PENDING_CASES.has(id)))
-strictTest('V8-family JIT (v8/node, deno)', V8_FAMILY_RIVALS)
-bandTest('V8-family JIT (v8/node, deno)', V8_FAMILY_RIVALS)
+// Each claim class over the cases it claims: every case but the pending ones and
+// the ones it excepts by name (bench/claims.mjs CLAIM_EXCEPTIONS), which answer to
+// their bands below. The V8 family excepts none today.
+const NAMES = { wasm: 'wasm rival', v8: 'V8-family JIT (v8/node, deno)', jsc: 'bun/jsc JIT' }
+const RIVALS = Object.fromEntries(CLAIM_CLASSES)
+for (const [label, rivals] of CLAIM_CLASSES) {
+  const excepted = exceptionsOf(label)
+  const name = NAMES[label] + (excepted.size ? ` (outside its named exceptions: ${[...excepted.keys()].join(', ')})` : '')
+  const ids = new Set(Object.keys(cases).filter(id => !PENDING_CASES.has(id) && !excepted.has(id)))
+  strictTest(name, rivals, ids)
+  bandTest(name, rivals, ids)
+}
 test.todo('claims: the pending library cases lead every V8-family and bun/jsc engine (PENDING_CASES)', () => {
   const measured = new Set([...PENDING_CASES].filter(id => cases[id]))
   ok(measured.size === PENDING_CASES.size, `unmeasured: ${[...PENDING_CASES].filter(id => !cases[id]).join(', ')}`)
@@ -512,14 +496,50 @@ test.todo('claims: the pending library cases lead every V8-family and bun/jsc en
     ok(notLed.length === 0, `not led: ${notLed.join(', ')}`)
   }
 })
-strictTest('bun/jsc JIT (outside the tight-integer-loop exception)', JSC_FAMILY_RIVALS, nonExceptionIds)
-bandTest('bun/jsc JIT (outside the tight-integer-loop exception)', JSC_FAMILY_RIVALS, nonExceptionIds)
 
-test('claims: documented exception — tight-integer-loop cases (vm/dict/crc32) stay within the 1.5× sanity band of bun/jsc', () => {
-  const exceptionIds = new Set(TIGHT_INT_LOOP_CASES)
-  const red = caseRatios(JSC_FAMILY_RIVALS, exceptionIds).filter(([, r]) => r > JSC_EXCEPTION_BAND_TOL)
-    .map(([id, r, who]) => `${id} ${r.toFixed(3)}× (${who})`)
-  ok(red.length === 0, `tight-integer-loop exception exceeded its ${JSC_EXCEPTION_BAND_TOL}× sanity band on ${red.length} case(s): ${red.join(', ')} — a real regression, not the documented rival-execution-model gap`)
+// NAMED EXCEPTIONS — each excepted case against its class's fastest rival:
+// within its band it holds (a lead says the entry may go), past it the gate fails.
+// A case the evidence does not time is reported, not passed as held.
+const exceptionVerdicts = (source = cases, table = CLAIM_EXCEPTIONS) => table.map(e => {
+  const [row] = caseRatios(RIVALS[e.class], new Set([e.case]), source)
+  return { ...e, ratio: row?.[1] ?? null, who: row?.[2] ?? null }
+})
+const verdictText = v => `${v.case} vs ${v.class} ${v.ratio == null ? 'unmeasured' : `${v.ratio.toFixed(3)}× (${v.who})`}, band ${v.band}×`
+
+test('claims: the named-exception table is well formed', () => {
+  const corpus = new Set(readdirSync(join(ROOT, 'bench'), { withFileTypes: true })
+    .filter(d => d.isDirectory() && existsSync(join(ROOT, 'bench', d.name, `${d.name}.js`))).map(d => d.name))
+  const seen = new Set()
+  for (const e of CLAIM_EXCEPTIONS) {
+    const key = `${e.case}/${e.class}`
+    ok(corpus.has(e.case), `${key}: a case of the corpus`)
+    ok(!PENDING_CASES.has(e.case), `${key}: a pending case answers to no claim, so to no exception`)
+    ok(RIVALS[e.class] != null, `${key}: a claim class (${Object.keys(RIVALS).join(', ')})`)
+    ok(typeof e.band === 'number' && e.band > 1 && e.band <= 2, `${key}: a band above 1 (a tie needs no exception) and at most 2`)
+    for (const field of ['cause', 'evidence'])
+      ok(typeof e[field] === 'string' && e[field].trim().length > 0 && !e[field].includes('\n'), `${key}: a one-line ${field}`)
+    ok(!seen.has(key), `${key}: named once`)
+    seen.add(key)
+  }
+})
+
+test('claims: an excepted case holds to its band and fails past it', () => {
+  const row = (jz, rival) => ({ targets: { jz: { parity: 'ok', medianUs: jz }, 'c-wasm': { parity: 'ok', medianUs: rival }, jsc: { parity: 'DIFF', medianUs: 1 } } })
+  const table = [{ case: 'held', class: 'wasm', band: 1.1 }, { case: 'broken', class: 'wasm', band: 1.1 },
+    { case: 'led', class: 'wasm', band: 1.1 }, { case: 'wrong', class: 'jsc', band: 1.5 }]
+  const verdicts = exceptionVerdicts({ held: row(109, 100), broken: row(111, 100), led: row(90, 100), wrong: row(100, 100) }, table)
+  is(verdicts.map(v => v.ratio == null ? null : +v.ratio.toFixed(2)).join(), '1.09,1.11,0.9,', 'ratios against the class\'s fastest timed rival; a wrong rival row times nothing')
+  is(verdicts.filter(v => v.ratio != null && v.ratio > v.band).map(v => v.case).join(), 'broken', 'only the case past its band breaks')
+})
+
+test('claims: named exceptions — each excepted case stays within its band', () => {
+  const verdicts = exceptionVerdicts()
+  const broken = verdicts.filter(v => v.ratio != null && v.ratio > v.band)
+  const held = verdicts.filter(v => v.ratio != null && v.ratio <= v.band)
+  const unmeasured = verdicts.filter(v => v.ratio == null)
+  if (held.length) console.log(`  held: ${held.map(verdictText).join('; ')}`)
+  if (unmeasured.length) console.log(`  unmeasured: ${unmeasured.map(verdictText).join('; ')}`)
+  ok(broken.length === 0, `named exception past its band, a regression the exception does not cover: ${broken.map(v => `${verdictText(v)} — ${v.cause}`).join('; ')}`)
 })
 
 // SIZE — the owner's bar (2026-08-28 tightened; supersedes the par-or-geomean-
