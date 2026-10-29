@@ -9,9 +9,9 @@
  *     function (its name ends in `_t`; jz's sin, cos, asin, acos and atan
  *     agree with libm to about 1e-9, not to the last digit).
  *  3. test/three/kernels.js, the CPU hot paths of a frame, answers what Node
- *     answers and is timed against V8. The ratios print on every run; a kernel
- *     jz leads by LEAD is pinned there (PINNED), and JZ_THREE_PIN=1 asks every
- *     kernel for jz no slower than V8.
+ *     answers and is timed against V8, each kernel in a Node process of its
+ *     own. The ratios print on every run; a kernel jz leads by LEAD is pinned
+ *     there (PINNED), and JZ_THREE_PIN=1 asks every kernel for jz no slower than V8.
  *  4. The three.js bench cases (bench/three*), built as the bench builds them,
  *     answer what Node answers, call after call.
  *
@@ -22,7 +22,8 @@
  */
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import { dirname, join, relative } from 'node:path'
 import { readdirSync } from 'node:fs'
 import { compile } from '../index.js'
@@ -79,15 +80,37 @@ const KERNELS = [['sceneUpdate', 10000, 20], ['transformPositions', 100000, 4], 
   ['slerp', 10000, 40], ['bounds', 100000, 4], ['normals', 30000, 4]]
 // A kernel jz leads by at least LEAD (V8 ms / jz ms) is pinned: a run that
 // measures it below LEAD fails. The others print until they clear it, then
-// join PINNED. V8 runs the seven kernels in one process over the same classes,
-// as an application calls them, and its inline caches see every shape the
-// kernels pass: a kernel alone in a process runs faster in V8 than here
-// (bench/three*, one case a process, is that comparison).
+// join PINNED. V8 times each kernel in a process of its own, where its inline
+// caches see that kernel's shapes alone: in this process they have seen every
+// shape the API test above passes, and V8 ran transformPositions in 15.7 ms and
+// normals in 25.7 that it runs in 3.6 and 2.7 alone (Apple M4 Max, loaded).
+// jz compiles the seven as one module, their kinds joined, and runs them in
+// this process: wasm keeps no feedback.
 const LEAD = 1.2
-const PINNED = new Set(['transformPositions', 'cull', 'raycast', 'slerp', 'normals'])
+const PINNED = new Set(['transformPositions', 'cull', 'raycast', 'slerp', 'bounds', 'normals'])
 // Processor time, the least of several runs: wall time on a busy machine measures the machine.
 const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000 }
 const least = (fn, after) => { let t = Infinity; for (let i = 0; i < 9; i++) { const t0 = cpu(); fn(); t = Math.min(t, cpu() - t0); after?.() } return t }
+// V8's time for one kernel in a fresh process: two calls to warm it, then the
+// least of nine; the better of two processes, as V8 settles a kernel's code
+// differently from one process to the next (normals read 2.7 ms in one, 6.1 in another).
+const V8_ALONE = `const [entry, name, n, repeats] = process.argv.slice(1)
+const k = (await import(entry))[name]
+const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000 }
+k(+n, +repeats); k(+n, +repeats)
+let t = Infinity
+for (let i = 0; i < 9; i++) { const t0 = cpu(); k(+n, +repeats); t = Math.min(t, cpu() - t0) }
+console.log(t)`
+const v8Alone = (entry, name, n, repeats) => {
+  let best = Infinity
+  for (let p = 0; p < 2; p++) {
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', V8_ALONE, pathToFileURL(entry).href, name, String(n), String(repeats)], { encoding: 'utf8' })
+    const t = +r.stdout.trim().split('\n').pop()
+    if (r.status !== 0 || !(t > 0)) throw Error(`${name} in a process of its own: ${r.stderr || r.stdout}`)
+    best = Math.min(best, t)
+  }
+  return best
+}
 
 test('three: the hot paths of a frame answer what Node answers, timed against V8', async () => {
   const entry = join(ROOT, 'test/three/kernels.js')
@@ -102,7 +125,7 @@ test('three: the hot paths of a frame answer what Node answers, timed against V8
     // a second round after the reset answers the same
     is(wasm[name](n, repeats), got, `${name} after memory.reset()`)
     memory.reset()
-    const v8 = least(() => js[name](n, repeats)), jz = least(() => wasm[name](n, repeats), () => memory.reset())
+    const v8 = v8Alone(entry, name, n, repeats), jz = least(() => wasm[name](n, repeats), () => memory.reset())
     sum += Math.log(v8 / jz)
     console.log(`  ${name.padEnd(20)}${v8.toFixed(2).padStart(9)}${jz.toFixed(2).padStart(9)}${((v8 / jz).toFixed(2) + '×').padStart(9)}${PINNED.has(name) ? '' : '  (diagnostic)'}`)
     if (PINNED.has(name)) ok(v8 / jz >= LEAD, `${name}: V8/jz ${(v8 / jz).toFixed(2)}× (jz ${jz.toFixed(2)} ms, V8 ${v8.toFixed(2)} ms), pinned at ${LEAD}×`)
