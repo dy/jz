@@ -1719,6 +1719,39 @@ test('in: open, aliased, deleted, and large schemas retain runtime membership di
   ok(!compile(declared, { optimize: 3, wat: true }).includes('$__dyn_has'), 'a declared key keeps the closed-schema path')
 })
 
+// A factory's literal computes a value (`{ buf: new Uint8Array(n) }`), and no
+// code can name the object while its values run: the writes right after it
+// are as definite as after a literal of constants, so their keys take slots
+// (watr's makeByteBuf). A call there still observes a literal pending before
+// it, whose later write stays out of its layout.
+test('declared literal keys: a call in a literal\'s own values keeps the writes after it definite', () => {
+  const SRC = `const make = (n) => {
+    const b = { buf: new Uint8Array(n), length: 0 }
+    b.push = (x) => { b.buf[b.length++] = x; return b.length }
+    b.size = () => b.length
+    return b
+  }
+  const put = (out, x) => { out.push(x); return out }
+  export const f = (n) => {
+    const a = [], b = make(n)
+    for (let i = 0; i < n; i++) { put(a, i); put(b, i * 2) }
+    return a.length * 1000 + b.size() * 10 + b.buf[n - 1] + ('push' in b ? 1 : 0)
+  }
+  let first = { x: 1 }
+  const peek = () => Object.keys(first).length
+  let second = { y: peek() }
+  first.z = 2
+  export const g = () => second.y * 10 + peek()`
+  const host = oracle(SRC)
+  for (const optimize of levels(0, 2, 3)) {
+    const ex = jz(SRC, { optimize }).exports
+    is(ex.f(8), host.f(8), `O${optimize}: methods written after a computed literal`)
+    is(ex.g(), host.g(), `O${optimize}: a later literal's call sees the earlier literal without its later key`)
+  }
+  ok(!compile(SRC.slice(0, SRC.indexOf('let first')), { optimize: 3, wat: true }).includes('$__dyn_set'),
+    'the factory\'s methods are slots, no dynamic store')
+})
+
 // The runtime `in` (every receiver the closed-schema path cannot decide) read
 // the property and reported "non-nullish", so a present null or undefined
 // field was absent: watr's `node[1][0] in TRUNC_OF_CONVERT[op]` (a table whose

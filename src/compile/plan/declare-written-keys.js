@@ -212,7 +212,14 @@ export const declareWrittenKeys = (ast) => {
         if (!STRUCTURAL.has(key) && !isArrayIndexKey(key)) { const lit = pending.get(name); let set = definite.get(lit); if (!set) definite.set(lit, set = new Set()); set.add(key) }
         continue
       }
-      if (bound) { if (some(bound[1], observes)) pending.clear(); else pending.set(bound[0], bound[1]); continue }
+      // A literal's values run before anything can name the object (a factory's
+      // `{ buf: new Uint8Array(n) }`): a call there observes only the literals
+      // already pending, never the one it builds.
+      if (bound) {
+        if (pending.size && some(bound[1], observes) && !blind(bound[1], [...pending.keys()])) pending.clear()
+        pending.set(bound[0], bound[1])
+        continue
+      }
       // A definition, or an assignment of a value that runs nothing, keeps the
       // literals pending; so does a statement whose only observers are calls
       // that cannot reach them.
