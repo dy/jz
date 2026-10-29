@@ -287,7 +287,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   for (const f of funcs) { funcByName.set(f.name, f); if (exported(f)) exportedNames.add(f.name) }
   let changed = false
 
-  const escapeId = (id) => { if (!escaped.has(id)) { escaped.add(id); changed = true; escape(results.get(id) ?? K.NONE); for (const k of closureProps.get(id)?.values() ?? []) escape(k) } }
+  const escapeId = (id) => { if (!escaped.has(id)) { escaped.add(id); changed = true; escape(results.get(id) ?? K.NONE); for (const k of closureProps.get(id)?.values() ?? []) escape(k); escape(closureWild.get(id) ?? K.NONE) } }
   // Members use existing scope keys: names for declared functions, numeric
   // IDs for anonymous closures. Taking a function's address preserves its
   // identity; only an unknown use opens its parameters.
@@ -1312,6 +1312,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // undefined. An escaped closure may be written by anyone: its properties are
   // read as ANY and what it holds escapes with it.
   const closureProps = new Map()   // closure id → Map(name → kind)
+  // What a closure holds under a name no store spells (`fn[k] = v`; a deleted
+  // property's absence): every name of it may read it.
+  const closureWild = new Map()    // closure id → kind
   const FUNCTION_PROTO = new Set(['call', 'apply', 'bind', 'toString', 'length', 'name', 'prototype', 'constructor'])
   const closureOwn = (recv) => tagOf(recv) === K.CLOSURE && paramOf(recv) !== UNKNOWN && !membersOf(paramOf(recv)).some(id => escaped.has(id))
   const raiseClosureProp = (recv, prop, k) => {
@@ -1322,7 +1325,23 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (nk !== old) { m.set(prop, nk); changed = true }
     }
   }
-  const closurePropOf = (recv, prop) => { let k = K.NONE; for (const id of membersOf(paramOf(recv))) k = merge(k, closureProps.get(id)?.get(prop) ?? K.NONE); return k }
+  const raiseClosureWild = (recv, k) => {
+    for (const id of membersOf(paramOf(recv))) {
+      if (escaped.has(id)) escape(k)
+      const old = closureWild.get(id) ?? K.NONE, nk = merge(old, k)
+      if (nk !== old) { closureWild.set(id, nk); changed = true }
+    }
+  }
+  const closurePropOf = (recv, prop) => { let k = K.NONE; for (const id of membersOf(paramOf(recv))) k = merge(k, merge(closureProps.get(id)?.get(prop) ?? K.NONE, closureWild.get(id) ?? K.NONE)); return k }
+  // Whether a function's own property holds its lifted function alone: every
+  // store into it so far (through the function's name, an alias, a parameter,
+  // a computed key) stored that function, and the function reached no code
+  // that may store another. One not stored yet holds what its definition will.
+  const holdsLifted = (recv, prop, lifted) => {
+    if (!closureOwn(recv)) return false
+    const k = closurePropOf(recv, prop), id = closureSetIds.get(lifted)
+    return k === K.NONE || id !== undefined && k === kind(K.CLOSURE, id)
+  }
   const cellWild = new Map()    // cell root → kind stored under a computed string key
   const cellNumeric = new Map() // cell root → kind stored under a Number key, possibly outside array indices
   // A dictionary built by a literal with a spread or a computed key: its
@@ -2658,10 +2677,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (name === 'hasOwnProperty' || name === 'propertyIsEnumerable') seeKeys(recv)
     // `f.m(…)` on a function `f` whose property `m` prepare lifted to the
     // function `f$m` (a class's static, a parser's table): that function is
-    // called, as the emitter calls it (method-dispatch.js tryFnPropCall).
+    // called, as the emitter calls it (method-dispatch.js tryFnPropCall),
+    // while every store into the property stored it (`holdsLifted`). A
+    // property stored anything else calls each closure it holds (below).
     if (node && Array.isArray(node[1]) && typeof node[1][1] === 'string' && funcByName.has(node[1][1])) {
       const lifted = liftedProp(node[1][1], name)
-      if (lifted && funcByName.has(lifted)) return call(lifted, base, n, node)
+      if (lifted && funcByName.has(lifted) && holdsLifted(recv, name, lifted)) return call(lifted, base, n, node)
     }
     if (t === K.NONE) return K.NONE
     // A member call on a nullish receiver throws before the callee runs: the
@@ -3720,6 +3741,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (t === K.ARRAY) { if (paramOf(recv) !== UNKNOWN) { storeAt(recv, idx, typeof target[1] === 'string' ? target[1] : null); raiseEntry(recv, ik, v, idx) } else escape(v) }
       else if (t === K.HASH) { if (paramOf(recv) !== UNKNOWN) raiseWild(recv, v); else escape(v) }
       else if (dictOrObject(recv)) { const c = cell(paramOf(recv)); raiseWild(recv, v); for (const sid of shapesInCell(c)) { raiseAllSlots(sid, v); raiseSideWild(sid, v) } if (cellLostObject.has(c)) poisonAll(recv, ik, v) }
+      // a function's property under a computed name: any of its names may hold it
+      else if (t === K.CLOSURE && closureOwn(recv)) raiseClosureWild(recv, v)
       else if (t === K.TYPED) {
         if (ik === K.NONE) return K.NONE
         if (typedElementKey(idx, ik === NUMBER)) return typedStore(typedElemKind(recv), v)
@@ -4556,6 +4579,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // A deleted field reads as absent: through a cell, on every shape it holds (as a store does).
       if (dictOrObject(r)) { const c = cell(paramOf(r)); for (const sid of shapesInCell(c)) { raiseAllSlots(sid, ABSENT); raiseSideWild(sid, ABSENT) } if (cellLostObject.has(c)) poisonAll(r, k, ABSENT) }
       else if (tagOf(r) === K.OBJECT || tagOf(r) === K.ANY) poisonAll(r, k, ABSENT)
+      // a function's property: any of its names may be gone
+      else if (tagOf(r) === K.CLOSURE && closureOwn(r)) raiseClosureWild(r, ABSENT)
       return
     }
     // A break to a block's label leaves it with what held there: what follows
@@ -5060,7 +5085,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, iterSites, reached, defaultRuns, decisions,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, closureWild, iterSites, reached, defaultRuns, decisions,
     mapKeys, heldKeys, absentStored,
     held,
     boolKeys, storeBits, paramKeys,
@@ -5506,7 +5531,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
     tuples.clear(); lens.length = 0; stores.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
-    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
+    pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
     if (unnamed.size && discover) return { discovered: [...unnamed.values()] }

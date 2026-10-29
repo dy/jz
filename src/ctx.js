@@ -104,6 +104,7 @@ function createFunctions() {
     names: new Set(),
     map: new Map(),
     multiProp: new Map(), // obj.prop → lifted implementations, including reassignments
+    heldProps: new Map(), // obj.prop → the one function the property holds for good, or null (compile/analyze/func-namespaces.js propFunctionOf)
     exports: Object.create(null), // export names may shadow Object.prototype
     valueExports: null, // export names of value bindings, each read through its getter (prepare defineValueExports)
     globalDevirt: null,

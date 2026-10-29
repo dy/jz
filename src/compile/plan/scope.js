@@ -28,6 +28,7 @@ import { K, tagOf, paramOf, isNullable, hasTag, valOf, core, UNKNOWN } from '../
 import { typedElemAux, ctorFromElemAux } from '../../../layout.js'
 import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces } from '../analyze.js'
+import { liftedPropOf } from '../analyze/func-namespaces.js'
 import { collectGlobalBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { includeForNamedCall, includeForGenericMethod, isNamedCallee } from '../../autoload.js'
@@ -578,9 +579,10 @@ export const inferModuleIntGlobals = (ast) => {
  *     (a genuinely reassigned function pointer needs `call_indirect`). Pure
  *     storage relocation: the global inits to the undefined NaN atom, exactly mirroring
  *     "key never set → __dyn_get yields undefined".
- *   - written once to its lifted `$f$prop` function and only ever *called*
- *     (never read as a value) → the `__dyn_set` is dead: emit already lowers
- *     `f.prop()` to a direct `call $f$prop`. Drop the write entirely.
+ *   - written once to its lifted `$f$prop` function, no other store reaching
+ *     it (the summary's `propFunction`), and only ever *called* (never read
+ *     as a value) → the `__dyn_set` is dead: its calls become direct calls of
+ *     `$f$prop` here. Drop the write entirely.
  *
  * Disqualified namespaces (`f` escapes as a bare value / is computed-indexed —
  * an alias could reach the table) keep the dynamic path. Together these can
@@ -627,8 +629,11 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
       // definition shape): a call of it is a direct call of `$f$prop`, which a
       // global would demote to call_indirect, and it becomes one here, so every
       // later pass sees the call edge; when the property is additionally never
-      // read as a value, the write itself is dead → drop it.
-      const lifted = !multi && w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}`
+      // read as a value, the write itself is dead → drop it. The summary
+      // vouches that it is the one store into the property: a store through
+      // an alias, a parameter or a computed key is invisible to the census
+      // above (`liftedPropOf`).
+      const lifted = !multi && w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}` && liftedPropOf(f, prop) !== null
       // An escaping namespace keeps its table, which an alias may read, and its
       // writes; a call of such a property is still the call emission makes of
       // `$f$prop` (emit/method-dispatch.js tryFnPropCall), here, where the
@@ -667,7 +672,8 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
   const rewrite = (node, stmt = false) => {
     if (!Array.isArray(node)) return node
     const op = node[0]
-    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.') {
+    // `f.p(…)` and `f.p?.(…)` alike: the property holds a function for good
+    if ((op === '()' || op === '?.()') && Array.isArray(node[1]) && node[1][0] === '.') {
       const d = decisionFor(node[1][1], node[1][2])
       if (d?.direct) return ['()', d.direct, ...node.slice(2).map(a => rewrite(a))]
     }

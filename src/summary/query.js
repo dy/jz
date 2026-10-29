@@ -20,7 +20,7 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | bitOf(K.TYPED)
@@ -138,6 +138,7 @@ export function summaryQueries(facts, internal = false) {
       if (seen.has(-1 - SET_BASE - id)) continue
       seen.add(-1 - SET_BASE - id)
       for (const v of closureProps.get(id)?.values() ?? []) reachCells(v, out, seen)
+      reachCells(closureWild.get(id), out, seen)
     }
   }
   // An array construction whose arrays the emitter makes itself and can tag
@@ -463,7 +464,7 @@ export function summaryQueries(facts, internal = false) {
       // Function.prototype name reads as anything.
       if (t === K.CLOSURE && paramOf(r) !== UNKNOWN && !FUNCTION_PROTO.has(prop) && !membersOf(paramOf(r)).some(id => escaped.has(id))) {
         let k = K.NONE
-        for (const id of membersOf(paramOf(r))) k = merge(k, closureProps.get(id)?.get(prop) ?? K.NONE)
+        for (const id of membersOf(paramOf(r))) k = merge(k, merge(closureProps.get(id)?.get(prop) ?? K.NONE, closureWild.get(id) ?? K.NONE))
         return orAbsent(k)
       }
       return prop === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY
@@ -880,6 +881,18 @@ export function summaryQueries(facts, internal = false) {
     // The closures a closure or closure-set id (calleeOf) names, and a
     // closure's arrow: what a call through a resolved binding runs.
     closureMembers: id => membersOf(id),
+    // The one named function a function's own property holds (a class's
+    // static, a parser's table): every store into it the solver saw stored
+    // that function, through the function's name, an alias, a parameter or a
+    // computed key, and the function reached no code that may store another
+    // (closureProps, closureWild, escaped). Null where it may hold anything else.
+    propFunction: (fn, prop) => {
+      const own = escaped.has(fn) ? undefined : closureProps.get(fn)?.get(prop)
+      const k = own === undefined ? undefined : merge(own, closureWild.get(fn) ?? K.NONE)
+      if (k === undefined || tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN || k !== kind(K.CLOSURE, paramOf(k))) return null
+      const members = membersOf(paramOf(k))
+      return members.length === 1 && typeof members[0] === 'string' ? members[0] : null
+    },
     closureIdOfBody: body => closuresByBody.get(body),
     closureArrow: id => (arrowOfClosure ??= arrowsById())[id] ?? null,
     memberMayBeOwn,

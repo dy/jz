@@ -38,6 +38,7 @@ import { registerCompact, COMPACT_DEPS, compactOn, declarePin } from './core/com
 import { hasExternalIngress, mayHoldHostValue } from '../src/compile/func-exports.js'
 import { arrayRecordSlot } from '../src/compile/array-records.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
+import { liftedPropOf } from '../src/compile/analyze/func-namespaces.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
 import { unbounded } from '../src/summary/contract.js'
@@ -3181,11 +3182,10 @@ export default (ctx) => {
     // construction, so the optional is moot — delegate to the full `()` dispatch
     // (direct call). Without this arm the dead-write-drop plan (which assumes
     // call sites lower to direct calls) drops the write while this emitter read
-    // the never-written dyn table → undefined. multiProp (reassigned) slots stay
-    // dynamic: their live value is the prop-global and may legitimately be nullish.
+    // the never-written dyn table → undefined. A property stored anything else
+    // (`liftedPropOf`) stays dynamic: its live value may legitimately be nullish.
     if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' && typeof callee[2] === 'string') {
-      const base = ctx.scope.chain[callee[1]] || callee[1]
-      if (ctx.funcs.names.has(`${base}$${callee[2]}`) && !ctx.funcs.multiProp.has(`${base}.${callee[2]}`)) {
+      if (liftedPropOf(ctx.scope.chain[callee[1]] || callee[1], callee[2])) {
         const callArgs = args.length === 0 ? null : [',', ...args]
         return asF64(ctx.core.emit['()'](callee, callArgs))
       }

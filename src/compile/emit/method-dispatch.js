@@ -26,6 +26,7 @@ import { emit } from './dispatch.js'
 import { classMethodCall } from './class-dispatch.js'
 import { copyReceiverFacts, isPresentArrayElement, stringOps } from './shared.js'
 import { sidecarOverride } from './own-method.js'
+import { liftedPropOf } from '../analyze/func-namespaces.js'
 
 
 // Internal index hooks and property getters share the emitter table with
@@ -232,13 +233,14 @@ function tryToSpliced(callee, obj, method, parsed) {
     ['local.get', `$${c}`]], 'f64')
 }
 
-// 4. Function property call: fn.prop(args) → direct call to fn$prop. Skipped when
-// the property was reassigned (wrapper composition) — then it is a mutable slot
-// and must be read dynamically before the call.
+// 4. Function property call: fn.prop(args) → direct call to fn$prop, where the
+// property holds that function for good (`liftedPropOf`). One stored anything
+// else (a reassignment anywhere, through any alias) is a mutable slot and is
+// read before the call.
 function tryFnPropCall(callee, obj, method, parsed) {
-  if (typeof obj === 'string' && ctx.funcs.names.has(obj) && !ctx.funcs.multiProp.has(`${obj}.${method}`)) {
-    const fname = `${obj}$${method}`
-    if (ctx.funcs.names.has(fname)) {
+  if (typeof obj === 'string') {
+    const fname = liftedPropOf(obj, method)
+    if (fname) {
       // The direct call of the lifted function, with its spreads in place: the
       // call path packs a rest parameter and materializes a tuple result
       // (`fn.coefs = (fs) => [a, b]`: the caller holds one pointer, not N lanes).

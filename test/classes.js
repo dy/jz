@@ -324,6 +324,90 @@ test('class static method of a class handed out as a value is a direct call befo
   ok(!/call \$Q\$mix\b/.test(compileWat(src, { wat: true, optimize: 'speed' })), 'the static is spliced at its site')
 })
 
+// A static, or any function's property, stored again beyond its definition
+// (inside a function, before its class, through an alias or a parameter,
+// under a computed key, by a pattern or a loop head, by Object.assign) holds
+// what was stored last where it is called: the summary's census of a
+// function's own properties is the one witness the namespace flattening, the
+// program index and the emitter read before calling the lifted function.
+test('class statics and function properties stored anywhere are called as stored', () => {
+  // a fresh module each time: the programs store into their classes
+  const agreesAt = (src) => {
+    for (const optimize of levels(0, 2, 'speed')) {
+      const want = oracle(src), got = jz(src, { optimize }).exports
+      for (const name of Object.keys(want)) if (!/^class\b/.test(String(want[name]))) is(got[name](), want[name](), `${name} O${optimize}`)
+    }
+  }
+  agreesAt(`class C { static m() { return 1 } }
+    const g = () => { C.m = () => 2 }
+    export let inFunction = () => { const a = C.m(); g(); return a * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    const g = () => { C.m = () => 2 }
+    g()
+    export let calledAtTop = () => C.m()`)
+  agreesAt(`class C { static m() { return 1 } }
+    export let inBody = () => { const a = C.m(); C.m = () => 2; return a * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    export let inClosure = () => { const s = () => { C.m = (x) => x * 3 }; const a = C.m(); s(); return a + C.m(5) }`)
+  agreesAt(`const s = () => { C.m = () => 2 }
+    class C { static m() { return 1 } }
+    export let before = () => { const a = C.m(); s(); return a * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    export let alias = () => { const a = C.m(); const K = C; K.m = () => 2; return a * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    const w = (o) => { o.m = () => 2 }
+    export let param = () => { const a = C.m(); w(C); return a * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    export let computed = () => { const a = C.m(); C['m'] = () => 2; const b = C.m(), k = 'm', K = C; K[k] = () => 3; return a * 100 + b * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    const set = (o, k, v) => { o[k] = v }, ks = ['x', 'm']
+    export let dynamicKey = () => { const a = C.m(); set(C, 'm', () => 2); const b = C.m(); for (const k of ks) C[k] = () => 3; return a * 100 + b * 10 + C.m() }`)
+  agreesAt(`function g() {} g.p = () => 1
+    const del = (o, k) => { delete o[k] }
+    export let deleted = () => { const a = g.p(); del(g, 'p'); try { return a + g.p() } catch (e) { return [a, e instanceof TypeError, typeof g.p] } }`)
+  agreesAt(`class C { static m() { return 1 } }
+    export let pattern = () => { const a = C.m(); ({ q: C.m } = { q: () => 2 }); const b = C.m(); [C.m] = [() => 3]; return a * 100 + b * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    export let loopHead = () => { const a = C.m(); for (C.m of [() => 2]); return a * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    export let assigned = () => { const a = C.m(); Object.assign(C, { m: () => 2 }); return a * 10 + C.m() }`)
+  agreesAt(`class C { static m() { return 1 } }
+    const s = () => { C.m = 5 }
+    export let number = () => { s(); return C.m }`)
+  agreesAt(`class C { static m() { return 1 } }
+    const s = () => { C.m = () => 2 }
+    export let held = () => { s(); const h = C.m; return h() }`)
+  agreesAt(`class C { static k = 3; static m() { return this.k } static n() { return this.m() } }
+    const s = () => { C.m = () => 7 }
+    export let viaThis = () => { const a = C.n(); s(); return a * 10 + C.n() }`)
+  agreesAt(`class C { static m() { return 1 } g() { return this.constructor.m() } }
+    const s = () => { C.m = () => 2 }
+    export let viaConstructor = () => { const c = new C(), a = c.g(); s(); return a * 10 + c.g() }`)
+  agreesAt(`export class C { static m() { return 1 } }
+    const s = () => { C.m = () => 2 }
+    export let exported = () => { const a = C.m(); s(); return a * 10 + C.m() }`)
+  agreesAt(`class C { static m = () => 1 }
+    const s = () => { C.m = () => 2 }
+    export let field = () => { const a = C.m(); s(); return a * 10 + C.m() }`)
+  agreesAt(`function g() {} g.p = () => 1
+    const s = () => { g.p = () => 2 }
+    export let fnProp = () => { const a = g.p(); s(); return a * 10 + g.p() }`)
+  agreesAt(`function g() {}
+    const s = () => { g.p = () => 2 }
+    g.p = () => 1
+    export let fnPropBefore = () => { const a = g.p(); s(); return a * 10 + g.p() }`)
+  agreesAt(`function b() { return 2 } function g() {} g.p = () => 1
+    export let fnPropNamed = () => { const a = g.p(); g.p = b; return a * 10 + g.p() }`)
+  agreesAt(`function g() {} g.p = () => 1
+    const s = () => { g.p ||= () => 2; g.p &&= () => 3 }
+    export let fnPropLogical = () => { s(); return g.p() }`)
+  agreesAt(`function g() {} g.p = (x) => x
+    export let fnPropLoop = () => { let t = 0; for (let i = 0; i < 3; i++) { t += g.p(i); g.p = (x) => x * 10 } return t }`)
+  agreesAt(`function g() {} g.p = (x) => x * 2
+    const s = () => { g.p = null }
+    export let optional = () => { const a = g.p?.(21); s(); return [a, g.p?.(21)] }`)
+})
+
 test('named class expression static method sees inner name', () => {
   if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`

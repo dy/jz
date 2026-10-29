@@ -2,6 +2,7 @@ import { MUTATE_OPS, isFuncRef, isLiteralStr, collectAllBoundNames, walkAst } fr
 import { staticObjectProps } from '../static.js'
 import { isExported } from './func-exports.js'
 import { classRootNames } from './emit/class-dispatch.js'
+import { propFunctionOf } from './analyze/func-namespaces.js'
 
 // ProgramIndex member-target family (.work/archive/v1-architecture-campaign.md finish-order item 1).
 // This is the canonical, frozen, same-module resolver for a `.`-member call's
@@ -78,20 +79,15 @@ import { classRootNames } from './emit/class-dispatch.js'
 // occurrence in the whole program is accounted for, and a `.`-property read
 // off it is exactly as safe to resolve as the object-literal case.
 //
-// The written-once witness for a DROPPED write (flattenFuncNamespaces did
-// remove it) survives anyway, in a different place: prepare's own lift
-// already recorded it, permanently, as an ordinary entry in
-// `ctx.funcs.names`/`ctx.funcs.map` (the function `fn$prop` itself) plus a
-// negative fact in `ctx.funcs.multiProp` (`"fn.prop"`) exactly when a SECOND
-// write to the same property occurs (wrapper-composition reassignment —
-// prepare's own "Collide → fresh name" branch). `resolveMemberSourceId` below falls
-// back to these two facts when the census found no write to fold at all,
-// trusted the SAME way `tryFnPropCall`/`bigintMethodTargets` (emit.js)
-// already trust them for direct-call emission — a same-module function
-// base, no second write (`multiProp` absent), the `${objName}$${prop}` name
-// resolves — so the resolved callee is the exact function a bare-name call
-// to `fn$prop` would reach; no new proof, no new naming convention, no
-// divergence from what emission already does with zero analysis support.
+// A function receiver's property is not resolved off that census, though:
+// it sees top-level writes alone, never a store from a function body,
+// through an alias, a parameter or a computed key, nor a computed delete. The
+// summary's census of a function's own properties sees every one, and
+// `resolveMemberSourceId` resolves a function's property to the one named
+// function it finds there (`propFunctionOf`, compile/analyze/func-
+// namespaces.js), decided once per compile: the answer the namespace
+// flattening and the emitter's direct calls (`tryFnPropCall`) read too, a
+// definition the flattening dropped included.
 //
 // Nested extension: `root.inner.method()` resolves through the same index when
 // every intermediate object is a closed module-level object literal and remains
@@ -857,6 +853,15 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     if (typeof objName !== 'string') return -1
     const isFuncBase = ctx.funcs.names.has(objName)
     if (!(isFuncBase ? safeFuncBase(objName) : safeReceiver(objName))) return -1
+    // A function's property: the census here folds its top-level writes alone,
+    // never a store from a function body, through an alias or a parameter. The
+    // summary's census of a function's own properties sees every one, and its
+    // answer is the one the namespace flattening and the emitter read
+    // (`propFunctionOf`), a definition the flattening dropped included.
+    if (isFuncBase) {
+      const held = propFunctionOf(objName, prop)
+      return held == null ? -1 : sourceNameIds.get(held) ?? -1
+    }
     const targetId = table.get(objName)?.get(prop)
     // Only a named-function resolution is `resolveMemberSourceId`'s contract. An
     // arrow-node resolution (foldWrite's other resolved shape, retained for
@@ -864,17 +869,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     // asks for one numeric function identity expects (or
     // could use) a bare AST node in place of a ctx.funcs.list entry.
     if (targetId === POISON || Array.isArray(targetId)) return -1
-    if (Number.isInteger(targetId)) return targetId
-    if (!isFuncBase) return -1
-    // Lifted function-property fallback (see header) — no write survived for
-    // the census above to fold (flattenFuncNamespaces dropped it outright),
-    // so resolve directly off prepare's own witnesses: same single-write
-    // proof (`multiProp` ABSENT — prepare adds it on a second write to the
-    // same `objName.prop`, the identical fact `tryFnPropCall`/
-    // `bigintMethodTargets` already gate on), same `${objName}$${prop}` name
-    // emission's own direct-call path uses.
-    if (ctx.funcs.multiProp.has(`${objName}.${prop}`)) return -1
-    return sourceNameIds.get(`${objName}$${prop}`) ?? -1
+    return Number.isInteger(targetId) ? targetId : -1
   }
 
   /**

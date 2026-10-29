@@ -10,6 +10,35 @@ import { isFuncRef } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 
 /**
+ * The one named function a function's own property holds for good, or null:
+ * every store into the property, through the function's name at any depth,
+ * an alias, a parameter or a computed key, stores that function, and the
+ * function never reaches code that may store another (the summary's
+ * `propFunction`). Decided once per compile, at the first ask: a summary of
+ * code later passes rewrote may know less, and the namespace flattening, the
+ * program index and the emitter must give one answer (a call made direct
+ * where the index left its target unreached, or a slot read whose function
+ * the index released, breaks the module).
+ */
+export const propFunctionOf = (fn, prop) => {
+  const key = `${fn}.${prop}`, held = ctx.funcs.heldProps
+  if (held.has(key)) return held.get(key)
+  if (!ctx.summary) return null
+  const r = ctx.summary.propFunction(fn, prop)
+  held.set(key, r)
+  return r
+}
+
+/** `fn$prop`, prepare's lift of a top-level `fn.prop = arrow`, where the
+ *  property holds it for good (`propFunctionOf`): a call of the property is
+ *  that function's own call. Null otherwise. */
+export const liftedPropOf = (fn, prop) => {
+  const lifted = `${fn}$${prop}`
+  return ctx.funcs.names.has(fn) && ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) &&
+    propFunctionOf(fn, prop) === lifted ? lifted : null
+}
+
+/**
  * Whole-program function-namespace SRoA analysis.
  *
  * A user function used as a property bag — `parse.space = …; parse.step()` —

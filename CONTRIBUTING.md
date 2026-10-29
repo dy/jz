@@ -1301,8 +1301,9 @@ receive complete facts, and later summaries cannot mutate earlier readers.
 A closure's own properties are facts of its site (`closureProps`): `fn.ops = ops`
 on a dispatcher stores the array's kind under the name for every instance of
 that closure, a read on a closure set joins its members, a name never stored
-reads undefined, and an escaped member reads as anything and escapes what it
-holds. A global the plan declares without a declaration statement (a function
+reads undefined, a store under a computed name (or a computed delete's
+absence) reaches every name (`closureWild`), and an escaped member reads as
+anything and escapes what it holds. A global the plan declares without a declaration statement (a function
 property flattened to a module global, `plan/scope.js`) is a module binding
 named by its writes, undefined until the first (`moduleGlobals`) unless a
 top-level statement assigns it unconditionally (`initWrites`: initialized like
@@ -2078,10 +2079,17 @@ anywhere, or a top-level compound one), so the pass sees the flattened global
 as a literal-bound name. A function's properties are never boxed: where the
 function escapes they stay in the table its pointer keys, so the function
 read as a value is still callable and still a function to `typeof`; a call
-`f.p(…)` of a property whose one write is its lifted definition at the top
-level is still that function's own call there (a class's static called as
+`f.p(…)` or `f.p?.(…)` of a property that holds its lifted definition for
+good is still that function's own call there (a class's static called as
 `C.m(…)`, the class a value its `constructor` hands out), as emission makes
-it, so the call census, the inliner and the parameter proofs read it. A call
+it, so the call census, the inliner and the parameter proofs read it. For
+good is the summary's word (`propFunctionOf`, compile/analyze/func-
+namespaces.js, from its census of a function's own properties): every store
+into the property, from a function body, through an alias, a parameter or a
+computed key, stored that function, no computed delete reached it, and the
+function reached no code that may store another. It is decided once per
+compile, so the flattening, the program index and the emitter give one
+answer. A property stored anything else is a slot its calls read. A call
 through a global bound once to a function (`devirtGlobalCalls`: a flattened
 `m.assign = nz` called as `m.assign(…)`, an alias `nrm = m.assign`) rewrites
 to the function's own call, so the call census, the inliner and the parameter
@@ -3838,7 +3846,8 @@ see (`Error`, an expression) or as an expression with statics, and the
 `class-generic` advisory names which. `'m' in o` holds for a member of the
 instance's class as it would through a prototype (`classMemberIn`); a static
 call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
-emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`).
+emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`) while the static
+holds it alone: one stored again anywhere calls what it holds.
 The supported empty class-prototype reflection uses the ordinary getter registry,
 with the settled closure kind rather than its storage hint. Accessor probes and
 optional reads retain captured receiver facts in a scoped alias, preserving receiver
