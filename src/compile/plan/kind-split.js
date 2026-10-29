@@ -31,7 +31,7 @@ import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 
 const LOOPS = new Set(['for', 'while'])
-const MAX_SIZE = 4000, MAX_CTORS = 3
+const MAX_SIZE = 4000, MAX_CTORS = 3, MAX_ARMS = 4
 
 /** The names `node` reads elements (`x[i]`) or a length (`x.length`) of. */
 const receivers = (node) => {
@@ -193,17 +193,22 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
       if (ctors.size === 1) split.push([n, [...ctors][0]])
       else if (ctors.size > 1 && ctors.size <= MAX_CTORS) several.push([n, ctors])
     }
-    // The names of several constructors run a copy for each constructor they all
-    // may hold (channels of one container, all Float32 or all Float64: a copy
-    // the vectorizer lifts); a mix of them runs the loop, each store versioned by
-    // width after emission (optimize/unswitch.js). Where they share none, a copy
-    // per constructor of one name the loop only reads.
+    // The names of several constructors run a copy for each choice of theirs
+    // (channels of either width beside a parameter's buffer of either: a copy
+    // the vectorizer lifts for each pairing, one width or two) up to MAX_ARMS
+    // copies, those of one constructor first; past that, a copy for each
+    // constructor they all may hold, a mix of them the loop, each store versioned
+    // by width after emission (optimize/unswitch.js). Where they share none, a
+    // copy per constructor of one name the loop only reads.
+    const choices = several.reduce((acc, [n, cs]) => acc.flatMap(a => [...cs].map(c => [...a, [n, c]])), [[]])
     const common = several.length ? [...several[0][1]].filter(c => several.every(([, cs]) => cs.has(c))) : []
     const reader = several.find(([n]) => !storedInto(n))
     const multi = common.length ? null : reader ? [reader[0], [...reader[1]]] : null
     if (!split.length && !multi && !common.length) continue
+    const widths = arm => new Set(arm.map(([, c]) => c)).size
     // a copy per constructor, each under its own test beside the others'; the loop last
-    const arms = common.length ? common.map(c => [...split, ...several.map(([n]) => [n, c])])
+    const arms = several.length && choices.length <= MAX_ARMS ? choices.sort((a, b) => widths(a) - widths(b)).map(a => [...split, ...a])
+      : common.length ? common.map(c => [...split, ...several.map(([n]) => [n, c])])
       : multi ? multi[1].map(c => [...split, [multi[0], c]]) : [split]
     let choice = ['{}', [';', bare]]
     for (const arm of arms.reverse()) {

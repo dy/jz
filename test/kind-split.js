@@ -248,3 +248,14 @@ test('kind split: a Float64Array test over channels first met as Float32Array vi
   const loops = directStores(wat(paramMix, { optimize: 2 }))
   ok(loops.some(l => /f64\.store/.test(l) && !/f32\.load/.test(l)), 'a copy stores and reads Float64 elements directly')
 })
+
+// The same mix adds a node's Float32 channel into the parameter's Float64
+// channel: a copy for each pairing of the two names' constructors, so the
+// pairings of two widths read and store each directly too.
+test('kind split: channels of one width mixed into channels of the other run a copy for that pairing', () => {
+  agrees(paramMix, [['f', 0.5], ['f', 3]])
+  if (belowOpt(2)) return
+  const loops = directStores(wat(paramMix, { optimize: 2 }))
+  ok(loops.some(l => /f64\.store/.test(l) && /f32\.load/.test(l)), 'a copy adds Float32 elements into Float64 ones')
+  ok(loops.some(l => /f32\.store/.test(l) && /f64\.load/.test(l)), 'a copy adds Float64 elements into Float32 ones')
+})
