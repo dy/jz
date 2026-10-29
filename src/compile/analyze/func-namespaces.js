@@ -34,11 +34,12 @@ import { ctx } from '../../ctx.js'
  * is reachable through, so it still disqualifies (`start strict`: this is
  * deliberately not trying to prove higher-order callback safety yet).
  *
- * Returns `Map<funcName, { disq, props:Set, valRead:Set,
+ * Returns `Map<funcName, { disq, rebound, props:Set, valRead:Set,
  * writes:Map<prop,[{rhs,atInit}]> }>` — `valRead` is the subset of props read
  * as a value (not merely called). `flattenFuncNamespaces` (plan.js) turns it
  * into the rewrite. A name carrying `disq` escapes / is reassigned / is
- * computed-indexed and must not be touched.
+ * computed-indexed: its table stays; `rebound` (the name itself reassigned)
+ * means even a call of a property may reach another function's.
  */
 export function analyzeFuncNamespaces(ast) {
   const funcNames = ctx.funcs.names
@@ -47,7 +48,7 @@ export function analyzeFuncNamespaces(ast) {
   const ns = new Map()
   const rec = (name) => {
     let r = ns.get(name)
-    if (!r) ns.set(name, r = { disq: false, props: new Set(), valRead: new Set(), writes: new Map() })
+    if (!r) ns.set(name, r = { disq: false, rebound: false, props: new Set(), valRead: new Set(), writes: new Map() })
     return r
   }
   // `['.'|'?.', f, P]` member where f is a known function and P a string key.
@@ -98,7 +99,7 @@ export function analyzeFuncNamespaces(ast) {
         visit(node[2], false)
         return
       }
-      if (isFuncRef(node[1], funcNames)) rec(node[1]).disq = true  // reassignment
+      if (isFuncRef(node[1], funcNames)) { const r = rec(node[1]); r.disq = r.rebound = true }  // reassignment
       else visit(node[1], false)
       visit(node[2], false)
       return

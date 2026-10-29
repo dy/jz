@@ -2077,7 +2077,11 @@ arrow property) flattens like one with arrows (`plan/scope.js`
 anywhere, or a top-level compound one), so the pass sees the flattened global
 as a literal-bound name. A function's properties are never boxed: where the
 function escapes they stay in the table its pointer keys, so the function
-read as a value is still callable and still a function to `typeof`. A call
+read as a value is still callable and still a function to `typeof`; a call
+`f.p(…)` of a property whose one write is its lifted definition at the top
+level is still that function's own call there (a class's static called as
+`C.m(…)`, the class a value its `constructor` hands out), as emission makes
+it, so the call census, the inliner and the parameter proofs read it. A call
 through a global bound once to a function (`devirtGlobalCalls`: a flattened
 `m.assign = nz` called as `m.assign(…)`, an alias `nrm = m.assign`) rewrites
 to the function's own call, so the call census, the inliner and the parameter

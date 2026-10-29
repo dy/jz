@@ -617,18 +617,26 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
   // write to an only-called single-write slot).
   const flat = new Map()
   for (const [f, info] of ns) {
-    if (info.disq) continue
+    if (info.disq && info.rebound) continue
     let decide
     const plan = (prop, d) => { if (!decide) flat.set(f, decide = new Map()); decide.set(prop, d) }
     for (const prop of info.props) {
-      if (ctx.funcs.multiProp.has(`${f}.${prop}`)) { plan(prop, { global: `${f}${T}${prop}` }); continue }
+      const multi = ctx.funcs.multiProp.has(`${f}.${prop}`)
       const w = info.writes.get(prop)
       // Single top-level write of the lifted `$f$prop` (the `f.prop = arrow`
       // definition shape): a call of it is a direct call of `$f$prop`, which a
       // global would demote to call_indirect, and it becomes one here, so every
       // later pass sees the call edge; when the property is additionally never
       // read as a value, the write itself is dead → drop it.
-      if (w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}`) {
+      const lifted = !multi && w && w.length === 1 && w[0].atInit && w[0].rhs === `${f}$${prop}`
+      // An escaping namespace keeps its table, which an alias may read, and its
+      // writes; a call of such a property is still the call emission makes of
+      // `$f$prop` (emit/method-dispatch.js tryFnPropCall), here, where the
+      // inliner and the parameter census see it: a class's static method called
+      // as `C.m(…)`, the class itself a value its `constructor` hands out.
+      if (info.disq) { if (lifted) plan(prop, { direct: `${f}$${prop}`, drop: false }); continue }
+      if (multi) { plan(prop, { global: `${f}${T}${prop}` }); continue }
+      if (lifted) {
         plan(prop, { direct: `${f}$${prop}`, drop: !info.valRead.has(prop) })
         continue
       }

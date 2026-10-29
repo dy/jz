@@ -297,6 +297,33 @@ test('class static method uses this as class binding', () => {
   is(run(), 11)
 })
 
+// A class whose `constructor` is read is a value (the binder hands it out), so
+// its statics keep their table; a call `C.m(…)` is still the call of the
+// static's function, seen as one by the inliner and the parameter census
+// (plan/scope.js flattenFuncNamespaces): three's `Quaternion.slerpFlat` in a
+// loop, spliced there with its offsets as integers.
+test('class static method of a class handed out as a value is a direct call before emission', () => {
+  const src = `
+    class Q {
+      constructor(x = 0, w = 1) { this.x = x; this.w = w }
+      clone() { return new this.constructor(this.x, this.w) }
+      static mix(dst, d, a, o, t) { dst[d] = a[o] * (1 - t) + a[o + 1] * t }
+    }
+    export let run = () => {
+      const n = 64, a = new Float64Array(n * 2), dst = new Float64Array(n)
+      for (let i = 0; i < a.length; i++) a[i] = i * 0.5
+      for (let i = 0; i < n; i++) Q.mix(dst, i, a, i * 2, 0.25)
+      let s = 0
+      for (let i = 0; i < n; i++) s += dst[i]
+      const held = new Q(4).clone().constructor.mix
+      held(dst, 0, a, 6, 0.5)
+      return s + new Q(3).clone().x + dst[0]
+    }`
+  for (const optimize of levels(1, 2, 'speed')) is(jz(src, { optimize }).exports.run(), oracle(src).run(), `O${optimize}`)
+  if (onKernel()) return
+  ok(!/call \$Q\$mix\b/.test(compileWat(src, { wat: true, optimize: 'speed' })), 'the static is spliced at its site')
+})
+
 test('named class expression static method sees inner name', () => {
   if (onWasi()) return  // wasi: run-reserved / void command entry
   const { run } = compile(`
