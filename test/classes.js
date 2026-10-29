@@ -912,6 +912,27 @@ test('class static accessors, one line or many', () => {
   is(one(), 7); is(many(), 8); is(both(), 7); is(viaThis(), 8)
 })
 
+// Every store to a static accessor calls its setter with the value it
+// assigns, which the store yields: a compound or logical one reads through
+// the getter first, an increment yields the old number postfix and the new
+// prefix, and one with no setter throws a TypeError, as in strict code.
+test('class static accessors under every store', () => {
+  const src = `class C { static w = 1; static get v() { return C.w } static set v(x) { C.w = x * 10; return 99 } }
+    class G { static get v() { return 7 } }
+    class S { static w = 0; static set v(x) { S.w = x } }
+    export let value = () => { C.w = 1; const r = (C.v = 5); let y; y = C.v = 2; return [r, y, C.w] }
+    export let compound = () => { C.w = 1; const r = (C.v += 2); C.v *= 3; C.v -= 1; C.v **= 1; C.v %= 7; C.v <<= 1; C.v |= 1; return [r, C.w] }
+    export let logical = () => { C.w = 0; C.v ||= 4; const a = C.w; C.v &&= 5; const b = C.w; C.w = null; C.v ??= 6; return [a, b, C.w] }
+    export let steps = () => { C.w = 1; const a = C.v++, b = ++C.v, c = C.v--, d = --C.v; return [a, b, c, d, C.w] }
+    export let getterOnly = () => { const log = []; try { G.v = (log.push('rhs'), 1) } catch (e) { log.push(e instanceof TypeError) } try { G.v += 1 } catch (e) { log.push(e instanceof TypeError) } return [log, G.v] }
+    export let setterOnly = () => { S.v = 3; const r = S.v; S.v ??= 4; return [r, S.w] }
+    export let inFunction = () => { const bump = () => { C.v += 1 }; C.w = 1; bump(); bump(); return C.w }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) is(got[name](), want[name](), `${name} O${optimize}`)
+  }
+})
+
 // A getter named `type` on some class is no reason to dispatch `e.type` on a
 // receiver the summary types as a literal's layout: the read stays a slot read.
 test('a class accessor name does not make reads on other layouts dynamic', () => {

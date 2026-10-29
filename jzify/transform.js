@@ -3,7 +3,7 @@
  * @module jzify/transform
  */
 
-import { rewriteChildren, withLoc, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET, objectLiteralEntries } from '../src/ast.js'
+import { rewriteChildren, withLoc, JZ_BLOCK_OPS, LABEL_BODY_OPS, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, objectLiteralEntries } from '../src/ast.js'
 import { ctx, err } from '../src/ctx.js'
 import { isDestructurePat } from './hoist-vars.js'
 import { foldPrototypeStores } from './classes.js'
@@ -357,6 +357,32 @@ export function createTransform(opts) {
   }
   const wrapArg = (a) => (Array.isArray(a) && a[0] === '...' && wrapSpreadDrain(a)) || transform(a)
 
+  // A store to a static accessor of a class of this module (classes.js: the
+  // `x__get` / `x__set` functions on the class): the setter called with the
+  // value the store assigns, which the store yields, as an assignment
+  // expression does; a compound or logical store reads through the getter
+  // first (undefined without one), an increment through a local's own `++`
+  // (the old number postfix, the new prefix). Without a setter the store
+  // throws, as one to a getter-only property does in strict code.
+  const staticAccessorOf = (lhs) => Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string' &&
+    (opts.classStaticAccessor(lhs[1], lhs[2] + ACCESSOR_SET) || opts.classStaticAccessor(lhs[1], lhs[2] + ACCESSOR_GET))
+  const storeStatic = ([, cls, prop], op, rhs, postfix) => {
+    const set = (v) => opts.classStaticAccessor(cls, prop + ACCESSOR_SET) ? ['()', ['.', cls, prop + ACCESSOR_SET], v]
+      : ['throw', ['new', ['()', 'TypeError', [null, `Cannot set property ${prop} of a class which has only a getter`]]]]
+    const call = (param, stmts, arg) => ['()', ['=>', ['()', param], ['{}', [';', ...stmts]]], arg]
+    const v = names.genTemp('sv')
+    const assigned = (value) => call(v, [set(v), ['return', v]], value)
+    const read = ['.', cls, prop]
+    if (op === '=') return transform(assigned(rhs))
+    if (op === '||=' || op === '&&=' || op === '??=') return transform([op.slice(0, -1), read, assigned(rhs)])
+    if (op === '++' || op === '--') {
+      const r = names.genTemp('sv')
+      return transform(postfix ? call(v, [['const', ['=', r, [op, v, null]]], set(v), ['return', r]], read)
+        : call(v, [[op, v], set(v), ['return', v]], read))
+    }
+    return transform(assigned([op.slice(0, -1), read, rhs]))
+  }
+
   const handlers = {
     // async function/arrow → (a, b) => __async_run((function* (a, b) …)(a, b))
     'async'(inner) {
@@ -585,9 +611,6 @@ export function createTransform(opts) {
       if (Array.isArray(lhs) && (lhs[0] === '.' || lhs[0] === '[]') && Array.isArray(lhs[1]) && lhs[1][0] === '.' && lhs[1][2] === 'prototype'
           && typeof lhs[1][1] === 'string' && opts.isClass(lhs[1][1]))
         err('jzify: ' + JC.prototypeStore)
-      // a static accessor of a class of this module: the slot function on the class (classes.js)
-      if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string' && opts.classStaticAccessor(lhs[1], lhs[2] + ACCESSOR_SET))
-        return ['()', ['.', lhs[1], lhs[2] + ACCESSOR_SET], transform(rhs)]
     },
 
     '.'(obj, prop) {
@@ -838,6 +861,9 @@ export function createTransform(opts) {
     if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
     const op = node[0]
     if (op == null) return node
+    // a store to a static accessor of a class of this module (storeStatic);
+    // a postfix step carries a third slot, null
+    if (MUTATE_OPS.has(op) && staticAccessorOf(node[1])) return storeStatic(node[1], op, node[2], node[2] === null)
     const h = handlers[op]
     let result
     if (h) {
