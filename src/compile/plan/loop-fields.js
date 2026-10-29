@@ -65,6 +65,18 @@
  * declared once being one every analysis of a binding takes whole, and declares
  * no alias whose every access now names a local.
  *
+ * Receivers a stored field name of which several hold, of layouts that each
+ * hold it as a slot of their own, may be one object where no construction
+ * site tells them apart: three's vectors are all made by one constructor's
+ * literal (`_vector`, `box.min` and `box.max` of Box3.setFromArray). The copy
+ * then runs where it finds them distinct objects (their pairwise `!==`), and a
+ * receiver used as itself joins that test with its fields left in memory. A
+ * name another class gives an accessor (Quaternion's `get x()`) is a field of
+ * the layouts that hold none (member-uses.js `plainMember`). A Number field
+ * that may be missing (`this.x = array[offset]` past the end), which every
+ * store of the loop leaves a present Number, is held as a Number where the
+ * copy finds it present, so no read of it tests for undefined.
+ *
  * @module compile/plan/loop-fields
  */
 import { ctx } from '../../ctx.js'
@@ -74,11 +86,13 @@ import { freshId } from '../../ir.js'
 import { K, core, tagOf, paramOf, isNullable, hasTag } from '../../summary/kind.js'
 import { TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../../layout.js'
 import { invalidateBodies } from '../analyze.js'
+import { plainMember } from '../../member-uses.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { LOOP_OPS, collectBindings, nodeSize } from './common.js'
 import { cloneWithSubst, smallConstForTripCount, containsNestedClosure, containsDeclOf } from '../../type.js'
 
-const MAX_SIZE = 600
+// (the bound of a plan copy, growth.js)
+const MAX_SIZE = 800
 const ELEMENT_KINDS = new Set([K.ARRAY, K.TYPED])
 const BARRIERS = new Set(['=>', 'yield', 'await', 'delete', 'new', 'label', 'throw', 'try', 'return', 'in', 'bigint', 'for-in', 'for-of'])
 
@@ -109,7 +123,6 @@ const isSlot = (n) => Array.isArray(n) && n[0] === '[]' && slotIndex(n[2]) != nu
 const MAX_DISTINCT = 16
 const VIEW_FLAGS = TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG
 const ctorName = (c) => c?.replace(/^new\./, '') ?? null
-const accessor = (p) => ctx.transform.accessorNames?.has(p) || ctx.transform.literalAccessorNames?.has(p) || p === '__proto__'
 const mayBeMissing = (k) => k == null || isNullable(k) || hasTag(k, K.NULLISH) || hasTag(k, K.ABSENT)
 const isObject = (k) => tagOf(core(k ?? 0)) === K.OBJECT
 
@@ -153,10 +166,20 @@ const readFirst = (loop) => {
   return out
 }
 
+/** A Number kind that may be null or undefined. */
+const numberOrMissing = (k) => k != null && tagOf(core(k)) === K.NUMBER && mayBeMissing(k)
+const NUMBER_STORES = new Set(['-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '++', '--'])
+/** Whether a store into a Number-or-missing field leaves a present Number. */
+const numberStore = (st, view) => {
+  const op = st[0], k = op === '=' || op === '+=' ? view.kindOfExpr(st[2]) : null
+  return NUMBER_STORES.has(op) || op === '=' && k != null && tagOf(core(k)) === K.NUMBER && !mayBeMissing(k) ||
+    op === '+=' && k != null && tagOf(core(k)) === K.NUMBER
+}
+
 /** What `loop` does with fields, or null where it does anything that could reach them unseen. */
 const censusOf = (loop, view) => {
   const declared = new Set(), written = new Set(), stored = new Set(), bare = new Set()
-  const accesses = []               // [node, isWrite]: every static field access
+  const accesses = []               // [node, isWrite, store]: every static field access, a write with its store
   const elements = new Set()        // receivers of element accesses
   const slots = []                  // [node, isWrite, value]: every element access at a constant index
   const indexed = new Set()         // receivers read or written at an index the loop computes
@@ -193,7 +216,7 @@ const censusOf = (loop, view) => {
     if (MUTATE_OPS.has(op)) {
       const t = n[1]
       if (isName(t)) written.add(t)
-      else if (isField(t)) { stored.add(t[2]); accesses.push([t, true]) }
+      else if (isField(t)) { stored.add(t[2]); accesses.push([t, true, n]) }
       else if (Array.isArray(t) && t[0] === '[]') {
         if (!ELEMENT_KINDS.has(tagOf(core(view.kindOfExpr(t[1]) ?? 0))) && !numberKey(t[2], view)) { open = true; return }
         elementStores.add(t[1])
@@ -238,7 +261,7 @@ const planLoop = (loop, view, shared) => {
   }
   // a record or an array read ahead of the loop: a steady name's field no store
   // names, or its element at a constant index no store reaches
-  const chainOf = (e) => isField(e) && steady(e[1]) && !stored.has(e[2]) && !accessor(e[2]) && isObject(view.kindOfExpr(e[1]))
+  const chainOf = (e) => isField(e) && steady(e[1]) && !stored.has(e[2]) && isObject(view.kindOfExpr(e[1])) && plainMember(view, view.shapesOfExpr(e[1]), e[2])
     ? { key: e[1] + '.' + e[2], base: e[1], field: e[2], expr: e }
     : isSlot(e) && steady(e[1]) && unstoredArray(e[1]) ? { key: e[1] + '[' + slotIndex(e[2]) + ']', base: e[1], index: slotIndex(e[2]), expr: e } : null
   // an alias stands for its record when nothing else writes it and it is used for fields and elements alone
@@ -249,12 +272,13 @@ const planLoop = (loop, view, shared) => {
     return chainOf(e)
   }
   const fields = new Map(), byName = new Map(), dropped = new Set()
-  for (const [n, isWrite] of accesses) {
+  for (const [n, isWrite, store] of accesses) {
     const r = receiverOf(n[1])
     if (!r) { const s = byName.get(n[2]) ?? new Set(); s.add('\0'); byName.set(n[2], s); continue }
     const key = r.key + '|' + n[2]
-    const f = fields.get(key) ?? { recv: r, p: n[2], written: false, nodes: [] }
+    const f = fields.get(key) ?? { recv: r, p: n[2], written: false, stores: [] }
     f.written ||= isWrite
+    if (store) f.stores.push(store)
     fields.set(key, f)
     const s = byName.get(n[2]) ?? new Set(); s.add(r.key); byName.set(n[2], s)
   }
@@ -272,13 +296,33 @@ const planLoop = (loop, view, shared) => {
     for (const s of sets) for (const site of s) { if (seen.has(site)) return false; seen.add(site) }
     return true
   }
+  // ...or, objects of one layout each holding the field as a slot of its own
+  // (`_vector`, `box.min`, `box.max` of three's Box3.setFromArray: Vector3s all,
+  // made at one site), a copy that finds them distinct objects at run time
+  const distinctObjects = new Map()   // receiver keys, joined → the keys
+  const recvOf = (key) => [...fields.values()].find(f => f.recv.key === key)?.recv
+  const distinctAtRun = (keys, p) => {
+    if (keys.has('\0') || keys.size > MAX_DISTINCT) return false
+    for (const key of keys) {
+      const r = recvOf(key), e = r?.expr ?? key
+      if (!r || !isObject(view.kindOfExpr(e)) || !(view.shapesOfExpr(e)?.every(sid => view.layoutSlot(sid, p)) ?? false)) return false
+    }
+    const group = [...keys].sort()
+    distinctObjects.set(group.join('\0'), group)
+    return true
+  }
   const held = []
   for (const f of fields.values()) {
-    if (dropped.has(f.recv.base) || (stored.has(f.p) && byName.get(f.p).size > 1 && !apart(byName.get(f.p))) || accessor(f.p)) continue
+    if (dropped.has(f.recv.base) || (stored.has(f.p) && byName.get(f.p).size > 1 && !apart(byName.get(f.p)) && !distinctAtRun(byName.get(f.p), f.p))) continue
     const kind = f.recv.expr ? view.kindOfExpr(f.recv.expr) : view.kindOfExpr(f.recv.key)
     if (!isObject(kind)) continue
     const shapes = f.recv.expr ? view.shapesOfExpr(f.recv.expr) : view.shapesOfExpr(f.recv.key)
+    // a name some class gives an accessor is a field of the layouts holding none
+    if (!plainMember(view, shapes, f.p)) continue
     if (f.written && (computedRead || !(shapes?.every(sid => view.layoutSlot(sid, f.p)) ?? false))) continue
+    // A Number field that may be missing (`this.x = array[offset]` past the end)
+    // the loop leaves a Number: the copy finds it present, then a Number throughout
+    f.present = numberOrMissing(view.kindOfExpr(['.', f.recv.expr ?? f.recv.key, f.p])) && f.stores.every(st => numberStore(st, view))
     held.push(f)
   }
   // An element at a constant index the loop stores numbers into: of an owned
@@ -353,7 +397,7 @@ const planLoop = (loop, view, shared) => {
     bases.add(r)
   }
   const distinct = [...plain.values()].filter(group => group.length > 1)
-  return { held, elems, distinct, bases: [...bases], chains: [...chains.values()], aliases, view }
+  return { held, elems, distinct, objects: [...distinctObjects.values()], bases: [...bases], chains: [...chains.values()], aliases, view }
 }
 
 /** `loop` with each held field access naming its local, each chain its record's local, and each name it declares a name of its own. */
@@ -478,7 +522,8 @@ const copiesView = (view, back) => {
     kindOfExpr: e => view.kindOfExpr(orig(e)), sitesOfExpr: e => view.sitesOfExpr(orig(e)), shapesOfExpr: e => view.shapesOfExpr(orig(e)),
     typedPayloadCtorOfExpr: e => view.typedPayloadCtorOfExpr(orig(e)), fixedLenOfExpr: e => view.fixedLenOfExpr(orig(e)),
     arrayDenseOfExpr: e => view.arrayDenseOfExpr(orig(e)), arrayCellOf: e => view.arrayCellOf(orig(e)),
-    layoutSlot: (sid, p) => view.layoutSlot(sid, p), elemOfKind: k => view.elemOfKind(k),
+    layoutSlot: (sid, p) => view.layoutSlot(sid, p), layoutMember: (sid, p) => view.layoutMember(sid, p),
+    layoutSide: (sid, p) => view.layoutSide(sid, p), elemOfKind: k => view.elemOfKind(k),
   }
 }
 
@@ -517,19 +562,26 @@ export const promoteLoopFields = (ast) => {
       const probe = (e) => e.chain ? records.get(e.chain.key).probe : e.recv
       const locals = new Map(plan.held.map(f => [f.recv.key + '|' + f.p, `${recv(f.recv)}${T}${f.p}${freshId(ctx)}`]))
       for (const e of plan.elems) for (const k of e.indices) locals.set(e.recv + '[' + k, `${src(e)}${T}${k}${freshId(ctx)}`)
-      const decls = [...plan.held.map(f => ['=', locals.get(f.recv.key + '|' + f.p), ['.', recv(f.recv), f.p]]),
+      // a field the copy finds present, read into a probe of its own by the guard
+      const presentOf = new Map(plan.held.filter(f => f.present).map(f => [f, `${recv(f.recv)}${T}${f.p}${freshId(ctx)}`]))
+      const decls = [...plan.held.map(f => ['=', locals.get(f.recv.key + '|' + f.p), presentOf.has(f) ? ['u+', presentOf.get(f)] : ['.', recv(f.recv), f.p]]),
         ...plan.elems.flatMap(e => e.indices.map(k => ['=', locals.get(e.recv + '[' + k), ['[]', src(e), [null, k]]]))]
       const back = [...plan.held.filter(f => f.written).map(f => ['=', ['.', recv(f.recv), f.p], locals.get(f.recv.key + '|' + f.p)]),
         ...plan.elems.flatMap(e => [...e.written].map(k => ['=', ['[]', src(e), [null, k]], locals.get(e.recv + '[' + k)]))]
       const own = records.size ? [['const', ...[...records.values()].map(r => ['=', r.local, r.probe])]] : []
       const copy = ['{}', [';', ...own, ['let', ...decls], substitute(loop, plan, locals, records), ...back]]
       rewrote = true
-      // the bases present, the records read, the typed arrays long enough, the arrays of a cell distinct
+      // the bases present, the records read, the typed arrays long enough, the arrays of a cell
+      // distinct, and so the objects a stored field name of which several hold
+      const pairs = (g, at) => g.flatMap((a, i) => g.slice(i + 1).map(b => ['!==', at(a), at(b)]))
       const tests = [...plan.bases.map(r => ['!=', r, [null, null]]),
         ...[...records.values()].map(r => ['=', r.probe, r.expr]),
         ...plan.elems.filter(e => e.typed).map(e => ['>', ['.', e.recv, 'length'], [null, e.max]]),
-        ...plan.distinct.flatMap(g => g.flatMap((a, i) => g.slice(i + 1).map(b => ['!==', probe(a), probe(b)])))]
-      const head = records.size ? [['let', ...[...records.values()].map(r => r.probe)]] : []
+        ...plan.distinct.flatMap(g => pairs(g, probe)),
+        ...plan.objects.flatMap(g => pairs(g, key => records.get(key)?.probe ?? key)),
+        ...[...presentOf].map(([f, name]) => ['!=', ['=', name, ['.', records.get(f.recv.key)?.probe ?? f.recv.key, f.p]], [null, null]])]
+      const probes = [...[...records.values()].map(r => r.probe), ...presentOf.values()]
+      const head = probes.length ? [['let', ...probes]] : []
       if (!tests.length) return copy
       // (the loop as written runs where the guard fails: cold, with every loop in it, as a version's twin is)
       walkAst(st, { enter: (n) => { if (n[0] === '=>') return false; if (n[0] === 'for' || n[0] === 'while') { n.cold = true; const b = n[n.length - 1]; if (Array.isArray(b)) b.cold = true } } })

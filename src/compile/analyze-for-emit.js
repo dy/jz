@@ -1,5 +1,6 @@
 import { ctx } from '../ctx.js'
-import { T, isBlockBody, isReassigned, collectAssignedNames, walkAst, MUTATE_OPS, ACCESSOR_GET, callArgs } from '../ast.js'
+import { T, isBlockBody, isReassigned, collectAssignedNames, walkAst, MUTATE_OPS, callArgs } from '../ast.js'
+import { plainMember } from '../member-uses.js'
 import { constIntExpr } from '../static.js'
 import { intLevelMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
@@ -285,11 +286,8 @@ export function analyzeFuncForEmit(func, programFacts) {
     const prop = n[2]
     if (prop === 'length' || ctx.summary?.memberMayBeOwn?.(prop)) return false
     const sids = summary.shapesOfExpr(n[1])
-    if (!sids?.length) return false
     // A name some class or literal gives an accessor is a field on the layouts that hold none.
-    if (!ctx.transform.accessorNames?.has(prop) && !ctx.transform.literalAccessorNames?.has(prop)) return true
-    const slot = prop + ACCESSOR_GET, dynamic = ctx.transform.dynamicAccessorNames?.has(prop) === true
-    return !sids.some(sid => summary.layoutMember(sid, slot) || summary.layoutSlot(sid, slot) || (dynamic && summary.layoutSide(sid, slot)))
+    return !!sids?.length && plainMember(summary, sids, prop)
   } : null
   const typedLoads = mapOrOverlaySize(ctx.func.typedElem) > 0
   // A BigInt element read that may miss keeps its own load: the shared temp

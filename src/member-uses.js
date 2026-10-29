@@ -57,6 +57,20 @@ export function memberUses() {
   return ctx.transform.memberUses = collectMemberUses()
 }
 
+/** Whether `prop` is a plain slot on every layout of `sids` (a summary view's
+ *  `shapesOfExpr`), read and written without user code: a name no class or
+ *  literal gives an accessor, or one whose getter and setter no listed layout
+ *  holds (as a slot, a class method, or a side slot a derived class installs).
+ *  Three's Quaternion has `get x()`: a Vector3's `x` is still a field. */
+export function plainMember(view, sids, prop) {
+  if (prop === '__proto__') return false
+  if (!ctx.transform.accessorNames?.has(prop) && !ctx.transform.literalAccessorNames?.has(prop)) return true
+  if (!sids?.length) return false
+  const dynamic = ctx.transform.dynamicAccessorNames?.has(prop) === true
+  return ![prop + ACCESSOR_GET, prop + ACCESSOR_SET].some(slot =>
+    sids.some(sid => view.layoutMember(sid, slot) || view.layoutSlot(sid, slot) || (dynamic && view.layoutSide(sid, slot))))
+}
+
 /** Whether the program defines or stores a `toString`/`valueOf` anywhere: the
  *  user conversions OrdinaryToPrimitive would run (compile/emit/to-primitive.js). */
 export const definesToPrimitive = ({ defined, written }) => ['toString', 'valueOf'].some(name => defined.has(name) || written.has(name))

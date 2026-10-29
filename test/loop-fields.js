@@ -175,3 +175,48 @@ export let run = (cut) => { const st = [[0, 0]]; return f(new Float64Array(5).fi
   agrees(`const f = (data, state) => { for (let i = 0; i < data.length; i++) { const s = state[0]; s[0] = s[0] + data[i]; s[1] = data[i]; state[0] = state[1] } return state[0][0] + state[1][0] }
 export let go = () => f(new Float64Array(5).fill(1), [[0, 0], [10, 0]])`, [['go']])
 })
+
+// A box grown by the points of a buffer as three.js's Box3.setFromArray grows
+// it: each point read into a module scratch vector (`_vector.fromArray`), the
+// box's min and max vectors stored per point. The three receivers are vectors
+// of one layout made at one site (the constructor's literal), so no
+// construction site tells them apart: the copy holds their fields where it
+// finds them three objects at run time, and the loop as written runs where two
+// are one. Another class's accessor of the same name (Quaternion's `get x()`)
+// leaves a vector's `x` a field. A coordinate a read past the buffer's end
+// leaves undefined is a Number or missing: the copy finds the box's present
+// and holds them as Numbers, tested once before the loop.
+const box = `class Q { constructor() { this._x = 0 } get x() { return this._x } set x(v) { this._x = v } }
+class V {
+  constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z }
+  fromArray(a, o = 0) { this.x = a[o]; this.y = a[o + 1]; this.z = a[o + 2]; return this }
+  min(v) { this.x = Math.min(this.x, v.x); this.y = Math.min(this.y, v.y); this.z = Math.min(this.z, v.z); return this }
+  max(v) { this.x = Math.max(this.x, v.x); this.y = Math.max(this.y, v.y); this.z = Math.max(this.z, v.z); return this }
+}
+const _vector = new V()
+class Box {
+  constructor(min = new V(Infinity, Infinity, Infinity), max = new V(-Infinity, -Infinity, -Infinity)) { this.min = min; this.max = max }
+  setFromArray(a) { for (let i = 0, il = a.length; i < il; i += 3) { this.min.min(_vector.fromArray(a, i)); this.max.max(_vector) } return this }
+}
+const q = new Q(), pts = new Float32Array(30)
+for (let i = 0; i < pts.length; i++) pts[i] = Math.sin(i * 7) * 10
+const box = new Box(), one = new V(Infinity, Infinity, Infinity), shared = new Box(one, one), held = new Box(_vector, new V())
+const sum = (b) => b.min.x + b.min.y + b.min.z + b.max.x + b.max.y + b.max.z
+export let grow = () => { q.x = 2; return sum(box.setFromArray(pts)) + q.x + _vector.z }
+export let same = () => sum(shared.setFromArray(pts)) + _vector.x
+export let scratch = () => sum(held.setFromArray(pts))
+export let missing = () => { box.min.fromArray(pts, 29); return sum(box.setFromArray(pts)) }
+export let none = () => { box.min.fromArray(pts, 29); box.setFromArray(new Float32Array(0)); return box.min.y === undefined ? 1 : 0 }`
+
+test('loop fields: vectors of one layout a loop stores through several receivers agree with JS, distinct or one', () => {
+  agrees(box, [['grow'], ['same'], ['scratch'], ['missing'], ['none'], ['grow']])
+})
+
+test('loop fields: a box grown point by point holds its vectors in locals, as Numbers', () => {
+  if (belowOpt(2)) return
+  for (const optimize of levels(2, 3)) {
+    const loops = loopsOf(wat(box, { optimize })).filter(l => /f64\.min/.test(l) && /f32\.load/.test(l) && l.indexOf('(loop', 1) < 0)
+    // (an undefined test reads the bits: `i64.eq (i64.reinterpret_f64 …) undefined`)
+    ok(loops.some(l => !/f64\.(load|store)|i64\.reinterpret_f64/.test(l)), `at ${optimize}: a loop reads the points alone, no field and no undefined test`)
+  }
+})
