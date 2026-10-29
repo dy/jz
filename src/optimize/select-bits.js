@@ -12,10 +12,12 @@
  * the order they did.
  *
  * Only a condition the data decides afresh takes the bits: a bit of a computed
- * word, or an order between two computed floats. A test against a literal and
- * a NaN test (`x != x`, the canonicalization every float result takes on the
- * way into a generic slot) almost always answer alike; their branch predicts,
- * and costs less than the two register transfers the integer move needs.
+ * word, or an order between two computed floats. A test against a literal, or
+ * inside a loop against a bound the loop never writes (a clamp's limits read
+ * before it), and a NaN test (`x != x`, the canonicalization every float result
+ * takes on the way into a generic slot) almost always answer alike; their
+ * branch predicts, and costs less than the two register transfers the integer
+ * move needs.
  *
  * @module optimize/select-bits
  */
@@ -45,7 +47,7 @@ const sameRead = (a, b) => isArr(a) && isArr(b) && b[0] === 'local.get' && (a[0]
  *  an order between two computed floats (`d < best`). A test against a literal (a clamp, a
  *  threshold, a tag, Infinity) and a NaN test (`x != x`) hold the same way nearly always: their
  *  branch predicts, and stays. */
-const decidedByData = (c) => {
+const decidedByData = (c, fixed = isConst) => {
   if (!isArr(c)) return false
   if (c[0] === 'i32.eqz' && c.length === 2) c = c[1]
   if (c[0] === 'i32.and' && c.length === 3) {
@@ -53,7 +55,20 @@ const decidedByData = (c) => {
     const word = isConst(c[1]) ? c[2] : c[1]
     return isArr(word) && !ANY_CMP.has(word[0])
   }
-  return FLOAT_CMP.has(c[0]) && c.length === 3 && !isConst(c[1]) && !isConst(c[2]) && !sameRead(c[1], c[2]) && !sameRead(c[2], c[1])
+  return FLOAT_CMP.has(c[0]) && c.length === 3 && !fixed(c[1]) && !fixed(c[2]) && !sameRead(c[1], c[2]) && !sameRead(c[2], c[1])
+}
+
+// the locals a loop writes, its nested loops included
+const writtenIn = (loop, memo) => {
+  let set = memo.get(loop)
+  if (set) return set
+  memo.set(loop, set = new Set())
+  const walk = (n) => {
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') set.add(n[1])
+    for (let i = 1; i < n.length; i++) if (isArr(n[i])) walk(n[i])
+  }
+  walk(loop)
+  return set
 }
 
 /** Rewrite the float selects of every function in `ast` (a module) to integer selects of their bits. */
@@ -71,15 +86,19 @@ export function selectBits(ast) {
     if (!isArr(fn) || fn[0] !== 'func') continue
     const locals = new Map()
     for (const d of fn) if (isArr(d) && (d[0] === 'param' || d[0] === 'local') && typeof d[1] === 'string' && d[1][0] === '$') locals.set(d[1], d[2])
-    const visit = (n) => {
+    // Inside a loop, a bound the loop never writes (a clamp's limits read
+    // once before it) holds as a literal does.
+    const memo = new Map()
+    const visit = (n, loop) => {
+      const fixed = loop ? (x) => isConst(x) || isArr(x) && x[0] === 'local.get' && !writtenIn(loop, memo).has(x[1]) : isConst
       for (let i = 1; i < n.length; i++) {
         const c = n[i]
         if (!isArr(c)) continue
-        visit(c)
+        visit(c, c[0] === 'loop' ? c : loop)
         if (c[0] !== 'select') continue
         const typed = isArr(c[1]) && c[1][0] === 'result'
         const at = typed ? 2 : 1
-        if (c.length !== at + 3 || !decidedByData(c[at + 2])) continue
+        if (c.length !== at + 3 || !decidedByData(c[at + 2], fixed)) continue
         const t = floatType(c, locals, globals)
         if (!t) continue
         const [w, toBits, fromBits] = BITS[t]

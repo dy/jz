@@ -4945,6 +4945,43 @@ test('selectBits: a float select the data decides picks the operands\' bits at s
   ok(plain >= 1, 'the clamp against a literal keeps its float select')
 })
 
+// A clamp against limits its loop reads before it (a range record's min and max)
+// holds the same way nearly always, as one against a literal does: its select
+// stays a float select, whose branch predicts. A bound the loop writes (a running
+// minimum) is still the data's.
+test('selectBits: a clamp against bounds its loop never writes keeps its float select', () => {
+  const src = `export let f = (lo, hi, n) => {
+    const v = new Float64Array(64)
+    let s = 0x2545f491 | 0
+    for (let i = 0; i < 64; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; v[i] = (s & 4095) / 512 - 4 }
+    v[3] = NaN; v[7] = -0
+    let acc = 0, best = Infinity
+    for (let k = 0; k < n; k++) {
+      const x = v[k & 63]
+      const c = x > hi ? hi : x
+      acc += c < lo ? lo : c
+      best = x < best ? x : best
+    }
+    return acc + best
+  }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', 2]) {
+    const f = run(src, { optimize }).f
+    for (const [lo, hi] of [[-1, 1], [0, 0], [-0, 0], [2, -2], [NaN, 1], [-1, NaN], [-Infinity, Infinity]])
+      for (const n of [0, 1, 7, 64, 500]) is(f(lo, hi, n), host(lo, hi, n), `O${optimize} lo=${lo} hi=${hi} n=${n}`)
+  }
+  if (onKernel()) return
+  const ast = parseWat(compile(src, { wat: true, optimize: 'speed' }))
+  let bits = 0, plain = 0
+  walk(ast, n => {
+    if (n[0] === 'f64.reinterpret_i64' && Array.isArray(n[1]) && n[1][0] === 'select') bits++
+    // (a bits select's own select picks i64 operands)
+    else if (n[0] === 'select' && Array.isArray(n[n.length - 1]) && /^f64\.[lg]t$/.test(n[n.length - 1][0]) && !(Array.isArray(n[1]) && n[1][0] === 'i64.reinterpret_f64')) plain++
+  })
+  ok(plain >= 2, `the two clamps keep their float selects (${plain})`)
+  ok(bits >= 1, `the running minimum selects bits (${bits})`)
+})
+
 // x64 V8 lowers a byte or halfword mask to a zero extension; over `x ^ y` it extends a register
 // into itself on every path, over `x` alone (still live after) it is a renamed move. The speed tier
 // masks the operand that sets bits past the mask; no path grows, the instruction count holds.
