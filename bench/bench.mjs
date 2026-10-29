@@ -198,8 +198,10 @@ const caseMemory = () => ({})
 // resolution for self.js's bare `watr` imports). A module that throws and never
 // catches carries the tag too (a98rgb, cam16, hct, hsl, hwb, ipt, jzazbz,
 // jzczhz, munsell and worley's in 2026-10): such a row fails, not skips, on a
-// wasmtime or w2c2 without EH.
-const NEEDS_EH = new Set(['jessie', 'jz', 'watr'])
+// wasmtime or w2c2 without EH. webaudio catches in its render loop
+// (OfflineAudioContext `_continueRendering`): wasmtime 25 rejected it with
+// "exceptions proposal not enabled".
+const NEEDS_EH = new Set(['jessie', 'jz', 'watr', 'webaudio'])
 const wasmtimeHasEH = (() => {
   let v
   return () => v ??= /\bexceptions\b/.test(spawnSync('wasmtime', ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
