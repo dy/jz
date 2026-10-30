@@ -331,8 +331,9 @@ against bun/JSC at 1.5×. Any other gap stays red until fixed, unless the owner
 accepts it for a release as an `open` entry, a target with its cause named. The
 open entries today are the dynamic programs, where the JIT speculates on the
 shapes and kinds each site has seen and jz's wasm carries only what it proves:
-`watr` against V8 at 1.3× and bun/JSC at 1.45×, `jessie` against bun/JSC at
-1.2×, and the `jz` self-compile case against V8 at 1.3× and bun/JSC at 1.35×.
+`watr` at 1.45×, `jessie` at 1.2× and the `jz` self-compile case at 1.35×,
+each against bun/JSC. The V8 family excepts nothing: `watr` and the `jz`
+self-compile case trail it and stay red until fixed.
 The class `rss` holds `webaudio`'s peak RSS to 1.15× V8's: V8's compiled code
 for the speed build's 1.19 MB of wasm outweighs jz's 4.5 MB heap.
 

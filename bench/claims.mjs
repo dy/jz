@@ -52,22 +52,12 @@ export const CLAIM_EXCEPTIONS = [
     evidence: "PLAN.md, the crc32 row of 'Active focus, September 25'",
   },
   {
-    case: 'watr', class: 'v8', band: 1.3, open: true,
-    cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
-    evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
-  },
-  {
     case: 'watr', class: 'jsc', band: 1.45, open: true,
     cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
     evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
   },
   {
     case: 'jessie', class: 'jsc', band: 1.2, open: true,
-    cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
-    evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
-  },
-  {
-    case: 'jz', class: 'v8', band: 1.3, open: true,
     cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
     evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
   },
