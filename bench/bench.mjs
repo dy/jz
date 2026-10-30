@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
+import EVENTS from '../src/std/events.js'
 import { completeBenchSvgRun, renderBenchSvg } from '../scripts/bench-svg.mjs'
 import { classifyBenchmarkChecksum, LAB, timedBenchmarkRow } from '../assets/headline.js'
 import { contenders } from './claims.mjs'
@@ -651,6 +652,13 @@ if (typeof TextEncoder === 'undefined') {
   }
 }
 `
+  // Shell engines (jsc) ship no DOM events either; a library built on EventTarget
+  // (webaudio's contexts and nodes) gets jz's own (src/std/events.js, the classes
+  // the jz row compiles), only where the host has none and the program names one.
+  const eventShim = `var Event = __benchGlobal.Event, CustomEvent = __benchGlobal.CustomEvent, EventTarget = __benchGlobal.EventTarget
+if (typeof EventTarget === 'undefined') ({ Event, CustomEvent, EventTarget } = (() => {${EVENTS.replace(/\bexport class\b/g, 'class')}return { Event, CustomEvent, EventTarget }
+})())
+`
   let body = ''
   let src = readFileSync(c.js, 'utf8')
   if (src.includes('../_lib/benchlib.js')) {
@@ -682,7 +690,8 @@ if (typeof TextEncoder === 'undefined') {
   }
   // Native compilers with their own Web globals need no shell polyfills.
   const heapShim = NATIVE_ARENA_RE.test(body) ? NATIVE_ARENA_SHIM : ''
-  const contents = (nativeGlobals ? '' : out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '')) + heapShim + body
+  const contents = (nativeGlobals ? '' : out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '') +
+    (/\b(?:Custom)?Event(?:Target)?\b/.test(body) ? eventShim : '')) + heapShim + body
   if (!existsSync(path) || readFileSync(path, 'utf8') !== contents) writeFileSync(path, contents)
   flatInputs.add(path)
   return path

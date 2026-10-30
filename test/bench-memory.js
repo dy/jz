@@ -155,6 +155,32 @@ syncBuiltinESMExports()
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })
 
+// A shell with no DOM events (JSC's) runs webaudio, whose contexts extend EventTarget,
+// on the events jz itself compiles, and answers V8's checksum.
+test('JS benchmark runners: a shell without EventTarget runs the webaudio engine', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'jz shell events '))
+  try {
+    const hook = join(scratch, 'shell.mjs'), bare = join(scratch, 'bare.mjs'), json = join(scratch, 'results.json')
+    writeFileSync(bare, 'delete globalThis.EventTarget; delete globalThis.Event; delete globalThis.CustomEvent\n')
+    writeFileSync(hook, `import cp from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+const spawn = cp.spawnSync
+cp.spawnSync = (cmd, args, opts) => {
+  if (cmd === '/usr/bin/time') return { status: 1 }
+  return cmd === 'fixture-jsc' ? spawn(process.execPath, ['--import', ${JSON.stringify(bare)}, ...args], opts) : spawn(cmd, args, opts)
+}
+syncBuiltinESMExports()
+`)
+    execFileSync(process.execPath, ['--import', hook, fileURLToPath(new URL('../bench/bench.mjs', import.meta.url)),
+      '--cases=webaudio', '--targets=v8,jsc', `--json=${json}`], {
+      encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,
+      env: { ...process.env, JSC_BIN: 'fixture-jsc', JZ_BENCH_BUILD_DIR: join(scratch, 'build'), JZ_BENCH_WEB_DIR: join(scratch, 'web') },
+    })
+    const { v8, jsc } = JSON.parse(readFileSync(json, 'utf8')).cases.webaudio.targets
+    is([v8.parity, jsc.parity], ['ok', 'ok'], `the shell renders what V8 renders: ${JSON.stringify(jsc)}`)
+  } finally { rmSync(scratch, { recursive: true, force: true }) }
+})
+
 test('reference evidence: CI paths retain corpus, memory and native release gates', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'jz reference gates '))
   try {
