@@ -9,7 +9,13 @@ import { ok } from 'tst/assert.js'
 import { agree, funcWat, wat } from './util.js'
 import { belowOpt } from './_matrix.js'
 
-const shapes = (src, check) => { if (!belowOpt(2)) check(funcWat(wat(src), 'f$exp') || funcWat(wat(src), 'f')) }
+// The export's body and the passes of a loop nest the speed tier makes calls of
+// (optimize/split-funcs.js loopPasses: `$f$exp$s0`, ...), where its loop may land.
+const shapes = (src, check) => {
+  if (belowOpt(2)) return
+  const w = wat(src), passes = [...w.matchAll(/\(func \$(f(?:\$exp)?\$s\d+)[\s)]/g)].map(m => funcWat(w, m[1]))
+  check([funcWat(w, 'f$exp') || funcWat(w, 'f'), ...passes].join('\n'))
+}
 // The loops that hold no other loop, as text.
 const innermost = (fn) => {
   const out = []
