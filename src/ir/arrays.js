@@ -72,9 +72,11 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, ca
   const id = freshId(ctx)
   const setup = []
   if (arr) setup.push(['local.set', `$${arr}`, asF64(arrExpr)])
-  const resolve = ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]]
+  // A node per position: the setup's resolve and a refreshing loop's are two
+  // places a later pass may rewrite one of (optimize/forward-hops.js).
+  const resolve = () => ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${arr}`]]]]
   if (!ptrLocal || refresh) inc('__ptr_offset')
-  if (!ptrLocal) setup.push(resolve)
+  if (!ptrLocal) setup.push(resolve())
   if (!lenLocal) setup.push(
     ['local.set', `$${len}`, ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]])
   // Forward: i 0→len-1. Reverse (findLast*): i len-1→0, same elem indices.
@@ -95,11 +97,11 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, ca
       ['i32.load', ['i32.sub', ['local.get', `$${ptr}`], ['i32.const', 8]]]]
     if (callbacks.visitMissing) {
       const value = callbacks.dense ? elemLoad(ptr, i) : arrayValue(elemLoad(ptr, i))
-      visit = [...(refresh ? [resolve] : []), ['local.set', `$${item}`, refresh
+      visit = [...(refresh ? [resolve()] : []), ['local.set', `$${item}`, refresh
         ? ['if', ['result', 'f64'], present, ['then', value], ['else', ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]]]
         : value], ...body]
     } else visit = refresh
-      ? [resolve, ['if', present, ['then', ...read], ...(callbacks.onMissing ? [['else', ...callbacks.onMissing(i)]] : [])]]
+      ? [resolve(), ['if', present, ['then', ...read], ...(callbacks.onMissing ? [['else', ...callbacks.onMissing(i)]] : [])]]
       : read
   } else visit = [['local.set', `$${item}`, arrayValue(elemLoad(ptr, i))], ...body]
   setup.push(

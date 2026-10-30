@@ -52,6 +52,22 @@ test('array holes: value iteration visits undefined while property callbacks ski
   runCases(src, [0, 0, 1, 4, 2, 0].map(n => ['f', [n]]))
 })
 
+// A callback loop re-resolves its receiver each step (ir/arrays.js arrayLoop):
+// that resolve and the one before the loop were one node, so the speed tier's
+// hop hoisting (optimize/forward-hops.js), rewriting the loop's, rewrote the
+// length read before the loop to a local set only after it, and the read
+// trapped. A handler before the loop is what keeps the receiver's hop.
+test('array holes: a callback loop after a handler reads its length before the hop it hoists', () => {
+  const methods = ['every(v => false)', 'some(v => v === 9)', 'find(v => v === 9)', 'findIndex(v => v === 9)', 'map(v => v).length', 'filter(v => true).length', 'reduce((s, v) => s + (v ?? 1), 0)']
+  const src = methods.map((m, k) => `export function f${k}(n) { const a = new Array(n); if (n > 2) a[2] = 9
+  try { if (n > 9) throw 1 } catch (e) { } return a.${m} }`).join('\n')
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const wasm = jz(src, { optimize }).exports
+    for (let k = 0; k < methods.length; k++) for (const n of [0, 1, 3]) is(wasm[`f${k}`](n), js[`f${k}`](n), `${methods[k]} n=${n} O${optimize}`)
+  }
+})
+
 test('array holes: callbacks observe deletion, growth and reinserted later indices', () => {
   const src = `${signature}
     export function f(mode) {
