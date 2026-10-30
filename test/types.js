@@ -1538,7 +1538,8 @@ test('untyped receiver: a closure-free program calls a Number method on a value 
     export let host = (h) => h.x.toFixed(1)`
   for (const optimize of levels(0, 2, 'size')) {
     const m = jz(src, { optimize }).exports
-    is([m.fixed('{"b":2.25}'), m.local('{"b":2.25}'), m.missing('{"c":1}'), m.host({ x: 1.25 })], ['2.3', '2.25', true, '1.3'], `O${optimize}`)
+    is([m.fixed('{"b":2.25}'), m.local('{"b":2.25}'), m.missing('{"c":1}')], ['2.3', '2.25', true], `O${optimize}`)
+    if (!onWasi()) is(m.host({ x: 1.25 }), '1.3', `host object O${optimize}`)
   }
 })
 
@@ -1576,6 +1577,7 @@ test('untyped receiver: a method named like a builtin on a receiver that may own
 // typed otherwise (`lastIndexOf`, an array's or a string's; `split`, an array)
 // takes it as it is, as JS does. A string still takes the builtin.
 test('untyped receiver: a host object\'s method named like a builtin is its own', () => {
+  if (onWasi()) return  // wasi: host objects
   const host = { charCodeAt: (i) => i + 6, includes: () => 'yes', toUpperCase: () => 5, slice: () => 42, indexOf: (o) => o.k + 1, lastIndexOf: () => '3', split: () => 'xy' }
   const src = `export let code = (o) => o.charCodeAt(1)
     export let has = (o) => o.includes(1)

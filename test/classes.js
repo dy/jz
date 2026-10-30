@@ -309,7 +309,7 @@ test('class static method of a class handed out as a value is a direct call befo
       clone() { return new this.constructor(this.x, this.w) }
       static mix(dst, d, a, o, t) { dst[d] = a[o] * (1 - t) + a[o + 1] * t }
     }
-    export let run = () => {
+    export let go = () => {
       const n = 64, a = new Float64Array(n * 2), dst = new Float64Array(n)
       for (let i = 0; i < a.length; i++) a[i] = i * 0.5
       for (let i = 0; i < n; i++) Q.mix(dst, i, a, i * 2, 0.25)
@@ -319,7 +319,7 @@ test('class static method of a class handed out as a value is a direct call befo
       held(dst, 0, a, 6, 0.5)
       return s + new Q(3).clone().x + dst[0]
     }`
-  for (const optimize of levels(1, 2, 'speed')) is(jz(src, { optimize }).exports.run(), oracle(src).run(), `O${optimize}`)
+  for (const optimize of levels(1, 2, 'speed')) is(jz(src, { optimize }).exports.go(), oracle(src).go(), `O${optimize}`)
   if (onKernel()) return
   ok(!/call \$Q\$mix\b/.test(compileWat(src, { wat: true, optimize: 'speed' })), 'the static is spliced at its site')
 })

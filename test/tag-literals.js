@@ -9,7 +9,7 @@
 import test from 'tst'
 import { ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, onWasi } from './_matrix.js'
 import { funcWat, oracle, wat } from './util.js'
 
 const agrees = (src, args, label) => {
@@ -92,6 +92,7 @@ export let f = () => { let h = 0; for (let i = 0; i < list.length; i++) { const 
 })
 
 test('tag literals: a host that sees the objects keeps the compare', () => {
+  if (onWasi()) return  // wasi: the objects cross to a JS host and back
   // The objects reach the host: their fields may change there.
   const src = `${events}
 export let make = (n) => mk(n)

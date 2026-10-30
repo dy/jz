@@ -574,9 +574,12 @@ test('allocation: the growth helper runs only where an allocation passes the mem
     const { instance } = await WebAssembly.instantiate(compile(src, { optimize: 'speed', helperCounters: true, ...(memory ? { memory } : {}) }))
     const e = instance.exports
     e.__helper_counts_reset?.()
+    const before = e.memory.buffer.byteLength
     is(e.f(2000), 2000 + 4000 + 2000, `result, memory ${memory ?? 'default'}`)
     is(e.g(2000), 6 + 16000, `appends, memory ${memory ?? 'default'}`)
-    const grows = Number(e.__hc_memgrow?.value ?? 0)
-    ok(grows <= 8, `memory ${memory ?? 'default'}: ${grows} growth calls for 4000 allocations and 4000 appends`)
+    // about one call per growth, which doubles the memory below 128 MiB: the JS
+    // host's memory starts at 17 pages, WASI's at one, ten doublings short of this
+    const grows = Number(e.__hc_memgrow?.value ?? 0), doublings = Math.ceil(Math.log2(e.memory.buffer.byteLength / before))
+    ok(grows <= doublings + 1, `memory ${memory ?? 'default'}: ${grows} growth calls for 4000 allocations and 4000 appends, the memory doubling ${doublings} times`)
   }
 })

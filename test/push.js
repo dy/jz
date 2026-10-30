@@ -86,10 +86,11 @@ test('push: appends call only to grow', async () => {
 test('push: an array at the heap top grows in place without the host allocator', () => {
   if (onKernel()) return  // kernel: host {alloc:false} option doesn't reach the single-source self-compile
   const src = `export let f = (n) => { const a = [], b = a; while (n > 1) { a.push(n); n = n % 2 ? 3 * n + 1 : n / 2 } return a.length * 1000 + b.length + (a === b ? 0.5 : 0) + b[b.length - 1] }`
-  // (the growth helpers the module keeps: watr may splice one into its one caller)
+  // (the growth helpers the module keeps: watr may splice one into its one caller;
+  // the extension moves the heap top itself, which a relocation leaves to the allocator)
   const grows = (optimize) => { const w = wat(src, { optimize, alloc: false }); return ['__arr_room', '__arr_grow_known', '__arr_push1'].map(n => funcWat(w, n)).join('') }
-  ok(/\$__heap_reset\b/.test(grows('speed')), 'speed: the grow extends a block at the heap top')
-  ok(!/\$__heap_reset\b/.test(grows('size')), 'size: the grow relocates')
+  ok(/\(global\.set \$__heap\b/.test(grows('speed')), 'speed: the grow extends a block at the heap top')
+  ok(!/\(global\.set \$__heap\b/.test(grows('size')), 'size: the grow relocates')
   const want = oracle(src).f(27)
   for (const optimize of levels(0, 2, 'speed', 'size')) is(jz(src, { optimize, alloc: false }).exports.f(27), want, `f(27) at ${optimize}, alloc: false`)
 })

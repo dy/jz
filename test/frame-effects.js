@@ -17,7 +17,7 @@ import { listedBuiltin, transitiveFrameEffects } from '../src/compile/analyze/fr
 import { includeAllMods } from '../src/autoload.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { ctx } from '../src/ctx.js'
-import { levels, onKernel, belowOpt } from './_matrix.js'
+import { levels, onKernel, onWasi, belowOpt } from './_matrix.js'
 import { oracle, compileInProcess } from './util.js'
 
 const TAPE = { optimize: { watr: false } }   // the pass's own output, before watr folds dead allocations away
@@ -1494,7 +1494,7 @@ test('frame effects: a call that never returns does not make its frame allocate'
 // no escape and the frame keeps its flag; its result converts to the builtin's
 // Number, so `c` stays one and the scan above allocates nothing.
 test('frame effects: a host method call with primitive arguments is no escape', () => {
-  if (onKernel()) return
+  if (onKernel() || onWasi()) return  // wasi: host objects
   const src = `let cur
     export function f(i) { const t = [i, i + 1]; return cur.charCodeAt(i | 0) + t[1] }
     export function g(s) { cur = s; return f(0) }`

@@ -4822,6 +4822,7 @@ test('loop-SR: a loop guarded by a divisibility test steps from one admitted pas
     `export let f=(n,w,base)=>{ let s=0,c=0; for(let k=0;k<n;k++){ c++; const e=base-k; if(e>=0 && e%w===0) s=(s*31+e/w+c)|0 } return s }`,
     `export let f=(n,w,base,o)=>{ let s=0; for(let k=0;k<n;k++){ const e=base-k; if(o.t>k && e%w===0) s=(s*31+e/w)|0 } return s }`,
   ]) {
+    if (onWasi() && src.includes('o.t')) continue  // wasi: a host object's field
     const on = run(src, { optimize: 'speed' }).f, js = oracle(src).f
     for (const w of [1, 3, 0, -2]) for (const n of [0, 9, 40]) is(on(n, w, 30, { t: 20 }), js(n, w, 30, { t: 20 }), `kept: n=${n} w=${w}`)
   }
