@@ -429,7 +429,7 @@ function adoptCounter(node, parent, idx, root, captured) {
   const init = node[1]
   if (!Array.isArray(init) || init[0] !== '=' || typeof init[1] !== 'string') return false
   const name = init[1]
-  if (captured.has(name) || occursOutside(root, node, name)) return false
+  if (captured.has(name) || ctx.scope.globals.has(name) || occursOutside(root, node, name)) return false
   const own = fresh(name)
   const copy = cloneWithSubst(node, new Map(), new Map([[name, own]]))
   copy[1] = ['let', ['=', own, copy[1][2]]]

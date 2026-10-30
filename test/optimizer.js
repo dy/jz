@@ -4874,6 +4874,13 @@ test('counted loops: a counter declared outside the for is the loop\'s own', () 
     is(run(outside, { optimize }).f(7), run(inside, { optimize }).f(7), 'O' + optimize + ': the same result')
     is(run(after, { optimize }).f(7), 8, 'O' + optimize + ': a counter read after the loop stays outside: ' + 8)
   }
+  // A module binding is read outside the function: the loop counts with it, as written.
+  const shared = 'let i = 0\nexport let f = (n) => { for (i = 0; i < n; i++); return 0 }\nexport let g = () => i'
+  for (const optimize of [0, 2, 3]) {
+    const e = run(shared, { optimize })
+    e.f(5)
+    is(e.g(), 5, 'O' + optimize + ': a module counter keeps the loop\'s writes: 5')
+  }
 })
 // The unroller's size gate reads the body after the integer narrowing: nqueens' `avail`
 // is a Number with its conversions before it (112 nodes against the gate of 110; 90 after).
