@@ -15,7 +15,9 @@ for (const id of ['scriptc', 'tslang']) test(`${id} bench: native artifact, sour
     const json = join(dir, 'results.json')
     const hook = join(dir, 'deadline.mjs'), pid = join(dir, 'pid')
     const hang = `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(pid)}, String(process.pid)); setInterval(() => {}, 1000)`
-    // Keep the real subprocess termination path, shortening only its deadline.
+    // Keep the real subprocess termination path, shortening only its deadline:
+    // long enough for the hanging stand-in to start and write its pid on a
+    // loaded machine (a second was not), short of the minute it replaces.
     writeFileSync(hook, `import cp from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
@@ -23,7 +25,7 @@ const spawn = cp.spawnSync, exec = cp.execFileSync
 const mode = readFileSync(${JSON.stringify(mode)}, 'utf8')
 const deadline = (opts, ms) => {
   if (opts?.timeout !== ms || opts.killSignal !== 'SIGKILL') throw new Error('missing hard deadline')
-  return mode.endsWith('-hang') ? { ...opts, timeout: 1000 } : opts
+  return mode.endsWith('-hang') ? { ...opts, timeout: 5000 } : opts
 }
 cp.execFileSync = (cmd, args, opts) => exec(cmd, args,
   cmd === ${JSON.stringify(bin)} && !args.includes('--version') ? deadline(opts, 120_000) : opts)
