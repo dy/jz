@@ -121,7 +121,7 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, ca
  *    init  — IR statement that allocates and sets `local`
  *    ptr   — f64 IR expression: __mkptr(type, aux, local).
  *  Caller emits init, fills via local, then uses ptr (or local for further work). */
-export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
+export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap', fill = true }) {
   // stride=8 (f64 slots — Array/HASH/OBJECT) hits the specialized __alloc_hdr which
   // hardcodes the multiply. Everything else (Set:16, Map probe:24, raw bytes:1) goes
   // through the generic __alloc_hdr_n(len, cap, stride).
@@ -136,11 +136,25 @@ export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
     len = ['local.get', `$${n}`]
   }
   const args = [irOf(len), irOf(cap == null ? len : cap)]
-  let helper
-  if (stride === 8) helper = '__alloc_hdr'
-  else { helper = '__alloc_hdr_n'; args.push(['i32.const', stride]) }
-  inc(helper)
-  const allocate = ['local.set', `$${local}`, ['call', '$' + helper, ...args]]
+  let allocate
+  if (!fill && stride === 1 && isPureIR(args[0]) && isPureIR(args[1])) {
+    // A byte block nothing reads before writing (plan/read-buffers.js): __alloc_hdr_n's
+    // header, without its fill. The bytes are the allocator's: zeros or a rewound block's.
+    inc('__alloc')
+    const at = ['local.get', `$${local}`]
+    allocate = ['block',
+      ['local.set', `$${local}`, ['call', '$__alloc', ['i32.add', ['i32.const', 16], args[1]]]],
+      ['i64.store', at, ['i64.const', 0]],
+      ['i32.store', 'offset=8', at, args[0]],
+      ['i32.store', 'offset=12', at, args[1]],
+      ['local.set', `$${local}`, ['i32.add', at, ['i32.const', 16]]]]
+  } else {
+    let helper
+    if (stride === 8) helper = '__alloc_hdr'
+    else { helper = '__alloc_hdr_n'; args.push(['i32.const', stride]) }
+    inc(helper)
+    allocate = ['local.set', `$${local}`, ['call', '$' + helper, ...args]]
+  }
   const init = capture ? ['block', capture, allocate] : allocate
   const ptr = mkPtrIR(type, aux, ['local.get', `$${local}`])
   return { local, init, ptr }

@@ -921,7 +921,7 @@ export function emitDecl(...inits) {
     // carriers (boxed/global escape); any miss falls back to the copying slice.
     let viewInit = null
     const scratch = ctx.memory.scratch.get(ctx.func.current)?.get(init)
-    if (scratch) viewInit = ctx.core.emit['#fixedTyped'](init[1].slice(4), scratch)
+    if (scratch) viewInit = ctx.core.emit['#fixedTyped'](init[1].slice(4), scratch, init.noFill === true)
     if (ctx.func.sliceViews?.has(name) && !ctx.func.boxed.has(name) && !isGlobal(name)
         && Array.isArray(init) && init[0] === '()'
         && Array.isArray(init[1]) && init[1][0] === '.' && init[1][2] === 'slice') {
@@ -977,7 +977,12 @@ export function emitDecl(...inits) {
     if (!val) {
       if (ctx.func.localReps?.get(name)?.arrayCap != null && Array.isArray(init) && init[0] === '[')
         val = numericConstruction(init, ctx.core.emit['[capacity'](name, init.slice(1), init))
-      else val = tagged && hasAmbiguousBoolMerge(init) ? emitIdentitySafe(init) : emit(init)
+      else {
+        // a read buffer (plan/read-buffers.js): its constructor, entered first, takes no zero fill
+        ctx.func.noFill = Array.isArray(init) && init.noFill === true
+        val = tagged && hasAmbiguousBoolMerge(init) ? emitIdentitySafe(init) : emit(init)
+        ctx.func.noFill = false
+      }
     }
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
     if (!viewInit) val = boolCarrier(name, init, val)

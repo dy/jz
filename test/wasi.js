@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle } from './util.js'
-import { adaptI64, levels } from './_matrix.js'
+import { adaptI64, belowOpt, levels } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
@@ -812,6 +812,53 @@ test('fs: a node:fs reader passed as a callback fills a typed array, no dynamic 
   stdout.write = (b) => { out.push(Buffer.from(b)); return true }
   try { inst.exports._start() } finally { stdout.write = write }
   is(Buffer.compare(Buffer.concat(out), node), 0, 'byte-at-a-time reads')
+})
+
+// A byte array made for a read, and read only below the count the read returned,
+// takes no zero fill (plan/read-buffers.js): the reporter's host made one per read
+// of `n - got` bytes and zeroed the rest of a megabyte at every 1 KiB read of a
+// pipe. A read past the count, a read at an offset, a counter stepped ahead of its
+// read, a wider bound or an escape keeps the fill. Each case holds one typed
+// array, made anew each pass of a loop, and answers what Node answers.
+test('fs: a buffer only its read\'s count reads takes no zero fill', async () => {
+  const wrap = (body) => `import fs from 'fs'
+    function sum (t) { let s = 0; for (let i = 0; i < t.length; i++) s = (s * 31 + t[i]) | 0; return s }
+    function main () { let h = 0; ${body}; return h }
+    export let _start = () => { fs.writeSync(1, String(main())) }`
+  const pass = (L, body) => `for (let pass = 0; pass < 4; pass++) { const t = new Uint8Array(${L}); ${body} }`
+  const counted = 'let i = 0; while (i < r) { h = (h * 31 + t[i]) | 0; i = i + 1 }'
+  const fill = (read) => `let got = 0
+    while (got < 40) {
+      const t = new Uint8Array(40 - got)
+      const r = ${read}
+      if (r <= 0) break
+      let i = 0
+      while (i < r) { h = (h * 31 + t[i] + got) | 0; i = i + 1 }
+      got = got + r
+    }`
+  const cases = {
+    'per read, positional': [true, fill('fs.readSync(0, t, 0, t.length)')],
+    'per read, options': [true, fill('fs.readSync(0, t, { offset: 0, length: t.length })')],
+  }
+  for (const [kind, L] of [['fixed', '16'], ['heap', '16 + (pass & 1)']]) Object.assign(cases, {
+    [`below the count, ${kind}`]: [true, pass(L, `const r = fs.readSync(0, t, 0, 16); ${counted}`)],
+    [`past the count, ${kind}`]: [false, pass(L, 'const r = fs.readSync(0, t, 0, 16); for (let i = 0; i < t.length; i++) h = (h * 31 + t[i] + r) | 0')],
+    [`at an offset, ${kind}`]: [false, pass(L, `const r = fs.readSync(0, t, (pass & 1) * 4, 8); ${counted}`)],
+    [`stepped ahead, ${kind}`]: [false, pass(L, 'const r = fs.readSync(0, t, 0, 15); let i = 0; while (i < r) { i = i + 1; h = (h * 31 + t[i]) | 0 }')],
+    [`a wider bound, ${kind}`]: [false, pass(L, 'const r = fs.readSync(0, t, 0, 12); const q = r + 3; let i = 0; while (i < q) { h = (h * 31 + t[i]) | 0; i = i + 1 }')],
+    [`escapes, ${kind}`]: [false, pass(L, `const r = fs.readSync(0, t, 0, 16); ${counted}; h = (h + sum(t)) | 0`)],
+  })
+  // the zero fills the program's own functions make: a fill, or an allocation that fills
+  const fills = (wat) => wat.split(/(?=\(func \$)/).filter(f => /^\(func \$(?!__)/.test(f))
+    .reduce((n, f) => n + (f.match(/memory\.fill|call \$__alloc_hdr_n/g) || []).length, 0)
+  const input = Buffer.from(Array.from({ length: 37 }, (_, i) => (i * 37 + 11) & 255))
+  for (const [name, [free, body]] of Object.entries(cases)) {
+    const src = wrap(body)
+    const { node, jz } = await runBoth(src, input)
+    ok(node.length > 0, `${name}: node ran`)
+    is(jz.toString(), node.toString(), `${name}: node:wasi answers what Node answers`)
+    if (!belowOpt(2)) is(fills(compile(src, { host: 'wasi', wat: true })) === 0, free, `${name}: ${free ? 'no zero fill' : 'zero fill kept'}`)
+  }
 })
 
 test('fs: a Native Messaging host echoes length-prefixed frames byte-exact', async () => {

@@ -58,6 +58,7 @@ export function createActiveFunction({
     stack: [],
     uniq,
     inTry: false,
+    noFill: false,       // the declarator being emitted is a read buffer (plan/read-buffers.js): its constructor skips the zero fill
     finallyStack: null,
     pendingLabel: null,
     refinements: null,

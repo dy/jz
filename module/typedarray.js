@@ -404,8 +404,9 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.TYPED}) (i32.and (local.get $aux) (i32.const 119)) (local.get $dst)))`
 
   // A declaration's proved scratch placement uses the same static writer as
-  // module state. Clear at the construction site, preserving JS zeroing.
-  ctx.core.emit['#fixedTyped'] = (name, slot) => {
+  // module state. Clear at the construction site, preserving JS zeroing, but
+  // for a read buffer (plan/read-buffers.js), whose stale bytes no read reaches.
+  ctx.core.emit['#fixedTyped'] = (name, slot, noFill = false) => {
     const bytes = slot.len * STRIDE[TYPED_ELEM_CODE[name]]
     if (bytes > STATIC_TYPED_MAX_BYTES) return null
     setLinkDemand('typedarray')
@@ -414,6 +415,7 @@ export default (ctx) => {
     const ptr = () => staticStoragePtr(typedAux(name), bytes, slot)
     // Distinct IR nodes per use: the static-prefix pass rebases each pointer
     // in place, so sharing one subtree would shift later slots twice.
+    if (noFill) return typed(ptr(), 'f64')
     return typed(['block', ['result', 'f64'],
       ['memory.fill', ptrOffsetIR(ptr(), VAL.TYPED), ['i32.const', 0], ['i32.const', bytes]], ptr()], 'f64')
   }
@@ -432,6 +434,9 @@ export default (ctx) => {
     const aux = typedAux(name)
     const stride = STRIDE[elemType]
     ctx.core.emit[`new.${name}`] = (lenExpr, offsetExpr, lenExpr2) => {
+      // the declarator's read-buffer mark, taken before any nested emit can see it
+      const fill = !ctx.func.noFill
+      ctx.func.noFill = false
       setLinkDemand('typedarray')
       if (name === 'Float16Array') setLinkDemand('f16')
       if (name === 'Uint8ClampedArray') setLinkDemand('clamped')
@@ -701,7 +706,7 @@ export default (ctx) => {
         return typed(staticStoragePtr(aux, staticBytes), 'f64')
       const lenL = tempI32('tan')
       const out = allocPtr({ type: PTR.TYPED, aux,
-        len: ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]], stride: 1, tag: 'ta' })
+        len: ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]], stride: 1, tag: 'ta', fill })
       // ToIndex: a proven number truncates in place (a literal folds to its
       // constant), anything else converts first (a string parses, a BigInt throws).
       const lenIR = asI32Sat(valTypeOf(lenExpr) === VAL.NUMBER ? emit(lenExpr) : toNumF64(lenExpr, emit(lenExpr)))

@@ -66,6 +66,7 @@ import { reciprocalLoopDivisors } from './reciprocal-loops.js'
 import { splitLoopKinds } from './kind-split.js'
 import { callChosenFunctions } from './chosen-calls.js'
 import { specializeCalledArgs } from './called-args.js'
+import { markReadBuffers } from './read-buffers.js'
 import { hoistObjectReads } from './object-reads.js'
 import { hoistSiteReceivers } from './site-receivers.js'
 import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
@@ -238,6 +239,9 @@ export default function plan(ast, profiler, summarize) {
     // one it cannot read.
     if (spliced || lambdas) ctx.summary = summarize()
     sweep('guardConstants', guardConstants)
+    // A byte array a read fills and read only where the read wrote: no zero fill.
+    // After inlining, which puts the read beside the array; ahead of the loop forms.
+    t('markReadBuffers', markReadBuffers)
     sweep('canonicalizeCountedLoops', canonicalizeCountedLoops)
     sweep('splitCharScan', splitCharScanLoops)
     // Record parameters read field by field become lanes before the object

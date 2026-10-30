@@ -78,6 +78,8 @@ export const clonePlain = node => {
   const out = node.map(clonePlain)
   // (a function's parameter list or body: it has no `prototype`, jzify transform.js prototypeless)
   if (node.noProto) out.noProto = true
+  // (a read buffer's constructor, plan/read-buffers.js: a copy reads what its source read)
+  if (node.noFill) out.noFill = true
   return out
 }
 
