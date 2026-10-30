@@ -357,7 +357,12 @@ const ARRAY_CALLS = {
 //            not 34): slice f$exp +1264 and __esc_elem now entered, entered +848
 //   cd956f3f a value read only for its bits loads as an integer: slice -536
 // The rest (buf +5, condref +40, slice +56, entered +8) is watr 5.13's output;
-// nest fell 5595 -> 5545 meanwhile, locked in with these.
+// nest fell 5595 -> 5545 meanwhile, locked in with these. Since:
+//   7b5f0f35d a computed read of a receiver of no known kind reads inline after a test
+//            for a Map or a Set, where it called the method-value reader: slice f$exp
+//            +8160, entered +2656, all from the seeds whose loop is `a[o + i] = a[o + i]`
+//            (f$exp 1858 -> 3161 WAT lines); that kernel, called on an array the module
+//            builds, runs 0.52x (62 vs 120 ms, 15 alternating rounds, Apple M4 Max, load 8).
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
