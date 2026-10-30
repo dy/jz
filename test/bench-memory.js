@@ -3,7 +3,7 @@ import { is } from 'tst/assert.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
 import { linuxSwapUsedMB } from '../bench/machine-state.mjs'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -187,7 +187,10 @@ test('reference evidence: CI paths retain corpus, memory and native release gate
     const root = fileURLToPath(new URL('../', import.meta.url))
     const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
     const watr = JSON.parse(readFileSync(join(root, 'node_modules/watr/package.json'), 'utf8')).version
-    const names = Object.keys(JSON.parse(readFileSync(join(root, 'bench/results.json'), 'utf8')).cases)
+    // every case of the corpus, as the claims gate lists it (bench-claims.js), not
+    // the committed snapshot's, which a case added since its last run lacks
+    const names = readdirSync(join(root, 'bench'), { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(join(root, 'bench', d.name, `${d.name}.js`))).map(d => d.name)
     const fresh = () => ({ meta: { commit, versions: { watr }, machineState: { swapUsedMB: 0 } },
       cases: Object.fromEntries(names.map(name => [name, { targets: Object.fromEntries(
         ['jz', 'v8', 'jz-w2c'].map(target => [target, { parity: 'ok', medianUs: 1, memKb: 64 }])) }])) })
