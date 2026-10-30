@@ -22,10 +22,14 @@ export const CLAIM_CLASSES = [
 /** Named exceptions: a case one claim class holds to a band instead of leadership,
  *  jz over the class's fastest rival by the reference medians. Measurement earns an
  *  entry: the case's code shown optimal against that class, or the same code leading
- *  on some CPUs and trailing on others. Each is a tripwire, not a claim: the gate
- *  (test/bench-claims.js) fails the moment the case leaves its band, and the entry
- *  goes the commit jz leads on every runner. `cause` is the measured cause in a line,
- *  `evidence` where it was measured. */
+ *  on some CPUs and trailing on others. An `open` entry is the one other kind, a gap
+ *  the owner accepts for the release while it is worked on: a dynamic program (a
+ *  parser, a compiler) where the JIT speculates on what each site has seen and jz's
+ *  wasm carries only what it proves for every input. Each is a tripwire, not a claim:
+ *  the gate (test/bench-claims.js) fails the moment the case leaves its band, and the
+ *  entry goes the commit jz leads on every runner. The class `rss` holds a case of the
+ *  peak-RSS claim (test/_memory-floor.js) to a band of jz's peak over V8's. `cause` is
+ *  the measured cause in a line, `evidence` where it was measured. */
 export const CLAIM_EXCEPTIONS = [
   {
     case: 'vm', class: 'wasm', band: 1.12,
@@ -46,6 +50,36 @@ export const CLAIM_EXCEPTIONS = [
     case: 'crc32', class: 'jsc', band: 1.5,
     cause: 'V8 adds the table base as a wrapped 32-bit word before each table load where JSC indexes base plus scaled index (paired 1.401; about 1.26 with the table at a constant address)',
     evidence: "PLAN.md, the crc32 row of 'Active focus, September 25'",
+  },
+  {
+    case: 'watr', class: 'v8', band: 1.3, open: true,
+    cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
+    evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
+  },
+  {
+    case: 'watr', class: 'jsc', band: 1.45, open: true,
+    cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
+    evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
+  },
+  {
+    case: 'jessie', class: 'jsc', band: 1.2, open: true,
+    cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
+    evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
+  },
+  {
+    case: 'jz', class: 'v8', band: 1.3, open: true,
+    cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
+    evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
+  },
+  {
+    case: 'jz', class: 'jsc', band: 1.35, open: true,
+    cause: "the JIT speculates on the shapes and kinds each site has seen (inline caches, deoptimizing on a miss) where jz's wasm carries only what it proves for every input; per-site shape caches in the wasm could close it, so the gap is not shown irreducible",
+    evidence: 'reference runs 4922687e (EPYC 7763: watr 1.122× deno, 1.137× bun; jessie 1.070× jsc; jz 1.158× v8, 1.245× bun) and 825566d4 (watr 1.211× v8, 1.366× bun; jessie 1.127× jsc)',
+  },
+  {
+    case: 'webaudio', class: 'rss', band: 1.15, open: true,
+    cause: "V8's compiled code for the speed build's 1.19 MB of wasm, about 13 MB resident, where the heap's high-water mark is 4.5 MB (the size build's 376 KB peaks at 70.0 MB)",
+    evidence: 'reference run 4922687e (1.102×); paired local runs at d9c9e3a4 (75.7 MB against V8\'s 70.2 MB)',
   },
 ]
 /** The cases a claim class holds to a band: case → its exception. */

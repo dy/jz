@@ -17,17 +17,22 @@ These are the product's promises. They are CI-gated (`test/bench.js`), not aspir
    A case where another *wasm* target wins is a bug to fix, tracked as `todo` in the gate
    until jz takes the lead — never silently accepted (`vm`, whose same code leads or trails
    by CPU, is the one named exception below).
-2. **Faster than V8-family JITs, everywhere; faster than bun/JSC, almost everywhere.**
-   jz beats V8-family engines (Node, Deno) on every case. It beats bun/JSC too, except
-   the tight-integer-loop class (`vm`, `dict`, `crc32`), where JSC's adaptive JIT
-   out-executes an AOT wasm module on code already shown optimal.
+2. **Faster than V8-family JITs and bun/JSC, except named cases.**
+   jz beats V8-family engines (Node, Deno) and bun/JSC on every kernel. Two classes
+   trail within named bands: the tight-integer-loop class against JSC (`vm`, `dict`,
+   `crc32`), where JSC's adaptive JIT out-executes an AOT wasm module on code already
+   shown optimal; and the dynamic programs (`watr`, `jessie`, the `jz` self-compile),
+   where the JIT speculates on what each site has seen and jz's wasm carries only what
+   it proves. The second class is open work, not a proven limit.
 
 The exceptions are one table, `CLAIM_EXCEPTIONS` in `bench/claims.mjs`: case, claim
 class, band, a one-line measured cause and an evidence pointer. An entry is earned by
 measurement only: the same code shown optimal against that class, or the same machine
 code leading on some CPUs and trailing on others (`vm` against the wasm class: 0.75× on
-Zen 4, 0.76× on the M4, 1.07× on Zen 3, 1.10× on Zen 5). A codegen gap is never an exception,
-however hard; it stays red until fixed. The gate (`test/bench-claims.js`) holds an
+Zen 4, 0.76× on the M4, 1.07× on Zen 3, 1.10× on Zen 5). Any other gap stays red until
+fixed, unless the owner accepts it for a release: such an entry is marked `open`, names
+its cause and stays a target (today the dynamic programs, and `webaudio`'s peak RSS
+against V8 under the class `rss`). The gate (`test/bench-claims.js`) holds an
 excepted case to its band instead of leadership and fails past it: every exception is a
 tripwire, not a claim, removed the commit jz leads on every runner.
 

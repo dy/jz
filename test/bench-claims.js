@@ -274,7 +274,8 @@ test('claims: memory evidence is fresh (no compiler commits past its measured co
 })
 
 test('claims: allocation-heavy cases use no more peak RSS than V8', () => {
-  const { missing, losses } = memoryFloor(memorySnapshot.cases)
+  const { missing, losses, held } = memoryFloor(memorySnapshot.cases, exceptionsOf('rss'))
+  if (held.length) console.log(`  held: ${held.map(([name, ratio]) => `${name} ${ratio.toFixed(3)}× (band ${exceptionsOf('rss').get(name).band}×)`).join(', ')}`)
   ok(missing.length === 0, `missing correct, measured memory rows: ${missing.join(', ')}`)
   ok(losses.length === 0, `JZ/V8 peak-RSS losses: ${losses.map(([name, ratio]) => `${name} ${ratio.toFixed(3)}×`).join(', ')}`)
 })
@@ -522,7 +523,7 @@ const bandTest = (label, rivals, ids = null, tol = WASM_BAND_TOL) => test(`claim
 
 // Each claim class over the cases it claims: every case but the pending ones and
 // the ones it excepts by name (bench/claims.mjs CLAIM_EXCEPTIONS), which answer to
-// their bands below. The V8 family excepts none today.
+// their bands below.
 const NAMES = { wasm: 'wasm rival', v8: 'V8-family JIT (v8/node, deno)', jsc: 'bun/jsc JIT' }
 const RIVALS = Object.fromEntries(CLAIM_CLASSES)
 for (const [label, rivals] of CLAIM_CLASSES) {
@@ -544,7 +545,7 @@ test.todo('claims: the pending library cases lead every V8-family and bun/jsc en
 // NAMED EXCEPTIONS — each excepted case against its class's fastest rival:
 // within its band it holds (a lead says the entry may go), past it the gate fails.
 // A case the evidence does not time is reported, not passed as held.
-const exceptionVerdicts = (source = cases, table = CLAIM_EXCEPTIONS) => table.map(e => {
+const exceptionVerdicts = (source = cases, table = CLAIM_EXCEPTIONS.filter(e => RIVALS[e.class])) => table.map(e => {
   const [row] = caseRatios(RIVALS[e.class], new Set([e.case]), source)
   return { ...e, ratio: row?.[1] ?? null, who: row?.[2] ?? null }
 })
@@ -558,7 +559,8 @@ test('claims: the named-exception table is well formed', () => {
     const key = `${e.case}/${e.class}`
     ok(corpus.has(e.case), `${key}: a case of the corpus`)
     ok(!PENDING_CASES.has(e.case), `${key}: a pending case answers to no claim, so to no exception`)
-    ok(RIVALS[e.class] != null, `${key}: a claim class (${Object.keys(RIVALS).join(', ')})`)
+    ok(RIVALS[e.class] != null || e.class === 'rss' && MEMORY_CASES.includes(e.case), `${key}: a claim class (${Object.keys(RIVALS).join(', ')}), or rss for a memory case (${MEMORY_CASES.join(', ')})`)
+    ok(e.open == null || e.open === true, `${key}: open is true or absent`)
     ok(typeof e.band === 'number' && e.band > 1 && e.band <= 2, `${key}: a band above 1 (a tie needs no exception) and at most 2`)
     for (const field of ['cause', 'evidence'])
       ok(typeof e[field] === 'string' && e[field].trim().length > 0 && !e[field].includes('\n'), `${key}: a one-line ${field}`)

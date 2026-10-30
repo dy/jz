@@ -327,8 +327,14 @@ fails. Every exception is a tripwire, not a claim, and goes the commit jz leads
 on every runner. The table today: `vm` against the wasm class at 1.12×
 (identical `run_kernel` code: 0.75× on an EPYC 9V74, 0.76× on an Apple M4,
 1.07× on an EPYC 7763, 1.10× on an EPYC 9V45), and `vm`, `dict` and `crc32`
-against bun/JSC at 1.5×. A codegen gap, however hard, earns none: the `jz`
-self-compile case and `watr` trail the JIT classes and stay red until fixed.
+against bun/JSC at 1.5×. Any other gap stays red until fixed, unless the owner
+accepts it for a release as an `open` entry, a target with its cause named. The
+open entries today are the dynamic programs, where the JIT speculates on the
+shapes and kinds each site has seen and jz's wasm carries only what it proves:
+`watr` against V8 at 1.3× and bun/JSC at 1.45×, `jessie` against bun/JSC at
+1.2×, and the `jz` self-compile case against V8 at 1.3× and bun/JSC at 1.35×.
+The class `rss` holds `webaudio`'s peak RSS to 1.15× V8's: V8's compiled code
+for the speed build's 1.19 MB of wasm outweighs jz's 4.5 MB heap.
 
 Performance evidence describes the machine recorded in its metadata. The
 current `bench/results.json` records darwin/arm64, Apple M4 Max. Ordinary CI

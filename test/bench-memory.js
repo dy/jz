@@ -21,7 +21,7 @@ test('memory evidence: Linux swap is measured, including a host with swap disabl
 
 test('memory evidence: parity, complete coverage and finite RSS precede comparison', () => {
   is(memoryFloor({}).missing, MEMORY_CASES)
-  is(memoryFloor(evidence()), { missing: [], losses: [], rows: MEMORY_CASES.map(name => [name, 64, 64]) })
+  is(memoryFloor(evidence()), { missing: [], losses: [], held: [], rows: MEMORY_CASES.map(name => [name, 64, 64]) })
   for (const target of ['jz', 'v8']) for (const bad of [undefined, null, 0, -1, NaN, Infinity]) {
     const cases = evidence()
     cases.watr.targets[target].memKb = bad
@@ -41,6 +41,16 @@ test('memory evidence: a win elsewhere cannot hide one allocation-heavy loss', (
   is(memoryFloor(cases).losses, [['watr', 65 / 64]])
   cases.watr.targets.jz.memKb = 64
   is(memoryFloor(cases).losses, [])
+})
+
+test('memory evidence: a named band holds its case and fails past it', () => {
+  const cases = evidence(), bands = new Map([['watr', { band: 1.1 }]])
+  cases.watr.targets.jz.memKb = 70
+  is(memoryFloor(cases, bands), { missing: [], losses: [], held: [['watr', 70 / 64]], rows: MEMORY_CASES.map(name => [name, name === 'watr' ? 70 : 64, 64]) })
+  cases.watr.targets.jz.memKb = 71
+  is(memoryFloor(cases, bands).losses, [['watr', 71 / 64]])
+  cases.webaudio.targets.jz.memKb = 65
+  is(memoryFloor(cases, bands).losses, [['watr', 71 / 64], ['webaudio', 65 / 64]], 'a band names one case')
 })
 
 test('memory evidence: paired runs use both positions and reject incomplete RSS', () => {
