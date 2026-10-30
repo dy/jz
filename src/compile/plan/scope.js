@@ -20,7 +20,7 @@
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { createFunction, frameRoots } from '../../function.js'
-import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, T, copyNode, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
 import { typedStaticLen, intLevelMap } from '../../type.js'
@@ -1415,6 +1415,30 @@ export const dropUnreadGlobals = (ast, programFacts) => {
       progress = changed = true
     }
   }
+  return changed
+}
+
+/**
+ * A derived class's link to its base (jzify/classes.js STATIC_BASE) serves
+ * reads through the class alone: a class the call graph never reaches, which
+ * nothing reads, stores into or hands out, keeps no link, whose store would
+ * make its value for nothing.
+ */
+export const dropUnreachedStaticLinks = (ast, programFacts) => {
+  if (!ctx.linkDemand.staticBase) return false
+  const { reachableForLowering } = programFacts.programIndex
+  let changed = false
+  const visit = (n) => {
+    if (!Array.isArray(n) || n[0] !== ';') return
+    for (let i = 1; i < n.length; i++) {
+      const s = n[i]
+      if (Array.isArray(s) && s[0] === ';') { visit(s); continue }
+      if (!Array.isArray(s) || s[0] !== '=' || !Array.isArray(s[1]) || s[1][0] !== '.' || s[1][2] !== STATIC_BASE) continue
+      const f = typeof s[1][1] === 'string' ? ctx.funcs.map.get(s[1][1]) : null
+      if (f && !reachableForLowering(f)) { n[i] = [';']; changed = true }
+    }
+  }
+  for (const root of [...(ctx.module.moduleInits || []), ast]) visit(root)
   return changed
 }
 

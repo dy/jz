@@ -46,7 +46,7 @@ import { adviseProgram } from './advise.js'
 import { scanInplaceStores } from '../inplace-store.js'
 import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
-  moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals,
+  moduleGlobalKinds, unboxConstTypedGlobals, inferModuleIntGlobals, dropUnreadGlobals, dropUnreachedStaticLinks,
   flattenFuncNamespaces, devirtGlobalCalls, devirtClassCalls, classifyHashDictGlobals,
   resolveClosureWidth, canSkipWholeProgramNarrowing,
   holdModuleNumbers, resolveHeldMethods, holdModuleRegexes,
@@ -306,6 +306,7 @@ export default function plan(ast, profiler, summarize) {
   // frozen: the values dropped hold no call. At every level, like the functions
   // nothing reaches: what a program may name does not depend on the optimizer.
   if (t('dropUnreadGlobals', () => dropUnreadGlobals(ast, programFacts))) getFactStore().revision++
+  if (t('dropUnreachedStaticLinks', () => dropUnreachedStaticLinks(ast, programFacts))) getFactStore().revision++
   // Shape check (.work/archive/program-facts-split.md §7.1): this is the ONLY staple-on
   // site anywhere in src/compile/ that adds a top-level key to `programFacts`
   // after `collectProgramFacts` publishes it — the moment it lands is the

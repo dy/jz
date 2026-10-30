@@ -3,7 +3,7 @@
  * @module jzify/classes
  */
 
-import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, STATIC_BASE, T, withLoc, collectParamNames, collectAllBoundNames } from '../src/ast.js'
+import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, STATIC_BASE, T, withLoc, cloneNode, collectParamNames, collectAllBoundNames } from '../src/ast.js'
 import { ctx, err, warn } from '../src/ctx.js'
 import { usesArguments } from './arguments.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
@@ -255,11 +255,11 @@ const withReceiver = (args, recv) => args == null ? recv : Array.isArray(args) &
 // class's [[Prototype]]: the class holds its base under STATIC_BASE (ast.js),
 // which the summary and the runtime's dynamic read follow on a miss. A
 // static method, getter or setter that reads its receiver (`this`, `super`)
-// runs with the class it is read through: in a program that derives classes
-// it is a function of the receiver (`C⟨static⟩m(self, …)`), the class's own
-// `C.m` calls it with the class, and every class deriving it without
-// declaring the name holds one calling it with itself. `super.m(…)` in a
-// static calls the base's with the receiver; `super.x` reads the base's.
+// runs with the class it is read through: the class's own `C.m` binds the
+// class, and where the program derives the class the member is also a
+// function of the receiver (`C⟨static⟩m(self, …)`), which every class deriving
+// it without declaring the name holds a copy calling with itself. `super.m(…)`
+// in a static calls the base's with the receiver; `super.x` reads the base's.
 // Both copies and `super` take the base's member as the class defines it:
 // one stored again (`A.m = …`) is rejected where the summary sees the store
 // (compile/plan/index.js `checkStaticCopies`).
@@ -657,7 +657,7 @@ function lowerStruct({ name, heritage, base, nativeCollection, ctorParams, ctorB
   // class's own copy of each member of the base that reads its receiver.
   if (base?.chainStatics) {
     trailers.push(['=', ['.', cls, STATIC_BASE], heritage])
-    ctx.linkDemand.staticBase = true
+    ctx.linkDemand.staticBase = entry.linked = true
     for (const slot of shadows) trailers.push(['=', ['.', cls, slot], UNDEF])
     for (const [slot, m] of entry.staticMembers) if (m.fn) {
       trailers.push(['=', ['.', cls, slot], forwardTo(m.fn, cls, m.params, names.classSuperArg)])
@@ -676,20 +676,19 @@ function lowerStruct({ name, heritage, base, nativeCollection, ctorParams, ctorB
       else if (b != null) trailers.push(b)
       continue
     }
-    let rhs
+    // A member that reads its receiver is also a function of it, for each
+    // class deriving this one to call with itself (its own copy, its `super`);
+    // the class's own member binds the class.
+    let fn = null
     if (kind && inherits(cls) && readsReceiver(value)) {
-      // a function of the receiver, which the class's own member calls with the class
-      const fn = methodFn(cls, CLASS_T + 'static' + sname)
-      const [mparams, mbody] = ownArguments(value[2], value[3])
+      fn = methodFn(cls, CLASS_T + 'static' + sname)
+      const [mparams, mbody] = ownArguments(...cloneNode([value[2], value[3]]))
       const code = (node) => renameThis(ownCode(node), self)
       hoists.push(['let', ['=', fn, fnOf(kind === true ? undefined : kind, code(mparams), block(code(mbody)))]])
       entry.staticMembers.set(sname, { fn, params: mparams, owner: entry, method: true })
-      rhs = forwardTo(fn, cls, mparams, names.classSuperArg)
-    } else {
-      entry.staticMembers.set(sname, { fn: null, owner: entry, method: !!kind })
-      rhs = kind ? methodValue(value[2] && ownCode(value[2]), ownCode(value[3]), kind === true ? undefined : kind, cls)
-        : value == null ? UNDEF : transform(renameThis(ownCode(value), cls))
-    }
+    } else entry.staticMembers.set(sname, { fn: null, owner: entry, method: !!kind })
+    const rhs = kind ? methodValue(value[2] && ownCode(value[2]), ownCode(value[3]), kind === true ? undefined : kind, cls)
+      : value == null ? UNDEF : transform(renameThis(ownCode(value), cls))
     trailers.push(['=', ['.', cls, sname], rhs])
   }
   // The static members the host reads and writes off an exported class, its
@@ -1021,22 +1020,18 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     }
     const named = typeof sname === 'string'
     if (named && kind === true && (sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET))) staticAccessors.add(sname)
-    let rhs
-    // A declared class's member that reads its receiver is a function of it,
-    // beside the class in its scope, as a schema class's is; a class
-    // expression's, or a member named at run time, binds the class.
+    // A declared class's member that reads its receiver is also a function of
+    // it, beside the class in its scope, as a schema class's is (a class
+    // expression's, or a member named at run time, passes on its own alone).
     if (kind && named && trailers && inherits(cls) && readsReceiver(value)) {
       const fn = methodFn(cls, CLASS_T + 'static' + sname)
-      const [mparams, mbody] = ownArguments(value[2], value[3])
+      const [mparams, mbody] = ownArguments(...cloneNode([value[2], value[3]]))
       const code = (node) => renameThis(ownCode(node), self)
       hoists.push(['let', ['=', fn, receiverFn(self, kind === true ? undefined : kind, code(mparams), block(code(mbody)))]])
       staticMembers.set(sname, { fn, params: mparams, owner: info, method: true })
-      rhs = forwardTo(fn, cls, mparams, names.classSuperArg)
-    } else {
-      if (named) staticMembers.set(sname, { fn: null, owner: info, method: !!kind })
-      rhs = kind ? methodValue(value[2] && ownCode(value[2]), ownCode(value[3]), kind === true ? undefined : kind, cls)
-        : value == null ? UNDEF : transform(renameThis(ownCode(value), cls))
-    }
+    } else if (named) staticMembers.set(sname, { fn: null, owner: info, method: !!kind })
+    const rhs = kind ? methodValue(value[2] && ownCode(value[2]), ownCode(value[3]), kind === true ? undefined : kind, cls)
+      : value == null ? UNDEF : transform(renameThis(ownCode(value), cls))
     staticStmts.push(['=', memberRef(cls, sname), rhs])
   }
   staticStmts.push(['return', cls])

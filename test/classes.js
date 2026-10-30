@@ -1023,6 +1023,14 @@ test('class statics inherit across modules and to the host', () => {
     export let f = () => [A.twice(), M.twice(), B.twice(), M.plain(3), B.make() instanceof B, M.make() instanceof A, B.g, M.g]`
   // node: [2, 10, 15, 6, true, true, 107, 105]
   for (const optimize of levels(0, 2, 'speed')) is(jz(src, { optimize, modules }).exports.f(), [2, 10, 15, 6, true, true, 107, 105], `O${optimize}`)
+  // a derived class the program never reaches keeps no link (its module still makes it)
+  const unused = {
+    './node.js': `class Node { constructor(c) { this.c = c; Node.check(c) } static check(c) { return c } }\nexport default Node`,
+    './shaper.js': `import Node from './node.js'\nclass Shaper extends Node { #curve = null; get curve() { return this.#curve } set curve(v) { this.#curve = v } }\nexport default Shaper`,
+    './gain.js': `import Node from './node.js'\nclass Gain extends Node { constructor(c) { super(c); this.g = 2 } }\nexport default Gain`,
+    './ctx.js': `import Shaper from './shaper.js'\nimport Gain from './gain.js'\nexport class Ctx { shaper() { return new Shaper(this) } gain() { return new Gain(this) } }`,
+  }
+  for (const optimize of levels(0, 2, 'size')) is(jz(`import { Ctx } from './ctx.js'\nexport let f = () => new Ctx().gain().g`, { optimize, modules: unused }).exports.f(), 2, `unused derived O${optimize}`)
   if (onWasi()) return
   const host = `export class A { static k = 1; static m() { return this.k } static plain() { return 5 } static get g() { return this.k * 100 } }
     export class B extends A { static k = 2 }

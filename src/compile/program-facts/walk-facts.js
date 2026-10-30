@@ -287,6 +287,17 @@ const dispatchLeaves = (node, out = []) => {
   return dispatchLeaves(node[2], out) && dispatchLeaves(node[3], out)
 }
 
+/** The factories of the classes linked to their base (jzify/classes.js
+ *  STATIC_BASE): each keeps its property table, read through its value. */
+const linkedFactories = () => {
+  const out = new Set()
+  for (const e of ctx.transform.classes?.values() ?? []) if (e.linked) out.add(e.factory)
+  return out
+}
+/** Whether an assignment target is a property of a linked class, other than its link. */
+const storesIntoLinked = (target, linked) => linked.size > 0 && Array.isArray(target) && (target[0] === '.' || target[0] === '[]' || target[0] === '?.') &&
+  typeof target[1] === 'string' && linked.has(target[1]) && target[2] !== STATIC_BASE
+
 /** Walk one AST root and accumulate program facts. Function bodies are WeakMap-cached
  *  so plan-phase rescans skip unchanged bodies after inlining/scalarization passes.
  *  Module AST is never cached — plan may mutate it in place (flattenFuncNamespaces). */
@@ -307,9 +318,15 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
     acc.nameEscapes.add(root)
     if (full && isFuncRef(root, ctx.funcs.names)) acc.addressTakenNames.add(root)
   }
+  let linked = null
   const walkFacts = (node, fullWalk, inArrow, caller) => {
     if (!Array.isArray(node)) return
     const op = node[0]
+    // A store into a class linked to its base (jzify/classes.js STATIC_BASE)
+    // writes the property table it keeps, through the class's value: the
+    // class is reached from where the store is (the link's own store aside).
+    if (MUTATE_OPS.has(op) && storesIntoLinked(node[1], linked ??= linkedFactories()))
+      acc.memberCallSites.push({ callee: node[1][1], callerFunc: caller ?? null })
     // `f?.(x)` on a named function is the same call site as `f(x)`: the
     // callee is never nullish, so every census below treats both ops alike.
     const isCallOp = op === '()' || op === '?.()'
@@ -471,13 +488,12 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // reassignment, `ns.p` a namespace slot: propMap above), but what the
         // target is built from is read: a member target's receiver and key.
         // `g[k] = v` on a function name takes the function as a value (its
-        // property bag is keyed by the closure), as does a derived class's link
-        // to its base (jzify/classes.js STATIC_BASE: its bag stays, read by
-        // key), and a call in the key is a call site.
+        // property bag is keyed by the closure), and a call in the key is a
+        // call site.
         const target = node[1]
         if (Array.isArray(target) && (target[0] === '[]' || target[0] === '.' || target[0] === '?.')) {
           const [, obj, key] = target
-          if ((target[0] === '[]' || key === STATIC_BASE) && isFuncRef(obj, ctx.funcs.names)) acc.addressTakenNames.add(obj)
+          if (target[0] === '[]' && isFuncRef(obj, ctx.funcs.names)) acc.addressTakenNames.add(obj)
           else walkFacts(obj, true, inArrow, caller)
           if (target[0] === '[]') {
             if (isFuncRef(key, ctx.funcs.names)) acc.addressTakenNames.add(key)
@@ -538,6 +554,7 @@ export function collectProgramFacts(ast) {
   // init-stored func REFS into addressTakenNames, a program-wide dispatch behavior
   // change this census repair must not smuggle in.
   const initCalleeMembers = new WeakSet()
+  let linked = null
   const initCallSites = (node) => walkAst(node, { enter: node => {
     const isCallOp = node[0] === '()' || node[0] === '?.()'
     if (isCallOp && isFuncRef(node[1], ctx.funcs.names)) {
@@ -564,6 +581,8 @@ export function collectProgramFacts(ast) {
       f.memberCallSites.push({ callee: node[i], callerFunc: null })
     }
     if (MUTATE_OPS.has(node[0]) && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) initCalleeMembers.add(node[1])
+    // a store into a linked class at module scope roots the class (walkFacts above)
+    if (MUTATE_OPS.has(node[0]) && storesIntoLinked(node[1], linked ??= linkedFactories())) f.memberCallSites.push({ callee: node[1][1], callerFunc: null })
     if ((node[0] === '.' || node[0] === '?.') && isFuncRef(node[1], ctx.funcs.names) &&
         typeof node[2] === 'string' && !initCalleeMembers.has(node))
       f.memberValueReads.push({ objName: node[1], prop: node[2] })

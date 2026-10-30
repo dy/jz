@@ -348,9 +348,8 @@ export default (ctx) => {
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), ...(recordsOn() ? ['__rec_get'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...(recordsOn() ? ['__rec_get'] : []), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
-    __dyn_get_t_hmo: () => [...viewDeps('__view_get'), ...(recordsOn() ? ['__rec_get'] : []), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
-    __dyn_has_own: ['__dyn_get_t_hmo', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
+    __dyn_has_chain: ['__dyn_has', '__dyn_get_t_h', '__ptr_type'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__arr_value', '__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_key', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_expr_t_h: () => ['__dyn_get_t_h', '__hash_get_local_h'],
@@ -1947,7 +1946,7 @@ export default (ctx) => {
   // outside the schema. Each miss return is `${miss}`; the durable sidecar
   // probe takes the lookup whose own miss matches (`__hash_get_local_h` /
   // `_hm`).
-  const dynGetBody = (name, missNan, sidecarGet, chain = true) => {
+  const dynGetBody = (name, missNan, sidecarGet) => {
     const presence = missNan !== UNDEF_NAN
     const miss = `(i64.const ${missNan})`
     // Whether the key's first code unit is a digit, read in place: an
@@ -1961,12 +1960,13 @@ export default (ctx) => {
       (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
       (then (call $__typed_prop_get (local.get $obj) (local.get $key) (local.get $h) ${miss}))
       (else ${miss}))` : miss
-    // A derived class's static it does not hold itself is its base's, read
-    // through the class's link (jzify/classes.js STATIC_BASE) as JS reads it
-    // through the class's prototype, past the function's own `length` (the
-    // arms below); a class with no link ends the walk, as does a private
-    // name (`#x`), which is the declaring class's alone.
-    if (chain && ctx.linkDemand.staticBase) {
+    // A read of a derived class's static it does not hold itself reads its
+    // base's, through the class's link (jzify/classes.js STATIC_BASE) as JS
+    // reads it through the class's prototype, past the function's own
+    // `length` (the arms below); a class with no link ends the walk, as does a
+    // private name (`#x`), which is the declaring class's alone. Presence is
+    // own (`hasOwnProperty`); `in` walks the links itself (__dyn_has_chain).
+    if (!presence && ctx.linkDemand.staticBase) {
       const link = strHashLiteral(STATIC_BASE)
       const firstUnit = `(if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
               (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
@@ -2271,8 +2271,6 @@ export default (ctx) => {
   }
   ctx.core.stdlib['__dyn_get_t_h'] = () => dynGetBody('__dyn_get_t_h', UNDEF_NAN, '__hash_get_local_h')
   ctx.core.stdlib['__dyn_get_t_hm'] = () => dynGetBody('__dyn_get_t_hm', TOMB_NAN, '__hash_get_local_hm')
-  // presence of an own property: a derived class's static its base holds is not its own
-  ctx.core.stdlib['__dyn_get_t_hmo'] = () => dynGetBody('__dyn_get_t_hmo', TOMB_NAN, '__hash_get_local_hm', false)
 
   // `k in o` on a receiver the emitter cannot decide statically: the key is a
   // property key (ToPropertyKey), the lookup is the read's own chain, and a
@@ -2283,12 +2281,16 @@ export default (ctx) => {
     (i64.ne
       (call $__dyn_get_t_hm (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (call $__str_hash (local.get $key)))
       (i64.const ${TOMB_NAN})))`
-  ctx.core.stdlib['__dyn_has_own'] = `(func $__dyn_has_own (param $obj i64) (param $key i64) (result i32)
-    (if (i32.eqz (call $__is_str_key (local.get $key)))
-      (then (local.set $key (call $__to_key (local.get $key)))))
-    (i64.ne
-      (call $__dyn_get_t_hmo (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (call $__str_hash (local.get $key)))
-      (i64.const ${TOMB_NAN})))`
+  // `k in C` of a class: its own property or one of the bases its links
+  // (jzify/classes.js STATIC_BASE) reach, as `in` reads through prototypes.
+  ctx.core.stdlib['__dyn_has_chain'] = () => `(func $__dyn_has_chain (param $obj i64) (param $key i64) (result i32)
+    (loop $up
+      (if (call $__dyn_has (local.get $obj) (local.get $key)) (then (return (i32.const 1))))
+      (if (i32.eq (call $__ptr_type (local.get $obj)) (i32.const ${PTR.CLOSURE}))
+        (then
+          (local.set $obj (call $__dyn_get_t_h (local.get $obj) (i64.const ${STATIC_BASE_SSO_I64}) (i32.const ${PTR.CLOSURE}) (i32.const ${strHashLiteral(STATIC_BASE)})))
+          (br_if $up ${print(boxedPtrTypeEq(['f64.reinterpret_i64', ['local.get', '$obj']], PTR.CLOSURE))}))))
+    (i32.const 0))`
 
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj i64) (param $key i64) (param $fallback i64) (result i64)
     (local $val i64)
@@ -3045,8 +3047,8 @@ export default (ctx) => {
             ['i32.or', ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]],
               ['i32.eq', typeVal, ['i32.const', PTR.BUFFER]]]]]]]
 
-    // `hasOwnProperty` asks a derived class for its own statics alone (__dyn_has_own)
-    const has = own && ctx.linkDemand.staticBase ? '__dyn_has_own' : '__dyn_has'
+    // `in` finds a class's statics its bases hold too (__dyn_has_chain)
+    const has = !own && ctx.linkDemand.staticBase && (objType == null || objType === VAL.CLOSURE) ? '__dyn_has_chain' : '__dyn_has'
     inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_key', has, '__ptr_offset', own ? '__is_nullish' : '__is_object')
     // The receiver may be a host object, which the host answers for, as dot
     // reads ask it (array.js ensureHostOpaqueGet).
