@@ -90,6 +90,15 @@ const run = (cmd, args) => {
   }
 }
 
+/** WABT (through 1.0.42) declares every multi-value result struct in the generated
+ *  header, but writes SIMDe's `v128` there only for v128 globals, imports and exports:
+ *  an internal function returning several values, a v128 among them, names `v128` in
+ *  the header before anything defines it. Give that header the declaration WABT
+ *  writes when it does see the need; the source's own copy sits behind the same guard. */
+export const declareV128 = h => /\bv128\b/.test(h) && !h.includes('WASM_RT_SIMD_TYPE_DEFINED')
+  ? h.replace('#include "wasm-rt.h"\n', `$&#include <simde/wasm/simd128.h>\n\n#ifndef WASM_RT_SIMD_TYPE_DEFINED\n#define WASM_RT_SIMD_TYPE_DEFINED\ntypedef simde_v128_t v128;\n#endif\n`)
+  : h
+
 /** Exception handling and tail calls: WABT 1.0.42 enables both by default and has no
  *  --enable-* flags for them; 1.0.41 and earlier need the flags. Its --help says which. */
 const featureFlags = new Map()
@@ -125,6 +134,8 @@ export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess, main
   mkdirSync(dir, { recursive: true })
   const c = join(dir, 'jz.c')
   run(tools.wasm2c, [...features(tools.wasm2c), '-n', 'jz', wasm, '-o', c])
+  const h = join(dir, 'jz.h'), header = readFileSync(h, 'utf8'), declared = declareV128(header)
+  if (declared !== header) writeFileSync(h, declared)
   if (postprocess) writeFileSync(c, execFileSync('awk', ['-f', postprocess, c], { maxBuffer: 1 << 30 }))
   // CC may carry its own arguments: CC="zig cc".
   const [cc, ...ccArgs] = tools.cc.trim().split(/\s+/)

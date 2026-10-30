@@ -1,11 +1,12 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PROVIDED, toolchain } from '../scripts/native/compile.mjs'
+import { compile as compileWat } from 'watr'
+import { declareV128, PROVIDED, toolchain, wasm2native } from '../scripts/native/compile.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const POST = join(ROOT, 'scripts/native/postprocess-watr.awk')
@@ -54,7 +55,9 @@ const exec = cp.execFileSync, spawn = cp.spawnSync
 const mode = process.env.JZ_NATIVE_ABI, modern = mode === 'current'
 cp.execFileSync = (cmd, args, opts) => {
   if (cmd === 'wasm2c') {
-    writeFileSync(args[args.indexOf('-o') + 1], ${JSON.stringify(fixture)})
+    const out = args[args.indexOf('-o') + 1]
+    writeFileSync(out, ${JSON.stringify(fixture)})
+    writeFileSync(out.replace(/\\.c$/, '.h'), '#include "wasm-rt.h"\\n')
     return Buffer.alloc(0)
   }
   if (cmd === process.env.W2C2_BIN) {
@@ -224,6 +227,31 @@ console.log('not reached')
   is(r2.stdout, 'caught 8\n', 'a bad descriptor throws WASI EBADF (8), caught by try/catch')
   is(r2.status, 134, 'an uncaught throw traps with exit status 134, as wasmtime does')
   ok(/^wasm trap: /.test(r2.stderr), 'the trap reason goes to stderr')
+}))
+
+// WABT writes every multi-value result struct into the header, SIMDe's v128 only for
+// v128 globals, imports and exports (jzczhz's prologue returns 58 hoisted splats).
+const V128_RESULTS = `(module
+  (func $pair (param f64) (result i32 v128) (i32.const 7) (f64x2.splat (local.get 0)))
+  (func (export "_start") (local v128)
+    (call $pair (f64.const 2.5)) (local.set 0)
+    (if (i32.ne (i32.const 7)) (then unreachable))
+    (if (f64.ne (f64x2.extract_lane 1 (local.get 0)) (f64.const 2.5)) (then unreachable))))`
+test('native wasm2c header: v128 declared where a multi-value result names it', () => {
+  const head = '#include "wasm-rt.h"\n\nstruct wasm_multi_io { u32 i0; v128 o1; };\n'
+  const out = declareV128(head)
+  ok(out.indexOf('typedef simde_v128_t v128;') < out.indexOf('v128 o1'), 'v128 is defined before the struct names it')
+  ok(out.includes('#ifndef WASM_RT_SIMD_TYPE_DEFINED'), 'behind the guard the generated source checks')
+  is(declareV128(out), out, 'a declared header stays as it is')
+  is(declareV128('#include "wasm-rt.h"\n'), '#include "wasm-rt.h"\n', 'a header without v128 stays as it is')
+})
+const SIMDE = !NATIVE.error && NATIVE.include.some(p => existsSync(join(p, 'simde/wasm/simd128.h')))
+test('native executable: an internal function returning a v128 among several values', { skip: !SIMDE }, () => scratchDir('v128', dir => {
+  const wasm = join(dir, 'pair.wasm'), bin = join(dir, 'pair')
+  writeFileSync(wasm, compileWat(V128_RESULTS))
+  wasm2native(wasm, bin, { dir, tools: NATIVE })
+  const r = spawnSync(bin, { encoding: 'utf8' })
+  is(r.status, 0, `the struct-returned v128 carries its lanes: ${r.stderr}`)
 }))
 
 test('native executable: a CC carrying arguments, and a C failure blamed on no tail call', { skip: !!NATIVE.error }, () => scratchDir('cc', dir => {
