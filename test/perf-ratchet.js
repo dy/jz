@@ -339,6 +339,25 @@ const ARRAY_CALLS = {
 // (the idx+1 check is gone from the loops the calls run), slice's 25910 ->
 // 26128. The totals count both arms from here on.
 
+// Runtime correctness and memory work since the 2026-10-14 baseline (6249eea8),
+// each step attributed by a per-function comparison of the 40 programs against
+// the commit before it; the entered loops of buf and condref did not move:
+//   be115089 __itoa renders two digits a pass (half the passes): buf +115, condref +920, slice +920
+//   678f6255 __to_num reads a packed digit string by its units: +145, +1160, +1160
+//   be92f3db __compact rekeys the named-property table it moves, the reset's slot
+//            log relogs and cancels in step (__durable_slot_relog/_cancel): +1520, +12160, +11296
+//   903fc2b9 __gc_mark rewrites a durable stub chain at its last stub: +115, +920, +920
+//   603df6b2 __hash_set_local grows the reset's log where it trapped: +85, +680, +544
+//   f5d1feae __compact grows the memory again past the host's views: +315, +2520, +2520
+//   27a54476 __coll_order sorts past 64 entries by radix, not insertion: slice +1544
+//   495fa1e6 __hash_set_local / __ihash_set_local find an array key after it grows:
+//            slice +128, entered +64 (the probe the slice programs run)
+//   ae7416e1 a number bounded through nested loops: slice f$exp -72, entered -48
+//   5882f354 an escaping loop gives back each iteration's memory (jessie in 8.5 MB,
+//            not 34): slice f$exp +1264 and __esc_elem now entered, entered +848
+//   cd956f3f a value read only for its bits loads as an integer: slice -536
+// The rest (buf +5, condref +40, slice +56, entered +8) is watr 5.13's output;
+// nest fell 5595 -> 5545 meanwhile, locked in with these.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
