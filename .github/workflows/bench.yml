@@ -130,8 +130,11 @@ jobs:
       # stat goes null (why the 3rd hero stat was dropped in 83d6add5).
       - name: rust wasm target
         run: rustup target add wasm32-wasip1 || true
-      # Competitor toolchains + binaryen (provides wasm-opt).
-      - run: npm install --ignore-scripts --no-save assemblyscript@~0.27.0 binaryen
+      # Competitor toolchains + binaryen (provides wasm-opt), in one install: a
+      # second --no-save install would prune this one's packages. jco builds the
+      # ComponentizeJS lane, componentize-qjs its QuickJS twin; js2wasm is
+      # @loopdive/js2 (its wasm-opt pass takes binaryen ^132).
+      - run: npm install --ignore-scripts --no-save assemblyscript@~0.27.0 binaryen @bytecodealliance/jco@1.40.0 @bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0 @loopdive/js2@0.71.0
       # Porffor's npm 0.61.x is the frozen pre-rewrite engine. The author's
       # install is the release binary (porffor.dev/install.sh); pin the tested
       # release, alpha 13 (547c781, 2026-09-30), by its tag so the comparison is
@@ -172,6 +175,23 @@ jobs:
           done
           echo "TSLANG_BIN=$RUNNER_TEMP/tslang/tslang" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/tslang/tslang" --version
+      # QuickJS-NG's WASI build, the engine module the qjs-wasi lane runs under node.
+      - name: install QuickJS-NG v0.17.0 (qjs-wasi.wasm)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/qjs-wasi.wasm" https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-wasi.wasm
+          echo "42a732a676ec2d93488c19411e0fad283bf72658fdad746f089914b523c783b1  $RUNNER_TEMP/qjs-wasi.wasm" | sha256sum -c -
+          echo "QJS_WASI=$RUNNER_TEMP/qjs-wasi.wasm" >> "$GITHUB_ENV"
+      # Static Hermes has no release: build the pinned static_h source, cached by
+      # the installer that pins it (shermes records its absolute paths at build).
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/shermes
+          key: shermes-${{ runner.os }}-${{ hashFiles('scripts/install-shermes.mjs') }}
+      - name: build Static Hermes (pinned source)
+        run: |
+          [ -x "$RUNNER_TEMP/shermes/shermes" ] || node scripts/install-shermes.mjs "$RUNNER_TEMP/shermes"
+          echo "SHERMES_BIN=$RUNNER_TEMP/shermes/shermes" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/shermes/shermes" --version
       - name: native compiler installation smoke
         run: |
           printf 'console.log("scriptc ready");\n' > "$RUNNER_TEMP/scriptc-smoke.ts"
@@ -181,6 +201,9 @@ jobs:
           clang -O2 -fPIC -c bench/_lib/tslang-clock.c -o "$RUNNER_TEMP/tslang-clock.o"
           "$TSLANG_BIN" --emit=exe --opt --opt_level=3 --relocation-model=pic --obj="$RUNNER_TEMP/tslang-clock.o" "$RUNNER_TEMP/tslang-smoke.ts" -o "$RUNNER_TEMP/tslang-smoke"
           test "$("$RUNNER_TEMP/tslang-smoke")" = 'tslang ready'
+          printf 'print("shermes ready");\n' > "$RUNNER_TEMP/shermes-smoke.js"
+          "$SHERMES_BIN" -O "$RUNNER_TEMP/shermes-smoke.js" -o "$RUNNER_TEMP/shermes-smoke"
+          test "$("$RUNNER_TEMP/shermes-smoke")" = 'shermes ready'
       - name: versions
         run: |
           node --version
@@ -297,7 +320,7 @@ jobs:
             # Seed the checksum oracle from current reference evidence, not old CI
             # results. This is a full refresh: all timings below come from this runner.
             cp bench/results.json bench/results-ci.json
-            node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,scriptc,tslang,jz,jz-wasmtime,jz-w2c,wat,numpy --json=bench/results-ci.json || exit 1
+            node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,scriptc,tslang,shermes,js2wasm,qjs-wasi,componentize-qjs,componentize-js,jz,jz-wasmtime,jz-w2c,wat,numpy --json=bench/results-ci.json || exit 1
           else
             set -o pipefail
             log="${RUNNER_TEMP:-$(mktemp -d)}/publish.log"

@@ -1,0 +1,43 @@
+// The component lanes' world: the program runs as a wasi:cli command, and the
+// QuickJS host shim (qjs-host.js) writes through stdout and reads the monotonic
+// clock. The WASI packages carry only the items these use.
+package jz:bench;
+
+world bench {
+  import wasi:cli/stdout@0.2.0;
+  import wasi:clocks/monotonic-clock@0.2.0;
+  export wasi:cli/run@0.2.0;
+}
+
+package wasi:io@0.2.0 {
+  interface error {
+    resource error;
+  }
+  interface streams {
+    use error.{error};
+    variant stream-error {
+      last-operation-failed(error),
+      closed,
+    }
+    resource output-stream {
+      blocking-write-and-flush: func(contents: list<u8>) -> result<_, stream-error>;
+    }
+  }
+}
+
+package wasi:clocks@0.2.0 {
+  interface monotonic-clock {
+    type instant = u64;
+    now: func() -> instant;
+  }
+}
+
+package wasi:cli@0.2.0 {
+  interface stdout {
+    use wasi:io/streams@0.2.0.{output-stream};
+    get-stdout: func() -> output-stream;
+  }
+  interface run {
+    run: func() -> result;
+  }
+}

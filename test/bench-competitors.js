@@ -128,6 +128,74 @@ fs.chmodSync(out, 0o755)
   }
 })
 
+test('component bench lanes: entry deferred past build-time init, run through wasi:cli/run', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz component '))
+  try {
+    const json = join(dir, 'results.json'), mode = join(dir, 'mode')
+    writeFileSync(mode, 'ok')
+    // Stand-in builders keep the module as the "component"; the stand-in wasmtime
+    // evaluates it (the WASI imports bound to node), requires that evaluation
+    // alone ran nothing, then calls the exported wasi:cli/run.
+    const builder = (name, check) => {
+      writeFileSync(join(dir, name), `#!/usr/bin/env node
+const fs = require('node:fs'), args = process.argv.slice(2)
+const arg = f => args[args.indexOf(f) + 1]
+${check}
+if (!arg('--wit').endsWith('bench.wit') || !fs.existsSync(arg('--wit'))) process.exit(3)
+const src = fs.readFileSync(js, 'utf8')
+if (!src.includes('export { __jzRun as run }') || /\\nmain\\(\\)\\n/.test(src)) process.exit(4)
+if (fs.readFileSync(${JSON.stringify(mode)}, 'utf8') === 'fail') { console.error('unsupported fixture'); process.exit(5) }
+fs.writeFileSync(arg('-o'), src)
+`)
+      chmodSync(join(dir, name), 0o755)
+    }
+    builder('componentize-qjs', `const js = arg('--js')
+if (!args.includes('--sync') || !fs.readFileSync(js, 'utf8').startsWith('// console.log and performance.now for componentize-qjs')) process.exit(2)`)
+    builder('jco', `const js = args[1]
+if (args[0] !== 'componentize' || args.slice(args.indexOf('--disable') + 1, args.indexOf('--disable') + 3).join() !== 'http,fetch-event') process.exit(2)`)
+    writeFileSync(join(dir, 'wasmtime'), `#!/usr/bin/env node
+const fs = require('node:fs'), { pathToFileURL } = require('node:url'), args = process.argv.slice(2)
+if (args[0] === '--version') { console.log('wasmtime test'); process.exit(0) }
+if (args[0] !== 'run') process.exit(2)
+const src = fs.readFileSync(args[1], 'utf8')
+  .replace(/^import stdout from 'wasi:cli\\/stdout@0\\.2\\.0'$/m, 'const stdout = { getStdout: () => ({ blockingWriteAndFlush: b => process.stdout.write(Buffer.from(b)) }) }')
+  .replace(/^import clock from 'wasi:clocks\\/monotonic-clock@0\\.2\\.0'$/m, 'const clock = { now: () => process.hrtime.bigint() }')
+const mod = args[1] + '.mjs'
+fs.writeFileSync(mod, src)
+let wrote = false
+const write = process.stdout.write.bind(process.stdout)
+process.stdout.write = (...a) => (wrote = true, write(...a))
+import(pathToFileURL(mod).href).then(m => {
+  if (wrote || typeof globalThis.__jzMain !== 'function') { console.error('ran at init'); process.exit(6) }
+  m.run.run()
+})
+`)
+    chmodSync(join(dir, 'wasmtime'), 0o755)
+    const run = (args = []) => execFileSync(process.execPath, [
+      join(ROOT, 'bench/bench.mjs'), '--targets=componentize-qjs,componentize-js', '--cases=alpha', '--no-web', `--json=${json}`, ...args,
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, CQJS_BIN: join(dir, 'componentize-qjs'),
+      JCO_BIN: join(dir, 'jco'), WASMTIME_BIN: join(dir, 'wasmtime'),
+      JZ_BENCH_BUILD_DIR: join(dir, 'build'), JZ_BENCH_WEB_DIR: join(dir, 'web'), JZ_BENCH_REBUILD: '1' } })
+    run()
+    const r = JSON.parse(readFileSync(json, 'utf8'))
+    for (const id of ['componentize-qjs', 'componentize-js']) {
+      is(r.cases.alpha.targets[id].parity, 'ok', `${id}: the unchanged kernel runs once, through run()`)
+      ok(r.cases.alpha.targets[id].bytes > 0, `${id}: component size is recorded`)
+      ok(r.meta.invocations[id].includes('wasmtime run'), `${id}: invocation is recorded`)
+    }
+    is(r.meta.versions.wasmtime, 'wasmtime test', 'the runner version is recorded')
+    writeFileSync(mode, 'fail')
+    run()
+    for (const id of ['componentize-qjs', 'componentize-js']) {
+      const row = JSON.parse(readFileSync(json, 'utf8')).cases.alpha.targets[id]
+      is(row.status, 'fail', `${id}: a rejected build records a failure`)
+      ok(/unsupported fixture/.test(row.reason), `${id}: the builder's diagnostic is kept`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('tov bench: ported source only, checkout identity, parity and failures', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jz tov '))
   try {

@@ -326,6 +326,10 @@ const TARGETS = {
   moonbit: { label: 'MoonBit', band: 'wasm' },
   jawsm: { label: 'jawsm', band: 'wasm', hatch: true },
   javy:  { label: 'Javy QuickJS', band: 'wasm', hatch: true },
+  'qjs-wasi': { label: 'QuickJS-NG', sub: 'wasi', band: 'wasm', hatch: true },
+  'componentize-qjs': { label: 'componentize-qjs', band: 'wasm', hatch: true },
+  'componentize-js': { label: 'ComponentizeJS', band: 'wasm', hatch: true },
+  js2wasm: { label: 'js2wasm', band: 'wasm', hatch: true },
   // Native reference rows (corpus geomean only). `native` sub disambiguates them
   // from the wasm rows above — "C native" vs "C clang → wasm", "Rust native" vs
   // "Rust rustc → wasm". The speed-of-light ceiling, never a per-case row.
@@ -367,6 +371,10 @@ const DESC = {
   moonbit: 'MoonBit – a wasm-first language, run on its moonrun (V8) runner.',
   jawsm: 'jawsm – a JavaScript → wasm compiler.',
   javy: 'Javy – the QuickJS interpreter shipped inside a wasm module (Bytecode Alliance).',
+  'qjs-wasi': 'QuickJS-NG’s own WASI build – the interpreter as a wasm module, reading the script at run time.',
+  'componentize-qjs': 'componentize-qjs – QuickJS embedded in a WebAssembly component, initialized at build time; run on Wasmtime.',
+  'componentize-js': 'ComponentizeJS – StarlingMonkey (SpiderMonkey) embedded in a WebAssembly component (Bytecode Alliance); run on Wasmtime.',
+  js2wasm: 'js2wasm – JavaScript compiled ahead of time to WasmGC, no engine inside (Loopdive).',
   nat: 'C compiled to a native binary (clang -O3 -march=native) – the speed-of-light ceiling.',
   'jz-w2c': 'JZ’s wasm lowered to a native binary via wasm2c → clang -O3.',
   'jz-w2c2': 'JZ’s wasm lowered to a native binary via w2c2 → clang -O3 (second translator, CI cross-check; no SIMD support so it skips vectorized cases).',
@@ -389,6 +397,7 @@ const REPO = 'https://github.com/dy/jz/blob/main/bench'
 // existing report, or file one from there). jz's own targets point back at jz.
 const REPOS = {
   'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', tslang: 'ASDAlexander77/TypeScriptCompiler', perry: 'PerryTS/perry', tov: 'richiemcilroy/Tov', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
+  'qjs-wasi': 'quickjs-ng/quickjs', 'componentize-qjs': 'andreiltd/componentize-qjs', 'componentize-js': 'bytecodealliance/ComponentizeJS', js2wasm: 'loopdive/js2',
   moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
   'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
   graaljs: 'oracle/graal', spidermonkey: 'mozilla/gecko-dev', shermes: 'facebook/hermes', jawsm: 'wasmerio/wasmer',
@@ -397,6 +406,7 @@ const REPOS = {
 const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
   'porf-native': '.js', scriptc: '.js', tslang: '.js', perry: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
+  'qjs-wasi': '.js', 'componentize-qjs': '.js', 'componentize-js': '.js', js2wasm: '.js',
   as: '.as.ts', tov: '.tov', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
   'go-wasm': '.go', go: '.go', tinygo: '.go', 'zig-wasm': '.zig', zig: '.zig',
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',

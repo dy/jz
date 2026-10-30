@@ -4,7 +4,7 @@ import { sysroot, toolchain as nativeToolchain, wasm2native } from '../scripts/n
 import { compileJzAt, compileJzSelf, compileJzWasi, watrModuleSources } from './_lib/compile.js'
 import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, OWN_GRAPH, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -76,6 +76,16 @@ const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
 // scriptc (vercel-labs): TS/JS → native AOT (TypeScript-checker typing + LLVM,
 // no embedded engine). npm: `npm i -g scriptc@0.4.6`.
 const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
+// JS engines shipped inside wasm, fenced references beside Javy: QuickJS-NG's
+// WASI build (the release's qjs-wasi.wasm, a file), and the component builders
+// componentize-qjs (QuickJS) and `jco componentize` (ComponentizeJS:
+// StarlingMonkey, SpiderMonkey), whose components wasmtime runs.
+const QJS_WASI = process.env.QJS_WASI || ''
+const CQJS_BIN = process.env.CQJS_BIN || 'componentize-qjs'
+const JCO_BIN = process.env.JCO_BIN || 'jco'
+const WASMTIME_BIN = process.env.WASMTIME_BIN || 'wasmtime'
+// js2wasm (loopdive/js2): JS → WasmGC AOT. npm: `@loopdive/js2`.
+const JS2WASM_BIN = process.env.JS2WASM_BIN || 'js2wasm'
 const TSLANG_BIN = process.env.TSLANG_BIN || 'tslang'
 const PERRY_BIN = process.env.PERRY_BIN || 'perry'
 // Tov (richiemcilroy/Tov): TypeScript-shaped language → C → native. Its
@@ -209,7 +219,7 @@ const caseMemory = () => ({})
 const NEEDS_EH = new Set(['jessie', 'jz', 'watr', 'webaudio'])
 const wasmtimeHasEH = (() => {
   let v
-  return () => v ??= /\bexceptions\b/.test(spawnSync('wasmtime', ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
+  return () => v ??= /\bexceptions\b/.test(spawnSync(WASMTIME_BIN, ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
 })()
 // optimize `exceptions: false` (src/compile/index.js pruneUnusedThrowRuntime): an
 // opt-in build variant for jz-w2c2 (and jz-w2c, before it took wasm2c's EH) that lowers every surviving internal
@@ -275,6 +285,21 @@ const versionText = cmd => {
   } catch {
     return ''
   }
+}
+const whichPath = cmd => realpathSync(cmd.includes('/') ? cmd : execFileSync('which', [cmd], { encoding: 'utf8' }).trim())
+// The version of npm package `pkg` installed beside the CLI `cmd` (its
+// node_modules or an enclosing one): componentize-qjs prints none, and jco's
+// own number does not name the ComponentizeJS engine it builds with.
+const npmVersion = (cmd, pkg) => {
+  try {
+    let dir = whichPath(cmd)
+    while (dir !== dirname(dir)) {
+      dir = dirname(dir)
+      const p = join(dir, dir.endsWith('/node_modules') ? '' : 'node_modules', pkg, 'package.json')
+      if (existsSync(p)) return JSON.parse(readFileSync(p, 'utf8')).version
+    }
+  } catch {}
+  return null
 }
 // Porffor identity for evidence metadata and the prep cache. A release binary
 // names its commit in its version text (`alpha 13 (547c781 2026-09-30)`), which
@@ -501,9 +526,18 @@ const jzBaseSizeWasmPath = c => join(caseBuild(c), `${c.id}-base-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
 const porfFlatPath = c => join(caseBuild(c), `${c.id}-porf-flat.js`)
 const nativeFlatPath = c => join(caseBuild(c), `${c.id}-native-flat.js`)
+const componentFlatPath = c => join(caseBuild(c), `${c.id}-component-flat.js`)
 const perryBinPath = c => join(caseBuild(c), `${c.id}-perry`)
 const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const porfNatPath = c => join(caseBuild(c), `${c.id}-porfnat`)
+// The Hermes libraries a shermes executable loads, resolved as its loader does:
+// ldd's paths on Linux; on macOS its @rpath names against its LC_RPATH entries.
+const hermesLibs = bin => {
+  const out = args => execFileSync(process.platform === 'darwin' ? 'otool' : 'ldd', [...args, bin], { encoding: 'utf8' })
+  if (process.platform !== 'darwin') return [...out([]).matchAll(/=>\s*(\S*hermes\S*)/g)].map(m => m[1])
+  const rpaths = [...out(['-l']).matchAll(/cmd LC_RPATH\s+cmdsize \d+\s+path (\S+)/g)].map(m => m[1])
+  return [...out(['-L']).matchAll(/@rpath\/(\S*hermes\S*)/g)].map(m => rpaths.map(r => join(r, m[1])).find(existsSync))
+}
 const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
 const tslangBinPath = c => join(caseBuild(c), `${c.id}-tslang`)
 const tovBinPath = c => join(caseBuild(c), `${c.id}-tov`)
@@ -584,8 +618,11 @@ const compileJzSize = (c, compiler = compile, path = jzSizeWasmPath(c)) => {
 const compileJzSelfIsolated = c => compileJzSelf(jzHostWasmPath(c), jzSizeWasmPath(c))
 
 const flatInputs = new Set()
-const writeFlat = (c, { nativePerformance = false, nativeGlobals = false } = {}) => {
-  const path = nativeGlobals ? nativeFlatPath(c) : nativePerformance ? porfFlatPath(c) : flatPath(c)
+// deferMain: the entry is stored as __benchGlobal.__jzMain, not called, for the
+// component builders, which run top-level code at build time (Wizer snapshots).
+const writeFlat = (c, { nativePerformance = false, nativeGlobals = false, deferMain = false } = {}) => {
+  const path = deferMain ? componentFlatPath(c) : nativeGlobals ? nativeFlatPath(c) : nativePerformance ? porfFlatPath(c) : flatPath(c)
+  const call = entry => deferMain ? `__benchGlobal.__jzMain = ${entry}` : `${entry}()`
   if (flatInputs.has(path)) return path
   mkdirSync(caseBuild(c), { recursive: true })
   let out = `const __benchGlobal = typeof globalThis !== 'undefined' ? globalThis : this
@@ -672,7 +709,7 @@ if (typeof EventTarget === 'undefined') ({ Event, CustomEvent, EventTarget } = (
     const { buildSync } = esbuildSync()
     const r = buildSync({
       stdin: {
-        contents: `import { main } from ${JSON.stringify(c.js)}\nmain()\n`,
+        contents: `import { main } from ${JSON.stringify(c.js)}\n${call('main')}\n`,
         resolveDir: dirname(c.js), loader: 'js',
       },
       bundle: true, format: 'iife', write: false, platform: 'neutral',
@@ -685,8 +722,8 @@ if (typeof EventTarget === 'undefined') ({ Event, CustomEvent, EventTarget } = (
     // `export let main = …`, or `export { run as main }` as the bundled stdlib cases end
     // (whose library may declare a `main` of its own): the entry called by its own name.
     const entry = /\bexport\s*\{\s*(\w+)\s+as\s+main\s*\}/.exec(src)?.[1]
-    body += (entry ? src.replace(/\bexport\s*\{\s*\w+\s+as\s+main\s*\}/, '') + `\n${entry}()\n`
-      : src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n')
+    body += (entry ? src.replace(/\bexport\s*\{\s*\w+\s+as\s+main\s*\}/, '') + `\n${call(entry)}\n`
+      : src.replace(/\bexport let main\b/, 'const main') + `\n${call('main')}\n`)
   }
   // Native compilers with their own Web globals need no shell polyfills.
   const heapShim = NATIVE_ARENA_RE.test(body) ? NATIVE_ARENA_SHIM : ''
@@ -772,6 +809,16 @@ int main(void) {
 const watWasmPath = c => join(caseBuild(c), `${c.id}-wat.wasm`)
 const jawsmWasmPath = c => join(caseBuild(c), `${c.id}-jawsm.wasm`)
 const javyWasmPath = c => join(caseBuild(c), `${c.id}.javy.wasm`)
+// A component lane's program: the deferred-entry flat script, the entry exported
+// as wasi:cli/run (the world in _lib/bench.wit), `host` ahead of both.
+const COMPONENT_WIT = join(LIB, 'bench.wit')
+const componentPath = (c, id) => join(caseBuild(c), `${c.id}-${id}.wasm`)
+const componentSource = (c, id, flat, host = '') => {
+  const path = join(caseBuild(c), `${c.id}-${id}.js`)
+  writeFileSync(path, host + readFileSync(flat, 'utf8') +
+    'const __jzRun = { run() { __benchGlobal.__jzMain() } }\nexport { __jzRun as run }\n')
+  return path
+}
 const tinygoWasmPath = c => join(caseBuild(c), `${c.id}.tinygo.wasm`)
 const moonbitProjDir = c => join(caseBuild(c), 'mbt')
 const moonbitWasmPath = c => join(moonbitProjDir(c), '_b', 'wasm', 'release', 'build', 'src', 'src.wasm')
@@ -786,6 +833,14 @@ const natgccBinPath = c => join(caseBuild(c), `${c.id}-natgcc`)
 // which is exactly why `nat` quietly drops out of a local bench run. Resolve a
 // real SDK via xcrun (fallback: the CLT unversioned symlink) and pass -isysroot.
 const macSysrootArgs = sysroot()
+// The same fix for compilers that drive a C compiler with no flag passthrough
+// (scriptc's bare `clang`, the `cc` path shermes recorded at its build): SDKROOT
+// pins the real SDK, and CLANG_NO_DEFAULT_CONFIG drops Homebrew LLVM's baked
+// config, whose stale -isysroot (a nonexistent CLT MacOSX<ver>.sdk) overrides
+// SDKROOT. A user-set SDKROOT passes through untouched.
+const sdkEnv = macSysrootArgs.length && !process.env.SDKROOT
+  ? { ...process.env, SDKROOT: macSysrootArgs[1], CLANG_NO_DEFAULT_CONFIG: '1' }
+  : process.env
 
 const targets = {
   nat: {
@@ -885,15 +940,18 @@ const targets = {
     bin: flatPath,
     run: c => runFlat('spidermonkey', c, src => [spiderMonkeyBin(), src]),
   },
-  // Static Hermes — AOT JS → native via C/LLVM. Hand-run reference point:
-  // build `shermes` from facebook/hermes (needs the LLVM toolchain) and point
+  // Static Hermes: AOT JS → native via C, linked with the Hermes VM and GC.
+  // scripts/install-shermes.mjs builds it from facebook/hermes; point
   // SHERMES_BIN at it. Untyped JS compiles too (stays dynamic, still AOT).
+  // The executable links the VM as a shared library (shermes links it
+  // statically only on macOS): the size column adds the VM's libraries.
   shermes: {
     name: 'Static Hermes (shermes -O → native)',
     available: () => has(SHERMES_BIN),
     bin: shermesBinPath,
+    linked: c => hermesLibs(shermesBinPath(c)),
     run: c => runFlat('shermes', c, () => [shermesBinPath(c)], src => {
-      execFileSync(SHERMES_BIN, ['-O', src, '-o', shermesBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync(SHERMES_BIN, ['-O', src, '-o', shermesBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe', env: sdkEnv })
     }),
   },
   // The ONE Porffor lane: `porf native` AOT-compiles JS through its C backend
@@ -922,16 +980,8 @@ const targets = {
     available: () => has(SCRIPTC_BIN),
     bin: scriptcBinPath,
     run: c => runFlat('scriptc', c, () => [scriptcBinPath(c)], src => {
-      // scriptc drives bare `clang` from PATH with no flag passthrough, so
-      // macSysrootArgs' fix rides in as env instead: SDKROOT pins the real SDK
-      // and CLANG_NO_DEFAULT_CONFIG drops Homebrew LLVM's baked config, whose
-      // stale -isysroot (a nonexistent CLT MacOSX<ver>.sdk) overrides SDKROOT.
-      // A user-set SDKROOT passes through untouched.
-      const env = macSysrootArgs.length && !process.env.SDKROOT
-        ? { ...process.env, SDKROOT: macSysrootArgs[1], CLANG_NO_DEFAULT_CONFIG: '1' }
-        : process.env
       execFileSync(SCRIPTC_BIN, ['build', src, '-o', scriptcBinPath(c)], {
-        cwd: caseBuild(c), stdio: 'pipe', env, timeout: 120_000, killSignal: 'SIGKILL',
+        cwd: caseBuild(c), stdio: 'pipe', env: sdkEnv, timeout: 120_000, killSignal: 'SIGKILL',
       })
     }, { nativeGlobals: true, timeout: 60_000 }),
   },
@@ -1064,9 +1114,9 @@ const targets = {
   },
   'jz-wasmtime': {
     name: 'jz → wasmtime',
-    available: c => has('wasmtime') && (!NEEDS_EH.has(c.id) || wasmtimeHasEH()),
+    available: c => has(WASMTIME_BIN) && (!NEEDS_EH.has(c.id) || wasmtimeHasEH()),
     bin: wasmPath,
-    run: c => tryRun('jz-wasmtime', c, () => compileJz(c), ['wasmtime', '--invoke', 'main', wasmPath(c)]),
+    run: c => tryRun('jz-wasmtime', c, () => compileJz(c), [WASMTIME_BIN, '--invoke', 'main', wasmPath(c)]),
   },
   'jz-w2c': {
     name: 'jz → wasm2c → clang -O3',
@@ -1124,6 +1174,56 @@ const targets = {
       () => ['node', '--no-warnings', join(LIB, 'run-javy.mjs'), javyWasmPath(c)],
       src => execFileSync('javy', ['compile', src, '-o', javyWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })),
   },
+  // js2wasm: JS → WasmGC, ahead of time, no engine inside. The Node-host target
+  // (--target node) takes console and performance from node through the
+  // generated imports helper (its runtime sits beside the CLI, dist/); the
+  // shims' globalThis reads reach them.
+  js2wasm: {
+    name: 'js2wasm (JS → WasmGC)',
+    available: () => has(JS2WASM_BIN),
+    bin: c => join(caseBuild(c), 'js2wasm', `${c.id}-flat.wasm`),
+    run: c => runFlat('js2wasm', c, () => ['node', '--no-warnings', join(LIB, 'run-js2wasm.mjs'), targets.js2wasm.bin(c),
+      join(dirname(whichPath(JS2WASM_BIN)), 'runtime.js')], src => {
+      mkdirSync(join(caseBuild(c), 'js2wasm'), { recursive: true })
+      execFileSync(JS2WASM_BIN, [src, '--target', 'node', '--no-wat', '--no-dts', '-q', '-o', join(caseBuild(c), 'js2wasm')], {
+        cwd: caseBuild(c), stdio: 'pipe', timeout: 300_000, killSignal: 'SIGKILL' })
+    }),
+  },
+  // QuickJS-NG's own WASI build, fenced like Javy: the release's engine module
+  // reads the flat script from a preopened directory and interprets it. No
+  // prep, so the engine file is never a build artifact; its size is the column.
+  'qjs-wasi': {
+    name: 'QuickJS-NG (qjs-wasi.wasm)',
+    available: () => !!QJS_WASI && existsSync(QJS_WASI),
+    bin: () => QJS_WASI,
+    run: c => runFlat('qjs-wasi', c, src => ['node', '--no-warnings', join(LIB, 'run-qjs-wasi.mjs'), QJS_WASI, src]),
+  },
+  // componentize-qjs: QuickJS embedded in a component, initialized by Wizer.
+  // QuickJS here has no console or performance; _lib/qjs-host.js
+  // binds them to wasi:cli/stdout and wasi:clocks/monotonic-clock. --sync
+  // embeds the runtime without component-model async, which wasmtime runs as is.
+  'componentize-qjs': {
+    name: 'componentize-qjs (QuickJS component)',
+    available: () => has(CQJS_BIN) && has(WASMTIME_BIN),
+    bin: c => componentPath(c, 'cqjs'),
+    run: c => runFlat('componentize-qjs', c, () => [WASMTIME_BIN, 'run', componentPath(c, 'cqjs')], flat => {
+      const src = componentSource(c, 'cqjs', flat, readFileSync(join(LIB, 'qjs-host.js'), 'utf8'))
+      execFileSync(CQJS_BIN, ['--wit', COMPONENT_WIT, '--js', src, '--sync', '-o', componentPath(c, 'cqjs')], { cwd: caseBuild(c), stdio: 'pipe' })
+    }, { deferMain: true }),
+  },
+  // ComponentizeJS through `jco componentize`: StarlingMonkey (SpiderMonkey)
+  // embedded in a component, its console and clocks over WASI. The http and
+  // fetch-event features import wasi:http, which a command needs none of.
+  // --aot (weval) measured slower here (mandelbrot 735 vs 351 ms) and stays off.
+  'componentize-js': {
+    name: 'ComponentizeJS (StarlingMonkey component)',
+    available: () => has(JCO_BIN) && has(WASMTIME_BIN),
+    bin: c => componentPath(c, 'sm'),
+    run: c => runFlat('componentize-js', c, () => [WASMTIME_BIN, 'run', componentPath(c, 'sm')], flat => {
+      execFileSync(JCO_BIN, ['componentize', componentSource(c, 'sm', flat), '--wit', COMPONENT_WIT,
+        '--disable', 'http', 'fetch-event', '-o', componentPath(c, 'sm')], { cwd: caseBuild(c), stdio: 'pipe' })
+    }, { deferMain: true }),
+  },
   // TinyGo — the same .go sources as `go`/`go-wasm`, through LLVM instead of the gc
   // runtime: a much smaller/leaner wasm than `GOOS=wasip1`. A real wasm-band rival
   // (reuses the Go corpus, no new sources). Limited stdlib — cases it can't compile
@@ -1173,7 +1273,7 @@ const TARGET_CMDS = {
   bun: 'bun run-v8.mjs <case>.js',
   spidermonkey: 'js <case>-flat.js',
   jsc: 'jsc <case>-flat.js',
-  shermes: 'shermes -O <case>-flat.js -o <case>',
+  shermes: 'shermes -O <case>-flat.js -o <case>-shermes (Hermes VM linked as a shared library, counted in the size; Date.now clock, ms) → run binary',
   graaljs: 'graaljs <case>-flat.js',
   'porf-native': 'porf native <case>-porf-flat.js -o <case>-porfnat (AOT via C, default cc -O3; LTO follows Porffor build mode) → run binary',
   scriptc: 'scriptc build <case>-native-flat.js -o <case>-scriptc (default release optimization, static runtime) → run binary',
@@ -1192,6 +1292,10 @@ const TARGET_CMDS = {
   'jz-w2c2': 'jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
   javy: 'javy compile <case>-flat.js → node (V8 wasm) · fenced interpreter reference',
+  js2wasm: 'js2wasm <case>-flat.js --target node (JS-host WasmGC; wasm-opt where installed) → node (V8 wasm, its generated imports helper)',
+  'qjs-wasi': 'qjs-wasi.wasm /case/<case>-flat.js (QuickJS-NG WASI build, the script preopened) → node (V8 wasm) · fenced interpreter reference',
+  'componentize-qjs': 'componentize-qjs --wit bench.wit --js <case>-cqjs.js --sync (QuickJS + Wizer; entry exported as wasi:cli/run, console and clock over WASI) → wasmtime run · fenced interpreter reference',
+  'componentize-js': 'jco componentize <case>-sm.js --wit bench.wit --disable http fetch-event (StarlingMonkey + Wizer; entry exported as wasi:cli/run) → wasmtime run · fenced interpreter reference',
   tinygo: 'tinygo build -target=wasip1 -opt=2 <case>.go → node (V8 wasm)',
   moonbit: 'moon build --target wasm --release <case>.mbt → moonrun (V8 wasm)',
 }
@@ -1200,7 +1304,9 @@ const TARGET_CMDS = {
 // compiler versions happen to be installed today. Same-name tools use their id.
 const TARGET_VERSIONS = {
   v8: ['node'], as: ['asc', 'node'], 'porf-native': ['porffor'], nat: ['clang'],
-  jz: ['jz', 'watr', 'node'], 'jz-base': ['node'], 'jz-wasmtime': ['jz', 'watr'],
+  jz: ['jz', 'watr', 'node'], 'jz-base': ['node'], 'jz-wasmtime': ['jz', 'watr', 'wasmtime'],
+  'qjs-wasi': ['quickjs-ng', 'node'], 'componentize-qjs': ['componentize-qjs', 'wasmtime'],
+  'componentize-js': ['componentize-js', 'wasmtime'], js2wasm: ['js2wasm', 'node'],
   'jz-w2c': ['jz', 'watr', 'clang'], 'jz-w2c2': ['jz', 'watr', 'clang'],
   'c-wasm': ['node'], 'rust-wasm': ['node'], 'go-wasm': ['node'], 'zig-wasm': ['node'],
   wat: ['node'], jawsm: ['node'], javy: ['node'], tinygo: ['node'],
@@ -1551,12 +1657,14 @@ for (const cid of selectedCases) {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
   }
+  // `linked`: the shared libraries an artifact cannot run without, counted in.
   const sizeOf = id => {
     const t = targets[id]
     if (!t.bin) return null
-    const p = t.bin(c)
-    if (!p || !existsSync(p)) return null
-    try { return statSync(p).size } catch { return null }
+    try {
+      const paths = [t.bin(c), ...t.linked?.(c) ?? []]
+      return paths.every(p => p && existsSync(p)) ? paths.reduce((s, p) => s + statSync(p).size, 0) : null
+    } catch { return null }
   }
 
   for (const r of results) r.bytes = sizeOf(r.id)
@@ -1800,6 +1908,13 @@ if (JSON_PATH) {
       // Includes checkout HEAD when available; also invalidates the prep cache.
       porffor: has(PORF_BIN) && porfIdentity(),
       scriptc: has(SCRIPTC_BIN) && ver(SCRIPTC_BIN),
+      shermes: has(SHERMES_BIN) && ver(SHERMES_BIN),
+      'quickjs-ng': !!QJS_WASI && existsSync(QJS_WASI) &&
+        spawnSync('node', ['--no-warnings', join(LIB, 'run-qjs-wasi.mjs'), QJS_WASI, '--version'], { encoding: 'utf8' }).stdout.trim(),
+      'componentize-qjs': has(CQJS_BIN) && npmVersion(CQJS_BIN, 'componentize-qjs'),
+      'componentize-js': has(JCO_BIN) && npmVersion(JCO_BIN, '@bytecodealliance/componentize-js'),
+      wasmtime: has(WASMTIME_BIN) && ver(WASMTIME_BIN),
+      js2wasm: has(JS2WASM_BIN) && ver(JS2WASM_BIN),
       tslang: has(TSLANG_BIN) && (versionText(TSLANG_BIN).match(/tslang version[^\n]*/)?.[0] || ver(TSLANG_BIN)),
       perry: has(PERRY_BIN) && ver(PERRY_BIN),
       tov: has(TOV_BIN) && tovIdentity(),

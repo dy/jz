@@ -253,7 +253,8 @@ lead for free without answering a question a user actually has. Javy
 (embedded-QuickJS) is wired as a **fenced reference** — it appears per case as a
 hatched row so the cost of the "ship a JS interpreter in wasm" approach is
 visible, but it is excluded from `SVG_TARGETS` so it never moves the headline
-number. The Wasm field compares JZ with Rust, Go, C, Zig, AssemblyScript, and
+number. QuickJS-NG's WASI build (`qjs-wasi`), componentize-qjs and
+ComponentizeJS (StarlingMonkey) are fenced the same way. The Wasm field compares JZ with Rust, Go, C, Zig, AssemblyScript, and
 MoonBit on the same target, plus the JS JITs JZ replaces. Porffor has no Wasm
 target in its current alpha line; its native artifact is a separate hard speed
 and size floor. Native C is the speed-of-light reference.
@@ -388,7 +389,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `bun` | raw JavaScript on Bun/JavaScriptCore |
 | `jsc` | raw JavaScript on the standalone JavaScriptCore shell — Safari's engine (`jsc`; install via `jsvu --engines=javascriptcore`, or set `JSC_BIN`) |
 | `spidermonkey` | raw JavaScript on SpiderMonkey shell (`spidermonkey`, `sm`, `js128`, `js115`, `js102`, or `js`) |
-| `shermes` | Static Hermes — JS AOT-compiled to a native binary (`shermes -O`), when installed |
+| `shermes` | Static Hermes `static_h` `c37388f`: JS compiled through C to a native executable linked with the Hermes VM and GC (`shermes -O <case>-flat.js`). The VM is a shared library, which the size column adds. Hermes has no `performance`, so the shim falls back to `Date.now` (millisecond steps, as Javy). Set `SHERMES_BIN` to override. |
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | JZ output with host imports for timing/logging (measures wasm size without WASI console/perf bloat) |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
@@ -405,6 +406,10 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `perry` | [Perry](https://perryts.com/): JS/TS compiled through LLVM to a native executable with its runtime and GC. `perry compile <case>-native-flat.js -o <bin> --fp-contract off`, then run the binary. Uses the unchanged JS kernels, native `performance.now()`, default optimization and host CPU tuning; no type annotations, fast-math, or V8 fallback. Set `PERRY_BIN` to override. |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
 | `javy` | Javy (`javy compile`, JS in embedded QuickJS) when installed; fenced interpreter reference, never in the headline geomean |
+| `qjs-wasi` | [QuickJS-NG](https://github.com/quickjs-ng/quickjs) 0.17.0's WASI build (the release's `qjs-wasi.wasm`), run under node's WASI with the case's directory preopened: the interpreter reads `<case>-flat.js` at run time. The size column is the engine module. Set `QJS_WASI` to the `.wasm`. Fenced like Javy |
+| `componentize-qjs` | [componentize-qjs](https://github.com/andreiltd/componentize-qjs) 0.5.0: QuickJS embedded in a WebAssembly component, initialized by Wizer at build time, run by `wasmtime run`. The flat script stores its entry instead of calling it (Wizer would run the benchmark at build time) and exports it as `wasi:cli/run` (`_lib/bench.wit`); this QuickJS has no `console` or `performance`, so `_lib/qjs-host.js` binds them to WASI stdout and the monotonic clock. `--sync` embeds the runtime without component-model async. Fenced like Javy |
+| `componentize-js` | [ComponentizeJS](https://github.com/bytecodealliance/ComponentizeJS) 0.23.0 through `jco componentize` (jco 1.40.0): StarlingMonkey (SpiderMonkey) embedded in a component, the same deferred entry and world, its own console and clocks; `--disable http fetch-event` drops the `wasi:http` imports a command never uses. Default build: `--aot` (weval) ran mandelbrot slower here, 735 ms against 351 ms. Fenced like Javy |
+| `js2wasm` | [js2wasm](https://github.com/loopdive/js2) 0.71.0 (`@loopdive/js2`): JS compiled ahead of time to WasmGC, no engine inside. `js2wasm <case>-flat.js --target node` (wasm-opt where binaryen ^132 is installed), run in node through its generated imports helper, which supplies `console` and `performance`. Set `JS2WASM_BIN` to override |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
 | `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run on `moonrun` (MoonBit's V8 wasm runner, which supplies the monotonic clock) — a wasm-first-language rival, when `moon`/`moonrun` are installed |
 | `tov` | [Tov](https://github.com/richiemcilroy/Tov): a TypeScript-shaped language compiled through C to a native binary. `tov build <case>.tov -o <bin>` at its default (`-O3`, checked integer overflow), when a matching `.tov` port exists. A ported language like `rust` or `as`, not a JS host: it rejects the unchanged corpus (untyped parameters, no typed arrays, no `Math.imul`). Set `TOV_BIN` to override. |
@@ -433,6 +438,34 @@ gave the same results case for case; its `SCRIPTC_INFER_JS=1`, inference for a
 program's own JavaScript (unreleased, added the day after 0.4.6), typed three
 declarations of alpha and changed no timing. `--optimization speed` ran alpha,
 mandelbrot and bitwise within 2% of the default release build.
+
+Static Hermes has no release: `node scripts/install-shermes.mjs <dir>` builds
+the pinned `static_h` revision of facebook/hermes (cmake and a C++17 compiler)
+and writes `<dir>/shermes`, a launcher that names that revision; CI caches the
+build. shermes runs the C compiler CMake found when it was built, which on
+macOS needs the SDK the harness passes as `SDKROOT`.
+
+The engine-in-wasm lanes: download QuickJS-NG's
+[`qjs-wasi.wasm`](https://github.com/quickjs-ng/quickjs/releases/tag/v0.17.0)
+and set `QJS_WASI` to it; `npm install @bytecodealliance/jco@1.40.0
+@bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0` supplies `jco`
+and `componentize-qjs`, whose components run on `wasmtime` (`WASMTIME_BIN`; the
+lanes need a current release: wasmtime 25 ran QuickJS's mandelbrot 5–8× slower
+than 50 does). js2wasm is `npm install @loopdive/js2@0.71.0 binaryen`.
+CI installs all of them. Not wired:
+
+- Static Hermes to WASI, tmikov's `shermes-wasm` branch: no release. A fork
+  publishes a prebuilt SDK under a moving `sdk-latest` tag, and the lane would
+  also need wasi-sdk.
+- guest271314/quickjs-ng-wasi-wasm, QuickJS-NG with the script embedded at
+  build time through wasi-sdk (550 KiB): a build script, no release; the
+  upstream `qjs-wasi.wasm` reads the script at run time instead.
+- js2wasm source main (`a514946`, 2026-10-30): its JS-host output prints no
+  string literal (`console.log("top", 1 + 2)` prints `3`), so the result line
+  comes out empty; the lane takes the 0.71.0 release.
+- `componentize-js`'s own CLI (0.23.0): with `@bytecodealliance/preview2-shim`
+  0.31, which it resolves, its WIT reader gets no preopened directory and
+  cannot read `--wit`; `jco componentize` drives the same package.
 
 For TypeScriptCompiler, extract the
 [pre-alpha87 Ubuntu 24.04 x64 release](https://github.com/ASDAlexander77/TypeScriptCompiler/releases/tag/v0.0-pre-alpha87),
@@ -467,6 +500,60 @@ unchanged; all three timing anchors passed within the 10% drift limit. These
 remain partial, mixed-vintage measurements on a host with high swap use,
 recorded in `meta.machineState`. The chart labels each native lane's comparable
 coverage; wrong checksums and failures never enter its geomean.
+
+A 2026-10-30 local run on the same machine measured the lanes added or changed
+since on all 91 cases, JZ at `135e1bd`. It is not reference evidence and
+`results.json` keeps its rows: the load average was 16–18 from other work, and
+three case subsets ran in parallel, each pairing JZ with every lane in one
+process. Time and size are geometric means of lane ÷ JZ over the non-lab cases
+both answer correctly (count in brackets), against JZ's size build; no lane is
+faster than JZ on any case.
+
+| lane | agree | wrong | failed | timed out | time ÷ JZ | size ÷ JZ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| scriptc 0.4.6 | 72 | 3 | 12 | 4 | 96× (70) | 215× |
+| Static Hermes `c37388f` | 86 | 3 | 2 | 0 | 27× (80) | 1573× |
+| js2wasm 0.71.0 | 14 | 55 | 19 | 3 | 211× (14) | 7.5× |
+| QuickJS-NG 0.17.0 WASI | 86 | 5 | 0 | 0 | 117× (83) | 462× |
+| componentize-qjs 0.5.0 | 85 | 5 | 1 | 0 | 107× (83) | 488× |
+| ComponentizeJS 0.23.0 | 85 | 5 | 0 | 1 | 164× (82) | 3812× |
+
+Every lane's wrong answers but js2wasm's are the color probes and deltae, which
+JZ misses too (no lane reproduces their stored checksums). Two Static Hermes
+rows time as 0 at its millisecond clock and leave its geomean. The rest, case
+by case:
+
+- scriptc: the TypeScript checker rejects the JavaScript of webaudio
+  (`Symbol.dispose ||=`, a read-only property), threescene, threeanim and
+  threegeom (three.js's JSDoc `Array<number,number,number,?string>`), upfirdn
+  (`out` used before assigned), jessie and jz (`This condition will always
+  return true`); stdlib-dists and watr reach operations with no lowering yet
+  (`Boolean.prototype.toString`, `new BigInt64Array`, SC2020); movavg and
+  threecull fail its run-time type checks (`expected number at $.memory, got
+  array`), fabrik a read of a `var` above its declaration; particle,
+  stdlib-special, stdlib-gamma and stdlib-pow pass the 60-second limit. scriptc
+  limitations all, none the harness's.
+- Static Hermes: webaudio's dynamic `import()` does not compile (`Invalid
+  expression encountered`); in the jz case the compiled compiler's parser stops
+  at `Unclosed (`, quoting its input as `for (let i̭ = 0` (a combining mark
+  after `i` the case's source does not hold; Node, QuickJS and SpiderMonkey
+  reproduce the oracle).
+- js2wasm: five different kernels, mandelbrot and bitwise among them, return
+  one wrong checksum (1299645893); alone, the checksum's FNV step
+  (`Math.imul(h ^ (a[i] | 0), 0x01000193) | 0` in an arrow function) compiles
+  to invalid wasm, an `i32.mul` over a TypeError. The TypeScript checker
+  rejects watr, jessie, jz, webaudio, stdlib-dists and the three.js cases;
+  glyfparse and vm emit invalid wasm; stdlib-exp and dispatch dereference null,
+  stdlib-gamma, stdlib-pow, stdlib-ddot and sosfilter end in an uncaught wasm
+  exception, fabrik calls a non-function and munsell throws a ReferenceError;
+  particle, sieve and stdlib-special's compile pass their limits.
+- componentize-qjs: jessie's recursive descent exhausts wasmtime's default wasm
+  stack (`call stack exhausted`).
+- ComponentizeJS: stdlib-dists passes the 300-second run limit.
+
+The engines-in-wasm lanes run the self-compile case too: QuickJS-NG 2.91 s,
+componentize-qjs 2.48 s, ComponentizeJS 4.83 s, each with the oracle's checksum
+(JZ's own row there, which takes over an hour to build, was not rerun).
 
 TypeScriptCompiler pre-alpha87 also produced no usable results on the 74 discovered
 cases. Its compiler and monotonic-clock installation smoke passed; corpus failures
@@ -550,7 +637,12 @@ GRAALJS_BIN=/path/to/graaljs \
 PORF_BIN=/path/to/porf \
 SCRIPTC_BIN=/path/to/scriptc \
 PERRY_BIN=/path/to/perry \
-node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf-native,scriptc,perry
+JS2WASM_BIN=/path/to/js2wasm \
+QJS_WASI=/path/to/qjs-wasi.wasm \
+CQJS_BIN=/path/to/componentize-qjs \
+JCO_BIN=/path/to/jco \
+WASMTIME_BIN=/path/to/wasmtime \
+node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf-native,scriptc,perry,js2wasm,qjs-wasi,componentize-qjs,componentize-js
 ```
 
 ## Reading the numbers (darwin/arm64, M-class)
@@ -840,8 +932,9 @@ has the advantage of profile-guided tiering on a long-running compiler.
 ### Lab-case native coverage: JS→native compilers and the no-EH build variant
 
 The compiler workloads (`jz`, `watr`, `jessie`) run through the same native
-lanes as the smaller kernels. scriptc `6d1907a` rejects these bundles during
-compilation. Porffor alpha 13 compiles them, but the executables fail at runtime:
+lanes as the smaller kernels. scriptc 0.4.6's type checker rejects the `jz` and
+`jessie` bundles, and `watr` stops at `new BigInt64Array` (2026-10-30 run
+above). Porffor alpha 13 compiles them, but the executables fail at runtime:
 
 | case | Porffor alpha 13 runtime error |
 | --- | --- |
@@ -851,7 +944,8 @@ compilation. Porffor alpha 13 compiles them, but the executables fail at runtime
 | `webaudio` | `EventTarget is not defined` |
 
 These failures retain their diagnostics in `results.json` and do not enter
-speed ratios. Static Hermes remains unavailable on the reference machine.
+speed ratios. Static Hermes runs `watr` and `jessie` (1.91× and 9.84× JZ's
+time in the 2026-10-30 run) and fails `jz` and `webaudio`, as listed there.
 
 **No-EH build variant for the native lab rows (`jz-w2c2`).** The lab cases'
 compiled wasm carries a wasm-exceptions tag section (jz lowers `try`/`catch`/
