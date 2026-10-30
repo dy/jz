@@ -1207,7 +1207,11 @@ test('invariant: value reads, global devirt, and init arguments take the functio
   compile('let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nexport let h = (v) => ns.p && v ? ns.p(v) : 0')
   index = ctx.plans.programIndex
   ok(reach(index, 'ns$p') && !index.addressTaken.has('ns$p'),
-    'a member read consumed only as a truthiness test is a root without taking the address')
+    'a member read consumed as a truthiness test beside a direct call roots the function without taking the address')
+
+  compile('let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nexport let h = (v) => ns.p && v ? 1 : 0')
+  index = ctx.plans.programIndex
+  ok(!index.addressTaken.has('ns$p'), 'a member read consumed only as a truthiness test takes no address')
 
   compile("import { use } from './m.jz'\nexport let h = (v) => use(v)", {
     modules: { './m.jz': 'let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nexport let use = (v) => ns.p(v)' },
