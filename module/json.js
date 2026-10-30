@@ -185,7 +185,7 @@ export default (ctx) => {
     __hex4: ['__hex1'],
     __jp_num: ['__jp_num_full'],
     __jp_num_full: ['__pow10', '__dec_to_f64', '__char_at'],
-    __jp_arr: ['__jp_ws', '__jp_val'],
+    __jp_arr: ['__jp_ws', '__jp_val', '__dense_check'],
     __jp_obj: ['__jp_ws', '__jp_val', '__jp_str', '__jp_schema_get', '__alloc_hdr', '__mkptr', '__str_eq', '__jp_key_idx'],
     __jp_schema_get: ['__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__str_hash', '__jp_schema_limit'],
     __jp_schema_limit: ['__alloc_hdr', '__mkptr'],
@@ -1100,6 +1100,7 @@ export default (ctx) => {
       ;; preserve across the copy.
       (if (i32.ge_s (local.get $len) (local.get $cap))
         (then
+          (call $__dense_check (i32.shl (local.get $cap) (i32.const 1)))
           (local.set $new (call $__alloc_hdr (local.get $len) (i32.shl (local.get $cap) (i32.const 1))))
           (memory.copy (local.get $new) (local.get $ptr) (i32.shl (local.get $len) (i32.const 3)))
           (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
@@ -1510,6 +1511,7 @@ export default (ctx) => {
           ;; dyn-props sidecar to preserve across the copy.
           (if (i32.ge_s (local.get $${len}) (local.get $${cap}))
             (then
+              (call $__dense_check (i32.shl (local.get $${cap}) (i32.const 1)))
               (local.set $${next} (call $__alloc_hdr (local.get $${len}) (i32.shl (local.get $${cap}) (i32.const 1))))
               (memory.copy (local.get $${next}) (local.get $${ptr}) (i32.shl (local.get $${len}) (i32.const 3)))
               (local.set $${cap} (i32.shl (local.get $${cap}) (i32.const 1)))
@@ -1557,7 +1559,7 @@ ${localDecls}
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))
     ${body})`
-    ctx.core.stdlibDeps[name] = ['__jp_ws', '__jp', '__jp_num', '__jp_str', '__str_length', '__alloc', '__ptr_aux', '__sso_char', '__ptr_offset', '__alloc_hdr', '__mkptr']
+    ctx.core.stdlibDeps[name] = ['__jp_ws', '__jp', '__jp_num', '__jp_str', '__str_length', '__alloc', '__ptr_aux', '__sso_char', '__ptr_offset', '__alloc_hdr', '__mkptr', '__dense_check']
     ctx.runtime.jsonShapeParsers.set(sig, name)
     return name
   }

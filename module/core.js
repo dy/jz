@@ -80,10 +80,16 @@ const typedIdxDeps = () => !typedLinked() ? ['__len', '__ptr_offset', '__ptr_off
 // The most eight-byte slots an array holds, 2^29 - 1024: its 16-byte header and
 // slots are a size under 2^32 - 4104 bytes, which __alloc's wraparound test
 // answers exactly whatever its placement gap. Every length or capacity of an
-// array is held to it where it comes in (new Array, a length store, an index
-// store and the grow, Array.from), so the shared allocators need no test of
-// their own; JavaScript's sparse arrays reach 2^32 - 1 (README: no holes).
+// array is held to it where it comes in (`__dense_check`: new Array, a length
+// store, an index store and the grow, a length taken from a typed array or a
+// string, a parse or a regex split that doubles its room; Array.from's own), so
+// the shared allocators need no test of their own; JavaScript's sparse arrays
+// reach 2^32 - 1 (README: no holes).
 export const DENSE_MAX = 0x1ffffc00
+// The most slots a hash table takes (`__table_check`), each at most 32 bytes:
+// 2^26, under 2^31 bytes. A rehash past it needs the old table besides, more
+// than wasm32's memory holds.
+export const TABLE_MAX = 0x4000000
 
 // An element of the array `$ptr` as a value (`load` its cell): where the program
 // keeps an array's elements raw (compile/numeric-arrays.js) `__arr_cell` reads
@@ -1728,6 +1734,12 @@ export default (ctx) => {
   // immediate at every call site (~20+) plus a param/local.get pair in the body.
   // Non-8 strides (Set: 16, Map/HASH probe: 24, TypedArray raw: 1) use __alloc_hdr_n.
   // A capacity is held to DENSE_MAX where it comes in, not here (module/array.js).
+  // The RangeError of an allocation for a length or a table past its limit,
+  // tested where it comes in (DENSE_MAX, TABLE_MAX).
+  ctx.core.stdlib['__dense_check'] = `(func $__dense_check (param $n i32)
+    (if (i32.gt_u (local.get $n) (i32.const ${DENSE_MAX})) (then ${HEAP_EXHAUSTED_THROW})))`
+  ctx.core.stdlib['__table_check'] = `(func $__table_check (param $cap i32)
+    (if (i32.gt_u (local.get $cap) (i32.const ${TABLE_MAX})) (then ${HEAP_EXHAUSTED_THROW})))`
   ctx.core.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (result i32)
     (local $ptr i32)
     (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $cap) (i32.const 3)))))

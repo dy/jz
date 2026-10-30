@@ -554,21 +554,25 @@ export default (ctx) => {
     // distinct entries ≤ len, so the table lands ≤50% full and never needs to grow
     // while seeding. Floors at initCap for the empty/short case.
     const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
-    inc('__set_add', '__ptr_type', '__len', read)
+    inc('__set_add', '__ptr_type', '__len', read, '__table_check')
     noteKeys()
     const setL = temp('nss'), arrL = temp('nsa')
-    const iL = tempI32('nsi'), lenL = tempI32('nsl')
+    const iL = tempI32('nsi'), lenL = tempI32('nsl'), capL = tempI32('nsc')
+    // the table a source of this length takes, held to TABLE_MAX (a typed
+    // array's length reaches 2^31)
     const capExpr = ['select', ['i32.const', initCap],
       ['i32.shl', ['i32.const', 1], ['i32.sub', ['i32.const', 32], ['i32.clz',
         ['i32.sub', ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', 1]], ['i32.const', 1]]]]],
       ['i32.le_u', ['local.get', `$${lenL}`], ['i32.const', initCap / 2]]]
-    const out = allocPtr({ type: PTR.SET, len: 0, cap: capExpr, stride: SET_ENTRY + lane, tag: 'set' })
+    const out = allocPtr({ type: PTR.SET, len: 0, cap: ['local.get', `$${capL}`], stride: SET_ENTRY + lane, tag: 'set' })
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr_ctor', [',', iterExpr]]))],
       ['local.set', `$${lenL}`, ['i32.const', 0]],
       ['if', ['i32.or', ptrTypeEq(['local.get', `$${arrL}`], PTR.ARRAY), ptrTypeEq(['local.get', `$${arrL}`], PTR.TYPED)],
         ['then', ['local.set', `$${lenL}`,
           ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${arrL}`]]]]]],
+      ['local.set', `$${capL}`, capExpr],
+      ['call', '$__table_check', ['local.get', `$${capL}`]],
       out.init,
       ['local.set', `$${setL}`, out.ptr],
       ['local.set', `$${iL}`, ['i32.const', 0]],
@@ -1198,6 +1202,7 @@ export default (ctx) => {
       (i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz
         (i32.sub (i32.shl (local.get $n) (i32.const 1)) (i32.const 1)))))
       (i32.le_u (local.get $n) (i32.const ${initCap / 2}))))
+    (call $__table_check (local.get $newcap))
     ;; A shallow Map copy can retain its probe layout and insertion ranks.
     ;; Copy only the entries and hash lane; own properties belong to the source.
     ;; Sparse sources still rebuild below instead of retaining excess capacity.

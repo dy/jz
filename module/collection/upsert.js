@@ -103,9 +103,12 @@ const keyHashIR = (hashFn = '$__str_hash') => hashFn !== '$__str_hash' || ctx.tr
 // ordered iteration (capacity is never observable from JS), just fewer
 // generations for a table large enough to reach the tier.
 const GROW_QUAD_CAP = 8192
+// A table past TABLE_MAX slots is the RangeError of an allocation (module/core.js):
+// its size would wrap the i32 the allocator takes, and the rehash write past the block.
 const nextCapIR = (capLocal = '$cap', newcapLocal = '$newcap') =>
   `(local.set ${newcapLocal} (i32.shl (local.get ${capLocal})
-    (select (i32.const 2) (i32.const 1) (i32.ge_u (local.get ${capLocal}) (i32.const ${GROW_QUAD_CAP})))))`
+    (select (i32.const 2) (i32.const 1) (i32.ge_u (local.get ${capLocal}) (i32.const ${GROW_QUAD_CAP})))))
+    (call $__table_check (local.get ${newcapLocal}))`
 const probeStart = (entrySize, idxExpr = '(i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1)))') => hasProbeLane()
   ? `(local.set $lb (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
     (local.set $end (i32.add (local.get $lb) (i32.shl (local.get $cap) (i32.const 2))))

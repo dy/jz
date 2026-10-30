@@ -207,7 +207,7 @@ export default (ctx) => {
     __str_subst: ['__str_length', '__char_at', '__str_slice', '__str_concat', '__str_eq', '__len', '__ptr_offset'],
     __str_replace_subst: ['__str_indexof', '__str_slice', '__str_concat', '__str_length', '__str_subst'],
     __str_replaceall_subst: ['__str_indexof', '__str_slice', '__str_concat', '__str_length', '__str_subst'],
-    __str_split: ['__str_slice', '__str_length', '__char_at', '__alloc_hdr'],
+    __str_split: ['__str_slice', '__str_length', '__char_at', '__alloc_hdr', '__dense_check'],
     __str_idx: ['__char_unit'],
     __sso_norm: [],
     __bytes_decode: ['__typed_data', '__byte_length', '__ptr_type', '__utf8_decode'],
@@ -1649,6 +1649,7 @@ export default (ctx) => {
   wat('__str_points', `(func $__str_points (param $s i64) (result f64)
     (local $len i32) (local $i i32) (local $n i32) (local $cp i32) (local $a i32)
     (local.set $len (call $__str_length (local.get $s)))
+    (call $__dense_check (local.get $len))
     (local.set $a (call $__alloc_hdr (i32.const 0) (local.get $len)))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
@@ -1678,6 +1679,7 @@ export default (ctx) => {
     (if (i32.eqz (local.get $plen)) (then
       ;; Empty-separator: split into individual byte-chars, up to $limit
       (local.set $count (select (local.get $limit) (local.get $slen) (i32.lt_u (local.get $limit) (local.get $slen))))
+      (call $__dense_check (local.get $count))
       (local.set $arr (call $__alloc_hdr (local.get $count) (local.get $count)))
       (block $de (loop $le
         (br_if $de (i32.ge_s (local.get $i) (local.get $count)))
@@ -1710,6 +1712,7 @@ export default (ctx) => {
         (br $l1)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l1)))
+    (call $__dense_check (local.get $count))
     (local.set $arr (call $__alloc_hdr (local.get $count) (local.get $count)))
     (local.set $piece_start (i32.const 0))
     (local.set $piece_idx (i32.const 0))

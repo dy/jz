@@ -123,7 +123,7 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
   // Array.from(string) → array of single-char strings. The generic __arr_from
   // path memory-copies f64 slots and is invalid for byte-backed strings.
   if (sourceVt === VAL.STRING) {
-    inc('__codepoint_at', '__codepoint_string', '__str_len')
+    inc('__codepoint_at', '__codepoint_string', '__str_len', '__dense_check')
     const s = temp('sfs'), len = tempI32('sfl'), i = tempI32('sfi'), pos = tempI32('sfp'), cp = tempI32('sfcp')
     const srcIR = asF64(emit(src))
     const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }], null, thisArg)
@@ -136,6 +136,7 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
       ['local.set', `$${s}`, srcIR],
       ...callbackSetup(cb),
       ['local.set', `$${len}`, ['call', '$__str_len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ['call', '$__dense_check', lenIR],
       out.init,
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['local.set', `$${pos}`, ['i32.const', 0]],
@@ -161,7 +162,7 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
   // Known Array/TypedArray + mapper: fixed integer length, but each element
   // is read afresh so callback mutations of not-yet-visited slots are visible.
   if (mapFn && (sourceVt === VAL.ARRAY || sourceVt === VAL.TYPED)) {
-    inc('__len', read)
+    inc('__len', read, ...(sourceVt === VAL.TYPED ? ['__dense_check'] : []))
     const s = temp('afs'), len = tempI32('afl'), i = tempI32('afi'), item = temp('afv')
     const srcIR = asF64(emit(src))
     const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }], null, thisArg)
@@ -171,6 +172,7 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
       ['local.set', `$${s}`, srcIR],
       ...callbackSetup(cb),
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ...(sourceVt === VAL.TYPED ? [['call', '$__dense_check', ['local.get', `$${len}`]]] : []),
       out.init,
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,

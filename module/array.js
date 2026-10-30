@@ -12,7 +12,7 @@ import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32,
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
 import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
-import { arrCellWat, arrCellHelper, DENSE_MAX, HEAP_EXHAUSTED_THROW } from './core.js'
+import { arrCellWat, arrCellHelper, HEAP_EXHAUSTED_THROW } from './core.js'
 import { arrayKeysOn } from './collection/identity.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey, isReassigned, some } from '../src/ast.js'
@@ -126,7 +126,7 @@ const ARR_TYPED_OBJ_SET_DEPS = ['__is_nullish', '__arr_typed_set_idx', '__ptr_ty
 // test would fail (and the kernel would trap) without this line.
 const arrayGrowDeps = (knownArray = false) => () => [
   ...(knownArray ? ['__ptr_offset_fwd'] : ['__ptr_type', '__ptr_offset']),
-  '__alloc_hdr', '__mkptr',
+  '__alloc_hdr', '__mkptr', '__dense_check',
   ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : []),
   ...(needsArrayDynMove() ? ['__dyn_move'] : []),
   ...(arrayKeysOn() ? ['__arr_ident_word'] : []),
@@ -272,7 +272,7 @@ export default (ctx) => {
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_room: ['__arr_grow_known', '__ptr_offset_fwd'],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
-    __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', '__to_num', '__to_int32', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_set_length: ['__arr_grow_known', '__dense_check', '__ptr_offset', '__ptr_type', '__to_num', '__to_int32', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_flat: ['__arr_flat_in', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
@@ -336,15 +336,12 @@ export default (ctx) => {
     const kind = len == null ? VAL.NUMBER : valTypeOf(len)
     if (len != null && kind != null && kind !== VAL.NUMBER) return emit(['[', len])
     const v = temp('alv'), vGet = ['local.get', `$${v}`]
-    ctx.runtime.throws = true
+    if (len != null) inc('__dense_check')
     const lengthOf = ['block', ['result', 'i32'],
       ['local.set', `$${n}`, ['i32.trunc_sat_f64_u', vGet]],
       ['if', ['i32.or', ['f64.ne', vGet, ['f64.convert_i32_u', nIR]], ['f64.lt', vGet, ['f64.const', 0]]],
         ['then', ['drop', throwErrorIR('RangeError', 'Invalid array length')]]],
-      ['if', ['i32.gt_u', nIR, ['i32.const', DENSE_MAX]],
-        ['then',
-          ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.HEAP_EXHAUSTED)]]],
-          ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.HEAP_EXHAUSTED)]]]],
+      ['call', '$__dense_check', nIR],
       nIR]
     const sized = ['block', ['result', 'f64'],
       ['local.set', `$${n}`, len == null ? ['i32.const', 0] : lengthOf],
@@ -426,6 +423,7 @@ export default (ctx) => {
   ctx.core.stdlib['__arr_from'] = () => `(func $__arr_from (param $src i64) (result f64)
     (local $len i32) (local $dst i32) (local $i i32)
     (local.set $len (call $__len (local.get $src)))
+    (call $__dense_check (local.get $len))
     (local.set $dst (call $__alloc_hdr (local.get $len) (local.get $len)))
     (if (i32.eq (call $__ptr_type (local.get $src)) (i32.const ${PTR.ARRAY}))
       (then (memory.copy (local.get $dst) (call $__ptr_offset (local.get $src)) (i32.shl (local.get $len) (i32.const 3))))
@@ -609,7 +607,7 @@ export default (ctx) => {
       (local.get $minCap)
       (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1))
       (i32.gt_u (local.get $minCap) (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1)))))
-    (if (i32.gt_u (local.get $newCap) (i32.const ${DENSE_MAX})) (then ${HEAP_EXHAUSTED_THROW}))
+    (call $__dense_check (local.get $newCap))
     ${!ctx.memory.shared && (ctx.transform.alloc !== false || !leanRuntime()) ? `${room}${slide}
     (i32.store (i32.sub (local.get $base) (i32.const 4)) (local.get $newCap))
     ${grownPtrWat('(local.get $base)')})` : `${relocateWat()})`}`
@@ -797,7 +795,7 @@ export default (ctx) => {
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)})))
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)}))))
     ;; A dense eight-byte-slot array cannot fit this many elements in wasm32.
-    (if (i32.gt_u (local.get $n) (i32.const ${DENSE_MAX})) (then ${HEAP_EXHAUSTED_THROW}))
+    (call $__dense_check (local.get $n))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
     (if (i32.lt_u (local.get $base) (i32.const 8)) (then (return (local.get $p))))
     ${durableArrSnapIR('base', 'ptr')}

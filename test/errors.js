@@ -778,6 +778,45 @@ test('array length past what memory can hold is the RangeError of an allocation'
   }
 })
 
+// A length the runtime takes from other data (a typed array's or a string's
+// elements, a byte each; a parse or a split that doubles its room) or a hash
+// table's capacity passes what memory can hold only past 512 MiB of data, more
+// than a test allocates: each such site is pinned by the test it makes where
+// the length comes in (`__dense_check` past DENSE_MAX, `__table_check` past
+// TABLE_MAX, module/core.js), the RangeError of an allocation the tests above
+// read through `new Array(n)`, a length store and an index store, which share it.
+// A length taken from arrays alone is bounded by the memory they hold: no test.
+test('a length taken from other data is tested where it comes in', () => {
+  const sites = [
+    ['spread of a typed array', 'export let f = (n) => [...new Uint8Array(n)].length', 'dense'],
+    ['spread of a string', 'export let f = (s) => [...s].length', 'dense'],
+    ['Array.from of a typed array', 'export let f = (n) => Array.from(new Uint8Array(n)).length', 'dense'],
+    ['Array.from of a typed array with a mapper', 'export let f = (n) => Array.from(new Uint8Array(n), (x, i) => i).length', 'dense'],
+    ['Array.from of a string', "export let f = (s) => Array.from(s + '!').length", 'dense'],
+    ['split into characters', "export let f = (s) => s.split('').length", 'dense'],
+    ['split by a separator', "export let f = (s) => s.split(',').length", 'dense'],
+    ['split by a regex', 'export let f = (s) => s.split(/,+/).length', 'dense'],
+    ['a parsed array', 'export let f = (s) => JSON.parse(s).length', 'dense'],
+    ['keys, values and entries of a string', "export let f = (s) => { const t = s + '!'; return Object.keys(t).length + Object.values(t).length + Object.entries(t).length }", 'dense'],
+    ['a Set of a typed array', 'export let f = (n) => new Set(new Uint8Array(n)).size', 'table'],
+    ['a Map of entries', 'export let f = (a) => new Map(a).size', 'table'],
+    ['a growing Map', 'export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) m.set(i, i); return m.size }', 'table'],
+  ]
+  for (const [name, src, kind] of sites) {
+    const wat = compile(src, { optimize: 0, wat: true })
+    ok(wat.includes(kind === 'dense' ? 'call $__dense_check' : 'call $__table_check'), `${name}: the length is tested where it comes in`)
+  }
+  ok(!compile('export let f = (n) => { const a = [1, 2, n]; return [...a, ...a.map(x => x * 2)].length }', { optimize: 0, wat: true }).includes('$__dense_check'),
+    'a length taken from arrays alone carries no test')
+  // what the tested sites answer at lengths memory holds
+  const src = `export let f = (n, s) => [[...new Uint8Array(n)].length, Array.from(new Uint8Array(n), (x, i) => i).join(), [...s].length,
+    s.split('').length, s.split(',').length, JSON.parse('[' + s + ']').length, new Set(new Uint8Array(n)).size,
+    Object.entries(s).length, (() => { const m = new Map(); for (let i = 0; i < n * 9; i++) m.set(i, i); return m.size })()]`
+  const ref = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) for (const [n, s] of [[0, '1'], [3, '1,2'], [40, '5,6,7']])
+    is(jz(src, { optimize }).exports.f(n, s), ref.f(n, s), `f(${n}, ${s}) at ${optimize}`)
+})
+
 test('host decode: a decoded escape does not leave a stale marker for the next trap', () => {
   // A real userThrows escape (WebAssembly.Exception path) writes the SAME marker
   // global a trap-lowered throw does — decodeThrown must consume it there too, or

@@ -1650,7 +1650,7 @@ export default (ctx) => {
     // Generate a split-by-regex WAT function for this regex
     const splitName = `__regex_split_${id}`
     if (!ctx.core.stdlib[splitName]) {
-      inc('__str_to_buf', '__str_slice', '__alloc_hdr')
+      inc('__str_to_buf', '__str_slice', '__alloc_hdr', '__dense_check')
       ctx.core.stdlib[splitName] = `(func $${splitName} (param $str i64) (result f64)
         (local $off i32) (local $len i32) (local $pos i32) (local $result i32)
         (local $mstart i32) (local $mend i32) (local $prevEnd i32)
@@ -1703,6 +1703,7 @@ export default (ctx) => {
           (if (i32.ge_u (local.get $count) (local.get $cap))
             (then
               (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
+              (call $__dense_check (local.get $cap))
               (local.set $newArr (call $__alloc_hdr (local.get $count) (local.get $cap)))
               (memory.copy (local.get $newArr) (local.get $arrOff) (i32.shl (local.get $count) (i32.const 3)))
               (local.set $arrOff (local.get $newArr))))
@@ -1717,6 +1718,7 @@ export default (ctx) => {
         (if (i32.ge_u (local.get $count) (local.get $cap))
           (then
             (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
+            (call $__dense_check (local.get $cap))
             (local.set $newArr (call $__alloc_hdr (local.get $count) (local.get $cap)))
             (memory.copy (local.get $newArr) (local.get $arrOff) (i32.shl (local.get $count) (i32.const 3)))
             (local.set $arrOff (local.get $newArr))))

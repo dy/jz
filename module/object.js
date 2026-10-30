@@ -352,7 +352,7 @@ export default (ctx) => {
   // Index-string key array for an array-like receiver. `lenCall` is the
   // length builtin: __len for jz arrays, __str_len for strings.
   const idxKeys = (obj, lenCall) => {
-    inc(lenCall, '__to_str')
+    inc(lenCall, '__to_str', '__dense_check')
     const v = temp('ik'), i = tempI32('iki'), len = tempI32('ikl')
     const vPtr = () => ['i64.reinterpret_f64', ['local.get', `$${v}`]]
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'ik' })
@@ -360,6 +360,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${v}`, asF64(emit(obj))],
       ['local.set', `$${len}`, ['call', `$${lenCall}`, vPtr()]],
+      ['call', '$__dense_check', ['local.get', `$${len}`]],
       out.init,
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
@@ -656,7 +657,7 @@ export default (ctx) => {
     const nullish = requireCoercible(obj)
     if (nullish) return nullish
     if (stringValType(obj)) {
-      inc('__str_idx', '__str_len')
+      inc('__str_idx', '__str_len', '__dense_check')
       const s = temp('osv'), i = tempI32('osvi'), len = tempI32('osvl')
       const sPtr = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
       const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'osv' })
@@ -664,6 +665,7 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(obj))],
         ['local.set', `$${len}`, ['call', '$__str_len', sPtr()]],
+        ['call', '$__dense_check', ['local.get', `$${len}`]],
         out.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
@@ -693,7 +695,7 @@ export default (ctx) => {
     const nullish = requireCoercible(obj)
     if (nullish) return nullish
     if (stringValType(obj)) {
-      inc('__str_idx', '__str_len', '__to_str')
+      inc('__str_idx', '__str_len', '__to_str', '__dense_check')
       const s = temp('oes'), i = tempI32('oesi'), len = tempI32('oesl'), pair = tempI32('oep')
       const sPtr = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
       const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'oes' })
@@ -701,6 +703,7 @@ export default (ctx) => {
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(obj))],
         ['local.set', `$${len}`, ['call', '$__str_len', sPtr()]],
+        ['call', '$__dense_check', ['local.get', `$${len}`]],
         out.init,
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,

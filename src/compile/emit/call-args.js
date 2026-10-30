@@ -322,6 +322,7 @@ export function buildArrayWithSpreads(items) {
       if (s < lastEffect) {
         const copy = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${sec.lenLocal}`], tag: 'spread' })
         const at = tempI32('spreadPos')
+        if (sec.val !== VAL.ARRAY) { inc('__dense_check'); ir.push(['call', '$__dense_check', ['local.get', `$${sec.lenLocal}`]]) }
         ir.push(copy.init, ['local.set', `$${at}`, ['i32.const', 0]],
           ...emitSpreadCopy(copy.local, at, sec.local, sec.lenLocal, sec.val, rangeBase(sec), sec.dense),
           ['local.set', `$${sec.local}`, copy.ptr])
@@ -337,7 +338,13 @@ export function buildArrayWithSpreads(items) {
     }
   }
 
-  // Allocate exact, then store the captured values.
+  // Allocate exact, then store the captured values. A length taken from a
+  // typed array or a string (a byte an element) may pass what an array holds
+  // (module/core.js DENSE_MAX); one taken from arrays may not.
+  if (sections.some(sec => sec.type === 'spread' && sec.val !== VAL.ARRAY)) {
+    inc('__dense_check')
+    ir.push(['call', '$__dense_check', ['local.get', `$${len}`]])
+  }
   ir.push(out.init, ['local.set', `$${pos}`, ['i32.const', 0]])
   for (const sec of sections) {
     if (sec.type === 'array') {
