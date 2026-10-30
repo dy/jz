@@ -112,7 +112,8 @@ test('static scratch: a program the compaction keeps roots none of its static ar
     for (const i of [0, 1, 7]) is(m.h(i), host.h(i), `h(${i}) at ${optimize}`)
   }
   if (onWasi()) return
-  for (const optimize of levels(0, 2, 3)) {
+  // (the levels that compact: O0 and O1 keep what they store, as the size tier does)
+  for (const optimize of levels(2, 3)) {
     const text = wat(src, { optimize })
     ok(/\(func \$__gc_roots/.test(text), `the module compacts at ${optimize}`)
     ok(!/global\.[gs]et \$[FUB]\b/.test(funcWat(text, '__gc_roots')), `no root names a static array at ${optimize}`)

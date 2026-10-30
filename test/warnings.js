@@ -171,6 +171,8 @@ test('warnings: deopt-method on an unknown-receiver method call', () => {
 test('warnings: no deopt on for-in over a static schema (it unrolls/slot-folds)', () => {
   // The for-in over a fixed-shape object unrolls to static slot reads — the emit-site
   // advisory fires only when a slow path is actually emitted, so this stays quiet.
+  // Below level 2 the loop is not unrolled (forInUnroll): its read is the slow path.
+  if (belowOpt(2)) return
   const ws = warningsFor('let o = {a:1,b:2,c:3}; export let f = () => { let s = 0; for (let k in o) s += o[k]; return s }')
   is(ws.filter(e => e.code.startsWith('deopt-')).length, 0)
 })

@@ -8,7 +8,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
-import { levels, onWasi, belowOpt } from './_matrix.js'
+import { levels, onWasi, belowOpt, OPT_LEVEL } from './_matrix.js'
 import { oracle, wat, funcWat } from './util.js'
 
 const tiers = () => levels(0, 1, 2, 3, 'size')
@@ -143,7 +143,8 @@ test('numeric arrays: growth keeps the raw layout, the walks keep the bits', () 
     if (optimize === undefined && !belowOpt(1)) ok(compactions >= 1, `compacted (${compactions})`)
     // the last steps' payloads, low words as stored: no walk forwarded them
     const len = exports.n(), first = 3000 - len
-    if (optimize === undefined || raw(optimize)) for (let k = 0; k < len; k++) is(exports.low(k), 0x8000 + ((first + k) % 1024) * 8, `payload ${k} kept O${optimize}`)
+    // (no option compiles at the leg's level: the opt0 leg's boxes the payloads, as O0 does)
+    if (raw(optimize ?? OPT_LEVEL)) for (let k = 0; k < len; k++) is(exports.low(k), 0x8000 + ((first + k) % 1024) * 8, `payload ${k} kept O${optimize}`)
   }
 })
 
