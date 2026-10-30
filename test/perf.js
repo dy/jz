@@ -2079,10 +2079,8 @@ const parserFixture = `export let f = (s) => {
 // The two-digit integer writer and the 4 KiB block colouring: 16876 -> 17029.
 // No frame or export sets the outermost mark, so link exports no setter and
 // the escape tests against it fold away: 17124 -> 15567.
-// The runtime work since, inside the band (16336 at 4922687e9), and the
-// header allocator's refused capacity with the placement it skips past 2^32 -
-// 4 KiB (module/core.js __alloc_hdr, __alloc): 16336 -> 16352.
-golden('closure-heavy parser', parserFixture, 16352)
+// The runtime work since, inside the band: 15567 -> 16336.
+golden('closure-heavy parser', parserFixture, 16336)
 test('closure-heavy parser: behavior behind the size pin', () => {
   const { f } = jz(parserFixture).exports
   for (const [input, expected] of [['', 0], ['0', 0], ['123', 123], ['x12-y3', 123], ['😀१२3', 3]])
