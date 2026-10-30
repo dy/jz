@@ -197,6 +197,12 @@ function publish({ facts, unnamedLayouts, contract }) {
   return published
 }
 
+// The results of builtin methods, by syntax: a literal's chain stays a builtin value.
+const ARRAY_RESULTS = new Set(['map', 'filter', 'slice', 'concat', 'flat', 'flatMap', 'reverse', 'sort', 'fill', 'splice', 'toSorted', 'toReversed', 'toSpliced', 'with', 'copyWithin'])
+const STRING_RESULTS = new Set(['slice', 'substring', 'trim', 'trimStart', 'trimEnd', 'toLowerCase', 'toUpperCase', 'padStart', 'padEnd', 'repeat', 'concat', 'charAt', 'at', 'normalize'])
+// Receivers whose methods are the builtins' alone: no program code runs in them but what they are passed.
+const BUILTIN_RECEIVERS = new Set([K.STRING, K.NUMBER, K.BOOL, K.BIGINT, K.TYPED, K.MAP, K.SET, K.DATE, K.REGEX, K.BUFFER])
+
 function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = () => undefined, classes, accessors = null, hidden = null, exported, imports, hostGlobals = [], moduleGlobals = new Map(), constString = () => null, constStrings = () => null, onLose = null, onOpen = null, discover = false, liftedProp = () => null, guardedClone = () => null, conversions = true, byCalls = true }) {
   // Numeric entry contracts restart the kind solve. Report its final losses,
   // not the discarded unknown-parameter solve's intermediate escapes.
@@ -4104,8 +4110,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   // Module bindings a top-level statement assigns unconditionally (`straight`:
   // the statement position of a top, not under a branch, loop or closure).
-  // Such a binding is initialized like a declared one: no read of the program
-  // runs before module initialization.
+  // Such a binding is initialized like a declared one where no read runs before
+  // that statement (`settleInitOrder`, over the settled kinds).
   const initWrites = new Set()
   const collect = (n, scope, straight = false) => {
     if (!Array.isArray(n)) return
@@ -4194,13 +4200,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // is a module binding named by its writes: undefined until the first one,
   // unless a top-level statement assigns it unconditionally (`initWrites`).
   // Every seeding of the kinds starts it so (`seed`, below).
-  const undeclaredGlobals = [], writtenGlobals = new Set()
+  const undeclaredGlobals = [], writtenGlobals = new Set(), assumedInit = new Map()   // (name → key: assumed written before any read)
   for (let i = 0; i < writes.length; i += 5) {
     const scope = writes[i], name = writes[i + 1]
     if (moduleGlobals.has(name) && keyOf(name, scope) === null) {
       const key = declareIn(MODULE, name)
       writtenGlobals.add(key)
       if (!initWrites.has(name)) undeclaredGlobals.push(key)
+      else assumedInit.set(name, key)
     }
   }
   // Resolved once every binding is declared: a global named by its writes is
@@ -5495,8 +5502,212 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     for (const key of undeclaredGlobals) raise(kinds, key, NULLISH)
     for (const f of funcs) if (exportedNames.has(f.name)) for (const p of f.sig.params) { if (p.rest) continue; const key = keyIn(f.name, p.name); bindParam(key, p.boundaryTyped ? kind(K.TYPED, encodeTypedElemAux(p.boundaryTyped.replace('+', ''), false)) : numeric.includes(key) ? NUMBER : ANY) }
   }
+  // A module global a top-level statement stores unconditionally was assumed
+  // written before any read (`initWrites`). The initializers run every statement
+  // up to its first such store, its own value included, and what they call: a
+  // function they call that reads the global reads it undefined (`const before =
+  // parse(3)` ahead of `parse.prop = …`). Decided over the settled kinds, which
+  // name what a call runs: a named function its frame, a closure value the
+  // closures its kind names, a builtin's method (a receiver of a builtin kind, a
+  // literal's chain) the callbacks it is passed, a slot's call the closures the
+  // slot holds; a call nothing names may run every closure and function made so
+  // far, as may a spread or an iteration in a program that defines an iterator,
+  // and any read or operator in one that defines an accessor or a conversion. A
+  // global so read holds the nullish it starts as, and the kinds settle again.
+  // A read is any mention but the target of `=` or of `??=`, which tests the bits
+  // it finds whatever its kind says.
+  let initOrder = null
+  const settleInitOrder = () => {
+    while (assumedInit.size) {
+      initOrder ??= initOrderOf()
+      const early = initOrder()
+      if (!early.length) return
+      for (const name of early) { const key = assumedInit.get(name); assumedInit.delete(name); undeclaredGlobals.push(key); raise(kinds, key, NULLISH) }
+      fixpoint()
+    }
+  }
+  const initOrderOf = () => {
+    const stmts = []
+    const flatten = (n) => { if (Array.isArray(n) && n[0] === ';') for (let i = 1; i < n.length; i++) flatten(n[i]); else if (n != null) stmts.push(n) }
+    for (const top of tops) flatten(top)
+    // The first statement storing each global on every run: itself, a sequence's
+    // part, a declarator's value, a chained value (`id = parse.id = c => …`).
+    const firstStore = new Map()
+    const stores = (n, at) => {
+      if (!Array.isArray(n)) return
+      if ((n[0] === '=' || n[0] === '??=') && typeof n[1] === 'string') {
+        if (assumedInit.has(n[1]) && !firstStore.has(n[1])) firstStore.set(n[1], at)
+        if (n[0] === '=') stores(n[2], at)
+      }
+      if (n[0] === ',') for (let i = 1; i < n.length; i++) stores(n[i], at)
+      if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) if (Array.isArray(n[i]) && n[i][0] === '=') stores(n[i][2], at)
+    }
+    stmts.forEach(stores)
+    // Whether the program defines an iterator (a literal's `@@iterator` key, a store
+    // to one, a class's method of the name): only then may an iteration run its code.
+    const iterSym = (k) => k === '@@iterator' || k === '@@asyncIterator' || Array.isArray(k) && k[0] === 'str' && iterSym(k[1])
+    let iterates = funcs.some(f => f.name.includes('@@iterator') || f.name.includes('@@asyncIterator'))
+    const iterKey = (n) => {
+      if (!Array.isArray(n) || iterates) return
+      if (n[0] === ':' && iterSym(n[1]) || MUTATE_OPS.has(n[0]) && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '[]') && iterSym(n[1][2])) { iterates = true; return }
+      for (let i = 1; i < n.length; i++) iterKey(n[i])
+    }
+    for (const top of tops) iterKey(top)
+    for (const f of funcs) { iterKey(f.body); if (f.defaults) for (const k in f.defaults) iterKey(f.defaults[k]) }
+    const hooks = conversions || accessors?.size > 0 || funcs.some(f => f.name.endsWith(ACCESSOR_GET) || f.name.endsWith(ACCESSOR_SET))
+    return () => {
+      const bindingKind = (name, scope) => { const key = keyOf(name, scope); return key === null ? null : kinds[key] ?? K.NONE }
+      // The callables a kind names: [] where it holds none, null where it may hold any.
+      const callablesOf = (k) => {
+        const c = core(k)
+        if (c === K.NONE || tagOf(c) === K.NONE) return []
+        return tagOf(c) === K.CLOSURE && paramOf(c) !== UNKNOWN ? membersOf(paramOf(c)) : null
+      }
+      // The kinds a read may have, from the settled kinds, unjoined (a join would
+      // unify what the solve keeps apart): a name's, a slot's through a receiver of
+      // known shape, a builtin method's result on a literal or a known value; null
+      // where nothing names it.
+      const ARRAY_ANY = kind(K.ARRAY, UNKNOWN)
+      const readKinds = (e, scope) => {
+        if (typeof e === 'string') { const k = bindingKind(e, scope); return k === null ? null : [k] }
+        if (!Array.isArray(e)) return null
+        if (e[0] === 'str') return [STRING]
+        if (e[0] === '[') return [ARRAY_ANY]
+        if (e[0] === '()' && Array.isArray(e[1]) && e[1][0] === '.' && typeof e[1][2] === 'string') {
+          const rs = readKinds(e[1][1], scope), m = e[1][2]
+          if (rs === null || !rs.length) return null
+          if (rs.every(r => tagOf(core(r)) === K.STRING)) return m === 'split' ? [ARRAY_ANY] : STRING_RESULTS.has(m) ? [STRING] : null
+          return rs.every(r => tagOf(core(r)) === K.ARRAY) && ARRAY_RESULTS.has(m) ? [ARRAY_ANY] : null
+        }
+        if ((e[0] !== '.' && e[0] !== '?.') || typeof e[2] !== 'string') return null
+        const rs = readKinds(e[1], scope)
+        if (rs === null) return null
+        const out = []
+        for (const r of rs) {
+          const c = core(r), t = tagOf(c)
+          if (t === K.NONE) continue
+          if (t === K.OBJECT && paramOf(c) !== UNKNOWN) { const ks = slotKinds(paramOf(c), e[2]); if (ks === null) return null; out.push(...ks) }
+          else if (t === K.CLOSURE && paramOf(c) !== UNKNOWN) for (const id of membersOf(paramOf(c))) out.push(closureProps.get(id)?.get(e[2]) ?? K.NONE, closureWild.get(id) ?? K.NONE)
+          else return null
+        }
+        return out
+      }
+      // A property's kinds over the shapes an object kind names; null where a shape
+      // lacks it (a store may have added it) or has lost its identity.
+      const slotKinds = (id, prop) => {
+        const out = []
+        for (const sid of shapesOf(id)) { if (opaqueSchemas.has(sid) || schemas[sid].indexOf(prop) < 0) return null; out.push(slotOf(sid, prop)) }
+        return out
+      }
+      const callablesIn = (ks) => { const out = []; for (const k of ks) { const c = callablesOf(k); if (c === null) return null; out.push(...c) } return out }
+      // What a call runs: callables, 'builtin' (what it is passed), or null (anything made).
+      const targetsOf = (callee, scope) => {
+        if (typeof callee === 'string') {
+          const key = keyOf(callee, scope)
+          if (key !== null) return callablesOf(kinds[key] ?? K.NONE)
+          if (funcByName.has(callee)) return [callee]
+          return callee.startsWith('__') && iterates && (callee.startsWith('__iter') || callee.startsWith('__ag_')) ? null : 'builtin'
+        }
+        if (!Array.isArray(callee)) return null
+        if (callee[0] === '=>') return [closureId(callee)]
+        if ((callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string') {
+          const rs = readKinds(callee[1], scope), m = callee[2]
+          if (rs === null) return null
+          const cs = rs.map(core).filter(c => tagOf(c) !== K.NONE)
+          if (!cs.length) return []
+          const tags = cs.map(tagOf)
+          if (tags.every(t => BUILTIN_RECEIVERS.has(t))) return 'builtin'
+          if (tags.every(t => t === K.ARRAY)) return ARRAY_METHODS.has(m) ? 'builtin' : null
+          if (cs.every(c => tagOf(c) === K.CLOSURE && paramOf(c) !== UNKNOWN)) {
+            if (m === 'bind') return []
+            if (m === 'call' || m === 'apply') return cs.flatMap(c => membersOf(paramOf(c)))
+            return callablesIn(cs.flatMap(c => membersOf(paramOf(c)).flatMap(id => [closureProps.get(id)?.get(m) ?? K.NONE, closureWild.get(id) ?? K.NONE])))
+          }
+          if (cs.every(c => tagOf(c) === K.OBJECT && paramOf(c) !== UNKNOWN)) { const ks = []; for (const c of cs) { const k = slotKinds(paramOf(c), m); if (k === null) return null; ks.push(...k) } return callablesIn(ks) }
+          return null
+        }
+        return null
+      }
+      // Per code unit (a named function, a closure id): the candidates it reads,
+      // whether it calls what nothing names, what it makes, what it runs.
+      const units = new Map()
+      const unitOf = (key) => {
+        let u = units.get(key)
+        if (u) return u
+        units.set(key, u = { reads: new Set(), dynamic: false, makes: new Set(), runs: new Set() })
+        const f = typeof key === 'string' ? funcByName.get(key) : null
+        const defaults = f ? f.defaults : closureDefaults[key]
+        if (defaults) for (const name in defaults) scan(defaults[name], u, key)
+        scan(f ? f.body : closureBodies[key], u, key)
+        return u
+      }
+      const runArg = (a, u, scope) => {
+        if (Array.isArray(a) && a[0] === '=>') { u.runs.add(closureId(a)); return }
+        if (typeof a !== 'string') return
+        const key = keyOf(a, scope)
+        if (key === null) { if (funcByName.has(a)) u.runs.add(a); return }
+        const c = callablesOf(kinds[key] ?? K.NONE)
+        if (c === null) u.dynamic = true; else for (const id of c) u.runs.add(id)
+      }
+      const scan = (n, u, scope) => {
+        if (typeof n === 'string') {
+          const key = keyOf(n, scope)
+          if (key !== null) { if (assumedInit.get(n) === key) u.reads.add(n) }
+          else if (funcByName.has(n)) u.makes.add(n)
+          return
+        }
+        if (!Array.isArray(n) || n[0] === 'str') return
+        const op = n[0]
+        if (op === '=>') { u.makes.add(closureId(n)); return }
+        if (op === '.' || op === '?.') { scan(n[1], u, scope); return }
+        if (op === ':') { scan(n[2], u, scope); return }
+        if ((op === '=' || op === '??=') && typeof n[1] === 'string') { scan(n[2], u, scope); return }
+        if (op === '...' && iterates) u.dynamic = true
+        if (op === '()' || op === '?.()') {
+          const t = targetsOf(n[1], scope)
+          if (t === null) { u.dynamic = true; scan(n[1], u, scope) }
+          else {
+            if (t !== 'builtin') for (const id of t) u.runs.add(id)
+            if (Array.isArray(n[1]) && n[1][0] !== '=>') scan(n[1][0] === '.' || n[1][0] === '?.' ? n[1][1] : n[1], u, scope)
+          }
+          for (let i = 2; i < n.length; i++) for (const a of Array.isArray(n[i]) && n[i][0] === ',' ? n[i].slice(1) : [n[i]]) {
+            if (t === 'builtin' || t === null) runArg(a, u, scope)
+            scan(a, u, scope)
+          }
+          return
+        }
+        for (let i = 1; i < n.length; i++) scan(n[i], u, scope)
+      }
+      // What has run by each statement: its reads, through what it runs, and once
+      // something unnamed is called, through everything made.
+      const reads = new Set(), made = new Set(), seen = new Set()
+      let dynamic = hooks
+      const absorb = (u) => {
+        for (const r of u.reads) reads.add(r)
+        if (u.dynamic) dynamic = true
+        for (const m of u.makes) made.add(m)
+        for (const r of u.runs) if (!seen.has(r)) { seen.add(r); absorb(unitOf(r)) }
+      }
+      // A getter, a setter or a conversion method runs at a read or an operator: in a
+      // program that defines one, it runs from the first statement on.
+      if (hooks) for (const f of funcs) {
+        const m = f.name.slice(f.name.lastIndexOf(CLASS_T) + 1)
+        if (m.endsWith(ACCESSOR_GET) || m.endsWith(ACCESSOR_SET) || m === 'toString' || m === 'valueOf' || m === '@@toPrimitive') { seen.add(f.name); absorb(unitOf(f.name)) }
+      }
+      const early = []
+      for (let at = 0; at < stmts.length; at++) {
+        const u = { reads: new Set(), dynamic: false, makes: new Set(), runs: new Set() }
+        scan(stmts[at], u, MODULE)
+        absorb(u)
+        if (dynamic) for (const m of made) if (!seen.has(m)) { seen.add(m); absorb(unitOf(m)) }
+        for (const [g, first] of firstStore) if (first === at && reads.has(g) && assumedInit.has(g)) early.push(g)
+      }
+      return early
+    }
+  }
   seed([])
   fixpoint()
+  settleInitOrder()
   // Batch every layout the kind fixpoint discovers before restarting. A
   // restart in the middle can discover only one layer of a call chain at a
   // time, rebuilding the whole program once per layer.
@@ -5534,6 +5745,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()
+    settleInitOrder()
     if (unnamed.size && discover) return { discovered: [...unnamed.values()] }
   }
 

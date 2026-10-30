@@ -65,3 +65,16 @@ test('function properties: a call of a property defined once is a call of its fu
   if (belowOpt(2)) return
   ok(!/\$__typed_idx/.test(compile(src, { wat: true, optimize: { sourceInline: false, inlineFns: false } })), 'the element reads take the callers\' Float32Array')
 })
+
+// A namespace property becomes a module global; read while the module initializes,
+// ahead of its first store, it is undefined there. The summary decides what the
+// initializers run before each store (summary/index.js settleInitOrder): a call
+// stored twice crashed (`table index is out of bounds`), the test of it folded true.
+test('function properties: a property read during initialization before its first store is undefined', () => agree([
+  ['stored twice', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nconst before = parse(3)\nparse.p = (x) => x * 2\nparse.p = (x) => x * 3\nconst after = parse(3)\nexport let f = (x) => [before, after, parse(x)]`, 5],
+  ['through a callback', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nconst before = [3].map((x) => parse(x))[0]\nparse.p = (x) => x * 2\nparse.p = (x) => x * 4\nexport let f = (x) => [before, parse(x)]`, 5],
+  ['through a closure an object holds', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nconst o = { run: (x) => parse(x) }\nconst before = o.run(3)\nparse.p = (x) => x * 2\nparse.p = (x) => x * 4\nexport let f = (x) => [before, o.run(x)]`, 5],
+  ['a first store by ??=', `function g() { return g.cfg.k }\ng.cfg ??= { k: 4 }\nexport let f = () => [g(), g.cfg.k]`],
+  ['through a getter', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nclass P { get v() { return parse(3) } }\nconst before = new P().v\nparse.p = (x) => x * 2\nparse.p = (x) => x * 4\nexport let f = (x) => [before, parse(x)]`, 5],
+  ['through a conversion', `function parse(x) { return parse.p ? parse.p(x) : -1 }\nclass Q { valueOf() { return parse(3) } }\nconst before = new Q() + 0\nparse.p = (x) => x * 2\nparse.p = (x) => x * 4\nexport let f = (x) => [before, parse(x)]`, 5],
+]))
