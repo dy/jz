@@ -3,6 +3,7 @@ import { T, isBlockBody, isReassigned, collectAssignedNames, walkAst, MUTATE_OPS
 import { plainMember } from '../member-uses.js'
 import { constIntExpr } from '../static.js'
 import { intLevelMap } from '../type.js'
+import { boundedSteps } from '../type/bounded-counters.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
 import { valTypeOf } from '../kind.js'
@@ -509,7 +510,8 @@ export function analyzeFuncForEmit(func, programFacts) {
   let cellTypes = null
   if (ctx.func.boxed.size) {
     const boxedNames = new Set(ctx.func.boxed.keys())
-    const capturedIntLevels = intLevelMap(body, boxedNames)
+    // a scanner's position its closures advance under a test of a length: each step a word (type/bounded-counters.js)
+    const capturedIntLevels = intLevelMap(body, boxedNames, undefined, undefined, undefined, boundedSteps(body, boxedNames))
     for (const name of boxedNames) {
       if (sig.params.some(p => p.name === name)) continue
       if (capturedIntLevels.get(name) === 2) (cellTypes ??= new Set()).add(name)

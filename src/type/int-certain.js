@@ -57,7 +57,11 @@ const noteExactDivs = (test, arm) => {
     walkAst(arm, { enter: n => { if (n[0] === '=>') return false; if (n[0] === '/' && n.length === 3 && sameNode(n[1], rem[1]) && sameNode(n[2], rem[2])) exactDivs.add(n) } })
   }
 }
-function collectIntDefs(body, capturedNames, defs) {
+// The defs this collection makes of the steps a loop test bounds (type/
+// bounded-counters.js), fresh nodes: each at a level no wider than its binding's.
+const boundedRhs = new WeakSet()
+function collectIntDefs(body, capturedNames, defs, steps) {
+  const bounded = (name, step) => { const rhs = ['+', name, step]; boundedRhs.add(rhs); return rhs }
   const pushDef = (name, rhs, inArrow) => {
     if (inArrow && !capturedNames.has(name)) return
     let list = defs.get(name)
@@ -78,12 +82,12 @@ function collectIntDefs(body, capturedNames, defs) {
         else if (typeof decl === 'string' && ctx.summary?.at(body).bindingKindOf(decl) !== NUMBER) pushDef(decl, null, inArrow)
       }
     } else if (op === '=' && typeof n[1] === 'string') {
-      pushDef(n[1], n[2], inArrow)
+      pushDef(n[1], steps?.has(n) ? bounded(n[1], n[2][1] === n[1] ? n[2][2] : n[2][1]) : n[2], inArrow)
     } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
                !CMP_OPS.has(op) && op !== '=>' && typeof n[1] === 'string') {
-      pushDef(n[1], [op.slice(0, -1), n[1], n[2]], inArrow)
+      pushDef(n[1], steps?.has(n) ? bounded(n[1], n[2]) : [op.slice(0, -1), n[1], n[2]], inArrow)
     } else if ((op === '++' || op === '--') && typeof n[1] === 'string') {
-      pushDef(n[1], [op === '++' ? '+' : '-', n[1], [null, 1]], inArrow)
+      pushDef(n[1], steps?.has(n) ? bounded(n[1], [null, 1]) : [op === '++' ? '+' : '-', n[1], [null, 1]], inArrow)
     }
   } })
   collect(body, false)
@@ -113,6 +117,7 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
     if (typeof expr === 'number' || typeof expr === 'boolean') return _numLevel(expr)
     if (typeof expr === 'string') return intLevels.get(expr) ?? 0
     if (!Array.isArray(expr)) return 0
+    if (boundedRhs.has(expr)) return intLevels.get(expr[1]) ?? 0
     const sv = staticValue(expr)
     if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return 0
     const op = expr[0]
@@ -197,12 +202,12 @@ const _slotLevelAdapter = (slotIntOf) => slotIntOf
 /** The level of one expression under a level map `intLevelMap` returned (a call's argument in its caller). */
 export const intLevelOf = (expr, levels, readPresent) => makeIntLevelExpr(levels, null, readPresent)(expr)
 
-export function intLevelMap(body, capturedNames, slotLevelOf, readPresent, params = ctx.func.current?.params) {
+export function intLevelMap(body, capturedNames, slotLevelOf, readPresent, params = ctx.func.current?.params, steps = null) {
   const defs = takeScratchMap()
-  try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params) } finally { releaseScratchMap(defs) }
+  try { return intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params, steps) } finally { releaseScratchMap(defs) }
 }
-function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params) {
-  collectIntDefs(body, capturedNames, defs)
+function intLevelMapIn(body, capturedNames, slotLevelOf, defs, readPresent, params, steps) {
+  collectIntDefs(body, capturedNames, defs, steps)
   return levelsOfDefs(defs, slotLevelOf, readPresent, params)
 }
 function levelsOfDefs(defs, slotLevelOf, readPresent, params) {

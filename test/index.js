@@ -137,6 +137,7 @@ const TESTS = [
   'select-order',
   'pointer-join',
   'union-kinds',
+  'captured-counters',
   'typed-rebound',
   'late-field',
   'index-key',
