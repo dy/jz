@@ -79,17 +79,24 @@ export const compileJzWasi = (c, optimize, compiler = compile) => {
   return compiler(code, { host: 'wasi', jzify: true, modules, optimize })
 }
 
-// The compiler graph can exhaust V8's heap. Both harnesses isolate its build
+// The compiler graph can exhaust V8's heap. Both harnesses isolate its builds
 // so a crash is a failed row and the remaining cases can still be measured.
+// One process and 90 minutes per artifact: the build grows with the compiler it
+// compiles, and the speed and size builds in one process outgrew a shared hour
+// on the reference runner (EPYC 7763, 2026-10: about 59 minutes at a841739a,
+// past 60 at 2c8f08ac and 825566d4). The speed build is about 72% of the work
+// (20.5 of 28.3 T instructions at a841739a, 21.8 of 30.0 at 007669bf: Apple M4
+// Max): about 45 minutes there by that share, half its 90.
 export const compileJzSelf = (hostOut, sizeOut) => {
-  // (the two builds take 22 minutes on an Apple M-series machine under load, 2026-10-05: a
-  // runner's budget is the job's, `timeout-minutes` in bench.yml)
-  const timeout = 60 * 60 * 1000
-  const r = spawnSync(process.execPath, ['--max-old-space-size=8192', join(LIB, 'compile-jz-self.mjs'), hostOut || '-', sizeOut || '-'],
+  for (const [level, out] of [['speed', hostOut], ['size', sizeOut]]) if (out) buildJzSelf(level, out)
+}
+const buildJzSelf = (level, out) => {
+  const timeout = 90 * 60 * 1000
+  const r = spawnSync(process.execPath, ['--max-old-space-size=8192', join(LIB, 'compile-jz-self.mjs'), level, out],
     { cwd: ROOT, encoding: 'utf8', timeout })
   const detail = (r.stderr || r.stdout || '').trim()
-  if (r.error?.code === 'ETIMEDOUT') throw Error(`compiler benchmark build exceeded ${timeout / 1000}s`)
-  if (r.signal) throw Error(`compiler benchmark build terminated by ${r.signal}: ${detail}`)
+  if (r.error?.code === 'ETIMEDOUT') throw Error(`compiler benchmark ${level} build exceeded ${timeout / 1000}s`)
+  if (r.signal) throw Error(`compiler benchmark ${level} build terminated by ${r.signal}: ${detail}`)
   if (r.error) throw r.error
-  if (r.status !== 0) throw Error(`compiler benchmark build exited ${r.status}: ${detail}`)
+  if (r.status !== 0) throw Error(`compiler benchmark ${level} build exited ${r.status}: ${detail}`)
 }

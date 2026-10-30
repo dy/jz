@@ -891,26 +891,21 @@ corpus" and "structurally cannot be taken" are different guarantees):
 | `jessie` | **not valid — stays gated.** subscript's switch-statement PARSE feature (`node_modules/subscript/feature/switch.js`, reachable from `parse`) wraps its body in a bare `try { … } finally { inSwitch-- }` — zero `catch` clauses, invisible to a source grep for `catch`, but jz's `finally` codegen still needs an internal try_table/catch(-rethrow) for the cleanup path, so the safety net correctly refuses to prune it. A genuine fix needs an EH-to-branch lowering (Emscripten-style setjmp/longjmp, or a result-code ABI threaded through every call inside a `try`) — a real compilation strategy, scoped here as a design note, not implemented. |
 | `jz` | **not valid — stays gated**, for two independent reasons: (1) the self-compiled compiler's own source has genuine `try`/`catch` used as live fallback logic in hot compiler internals (`src/kind.js`'s `try { JSON.parse(src) } catch { return null }`, plus `src/compile/{narrow,emit,flow-types,analyze}.js`, `src/prepare/pre-eval.js`) — real, input-shape-dependent code, not just corpus-empirical zero; (2) independently, `jz-w2c`'s plain-CLI shell-out can't even reach codegen for this case today (needs `--resolve` for `self.js`'s bare `watr`/`watr/print` imports, and even then hits an unrelated `--host wasi` incompatibility — a `WebAssembly.*` reference inside the self-compile graph needs the `js`-host's env import). Same design-note scope as `jessie`. |
 
-### jz×jz — the self-compile-squared row (blocked on the region-arena build)
+### jz×jz: the self-compile-squared row
 
-The `jz` CASE under the `jz` TARGET is the last uncovered cell in the lab
-grid: jz compiling itself (`bench/jz/jz.js` → `scripts/self.js`, the whole
-compiler) into a wasm module that, once run, itself compiles 3 more
-programs 45 times over. It is gated on the region-arena allocator
-(concurrent work, `.work/evidence.md §Region arena`) — today's bump-and-
-never-free allocator has no bound on this workload's working set. The bench
-plumbing is ready for the moment it lands: this cell's PREP (the compile)
-runs in its own isolated child process (`bench/_lib/compile-jz-self.mjs`,
-`--max-old-space-size=8192`, `memory: 65536` pages = the full wasm32 4 GiB
-address space) under a 10-minute wall-clock cap
-(`compileJzSelfIsolated`/`JZ_SELF_HOST_TIMEOUT_MS` in `bench.mjs`), so a bad
-day here — OOM, a genuine hang — surfaces as one `{ status: 'fail', reason }`
-row instead of taking the whole bench run down. Verified live, today: the
-isolated compile succeeds (~4 minutes, ~3.3 GB peak RSS) but the resulting
-module traps at RUN time with a clean, catchable V8 `RangeError: Maximum
-call stack size exceeded` — an honest failure, not a crash. No bench.mjs
-change should be needed when the region build lands; the cell should just
-start succeeding.
+The `jz` CASE under the `jz` TARGET is jz compiling itself (`bench/jz/jz.js`
+→ `scripts/self.js`, the whole compiler) into a wasm module that, once run,
+itself compiles 3 more programs 45 times over. Its prep runs in isolated
+child processes, one per artifact (`bench/_lib/compile-jz-self.mjs`: the
+speed build the row times, the size build the size column reads), each
+under `--max-old-space-size=8192` with `memory: 65536` pages (the full wasm32
+4 GiB address space) and 90 minutes of its own (`compileJzSelf` in
+`bench/_lib/compile.js`), so a bad day here, an OOM or a genuine hang,
+surfaces as one `{ status: 'fail', reason }` row instead of taking the whole
+bench run down. The two builds once shared one process and one hour, which
+they outgrew on the reference runner as the compiler grew: about 59 minutes
+at a841739a, past the hour at 2c8f08ac and 825566d4 (EPYC 7763). The speed
+build is about 72% of the work.
 
 ### Where the gaps live
 

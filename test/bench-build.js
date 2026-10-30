@@ -191,7 +191,7 @@ test('bench build: an isolated compiler crash preserves the failure and later si
   `], { encoding: 'utf8', timeout: 60000, env: { ...process.env, PATH: '' } })
   if (result.error) throw result.error
   is(result.status, 1, 'the crashed row fails the whole command')
-  ok(result.stderr.includes('jz: jz compilation failed: compiler benchmark build terminated by SIGABRT: heap exhausted'), 'case, signal and cause survive')
+  ok(result.stderr.includes('jz: jz compilation failed: compiler benchmark size build terminated by SIGABRT: heap exhausted'), 'case, signal and cause survive')
   ok(result.stdout.includes('SIZE jz jz= '), 'the crashed case remains in the results')
   ok(/SIZE lz jz=\d+ /.test(result.stdout), 'the following case still compiles')
 })
