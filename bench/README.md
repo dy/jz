@@ -400,7 +400,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only; unsupported SIMD and multi-value cases record build failures. Set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 13 (`547c781`, 2026-09-30); a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
-| `scriptc` | [scriptc](https://github.com/vercel-labs/scriptc) source `6d1907a` (package version 0.1.7): JS/TS compiled through the TypeScript checker and LLVM to a native executable with its static runtime. `scriptc build <case>-native-flat.js -o <bin>` uses default release optimization and native `performance.now()`. No annotations or `--dynamic` fallback are added. Set `SCRIPTC_BIN` to override. |
+| `scriptc` | [scriptc](https://github.com/vercel-labs/scriptc) 0.4.6: JS/TS compiled through the TypeScript checker and LLVM to a native executable with its static runtime, no embedded engine. `scriptc build <case>-native-flat.js -o <bin>` uses default release optimization and native `performance.now()`. No annotations are added, so untyped values compile to its dynamic tier (native code that checks types at run time). Set `SCRIPTC_BIN` to override. |
 | `tslang` | [TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler) pre-alpha87: LLVM/MLIR native output with its default library and Boehm GC. The unchanged flattened JS is saved as `.ts`; a C `clock_gettime(CLOCK_MONOTONIC)` binding supplies `performance.now()`. `tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>.ts -o <bin>`. Set `TSLANG_BIN` to override. |
 | `perry` | [Perry](https://perryts.com/): JS/TS compiled through LLVM to a native executable with its runtime and GC. `perry compile <case>-native-flat.js -o <bin> --fp-contract off`, then run the binary. Uses the unchanged JS kernels, native `performance.now()`, default optimization and host CPU tuning; no type annotations, fast-math, or V8 fallback. Set `PERRY_BIN` to override. |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
@@ -425,21 +425,14 @@ calls Perry again (its own object cache remains enabled), while paired rounds
 reuse the binary. Perry's browser/WASM backend is a separate target and is not
 measured by this native lane.
 
-scriptc 0.1.7 remains the latest npm release as of 2026-09-30. The benchmark
-uses the newer source revision
-[`6d1907a`](https://github.com/vercel-labs/scriptc/commit/6d1907aa06d8da25b19dc0981ac25e02ed22dd14),
-92 commits after that release. Build it on macOS arm64 or Linux x64/glibc with
-Node 24+, npm, clang, curl and tar:
-
-```sh
-node scripts/install-scriptc.mjs /path/to/scriptc-current
-SCRIPTC_BIN=/path/to/scriptc-current/scriptc node bench/bench.mjs --targets=scriptc
-```
-
-CI uses the same installer. It builds the compiler and runtime from the pinned
-source and uses the official 0.1.7 LLVM 22.1.8 helper; subsequent helper changes
-add cross-target support and Android TLS, leaving these native host backends
-unchanged. The launcher records both the package version and full source commit.
+Install the pinned scriptc release with `npm install -g scriptc@0.4.6` (Node 24+;
+prebuilt for macOS arm64 and Linux x64), then run
+`node bench/bench.mjs --targets=scriptc`. CI uses the same package. Source main
+`a37abcc` (2026-10-30), built the way the previous installer built `6d1907a`,
+gave the same results case for case; its `SCRIPTC_INFER_JS=1`, inference for a
+program's own JavaScript (unreleased, added the day after 0.4.6), typed three
+declarations of alpha and changed no timing. `--optimization speed` ran alpha,
+mandelbrot and bitwise within 2% of the default release build.
 
 For TypeScriptCompiler, extract the
 [pre-alpha87 Ubuntu 24.04 x64 release](https://github.com/ASDAlexander77/TypeScriptCompiler/releases/tag/v0.0-pre-alpha87),
@@ -452,10 +445,13 @@ Both lanes bound compilation to 120 seconds and execution to 60 seconds,
 rebuild on each invocation, and reuse artifacts within paired rounds.
 Rebuilds discard the previous artifact; a successful exit without output is a failure.
 Rejected programs and wrong checksums remain visible; they supply no timing ratios.
-In scriptc's static mode, compilation can succeed while execution rejects an
-untyped operation: `const f = (seed) => seed | 0; console.log(f(7))` throws
-`SC2011`, while the control with `seed: number` prints `7`. The benchmark keeps
-the original JavaScript; it adds neither annotations nor a dynamic engine.
+scriptc takes its types from the TypeScript checker alone, so the corpus's
+unannotated parameters are `any`. Through `6d1907a` (0.1.7) the static build
+rejected operations on them at run time (`the '|' operator on 'any'-typed
+values runs in the embedded dynamic engine, which this build does not
+include`, the stored rows' commonest failure); 0.3 removed that engine and
+compiles them to its dynamic tier instead. That tier is the cost the lane
+measures. The benchmark keeps the original JavaScript and adds no annotations.
 Use `--json=<file> --no-web` to record competitor results without rebuilding JZ's
 browser artifacts. Add `--merge` to preserve unmeasured target rows in that file.
 

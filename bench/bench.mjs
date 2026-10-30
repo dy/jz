@@ -73,8 +73,8 @@ const MOONBIT_LIB = join(LIB, 'bench.mbt')
 const BUN_BIN = process.env.BUN_BIN || 'bun'
 const DENO_BIN = process.env.DENO_BIN || 'deno'
 const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
-// scriptc (vercel-labs) — TS/JS → native AOT (TypeScript-checker typing + LLVM,
-// C fallback lane; no engine unless --dynamic). npm: `npm i -g scriptc`.
+// scriptc (vercel-labs): TS/JS → native AOT (TypeScript-checker typing + LLVM,
+// no embedded engine). npm: `npm i -g scriptc@0.4.6`.
 const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
 const TSLANG_BIN = process.env.TSLANG_BIN || 'tslang'
 const PERRY_BIN = process.env.PERRY_BIN || 'perry'
@@ -910,13 +910,13 @@ const targets = {
       execFileSync(PORF_BIN, ['native', src, '-o', porfNatPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, { nativePerformance: true }),
   },
-  // scriptc (vercel-labs) — TS/JS AOT via the TypeScript checker + LLVM, the
-  // native-band sibling of shermes/porf-native. Static by default: NO embedded
-  // engine (quickjs-ng ships only under --dynamic, which this lane deliberately
-  // never passes — the row measures the engine-less shipping artifact, and a
-  // case its static tier can't swallow records an honest fail). Constructs
-  // outside its LLVM tier fall back to its C emitter on native targets — still
-  // static, still this lane (a stderr note names the construct).
+  // scriptc (vercel-labs): TS/JS AOT via the TypeScript checker + LLVM, the
+  // native-band sibling of shermes/porf-native, with no embedded engine. Types
+  // come from the checker alone, so the corpus's unannotated parameters are
+  // `any`: 0.4.6 compiles them to its dynamic tier, native code that checks
+  // types at run time (0.1.7's static build rejected them; 0.3 dropped the
+  // embedded engine that --dynamic once added). The row measures that path on
+  // the unchanged JS; nothing is annotated.
   scriptc: {
     name: 'scriptc → native (static)',
     available: () => has(SCRIPTC_BIN),

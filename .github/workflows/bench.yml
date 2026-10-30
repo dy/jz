@@ -155,11 +155,11 @@ jobs:
           echo "PERRY_NO_UPDATE_CHECK=1" >> "$GITHUB_ENV"
           echo "PERRY_UPDATE_MODE=off" >> "$GITHUB_ENV"
           perry --version
-      - name: build scriptc current source (pinned)
+      - name: install scriptc 0.4.6
         run: |
-          node scripts/install-scriptc.mjs "$RUNNER_TEMP/scriptc"
-          echo "SCRIPTC_BIN=$RUNNER_TEMP/scriptc/scriptc" >> "$GITHUB_ENV"
-          "$RUNNER_TEMP/scriptc/scriptc" --version
+          npm install --global scriptc@0.4.6
+          echo "SCRIPTC_BIN=$(command -v scriptc)" >> "$GITHUB_ENV"
+          scriptc --version
       - name: install TypeScriptCompiler pre-alpha87
         run: |
           sudo apt-get install -y clang libcurl4-openssl-dev
