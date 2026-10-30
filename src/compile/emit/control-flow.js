@@ -608,22 +608,36 @@ function durableLoopArrays(init, cond, step, body) {
  * mark names and empties the log (`$__gc_epoch` counts them): the iteration
  * after one keeps all and starts a mark of its own. The loop's end, and a
  * return or a branch out of it, put the log's floor back.
+ *
+ * The flag the releases read is the iterations' own: each release clears it
+ * once it has read it, so an escape one iteration made (a cache filled once)
+ * leaves the next ones free to give their memory back. What the clearings
+ * took is kept for the frame around the loop, the lowest, as its complement
+ * (`ies`: 0, a local's start, while none took anything), and, in a program
+ * that catches, handed to `$__esc_low` as a frame hands its flag (a handler
+ * reads there what an exception left behind); the loop's end and a branch out
+ * of it put the lowest back.
  */
 const RELEASE_BYTES = 65536   // the iterations a release takes back together: a walk per 64 KiB they made, at most
 const iterationRelease = () => {
   inc('__iter_release')
-  const mark = tempI32('irm'), was = tempI32('irb'), epoch = tempI32('ire')
+  const mark = tempI32('irm'), was = tempI32('irb'), epoch = tempI32('ire'), held = tempI32('ies')
   const top = () => ctx.memory.shared ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]] : ['global.get', '$__heap']
   const raise = () => ['if', ['i32.gt_u', ['local.get', `$${mark}`], ['global.get', '$__ibase']], ['then', ['global.set', '$__ibase', ['local.get', `$${mark}`]]]]
+  const lower = (g, v) => ['if', ['i32.lt_u', v, ['global.get', g]], ['then', ['global.set', g, v]]]
+  const not = (v) => ['i32.xor', v, ['i32.const', -1]]
   return {
     pre: [['local.set', `$${mark}`, top()], ['local.set', `$${was}`, ['global.get', '$__ibase']], raise(),
-      ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']]].map(releasing),
+      ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']], ['local.set', `$${held}`, ['i32.const', 0]]].map(releasing),
     top: releasing(['if', ['i32.ne', ['local.get', `$${epoch}`], ['global.get', '$__gc_epoch']],
       ['then', ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']], ['local.set', `$${mark}`, top()], raise()],
       ['else', ['if', ['i32.gt_u', ['i32.sub', top(), ['local.get', `$${mark}`]], ['i32.const', RELEASE_BYTES]],
-        ['then', ['local.set', `$${mark}`, ['call', '$__iter_release', ['local.get', `$${mark}`]]]]]]]),
-    post: releasing(['global.set', '$__ibase', ['local.get', `$${was}`]]),
-    cleanup: ['#logFloor', was],
+        ['then', ['local.set', `$${mark}`, ['call', '$__iter_release', ['local.get', `$${mark}`]]],
+          // the flag taken over: kept as the lowest, handed over, cleared
+          ['if', ['i32.gt_u', not(['global.get', '$__esc']), ['local.get', `$${held}`]], ['then', ['local.set', `$${held}`, not(['global.get', '$__esc'])]]],
+          ...(ctx.plans.catches ? [lower('$__esc_low', ['global.get', '$__esc'])] : []), ['global.set', '$__esc', ['i32.const', -1]]]]]]),
+    post: releasing(['block', ['global.set', '$__ibase', ['local.get', `$${was}`]], lower('$__esc', not(['local.get', `$${held}`]))]),
+    cleanup: ['#logFloor', was, held],
   }
 }
 /** A statement of the release protocol: a program that allocates nothing has
@@ -1421,7 +1435,9 @@ export const controlFlowOps = {
 
   'while': (cond, body) => controlFlowOps['for'](null, cond, null, body),
   // a released loop's floor put back where a return or a branch leaves it (iterationRelease)
-  '#logFloor': (was) => releasing(typed(['global.set', '$__ibase', ['local.get', `$${was}`]], 'void')),
+  '#logFloor': (was, held) => releasing(typed(['block', ['global.set', '$__ibase', ['local.get', `$${was}`]],
+    ['if', ['i32.lt_u', ['i32.xor', ['local.get', `$${held}`], ['i32.const', -1]], ['global.get', '$__esc']],
+      ['then', ['global.set', '$__esc', ['i32.xor', ['local.get', `$${held}`], ['i32.const', -1]]]]]], 'void')),
   'label': (name, body) => {
     const brk = `$label${freshId(ctx)}`
     return withControlFrame({ label: name, brk }, () =>

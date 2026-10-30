@@ -35,7 +35,7 @@ import { ctx, checkpointed, err, PTR, HEAP, getFactStore, declGlobal, inc } from
 import { createFunction, frameNode, frameRoots } from '../function.js'
 import { functionPlanOf, publishFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { FIELD, symbolSlotBits } from '../../layout.js'
-import { beginAssignedMemo, endAssignedMemo } from '../ast.js'
+import { beginAssignedMemo, endAssignedMemo, some } from '../ast.js'
 import {
   structInlinePass, unionInlinePass, clearBodyFacts,
 } from './analyze.js'
@@ -321,6 +321,10 @@ export function assemble(ast, profiler) {
     // Loops whose iterations are released by the escape flag and the walk
     // from its log (emit/control-flow.js iterationRelease): where the walk runs.
     const releases = ctx.plans.releaseLoops = reachOn() && !ctx.memory.shared && ctx.transform.optimize?.iterationRelease !== false ? new WeakSet() : null
+    // Whether a handler may catch what a released iteration throws: one reads the flag the frames it
+    // left handed over (emit/statements.js flagCaught), so a release hands over the flag it clears.
+    ctx.plans.catches = !!releases && [ast, ...(ctx.module.moduleInits ?? []), ...ctx.funcs.list.map(f => f.body)]
+      .some(r => r != null && some(r, n => n[0] === 'catch' || n[0] === 'finally', { skipArrow: false }))
     let released = false
     ctx.plans.hasCompactLoops = false
     const facts = transitiveFrameEffects(ctx.funcs.list, [ast, ...(ctx.module.moduleInits ?? [])], iterations)

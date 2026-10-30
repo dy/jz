@@ -75,7 +75,7 @@
  *
  * @module optimize/arena-rewind
  */
-import { T, NONE, intern, text, walk, node, str, num, push, insertAfter, remove, fromWat } from '../ir/tape.js'
+import { T, NONE, OP_NUM, intern, text, walk, node, str, num, push, insertAfter, remove, fromWat } from '../ir/tape.js'
 import { T as MARK } from '../ast.js'
 
 // JZ_DEBUG_POISON=1: a rewound frame overwrites what it frees, so a pointer
@@ -167,6 +167,8 @@ const SURVIVE = '$__survive', ROOTN = '$__rootn', ROOTS = '$__roots', ROOT_RESET
 // The lowest the flag stood at since the outermost reading frame was entered:
 // a handler's flag (compile/emit/statements.js).
 const ESC_LOW = '$__esc_low'
+// The local a released loop keeps the lowest flag it took over in (emit/control-flow.js iterationRelease).
+const ESC_HELD = '$' + MARK + 'ies'
 // Below it a receiver is logged too while a loop releases its iterations (module/core/reach.js `__iter_release`).
 const IBASE = '$__ibase'
 // What asks of a stored value whether a running call made it: no lowering itself.
@@ -244,6 +246,20 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   const bodyStart = (f) => { let c = T.next[T.a[f]]; while (c !== NONE && isHeader(c)) c = T.next[c]; return c }
   const eachBody = (f, fn) => { for (let c = bodyStart(f); c !== NONE; c = T.next[c]) walk(c, fn) }
   const opText = (id) => T.syms[T.op[id]]
+  // A write of the flag that lowers nothing: the flag cleared, or put back to the
+  // lowest a released loop took over from it (emit/control-flow.js iterationRelease),
+  // no lower than the loop's own escapes, flagged where they run, made it.
+  const allOnes = (v) => v !== NONE && opText(v) === 'i32.const' && T.a[v] !== NONE && T.op[T.a[v]] === OP_NUM && T.imm[T.a[v]] === -1
+  const heldGet = (v) => v !== NONE && opText(v) === 'local.get' && text(T.a[v])?.startsWith(ESC_HELD) === true
+  const clearsFlag = (id) => {
+    const v = T.next[T.a[id]]
+    if (v === NONE) return false
+    if (allOnes(v)) return true
+    // the loop keeps the lowest as its complement: `(i32.xor (local.get $ies…) (i32.const -1))`
+    if (opText(v) !== 'i32.xor') return false
+    const a = T.a[v], b = a === NONE ? NONE : T.next[a]
+    return (heldGet(a) && allOnes(b)) || (allOnes(a) && heldGet(b))
+  }
 
   // Imports: callees the module declares but does not define. Immutable
   // globals: pooled constants, values rather than tables.
@@ -497,7 +513,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
       if (op === GLOBAL_SET) {
         const g = text(T.a[id])
         // the emitter's own lowering (a census site, a catch handler)
-        if (g === '$__esc') { rec.lowers = true; if (rec.censused) rec.ownFlag = true }
+        if (g === '$__esc') { if (!clearsFlag(id)) { rec.lowers = true; if (rec.censused) rec.ownFlag = true } }
         else if (ENUMC.test(g)) rec.enumc = true
         else if (!strandsNothing(g) && !(censused.has(name) && userGlobals.has(g?.slice(1)))) escapeAt(rec, id, 'global.set ' + g)
       }
@@ -701,7 +717,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     walk(id, (n) => {
       if (why !== null) return false
       const op = T.op[n]
-      if (op === GLOBAL_SET) { const g = text(T.a[n]); if (g === '$__esc') why = 'lowers the flag'; else if (!strandsNothing(g)) why = 'global.set ' + g }
+      if (op === GLOBAL_SET) { const g = text(T.a[n]); if (g === '$__esc') { if (!clearsFlag(n)) why = 'lowers the flag' } else if (!strandsNothing(g)) why = 'global.set ' + g }
       else if (callsRef(op)) why = opText(n)
       else if (callsTable(op)) { if (rec.resolved ? rec.targets.some(t => info.get(t).tapeFlag) : tableFlags) why = opText(n) }
       else if (callsDirect(op)) {

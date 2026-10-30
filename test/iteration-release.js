@@ -47,6 +47,21 @@ const grownBy = (src, opts = {}, host = undefined) => (...args) => {
   return exports.memory.buffer.byteLength - at
 }
 
+test('iteration release: an escape one iteration made leaves the next ones free to give their memory back', () => {
+  // the first iteration hands the host a value (link lowers the flag to zero
+  // there, an escape with no address); each release reads the flag the
+  // iterations since the last one lowered, not one standing since the loop began
+  const src = `import { keep } from "host"
+    export let f = (n) => { let cs = 0
+      for (let r = 0; r < n; r++) { const t = []; for (let k = 0; k < 4000; k++) t.push(k + r); if (r === 0) keep(t.length); cs = (cs + t[7]) | 0 }
+      return cs }`
+  const host = { host: { keep: () => 0 } }
+  for (const n of [1, 9, 200]) is(instantiate(new WebAssembly.Module(compile(src, { optimize: 'speed', imports: host })), { imports: host }).exports.f(n), n * 7 + n * (n - 1) / 2, `f(${n})`)
+  ok(/call \$__iter_release/.test(compile(src, { optimize: 'speed', wat: true, imports: host })), 'the loop releases its iterations')
+  const grown = grownBy(src, { imports: host }, host)
+  is(grown(200), grown(2), 'two hundred iterations grow what two do')
+})
+
 test('iteration release: a store through a receiver the site keeps names the receiver, re-read through its owner', () => {
   // `self.buf.chans` may run an accessor (Port's `get chans`), so the site keeps
   // the receiver as it is evaluated; the allocating value stages it through a
