@@ -20,7 +20,7 @@ import {
 } from '../representation-plan.js'
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { I64_ARITH_OP, bigIntDivIR, bigIntDomainsCanMix, bigIntOperand, bigintMixReject } from './bigint.js'
-import { emit, emitIdentitySafe, boolCarrier, toBool, markInstrumented, whereNew, withEscapeFlag, siteFlag, bindingStore } from './dispatch.js'
+import { emit, emitIdentitySafe, boolCarrier, toBool, markInstrumented, whereNew, withEscapeFlag, siteFlag, bindingStore, keptAs } from './dispatch.js'
 import { emitArrayViewDef } from '../array-view.js'
 import { privateStringBuilder } from '../analyze-scans.js'
 import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
@@ -74,8 +74,9 @@ function stagedReference(name, update = true, rhs) {
     // the original binding. Preserve the ordinary reference evaluation order.
     if (tag === 'ref' && name[0] === '[]' && Array.isArray(node) &&
         node[0] === '.' && typeof node[2] === 'string' && valTypeOf(node[1]) == null) {
-      const owner = stage(node[1], 'owner', true)
-      node = ['.', owner, node[2]]
+      const owner = stage(node[1], 'owner', true), spelled = ['.', owner, node[2]]
+      keptAs(node, spelled)
+      node = spelled
       writeback = [owner, node[2]]
     }
     const h = temp(tag)

@@ -2034,6 +2034,14 @@ function keep(node, recv, run) {
   for (const k of REP_FACTS) if (cell.facts[k] !== undefined) value[k] = cell.facts[k]
   return { ir, flag: noted(['call', '$' + fn, asF64(value)], node) }
 }
+/** `spelled` evaluates to what the kept receiver `node` does (a staged reference
+ *  reads it through a temp of its owner, emit/assignment.js stagedReference):
+ *  its emission keeps the receiver for the site. */
+export function keptAs(node, spelled) {
+  if (keeping === 0) return
+  const cell = KEPT.get(node)
+  if (cell !== undefined) KEPT.set(spelled, cell)
+}
 /** The kept receiver `node` emitted, its value teed into the site's local. */
 function keptReceiver(node, expect, cell) {
   KEPT.delete(node)

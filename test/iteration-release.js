@@ -8,7 +8,7 @@
 // host answers, the memory read after the loop overwritten first.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import jz, { compile, instantiate } from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle, run } from './util.js'
 
@@ -37,6 +37,33 @@ test('iteration release: a parser loop runs in the memory of one parse', () => {
   ok(releases(src) > 0, 'the loop releases its iterations')
   const grown = (n) => { const inst = jz(src, { optimize: 'speed' }), s = inst.exports.make(), at = inst.memory.buffer.byteLength; inst.exports.f(n, s); return inst.memory.buffer.byteLength - at }
   is(grown(1000), grown(1), 'a thousand parses grow what one does')
+})
+
+// The memory a call of `f` grows, on a fresh instance; `host` the functions a declared import takes.
+const grownBy = (src, opts = {}, host = undefined) => (...args) => {
+  const { exports } = instantiate(new WebAssembly.Module(compile(src, { optimize: 'speed', ...opts })), host && { imports: host })
+  const at = exports.memory.buffer.byteLength
+  exports.f(...args)
+  return exports.memory.buffer.byteLength - at
+}
+
+test('iteration release: a store through a receiver the site keeps names the receiver, re-read through its owner', () => {
+  // `self.buf.chans` may run an accessor (Port's `get chans`), so the site keeps
+  // the receiver as it is evaluated; the allocating value stages it through a
+  // temp of its owner (emit/assignment.js stagedReference), which must keep it
+  // too, or the flag goes to zero and every iteration stays
+  const src = `class Buf { constructor(n) { this.chans = [new Float64Array(n)] } }
+    class Port { constructor(n) { this.buf = new Buf(n) } get chans() { return 0 } }
+    const tick = (self, n) => { for (let c = 0; c < 2; c++) self.buf.chans[c] = new Float64Array(n) }
+    export let f = (n) => { let cs = 0
+      for (let r = 0; r < n; r++) { const p = new Port(8); const q = r > 1e9 ? { buf: null } : p; tick(q, 4096); cs += q.buf.chans[1].length }
+      return cs }`
+  agree(src, [1, 7, 30])
+  const wat = compile(src, { optimize: 'speed', wat: true })
+  const f = wat.slice(wat.indexOf('(func $f'), wat.indexOf('\n  (func ', wat.indexOf('(func $f') + 10))
+  ok(/call \$__esc_(val|elem)/.test(f) && !/global\.set \$__esc\s*\(i32\.const 0\)/.test(f), 'the store lowers the flag to its receiver, not to zero')
+  const grown = grownBy(src)
+  is(grown(300), grown(1), 'three hundred iterations grow what one does')
 })
 
 test('iteration release: a module binding keeps what it was given, the rest goes', () => {
