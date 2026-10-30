@@ -438,7 +438,51 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 // Excluded from the strict and band tests and from the corpus-coverage test
 // until the todo below flips; a case leaves this set the commit it leads.
 const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik'])
-const caseRatios = (rivals, ids = null, source = cases) => {
+
+// A claimed case answers for jz with a timed, parity-valid row: a failed, wrong or
+// missing JZ row leaves no ratio, and the claims then held without it. Only a case
+// whose stored checksum no lane reproduces (the libm-divergent probes) carries no
+// claim to hold jz to; it is named, not dropped in silence.
+const describeRow = row => row == null ? 'missing'
+  : row.status != null ? `${row.status}${row.reason ? ` (${String(row.reason).split('\n')[0].slice(0, 100)})` : ''}`
+    : !correctBenchmarkRow(row) ? `parity ${row.parity ?? 'unknown'}` : 'no positive timing'
+const claimEvidence = (source, pending = PENDING_CASES) => {
+  const missing = [], uncontested = []
+  for (const [id, c] of Object.entries(source)) {
+    const jz = c.targets?.jz
+    if (pending.has(id) || timedBenchmarkRow(jz)) continue
+    if (jz != null && jz.status == null && !Object.values(c.targets).some(correctBenchmarkRow)) uncontested.push(id)
+    else missing.push(`${id}: ${describeRow(jz)}`)
+  }
+  return { missing, uncontested }
+}
+
+test('claims: a claimed case without a timed JZ row fails by name', () => {
+  const timed = { parity: 'ok', medianUs: 1 }, diff = { parity: 'DIFF', medianUs: 1 }
+  const { missing, uncontested } = claimEvidence({
+    led: { targets: { jz: timed, v8: timed } },
+    failed: { targets: { jz: { status: 'fail', reason: 'compiler benchmark build exceeded 3600s' }, v8: timed } },
+    absent: { targets: { v8: timed } },
+    wrong: { targets: { jz: diff, v8: timed } },
+    untimed: { targets: { jz: { parity: 'ok', medianUs: 0 }, v8: timed } },
+    probe: { targets: { jz: diff, v8: diff } },
+    failedProbe: { targets: { jz: { status: 'fail' }, v8: diff } },
+    pending: { targets: { jz: { status: 'fail' }, v8: timed } },
+  }, new Set(['pending']))
+  is(missing, ['failed: fail (compiler benchmark build exceeded 3600s)', 'absent: missing', 'wrong: parity DIFF', 'untimed: no positive timing', 'failedProbe: fail'],
+    'a failed, missing, wrong or untimed JZ row is named; a pending case answers to no claim')
+  is(uncontested, ['probe'], 'only a JZ row that ran where no lane reproduces the checksum carries no claim')
+})
+
+test('claims: every claimed case carries a timed, parity-valid JZ row', () => {
+  const { missing, uncontested } = claimEvidence(cases)
+  if (uncontested.length) console.log(`  uncontested (no lane reproduces the stored checksum): ${uncontested.join(', ')}`)
+  ok(missing.length === 0, missing.length
+    ? `claimed cases without a timed, parity-valid JZ row: ${missing.join('; ')}`
+    : 'every claimed case carries a timed, parity-valid JZ row')
+})
+
+const caseRatios =(rivals, ids = null, source = cases) => {
   const out = []
   for (const [id, c] of Object.entries(source)) {
     if (ids ? !ids.has(id) : PENDING_CASES.has(id)) continue
