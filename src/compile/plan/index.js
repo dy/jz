@@ -148,7 +148,7 @@ export default function plan(ast, profiler, summarize) {
   // A name that holds a method of `Object.prototype` is the method where it is called.
   sweep('resolveHeldMethods', () => resolveHeldMethods(ast))
   // A loop's counter declared outside it and read nowhere else: the loop's own, from here on.
-  sweep('adoptLoopCounters', adoptLoopCounters)
+  sweep('adoptLoopCounters', () => adoptLoopCounters(ast))
   // A key stored on objects nothing asks for their keys becomes a declared
   // slot of their literals too, the literals their values join sharing one layout.
   ctx.summary = summarize()

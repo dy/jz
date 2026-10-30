@@ -24,6 +24,18 @@ const TYPED_ELEM_BYTE_WIDTH = [1, 1, 2, 2, 4, 4, 4, 8]
 // same multi-source chain resolveElem (module/typedarray.js) and this compiler's
 // own typed-dispatch sites read for a receiver NAME: a per-function narrowing
 // overlay first, then the whole-function map, then the module-global map.
+/** The most elements a typed array of this name holds in a 2^32-byte memory, by
+ *  its element width (its length word and the word at 0 no allocation takes
+ *  aside), where that fits a signed word: two bytes or more. Null otherwise. */
+const typedLengthCap = (name) => {
+  const raw = typedCtorRawOf(name)
+  if (raw == null) return null
+  const code = TYPED_ELEM_CODE[typedCtorName(raw)]
+  const width = code != null ? TYPED_ELEM_BYTE_WIDTH[code] : null
+  if (width == null) return null
+  const cap = Math.floor((0x100000000 - 16) / width)
+  return cap <= 0x7fffffff ? cap : null
+}
 export const typedCtorRawOf = (name) =>
   ctx.func?.localTypedElemsOverlay?.get(name) ?? ctx.func?.typedElem?.get(name) ?? ctx.scope?.globalTypedElem?.get(name) ?? null
 
@@ -163,16 +175,8 @@ export function intExprRange(n, nameRange = null) {
     // An array's elements are eight bytes each in the same 2^32-byte memory:
     // its count is below 2^29, whatever it grows to.
     if (repOf(n[1])?.val === VAL.ARRAY) return [0, 0x1fffffff]
-    const raw = typedCtorRawOf(n[1])
-    if (raw != null) {
-      const bare = typedCtorName(raw)
-      const code = TYPED_ELEM_CODE[bare]
-      const width = code != null ? TYPED_ELEM_BYTE_WIDTH[code] : null
-      if (width != null) {
-        const cap = Math.floor((0x100000000 - 16) / width)
-        if (cap <= 0x7fffffff) return [0, cap]
-      }
-    }
+    const cap = typedLengthCap(n[1])
+    if (cap != null) return [0, cap]
     // A typed array of a width the program does not name (a constructor a
     // table picks) reads its length as the signed word of its byte count's
     // shift (module/core.js `__len`): a word, whatever the count.
@@ -491,6 +495,48 @@ export function counterInit(init, name) {
 
 // A string's length is an i32 field (abi/string.js): below 2^31 by construction.
 const STRING_LENGTH_TOP = 0x7fffffff
+
+/** The most elements a receiver of this name can hold, by its kind alone, or null:
+ *  an array's are eight bytes each in a 2^32-byte memory, a typed array's of two
+ *  bytes or more no more than that memory holds, a string's length an i32 field. */
+const lengthTop = (name) => {
+  const k = ctx.summary?.at?.(ctx.func?.current)?.kindOfExpr?.(name)
+  if (repOf(name)?.val === VAL.ARRAY || k != null && tagOf(k) === K.ARRAY) return 0x1fffffff
+  return typedLengthCap(name) ?? (isStringName(name) ? STRING_LENGTH_TOP : null)
+}
+/**
+ * A counter each pass of a `for` takes up by one, admitted only by the truth of
+ * an element read at it: `(d = R[i++])` (the read at the old value, the counter one
+ * on, the loop no step of it) or `R[i]` under the step `i++`. An index past the end
+ * reads undefined, which is false, so the counter rises only through indices of
+ * elements R holds, whatever R the read finds: a test passes below R's length, the
+ * step after it reaches the length at most, and a failing `R[i++]` steps once more.
+ * → { name, recv, post, top } (post: the step is the read's own; top: the largest
+ * value the counter takes, its last step included), else null. The start, and the
+ * loop writing neither the counter elsewhere nor the receiver, are the caller's to check.
+ */
+export function elementCounter(cond, step) {
+  const read = Array.isArray(cond) && cond[0] === '=' && cond.length === 3 && typeof cond[1] === 'string' ? cond[2] : cond
+  if (!Array.isArray(read) || read[0] !== '[]' || read.length !== 3 || typeof read[1] !== 'string') return null
+  const idx = read[2]
+  const post = Array.isArray(idx) && idx[0] === 'postfix' && Array.isArray(idx[1]) && idx[1][0] === '++' && typeof idx[1][1] === 'string'
+  const name = post ? idx[1][1] : typeof idx === 'string' ? idx : null
+  if (!name || name === read[1] || read !== cond && (cond[1] === name || cond[1] === read[1])) return null
+  if (post ? step != null && isReassigned(step, name) : !unitStep(step, name)) return null
+  const top = lengthTop(read[1])
+  if (top == null) return null
+  const last = post ? top + 1 : top
+  return last <= I32_MAX ? { name, recv: read[1], post, top: last } : null
+}
+// `i++`, `++i`, `i += 1` or `i = i + 1` as a loop's whole step.
+const unitStep = (s, name) => {
+  if (Array.isArray(s) && s[0] === 'postfix') s = s[1]
+  if (!Array.isArray(s) || s[1] !== name) return false
+  if (s[0] === '++' && s.length === 2) return true
+  if (s[0] === '+=' && s.length === 3) return constIntExpr(s[2]) === 1
+  return s[0] === '=' && s.length === 3 && Array.isArray(s[2]) && s[2][0] === '+' && s[2].length === 3 &&
+    (s[2][1] === name && constIntExpr(s[2][2]) === 1 || s[2][2] === name && constIntExpr(s[2][1]) === 1)
+}
 /** A typed array of elements, as the summary names it: no DataView, whose
  *  `length` is undefined (summary/kind.js isCount: an element aux proves it). */
 const typedElements = (name) => {

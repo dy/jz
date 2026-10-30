@@ -7,7 +7,7 @@ import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET,
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
-  constIntExpr, constNumExpr, counterInit, guardCounterName, forCounterRange, forCounterBounds, typedCtorRawOf,
+  constIntExpr, constNumExpr, counterInit, guardCounterName, elementCounter, forCounterRange, forCounterBounds, typedCtorRawOf,
 } from '../static.js'
 import { exprType } from '../type.js'
 import { K, NUMBER, tagOf, hasTag, typedElemKind } from '../summary/kind.js'
@@ -1444,6 +1444,13 @@ const bodyQueries = (body) => {
   }
 }
 
+// More writes of `name` in an element counter's test than its read's own step.
+const writesBeside = (cond, name) => {
+  let writes = 0
+  walkAst(cond, { enter: n => { if (n[1] === name && MUTATE_OPS.has(n[0])) writes++ } })
+  return writes !== 1
+}
+
 /** A counter a `for` declares and only its step moves holds its guard's test
  *  range wherever it is visible: the initial value, then a body value one step
  *  on. Stamped before the body is typed, so its declarations see the bound. */
@@ -1454,7 +1461,8 @@ export function stampLoopCounterRanges(body) {
     if (node[0] === '=>') return false   // a closure's loops are typed with its own body
     if (node[0] !== 'for' || node.length !== 5) return
     const [, init, cond, step, loopBody] = node
-    const name = guardCounterName(cond)
+    const exit = guardCounterName(cond) ? null : elementCounter(cond, step)
+    const name = exit ? exit.name : guardCounterName(cond)
     if (!name) return
     // declared by this loop's own `let`: scoped to the loop, so no later write;
     // or declared once ahead of it, every write of it the loop's step (a
@@ -1472,13 +1480,27 @@ export function stampLoopCounterRanges(body) {
         }
       } })
     }
-    if (decls.get(name) !== 1 || isReassigned(loopBody, name) || isReassigned(cond, name) || closureWrites(name)) return
+    // (an element counter's one write in its test is the read's own step)
+    if (decls.get(name) !== 1 || isReassigned(loopBody, name) || (exit?.post ? writesBeside(cond, name) : isReassigned(cond, name)) || closureWrites(name)) return
     const entry = own ? null : !isReassigned(init, name) && !writesOutsideLoop(body, new Set([node]), name) ? dominatingLoopInit(body, node, name) : null
     if (!own && entry == null) return
     const rangeOf = e => intExprRange(e, n => {
       const binding = scanBindingUses(body).get(n)
       return singleInitializer(n) ? intExprRange(binding[BINDING_USE_INIT]) : null
     })
+    if (exit) {
+      // From its start the counter only rises, to the element bound at most; the
+      // receiver the loop never rebinds keeps the kind that bounds it.
+      if (isReassigned(loopBody, exit.recv) || isReassigned(cond, exit.recv) || step != null && isReassigned(step, exit.recv) || closureWrites(exit.recv)) return
+      const start = own ? counterInit(init, name) : entry
+      const r = start != null ? rangeOf(start) : null
+      if (!r || !Number.isInteger(r[0]) || !Number.isInteger(r[1]) || Object.is(r[0], -0) || r[0] < -2147483648) return
+      // (a start past every element fails the first test; the read's own step still takes it one on)
+      const hi = Math.max(exit.post ? r[1] + 1 : r[1], exit.top)
+      if (hi > 2147483647) return
+      updateRep(name, { range: [r[0], hi] })
+      return
+    }
     const range = forCounterBounds(own ? init : ['let', ['=', name, entry]], cond, step, name, rangeOf)
     if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
     updateRep(name, { range: range.test })

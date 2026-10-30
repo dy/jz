@@ -486,3 +486,47 @@ test('counter width: imul takes the product\'s range within one word, any word b
   is(range([0, 100000], [0, 100000]), [-2147483648, 2147483647], 'past one word: any word')
   is(range([0, 10], null), [-2147483648, 2147483647], 'an unknown operand: any word')
 })
+
+// A counter each pass of its loop admits by the truth of an element read at it
+// (`(d = ops[i++])`, the read's own step, or `ops[i]` under `i++`) rises only through
+// indices of elements its receiver holds, so it stays within the receiver's length:
+// an array's eight-byte elements in a 32-bit memory, a string's i32 length
+// (static.js elementCounter). A closure's counter is its own too, a parameter no
+// call needs to supply among them (plan/counted-loops.js adoptLoopCounters).
+test('counter width: a counter admitted by an element read stays within its receiver\'s length', () => {
+  const source = `const sum = (ops) => { let d, n = 0; for (let i = 0; (d = ops[i++]);) n += d; return n }
+    const count = (ops) => { let n = 0; for (let i = 0; ops[i]; i++) n++; return n }
+    const from = (ops) => { let d, i, n = 0; for (i = 1; (d = ops[i++]);) n = n * 2 + d; return n }
+    const chars = (s) => { let n = 0; for (let i = 0; s[i]; i++) n += s.charCodeAt(i); return n }
+    const mk = (ops) => (a, d, n, i) => { n = a; for (i = 0; (d = ops[i++]);) n += d; return n }
+    export function f(a, b, c) {
+      const ops = [a, b, c], g = [mk(ops), mk([c])]
+      return [sum(ops), count(ops), from(ops), chars('ab' + a), g[a & 1](0), g[0](1, 2, 3, 4)]
+    }`
+  compare(source, [[1, 2, 3], [0, 5, 6], [4, 0, 6], [7, 8, 0], [NaN, 1, 2], [-1, -2, -3], [2.5, 1, 1]])
+  if (!onKernel()) {
+    // (the program's own functions: the stdlib's number parser converts digits)
+    const own = parse(source, { level: 3, watr: false, sourceInline: false }).filter(n => Array.isArray(n) && n[0] === 'func' && !String(n[1]).startsWith('$__'))
+    is(loopCount(own, n => n[0] === 'i32.trunc_sat_f64_s' || n[0] === 'f64.convert_i32_s'), 0, 'the counters index their arrays as words')
+  }
+})
+
+test('counter width: element-admitted counters keep Number semantics past what bounds them', () => {
+  // a receiver the host passes (any object), bytes (a length near 2^32), a string's
+  // read's own step (one past an i32 length), a receiver the loop rebinds, a start
+  // past every element (the read's step takes it past int32), a counter read after
+  // the loop or captured, and a module counter
+  compare(`const tail = (ops) => { let d, i; for (i = 0; (d = ops[i++]);); return i }
+    const kept = (ops) => { let d, i, n = 0; const get = () => i; for (i = 0; (d = ops[i++]);) n += get(); return n }
+    let shared = 0
+    const outer = (ops) => { let d; for (shared = 0; (d = ops[shared++]);); return shared }
+    const bytes = (u) => { let n = 0; for (let i = 0; u[i]; i++) n++; return n }
+    const str = (s) => { let c, n = 0; for (let i = 0; (c = s[i++]);) n++; return n }
+    const grow = (a) => { let u = a, n = 0; for (let i = 0; u[i]; i++) { n++; if (i === 1) u = [1, 1, 1, 1, 1, 1] } return n }
+    const far = (ops) => { let d, i = 2147483647; for (; (d = ops[i++]);); return i }
+    export function f(a, b) {
+      const ops = [a, b, 0, 9]
+      return [tail(ops), kept(ops), outer(ops), shared, bytes(new Uint8Array([a, b, 0])), str('xy' + a), grow([a, b]), far(ops)]
+    }`, [[1, 2], [0, 1], [3, 0], [NaN, 4]])
+  compare(`export function f(ops) { let d, n = 0; for (let i = 0; (d = ops[i++]);) n += d; return n }`, [[[1, 2, 3]], [[4, 0, 6]], [[]]])
+})

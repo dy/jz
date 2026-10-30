@@ -35,7 +35,8 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode } from '../../ast.js'
+import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode, extractParams, collectParamName, collectParamNames } from '../../ast.js'
+import { frameRoots } from '../../function.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
 import { cloneWithSubst } from '../../type.js'
@@ -425,11 +426,11 @@ const leaves = (n) => {
 // read nowhere outside the loop and never captured: the loop declares a counter of its
 // own, starting where the init starts it, the form every later reading takes; the outer
 // name stays as it was, unread.
-function adoptCounter(node, parent, idx, root, captured) {
+function adoptCounter(node, parent, idx, root, captured, local) {
   const init = node[1]
   if (!Array.isArray(init) || init[0] !== '=' || typeof init[1] !== 'string') return false
   const name = init[1]
-  if (captured.has(name) || ctx.scope.globals.has(name) || occursOutside(root, node, name)) return false
+  if (captured.has(name) || !local(name) || occursOutside(root, node, name)) return false
   const own = fresh(name)
   const copy = cloneWithSubst(node, new Map(), new Map([[name, own]]))
   copy[1] = ['let', ['=', own, copy[1][2]]]
@@ -437,25 +438,56 @@ function adoptCounter(node, parent, idx, root, captured) {
   return true
 }
 
-/** Plan sweep, before the summary: every `for` adopts a counter declared outside it. */
-export const adoptLoopCounters = () => {
+/** Every `for` of one body adopting the counter it may (closures inside it are bodies of their own). */
+const adoptIn = (body, local) => {
+  const captured = new Set()
+  walkAst(body, { enter: node => {
+    if (node[0] === '=>') { walkAst(node, { enter: m => { for (let j = 1; j < m.length; j++) if (typeof m[j] === 'string') captured.add(m[j]) } }); return false }
+  } })
+  // (innermost first: an outer loop's copy then carries its inner loop as adopted)
+  const fors = []
+  walkAst(body, { enter: (node, parent, idx) => {
+    if (node[0] === '=>') return false
+    if (node[0] === 'for' && node.length === 5 && parent) fors.push([node, parent, idx])
+  } })
   let changed = false
+  for (let n = fors.length - 1; n >= 0; n--) {
+    const [node, parent, idx] = fors[n]
+    if (parent[idx] === node && adoptCounter(node, parent, idx, body, captured, local)) changed = true
+  }
+  return changed
+}
+
+/** The names a closure binds itself: its parameters and its body's declarations
+ *  (prepare names each binding once), not what it captures. */
+const closureNames = (arrow) => {
+  const names = collectParamNames(extractParams(arrow[1]))
+  walkAst(arrow[2], { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === 'let' || n[0] === 'const' || n[0] === 'var')
+      for (let i = 1; i < n.length; i++) { const d = n[i]; if (typeof d === 'string') names.add(d); else if (Array.isArray(d) && d[0] === '=') collectParamName(d[1], names) }
+  } })
+  return names
+}
+
+/** Plan sweep, before the summary: every `for` adopts a counter declared outside it,
+ *  in a function and in every closure, wherever the closure is written (a parameter's
+ *  default among them). A closure's counter may be a parameter of its own: a call's
+ *  argument there is never read where the loop's start is written first. */
+export const adoptLoopCounters = (ast) => {
+  let changed = false
+  const arrows = new Set()
+  const closures = (root) => walkAst(root, { enter: n => { if (n[0] === '=>') arrows.add(n) } })
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    const captured = new Set()
-    walkAst(func.body, { enter: node => {
-      if (node[0] === '=>') { walkAst(node, { enter: m => { for (let j = 1; j < m.length; j++) if (typeof m[j] === 'string') captured.add(m[j]) } }); return false }
-    } })
-    // (innermost first: an outer loop's copy then carries its inner loop as adopted)
-    const fors = []
-    walkAst(func.body, { enter: (node, parent, idx) => {
-      if (node[0] === '=>') return false
-      if (node[0] === 'for' && node.length === 5 && parent) fors.push([node, parent, idx])
-    } })
-    for (let n = fors.length - 1; n >= 0; n--) {
-      const [node, parent, idx] = fors[n]
-      if (parent[idx] === node && adoptCounter(node, parent, idx, func.body, captured)) changed = true
-    }
+    if (adoptIn(func.body, name => !ctx.scope.globals.has(name))) changed = true
+    for (const root of frameRoots(func)) closures(root)
+  }
+  for (const root of [...(ctx.module.moduleInits || []), ast]) if (root) closures(root)
+  for (const arrow of arrows) {
+    if (!Array.isArray(arrow[2]) || arrow[2][0] !== '{}') continue
+    const own = closureNames(arrow)
+    if (adoptIn(arrow[2], name => own.has(name))) changed = true
   }
   return changed
 }
