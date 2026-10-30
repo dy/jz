@@ -84,9 +84,18 @@ jobs:
       # NumPy native-reference rows (python3 is preinstalled on ubuntu).
       - name: install numpy
         run: python3 -m pip install --break-system-packages numpy || pip install numpy || true
-      # GNU time supplies RSS; SIMDe supplies wasm2c's SIMD headers.
+      # GNU time supplies RSS; SIMDe supplies wasm2c's SIMD headers. wasm2c includes
+      # <simde/wasm/simd128.h>, which SIMDe has from 0.7.4; Ubuntu 24.04's
+      # libsimde-dev is 0.7.2 (arm/ and x86/ only), so the release is pinned here.
       - name: install measurement and native headers
-        run: sudo apt-get update && sudo apt-get install -y time libsimde-dev clang
+        run: |
+          sudo apt-get update && sudo apt-get install -y time clang
+          curl -fsSL -o "$RUNNER_TEMP/simde.tar.xz" https://github.com/simd-everywhere/simde/releases/download/v0.8.2/simde-amalgamated-0.8.2.tar.xz
+          echo "59068edc3420e75c5ff85ecfd80a77196fb3a151227a666cc20abb313a5360bf  $RUNNER_TEMP/simde.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/simde/simde"
+          tar xJf "$RUNNER_TEMP/simde.tar.xz" --strip-components=1 -C "$RUNNER_TEMP/simde/simde"
+          test -f "$RUNNER_TEMP/simde/simde/wasm/simd128.h"
+          echo "SIMDE_DIR=$RUNNER_TEMP/simde" >> "$GITHUB_ENV"
       # wasmtime runs the standalone `jz → wasmtime` / `jz → wasm2c` reference rows.
       - name: install wasmtime
         run: |
