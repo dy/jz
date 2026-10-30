@@ -1026,3 +1026,29 @@ test('regex: a receiver is tested as a regex in one lookup, however many literal
   const isRe = wat.split(/\n(?=  \(func )/).find(p => /\(func \$__is_regexp\b/.test(p)) ?? ''
   is(isRe.includes('br_table') && (isRe.match(/i64\.eq/g) ?? []).length === 0, true, 'one jump table, no equality per literal')
 })
+
+// A regex held in an array, a field or a Map reads as an OBJECT, whose ToString
+// a program with no user toString/valueOf folds to the inherited tag: one that
+// makes regexes asks the value's layout at the conversion (ir/coerce.js
+// `inheritedObjectString`), so it reads its source and flags, as with the
+// ToPrimitive prelude a user method links.
+test('regex: a regex held in a container converts to its source and flags', () => {
+  const body = `const rs = [/a+/g, /b/i], holder = { re: /o+/m, list: [/t/y] }, m = new Map([[1, /k/s]])
+  const pick = (i) => rs[i]
+  export const conv = () => [String(rs[0]), rs[1] + '', \`\${holder.re}\`, 'x' + holder.list[0], String(m.get(1)),
+    String(pick(1)), rs[0] + 1, +rs[1], rs[0] == '/a+/g', rs.map(String).join(), [...rs].map(r => \`\${r}\`).join(' ')]
+  export const keys = () => { const o = {}; o[rs[1]] = 1; o[holder.re] = 2; return Object.keys(o) }
+  export const plain = () => { const ps = [{ x: 1 }]; return [String(ps[0]), ps[0] + '', \`\${{ y: 2 }}\`] }
+  export const loop = () => { let s = ''; for (const r of rs) s += String(r) + ';'; return s }`
+  const withMethod = `const tok = { toString() { return 'tok' } }\n${body}\nexport const own = () => [String(tok), \`\${tok}\`]`
+  for (const src of [body, withMethod]) {
+    const ref = oracle(src)
+    for (const optimize of levels(0, 2, 'speed', 'size')) {
+      const ex = jz(src, { optimize }).exports
+      for (const f of Object.keys(ref)) is(ex[f](), ref[f](), `${f} O${optimize}${src === body ? '' : ' (with toString)'}`)
+    }
+  }
+  // A program that makes no regex keeps the inherited tag a constant.
+  const wat = compile(`const ps = [{ x: 1 }]\nexport const f = () => String(ps[0])`, { optimize: 2, wat: true })
+  is(/\$__is_regexp\b/.test(wat), false, 'no regex test without regexes')
+})

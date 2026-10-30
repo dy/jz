@@ -27,10 +27,22 @@ import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, truthyIR, nullableBoolBoxIR }
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
 /** Object coercion uses the same prepared OrdinaryToPrimitive functions as
- * runtime kernels. A program without user methods needs only the inherited tag. */
+ * runtime kernels. A program without user methods needs only the inherited
+ * conversion: Object.prototype's tag, but under the string hint RegExp.prototype's
+ * source and flags for an object of a regex literal's layout, which a program
+ * that makes regexes tests for at run time (a regex held in an array or a field
+ * reads as an OBJECT). Under the number hint both convert to NaN. */
 const inheritedObjectTag = () => { ctx.module.include('string'); return asI64(ctx.core.emit['str']('[object Object]')) }
-function inheritedObjectString(value) {
-  return typed(['block', ['result', 'i64'], ['drop', asF64(value)], inheritedObjectTag()], 'i64')
+function inheritedObjectString(value, hint) {
+  if (hint !== 'string' || !ctx.module.demanded.has('regex'))
+    return typed(['block', ['result', 'i64'], ['drop', asF64(value)], inheritedObjectTag()], 'i64')
+  ctx.module.include('regex')
+  inc('__is_regexp', '__regex_string')
+  const t = tempI64('ots'), get = () => ['local.get', `$${t}`]
+  return typed(['block', ['result', 'i64'], ['local.set', `$${t}`, asI64(value)],
+    ['if', ['result', 'i64'], ['call', '$__is_regexp', get()],
+      ['then', ['call', '$__regex_string', get()]],
+      ['else', inheritedObjectTag()]]], 'i64')
 }
 
 /** The prepared OrdinaryToPrimitive functions (compile/emit/to-primitive.js), by hint:
@@ -39,7 +51,7 @@ export { TO_PRIMITIVE } from '../evaluation-effects.js'
 
 export function objectToPrimitive(v, hint) {
   const name = hint === 'string' ? TO_PRIMITIVE.string : TO_PRIMITIVE.number
-  if (!ctx.funcs.runtimeRoots.has(name)) return inheritedObjectString(v)
+  if (!ctx.funcs.runtimeRoots.has(name)) return inheritedObjectString(v, hint)
   const recv = temp('tpr')
   return typed(['block', ['result', 'i64'], ['local.set', `$${recv}`, asF64(v)],
     asI64(ctx.bridge.emit(['()', name, recv]))], 'i64')
