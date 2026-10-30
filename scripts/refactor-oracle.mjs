@@ -237,9 +237,15 @@ function makeBenchSpec(root, resolveModuleGraph, id) {
   }
 }
 
-function makeExampleSpec(root, dirName, fileBase) {
-  const code = readFileSync(join(root, 'examples', dirName, `${fileBase}.js`), 'utf8')
-  return { name: `example:${fileBase}`, code, opts: {} }
+// An example compiles with the modules it imports, as examples/build.mjs
+// compiles it; sources its own builder generates (threejs-math vendors
+// three.js's) are generated first, by that builder, where they are missing.
+function makeExampleSpec(root, resolveModuleGraph, dirName, fileBase) {
+  const dir = join(root, 'examples', dirName), entry = join(dir, `${fileBase}.js`)
+  const missing = [...readFileSync(entry, 'utf8').matchAll(/\bfrom\s+['"](\.[^'"]+)['"]/g)].some(m => !existsSync(join(dir, m[1])))
+  if (missing && existsSync(join(dir, 'build.mjs'))) execFileSync(process.execPath, [join(dir, 'build.mjs')], { cwd: dir, stdio: 'ignore' })
+  const graph = resolveModuleGraph(entry)
+  return { name: `example:${fileBase}`, code: graph.code, opts: Object.keys(graph.modules).length ? { modules: graph.modules } : {} }
 }
 
 async function buildCorpus(root, { full = false } = {}) {
@@ -257,11 +263,11 @@ async function buildCorpus(root, { full = false } = {}) {
   const exampleSpecs = []
   const { examples } = await import(pathToFileURL(join(root, 'examples/examples.js')).href)
   for (const e of examples) {
-    exampleSpecs.push(makeExampleSpec(root, e.name, e.name))
-    for (const k of e.kernels || []) exampleSpecs.push(makeExampleSpec(root, e.name, k))
+    exampleSpecs.push(makeExampleSpec(root, resolveModuleGraph, e.name, e.name))
+    for (const k of e.kernels || []) exampleSpecs.push(makeExampleSpec(root, resolveModuleGraph, e.name, k))
   }
-  exampleSpecs.push(makeExampleSpec(root, 'rfft', 'rfft'))
-  exampleSpecs.push(makeExampleSpec(root, 'zzfx', 'zzfx'))
+  exampleSpecs.push(makeExampleSpec(root, resolveModuleGraph, 'rfft', 'rfft'))
+  exampleSpecs.push(makeExampleSpec(root, resolveModuleGraph, 'zzfx', 'zzfx'))
 
   const kernelParitySpecs = []
   for (const [name, src] of Object.entries(KERNEL_PARITY_CORPUS)) kernelParitySpecs.push({ name: `kernel-parity:${name}`, code: src, opts: {} })
