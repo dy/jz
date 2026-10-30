@@ -452,7 +452,7 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * Nested function bodies are entered only for the callbacks CALLBACK_METHODS
  * and callbackArg run synchronously and for local arrows called from this scope.
  */
-function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false, tested = null, loopTests = null) {
+function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false, tested = null, loopTests = null, carried = NO_NAMES) {
   // These tables belong only to this walk; published facts own their storage.
   const decl = takeScratchMap(), arrows = takeScratchMap(), reads = takeScratchMap()
   const assigned = takeScratchSet(), scanned = takeScratchSet(), writtenNested = takeScratchSet(), nestedDecl = takeScratchSet()
@@ -470,7 +470,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   // their value whether a running call made it; `siteKept`: the sites whose
   // receiver the emitter keeps as it is evaluated, where it cannot read it again.
   const out = { writesOuter: false, arenaUnsafe: false, keeps: false, flagged: false, unsited: false, allocates: false, callsUnknown: false, runsAccessor: false, why: null, keepsWhy: null,
-    callees: new Set(), unguarded: new Set(), closures: new Set(), closureCalls: [], sites: new Set(), siteWhy: null, siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), freshObjects: null }
+    callees: new Set(), unguarded: new Set(), closures: new Set(), closureCalls: [], carriedStores: false, sites: new Set(), siteWhy: null, siteKinds: new Map(), siteGrows: new Set(), siteGrown: new Set(), siteAsked: new Set(), siteKept: new Set(), siteNames: new Map(), siteWhys: new Map(), inline: new Set(), freshObjects: null }
   // The node the walk stands on: an escape found there is a site of it.
   let at = null
   // Branches and early returns around it: nonzero where it may not run on a call.
@@ -918,9 +918,11 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         // lives in (older than this frame) or into the module's global. A
         // binding of this scope a nested function writes lives in a cell this
         // frame made: a store into fresh memory.
+        // (one an iteration carries nothing in holds what the next replaces: carriedBindings)
         if (outerName(target)) {
           outer()
-          if (stored) escape('outer binding ' + target, !ctx.scope.userGlobals?.has(target) ? SITE.CELL : reachOn() ? SITE.ROOT : SITE.ZERO, { older: true, asked })
+          if (stored && carried.has(target)) out.carriedStores = true
+          else if (stored) escape('outer binding ' + target, !ctx.scope.userGlobals?.has(target) ? SITE.CELL : reachOn() ? SITE.ROOT : SITE.ZERO, { older: true, asked })
         }
       } else if (isArr(target) && target[0] === '.') {
         // A setter the census cannot name runs code of the module; the store may be a plain one.
@@ -1022,19 +1024,80 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
   }
 }
 
-/** Every loop of a body, outermost first, with the nodes its iteration runs.
+/** Every loop of a body, outermost first, with the nodes its iteration runs,
+ *  its test, and whether a `try` of the function stands around it (`tried`).
  *  Nested function bodies are not entered: their loops belong to them. */
 function loopsOf(body) {
   const loops = []
-  const walk = (n) => {
+  const walk = (n, tried) => {
     if (!isArr(n) || isFunctionNode(n)) return
     const op = n[0]
-    if (op === 'for' && n[4] !== undefined) loops.push({ body: n[4], roots: [n[2], n[3], n[4]].filter(x => x != null) })
-    else if (op === 'while' && n[2] !== undefined) loops.push({ body: n[2], roots: [n[1], n[2]] })
+    if (op === 'for' && n[4] !== undefined) loops.push({ body: n[4], roots: [n[2], n[3], n[4]].filter(x => x != null), test: n[2] ?? null, tried })
+    else if (op === 'while' && n[2] !== undefined) loops.push({ body: n[2], roots: [n[1], n[2]], test: n[1], tried })
+    const inner = tried || op === 'catch' || op === 'finally'
+    for (let i = 1; i < n.length; i++) walk(n[i], inner)
+  }
+  walk(body, false)
+  return loops
+}
+
+/** The bindings of the function no nested function names: a value one holds
+ *  is read only where the function's own code reads it. */
+function ownBindings(func) {
+  const own = new Set(), named = new Set()
+  for (const p of func.sig?.params ?? []) if (p?.name) own.add(p.name)
+  if (func.rest) own.add(func.rest)
+  const names = (n) => { if (isName(n)) named.add(n); else if (isArr(n)) for (let i = 1; i < n.length; i++) names(n[i]) }
+  const walk = (n) => {
+    if (!isArr(n)) return
+    if (isFunctionNode(n)) { names(n); return }
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      for (const nm of patternNames(isArr(d) && d[0] === '=' ? d[1] : d)) own.add(nm)
+    }
     for (let i = 1; i < n.length; i++) walk(n[i])
   }
-  walk(body)
-  return loops
+  walk(func.body)
+  for (const nm of named) own.delete(nm)
+  return own
+}
+
+/** Whether a statement may end its iteration early (a jump, a return), suspend
+ *  it, or catch what it throws: what follows it may not run on every iteration. */
+function mayCutIteration(n) {
+  if (!isArr(n) || isFunctionNode(n)) return false
+  const op = n[0]
+  if (op === 'break' || op === 'continue' || op === 'return' || op === 'yield' || op === 'await' || op === 'catch' || op === 'finally' || op === 'label') return true
+  for (let i = 1; i < n.length; i++) if (mayCutIteration(n[i])) return true
+  return false
+}
+
+/** The bindings a loop's iteration carries nothing in to the next one
+ *  (`carried`): each a binding of the function's own (`own`), assigned by a
+ *  statement of the body every iteration runs, before which nothing of the
+ *  iteration reads it, the assigned value included. A value the iteration
+ *  stores there is dead at the next iteration's start, so the release there
+ *  (emit/control-flow.js iterationRelease, placed after the test so the last
+ *  iteration's value outlives the loop) may take it. Only where the test
+ *  allocates nothing (what it made before that release would go with it) and
+ *  no `try` of the function stands around the loop (an exception thrown
+ *  before the assignment would leave the freed value to a handler). */
+function carriedBindings(view, body, test, own) {
+  if (!own.size || (test != null && !allocatesNothing(view, test))) return NO_NAMES
+  let stmts = body
+  while (isArr(stmts) && stmts[0] === '{}' && stmts.length === 2) stmts = stmts[1]
+  stmts = isArr(stmts) && stmts[0] === ';' ? stmts.slice(1) : [stmts]
+  let carried = null
+  const read = new Set()
+  const reads = (n) => { if (isName(n)) read.add(n); else if (isArr(n)) for (let i = 1; i < n.length; i++) reads(n[i]) }
+  for (const s of stmts) {
+    if (isArr(s) && s[0] === '=' && isName(s[1]) && own.has(s[1]) && !read.has(s[1])) {
+      reads(s[2])
+      if (!read.has(s[1])) (carried ??= new Set()).add(s[1])
+    } else reads(s)
+    if (mayCutIteration(s)) break
+  }
+  return carried ?? NO_NAMES
 }
 
 /** The function's own facts and, per loop, the iteration's. */
@@ -1056,10 +1119,12 @@ function frameEffectsOf(func, loops) {
   // a loop's scope declares nothing of the function's: its parameters are
   // outer storage there (a block kept in one outlives the iteration);
   // `iteration` the same census judged by the escape flag, as a frame's is
-  out.loops = loops ? loopsOf(body).map(({ body: loopBody, roots }) => {
+  let own = null
+  out.loops = loops ? loopsOf(body).map(({ body: loopBody, roots, test, tried }) => {
     const tested = loopTests.get(loopBody) ?? null
-    return { body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, typedParams, false, false, tested),
-      iteration: () => census(view, roots, [loopBody], NO_NAMES, typedParams, true, false, tested) }
+    const carried = tried ? NO_NAMES : carriedBindings(view, loopBody, test, own ??= ownBindings(func))
+    return { body: loopBody, carried, own: census(view, roots, [loopBody], NO_NAMES, typedParams, false, false, tested),
+      iteration: () => census(view, roots, [loopBody], NO_NAMES, typedParams, true, false, tested, null, carried) }
   }) : []
   return out
 }
@@ -1137,13 +1202,14 @@ function arrowsIn(n, found) {
  *  store into a binding of the function declared outside the loop, or into
  *  what such a binding holds, is no escape of the frame's, so no flag would
  *  name it; a suspension hands what the iteration made to code outside it.
- *  Callees are frames of their own, flagged where they run. */
+ *  Callees are frames of their own, flagged where they run. The iteration's
+ *  census where they may, else false. */
 function releasable(o, iteration, body) {
   if (suspends(body)) return false
   const l = iteration()
   if (l.unsited) return false
   for (const n of l.sites) if (!o.sites.has(n)) return false
-  return true
+  return l
 }
 const suspends = (n) => isArr(n) && !isFunctionNode(n) && (n[0] === 'yield' || n[0] === 'await' || n.some((c, i) => i > 0 && suspends(c)))
 
@@ -1169,7 +1235,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const nodes = [...own, ...closureOwn]
   const facts = new Map()
   for (const [name, o] of nodes) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, keeps: o.keeps, flagged: o.flagged, unsited: o.unsited, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates,
-    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), allocLoops: new Set(), releaseLoops: new Set(), freshObjects: o.freshObjects ?? null })
+    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), allocLoops: new Set(), releaseLoops: new Set(), releaseAfterTest: new Set(), freshObjects: o.freshObjects ?? null })
   const spell = (c) => typeof c === 'number' ? 'closure' + c : c
   // The arena facts of a callee (a function by name, a closure by its key),
   // `every`: reached on every call of the caller. A host's function is
@@ -1229,7 +1295,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const rewindable = (l) => !l.arenaUnsafe && !l.closures?.size && [...l.callees].every(clean)
   for (const [name, o] of own) {
     const f = facts.get(name)
-    for (const { body, own: l, iteration } of o.loops) {
+    for (const { body, own: l, iteration, carried } of o.loops) {
       if (!allocating(l)) continue
       if (rewindable(l)) { f.loops.add(body); continue }
       // an iteration that allocates and lets something escape: what it keeps is
@@ -1237,8 +1303,10 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
       f.allocLoops.add(body)
       // and released at the next one's start by the escape flag where every
       // escape the iteration can run is one of the frame's sites, flagged
-      // where it runs (emit/control-flow.js iterationRelease)
-      if (releasable(o, iteration, body)) f.releaseLoops.add(body)
+      // where it runs (emit/control-flow.js iterationRelease); after the
+      // loop's test where a binding carries what the next iteration replaces
+      const it = releasable(o, iteration, body)
+      if (it) { f.releaseLoops.add(body); if (it.carriedStores) f.releaseAfterTest.add(body) }
     }
   }
   // a closure's loops likewise, the compacting ones: a pipeline's phases and

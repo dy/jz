@@ -321,6 +321,8 @@ export function assemble(ast, profiler) {
     // Loops whose iterations are released by the escape flag and the walk
     // from its log (emit/control-flow.js iterationRelease): where the walk runs.
     const releases = ctx.plans.releaseLoops = reachOn() && !ctx.memory.shared && ctx.transform.optimize?.iterationRelease !== false ? new WeakSet() : null
+    // Those of them whose release stands after the loop's test: a binding carries the last iteration's value out.
+    const afterTest = ctx.plans.releaseAfterTest = new WeakSet()
     // Whether a handler may catch what a released iteration throws: one reads the flag the frames it
     // left handed over (emit/statements.js flagCaught), so a release hands over the flag it clears.
     ctx.plans.catches = !!releases && [ast, ...(ctx.module.moduleInits ?? []), ...ctx.funcs.list.map(f => f.body)]
@@ -363,7 +365,7 @@ export function assemble(ast, profiler) {
       f.frame = frame
       for (const body of frame.loops) loops.add(body)
       for (const body of frame.allocLoops ?? []) compacts.add(body)
-      if (releases) for (const body of frame.releaseLoops ?? []) { releases.add(body); released = true }
+      if (releases) for (const body of frame.releaseLoops ?? []) { releases.add(body); released = true; if (frame.releaseAfterTest?.has(body)) afterTest.add(body) }
       join(frame)
     }
     for (const o of facts.closureSiteFacts.values()) join(o)

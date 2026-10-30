@@ -47,6 +47,26 @@ const grownBy = (src, opts = {}, host = undefined) => (...args) => {
   return exports.memory.buffer.byteLength - at
 }
 
+test('iteration release: a binding the next iteration replaces before reading carries the last one out, the rest goes', () => {
+  // `ast` is read after the loop: the iteration that fails the test keeps it (frame-effects.js carriedBindings)
+  const src = PARSE + `export let make = () => { let s = ''; for (let i = 0; i < 2000; i++) s += String.fromCharCode(97 + i % 26); return s }
+    export let f = (n, s = make()) => { let ast = null, cs = 0; for (let r = 0; r < n; r++) { ast = parse(s); cs = (cs + hash(ast)) | 0 } ${CHURN}; return cs + hash(ast) + junk.length }`
+  agree(src, [1, 7, 40])
+  ok(releases(src) > 0, 'the loop releases its iterations')
+  const grown = (n) => { const inst = jz(src, { optimize: 'speed' }), s = inst.exports.make(), at = inst.memory.buffer.byteLength; inst.exports.f(n, s); return inst.memory.buffer.byteLength - at }
+  for (const n of [50, 1000]) is(grown(n), grown(1), `${n} parses grow what one does, where a compaction lets twice its slack pile up`)
+  // each a binding an iteration may read, or leave holding the one before, so its loop keeps all
+  const keeps = [
+    `let prev = null, ast = null; for (let r = 0; r < n; r++) { prev = ast; ast = parse(s) } ${CHURN}; return hash(ast) + (prev ? hash(prev) : 0)`,
+    `let ast = null; for (let r = 0; r < n; r++) { if (r === 3) continue; ast = parse(s) } ${CHURN}; return hash(ast)`,
+    `let ast = null; for (let r = 0; r < n; r++) { if (r === n - 1 && n > 2) break; ast = parse(s) } ${CHURN}; return hash(ast)`,
+    `let ast = null; try { for (let r = 0; r < n; r++) { ast = parse(s + (r === 5 ? ast.length : '')) } } catch (e) { return -1 } ${CHURN}; return hash(ast)`,
+    `let ast = null; const get = () => ast; for (let r = 0; r < n; r++) ast = parse(s); ${CHURN}; return hash(get())`,
+    `let ast = parse(s); for (let r = 0; ast.length < 100000 && r < n; r++) ast = parse(s); ${CHURN}; return hash(ast)`,
+  ]
+  for (const body of keeps) agree(PARSE + `export let f = (n) => { let s = ''; for (let i = 0; i < 4000; i++) s += String.fromCharCode(97 + i % 26); ${body} }`, [1, 3, 9])
+})
+
 test('iteration release: an escape one iteration made leaves the next ones free to give their memory back', () => {
   // the first iteration hands the host a value (link lowers the flag to zero
   // there, an escape with no address); each release reads the flag the

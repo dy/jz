@@ -1398,7 +1398,14 @@ export const controlFlowOps = {
     }
     if (step) loopBody.push(...withRefinements(initRefs, step, () => emitVoid(step)))
     loopBody.push(['br', loop])
-    if (release) { loopBody.unshift(release.top); result.push(...release.pre) }
+    // A binding that carries the last iteration's value out of the loop
+    // (frame-effects.js carriedBindings) keeps it: its release follows the
+    // test, so the iteration that fails it releases nothing.
+    if (release) {
+      if (condForLoop && ctx.plans.releaseAfterTest?.has(bodyNode0)) loopBody.splice(1, 0, release.top)
+      else loopBody.unshift(release.top)
+      result.push(...release.pre)
+    }
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
     // (`cold` on the IR too: the vectorizer leaves a cold loop; `checkedTwin` is specialize's mark)
     if (cold) { loopBlockNode.checkedTwin = true; walkAst(loopBlockNode, { enter: n => { if (n[0] === 'loop') { n.checkedTwin = true; n.cold = true } } }) }
