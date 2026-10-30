@@ -3009,6 +3009,60 @@ test('memop: overlapping same-buffer copy keeps exact forward-loop semantics', (
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
 })
 
+test('memop: a copy whose index adds a constant or an invariant lifts to memory.copy', () => {
+  // `out[5 + k] = src[s + k]` (a framed message's body copy): the 5 folds into the
+  // store's memarg, `s` is a term of the load's index. Same-buffer shifts by
+  // constants share one teed `a + i` between two memargs; a forward overlap keeps
+  // the loop behind the guard, a backward one is memmove's.
+  const cases = {
+    frame: `export const main = () => {
+      const src = new Uint8Array(300)
+      for (let i = 0; i < 300; i++) src[i] = i * 7
+      let h = 0
+      for (let s = 0; s < 40; s += 13) {
+        const n = 200 - s
+        const out = new Uint8Array(n + 6)
+        out[4] = 91
+        let k = 0
+        while (k < n) { out[5 + k] = src[s + k]; k = k + 1 }
+        out[5 + n] = 93
+        for (let i = 0; i < out.length; i++) h = (h * 31 + out[i]) | 0
+      }
+      return h
+    }`,
+    f64: `export const main = () => {
+      const a = new Float64Array(64), b = new Float64Array(64)
+      for (let i = 0; i < 64; i++) a[i] = i * 1.25
+      for (let i = 0; i < 50; i++) b[2 + i] = a[3 + i]
+      let s = 0
+      for (let i = 0; i < 64; i++) s = s * 3 + b[i]
+      return s
+    }`,
+    forward: `export const main = () => {
+      const a = new Uint8Array(64)
+      for (let i = 0; i < 64; i++) a[i] = i
+      for (let i = 0; i < 40; i++) a[3 + i] = a[1 + i]
+      let h = 0
+      for (let i = 0; i < 64; i++) h = (h * 31 + a[i]) | 0
+      return h
+    }`,
+    backward: `export const main = () => {
+      const a = new Uint8Array(64)
+      for (let i = 0; i < 64; i++) a[i] = i
+      for (let i = 0; i < 40; i++) a[1 + i] = a[3 + i]
+      let h = 0
+      for (let i = 0; i < 64; i++) h = (h * 31 + a[i]) | 0
+      return h
+    }`,
+  }
+  for (const [name, src] of Object.entries(cases)) {
+    const want = new Function(src.replace('export const main =', 'return'))()()
+    is(runVec(src, SIMD_OPT).main(), want, `${name}: lifted = JS`)
+    is(runVec(src, NOVEC).main(), want, `${name}: scalar = JS`)
+    ok(/memory\.copy/.test(wat(src, SIMD_OPT)), `${name}: memory.copy`)
+  }
+})
+
 test('memop: induction variable and bound state exact after the lift', () => {
   // i is read after the loop — the lift must leave it == bound.
   const src = `
