@@ -933,6 +933,122 @@ test('class static accessors under every store', () => {
   }
 })
 
+// A derived class reads a static it does not declare through its base, as JS
+// reads it through the class's prototype: a method, a field as the base holds
+// it now, a getter and a setter, through the class's name or a value holding
+// it. A static that reads `this` runs with the class it is read through,
+// `super.m()` and `super.x` in a static reach the base's with the receiver,
+// an own static of the name replaces the base's member whole, and a private
+// static stays the declaring class's.
+test('class statics inherit through the base', () => {
+  const src = `class A {
+      static k = 3; static count = 0; static tag = 'a'
+      static create(x) { return new this(x) }
+      static describe() { return this.tag + ':' + this.k }
+      static get g() { return 'g' + this.tag }
+      static set s(v) { this.sv = v * 2 }
+      static get ro() { return 1 }
+      static bump() { A.count++; return A.count }
+      static plain(x) { return x + 1 }
+      static *steps() { yield this.k; yield this.k + 1 }
+      static #p() { return 4 }
+      static usesP() { return this.#p() }
+      constructor(x) { this.x = x }
+    }
+    class B extends A {
+      static tag = 'b'
+      static describe() { return 'B(' + super.describe() + ')' }
+      static get g() { return super.g + '!' }
+      static plain(x) { return super.plain(x) * 10 }
+      static k2 = super.k * 10
+      static { this.blk = super.tag + this.tag }
+    }
+    class C extends B { static k = 9 }
+    class D extends A { static get k() { return 42 } }
+    class E extends A { static ro = 7 }
+    const describe = (K) => K.describe(), make = (K, x) => K.create(x)
+    export let methods = () => [B.create(5) instanceof B, B.create(5).x, C.create(6) instanceof C, B.describe(), C.describe(), D.describe(), C.plain(1), D.plain(1)]
+    export let accessors = () => [B.g, C.g, D.k, A.g, [...C.steps()]]
+    export let setters = () => { B.s = 4; C.s = 5; return [B.sv, C.sv, A.sv] }
+    export let live = () => { A.bump(); A.bump(); const a = B.count; A.count = 10; return [a, B.count, C.count] }
+    export let own = () => { B.k = 100; B.count += 5; return [A.k, B.k, C.k, A.count, B.count] }
+    export let values = () => [describe(B), describe(C), make(C, 1) instanceof C, make(A, 2).x, [A, B, C].map(K => K.tag).join()]
+    export let superFields = () => [B.k2, B.blk]
+    export let replaced = () => { const log = []; try { B.ro = 5 } catch (e) { log.push(e instanceof TypeError) } E.ro = 8; log.push(E.ro, B.ro); return log }
+    export let ownership = () => [B.hasOwnProperty('k'), Object.hasOwn(B, 'plain'), Object.hasOwn(D, 'plain'), D.hasOwnProperty('tag'), 'k' in C, 'plain' in D]
+    export let privates = () => { const out = [A.usesP()]; try { out.push(C.usesP()) } catch (e) { out.push(e instanceof TypeError) } return out }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) is(got[name](), want[name](), `${name} O${optimize}`)
+  }
+})
+
+// Classes of closures (declared in a function, a class expression, a base an
+// expression names) inherit their statics the same way, as does a class
+// whose statics the program stores after its declaration; a base an
+// expression names is `this` for the statics read through it.
+test('class statics inherit in classes of closures', () => {
+  const src = `class A { static k = 3; static name2 = 'A'; static plain(x) { return x + 1 } static who() { return this.name2 } static make() { return new this() } }
+    class B extends A { static name2 = 'B' }
+    export let nested = () => {
+      class P { static k = 1; static who() { return this.k } static up() { return P.k } }
+      class Q extends P { static k = 2; static both() { return super.who() * 10 + this.k } }
+      return [Q.who(), Q.up(), Q.k, Q.both()]
+    }
+    export let fromModule = () => { class N extends A { static name2 = 'N' } return [N.who(), N.plain(5), N.make() instanceof A] }
+    export let expression = () => { const X = class extends A { static name2 = 'X' }; return [X.who(), X.plain(2), X.k] }
+    const pick = (f) => f ? A : B
+    export let dynamic = () => { class Z extends pick(false) {} return [Z.plain(1), Z.k, Z.who()] }
+    class R {}
+    R.registry = new Map(); R.count = 1
+    class S extends R {}
+    export let storedAfter = () => { S.registry.set('a', 1); R.count++; return [R.registry.size, S.count, S.registry === R.registry] }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) is(got[name](), want[name](), `${name} O${optimize}`)
+  }
+})
+
+// Across modules, through an import under another name, and for the host: an
+// exported derived class carries the statics it inherits.
+test('class statics inherit across modules and to the host', () => {
+  const modules = {
+    './base.js': `const helper = (x) => x * 2
+      export class A { static k = 1; static make() { return new this() } static twice() { return helper(this.k) } static plain(x) { return helper(x) } static get g() { return this.k + 100 } }`,
+    './mid.js': `import { A as Base } from './base.js'\nexport class M extends Base { static k = 5 }`,
+  }
+  const src = `import { A } from './base.js'
+    import { M } from './mid.js'
+    class B extends M { static k = 7; static twice() { return super.twice() + 1 } }
+    export let f = () => [A.twice(), M.twice(), B.twice(), M.plain(3), B.make() instanceof B, M.make() instanceof A, B.g, M.g]`
+  // node: [2, 10, 15, 6, true, true, 107, 105]
+  for (const optimize of levels(0, 2, 'speed')) is(jz(src, { optimize, modules }).exports.f(), [2, 10, 15, 6, true, true, 107, 105], `O${optimize}`)
+  if (onWasi()) return
+  const host = `export class A { static k = 1; static m() { return this.k } static plain() { return 5 } static get g() { return this.k * 100 } }
+    export class B extends A { static k = 2 }
+    class C extends A { static k = 3 }
+    export class D extends C {}`
+  for (const optimize of levels(0, 2)) {
+    const { A, B, D } = jz(host, { optimize }).exports
+    is([A.m(), B.m(), B.plain(), B.k, B.g, D.m(), D.k, D.plain(), D.g], [1, 2, 5, 2, 200, 3, 3, 5, 300], `host O${optimize}`)
+  }
+})
+
+// A derived class holds a static of its base that reads `this` as its own,
+// made where the class is defined: a program storing another value into the
+// base's is rejected, where JS would read the new one through the base.
+test('a static a derived class takes as declared and the program stores again is rejected', () => {
+  throws(() => jz(`class A { static k = 1; static m() { return this.k } }
+    class B extends A { static k = 2 }
+    const patch = () => { A.m = () => 10 }
+    export let f = () => { patch(); return B.m() }`), /stores another value into it/)
+  // a static that does not read `this` is the base's, read through it
+  const src = `class A { static m() { return 1 } }
+    class B extends A {}
+    export let f = () => { const a = B.m(); A.m = () => 2; return [a, B.m()] }`
+  for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `O${optimize}`)
+})
+
 // A getter named `type` on some class is no reason to dispatch `e.type` on a
 // receiver the summary types as a literal's layout: the read stays a slot read.
 test('a class accessor name does not make reads on other layouts dynamic', () => {

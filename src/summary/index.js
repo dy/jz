@@ -49,7 +49,7 @@
  * @module summary
  */
 import { SPAN_BINARY, spanBinary } from './span.js'
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, T as SEP } from '../ast.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
@@ -1338,7 +1338,20 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (nk !== old) { closureWild.set(id, nk); changed = true }
     }
   }
-  const closurePropOf = (recv, prop) => { let k = K.NONE; for (const id of membersOf(paramOf(recv))) k = merge(k, merge(closureProps.get(id)?.get(prop) ?? K.NONE, closureWild.get(id) ?? K.NONE)); return k }
+  const closurePropOf = (recv, prop) => { let k = K.NONE; for (const id of membersOf(paramOf(recv))) k = merge(k, closureMemberProp(id, prop)); return k }
+  // A closure's own property, joined, for a derived class, with what its base
+  // holds under the name, which a read finds where the class holds none
+  // (jzify/classes.js STATIC_BASE): a base of unknown identity, or one that
+  // escaped, holds anything.
+  const closureMemberProp = (id, prop, depth = 0) => {
+    const own = closureProps.get(id)
+    let k = merge(own?.get(prop) ?? K.NONE, closureWild.get(id) ?? K.NONE)
+    const base = prop === STATIC_BASE || prop[0] === '#' ? undefined : own?.get(STATIC_BASE)
+    if (base === undefined) return k
+    if (tagOf(base) !== K.CLOSURE || paramOf(base) === UNKNOWN || depth > 64) return merge(k, ANY)
+    for (const b of membersOf(paramOf(base))) k = merge(k, escaped.has(b) ? ANY : closureMemberProp(b, prop, depth + 1))
+    return k
+  }
   // Whether a function's own property holds its lifted function alone: every
   // store into it so far (through the function's name, an alias, a parameter,
   // a computed key) stored that function, and the function reached no code

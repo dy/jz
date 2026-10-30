@@ -33,11 +33,12 @@ const DECLS = new Set(['let', 'const', 'var', 'using', 'await using'])
  *  bare for-in or for-of head's, an update's), and the property keys it
  *  writes by a static key, deletes, or defines a getter for; through nested
  *  functions where `deep`. A declaration's initializer assigns nothing. */
-export const assignCensus = (node, deep, names = new Map(), props = new Set()) => {
+export const assignCensus = (node, deep, names = new Map(), props = new Set(), receivers = new Set()) => {
   const target = (t) => {
     if (typeof t === 'string') { names.set(t, (names.get(t) ?? 0) + 1); return }
     if (!Array.isArray(t)) return
     const op = t[0]
+    if ((op === '.' || op === '[]' && t.length === 3) && typeof t[1] === 'string') receivers.add(t[1])
     if (op === '.') { if (typeof t[2] === 'string') props.add(t[2]); return }
     if (op === '[]' && t.length === 3) { if (Array.isArray(t[2]) && t[2][0] == null && typeof t[2][1] === 'string') props.add(t[2][1]); return }
     if (op === '[]' || op === '{}' || op === ',') { for (let i = 1; i < t.length; i++) target(t[i]); return }
@@ -55,7 +56,7 @@ export const assignCensus = (node, deep, names = new Map(), props = new Set()) =
     for (let i = 1; i < n.length; i++) walk(n[i])
   }
   walk(node)
-  return { names, props }
+  return { names, props, receivers }
 }
 
 export function createAsyncLowering({ genTemp, err, censusOf }) {

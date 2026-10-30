@@ -1,5 +1,5 @@
 /** Read-only summary queries. This module has no access to solver transfers. */
-import { ACCESSOR_GET, ACCESSOR_SET, EXACT_MATH, CLASS_T, isBrand, schemaKey, isArrayIndexKey, spreadExclusions } from '../ast.js'
+import { ACCESSOR_GET, ACCESSOR_SET, EXACT_MATH, CLASS_T, STATIC_BASE, isBrand, schemaKey, isArrayIndexKey, spreadExclusions } from '../ast.js'
 import { encodeTypedElemAux, ctorFromElemAux, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG } from '../../layout.js'
 import { ATOMICS_VALUE_OPS, builtinCalleeVal, methodValType } from '../kind-traits.js'
 import { VAL } from '../reps.js'
@@ -91,6 +91,38 @@ export function summaryQueries(facts, internal = false) {
       if (id !== undefined && id !== UNKNOWN) { a = (a & ~UNKNOWN) | id; b = (b & ~UNKNOWN) | id }
     }
     return join(a, b)
+  }
+  // A closure's own property, joined, for a derived class, with what its base
+  // holds under the name (the solver's closureMemberProp).
+  const closureMemberProp = (id, prop, depth = 0) => {
+    const own = closureProps.get(id)
+    let k = merge(own?.get(prop) ?? K.NONE, closureWild.get(id) ?? K.NONE)
+    const base = prop === STATIC_BASE || prop[0] === '#' ? undefined : own?.get(STATIC_BASE)
+    if (base === undefined) return k
+    if (tagOf(base) !== K.CLOSURE || paramOf(base) === UNKNOWN || depth > 64) return merge(k, ANY)
+    for (const b of membersOf(paramOf(base))) k = merge(k, escaped.has(b) ? ANY : closureMemberProp(b, prop, depth + 1))
+    return k
+  }
+  // The one named function a function's own property holds (a class's
+  // static, a parser's table): every store into it the solver saw stored
+  // that function, through the function's name, an alias, a parameter or a
+  // computed key, and the function reached no code that may store another
+  // (closureProps, closureWild, escaped). A derived class's name it never
+  // stores itself holds what its base's does (jzify/classes.js STATIC_BASE).
+  // Null where it may hold anything else.
+  const propFunction = (fn, prop, depth = 0) => {
+    if (escaped.has(fn)) return null
+    const props = closureProps.get(fn), own = props?.get(prop), wild = closureWild.get(fn) ?? K.NONE
+    if (own === undefined) {
+      const base = prop === STATIC_BASE || prop[0] === '#' || wild !== K.NONE || depth > 64 ? undefined : props?.get(STATIC_BASE)
+      if (base === undefined || tagOf(base) !== K.CLOSURE || paramOf(base) === UNKNOWN || base !== kind(K.CLOSURE, paramOf(base))) return null
+      const bases = membersOf(paramOf(base))
+      return bases.length === 1 && typeof bases[0] === 'string' ? propFunction(bases[0], prop, depth + 1) : null
+    }
+    const k = merge(own, wild)
+    if (tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN || k !== kind(K.CLOSURE, paramOf(k))) return null
+    const members = membersOf(paramOf(k))
+    return members.length === 1 && typeof members[0] === 'string' ? members[0] : null
   }
   // A callable's result away from a call site: a forwarded argument's result is unknown here.
   const resultOfId = (id) => join(results.get(id) ?? K.NONE, forwards.get(id)?.size ? ANY : K.NONE)
@@ -464,7 +496,7 @@ export function summaryQueries(facts, internal = false) {
       // Function.prototype name reads as anything.
       if (t === K.CLOSURE && paramOf(r) !== UNKNOWN && !FUNCTION_PROTO.has(prop) && !membersOf(paramOf(r)).some(id => escaped.has(id))) {
         let k = K.NONE
-        for (const id of membersOf(paramOf(r))) k = merge(k, merge(closureProps.get(id)?.get(prop) ?? K.NONE, closureWild.get(id) ?? K.NONE))
+        for (const id of membersOf(paramOf(r))) k = merge(k, closureMemberProp(id, prop))
         return orAbsent(k)
       }
       return prop === 'buffer' && t === K.TYPED ? kind(K.BUFFER) : ANY
@@ -881,15 +913,15 @@ export function summaryQueries(facts, internal = false) {
     // The closures a closure or closure-set id (calleeOf) names, and a
     // closure's arrow: what a call through a resolved binding runs.
     closureMembers: id => membersOf(id),
-    // The one named function a function's own property holds (a class's
-    // static, a parser's table): every store into it the solver saw stored
-    // that function, through the function's name, an alias, a parameter or a
-    // computed key, and the function reached no code that may store another
-    // (closureProps, closureWild, escaped). Null where it may hold anything else.
-    propFunction: (fn, prop) => {
-      const own = escaped.has(fn) ? undefined : closureProps.get(fn)?.get(prop)
-      const k = own === undefined ? undefined : merge(own, closureWild.get(fn) ?? K.NONE)
-      if (k === undefined || tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN || k !== kind(K.CLOSURE, paramOf(k))) return null
+    // The one named function a function's own property holds (above).
+    propFunction: (fn, prop) => propFunction(fn, prop),
+    // The one named function every store the solver saw into a function's own
+    // property stored, whatever code it never saw may do; null otherwise.
+    storedFunction: (fn, prop) => {
+      const own = closureProps.get(fn)?.get(prop)
+      if (own === undefined) return null
+      const k = merge(own, closureWild.get(fn) ?? K.NONE)
+      if (tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN || k !== kind(K.CLOSURE, paramOf(k))) return null
       const members = membersOf(paramOf(k))
       return members.length === 1 && typeof members[0] === 'string' ? members[0] : null
     },

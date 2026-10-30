@@ -19,7 +19,7 @@ import { emit, deps, call, storedValue, withIgnoredArgs } from '../src/bridge.js
 import { valTypeOf } from '../src/kind.js'
 import { NUMBER } from '../src/summary/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
-import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
+import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET, STATIC_BASE } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, FORWARDING_MASK, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
 import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY, nanPrefixHex, nanPrefixMaskHex } from '../layout.js'
@@ -70,6 +70,7 @@ export const stringIndexWat = (name, max) => `(func $${name} (param $key i64) (r
 // ssoEncode('length') never returns null (6 ASCII).
 export const LENGTH_SSO_I64 = (() => { const e = ssoEncode('length'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
 const SIZE_SSO_I64 = (() => { const e = ssoEncode('size'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
+const STATIC_BASE_SSO_I64 = (() => { const e = ssoEncode(STATIC_BASE); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
 const builtinPropDeps = () => [
   ...(ctx.linkDemand.map || ctx.linkDemand.set ? ['__len'] : []),
   ...(ctx.core.stdlib.__closure_length ? ['__closure_length'] : []),
@@ -347,7 +348,9 @@ export default (ctx) => {
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get_t_h: () => [...(ctx.schema.regexSids.size ? ['__regex_prop'] : []), ...(recordsOn() ? ['__rec_get'] : []), '__arr_value', ...viewDeps('__view_get'), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_h', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.core.stdlib['__str_idx'] ? ['__str_idx'] : []), ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_get_t_hm: () => [...viewDeps('__view_get'), ...(recordsOn() ? ['__rec_get'] : []), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
+    __dyn_get_t_hmo: () => [...viewDeps('__view_get'), ...(recordsOn() ? ['__rec_get'] : []), ...builtinPropDeps(), '__is_str_key', '__schema_slot_h', '__schema_value', '__ihash_get_local', '__key_eq', '__is_nullish', '__hash_get_local_hm', '__str_arr_idx', '__str_length', '__ptr_aux', ...(ctx.linkDemand.typedProperties ? ['__typed_str_idx', '__typed_prop_get', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'] : [])],
     __dyn_has: ['__dyn_get_t_hm', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
+    __dyn_has_own: ['__dyn_get_t_hmo', '__ptr_type', '__str_hash', '__is_str_key', '__to_key'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__arr_value', '__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_key', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_expr_t_h: () => ['__dyn_get_t_h', '__hash_get_local_h'],
@@ -1944,7 +1947,7 @@ export default (ctx) => {
   // outside the schema. Each miss return is `${miss}`; the durable sidecar
   // probe takes the lookup whose own miss matches (`__hash_get_local_h` /
   // `_hm`).
-  const dynGetBody = (name, missNan, sidecarGet) => {
+  const dynGetBody = (name, missNan, sidecarGet, chain = true) => {
     const presence = missNan !== UNDEF_NAN
     const miss = `(i64.const ${missNan})`
     // Whether the key's first code unit is a digit, read in place: an
@@ -1958,6 +1961,26 @@ export default (ctx) => {
       (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
       (then (call $__typed_prop_get (local.get $obj) (local.get $key) (local.get $h) ${miss}))
       (else ${miss}))` : miss
+    // A derived class's static it does not hold itself is its base's, read
+    // through the class's link (jzify/classes.js STATIC_BASE) as JS reads it
+    // through the class's prototype, past the function's own `length` (the
+    // arms below); a class with no link ends the walk, as does a private
+    // name (`#x`), which is the declaring class's alone.
+    if (chain && ctx.linkDemand.staticBase) {
+      const link = strHashLiteral(STATIC_BASE)
+      const firstUnit = `(if (result i32) (i64.ne (i64.and (local.get $key) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+              (then (i32.and (i32.wrap_i64 (local.get $key)) (i32.const 127)))
+              (else (i32.load16_u (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))))`
+      fallback = `(block (result i64)
+      (local.set $val (i64.const 0))
+      (if (i32.and (i32.and (i32.eq (local.get $type) (i32.const ${PTR.CLOSURE})) (call $__is_str_key (local.get $key)))
+            (i32.and (i32.ne ${firstUnit} (i32.const 35))
+              (i32.or (i32.ne (local.get $h) (i32.const ${link})) (i32.eqz (call $__key_eq (local.get $key) (i64.const ${STATIC_BASE_SSO_I64}))))))
+        (then (local.set $val (call $${name} (local.get $obj) (i64.const ${STATIC_BASE_SSO_I64}) (i32.const ${PTR.CLOSURE}) (i32.const ${link})))))
+      (if (result i64) ${print(boxedPtrTypeEq(['f64.reinterpret_i64', ['local.get', '$val']], PTR.CLOSURE))}
+        (then (call $${name} (local.get $val) (local.get $key) (i32.const ${PTR.CLOSURE}) (local.get $h)))
+        (else ${fallback})))`
+    }
     if (ctx.linkDemand.map || ctx.linkDemand.set) fallback = `(if (result i64)
       (i32.and (i32.or (i32.eq (local.get $type) (i32.const ${PTR.MAP})) (i32.eq (local.get $type) (i32.const ${PTR.SET})))
         (call $__key_eq (local.get $key) (i64.const ${SIZE_SSO_I64})))
@@ -2248,6 +2271,8 @@ export default (ctx) => {
   }
   ctx.core.stdlib['__dyn_get_t_h'] = () => dynGetBody('__dyn_get_t_h', UNDEF_NAN, '__hash_get_local_h')
   ctx.core.stdlib['__dyn_get_t_hm'] = () => dynGetBody('__dyn_get_t_hm', TOMB_NAN, '__hash_get_local_hm')
+  // presence of an own property: a derived class's static its base holds is not its own
+  ctx.core.stdlib['__dyn_get_t_hmo'] = () => dynGetBody('__dyn_get_t_hmo', TOMB_NAN, '__hash_get_local_hm', false)
 
   // `k in o` on a receiver the emitter cannot decide statically: the key is a
   // property key (ToPropertyKey), the lookup is the read's own chain, and a
@@ -2257,6 +2282,12 @@ export default (ctx) => {
       (then (local.set $key (call $__to_key (local.get $key)))))
     (i64.ne
       (call $__dyn_get_t_hm (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (call $__str_hash (local.get $key)))
+      (i64.const ${TOMB_NAN})))`
+  ctx.core.stdlib['__dyn_has_own'] = `(func $__dyn_has_own (param $obj i64) (param $key i64) (result i32)
+    (if (i32.eqz (call $__is_str_key (local.get $key)))
+      (then (local.set $key (call $__to_key (local.get $key)))))
+    (i64.ne
+      (call $__dyn_get_t_hmo (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (call $__str_hash (local.get $key)))
       (i64.const ${TOMB_NAN})))`
 
   ctx.core.stdlib['__dyn_get_or'] = `(func $__dyn_get_or (param $obj i64) (param $key i64) (param $fallback i64) (result i64)
@@ -3014,12 +3045,14 @@ export default (ctx) => {
             ['i32.or', ['i32.eq', typeVal, ['i32.const', PTR.CLOSURE]],
               ['i32.eq', typeVal, ['i32.const', PTR.BUFFER]]]]]]]
 
-    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_key', '__dyn_has', '__ptr_offset', own ? '__is_nullish' : '__is_object')
+    // `hasOwnProperty` asks a derived class for its own statics alone (__dyn_has_own)
+    const has = own && ctx.linkDemand.staticBase ? '__dyn_has_own' : '__dyn_has'
+    inc('__ptr_type', '__len', '__str_length', '__hash_has', '__is_str_key', '__to_key', has, '__ptr_offset', own ? '__is_nullish' : '__is_object')
     // The receiver may be a host object, which the host answers for, as dot
     // reads ask it (array.js ensureHostOpaqueGet).
     const ext = demandHostReceiver()
     if (ext) inc('__ext_has')
-    const dynHas = () => ['call', '$__dyn_has', ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]
+    const dynHas = () => ['call', '$' + has, ['i64.reinterpret_f64', objVal], ['i64.reinterpret_f64', keyVal]]
     // An own-property probe: the probe finds a slot some layout holds as no
     // own property (module/schema.js ownKeys), which a receiver of that layout
     // lacks: a literal key's layouts by their ids, any other key by the

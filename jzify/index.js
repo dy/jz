@@ -400,7 +400,7 @@ let transform, transformScope, transformParams
 bindTransform(transform)
 
 const constStrings = new Map()
-;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, shadowsBuiltin: shadowsJzifyBuiltin, classBindingScope, readsConstructor: () => ctorUse.on }))
+;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, shadowsBuiltin: shadowsJzifyBuiltin, classBindingScope, readsConstructor: () => ctorUse.on, inherits: (name) => inherits(name), storedOn: (name) => census.receivers.has(name) }))
 const generatorNames = new Set()
 // the ones whose return() runs code (closesOnReturn): loops over them close
 const generatorCloses = new Set()
@@ -418,11 +418,19 @@ const iterProto = { on: false, helpers: false, program: false, programHelpers: f
 // Whether the program reads a `constructor` member (`new this.constructor(…)`,
 // `a.constructor === C`): its classes then carry the member (classes.js).
 const ctorUse = { on: false, program: false }
+// The classes the program derives (`class B extends A`, in any module), by
+// the name the heritage spells: their statics that read the receiver are
+// functions of it, each derived class calling them with itself (classes.js).
+// A heritage naming anything but a class its scope declares (an import, a
+// variable, an expression) may be any class; one naming a global (`Error`,
+// `Map`) is none of the program's.
+const heritage = { names: new Set(), any: false }, programHeritage = { names: new Set(), any: false }
+const inherits = (name) => heritage.any || heritage.names.has(name)
 const genErr = (msg) => err('jzify: ' + msg)
 // What the module assigns and the program writes by key (async.js
 // assignCensus): a suspension's hoisting reads what another activation may
 // change first. The program's keys come from every module the witness reads.
-let census = { names: new Map(), props: new Set() }, programProps = new Set(), witnessed = new WeakSet()
+let census = { names: new Map(), props: new Set(), receivers: new Set() }, programProps = new Set(), witnessed = new WeakSet()
 const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr, enterBody, leaveBody } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr, censusOf: () => census })
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, isGenerator, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, isGenerator, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
@@ -456,6 +464,11 @@ function canonSymbols(node, bindings = false) {
       iterProto.helpers = true
     if (op === 'instanceof' && node[2] === 'Iterator' && !shadowsJzifyBuiltin('Iterator')) iterProto.helpers = true
     if ((op === '.' || op === '?.') && node[2] === 'constructor') ctorUse.on = true
+    if (op === 'class' && node[2] != null) {
+      if (typeof node[2] !== 'string') heritage.any = true
+      else if (declaredClass(node[2])) heritage.names.add(node[2])
+      else if (classBindingScope(node[2])) heritage.any = true
+    }
     // a well-known symbol is a reserved prop with no slot to assign: the
     // polyfill `Symbol.dispose ||= Symbol('dispose')` is a no-op statement
     if (!shadowsJzifyBuiltin('Symbol') && (op === '||=' || op === '??=' || op === '=') &&
@@ -697,6 +710,7 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   iterProto.helpers = iterProto.programHelpers
   iterProto.std = std
   ctorUse.on = ctorUse.program
+  heritage.names = new Set(programHeritage.names); heritage.any = programHeritage.any
   ast = canonSymbols(ast, true)
   if (!std) ast = typedCtorValues(ast)
   ast = hoistDynamicImports(ast)
@@ -757,15 +771,18 @@ jzify.witness = (asts) => {
   iterProto.program = false
   iterProto.programHelpers = false
   ctorUse.program = false
+  programHeritage.names = new Set(); programHeritage.any = false
   for (const ast of asts) {
     activeBuiltinScope = null
     builtinScopes = buildBuiltinScopes(ast)
     iterProto.on = false
     iterProto.helpers = false
     ctorUse.on = false
+    heritage.names = programHeritage.names; heritage.any = false
     canonSymbols(ast)
     iterProto.program ||= iterProto.on
     iterProto.programHelpers ||= iterProto.helpers
     ctorUse.program ||= ctorUse.on
+    programHeritage.any ||= heritage.any
   }
 }

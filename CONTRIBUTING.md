@@ -3848,6 +3848,21 @@ instance's class as it would through a prototype (`classMemberIn`); a static
 call `C.s(…)` reaches the lifted function `C$s` in the summary as in the
 emitter (`liftedProp`, method-dispatch.js `tryFnPropCall`) while the static
 holds it alone: one stored again anywhere calls what it holds.
+A derived class's statics follow its base (jzify/classes.js, ast.js
+`STATIC_BASE`): the class holds its base under a hidden key; the summary joins
+what the base holds into each name the class may not hold itself
+(`closureMemberProp`, `propFunction`: `B.m()` of a static `B` never stores
+calls the base's lifted function directly), and the runtime's dynamic read
+walks the link on a closure's miss, past `length` and private names
+(module/collection.js `dynGetBody`); `hasOwnProperty` asks `__dyn_has_own`,
+which does not walk. A static that reads its receiver (`this`, `super`) is,
+where the program derives its class (the heritage census, jzify/index.js), a
+function of the receiver, `C⟨static⟩m(self, …)`: the class's own member and
+each deriving class's copy of it call it with their class, and the classes a
+copy takes it through must store nothing else into the name (plan
+`checkStaticCopies`). An own static replaces the base's member of its name
+whole, hiding the base's accessor slots with its own undefined; `super.x` in
+a static reads the base's, `super.m()` calls the base's with the receiver.
 The supported empty class-prototype reflection uses the ordinary getter registry,
 with the settled closure kind rather than its storage hint. Accessor probes and
 optional reads retain captured receiver facts in a scoped alias, preserving receiver

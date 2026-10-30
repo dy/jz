@@ -6,8 +6,8 @@
  *
  * @module compile/analyze/func-namespaces
  */
-import { isFuncRef } from '../../ast.js'
-import { ctx } from '../../ctx.js'
+import { isFuncRef, STATIC_BASE } from '../../ast.js'
+import { ctx, err } from '../../ctx.js'
 
 /**
  * The one named function a function's own property holds for good, or null:
@@ -29,13 +29,27 @@ export const propFunctionOf = (fn, prop) => {
   return r
 }
 
+/** A derived class's copy of its base's static that reads its receiver, and a
+ *  `super.m` the class resolved, take the member as the class defining it
+ *  does (jzify/classes.js staticCopy): each class from the base up to that one
+ *  must store nothing else into the name, here or in any function, where JS
+ *  would read the newer value through the base. Rejected rather than read stale. */
+export const checkStaticCopies = () => {
+  for (const { cls, slot, held } of ctx.transform.staticCopies ?? []) for (const c of held)
+    if (ctx.summary?.storedFunction(c, slot) !== `${c}$${slot}`)
+      err(`class \`${cls}\` takes the static \`${slot.replace(/__[gs]et$/, '')}\` of its base \`${c}\` as declared, but the program stores another value into it: a static that reads \`this\` is bound to each class deriving it where the class is defined`)
+}
+
 /** `fn$prop`, prepare's lift of a top-level `fn.prop = arrow`, where the
  *  property holds it for good (`propFunctionOf`): a call of the property is
  *  that function's own call. Null otherwise. */
 export const liftedPropOf = (fn, prop) => {
-  const lifted = `${fn}$${prop}`
-  return ctx.funcs.names.has(fn) && ctx.funcs.names.has(lifted) && !ctx.funcs.multiProp.has(`${fn}.${prop}`) &&
-    propFunctionOf(fn, prop) === lifted ? lifted : null
+  if (!ctx.funcs.names.has(fn)) return null
+  const held = propFunctionOf(fn, prop)
+  if (held == null || !ctx.funcs.names.has(held) || held.length <= prop.length + 1 || !held.endsWith('$' + prop)) return null
+  // its own lift, or, for a derived class's static it never holds itself, its base's
+  const owner = held.slice(0, -prop.length - 1)
+  return (owner === fn || ctx.funcs.names.has(owner)) && !ctx.funcs.multiProp.has(`${owner}.${prop}`) ? held : null
 }
 
 /**
@@ -123,6 +137,9 @@ export function analyzeFuncNamespaces(ast) {
       const m = memberOf(node[1])
       if (m) {
         const r = rec(m[1]); r.props.add(m[2])
+        // a derived class's base (jzify/classes.js): a name the class does not
+        // hold reads the base's table, which the runtime walks: both keep theirs
+        if (m[2] === STATIC_BASE) r.disq = true
         let w = r.writes.get(m[2]); if (!w) r.writes.set(m[2], w = [])
         w.push({ rhs: node[2], atInit })
         visit(node[2], false)

@@ -906,6 +906,7 @@ export function reset(proto, globals, bridge) {
     map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
     hiddenMembers: false, // closure-lowered derived methods stored in property hashes
+    staticBase: false, // a derived class reads its statics through its base (jzify/classes.js STATIC_BASE)
     f16: false,       // Float16Array construction anywhere.
     clamped: false,   // Uint8ClampedArray construction anywhere.
     typedView: false, // A typed-array VIEW (subarray / buffer-reinterpret / unknown-arg ctor

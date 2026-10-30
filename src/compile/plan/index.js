@@ -28,6 +28,7 @@
 
 import { ctx, checkpointed, getFactStore } from '../../ctx.js'
 import { clearBodyFacts } from '../analyze.js'
+import { checkStaticCopies } from '../analyze/func-namespaces.js'
 import {
   collectProgramFacts, collectSlotConstants, analyzeSchemaSlotIntCertain, collectSlotWriteHazards, analyzeParamNeverGrown,
   synthesizeComputedDispatchCallSites, synthesizeMemberDispatchCallSites, readonlyParamReps, freezeCallSites,
@@ -141,6 +142,7 @@ export default function plan(ast, profiler, summarize) {
   // Function-namespace SROA — dissolve reassigned `f.prop` slots into module
   // globals before inlining/narrowing, so all downstream passes see plain
   // globals instead of the dynamic property machinery.
+  t('checkStaticCopies', checkStaticCopies)
   sweep('flattenFuncNamespaces', () => flattenFuncNamespaces(ast, facts().propMap))
   // A literal-key write outside a literal-bound name's layout becomes a
   // declared slot of that literal (flattened function properties included).

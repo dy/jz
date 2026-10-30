@@ -3,12 +3,13 @@
  * @module jzify/classes
  */
 
-import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, T, withLoc, collectParamNames, collectAllBoundNames } from '../src/ast.js'
+import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, STATIC_BASE, T, withLoc, collectParamNames, collectAllBoundNames } from '../src/ast.js'
 import { ctx, err, warn } from '../src/ctx.js'
 import { usesArguments } from './arguments.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { JZIFY_CLASS_ERRORS } from '../src/op-policy.js'
 
-export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor, shadowsBuiltin, classBindingScope }) {
+export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor, inherits, storedOn, shadowsBuiltin, classBindingScope }) {
 // === class lowering ===
 //
 // A class is lowered to a factory arrow. Instance state is a plain object;
@@ -42,8 +43,10 @@ export function createClassLowering({ transform, names, JC, constStrings, atModu
 // A receiver of any other kind (array, string, typed array) is untouched, so
 // `.length` on those keeps its lowering.
 //
-// Out of scope (rejected with a clear message): full `super.foo` property
-// semantics, a getter or setter with a computed name. Private `#name` members are
+// Out of scope (rejected with a clear message): `super.foo` read as a property
+// in an instance member, a store through `super`, a getter or setter with a
+// computed name (a static's `super.foo` and `super.m()`: static inheritance
+// below). Private `#name` members are
 // kept as the literal key string `#name` (jz allows it).
 const DEFAULT_DERIVED_CTOR_ARITY = 8
 
@@ -245,6 +248,82 @@ function rewriteSuperMethodCallsNode(node, baseMethodVars, recv, callReceiver) {
 // A call's argument node with `recv` prepended: `null` → recv, `a` → `[',', recv, a]`.
 const withReceiver = (args, recv) => args == null ? recv : Array.isArray(args) && args[0] === ',' ? [',', recv, ...args.slice(1)] : [',', recv, args]
 
+// === static inheritance ===
+//
+// A class's statics are its own properties, and a derived class reads a name
+// it does not hold itself as its base holds it, as JS reads it through the
+// class's [[Prototype]]: the class holds its base under STATIC_BASE (ast.js),
+// which the summary and the runtime's dynamic read follow on a miss. A
+// static method, getter or setter that reads its receiver (`this`, `super`)
+// runs with the class it is read through: in a program that derives classes
+// it is a function of the receiver (`C⟨static⟩m(self, …)`), the class's own
+// `C.m` calls it with the class, and every class deriving it without
+// declaring the name holds one calling it with itself. `super.m(…)` in a
+// static calls the base's with the receiver; `super.x` reads the base's.
+// Both copies and `super` take the base's member as the class defines it:
+// one stored again (`A.m = …`) is rejected where the summary sees the store
+// (compile/plan/index.js `checkStaticCopies`).
+const readsReceiver = (fn) => usesThis(fn[2]) || usesThis(fn[3]) || hasSuperProp(fn[2]) || hasSuperProp(fn[3])
+// `(a, b, ...r) => fn(recv, a, b, ...r)`: the arguments a function of the
+// receiver takes past it, its leading ones (those before a default or a rest,
+// which make the wrapper's `length` the member's) by name, the rest as given.
+function forwardTo(fn, recv, params, argName) {
+  const plist = extractParams(arrowParams(params ?? null))
+  let n = 0
+  while (n < plist.length && n < MAX_CLOSURE_ARITY && !(Array.isArray(plist[n]) && (plist[n][0] === '=' || plist[n][0] === '...'))) n++
+  const args = plist.slice(0, n).map((_, i) => argName(i))
+  if (n < plist.length) args.push(['...', argName(n)])
+  const list = args.length === 0 ? null : args.length === 1 ? args[0] : [',', ...args]
+  return ['=>', ['()', list], ['()', fn, withReceiver(list, recv)]]
+}
+// A static's `super.x` (`super[k]` with a literal key) and `super.m(…)`, in
+// the member's code (arrows too, not nested functions or classes): the
+// base's member with `this` as the receiver. `member(name)` is the base's
+// static of the name (`{ fn }`, fn the function of the receiver where it has
+// one), `baseRef` the expression naming the base. A store through `super` is
+// rejected, as in an instance member.
+function rewriteStaticSuper(node, baseRef, member) { return withLoc(rewriteStaticSuperNode(node, baseRef, member), node) }
+function rewriteStaticSuperNode(node, baseRef, member) {
+  if (!Array.isArray(node)) return node
+  if (node[0] === 'function' || node[0] === 'function*' || node[0] === 'class') return node
+  const superKey = (n) => Array.isArray(n) && n[1] === 'super' ? n[0] === '.' ? n[2] : n[0] === '[]' ? literalStringKey(n[2]) : null : null
+  if (MUTATE_OPS.has(node[0]) && Array.isArray(node[1]) && node[1][1] === 'super') jzifyError(JZIFY_CLASS_ERRORS.superProp)
+  if (node[0] === '()' && superKey(node[1]) != null) {
+    const name = superKey(node[1]), args = node.slice(2).map(n => rewriteStaticSuper(n, baseRef, member))
+    const fn = member(name)?.fn
+    return fn ? ['()', fn, withReceiver(args[0] ?? null, 'this')] : ['()', superRead(name, baseRef, member), ...args]
+  }
+  const name = superKey(node)
+  if (name != null) return superRead(name, baseRef, member)
+  if (node[1] === 'super' && (node[0] === '.' || node[0] === '?.' || node[0] === '[]')) jzifyError(JZIFY_CLASS_ERRORS.superProp)
+  return node.map((n, i) => i === 0 ? n : rewriteStaticSuper(n, baseRef, member))
+}
+// `super.x`: the base's getter run with the receiver where it reads one,
+// otherwise the base's property (the transform dispatches a getter that does not).
+const superRead = (name, baseRef, member) => {
+  const get = member(name + ACCESSOR_GET)?.fn
+  return get ? ['()', get, 'this'] : ['.', baseRef, name]
+}
+// The statics a derived class reads through its base: all but the private
+// ones (`#x`), which are the declaring class's alone.
+const inheritedStatics = (base) => new Map([...base?.staticMembers ?? []].filter(([slot]) => slot[0] !== '#'))
+// The class's own statics replace the base's members of their names in the
+// class's view (`members`, `accessors`); the base's accessor slots of a name
+// the class declares no such slot of are the ones the class hides with its
+// own undefined (the runtime's probe for a getter finds the class's first).
+function ownStatics(statics, members, accessors) {
+  const own = new Set(), shadows = []
+  for (const [sname, , kind] of statics) if (kind !== 'block' && typeof sname === 'string') own.add(sname)
+  for (const sname of own) {
+    const prop = sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET) ? sname.slice(0, -ACCESSOR_GET.length) : sname
+    for (const slot of [prop, prop + ACCESSOR_GET, prop + ACCESSOR_SET]) {
+      if (slot !== prop && !own.has(slot) && members.has(slot) && !shadows.includes(slot)) shadows.push(slot)
+      members.delete(slot); accessors.delete(slot)
+    }
+  }
+  return shadows
+}
+
 // A derived constructor's body around its `super(…)` statement: the call's
 // arguments, the statements before it (`pre`, which run before the base's
 // constructor and may compute those arguments) and the body after it.
@@ -392,6 +471,7 @@ const methodValue = (params, body, kind, receiver) => {
 // program reads one, `constructor` (the class, called as its factory).
 const structClasses = new Map()   // this module's classes by local name
 let localClasses = new WeakMap()   // lexical declaration scope → local native families
+let localStatics = new WeakMap()   // lexical declaration scope → class of closures → its statics (staticMembers, staticAccessors, chainStatics)
 let moduleImports = null          // the module's imports and the binding resolver (index.js), or null
 /** The class a name of this module denotes: one lowered here, or one imported
  *  from a module lowered before it (the imports prepared in source order, as
@@ -413,8 +493,29 @@ const resolveClass = (name) => {
   return null
 }
 const methodFn = (cls, m) => `${cls}${CLASS_T}${m}`
+/** The statics a class the name denotes holds and passes on: a schema class's
+ *  entry, or what a class of closures of the scope recorded; null otherwise. */
+const staticsOf = (name) => resolveClass(name) ?? localStatics.get(classBindingScope(name))?.get(name) ?? null
+// A function of the receiver `self` and the member's parameters, of the member's kind.
+const receiverFn = (self, kind, params, body) => {
+  const list = extractParams(arrowParams(params ?? null)), sl = list.length ? [',', self, ...list] : self
+  return transform(kind === 'gen' ? ['function*', null, sl, body] : kind === 'asyncgen' ? ['async', ['function*', null, sl, body]]
+    : kind === 'async' ? ['async', ['=>', ['()', sl], body]] : ['=>', ['()', sl], body])
+}
 const INIT = CLASS_T + 'init', BIND = CLASS_T + 'bind'
-function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers }) {
+// A class's copy of its base's static `slot` (and its `super.slot`) takes the
+// member as the class defining it (`m.owner`) does: the classes from the base
+// up to that one must hold it for good, each its own `C$slot`, which the plan
+// checks against the summary (compile/plan/index.js checkStaticCopies).
+const staticCopy = (entry, slot, m) => {
+  const held = []
+  for (let e = ctx.transform.classes.get(entry.base); e; e = e === m.owner ? null : ctx.transform.classes.get(e.base)) {
+    if (!e.liftedStatics) return   // a class of closures, or one in a function: its statics are no lifted functions
+    held.push(e.module ? `${e.module}$${e.name}` : e.name)
+  }
+  if (held.length) (ctx.transform.staticCopies ??= []).push({ cls: entry.name, slot, held })
+}
+function lowerStruct({ name, heritage, base, nativeCollection, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers }) {
   const cls = name ?? names.classStatic()
   const id = ctx.transform.classId = (ctx.transform.classId ?? 0) + 1
   const brand = BRAND + id
@@ -428,7 +529,8 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
   for (const [, , mbody] of methods) assignedThisFields(mbody, assigned)
   for (const f of assigned) if (!own.includes(f)) own.push(f)
   const allFields = base ? [...base.fields, ...own.filter(f => !base.fields.includes(f))] : own
-  const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls, init: methodFn(cls, INIT), fields: allFields, methods: new Map(base?.methods), base: base?.brand ?? null, staticAccessors: new Set(base?.staticAccessors), statics: [] }
+  const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls, init: methodFn(cls, INIT), fields: allFields, methods: new Map(base?.methods), base: base?.brand ?? null, staticAccessors: new Set(base?.staticAccessors), statics: [],
+    staticMembers: inheritedStatics(base), chainStatics: statics.length > 0 || storedOn(cls) || !!base?.chainStatics }
   if (nativeCollection) { entry.nativeCollection = nativeCollection; entry.nominal = CLASS_T + 'instance' + id }
   // An own descriptor replaces the inherited descriptor as a whole. Clear
   // siblings before adding this class's methods so its own getter/setter pair stays paired.
@@ -449,6 +551,7 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
     entry.methods.set(mname, methodFn(cls, mname))
   }
   const localScope = nativeCollection && !atModuleScope() ? classBindingScope(cls) : null
+  entry.liftedStatics = !localScope
   if (localScope) {
     let entries = localClasses.get(localScope)
     if (!entries) localClasses.set(localScope, entries = new Map())
@@ -543,25 +646,54 @@ function lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, metho
     ['let', ['=', self, lit]], ...install,
     ['()', entry.init, [',', self, ...fargs]],
     ['return', self]]]]
-  // The static members the host reads and writes off an exported class
-  // (compile/emit/class-dispatch.js synthesizeClassExports): a method, a field
-  // (a writable value), a getter or a setter.
+  // An own static replaces what the base holds under its name, as a whole.
+  const shadows = ownStatics(statics, entry.staticMembers, entry.staticAccessors)
+  // The base, which a name the class does not hold reads through, the
+  // accessor slots of the base an own static of the name hides, and the
+  // class's own copy of each member of the base that reads its receiver.
+  if (base?.chainStatics) {
+    trailers.push(['=', ['.', cls, STATIC_BASE], heritage])
+    ctx.linkDemand.staticBase = true
+    for (const slot of shadows) trailers.push(['=', ['.', cls, slot], UNDEF])
+    for (const [slot, m] of entry.staticMembers) if (m.fn) {
+      trailers.push(['=', ['.', cls, slot], forwardTo(m.fn, cls, m.params, names.classSuperArg)])
+      staticCopy(entry, slot, m)
+    }
+  }
+  const member = (slot) => { const m = base?.staticMembers.get(slot); if (m?.fn) staticCopy(entry, slot, m); return m }
+  const ownCode = (node) => base ? rewriteStaticSuper(node, heritage, member) : node
   for (const [sname, value, kind] of statics) {
     const accessor = kind === true && (sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET))
     if (accessor) entry.staticAccessors.add(sname)
-    if (kind !== 'block') entry.statics.push(accessor ? [sname.slice(0, -ACCESSOR_GET.length), sname.endsWith(ACCESSOR_GET) ? 'get' : 'set']
-      : [sname, kind ? 'method' : 'field'])
     if (kind === 'block') {
-      let b = transform(renameThis(value, cls))
+      let b = transform(renameThis(ownCode(value), cls))
       if (Array.isArray(b) && b[0] === '{}') b = b[1]
       if (Array.isArray(b) && b[0] === ';') trailers.push(...b.slice(1).filter(x => x != null))
       else if (b != null) trailers.push(b)
       continue
     }
-    const rhs = kind ? methodValue(value[2], value[3], kind === true ? undefined : kind, cls)
-      : value == null ? UNDEF : transform(renameThis(value, cls))
+    let rhs
+    if (kind && inherits(cls) && readsReceiver(value)) {
+      // a function of the receiver, which the class's own member calls with the class
+      const fn = methodFn(cls, CLASS_T + 'static' + sname)
+      const [mparams, mbody] = ownArguments(value[2], value[3])
+      const code = (node) => renameThis(ownCode(node), self)
+      hoists.push(['let', ['=', fn, fnOf(kind === true ? undefined : kind, code(mparams), block(code(mbody)))]])
+      entry.staticMembers.set(sname, { fn, params: mparams, owner: entry, method: true })
+      rhs = forwardTo(fn, cls, mparams, names.classSuperArg)
+    } else {
+      entry.staticMembers.set(sname, { fn: null, owner: entry, method: !!kind })
+      rhs = kind ? methodValue(value[2] && ownCode(value[2]), ownCode(value[3]), kind === true ? undefined : kind, cls)
+        : value == null ? UNDEF : transform(renameThis(ownCode(value), cls))
+    }
     trailers.push(['=', ['.', cls, sname], rhs])
   }
+  // The static members the host reads and writes off an exported class, its
+  // own and those it inherits (compile/emit/class-dispatch.js
+  // synthesizeClassExports): a method, a field (a writable value), a getter
+  // or a setter, each the class's property as the module reads it.
+  for (const [slot, m] of entry.staticMembers) entry.statics.push(slot.endsWith(ACCESSOR_GET) || slot.endsWith(ACCESSOR_SET)
+    ? [slot.slice(0, -ACCESSOR_GET.length), slot.endsWith(ACCESSOR_GET) ? 'get' : 'set'] : [slot, m.method ? 'method' : 'field'])
   if (!readsConstructor()) return factory
   // `o.constructor` is the instance's class, a member every class overrides:
   // called, its factory (`new this.constructor(…)`); read, the class itself.
@@ -685,14 +817,16 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   // a member named at run time is no slot of a schema
   const computed = keyDecls.length > 0
   if (computed && nativeCollection) jzifyError(`a computed member name is not supported on a class extending ${nativeCollection}`)
-  if (nativeCollection && hoists && (statics.length === 0 || trailers))
-    return lowerStruct({ name, base, nativeCollection, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
-  if (structsOn && hoists && atModuleScope() && (heritage == null || base && !base.nominal) && (statics.length === 0 || trailers) && !computed)
-    return lowerStruct({ name, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
+  // statics, its own or its base's, are stored after the class's declaration
+  const staticsPlaced = statics.length === 0 && !base?.chainStatics || trailers
+  if (nativeCollection && hoists && staticsPlaced)
+    return lowerStruct({ name, heritage, base, nativeCollection, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
+  if (structsOn && hoists && atModuleScope() && (heritage == null || base && !base.nominal) && staticsPlaced && !computed)
+    return lowerStruct({ name, heritage, base, ctorParams, ctorBody, methods, fields, statics, superMethods, hoists, trailers })
   // The advisory names what kept the class from its schema lowering (`why`):
   // a class of closures reads and calls its members through the runtime.
   if (structsOn) warn('class-generic', `class ${name ?? '(anonymous)'} is lowered to closures, not a schema: ${
-    !atModuleScope() ? 'it is declared inside a function' : computed ? 'a member of it has a computed name' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members need a declaration, not an expression'}`, { fn: name ?? undefined })
+    !atModuleScope() ? 'it is declared inside a function' : computed ? 'a member of it has a computed name' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members, or its base\'s, need a declaration, not an expression'}`, { fn: name ?? undefined })
   const self = names.classSelf()
   const UNDEF = []                                  // jessie's node for `undefined`
   const memberRef = (obj, key) => typeof key === 'string' ? ['.', obj, key] : ['[]', obj, key.computed]
@@ -743,14 +877,28 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   // no unique schema. Give its instances a hidden nominal mark instead;
   // derived factories retain their base's mark as they build the same object.
   let nominal = null
+  // The statics a class deriving this one reads through it: the base's (a
+  // class of the scope, of either lowering), those this class declares
+  // replacing them by name (filled in as they lower, below).
+  const baseStatics = base ?? (typeof heritage === 'string' ? staticsOf(heritage) : null)
+  const staticMembers = inheritedStatics(baseStatics), staticAccessors = new Set(baseStatics?.staticAccessors)
+  const shadows = ownStatics(statics, staticMembers, staticAccessors)
+  const copies = [...staticMembers].filter(([, m]) => m.fn)
+  const dynamicBase = heritage != null && typeof heritage !== 'string'
+  // the base a name the class does not hold reads through: a class, or a value an expression or a binding holds
+  const linked = heritage != null && (dynamicBase || (baseStatics ? !!baseStatics.chainStatics : !!classBindingScope(heritage)))
+  const info = { staticMembers, staticAccessors, chainStatics: statics.length > 0 || storedOn(cls) || linked }
   if (atModuleScope() && heritage != null) {
     const id = ctx.transform.classId = (ctx.transform.classId ?? 0) + 1
     const brand = BRAND + id
     nominal = CLASS_T + 'instance' + id
     const entry = { brand, name: cls, module: ctx.module.currentPrefix, factory: cls,
-      nominal, fields: [], methods: new Map(), base: base?.brand ?? null, staticAccessors: new Set() }
+      nominal, fields: [], methods: new Map(), base: base?.brand ?? null, ...info }
     structClasses.set(cls, entry)
     ;(ctx.transform.classes ??= new Map()).set(brand, entry)
+  } else if (trailers && name) {
+    const scope = classBindingScope(cls)
+    if (scope) { let at = localStatics.get(scope); if (!at) localStatics.set(scope, at = new Map()); at.set(cls, info) }
   }
   if (ctorMember) litProps.push([':', 'constructor', cls])
   // The instance holds its class's members as slots, which JS keeps on the
@@ -764,7 +912,6 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   }
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
   let params = ctorParams ?? ['()', null]
-  const dynamicBase = heritage != null && typeof heritage !== 'string'
   const baseRef = heritage == null ? null : dynamicBase ? names.classBase() : heritage
   const stmts = []
   // the function of the class scope that makes or completes the instance (`members`)
@@ -829,24 +976,53 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   }
   stmts.push(['return', self])
   const factory = ['=>', arrowParams(params), ['{}', [';', ...stmts]]]
-  if (!dynamicBase && statics.length === 0 && !ctorMember && !computed && !membersFn) return factory
+  if (!dynamicBase && statics.length === 0 && !linked && !ctorMember && !computed && !membersFn) return factory
 
-  // the heritage, then the computed names, then the class and its static parts
+  // the heritage, then the computed names, then the class, its base and the
+  // copies of the base's members that read their receiver, and its static parts
   const staticStmts = []
   if (dynamicBase) staticStmts.push(['let', ['=', baseRef, transform(heritage)]])
   staticStmts.push(...keyDecls)
   if (membersFn) staticStmts.push(['let', ['=', members, membersFn]])
   staticStmts.push(['let', ['=', cls, factory]])
+  const holder = { base: base?.brand, name: cls }
+  if (linked) {
+    staticStmts.push(['=', ['.', cls, STATIC_BASE], baseRef])
+    ctx.linkDemand.staticBase = true
+    for (const slot of shadows) staticStmts.push(['=', ['.', cls, slot], UNDEF])
+    for (const [slot, m] of copies) {
+      staticStmts.push(['=', ['.', cls, slot], forwardTo(m.fn, cls, m.params, names.classSuperArg)])
+      staticCopy(holder, slot, m)
+    }
+  }
+  const member = (slot) => { const m = baseStatics?.staticMembers.get(slot); if (m?.fn) staticCopy(holder, slot, m); return m }
+  const ownCode = (node) => heritage != null ? rewriteStaticSuper(node, baseRef, member) : node
   for (const [sname, value, kind] of statics) {
     if (kind === 'block') {
-      let b = transform(renameThis(value, cls))
+      let b = transform(renameThis(ownCode(value), cls))
       if (Array.isArray(b) && b[0] === '{}') b = b[1]
       if (Array.isArray(b) && b[0] === ';') staticStmts.push(...b.slice(1).filter(x => x != null))
       else if (b != null) staticStmts.push(b)
       continue
     }
-    const rhs = kind ? methodValue(value[2], value[3], kind === true ? undefined : kind, cls)
-      : value == null ? UNDEF : transform(renameThis(value, cls))
+    const named = typeof sname === 'string'
+    if (named && kind === true && (sname.endsWith(ACCESSOR_GET) || sname.endsWith(ACCESSOR_SET))) staticAccessors.add(sname)
+    let rhs
+    // A declared class's member that reads its receiver is a function of it,
+    // beside the class in its scope, as a schema class's is; a class
+    // expression's, or a member named at run time, binds the class.
+    if (kind && named && trailers && inherits(cls) && readsReceiver(value)) {
+      const fn = methodFn(cls, CLASS_T + 'static' + sname)
+      const [mparams, mbody] = ownArguments(value[2], value[3])
+      const code = (node) => renameThis(ownCode(node), self)
+      hoists.push(['let', ['=', fn, receiverFn(self, kind === true ? undefined : kind, code(mparams), block(code(mbody)))]])
+      staticMembers.set(sname, { fn, params: mparams, owner: info, method: true })
+      rhs = forwardTo(fn, cls, mparams, names.classSuperArg)
+    } else {
+      if (named) staticMembers.set(sname, { fn: null, owner: info, method: !!kind })
+      rhs = kind ? methodValue(value[2] && ownCode(value[2]), ownCode(value[3]), kind === true ? undefined : kind, cls)
+        : value == null ? UNDEF : transform(renameThis(ownCode(value), cls))
+    }
     staticStmts.push(['=', memberRef(cls, sname), rhs])
   }
   staticStmts.push(['return', cls])
@@ -860,7 +1036,7 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   /** The module's classes are its own: cleared at every jzify entry, with the
    *  module's imports for the classes of others; `structs` false keeps every class a closure. */
   let structsOn = true
-  const resetClasses = (structs = true, imports = null) => { structClasses.clear(); localClasses = new WeakMap(); structsOn = structs; moduleImports = imports }
+  const resetClasses = (structs = true, imports = null) => { structClasses.clear(); localClasses = new WeakMap(); localStatics = new WeakMap(); structsOn = structs; moduleImports = imports }
   return { lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses }
 }
 

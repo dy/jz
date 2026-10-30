@@ -162,7 +162,7 @@ Where behaviour differs from JS:
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.
 - **Data descriptors only.** `Object.defineProperty` stores the value but ignores `writable`, `enumerable` and `configurable`. `Object.getOwnPropertyDescriptor` reports all three flags as true; a property whose value is `undefined` is reported as absent.
 - **No runtime prototype chain.** `Object.create(null)` creates an empty object; `Object.create(obj)` copies supported object layouts instead of linking a prototype. Class inheritance and supported prototype assignments are resolved at compile time.
-- **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver.
+- **Class methods stay bound.** An extracted class method retains its instance. Object-literal methods use the call receiver. A static method, getter or setter that reads `this` is, in each class deriving it, the derived class's own, bound to it where the class is defined: `hasOwnProperty` finds it there, it is another function than the base's, and a program that stores another value into the base's is rejected. Statics a class inherits from a base an expression names (`extends mixin(A)`) run with the class that declares them as `this`.
 - **`new` of an untraced callee.** `new` of an arrow, a method, an async function, a generator or a builtin function throws a TypeError where the callee is written in place, or is a name, a class's or a literal object's member, an alias or a `bind` of one the module never reassigns. A callee value reached another way (a parameter, a function's result, a getter's value) is called instead.
 - **Numeric export parameters.** A parameter an exported function never uses as a string is compiled as a number and converted at the boundary: `export let add = (a, b) => a + b` gives `add(1, '2')` as 3, where JavaScript concatenates. A use as a string counts through a copy, a call and a sum: `(s) => (s + s).slice(1)` takes a string.
 - **Host globals bind at instantiation.** A global the program names without declaring it is the host's value when the module is instantiated: one the host defines or replaces later is not seen. `globalThis.Name` reads it as it stands.
@@ -207,7 +207,7 @@ the module; handed back to the module it is the instance itself, and the
 host's console prints it by its fields. An instance of a class deriving from it
 that the program does not export reaches the host with its own overrides.
 The class's static fields read and write the class, and its static methods,
-getters and setters run in the module.
+getters and setters run in the module, those it inherits from its base included.
 A property the program stores on an instance outside its fields reads, lists
 and writes as it stands too; one the host adds stays on the host's object.
 

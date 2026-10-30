@@ -3389,6 +3389,8 @@ function prepareModule(specifier, source) {
       const renamed = (n) => moduleExports.get(n) ?? n
       e.factory = renamed(e.factory); e.init = renamed(e.init)
       for (const [m, fn] of e.methods) e.methods.set(m, renamed(fn))
+      // its statics' functions of the receiver, which a class deriving it calls
+      for (const m of e.staticMembers?.values() ?? []) if (m.fn) m.fn = renamed(m.fn)
     }
   }
 

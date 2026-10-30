@@ -7,7 +7,7 @@
  * `../program-facts.js` for the full module map and build order.
  * @module program-facts/walk-facts
  */
-import { commaList, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, walkAst } from '../../ast.js'
+import { commaList, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, walkAst, STATIC_BASE } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { VAL } from '../../reps.js'
 import { nullishArm } from '../../kind.js'
@@ -471,12 +471,13 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // reassignment, `ns.p` a namespace slot: propMap above), but what the
         // target is built from is read: a member target's receiver and key.
         // `g[k] = v` on a function name takes the function as a value (its
-        // property bag is keyed by the closure), and a call in the key is a
-        // call site.
+        // property bag is keyed by the closure), as does a derived class's link
+        // to its base (jzify/classes.js STATIC_BASE: its bag stays, read by
+        // key), and a call in the key is a call site.
         const target = node[1]
         if (Array.isArray(target) && (target[0] === '[]' || target[0] === '.' || target[0] === '?.')) {
           const [, obj, key] = target
-          if (target[0] === '[]' && isFuncRef(obj, ctx.funcs.names)) acc.addressTakenNames.add(obj)
+          if ((target[0] === '[]' || key === STATIC_BASE) && isFuncRef(obj, ctx.funcs.names)) acc.addressTakenNames.add(obj)
           else walkFacts(obj, true, inArrow, caller)
           if (target[0] === '[]') {
             if (isFuncRef(key, ctx.funcs.names)) acc.addressTakenNames.add(key)

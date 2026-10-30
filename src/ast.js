@@ -69,6 +69,13 @@ export const CLASS_T = '\uE003'
 // lives in the schema id, as an Error's does (module/schema.js).
 export const BRAND = CLASS_T + 'class'
 export const isBrand = (name) => typeof name === 'string' && name.startsWith(BRAND)
+// A derived class's link to its base class, as JS's [[Prototype]] of a class
+// is (jzify/classes.js): the class's own property under this key holds the
+// base, and a name the class does not hold itself reads as the base holds it
+// (the summary's closure properties, the runtime's dynamic read in
+// module/collection.js). A short ASCII key, packed into the pointer, no
+// source spells.
+export const STATIC_BASE = '\u0001base'
 
 // A declaration a lowering moved ahead of the statement that initializes it
 // (a generator's locals, hoisted out of its steps: jzify/generators.js) leads
