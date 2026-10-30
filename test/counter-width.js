@@ -1,6 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle } from './util.js'
+import { compile } from '../index.js'
 import { levels, onKernel } from './_matrix.js'
 import { parse, loopCount } from '../scripts/wat-probe.mjs'
 import { forCounterBounds, forCounterRange, intExprRange } from '../src/static.js'
@@ -358,6 +359,29 @@ test('counter width: guarded words preserve mutation order and object coercion o
   }`, [[0], [1]])
 })
 
+
+test('counter width: a parameter the loop never writes takes a word in the guarded arm, as a local does', () => {
+  // `src[start + k]` with `start` a Number parameter: the guard proves it whole and
+  // the index in bounds, so the arm reads a word and the copy lifts to memory.copy;
+  // a fractional start fails the guard into the checked arm, as JS answers it
+  const source = `function frame (src, start, n) {
+    const out = new Uint8Array(n + 1)
+    let k = 0
+    while (k < n) { out[1 + k] = src[start + k]; k = k + 1 }
+    let h = 0
+    for (let i = 0; i <= n; i++) h = (h * 31 + out[i]) | 0
+    return h
+  }
+  export function f(m) {
+    const src = new Uint8Array(300)
+    for (let i = 0; i < 300; i++) src[i] = i * 7 + 3
+    let h = 0
+    for (let s = 0; s < m; s++) h = (h + frame(src, s * 0.5, 100) + frame(src, s * 1.5, 50) + frame(src, 290 - s, 20)) | 0
+    return h
+  }`
+  compare(source, [[0], [1], [9]])
+  if (!onKernel()) ok(/memory\.copy/.test(compile(source, { wat: true })), 'the copy reads a word offset')
+})
 
 test('counter width: companion while cursors need progress on every continuing path', () => {
   const options = { constInt: x => typeof x === 'number' ? x : null,

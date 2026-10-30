@@ -827,7 +827,9 @@ export const controlFlowOps = {
           if (typeof name !== 'string' || lookupValType(name) !== VAL.NUMBER || ctx.func.boxed?.has(name)) return false
           const global = isGlobal(name), rep = global ? repOfGlobal(name) : repOf(name)
           // (a local the plan already holds as a word takes the proof's range alone: its carrier stays)
-          const type = global ? ctx.scope.globalTypes.get(name) : ctx.func.locals.get(name)
+          // A parameter the loop never writes is a binding like a local: the signature types it.
+          const param = global || ctx.func.locals.has(name) ? null : ctx.func.current?.params?.find(p => p.name === name)
+          const type = global ? ctx.scope.globalTypes.get(name) : param ? (param.ptrKind == null && !param.rest ? param.type : null) : ctx.func.locals.get(name)
           if (!(type === 'f64' || !global && type === 'i32') || rep?.ptrKind != null || rep?.unsigned) return false
           // Slot admission already proves the binding stable across explicit
           // calls/writes. A module snapshot must also survive implicit user code.

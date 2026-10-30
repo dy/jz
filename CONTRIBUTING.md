@@ -4706,8 +4706,9 @@ shared `matchBlockLoop` descriptor and returns a wrapper or `null` — a `null` 
 stays scalar), so **never emit code you can't prove equivalent to the scalar loop.**
 
 Typed extent guards may give their fast arm fresh signed-word locals for
-stable integral entries, private affine index definitions, and secondary
-cursors whose final update also fits. The checked arm keeps its original
+stable integral entries (a parameter the loop never writes as a local),
+private affine index definitions, and secondary cursors whose final update
+also fits. The checked arm keeps its original
 Number locals. Every arithmetic intermediate must remain a safe integer;
 final address bounds cannot justify losing rounded products or negative zero.
 Captured bindings and live exits keep their original storage. Entry literals
