@@ -55,6 +55,11 @@ function carrySite(node, out) {
     sites.add(out)
     ;(ctx.plans.siteOrigin ??= new WeakMap()).set(out, ctx.plans.siteOrigin.get(node) ?? node)
   }
+  // A typed array placed in a static block (compile/fixed-memory.js) is placed
+  // in its copy too: copies of a loop's body run one after another, as its
+  // iterations do in the one block, and a helper may read the block's address.
+  const placed = ctx.memory?.scratch?.get(ctx.func?.current), slot = placed?.get(node)
+  if (slot) placed.set(out, slot)
   return out
 }
 

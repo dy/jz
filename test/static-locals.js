@@ -74,6 +74,16 @@ test('static locals: every declaration starts from zeros, two live arrays never 
   ok(Math.abs(at[0] - at[1]) >= 16, 'at disjoint addresses')
 })
 
+test('static locals: a loop the emitter copies places its block in every copy', () => {
+  // with the plan's typed-array unroll off, the emitter copies the loop's body
+  // (emit/control-flow.js unrollSmallConstFor): each copy of the placed
+  // constructor is placed too, since `sum` reads the block at its address
+  const src = SUM + `export let f = (k) => { let s = 0; for (let j = 0; j < 3; j++) { const a = new Int32Array(4); a[(k + j) & 3] += j + 1; a[k & 3] += 1; s = s * 100 + sum(a) } return s }`
+  const host = oracle(src)
+  for (const level of [2, 3]) for (const k of [0, 1, 5])
+    is(run(src, { optimize: { level, scalarTypedLoopUnroll: 0 } }).f(k), host.f(k), `O${level}, no plan unroll: f(${k})`)
+})
+
 test('static locals: a helper parameter reads a constant address only where every call passes one block', () => {
   agree(SUM + `export let f = (k) => { const a = new Int32Array(4); a[k & 3] = 5; return sum(a) }
     export let g = (k) => { const b = new Int32Array(8); b[k & 7] = 3; return sum(b) + sum(b) }`,
