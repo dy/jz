@@ -262,7 +262,7 @@ const withReceiver = (args, recv) => args == null ? recv : Array.isArray(args) &
 // in a static calls the base's with the receiver; `super.x` reads the base's.
 // Both copies and `super` take the base's member as the class defines it:
 // one stored again (`A.m = …`) is rejected where the summary sees the store
-// (compile/plan/index.js `checkStaticCopies`).
+// (compile/analyze/func-namespaces.js `checkStaticCopies`).
 const readsReceiver = (fn) => usesThis(fn[2]) || usesThis(fn[3]) || hasSuperProp(fn[2]) || hasSuperProp(fn[3])
 // `(a, b, ...r) => fn(recv, a, b, ...r)`: the arguments a function of the
 // receiver takes past it, its leading ones (those before a default or a rest,
@@ -510,7 +510,7 @@ const INIT = CLASS_T + 'init', BIND = CLASS_T + 'bind'
 // A class's copy of its base's static `slot` (and its `super.slot`) takes the
 // member as the class defining it (`m.owner`) does: the classes from the base
 // up to that one must hold it for good, each its own `C$slot`, which the plan
-// checks against the summary (compile/plan/index.js checkStaticCopies).
+// checks against the summary (compile/analyze/func-namespaces.js checkStaticCopies).
 const staticCopy = (entry, slot, m) => {
   const held = []
   for (let e = ctx.transform.classes.get(entry.base); e; e = e === m.owner ? null : ctx.transform.classes.get(e.base)) {

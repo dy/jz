@@ -933,7 +933,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   // property table through its value: a class linked to its base (jzify/
   // classes.js STATIC_BASE), which keeps its table, is then reached itself.
   const linked = new Set()
-  for (const e of ctx.transform.classes?.values() ?? []) if (e.linked) linked.add(e.factory)
+  for (const e of ctx.transform?.classes?.values() ?? []) if (e.linked) linked.add(e.factory)
   for (const site of programFacts.memberCallSites || []) {
     let sourceId = site.callee != null ? sourceIdOf(site.callee) : resolveMemberSourceId(site.objName, site.prop)
     if (sourceId < 0 && site.callee == null && linked.has(site.objName)) sourceId = sourceIdOf(site.objName)
