@@ -1567,9 +1567,9 @@ test('once-run factory: a module binding takes the returned arrow, its declarati
   const src = `const make = () => [1, 2, 3]
     export const f = (() => { const a = make(); let n = 0; return (o, x) => { n++; o[0] = a[0] + x; return o[0] + n } })()
     export const g = (x) => { const o = [0]; return f(o, x) + f(o, x) }`
-  const js = oracle(src)
+  // the factory's state counts the calls: each level against a module of its own
   for (const optimize of levels(0, 2, 'speed')) {
-    const m = jz(src, { optimize }).exports
+    const m = jz(src, { optimize }).exports, js = oracle(src)
     for (const x of [1, 2.5, 7]) is(m.g(x), js.g(x), `g(${x}) at ${optimize}`)
   }
   if (!onKernel() && !belowOpt(2)) ok(!/call_indirect/.test(wat(src)), 'the binding is a function: no closure call')
@@ -1580,8 +1580,7 @@ test('once-run factory: a module binding takes the returned arrow, its declarati
     `export const f = (() => { const x = 2; return (x) => x * 2 })()`,
   ]) {
     const src2 = keep + '\nexport const g = (v) => f(v) + f(v)'
-    const js2 = oracle(src2)
-    for (const optimize of levels(0, 2, 'speed')) is(jz(src2, { optimize }).exports.g(5), js2.g(5), `${optimize}: ${keep.slice(17, 50)}`)
+    for (const optimize of levels(0, 2, 'speed')) is(jz(src2, { optimize }).exports.g(5), oracle(src2).g(5), `${optimize}: ${keep.slice(17, 50)}`)
   }
 })
 
@@ -1590,9 +1589,8 @@ test('once-run factory: a program\'s module takes the lift the entry takes', () 
     export const rotationTo = (() => { const tmp = create(); let calls = 0; return (out, a, b) => { calls++; tmp[0] = a[0] * b[1] - a[1] * b[0]; out[0] = tmp[0]; out[1] = calls; return out } })()`
   const src = `import { create, rotationTo } from './quat.js'
     export const g = (x) => { const o = create(), a = [x, 2, 3, 1], b = [4, x, 6, 1]; rotationTo(o, a, b); rotationTo(o, b, a); return o[0] * 100 + o[1] }`
-  const js = oracle(quat + '\n' + src.replace(/import[^\n]*\n/, ''))
   for (const optimize of levels(0, 2, 'speed')) {
-    const m = jz(src, { optimize, modules: { './quat.js': quat } }).exports
+    const m = jz(src, { optimize, modules: { './quat.js': quat } }).exports, js = oracle(quat + '\n' + src.replace(/import[^\n]*\n/, ''))
     for (const x of [1, 2.5]) is(m.g(x), js.g(x), `g(${x}) at ${optimize}`)
   }
   if (!onKernel() && !belowOpt(2)) ok(!/call_indirect/.test(wat(src, { modules: { './quat.js': quat } })), 'the module binding is a function: no closure call')
