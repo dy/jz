@@ -13,7 +13,7 @@ import { OPTF } from '../ctx.js'
 
 import { primitiveKind } from '../evaluation-effects.js'
 import { ctx, err, strictCode, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
-import { T, ACCESSOR_SET } from '../ast.js'
+import { T, ACCESSOR_GET, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith, lacksSlot } from './emit/class-dispatch.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, intExprRange } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
@@ -27,7 +27,7 @@ import {
   typed, asF64, asI32, asI64, keyIndex, temp, tempI32, withTemp, block64,
   ptrOffsetIR, fwdOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
-  freshId, boxBigInt, isNullish, throwTypeErrorIR, capturedCellSave, cellSnap, cloneIR,
+  freshId, boxBigInt, isNullish, throwTypeErrorIR, throwErrorIR, capturedCellSave, cellSnap, cloneIR,
 } from '../ir.js'
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationStorageWriteAction } from './representation-plan.js'
@@ -911,23 +911,35 @@ function classSetterStore(obj, prop, val) {
 function accessorStore(obj, prop, val) {
   const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
   if (vt != null && vt !== VAL.OBJECT && vt !== VAL.CLOSURE) return null
-  const setter = prop + ACCESSOR_SET
+  const setter = prop + ACCESSOR_SET, getter = prop + ACCESSOR_GET
   // a schema carrying the slot calls it statically; a literal without the slot
   // stores plainly; anything else probes (see module/core.js accessorRead)
   const sid = typeof obj === 'string' ? ctx.schema.idOf(obj) : null
   // an object literal's accessor a `delete` may have removed stores dynamically (collection.js __view_set)
-  const known = sid != null && ctx.schema.slotOf(obj, setter) >= 0 && !(ctx.types.anyDelete && ctx.transform.literalAccessorNames?.has(prop))
+  const deletable = ctx.types.anyDelete && ctx.transform.literalAccessorNames?.has(prop)
+  const known = sid != null && ctx.schema.slotOf(obj, setter) >= 0 && !deletable
   if (Array.isArray(obj) && obj[0] === '{}') return null
+  // A literal's getter without a setter beside it (jzify/classes.js
+  // literalGetterOnly): the store throws, as one to a getter-only property
+  // does in strict code, the receiver and the value evaluated first.
+  const readOnly = `Cannot set property ${prop} of #<Object> which has only a getter`
+  if (sid != null && !known && !deletable && ctx.schema.slotOf(obj, getter) >= 0) {
+    const pre = [['drop', asF64(emit(obj))], ['drop', asF64(emit(val))]]
+    return ctx.func._expect === 'void' ? typed(['block', ...pre, ['drop', throwErrorIR('TypeError', readOnly)]], 'void')
+      : typed(['block', ['result', 'f64'], ...pre, throwErrorIR('TypeError', readOnly)], 'f64')
+  }
   // a schema without the slot holds it only when a derived class installs it
   // dynamically; a scalar-replaced literal never leaves its function
   if (sid != null && !known && !ctx.transform.dynamicAccessorNames?.has(prop)) return null
   if (typeof obj === 'string' && ctx.func.flatObjects?.has(obj)) return null
   // a receiver that is no instance of a class with the accessor (the class
   // dispatch tested each) carries it only as a slot of an object literal's
-  // schema or as a static pair on a class value: with neither, the store is plain
-  if (!known && !ctx.transform.dynamicAccessorNames?.has(prop) && !ctx.schema.list.some(s => s?.includes(setter))) return null
+  // schema or as a static pair on a class value: with neither, the store is
+  // plain (a literal's getter alone makes it throw)
+  const getterOnly = ctx.transform.literalGetterOnly?.has(prop)
+  if (!known && !ctx.transform.dynamicAccessorNames?.has(prop) && !ctx.schema.list.some(s => s?.includes(setter) || getterOnly && s?.includes(getter))) return null
   // the summary's layouts say the same for a receiver it types (module/core.js slotAccessorRead)
-  if (!known && lacksSlot(obj, setter)) return null
+  if (!known && lacksSlot(obj, setter) && !(getterOnly && !lacksSlot(obj, getter))) return null
   const void_ = ctx.func._expect === 'void'
   // JS order: the receiver, then the value
   const pre = []
@@ -936,10 +948,14 @@ function accessorStore(obj, prop, val) {
   const vT = temp('accv')
   pre.push(['local.set', `$${vT}`, asF64(emit(val))])
   const call = ['()', ['.', recv, setter], vT]
-  const body = known ? call
-    : ['?:', ['===', ['typeof', ['.', recv, setter]], ['str', 'function']], call, ['=', ['__raw_prop', recv, prop], vT]]
-  if (void_) return typed(['block', ...pre, ['drop', asF64(emit(body))]], 'void')
-  return typed(['block', ['result', 'f64'], ...pre, ['drop', asF64(emit(body))], ['local.get', `$${vT}`]], 'f64')
+  const isFn = (slot) => asI32(emit(['===', ['typeof', ['.', recv, slot]], ['str', 'function']]))
+  const plain = () => asF64(emit(['=', ['__raw_prop', recv, prop], vT]))
+  // a receiver that holds a literal's getter and no setter throws (above)
+  const body = known ? asF64(emit(call))
+    : ['if', ['result', 'f64'], isFn(setter), ['then', asF64(emit(call))],
+      ['else', getterOnly ? ['if', ['result', 'f64'], isFn(getter), ['then', throwErrorIR('TypeError', readOnly)], ['else', plain()]] : plain()]]
+  if (void_) return typed(['block', ...pre, ['drop', body]], 'void')
+  return typed(['block', ['result', 'f64'], ...pre, ['drop', body], ['local.get', `$${vT}`]], 'f64')
 }
 
 /** `obj.prop = val` into the record slot of the layout the receiver's arrays

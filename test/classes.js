@@ -1049,6 +1049,31 @@ test('a static a derived class takes as declared and the program stores again is
   for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `O${optimize}`)
 })
 
+// A store to a getter with no setter of its name throws a TypeError, as in
+// strict code: on an instance (of the getter's class or a derived one, under
+// every assignment, in the constructor too), on an object literal and
+// through a receiver of unknown kind. A prototype's data property, which the
+// prototype fold makes a getter, takes an instance's own value instead.
+test('a store to a getter-only accessor throws', () => {
+  const src = `class P { constructor() { this.w = 1 } get v() { return this.w * 2 } }
+    class Q extends P {}
+    class H { constructor() { this.v = 3 } get v() { return 2 } }
+    class C { constructor(x) { this.x = x } }
+    C.prototype.kind = 'c'
+    const lit = { w: 3, get v() { return this.w }, set s(x) { this.w = x } }
+    const tryStore = (f) => { try { f(); return 'stored' } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other' } }
+    const store = (o) => { o.v = 9 }
+    export let instance = () => { const p = new P(), q = new Q(); return [tryStore(() => { p.v = 5 }), p.v, p.w, tryStore(() => { q.v = 5 }), q.v, tryStore(() => new H())] }
+    export let steps = () => { const p = new P(); return [tryStore(() => { p.v += 1 }), tryStore(() => { p.v++ }), tryStore(() => { p.v ||= 1 }), tryStore(() => { p.v ??= 1 }), p.v] }
+    export let literal = () => { const r = tryStore(() => { lit.v = 5 }); lit.s = 4; return [r, lit.v] }
+    export let unknown = () => [tryStore(() => store(new P())), tryStore(() => store(lit)), tryStore(() => store({ v: 1 }))]
+    export let prototypeData = () => { const a = new C(1), b = new C(2); return [tryStore(() => { a.kind = 'own' }), a.kind, b.kind] }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const want = oracle(src), got = jz(src, { optimize }).exports
+    for (const name of Object.keys(want)) is(got[name](), want[name](), `${name} O${optimize}`)
+  }
+})
+
 // A getter named `type` on some class is no reason to dispatch `e.type` on a
 // receiver the summary types as a literal's layout: the read stays a slot read.
 test('a class accessor name does not make reads on other layouts dynamic', () => {

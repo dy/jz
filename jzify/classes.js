@@ -366,6 +366,10 @@ function lowerObjectLiteralAccessors(args) {
     ;(ctx.transform.literalAccessorNames ??= new Set()).add(slot.slice(0, -ACCESSOR_GET.length))
     return [':', slot, ['function', null, params, body]]
   })
+  // a getter without a setter of its name: a store through it throws (compile/emit-assign.js accessorStore)
+  const slots = new Set(out.map(p => Array.isArray(p) && p[0] === ':' ? p[1] : null))
+  for (const slot of slots) if (typeof slot === 'string' && slot.endsWith(ACCESSOR_GET) && !slots.has(slot.slice(0, -ACCESSOR_GET.length) + ACCESSOR_SET))
+    (ctx.transform.literalGetterOnly ??= new Set()).add(slot.slice(0, -ACCESSOR_GET.length))
   return out.length === 1 ? [out[0]] : [[',', ...out]]
 }
 
@@ -715,7 +719,7 @@ function lowerStruct({ name, heritage, base, nativeCollection, ctorParams, ctorB
 
 function lowerClass(name, heritage, body, hoists, trailers) {
   let ctorParams = null, ctorBody = null
-  const methods = [], fields = [], statics = []
+  const methods = [], fields = [], statics = [], dataGetters = new Set()
   // A computed member name (`[expr]`) is evaluated once, where the class is
   // defined, in member order (ClassDefinitionEvaluation): a temp each, bound
   // after the heritage and before the static parts. The member then names it
@@ -743,7 +747,7 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       statics.push([accessorSlot(acc[0], key), ['function', null, acc[2], acc[3]], true])
       continue
     }
-    if (it[0] === 'get' || it[0] === 'set') { methods.push(accessorMethod(it, constStrings)); continue }
+    if (it[0] === 'get' || it[0] === 'set') { methods.push(accessorMethod(it, constStrings)); if (it[4] === PROTO_DATA) dataGetters.add(methods[methods.length - 1][0]); continue }
     // a bare field: `'x';`, `[k];`
     if (literalStringKey(it) != null || it[0] === '[]' && it.length === 2) { fields.push([keyOf(it), null]); continue }
     // A method `m() {}`, `async m() {}`, `*g() {}`, `async *g() {}`: the value
@@ -795,6 +799,16 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     }
     if (it[0] === 'static') jzifyError(JC.staticMember)
     jzifyError(`unsupported class member shape (jz recognizes fields, methods, and static fields/methods/blocks only): ${JSON.stringify(it).slice(0, 60)}`)
+  }
+  // A getter the class declares no setter beside: a store through it throws,
+  // as one to a getter-only property does in strict code (a setter of its own
+  // that throws, which the store's dispatch finds as any setter).
+  // (A prototype's data property, folded to a getter (foldPrototypeStores), is
+  // one an instance's store shadows with its own instead.)
+  for (const [mname] of methods.slice()) if (typeof mname === 'string' && mname.endsWith(ACCESSOR_GET) && !dataGetters.has(mname)) {
+    const prop = mname.slice(0, -ACCESSOR_GET.length)
+    if (!methods.some(([m]) => m === prop + ACCESSOR_SET))
+      methods.push([prop + ACCESSOR_SET, names.genTemp('v'), ['{}', ['throw', ['new', ['()', 'TypeError', [null, `Cannot set property ${prop} of #<${name ?? 'Object'}> which has only a getter`]]]]]])
   }
   const superMethods = heritage == null ? new Set() : new Set([
     ...collectSuperMethodCalls(ctorBody),
@@ -1119,6 +1133,9 @@ export function foldPseudoClassical(stmts) {
 }
 
 // ── Prototype stores ─────────────────────────────────────────────────────────
+// A getter standing for a prototype's data property carries this mark: an
+// instance's store shadows it, where one to a declared getter alone throws.
+const PROTO_DATA = CLASS_T + 'data'
 // `C.prototype.p = v` on a class `C` of the scope, in a static block of `C`
 // (`this.prototype.p` there) or among the scope's statements, with
 // `Object.assign(C.prototype, {…})` as its batch form, names a member of the
@@ -1218,8 +1235,8 @@ export function foldPrototypeStores(stmts) {
     for (const [name, l] of byName ?? []) {
       const k = kindOf(l)
       if (k === 'method') items.push([':', name, anon(l[l.length - 1].value)])
-      else if (k === 'literal') items.push(['get', name, null, ['return', l[0].value]])
-      else if (k === 'binding') { bindings.push(binding(c[1], name)); items.push(['get', name, null, ['return', binding(c[1], name)]]) }
+      else if (k === 'literal') items.push(['get', name, null, ['return', l[0].value], PROTO_DATA])
+      else if (k === 'binding') { bindings.push(binding(c[1], name)); items.push(['get', name, null, ['return', binding(c[1], name)], PROTO_DATA]) }
     }
     return ['class', c[1], c[2], items.length === 0 ? null : items.length === 1 ? items[0] : [';', ...items]]
   }
