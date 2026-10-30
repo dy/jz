@@ -1075,7 +1075,11 @@ test('a store to a getter-only accessor throws', () => {
     export let steps = () => { const p = new P(); return [tryStore(() => { p.v += 1 }), tryStore(() => { p.v++ }), tryStore(() => { p.v ||= 1 }), tryStore(() => { p.v ??= 1 }), p.v] }
     export let literal = () => { const r = tryStore(() => { lit.v = 5 }); lit.s = 4; return [r, lit.v] }
     export let unknown = () => [tryStore(() => store(new P())), tryStore(() => store(lit)), tryStore(() => store({ v: 1 }))]
-    export let prototypeData = () => { const a = new C(1), b = new C(2); return [tryStore(() => { a.kind = 'own' }), a.kind, b.kind] }`
+    export let prototypeData = () => { const a = new C(1), b = new C(2); return [tryStore(() => { a.kind = 'own' }), a.kind, b.kind] }
+    class V1 { get valueOf() { return () => 7 } valueOf() { return 9 } }
+    class V2 { valueOf() { return 9 } get valueOf() { return () => 7 } }
+    const other = {}
+    export let lastMember = () => { other.valueOf = () => 1; return [Number(new V1()), Number(new V2()), tryStore(() => { new V2().valueOf = 1 })] }`
   for (const optimize of levels(0, 2, 'speed')) {
     const want = oracle(src), got = jz(src, { optimize }).exports
     for (const name of Object.keys(want)) is(got[name](), want[name](), `${name} O${optimize}`)

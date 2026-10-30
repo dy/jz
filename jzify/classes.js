@@ -9,7 +9,7 @@ import { usesArguments } from './arguments.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { JZIFY_CLASS_ERRORS } from '../src/op-policy.js'
 
-export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor, inherits, storedOn, shadowsBuiltin, classBindingScope }) {
+export function createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, readsConstructor, inherits, storedOn, written, shadowsBuiltin, classBindingScope }) {
 // === class lowering ===
 //
 // A class is lowered to a factory arrow. Instance state is a plain object;
@@ -799,16 +799,6 @@ function lowerClass(name, heritage, body, hoists, trailers) {
     if (it[0] === 'static') jzifyError(JC.staticMember)
     jzifyError(`unsupported class member shape (jz recognizes fields, methods, and static fields/methods/blocks only): ${JSON.stringify(it).slice(0, 60)}`)
   }
-  // A getter the class declares no setter beside: a store through it throws,
-  // as one to a getter-only property does in strict code (a setter of its own
-  // that throws, which the store's dispatch finds as any setter).
-  // (A prototype's data property, folded to a getter (foldPrototypeStores), is
-  // one an instance's store shadows with its own instead.)
-  for (const [mname] of methods.slice()) if (typeof mname === 'string' && mname.endsWith(ACCESSOR_GET) && !dataGetters.has(mname)) {
-    const prop = mname.slice(0, -ACCESSOR_GET.length)
-    if (!methods.some(([m]) => m === prop + ACCESSOR_SET))
-      methods.push([prop + ACCESSOR_SET, names.genTemp('v'), ['{}', ['throw', ['new', ['()', 'TypeError', [null, `Cannot set property ${prop} of #<${name ?? 'Object'}> which has only a getter`]]]]]])
-  }
   const superMethods = heritage == null ? new Set() : new Set([
     ...collectSuperMethodCalls(ctorBody),
     ...fields.flatMap(([, init]) => init == null ? [] : [...collectSuperMethodCalls(init)]),
@@ -825,6 +815,23 @@ function lowerClass(name, heritage, body, hoists, trailers) {
       jzifyError(JC.superProp)
   }
   const base = typeof heritage === 'string' ? resolveClass(heritage) : null
+  // A property the class's members leave a getter without a setter (the last
+  // member of the name defines it, a method replacing an accessor whole),
+  // where the program stores into its name and no field of the instance
+  // holds it: the store throws, as one to a getter-only property does in
+  // strict code (a setter of its own that throws, which the store's dispatch
+  // finds as any setter). A prototype's data property, folded to a getter
+  // (foldPrototypeStores), is one an instance's store shadows with its own.
+  const descriptors = new Map()   // property → 'data' | the accessor's halves
+  for (const [mname] of methods) if (typeof mname === 'string') {
+    const half = mname.endsWith(ACCESSOR_GET) ? 'get' : mname.endsWith(ACCESSOR_SET) ? 'set' : null
+    const prop = half ? mname.slice(0, -ACCESSOR_GET.length) : mname, now = descriptors.get(prop)
+    const was = typeof now === 'object' ? now : null
+    descriptors.set(prop, !half ? 'data' : { get: half === 'get' ? !dataGetters.has(mname) : was?.get ?? false, set: half === 'set' || (was?.set ?? false) })
+  }
+  for (const [prop, d] of descriptors) if (typeof d === 'object' && d.get && !d.set && written(prop) &&
+      !fields.some(([f]) => f === prop) && !base?.fields?.includes(prop))
+    methods.push([prop + ACCESSOR_SET, names.genTemp('v'), ['{}', ['throw', ['new', ['()', 'TypeError', [null, `Cannot set property ${prop} of #<${name ?? 'Object'}> which has only a getter`]]]]]])
   const nativeCollection = base?.nativeCollection ??
     ((heritage === 'Map' || heritage === 'Set') && !shadowsBuiltin(heritage) ? heritage : null)
   // a member named at run time is no slot of a schema

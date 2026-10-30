@@ -400,7 +400,7 @@ let transform, transformScope, transformParams
 bindTransform(transform)
 
 const constStrings = new Map()
-;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, shadowsBuiltin: shadowsJzifyBuiltin, classBindingScope, readsConstructor: () => ctorUse.on, inherits: (name) => inherits(name), storedOn: (name) => census.receivers.has(name) }))
+;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, classBrand, classStaticAccessor, resetClasses } = createClassLowering({ transform, names, JC, constStrings, atModuleScope, lowerArguments, shadowsBuiltin: shadowsJzifyBuiltin, classBindingScope, readsConstructor: () => ctorUse.on, inherits: (name) => inherits(name), storedOn: (name) => census.receivers.has(name), written: (prop) => census.stored.has(prop) }))
 const generatorNames = new Set()
 // the ones whose return() runs code (closesOnReturn): loops over them close
 const generatorCloses = new Set()
@@ -430,7 +430,7 @@ const genErr = (msg) => err('jzify: ' + msg)
 // What the module assigns and the program writes by key (async.js
 // assignCensus): a suspension's hoisting reads what another activation may
 // change first. The program's keys come from every module the witness reads.
-let census = { names: new Map(), props: new Set(), receivers: new Set() }, programProps = new Set(), witnessed = new WeakSet()
+let census = { names: new Map(), props: new Set(), receivers: new Set(), stored: new Set() }, programProps = new Set(), programStored = new Set(), witnessed = new WeakSet()
 const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr, enterBody, leaveBody } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr, censusOf: () => census })
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, isGenerator, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, isGenerator, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
@@ -741,7 +741,7 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   if (Array.isArray(ast)) { const stmts = foldPrototypeStores(ast[0] === ';' ? ast.slice(1) : [ast]); ast = stmts.length === 1 ? stmts[0] : [';', ...stmts] }
   builtinScopes = buildBuiltinScopes(ast)
   census = assignCensus(ast, true)
-  if (witnessed.has(entry)) for (const key of programProps) census.props.add(key)
+  if (witnessed.has(entry)) { for (const key of programProps) census.props.add(key); for (const key of programStored) census.stored.add(key) }
   let out = transformScope(ast)
   // The lowerings reference runtime helpers (`__p_new`, `__it_drain`,
   // `__usp_new`) as free names: each resolves to its std module through the
@@ -766,8 +766,8 @@ jzify.iteratorProtocol = () => iterProto.program
 jzify.witness = (asts) => {
   // an empty module's tree is no object: nothing to witness
   witnessed = new WeakSet(asts.filter(ast => ast !== null && typeof ast === 'object'))
-  programProps = new Set()
-  for (const ast of asts) assignCensus(ast, true, new Map(), programProps)
+  programProps = new Set(); programStored = new Set()
+  for (const ast of asts) assignCensus(ast, true, new Map(), programProps, new Set(), programStored)
   iterProto.program = false
   iterProto.programHelpers = false
   ctorUse.program = false
