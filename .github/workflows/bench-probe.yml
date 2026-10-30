@@ -21,9 +21,14 @@ on:
       base:
         description: commit to measure beside this tree as jz-base (A/B on one machine)
         default: ''
+      node_flags:
+        description: node flag sets, ';'-separated (an empty set is the default), each run on jz's wasm and on V8's JS in alternating fresh processes after the paired rounds
+        default: ''
 jobs:
   probe:
     runs-on: ubuntu-latest
+    env:
+      JZ_BENCH_BUILD_DIR: ${{ github.workspace }}/../jz-bench
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,9 +71,35 @@ jobs:
         run: |
           [ -n "$JZ_BASE_ROOT" ] && TARGETS="${TARGETS/jz,/jz,jz-base,}"
           node bench/bench.mjs --cases="$CASES" --targets="$TARGETS" --paired="$REPEATS" --json="$RUNNER_TEMP/probe.json"
+      # The same built modules under other node flags: how much of a case's
+      # ratio is the engine's tiering (--no-liftoff, --v8-pool-size) and not code.
+      - name: flag rounds
+        if: ${{ inputs.node_flags != '' }}
+        env:
+          CASES: ${{ inputs.cases }}
+          REPEATS: ${{ inputs.repeats }}
+          FLAGS: ${{ inputs.node_flags }}
+        run: |
+          cat > "$RUNNER_TEMP/flags.mjs" <<'JS'
+          import { execFileSync } from 'node:child_process'
+          import { join } from 'node:path'
+          const [cases, rounds, sets] = [process.env.CASES.split(','), +process.env.REPEATS * 2, process.env.FLAGS.split(';')]
+          const med = a => [...a].sort((x, y) => x - y)[a.length >> 1]
+          const time = (flags, args) => +execFileSync('node', [...flags, ...args], { encoding: 'utf8', maxBuffer: 1 << 26 }).match(/median_us=([\d.]+)/)[1]
+          for (const id of cases) {
+            const lanes = { jz: ['bench/_lib/run-jz-host.mjs', join(process.env.JZ_BENCH_BUILD_DIR, id, `${id}-host.wasm`)], v8: ['bench/_lib/run-v8.mjs', `bench/${id}/${id}.js`] }
+            const runs = sets.map(set => ({ set: set || '(default)', flags: set.split(' ').filter(Boolean), jz: [], v8: [] }))
+            for (let r = 0; r < rounds; r++) for (const run of r % 2 ? [...runs].reverse() : runs)
+              for (const lane of r % 2 ? ['v8', 'jz'] : ['jz', 'v8']) run[lane].push(time(run.flags, lanes[lane]))
+            for (const run of runs) console.log(`${id} ${run.set.padEnd(24)} jz ${med(run.jz).toFixed(0).padStart(7)} µs  v8 ${med(run.v8).toFixed(0).padStart(7)} µs  jz/v8 ${med(run.jz.map((t, i) => t / run.v8[i])).toFixed(3)}  jz/jz-default ${(med(run.jz) / med(runs[0].jz)).toFixed(3)}  [jz ${run.jz.join(' ')}] [v8 ${run.v8.join(' ')}]`)
+          }
+          JS
+          node "$RUNNER_TEMP/flags.mjs" | tee "$RUNNER_TEMP/flags.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bench-probe
-          path: ${{ runner.temp }}/probe.json
+          path: |
+            ${{ runner.temp }}/probe.json
+            ${{ runner.temp }}/flags.log
           if-no-files-found: error
