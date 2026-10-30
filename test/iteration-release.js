@@ -101,6 +101,24 @@ test('iteration release: a store through a receiver the site keeps names the rec
   is(grown(300), grown(1), 'three hundred iterations grow what one does')
 })
 
+test('iteration release: a loop calling a function of the program stays a loop that releases', () => {
+  // the loop indexes a small typed array by its counter, which a copy per value
+  // would make literal (plan/literals.js unrollTypedArrayLoops): the copies
+  // would have no boundary to give an iteration's memory back at. As a bench
+  // reports through the host, `f` reports through a module binding: a frame
+  // that reads the escape flag, which a release reads under
+  const src = `let report = null
+    const make = (n) => { const o = { buf: new Float64Array(n), next: null }; o.next = { buf: new Float64Array(n) }; o.buf[0] = n; return o }
+    const median = (a) => { const s = a.slice().sort(); return s[s.length >> 1] }
+    export let f = (n) => { let out = null; const samples = new Float64Array(11)
+      for (let i = 0; i < 11; i++) { out = make(n); samples[i] = out.buf[0] + i }
+      report = [median(samples), out.buf[0], out.next.buf.length]
+      return report[0] + report[1] + report[2] }`
+  agree(src, [1, 8, 3000])
+  const grown = grownBy(src)
+  ok(grown(20000) <= 4 * 2 * 20000 * 8, `eleven iterations of 320 KB grow ${grown(20000)} bytes, not eleven times that`)
+})
+
 test('iteration release: a module binding keeps what it was given, the rest goes', () => {
   const src = `let g = null
     export let f = (n) => { let cs = 0; for (let i = 0; i < n; i++) { const t = []; for (let k = 0; k < 40; k++) t.push(k); g = [i, t.length]; cs += t[3] } ${CHURN}; return g[0] + g[1] + cs + junk.length }`

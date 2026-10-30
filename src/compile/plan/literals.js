@@ -552,6 +552,12 @@ function smallScalarTypedForTrip(init, cond, step) {
   return { name: decl[1], end }
 }
 
+// A body that calls a function of the program's keeps its loop: the copies
+// shrink the element accesses, not the call, and what the call allocates goes
+// back at an iteration's boundary (the release or compaction of
+// emit/control-flow.js), which a run of copies has none of.
+const callsProgram = (body) => some(body, n => n[0] === '()' && typeof n[1] === 'string' && !!ctx.funcs.map.get(n[1])?.body)
+
 const scalarTypedLoopBudget = (body) => {
   if (!Array.isArray(body) || body[0] === '=>') return 1
   if (body[0] === 'for') {
@@ -582,7 +588,7 @@ const unrollTypedArrayLoops = (node, names) => {
   }
   if (node[0] === 'for') {
     const trip = smallScalarTypedForTrip(node[1], node[2], node[3])
-    if (trip && indexesByCounter(node[4], names, trip.name) && scalarTypedLoopBudget(node[4]) * trip.end <= maxScalarTypedNestedUnroll() &&
+    if (trip && indexesByCounter(node[4], names, trip.name) && !callsProgram(node[4]) && scalarTypedLoopBudget(node[4]) * trip.end <= maxScalarTypedNestedUnroll() &&
         !hasControlTransfer(node[4]) && !containsDeclOf(node[4], trip.name) && !isReassigned(node[4], trip.name)) {
       const out = [';']
       const bindings = new Set()
