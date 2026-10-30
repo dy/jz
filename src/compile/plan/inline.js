@@ -86,6 +86,24 @@ const eagerCallFreeBooleans = n => walkAst(n, { enter: n => {
 const isPureCallee = name => typeof name === 'string' && name.startsWith('math.') && name !== 'math.random'
 
 const bodyHasCall = body => some(body, n => n[0] === '()' || n[0] === 'new')
+// A property or an element read of a value of several kinds is answered by a dispatch over
+// the kinds at run time: a hundred instructions or more where the source has a few nodes
+// (watr's `isId`, `n => n?.[0] === '$'`, emits 145). A splice resolves it where the site
+// gives the parameter read so one kind; where the site's argument is of several kinds too,
+// the copy is the whole dispatch again.
+const MEMBER_READS = new Set(['.', '?.', '[]', '?.[]'])
+const several = (kd) => kd != null && tagOf(core(kd)) === K.ANY
+/** The positions of the parameters of several kinds `func` reads a property or element of, or null. */
+const dispatchParams = (func) => {
+  const view = ctx.summary?.at(func.sig)
+  if (!view) return null
+  const at = new Map((func.sig?.params || []).map((p, i) => [p.name, i])), out = new Set()
+  some(func.body, n => {
+    if (MEMBER_READS.has(n[0]) && n.length === 3 && typeof n[1] === 'string' && at.has(n[1]) && several(view.kindOfExpr(n[1]))) out.add(at.get(n[1]))
+    return false
+  })
+  return out.size ? [...out] : null
+}
 const BIND = CLASS_T + 'bind'
 
 /** Candidates spliced at their sites in loops only; a straight-line site keeps
@@ -445,6 +463,21 @@ const WARM_BODY = 200
 let callerSize = 0, callerBound = true, kernels = new Set(), inClosure = false
 // The candidates a second site or an export keeps: a splice of one copies its body.
 let sharedBodies = new Set()
+// Of those, the ones reading a property or element of a parameter of several kinds: name → its positions (`dispatchParams`).
+let dispatchAt = new Map()
+/** Whether a site of a shared body passes an argument of several kinds where the body reads one
+ *  (`dispatchAt`): its copy would be the dispatch again, which grows the caller by a hundred
+ *  instructions a read and saves one call. The engine's optimizing tier compiles a function
+ *  whole once it is hot, its copies at sites that never run among the rest, and inlines a body
+ *  it keeps at the sites that do. watr's token helpers (`isId`, `top`, `isStr`), copied to every
+ *  site, put 12 KB more in the functions that tier up, a tenth of that tier's compile work,
+ *  while the bench ran in baseline code; tiered up it ran no faster for them. The site keeps the call. */
+const keepsDispatch = (node) => {
+  const at = dispatchAt.get(node[1])
+  if (!at) return false
+  const args = callArgs(node)
+  return !!args && at.some(i => i < args.length && several(callerView?.kindOfExpr(args[i])))
+}
 // The candidates that splice only where an argument they call is a function: name → the positions of those parameters.
 let fnSites = new Map()
 // The positions of the parameters `func` calls inside a loop.
@@ -479,6 +512,7 @@ const isFunctionArg = isFunctionValue
 const isCandidateCall = (node, candidates, hot = false) => {
   if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string' || !candidates.has(node[1])) return false
   if (callerSize > SOURCE_FULL && sharedBodies.has(node[1])) return false
+  if (keepsDispatch(node)) return false
   if (warm.has(node[1])) { if (loopsDeep === 0 && !hot || callerSize > SOURCE_FULL) return false }
   else if (!hot && hotOnly.has(node[1])) return false
   if (!hot && callerBound && callerSize > SOURCE_FULL && kernels.has(node[1])) { ctx.plans.keptKernels.add(node[1]); return false }
@@ -840,7 +874,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
     return out
   }
   const hNode = (n, pre, cond, eff) => {
-    if (!cond && n[0] === '()' && typeof n[1] === 'string' && lifts(n[1]) && unitCommutes(n, eff)) {
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && lifts(n[1]) && !keepsDispatch(n) && unitCommutes(n, eff)) {
       const argEffects = effState()
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, argEffects))]
       const tmp = `${T}inl${freshId(ctx)}_h`
@@ -953,6 +987,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   loopsDeep = 0
   kernels = new Set()
   sharedBodies = new Set()
+  dispatchAt = new Map()
   fnSites = new Map()
   callerSize = 0
   // the size tier keeps one copy of what is called once, wherever: a function of its own costs its frame
@@ -1232,7 +1267,11 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (loopOnly || warmBody) hotOnly.add(func.name)
     if (warmBody) warm.add(func.name)
     if (fnOnly) fnSites.set(func.name, called)
-    if (isExported(func) || sites.length !== 1) sharedBodies.add(func.name)
+    if (isExported(func) || sites.length !== 1) {
+      sharedBodies.add(func.name)
+      const at = dispatchParams(func)
+      if (at) dispatchAt.set(func.name, at)
+    }
     candidates.set(func.name, func)
     if (constructs) constructing.add(func.name)
     recollect = true  // a function this one blocked (a caller of it) may qualify now

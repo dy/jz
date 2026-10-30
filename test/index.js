@@ -212,6 +212,7 @@ const TESTS = [
   'tested-counter',
   'guard-views',
   'inline-pure-leaf',
+  'inline-dispatch',
   'lean-dict',
   'int-narrow', 'reuse-loads',
   'specialize', 'guards', 'inline-args', 'growth', 'push', 'forward-hops',
