@@ -57,6 +57,14 @@ test('warnings: heap-loop when a loop body allocates', () => {
   is(ws[0].code, 'heap-loop')
 })
 
+test('warnings: an fs.readSync options literal in a loop makes no object', () => {
+  // module/fs.js reads the literal's keys at compile time; what its values allocate still counts
+  const loop = (call) => `import fs from 'fs'
+    export let _start = () => { const b = new Uint8Array(4), q = []; let n = 0; for (let k = 0; k < 3; k++) { n += ${call} } fs.writeSync(1, String(n + q.length)) }`
+  is(warningsFor(loop('fs.readSync(0, b, { offset: 0, length: 4 })'), { host: 'wasi' }).filter(w => w.code === 'heap-loop').length, 0)
+  is(warningsFor(loop('fs.readSync(0, b, { offset: 0, length: (q.push(1), 4) })'), { host: 'wasi' }).filter(w => w.code === 'heap-loop').length, 1)
+})
+
 test('warnings: an export whose calls keep nothing stays quiet, parameters and all', () => {
   is(warningsFor('export let f = (n) => { let xs = []; xs.push(n); return xs.length }').length, 0)
   is(warningsFor('export let f = (buf) => { let s = 0; const t = [0]; for (let i = 0; i < buf.length; i++) s += buf[i]; return s + t.length }').filter(w => w.code === 'heap-per-call').length, 0)

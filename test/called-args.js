@@ -99,6 +99,32 @@ test('called args: nested closures keep captured argument values and writes', ()
     export function probe() { return pick('a') }`, [['probe'], ['probe']])
 })
 
+// A reader and a writer handed down through the functions that only pass them on
+// (a Native Messaging host's `runNmHost(read, write) → runRechunk → readFillExact`):
+// each copy names the function to its callee, whose own copy calls it directly.
+const handedDown = `function sq (x) { return x * x }
+function inc (x) { return x + 1 }
+function fill (read, buf, n) { let got = 0; while (got < n) { buf[got] = read(got); got++ } return got }
+function serve (read, write, n) {
+  const buf = new Float64Array(n)
+  fill(read, buf, n)
+  let s = 0
+  for (let i = 0; i < n; i++) s += write(buf[i])
+  return s
+}
+function host (read, write, n) { return serve(read, write, n) + serve(read, write, n >> 1) }
+export let run = (n) => host(sq, inc, n) + host(inc, sq, n)`
+
+test('called args: a function passed on through further calls reaches its callee by name', () => {
+  agrees(handedDown, [['run', 0], ['run', 1], ['run', 10]])
+  if (!belowOpt(2)) ok(!/call_indirect/.test(wat(handedDown, { optimize: 2 })), 'no indirect call')
+  // passed on to a function that compares it, the value stays the function's
+  agrees(`function sq (x) { return x * x }
+    function tag (f) { return f === sq ? 1 : 2 }
+    function host (f, x) { return tag(f) * 100 + f(x) }
+    export let run = (x) => host(sq, x)`, [['run', 3]])
+})
+
 // A mode string per call site: the copy reads the literal, its tests decide and
 // the arms they rule out go (the band-limited `wave(type, t, dt)` of synth-osc).
 const modes = `const around = (t, dt) => t * dt

@@ -34,12 +34,19 @@ import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { clonePlain, collectBindings, nodeSize } from './common.js'
 
-/** Whether every mention of `name` in `node` is a call's callee, the calls collected. */
+/** Whether every mention of `name` in `node` is a call's callee or an argument a
+ *  call of a declared function passes on as it is (`readFill(read, buf)` in a
+ *  function given `read`), the calls collected. */
 const onlyCalled = (node, name, calls) => {
   if (typeof node === 'string') return node !== name
   if (!Array.isArray(node) || node[0] === 'str' || node[0] == null) return true
   if (node[0] === '=>') return !refsName(node, name, REFS_IN_EXPR)
   if (node[0] === '.' || node[0] === '?.') return onlyCalled(node[1], name, calls)
+  if (node[0] === '()' && typeof node[1] === 'string' && node[1] !== name && ctx.funcs.map.has(node[1])) {
+    const args = callArgs(node)
+    if (args.includes(name)) calls.push(node)
+    return args.every(a => a === name || onlyCalled(a, name, calls))
+  }
   let i = 1
   if (node[0] === '()' && node[1] === name) { calls.push(node); i = 2 }
   for (; i < node.length; i++) if (!onlyCalled(node[i], name, calls)) return false
@@ -122,10 +129,17 @@ const settle = (n) => {
   }
 }
 
-/** The body with each call of the parameter spelled as a call of `fn`. */
+/** The body with each call of the parameter spelled as a call of `fn`, and each
+ *  call passing it on passing `fn`: its callee, given a named function, may then
+ *  take a copy of its own. */
 const spelled = (body, param, fn) => {
   const out = clonePlain(body)
-  walkAst(out, { enter: (n) => { if (n[0] === '()' && n[1] === param) n[1] = fn } })
+  walkAst(out, { enter: (n) => {
+    if (n[0] !== '()') return
+    if (n[1] === param) n[1] = fn
+    const args = callArgs(n)
+    if (args?.includes(param)) setCallArgs(n, args.map(a => a === param ? fn : a))
+  } })
   return out
 }
 

@@ -192,7 +192,12 @@ export default function plan(ast, profiler, summarize) {
   // A local holding one of several functions and only called: a choice of direct calls.
   sweep('callChosenFunctions', () => callChosenFunctions(ast))
   // A parameter only called, given a named function: a copy that calls it by name.
-  sweep('specializeCalledArgs', () => specializeCalledArgs(facts(), ast))
+  // A copy passing it on names it to its callee, whose copy the next round makes.
+  sweep('specializeCalledArgs', () => {
+    let any = false
+    for (let round = 0; round < 8 && specializeCalledArgs(facts(), ast); round++) any = _dirty = true
+    return any
+  })
   let spliced = false
   sweep('inlineHotInternalCalls', () => (spliced = inlineHotInternalCalls(facts(), ast)))
   // A spliced call's statements are statements of its caller's lists, and its seams

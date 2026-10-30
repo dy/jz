@@ -1,5 +1,5 @@
 import { ctx, warn, err } from '../../ctx.js'
-import { walkAst, some, refsName, REFS_IN_EXPR } from '../../ast.js'
+import { walkAst, some, refsName, REFS_IN_EXPR, callArgs } from '../../ast.js'
 import { intLiteralValue } from '../../static.js'
 import { VAL } from '../../reps.js'
 import { adviseJsstringCarrier } from '../narrow.js'
@@ -32,7 +32,22 @@ function isHeapAlloc(node) {
   return false
 }
 
-const containsHeapAlloc = (node) => some(node, isHeapAlloc, { skipArrow: false })
+// An fs.readSync/writeSync options literal is read at compile time (module/fs.js):
+// no object is made, its values run as written.
+const STATIC_OPTIONS = new Set(['fs.readSync', 'fs.writeSync'])
+const optionValues = (o) => (o.length === 2 && Array.isArray(o[1]) && o[1][0] === ',' ? o[1].slice(1) : o.slice(1)).map(e => Array.isArray(e) && e[0] === ':' ? e[2] : e)
+const containsHeapAlloc = (node) => {
+  let hit = false
+  walkAst(node, { enter: (n) => {
+    if (hit) return false
+    if (n[0] === '()' && STATIC_OPTIONS.has(n[1])) {
+      hit = callArgs(n).some((a, i) => i === 2 && Array.isArray(a) && a[0] === '{}' ? optionValues(a).some(containsHeapAlloc) : containsHeapAlloc(a))
+      return false
+    }
+    if (isHeapAlloc(n)) { hit = true; return false }
+  } })
+  return hit
+}
 
 function heapLoopBody(node) {
   if (!Array.isArray(node) || !HEAP_LOOP_OPS.has(node[0])) return null
