@@ -66,6 +66,29 @@ test('function properties: a call of a property defined once is a call of its fu
   ok(!/\$__typed_idx/.test(compile(src, { wat: true, optimize: { sourceInline: false, inlineFns: false } })), 'the element reads take the callers\' Float32Array')
 })
 
+// A property defined once that is also read as a value (`parse.prop && parse.prop(x)`,
+// subscript's keyword guard) is a module global its one store writes: undefined
+// where it is read before the store runs, the function after; its calls stay direct.
+test('function properties: a property read as a value and called reads a global, undefined before its store', () => {
+  const src = `function parse(x) { return parse.prop ? parse.prop(x) : -1 }
+    const before = parse(3)
+    parse.prop = (x) => x * 2
+    const after = parse(3)
+    export let f = (x) => [before, after, parse(x), parse.prop && parse.prop(x + 1)]`
+  // only tested (a condition, `!`, a chain a test reads): the global holds 1, the
+  // function a callee alone; read as a value (`typeof`, `||`'s result), it holds the function
+  const tested = `function parse(x) { return parse.prop ? parse.prop(x) : -1 }
+    const before = [parse(3), !parse.prop, (parse.prop && 2) || 3]
+    parse.prop = (x) => x * 2
+    export let f = (x) => [before, parse(x), !parse.prop, (parse.prop && 2) || 3, parse.prop && parse.prop(x)]`
+  const valued = `function parse(x) { return parse.prop ? parse.prop(x) : -1 }
+    parse.prop = (x) => x * 2
+    export let f = (x) => [parse(x), typeof parse.prop, typeof (parse.prop || 0)]`
+  agree([['before and after its store', src, 5], ['a fraction', src, 0.5], ['only tested', tested, 4], ['read as a value', valued, 4]])
+  if (belowOpt(2)) return
+  ok(!/\$__dyn_(get|set)/.test(compile(src, { wat: true })), 'no property table')
+})
+
 // A namespace property becomes a module global; read while the module initializes,
 // ahead of its first store, it is undefined there. The summary decides what the
 // initializers run before each store (summary/index.js settleInitOrder): a call

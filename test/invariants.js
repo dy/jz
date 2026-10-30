@@ -1196,13 +1196,15 @@ test('invariant: value reads, global devirt, and init arguments take the functio
   if (onKernel()) return
   const reach = (index, name) => index.isGraphReachable(index.graphFunctionIdOfName(name))
 
-  compile('let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nconst saved = ns.p\nexport let h = (v) => saved(v)')
+  // (the value escapes into an array: a read only called through the binding it lands
+  // in reads the property's global and calls its one function directly, no address)
+  compile('let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nconst saved = ns.p\nconst other = (v) => -v\nconst fns = [saved, other]\nexport let h = (v) => fns[v & 1](v)')
   let index = ctx.plans.programIndex
   ok(index.addressTaken.has('ns$p') && reach(index, 'ns$p'),
     'a function-property read in value position takes the member\'s address')
-  ok(reach(index, 'ns') && !index.addressTaken.has('ns'), 'the base function is a root, its parameters stay covered')
+  ok(!index.addressTaken.has('ns'), 'the base function, a namespace dissolved into globals, keys no table and takes no address')
 
-  compile('let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nexport let h = (v) => ns.p && v ? 1 : 0')
+  compile('let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nexport let h = (v) => ns.p && v ? ns.p(v) : 0')
   index = ctx.plans.programIndex
   ok(reach(index, 'ns$p') && !index.addressTaken.has('ns$p'),
     'a member read consumed only as a truthiness test is a root without taking the address')

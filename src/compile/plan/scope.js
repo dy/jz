@@ -618,6 +618,33 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
   // f → Map<prop, decision>; decision is { global } (SROA) or { drop } (dead
   // write to an only-called single-write slot).
   const flat = new Map()
+  // Every value read of `f.prop` a test: an `if`'s, a choice's or a loop's
+  // condition, `!`'s operand, `&&`'s left, or an operand whose value only such a
+  // test reads (`&&`'s right, `||`'s and `??`'s either side, a choice's arm, where
+  // the whole is a test). Only its truth is read then, the same of its function
+  // as of 1, undefined before the store either way.
+  const roots = [ast, ...(ctx.module.moduleInits || []), ...ctx.funcs.list.flatMap(fn => fn.body && !fn.raw ? frameRoots(fn) : [])]
+  const testedOnly = (f, prop) => {
+    let only = true
+    const walk = (n, test) => {
+      if (!only || !Array.isArray(n) || n[0] === 'str') return
+      const op = n[0]
+      if ((op === '.' || op === '?.') && n[1] === f && n[2] === prop) { if (!test) only = false; return }
+      if ((op === '()' || op === '?.()') && n.length > 2 && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.') && n[1][1] === f && n[1][2] === prop) { for (let i = 2; i < n.length; i++) walk(n[i], false); return }   // a call
+      if (MUTATE_OPS.has(op) && Array.isArray(n[1]) && n[1][1] === f && n[1][2] === prop) { walk(n[2], false); return }   // a store
+      if (op === 'if' || op === 'while') { walk(n[1], true); for (let i = 2; i < n.length; i++) walk(n[i], false); return }
+      if (op === 'for') { walk(n[1], false); walk(n[2], true); walk(n[3], false); walk(n[4], false); return }
+      if (op === 'do') { walk(n[1], false); walk(n[2], true); return }
+      if (op === '!') { walk(n[1], true); return }
+      if (op === '&&') { walk(n[1], true); walk(n[2], test); return }
+      if (op === '||' || op === '??') { walk(n[1], test); walk(n[2], test); return }
+      if (op === '?:') { walk(n[1], true); walk(n[2], test); walk(n[3], test); return }
+      if (op === '()' && n.length === 2) { walk(n[1], test); return }
+      for (let i = 1; i < n.length; i++) walk(n[i], false)
+    }
+    for (const root of roots) walk(root, false)
+    return only
+  }
   for (const [f, info] of ns) {
     if (info.disq && info.rebound) continue
     let decide
@@ -641,8 +668,13 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
       // as `C.m(…)`, the class itself a value its `constructor` hands out.
       if (info.disq) { if (lifted) plan(prop, { direct: `${f}$${prop}`, drop: false }); continue }
       if (multi) { plan(prop, { global: `${f}${T}${prop}` }); continue }
+      // Read as a value as well (`parse.prop && parse.prop(…)`), the slot is what
+      // its one store leaves, undefined before it runs: a global the store
+      // writes, as any other slot of the namespace, its calls direct still; one
+      // only tested holds 1, and the function stays a callee, its address untaken.
       if (lifted) {
-        plan(prop, { direct: `${f}$${prop}`, drop: !info.valRead.has(prop) })
+        plan(prop, !info.valRead.has(prop) ? { direct: `${f}$${prop}`, drop: true }
+          : { direct: `${f}$${prop}`, global: `${f}${T}${prop}`, flag: testedOnly(f, prop) })
         continue
       }
       // Everything else dissolves into a module global — the namespace is
@@ -683,7 +715,7 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
     }
     if (op === '=' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
       const d = decisionFor(node[1][1], node[1][2])
-      if (d?.global) return ['=', d.global, rewrite(node[2])]
+      if (d?.global) return ['=', d.global, d.flag && stmt ? [null, 1] : rewrite(node[2])]
       if (d?.drop) return stmt ? [';'] : rewrite(node[2])  // dead write — statement: nothing; value: the rhs
     }
     const out = [op]
