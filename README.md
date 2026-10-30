@@ -454,14 +454,18 @@ JavaScript's bounds checks.
 - **[TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler)** (`tslang`) compiles TypeScript through LLVM/MLIR to native executables or WebAssembly. Our native benchmark lane feeds it the unchanged JavaScript corpus saved as `.ts`, with its default library and garbage collector.
 - **[Perry](https://perryts.com/)** compiles JS/TS through LLVM to native executables with a linked runtime and garbage collector. Our [benchmarks](bench/README.md) cover its native output on the unchanged JS corpus.
 - **[Tov](https://github.com/richiemcilroy/Tov)** is a TypeScript-shaped language compiled through C to native binaries. It rejects untyped JS (no `any`, typed arrays or `Math.imul`), so the benchmarks run it like AssemblyScript, on hand-ported cases.
-- **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** produces lean WASM, but is not directly executable JavaScript.
+- **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** produces lean WASM from a TypeScript dialect with WASM types (`i32`, `f64`, …); its source is not JavaScript that runs as is. JZ's source is plain JavaScript that runs unchanged in any engine.
 - **Rust, C, Zig, Go, and MoonBit** compiled to wasm run behind JZ by geomean on
   the corpus: rustc, clang and zig about 2×, Go and MoonBit over 4×. As native
   binaries Rust, Zig and Go still trail and C is level, so a rewrite buys a
   second toolchain and test suite for slower wasm.
-- **[Javy](https://github.com/bytecodealliance/javy)** and
-  **[ComponentizeJS](https://github.com/bytecodealliance/ComponentizeJS)** accept
-  broader JavaScript by shipping an interpreter or engine inside WASM.
+- **[Javy](https://github.com/bytecodealliance/javy)**,
+  **[ComponentizeJS](https://github.com/bytecodealliance/ComponentizeJS)**,
+  **[componentize-qjs](https://github.com/andreiltd/componentize-qjs)** and
+  QuickJS-NG builds for WASI such as
+  [quickjs-ng-wasi-wasm](https://github.com/guest271314/quickjs-ng-wasi-wasm)
+  accept broader JavaScript by shipping an interpreter or engine inside WASM
+  (StarlingMonkey or QuickJS). JZ ships no engine in its output.
 
 </details>
 
