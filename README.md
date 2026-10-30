@@ -156,7 +156,7 @@ Where behaviour differs from JS:
 - **Math within 50 ulp of V8.** Measured against V8's results: `sin`, `cos`, `tan` up to 49 ulp, `asin`, `acos` 1, `atan`, `atan2` 10, exponentials, logarithms, hyperbolics and `hypot` 5, `pow` 11, a constant `** 2.4`-style exponent 40; `sqrt` and `cbrt` agree. A test comparing them bit for bit needs a tolerance. `x ** 0.5` is `Math.sqrt(x)`, so `(-Infinity) ** 0.5` is NaN.
 - **BigInt is 64-bit.** It wraps past its range and has no `**`. `BigInt64Array` and `BigUint64Array` share one representation: a value of either passes `instanceof` for both, and `.constructor` of either reads undefined.
 - **No holes.** `[1, , 3]` and a write past the end fill the gap with `undefined` elements: `1 in a`, `Object.keys` and `forEach` see them.
-- **32-bit element indices.** An array holds up to 2³¹−1 elements. A store under a number that is not an index (`a[1.5] = v`, `a[-1] = v`) is dropped, where JavaScript gives the array a named property.
+- **32-bit element indices.** An array holds up to 2²⁹−3 elements, eight bytes each in wasm32's memory: a longer length, from `new Array(n)`, `a.length = n` or a store past it, throws the RangeError of an allocation, where JavaScript makes a sparse array. A store under a number that is not an index (`a[1.5] = v`, `a[-1] = v`) is dropped, where JavaScript gives the array a named property.
 - **Regexes compile at build time.** `new RegExp(pattern)` needs a literal; `\p{…}`, `d` and `v` flags are unsupported.
 - **ASCII case, UTC dates.** No locale or timezone tables: case conversion is ASCII, `normalize` returns its input, Date getters use UTC.
 - **Fixed shapes.** Object fields are slots resolved at compile time; `Object.freeze` does nothing and errors carry `name` and `message` only.

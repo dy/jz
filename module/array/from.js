@@ -16,6 +16,7 @@ import { staticPropertyKey } from '../../src/static.js'
 import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, inc, err, PTR, setLinkDemand } from '../../src/ctx.js'
 import { errorCodeLiteral, ERR } from '../../err-codes.js'
+import { DENSE_MAX } from '../core.js'
 import { makeCallback, idxArg } from './callback.js'
 import { representationProgramHasBigint } from '../../src/compile/representation-plan.js'
 
@@ -72,7 +73,7 @@ const staticArrayLikeLength = src => {
 
 // __alloc_hdr reserves 16 + len*8 bytes in a wasm32 i32 size. Keep that
 // computation non-wrapping; larger legal JS lengths reject as unsupported.
-const ARRAY_FROM_MAX_LENGTH = 0x1ffffffd
+const ARRAY_FROM_MAX_LENGTH = DENSE_MAX
 const toLengthIR = (raw, num, len) => [
   ['local.set', `$${num}`, ['call', '$__to_num', ['i64.reinterpret_f64', ['local.get', `$${raw}`]]]],
   ['if', ['f64.gt', ['local.get', `$${num}`], ['f64.const', ARRAY_FROM_MAX_LENGTH]],

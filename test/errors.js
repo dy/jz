@@ -742,6 +742,42 @@ test('host decode: memory that cannot grow is the RangeError of an allocation', 
   is(exports.tryGrow(1e6), -1, 'the program catches it as a RangeError')
 })
 
+// An array holds its elements dense, eight bytes each (module/core.js
+// DENSE_MAX): a length past 2^29 - 3 cannot be stored, where JavaScript makes a
+// sparse array. Every path to one throws the RangeError of an allocation, which
+// the program catches and after which the heap is whole: `new Array(n)` wrote
+// n into an i32 header over a block its wrapped size reserved (3e9 read
+// -1294967296, 2147483000 read -1), and an index store or a grow past 2^29
+// handed out the same block (memory access out of bounds, or worse, none).
+test('array length past what memory can hold is the RangeError of an allocation', () => {
+  const src = `export let ctor = (n) => { const a = new Array(n); return [a.length, a[0], a[n - 1]] }
+    export let setLen = (n) => { const a = [1, 2]; a.length = n; return [a.length, a[1], a[n - 1]] }
+    export let store = (n) => { const a = [1]; a[n - 1] = 2; return [a.length, a[0], a[n - 1]] }
+    export let from = (n) => Array.from({ length: n }).length
+    export let fill = (n) => new Array(n).fill(7).reduce((s, v) => s + v, 0)
+    export let push = (n) => { const a = new Array(n); a.push(5); return [a.length, a[n]] }
+    export let caught = (n) => { const keep = [1, 2, 3]
+      try { new Array(n); return -2 } catch (e) { return e instanceof RangeError ? keep.reduce((s, v) => s + v, 0) + [4, 5].length : -1 } }`
+  const ref = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const m = jz(src, { optimize }).exports
+    for (const f of ['ctor', 'setLen', 'store', 'from', 'fill', 'push']) for (const n of [1, 3, 100])
+      is(m[f](n), ref[f](n), `${f}(${n}) O${optimize}`)
+    for (const n of [2 ** 32, 2.5, -1]) for (const f of ['ctor', 'setLen']) {
+      let e; try { m[f](n) } catch (x) { e = x }
+      ok(e instanceof RangeError && e.message === 'Invalid array length', `${f}(${n}) is an invalid length at O${optimize}: ${e?.message}`)
+    }
+    for (const n of [536870910, 2 ** 30, 2147483000, 2 ** 31, 3e9, 2 ** 32 - 1]) {
+      for (const f of ['ctor', 'fill', 'push', ...(n < 2 ** 31 ? ['store', 'setLen'] : ['setLen'])]) {
+        let e; try { m[f](n) } catch (x) { e = x }
+        ok(e instanceof RangeError && e.message === 'Out of memory: the heap cannot grow', `${f}(${n}) at O${optimize}: ${e?.message ?? JSON.stringify(m[f](1))}`)
+      }
+      is(m.caught(n), 8, `caught(${n}) at O${optimize}`)
+    }
+    is(m.ctor(3), [3, undefined, undefined], `the heap is whole after the throws at O${optimize}`)
+  }
+})
+
 test('host decode: a decoded escape does not leave a stale marker for the next trap', () => {
   // A real userThrows escape (WebAssembly.Exception path) writes the SAME marker
   // global a trap-lowered throw does — decodeThrown must consume it there too, or

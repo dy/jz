@@ -48,7 +48,7 @@ import { sidecarOverride } from '../src/compile/emit/own-method.js'
 const NAN_BITS = nanPrefixHex()
 // The RangeError of an allocation linear memory cannot hold: the code goes to
 // the marker the host decodes (interop.js decodeThrown), then the throw.
-const HEAP_EXHAUSTED_THROW = `(global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)})))
+export const HEAP_EXHAUSTED_THROW = `(global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)})))
   (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)}))`
 
 // Element count from a validated TYPED offset and decoded aux bits.
@@ -80,6 +80,13 @@ const typedIdxDeps = () => !typedLinked() ? ['__len', '__ptr_offset', '__ptr_off
 // An element of the array `$ptr` as a value (`load` its cell): where the program
 // keeps an array's elements raw (compile/numeric-arrays.js) `__arr_cell` reads
 // the pointer's aux first, so that no Number's bits read as a hole.
+// The most eight-byte slots a block holds: its 16-byte header and slots are a
+// size of at most 2^32 - 8 bytes in the i32 the allocator takes, which its
+// wraparound test answers exactly. Every length or capacity of an array is held
+// to it, where JavaScript's sparse arrays reach 2^32 - 1: past it, an array
+// cannot be stored, as one that outgrows the memory cannot (README: no holes).
+export const DENSE_MAX = 0x1ffffffd
+
 export const arrCellHelper = () => numericArraysOn() ? '__arr_cell' : '__arr_value'
 export const arrCellWat = (load) => numericArraysOn() ? `(call $__arr_cell (local.get $ptr) ${load})` : `(call $__arr_value ${load})`
 
@@ -1022,11 +1029,14 @@ export default (ctx) => {
     if (place) declGlobal('__heap_color', 'i32', 0)
     // Own-memory twin: reject unsigned wraparound here too, before __memgrow
     // sees an offset that has already wrapped below the live heap (with the
-    // gap, against the top before it: gap and size stay under 2^32).
+    // gap, against the top before it). The test is exact while the size, the
+    // gap (a multiple of 8, at most 4088) and the rounding stay under 2^32: a
+    // block within 4 KiB of 2^32 bytes takes no gap (a header allocator's
+    // refused capacity asks 2^32 - 8, which the gap wrapped back above the top).
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
       (local $ptr i32) (local $next i32)
       (local.set $ptr (global.get $__heap))${place ? `
-      (if (i32.ge_u (local.get $bytes) (i32.const 4096))
+      (if (i32.lt_u (i32.sub (local.get $bytes) (i32.const 4096)) (i32.const -8192))
         (then
           (local.set $ptr (i32.add (local.get $ptr) (i32.and (i32.sub (global.get $__heap_color) (local.get $ptr)) (i32.const 4095))))
           (global.set $__heap_color (i32.and (i32.add (global.get $__heap_color) (i32.const 1024)) (i32.const 4095)))))` : ''}
@@ -1719,9 +1729,12 @@ export default (ctx) => {
   // Specialized over a generic (len, cap, stride) helper to drop a fat (i32.const 8)
   // immediate at every call site (~20+) plus a param/local.get pair in the body.
   // Non-8 strides (Set: 16, Map/HASH probe: 24, TypedArray raw: 1) use __alloc_hdr_n.
+  // A capacity past DENSE_MAX is a size that wraps the i32: it asks for 2^32 - 8
+  // bytes, which no heap above address 8 holds and __alloc refuses.
   ctx.core.stdlib['__alloc_hdr'] = `(func $__alloc_hdr (param $len i32) (param $cap i32) (result i32)
     (local $ptr i32)
-    (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.shl (local.get $cap) (i32.const 3)))))
+    (local.set $ptr (call $__alloc (select (i32.const -8) (i32.add (i32.const 16) (i32.shl (local.get $cap) (i32.const 3)))
+      (i32.gt_u (local.get $cap) (i32.const ${DENSE_MAX})))))
     (i64.store (local.get $ptr) (i64.const 0))
     (i32.store offset=8 (local.get $ptr) (local.get $len))
     (i32.store offset=12 (local.get $ptr) (local.get $cap))
@@ -1736,7 +1749,8 @@ export default (ctx) => {
   // grow path, which rehashes into a freshly-allocated table expecting empties.
   ctx.core.stdlib['__alloc_hdr_n'] = `(func $__alloc_hdr_n (param $len i32) (param $cap i32) (param $stride i32) (result i32)
     (local $ptr i32)
-    (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (local.get $stride)))))
+    (local.set $ptr (call $__alloc (select (i32.const -8) (i32.add (i32.const 16) (i32.mul (local.get $cap) (local.get $stride)))
+      (i32.gt_u (local.get $cap) (i32.div_u (i32.const -24) (local.get $stride))))))
     (i64.store (local.get $ptr) (i64.const 0))
     (i32.store offset=8 (local.get $ptr) (local.get $len))
     (i32.store offset=12 (local.get $ptr) (local.get $cap))

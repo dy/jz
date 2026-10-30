@@ -1006,8 +1006,10 @@ test('minimal: the size tier links the plain string walks', () => {
     is(jz(src, { optimize: 'size' }).exports.f(n), jsFn(src, 'f')(n), `size n=${n}`)
     is(jz(src, { optimize: 3 }).exports.f(n), jsFn(src, 'f')(n), `speed n=${n}`)
   }
+  // (2461 -> 2472: the probe table's allocator refuses a capacity whose size
+  // wraps the i32, module/core.js __alloc_hdr_n)
   const bytes = compile(src, { optimize: 'size', alloc: false }).length
-  ok(bytes <= 2466, `dictionary count: ${bytes} B (recorded 2466)`)
+  ok(bytes <= 2472, `dictionary count: ${bytes} B (recorded 2472)`)
 })
 
 // A ring value under a branchless conditional narrows: `x = c ? x + d : x - d`

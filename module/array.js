@@ -12,7 +12,7 @@ import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32,
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
 import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
-import { arrCellWat, arrCellHelper } from './core.js'
+import { arrCellWat, arrCellHelper, DENSE_MAX, HEAP_EXHAUSTED_THROW } from './core.js'
 import { arrayKeysOn } from './collection/identity.js'
 import { censusMaybeUndefinedKind, isPresentNumber, valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isArrayIndexKey, isReassigned, some } from '../src/ast.js'
@@ -329,14 +329,22 @@ export default (ctx) => {
         ['br', `$hloop${id}`]]]]
     // `new Array(len)` (23.1.1.1): a Number argument is the length, and one
     // that is not an integer in [0, 2^32) throws a RangeError; a single
-    // argument of any other kind is the array's one element.
+    // argument of any other kind is the array's one element. A length past
+    // DENSE_MAX is an array linear memory cannot hold, as `a.length = n` finds
+    // (its header held the length in an i32 and the slots the capacity's
+    // wrapped size: `new Array(3e9).length` read -1294967296).
     const kind = len == null ? VAL.NUMBER : valTypeOf(len)
     if (len != null && kind != null && kind !== VAL.NUMBER) return emit(['[', len])
     const v = temp('alv'), vGet = ['local.get', `$${v}`]
+    ctx.runtime.throws = true
     const lengthOf = ['block', ['result', 'i32'],
       ['local.set', `$${n}`, ['i32.trunc_sat_f64_u', vGet]],
       ['if', ['i32.or', ['f64.ne', vGet, ['f64.convert_i32_u', nIR]], ['f64.lt', vGet, ['f64.const', 0]]],
         ['then', ['drop', throwErrorIR('RangeError', 'Invalid array length')]]],
+      ['if', ['i32.gt_u', nIR, ['i32.const', DENSE_MAX]],
+        ['then',
+          ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.HEAP_EXHAUSTED)]]],
+          ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.HEAP_EXHAUSTED)]]]],
       nIR]
     const sized = ['block', ['result', 'f64'],
       ['local.set', `$${n}`, len == null ? ['i32.const', 0] : lengthOf],
@@ -541,7 +549,7 @@ export default (ctx) => {
               (i32.lt_u (local.get $off) (global.get $__heap_reset)))
           (then ${relocateWat()}))
         (local.set $newOff (i32.add (local.get $base) (i32.shl (local.get $newCap) (i32.const 3))))
-        (if (i32.lt_u (local.get $newOff) (local.get $base)) (then (unreachable)))
+        (if (i32.lt_u (local.get $newOff) (local.get $base)) (then ${HEAP_EXHAUSTED_THROW}))
         (if (i32.gt_u (local.get $newOff) (global.get $__heap_end)) (then (call $__memgrow (local.get $newOff))))
         (global.set $__heap (local.get $newOff))`
     // The head slack alone serves when it holds the array and fits the
@@ -550,7 +558,7 @@ export default (ctx) => {
     const room = slack ? `
     (if (i32.and (i32.ge_u (local.get $off) (global.get $__heap_reset))
           (i32.and (i32.ge_s (local.get $head) (local.get $len))
-                   (i32.ge_s (i32.add (local.get $head) (local.get $oldCap)) (local.get $minCap))))
+                   (i32.ge_u (i32.add (local.get $head) (local.get $oldCap)) (local.get $minCap))))
       (then (local.set $newCap (i32.add (local.get $head) (local.get $oldCap))))
       (else ${extend}))` : `
     (block ${extend})`
@@ -574,12 +582,12 @@ export default (ctx) => {
         (i32.ne (local.get $t) (i32.const ${PTR.ARRAY}))
         (i32.lt_u (local.get $off) (i32.const 8)))
       (then
-        (local.set $newCap (select (local.get $minCap) (i32.const 4) (i32.gt_s (local.get $minCap) (i32.const 4))))
+        (local.set $newCap (select (local.get $minCap) (i32.const 4) (i32.gt_u (local.get $minCap) (i32.const 4))))
         (local.set $newOff (call $__alloc_hdr (i32.const 0) (local.get $newCap)))
         (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $newOff)))))` : `(local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${followForwardingWat('$off', { lowGuard: true })}`}
     (local.set $oldCap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (if (i32.ge_s (local.get $oldCap) (local.get $minCap))
+    (if (i32.ge_u (local.get $oldCap) (local.get $minCap))
       (then (return (f64.reinterpret_i64 (local.get $ptr)))))
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
     ${slack ? `${arrBaseWat('$off', '$base')}
@@ -594,10 +602,14 @@ export default (ctx) => {
                                       (i32.ne (i32.wrap_i64 (local.get $ident)) (i32.const -1)))
         (then (call $__arr_ident_word (local.get $off)))
         (else (i64.const 0))))))` : ''}
+    ;; twice the block or the capacity asked, unsigned: a length past 2^31 (an
+    ;; index store's next length) reads negative. Past DENSE_MAX it is an array
+    ;; memory cannot hold (a 4 GiB memory holds no 2^29 slots past its data).
     (local.set $newCap (select
       (local.get $minCap)
       (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1))
-      (i32.gt_s (local.get $minCap) (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1)))))
+      (i32.gt_u (local.get $minCap) (i32.shl (i32.add (local.get $head) (local.get $oldCap)) (i32.const 1)))))
+    (if (i32.gt_u (local.get $newCap) (i32.const ${DENSE_MAX})) (then ${HEAP_EXHAUSTED_THROW}))
     ${!ctx.memory.shared && (ctx.transform.alloc !== false || !leanRuntime()) ? `${room}${slide}
     (i32.store (i32.sub (local.get $base) (i32.const 4)) (local.get $newCap))
     ${grownPtrWat('(local.get $base)')})` : `${relocateWat()})`}`
@@ -785,9 +797,7 @@ export default (ctx) => {
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)})))
         (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)}))))
     ;; A dense eight-byte-slot array cannot fit this many elements in wasm32.
-    (if (i32.gt_u (local.get $n) (i32.const 536870909))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)})))
-        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.HEAP_EXHAUSTED)}))))
+    (if (i32.gt_u (local.get $n) (i32.const ${DENSE_MAX})) (then ${HEAP_EXHAUSTED_THROW}))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
     (if (i32.lt_u (local.get $base) (i32.const 8)) (then (return (local.get $p))))
     ${durableArrSnapIR('base', 'ptr')}

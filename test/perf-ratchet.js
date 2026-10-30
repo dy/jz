@@ -363,6 +363,10 @@ const ARRAY_CALLS = {
 //            +8160, entered +2656, all from the seeds whose loop is `a[o + i] = a[o + i]`
 //            (f$exp 1858 -> 3161 WAT lines); that kernel, called on an array the module
 //            builds, runs 0.52x (62 vs 120 ms, 15 alternating rounds, Apple M4 Max, load 8).
+//   the array grow's capacity held to the dense limit (module/array.js arrGrow): an
+//            index store into a receiver of no known kind keeps the grow in its loop's
+//            cold arm, 9 ops more there: buf +45 (5 seeds), condref +360 (40 seeds),
+//            no entered loop moved.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
