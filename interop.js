@@ -224,9 +224,9 @@ for (const name of [...TYPED_ELEM_NAMES, 'BigInt64Array', 'BigUint64Array', 'Flo
 }
 // A typed pointer's kind, the view flag aside; its constructor where the host has one
 const kindOfAux = (a) => KIND_OF[a & ~(TYPED_ELEM_VIEW_FLAG | DATA_VIEW_FLAG)]
+// A typed array's length as its constructor takes one (ToIndex)
+const typedLength = (n) => { const i = Math.trunc(n) || 0; if (i < 0 || i > Number.MAX_SAFE_INTEGER) throw new RangeError(`Invalid typed array length: ${n}`); return i }
 const ctorOf = (kind) => kind && globalThis[kind.name]
-
-const _enhanced = new WeakSet()
 
 // A block that grew forwards to its new one (its capacity -1, the new offset before it)
 const forward = (m, off) => { while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true); return off }
@@ -279,18 +279,18 @@ const moduleTables = (mod) => {
  * compiled with, so each schema must bind at that id: modules sharing a memory
  * agree on their ids (one compilation, the same module again) or are refused.
  * The key mirrors module/schema.js: the property list as JSON, salted with the
- * class (the seven Error classes share one list). `_schemaKeyToId` keeps the
+ * class (the seven Error classes share one list). `schemaKeyToId` keeps the
  * salted keys across merges; `schemas` stays the plain lists `read` indexes.
  */
 const mergeTables = (mem, t) => {
   const errorSidToClass = new Map(mem.errorSidToClass), brandOfSid = new Map(mem.brandOfSid), regexOfSid = new Map(mem.regexOfSid)
-  const schemas = [...(mem.schemas || [])], _schemaKeyToId = new Map(mem._schemaKeyToId), fieldContracts = [...(mem.fieldContracts || [])]
-  const views = new Set([...(mem.views || []), ...t.views])
+  const schemas = [...mem.schemas], schemaKeyToId = new Map(mem.schemaKeyToId), fieldContracts = [...mem.fieldContracts]
+  const viewSchemas = new Set([...mem.viewSchemas, ...t.views])
   for (const [sid, name] of t.errorClasses) if (!errorSidToClass.has(sid)) errorSidToClass.set(sid, name)
   const keys = t.schemas.map((s, j) => { const salt = t.errorClasses.get(j) ?? t.brands.get(j) ?? (t.regexes.has(j) ? 'RegExp:' + JSON.stringify(t.regexes.get(j)) : null); return JSON.stringify(s) + (salt ? '\x02' + salt : '') })
   keys.forEach((key, j) => {
-    let sid = _schemaKeyToId.get(key)
-    if (sid === undefined) { _schemaKeyToId.set(key, sid = schemas.length); schemas.push(t.schemas[j]) }
+    let sid = schemaKeyToId.get(key)
+    if (sid === undefined) { schemaKeyToId.set(key, sid = schemas.length); schemas.push(t.schemas[j]) }
     if (sid !== j) throw new TypeError(`jz: schema ${j} {${t.schemas[j].join(', ')}} of this module binds as schema ${sid} in the memory it shares; modules sharing a memory must bind their schemas at the same ids (compile them together, or give each its own memory)`)
     if (t.brands.has(j)) brandOfSid.set(j, t.brands.get(j))
     if (t.regexes.has(j)) regexOfSid.set(j, t.regexes.get(j))
@@ -300,106 +300,123 @@ const mergeTables = (mem, t) => {
       throw new TypeError('jz: incompatible field contracts for a schema already bound to this memory')
     fieldContracts[j] = row
   })
-  return { schemas, _schemaKeyToId, errorSidToClass, brandOfSid, regexOfSid, fieldContracts, views }
+  return { schemas, schemaKeyToId, errorSidToClass, brandOfSid, regexOfSid, fieldContracts, viewSchemas }
+}
+
+// The codec of each memory jz enhanced, private to the runtime: the tables of
+// the modules sharing it, its allocator, its host references and the hold the
+// host keeps on its heap. The memory itself carries what index.d.ts JzMemory
+// declares and nothing else.
+const CODEC = new WeakMap()
+/** A memory's codec (tests reach the marshalling it does not expose). */
+export const codecOf = (m) => CODEC.get(m)
+
+/**
+ * A memory with the jz codec on it (`jz.memory`): made from nothing or a
+ * descriptor, or an existing WebAssembly.Memory enhanced in place.
+ */
+export const memory = (m) => {
+  if (!(m instanceof WebAssembly.Memory)) {
+    if (m != null && (typeof m !== 'object' || 'exports' in m || 'instance' in m))
+      throw new TypeError('jz.memory takes a WebAssembly.Memory or a descriptor { initial, maximum, shared }; an instance\'s memory is its result\'s `memory`')
+    m = new WebAssembly.Memory({ initial: m?.initial || 1, ...(m?.maximum ? { maximum: m.maximum } : {}), ...(m?.shared ? { shared: true } : {}) })
+  }
+  if (!CODEC.has(m)) codec(m, null)
+  return m
 }
 
 /**
- * A memory with the jz codec on it (`jz.memory`): created from nothing or a
- * descriptor, an existing WebAssembly.Memory enhanced in place, or an instance
- * result's memory bound to its module (allocator, schemas, host references).
- * A module without memory gets a reader of the values its bits carry.
+ * The codec of an instance's memory, its module's tables merged in and its
+ * allocator bound (`src`: { module, instance, exports, extMap }); for a module
+ * without memory, a reader of the values its bits carry (numbers, atoms, short
+ * strings, Symbols, closures through wrap's `fnOf`).
  */
-export const memory = (src) => {
-  if (src instanceof WebAssembly.Memory && _enhanced.has(src)) return src
-  if (!src || (typeof src === 'object' && !(src instanceof WebAssembly.Memory) && !src.instance && !src.exports && !src.memory)) {
-    const mem = new WebAssembly.Memory({ initial: src?.initial || 1, ...(src?.maximum ? { maximum: src.maximum } : {}), ...(src?.shared ? { shared: src.shared } : {}) })
-    return memory(mem)
+const bind = (src) => {
+  const raw = src.instance?.exports || src.exports
+  const mem = src.exports?.memory || raw.memory
+  const symbols = symbolsOf(src.instance || src, src.module, raw)
+  if (!mem) return {
+    scalar: true,
+    read: (v, fnOf) => decode(v, fnOf, symbols),
+    wrapVal: v => typeof v === 'symbol' ? symbols.write(v) : coerce(v),
   }
+  return codec(mem, { exports: { ...raw, memory: mem }, module: src.module || null, extMap: src.extMap || null, symbols })
+}
 
-  let mem, wasmExports = null, extMap = null, mod = null, symbols
-  if (src instanceof WebAssembly.Memory) {
-    mem = src
-    symbols = symbolsOf(mem, null, null)
-  } else {
-    // an instance result: { module, instance, exports, extMap }
-    const raw = src?.instance?.exports || src?.exports || src
-    mem = src?.exports?.memory || raw.memory
-    symbols = symbolsOf(src.instance || src, src.module, raw)
-    if (!mem) return {
-      read: (v, fnOf) => decode(v, fnOf, symbols),
-      wrapVal: v => typeof v === 'symbol' ? symbols.write(v) : coerce(v),
-      scalar: true,
-    }
-    wasmExports = { ...raw, memory: mem }
-    extMap = src.extMap || null
-    mod = src.module || null
-  }
+// The tables of a memory no module has bound yet
+const NO_MEMORY_TABLES = { schemas: [], schemaKeyToId: new Map(), errorSidToClass: new Map(), brandOfSid: new Map(), regexOfSid: new Map(), fieldContracts: [], viewSchemas: new Set() }
 
+const codec = (mem, src) => {
+  const wasmExports = src?.exports ?? null, mod = src?.module ?? null, extMap = src?.extMap ?? null
+  const symbols = src?.symbols ?? symbolsOf(mem, null, null)
+  const known = CODEC.get(mem)
+  // The module's tables joined to the memory's (rejected before anything
+  // changes when the module compiled with other ids), committed as a whole
+  const tables = mergeTables(known ?? NO_MEMORY_TABLES, mod ? moduleTables(mod) : NO_TABLES)
   const dv = () => new DataView(mem.buffer)
 
   const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, base, markBase } = makeJsAllocator(mem, wasmExports?.__jz_heap)
   const wasmAlloc = wasmExports?.__jz_alloc && (bytes => wasmExports.__jz_alloc(bytes) >>> 0)
-  // No call of the module runs while the host allocates for itself (`_busy`,
-  // kept by the call wrappers below): that storage a compaction never moves,
+  // No call of the module runs while the host allocates for itself (`busy`,
+  // kept by the call wrappers in wrap): that storage a compaction never moves,
   // its address being the host's to hold, so the pin keeps the floor above it.
-  const pinned = (allocate) => (bytes) => { const p = allocate(bytes); if (!mem._busy) { mem._pin = top(); mem._pinSet?.(mem._pin) } return p }
-  let alloc = pinned(wasmAlloc || jsAlloc)
-  const reset = wasmExports?.__jz_clear || jsReset
+  const pinned = (S, allocate) => (bytes) => { const p = allocate(bytes); if (!S.busy) { S.pin = S.top(); S.pinSet?.(S.pin) } return p }
+  const clear = wasmExports?.__jz_clear || jsReset
   initHeapPtr()
+
+  // another module in a memory already enhanced: its tables, allocator and reset
+  if (known) {
+    Object.assign(known, tables)
+    known.symbols = symbols
+    if (wasmExports?.__jz_view_data) known.viewData = wasmExports.__jz_view_data
+    if (wasmExports?.__jz_obj_props) known.objProps = wasmExports.__jz_obj_props
+    if (wasmExports?.__jz_obj_deleted) known.objDeleted = wasmExports.__jz_obj_deleted
+    if (wasmAlloc) known.alloc = pinned(known, wasmAlloc)
+    known.clear = clear
+    if (extMap) known.extMap = extMap
+    return known
+  }
+
+  const S = {
+    ...tables,
+    get buffer() { return mem.buffer },
+    symbols, extMap,
+    viewData: wasmExports?.__jz_view_data ?? null,
+    objProps: wasmExports?.__jz_obj_props ?? null,
+    objDeleted: wasmExports?.__jz_obj_deleted ?? null,
+    // Bytes the heap holds above the mark `memory.reset()` returns to: what calls
+    // allocated and kept, and what the host allocated. A host that sees it climb
+    // call after call has a leak to fix; a reset returns it to 0.
+    used, top, setTop, base, markBase, clear,
+    // What a decoded value names above this address holds the memory of the call that returned it (read).
+    above: Infinity, held: false, kept: false,
+    // Compaction (module/core/compact.js): the floor nothing below moves, raised
+    // over what the host made or was handed, and the bytes the last compaction
+    // kept, which the next waits to see doubled.
+    pin: 0, live: 0, calls: 0, busy: false,
+    pinAt: 0,   // the end of the highest block a decode handed the host as a view or a closure
+    fns: 0,     // closures decoded, so an object read with its methods is known to carry some
+    // the views the module left on host objects (`__ext_set`); the class instances
+    // the host holds (`handle`) by their host object, and those by address
+    hostViews: new WeakMap(), handles: new WeakMap(), instances: new Map(),
+    pinSet: null, pinReset: null, viewSet: null, viewBuf: null,
+  }
+  S.alloc = pinned(S, wasmAlloc || jsAlloc)
+  // The compiled reset owns the post-init mark and durable state; a memory of
+  // no module rewinds. What the host held by address (views it was handed,
+  // class instances) names storage a reset frees.
+  S.reset = () => { S.hostViews = new WeakMap(); S.handles = new WeakMap(); S.instances = new Map(); S.pin = 0; S.live = 0; S.clear(); S.pinReset?.() }
 
   // A block with the module's 16-byte header (`__alloc_hdr`: properties, length,
   // capacity), at its data's offset
   const hdr = (len, cap, bytes) => {
-    const raw = alloc(16 + bytes)
+    const raw = S.alloc(16 + bytes)
     const m = dv()
     m.setBigInt64(raw, 0n, true)
     m.setInt32(raw + 8, len, true)
     m.setInt32(raw + 12, cap, true)
     return raw + 16
   }
-
-  // The module's tables joined to the memory's (rejected before anything
-  // changes when the module compiled with other ids), committed as a whole
-  Object.assign(mem, mergeTables(mem, mod ? moduleTables(mod) : NO_TABLES))
-  if (wasmExports?.__jz_view_data) mem.viewData = wasmExports.__jz_view_data
-  if (wasmExports?.__jz_obj_props) mem.objProps = wasmExports.__jz_obj_props
-  if (wasmExports?.__jz_obj_deleted) mem.objDeleted = wasmExports.__jz_obj_deleted
-
-  mem._symbols = symbols
-  // The compiled reset owns the post-init mark and durable state; a memory of
-  // no module rewinds. What the host held by address (views it was handed,
-  // class instances) names storage a reset frees.
-  const resetAll = () => { mem._views = new WeakMap(); mem._handles = new WeakMap(); mem._instances = new Map(); mem._pin = 0; mem._live = 0; reset(); mem._pinReset?.() }
-
-  // another module in a memory already enhanced: its allocator and reset
-  if (_enhanced.has(mem)) {
-    if (wasmAlloc) { alloc = pinned(wasmAlloc); mem.alloc = alloc }
-    mem.reset = resetAll
-    if (extMap) mem._extMap = extMap
-    return mem
-  }
-
-  mem._extMap = extMap
-  // Bytes the heap holds above the mark `memory.reset()` returns to: what calls
-  // allocated and kept, and what the host allocated. A host that sees it climb
-  // call after call has a leak to fix; a reset returns it to 0.
-  Object.defineProperty(mem, 'used', { get: used, configurable: true })
-  mem._markBase = markBase
-  // What a decoded value names above this address holds the memory of the call that returned it (mem.read).
-  mem._above = Infinity
-  mem._held = false
-  mem._top = top
-  mem._setTop = setTop
-  mem._base = base
-  // Compaction (module/core/compact.js): the floor nothing below moves, raised
-  // over what the host made or was handed, and the bytes the last compaction
-  // kept, which the next waits to see doubled.
-  mem._pin = 0
-  mem._live = 0
-  mem._calls = 0
-  mem._busy = false
-  mem._pinAt = 0     // the end of the highest block a decode handed the host as a view or a closure
-  mem._fns = 0       // closures decoded, so an object read with its methods is known to carry some
 
   // Elements staged as i64 bits, never as JS Numbers (an array of NaN-payload
   // doubles may canonicalize them), and committed once all marshal: marshalling
@@ -409,28 +426,28 @@ export const memory = (src) => {
     for (let i = 0; i < n; i++) out[i] = i in source ? bits(wrap(source[i], i)) : TOMB_BITS
     return out
   }
-  mem.Array = (data) => {
-    const n = data.length, off = hdr(n, n, n * 8), cells = staged(data, mem.wrapVal)
+  S.Array = (data) => {
+    const n = data.length, off = hdr(n, n, n * 8), cells = staged(data, S.wrapVal)
     new BigInt64Array(mem.buffer, off, n).set(cells)
     return ptr(1, 0, off)
   }
 
-  mem.String = (str) => {
+  S.String = (str) => {
     if (ssoFits(str)) return encodeSSO(str)
-    const n = str.length, raw = alloc(4 + n * 2), m = dv()
+    const n = str.length, raw = S.alloc(4 + n * 2), m = dv()
     m.setInt32(raw, n, true)
     const off = raw + 4
     for (let i = 0; i < n; i++) m.setUint16(off + i * 2, str.charCodeAt(i), true)
     return ptr(4, 0, off)
   }
 
-  mem.BigInt = (value) => {
-    const off = alloc(8)
+  S.BigInt = (value) => {
+    const off = S.alloc(8)
     dv().setBigInt64(off, BigInt.asIntN(64, value), true)
     return ptr(5, 0, off)
   }
 
-  mem.Buffer = (data) => {
+  S.Buffer = (data) => {
     const bytes = data instanceof ArrayBuffer ? new Uint8Array(data)
       : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
       : new Uint8Array(data)
@@ -439,15 +456,15 @@ export const memory = (src) => {
     return ptr(2, 0, off)
   }
 
-  mem.wrapVal = function(v) {
+  S.wrapVal = function(v) {
     if (v === null || v === undefined) return coerce(v)
     // A view the module left on a host object (`__ext_set`) is the module's own
     // storage, read back as itself.
-    if (typeof v === 'object') { const own = mem._views?.get(v) ?? mem._handles?.get(v); if (own !== undefined) return own }
+    if (typeof v === 'object') { const own = S.hostViews?.get(v) ?? S.handles?.get(v); if (own !== undefined) return own }
     if (typeof v === 'number') return coerce(v)
     if (typeof v === 'boolean') return v ? TRUE_NAN : FALSE_NAN
-    if (typeof v === 'string') return mem.String(v)
-    if (typeof v === 'symbol') return mem._symbols.write(v)
+    if (typeof v === 'string') return S.String(v)
+    if (typeof v === 'symbol') return S.symbols.write(v)
     // A BigInt that is a box (memory.String, memory.BigInt) is itself. A plain
     // one has no BigInt evidence here (an export's slots consult jz:hostabi):
     // refused, where a decimal string would read as a wrong number.
@@ -455,10 +472,10 @@ export const memory = (src) => {
       if (isBox(v)) return v
       throw new TypeError(`jz: plain BigInt ${v}n passed to memory marshaling (memory.Array/memory.Object/memory.Hash/a host-import return/…) with no BigInt evidence — box it explicitly: mem.BigInt(${v}n)`)
     }
-    if (Array.isArray(v)) return mem.Array(v)
-    if (v instanceof ArrayBuffer) return mem.Buffer(v)
+    if (Array.isArray(v)) return S.Array(v)
+    if (v instanceof ArrayBuffer) return S.Buffer(v)
     if (v instanceof DataView) {
-      const parent = offset(mem.Buffer(v.buffer)), off = alloc(16), m = dv()
+      const parent = offset(S.Buffer(v.buffer)), off = S.alloc(16), m = dv()
       m.setInt32(off, v.byteLength, true)
       m.setInt32(off + 4, parent + v.byteOffset, true)
       m.setInt32(off + 8, parent, true)
@@ -470,14 +487,14 @@ export const memory = (src) => {
     if (typedName === 'BigInt64Array' || typedName === 'BigUint64Array' ||
         typedName === 'Float16Array' || typedName === 'Uint8ClampedArray')
       throw new TypeError(`jz: host ${typedName} at an untyped boundary is not supported — construct it inside the compiled source so its element storage policy is provable`)
-    if (KINDS[typedName]) return mem[typedName](v)
-    if (typeof v === 'object' || typeof v === 'function') return mem.External(v)
+    if (KINDS[typedName]) return S[typedName](v)
+    if (typeof v === 'object' || typeof v === 'function') return S.External(v)
     return UNDEF_NAN
   }
 
-  mem.External = function(obj) {
+  S.External = function(obj) {
     if (obj === null || obj === undefined) return coerce(obj)
-    return mem._extMap ? external(mem._extMap, obj) : UNDEF_NAN
+    return S.extMap ? external(S.extMap, obj) : UNDEF_NAN
   }
 
   // A plain object no compiled schema fits, as the module's own dictionary
@@ -502,7 +519,7 @@ export const memory = (src) => {
     for (let i = 0; i < len; i++) h = Math.imul(h ^ m.getUint16(off + i * 2, true), 0x01000193) | 0
     return clampHash(h) >>> 0
   }
-  mem.Hash = function(obj) {
+  S.Hash = function(obj) {
     if (obj == null) throw new TypeError('Cannot convert undefined or null to object')
     const entries = [], source = Object(obj)
     for (const key of Reflect.ownKeys(source))
@@ -512,13 +529,13 @@ export const memory = (src) => {
     const off = hdr(entries.length, cap, cap * 28)
     const slots = new BigInt64Array(cap * 3), lane = new Int32Array(cap)   // as i64 bits, an empty slot 0
     entries.forEach(([k, v], seq) => {
-      const keyBox = typeof k === 'symbol' ? mem._symbols.write(k) : mem.String(k)
+      const keyBox = typeof k === 'symbol' ? S.symbols.write(k) : S.String(k)
       const h = jzStrHash(keyBox)
       let idx = h & (cap - 1)
       while (slots[idx * 3] !== 0n) idx = (idx + 1) & (cap - 1)
       slots[idx * 3] = (BigInt(seq) << 32n) | BigInt(h >>> 0)
       slots[idx * 3 + 1] = bits(keyBox)
-      slots[idx * 3 + 2] = bits(mem.wrapVal(v))
+      slots[idx * 3 + 2] = bits(S.wrapVal(v))
       lane[idx] = h | 0
     })
     new BigInt64Array(mem.buffer, off, cap * 3).set(slots)
@@ -530,23 +547,23 @@ export const memory = (src) => {
   // Check the marshalled representation too: same JS constructor is not enough
   // when a view descriptor or a different nested schema changes the layout.
   const wrapField = (sid, i, value) => {
-    const rule = mem.fieldContracts[sid]?.[i]
-    if (rule?.[2] === 8) throw new TypeError('jz: field ' + mem.schemas[sid][i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
+    const rule = S.fieldContracts[sid]?.[i]
+    if (rule?.[2] === 8) throw new TypeError('jz: field ' + S.schemas[sid][i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
     let wrapped = rule && (rule[0] & (1 << PTR.OBJECT)) && value?.constructor === Object
-      ? mem.Object(value)
+      ? S.Object(value)
       : rule && (rule[0] & (1 << PTR.TYPED)) && ArrayBuffer.isView(value) && KINDS[value.constructor.name]
-        ? mem[value.constructor.name](value) : mem.wrapVal(value)
+        ? S[value.constructor.name](value) : S.wrapVal(value)
     if (!rule) return wrapped
     const [mask, detail, integer, constant] = rule
     if (detail >= 0 && (mask & (1 << PTR.TYPED)) && typeof wrapped === 'bigint' && type(wrapped) === PTR.TYPED &&
         (aux(wrapped) & ~TYPED_ELEM_VIEW_FLAG) === (detail & ~TYPED_ELEM_VIEW_FLAG) && aux(wrapped) !== detail) {
       if (detail & TYPED_ELEM_VIEW_FLAG) {
-        const data = offset(wrapped), length = dv().getUint32(data - 8, true), descriptor = alloc(16), view = dv()
+        const data = offset(wrapped), length = dv().getUint32(data - 8, true), descriptor = S.alloc(16), view = dv()
         view.setUint32(descriptor, length, true)
         view.setUint32(descriptor + 4, data, true)
         view.setUint32(descriptor + 8, data, true)
         wrapped = ptr(PTR.TYPED, detail, descriptor)
-      } else wrapped = mem.wrapVal(mem.read(wrapped))
+      } else wrapped = S.wrapVal(S.read(wrapped))
     }
     let family = typeof value === 'boolean' ? FIELD.BOOL : FIELD.NUMBER
     if (typeof wrapped === 'bigint' && isBox(wrapped)) {
@@ -558,30 +575,30 @@ export const memory = (src) => {
     const badNumber = family === FIELD.NUMBER && ((integer && (!Number.isInteger(value) || Object.is(value, -0))) ||
       (integer === 2 && (value < -2147483648 || value > 2147483647)) || (constant !== null && !Object.is(value, constant)))
     if (!(mask & family) || badDetail || badNumber)
-      throw new TypeError(`jz: field ${mem.schemas[sid][i]} violates its compiled representation contract${constant !== null ? ': expected discriminant ' + constant : (mask & (1 << PTR.TYPED)) && detail >= 0 ? ': expected ' + (ctorFromElemAux(detail) || 'DataView') : integer === 2 ? ': expected an int32 without negative zero' : ''}`)
+      throw new TypeError(`jz: field ${S.schemas[sid][i]} violates its compiled representation contract${constant !== null ? ': expected discriminant ' + constant : (mask & (1 << PTR.TYPED)) && detail >= 0 ? ': expected ' + (ctorFromElemAux(detail) || 'DataView') : integer === 2 ? ': expected an int32 without negative zero' : ''}`)
     return integer === 4 ? dv().getBigInt64(offset(wrapped), true) : wrapped
   }
 
-  mem.Object = function(obj) {
+  S.Object = function(obj) {
     const objKeys = Object.keys(obj)
     const key = objKeys.join(',')
-    const schemas = mem.schemas
+    const schemas = S.schemas
     // The shapes with these keys in this order, else in any order; among
     // several, a plain object is the plain shape's, not a class's (two
     // classes of one field list are told apart by brand, which a plain
     // object does not carry).
     const pick = (matches) => {
       if (matches.length <= 1) return matches[0] ?? -1
-      const plain = matches.filter(i => !mem.brandOfSid.has(i))
+      const plain = matches.filter(i => !S.brandOfSid.has(i))
       return plain.length === 1 ? plain[0] : -2
     }
-    let matches = schemas.reduce((a, s, i) => (!mem.regexOfSid.has(i) && s.join(',') === key ? a.concat(i) : a), [])
+    let matches = schemas.reduce((a, s, i) => (!S.regexOfSid.has(i) && s.join(',') === key ? a.concat(i) : a), [])
     if (!matches.length) matches = schemas.reduce((a, s, i) =>
-      (!mem.regexOfSid.has(i) && s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
+      (!S.regexOfSid.has(i) && s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
     const sid = pick(matches)
     if (sid === -2) throw Error(`Ambiguous schema for {${key}} — ${matches.length} compiled shapes match this key set; pass keys in one of these orders: ${matches.map(i => schemas[i].join(',')).join(' | ')}`)
-    if (sid === -1) return mem.Hash(obj)   // no compiled schema: first-class hash (External loses nested-mutation identity)
-    const schema = schemas[sid], raw = alloc(schema.length * 8), slots = schema.map((k, i) => bits(wrapField(sid, i, obj[k])))
+    if (sid === -1) return S.Hash(obj)   // no compiled schema: first-class hash (External loses nested-mutation identity)
+    const schema = schemas[sid], raw = S.alloc(schema.length * 8), slots = schema.map((k, i) => bits(wrapField(sid, i, obj[k])))
     new BigInt64Array(mem.buffer, raw, slots.length).set(slots)
     return ptr(6, sid, raw)
   }
@@ -598,17 +615,17 @@ export const memory = (src) => {
     }
     return slots.sort((a, b) => a[0] - b[0]).map(([, slot]) => slot)
   }
-  const pairs = (off, t, fnOf) => { const m = dv(); return liveSlots(off, t).map(slot => [mem.read(m.getBigInt64(slot + 8, true), fnOf), mem.read(m.getBigInt64(slot + 16, true), fnOf)]) }
+  const pairs = (off, t, fnOf) => { const m = dv(); return liveSlots(off, t).map(slot => [S.read(m.getBigInt64(slot + 8, true), fnOf), S.read(m.getBigInt64(slot + 16, true), fnOf)]) }
 
   // The heap below the end of what the host was handed by address never moves (`settle`)
-  const pinAt = (end) => { mem._pinAt = Math.max(mem._pinAt, end); mem._pinSet?.(mem._pinAt) }
+  const pinAt = (end) => { S.pinAt = Math.max(S.pinAt, end); S.pinSet?.(S.pinAt) }
   const blockEnd = (m, off) => off + 8 * m.getInt32(off - 4, true)
 
   // The value an object's slot `i` holds, by its field's compiled contract.
   const slotValue = (sid, off, i, fnOf) => {
-    const rule = mem.fieldContracts[sid]?.[i], raw = dv().getBigInt64(off + i * 8, true)
-    if (rule?.[2] === 8) throw new TypeError('jz: field ' + mem.schemas[sid][i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
-    const value = rule?.[2] === 4 ? raw : mem.read(raw, fnOf)
+    const rule = S.fieldContracts[sid]?.[i], raw = dv().getBigInt64(off + i * 8, true)
+    if (rule?.[2] === 8) throw new TypeError('jz: field ' + S.schemas[sid][i] + ' has ambiguous raw BigInt storage; use distinct object shapes')
+    const value = rule?.[2] === 4 ? raw : S.read(raw, fnOf)
     return value != null && rule && (rule[0] & ~FIELD.NULLISH) === FIELD.BOOL ? !!value : value
   }
 
@@ -618,15 +635,15 @@ export const memory = (src) => {
   // is the instance (`wrapVal`). The host holds it by address, so the heap below
   // it never moves, and a call that made it keeps what it allocated. A private
   // field (`#x`) stays inside.
-  mem.handle = (p, proto, fnOf) => {
+  S.handle = (p, proto, fnOf) => {
     const off = offset(p), sid = aux(p)
-    const known = mem._instances.get(off)?.deref()
-    if (known !== undefined && mem._handles.get(known) === p) return known
+    const known = S.instances.get(off)?.deref()
+    if (known !== undefined && S.handles.get(known) === p) return known
     const end = blockEnd(dv(), off)
-    if (off >= mem._above) mem._held = true
-    else mem._pin = Math.max(mem._pin, end)
+    if (off >= S.above) S.held = true
+    else S.pin = Math.max(S.pin, end)
     pinAt(end)
-    const fields = Object.create(proto), keys = mem.schemas[sid]
+    const fields = Object.create(proto), keys = S.schemas[sid]
     for (let i = 0; i < keys.length; i++) {
       if (typeof keys[i] !== 'string' || keys[i][0] === '#') continue
       Object.defineProperty(fields, keys[i], { enumerable: true, configurable: true,
@@ -634,37 +651,37 @@ export const memory = (src) => {
         set: (v) => { const b = bits(wrapField(sid, i, v)); dv().setBigInt64(off + i * 8, b, true) } })
     }
     // A module that stores properties outside a layout (its dictionaries,
-    // mem.read's object arm) shows an instance's as they stand: read, listed
+    // read's object arm) shows an instance's as they stand: read, listed
     // and written in place, found afresh at each access (a compaction may
     // move a dictionary). One the host adds stays the handle's own.
-    const obj = mem.objProps ? new Proxy(fields, {
-      get: (t, k, r) => { const slot = k in t ? undefined : extraSlots(p).get(k); return slot === undefined ? Reflect.get(t, k, r) : mem.read(dv().getBigInt64(slot + 16, true), fnOf) },
+    const obj = S.objProps ? new Proxy(fields, {
+      get: (t, k, r) => { const slot = k in t ? undefined : extraSlots(p).get(k); return slot === undefined ? Reflect.get(t, k, r) : S.read(dv().getBigInt64(slot + 16, true), fnOf) },
       has: (t, k) => k in t || extraSlots(p).has(k),
       ownKeys: (t) => { const own = Reflect.ownKeys(t); for (const k of extraSlots(p).keys()) if (!own.includes(k)) own.push(k); return own },
       getOwnPropertyDescriptor: (t, k) => {
         const own = Reflect.getOwnPropertyDescriptor(t, k), slot = own ? undefined : extraSlots(p).get(k)
-        return slot === undefined ? own : { value: mem.read(dv().getBigInt64(slot + 16, true), fnOf), writable: true, enumerable: true, configurable: true }
+        return slot === undefined ? own : { value: S.read(dv().getBigInt64(slot + 16, true), fnOf), writable: true, enumerable: true, configurable: true }
       },
       set: (t, k, v, r) => {
         const slot = k in t ? undefined : extraSlots(p).get(k)
         if (slot === undefined) return Reflect.set(t, k, v, r)
-        dv().setBigInt64(slot + 16, bits(mem.wrapVal(v)), true)
+        dv().setBigInt64(slot + 16, bits(S.wrapVal(v)), true)
         return true
       },
     }) : fields
-    mem._handles.set(obj, p)
-    mem._instances.set(off, new WeakRef(obj))
+    S.handles.set(obj, p)
+    S.instances.set(off, new WeakRef(obj))
     return obj
   }
   // The properties an object holds outside its layout, by key: the slot that holds each now.
   const extraSlots = (p) => {
     const out = new Map(), m = dv()
     for (const which of [0, 1]) {
-      const d = mem.objProps(p, which)
+      const d = S.objProps(p, which)
       if (!d) continue
       let off = offset(d)
       while (m.getInt32(off - 4, true) === -1) off = m.getUint32(off - 8, true)
-      for (const slot of liveSlots(off, 7)) out.set(mem.read(m.getBigInt64(slot + 8, true)), slot)
+      for (const slot of liveSlots(off, 7)) out.set(S.read(m.getBigInt64(slot + 8, true)), slot)
     }
     return out
   }
@@ -672,8 +689,8 @@ export const memory = (src) => {
   // A value from its bits. `fnOf` (wrap's, per instance) reads a closure as a
   // function calling it. What the host is handed by address marks the call
   // that returned it as holding its memory (`_held`, above the call's mark).
-  mem.read = function(p, fnOf = null) {
-    if (Array.isArray(p)) return p.map(v => mem.read(v, fnOf))  // a tuple of results
+  S.read = function(p, fnOf = null) {
+    if (Array.isArray(p)) return p.map(v => S.read(v, fnOf))  // a tuple of results
     if (typeof p === 'number') {
       if (p === p) return p
       p = f64ToI64(p)                    // a legacy f64 box
@@ -681,7 +698,7 @@ export const memory = (src) => {
     if (!isBox(p)) return i64ToF64(p)
     const m = dv(), t = type(p), a = aux(p)
     let off = offset(p)
-    if (t === PTR.ATOM && a >= SYMBOL_MIN && p !== TOMB_BITS) return mem._symbols.read(p)
+    if (t === PTR.ATOM && a >= SYMBOL_MIN && p !== TOMB_BITS) return S.symbols.read(p)
     // Arrays and collections retain their identity when storage grows.
     if (t === 1 || t >= 7 && t <= 9) off = forward(m, off)
     if (t === 0 && off === 0) {
@@ -691,9 +708,9 @@ export const memory = (src) => {
       if (a === 4) return false
       if (a === 5) return true
     }
-    if (t === 11 && mem._extMap) return mem._extMap[off]
+    if (t === 11 && S.extMap) return S.extMap[off]
     if (t === 10 && typeof fnOf === 'function') {
-      if (off >= mem._above) { mem._held = true; mem._fns++; if (off >= 16) pinAt(blockEnd(m, off)) }
+      if (off >= S.above) { S.held = true; S.fns++; if (off >= 16) pinAt(blockEnd(m, off)) }
       return fnOf(p)
     }
     if (t === 1) {  // ARRAY
@@ -702,12 +719,12 @@ export const memory = (src) => {
       if (a & ARRAY_RAW) { for (let i = 0; i < len; i++) out[i] = m.getFloat64(off + i * 8, true); return out }
       for (let i = 0; i < len; i++) {
         const value = m.getBigInt64(off + i * 8, true)
-        if (value !== TOMB_BITS) out[i] = mem.read(value, fnOf)
+        if (value !== TOMB_BITS) out[i] = S.read(value, fnOf)
       }
       return out
     }
     if (t === 3) {  // TYPED: a view of the module's memory, its bytes held
-      const held = (at, bytes) => { mem._viewSet?.(); if (at >= mem._above) { mem._held = true; pinAt(at + bytes) } return at }
+      const held = (at, bytes) => { S.viewSet?.(); if (at >= S.above) { S.held = true; pinAt(at + bytes) } return at }
       // a view's bytes: its descriptor's length, or what a resizable buffer now bounds ($__view_bytes)
       const viewBytes = () => {
         const n = m.getInt32(off, true), root = m.getInt32(off + 8, true)
@@ -746,33 +763,33 @@ export const memory = (src) => {
     }
     if (t === 5) return m.getBigInt64(off, true)  // BIGINT
     if (t === 6) {  // OBJECT
-      const keys = mem.schemas[a], fns = mem._fns
+      const keys = S.schemas[a], fns = S.fns
       // an instance of a class the module exports: the host's handle on it,
       // even where its layout hides a slot (a private name's) from the copy below
       const proto = keys && fnOf?.classes?.get(a)
-      if (proto) return mem.handle(p, proto, fnOf)
+      if (proto) return S.handle(p, proto, fnOf)
       // an object literal with an accessor reads through it: the module copies its data
-      if (mem.views?.has(a) && mem.viewData && !mem.errorSidToClass?.has(a) && !mem.regexOfSid?.has(a)) return mem.read(mem.viewData(p), fnOf)
-      if (!keys) { if (off >= mem._above) mem._held = true; return p }
-      const re = mem.regexOfSid?.get(a), obj = re ? new RegExp(re[0], re[1]) : {}
+      if (S.viewSchemas?.has(a) && S.viewData && !S.errorSidToClass?.has(a) && !S.regexOfSid?.has(a)) return S.read(S.viewData(p), fnOf)
+      if (!keys) { if (off >= S.above) S.held = true; return p }
+      const re = S.regexOfSid?.get(a), obj = re ? new RegExp(re[0], re[1]) : {}
       // a deleted slot's bit (layout.js deletedSlotWat; from 31 on one bit for the undefined ones)
-      const mask = mem.objDeleted ? mem.objDeleted(p) : 0
+      const mask = S.objDeleted ? S.objDeleted(p) : 0
       for (let i = 0; i < keys.length; i++) {
         if (mask && (i < 31 ? (mask >>> i) & 1 : (mask >>> 31) & 1 && m.getBigInt64(off + i * 8, true) === UNDEF_NAN)) continue
         obj[keys[i]] = slotValue(a, off, i, fnOf)
       }
       // properties stored outside the layout: its header's dictionary, then the
       // durable one by its offset (__obj_props), a later value replacing in place
-      if (mem.objProps) for (const which of [0, 1]) {
-        const d = mem.objProps(p, which)
+      if (S.objProps) for (const which of [0, 1]) {
+        const d = S.objProps(p, which)
         if (d) for (const [key, value] of pairs(forward(dv(), offset(d)), 7, fnOf)) obj[key] = value
       }
       fnOf?.owners.set(obj, p)
-      if (fnOf && mem._fns !== fns && off >= mem._above) pinAt(blockEnd(m, off))
+      if (fnOf && S.fns !== fns && off >= S.above) pinAt(blockEnd(m, off))
       return obj
     }
     if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.
-      if (t === 8) return new Set(liveSlots(off, t).map(slot => mem.read(m.getBigInt64(slot + 8, true), fnOf)))
+      if (t === 8) return new Set(liveSlots(off, t).map(slot => S.read(m.getBigInt64(slot + 8, true), fnOf)))
       const entries = pairs(off, t, fnOf)
       if (t !== 7) return new Map(entries)
       const out = Object.fromEntries(entries)
@@ -780,11 +797,11 @@ export const memory = (src) => {
       return out
     }
     // a handle on the module's memory is held as a view is
-    if (t !== 0 && off >= mem._above) mem._held = true
+    if (t !== 0 && off >= S.above) S.held = true
     return i64ToF64(p)  // the canonical NaN, a closure without a reader
   }
 
-  mem.write = function(p, data) {
+  S.write = function(p, data) {
     const t = type(p)
     let off = offset(p), m = dv()
     if (t === 1) {
@@ -792,7 +809,7 @@ export const memory = (src) => {
       const cap = m.getInt32(off - 4, true), length = data.length
       if (!Number.isSafeInteger(length) || length < 0) throw new RangeError('mem.write: invalid array length')
       if (length > cap) throw Error(`mem.write: ${data.length} elements exceeds this array's capacity of ${cap} — allocate it with a larger capacity, or write ${cap} or fewer elements`)
-      const cells = staged(data, mem.wrapVal)   // before the view: marshalling may grow the memory
+      const cells = staged(data, S.wrapVal)   // before the view: marshalling may grow the memory
       new BigInt64Array(mem.buffer, off, length).set(cells)
       dv().setInt32(off - 8, length, true)
     } else if (t === 3) {
@@ -809,7 +826,7 @@ export const memory = (src) => {
       }
       for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
     } else if (t === 6) {
-      const schema = mem.schemas[aux(p)]
+      const schema = S.schemas[aux(p)]
       if (!schema) throw Error(`mem.write: this pointer's schema id (${aux(p)}) has no compiled OBJECT schema — write to a pointer returned by mem.Object() for a schema this program compiled`)
       const slots = []
       for (const k of Object.keys(data)) {
@@ -823,41 +840,35 @@ export const memory = (src) => {
     }
   }
 
-  mem.alloc = alloc
-  // the views the module left on host objects (`__ext_set`); the class instances
-  // the host holds (`mem.handle`) by their host object, and those by address
-  mem._views = new WeakMap()
-  mem._handles = new WeakMap()
-  mem._instances = new Map()
-  mem.reset = resetAll
 
   // memory.Float64Array(data) and its kin: the elements converted to the kind
   // first (a view of this growable memory snapshotted), then copied in one
-  // `set`. BigInt kinds and a host without Float16Array write element by element.
+  // `set`; a length makes that many zeros, as `new Float64Array(n)` does.
+  // BigInt kinds and a host without Float16Array write element by element.
   for (const kind of Object.values(KINDS)) {
     const { name, code, stride, set } = kind, C = code & 16 ? null : ctorOf(kind)
-    mem[name] = (data) => {
-      if (C && (!(data instanceof C) || data.buffer === mem.buffer)) data = new C(data)
-      const n = data.length, bytes = n * stride, off = hdr(bytes, bytes, bytes)
-      if (C) new C(mem.buffer, off, n).set(data)
+    S[name] = (data) => {
+      const length = typeof data === 'number' ? typedLength(data) : -1
+      if (length < 0 && C && (!(data instanceof C) || data.buffer === mem.buffer)) data = new C(data)
+      const n = length < 0 ? data.length : length, bytes = n * stride, off = hdr(bytes, bytes, bytes)
+      if (length >= 0) new Uint8Array(mem.buffer, off, bytes).fill(0)
+      else if (C) new C(mem.buffer, off, n).set(data)
       else { const m = dv(); for (let i = 0; i < n; i++) m[set](off + i * stride, data[i], true) }
       return ptr(3, code, off)
     }
   }
 
-  // A typed array of n elements in the module's memory: the `view` the host fills
-  // and the `box` an export reads in place. A grow detaches the view (re-read it
-  // from the box), a reset frees it; a shared memory keeps it across grows.
-  mem.allocTyped = (Ctor, n) => {
-    const kind = KINDS[Ctor?.name]
-    if (!kind) throw Error(`mem.allocTyped: ${Ctor?.name ?? Ctor} is not a supported typed array constructor — pass one of ${Object.keys(KINDS).join(', ')}`)
-    const bytes = n * kind.stride, off = hdr(bytes, bytes, bytes)
-    mem._viewSet?.()
-    return { view: new Ctor(mem.buffer, off, n), box: ptr(3, kind.code, off) }
-  }
-
-  _enhanced.add(mem)
-  return mem
+  // The host's surface (index.d.ts JzMemory): the constructors, read, write,
+  // reset and the bytes used; the codec stays in CODEC.
+  const surface = { String: S.String, Array: S.Array, Object: S.Object, BigInt: S.BigInt }
+  for (const name of Object.keys(KINDS)) surface[name] = S[name]
+  surface.read = (value) => S.read(value)
+  surface.write = S.write
+  surface.reset = () => S.reset()
+  for (const [key, value] of Object.entries(surface)) Object.defineProperty(mem, key, { value, writable: true, enumerable: true, configurable: true })
+  Object.defineProperty(mem, 'used', { get: () => S.used(), enumerable: true, configurable: true })
+  CODEC.set(mem, S)
+  return S
 }
 
 // The module's ABI exports, every name the program cannot export (src/prepare/handlers.js
@@ -938,17 +949,17 @@ export const wrap = (src, state) => {
   }
   const esc = realInst.exports.__jz_esc, setBase = realInst.exports.__jz_base, survive = realInst.exports.__jz_survive
   const compact = realInst.exports.__jz_compact, pinGlobal = realInst.exports.__jz_pin, cost = realInst.exports.__jz_g_cost, viewed = realInst.exports.__jz_viewed
-  const mem = memory(src)
+  const mem = state?.mem ?? bind(src)
   // The module's pin (module/core/compact.js `__jz_pin`): the heap below the
   // highest block the host holds by address never moves, in a compaction the
   // host asks for or one a loop runs inside a call. Raised as values decode.
-  if (pinGlobal && mem) { mem._pinSet = (at) => { if (at > (pinGlobal.value >>> 0)) pinGlobal.value = at | 0 }; mem._pinReset = () => { pinGlobal.value = 0; if (viewed) viewed.value = 0 } }
+  if (pinGlobal && mem) { mem.pinSet = (at) => { if (at > (pinGlobal.value >>> 0)) pinGlobal.value = at | 0 }; mem.pinReset = () => { pinGlobal.value = 0; if (viewed) viewed.value = 0 } }
   // A view the host holds detaches as the memory grows: once one is handed
   // out, a compaction finds its scratch in the memory as it stands or
   // declines (`__jz_viewed`, module/core/stub-log.js), as the program's own
   // allocations alone grow it. The buffer the view shows marks how long:
   // once the program's allocation grew the memory past it (`settle`).
-  if (viewed && mem) mem._viewSet = () => { viewed.value = 1; mem._viewBuf = mem.buffer }
+  if (viewed && mem) mem.viewSet = () => { viewed.value = 1; mem.viewBuf = mem.buffer }
   // An async program exports __jz_mt_drain, __jz_p_state and __jz_p_value (`jz:async`):
   // each export call ends a turn (the microtasks drain) and a promise result
   // becomes a host Promise, a pending one settled by the after-tick sweep.
@@ -1262,7 +1273,7 @@ export const wrap = (src, state) => {
   // A call's heap: `enter` marks where it stood before the arguments were
   // copied in; `leave` rewinds to the mark when the export keeps nothing
   // (`jz:release`) and no call inside it (a host import calling back) kept
-  // anything (`mem._kept`, per nesting). An export whose frame runs escapes
+  // anything (`mem.kept`, per nesting). An export whose frame runs escapes
   // (`flag`) releases only where none wrote below the mark (the escape flag,
   // saved and cleared around the call, optimize/arena-rewind.js); a call that
   // threw releases nothing. `__jz_base` sets the outermost frame's mark and
@@ -1279,29 +1290,29 @@ export const wrap = (src, state) => {
   const COMPACT_MIN = 65536, CAP = 2 ** 32, MARGIN = 64 << 20
   const settle = (returned, held) => {
     if (!compact || mem.scalar) return
-    if (held) { mem._pin = Math.max(mem._pin, mem._pinAt); mem._pinAt = 0; mem._pinSet?.(mem._pin) }
-    if (!returned || asyncMod || (mem._calls = (mem._calls + 1) & 15) !== 0) return
-    const floor = Math.max(mem._base(), mem._pin), at = mem._top()
-    const since = at - floor, need = 2 * mem._live + COMPACT_MIN
-    if (since <= need && !(CAP - at < at / 8 + MARGIN + need - since && since > mem._live / 8 + COMPACT_MIN)) return
+    if (held) { mem.pin = Math.max(mem.pin, mem.pinAt); mem.pinAt = 0; mem.pinSet?.(mem.pin) }
+    if (!returned || asyncMod || (mem.calls = (mem.calls + 1) & 15) !== 0) return
+    const floor = Math.max(mem.base(), mem.pin), at = mem.top()
+    const since = at - floor, need = 2 * mem.live + COMPACT_MIN
+    if (since <= need && !(CAP - at < at / 8 + MARGIN + need - since && since > mem.live / 8 + COMPACT_MIN)) return
     // views handed out before the program's own allocation grew the memory are
     // detached: the walk's scratch may grow it again
-    if (viewed && viewed.value && mem._viewBuf !== mem.buffer) viewed.value = 0
+    if (viewed && viewed.value && mem.viewBuf !== mem.buffer) viewed.value = 0
     const to = compact(floor | 0) >>> 0
-    mem._live = Math.max(to - floor, cost ? cost.value >>> 0 : 0)
+    mem.live = Math.max(to - floor, cost ? cost.value >>> 0 : 0)
   }
   // the outermost call over: what it handed the host settles the floor
-  const done = (returned, handed) => { mem._busy = false; mem._above = Infinity; mem._held = false; settle(returned, handed) }
-  const running = () => depth === 0 && (depth = 1) === 1 && (mem._busy = true) && ((mem._above = 0), (mem._held = false), true)
-  const ran = (threw) => { depth = 0; if (threw && setBase) setBase(-1); done(!threw, mem._held) }
+  const done = (returned, handed) => { mem.busy = false; mem.above = Infinity; mem.held = false; settle(returned, handed) }
+  const running = () => depth === 0 && (depth = 1) === 1 && (mem.busy = true) && ((mem.above = 0), (mem.held = false), true)
+  const ran = (threw) => { depth = 0; if (threw && setBase) setBase(-1); done(!threw, mem.held) }
   const enter = (flag) => {
     // no frame of the module runs around the first call: a mark a call that threw left behind goes
     if (setBase && depth === 0) setBase(-1)
-    if (depth === 0) { mem._above = 0; mem._held = false }   // any view or closure decoded during the call counts
+    if (depth === 0) { mem.above = 0; mem.held = false }   // any view or closure decoded during the call counts
     depth++
-    mem._busy = true
-    const mark = { top: mem._top(), kept: mem._kept, esc: flag && esc ? esc.value >>> 0 : 0, base: null }
-    mem._kept = false
+    mem.busy = true
+    const mark = { top: mem.top(), kept: mem.kept, esc: flag && esc ? esc.value >>> 0 : 0, base: null }
+    mem.kept = false
     if (flag && esc) esc.value = -1
     // the outermost frame's mark is this call's where none runs around it; an older one stays
     if (flag && setBase) {
@@ -1314,28 +1325,28 @@ export const wrap = (src, state) => {
   // memory (a view, a closure, a promise read as it settles), which above the
   // call's mark holds what the call allocated (`mark.held`).
   const settled = (mark, ret) => {
-    const above = mem._above, held = mem._held
-    mem._above = mark.top; mem._held = false
+    const above = mem.above, held = mem.held
+    mem.above = mark.top; mem.held = false
     try {
       const out = finishRet(ret, exportRet)
-      mark.held = mem._held || (asyncMod && out instanceof Promise)
+      mark.held = mem.held || (asyncMod && out instanceof Promise)
       return out
-    } finally { mem._above = above; mem._held = held }
+    } finally { mem.above = above; mem.held = held }
   }
   const leave = (mark, release, flag, returned) => {
     const escaped = flag && (!esc || (esc.value >>> 0) < mark.top || !returned), held = mark.held === true
-    if (release && !mem._kept && !escaped && !held) {
-      if (POISON && mem._top() > mark.top) new Uint8Array(mem.buffer, mark.top, mem._top() - mark.top).fill(255)
-      mem._setTop(mark.top)
+    if (release && !mem.kept && !escaped && !held) {
+      if (POISON && mem.top() > mark.top) new Uint8Array(mem.buffer, mark.top, mem.top() - mark.top).fill(255)
+      mem.setTop(mark.top)
     }
     // a call that ran an escape keeps what the escape reaches: the module walks from what it wrote into
-    else if (release && !mem._kept && !held && returned && survive && mark.base === NO_MARK) mem._setTop(survive(mark.top) >>> 0)
-    mem._kept = mark.kept || !release || escaped || held || mem._kept
+    else if (release && !mem.kept && !held && returned && survive && mark.base === NO_MARK) mem.setTop(survive(mark.top) >>> 0)
+    mem.kept = mark.kept || !release || escaped || held || mem.kept
     if (flag && esc && mark.esc < (esc.value >>> 0)) esc.value = mark.esc | 0
     if (setBase && mark.base !== null) setBase(mark.base | 0)
     // a call that threw left the frames of the module without their epilogues: no mark stays past the outermost
     if (--depth === 0 && !returned && setBase) setBase(-1)
-    if (depth === 0) done(returned, held || mem._held)
+    if (depth === 0) done(returned, held || mem.held)
   }
 
   // A module without memory: values cross by their bits, no heap to release
@@ -1439,7 +1450,7 @@ const hostClasses = (table, exports, fnOf, mem) => {
       return factory(...args)
     } }[c.cls] : null
     const proto = C ? C.prototype : {}
-    const self = (o, key) => { if (!mem._handles.has(o)) throw new TypeError(`${c.cls}.prototype.${key} called on an object that is not an instance of ${c.cls}`); return o }
+    const self = (o, key) => { if (!mem.handles.has(o)) throw new TypeError(`${c.cls}.prototype.${key} called on an object that is not an instance of ${c.cls}`); return o }
     for (const [key, kind] of c.members) {
       const f = take('__jz_' + c.tag + MARK + kind + key), had = Object.getOwnPropertyDescriptor(proto, key)
       if (kind === 'm') {
@@ -1596,7 +1607,7 @@ const hostKey = (prop) => typeof prop === 'string' && prop.startsWith('@@') && W
 const prepareInterop = (opts) => {
   // the host references of a memory are one table for every module sharing
   // it: an index one module hands out resolves through another's import
-  const state = { extMap: opts.memory instanceof WebAssembly.Memory && opts.memory._extMap ? opts.memory._extMap : [null], mem: null }
+  const state = { extMap: (opts.memory instanceof WebAssembly.Memory && CODEC.get(opts.memory)?.extMap) || [null], mem: null }
   // The host's side of the module's dynamic operations (module/collection.js,
   // module/web.js), values crossing as i64 bits. A receiver that is no host
   // object (extMap[0] is null: an unsupported builtin method, an untyped
@@ -1698,7 +1709,7 @@ const prepareInterop = (opts) => {
     // pointer into the heap: the call around it releases nothing (`_kept`).
     __ext_set: (objBig, propBig, valBig) => {
       const v = read(valBig)
-      if (ArrayBuffer.isView(v)) { state.mem._views?.set(v, valBig); state.mem._kept = true }
+      if (ArrayBuffer.isView(v)) { state.mem.hostViews?.set(v, valBig); state.mem.kept = true }
       const prop = keyOf(propBig)
       extRecv(objBig, prop, 'property write')[prop] = v
       return 1
@@ -1725,7 +1736,7 @@ const prepareInterop = (opts) => {
     },
     __ext_callable: (vBig) => typeof state.extMap[offset(vBig)] === 'function' ? 1 : 0,
     // the description of a Symbol the module holds none of its own for: one the host made (module/symbol.js)
-    __ext_sym_desc: (vBig) => bits(state.mem.wrapVal(state.mem._symbols.read(vBig).description)),
+    __ext_sym_desc: (vBig) => bits(state.mem.wrapVal(state.mem.symbols.read(vBig).description)),
     // older binaries pass receiver, key and arguments
     __ext_call: (objBig, propBig, argsBig) => {
       const prop = keyOf(propBig), obj = extRecv(objBig, prop, 'method call'), args = read(argsBig)
@@ -1855,8 +1866,9 @@ const buildImports = (mod, opts, state) => {
   // is refused before its start function writes into it. (A page count is the
   // compiler's, not an import.)
   if (opts.memory instanceof WebAssembly.Memory) {
-    if (!_enhanced.has(opts.memory)) opts.memory = memory(opts.memory)
-    else mergeTables(opts.memory, moduleTables(mod))
+    const known = CODEC.get(opts.memory)
+    if (known) mergeTables(known, moduleTables(mod))
+    else memory(opts.memory)
     if (!imports.env) imports.env = {}
     imports.env.memory = opts.memory
   }
@@ -1907,18 +1919,18 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   // is readable): called once the exports are wrapped.
   const rawMemory = opts.memory instanceof WebAssembly.Memory ? opts.memory : inst.exports.memory
   const src = { module: mod, instance: inst, exports: { ...inst.exports, memory: rawMemory }, extMap: state.extMap }
-  const enhanced = memory(src)
-  state.mem = enhanced
+  const mem = bind(src)
+  state.mem = mem
   state.raise = inst.exports.__jz_throw_host
   state.errTag = inst.exports.__jz_err
   const exports = wrap(src, state)   // before init: an initializer may call a host function that calls back
   state.flushPrint?.()
   if (state.init) {
     state.init()
-    enhanced._markBase?.()
+    mem.markBase?.()
   }
   // A memoryless module's reader stays internal: the result's `.memory` is null.
-  return { exports, memory: enhanced?.scalar ? null : enhanced, instance: inst, module: mod }
+  return { exports, memory: mem.scalar ? null : rawMemory, instance: inst, module: mod }
 }
 
 export const toModule = (wasm) => wasm instanceof WebAssembly.Module ? wasm : new WebAssembly.Module(wasm)

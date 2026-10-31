@@ -2574,8 +2574,7 @@ argument, a value stored into a host object: `mem.read` marks `_held`). Shared a
 (`compact: false`, memory-for-size as `arenaReach`) and hosts other than the
 JS one do not compact; a walk that finds no room for its
 scratch above the heap leaves the heap as it was. Once the host holds a view
-of the module's memory (`__viewed`, set as `mem.read` decodes one or
-`allocTyped` makes one), the walk finds that room in the memory as it stands
+of the module's memory (`__viewed`, set as `mem.read` decodes one), the walk finds that room in the memory as it stands
 and never grows it, since a grow detaches every view: a render loop's pixel
 buffer, returned once and painted every frame, stays attached however often
 the state beside it is walked. Only a Set or Map rebuilt after the move,
@@ -5469,8 +5468,12 @@ arguments, preserving undefined for default initializers. It also skips unused
 rest packing and arguments beyond a non-rest function's arity. Defaults and
 captured reads participate in the census (`test/interop.js`). Kernel byte identity is not
 promised across releases. The runtime's other exports (`memory`, `wrap`, `coerce`, bit
-conversions, pointer/tag accessors, NaN constants, `toModule`) and the memory's
-`wrapVal`, `alloc` and `allocTyped` serve index.js and the tests; `jz/interop` does not expose them.
+conversions, pointer/tag accessors, NaN constants, `toModule`, `codecOf`) serve index.js
+and the tests; `jz/interop` does not expose them. A memory carries what index.d.ts
+`JzMemory` declares and nothing else (`test/mem.js` holds them equal): its codec, the
+marshalling (`wrapVal`, `Hash`, `External`), the allocator, the tables its modules
+bound and the host's hold on its heap, stays in interop.js, which `codecOf(memory)`
+hands the tests.
 
 ### Known limitations
 

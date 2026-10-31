@@ -77,13 +77,13 @@ test('interop: legacy host calls keep their object-key-arguments ABI', () => {
   const {instance,memory}=interop.instantiate(bytes)
   let gets=0
   const object={value:4,get run(){gets++;return function(x){return this.value+x}}}
-  const receiver=memory.External(object),args=memory.Array([3])
+  const receiver=interop.codecOf(memory).External(object),args=memory.Array([3])
   is(memory.read(instance.exports.invoke(receiver,memory.String('run'),args)),7,'legacy method receiver')
   is(gets,1,'legacy method getter runs once')
   const bound=instance.exports.read(receiver,memory.String('run'))
   is(memory.read(instance.exports.invoke(bound,interop.UNDEF_NAN,args)),7,'legacy property method remains bound')
   is(gets,2,'legacy property getter runs once')
-  const plain=memory.External(function(x){return this===undefined?x+2:-1})
+  const plain=interop.codecOf(memory).External(function(x){return this===undefined?x+2:-1})
   is(memory.read(instance.exports.invoke(plain,interop.UNDEF_NAN,args)),5,'legacy direct function')
   throws(()=>instance.exports.invoke(receiver,memory.String('missing'),args),TypeError,'missing legacy method throws')
 })
@@ -165,7 +165,7 @@ test('interop: host property and method errors retain class, identity and effect
     trace='';ok(got.computed('run')===value,`computed getter throw O${optimize}`);is(trace,'gq',`computed getter throw skips arguments O${optimize}`)
     trace='';is(got.badMethod(),true,`non-callable method TypeError O${optimize}`);is(trace,'gba',`non-callable check follows arguments O${optimize}`)
     const typed=new BigInt64Array([6n]);typed.read=function(){return this[0]}
-    receiver=instance.memory.External(typed)
+    receiver=interop.codecOf(instance.memory).External(typed)
     is(got.typed(),6n,`captured method keeps typed BigInt receiver evidence O${optimize}`)
     receiver=function(n){trace+='d';return this===undefined?n+3:-1}
     trace='';is(got.direct(),4,`held function has no receiver O${optimize}`);is(trace,'gad',`held function arguments once O${optimize}`)
@@ -712,7 +712,7 @@ test('interop: semantic Number ingress does not decode NaN payloads as handles',
     const value=nan(hi)
     ok(Number.isNaN(interop.coerce(value)),'semantic coercion retains a Number')
     is(interop.f64ToI64(interop.coerce(value)),0x7ff8000000000000n,'semantic coercion canonicalizes the payload')
-    for(const ptr of [mem.Array([value]),mem.Hash({value}),mem.Object({value}),mem.Array([[value],{value}])]){
+    for(const ptr of [mem.Array([value]),interop.codecOf(mem).Hash({value}),mem.Object({value}),mem.Array([[value],{value}])]){
       const out=mem.read(ptr)
       const first=Array.isArray(out)?Array.isArray(out[0])?out[0][0]:out[0]:out.value
       ok(Number.isNaN(first),'container round-trip retains numeric NaN')
@@ -755,7 +755,7 @@ test('interop: tagged arguments, closures and host returns keep numeric NaNs', (
       words[0]=17;words[1]=hi;const v=cell[0],want=['number',true,NaN]
       is(f.direct(v),want,`O${optimize} direct`)
       is(f.array([v]),want,'ordinary array argument')
-      is(f.object(r.memory.Hash({value:v})),[NaN],'native dictionary argument')
+      is(f.object(interop.codecOf(r.memory).Hash({value:v})),[NaN],'native dictionary argument')
       if(!onWasi())is(f.object({value:v}),[NaN],'ordinary host object argument')
       is(f.rest(v),want,'rest argument')
       is(c(v),want,'retained closure argument')
@@ -810,11 +810,12 @@ test('interop: Uint8Array arg crosses via native memcpy (correct for stride-1)',
   is(exports.sum(data), expect)
 })
 
-test('interop: memory.allocTyped gives a live view + box for zero-copy input', () => {
+test('interop: a typed array made by length is a live view + box for zero-copy input', () => {
   const { exports, memory } = interop.instantiate(compile(`
     export let dec = (b) => { let n = b.length, o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = b[i] / 255; return o }
   `))
-  const { view, box } = memory.allocTyped(Uint8Array, 4)
+  const box = memory.Uint8Array(4), view = memory.read(box)
+  is([...view], [0, 0, 0, 0], 'zeros, as new Uint8Array(4)')
   ok(view instanceof Uint8Array, 'view is a Uint8Array')
   ok(view.buffer === memory.buffer, 'view aliases wasm memory (zero-copy)')
   ok(typeof box === 'bigint', 'box is an i64 carrier')
@@ -885,9 +886,16 @@ for (const optimize of levels(false, 2, 3)) {
   })
 }
 
-test('interop: allocTyped rejects an unsupported ctor', () => {
-  const { memory } = interop.instantiate(compile('export let f = () => 1'))
-  throws(() => memory.allocTyped(Array, 4))
+test('interop: a typed array constructor takes a length as its host constructor does', () => {
+  const { memory } = interop.instantiate(compile('export let f = (a) => a.length'))
+  for (const name of ['Float64Array', 'Int16Array', 'Uint8ClampedArray', 'BigInt64Array', 'BigUint64Array']) {
+    // (BigInt64Array and BigUint64Array share one element code, which reads back signed)
+    const got = memory.read(memory[name](3)), kind = name === 'BigUint64Array' ? 'BigInt64Array' : name
+    is([got.constructor.name, got.length, ...got], [kind, 3, ...new globalThis[kind](3)], name + '(3)')
+    is(memory.read(memory[name](2.7)).length, 2, name + '(2.7) truncates')
+    throws(() => memory[name](-1), RangeError, name + '(-1)')
+  }
+  is(memory.read(memory.BigInt64Array([1n, -2n])), new BigInt64Array([1n, -2n]), 'BigInt64Array(data)')
 })
 
 // ── numeric export boundary ─────────────────────────────────────────────────
@@ -1137,7 +1145,7 @@ test('interop: classes of one field list keep their identity through the section
   const one = jz(`class A { constructor(x) { this.x = x } }\nclass B { constructor(x) { this.x = x } }
 export let a = () => new A(1), b = () => new B('s'), ra = (o) => o.x, rb = (o) => o.x, plain = () => ({ x: 2 })`)
   is(one.exports.ra(one.exports.a()), 1); is(one.exports.rb(one.exports.b()), 's')
-  is(one.memory.schemas.filter(s => s.join() === 'x').length, 3, 'two branded shapes and the plain one')
+  is(interop.codecOf(one.memory).schemas.filter(s => s.join() === 'x').length, 3, 'two branded shapes and the plain one')
   is(one.exports.ra(one.exports.plain()), 2)
   // another module's class C would bind at a fourth id while its pointers carry id 0: rejected
   throws(() => jz(`class C { constructor(x) { this.x = x } }\nexport let c = () => new C(true), rc = (o) => o.x`, { memory: one.memory }), /schema 0 \{x\} of this module binds as schema 3/)
@@ -1168,7 +1176,7 @@ test('interop: a rejected module leaves the memory it would share untouched', ()
   const memory = jz.memory()
   const one = jz(`export let mk = () => ({ p: 1, q: 'a longer static string' }), rq = (o) => o.q`, { memory })
   const o = one.exports.mk()
-  const tables = () => JSON.stringify([memory.schemas, [...memory._schemaKeyToId], [...memory.errorSidToClass], [...memory.brandOfSid], memory.fieldContracts])
+  const tables = () => JSON.stringify([interop.codecOf(memory).schemas, [...interop.codecOf(memory).schemaKeyToId], [...interop.codecOf(memory).errorSidToClass], [...interop.codecOf(memory).brandOfSid], interop.codecOf(memory).fieldContracts])
   const heap = () => new DataView(memory.buffer).getUint32(HEAP.PTR_ADDR, true)
   const before = tables(), ptr = heap()
   // static data, module-scope allocation, Error classes and another shape: its schema 0 would bind as schema 1
@@ -1263,17 +1271,17 @@ test('interop: Symbol property keys marshal through explicit dictionaries and ho
   if(onKernel())return
   const mem=interop.memory(),a=Symbol('same'),b=Symbol('same'),registry=Symbol.for('jz:key')
   for(const value of [{},{[a]:7,[b]:9,[registry]:11,a:13},{[b]:undefined},{}]){
-    const out=mem.read(mem.Hash(value))
+    const out=mem.read(interop.codecOf(mem).Hash(value))
     is(Reflect.ownKeys(out),Reflect.ownKeys(value),'own string and Symbol keys retain order')
     for(const key of Reflect.ownKeys(value))is(out[key],value[key],'key identity and value survive')
   }
   const effects={get first(){delete this[b];return 1},[a]:undefined,[b]:9}
   Object.defineProperty(effects,registry,{value:11,enumerable:false})
-  const changed=mem.read(mem.Hash(effects))
+  const changed=mem.read(interop.codecOf(mem).Hash(effects))
   is(Reflect.ownKeys(changed),['first',a],'earlier getters affect later Symbol presence; hidden keys stay hidden')
   is(changed[a],undefined,'present undefined retains its Symbol key')
-  is(mem.read(mem.Hash('ab')),{'0':'a','1':'b'},'primitive string boxing is preserved')
-  throws(()=>mem.Hash(null),TypeError)
+  is(mem.read(interop.codecOf(mem).Hash('ab')),{'0':'a','1':'b'},'primitive string boxing is preserved')
+  throws(()=>interop.codecOf(mem).Hash(null),TypeError)
   if(onWasi())return // External object imports belong to the JS host.
   const src=`import {get} from 'host';export function f(key){const o=get();return [o[key],key in o,delete o[key],key in o]}
     export function value(){return get().token}`
@@ -1309,8 +1317,9 @@ test('interop: memoryless Symbol codecs retain identity and reject numeric field
   for(const value of [first,first,host,foreign,Symbol.for('jz:memoryless'),first])
     is(f.echo(value),value,'memoryless ingress and egress share their identity table')
   is(f.registry(),Symbol.for('jz:memoryless'))
-  const raw=a.instance.exports.fresh(),reader=interop.memory(a),held=reader.read(raw)
-  is(interop.memory(a).read(raw),held,'rebuilding a memoryless adapter reuses its codec')
+  const raw=a.instance.exports.fresh(),held=interop.wrap(a).echo(raw)
+  is(typeof held,'symbol','a raw identity reads as a Symbol')
+  is(interop.wrap(a).echo(raw),held,'rebuilding a memoryless adapter reuses its codec')
   is(interop.wrap(a).echo(first),first,'another export wrapper shares identity')
   ok(f.fresh()!==host,'host ingress advances the runtime counter')
   a.instance.exports.__jz_symbol_id.value=symbolCountMax(1)

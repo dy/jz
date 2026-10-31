@@ -4,6 +4,7 @@ import { is, ok, almost, throws } from 'tst/assert.js'
 import { strHashLiteral } from '../module/collection.js'
 import { levels } from './_matrix.js'
 import { run, oracle, cases, agree, funcWat, compile, jz } from './util.js'
+import { codecOf } from '../interop.js'
 
 test('string conversion: nullable string reads need only sentinel formatting', () => {
   const src = `const words = ['', 'a', 'long string', null];
@@ -1631,7 +1632,7 @@ test('UTF-16 object keys survive UTF-8 schema metadata', () => {
     export let map=x=>{let m=new Map();m.set(String.fromCharCode(x),42);return m.get("\\uD800")}
   `), e=m.exports
   is(e.f(),Object.fromEntries(keys.map((key,i)=>[key,i+1])))
-  is(m.memory.read(m.instance.exports.g(m.memory.Hash({'\uD800':42}))),42)
+  is(m.memory.read(m.instance.exports.g(codecOf(m.memory).Hash({'\uD800':42}))),42)
   is(e.dictionary(0xD800),42); is(e.map(0xD800),42)
 })
 

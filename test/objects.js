@@ -4,7 +4,7 @@
 // through `?:`, dynamic key writes against fixed-shape slots.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { i64ToF64 } from '../interop.js'
+import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, belowOpt, levels } from './_matrix.js'
 import { run, oracle, cases, jz, compile } from './util.js'
 
@@ -754,13 +754,13 @@ test('Regression: property read does not call method emitter with same name', ()
   is(f(), 7)
 })
 
-test('Regression: mem.write partial object update preserves omitted fields', async () => {
-  const r = await WebAssembly.instantiate(compile(`
+test('Regression: mem.write partial object update preserves omitted fields', () => {
+  const r = instantiate(compile(`
     export let make = () => ({x: 1, y: 2, z: 3})
   `))
-  const m = jz.memory(r)
-  // Object result is a NaN-box → i64 carrier; reinterpret the raw i64 to the f64 pointer.
-  const ptr = i64ToF64(r.instance.exports.make())
+  const m = r.memory
+  // an object result crosses as its i64 box: the raw export's value is the pointer
+  const ptr = r.instance.exports.make()
   m.write(ptr, { y: 99 })
   const out = m.read(ptr)
   is(out.x, 1)

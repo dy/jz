@@ -26,7 +26,7 @@
 import { DBG_INVARIANTS } from '../src/debug.js'
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { instantiate } from '../interop.js'
+import { instantiate, codecOf } from '../interop.js'
 import { numHashLiteral, MAP_ENTRY } from '../module/collection.js'
 
 import { PTR } from '../layout.js'
@@ -336,8 +336,8 @@ test('Map key classifiers reject numeric payloads before boxed content compariso
   }
   const mod=instantiate(encodeWat(tree)),raw=mod.instance.exports,mem=mod.memory
   const symbol=Symbol('same'),otherSymbol=Symbol('same')
-  const real=[mem.BigInt(7n),mem.String('long string key'),mem.wrapVal(symbol),mem.wrapVal(otherSymbol),
-    mem.wrapVal(null),mem.wrapVal(undefined),mem.wrapVal(false),mem.wrapVal(true)]
+  const real=[mem.BigInt(7n),mem.String('long string key'),codecOf(mem).wrapVal(symbol),codecOf(mem).wrapVal(otherSymbol),
+    codecOf(mem).wrapVal(null),codecOf(mem).wrapVal(undefined),codecOf(mem).wrapVal(false),codecOf(mem).wrapVal(true)]
   for(const bits of numericNaNPayloads()) {
     is(raw.hash(bits),3,'all numeric NaNs share the canonical hash')
     is(raw.same(bits,0x7ff8000000000000n),1,'distinct NaN payloads compare equal')
@@ -347,7 +347,7 @@ test('Map key classifiers reject numeric payloads before boxed content compariso
     for(const box of real){is(raw.same(bits,box),0,'finite/infinite bits do not authorize payload loads');is(raw.same(box,bits),0,'boxed/numeric order stays distinct')}
   is(raw.same(real[0],mem.BigInt(7n)),1,'BigInt content identity remains')
   is(raw.same(real[1],mem.String('long string key')),1,'string content identity remains')
-  is(raw.same(real[2],mem.wrapVal(symbol)),1,'the same Symbol retains identity')
+  is(raw.same(real[2],codecOf(mem).wrapVal(symbol)),1,'the same Symbol retains identity')
   is(raw.same(real[2],real[3]),0,'equal Symbol descriptions do not equal identities')
   is(raw.same(0n,0x8000000000000000n),1,'both zero signs share SameValueZero')
 })

@@ -1,9 +1,10 @@
 // jz.memory API tests: JS↔WASM interop constructors, read, write
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
-import { i64ToF64, instantiate } from '../interop.js'
+import { i64ToF64, instantiate, codecOf } from '../interop.js'
 import { onWasi, onKernel, adaptI64, levels, belowOpt } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
+import { readFileSync } from 'node:fs'
 
 // interop's instantiate (not raw WebAssembly.instantiate): a module whose
 // unproven-receiver reads pull the env external machinery declares imports —
@@ -11,7 +12,7 @@ import { oracle, funcWat, jz, compile } from './util.js'
 // (i64 BigInt carriers), not the wrapped ones.
 async function run(code, opts) {
   const r = instantiate(compile(code, opts))
-  return { module: r.module, instance: { exports: adaptI64(r.module, r.instance.exports) } }
+  return { module: r.module, memory: r.memory, instance: { exports: adaptI64(r.module, r.instance.exports) } }
 }
 
 // ============================================
@@ -20,7 +21,7 @@ async function run(code, opts) {
 
 test('mem.read: regular number passthrough', async () => {
   const r = await run('export let f = () => [1]')
-  const m = jz.memory(r)
+  const m = r.memory
   is(m.read(42), 42)
   is(m.read(0), 0)
   is(m.read(-1.5), -1.5)
@@ -29,7 +30,7 @@ test('mem.read: regular number passthrough', async () => {
 
 test('mem.read: NaN passthrough (falls through type dispatch, returns NaN)', async () => {
   const r = await run('export let f = () => [0]')
-  const m = jz.memory(r)
+  const m = r.memory
   ok(isNaN(m.read(NaN)))
 })
 
@@ -42,7 +43,7 @@ test('mem.Array: write + read roundtrip', async () => {
     export let get = (a, i) => a[i]
     export let len = (a) => a.length
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = m.Array([10, 20, 30])
   ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   is(r.instance.exports.get(ptr, 0), 10)
@@ -53,7 +54,7 @@ test('mem.Array: write + read roundtrip', async () => {
 
 test('mem.read: WASM array → JS array', async () => {
   const r = await run(`export let make = () => { let a = [1, 2, 3]; return a }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make()
   const arr = m.read(ptr)
   ok(Array.isArray(arr))
@@ -66,7 +67,7 @@ test('mem.write: update array in place', async () => {
     export let make = () => { let a = [0, 0, 0]; return a }
     export let get = (a, i) => a[i]
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make()
   m.write(ptr, [7, 8, 9])
   is(r.instance.exports.get(ptr, 0), 7)
@@ -76,7 +77,7 @@ test('mem.write: update array in place', async () => {
 
 test('mem.write: capacity overflow throws', async () => {
   const r = await run(`export let get = (a, i) => a[i]`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = m.Array([1, 2])  // cap=2, allocated by JS side (hdr(n,n,...))
   let threw = false
   try { m.write(ptr, [1, 2, 3, 4]) } catch (e) { threw = true }
@@ -100,7 +101,7 @@ test('mem.write: a typed array takes its own element kind', () => {
 
 test('mem.String: SSO roundtrip', async () => {
   const r = await run(`export let len = (s) => s.length`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = m.String('hi')
   ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   is(r.instance.exports.len(ptr), 2)
@@ -108,7 +109,7 @@ test('mem.String: SSO roundtrip', async () => {
 
 test('mem.String: heap roundtrip', async () => {
   const r = await run(`export let len = (s) => s.length`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = m.String('hello world')
   ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   is(r.instance.exports.len(ptr), 11)
@@ -116,21 +117,21 @@ test('mem.String: heap roundtrip', async () => {
 
 test('mem.read: WASM SSO string → JS string', async () => {
   const r = await run(`export let make = () => { let s = "hi"; return s }`)
-  const m = jz.memory(r)
+  const m = jz.memory()   // the module has no memory: a short string lives in its box, which any memory reads
   const ptr = r.instance.exports.make()
   is(m.read(ptr), 'hi')
 })
 
 test('mem.read: WASM heap string → JS string', async () => {
   const r = await run(`export let make = () => { let s = "hello world"; return s }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make()
   is(m.read(ptr), 'hello world')
 })
 
 test('mem.String: SSO boundary (4 chars)', async () => {
   const r = await run(`export let len = (s) => s.length`)
-  const m = jz.memory(r)
+  const m = r.memory
   is(r.instance.exports.len(m.String('abcd')), 4)  // exactly 4 = SSO
   is(r.instance.exports.len(m.String('abcde')), 5) // 5 = heap
 })
@@ -145,7 +146,7 @@ test('mem.Object: auto schema lookup', async () => {
     export let getY = (o) => o.y
     export let make = (a, b) => { let o = {x: a, y: b}; return o }
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = m.Object({ x: 3, y: 4 })
   ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   is(r.instance.exports.getX(ptr), 3)
@@ -158,7 +159,7 @@ test('mem.Object: key order independence', async () => {
     export let getY = (o) => o.y
     export let make = (a, b) => { let o = {x: a, y: b}; return o }
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   // Keys in reverse order — should still find schema
   const ptr = m.Object({ y: 10, x: 20 })
   is(r.instance.exports.getX(ptr), 20)
@@ -176,7 +177,7 @@ test('mem.Object: ambiguous schemas throws', async () => {
     let b = {y: 3, x: 4}
     return a.x + b.y
   }`, { memory: 1 })
-  const m = jz.memory(r)
+  const m = r.memory
   // Exact order match works
   is(r.instance.exports.f(), 4)  // a.x=1 + b.y=3
   const ptrA = m.Object({ x: 10, y: 20 })
@@ -225,7 +226,7 @@ test('mem.Object: plain BigInt property value throws (post-C4b doctrine, mirrors
     export let getX = (o) => o.x
     export let make = (a, b) => { let o = {x: a, y: b}; return o }
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   let threw = null
   try { m.Object({ x: 5n, y: 1 }) } catch (e) { threw = e }
   ok(threw, 'plain BigInt property value throws')
@@ -238,14 +239,14 @@ test('mem.Object: boxed BigInt (mem.BigInt) property value round-trips', async (
     export let getX = (o) => o.x
     export let make = (a, b) => { let o = {x: a, y: b}; return o }
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = m.Object({ x: m.BigInt(5n), y: 1 })
   is(m.read(ptr).x, 5n, 'isBox BigInt property value round-trips through mem.read')
 })
 
 test('mem.write: plain BigInt array element throws (same class as mem.Object)', async () => {
   const r = await run(`export let make = () => { let a = [0, 0]; return a }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make()
   let threw = null
   try { m.write(ptr, [1, 2n]) } catch (e) { threw = e }
@@ -256,7 +257,7 @@ test('mem.write: plain BigInt array element throws (same class as mem.Object)', 
 
 test('mem.write: plain BigInt object property throws (same class as mem.Object)', async () => {
   const r = await run(`export let make = (a, b) => { let o = {x: a, y: b}; return o }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make(1, 2)
   let threw = null
   try { m.write(ptr, { x: 9n }) } catch (e) { threw = e }
@@ -267,7 +268,7 @@ test('mem.write: plain BigInt object property throws (same class as mem.Object)'
 
 test('mem.write: boxed BigInt (mem.BigInt) array element round-trips', async () => {
   const r = await run(`export let make = () => { let a = [0, 0]; return a }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make()
   m.write(ptr, [1, m.BigInt(5n)])
   is(m.read(ptr)[1], 5n, 'isBox BigInt element round-trips through mem.read')
@@ -275,7 +276,7 @@ test('mem.write: boxed BigInt (mem.BigInt) array element round-trips', async () 
 
 test('mem.write: boxed BigInt (mem.BigInt) object property round-trips', async () => {
   const r = await run(`export let make = (a, b) => { let o = {x: a, y: b}; return o }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make(1, 2)
   m.write(ptr, { x: m.BigInt(9n) })
   is(m.read(ptr).x, 9n, 'isBox BigInt property round-trips through mem.read')
@@ -285,7 +286,7 @@ test('mem.write: boxed BigInt (mem.BigInt) object property round-trips', async (
 
 test('mem.Array: null elements preserved', async () => {
   const r = await run('export let f = (a) => a[0]')
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = m.Array([null, 1, 2])
   // null element should be NaN-boxed null, not 0
   const result = r.instance.exports.f(ptr)
@@ -331,7 +332,7 @@ test('shared decimal powers: parser and formatter instances keep separate table 
 
 test('mem.read: WASM object → JS object', async () => {
   const r = await run(`export let make = (a, b) => { let o = {x: a, y: b}; return o }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make(7, 11)
   const obj = m.read(ptr)
   ok(typeof obj === 'object')
@@ -345,7 +346,7 @@ test('mem.write: partial object update', async () => {
     export let getX = (o) => o.x
     export let getY = (o) => o.y
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make(1, 2)
   m.write(ptr, { x: 99 })  // partial update — y unchanged
   is(r.instance.exports.getX(ptr), 99)
@@ -361,7 +362,7 @@ test('mem.Float64Array: write + read roundtrip', async () => {
     export let get = (a, i) => a[i]
     export let len = (a) => a.length
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = m.Float64Array([1.1, 2.2, 3.3])
   ok(typeof ptr === 'bigint')  // box is the i64 carrier (BigInt), not an f64 NaN-box
   almost(r.instance.exports.get(ptr, 0), 1.1)
@@ -374,7 +375,7 @@ test('mem.Float64Array: write roundtrip', async () => {
     export let make = (n) => { let a = new Float64Array(n); return a }
     export let get = (a, i) => a[i]
   `)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make(3)
   m.write(ptr, [10, 20, 30])
   almost(r.instance.exports.get(ptr, 0), 10)
@@ -383,7 +384,7 @@ test('mem.Float64Array: write roundtrip', async () => {
 
 test('mem.read: WASM TypedArray → JS typed array', async () => {
   const r = await run(`export let make = () => { let a = new Float64Array(3); a[0]=1; a[1]=2; a[2]=3; return a }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make()
   const arr = m.read(ptr)
   ok(arr instanceof Float64Array, 'returns Float64Array')
@@ -397,7 +398,7 @@ test('mem.read: WASM TypedArray → JS typed array', async () => {
 
 test('mem.write: string pointer throws', async () => {
   const r = await run(`export let make = () => { let s = "hello world"; return s }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make()
   let threw = false
   try { m.write(ptr, 'new value') } catch (e) { threw = true }
@@ -410,7 +411,7 @@ test('mem.write: string pointer throws', async () => {
 
 test('mem.read: nested read (number elements)', async () => {
   const r = await run(`export let make = () => { let a = [1, 2, 3]; return a }`)
-  const m = jz.memory(r)
+  const m = r.memory
   const ptr = r.instance.exports.make()
   const arr = m.read(ptr)
   is(arr[0], 1); is(arr[1], 2); is(arr[2], 3)
@@ -420,16 +421,19 @@ test('mem.read: nested read (number elements)', async () => {
 // jz.memory() API
 // ============================================
 
-test('jz.memory(): creates enhanced WebAssembly.Memory', () => {
+// The memory's own enumerable surface is index.d.ts JzMemory, member for member:
+// the codec behind it (schemas, allocator, host references) stays in the runtime.
+test('jz.memory(): its keys are the JzMemory members of index.d.ts', () => {
+  const decl = readFileSync(new URL('../index.d.ts', import.meta.url), 'utf8')
+  const body = decl.slice(decl.indexOf('export interface JzMemory'), decl.indexOf('\n}', decl.indexOf('export interface JzMemory')))
+  const members = [...body.matchAll(/^  (?:readonly )?([A-Za-z0-9]+)[(:]/gm)].map(m => m[1]).sort()
+  ok(members.length > 10, 'read the declaration')
   const memory = jz.memory()
   ok(memory instanceof WebAssembly.Memory, 'instanceof WebAssembly.Memory')
-  ok(typeof memory.read === 'function', 'has .read()')
-  ok(typeof memory.String === 'function', 'has .String()')
-  ok(typeof memory.Array === 'function', 'has .Array()')
-  ok(typeof memory.Object === 'function', 'has .Object()')
-  ok(typeof memory.write === 'function', 'has .write()')
-  ok(typeof memory.Float64Array === 'function', 'has .Float64Array()')
-  ok(Array.isArray(memory.schemas), 'has .schemas')
+  is(Object.keys(memory).sort(), members, 'a made memory')
+  const r = jz('export let s = (x) => "ab" + x')
+  is(Object.keys(r.memory).sort(), members, 'an instance\'s memory')
+  ok(Array.isArray(codecOf(memory).schemas), 'the codec holds the tables')
 })
 
 test('jz.memory(raw): patches and returns same object', () => {
@@ -541,14 +545,14 @@ test('shared memory: a module binds its schemas at the ids it compiled with, or 
   if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile
   const memory = jz.memory()
   const a = jz('export let make = () => { let o = {x: 1, y: 2}; return o }', { memory })
-  is(memory.schemas.length, 1, 'one schema after the first compile')
+  is(codecOf(memory).schemas.length, 1, 'one schema after the first compile')
   // another program's shape would bind as schema 1 while its pointers carry id 0:
   // rejected before the memory's tables change
   throws(() => jz('export let make2 = () => { let p = {name: 0, age: 0}; return p }', { memory }), /schema 0 \{name, age\} of this module binds as schema 1/)
-  is(memory.schemas.length, 1, 'the rejected module left no schema behind')
+  is(codecOf(memory).schemas.length, 1, 'the rejected module left no schema behind')
   // the same program again shares the memory: its schema is the memory's schema 0
   const b = jz('export let make = () => { let o = {x: 1, y: 2}; return o }', { memory })
-  is(memory.schemas.length, 1, 'one schema after the same program again')
+  is(codecOf(memory).schemas.length, 1, 'one schema after the same program again')
   for (const m of [a, b]) { const obj = memory.read(m.exports.make()); is(obj.x, 1); is(obj.y, 2) }
 })
 
@@ -564,7 +568,7 @@ test('shared memory: duplicate schemas not re-added', () => {
   const memory = jz.memory()
   jz('export let f = () => { let o = {a: 1, b: 2}; return o }', { memory })
   jz('export let g = () => { let o = {a: 3, b: 4}; return o }', { memory })
-  is(memory.schemas.length, 1, 'same schema not duplicated')
+  is(codecOf(memory).schemas.length, 1, 'same schema not duplicated')
 })
 
 test('one-off: inst.memory works without shared memory', () => {
@@ -1151,9 +1155,9 @@ test('host allocator: odd-sized mixed allocations never overlap', () => {
     mem.Float64Array([i + .5])
     for (const [ptr, expected] of saved) is([...mem.read(ptr)], expected)
   }
-  const before = mem.alloc(0)
-  for (const size of [-1, 1.5, NaN, Infinity, 2 ** 32]) throws(() => mem.alloc(size), RangeError)
-  is(mem.alloc(0), before, 'failed allocations do not advance the heap')
+  const before = codecOf(mem).alloc(0)
+  for (const size of [-1, 1.5, NaN, Infinity, 2 ** 32]) throws(() => codecOf(mem).alloc(size), RangeError)
+  is(codecOf(mem).alloc(0), before, 'failed allocations do not advance the heap')
 })
 
 test('host allocator: odd allocation survives Wasm allocator handoff', () => {
@@ -1187,7 +1191,7 @@ test('shared string pools include literals emitted by runtime helpers', () => {
 
 test('memory.write: growth and a failed marshal preserve destination atomicity', () => {
   const mem = jz.memory(), array = mem.Array([1, 2]), large = 'x'.repeat(70000)
-  mem.schemas.push(['a', 'b'])
+  codecOf(mem).schemas.push(['a', 'b'])
   const object = mem.Object({ a: 1, b: 2 })
   mem.write(array, [large, 3])
   is(mem.read(array), [large, 3])
@@ -1325,8 +1329,8 @@ test('host allocator: alignment preserves unsigned addresses above 2 GiB', () =>
   const memory = new WebAssembly.Memory({ initial: 32769, maximum: 32769 })
   const mem = jz.memory(memory)
   new DataView(memory.buffer).setUint32(1020, 0x80000001, true)
-  is(mem.alloc(1), 0x80000008)
-  is(mem.alloc(3), 0x80000010)
+  is(codecOf(mem).alloc(1), 0x80000008)
+  is(codecOf(mem).alloc(3), 0x80000010)
 })
 
 test('host fields: a matching typed constructor is adapted to a view descriptor', () => {

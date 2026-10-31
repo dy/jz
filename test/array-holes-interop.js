@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
-import { memory, wrap, toModule, offset, UNDEF_NAN } from '../interop.js'
+import { memory, wrap, toModule, offset, UNDEF_NAN, codecOf } from '../interop.js'
 import { TOMB_NAN } from '../layout.js'
 
 const TOMB = BigInt(TOMB_NAN)
@@ -68,7 +68,7 @@ test('array holes interop: Array+ copy-back preserves identity and follows spars
       if (n > 2) view.setFloat64(base + 16, 9, true)
     } else if (mode === 2) {
       const moved = mem.Array([, undefined, 8, , 10])
-      mem.alloc(70000)
+      codecOf(mem).alloc(70000)
       const view = new DataView(mem.buffer)
       view.setInt32(base - 8, offset(moved), true)
       view.setInt32(base - 4, -1, true)

@@ -1,6 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { instantiate } from '../interop.js'
+import { instantiate, codecOf } from '../interop.js'
 import { belowOpt, onKernel, levels } from './_matrix.js'
 import { funcWat, oracle, agree, jz, compile } from './util.js'
 import { ctx } from '../src/ctx.js'
@@ -73,7 +73,7 @@ test('audit: sentinel-neighbour UTF-16 hashes agree across literals, slices and 
   for (const optimize of TIERS) {
     const { exports, memory } = jz(src, { optimize })
     const obj = Object.fromEntries(hashStrings.map((k, i) => [k, i + 42]))
-    const ptr = memory.Hash(obj)
+    const ptr = codecOf(memory).Hash(obj)
     for (let i = 0; i < hashStrings.length; i++) {
       const k = hashStrings[i]
       is(exports.lookup(ptr, k), obj[k], 'host hash lane matches compiled probing')

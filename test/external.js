@@ -2,6 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi, levels } from './_matrix.js'
 import { oracle, jz, compile } from './util.js'
+import { codecOf } from '../interop.js'
 
 // Helper: compile and run
 function run(code, imports = {}) {
@@ -161,7 +162,7 @@ test('Computed delete reaches host storage and preserves strict failure and reus
     for(const [obj,key,expected] of [[array,'0',[true,'ok']],[array,'length','TypeError'],
       [typed,'0','TypeError'],[typed,'-0',[true,'ok']],[typed,'length',[true,'ok']],
       [fn,'prototype','TypeError'],[()=>{},'prototype',[true,'ok']]])
-      is(caught(instance.memory.External(obj),key),expected,`explicit host ${key}`)
+      is(caught(codecOf(instance.memory).External(obj),key),expected,`explicit host ${key}`)
     is(0 in array,false)
     is(typed[0],2)
   }
@@ -295,7 +296,7 @@ test('logical host field updates write back only on the assignment arm', () => {
         let gets=0, sets=0, state=[value]
         const o = { get state(){gets++;return state}, set state(v){sets++;state=v} }
         const writes = op === '||=' ? !value : op === '&&=' ? !!value : value == null
-        is(f(memory.External(o)), writes ? 9 : value, `O${optimize}: ${op} ${value}`)
+        is(f(codecOf(memory).External(o)), writes ? 9 : value, `O${optimize}: ${op} ${value}`)
         is(gets, 1, 'GetValue reads the host property once')
         is(sets, writes ? 1 : 0, 'only an actual store commits its copied container')
         is(state[0], writes ? 9 : value, 'short circuit preserves the host value')
@@ -323,7 +324,7 @@ test('staged host field stores retain BigInt assignment results', () => {
     const { exports: { f }, memory } = jz(src, { optimize })
     for (let i=0; i<2; i++) {
       const o={state:[0]}
-      is(f(memory.External(o)), 0x7ff8000500000000n, `O${optimize}: boxed result bits survive write-back`)
+      is(f(codecOf(memory).External(o)), 0x7ff8000500000000n, `O${optimize}: boxed result bits survive write-back`)
       is(o.state, [0x7ff8000500000000n], 'the host retains the same BigInt value')
     }
   }

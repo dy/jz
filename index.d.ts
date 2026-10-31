@@ -107,12 +107,13 @@ export interface CompileOptions {
   why?: boolean
 }
 
+/** A typed array on the jz heap: a copy of the elements, or a length's zeros. */
 export interface TypedArrayMemoryConstructor {
-  (data: ArrayLike<number>): JzPointer
+  (data: ArrayLike<number> | number): JzPointer
 }
 
 export interface BigIntTypedArrayMemoryConstructor {
-  (data: ArrayLike<bigint>): JzPointer
+  (data: ArrayLike<bigint> | number): JzPointer
 }
 
 /** Enhanced WebAssembly memory: allocate values on the jz heap and read them back. */
@@ -120,6 +121,8 @@ export interface JzMemory extends WebAssembly.Memory {
   String(str: string): JzPointer
   Array(data: ArrayLike<unknown>): JzPointer
   Object(obj: Record<string, unknown>): JzPointer
+  /** A BigInt boxed on the heap: a plain BigInt the module takes where its parameter is not proven BigInt. */
+  BigInt(value: bigint): JzPointer
 
   Float64Array: TypedArrayMemoryConstructor
   Float32Array: TypedArrayMemoryConstructor
@@ -144,12 +147,6 @@ export interface JzMemory extends WebAssembly.Memory {
   readonly used: number
 }
 
-/** Reader returned by `memory(instance)` for a module without linear memory. */
-export interface JzScalarMemory {
-  readonly scalar: true
-  read(value: JzCarrier | readonly JzCarrier[]): unknown
-}
-
 export type JzExports = Record<string, any>
 
 export interface JzInstance<E extends JzExports = JzExports> {
@@ -159,11 +156,10 @@ export interface JzInstance<E extends JzExports = JzExports> {
   module: WebAssembly.Module
 }
 
+/** `jz.memory()`: a memory of one page, an existing one enhanced in place, or one from a descriptor. An instance's memory is its result's `memory`. */
 export interface MemoryFactory {
   (): JzMemory
-  (memory: WebAssembly.Memory): JzMemory
-  (descriptor: WebAssembly.MemoryDescriptor): JzMemory
-  (instance: JzInstance): JzMemory | JzScalarMemory
+  (memory: WebAssembly.Memory | WebAssembly.MemoryDescriptor): JzMemory
 }
 
 /** `jz()`'s options: the compile options but `wat` (`jz()` instantiates), and those of

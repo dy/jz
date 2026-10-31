@@ -3,15 +3,11 @@ import { is, throws } from 'tst/assert.js'
 import { parseRegex, compileRegex } from '../module/regex.js'
 import { evaluate, cases, oracle, jz, compile } from './util.js'
 import { adaptI64, onKernel, levels } from './_matrix.js'
+import { instantiate } from '../interop.js'
 
-/** Compile + run, read result via jz.memory (for string-returning expressions) */
+/** Compile + run an expression, its value read back (for string-returning expressions) */
 function evalStr(code) {
-  const wasm = compile(`export let main = () => ${code}`)
-  const mod = new WebAssembly.Module(wasm)
-  const inst = new WebAssembly.Instance(mod)
-  inst.exports._initialize?.()  // wasi leg: reactor init (js leg ran the start section)
-  const m = jz.memory({ module: mod, instance: inst })
-  return m.read(adaptI64(mod, inst.exports).main())
+  return instantiate(compile(`export let main = () => ${code}`)).exports.main()
 }
 
 test('regex: each instance owns its properties and matching cursor', () => {
@@ -554,13 +550,9 @@ test('regex: str.replace(str, str) fallback through __str_replace', () => {
     export let a = () => s.replace(q, r)
     export let b = () => "abc123def".replace("123", "-")
   `)
-  const mod = new WebAssembly.Module(wasm)
-  const inst = new WebAssembly.Instance(mod)
-  inst.exports._initialize?.()  // wasi leg: reactor init (js leg ran the start section)
-  const m = jz.memory({ module: mod, instance: inst })
-  const exports = adaptI64(mod, inst.exports)
-  is(m.read(exports.a()), 'hello there')
-  is(m.read(exports.b()), 'abc-def')
+  const { exports } = instantiate(wasm)
+  is(exports.a(), 'hello there')
+  is(exports.b(), 'abc-def')
 })
 
 test('regex: str.split(regex)', async () => {
