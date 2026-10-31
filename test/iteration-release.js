@@ -80,8 +80,12 @@ test('iteration release: an escape one iteration made leaves the next ones free 
   const host = { host: { keep: () => 0 } }
   for (const n of [1, 9, 200]) is(instantiate(new WebAssembly.Module(compile(src, { optimize: 'speed', imports: host })), { imports: host }).exports.f(n), n * 7 + n * (n - 1) / 2, `f(${n})`)
   ok(/call \$__iter_take\b/.test(compile(src, { optimize: 'speed', wat: true, imports: host })), 'the loop releases its iterations, taking the flag over')
+  // the walk keeps the first iteration, and a release takes back 64 KiB of
+  // iterations together (control-flow.js RELEASE_BYTES): past a few iterations
+  // the memory stops growing. Two iterations stay below that, which a WASI
+  // build's one page, doubling, tells apart where the JS host's 17 do not.
   const grown = grownBy(src, { imports: host }, host)
-  is(grown(200), grown(2), 'two hundred iterations grow what two do')
+  is(grown(200), grown(20), 'two hundred iterations grow what twenty do')
 })
 
 test('iteration release: a released loop inside another takes nothing over, and its escapes reach the outer release', () => {
