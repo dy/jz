@@ -670,7 +670,7 @@ const handlers = {
       ? `import('${mod}'): only a source module (the \`modules\` option, or a file) can be imported dynamically`
       : `import('${mod}'): unknown module; provide it via { modules: { '${mod}': source } }`)
 
-    // Host imports override built-ins for named imports
+    // Host imports override source and built-in modules for named imports
     const hostMod = ctx.module.hostImports?.[mod]
     let remaining = specifiers
     if (hostMod && Array.isArray(specifiers) && specifiers[0] === '{}') {
@@ -689,7 +689,7 @@ const handlers = {
           }
         }
         if (builtinItems.length === 0) return null
-        if (!hasModule(mod)) {
+        if (!isBundledModule(mod) && !hasModule(mod)) {
           const name = typeof builtinItems[0] === 'string' ? builtinItems[0] : builtinItems[0][1]
           err(`'${name}' not declared in host module '${mod}' — add it to { imports: { '${mod}': {...} } }`)
         }
@@ -699,7 +699,49 @@ const handlers = {
       }
     }
 
-    // Tier 1: Built-in module
+    // Tier 1: Source module (bundling): a `modules` entry or a file the CLI resolved
+    // wins over a built-in of the same name (`string`, `math`, `core` …)
+    if (isBundledModule(mod)) {
+      const resolved = prepareModule(mod, bundledSource(mod))
+      importEdge(mod, lazy)
+      // Default import: import name from 'mod' → bind to default export
+      if (typeof specifiers === 'string') {
+        const mangled = resolved.exports.get('default')
+        if (!mangled) err(`'${mod}' has no default export — use a named import instead: import { name } from '${mod}'`)
+        ctx.scope.chain[specifiers] = mangled
+        return null
+      }
+      // Namespace import: import * as X from 'mod' → bind X.prop to mangled names
+      if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') {
+        const alias = specifiers[2]
+        // Store namespace mapping so '.' handler can resolve X.prop → mangled name
+        if (!ctx.module.namespaces) ctx.module.namespaces = Object.create(null)  // name-keyed: prototype-less (see derive)
+        ctx.module.namespaces[alias] = resolved.exports
+        return null
+      }
+      // Named imports: import { a, b } from 'mod', those a host module left
+      if (Array.isArray(remaining) && remaining[0] === '{}') {
+        const inner = remaining[1]
+        if (inner == null) return null
+        const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
+        for (const item of items) {
+          const name = moduleName(typeof item === 'string' ? item : item[1])
+          const alias = typeof item === 'string' ? item : item[2]
+          const mangled = resolved.exports.get(name)
+          if (!mangled) err(`'${name}' is not exported from '${mod}' — check the module's export list`)
+          if (mangled instanceof Map) {
+            // A namespace re-export (`export * as name from`): bind as `import * as`.
+            if (!ctx.module.namespaces) ctx.module.namespaces = Object.create(null)
+            ctx.module.namespaces[alias] = mangled
+            continue
+          }
+          ctx.scope.chain[alias] = mangled
+        }
+      }
+      return null
+    }
+
+    // Tier 2: Built-in module, one no source module of the name shadows
     if (hasModule(mod)) {
       includeModule(mod)
       const bind = (name, alias) => {
@@ -719,47 +761,6 @@ const handlers = {
           if (typeof item === 'string') bind(item)
           else if (Array.isArray(item) && item[0] === 'as') bind(moduleName(item[1]), item[2])
           else err(`Invalid import specifier: ${JSON.stringify(item)} — each named import must be a plain identifier or an \`x as y\` rename`)
-      }
-      return null
-    }
-
-    // Tier 2: Source module (bundling)
-    if (isBundledModule(mod)) {
-      const resolved = prepareModule(mod, bundledSource(mod))
-      importEdge(mod, lazy)
-      // Default import: import name from 'mod' → bind to default export
-      if (typeof specifiers === 'string') {
-        const mangled = resolved.exports.get('default')
-        if (!mangled) err(`'${mod}' has no default export — use a named import instead: import { name } from '${mod}'`)
-        ctx.scope.chain[specifiers] = mangled
-        return null
-      }
-      // Namespace import: import * as X from 'mod' → bind X.prop to mangled names
-      if (Array.isArray(specifiers) && specifiers[0] === 'as' && specifiers[1] === '*') {
-        const alias = specifiers[2]
-        // Store namespace mapping so '.' handler can resolve X.prop → mangled name
-        if (!ctx.module.namespaces) ctx.module.namespaces = Object.create(null)  // name-keyed: prototype-less (see derive)
-        ctx.module.namespaces[alias] = resolved.exports
-        return null
-      }
-      // Named imports: import { a, b } from 'mod'
-      if (Array.isArray(specifiers) && specifiers[0] === '{}') {
-        const inner = specifiers[1]
-        if (inner == null) return null
-        const items = (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner]).filter(x => x != null)
-        for (const item of items) {
-          const name = moduleName(typeof item === 'string' ? item : item[1])
-          const alias = typeof item === 'string' ? item : item[2]
-          const mangled = resolved.exports.get(name)
-          if (!mangled) err(`'${name}' is not exported from '${mod}' — check the module's export list`)
-          if (mangled instanceof Map) {
-            // A namespace re-export (`export * as name from`): bind as `import * as`.
-            if (!ctx.module.namespaces) ctx.module.namespaces = Object.create(null)
-            ctx.module.namespaces[alias] = mangled
-            continue
-          }
-          ctx.scope.chain[alias] = mangled
-        }
       }
       return null
     }

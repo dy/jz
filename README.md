@@ -39,7 +39,7 @@ These are all the options: any other key throws a `TypeError` naming it.
 
 | Option | Use |
 |---|---|
-| `modules` | Sources for static imports, `{ './dep.js': source }`. The CLI reads them from disk. |
+| `modules` | Sources for static imports, `{ './dep.js': source }`, each winning over a built-in module of its name (`math`, `string`). The CLI reads them from disk. |
 | `imports` | Host modules for `import { fn } from "mod"`: functions, constants, or a whole namespace such as `Math`. |
 | `define` | Compile-time constants injected as bindings, `{ DEBUG: false, N: 1024 }`: each key an identifier, each value a number, boolean, string, null, undefined, or an array or plain object of them. |
 | `host` | `'js'` (default) or `'wasi'` for standalone runtimes. |

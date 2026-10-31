@@ -242,6 +242,17 @@ test('import math from math', () => {
   is(f(16), 4)
 })
 
+// A built-in module's name is the program's to take: its own module wins
+test('import: a source module wins over a built-in module of the same name', () => {
+  const f = (src, opts) => jz(src, opts).exports
+  for (const name of ['string', 'math', 'core', 'date', 'console', 'json', 'Map'])
+    is(f(`import { x } from "${name}"; export let f = () => x`, { modules: { [name]: 'export let x = 42' } }).f(), 42, name)
+  is(f('import m from "math"; export let f = () => m.k', { modules: { math: 'export default { k: 7 }' } }).f(), 7, 'default import')
+  is(f('import * as s from "string"; export let f = () => s.x', { modules: { string: 'export let x = 9' } }).f(), 9, 'namespace import')
+  if (!onWasi()) is(f('import { a, b } from "string"; export let f = () => a() + b', { imports: { string: { a: () => 1 } }, modules: { string: 'export let b = 2' } }).f(), 3, 'a host import beside the source module')
+  almost(f(`import { sin } from 'math'; export let f = x => sin(x)`).f(0), 0, 1e-12, 'the built-in where no module takes the name')
+})
+
 // ============================================
 // Source module bundling (Tier 2)
 // ============================================
