@@ -960,7 +960,7 @@ exports.square(7) // 49</code></pre>
         <details>
           <summary><h2 class="fq">What's the memory model?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="square" aria-hidden="true"><path d="M5 9l7 7 7-7" /></svg></summary>
           <div class="ans prose">
-            <p>Freed by scope, not by a collector: a call's temporaries go when it returns, kept state is compacted once it doubles. <a href="https://github.com/dy/jz#memory" target="_blank" rel="noopener">Memory →</a></p>
+            <p>Freed by scope, not by a collector: a call's temporaries go when it returns; replaced state is reclaimed each time kept memory doubles. <a href="https://github.com/dy/jz#memory" target="_blank" rel="noopener">Memory →</a></p>
           </div>
         </details>
         <details id="compare">
@@ -968,7 +968,8 @@ exports.square(7) // 49</code></pre>
           <div class="ans prose">
             <ul>
               <li><b>AssemblyScript:</b> TypeScript-ish.</li>
-              <li><b>scriptc:</b> fails to run benches.</li>
+              <li><b>scriptc:</b> untyped JS ~90× slower.</li>
+              <li><b>Static Hermes:</b> embeds the Hermes runtime, ~25× slower.</li>
               <li><b>Porffor:</b> nice but broad, not fast.</li>
               <li><b>Javy:</b> QuickJS runtime in WASM.</li>
               <li><b>Perry:</b> TypeScript → native apps.</li>

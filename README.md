@@ -148,7 +148,7 @@ BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers and the Web codecs.
 
 Where behaviour differs from JS:
 
-- **Memory is freed by scope.** A call releases on return what it allocated and did not store into something older than itself; what it keeps is compacted once it doubles, and what the host holds pins the heap below it ([Memory](#memory)). `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
+- **Memory is freed by scope.** A call releases on return what it allocated and did not store into something older than itself; what it keeps stays, replaced state is reclaimed each time kept memory doubles, and what the host holds pins the heap below it ([Memory](#memory)). `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
 - **In-place array arguments.** An exported function that stores into an array argument and reads it back takes a Float64Array, a Float32Array or an Array there, which round as JS rounds them; another kind throws a TypeError.
 - **Float sums in lanes.** At the default level and `'speed'`, a loop that sums floats may add in two lanes: the last digits of the sum can differ.
 - **Constant arithmetic.** Compile-time `+ - * /` chains use exact rationals and round once: `0.1 + 0.2 - 0.3` becomes `2.7755575615628914e-17`. Set `optimize: { rationalConst: false }` for JavaScript's per-operation rounding.
