@@ -653,7 +653,7 @@ test('throw declares + exports __jz_last_err_bits even when carrier is dead', ()
 // The trap is NOT uncatchable at the HOST boundary, though: __jz_last_err_bits
 // (plain mutable-i64 MVP global, no exceptions proposal needed) survives the trap
 // and lets interop.js's decodeThrown resolve it back to the real ECMAScript error
-// class + `.thrown` code (audit #7 P1 — this used to be stripped along with the
+// class and message (audit #7 P1 — this used to be stripped along with the
 // tag, making host decode unreachable and forcing a bare `RuntimeError:
 // unreachable` on every ordinary runtime error).
 // ============================================================================
@@ -684,7 +684,7 @@ test('catchable throw keeps the exceptions runtime (try/catch needs the tag)', (
 // ============================================================================
 // Host decode of a trap-lowered internal throw (audit #7 P1) — the trap above is
 // decoded at the host boundary into the real ECMAScript error class the throw
-// site models, with `.thrown` carrying the raw $__jz_err code (src/err-codes.js).
+// site models, with its message (src/err-codes.js).
 // ============================================================================
 
 test('host decode: trap-lowered JSON.parse throw resolves to a real SyntaxError', () => {
@@ -692,7 +692,8 @@ test('host decode: trap-lowered JSON.parse throw resolves to a real SyntaxError'
   try { jz(`export let f=()=>JSON.parse('x')`).exports.f() }
   catch (e) { error = e }
   ok(error instanceof SyntaxError, `expected SyntaxError, got ${error?.constructor?.name}`)
-  is(error.thrown, 300, 'thrown code is JSON_PARSE_SYNTAX (src/err-codes.js)')
+  ok(!('thrown' in error) && !('cause' in error), 'no private code or wasm exception rides on it')
+  ok(error.message.length > 0, 'with a message')
 })
 
 test('host decode: trap-lowered radix throw resolves to a real RangeError', () => {
@@ -700,7 +701,7 @@ test('host decode: trap-lowered radix throw resolves to a real RangeError', () =
   try { jz(`export let f=()=>(3).toString(37)`).exports.f() }
   catch (e) { error = e }
   ok(error instanceof RangeError, `expected RangeError, got ${error?.constructor?.name}`)
-  is(error.thrown, 205, 'thrown code is NUMBER_RADIX (src/err-codes.js)')
+  ok(!('thrown' in error), 'no private code rides on it')
 })
 
 test('host decode: a genuine unmarked trap still surfaces as RuntimeError', () => {
@@ -830,8 +831,7 @@ test('host decode: a decoded escape does not leave a stale marker for the next t
   const inst = jz(src)
   let first
   try { inst.exports.f(1) } catch (e) { first = e }
-  ok(first instanceof Error && !(first instanceof SyntaxError), 'a user-thrown code remains a number')
-  is(first.thrown, 300)
+  is(first, 300, 'a user-thrown code remains a number')
   let second
   try { inst.exports.f(0) } catch (e) { second = e }
   ok(second instanceof WebAssembly.RuntimeError, `expected the later trap undecoded, got ${second?.constructor?.name}`)
@@ -986,8 +986,7 @@ test('errors: real Error objects (.work/archive/todo.md §deletion-sweep Slice A
 // by decodeThrown AND the new `readRet`, wired into both heap-module export
 // wrappers' `finishRet` call and the async promise-settle path
 // `readSettled`) — a returned/resolved Error now upgrades the same way a
-// thrown one does, minus `.cause`/`.thrown` (no host exception to attach a
-// cause to on a plain return).
+// thrown one does.
 test('errors: a RETURNED (not thrown) Error decodes as a real host Error at the boundary (audit-#10 finding-4)', () => {
   const j = (code) => jz(code, { jzify: true }).exports.f()
   const literal = j(`export let f = () => new TypeError('x')`)
@@ -1582,5 +1581,47 @@ test('catch: an optional call keeps its try', () => {
   for (const optimize of levels(0, 2, 3)) {
     const got = jz(src, { optimize }).exports
     for (const name of ['method', 'arrow', 'named', 'chained']) is(got[name](), want[name](), `${name} at ${optimize}`)
+  }
+})
+
+// A thrown value crosses to the host as JavaScript delivers it: a primitive, an
+// object or an array as itself, an Error as the host's Error of its class with
+// its message, a name it set and its other own properties. No private code or
+// wasm exception rides on it. (A class deriving Error has no host class: its
+// instance is the host's Error of the base, its name and message the source's.)
+test('errors: a thrown value reaches the host as Node delivers it', () => {
+  const caught = (f) => { try { f(); return { returned: true } } catch (e) { return e instanceof Error
+    ? { error: Object.getPrototypeOf(e).constructor.name, name: e.name, message: e.message, own: Object.keys(e), private: 'thrown' in e || 'cause' in e }
+    : { value: e } } }
+  const src = `class E extends Error { constructor(m) { super(m); this.name = 'E' } }
+    export let f = (k) => {
+      if (k === 0) throw 5
+      if (k === 1) throw 'boom'
+      if (k === 2) throw null
+      if (k === 3) throw undefined
+      if (k === 4) throw { a: 1, b: 'x' }
+      if (k === 5) throw [1, 'two']
+      if (k === 6) throw new TypeError('t')
+      if (k === 7) throw new RangeError('r' + k)
+      if (k === 8) { const e = new Error('plain'); e.name = 'Custom'; throw e }
+      if (k === 9) { const e = new Error('p'); e.code = 42; throw e }
+      if (k === 10) throw new E('m')
+      return k
+    }`
+  for (const optimize of levels(0, 2)) {
+    const got = jz(src, { optimize }).exports, want = oracle(src)
+    for (let k = 0; k <= 9; k++) is(caught(() => got.f(k)), caught(() => want.f(k)), `O${optimize}: case ${k}`)
+    is(caught(() => got.f(10)), { error: 'Error', name: 'E', message: 'm', own: ['name'], private: false }, `O${optimize}: a class deriving Error keeps its name and message`)
+  }
+  // an error the runtime raises: its class and a message, no code
+  const e = caught(() => jz('export let f = (o) => o.x.y').exports.f({ x: null }))
+  ok(e.error === 'TypeError' && e.message.length > 0 && !e.private, `a runtime TypeError, no code: ${JSON.stringify(e)}`)
+})
+
+test('errors: an early error is the SyntaxError JavaScript throws', () => {
+  for (const src of ['let a = 1; let a = 2', 'export let f = (x => x', 'let a = {}; a.1']) {
+    let error
+    try { compile(src) } catch (e) { error = e }
+    ok(error instanceof SyntaxError && /at line \d+:\d+/.test(error.message), `${JSON.stringify(src)}: ${error?.constructor?.name} ${error?.message.split('\n')[0]}`)
   }
 })

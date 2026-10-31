@@ -28,7 +28,7 @@ export const reservedWord = name => ALWAYS_RESERVED.has(name) || STRICT_RESERVED
 let at = null, base = 0
 const fail = message => {
   if (base != null && at != null) ctx.error.loc = base + at
-  err(`Early error: ${message}`)
+  err(`Early error: ${message}`, undefined, true)
 }
 const isNode = n => Array.isArray(n)
 // a resource declaration: `using …`, `await using …` (parsed `['await', ['using', …]]`)

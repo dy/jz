@@ -640,7 +640,7 @@ test('JSON.parse: growing schema tables preserve earlier objects and stop before
   is(first(), '{"fresh":1}', 'table grows safely again after clear')
   let thrown
   try { j.exports.user(214) } catch (e) { thrown = e }
-  is(thrown.thrown, 214, 'runtime errors do not reserve user-thrown numbers')
+  is(thrown, 214, 'runtime errors do not reserve user-thrown numbers')
 })
 
 

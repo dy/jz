@@ -264,10 +264,9 @@ test(`member reference ${op}: single evaluation, abrupt stages and recovery`, ()
       for (const stage of [0, 0, 1, 0, 2, 0, 3, 0])
         for (const initial of ['||=', '&&=', '??='].includes(op) ? [5, 0, null, undefined] : [5]) {
           let want, got
-          try { want = ['return', expected.f(stage, initial)] } catch (e) { want = ['throw', e] }
-          // Only the ordinary Error wrapper transports primitive throws.
+          try { want = ['return', expected.f(stage, initial)] } catch (e) { want = ['throw', e?.name ?? e] }
           try { got = ['return', actual.f(stage, initial)] }
-          catch (e) { got = ['throw', e?.name === 'Error' && Object.hasOwn(e, 'thrown') ? e.thrown : e?.name ?? e] }
+          catch (e) { got = ['throw', e?.name ?? e] }
           is(got, want, `${write} O${optimize || 0}: stage=${stage}, initial=${initial}`)
           is(actual.state(), expected.state(), 'stored value and receiver→key→RHS trace')
         }

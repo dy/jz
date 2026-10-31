@@ -29,7 +29,7 @@ const show = v => typeof v === 'bigint' ? `${v}n` : JSON.stringify(v)
 // One call's outcome, comparable across the host, native and hosted modules.
 const outcome = (fn, args) => {
   try { return { value: fn(...args) } }
-  catch (e) { return e != null && typeof e === 'object' ? ('thrown' in e ? { thrown: e.thrown, throws: e.constructor.name } : { throws: e.constructor.name }) : { thrown: e } }
+  catch (e) { return e != null && typeof e === 'object' ? { throws: e.constructor.name } : { thrown: e } }
 }
 const matches = (got, expected) => {
   if (expected != null && typeof expected === 'object' && ('throws' in expected || 'thrown' in expected)) {

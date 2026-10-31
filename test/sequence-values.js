@@ -11,7 +11,7 @@ import { oracle, jz, compile } from './util.js'
 const LEVELS = levels(false, 1, 2, 3)
 const observe = (f, args, wasm) => {
   try { return ['return', f(...args)] }
-  catch (e) { return ['throw', wasm && e?.name === 'Error' && Object.hasOwn(e, 'thrown') ? e.thrown : e?.name ?? e] }
+  catch (e) { return ['throw', e?.name ?? e] }
 }
 const prefix = `let trace=0
   function mark(n,stage){trace=trace*10+n;if(stage===n)throw n}

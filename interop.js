@@ -864,6 +864,26 @@ export const memory = (src) => {
 // exportName): its memory, the reactor entry and the `__jz_` prefix.
 const ABI_EXPORT = /^(?:memory|_initialize)$|^__jz_/
 
+// An Error of the program as the host's Error of its class (jz:errcls): its
+// message, a name it set (a class deriving Error, `e.name = …`) and its other
+// own properties, as the object JavaScript would have thrown holds them.
+const hostError = (cls, value) => {
+  const e = new (globalThis[cls] ?? Error)(value.message)
+  if (value.name !== undefined && value.name !== e.name) e.name = value.name
+  for (const key of Object.keys(value)) if (key !== 'message' && key !== 'name') e[key] = value[key]
+  return e
+}
+// An error the runtime raises (err-codes.js): the class and message its site
+// models, a DOMException where the class is one (`InvalidCharacterError`).
+const runtimeError = (code) => {
+  const info = ERR_INFO[code]
+  if (!info) return new Error(`jz runtime error ${code}`)
+  const C = globalThis[info.name]
+  if (typeof C === 'function') return new C(info.message)
+  if (typeof DOMException === 'function') return new DOMException(info.message, info.name)
+  return Object.assign(new Error(info.message), { name: info.name })
+}
+
 /**
  * Adapt raw exports to the JS calling convention: arguments marshalled in by
  * their compiled lanes, results decoded, throws decoded, the call's heap
@@ -998,7 +1018,7 @@ export const wrap = (src, state) => {
     if (Array.isArray(r)) return r.map(readRet)
     const decoded = mem.read(r, fnOf)
     const errClassName = errorSidClassOf(r)
-    return errClassName != null ? new (globalThis[errClassName] ?? Error)(decoded.message) : decoded
+    return errClassName != null ? hostError(errClassName, decoded) : decoded
   }
   // an export's result: one crossing as a Number is a Number (numberRet), a closure's is any value
   const exportRet = (r) => typeof r === 'number' ? numberRet(r) : readRet(r)
@@ -1008,28 +1028,24 @@ export const wrap = (src, state) => {
   const lastErrBits = realInst.exports.__jz_last_err_bits
   let lastErrBitsWritable = false
   if (lastErrBits) { try { lastErrBits.value = lastErrBits.value; lastErrBitsWritable = true } catch {} }
+  // The thrown value as JavaScript delivers it: the program's value as itself
+  // (a number, a string, null, an object or an array read back), its Error as a
+  // host Error of that class (hostError). A module without exception handling
+  // traps where it throws, having marked the value: a trap with no mark is a
+  // foreign one (bounds, stack), as it is.
   const decodeThrown = error => {
-    // A module without exception handling traps where it throws, having marked
-    // the value: a trap with no mark is a foreign one (bounds, stack), as it is.
     const isException = error instanceof WebAssembly.Exception
     if (!lastErrBits || !isException && !(error instanceof WebAssembly.RuntimeError && lastErrBits.value !== 0n)) throw error
     const errBits = lastErrBits.value
     if (lastErrBitsWritable) lastErrBits.value = 0n
-    // An internal error crosses as its code (err-codes.js), which only the
-    // private transport tag marks: a user's number stays a thrown number.
-    const code = Number(errBits >> 32n) === ERROR_CODE_HI ? Number(errBits & 0xffffffffn) : null
-    const info = code == null ? undefined : ERR_INFO[code]
-    const value = code == null ? (mem ? mem.read(errBits) : decode(errBits)) : code
-    if (value instanceof Error) throw value
-    // A jz Error object decodes as {message, name}: its class is its sid.
-    const errClassName = mem && value != null ? errorSidClassOf(errBits) : null
-    const wrapped = errClassName != null ? new (globalThis[errClassName] ?? Error)(value.message)
-      : info ? new (globalThis[info.name] ?? Error)(info.message)
-      : new Error(typeof value === 'string' ? value : String(value))
-    wrapped.cause = error
-    wrapped.thrown = value
-    if (state?.inHost) (state.caught ??= new WeakMap()).set(wrapped, errBits)
-    throw wrapped
+    // An error the runtime raises crosses as its code (err-codes.js), which only
+    // the private transport tag marks: a user's number stays a thrown number.
+    if (Number(errBits >> 32n) === ERROR_CODE_HI) throw runtimeError(Number(errBits & 0xffffffffn))
+    const value = mem.read(errBits, fnOf), cls = value != null ? errorSidClassOf(errBits) : null
+    const thrown = cls != null ? hostError(cls, value) : value
+    // a rethrow through a host import keeps the value's bits (catchingImport)
+    if (state?.inHost && thrown !== null && (typeof thrown === 'object' || typeof thrown === 'function')) (state.caught ??= new WeakMap()).set(thrown, errBits)
+    throw thrown
   }
   // A closure the host holds reads as a function calling it through the
   // module's trampoline as an export call runs; called as a method of an object

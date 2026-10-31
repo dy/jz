@@ -1,7 +1,7 @@
 // The wrong-code family corpus (test/self-families.js): ordinary JS around the
 // fresh self gate's reds, each case with its calls and the results JS gives
 // (a `{ throws }` expects that error class, a `{ thrown }` the primitive the
-// host receives as `Error.thrown`). The authored results are checked against
+// host receives, thrown as itself). The authored results are checked against
 // Node before any compiler is judged. `red` names the legs known red, so a
 // failure reads as the recorded defect or as a new one.
 export const FAMILIES = [

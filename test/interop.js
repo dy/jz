@@ -48,7 +48,7 @@ test('interop: host throws enter source catch without changing their values', ()
     value=new TypeError('uncaught')
     throws(()=>got.exports.uncaught(),e=>e===value,`uncaught Error identity O${optimize}`)
     value=23
-    throws(()=>got.exports.uncaught(),e=>e.thrown===23,`existing arbitrary-throw API O${optimize}`)
+    throws(()=>got.exports.uncaught(),e=>e===23,`a thrown number arrives as itself O${optimize}`)
     is(got.exports.ignored(),7,`reuse after uncaught O${optimize}`)
     value=7n
     is(got.exports.arithmetic(),'TypeError',`host BigInt retains mixed-arithmetic rejection O${optimize}`)
@@ -100,7 +100,7 @@ test('interop: duplicate import records wrap a host slot once', () => {
     (func (export "second") (call $second)))`)
   const value=Symbol('same slot');let calls=0
   const {exports}=interop.instantiate(bytes,{imports:{host:{fail(){calls++;throw value}}}})
-  for(const name of ['first','second','first'])throws(()=>exports[name](),e=>e.thrown===value,'same thrown Symbol')
+  for(const name of ['first','second','first'])throws(()=>exports[name](),e=>e===value,'same thrown Symbol')
   is(calls,3,'each import calls host exactly once')
 })
 
@@ -312,7 +312,7 @@ test('interop: unused ingress preserves defaults and live parameter observations
     for(const value of [Symbol(),undefined,null,1n,undefined])
       is(got.ignored(value,7),want.ignored(value,7),`default presence O${optimize}`)
     got.setup(1);want.setup(1)
-    throws(()=>got.ignored(),e=>e.thrown===9,`default throws O${optimize}`)
+    throws(()=>got.ignored(),e=>e===9,`default throws O${optimize}`)
     throws(()=>want.ignored(),e=>e===9)
     got.setup(0);want.setup(0)
     is(got.ignored(),want.ignored(),`default reuse O${optimize}`)
@@ -1250,7 +1250,7 @@ test('interop: Symbols retain identity through arguments, results, containers an
     }
     let error
     try{f.fail(host)}catch(e){error=e}
-    is(error?.thrown,host,'thrown Symbol retains the existing thrown-value transport')
+    is(error,host,'a thrown Symbol arrives as itself')
     is(f.exchange(first),host,'error recovery leaves the instance reusable')
     a.memory.reset()
     is(f.exchange(host),prior,'heap reset restores the original module Symbol')

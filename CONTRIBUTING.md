@@ -5393,8 +5393,13 @@ is trusted numeric (`analyze-for-emit.js`, `paramNeverString`), so a string
 passed there is converted where JavaScript would concatenate. Unsupported representations must reject. An unlisted silent
 wrong value or an accepted invalid-parse case blocks release. Early-error
 validation runs before lowering in both the JS and Wasm compiler;
-`test/test262-neg-accepts.json` gates the accepted-invalid ledger. Error classes
-and codes are stable within a major; message text may improve.
+`test/test262-neg-accepts.json` gates the accepted-invalid ledger; an early error
+throws SyntaxError. Error classes are stable within a major; message text may
+change. A value a call throws reaches the host as JavaScript throws it: a value of
+the program as itself, its Error as the host's Error of its class (`jz:errcls`)
+with its message, a name it set and its other own properties, an error the
+runtime raises (err-codes.js, its code private) as the class and message its
+site models.
 
 ### Host memory contract
 

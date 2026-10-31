@@ -488,11 +488,13 @@ Adoption is ejectable: remove the JZ build step and the source remains JavaScrip
 
 Pre-1.0. The entry points `jz` (the default export with `jz.memory`, `compile`
 and `instantiate`), `jz/interop` (`instantiate`), the options above and the CLI flags are the contract; removing or
-changing them takes a major version. Error classes and codes are stable within
-a major. Accepted programs preserve JavaScript values, exceptions and
-evaluation order at every optimization level, outside the differences listed
-above. The raw wasm ABI (pointer layout, allocator exports, custom sections) is
-not stable: load prebuilt modules with `jz/interop` from the same JZ version.
+changing them takes a major version. The class of an error is stable within a
+major; its message may change. Accepted programs preserve JavaScript values,
+exceptions and evaluation order at every optimization level, outside the
+differences listed above: a value a call throws reaches the host as JavaScript
+throws it, an Error as the host's Error of its class. The raw wasm ABI (pointer
+layout, allocator exports, custom sections) is not stable: load prebuilt modules
+with `jz/interop` from the same JZ version.
 [CONTRIBUTING](CONTRIBUTING.md#public-contract-and-abi) has the details.
 
 <p align="center">

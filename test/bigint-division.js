@@ -6,7 +6,7 @@ import { oracle, jz, compile } from './util.js'
 const LEVELS = levels(false, 1, 2, 3)
 const observe = (f, args, wasm) => {
   try { return ['return', f(...args)] }
-  catch (e) { return ['throw', wasm && e?.name === 'Error' && Object.hasOwn(e, 'thrown') ? e.thrown : e?.name ?? e] }
+  catch (e) { return ['throw', e?.name ?? e] }
 }
 const wrapped = result => result[0] === 'return' && typeof result[1] === 'bigint'
   ? ['return', BigInt.asIntN(64, result[1])] : result
