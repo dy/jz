@@ -598,20 +598,20 @@ const compileJzW2c = c => {
 }
 
 
-const compileJzHost = (c, compiler = compile, path = jzHostWasmPath(c)) => {
+const compileJzHost = (c, path = jzHostWasmPath(c)) => {
   // All benches compile at level 'speed' — full watr inlining + L3 cap/hash
   // tuning. If any pass at this level produces wrong checksums or crashes,
   // that's an optimizer bug to be fixed, not a reason to back off. This is the
   // build `run` times; the size column reads compileJzSize's -Os build instead.
-  const wasm = compileJzAt(c, { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) }, compiler)
+  const wasm = compileJzAt(c, { level: 'speed', ...(process.env.JZ_SIMD ? { vectorizeLaneLocal: true } : {}) })
   writeFileSync(path, wasm)
 }
 
 // -Os build for the size column — jz's smallest wasm for this case (no unroll /
 // inline body-duplication the speed tier trades bytes for). Same source, same
 // host imports, same memory; only the optimize tier differs.
-const compileJzSize = (c, compiler = compile, path = jzSizeWasmPath(c)) => {
-  writeFileSync(path, compileJzAt(c, { level: 'size' }, compiler))
+const compileJzSize = (c, path = jzSizeWasmPath(c)) => {
+  writeFileSync(path, compileJzAt(c, { level: 'size' }))
 }
 
 // Isolate the compiler graph; a failed build must not abort other benchmark rows.
