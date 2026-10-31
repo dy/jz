@@ -20,7 +20,7 @@
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { createFunction, frameRoots } from '../../function.js'
-import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, withLoc, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
 import { typedStaticLen, intLevelMap } from '../../type.js'
@@ -701,13 +701,15 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
   // write there emits nothing; in EXPRESSION position (comma chain, init value,
   // arrow body) `(f.p = v)` must still yield v — the lifted-closure reference —
   // or the surrounding arity breaks (invalid wasm: values left on the stack).
+  // Every node it builds keeps the one it replaces' source position (withLoc):
+  // advisories, errors and debug source maps of every function body read them.
   const rewrite = (node, stmt = false) => {
     if (!Array.isArray(node)) return node
     const op = node[0]
     // `f.p(…)` and `f.p?.(…)` alike: the property holds a function for good
     if ((op === '()' || op === '?.()') && Array.isArray(node[1]) && node[1][0] === '.') {
       const d = decisionFor(node[1][1], node[1][2])
-      if (d?.direct) return ['()', d.direct, ...node.slice(2).map(a => rewrite(a))]
+      if (d?.direct) return withLoc(['()', d.direct, ...node.slice(2).map(a => rewrite(a))], node)
     }
     if (op === '.' || op === '?.') {
       const d = decisionFor(node[1], node[2])
@@ -715,7 +717,7 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
     }
     if (op === '=' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
       const d = decisionFor(node[1][1], node[1][2])
-      if (d?.global) return ['=', d.global, d.flag && stmt ? [null, 1] : rewrite(node[2])]
+      if (d?.global) return withLoc(['=', d.global, d.flag && stmt ? [null, 1] : rewrite(node[2])], node)
       if (d?.drop) return stmt ? [';'] : rewrite(node[2])  // dead write — statement: nothing; value: the rhs
     }
     const out = [op]
@@ -726,7 +728,7 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
       if (op === ';' && isEmptySeq(c)) continue
       out.push(c)
     }
-    return out
+    return withLoc(out, node)
   }
   const newAst = rewrite(ast)
   ast.length = 0

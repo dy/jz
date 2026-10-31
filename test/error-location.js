@@ -97,3 +97,12 @@ test('error location: a syntax error stays a SyntaxError', () => {
   try { compile('export let f = () => {\n  let x = 1 +\n}') } catch (e) { error = e }
   ok(error instanceof SyntaxError, `got ${error?.name}`)
 })
+
+// A class's static member makes plan rewrite every function body
+// (flattenFuncNamespaces): the rewritten nodes keep their positions.
+test('error location: a function body keeps its positions beside a static member', () => {
+  if (onKernel()) return
+  let error
+  try { compile('class C { static K = 1 }\nexport let f = (n) => {\n  const a = new Float64Array(2)\n  a.length = n\n  return a[0]\n}') } catch (e) { error = e }
+  ok(error?.message.includes('\n  at line 4:12\n    a.length = n\n'), error?.message)
+})
