@@ -6,8 +6,7 @@
 // same source (`agree`, or `host` for a module graph), never a literal.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { agree, wat, oracle, run } from './util.js'
+import { agree, wat, oracle, run, jz, compile } from './util.js'
 import { ownedLevels } from './_matrix.js'
 
 const SPEED = { optimize: { level: 'speed' } }

@@ -33,13 +33,13 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
-import { compile } from '../index.js'
 import {
   parse, walk, has, loopHas, count, loopCount, head, F64_OR_ROUNDTRIP, PTR_HELPER,
 } from '../scripts/wat-probe.mjs'
 import {
   typedIntSource, typedIntMinMaxSource, typedIVSRSource, typedByteScanSource, typedMapSource,
 } from './_fuzz.js'
+import { compile } from './util.js'
 
 // Test-specific predicates (the shared ones live in scripts/wat-probe.mjs):
 // the loop trip-count overhead narrowLoopBound removes

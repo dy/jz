@@ -19,10 +19,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { onKernel, levels } from './_matrix.js'
 import { FAMILIES } from './_families.js'
+import { compile } from './util.js'
 
 const HOSTED = process.env.JZ_SELF_FAMILIES === '1'
 const show = v => typeof v === 'bigint' ? `${v}n` : JSON.stringify(v)

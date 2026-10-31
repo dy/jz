@@ -12,9 +12,8 @@
 // guard MISS still computes the exact JS result through the original.
 import test from 'tst'
 import { ok, is, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const opts = { wat: true, optimize: { level: 'speed', watr: false } }
 

@@ -1,9 +1,9 @@
 import test from 'tst'
-import jz, { compile } from '../index.js'
 import { is, ok } from 'tst/assert.js'
 import { isDestructurePat } from '../jzify/hoist-vars.js'
 import { parse } from '../src/parse.js'
 import { levels } from './_matrix.js'
+import { jz, compile } from './util.js'
 
 test('line comments stop at every line terminator without rewriting literal text', () => {
     for (const newline of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {

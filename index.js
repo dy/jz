@@ -1,23 +1,27 @@
 /** Compile and instantiate JavaScript, with host value interop. */
-import { compileSource, normalizeOptions } from './src/compiler.js'
+import { compileSource, compileInternal } from './src/compiler.js'
+import { normalizeOptions } from './src/options.js'
 import { serialize } from './src/source-literal.js'
 import jzify from './jzify/index.js'
 import { instantiate, memory } from './interop.js'
 
 /**
  * Compile jz source to a WASM binary, or WAT text with `wat: true`.
- * Options are index.d.ts; the internal flags tests and tools pass are listed in
- * CONTRIBUTING.md (Public contract and ABI).
+ * Options are index.d.ts CompileOptions; any other key throws a TypeError.
  *
  * @param {string} code
  * @param {object} [opts]
  * @returns {Uint8Array|string}
  */
-export const compile = (code, opts = {}) => compileSource(code, opts, jzify)
+export const compile = (code, opts) => compileSource(code, opts, jzify)
 
 export { instantiate }
 
 jz.memory = memory
+
+// The options jz() hands to instantiate alone (index.d.ts Jz: those of
+// InstantiateOptions that are no compile option).
+const INSTANTIATE_ONLY = ['write', 'read']
 
 /**
  * Compile and instantiate: jz('code', opts) or jz`code ${value}`.
@@ -59,8 +63,9 @@ export default function jz(code, ...args) {
       src += code[i + 1]
     }
     const hasInterp = Object.keys(interp).length
+    // the interpolated functions are env imports, an internal flag (src/options.js)
     const tplOpts = { _interp: hasInterp ? interp : null, ...(Object.keys(define).length && { define }) }
-    const result = instantiate(compile(src, tplOpts), tplOpts)
+    const result = instantiate(compileInternal(src, tplOpts, jzify), tplOpts)
     // Patch data getters: allocate values in WASM memory, update closure refs
     for (const [, { val, ref }] of Object.entries(data)) {
       if (typeof val === 'string') ref.ptr = result.memory.String(val)
@@ -70,12 +75,13 @@ export default function jz(code, ...args) {
     return result
   }
 
-  // String call: jz('code', opts?) — compile + instantiate + wrap
-  const callOpts = normalizeOptions(args[0])
-  const out = compile(code, callOpts)
-  // The internal `inspect` flag returns { wasm, inspect }: the analysis rides on the result
-  const inspected = out && typeof out === 'object' && 'wasm' in out
-  const result = instantiate(inspected ? out.wasm : out, callOpts)
-  if (inspected) result.inspect = out.inspect
-  return result
+  // String call: jz('code', opts?) — compile options to compile, the rest to instantiate
+  const opts = args[0] ?? {}, own = {}, run = {}
+  if (typeof opts !== 'object') throw new TypeError(`options take an object; got ${typeof opts}`)
+  for (const k of Object.keys(opts)) (INSTANTIATE_ONLY.includes(k) ? run : own)[k] = opts[k]
+  if (own.wat) throw new TypeError('jz() instantiates; use compile(src, { wat: true }) for text')
+  const flags = normalizeOptions(own)
+  if (flags.imports) run.imports = flags.imports
+  if (flags.memory instanceof WebAssembly.Memory) run.memory = flags.memory
+  return instantiate(compileInternal(code, flags, jzify), run)
 }

@@ -5332,21 +5332,31 @@ exported), `setCompileTarget` in src/compiler.js (the test harness's compiler
 switch) and `compileInProcess` in test/util.js (the in-process compiler for
 tests that read analysis state).
 
-`normalizeOptions` in src/compiler.js folds the public `memory` and `optimize` objects
-onto the internal flags. Tests and scripts may pass those flags directly:
+The public options are a closed set: `normalizeOptions` (src/options.js) checks
+every key and value of `compile()`'s and `jz()`'s options before the pipeline
+runs, throws a `TypeError` naming any other key (a 0.9 spelling names its
+replacement), and folds the `memory` and `optimize` objects onto the internal
+flags. The internal entry, `compileInternal` in src/compiler.js (which index.js
+does not export), folds without that check (`foldOptions`) and takes the
+internal flags beside the public options: the numeric levels 0-3 and `'fast'`,
+every pass and tuning key of src/passes.js inside `optimize`, and the flags
+below. The CLI checks its options with `normalizeOptions` and adds
+`importMetaUrl`; tests reach the internal entry through test/util.js's
+`compile` and `jz`, bench and scripts by importing it with jzify.
 
 | Internal option | Public spelling | Notes |
 |---|---|---|
-| `maxMemory`, `importMemory`, `sharedMemory` | `memory: { maximum, import, shared }` | a shared `WebAssembly.Memory` object sets `sharedMemory` by itself |
+| `maxMemory`, `importMemory`, `sharedMemory`, `fixedMemory` | `memory: { maximum, import, shared, fixed }` | a shared `WebAssembly.Memory` object sets `sharedMemory` by itself |
 | `noSimd`, `noTailCall` | `optimize: { simd: false, tailCall: false }` | |
 | `noEhAbort` | `optimize: { exceptions: false }` | trap on throw in catch-free modules; the w2c bench lane uses it per case |
 | `alloc: false` | `optimize: { alloc: false }` | raw standalone ABI: no allocator/reset exports, no decoded-error metadata |
 | `whyNotSimd`, `whyNotRewind` | `why: true` | reports go to the `warnings` callback |
+| `host: 'native'` | none | the wasm2c lane (scripts/native/): the JS host without tail calls or `__jz_table` |
 | `strict` | none | test-only: skips jzify and rejects the forms it lowers plus dynamic fallbacks |
 | `sourceType` | none | parse goal for test262 (`script`/`module`); the default `jz` goal keeps export-as-ABI |
 | `nativeTimers` | none | blocking `__timer_loop` in `_start` for the wasmtime CLI; a command-module auto rule is the intended replacement |
 | `importMetaUrl` | none | the CLI sets it from the entry file |
-| `profile`, `inspect`, `helperCounters`, `_eagerStdlib`, `_interp` | none | instrumentation and self-compile hooks |
+| `profile`, `inspect`, `helperCounters`, `helperCallsites`, `_compactCollections`, `_eagerStdlib`, `_interp` | none | instrumentation and self-compile hooks |
 
 Advisories reach the `warnings` callback, one per site (the source offset when the
 node kept one, else the message): `heap-return`, `heap-loop`, `deopt-generic`,
@@ -5459,7 +5469,7 @@ Small, focused commits. Describe what and why, not how.
 
 ### Runtime inspection
 
-`compile(source, { inspect: true }).inspect.runtime` describes final Wasm exports,
+The internal `inspect` flag (`compile(source, { inspect: true })` through test/util.js) returns `{ wasm, inspect }`; `inspect.runtime` describes final Wasm exports,
 including reachable helpers. `noAllocation`, `noHostCalls` and `boundedWork` are
 `true` only when proved; `null` means unknown. `maxInstructions` is a conservative
 instruction-count upper bound, not a latency estimate. A `call_indirect` resolves

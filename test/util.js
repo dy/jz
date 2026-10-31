@@ -1,15 +1,35 @@
 // Test utilities. Thin pass-throughs to jz / compile — no preset gating.
 // Internal representation is analysis-driven; tests assert behaviour and IR
 // shape, not preset names. Boundary variants belong on `opts.host`.
-import jz, { compile } from '../index.js'
-import { compileInProcess as compileNative } from '../src/compiler.js'
+import publicJz, { instantiate } from '../index.js'
+import { compileInProcess as compileNative, compileInternal } from '../src/compiler.js'
+import { foldOptions } from '../src/options.js'
 import jzify from '../jzify/index.js'
 import { is } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import printWat from 'watr/print'
 
-/** The in-process compiler past any test compile target, for tests that read analysis state.
- *  Options pass as given: no normalization of the public `memory`/`optimize` objects. */
+/** The compiler as the tests drive it: the public options beside the internal
+ *  flags (numeric levels, pass toggles, `strict`, `inspect`, `host: 'native'` …,
+ *  src/options.js foldOptions), through the selected compile target. The public
+ *  entry, which refuses those, is index.js's `compile`. */
+export const compile = (code, opts = {}) => compileInternal(code, opts, jzify)
+
+/** `jz()` over that compiler: compile with the internal flags, instantiate with the
+ *  same options (imports, memory, WASI stdio), and the `inspect` flag's analysis on
+ *  the result. A template literal is the public tag's. */
+export function jz(code, ...args) {
+  if (Array.isArray(code)) return publicJz(code, ...args)
+  const opts = foldOptions(args[0])
+  const out = compile(code, opts)
+  const inspected = out && typeof out === 'object' && 'wasm' in out
+  const result = instantiate(inspected ? out.wasm : out, opts)
+  if (inspected) result.inspect = out.inspect
+  return result
+}
+jz.memory = publicJz.memory
+
+/** The in-process compiler past any test compile target, for tests that read analysis state. */
 export const compileInProcess = (code, opts = {}) => compileNative(code, opts, jzify)
 
 /** Evaluate a JS expression via jz → WASM. */

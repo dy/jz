@@ -5,10 +5,9 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import compileWat from 'watr/compile'
-import jz, { compile } from '../index.js'
 import { inlineTiny } from '../src/optimize/inline-tiny.js'
 import { onKernel } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const run = (mod) => new WebAssembly.Instance(new WebAssembly.Module(compileWat(mod))).exports
 const funcs = (mod) => mod.filter(n => Array.isArray(n) && n[0] === 'func').map(n => n[1])

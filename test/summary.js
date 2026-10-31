@@ -5,13 +5,12 @@
 // factory result, a class instance, a method closure over the instance.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { phaseCheckpointEmulation } from '../src/debug.js'
 import { K, kind, join, orNull, tagOf, paramOf, isNullable, hasTag, UNKNOWN } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
 import { onKernel, OPT_LEVEL, levels, belowOpt } from './_matrix.js'
-import { funcWat, oracle, compileInProcess } from './util.js'
+import { funcWat, oracle, compileInProcess, jz, compile } from './util.js'
 
 // Bindings carry prepare's scope suffix; find one by function and bare name.
 const binding = (fn, bare) => {

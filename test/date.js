@@ -1,7 +1,6 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { batch } from './util.js'
+import { batch, jz, compile } from './util.js'
 import { onWasi, levels } from './_matrix.js'
 
 const run = code => jz(code).exports.f()

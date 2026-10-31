@@ -1,12 +1,12 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
-import jz, { compile, instantiate } from '../index.js'
+import { instantiate } from '../index.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
 import { VAL } from '../src/reps.js'
 import { summarize } from '../src/summary/index.js'
 import { valTypeOf } from '../src/kind.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const LEVELS = levels(false, 1, 2, 3)
 const observe = (f, args, wasm) => {

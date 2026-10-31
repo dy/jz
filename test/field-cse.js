@@ -6,9 +6,8 @@
 // the receiver each end the first read's reach.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat, funcWat } from './util.js'
+import { oracle, wat, funcWat, jz } from './util.js'
 
 const agrees = (src, args, label) => {
   const host = oracle(src)

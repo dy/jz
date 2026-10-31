@@ -77,7 +77,7 @@ const run = () => {
       const src = genProgram(cat, s)
       let jsFn, jzFn
       try { jsFn = compileJS(src) } catch { skipped++; continue }
-      try { jzFn = jz(src, { optimize: 2 }).exports.f } catch { skipped++; continue }
+      try { jzFn = jz(src, { optimize: true }).exports.f } catch { skipped++; continue }
       // correctness sanity (cheap n): drop if jz != v8 — a perf number on a
       // miscompile is meaningless. (Strict; contract-overflow uses |0-disciplined int.)
       const cj = jsFn(50, 3, 1.5, 7), cw = jzFn(50, 3, 1.5, 7)

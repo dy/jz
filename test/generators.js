@@ -7,8 +7,7 @@
 // for-of/for-in bodies over values not known to be generators.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { oracle, batch } from './util.js'
+import { oracle, batch, jz, compile } from './util.js'
 
 const j = (code) => jz(code).exports.f()
 

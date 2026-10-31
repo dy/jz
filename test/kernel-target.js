@@ -23,7 +23,7 @@ import { dirname, join } from 'node:path'
 import v8 from 'node:v8'
 import vm from 'node:vm'
 import { instantiate } from '../interop.js'
-import { normalizeOptions } from '../src/compiler.js'
+import { foldOptions } from '../src/options.js'
 import { selfBytes } from './_self-build.js'
 
 // Reclaim dead kernel instances. Each compile gets a FRESH 8192-page instance
@@ -140,7 +140,7 @@ const optJSONFor = (self, opts) => {
 }
 
 export const compileViaKernel = (code, opts = {}) => {
-  opts = normalizeOptions(opts)
+  opts = foldOptions(opts)
   if (opts.sourceMap)
     throw new Error('Source maps require the JavaScript compiler API or CLI; the Wasm compiler ABI does not return debug metadata')
   if (opts.inspect || opts.profile)

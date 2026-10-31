@@ -2,7 +2,7 @@
  * SPMD worker pool over ONE shared memory (Workers v1). Internal and
  * experimental: not a package export, node worker_threads only.
  *
- * Compiles `source` with { sharedMemory: true }, instantiates it on the main
+ * Compiles `source` against a shared memory, instantiates it on the main
  * thread AND in `threads` node worker_threads, all linked to the same
  * WebAssembly.Memory({ shared: true }). Kernels coordinate through shared
  * typed arrays + Atomics (module/atomics.js); strings/objects stay
@@ -27,7 +27,8 @@ import jz from './index.js'
 export default async function pool(source, opts = {}) {
   const { threads = 4, pages = 16, maxPages = 16384, ...rest } = opts
   const memory = new WebAssembly.Memory({ initial: pages, maximum: maxPages, shared: true })
-  const main = jz(source, { ...rest, sharedMemory: true, memory })
+  // (a shared Memory compiles against the `shared` memtype: src/options.js foldOptions)
+  const main = jz(source, { ...rest, memory })
   const { Worker } = await import('node:worker_threads')
   // The worker shim honors the jz:i64exp lane map (exact-bits ABI): an i64 lane
   // takes a BigInt — scalars convert to their f64 bits, boxed pointers (BigInt

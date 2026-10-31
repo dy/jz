@@ -21,9 +21,8 @@
 // four values must agree exactly (NaN compares by Object.is semantics here).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const agree = (src) => {
   const ref = oracle(src).f()

@@ -1,10 +1,10 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { onWasi, levels } from './_matrix.js'
-import jz, { compile } from '../index.js'
 import { compile as nativeCompile } from 'watr'
 import { readFileSync, readdirSync } from 'fs'
 import { fileURLToPath } from 'url'
+import { jz, compile } from './util.js'
 
 const WATR_ROOT = fileURLToPath(new URL('.', import.meta.resolve('watr')))
 const watrSrc = file => readFileSync(`${WATR_ROOT}/src/${file}`, 'utf8')

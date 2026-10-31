@@ -8,7 +8,7 @@ console.log('=' .repeat(70))
 
 for (let i = 0; i < FLOATBEATS.length; i++) {
   const fb = FLOATBEATS[i]
-  const wasm = compile(moduleSrc(fb.body), { optimize: 3 })
+  const wasm = compile(moduleSrc(fb.body), { optimize: 'speed' })
   const { exports, memory } = instantiate(wasm)
   
   const N = fb.sr // 1 second of samples

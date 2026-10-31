@@ -1,11 +1,9 @@
 // Comprehensive string method tests
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
-import jz from '../index.js'
 import { strHashLiteral } from '../module/collection.js'
 import { levels } from './_matrix.js'
-import { run, oracle, cases, agree, funcWat } from './util.js'
+import { run, oracle, cases, agree, funcWat, compile, jz } from './util.js'
 
 test('string conversion: nullable string reads need only sentinel formatting', () => {
   const src = `const words = ['', 'a', 'long string', null];

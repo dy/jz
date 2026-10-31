@@ -1,8 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle, funcWat } from './util.js'
+import { oracle, funcWat, jz, compile } from './util.js'
 
 const tiers = () => levels(0, 1, 2, 3, 'size')
 const signature = `function sig(a) { return [a.length, Object.keys(a), Object.values(a), Object.entries(a)] }`

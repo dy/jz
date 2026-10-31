@@ -2,10 +2,9 @@
 import test from 'tst'
 import parseWat from 'watr/parse'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { parse, has, callsOutside } from '../scripts/wat-probe.mjs'
-import { oracle, cases, funcWat } from './util.js'
+import { oracle, cases, funcWat, jz, compile } from './util.js'
 
 function run(code) {
   const { module, instance } = jz(code)

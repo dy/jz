@@ -7,8 +7,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
-import { agree, cases, oracle } from './util.js'
+import { agree, cases, oracle, jz } from './util.js'
 import { levels } from './_matrix.js'
 
 // One compile for a table of arrow programs; the wanted value is the host's.

@@ -4,9 +4,8 @@
 // none stays a loop, whatever it holds.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz } from './util.js'
 
 // Passes over a scratch array of 24: the pass counter indexes nothing, and the
 // loops that do index run too long to copy.

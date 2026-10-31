@@ -6,10 +6,9 @@
 // operators longest first (src/parse.js).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { parse } from '../src/parse.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 test('shift precedence: the parse tree', () => {
   const tree = (src) => JSON.stringify(parse(src))

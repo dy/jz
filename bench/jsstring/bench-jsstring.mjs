@@ -28,7 +28,11 @@
  * Usage:  node bench/jsstring/bench-jsstring.mjs [--samples=N] [--reps=N]
  */
 import { instantiate } from '../../interop.js'
-import { compile } from '../../index.js'
+import { compileInternal } from '../../src/compiler.js'
+import jzify from '../../jzify/index.js'
+
+// The internal entry: the `watr` and `jsstring` pass toggles and `alloc` are its flags.
+const compile = (code, opts) => compileInternal(code, opts, jzify)
 
 const args = Object.fromEntries(
   process.argv.slice(2).flatMap(a => {
@@ -200,9 +204,9 @@ try {
   const { code, modules } = resolveModuleGraph(benchFile)
 
   const buildJessieVariant = (label, optimize) => {
-    const wasm = compile(code, { jzify: true, modules, optimize, alloc: false })
+    const wasm = compile(code, { modules, optimize, alloc: false })
     const { exports } = instantiate(wasm)
-    const wat = compile(code, { jzify: true, modules, optimize: { ...optimize, watr: false }, wat: true, alloc: false })
+    const wat = compile(code, { modules, optimize: { ...optimize, watr: false }, wat: true, alloc: false })
     const externref = /\(func \$parseAndHash[\s\S]*?\(param \$src externref\)/.test(wat)
     return { label, exports, externref, bytes: wasm.byteLength }
   }

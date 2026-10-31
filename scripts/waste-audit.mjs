@@ -63,7 +63,7 @@ for (const id of cases) {
   try {
     wat = compile(src, {
       optimize: 'speed',
-      whyNotSimd: true,
+      why: true,
       warnings: w => warnings.push(w),
       wat: true,
       modules: { '../_lib/benchlib.js': benchlib },

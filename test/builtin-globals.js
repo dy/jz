@@ -8,9 +8,8 @@
 // binding, never the builtin.
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels, onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const agree = (cases) => {
   for (const [name, src, ...args] of cases) for (const optimize of levels(0, 2, 3))

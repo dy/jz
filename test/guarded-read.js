@@ -4,9 +4,8 @@
 // (module/typedarray.js). A miss still compares as undefined.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 // A register machine: `a` comes from the program, so no index is proven. The
 // program's first and second operands are the caller's: in range, negative,

@@ -59,7 +59,7 @@ function runTest(src) {
   const hasExport = /export\s+(let|const|function|default)/.test(code)
   if (!hasExport) code = 'export let _run = () => {\n' + code + '\nreturn 1\n}'
   try {
-    const wasm = compile(code, { jzify: true })
+    const wasm = compile(code)
     if (!wasm || !wasm.byteLength) return { status: 'fail', error: 'no output' }
     const m = new WebAssembly.Module(wasm)
     const inst = new WebAssembly.Instance(m)

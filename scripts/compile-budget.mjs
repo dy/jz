@@ -41,7 +41,7 @@ import { resolveModuleGraph } from ${JSON.stringify(join(ROOT, 'src/resolve.js')
 import { compile } from ${JSON.stringify(join(ROOT, 'index.js'))}
 const entry = process.argv[2]
 const g = resolveModuleGraph(entry, { resolveNode: true })
-const opts = { modules: g.modules, memory: 8192, optimize: 2 }
+const opts = { modules: g.modules, memory: 8192, optimize: true }
 const times = []
 let bytes = 0
 for (let i = 0; i < 4; i++) {

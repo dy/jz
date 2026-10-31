@@ -8,11 +8,11 @@
  */
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { compileViaKernel } from './kernel-target.js'
 import { onWasi, levels } from './_matrix.js'
 import { CORPUS } from './_kernel-corpus.js'
+import { compile } from './util.js'
 
 
 // Residual known divergences: NONE — every corpus row is byte-identical at

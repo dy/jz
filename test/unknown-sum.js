@@ -8,9 +8,8 @@
 // keeps its contract.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, belowOpt, onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
 const hostObject = (v) => v !== null && typeof v === 'object'

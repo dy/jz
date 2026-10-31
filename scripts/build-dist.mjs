@@ -27,6 +27,8 @@ import { stripWatTemplates } from './wat-strip.mjs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
+import { compileInternal } from '../src/compiler.js'
+import jzify from '../jzify/index.js'
 import { gzipSync } from 'node:zlib'
 import { specializeInvariants, resolveSelfCompileBuild } from './build-profile.mjs'
 
@@ -122,7 +124,7 @@ if (spraeEntry) {
 {
   const gridOut = resolve(ASSETS, 'grid-current.wasm')
   const { compile: distCompile } = await import(jsOut)
-  writeFileSync(gridOut, distCompile(readFileSync(resolve(ASSETS, 'grid-current.js'), 'utf8'), { optimize: 3 }))
+  writeFileSync(gridOut, distCompile(readFileSync(resolve(ASSETS, 'grid-current.js'), 'utf8'), { optimize: 'speed' }))
   console.log('wrote assets/grid-current.wasm', kb(gridOut))
 }
 
@@ -135,7 +137,8 @@ if (process.argv.includes('--js-only')) process.exit(0)
 // overrides. The hosted compiler still honors each program's requested profile.
 const wasmOut = resolve(OUT, 'jz.wasm')
 const profile = resolveSelfCompileBuild()
-const wasm = compile(profile.graph.code, {
+// The bootstrap profile's flags (collection compaction, helper counters) are internal ones.
+const wasm = compileInternal(profile.graph.code, {
   host: 'js',
   modules: profile.graph.modules,
   memory: profile.memory,
@@ -143,7 +146,7 @@ const wasm = compile(profile.graph.code, {
   _compactCollections: profile.compactCollections,
   helperCounters: profile.helperCounters,
   helperCallsites: profile.helperCallsites,
-})
+}, jzify)
 new WebAssembly.Module(wasm)  // validate before writing
 writeFileSync(wasmOut, wasm)
 console.log('wrote dist/jz.wasm', kb(wasmOut))

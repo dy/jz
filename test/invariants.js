@@ -12,7 +12,6 @@ import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { spawnSync } from 'node:child_process'
 import { join, relative } from 'path'
-import jz, { compile } from '../index.js'
 import { compile as compileWat } from 'watr'
 import { instantiate } from '../interop.js'
 import { ctx, reset } from '../src/ctx.js'
@@ -22,7 +21,7 @@ import { createActiveFunction } from '../src/compile/active-function.js'
 import { analyzeBody, analyzeValueFacts, reanalyzeBody, setFuncBody, clearBodyFacts } from '../src/compile/analyze.js'
 import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { GLOBALS } from '../src/prepare/index.js'
-import { run, wat } from './util.js'
+import { run, wat, jz, compile } from './util.js'
 import { onKernel, levels } from './_matrix.js'
 import { representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { buildProgramIndex } from '../src/compile/program-index.js'
@@ -1502,9 +1501,9 @@ test('debug lifecycle: repeated sessions, drift and failed-session recovery', ()
 })
 
 test('debug lifecycle: real compiles retain semantics across shape changes and errors', () => {
-  const entry = new URL('../index.js', import.meta.url).href
+  const entry = new URL('./util.js', import.meta.url).href   // the test entry: the levels 0-3
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
-    import jz from ${JSON.stringify(entry)}
+    import { jz } from ${JSON.stringify(entry)}
     const sources = [
       'export function f(){return 0}',
       'export let f = (p0) => { let unused = 0; return 0; }',
@@ -1525,10 +1524,10 @@ test('debug lifecycle: real compiles retain semantics across shape changes and e
 })
 
 test('invariant: inlining and cleanup preserve binding storage and evaluation order', () => {
-  const entry = new URL('../index.js', import.meta.url).href
+  const entry = new URL('./util.js', import.meta.url).href   // the test entry: the levels 0-3
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import assert from 'node:assert/strict'
-    import jz from ${JSON.stringify(entry)}
+    import { jz } from ${JSON.stringify(entry)}
     const cases = [
       ['export function f(x){let unused=0;let set=()=>{unused=x};set();return x}', 7],
       ['function make(){let unused=0;return x=>{unused=x;return x+1}} export function f(x){return make()(x)}', 8],
@@ -1655,7 +1654,7 @@ test('invariant: two proofs of a binding\'s integer hull meet, neither widens th
   const { spawnSync } = await import('node:child_process')
   const root = new URL('..', import.meta.url).pathname
   const script = `
-    import { compile } from './index.js'
+    import { compile } from './test/util.js'
     const src = 'export let f = (p0) => { let i0 = 0; while (i0 < 5) { if (i0) { let v1 = i0; } i0 = (i0 + 1); } return 0; }'
     for (const optimize of [2, 3]) compile(src, { optimize })
     console.log('ok')

@@ -3,9 +3,8 @@
 // String-method tests (charAt/charCodeAt/at/search/match) live in strings.js.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run, cases, wat, funcWat, oracle } from './util.js'
+import { run, cases, wat, funcWat, oracle, jz, compile } from './util.js'
 import { levels, onWasi, onKernel } from './_matrix.js'
-import jz, { compile } from '../index.js'
 import encodeWat from 'watr/compile'
 import { numberNanIR, truthyIR } from '../src/ir/sentinels.js'
 

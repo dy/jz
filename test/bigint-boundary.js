@@ -19,10 +19,10 @@
 // carrier behind an i64 boundary lane (`boundaryI64`), as `g` below does.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { ctx } from '../src/ctx.js'
 import { onKernel, levels } from './_matrix.js'
+import { compile } from './util.js'
 
 const HEX = 'const _hx8 = n => n.toString(16).padStart(8, "0")\n'
 const I64HEX = 'i64Hex = bits => "0x" + _hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + _hx8(Number(bits & 0xFFFFFFFFn))\n'

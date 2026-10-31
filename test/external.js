@@ -1,8 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onWasi, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 // Helper: compile and run
 function run(code, imports = {}) {

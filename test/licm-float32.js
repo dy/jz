@@ -1,12 +1,11 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
 import { parse, walk, loopCount } from '../scripts/wat-probe.mjs'
 import { levels, onKernel } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const find = (ast, name) => ast.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === name)
 const options = level => ({ optimize: { level, sourceInline: false } })

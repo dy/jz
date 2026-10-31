@@ -6,12 +6,11 @@
 // on its own hot paths (a query view, a dynamic method call).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
 import { firstRefKind, MUTATE_OPS, extractParams, classifyParam, collectParamName, collectParamNames } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze-scans.js'
 import { numHashLiteral } from '../module/collection.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 import { offset } from '../interop.js'
 
 const measure = (body, calls = 1000, warm = 10) => {

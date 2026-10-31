@@ -6,9 +6,8 @@
 // utils/constructor-name). Every form answers what the host answers.
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const WORDS = ['function abc(x) {}', '  function  named () {}', 'FUNCTION Up() {}', 'nope', '', 'function (x) {}']
 // [source]: `f( s )` answers the first group, or what the program makes of a miss

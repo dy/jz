@@ -12,9 +12,9 @@ import { is, ok } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { Duplex } from 'node:stream'
-import jz from '../index.js'
 import { levels, onWasi } from './_matrix.js'
 import { WebSocketConnection } from './fixtures/websocket-server/websocket-server.js'
+import { jz } from './util.js'
 
 const dir = new URL('./fixtures/websocket-server/', import.meta.url)
 const source = readFileSync(new URL('websocket-server.js', dir), 'utf8')

@@ -427,7 +427,7 @@ function dump(spec, file) {
 //                             so a reduction sums exactly in any lane order (the
 //                             checksum is bit for bit), N varied so no compiler hoists
 //                             the pure call out of the sweep
-// The case is a library workload: bench.mjs lowers it with jzify (LOWERED_CASES).
+// The case is a library workload, ES5 `var` and function declarations jzify lowers.
 async function benchCase(spec, id, kind, ...ranges) {
   const arity = { unary: 2, binary: 4, blas1: 2 }[kind]
   if (!arity || ranges.length < arity || ranges.slice(0, arity).some(r => !Number.isFinite(+r)))
@@ -663,8 +663,8 @@ ${names.map(([k]) => `  if (k === ${k}) { k${k}(U, OUT, 0); return 1 }`).join('\
 }
 `
   const t0 = performance.now()
-  const wasm = compile(src, { jzify: true, optimize: 'speed', memory: 4096 })
-  const text = compile(src, { jzify: true, optimize: 'speed', memory: 4096, wat: true })
+  const wasm = compile(src, { optimize: 'speed', memory: 4096 })
+  const text = compile(src, { optimize: 'speed', memory: 4096, wat: true })
   console.log(`${names.length} functions, ${wasm.byteLength} B, compiled in ${Math.round((performance.now() - t0) / 2)} ms`)
   const inst = instantiate(wasm, { memory: 4096 })
   const host = await import('data:text/javascript;base64,' + Buffer.from(src).toString('base64'))

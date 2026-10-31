@@ -28,8 +28,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel } from './_matrix.js'
-import jz, { compile } from '../index.js'
-import { agree, funcWat, oracle } from './util.js'
+import { agree, funcWat, oracle, jz, compile } from './util.js'
 
 const count = (s, re) => { const m = s.match(re); return m ? m.length : 0 }
 

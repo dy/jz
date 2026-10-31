@@ -7,9 +7,8 @@
 // is an empty object, a descriptor is the value under the data flags.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onKernel, onWasi, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const run = (src, opts) => jz(src, opts).exports.f()
 

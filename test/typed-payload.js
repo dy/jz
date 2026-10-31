@@ -4,9 +4,8 @@
 // (module/typedarray.js resolveElem payload).
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 const buf = `class Buf {
   #channels

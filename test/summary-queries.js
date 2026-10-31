@@ -2,13 +2,12 @@ import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { summarize, K, kind, join, hasTag, CARRIER, PRESENCE, contractVal } from '../src/summary/index.js'
 import { VAL } from '../src/reps.js'
-import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { instantiate } from '../interop.js'
 import { execFileSync } from 'node:child_process'
 import { onKernel, levels } from './_matrix.js'
 import { BRAND } from '../src/ast.js'
-import { oracle, compileInProcess } from './util.js'
+import { oracle, compileInProcess, compile } from './util.js'
 
 const lit = value => [null, value]
 const typed = ['()', 'new.BigInt64Array', lit(0)]
@@ -905,7 +904,7 @@ test('summary queries: A→A→B→A preserves bytes, retained facts, and earlie
   is([...compile(A, options)], [...a], 'queries between A compiles do not change bytes')
   const b = compile(B, options)
   const freshB = execFileSync(process.execPath, ['--input-type=module', '-e', `
-    import { compile } from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+    import { compile } from ${JSON.stringify(new URL('./util.js', import.meta.url).href)}
     process.stdout.write(Buffer.from(compile(${JSON.stringify(B)}, ${JSON.stringify(options)})).toString('base64'))
   `], { encoding: 'utf8', timeout: 60_000 })
   is([...b], [...Buffer.from(freshB, 'base64')], 'B after A matches a fresh process compiling B')

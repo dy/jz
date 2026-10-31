@@ -5,8 +5,8 @@
 // (a missed view = packing aliased memory = miscompile, the watr self-compile class).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onWasi } from './_matrix.js'
+import { jz, compile } from './util.js'
 
 // The arrays stay in memory: a module array only constant indices reach would be
 // locals of the kernel (plan/scratch.js), with no store left to pack.

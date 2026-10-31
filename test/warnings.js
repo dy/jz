@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
-import jz, { compile } from '../index.js'
+import { jz, compile } from './util.js'
 
 function warningsFor(code, opts = {}) {
   const warnings = []

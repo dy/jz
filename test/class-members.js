@@ -7,8 +7,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { agree, funcWat } from './util.js'
+import { agree, funcWat, jz, compile } from './util.js'
 
 // Each row is [label, program]; the program's export `f` takes no argument.
 const agrees = (rows) => { for (const [label, src] of rows) agree(src, 'f', [], undefined, label) }

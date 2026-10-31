@@ -5,9 +5,8 @@
 // a write may outrun, keep their cell a Number and their full magnitude.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 // Runs sweep this leg's levels; the WAT checks, compile-only, read every level.
 const ALL = [0, 2, 3, 'size']

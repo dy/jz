@@ -183,6 +183,26 @@ const LEVEL_PRESETS = Object.freeze({
   speed: L3_PRESET,
 })
 
+/** The name of `names` a typo of `word` most likely meant, or null: within three
+ *  edits, where a dropped, added or changed letter costs one (a dropped letter
+ *  compared position by position shifted every later one). */
+export const nearest = (word, names) => {
+  const dist = (a, b) => {
+    let prev = []
+    for (let j = 0; j <= b.length; j++) prev.push(j)
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i]
+      for (let j = 1; j <= b.length; j++)
+        cur.push(Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)))
+      prev = cur
+    }
+    return prev[b.length]
+  }
+  let best = null, bestDist = 4
+  for (const n of names) { const d = dist(word, n); if (d < bestDist) { best = n; bestDist = d } }
+  return best
+}
+
 /**
  * Normalize the user's `opts.optimize` value into a flat config object.
  *
@@ -205,14 +225,15 @@ export function resolveOptimize(opt) {
   if (typeof opt === 'number' || typeof opt === 'string') {
     const p = LEVEL_PRESETS[String(opt)]
     // Unknown preset used to silently mean level 2 — a typo ('sped') then shipped
-    // the wrong pipeline with no signal. Levels: 0-3, 'size', 'speed'.
-    if (!p) throw new Error(`Unknown optimize preset '${opt}' — valid: 0, 1, 2, 3, 'size', 'speed', 'fast'`)
+    // the wrong pipeline with no signal. (The levels 0-3 and 'fast' are the internal
+    // flags' presets; the public option names the four values below.)
+    if (!p) throw new Error(`optimize takes true, false, 'size' or 'speed'; got '${opt}'`)
     return { ...p }
   }
   if (typeof opt === 'object') {
     const baseLevel = typeof opt.level === 'number' || typeof opt.level === 'string' ? opt.level : 2
     const base = LEVEL_PRESETS[String(baseLevel)]
-    if (!base) throw new Error(`Unknown optimize level '${opt.level}' — valid: 0, 1, 2, 3, 'size', 'speed', 'fast'`)
+    if (!base) throw new Error(`optimize.level takes true, false, 'size' or 'speed'; got '${opt.level}'`)
     const out = { ...base }
     for (const n of PASS_NAMES) {
       if (!(n in opt)) continue
@@ -230,22 +251,8 @@ export function resolveOptimize(opt) {
     for (const k of Object.keys(opt)) {
       if (PASS_NAMES.includes(k)) continue
       if (!TUNING_KEYS.includes(k)) {
-        // edit distance: a dropped, added or changed letter costs one (a dropped letter
-        // compared position by position shifted every later one)
-        const dist = (a, b) => {
-          let prev = []
-          for (let j = 0; j <= b.length; j++) prev.push(j)
-          for (let i = 1; i <= a.length; i++) {
-            const cur = [i]
-            for (let j = 1; j <= b.length; j++)
-              cur.push(Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)))
-            prev = cur
-          }
-          return prev[b.length]
-        }
-        const all = [...PASS_NAMES, ...TUNING_KEYS]
-        const near = all.reduce((m, n) => dist(k, n) < dist(k, m) ? n : m, all[0])
-        throw new Error(`Unknown optimize key '${k}'${dist(k, near) <= 3 ? ` — did you mean '${near}'?` : ''} (registered passes: PASS_NAMES, tuning: TUNING_KEYS in src/optimize/index.js)`)
+        const near = nearest(k, [...PASS_NAMES, ...TUNING_KEYS])
+        throw new Error(`Unknown optimize key '${k}'${near ? ` — did you mean '${near}'?` : ''} (registered passes: PASS_NAMES, tuning: TUNING_KEYS in src/passes.js)`)
       }
       out[k] = opt[k]
     }

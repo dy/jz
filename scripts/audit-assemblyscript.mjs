@@ -70,7 +70,7 @@ const gaps = []
 for (const { name, kind, src } of CORPUS) {
   let bytes, tree
   try {
-    const w = compile(src, { optimize: 2 })
+    const w = compile(src, { optimize: true })
     bytes = w.byteLength ?? Buffer.byteLength(w)
     tree = parse(src, 2)
   } catch (e) {

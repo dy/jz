@@ -4,10 +4,9 @@
 // through `?:`, dynamic key writes against fixed-shape slots.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { i64ToF64 } from '../interop.js'
 import { onWasi, belowOpt, levels } from './_matrix.js'
-import { run, oracle, cases } from './util.js'
+import { run, oracle, cases, jz, compile } from './util.js'
 
 // A class's methods and accessors are its prototype's, its private names no
 // property, an Error's `name` its class's: hasOwnProperty, Object.hasOwn and

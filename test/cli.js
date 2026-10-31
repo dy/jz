@@ -241,27 +241,16 @@ test('cli: --no-tail-call uses ordinary call frames', () => {
   unlinkSync(dflt); unlinkSync(notc)
 })
 
-// audit-#11: --host native's TargetProfile (src/session.js) forces the SAME
-// noTailCall policy --no-tail-call sets explicitly — the wasm2c/native-lowering
-// lane (scripts/native/) needs it without every caller remembering the flag.
-// Pins the profile's own field, not just the pre-existing explicit-override path
-// the test above already covers.
-test('cli: --host native uses ordinary call frames (wasm2c return_call workaround)', () => {
-  const input = join(tmp, 'tcn.js')
-  const native = join(tmp, 'tcn-native.wat')
-  writeFileSync(input, 'export let sum = (n, acc) => n == 0 ? acc : sum(n - 1, acc + n)')
-  cli(input, '--wat', '--host', 'native', '-o', native)
-  ok(!/return_call/.test(readFileSync(native, 'utf8')), '--host native emits no return_call')
-  unlinkSync(native)
-})
-
-test('cli: --host native accepted, rejects unknown host', () => {
+test('cli: --host takes js or wasi', () => {
   const input = join(tmp, 'tcn2.js')
   writeFileSync(input, 'export let f = () => 1')
-  ok(cli(input, '--wat', '--host', 'native', '-o', '-').includes('module'), '--host native compiles')
-  const { stderr, status } = cliFail(input, '--wat', '--host', 'bogus', '-o', '-')
-  is(status, 1)
-  ok(/Invalid host/.test(stderr), 'unknown host still rejected')
+  ok(cli(input, '--wat', '--host', 'wasi', '-o', '-').includes('module'), '--host wasi compiles')
+  // ('native', the wasm2c lane's profile, is an internal flag: test/options.js)
+  for (const host of ['native', 'bogus']) {
+    const { stderr, status } = cliFail(input, '--wat', '--host', host, '-o', '-')
+    is(status, 1)
+    ok(stderr.includes(`host takes 'js' or 'wasi'; got '${host}'`), stderr)
+  }
 })
 
 test('cli: --names emits a wasm name section', () => {

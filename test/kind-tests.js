@@ -7,9 +7,8 @@
 // the samples' path runs; the plan drops the other arm (plan/fold-kind-tests.js).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const src = `
 let settings = (o) => ({ size: o?.frameSize ?? 2048, f: o?.factor ?? 1 })

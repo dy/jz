@@ -23,12 +23,12 @@ import { dirname, join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js'
 import { timedBenchmarkRow } from '../assets/headline.js'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { WASM_BAND_TOL } from '../bench/claims.mjs'
+import { compile } from './util.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')

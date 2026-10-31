@@ -1,9 +1,8 @@
 // WASI and console.log tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run, oracle } from './util.js'
+import { run, oracle, jz, compile } from './util.js'
 import { adaptI64, belowOpt, levels } from './_matrix.js'
-import jz, { compile } from '../index.js'
 import { wasi } from '../wasi.js'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'

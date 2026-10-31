@@ -9,9 +9,8 @@
 // (module/collection.js __obj_props, __obj_deleted; interop.js mem.read).
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels, onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
 const agree = (cases) => {

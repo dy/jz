@@ -3,9 +3,14 @@ import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { compile } from '../../index.js'
+import { compileInternal } from '../../src/compiler.js'
+import jzify from '../../jzify/index.js'
 import { resolveModuleGraph } from '../../src/resolve.js'
-import { GRAPH_CASES, LOWERED_CASES, graphSources } from './graph.js'
+import { GRAPH_CASES, graphSources } from './graph.js'
+
+// The internal entry: the raw ABI (`alloc: false`) and the pass toggles a diagnosis
+// passes (JZ_SIMD) are its flags.
+const compile = (code, opts) => compileInternal(code, opts, jzify)
 
 const LIB = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(LIB, '../..')
@@ -52,7 +57,6 @@ export const compileJzAt = (c, optimize, compiler = compile) => {
   }
   return compiler(code, {
     host: 'js',
-    jzify: isWatr || isGraph || LOWERED_CASES.has(c.id),
     modules,
     imports: {
       ...hostImports,
@@ -76,7 +80,7 @@ export const compileJzWasi = (c, optimize, compiler = compile) => {
   for (const [spec, names] of Object.entries(imports))
     modules[spec] = `const unavailable = () => { throw new Error('${spec} is a host adapter') }\n` +
       Object.keys(names).map(n => n === 'default' ? 'export default unavailable\n' : `export const ${n} = unavailable\n`).join('')
-  return compiler(code, { host: 'wasi', jzify: true, modules, optimize })
+  return compiler(code, { host: 'wasi', modules, optimize })
 }
 
 // The compiler graph can exhaust V8's heap. Both harnesses isolate its builds

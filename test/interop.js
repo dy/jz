@@ -9,11 +9,10 @@
 
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import * as interop from '../interop.js'
 import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
 import { HEAP, symbolCountMax } from '../layout.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 import { compile as wasm } from 'watr'
 
 // ── subpath surface ─────────────────────────────────────────────────────────
@@ -689,7 +688,7 @@ test('interop: void and nullable Number exports answer undefined and null on eve
       'export let n = (i) => new Float64Array(2)[i]\\nexport let u = (x) => { if (x) return 1 }\\nexport let z = (x) => x ? 1 : null\\n' +
       'export let e = (hi) => bits(hi)[0] * 2'
     const out = []
-    for (const optimize of [0, 2, 'size']) { const x = jz(src, { optimize }).exports; out.push([x.v(), x.g(), x.n(5), x.n(1), x.u(0), x.u(1), x.z(0), x.z(1), x.e(0x7ff80002), x.e(0x7ff80001)]) }
+    for (const optimize of [false, true, 'size']) { const x = jz(src, { optimize }).exports; out.push([x.v(), x.g(), x.n(5), x.n(1), x.u(0), x.u(1), x.z(0), x.z(1), x.e(0x7ff80002), x.e(0x7ff80001)]) }
     console.log(JSON.stringify(out, (k, v) => v === undefined ? 'undefined' : typeof v === 'number' && v !== v ? 'NaN' : v))`
   const row = ['undefined', 'undefined', 'undefined', 0, 'undefined', 1, null, 1, 'NaN', 'NaN'], want = JSON.stringify([row, row, row])
   const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path')

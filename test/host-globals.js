@@ -6,9 +6,8 @@
 // `console.trace`) is the host's own. Each program runs under jz and as plain JS.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const agree = async (src, calls) => {
   const want = oracle(src)

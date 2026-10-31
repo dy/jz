@@ -1,8 +1,7 @@
 import test from 'tst'
 import {is} from 'tst/assert.js'
-import jz, {compile} from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const LEVELS = levels(false, 1, 2, 3)
 const observe = (f, args, wasm) => {

@@ -6,8 +6,8 @@
 // kernel compiles without the source text.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { onKernel } from './_matrix.js'
+import { compile } from './util.js'
 
 const PRIVATE_USE = String.fromCharCode(0xe000)
 

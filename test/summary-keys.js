@@ -4,13 +4,13 @@
 // survives into another compilation.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { execFileSync } from 'node:child_process'
 import { ctx } from '../src/ctx.js'
 import { K, tagOf, hasTag } from '../src/summary/index.js'
 import { T as MARK } from '../src/ast.js'
 import { onKernel } from './_matrix.js'
+import { compile } from './util.js'
 
 const OPTS = { optimize: { level: 2, sourceInline: false, inlineFns: false } }
 const summarize = (src) => { compile(src, OPTS); return ctx.summary }
@@ -77,7 +77,7 @@ test('summary keys: the caches reach neither the published facts nor ctx; retent
   const A = 'export function make(){return {buf:new Float32Array(2),gain:3}} export function main(){return make().buf.length}'
   const B = 'export function main(){return {other:41}.other+1}'
   const freshB = execFileSync(process.execPath, ['--input-type=module', '-e', `
-    import {compile} from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+    import {compile} from ${JSON.stringify(new URL('./util.js', import.meta.url).href)}
     console.log(Buffer.from(compile(${JSON.stringify(B)}, ${JSON.stringify(OPTS)})).toString('base64'))
   `], {encoding:'utf8'}).trim()
   const a = compile(A, OPTS), saved = ctx.summary, retained = [...a]

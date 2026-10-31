@@ -1,8 +1,9 @@
-// The public compile options: eleven keys, with the memory and optimize objects
-// folding onto the internal flags (index.js normalizeOptions).
+// The public compile options: twelve keys, a closed set, with the memory and
+// optimize objects folding onto the internal flags (src/options.js normalizeOptions).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { jz as jzInternal, compile as compileInternal } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
 
 const flat = s => s.replace(/\s+/g, ' ')
@@ -21,6 +22,8 @@ test('options: define preserves scalar values, property names and sparse array l
   const src = `export const f = () => [K[''] === null, 1 / K['a-b'], K['quote"\\\\'],
     K.left['a-b'], K.right['a-b'], K['__proto__'], K.slots.length,
     K.slots[0] === undefined, K.slots[2] === undefined, 0 in K.slots, 2 in K.slots]`
+  // (the levels are the internal flags')
+  const jz = jzInternal
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const f = jz(src, { define: { K: value }, optimize }).exports.f
     const expected = [true, -Infinity, 'α😀', 7, 7, 13, 3, true, true, true, true]
@@ -91,7 +94,7 @@ test('options: static data must fit memory.maximum before emitting a module', ()
   const literal = 'x'.repeat(40000)
   const src = `export function f(){return ${JSON.stringify(literal)}}`
   for (const maximum of [1, 1, 2, 2, 1, 2]) {
-    const opts = { optimize: 0, memory: { maximum } }
+    const opts = { optimize: false, memory: { maximum } }
     if (maximum === 1) throws(() => compile(src, opts), /exceeding memory.maximum/)
     else {
       const p = jz(src, opts)
@@ -101,7 +104,7 @@ test('options: static data must fit memory.maximum before emitting a module', ()
     }
   }
   is(jz('export function f(){return "ok"}', { memory: { maximum: 1 } }).exports.f(), 'ok', 'small data after rejected large data')
-  is(jz(src, { optimize: 0 }).exports.f(), literal, 'ordinary compilation after a limited one')
+  is(jz(src, { optimize: false }).exports.f(), literal, 'ordinary compilation after a limited one')
 })
 
 test('options: shared memory, by descriptor or by a shared Memory object', () => {
@@ -123,6 +126,12 @@ test('options: optimize object — tailCall:false uses ordinary call frames', ()
   ok(!/return_call/.test(compile(TAIL, { wat: true, optimize: { tailCall: false } })), 'tailCall:false')
 })
 
+// audit-#11: the wasm2c lane's TargetProfile (src/session.js, the internal host
+// 'native') forces the noTailCall policy tailCall:false sets explicitly.
+test('options: the internal host native uses ordinary call frames', () => {
+  ok(!/return_call/.test(compileInternal(TAIL, { wat: true, host: 'native' })), "host 'native' emits no return_call")
+})
+
 test('options: optimize object — exceptions:false drops the exceptions tag', () => {
   ok(/\(tag /.test(compile(THROW, { wat: true })), 'a bare throw keeps the tag by default')
   const wat = compile(THROW, { wat: true, optimize: { exceptions: false } })
@@ -136,10 +145,13 @@ test('options: optimize object — alloc:false omits the allocator exports', () 
   ok(!/\(export "_alloc"/.test(raw) && !/\(export "_clear"/.test(raw), 'alloc:false is the raw ABI')
 })
 
-test('options: optimize object — level and pass keys, unknown key refused', () => {
+test('options: optimize object — its seven keys; a pass name or a typo refused', () => {
   ok(compile(LOOP, { optimize: { level: 'size' } }).byteLength > 0, 'level:size')
-  ok(compile(LOOP, { optimize: { level: 'speed', stencil: false } }).byteLength > 0, 'pass override')
-  throws(() => compile(LOOP, { optimize: { levle: 'size' } }), /Unknown optimize key/)
+  ok(compile(LOOP, { optimize: { level: 'speed', compact: false, rationalConst: false } }).byteLength > 0, 'compact and rationalConst')
+  throws(() => compile(LOOP, { optimize: { level: 'speed', stencil: false } }), /^TypeError: Unknown optimize option 'stencil' \(optimize takes level, simd, tailCall, exceptions, alloc, compact, rationalConst\)$/)
+  throws(() => compile(LOOP, { optimize: { levle: 'size' } }), /Unknown optimize option 'levle'; did you mean 'level'\?/)
+  throws(() => compile(LOOP, { optimize: { noSimd: true } }), /'noSimd' is not an optimize option: use simd: false/)
+  ok(compileInternal(LOOP, { optimize: { level: 'speed', stencil: false } }).byteLength > 0, 'a pass toggle is an internal flag')
 })
 
 test('options: why reports declined loops to the warnings callback', () => {
@@ -166,7 +178,63 @@ test('options: optimize level takes optimize\'s values; randomSeed takes a numbe
   // (a matrix leg compiles a call that names no level at its own)
   if (process.env.JZ_TEST_OPTIMIZE == null) is(compile(LOOP, { optimize: { level: true } }), compile(LOOP), 'level:true is the default')
   throws(() => compile(HEAP, { randomSeed: true }), /finite number/)
-  throws(() => compile(LOOP, { optimize: { level: 'speed', experimentalStencil: false } }), /Unknown optimize key/)
+  throws(() => compile(LOOP, { optimize: { level: 'speed', experimentalStencil: false } }), /Unknown optimize option/)
+  for (const [v, use] of [[0, 'false'], [1, null], [2, 'true'], [3, "'speed'"], ['fast', null], ['balanced', null]]) {
+    throws(() => compile(LOOP, { optimize: v }), new RegExp(`optimize takes true, false, 'size' or 'speed'; got ${typeof v === 'string' ? `'${v}'` : v}${use ? `: use ${use}` : '$'}`), `optimize: ${v}`)
+    throws(() => compile(LOOP, { optimize: { level: v } }), /^TypeError: optimize\.level takes true, false, 'size' or 'speed'/, `optimize.level: ${v}`)
+  }
+})
+
+// The 0.9 spellings and the internal flags are no options: each throws a
+// TypeError naming the key, before any compile state is touched.
+test('options: a closed set — an unknown key throws naming it, a 0.9 spelling its replacement', () => {
+  const refused = (opts, re) => {
+    let error
+    try { compile(HEAP, opts) } catch (e) { error = e }
+    ok(error instanceof TypeError, `${JSON.stringify(opts)}: TypeError, got ${error}`)
+    ok(re.test(error.message), `${JSON.stringify(opts)}: ${error.message}`)
+    ok(!/\n|jz bug|at line/.test(error.message), `an option error names no source line and no compiler bug: ${error.message}`)
+  }
+  for (const [key, use] of [['maxMemory', 'memory: { maximum }'], ['importMemory', 'memory: { import: true }'], ['sharedMemory', 'memory: { shared: true }'],
+    ['noSimd', 'optimize: { simd: false }'], ['tailCall', 'optimize: { tailCall }'], ['noTailCall', 'optimize: { tailCall: false }'],
+    ['alloc', 'optimize: { alloc }'], ['noEhAbort', 'optimize: { exceptions: false }'], ['whyNotSimd', 'why: true with a warnings callback'],
+    ['resolve', 'modules'], ['strict', 'a warnings callback']])
+    refused({ [key]: key === 'maxMemory' ? 4 : true }, new RegExp(`^'${key}' is not an option: use ${use.replace(/[{}()]/g, '\\$&')}`))
+  refused({ optimise: 'speed' }, /^Unknown option 'optimise'; did you mean 'optimize'\? \(options are modules, imports, define, host, memory, optimize, randomSeed, names, sourceMap, wat, warnings, why\)$/)
+  for (const key of ['stencil', 'profile', 'inspect', 'sourceType', 'importMetaUrl', 'nativeTimers', '_interp', 'jzify'])
+    refused({ [key]: true }, new RegExp(`^Unknown option '${key}'`))
+  refused({ memory: { inital: 4 } }, /^Unknown memory option 'inital'; did you mean 'initial'\? \(memory takes initial, maximum, shared, import, fixed\)$/)
+  refused({ memory: 'big' }, /^memory takes a non-negative integer page count/)
+  refused({ host: 'native' }, /^host takes 'js' or 'wasi'; got 'native'$/)
+  refused({ host: 'node' }, /^host takes 'js' or 'wasi'; got 'node'$/)
+  refused({ names: 1 }, /^names takes true or false; got 1$/)
+  refused({ define: { 'a-b': 1 } }, /^define key 'a-b' is not an identifier a module can declare$/)
+  refused({ define: { let: 1 } }, /^define key 'let' is not an identifier/)
+  refused({ define: { N: () => 1 } }, /^define\.N is not a compile-time constant/)
+  refused({ why: true }, /^why reports through warnings: pass a warnings callback beside it$/)
+  refused({ sourceMap: true, optimize: 'speed' }, /^sourceMap requires optimize: false/)
+  refused({ modules: { './a.js': 1 } }, /^modules takes/)
+  ok(compile(HEAP, { sourceMap: true, optimize: { level: false, tailCall: false } }).sourceMap, 'a debug build takes the engine switches')
+  ok(compileInternal(HEAP, { noSimd: true, host: 'native', sourceType: 'module' }).byteLength > 0, 'internal flags through the internal entry')
+  throws(() => compileInternal(HEAP, { host: 'node' }), /^TypeError: host takes 'js' or 'wasi'; got 'node'$/, 'the internal entry checks a value before compiling too')
+})
+
+test('options: an option error after a failed compile carries no stale source', () => {
+  throws(() => compile('export let f = x => eval(x)'))
+  let error
+  try { compile('export let g = 2', { host: 'node' }) } catch (e) { error = e }
+  is(error.message, "host takes 'js' or 'wasi'; got 'node'")
+})
+
+test('options: memory limits name memory.maximum', () => {
+  throws(() => compile(HEAP, { memory: { maximum: 0 } }), /^RangeError: memory\.maximum takes a positive integer page count/)
+  throws(() => compile(HEAP, { memory: { initial: 4, maximum: 2 } }), /^RangeError: memory\.maximum \(2\) is below the initial memory size \(4 pages\)$/)
+})
+
+test('options: jz() instantiates — wat refused, an option of neither compile nor instantiate refused', () => {
+  throws(() => jz(HEAP, { wat: true }), /^TypeError: jz\(\) instantiates; use compile\(src, \{ wat: true \}\) for text$/)
+  throws(() => jz(HEAP, { optimise: 'speed' }), /^TypeError: Unknown option 'optimise'/)
+  is(jz(HEAP, { optimize: 'size', memory: { initial: 2 } }).exports.f(1), 1.5)
 })
 
 test('options: the caller\'s option object is left untouched', () => {
@@ -186,6 +254,6 @@ test('options: warning callbacks run after compilation; a nested compile during 
   const again = compile(src, { warnings: () => {} })
   is(again.length, wasm.length, 'the nested compile left the outer output intact')
   let error
-  try { compile('let kept=[];export let f=n=>{kept.push([n]);return kept.length}', { optimize: 'speed', whyNotRewind: () => { compile('export let g = () => 1') } }) } catch (e) { error = e }
+  try { compileInternal('let kept=[];export let f=n=>{kept.push([n]);return kept.length}', { optimize: 'speed', whyNotRewind: () => { compile('export let g = () => 1') } }) } catch (e) { error = e }
   ok(error && /while a compilation is active/.test(error.message), `nested compile rejected: ${error?.message}`)
 })

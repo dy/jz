@@ -9,8 +9,7 @@
 // call_indirect kept as the always-sound default arm.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { run, oracle } from './util.js'
+import { run, oracle, jz, compile } from './util.js'
 import { levels } from './_matrix.js'
 
 const SPEED = { level: 'speed', watr: false }

@@ -8,9 +8,8 @@
 // answers.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, onKernel } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const VALUES = '[1, "s", [1, 2], { a: 1 }, null, undefined, true, 2.5, NaN]'
 // [source, the exports called with no argument]

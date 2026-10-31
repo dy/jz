@@ -6,8 +6,10 @@ import { writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname, basename } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
-import { compile } from './index.js'
+import { compileInternal } from './src/compiler.js'
+import { normalizeOptions } from './src/options.js'
 import { resolveModuleGraph } from './src/resolve.js'
+import jzify from './jzify/index.js'
 
 const PKG = createRequire(import.meta.url)('./package.json')
 
@@ -30,7 +32,7 @@ Options:
   -O0 | -O3 | -Os           Optimization: none, speed, size (default: balanced)
   -O <json>                 Optimize object, e.g. -O '{"simd":false}'
   -D, --define <K=V>        Compile-time constant (JSON value or string); repeatable
-  --host <js|wasi|native>   Runtime services (default js)
+  --host <js|wasi>          Runtime services (default js)
   --memory <n[:max]>        Initial and maximum memory, in 64 KiB pages
   --no-simd                 No auto-vectorization, for engines without SIMD
   --no-tail-call            No return_call, for engines without tail calls
@@ -112,18 +114,22 @@ function main() {
   const { code, modules } = resolveModuleGraph(inputFile, { resolveNode: true })
   if (process.env.JZ_DEBUG_MODULES === '1') console.error('modules:', Object.keys(modules))
 
-  const result = compile(code, {
+  // --no-simd and --no-tail-call are the optimize object's switches; a debug build is unoptimized
+  const level = optimize ?? (sourceMap ? false : undefined)
+  const switches = { ...(noSimd && { simd: false }), ...(noTailCall && { tailCall: false }) }
+  const optimizeOpt = !Object.keys(switches).length ? level
+    : { ...(typeof level === 'object' ? level : level !== undefined && { level }), ...switches }
+  // The options are the public ones; the entry's URL, for import.meta.url, is the CLI's own flag.
+  const flags = normalizeOptions({
     wat, why, names, warnings: w => console.warn(formatWarning(w)),
     ...(sourceMap && { sourceMap: { source: pathToFileURL(resolve(inputFile)).href, ...(outputFile !== '-' && !wat && { url: basename(outputFile) + '.map' }) } }),
-    importMetaUrl: pathToFileURL(resolve(inputFile)).href,
-    ...(optimize !== undefined && { optimize }),
+    ...(optimizeOpt !== undefined && { optimize: optimizeOpt }),
     ...(host && { host }),
     ...(memory !== undefined && { memory }),
     ...(define && { define }),
-    ...(noSimd && { noSimd: true }),
-    ...(noTailCall && { noTailCall: true }),
     ...(Object.keys(modules).length && { modules }),
   })
+  const result = compileInternal(code, { ...flags, importMetaUrl: pathToFileURL(resolve(inputFile)).href }, jzify)
 
   if (outputFile === '-') process.stdout.write(result)
   else {

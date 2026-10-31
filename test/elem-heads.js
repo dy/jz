@@ -8,8 +8,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { compile } from '../index.js'
-import { funcWat, oracle, run, wat } from './util.js'
+import { funcWat, oracle, run, wat, compile } from './util.js'
 
 const src = `
 const typedOf = (k) => k === 0 ? new Float64Array(8) : k === 1 ? new Float32Array(8) : k === 2 ? new Uint8Array(8)

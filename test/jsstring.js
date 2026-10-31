@@ -22,8 +22,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi } from './_matrix.js'
-import { compile } from '../index.js'
-import { run } from './util.js'
+import { run, compile } from './util.js'
 
 test('jsstring opt-in: bounded charCodeAt + length flips to externref', () => {
   if (onWasi()) return  // wasi: jsstring externref interop

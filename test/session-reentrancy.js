@@ -26,7 +26,6 @@ import { is, ok } from 'tst/assert.js'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import * as ctxModule from '../src/ctx.js'
 import { ctx } from '../src/ctx.js'
@@ -41,6 +40,7 @@ import {
 } from '../src/compile/representation-plan.js'
 import { withControlFrame, withExpectedValue, withInitializerScope } from '../src/compile/flow-state.js'
 import { onKernel } from './_matrix.js'
+import { compile } from './util.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKER = join(ROOT, 'test', '_fresh-compile-worker.mjs')

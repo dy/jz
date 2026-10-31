@@ -10,7 +10,6 @@
 // (`kept on a call that runs an escape: …`, the first the frame may reach).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { resetTape, fromWat, toWat } from '../src/ir/tape.js'
 import { arenaRewind } from '../src/optimize/arena-rewind.js'
 import { listedBuiltin, transitiveFrameEffects } from '../src/compile/analyze/frame-effects.js'
@@ -18,7 +17,7 @@ import { includeAllMods } from '../src/autoload.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { ctx } from '../src/ctx.js'
 import { levels, onKernel, onWasi, belowOpt } from './_matrix.js'
-import { oracle, compileInProcess } from './util.js'
+import { oracle, compileInProcess, jz, compile } from './util.js'
 
 const TAPE = { optimize: { watr: false } }   // the pass's own output, before watr folds dead allocations away
 const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}\n`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }

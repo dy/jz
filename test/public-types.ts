@@ -33,6 +33,16 @@ const again = instantiate(bytes, { imports: { host: { log: console.log } } })
 instantiate(bytes, { optimize: 'size' })
 // @ts-expect-error compile is the named export alone
 jz.compile('export let f = () => 1')
+const closed: CompileOptions = { optimize: { level: 'size', compact: false, rationalConst: false } }
+void closed
+// @ts-expect-error a pass name is no optimize option
+compile('export let f = () => 1', { optimize: { level: 'speed', stencil: false } })
+// @ts-expect-error the levels are true, false, 'size' and 'speed'
+compile('export let f = () => 1', { optimize: 3 })
+// @ts-expect-error the hosts are 'js' and 'wasi'
+compile('export let f = () => 1', { host: 'native' })
+// @ts-expect-error a 0.9 spelling is no option
+compile('export let f = () => 1', { maxMemory: 4 })
 
 void [decoded, wat, tuned, result, shared, wrapped, again]
 

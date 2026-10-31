@@ -2,10 +2,9 @@
 // Adapted from old arch tests + new NaN-boxing architecture
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
-import { cases, oracle, compileInProcess } from './util.js'
+import { cases, oracle, compileInProcess, jz, compile } from './util.js'
 import parseWat from 'watr/parse'
 
 // Prepared method readers can own the generic fallback for a source read.

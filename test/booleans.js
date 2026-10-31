@@ -6,8 +6,7 @@
 // self-compile mother bug.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { run, oracle } from './util.js'
+import { run, oracle, jz, compile } from './util.js'
 import { onKernel, levels } from './_matrix.js'
 
 const fn = (code) => run(code).f

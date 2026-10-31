@@ -3,8 +3,8 @@
 // site that spelled the record as a literal never allocates it.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, onWasi } from './_matrix.js'
+import { jz, compile } from './util.js'
 
 const NO_INLINE = { optimize: { sourceInline: false } }   // keep the callee a call, so the ABI shows
 const bodyOf = (wat, name) => { const i = wat.indexOf(`(func $${name}`); if (i < 0) return ''; const j = wat.indexOf('\n  (func ', i + 10); return wat.slice(i, j < 0 ? undefined : j) }

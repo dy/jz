@@ -5,9 +5,8 @@
 // on fresh module state.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, belowOpt } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz, compile } from './util.js'
 
 const agree = (cases) => {
   for (const [name, src, args] of cases) for (const optimize of levels(0, 2, 3)) {

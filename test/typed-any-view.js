@@ -6,9 +6,8 @@
 // and every access went through the run-time element dispatch.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 const src = `
 let x = new Float64Array(16)

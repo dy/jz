@@ -9,9 +9,8 @@
 // test/math-ulp.js, at levels 0, 2 and 3 (level 3 lifts the constant-exponent loops).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle, ulpDiff } from './util.js'
+import { oracle, ulpDiff, jz } from './util.js'
 import { powRuntime, powFold } from '../src/prepare/math-kernel.js'
 
 const same = (a, b) => Object.is(a, b) || (a !== a && b !== b)

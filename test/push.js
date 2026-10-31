@@ -5,9 +5,8 @@
 // receiver lands where JS puts it.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, onKernel } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz, compile } from './util.js'
 
 const agrees = (src, label, args = []) => {
   const want = oracle(src).f(...args)

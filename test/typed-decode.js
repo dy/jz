@@ -3,9 +3,8 @@
 // every other answer stays the runtime helper's.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 // Buffers of every numeric kind behind one array: the summary names them typed
 // arrays of open kind. `pick(k)` cycles Float32Array, Float64Array, a view of

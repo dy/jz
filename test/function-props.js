@@ -7,9 +7,8 @@
 // properties: read as a value, it was the box, and a call through it trapped.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, belowOpt, onWasi, onKernel } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
 const agree = (cases) => {

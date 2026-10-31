@@ -5,12 +5,11 @@
 // never a trap and never a garbage hit.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { f64ToI64 } from '../interop.js'
 import parseWat from 'watr/parse'
 import { walkAst } from '../src/ast.js'
 import { onKernel, withBigintStrict, levels, belowOpt } from './_matrix.js'
-import { oracle, funcWat } from './util.js'
+import { oracle, funcWat, jz, compile } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
 

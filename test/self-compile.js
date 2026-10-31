@@ -16,7 +16,7 @@ import test from 'tst'
 import { ok, is, throws } from 'tst/assert.js'
 import { instantiate } from '../interop.js'
 import { readMarks, phaseDeltas } from '../scripts/kernel-marks.mjs'
-import jz, { compile } from '../index.js'   // native compiler — the correctness reference for the kernel's output
+import { jz, compile } from './util.js'   // native compiler — the correctness reference for the kernel's output
 import { EQ_ZERO_KERNEL, EQ_ZERO_REUSE_B, GATHER_MAP_KERNEL, BOUNDED_GATHER_KERNEL } from './_optimizer-kernels.js'
 import { selfBytes } from './_self-build.js'
 

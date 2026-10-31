@@ -3,9 +3,8 @@
 // the calls are direct, typed and inlinable, with the same results.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz } from './util.js'
 
 const res = (f) => { try { return f() } catch (e) { return 'throws ' + e.constructor.name } }
 const agrees = (src, calls) => {

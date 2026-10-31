@@ -6,9 +6,8 @@
 // an invariant step keeps every access with its text checked.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const butterfly = (step, extra = '') => `
 export let f = (N, seed) => {

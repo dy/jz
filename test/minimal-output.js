@@ -6,10 +6,9 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
-import { compile } from '../index.js'
 import { onWasi, onKernel, levels, adaptI64 } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
-import { oracle } from './util.js'
+import { oracle, compile, jz } from './util.js'
 import { ctx } from '../src/ctx.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
@@ -243,7 +242,6 @@ for (const [name, src] of Object.entries(TYPED_SLOTS)) {
 // The static-data path is module-scope-only: a function-local literal that is mutated in
 // place must NOT alias a shared region, or the mutation leaks across calls. (Imported,
 // not run via WAT probes — this is a value-correctness invariant.)
-import jz from '../index.js'
 test('minimal: function-local mutated array is fresh each call', () => {
   if (skip) return
   const g = jz('export let g = () => { let a = [1,2,3,4]; a[0] = a[0] + 1; return a }').exports.g

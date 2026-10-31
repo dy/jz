@@ -2,11 +2,13 @@
 // the invariant test (test/wat-invariants.js) and the one-shot audits
 // (scripts/audit-*.mjs) can share it. "Can't prove fast; prove no waste": every
 // helper here asks whether a known overhead pattern survives into optimized output.
-import { compile } from '../index.js'
+import { compileInternal } from '../src/compiler.js'
+import jzify from '../jzify/index.js'
 import parseWat from 'watr/parse'
 
-// jz source → optimized WAT S-expr tree (arrays whose [0] is the op string).
-export const parse = (src, optimize) => parseWat(compile(src, { optimize, wat: true }))
+// jz source → optimized WAT S-expr tree (arrays whose [0] is the op string), at any
+// level the internal entry takes (0-3 among them).
+export const parse = (src, optimize) => parseWat(compileInternal(src, { optimize, wat: true }, jzify))
 
 // Visit every node; `inLoop` becomes true once lexically inside any `(loop …)`.
 export const walk = (node, visit, inLoop = false) => {

@@ -7,7 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const { FLOATBEATS, moduleSrc } = await import(join(__dirname, 'floatbeats.js'))
 
 for (let i = 0; i < FLOATBEATS.length; i++) {
-  const wasm = compile(moduleSrc(FLOATBEATS[i].body), { optimize: 3 })
+  const wasm = compile(moduleSrc(FLOATBEATS[i].body), { optimize: 'speed' })
   fs.writeFileSync(join(__dirname, `beat-${i}.wasm`), wasm)
   console.log(`Compiled beat-${i}: ${FLOATBEATS[i].name}`)
 }

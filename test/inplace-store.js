@@ -14,8 +14,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { run, oracle } from './util.js'
+import { run, oracle, jz, compile } from './util.js'
 import { levels } from './_matrix.js'
 
 // the immutable-bench kernel shape, parameterized so each test gets a fresh module

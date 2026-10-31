@@ -10,8 +10,7 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { run, oracle, compileInProcess } from './util.js'
+import { run, oracle, compileInProcess, jz, compile } from './util.js'
 import { levels } from './_matrix.js'
 import { scanBindingUses, invalidateBindingUsesCache, scanObjectArrayFacts, arrayUsesSafe, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, USE } from '../src/compile/analyze-scans.js'
 

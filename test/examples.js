@@ -1,6 +1,5 @@
 import test from 'tst';
 import { is, ok, throws } from 'tst/assert.js';
-import jz, { compile } from '../index.js';
 import { instantiate } from '../interop.js';
 import fs from 'fs';
 import { basename, join } from 'node:path';
@@ -8,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js';
 import { OPT, buildExample, buildKernel } from '../examples/build.mjs';
 import { onWasi } from './_matrix.js';
-import { funcWat } from './util.js';
+import { funcWat, jz, compile } from './util.js'
 
 let mandelbrotSrc = fs.readFileSync(new URL('../examples/mandelbrot/mandelbrot.js', import.meta.url), 'utf8');
 

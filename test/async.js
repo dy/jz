@@ -10,8 +10,7 @@
 // rejection reporting.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { batch, oracle } from './util.js'
+import { batch, oracle, jz, compile } from './util.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
 
 const val = async (src, ...args) => {

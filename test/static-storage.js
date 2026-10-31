@@ -6,11 +6,11 @@
 // loops.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { onKernel, levels } from './_matrix.js'
 import parse from 'watr/parse'
 import { walkAst } from '../src/ast.js'
+import { jz, compile } from './util.js'
 
 const DSP = `const a = new Float64Array(64); const b = new Float64Array(64)
 export let f = (x) => {

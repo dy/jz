@@ -3,9 +3,8 @@
 // (plan/loop-fields.js): the same values, the same throws, every level.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz } from './util.js'
 
 const loopsOf = (text) => {
   const out = []

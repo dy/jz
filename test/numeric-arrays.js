@@ -7,9 +7,8 @@
 // array for a pointer, and every other use keeps the boxed layout.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels, onWasi, belowOpt, OPT_LEVEL } from './_matrix.js'
-import { oracle, wat, funcWat } from './util.js'
+import { oracle, wat, funcWat, jz } from './util.js'
 
 const tiers = () => levels(0, 1, 2, 3, 'size')
 // the levels that keep arrays raw (src/passes.js numericArrays): O0 and O1, the reference tiers, keep every array boxed

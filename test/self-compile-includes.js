@@ -17,7 +17,6 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { readdirSync, readFileSync } from 'node:fs'
-import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { onKernel } from './_matrix.js'
 import { deriveMethodModules } from '../scripts/gen-prop-modules.mjs'
@@ -25,6 +24,7 @@ import { DERIVED_PROP_MODULES } from '../src/prop-modules.generated.js'
 import * as stdlibManifest from '../module/index.js'
 import { STDLIB, includeAllMods } from '../src/autoload.js'
 import { INTRINSIC_ARITY } from '../src/builtin-signatures.js'
+import { compile } from './util.js'
 
 test('self-compile: method signatures cover registered handler parameters without reflection', () => {
   if (onKernel()) return

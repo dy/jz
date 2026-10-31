@@ -1,8 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onWasi, levels } from './_matrix.js'
-import { oracle, funcWat } from './util.js'
+import { oracle, funcWat, jz, compile } from './util.js'
 
 // A builtin-named method through a receiver of no known kind: an own property
 // of the name shadows the builtin, on an array (also one a growth relocated),

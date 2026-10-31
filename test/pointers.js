@@ -1,12 +1,11 @@
 // NaN-boxing pointer encoding tests + multi-value threshold
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import parseWat from 'watr/parse'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { onKernel, withBigintStrict, levels } from './_matrix.js'
 import { i64Hex, ptrBits, PTR } from '../layout.js'
-import { run } from './util.js'
+import { run, jz, compile } from './util.js'
 
 
 // === Multi-value threshold ===

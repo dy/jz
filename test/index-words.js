@@ -8,9 +8,8 @@ import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import compileWat from 'watr/compile'
 import { guardToInt32 } from '../src/optimize/to-int32.js'
-import jz from '../index.js'
 import { levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 const EDGES = [0, -0, 0.5, -0.5, 1.9999, -1.9999, 2147483647, 2147483648, -2147483648, -2147483649,
   4294967295.5, 4294967296, 4294967301, -4294967301, 2 ** 51 - 0.5, 2 ** 51, -(2 ** 51) + 0.5, -(2 ** 51),

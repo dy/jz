@@ -4,8 +4,7 @@
 // missing element can arrive through meets every operator here.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const reads = {
   direct: ['', 'a[k]'],

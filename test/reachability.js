@@ -18,10 +18,10 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { ctx } from '../src/ctx.js'
 import { onKernel, levels } from './_matrix.js'
+import { compile } from './util.js'
 
 // Every program appends to `t` as its functions run and reads it through `trace()`.
 const T = `let t = ''\nexport const trace = () => t\n`

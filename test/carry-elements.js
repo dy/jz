@@ -4,9 +4,8 @@
 // the converted element, not the stored expression.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
-import { funcWat, oracle } from './util.js'
+import { funcWat, oracle, jz, compile } from './util.js'
 
 const CARRY_OFF = { level: 'speed', carryElements: false }
 const kernel = (ctor, store) => `

@@ -1,10 +1,9 @@
 // jz.memory API tests: JS↔WASM interop constructors, read, write
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { i64ToF64, instantiate } from '../interop.js'
 import { onWasi, onKernel, adaptI64, levels, belowOpt } from './_matrix.js'
-import { oracle, funcWat } from './util.js'
+import { oracle, funcWat, jz, compile } from './util.js'
 
 // interop's instantiate (not raw WebAssembly.instantiate): a module whose
 // unproven-receiver reads pull the env external machinery declares imports —

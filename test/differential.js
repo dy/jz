@@ -9,10 +9,9 @@
 // excluded — last-ULP differences there are not jz bugs.
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import jz from '../index.js'
 import { scalarCase } from './_scalar-core-cases.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 // Deterministic PRNG so failures reproduce.
 const rng = (seed => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296)(0xC0FFEE)

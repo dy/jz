@@ -11,7 +11,7 @@
 //   edge    signed zeros, infinities, NaN, the extreme magnitudes and the domain
 //           boundaries (every pair of them for the two-argument functions)
 //
-// Each function runs compiled twice, scalar ({ level: 2, noSimd: true }) and at
+// Each function runs compiled twice, scalar ({ level: true, simd: false }) and at
 // the speed level, whose loop may take the two-lane kernel; the table reports the
 // scalar kernel against the host, `lanes≠` counts where the two builds disagree,
 // and `fold≠` where the constant folder (src/prepare/math-kernel.js) disagrees
@@ -79,9 +79,9 @@ const build = (optimize) => {
     return out
   }
 }
-const scalar = build({ level: 2, noSimd: true }), lanes = build(3)
+const scalar = build({ level: true, simd: false }), lanes = build('speed')
 // the two-lane kernels (module/math/simd.js) a loop's lifted body calls
-const laneWat = compile(src, { optimize: 3, wat: true })
+const laneWat = compile(src, { optimize: 'speed', wat: true })
 const funcText = (name) => {
   const m = new RegExp(`\\(func \\$${name}(?=[\\s)])`).exec(laneWat)
   if (!m) return ''

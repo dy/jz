@@ -2,10 +2,9 @@
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
-import jz, { compile } from '../index.js'
 import math from '../module/math.js'
 import { scalarCase } from './_scalar-core-cases.js'
-import { cases, run, oracle } from './util.js'
+import { cases, run, oracle, jz, compile } from './util.js'
 
 
 function runScalarCase(id, opts) {

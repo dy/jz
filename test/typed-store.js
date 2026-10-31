@@ -10,10 +10,8 @@
 // receiver. Every form is compared with the host at every tier.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
-import { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 test('logical stores retain conversion exceptions, finally and enclosing bound effects', () => {
   for (const [op, init, index] of [['||=',0,0], ['&&=',1,0], ['??=',0,1]]) {

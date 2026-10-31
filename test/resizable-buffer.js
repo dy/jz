@@ -3,9 +3,8 @@
 // under jz and as plain JS, and the two must agree.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const tryIt = `const tryIt = (f) => { try { return f() } catch (e) { return e.name } }\n`
 const agree = (src, calls) => {

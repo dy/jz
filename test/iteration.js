@@ -6,8 +6,7 @@
 // __iter_arr's unknown-receiver arm (module/collection.js).
 import test, { is } from 'tst'
 import { throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { run, oracle } from './util.js'
+import { run, oracle, jz, compile } from './util.js'
 import { levels, onWasi } from './_matrix.js'
 
 test('for-of reads the live array length through direct and helper mutations', () => {

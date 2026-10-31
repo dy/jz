@@ -9,7 +9,7 @@
 // in the shipped scripts changes. test/self-checkpoint.js forces the kernel's
 // internal checkpoint branch this way.
 import { writeFileSync } from 'node:fs'
-import { compile } from '../index.js'
+import { compile } from './util.js'
 import { resolveSelfCompileBuild, SELF_ENTRY, SELF_OPTIMIZE } from '../scripts/build-profile.mjs'
 import { applyOverlays } from './_self-overlay.js'
 

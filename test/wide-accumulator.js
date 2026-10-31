@@ -4,9 +4,8 @@
 // loop at the iteration where it would leave the exact-integer range.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, onKernel } from './_matrix.js'
-import { oracle, funcWat } from './util.js'
+import { oracle, funcWat, jz, compile } from './util.js'
 import { genProgram } from '../scripts/perf-corpus.mjs'
 import parseWat from 'watr/parse'
 import { walkAst } from '../src/ast.js'

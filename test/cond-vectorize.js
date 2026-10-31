@@ -9,7 +9,7 @@
 // vectorizes as i32x4 (the narrowing held — an f64x2 body would be a lost narrowing).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import { jz, compile } from './util.js'
 
 const runF = (src, o) => jz(src, { optimize: o }).exports.run()
 const watRun = (src) => {

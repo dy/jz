@@ -7,9 +7,8 @@
 // it. Each receiver meets each binding form and each use, against the host.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const pick = 'const pick = (k) => [new Float32Array(4), new Float64Array(4), new Float64Array(8).subarray(4)][k % 3]\n'
 // [module prelude, the receiver's declaration, the read]

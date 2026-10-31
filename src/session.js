@@ -282,17 +282,19 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   return ctx.transform.optimize
 }
 
-/** Reject invalid wasm32 limits before an ABI can round or erase them. */
+/** Reject invalid wasm32 limits before an ABI can round or erase them. The
+ *  messages name the public spelling: `memory.initial` (or a bare page count)
+ *  is the `memory` flag, `memory.maximum` the `maxMemory` flag. */
 export function validateMemory({ memory, maxMemory }) {
   if (memory != null && typeof memory !== 'object' &&
       (!Number.isInteger(memory) || memory < 0 || memory > 65536))
-    throw new RangeError(`opts.memory initial size must be a non-negative integer page count no greater than 65536 (each page is 64 KiB); got ${memory}`)
+    throw new RangeError(`memory.initial takes a non-negative integer page count no greater than 65536 (each page is 64 KiB); got ${memory}`)
   if (maxMemory == null) return
   if (!Number.isInteger(maxMemory) || maxMemory < 1 || maxMemory > 65536)
-    throw new RangeError(`opts.maxMemory must be a positive integer page count no greater than 65536 (each page is 64 KiB); got ${maxMemory}`)
+    throw new RangeError(`memory.maximum takes a positive integer page count no greater than 65536 (each page is 64 KiB); got ${maxMemory}`)
   const initialPages = typeof memory === 'number' ? memory || 1 : 1
   if (maxMemory < initialPages)
-    throw new RangeError(`opts.maxMemory (${maxMemory}) is below the initial memory size (${initialPages} pages)`)
+    throw new RangeError(`memory.maximum (${maxMemory}) is below the initial memory size (${initialPages} pages)`)
 }
 
 /** Normalized memory options have the same meaning in both compiler hosts. */

@@ -3,7 +3,8 @@
 import { writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { compile } from '../index.js'
+import { compileInternal } from '../src/compiler.js'
+import jzify from '../jzify/index.js'
 import { resolveSelfCompileBuild } from './build-profile.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -41,7 +42,8 @@ const t0 = Date.now()
 // redundant here. No-op until watr >5.2.3 lands the option.
 const profile = resolveSelfCompileBuild()
 console.log('resolved self-compile graph…', Object.keys(profile.graph.modules).length, 'modules')
-const wasm = compile(profile.graph.code, {
+// The bootstrap profile's flags (collection compaction, helper counters) are internal ones.
+const wasm = compileInternal(profile.graph.code, {
   host: 'js', // The compiler artifact's host is independent of the test matrix.
   modules: profile.graph.modules,
   memory: profile.memory,
@@ -49,7 +51,7 @@ const wasm = compile(profile.graph.code, {
   _compactCollections: profile.compactCollections,
   helperCounters: profile.helperCounters,
   helperCallsites: profile.helperCallsites,
-})
+}, jzify)
 console.log('compiled', wasm.byteLength, 'bytes in', Date.now() - t0, 'ms')
 new WebAssembly.Module(wasm)
 mkdirSync(OUT_DIR, { recursive: true })

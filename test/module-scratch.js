@@ -9,9 +9,8 @@
 // what the host answers.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, run, wat } from './util.js'
+import { oracle, run, wat, compile } from './util.js'
 
 // A helper that writes two results at a stride: over its second copy's budget, so two sites keep the call.
 const ASSIGN = `const SMALLEST = 2.2250738585072014e-308, SCALE = 4503599627370496

@@ -3,9 +3,8 @@
 // undefined NaN) and the run tests nothing else (emit/arithmetic.js).
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz } from './util.js'
 import parseWat from 'watr/parse'
 
 // Every value that reaches a sum is a number or missing: the arguments are

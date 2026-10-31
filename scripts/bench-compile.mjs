@@ -2,7 +2,8 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { compile } from '../index.js'
+import { compileInternal } from '../src/compiler.js'
+import jzify from '../jzify/index.js'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const BENCH = join(ROOT, 'bench')
@@ -59,7 +60,6 @@ const optionsFor = id => ({
   },
   optimize: { smallConstForUnroll: false, scalarTypedArrayLen: 8 },
   ...(id === 'watr' ? {
-    jzify: true,
     memory: 4096,
     optimize: { watr: false, smallConstForUnroll: false },
   } : {}),
@@ -70,7 +70,8 @@ const runOnce = (id) => {
   const code = readFileSync(join(BENCH, id, `${id}.js`), 'utf8')
   const profile = {}
   const start = performance.now()
-  const wasm = compile(code, { ...optionsFor(id), profile })
+  // the internal entry: pass tuning, alloc and the profile sink are its flags
+  const wasm = compileInternal(code, { ...optionsFor(id), profile }, jzify)
   const total = performance.now() - start
   const t = profile.totals || {}
   const plan = t.plan || 0

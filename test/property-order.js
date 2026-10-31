@@ -1,7 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { oracle, funcWat } from './util.js'
+import { oracle, funcWat, jz, compile } from './util.js'
 
 const snapshot = `function snapshot(o) {
   let loop = ''

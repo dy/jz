@@ -12,8 +12,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi, onKernel, OPT_LEVEL, levels } from './_matrix.js'
-import { oracle } from './util.js'
-import jz, { compile as compileWat } from '../index.js'
+import { oracle, jz, compile as compileWat } from './util.js'
 import { instantiate } from '../interop.js'
 
 const compile = (src) => jz(src, { jzify: true }).exports

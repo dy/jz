@@ -817,9 +817,10 @@ function shouldSkipBase(content, rel = '') {
 // Try to compile and run a test
 let compile, jz
 try {
-  const mod = await import(join(ROOT, 'index.js'))
-  compile = mod.default.compile || mod.compile
-  jz = mod.default
+  // the test entry: `sourceType` is an internal flag (src/options.js)
+  const mod = await import(join(ROOT, 'test/util.js'))
+  compile = mod.compile
+  jz = mod.jz
 } catch (e) {
   console.error('Failed to import jz:', e.message)
   process.exit(1)

@@ -13,8 +13,7 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { run, oracle } from './util.js'
-import jz, { compile } from '../index.js'
+import { run, oracle, jz, compile } from './util.js'
 
 // What each export returns of the value at `v`.
 const OPS = {

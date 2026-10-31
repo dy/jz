@@ -7,8 +7,7 @@
  */
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { agree, oracle } from './util.js'
+import { agree, oracle, jz, compile } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 
 const agrees = (rows) => { for (const [label, src] of rows) agree(src, 'f', [], undefined, label) }

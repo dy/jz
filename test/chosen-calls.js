@@ -4,9 +4,8 @@
 // agrees with JS (plan/chosen-calls.js, plan/inline.js, program-facts).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz } from './util.js'
 
 const loopsOf = (text) => {
   const out = []

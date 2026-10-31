@@ -12,13 +12,13 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { PASS_NAMES, TUNING_KEYS } from '../src/optimize/index.js'
 import { HELPER_COUNTERS } from '../src/helper-counters.js'
 import { levels, onKernel } from './_matrix.js'
 import { resolveOptimize } from '../src/optimize/config.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { ctx } from '../src/ctx.js'
+import { jz, compile } from './util.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -147,9 +147,9 @@ test('passes: unknown optimize keys and presets fail loudly', () => {
     'typo key suggests the registered name')
   // Under JZ_TEST_OPTIMIZE legs the harness merges the string into { level },
   // so the throw comes from the level branch — accept either message.
-  throws(() => compile('export let f = () => 1', { optimize: 'sped' }), /Unknown optimize (preset|level)/,
+  throws(() => compile('export let f = () => 1', { optimize: 'sped' }), /optimize(\.level)? takes true, false, 'size' or 'speed'; got 'sped'/,
     'unknown preset string throws')
-  throws(() => compile('export let f = () => 1', { optimize: { level: 7 } }), /Unknown optimize level/,
+  throws(() => compile('export let f = () => 1', { optimize: { level: 7 } }), /optimize\.level takes true, false, 'size' or 'speed'; got '7'/,
     'unknown level throws')
   // Registered tuning keys still pass through.
   compile('export let f = (x) => Math.pow(x, 0.2)', { optimize: { approxPow: true } })

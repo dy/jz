@@ -26,10 +26,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, relative } from 'node:path'
 import { readdirSync } from 'node:fs'
-import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { instantiate } from '../interop.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
+import { compile } from './util.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const MATH = join(ROOT, 'node_modules/three/src/math')

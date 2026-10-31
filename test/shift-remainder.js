@@ -3,9 +3,8 @@
 // neither the quotient nor `x` is written in between.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 const inputs = [0, 1, 7, 8, 15, 16, 17, 255, 65535, 65536, 65537, 6291456, 8291455, 2147483647, -1, -7, -8, -16, -17, -65536, -65537, -2147483648]
 

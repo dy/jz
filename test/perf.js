@@ -2,12 +2,11 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { belowOpt, levels, onWasi, onKernel } from './_matrix.js'
-import jz, { compile } from '../index.js'
 import { HELPER_SITE_PREFIX } from '../src/helper-counters.js'
 import parseWat from 'watr/parse'
 import printWat from 'watr/print'
 import { parse as watTree, callsOutside, walk as walkWat } from '../scripts/wat-probe.mjs'
-import { foldWords, oracle, funcWat } from './util.js'
+import { foldWords, oracle, funcWat, jz, compile } from './util.js'
 
 // Helper: time N iterations, return ms
 function bench(fn, n) {

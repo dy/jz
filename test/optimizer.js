@@ -11,13 +11,11 @@
  */
 import test from 'tst'
 import { almost, is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
 import { onKernel, levels } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES } from '../src/optimize/index.js'
 import { fusedRewrite, lowerToInt32Tails, foldLoadCasts } from '../src/optimize/peephole.js'
 import { ctx } from '../src/ctx.js'
 import { T, walkAst } from '../src/ast.js'
-import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize, OPTS as WATR_OPTS } from 'watr/optimize'
 import parseWat from 'watr/parse'
@@ -40,7 +38,7 @@ import { ringLaps } from '../src/optimize/ring-laps.js'
 import { earlyStores } from '../src/optimize/early-stores.js'
 import { leadChains } from '../src/optimize/lead-chains.js'
 import { issueOrder } from '../src/optimize/issue-order.js'
-import { foldWords, funcWat, run, oracle, compileInProcess } from './util.js'
+import { foldWords, funcWat, run, oracle, compileInProcess, jz, compile } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
 
@@ -3233,7 +3231,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   // level 2); a stray 'balanced' now FAILS like any unknown preset — the silent
   // level-2 fallback shipped the wrong pipeline on typos ('sped') with no signal.
   try { resolveOptimize('balanced'); ok(false, `removed 'balanced' must throw`) }
-  catch (e) { ok(/Unknown optimize preset/.test(String(e.message)), `removed 'balanced' throws the unknown-preset error`) }
+  catch (e) { ok(/optimize takes true, false, 'size' or 'speed'; got 'balanced'/.test(String(e.message)), `removed 'balanced' throws the unknown-preset error`) }
   const size = resolveOptimize('size')
   is(size.watr, true)
   is(size.smallConstForUnroll, false)
@@ -3250,7 +3248,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
   is(speed.smallConstForUnroll, true)
   // unknown string falls back to level 2
   try { resolveOptimize('bogus'); ok(false, `unknown preset must throw`) }
-  catch (e) { ok(/Unknown optimize preset/.test(String(e.message)), `unknown preset throws`) }
+  catch (e) { ok(/optimize takes true, false, 'size' or 'speed'; got 'bogus'/.test(String(e.message)), `unknown preset throws`) }
   // object with string level base + override
   const sizePlusVec = resolveOptimize({ level: 'size', vectorizeLaneLocal: true })
   is(sizePlusVec.vectorizeLaneLocal, true)

@@ -11,9 +11,9 @@
  */
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { fileURLToPath } from 'node:url'
 import { LEVELS, levelKey, runSpec, hashBuffer, buildCorpus } from '../scripts/refactor-oracle.mjs'
+import { compile } from './util.js'
 
 // A tiny, self-contained 3-specimen corpus — deliberately independent of
 // bench/examples/kernel-parity so this test has no directory-layout

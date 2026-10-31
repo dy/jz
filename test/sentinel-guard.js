@@ -7,11 +7,10 @@
 // so the unguarded original loops run too.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import parseWat from 'watr/parse'
 import { count, walk } from '../scripts/wat-probe.mjs'
 import { onKernel, levels } from './_matrix.js'
-import { funcWat, oracle } from './util.js'
+import { funcWat, oracle, jz, compile } from './util.js'
 
 const N = 48
 const ENVELOPE = `

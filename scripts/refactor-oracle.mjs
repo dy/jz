@@ -176,7 +176,10 @@ async function loadRoot(root) {
   const imp = (rel) => import(pathToFileURL(join(root, rel)).href)
   const { compile } = await imp('index.js')
   const { resolveModuleGraph } = await imp('src/resolve.js')
-  return { root, compile, resolveModuleGraph }
+  // the internal entry where the root has one: the levels and `alloc` are its flags
+  const { compileInternal } = await imp('src/compiler.js')
+  const jzify = compileInternal && (await imp('jzify/index.js')).default
+  return { root, compile: compileInternal ? (code, opts) => compileInternal(code, opts, jzify) : compile, resolveModuleGraph }
 }
 
 function benchlibHostSource(root) {
@@ -229,7 +232,6 @@ function makeBenchSpec(root, resolveModuleGraph, id) {
     name: `bench:${id}`,
     code,
     opts: {
-      jzify: isWatr || isGraph,
       modules,
       imports: { ...hostImports, env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } },
       alloc: false,

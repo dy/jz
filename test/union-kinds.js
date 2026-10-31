@@ -5,9 +5,8 @@
 // through the union reaches the array as the array does, the primitive as itself.
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 // A fresh module on each side per level: a program may keep state across calls.
 const agreeAll = (src, seeds, label) => {

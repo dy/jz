@@ -17,12 +17,12 @@ import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { CATEGORIES, genProgram } from '../scripts/perf-corpus.mjs'
 import { onWasi } from './_matrix.js'
+import { compile } from './util.js'
 
 const SEEDS = 40
 const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')

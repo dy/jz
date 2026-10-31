@@ -7,10 +7,9 @@
 // agrees with the host at every tier.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels, onKernel } from './_matrix.js'
 import parseWat from 'watr/parse'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 const agrees = (src, label, args = []) => {
   const want = oracle(src).f(...args)

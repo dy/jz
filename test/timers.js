@@ -1,9 +1,9 @@
 // Native timer tests (wasmtime/wasmer)
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { writeFileSync } from 'fs'
 import { execSync } from 'child_process'
+import { compile } from './util.js'
 
 function hasCmd(cmd) { try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true } catch { return false } }
 const skip = !hasCmd('wasmtime') && !hasCmd('wasmer')

@@ -9,9 +9,8 @@
 // comes back, read after the call (it may grow the memory).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, belowOpt, onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const src = `
 export let readBack = (a) => { a[0] = 0.1; a[1] = 1.5; a[2] = 300; return a[0] + a[1] + a[2] }

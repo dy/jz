@@ -26,8 +26,8 @@
 // discipline: no hand-picked expected values for anything V8 can just answer).
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels } from './_matrix.js'
+import { jz } from './util.js'
 
 // Compiles `src` at BOTH optimize 0 and optimize 3, runs `native` beside each,
 // and asserts every call in `argsList` agrees — the differential vs V8 the

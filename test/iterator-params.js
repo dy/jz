@@ -1,8 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { oracle, batch } from './util.js'
+import { oracle, batch, jz } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 
 const same = src => is(jz(src).exports.f(), oracle(src).f())

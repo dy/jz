@@ -7,7 +7,8 @@
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { compile } from '../index.js'
+import { compileInternal } from '../src/compiler.js'
+import jzify from '../jzify/index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { GRAPH_CASES, graphSources } from '../bench/_lib/graph.js'
 
@@ -29,7 +30,8 @@ if (GRAPH_CASES.has(id)) {
   modules = { '../_lib/benchlib.js': benchlib, ...(id === 'watr' ? watrSources() : {}) }
 }
 const warnings = []
-compile(code, { jzify: GRAPH_CASES.has(id) || id === 'watr', modules, imports: { ...hostImports, env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } }, optimize: 'speed', alloc: false, warnings: w => warnings.push(w) })
+// the internal entry (alloc, and every field an advisory records, through a sink)
+compileInternal(code, { modules, imports: { ...hostImports, env: { logResult: { params: 5 } }, performance: { now: { params: 0, returns: 'number' } } }, optimize: 'speed', alloc: false, warnings: { onWarning: w => warnings.push(w) } }, jzify)
 const by = (code) => warnings.filter(e => e.code === code)
 const fn = (e) => (e.fn ?? '?').replace(//g, '.').replace(/^m\d+_/, '')
 const T = ''

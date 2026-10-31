@@ -15,7 +15,11 @@ import { readFileSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { join } from 'node:path'
-import { compile } from '../index.js'
+import { compileInternal } from '../src/compiler.js'
+import jzify from '../jzify/index.js'
+
+// The internal entry: `--opt=` may name a pass beside the public optimize keys.
+const compile = (code, opts) => compileInternal(code, opts, jzify)
 import { instantiate } from '../interop.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { OPT } from './build.mjs'

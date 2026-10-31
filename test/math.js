@@ -1,7 +1,6 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
-import { evaluate, foldWords, run, oracle, funcWat } from './util.js'
-import jz, { compile } from '../index.js'
+import { evaluate, foldWords, run, oracle, funcWat, jz, compile } from './util.js'
 import { onKernel, levels, belowOpt } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
 

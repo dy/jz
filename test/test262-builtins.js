@@ -1227,7 +1227,8 @@ function shouldSkip(raw, rel) {
   return null
 }
 
-const { default: jz } = await import(join(ROOT, 'index.js'))
+// the test entry: a blocking agent's `sharedMemory` is an internal flag (src/options.js)
+const { jz } = await import(join(ROOT, 'test/util.js'))
 
 // flags:[async] tests — module-level $DONE shim (doneprintHandle.js stand-in);
 // the host polls __t262_check, each call draining the module's microtask queue

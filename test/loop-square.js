@@ -3,9 +3,9 @@
 // counters; unknown entries retain the original Number comparison.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onKernel } from './_matrix.js'
 import parseWat from 'watr/parse'
+import { jz, compile } from './util.js'
 
 const loopHasF64Mul = (src, opt = 2) => {
   const tree = parseWat(compile(src, { optimize: opt, wat: true }))

@@ -1,8 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
-import { funcWat, oracle } from './util.js'
+import { funcWat, oracle, jz, compile } from './util.js'
 
 const kernel = (ctor = 'Int32Array', edit = '', extra = '', targetSize = 'size') => `
 function fill(indices) {

@@ -95,7 +95,10 @@ if (flag('--worker')) {
   const { readMarks } = await import('./kernel-marks.mjs')
   const { resolveSelfCompileBuild } = await import('./build-profile.mjs')
   const { resolveModuleGraph } = await import('../src/resolve.js')
-  const { compile } = await import('../index.js')
+  // the internal entry: the gate's levels are the numeric ones
+  const { compileInternal } = await import('../src/compiler.js')
+  const { default: jzify } = await import('../jzify/index.js')
+  const compile = (code, opts) => compileInternal(code, opts, jzify)
   const { corpus } = await import('./kernel-gate-corpus.js')
   const kernel = readFileSync(kernelPath)
   const fresh = (bytes = kernel, pages = 8192) => {

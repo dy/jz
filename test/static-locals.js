@@ -8,9 +8,8 @@
 // parameters that do the same; and every program answers what the host answers.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
-import { funcWat, oracle, run, wat } from './util.js'
+import { funcWat, oracle, run, wat, jz } from './util.js'
 
 const agree = (src, calls) => {
   for (const optimize of levels(0, 1, 2, 3, 'size')) {

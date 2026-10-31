@@ -19,9 +19,8 @@
 // populations for absence-of-overhead.
 //
 // @module test/_fuzz
-import jz from '../index.js'
 import { onKernel } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 import { collect } from './_gc.js'
 
 // KERNEL-ONLY hang exclusion (region-hooks-on kernel investigation,

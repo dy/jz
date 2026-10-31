@@ -4,10 +4,10 @@
 // __start at all. Hermeticity is proven dynamically (throwing env stubs).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { compile as compileWat } from 'watr'
 import { snapshotInit } from '../src/snapshot.js'
 import parse from 'watr/parse'
+import { jz, compile } from './util.js'
 
 const SNAP = { level: 2, snapshotInit: true }
 

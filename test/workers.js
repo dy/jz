@@ -8,9 +8,8 @@
 // (jz:i64exp lanes).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 import pool from '../pool.js'
 
 const sharedMem = () => new WebAssembly.Memory({ initial: 4, maximum: 64, shared: true })

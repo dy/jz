@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onKernel } from './_matrix.js'
+import { jz, compile } from './util.js'
 
 const options = optimize => ({ optimize, memory: { fixed: ['process'] } })
 const oracle = src => new Function(src.replaceAll('export ', '') + '; return process')()

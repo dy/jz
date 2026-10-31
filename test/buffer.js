@@ -3,9 +3,8 @@
 // buf.slice, DataView aliasing.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, funcWat } from './util.js'
+import { oracle, funcWat, jz, compile, compile as _compile } from './util.js'
 import encodeWat from 'watr/compile'
 
 // === Allocation + byteLength ===
@@ -926,7 +925,6 @@ test('slice — Int16Array owned→view self-reassign (non-byte stride)', () => 
 // store (not a per-element __typed_set_idx runtime dispatch). The element ctor is
 // inferred from every construction form: Array.from, array literal, push, index-fill.
 
-import { compile as _compile } from '../index.js'
 // (the tagged store's tail stays a function, kept out of line: the generic set's typed arm
 // splices the store's head, whose fallback calls it; no per-element store reaches it)
 const noRuntimeScatter = (src) => !/call \$__typed_set_idx(?!_tagged_tail\b)/.test(_compile(src, { wat: true }))

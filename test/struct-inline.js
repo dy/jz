@@ -12,9 +12,8 @@
  */
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { run, oracle } from './util.js'
+import { run, oracle, compile } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 
 

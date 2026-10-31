@@ -10,9 +10,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
-import jz from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { levels, onWasi, onKernel } from './_matrix.js'
+import { jz } from './util.js'
 
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
 // each program's files in a directory of their own: Node caches a module by its path

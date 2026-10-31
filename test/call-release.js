@@ -8,9 +8,8 @@
 // the heap above the mark `memory.reset()` returns to.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
 import { levels, onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const CALLS = 2000
 // Heap growth over CALLS calls of `call`, after one call to settle first-call state.

@@ -12,13 +12,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { compile } from '../index.js'
 import { PROGRAMS } from '../scripts/kernel-gate-corpus.js'
 import { deriveStatus, judgeMemory, judgeSpeed, median, validateReport } from '../scripts/kernel-gate-judge.mjs'
 import { graphEntries, contentHash } from '../scripts/graph-provenance.mjs'
 import { resolveSelfCompileBuild, SELF_ENTRY } from '../scripts/build-profile.mjs'
 import { rewriteModuleImports } from '../src/resolve.js'
 import { onKernel } from './_matrix.js'
+import { compile } from './util.js'
 
 const ROOT = new URL('..', import.meta.url).pathname
 const RUNNER = join(ROOT, 'scripts/kernel-gate.mjs')

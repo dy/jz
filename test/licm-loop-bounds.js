@@ -1,6 +1,5 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { hoistInvariantLoop } from '../src/optimize/licm.js'
@@ -8,7 +7,7 @@ import { ctx } from '../src/ctx.js'
 import { isInactiveFunction } from '../src/compile/active-function.js'
 import { parse, walk, loopCount } from '../scripts/wat-probe.mjs'
 import { levels, onKernel } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const scratch = (body, result = 'sum', setup = '') => `export function f(n, k, mode) {
   let data = new Float32Array(6), sum = 0

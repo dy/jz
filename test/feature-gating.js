@@ -6,8 +6,8 @@
 // "features.X" label — same behavior, same gate, just relocated on ctx.
 import test from 'tst'
 import { is, ok, any } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { onWasi, onKernel } from './_matrix.js'
+import { compile } from './util.js'
 
 // Feature gating asks: did jz pull this stdlib in? watr's `inlineOnce` +
 // `treeshake` then folds + erases helpers whose only caller has been inlined,

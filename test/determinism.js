@@ -5,10 +5,10 @@
 // reproducible builds, and bisection. ~free to assert, easy to regress.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { OPT_LEVEL, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_SOURCE } from './_bigint-typed-store-corpus.js'
 import { scalarCase } from './_scalar-core-cases.js'
+import { compile } from './util.js'
 
 const PROGRAMS = [
   scalarCase('abi-add').source,

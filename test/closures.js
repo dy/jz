@@ -2,9 +2,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel, levels } from './_matrix.js'
-import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { funcWat, oracle, run, wat } from './util.js'
+import { funcWat, oracle, run, wat, jz, compile } from './util.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { T } from '../src/ast.js'
 

@@ -6,9 +6,8 @@
 // values a constructor computes first) run between the stores.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 const agrees = (src, args, label) => {
   const host = oracle(src)

@@ -8,9 +8,8 @@
 // getter of the name and a host that sees the objects each keep the compare.
 import test from 'tst'
 import { ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz, compile } from './util.js'
 
 const agrees = (src, args, label) => {
   const host = oracle(src)

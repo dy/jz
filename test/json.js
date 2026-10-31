@@ -1,9 +1,8 @@
 // JSON.stringify and JSON.parse tests
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { instantiate, aux } from '../interop.js'
-import { run, cases, oracle } from './util.js'
+import { run, cases, oracle, jz, compile } from './util.js'
 import { levels } from './_matrix.js'
 
 // === JSON.stringify ===

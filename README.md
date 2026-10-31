@@ -35,21 +35,22 @@ exports.square(7) // 49
 
 `jz(source, opts)` compiles and instantiates. `compile(source, opts)` returns the wasm, and
 `instantiate(wasm, { imports, memory })` runs it, also from `jz/interop` without the compiler.
+These are all the options: any other key throws a `TypeError` naming it.
 
 | Option | Use |
 |---|---|
 | `modules` | Sources for static imports, `{ './dep.js': source }`. The CLI reads them from disk. |
 | `imports` | Host modules for `import { fn } from "mod"`: functions, constants, or a whole namespace such as `Math`. |
-| `define` | Compile-time constants injected as bindings, `{ DEBUG: false, N: 1024 }`. Accepts numbers, booleans, strings, null/undefined, arrays and plain data objects. |
-| `host` | `'js'` (default), `'wasi'` for standalone runtimes, `'native'` for the wasm2c lane. |
-| `memory` | Initial pages, a `WebAssembly.Memory` or `jz.memory()` shared between modules, or `{ initial, maximum, shared, import, fixed }`. `fixed: ['process']` requires named Wasm exports to use fixed storage. |
-| `optimize` | `true` (default), `'speed'`, `'size'`, `false`, or an object: `{ level, simd, tailCall, exceptions, alloc }` for engines without SIMD or tail calls and for raw standalone modules. |
+| `define` | Compile-time constants injected as bindings, `{ DEBUG: false, N: 1024 }`: each key an identifier, each value a number, boolean, string, null, undefined, or an array or plain object of them. |
+| `host` | `'js'` (default) or `'wasi'` for standalone runtimes. |
+| `memory` | Initial pages, a `WebAssembly.Memory` or `jz.memory()` shared between modules, or `{ initial, maximum, shared, import, fixed }`: `initial` and `maximum` in 64 KiB pages, `shared` for a threads memory, `import` to take `env.memory` from the host, `fixed: ['process']` to require named Wasm exports to use fixed storage. |
+| `optimize` | `true` (default), `'speed'`, `'size'`, `false`, or `{ level, simd, tailCall, exceptions, alloc, compact, rationalConst }`: `level` takes the same four values; `simd: false` and `tailCall: false` for engines without SIMD or tail calls; `exceptions: false` traps on a throw in a module that catches nothing; `alloc: false` is the raw standalone ABI, no allocator exports; `compact: false` keeps what a call replaced until `memory.reset()` ([Memory](#memory)); `rationalConst: false` rounds constant arithmetic per operation, as JavaScript does. |
 | `randomSeed` | Number for a reproducible `Math.random`. |
 | `names` | Emit the wasm name section for profilers and debuggers. |
-| `sourceMap` | Debug build with statement locations and function names: `true` embeds the map; `{ source, url }` names the entry and an external map URL. The returned bytes also expose `.sourceMap`. Selects `optimize: false`. |
-| `wat` | Return WAT text instead of bytes. |
+| `sourceMap` | Debug build with statement locations and function names: `true` embeds the map; `{ source, url }` names the entry and an external map URL. The returned bytes also expose `.sourceMap`. Requires `optimize` absent or off (`false`, `{ level: false }`). |
+| `wat` | `compile` only: return WAT text instead of bytes. |
 | `warnings` | Callback for advisories: dynamic fallbacks, heap growth. |
-| `why` | Also report to `warnings` each loop the vectorizer and each arena the rewind declined. |
+| `why` | With `warnings`: also report each loop the vectorizer and each arena the rewind declined. |
 </details>
 
 ## CLI

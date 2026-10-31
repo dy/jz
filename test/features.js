@@ -1,9 +1,8 @@
 // Spread, destruct alias, TypedArrays, Set, Map
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { adaptI64, levels, belowOpt, onWasi } from './_matrix.js'
-import { run, oracle } from './util.js'
+import { run, oracle, jz, compile } from './util.js'
 
 test('optional chains: grouping preserves chain boundaries, receivers and argument order', () => {
   const source = `let gets = 0, args = 0, keys = 0

@@ -1,8 +1,7 @@
 // Comprehensive spread operator tests
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run, oracle, funcWat } from './util.js'
-import jz, { compile } from '../index.js'
+import { run, oracle, funcWat, jz, compile } from './util.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
 
 test('spread: keyless primitives retain closed layouts and source effects', () => {

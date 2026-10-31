@@ -6,9 +6,9 @@
 // node for node: TREES holds what subscript 10.8.1 gives for each source.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { parse } from '../src/parse.js'
 import { onKernel } from './_matrix.js'
+import { jz } from './util.js'
 
 // [source, the tree as JSON]
 const TREES = [

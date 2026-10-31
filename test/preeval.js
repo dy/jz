@@ -2,11 +2,10 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
-import jz, { compile } from '../index.js'
 import { constNumExpr, constIntExpr } from '../src/static.js'
 import { ctx } from '../src/ctx.js'
 import { scalarCase } from './_scalar-core-cases.js'
-import { oracle, run } from './util.js'
+import { oracle, run, jz, compile } from './util.js'
 
 
 // ============================================================================

@@ -413,7 +413,7 @@ test('compound writes: empty→empty→A→A→B→empty→truncated A→A prese
   ]
   for (const optimize of levels(false, 1, 2, 3)) {
     const freshB = execFileSync(process.execPath, ['--input-type=module', '-e', `
-      import {compile} from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
+      import {compile} from ${JSON.stringify(new URL('./util.js', import.meta.url).href)}
       console.log(Buffer.from(compile(${JSON.stringify(sources[1])}, {optimize:${optimize}})).toString('base64'))
     `], {encoding:'utf8'}).trim()
     const retained = [], baselines = []

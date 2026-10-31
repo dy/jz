@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onKernel, onWasi, levels } from './_matrix.js'
-import jz, { compile } from '../index.js'
+import { jz, compile } from './util.js'
 
 const run = (code, opts) => {
   const { exports, memory } = jz(code, opts)

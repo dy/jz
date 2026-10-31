@@ -48,13 +48,14 @@ import { configureFixedMemory, verifyFixedScratch, verifyFixedMemory } from './c
 import { DBG_INVARIANTS, assertCtxInvariants } from './debug.js'
 import { parse } from './parse.js'
 import watrCompile, { sourceMapURL } from "watr/compile";
-import { sourceMapOptions, annotateSource, completeSourceMap } from './source-map.js'
+import { annotateSource, completeSourceMap } from './source-map.js'
 import { snapshotInit } from "./snapshot.js";
 import watrPrint from "watr/print";
 import { ctx, err, warn, setLinkDemand, flushWarnings } from './ctx.js'
 import { GLOBALS } from './prepare/index.js'
 import { frontHalf } from './front.js'
-import { configureDiagnostics, configureMemory, validateMemory, beginSession } from './session.js'
+import { configureDiagnostics, configureMemory, beginSession } from './session.js'
+import { normalizeOptions, foldOptions } from './options.js'
 import compile, { tailFacts } from './compile/index.js'
 import { emitter, emissionHooks } from './compile/emit.js'
 import { watrTail } from './optimize/watr-tail.js'
@@ -74,14 +75,10 @@ const resolveUrl = (spec, base) => new URL(spec, base).href
 
 // opts.define → a one-line `let K = V; …` prelude prepended to source. Kept on a
 // single line (no trailing newline) so user line numbers past line 1 stay exact —
-// same convention the template tag uses for hoisted literals.
+// same convention the template tag uses for hoisted literals. (foldOptions
+// checked every key and value.)
 const defineBindings = (define) => {
-  const parts = []
-  for (const [k, v] of Object.entries(define)) {
-    const s = serialize(v)
-    if (s === null) err(`opts.define['${k}'] is not a compile-time constant — use a number, boolean, string, null, or a literal array/object`)
-    parts.push(`let ${k} = ${s}`)
-  }
+  const parts = Object.entries(define).map(([k, v]) => `let ${k} = ${serialize(v)}`)
   return parts.length ? parts.join('; ') + '; ' : ''
 }
 
@@ -89,7 +86,6 @@ const nowMs = () => globalThis.performance?.now ? globalThis.performance.now() :
 
 const compileProfiler = (profile) => {
   if (profile == null) return null
-  if (typeof profile !== 'object') throw new TypeError('opts.profile must be an object sink (populated with compile-phase entries/totals); for a wasm name section use opts.names')
   profile.entries ||= []
   profile.totals ||= {}
   return {
@@ -164,67 +160,30 @@ const appendFunctionNames = (wasm, module) => {
   return out
 }
 
-/**
- * Public option objects → internal flags (index.d.ts names them). Idempotent; the
- * caller's object is never mutated. Every advanced knob lives inside `memory` and
- * `optimize`, so the top-level surface stays eleven keys.
- */
-export const normalizeOptions = (opts) => {
-  if (!opts) return {}
-  if (opts._normalized) return opts
-  const o = { ...opts, _normalized: true }
-  const m = o.memory
-  if (m && typeof m === 'object' && !(m instanceof WebAssembly.Memory)) {
-    // WebAssembly.MemoryDescriptor plus `import` and the `fixed` export contract.
-    if (m.initial != null) o.memory = m.initial; else delete o.memory
-    if (m.maximum != null) o.maxMemory = m.maximum
-    if (m.fixed != null) o.fixedMemory = m.fixed
-    if (m.shared) o.sharedMemory = true
-    if (m.import) o.importMemory = true
-  } else if (m instanceof WebAssembly.Memory && typeof SharedArrayBuffer !== 'undefined' && m.buffer instanceof SharedArrayBuffer) {
-    o.sharedMemory = true   // a shared Memory links only against the `shared` memtype
-  }
-  validateMemory(o)
-  const opt = o.optimize
-  if (opt && typeof opt === 'object') {
-    const { simd, tailCall, exceptions, alloc, ...passes } = opt
-    // `level` takes the values `optimize` takes: false is off, true the default
-    if (typeof passes.level === 'boolean') passes.level = passes.level ? 2 : 0
-    if (simd === false) o.noSimd = true
-    if (tailCall === false) o.noTailCall = true
-    if (exceptions === false) o.noEhAbort = true
-    if (alloc === false) o.alloc = false
-    o.optimize = passes
-  }
-  // The callback becomes the session's sink; `why` reports through it alone.
-  if (o.warnings != null) {
-    if (typeof o.warnings !== 'function') throw new TypeError('opts.warnings takes a callback, (warning) => …')
-    o.warnings = { entries: [], onWarning: o.warnings }
-  }
-  if (o.why && o.warnings) {
-    o.whyNotSimd = true
-    o.whyNotRewind = true
-  }
-  return o
-}
-
-// Test configuration shared by every public compiler entry. The in-process
-// entry remains available for tests inspecting native analysis state.
+// Test configuration shared by every compiler entry. The in-process entry
+// remains available for tests inspecting native analysis state.
 let compileTarget = null
 export const setCompileTarget = fn => { const previous = compileTarget; compileTarget = fn; return previous }
-export const compileSource = (code, options = {}, jzify = null) => {
-  const opts = normalizeOptions(options)
-  return compileTarget ? compileTarget(code, opts) : compileInProcess(code, opts, jzify)
-}
+const run = (code, flags, jzify) => compileTarget ? compileTarget(code, flags) : compileInProcess(code, flags, jzify)
+
+/** The public entry: options held to the public contract (src/options.js normalizeOptions). */
+export const compileSource = (code, opts, jzify = null) => run(code, normalizeOptions(opts), jzify)
+
+/** The internal entry, which index.js does not export: the internal flags beside
+ *  the public options (CONTRIBUTING.md, Public contract and ABI), for the CLI,
+ *  the tests, the bench and the tools. */
+export const compileInternal = (code, opts, jzify = null) => run(code, foldOptions(opts), jzify)
 
 /** In-process entry for tests that inspect ctx, profiles, or analysis snapshots. */
 export function compileInProcess(code, opts = {}, jzify = null) {
+  opts = foldOptions(opts)
   try {
     return jzCompileInner(code, opts, jzify)
   } catch (e) {
     // Any uncaught native exception (TypeError, ReferenceError, etc.) is a jz
     // codegen leak — surface it as an internal compile error with the source
     // location we were standing on. err()-thrown errors already pass through.
+    // (Option errors throw before this, from foldOptions.)
     if (e?.name === 'TypeError' || e?.name === 'ReferenceError' || e?.name === 'RangeError') {
       // Pass `e` as the cause so the original stack (the real codegen site) survives.
       err(`internal: ${e.message} (jz hit an unsupported case while compiling${ctx.error.node ? '; the AST node above shows the trigger' : ''}). This is a jz bug — please report.`, e)
@@ -265,13 +224,8 @@ const setupCtx = (code, opts, jzify) => {
   }
   // Session lifecycle — shared verbatim with the self-compile kernel's setupSelf
   // (src/session.js): ctx reset, every cache clear, name-uids, warnings,
-  // strict/host/optimize normalization, post-reset invariants.
-  if (opts.sourceType != null && opts.sourceType !== 'jz' && opts.sourceType !== 'script' && opts.sourceType !== 'module')
-    err(`Invalid sourceType '${opts.sourceType}'. Expected 'jz', 'script', or 'module'.`)
-  if (opts.host && opts.host !== 'js' && opts.host !== 'wasi' && opts.host !== 'native') {
-    if (opts.host === 'gc') err(`host:'gc' is reserved for a planned wasm-gc backend, not yet implemented. Use 'js' (default — JS host with externref/js-string interop), 'wasi' (standalone runtimes — no env imports), or 'native' (wasm2c/native-lowering lane).`)
-    err(`Invalid host '${opts.host}'. Expected 'js' (default), 'wasi', or 'native'.`)
-  }
+  // strict/host/optimize normalization, post-reset invariants. (foldOptions
+  // checked host, sourceType, randomSeed and the memory limits.)
   beginSession({
     emitter, globals: GLOBALS, hooks: emissionHooks(),
     source: code, optimize: opts.optimize, warnings: opts.warnings, strict: opts.strict, host: opts.host, alloc: opts.alloc,
@@ -300,11 +254,7 @@ const setupCtx = (code, opts, jzify) => {
   // collection tables without changing collection layout in user outputs.
   if (opts._compactCollections) ctx.transform.compactCollections = true
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
-  if (opts.randomSeed !== undefined) {
-    if (!Number.isFinite(opts.randomSeed))
-      err(`opts.randomSeed must be a finite number, the seed of a reproducible Math.random (without it Math.random seeds from host entropy); got ${typeof opts.randomSeed}`)
-    ctx.transform.randomSeed = opts.randomSeed
-  }
+  if (opts.randomSeed !== undefined) ctx.transform.randomSeed = opts.randomSeed
   if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
@@ -328,7 +278,7 @@ const jzCompileInner = (code, opts = {}, jzify) => {
   finally { compiling = false; flushWarnings() }
 }
 const compilePipeline = (code, opts = {}, jzify) => {
-  const mapOptions = sourceMapOptions(opts.sourceMap, opts.optimize), originalSource = code
+  const mapOptions = opts.sourceMap || null, originalSource = code
   const prefix = opts.define ? defineBindings(opts.define) : ''
   if (prefix) code = prefix + code.replace(/^#![^\n\r\u2028\u2029]*/, text => ' '.repeat(text.length))
   if (mapOptions) opts = { ...opts, optimize: false }

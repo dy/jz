@@ -7,9 +7,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 test('buffer alias: a binding assigned another array, or a view of its buffer, is that buffer', () => {
   for (const init of ['b = a', 'b = new Float64Array(a.buffer)', 'b = a.subarray(0)']) {

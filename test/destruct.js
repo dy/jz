@@ -1,8 +1,7 @@
 // Destructuring, optional chaining, typeof
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
-import { oracle, run } from './util.js'
+import { oracle, run, jz, compile } from './util.js'
 import { belowOpt, levels, onWasi, ownedLevels } from './_matrix.js'
 
 test('destruct: object rest copies dynamic own properties after defaults', () => {

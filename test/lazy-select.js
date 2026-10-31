@@ -2,9 +2,8 @@
 // Its trap/effect/alias proofs are tested in watr; these pin JS lowering and tiering.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const POLY = '(((((x + 1) * x + 2) * x + 3) * x + 4) * x + 5) * x + 6'
 const SRC = `export const f = (x, a, b) => {

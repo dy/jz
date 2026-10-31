@@ -6,9 +6,8 @@
 // stream cursor near the end), so the checked twin runs too.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
-import { funcWat, oracle } from './util.js'
+import { funcWat, oracle, jz, compile } from './util.js'
 
 const GLYPH = `
 const decode = (s, flags, off, n) => {

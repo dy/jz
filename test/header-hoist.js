@@ -9,9 +9,8 @@
 // loop, once (compile/emit/control-flow.js durableLoopArrays).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { agree, funcWat, oracle, run, wat } from './util.js'
+import { agree, funcWat, oracle, run, wat, jz } from './util.js'
 
 const fnText = (text, name) => funcWat(text, name + '$exp') || funcWat(text, name)
 

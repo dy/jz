@@ -11,9 +11,8 @@
 // logarithms.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, belowOpt } from './_matrix.js'
-import { oracle, ulpDiff, wat, funcWat } from './util.js'
+import { oracle, ulpDiff, wat, funcWat, jz, compile } from './util.js'
 import { MATH_KERNEL } from '../src/prepare/math-kernel.js'
 
 const same = (a, b) => Object.is(a, b) || (a !== a && b !== b)

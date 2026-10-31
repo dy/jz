@@ -1,9 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
-import jz from '../index.js'
-import { compile } from '../index.js'
-import { run, cases, oracle } from './util.js'
+import { run, cases, oracle, jz, compile } from './util.js'
 import { instantiate } from '../interop.js'
 
 
@@ -471,7 +469,7 @@ test('error: invalid host option', () => {
   if (onKernel()) return  // kernel: host {host:…} option + its validation are host-side, never reach the wasm
   let error
   try { compile('export let f = () => 1', { host: 'edge' }) } catch (e) { error = e }
-  ok(error && error.message.includes('Invalid host'), `expected Invalid host, got "${error?.message}"`)
+  ok(error instanceof TypeError && error.message === "host takes 'js' or 'wasi'; got 'edge'", `expected the host's TypeError, got "${error?.message}"`)
 })
 
 test('error: circular import detected', () => {

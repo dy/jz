@@ -1,7 +1,7 @@
 // Public TypeScript surface for jz.
 
 /** Runtime services the module is compiled against. */
-export type Host = 'js' | 'wasi' | 'native'
+export type Host = 'js' | 'wasi'
 
 /** Value injectable through `define`. */
 export type DefineValue = number | boolean | string | null | undefined | DefineValue[] | { [k: string]: DefineValue }
@@ -33,22 +33,25 @@ export interface MemoryOptions {
   fixed?: readonly string[]
 }
 
+/** An optimization preset: `true` balanced (the default), `'speed'`, `'size'`, `false` off. */
+export type OptimizeLevel = boolean | 'size' | 'speed'
+
 /**
- * Advanced optimizer control on top of a preset `level`.
+ * A preset `level` and the switches beside it; any other key throws.
  * `simd` and `tailCall` are engine-capability switches. `exceptions: false`
  * traps on throw in catch-free modules and drops the exceptions tag.
  * `alloc: false` is the raw standalone ABI (no allocator or reset exports).
- * Any other key names an individual pass and is validated by name.
  */
 export interface OptimizeOptions {
-  level?: boolean | 'size' | 'speed'
+  level?: OptimizeLevel
   simd?: boolean
   tailCall?: boolean
   exceptions?: boolean
   alloc?: boolean
-  /** Compact what the module keeps as each outermost call returns (owned memory). Default on. */
+  /** Compact what the module keeps as each outermost call returns (owned memory). Default on, off at `'size'`. */
   compact?: boolean
-  [pass: string]: unknown
+  /** Fold constant arithmetic exactly, rounding once (default); false rounds per operation, as JavaScript does. */
+  rationalConst?: boolean
 }
 
 export interface SourceMapOptions {
@@ -78,23 +81,23 @@ export interface CompileOptions {
   imports?: Record<string, unknown>
   /** Compile-time constants injected as top-level bindings. */
   define?: Record<string, DefineValue>
-  /** JS host (default), WASI, or the wasm2c native lane. */
+  /** JS host (default) or WASI. */
   host?: Host
   /** Initial pages, a memory shared across modules, or a descriptor. */
   memory?: number | WebAssembly.Memory | JzMemory | MemoryOptions
   /** `true` (default) balanced, `'speed'`, `'size'`, `false` off, or an object. */
-  optimize?: boolean | 'size' | 'speed' | OptimizeOptions
+  optimize?: OptimizeLevel | OptimizeOptions
   /** Fixed seed for a reproducible `Math.random`; without it the host's entropy seeds it. */
   randomSeed?: number
   /** Emit the wasm `name` section for profilers and debuggers. */
   names?: boolean
-  /** Statement source map and function names. Selects optimize: false; other tiers reject. */
+  /** Statement source map and function names: a debug build, `optimize` absent or off. */
   sourceMap?: boolean | SourceMapOptions
   /** Return WAT text instead of the binary. */
   wat?: boolean
   /** Called with each compiler advisory once the compilation is over. */
   warnings?: (warning: WarningEntry) => void
-  /** Also report to `warnings` every loop the vectorizer and every arena the rewind declined. */
+  /** With `warnings`: also report every loop the vectorizer and every arena the rewind declined. */
   why?: boolean
 }
 

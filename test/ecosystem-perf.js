@@ -17,9 +17,9 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { readFileSync, writeFileSync, mkdtempSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { instantiate } from '../interop.js'
+import { compile } from './util.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CI = !!process.env.CI

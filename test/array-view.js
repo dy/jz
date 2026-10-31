@@ -4,9 +4,8 @@
 // snapshot semantics.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { onKernel, levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const OFF = { level: 'speed', arrayViews: false }
 const check = (name, src, inputs) => {

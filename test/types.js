@@ -4,7 +4,6 @@ import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel, withBigintStrict, levels } from './_matrix.js'
 import { parse } from 'subscript/feature/jessie'
-import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../interop.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { ctx, reset } from '../src/ctx.js'
@@ -16,7 +15,7 @@ import { T } from '../src/ast.js'
 import { summarize, K, kind } from '../src/summary/index.js'
 import { hasAmbiguousBoolMerge, censusMaybeUndefinedKind, censusMaybeUndefined, censusShapedNode } from '../src/kind.js'
 import { PRESENCE, contractVal } from '../src/summary/index.js'
-import { cases, run } from './util.js'
+import { cases, run, jz, compile } from './util.js'
 
 const coerce = v => v === undefined ? UNDEF_NAN : v === null ? NULL_NAN : v
 

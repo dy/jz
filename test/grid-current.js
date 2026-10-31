@@ -7,10 +7,9 @@
 // global, or a hash key built from a non-bit-identical quantity, would diverge here within a few frames.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import fs from 'fs'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const src = fs.readFileSync(new URL('../assets/grid-current.js', import.meta.url), 'utf8')
 // the SAME source as plain JS: strip the ESM `export` keywords and hand back the four exports.

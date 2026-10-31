@@ -7,10 +7,9 @@
 // a zero-argument run as its void command entry.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, onKernel, onWasi } from './_matrix.js'
 import { ptrBits, PTR } from '../layout.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const agree = (cases) => {
   for (const [name, src, args = []] of cases) for (const optimize of levels(0, 2, 3))

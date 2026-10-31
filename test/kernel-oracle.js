@@ -38,12 +38,12 @@
  */
 import test from 'tst'
 import { is, not, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { CORPUS } from './_kernel-corpus.js'
 import { compileViaKernel } from './kernel-target.js'
 import { instantiate } from '../interop.js'
 import { onWasi, withBigintStrict, levels } from './_matrix.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
+import { jz, compile } from './util.js'
 
 // The oracle: the exact same source, imported as a plain ES module. Valid jz
 // source IS valid JS (export syntax, no jz-only sugar in any row below), so

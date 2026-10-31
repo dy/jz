@@ -5,9 +5,8 @@
 // JSON, delete, the host) keeps the key out (plan/declare-unseen-keys.js).
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { funcWat, oracle, wat } from './util.js'
+import { funcWat, oracle, wat, jz } from './util.js'
 
 const agree = (src, calls) => {
   for (const optimize of levels(0, 2, 3)) {

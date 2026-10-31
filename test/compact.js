@@ -7,10 +7,9 @@
 // `memory.reset()` still returns the module to its start.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels, onWasi, onKernel, belowOpt } from './_matrix.js'
 import { execFileSync } from 'node:child_process'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 // Calls `step(i)` on both the module and the oracle, comparing each result;
 // counts the compactions (the kept memory shrinking between calls) and the peak.

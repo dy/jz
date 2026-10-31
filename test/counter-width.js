@@ -1,7 +1,6 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { run, oracle } from './util.js'
-import { compile } from '../index.js'
+import { run, oracle, compile } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 import { parse, loopCount } from '../scripts/wat-probe.mjs'
 import { forCounterBounds, forCounterRange, intExprRange } from '../src/static.js'

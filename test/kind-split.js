@@ -4,9 +4,8 @@
 // array class test to its element kind): the same values, the same throws.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz } from './util.js'
 
 const res = (f) => { try { return f() } catch (e) { return 'throws ' + e.constructor.name } }
 const agrees = (src, calls) => {

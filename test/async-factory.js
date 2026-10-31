@@ -10,9 +10,8 @@
 // `__dyn_set` per sample, 0.03× of V8 where the plain factory ran 0.3×.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels, onKernel, onWasi } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz } from './util.js'
 
 const N = 64
 const kernel = `

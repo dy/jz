@@ -7,8 +7,7 @@
 // the same source; sums are integer so no lane order shows in them.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
-import { oracle, run, wat, funcWat as funcWatOf } from './util.js'
+import { oracle, run, wat, funcWat as funcWatOf, jz } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
 import parseWat from 'watr/parse'
 import { loopCount } from '../scripts/wat-probe.mjs'

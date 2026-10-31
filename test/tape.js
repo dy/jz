@@ -6,7 +6,6 @@
 // and each link pass has its direct test here.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
 import encodeWat from 'watr/compile'
 import { T, NONE, resetTape, fromWat, toWat, verify, walk, intern, node, str, push, replace, reserve } from '../src/ir/tape.js'
 import { treeshake } from '../src/link/treeshake.js'
@@ -20,6 +19,7 @@ import { fold } from '../src/optimize/fold.js'
 import { rotateLoops } from '../src/optimize/rotate-loops.js'
 import { funcs } from '../src/optimize/fn.js'
 import { T as MARK } from '../src/ast.js'
+import { compile } from './util.js'
 
 const same = (a, b) => {
   if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.type === b.type && a.every((x, i) => same(x, b[i]))

@@ -8,9 +8,9 @@
 // host answers, the memory read after the loop overwritten first.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile, instantiate } from '../index.js'
+import { instantiate } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle, run } from './util.js'
+import { oracle, run, jz, compile } from './util.js'
 
 const agree = (src, ns = [1, 7, 200]) => {
   for (const optimize of levels(0, 2, 3, 'size', 'speed')) {

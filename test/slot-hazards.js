@@ -19,9 +19,8 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
-import { run, oracle, compileInProcess } from './util.js'
+import { run, oracle, compileInProcess, jz, compile } from './util.js'
 import { initSchema } from '../module/schema.js'
 import { levels } from './_matrix.js'
 

@@ -5,10 +5,9 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import compileWat from 'watr/compile'
-import jz, { compile } from '../index.js'
 import { splitFuncs, loopPasses } from '../src/optimize/split-funcs.js'
 import { onKernel } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const FORCE = { fnMin: 0, armMin: 1 }
 /** The module of `wat` split with `opts`, instantiated, and the functions it made. */

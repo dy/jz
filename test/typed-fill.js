@@ -3,9 +3,8 @@
 // element kind fills alike, and the value converts once before the fill.
 import test from 'tst'
 import { levels } from './_matrix.js'
-import { agree, oracle } from './util.js'
+import { agree, oracle, jz } from './util.js'
 import { is } from 'tst/assert.js'
-import jz from '../index.js'
 
 const sum = 'const sum = (a) => { let h = 0; for (let i = 0; i < a.length; i++) h = h * 31 + a[i]; return h }\n'
 const pool = `const pick = (k, n) => [new Float32Array(n), new Float64Array(n), new Float32Array(2 * n).subarray(n, 2 * n), new Float64Array(3 * n).subarray(n, 2 * n),

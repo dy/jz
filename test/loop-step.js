@@ -4,9 +4,8 @@
 // store of `re[a + half]` (compile/cse-load.js stepCounter).
 import test from 'tst'
 import { ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, wat } from './util.js'
+import { oracle, wat, jz } from './util.js'
 
 const butterfly = `const pass = (re, im, wre, wim, n) => {
   for (let len = 2; len <= n; len <<= 1) {

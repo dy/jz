@@ -1,8 +1,7 @@
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
 import { parseRegex, compileRegex } from '../module/regex.js'
-import { evaluate, cases, oracle } from './util.js'
-import jz, { compile } from '../index.js'
+import { evaluate, cases, oracle, jz, compile } from './util.js'
 import { adaptI64, onKernel, levels } from './_matrix.js'
 
 /** Compile + run, read result via jz.memory (for string-returning expressions) */

@@ -2,8 +2,8 @@
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
 import { onWasi, adaptI64, levels, belowOpt } from './_matrix.js'
-import jz, { compile } from '../index.js'
 import { instantiate } from '../interop.js'
+import { jz, compile } from './util.js'
 
 test('module renaming preserves AST operators that share a binding name', () => {
   const modules = { m: `

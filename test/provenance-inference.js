@@ -8,12 +8,12 @@
 // module-seeded sid maps feeding the typed-param arg lattice.
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import {
   TYPED_CTOR_CONFLICT, TYPED_SOURCE_NAME, TYPED_SOURCE_CALL, TYPED_SOURCE_FIELD, TYPED_SOURCE_INDEX,
   typedStorageFact,
 } from '../src/typed-provenance.js'
 import { levels } from './_matrix.js'
+import { jz, compile } from './util.js'
 
 test('typed provenance: one grammar authority joins and chains every storage source', () => {
   const names = new Map([['a', 'new.Int16Array'], ['b', 'new.Int16Array'], ['c', 'new.Float64Array']])

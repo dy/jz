@@ -4,9 +4,8 @@
 // (module/typedarray.js __typed_sort), in every element kind.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
 import { levels } from './_matrix.js'
-import { oracle, run } from './util.js'
+import { oracle, run, jz, compile } from './util.js'
 
 const KINDS = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
   'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array']

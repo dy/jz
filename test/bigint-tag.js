@@ -8,10 +8,9 @@
 // Number|BigInt printed nothing).
 import test from 'tst'
 import { is, throws } from 'tst/assert.js'
-import jz from '../index.js'
 import { isBigIntBox } from '../src/ir.js'
 import { levels } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz } from './util.js'
 
 const LEVELS = levels(false, 1, 2)
 

@@ -12,8 +12,7 @@ import { splitReassigned } from '../src/prepare/split-bindings.js'
 import { scanReassignedTopLevel, writtenNames } from '../src/prepare/ident-purity.js'
 import { parse } from '../src/parse.js'
 import { belowOpt, levels } from './_matrix.js'
-import { compile } from '../index.js'
-import { foldWords, oracle, run, wat } from './util.js'
+import { foldWords, oracle, run, wat, compile } from './util.js'
 import { parse as probeParse, walk as probeWalk } from '../scripts/wat-probe.mjs'
 
 const ARGS = [[1, 3], [5, 3], [-2, 3], [0.5, -7], [1e3, 0]]

@@ -2,7 +2,7 @@
 import { NATIVE_ARENA_SHIM, NATIVE_ARENA_RE } from '../scripts/native-arena.js'
 import { sysroot, toolchain as nativeToolchain, wasm2native } from '../scripts/native/compile.mjs'
 import { compileJzAt, compileJzSelf, compileJzWasi, watrModuleSources } from './_lib/compile.js'
-import { GRAPH_CASES, LOWERED_CASES, HOST_ADAPTERS, OWN_GRAPH, graphSources } from './_lib/graph.js'
+import { GRAPH_CASES, HOST_ADAPTERS, OWN_GRAPH, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
@@ -1868,7 +1868,7 @@ function emitWebWasm(caseIds) {
           ...(isWatr ? watrModuleSources() : {}),
         }
       }
-      const opts = { jzify: isWatr || isGraph || LOWERED_CASES.has(c.id), modules, optimize: { level: 'speed' }, ...caseMemory(c) }
+      const opts = { modules, optimize: { level: 'speed' }, ...caseMemory(c) }
       let wasm
       const times = []
       for (let i = 0; i < 3; i++) {

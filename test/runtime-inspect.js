@@ -1,8 +1,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { compile } from '../index.js'
 import { captureRuntimeInspect } from '../src/compile/func-inspect.js'
 import { onKernel } from './_matrix.js'
+import { compile } from './util.js'
 
 const inspect = (src, opts = {}) => compile(src, { ...opts, inspect: true }).inspect.runtime
 

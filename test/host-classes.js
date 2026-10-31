@@ -6,9 +6,8 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { inspect } from 'node:util'
-import jz, { compile } from '../index.js'
 import { levels, onWasi } from './_matrix.js'
-import { oracle } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const agree = async (src, drive) => {
   const want = await drive(oracle(src))
