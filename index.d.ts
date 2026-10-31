@@ -11,7 +11,7 @@ export type JzPointer = bigint
 export type JzCarrier = number | bigint
 
 /** A compiler advisory, in the program's own source and names. */
-export interface WarningEntry {
+export interface Warning {
   /** The advisory's kind: `deopt-dyn-read`, `heap-return`, `simd-why-not`, … */
   code: string
   message: string
@@ -83,8 +83,8 @@ export interface CompiledWasm extends Uint8Array {
 export interface CompileOptions {
   /** Static ES imports to bundle: `{ './dep.js': 'export let x = 1' }`. */
   modules?: Record<string, string>
-  /** Host modules for `import { fn } from "mod"`: functions, constants, or a whole namespace. */
-  imports?: Record<string, unknown>
+  /** Host modules for `import { fn } from "mod"`: each a namespace of functions and constants, such as `Math`. */
+  imports?: Record<string, object>
   /** Compile-time constants injected as top-level bindings. */
   define?: Record<string, DefineValue>
   /** JS host (default) or WASI. */
@@ -102,7 +102,7 @@ export interface CompileOptions {
   /** Return WAT text instead of the binary. */
   wat?: boolean
   /** Called with each compiler advisory once the compilation is over. */
-  warnings?: (warning: WarningEntry) => void
+  warnings?: (warning: Warning) => void
   /** With `warnings`: also report every loop the vectorizer and every arena the rewind declined. */
   why?: boolean
 }
@@ -166,9 +166,13 @@ export interface MemoryFactory {
   (instance: JzInstance): JzMemory | JzScalarMemory
 }
 
+/** `jz()`'s options: the compile options but `wat` (`jz()` instantiates), and those of
+ *  `instantiate` no compile option names; `imports` and a shared `memory` serve both. */
+export type JzOptions = Omit<CompileOptions, 'wat'> & { wat?: false } & Omit<InstantiateOptions, keyof CompileOptions>
+
 /** Compile and instantiate: `jz(source, opts)` or ``jz`source` ``; `jz.memory()` makes a memory modules share. */
 export interface Jz {
-  (code: string, opts?: CompileOptions & { wat?: false }): JzInstance
+  (code: string, opts?: JzOptions): JzInstance
   (strings: TemplateStringsArray, ...values: unknown[]): JzInstance
   memory: MemoryFactory
 }
@@ -181,7 +185,7 @@ export function compile(code: string, opts?: CompileOptions & { wat?: false }): 
 export function compile(code: string, opts?: CompileOptions): CompiledWasm | string
 
 /** Options of `instantiate`. */
-export interface InteropOptions {
+export interface InstantiateOptions {
   /** Host modules for the module's `import { fn } from "mod"` declarations. */
   imports?: Record<string, unknown>
   /** Memory to link instead of the module's own export. */
@@ -194,5 +198,5 @@ export interface InteropOptions {
 /** Instantiate prebuilt jz wasm: marshals values, decodes errors, links WASI when present. */
 export function instantiate(
   wasm: WebAssembly.Module | Uint8Array | ArrayBuffer,
-  opts?: InteropOptions,
+  opts?: InstantiateOptions,
 ): JzInstance

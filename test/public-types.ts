@@ -1,4 +1,4 @@
-import jz, { compile, instantiate, type CompileOptions, type JzPointer } from 'jz'
+import jz, { compile, instantiate, type CompileOptions, type InstantiateOptions, type JzOptions, type JzPointer, type Warning } from 'jz'
 import { instantiate as instantiateInterop } from 'jz/interop'
 
 const mem = jz.memory()
@@ -43,6 +43,16 @@ compile('export let f = () => 1', { optimize: 3 })
 compile('export let f = () => 1', { host: 'native' })
 // @ts-expect-error a 0.9 spelling is no option
 compile('export let f = () => 1', { maxMemory: 4 })
+const seen: Warning[] = []
+compile('export let f = () => 1', { warnings: (w) => { seen.push(w); void [w.file, w.line, w.column, w.fn] } })
+const run: JzOptions = { optimize: 'size', imports: { host: { log: console.log } } }
+jz('export let f = () => 1', run)
+const link: InstantiateOptions = { imports: {} }
+void [seen, link]
+// @ts-expect-error jz() instantiates: no WAT
+jz('export let f = () => 1', { wat: true })
+// @ts-expect-error an import is a namespace, not a value
+compile('export let f = () => 1', { imports: { host: 1 } })
 
 void [decoded, wat, tuned, result, shared, wrapped, again]
 
