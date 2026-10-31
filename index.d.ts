@@ -10,12 +10,18 @@ export type DefineValue = number | boolean | string | null | undefined | DefineV
 export type JzPointer = bigint
 export type JzCarrier = number | bigint
 
+/** A compiler advisory, in the program's own source and names. */
 export interface WarningEntry {
+  /** The advisory's kind: `deopt-dyn-read`, `heap-return`, `simd-why-not`, … */
   code: string
   message: string
-  fn?: string
+  /** The bundled module the position is in (a `modules` key); absent for the entry source. */
+  file?: string
+  /** 1-based source position; absent for an advisory that has none, about the whole program or naming its class only. */
   line?: number
   column?: number
+  /** The program's function (or class, `Class.method`) it concerns. */
+  fn?: string
 }
 
 /**

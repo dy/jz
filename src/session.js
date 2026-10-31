@@ -314,5 +314,5 @@ export function configureDiagnostics({ whyNotSimd, whyNotRewind }) {
   if (whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
   if (typeof whyNotRewind === 'function') ctx.transform.whyNotRewind = whyNotRewind
   else if (whyNotRewind) ctx.transform.whyNotRewind = (name, reason) =>
-    warn('rewind-why-not', `${name}: ${reason}`, { fn: name.slice(1), reason })
+    warn('rewind-why-not', `${name.slice(1)}: ${reason}`, { fn: name.slice(1), reason })
 }

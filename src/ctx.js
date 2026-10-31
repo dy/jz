@@ -1022,7 +1022,9 @@ const variantOf = (fn) => {
 
 /** Record one advisory; `loc` is a source byte offset used only to derive
  *  line/column — it is never persisted on the entry. No-op unless
- *  `initWarnings` wired a sink. */
+ *  `initWarnings` wired a sink. The entry speaks the program's names (the
+ *  message's, and `fn` where the function has one); an advisory in a function
+ *  with no position of its own stands at the function's. */
 export function warn(code, message, meta = {}, loc = null) {
   if (!ctx.warnings) return
   // A kind variant of an export (narrow/param-abi.js) is its origin's body
@@ -1033,11 +1035,21 @@ export function warn(code, message, meta = {}, loc = null) {
   const key = `${code}:${meta.fn || ''}:${loc ?? meta.line ?? message}`
   if (ctx.warnings.seen.has(key)) return
   ctx.warnings.seen.add(key)
-  const entry = { code, message, ...meta }
-  const at = locate(loc)
+  const entry = { code, message: userText(message), ...meta }
+  const fn = meta.fn != null ? String(meta.fn) : null, name = fn != null ? userName(fn) : null
+  if (name) entry.fn = name
+  const at = locate(loc ?? (fn != null ? funcLoc(fn) : null))
   if (at) { entry.line = at.line; entry.column = at.col; if (at.file) entry.file = at.file }
   ctx.warnings.sink.entries.push(entry)
   ctx.warnings.pending.push(entry)
+}
+
+/** The source position of a function an advisory names (`f`, `$f`, a loop's `f#2`). */
+const funcLoc = (fn) => {
+  let name = fn[0] === '$' ? fn.slice(1) : fn
+  const hash = name.lastIndexOf('#')
+  if (hash > 0) name = name.slice(0, hash)
+  return ctx.funcs.map?.get(name)?.body?.loc ?? null
 }
 
 /** Advise that an emit site fell back to generic runtime dispatch (the slow,

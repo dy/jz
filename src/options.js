@@ -119,6 +119,19 @@ const bindable = (k) => {
   return true
 }
 
+// A function's name as the program can spell it: an identifier, or a class's member (`P.get`)
+const FN = /^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*(\.[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*)?$/u
+
+/** The warning a callback receives (index.d.ts Warning): what, where in the
+ *  program's source, and in which of its functions. An advisory about a function
+ *  the program does not name and the source does not place (a helper the
+ *  compiler wrote) reaches no callback. */
+const publicWarning = ({ code, message, fn, file, line, column }) => {
+  const named = typeof fn === 'string' && FN.test(fn)
+  if (fn != null && !named && line == null) return null
+  return { code, message, ...(file != null && { file }), ...(line != null && { line, column }), ...(named && { fn }) }
+}
+
 /**
  * Options → the flags the pipeline reads, the caller's object untouched: the
  * `memory` and `optimize` objects fold onto flags, a warnings callback becomes the
@@ -163,9 +176,12 @@ export const foldOptions = (opts) => {
     if (alloc === false) o.alloc = false
     o.optimize = passes
   }
-  // The callback becomes the session's sink (a sink object is the tests' and the kernel bridge's).
-  if (typeof o.warnings === 'function') o.warnings = { entries: [], onWarning: o.warnings }
-  else if (o.warnings != null && !plain(o.warnings)) fail('warnings takes a callback, (warning) => …')
+  // A callback receives the public warning; a sink object (the tests', the kernel
+  // bridge's) every field the advisory recorded.
+  if (typeof o.warnings === 'function') {
+    const onWarning = o.warnings
+    o.warnings = { entries: [], onWarning: (entry) => { const w = publicWarning(entry); if (w) onWarning(w) } }
+  } else if (o.warnings != null && !plain(o.warnings)) fail('warnings takes a callback, (warning) => …')
   if (o.why && o.warnings) {
     o.whyNotSimd = true
     o.whyNotRewind = true

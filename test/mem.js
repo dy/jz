@@ -1553,7 +1553,7 @@ test('arena: a loop marker dropped at link reports the loop\'s reason', () => {
       for (let i = 0; i < n; i++) { const b = new Float64Array(128); for (let k = 0; k < 128; k++) b[k] = i + k; s += b[1] + tick() }
       return s
     }`, { optimize: REWOUND, why: true, warnings: w => warnings.push(w) })
-  const loop = warnings.filter(e => e.code === 'rewind-why-not' && /\$each: loop:/.test(e.message)).map(e => e.message)
+  const loop = warnings.filter(e => e.code === 'rewind-why-not' && /^each: loop:/.test(e.message)).map(e => e.message)
   ok(loop.length > 0 && loop.every(m => /loop: tape: .*global\.set/.test(m)), 'the loop\'s tape is the reason: ' + loop.join(' | '))
 })
 

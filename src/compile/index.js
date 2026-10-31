@@ -206,7 +206,7 @@ export function assemble(ast, profiler) {
       // `losses`: the first cause the summary loses each object shape by (its reads and stores are dynamic from then on)
       onLose: losses && ((...loss) => losses.push(loss)),
       // `why` only (a sink alone reports the shape and read advisories): the first cause an array built at a fixed count keeps its guards by
-      onOpen: ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? (count, why, fn, site) => warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }) : null,
+      onOpen: ctx.warnings && (ctx.transform.whyNotRewind || ctx.transform.optimize?.whyNotSimd) ? (count, why, fn, site) => warn('array-open', `an array of ${count} elements keeps its length checks: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 120) }, site?.loc) : null,
       moduleGlobals: ctx.scope.globals,
       constStrings: jsonShapeStrings,
       constString: (name) => ctx.scope.shapeStrs?.get(name) ?? ctx.scope.constStrs?.get(name) ?? null,   // a module const's folded string (kind/shape.js jsonConstString)
@@ -303,7 +303,7 @@ export function assemble(ast, profiler) {
   // The advisory reports what this summary loses: an earlier one, taken before
   // the plan dropped an arm a test never takes, may lose a shape the program keeps.
   for (const [sid, why, fn, site] of ctx.summary.losses ?? [])
-    warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) })
+    warn('shape-lost', `schema ${sid} {${ctx.schema.list[sid]?.slice(0, 6).join(', ')}${ctx.schema.list[sid]?.length > 6 ? ', …' : ''}} is lost: ${why}`, { fn: typeof fn === 'string' ? fn : fn == null ? undefined : `closure ${fn}`, sid, why, site: site == null ? undefined : JSON.stringify(site).slice(0, 160) }, site?.loc)
   // A layout's view runs only where the code the program lowers builds an
   // object literal with an accessor (module/schema.js viewsOn).
   settleViews([ast, ...(ctx.module.moduleInits ?? []),

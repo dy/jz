@@ -4,7 +4,7 @@
  */
 
 import { extractParams, objectLiteralEntries, blockStmts, refsName, REFS_IN_EXPR, ACCESSOR_GET, ACCESSOR_SET, MUTATE_OPS, BRAND, CLASS_T, STATIC_BASE, T, withLoc, cloneNode, collectParamNames, collectAllBoundNames } from '../src/ast.js'
-import { ctx, err, warn } from '../src/ctx.js'
+import { ctx, err, here, warn } from '../src/ctx.js'
 import { usesArguments } from './arguments.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { JZIFY_CLASS_ERRORS } from '../src/op-policy.js'
@@ -846,7 +846,7 @@ function lowerClass(name, heritage, body, hoists, trailers) {
   // The advisory names what kept the class from its schema lowering (`why`):
   // a class of closures reads and calls its members through the runtime.
   if (structsOn) warn('class-generic', `class ${name ?? '(anonymous)'} is lowered to closures, not a schema: ${
-    !atModuleScope() ? 'it is declared inside a function' : computed ? 'a member of it has a computed name' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members, or its base\'s, need a declaration, not an expression'}`, { fn: name ?? undefined })
+    !atModuleScope() ? 'it is declared inside a function' : computed ? 'a member of it has a computed name' : heritage != null && !base ? typeof heritage === 'string' ? `its base \`${heritage}\` is not a class this module imports or declares` : 'its base is an expression' : 'its static members, or its base\'s, need a declaration, not an expression'}`, { fn: name ?? undefined }, here())
   const self = names.classSelf()
   const UNDEF = []                                  // jessie's node for `undefined`
   const memberRef = (obj, key) => typeof key === 'string' ? ['.', obj, key] : ['[]', obj, key.computed]

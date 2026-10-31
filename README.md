@@ -49,7 +49,7 @@ These are all the options: any other key throws a `TypeError` naming it.
 | `names` | Emit the wasm name section for profilers and debuggers. |
 | `sourceMap` | Debug build with statement locations and function names: `true` embeds the map; `{ source, url }` names the entry and an external map URL. The returned bytes also expose `.sourceMap`. Requires `optimize` absent or off (`false`, `{ level: false }`). |
 | `wat` | `compile` only: return WAT text instead of bytes. |
-| `warnings` | Callback for advisories: dynamic fallbacks, heap growth. |
+| `warnings` | Callback for advisories (dynamic fallbacks, heap growth), each `{ code, message, file, line, column, fn }` in the program's own source and names; `file` is absent for the entry source, the position for an advisory about the whole program. |
 | `why` | With `warnings`: also report each loop the vectorizer and each arena the rewind declined. |
 </details>
 

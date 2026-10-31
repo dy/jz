@@ -17,7 +17,7 @@
  */
 
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
-import { addSource, ctx, declGlobal, derive, emitArity, err, setFeature, warn } from '../ctx.js'
+import { addSource, ctx, declGlobal, derive, emitArity, err, here, setFeature, warn } from '../ctx.js'
 import { INTRINSIC_ARITY } from '../builtin-signatures.js'
 import { createFunction } from '../function.js'
 import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, accessorOf, alwaysReturns, classifyParam, cloneNode, collectAllBoundNames, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
@@ -1809,7 +1809,7 @@ const hostGlobalNode = (name) => {
   ;(ctx.features.errorClasses ??= new Set()).add('ReferenceError')
   if (!ctx.module.hostFree.has(name)) {
     ctx.module.hostFree.add(name)
-    warn('host-global', `\`${name}\` is declared nowhere in the program: it reads the host's global of that name`, {})
+    warn('host-global', `\`${name}\` is declared nowhere in the program: it reads the host's global of that name`, {}, here())
   }
   return ['()', '__host_global', ['str', name]]
 }

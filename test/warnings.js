@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels, onWasi } from './_matrix.js'
 import { jz, compile } from './util.js'
+import { compile as publicCompile } from '../index.js'
 
 function warningsFor(code, opts = {}) {
   const warnings = []
@@ -14,6 +15,32 @@ test('fixed length: the advisory names the first cause an array keeps its checks
   const warnings = warningsFor(`const out = [0, 0, 0]\nexport const f = (k) => { out.push(k); return out[0] }`, { why: true })
   const entry = warnings.find(e => e.code === 'array-open')
   ok(entry && /3 elements/.test(entry.message) && /push/.test(entry.message), entry?.message)
+})
+
+// What a callback receives is the program's source and names, nothing of the
+// compiler's own: no internal fields, no minted names, no helper it wrote.
+test('warnings: a callback receives { code, message, file, line, column, fn } in the program\'s names', () => {
+  const ws = []
+  publicCompile('import { h } from "./dep.js"\nclass Q { constructor() { this.m = {} } g(k) { return this.m[k] } }\nexport let f = (o, k) => o[k] + h(k) + new Q().g(k)',
+    { modules: { './dep.js': 'export let h = (x) => { let o = {}; o[x] = 1; return o[x] }' }, warnings: w => ws.push(w) })
+  ok(ws.length >= 3, `advisories: ${ws.length}`)
+  for (const w of ws) {
+    ok(Object.keys(w).every(k => ['code', 'message', 'file', 'line', 'column', 'fn'].includes(k)), `public fields only: ${JSON.stringify(w)}`)
+    ok(!/[\uE000-\uF8FF]/.test(w.message + (w.fn ?? '')), `no minted name: ${JSON.stringify(w)}`)
+  }
+  const write = ws.find(w => w.code === 'deopt-dyn-write')
+  is([write.file, write.fn, write.line, write.column], ['./dep.js', 'h', 1, 42], 'a bundled module\'s function, at its own source')
+  ok(/`o\[…\] = …`/.test(write.message), write.message)
+  ok(ws.some(w => w.fn === 'Q.g' && /`this\.m`/.test(w.message)), 'a class member and its receiver as written')
+  is(ws.filter(w => w.line == null).length, 0, 'the helpers the compiler wrote for the dynamic reads report nothing')
+})
+
+test('warnings: why reports stand at their function', () => {
+  if (belowOpt(2)) return
+  const ws = []
+  publicCompile('export let f = (n) => { let a = new Float64Array(n); for (let i = 1; i < n; i++) a[i] = a[i - 1] + 1; return a[0] }', { why: true, warnings: w => ws.push(w) })
+  const simd = ws.find(w => w.code === 'simd-why-not')
+  ok(simd && simd.fn === 'f' && simd.line === 1 && /^f: loop #1 not vectorized/.test(simd.message), JSON.stringify(simd))
 })
 
 test('warnings: no sink → no advisories emitted', () => {
@@ -316,7 +343,7 @@ test('warnings: no int-global-truncation for a self-contained integer counter', 
 test('warnings: deopt-prop-read names a property read with no static slot', () => {
   const ws = warningsFor('export let f = (o) => o.zz + 1').filter(e => e.code === 'deopt-prop-read')
   is(ws.length, 1)
-  ok(/\.zz`/.test(ws[0].message) && ws[0].how === 'dynamic', 'the site and how it lowered')
+  ok(/`o\.zz` has no static slot \(dynamic\)/.test(ws[0].message), `the site and how it lowered: ${ws[0].message}`)
   is(warningsFor('let o = {a: 1, b: 2}; export let f = () => o.a + o.b').filter(e => e.code === 'deopt-prop-read').length, 0)
 })
 
@@ -332,7 +359,7 @@ test('warnings: shape-lost names the first cause an object shape is lost by', ()
   // a join with a value of unknown kind (the exported parameter) loses the literal's shape
   const ws = warningsFor('export let f = (x) => { const o = { a: 1 }; const p = x || o; return p.a }').filter(e => e.code === 'shape-lost')
   is(ws.length, 1)
-  ok(/\{a\}/.test(ws[0].message) && /joined with an unknown value/.test(ws[0].why) && ws[0].fn === 'f', `${ws[0].message} in ${ws[0].fn}`)
+  ok(/\{a\} is lost: joined with an unknown value$/.test(ws[0].message) && ws[0].fn === 'f', `${ws[0].message} in ${ws[0].fn}`)
 })
 
 test('warnings: shape-loss reports layouts for distinct construction sites', () => {
@@ -341,7 +368,7 @@ test('warnings: shape-loss reports layouts for distinct construction sites', () 
   is(compile(source,{warnings: w => warnings.push(w)}),quiet,'diagnostics preserve emitted bytes')
   const lost = warnings.filter(w => w.code === 'shape-lost')
   is(lost.length,1,'the two construction sites share one reported layout')
-  is(lost[0].sid,0)
+  ok(/^schema 0 /.test(lost[0].message), lost[0].message)
   ok(/\{x\}/.test(lost[0].message),'the report uses the registered field names')
 })
 
@@ -372,7 +399,7 @@ test('warnings: numeric reseeding discards provisional shape losses only', () =>
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     for (const src of [numeric, numeric, lost, numeric, 'export function empty() {}', lost]) {
       const messages = warningsFor(src, {optimize}).filter(w => w.code === 'shape-lost')
-      if (src === lost) ok(messages.some(w => w.why === 'joined with an unknown value'), `real loss O${optimize}`)
+      if (src === lost) ok(messages.some(w => w.message.endsWith('is lost: joined with an unknown value')), `real loss O${optimize}`)
       else is(messages, [], `settled shape O${optimize}`)
     }
   }
@@ -387,8 +414,8 @@ test('warnings: shape-loss diagnostics leave emitted code unchanged across compi
     is(compile(code, { warnings: w => warnings.push(w) }), quiet, 'enabling advisories preserves the complete module')
     const losses = warnings.filter(e => e.code === 'shape-lost')
     is(losses.length, code === joined || code === hosted ? 1 : 0, 'each compile owns its diagnostic state')
-    if (code === joined) is(losses[0].why, 'joined with an unknown value')
-    if (code === hosted) is(losses[0].why, 'handed to the host', 'cyclic references keep the root cause')
+    if (code === joined) ok(losses[0].message.endsWith('is lost: joined with an unknown value'), losses[0].message)
+    if (code === hosted) ok(losses[0].message.endsWith('is lost: handed to the host'), 'cyclic references keep the root cause')
   }
 })
 

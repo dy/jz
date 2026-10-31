@@ -5368,6 +5368,14 @@ object layout by, with the function and statement), `host-global`,
 and `rewind-why-not` need `why`. Warnings are delivered after the pipeline
 returns, so a warning callback may compile again; a compile attempted while
 the pipeline is active is rejected.
+`warn()` (src/ctx.js) writes each entry in the program's names (`userText`:
+a scope-renamed local as written, a bundled module's binding unprefixed, a
+class member `P.get`, a minted temporary `<expr>`) and places an advisory with
+no position of its own at its function's. A callback receives the public
+warning (src/options.js `publicWarning`): `code`, `message`, `file`, `line`,
+`column`, `fn`, and nothing about a helper the compiler wrote; a sink object
+`{ onWarning }`, the internal entry's, receives every field recorded
+(`prop`, `how`, `why`, `site`, `sid`, `reason`, …), as why-census reads them.
 `scripts/why-census.mjs <case>` prints a bench case's census: the layouts lost
 in order (the first is the root of a cascade), the dynamic reads by function,
 the classes kept as closures.

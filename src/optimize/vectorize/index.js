@@ -323,7 +323,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       if (!r && vecState.whyNotActive && (bl || op)) {
         whyNotN++
         warn('simd-why-not',
-          `${fnName}: loop #${whyNotN} not vectorized — ${vecState.whyNotReason || 'no SIMD-liftable shape (loop-carried dependency, non-affine address, or unsupported control flow)'}`,
+          `${fnName.replace(/^\$/, '')}: loop #${whyNotN} not vectorized — ${vecState.whyNotReason || 'no SIMD-liftable shape (loop-carried dependency, non-affine address, or unsupported control flow)'}`,
           { fn: `${fnName}#${whyNotN}` })
       }
       if (r) simdFired = true   // one of the real SIMD recognizers above matched

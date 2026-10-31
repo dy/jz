@@ -12,12 +12,12 @@
 
 import { typed } from '../src/ir.js'
 import { hostImport } from '../src/bridge.js'
-import { warn } from '../src/ctx.js'
+import { warn, here } from '../src/ctx.js'
 
 export default (ctx) => {
   ctx.core.emit['navigator.hardwareConcurrency'] = () => {
     if (!ctx.transform.targetProfile.envImports) {
-      warn('host-global', `\`navigator.hardwareConcurrency\` has no WASI source — folded to 1; size worker pools from the embedder instead`, {})
+      warn('host-global', `\`navigator.hardwareConcurrency\` has no WASI source — folded to 1; size worker pools from the embedder instead`, {}, here())
       return typed(['f64.const', 1], 'f64')
     }
     hostImport('env', 'hardwareConcurrency', ['func', '$__hw_concurrency', ['result', 'f64']])

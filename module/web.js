@@ -27,7 +27,7 @@
 
 import { typed, asI64, asF64, UNDEF_NAN, temp, tempI64 } from '../src/ir.js'
 import { emit, hostImport, storedValue } from '../src/bridge.js'
-import { warn, inc, setLinkDemand } from '../src/ctx.js'
+import { warn, here, inc, setLinkDemand } from '../src/ctx.js'
 import { PTR, LAYOUT, TOMB_NAN, encodePtrHi } from '../layout.js'
 
 const ARITY = { fetch: 2 }
@@ -36,7 +36,7 @@ export default (ctx) => {
   for (const [name, arity] of Object.entries(ARITY)) {
     ctx.core.emit[name] = (...args) => {
       if (!ctx.transform.targetProfile.envImports)
-        warn('host-global', `\`${name}\` binds from the JS host — under host:'wasi' wire env.${name} yourself or instantiation will fail`, {})
+        warn('host-global', `\`${name}\` binds from the JS host — under host:'wasi' wire env.${name} yourself or instantiation will fail`, {}, here())
       hostImport('env', name, ['func', `$__env_${name}`,
         ...Array.from({ length: arity }, () => ['param', 'i64']), ['result', 'i64']])
       const ir = [`call`, `$__env_${name}`]
