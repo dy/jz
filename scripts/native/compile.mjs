@@ -152,7 +152,7 @@ export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess, main
 }
 
 // jz options that take a value, so the value is not mistaken for the input.
-const VALUED = new Set(['-O', '--optimize', '-D', '--define', '--memory'])
+const VALUED = new Set(['-O', '-D', '--define', '--memory'])
 const USAGE = 'usage: node scripts/native/compile.mjs <program.js | program.wasm> [-o out] [jz options]'
 
 function cli(args) {

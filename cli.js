@@ -3,7 +3,7 @@
 /** jz CLI — compile a JavaScript file to WebAssembly. */
 
 import { writeFileSync, mkdirSync } from 'fs'
-import { resolve, dirname, basename } from 'path'
+import { resolve, dirname, basename, relative, isAbsolute } from 'path'
 import { pathToFileURL } from 'url'
 import { createRequire } from 'module'
 import { compileInternal } from './src/compiler.js'
@@ -29,8 +29,8 @@ Examples:
 
 Options:
   -o, --output <file>       Output path: .wasm, .wat, or - for stdout
-  -O0 | -O3 | -Os           Optimization: none, speed, size (default: balanced)
-  -O <json>                 Optimize object, e.g. -O '{"simd":false}'
+  -O0 | -O2 | -O3 | -Os     Optimization: none, balanced (the default), speed, size
+  -O <json>                 Optimize object, e.g. -O '{"level":"speed","simd":false}'
   -D, --define <K=V>        Compile-time constant (JSON value or string); repeatable
   --host <js|wasi>          Runtime services (default js)
   --memory <n[:max]>        Initial and maximum memory, in 64 KiB pages
@@ -47,15 +47,21 @@ Options:
 // `jz src.js -o dist/out.wasm` creates dist/ like every other compiler does.
 const writeOut = (file, data) => { mkdirSync(dirname(resolve(file)), { recursive: true }); writeFileSync(file, data) }
 
-const formatWarning = w => `warning[${w.code}]${w.line != null ? ` (${w.line}:${w.column})` : ''}: ${w.message}`
+// A warning as compilers print one: file:line:col: warning[code]: message
+const formatWarning = (w, entry) => {
+  const file = w.file == null ? entry : isAbsolute(w.file) ? relative(process.cwd(), w.file) : w.file
+  return `${[file, w.line, w.column].filter(p => p != null).join(':')}: warning[${w.code}]: ${w.message}`
+}
 
-// -O0 none · -O3 speed · -Os size · -O2 default · -O '{…}' advanced object
-const OPT_LEVELS = { 0: false, 2: true, 3: 'speed', s: 'size', size: 'size', speed: 'speed' }
-function parseOptimize(v) {
-  if (v == null) throw new Error('-O expects a level (0, 2, 3, s) or an optimize object')
-  if (v.trimStart().startsWith('{')) return JSON.parse(v)
-  if (!(v in OPT_LEVELS)) throw new Error(`unknown optimization level '${v}' — use -O0, -O2, -O3, -Os or -O '{…}'`)
+// -O0 none · -O2 balanced (the default) · -O3 speed · -Os size; -O '{…}' the optimize object
+const OPT_LEVELS = { 0: false, 2: true, 3: 'speed', s: 'size' }
+function parseLevel(v) {
+  if (!Object.hasOwn(OPT_LEVELS, v)) throw new Error(`unknown optimization level '-O${v}' — use -O0, -O2, -O3, -Os or -O '{…}'`)
   return OPT_LEVELS[v]
+}
+function parseOptimize(v) {
+  if (!v.trimStart().startsWith('{')) throw new Error(`-O takes an optimize object, -O '{…}' (got '${v}'); the levels are -O0, -O2, -O3, -Os`)
+  try { return JSON.parse(v) } catch (e) { throw new Error(`-O takes an optimize object in JSON: ${e.message}`) }
 }
 
 // -D NAME=VALUE: VALUE parses as JSON when it can (numbers, booleans, null,
@@ -86,21 +92,27 @@ function main() {
 
   let inputFile = null, outputFile = null, wat = false, why = false, sourceMap = false
   let optimize, host, memory, define, names = false, noSimd = false, noTailCall = false
+  // a flag's value: the next argument, which is no flag (`-` alone is stdout)
+  const value = (i, flag) => {
+    const v = args[i]
+    if (v == null || v.startsWith('-') && v !== '-') throw new Error(`${flag} takes a value (jz --help for options)`)
+    return v
+  }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
-    if (a === '--output' || a === '-o') outputFile = args[++i]
+    if (a === '--output' || a === '-o') outputFile = value(++i, a)
     else if (a === '--wat') wat = true
     else if (a === '--why') why = true
     else if (a === '--names') names = true
     else if (a === '--source-map') sourceMap = true
     else if (a === '--no-simd') noSimd = true
     else if (a === '--no-tail-call') noTailCall = true
-    else if (a === '--host') host = args[++i]
-    else if (a === '--memory') memory = parseMemory(args[++i])
-    else if (a === '--define' || a === '-D') { const [k, v] = parseDefine(args[++i]); (define ||= {})[k] = v }
+    else if (a === '--host') host = value(++i, a)
+    else if (a === '--memory') memory = parseMemory(value(++i, a))
+    else if (a === '--define' || a === '-D') { const [k, v] = parseDefine(value(++i, a)); (define ||= {})[k] = v }
     else if (a.startsWith('-D') && a.length > 2) { const [k, v] = parseDefine(a.slice(2)); (define ||= {})[k] = v }
-    else if (a === '--optimize' || a === '-O') optimize = parseOptimize(args[++i])
-    else if (/^-O.+/.test(a)) optimize = parseOptimize(a.slice(2))
+    else if (a === '-O') optimize = parseOptimize(value(++i, a))
+    else if (/^-O.+/.test(a)) optimize = parseLevel(a.slice(2))
     else if (a.startsWith('-') && a !== '-') throw new Error(`unknown option '${a}' (jz --help for options)`)
     else if (!inputFile) inputFile = a
     else throw new Error(`unexpected argument '${a}' — jz compiles one entry file`)
@@ -108,6 +120,8 @@ function main() {
   if (!inputFile) throw new Error('No input file specified — usage: jz <file.js> (jz --help for options)')
   if (!outputFile) outputFile = inputFile.replace(/\.[cm]?js$/, '') + (wat ? '.wat' : '.wasm')
   if (outputFile.endsWith('.wat')) wat = true
+  else if (wat && outputFile.endsWith('.wasm')) throw new Error(`--wat writes text: name the output .wat, not ${outputFile}`)
+  if (sourceMap && (wat || outputFile === '-')) throw new Error('--source-map writes the map beside a .wasm file: it takes neither --wat, a .wat output nor -o -')
 
   // Every specifier resolves to an absolute path, so one physical file is one module
   // instance; bare specifiers go through Node resolution from the entry's directory.
@@ -121,7 +135,7 @@ function main() {
     : { ...(typeof level === 'object' ? level : level !== undefined && { level }), ...switches }
   // The options are the public ones; the entry's URL, for import.meta.url, is the CLI's own flag.
   const flags = normalizeOptions({
-    wat, why, names, warnings: w => console.warn(formatWarning(w)),
+    wat, why, names, warnings: w => console.warn(formatWarning(w, inputFile)),
     ...(sourceMap && { sourceMap: { source: pathToFileURL(resolve(inputFile)).href, ...(outputFile !== '-' && !wat && { url: basename(outputFile) + '.map' }) } }),
     ...(optimizeOpt !== undefined && { optimize: optimizeOpt }),
     ...(host && { host }),

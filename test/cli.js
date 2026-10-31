@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { execFileSync, spawnSync } from 'child_process'
-import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, unlinkSync, mkdtempSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
@@ -299,6 +299,53 @@ test('cli: --why reports declined loops on stderr', () => {
   is(status, 0)
   ok(/warning\[(simd-why-not|rewind-why-not)\]/.test(stderr), 'why-not report on stderr')
   unlinkSync(output)
+})
+
+test('cli: a flag missing its value exits 1 naming the flag', () => {
+  const input = join(tmp, 'val.js')
+  writeFileSync(input, 'export let f = () => 1')
+  for (const flag of ['-o', '--output', '-D', '--define', '--host', '--memory', '-O']) {
+    for (const args of [[input, flag], [flag, '--wat', input]]) {
+      const { stderr, status } = cliFail(...args)
+      is(status, 1, `${args.join(' ')}`)
+      ok(stderr.includes(`${flag} takes a value`), `${args.join(' ')}: ${stderr}`)
+    }
+  }
+})
+
+test('cli: one spelling per optimization: -O0, -O2, -O3, -Os, -O \'{…}\'', () => {
+  const input = join(tmp, 'lvl.js')
+  writeFileSync(input, 'export let f = (a, b) => a + b')
+  for (const level of ['-O0', '-O2', '-O3', '-Os']) ok(cli(input, level, '--wat', '-o', '-').includes('module'), level)
+  for (const args of [['-Osize'], ['-Ospeed'], ['-O1'], ['--optimize', '3']]) {
+    const { status, stderr } = cliFail(input, ...args, '--wat', '-o', '-')
+    is(status, 1, args.join(' ')); ok(stderr.length > 0, stderr)
+  }
+  const { status, stderr } = cliFail(input, '-O', '3', '--wat', '-o', '-')
+  is(status, 1); ok(/-O takes an optimize object/.test(stderr), stderr)
+  const bad = cliFail(input, '-O', '{"stencil":false}', '--wat', '-o', '-')
+  is(bad.status, 1); ok(/Unknown optimize option 'stencil'/.test(bad.stderr), bad.stderr)
+})
+
+test('cli: refuses an output it would write wrong', () => {
+  const input = join(tmp, 'out.js')
+  writeFileSync(input, 'export let f = () => 1')
+  const wasm = join(tmp, 'out-wat.wasm')
+  const r = cliFail(input, '--wat', '-o', wasm)
+  is(r.status, 1); ok(/--wat writes text/.test(r.stderr), r.stderr)
+  ok(!existsSync(wasm), 'nothing written')
+  for (const args of [['--wat'], ['-o', '-'], ['-o', join(tmp, 'out.wat')]]) {
+    const { status, stderr } = cliFail(input, '--source-map', ...args)
+    is(status, 1, args.join(' ')); ok(/--source-map writes the map beside a \.wasm file/.test(stderr), stderr)
+  }
+})
+
+test('cli: a warning prints as file:line:col: warning[code]: message', () => {
+  const input = join(tmp, 'warn.js')
+  writeFileSync(input, 'export let f = (o) => o.zz + 1')
+  const { stderr, status } = cliBoth(input, '--why', '-o', join(tmp, 'warn.wasm'))
+  is(status, 0)
+  ok(stderr.split('\n').includes(`${input}:1:24: warning[deopt-prop-read]: property read \`o.zz\` has no static slot (dynamic): it goes through a runtime lookup`), stderr)
 })
 
 // Cleanup temp files
