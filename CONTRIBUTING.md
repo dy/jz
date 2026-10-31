@@ -5459,8 +5459,15 @@ takes `memory` or a `__jz_` name (`compile` rejects it at the export); its own
 `_initialize` or `_start` is the WASI entry, after jz's init. `instantiate()`'s
 `exports` holds the program's exports alone; the ABI stays on `instance.exports`.
 
-Prebuilt Wasm must use matching compiler and interop revisions. The raw ABI has
-no independent version marker and is not frozen: NaN-box layouts, the `__jz_`
+A module that carries `jz:` sections, what the interop reads to marshal its values,
+says their ABI version in `jz:abi`, one byte (layout.js `ABI_VERSION`,
+optimize/watr-tail.js `markAbi`); one that exchanges numbers alone carries none.
+`instantiate()` refuses a module of another version and one built before the
+marker (no `jz:abi`, the old `_alloc`/`__heap` exports or `jz:` sections), so
+1.0 reads 1.0 binaries and no older layout. A box crosses as its i64 bits only:
+no f64 NaN-box carrier, no `__ext_prop`/`__ext_call`.
+
+The raw ABI is not frozen across versions: NaN-box layouts, the `__jz_`
 exports, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
 `jz:errcls`, `jz:brand`, `jz:class`, `jz:values`
 and its getters, schema IDs,

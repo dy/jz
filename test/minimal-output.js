@@ -953,8 +953,9 @@ test('minimal: a long-literal concat skips the SSO arms', () => {
   ok(speed.includes('call $__str_concat_raw_long'), 'the speed tier keeps the twin')
   for (const n of [0, 1, 40]) is(jz(src, { optimize: 'size' }).exports.f(n), jsFn(src, 'f')(n), `n=${n}`)
   is(jz(src, { optimize: 3 }).exports.f(40), jsFn(src, 'f')(40), 'O3')
+  // (1043 -> 1044: the module carries jz sections, so the 10-byte jz:abi marker)
   const bytes = compile(src, { optimize: 'size', alloc: false }).length
-  ok(bytes <= 1043, `long concat: ${bytes} B (recorded 1043)`)
+  ok(bytes <= 1044, `long concat: ${bytes} B (recorded 1044)`)
 })
 
 // A typed factory called with one constant (`mkSignal(N)`, `const out = new
@@ -1006,9 +1007,9 @@ test('minimal: the size tier links the plain string walks', () => {
     is(jz(src, { optimize: 3 }).exports.f(n), jsFn(src, 'f')(n), `speed n=${n}`)
   }
   // (2461 -> 2473: the dictionary's growth tests its table against TABLE_MAX,
-  // module/collection/upsert.js nextCapIR)
+  // module/collection/upsert.js nextCapIR; 2473 -> 2483: the 10-byte jz:abi marker)
   const bytes = compile(src, { optimize: 'size', alloc: false }).length
-  ok(bytes <= 2473, `dictionary count: ${bytes} B (recorded 2473)`)
+  ok(bytes <= 2483, `dictionary count: ${bytes} B (recorded 2483)`)
 })
 
 // A ring value under a branchless conditional narrows: `x = c ? x + d : x - d`

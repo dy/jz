@@ -439,7 +439,6 @@ export default (ctx) => {
   // (not f64) to dodge V8's f64 NaN canonicalization at the wasm↔JS edge —
   // same hazard as env.print / env.setTimeout (see module/console.js header).
   // i32 returns (has/set) and arg shapes stay; only boxed-pointer carriers move.
-  ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_get'] = '(import "env" "__ext_get" (func $__ext_get (param i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_is_error'] = '(import "env" "__ext_is_error" (func $__ext_is_error (param i64 i32) (result i32)))'
   ctx.core.stdlib['__ext_has_iterator'] = '(import "env" "__ext_has_iterator" (func $__ext_has_iterator (param i64) (result i32)))'
@@ -452,7 +451,6 @@ export default (ctx) => {
   // Own keys/values/entries (0/1/2), or all own string/Symbol keys (3), as a jz array.
   ctx.core.stdlib['__ext_enum'] = '(import "env" "__ext_enum" (func $__ext_enum (param i64 i32) (result i64)))'
   ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
-  ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'
   ctx.core.stdlib['__ext_invoke'] = '(import "env" "__ext_invoke" (func $__ext_invoke (param i64 i64 i64) (result i64)))'
   // The same call whose result converts to the primitive a builtin's call is
   // typed as (kind-traits.js hostResultAs): 1 a Number, 2 a Boolean, 3 a string.

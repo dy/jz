@@ -28,17 +28,19 @@ import { PTR, encodePtrHi, encodeTypedElemAux } from '../layout.js'
 const argBits = (v) => typeof v === 'bigint' ? v : f64ToI64(v)
 
 /**
- * Adapt RAW wasm exports back to the f64 NaN-box ABI for tests that instantiate
- * directly (bypassing `jz/interop` wrap()). The i64 boundary carrier (Safari NaN-
- * canonicalization dodge) makes boxed params/results cross as i64/BigInt; this
- * reinterprets BigInt↔f64 at exactly the positions the `jz:i64exp` custom section
- * marks, so a legacy `run(code).f(x)` keeps seeing/passing f64 NaN-boxes & numbers.
+ * Adapt RAW wasm exports for tests that instantiate directly (bypassing
+ * `jz/interop` wrap()), as a raw host sees them: a box crosses as its i64 bits
+ * (BigInt), a number as a Number, at exactly the positions the `jz:i64exp`
+ * custom section marks.
  *
  * `mod` is the WebAssembly.Module (for the custom section), `raw` its instance
  * exports. With no i64 exports the raw object is returned untouched.
  */
 // A NaN-box carrying the PTR.BIGINT tag (interop.js isBox and type).
-const bigintBox = b => typeof b === 'bigint' && (Number((b >> 32n) & 0xFFFFFFFFn) & 0xFFF80000) === 0x7FF80000 && ptrType(b) === PTR.BIGINT
+const isBoxBits = b => typeof b === 'bigint' && (Number((b >> 32n) & 0xFFFFFFFFn) & 0xFFF80000) === 0x7FF80000
+/** A raw result that crossed as a box (a pointer, an atom): its i64 carrier, never a Number. */
+export const boxed = isBoxBits
+const bigintBox = b => isBoxBits(b) && ptrType(b) === PTR.BIGINT
 
 export function adaptI64(mod, raw) {
   const i64Exp = new Map()
@@ -56,7 +58,7 @@ export function adaptI64(mod, raw) {
     // fill from the array-like, pass the box; a `+` slot copies back after.
     const typedArg = (x, ctor, writes, back) => {
       const Ctor = globalThis[ctor]
-      const src = x instanceof Ctor ? x : Ctor.from(typeof x === 'number' && x !== x ? jzMemory(raw.memory).read(x) : x)
+      const src = x instanceof Ctor ? x : Ctor.from(typeof x === 'bigint' ? jzMemory(raw.memory).read(x) : x)
       const bytes = src.length * Ctor.BYTES_PER_ELEMENT
       const hdr = raw.__jz_alloc(16 + bytes)
       const dv = new DataView(raw.memory.buffer)
@@ -90,8 +92,8 @@ export function adaptI64(mod, raw) {
       if (m) return ret.map(i64ToF64)
       // A boxed BigInt result (an export's result contract: the BigInt crosses
       // boxed) reads as interop's decoder reads it, the cell's payload; every
-      // other box keeps its f64 bits for the raw host to inspect.
-      return r ? (bigintBox(ret) ? jzMemory(raw.memory).read(ret) : i64ToF64(ret)) : ret
+      // other box stays the i64 carrier a raw host receives, a number its value.
+      return r ? (bigintBox(ret) ? jzMemory(raw.memory).read(ret) : isBoxBits(ret) ? ret : i64ToF64(ret)) : ret
     }
   }
   return out

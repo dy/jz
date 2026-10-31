@@ -288,9 +288,9 @@ test('mem.Array: null elements preserved', async () => {
   const r = await run('export let f = (a) => a[0]')
   const m = r.memory
   const ptr = m.Array([null, 1, 2])
-  // null element should be NaN-boxed null, not 0
+  // the null element crosses as the null box, not 0
   const result = r.instance.exports.f(ptr)
-  ok(isNaN(result), 'null element is NaN-boxed')
+  is(m.read(result), null, 'null element reads back null')
 })
 
 // === Shared memory: no data collision ===
@@ -299,9 +299,9 @@ test('shared memory: no static string collision', async () => {
   if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile
   const memory = new WebAssembly.Memory({ initial: 1 })
   const a = jz('export let f = () => "hello"', { memory })
-  // Raw instance export returns the i64 box (string is a NaN-box → i64 carrier);
-  // reinterpret to the f64 pointer for memory.read (a.exports.f() would decode to "hello").
-  const aPtr = i64ToF64(a.instance.exports.f())
+  // The raw instance export returns the i64 box, the pointer memory.read takes
+  // (a.exports.f() would decode to "hello").
+  const aPtr = a.instance.exports.f()
   const aVal = a.memory.read(aPtr)
   is(aVal, 'hello')
 

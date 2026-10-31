@@ -12,7 +12,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, symbolCountMax, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_NAMES, encodeTypedElemAux, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
+import { ABI_VERSION, HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, symbolCountMax, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_NAMES, encodeTypedElemAux, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
@@ -126,12 +126,11 @@ const encodeSSO = (s) => {
   return ptr(4, Number(p >> 32n) | LAYOUT.SSO_BIT, Number(p & 0xFFFFFFFFn))
 }
 
-// The i64 carrier, or a legacy f64 NaN-box (intact on V8).
-const asBits = (p) => typeof p === 'bigint' ? p : f64ToI64(p)
+// A box's parts: it crosses as the i64 carrier
 export const ptr = (type, aux, offset) => { _u32[1] = encodePtrHi(type, aux); _u32[0] = offset; return _u64[0] }
-export const offset = (p) => lo32(asBits(p))
-export const type = (p) => decodePtrType(hi32(asBits(p)))
-export const aux = (p) => decodePtrAux(hi32(asBits(p)))
+export const offset = (p) => lo32(p)
+export const type = (p) => decodePtrType(hi32(p))
+export const aux = (p) => decodePtrAux(hi32(p))
 
 const decodeSSO = (b) => {
   const a = decodePtrAux(hi32(b)), len = (a >>> 10) & 7
@@ -186,8 +185,7 @@ const symbolsOf = (owner, mod, raw) => {
 // A module with memory reads through `mem.read`.
 const decode = (v, fnOf = null, symbols = null) => {
   if (Array.isArray(v)) return v.map(x => decode(x, fnOf, symbols))   // a tuple of results
-  if (typeof v === 'number') { if (v === v) return v; v = f64ToI64(v) }
-  else if (typeof v !== 'bigint') return v     // already a JS value
+  if (typeof v !== 'bigint') return v     // a number, or already a JS value: a box crosses as its i64 bits
   if (!isBox(v)) return i64ToF64(v)
   if (type(v) === 4 && (aux(v) & LAYOUT.SSO_BIT)) return decodeSSO(v)
   if (type(v) === 10 && fnOf) return fnOf(v)
@@ -691,10 +689,7 @@ const codec = (mem, src) => {
   // that returned it as holding its memory (`_held`, above the call's mark).
   S.read = function(p, fnOf = null) {
     if (Array.isArray(p)) return p.map(v => S.read(v, fnOf))  // a tuple of results
-    if (typeof p === 'number') {
-      if (p === p) return p
-      p = f64ToI64(p)                    // a legacy f64 box
-    } else if (typeof p !== 'bigint') return p   // already a JS value
+    if (typeof p !== 'bigint') return p   // a number, or already a JS value: a box crosses as its i64 bits
     if (!isBox(p)) return i64ToF64(p)
     const m = dv(), t = type(p), a = aux(p)
     let off = offset(p)
@@ -1628,14 +1623,13 @@ const prepareInterop = (opts) => {
   // a BigInt a host BigInt64Array or BigUint64Array holds is a value (boxed); any other has no evidence
   const bigTyped = (obj, value) => typeof value === 'bigint' && (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
   // A property Get, the getter run once. `raw` (a method reference) and a
-  // function by `__ext_get` cross by identity; `legacy` (`__ext_prop`, of
-  // older binaries) binds a method to its receiver.
-  const readProperty = (objBig, propBig, legacy = false, raw = false) => {
+  // function cross by identity.
+  const readProperty = (objBig, propBig, raw = false) => {
     const prop = keyOf(propBig), obj = extRecv(objBig, prop, 'property read'), value = obj[prop]
     // (a method reference the receiver lacks: the invoke that follows names it)
     if (raw && typeof value !== 'function') state.methodMiss = { obj, prop }
-    if (raw || !legacy && typeof value === 'function') return bits(hostValue(state, value))
-    return bits(bigTyped(obj, value) ? state.mem.BigInt(value) : state.mem.wrapVal(legacy && typeof value === 'function' ? value.bind(obj) : value))
+    if (raw || typeof value === 'function') return bits(hostValue(state, value))
+    return bits(bigTyped(obj, value) ? state.mem.BigInt(value) : state.mem.wrapVal(value))
   }
   // A typed array of the module's memory handed to a host call arrives as a
   // copy the host may keep past the call (a view detaches as the memory grows);
@@ -1669,10 +1663,9 @@ const prepareInterop = (opts) => {
   const invokeAs = (fnBig, recvBig, argsBig, as) => invoke(read(fnBig), read(recvBig), read(argsBig), as)
   // the env functions the runtime gives: the template's own (index.js, `_interp`) and these
   state.env = Object.assign({ ...opts._interp }, {
-    __ext_prop: (objBig, propBig) => readProperty(objBig, propBig, true),
     __ext_get: (objBig, propBig) => readProperty(objBig, propBig),
     // a raw Get, for reads, copies and method references: a function unbound
-    __ext_method: (objBig, propBig) => readProperty(objBig, propBig, false, true),
+    __ext_method: (objBig, propBig) => readProperty(objBig, propBig, true),
     // for-of over a host iterable (`__iter_arr`) reads a length, then the
     // element at its counter, each step: the view pulls the next value at a
     // length read where none waits, the element read takes it. A spread
@@ -1744,11 +1737,6 @@ const prepareInterop = (opts) => {
     __ext_callable: (vBig) => typeof state.extMap[offset(vBig)] === 'function' ? 1 : 0,
     // the description of a Symbol the module holds none of its own for: one the host made (module/symbol.js)
     __ext_sym_desc: (vBig) => bits(state.mem.wrapVal(state.mem.symbols.read(vBig).description)),
-    // older binaries pass receiver, key and arguments
-    __ext_call: (objBig, propBig, argsBig) => {
-      const prop = keyOf(propBig), obj = extRecv(objBig, prop, 'method call'), args = read(argsBig)
-      return invoke(prop === undefined ? obj : obj[prop], prop === undefined ? undefined : obj, args)
-    },
   })
   return state
 }
@@ -1951,6 +1939,22 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
 
 export const toModule = (wasm) => wasm instanceof WebAssembly.Module ? wasm : new WebAssembly.Module(wasm)
 
+// The ABI a module was built for (`jz:abi`, layout.js ABI_VERSION): one this
+// runtime does not read is refused, as is one built before the marker, which
+// its exports of the older layout or its sections tell.
+const PRE_ABI_SECTIONS = ['jz:i64exp', 'jz:hostabi', 'jz:release', 'jz:schema', 'jz:errcls', 'jz:rest', 'jz:extparam']
+const checkAbi = (mod) => {
+  const marker = customSection(mod, 'jz:abi')
+  if (marker) {
+    const built = sectionReader(marker).varint()
+    if (built !== ABI_VERSION) throw new TypeError(`jz: this module was built for jz ABI ${built}, and this runtime reads ABI ${ABI_VERSION}: load it with the jz that built it, or rebuild it with this one`)
+    return
+  }
+  const names = new Set(WebAssembly.Module.exports(mod).map(e => e.name))
+  if (names.has('memory') && (names.has('_alloc') || names.has('__heap')) || PRE_ABI_SECTIONS.some(n => customSection(mod, n)))
+    throw new TypeError('jz: this module was built by a jz before 1.0 (it carries no jz:abi section): rebuild it with this version')
+}
+
 /**
  * Instantiate prebuilt jz wasm: WASI and host imports linked, exports wrapped.
  * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm
@@ -1958,8 +1962,9 @@ export const toModule = (wasm) => wasm instanceof WebAssembly.Module ? wasm : ne
  * @returns {{ exports, memory, instance, module }}
  */
 export const instantiate = (wasm, opts = {}) => {
-  const state = prepareInterop(opts)
   const mod = toModule(wasm)
+  checkAbi(mod)
+  const state = prepareInterop(opts)
   const { imports, needsWasi } = buildImports(mod, opts, state)
   const hasImports = Object.keys(imports).some(k => k !== '_setMemory')
   const inst = new WebAssembly.Instance(mod, hasImports ? imports : undefined)

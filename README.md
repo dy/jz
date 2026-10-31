@@ -332,9 +332,8 @@ can catch; after a `memory.reset()` the module runs again.
 Host Number values remain numbers, including NaNs with custom payloads (one
 whose bits spell the undefined or null box enters as the canonical NaN). Pass
 allocated memory by its bigint handle from `memory.Array`, `memory.Float64Array`
-or the other constructors. `memory.read` also
-accepts legacy floating-point carriers; ordinary argument and value marshaling
-does not interpret Number payloads as handles. An export's Number result reads
+or the other constructors. A handle crosses as its BigInt, and nothing reads a
+Number's payload as one, `memory.read` included. An export's Number result reads
 as a Number whatever its payload; one that may be undefined or null, and a void
 export's undefined, read as those on every engine.
 
@@ -504,8 +503,9 @@ major; its message may change. Accepted programs preserve JavaScript values,
 exceptions and evaluation order at every optimization level, outside the
 differences listed above: a value a call throws reaches the host as JavaScript
 throws it, an Error as the host's Error of its class. The raw wasm ABI (pointer
-layout, allocator exports, custom sections) is not stable: load prebuilt modules
-with `jz/interop` from the same JZ version.
+layout, the `__jz_` exports, custom sections) is not stable across versions: a module
+says the one it was built for (`jz:abi`), and `instantiate` refuses a module of
+another.
 [CONTRIBUTING](CONTRIBUTING.md#public-contract-and-abi) has the details.
 
 <p align="center">

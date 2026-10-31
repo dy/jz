@@ -1,7 +1,7 @@
 // Raw non-JS consumer ABI — internally locked for each emitted binary.
-// This guards compiler/host agreement, not cross-release stability: until a raw
-// ABI version marker exists, README.md requires exact-version pinning and keeps
-// the high-level wrapper as the public embedder contract.
+// This guards compiler/host agreement, not cross-release stability: a module
+// says its ABI version (`jz:abi`, layout.js ABI_VERSION) and the high-level
+// wrapper, the public embedder contract, refuses another.
 //
 // A wasmtime/Rust/Go/Zig host runs prebuilt jz wasm with (a) the exported allocator,
 // (b) the documented NaN-box layout (layout.js), and (c) the wasm function SIGNATURE,

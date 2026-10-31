@@ -185,7 +185,7 @@ const MADE = '$__made'
 const GIVE = '$__frame_give', OUTER = '$__frame_outer'
 const ESC_MARK = 'esch'
 // jz's interop imports that hand the host nothing it could keep: they read.
-const EXT_READS = new Set(['$__ext_prop', '$__ext_get', '$__ext_method', '$__ext_has', '$__ext_has_iterator', '$__ext_enum', '$__ext_json', '$__ext_json_omits'])
+const EXT_READS = new Set(['$__ext_get', '$__ext_method', '$__ext_has', '$__ext_has_iterator', '$__ext_enum', '$__ext_json', '$__ext_json_omits'])
 
 /** @param rewindable  Map `$name` → result type of the functions whose records allow a rewind,
  *                    a list of types where the function has several results

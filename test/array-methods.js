@@ -2,7 +2,8 @@
 import test from 'tst'
 import parseWat from 'watr/parse'
 import { is, ok, throws } from 'tst/assert.js'
-import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels, boxed } from './_matrix.js'
+import { UNDEF_NAN } from '../interop.js'
 import { parse, has, callsOutside } from '../scripts/wat-probe.mjs'
 import { oracle, cases, funcWat, jz, compile } from './util.js'
 
@@ -487,7 +488,7 @@ test('.find: found', () => {
 })
 
 test('.find: not found', () => {
-  ok(Number.isNaN(run(`export let f = () => [1, 2, 3].find((x) => x > 10)`).f()))
+  is(run(`export let f = () => [1, 2, 3].find((x) => x > 10)`).f(), UNDEF_NAN)
 })
 
 // === .indexOf ===
@@ -875,7 +876,7 @@ test('.join: comma sep', () => {
     let a = [1, 2, 3]
     return a.join(",")
   }`)
-  ok(isNaN(f()))  // returns NaN-boxed string pointer
+  ok(boxed(f()))  // a string pointer's box
 })
 
 // === Chained ===

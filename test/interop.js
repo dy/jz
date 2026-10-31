@@ -11,7 +11,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import * as interop from '../interop.js'
 import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
-import { HEAP, symbolCountMax } from '../layout.js'
+import { HEAP, symbolCountMax, ABI_VERSION } from '../layout.js'
 import { oracle, jz, compile } from './util.js'
 import { compile as wasm } from 'watr'
 
@@ -66,26 +66,22 @@ test('interop: host throws enter source catch without changing their values', ()
   is(ignored.exports.f(),7,'scalar source catch accepts heap-backed host BigInt')
 })
 
-test('interop: legacy host calls keep their object-key-arguments ABI', () => {
-  const bytes=wasm(`(module
+// A module carries the ABI it was built for (`jz:abi`, one integer): instantiate
+// refuses one of another ABI, and one built before the marker, by its exports
+// of the older layout, instead of misreading its values.
+test('interop: a module says its ABI, and instantiate refuses another', () => {
+  const abiOf = (bytes) => { const s = WebAssembly.Module.customSections(new WebAssembly.Module(bytes), 'jz:abi'); return s.length ? [...new Uint8Array(s[0])] : null }
+  is(abiOf(compile('export let s = (x) => "ab" + x')), [ABI_VERSION], 'a module of the runtime\'s ABI marks it')
+  is(ABI_VERSION, 1, 'the first ABI')
+  is(abiOf(compile('export let add = (a, b) => a + b')), null, 'a module of numbers alone carries none')
+  const later = wasm('(module (memory (export "memory") 1) (@custom "jz:abi" "\\02"))')
+  throws(() => interop.instantiate(later), /ABI 2/, 'another ABI is refused')
+  const pre = wasm(`(module
     (import "env" "__ext_call" (func $call (param i64 i64 i64) (result i64)))
-    (import "env" "__ext_prop" (func $read (param i64 i64) (result i64)))
     (memory (export "memory") 1)
-    (func (export "read") (param i64 i64) (result i64) (call $read (local.get 0) (local.get 1)))
-    (func (export "invoke") (param i64 i64 i64) (result i64)
-      (call $call (local.get 0) (local.get 1) (local.get 2))))`)
-  const {instance,memory}=interop.instantiate(bytes)
-  let gets=0
-  const object={value:4,get run(){gets++;return function(x){return this.value+x}}}
-  const receiver=interop.codecOf(memory).External(object),args=memory.Array([3])
-  is(memory.read(instance.exports.invoke(receiver,memory.String('run'),args)),7,'legacy method receiver')
-  is(gets,1,'legacy method getter runs once')
-  const bound=instance.exports.read(receiver,memory.String('run'))
-  is(memory.read(instance.exports.invoke(bound,interop.UNDEF_NAN,args)),7,'legacy property method remains bound')
-  is(gets,2,'legacy property getter runs once')
-  const plain=interop.codecOf(memory).External(function(x){return this===undefined?x+2:-1})
-  is(memory.read(instance.exports.invoke(plain,interop.UNDEF_NAN,args)),5,'legacy direct function')
-  throws(()=>instance.exports.invoke(receiver,memory.String('missing'),args),TypeError,'missing legacy method throws')
+    (global (export "__heap") (mut i32) (i32.const 1024))
+    (func (export "_alloc") (param i32) (result i32) (i32.const 0)))`)
+  throws(() => interop.instantiate(pre), /before 1\.0/, 'a module of the ABI before the marker is refused')
 })
 
 test('interop: duplicate import records wrap a host slot once', () => {
@@ -726,8 +722,8 @@ test('interop: semantic Number ingress does not decode NaN payloads as handles',
   ok(Number.isNaN(seen[0][0]),'earlier decoded values survive later allocations')
   is(mem.read(mem.Array([])),[],'empty ingress')
   const text=mem.String('legacy value'),legacy=interop.i64ToF64(text)
-  is(mem.read(legacy),'legacy value','raw read still accepts legacy floating carriers')
-  is([interop.type(legacy),interop.aux(legacy),interop.offset(legacy)],[interop.type(text),interop.aux(text),interop.offset(text)],'raw pointer helpers retain legacy bit decoding')
+  ok(Number.isNaN(mem.read(legacy)),'a Number reads as a number: its NaN payload is no handle (ABI 1 has no f64 carrier)')
+  is(mem.read(text),'legacy value','the i64 carrier reads as its value')
   is(mem.read(mem.Array([text])),['legacy value'],'explicit bigint handles still cross semantic containers')
   const raw=nan(0x7ff80002,17),ptr=mem.Float64Array(a)
   is(interop.f64ToI64(mem.read(ptr)[0]),interop.f64ToI64(raw),'typed bulk transfer keeps every payload bit')
@@ -1307,6 +1303,7 @@ test('interop: memoryless Symbol codecs retain identity and reject numeric field
       (i64.add (i64.const 0x7ff8001000000000) (i64.add (i64.shl (global.get $id) (i64.const 1)) (i64.const 1))))
     (func (export "echo") (param i64) (result i64) (local.get 0))
     (func (export "registry") (result i64) (i64.const 0x7ff8001000000000))
+    (@custom "jz:abi" "\01")
     (@custom "jz:symbols" "[[\"jz:memoryless\",16]]")
     (@custom "jz:symbol-slots" "[1,null]")
     (@custom "jz:i64exp" "[{\"name\":\"fresh\",\"r\":true},{\"name\":\"echo\",\"p\":[0],\"r\":true},{\"name\":\"registry\",\"r\":true}]"))`
@@ -1395,7 +1392,6 @@ test('interop: instantiate writes nothing into its options', () => {
   is(Object.keys(opts), ['memory', 'imports'], 'no key added')
   ok(opts.memory === memory && opts.imports === imports && Object.keys(imports).join() === 'host', 'none replaced')
 })
-
 
 test('interop: a WASI module\'s stdio goes through the wasi option', () => {
   const out = []

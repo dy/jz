@@ -1041,7 +1041,6 @@ test('arena rewind on the tape: an import taking arguments vetoes, an interop im
   const run = (callee, args) => /heap_save/.test(src(onTape(m(callee, args), root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null }))))
   ok(!run('$env.x', [['f64.const', 1]]), 'a user import with an argument may keep it')
   ok(!run('$__ext_call', [['f64.const', 1]]), 'a host function jz calls may keep its arguments')
-  ok(run('$__ext_prop', [['f64.const', 1]]), 'the interop imports that read hand the host nothing')
   ok(run('$__ext_method', [['f64.const', 1]]), 'an unbound host property read hands the host nothing')
   ok(run('$__ext_get', [['f64.const', 1]]), 'a property read with the native container codec hands the host nothing')
   ok(!run('$__ext_invoke', [['f64.const', 1]]), 'calling the captured function may keep its arguments')

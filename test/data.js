@@ -2,7 +2,8 @@
 // Adapted from old arch tests + new NaN-boxing architecture
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
-import { onWasi, onKernel, adaptI64, levels } from './_matrix.js'
+import { onWasi, onKernel, adaptI64, levels, boxed } from './_matrix.js'
+import { UNDEF_NAN } from '../interop.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 import { cases, oracle, compileInProcess, jz, compile } from './util.js'
 import parseWat from 'watr/parse'
@@ -1390,7 +1391,7 @@ test('array: return pointer', () => {
     export let get = (a, i) => a[i]
   `)
   const ptr = make()
-  ok(isNaN(ptr))
+  ok(boxed(ptr))
   is(get(ptr, 0), 5)
   is(get(ptr, 2), 15)
 })
@@ -1440,7 +1441,7 @@ test('array: >8 elements = pointer', () => {
     export let f = () => { let a = [1,2,3,4,5,6,7,8,9]; return a }
     export let g = (a) => a[8]
   `)
-  ok(isNaN(f()))
+  ok(boxed(f()))
   is(g(f()), 9)
 })
 
@@ -1513,7 +1514,7 @@ test('object: return as pointer', () => {
     export let getY = (o) => o.y
   `)
   const ptr = make(7, 11)
-  ok(isNaN(ptr))
+  ok(boxed(ptr))
   is(getX(ptr), 7)
   is(getY(ptr), 11)
 })
@@ -1557,7 +1558,7 @@ test('object: param schema default resolves ambiguity', () => {
 
 test('string: SSO creation', () => {
   const ptr = run('export let f = () => { let s = "hi"; return s }').f()
-  ok(isNaN(ptr))  // NaN-boxed
+  ok(boxed(ptr))  // a box
 })
 
 test('string: SSO', () => {
@@ -1573,7 +1574,7 @@ test('string: SSO', () => {
 
 test('string: heap creation', () => {
   const ptr = run('export let f = () => { let s = "hello world"; return s }').f()
-  ok(isNaN(ptr))
+  ok(boxed(ptr))
 })
 
 test('string: heap', () => {
@@ -2009,12 +2010,12 @@ test('array: out-of-range read returns undefined', () => {
     let a = [1]
     return a[1]
   }`)
-  ok(Number.isNaN(f()))
+  is(f(), UNDEF_NAN)
 })
 
 test('array: split missing item is undefined', () => {
   const { f } = run(`export let f = () => "unreachable".split(" ")[1]`)
-  ok(Number.isNaN(f()))
+  is(f(), UNDEF_NAN)
 })
 
 test('array: truthy & pop', () => {
