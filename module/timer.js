@@ -30,6 +30,7 @@
 import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, tempI64 } from '../src/ir.js'
 import { emit, deps, hostImport } from '../src/bridge.js'
 import { inc, err, LAYOUT, declGlobal } from '../src/ctx.js'
+import { dataAlign, dataLen, dataPush } from '../src/static-data.js'
 
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40
@@ -86,11 +87,16 @@ const setupWasi = (ctx) => {
     declGlobal('__timer_count', 'i32')
   }
 
-  // __time_ns() → i64 — current monotonic nanoseconds
-  // Reuses address 0-7 for the i64 output (same as __time_ms in console.js)
-  ctx.core.stdlib['__time_ns'] = `(func $__time_ns (result i64)
-    (drop (call $__clock_time_get (i32.const 1) (i64.const 1) (i32.const 0)))
-    (i64.load (i32.const 0)))`
+  // __time_ns() → i64 — current monotonic nanoseconds, in eight bytes of its
+  // own: the static pool may start at zero (as __time_ms in console.js)
+  ctx.core.stdlib['__time_ns'] = () => {
+    dataAlign(8)
+    const off = dataLen()
+    dataPush(new Uint8Array(8))
+    return `(func $__time_ns (result i64)
+    (drop (call $__clock_time_get (i32.const 1) (i64.const 1) (i32.const ${off})))
+    (i64.load (i32.const ${off})))`
+  }
 
   // __timer_init() — allocate timer queue, zero-fill, init next_id
   // Queue layout: [next_id i32 @ -4] [entry0 .. entry{MAX_TIMERS-1}]

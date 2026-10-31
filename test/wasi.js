@@ -1006,3 +1006,13 @@ test('WASI integer output preserves signed and unsigned 32-bit values', () => {
     is(captured.join(''), expected, `O${optimize}: numeric output agrees with JS`)
   }
 })
+
+// The WASI timer queue reads the clock into eight bytes of its own: at address
+// 0 it overwrote the first static string, so a callback printing a literal
+// printed an empty line under wasmtime (the JS host ticks the same queue).
+test('WASI: a timer callback prints its literal, the clock writing beside it', async () => {
+  const out = []
+  jz(`setTimeout(() => console.log('timer fired'), 1)`, { host: 'wasi', wasi: { write: (fd, text) => out.push(text) } })
+  await new Promise(resolve => setTimeout(resolve, 40))
+  is(out.join(''), 'timer fired\n')
+})
