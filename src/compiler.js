@@ -192,34 +192,20 @@ export function compileInProcess(code, opts = {}, jzify = null) {
   }
 }
 
-// Test-matrix bridge: when JZ_TEST_* env vars are set, inject them as default
-// opts so the npm test suite can be re-run under varying configurations (opt
-// levels, host, jzify, …) without source changes. User-supplied opts always win
-// — env defaults fill only what the caller left unset. Resolved once at module
-// load; no-op (single boolean check) when the env is empty (production path).
-const TEST_ENV_DEFAULTS = (() => {
-  // Guard bare `process` — the compiler bundle must load in browsers/Workers too
-  // (this IIFE runs at module import; an unguarded ref throws ReferenceError there).
-  const e = (typeof process !== 'undefined' && process.env) || {}
-  const out = {}
-  if (e.JZ_TEST_OPTIMIZE != null) {
-    const v = e.JZ_TEST_OPTIMIZE
-    out.optimize = /^-?\d+$/.test(v) ? Number(v) : v === 'false' ? false : v
-  }
-  if (e.JZ_TEST_HOST) out.host = e.JZ_TEST_HOST
-  if (e.JZ_TEST_STRICT) out.strict = e.JZ_TEST_STRICT === '1'
-  return out
-})()
-const HAS_TEST_ENV = Object.keys(TEST_ENV_DEFAULTS).length > 0
+// Defaults the test matrix installs (test/_env.js, from JZ_TEST_OPTIMIZE,
+// JZ_TEST_HOST and JZ_TEST_STRICT) for every compile of its process, an option the
+// call passes winning. The compiler reads no environment of its own.
+let compileDefaults = null
+export const setCompileDefaults = (defaults) => { compileDefaults = defaults && Object.keys(defaults).length ? defaults : null }
 
 // Shared front-half: reset ctx, wire opts → ctx.transform/memory/module/features,
 // and inject parse/resolveUrl. Called by `jzCompileInner` (the only entry point
 // today). The self-compile entry (scripts/self.js) drives reset itself rather than
 // going through this path, since it needs only a minimal, interop-free setup.
 const setupCtx = (code, opts, jzify) => {
-  if (HAS_TEST_ENV) {
+  if (compileDefaults) {
     const merged = { ...opts }
-    for (const k of Object.keys(TEST_ENV_DEFAULTS)) if (merged[k] == null) merged[k] = TEST_ENV_DEFAULTS[k]
+    for (const k of Object.keys(compileDefaults)) if (merged[k] == null) merged[k] = compileDefaults[k]
     opts = merged
   }
   // Session lifecycle — shared verbatim with the self-compile kernel's setupSelf

@@ -172,7 +172,7 @@ test('destruct assign: [...rest] = arr', () => {
 // answered false though `x` is a genuine (small) array by every other
 // observation. Fixed via _collectDerivedArrayNames (same file) — pinned at
 // every optimize level via npm run test:matrix (test:opt0/opt3 rerun this
-// whole file; JZ_TEST_OPTIMIZE governs jz's own default via index.js).
+// whole file; JZ_TEST_OPTIMIZE governs jz's own default via test/_env.js).
 test('destruct: const [...x] = arr keeps Array identity under promotion (audit-#12 Family A)', () => {
   const { f } = run(`export let f = () => {
     const [...x] = [1]

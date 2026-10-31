@@ -99,7 +99,7 @@ export function adaptI64(mod, raw) {
 
 const env = process.env.JZ_TEST_OPTIMIZE
 
-/** Resolved optimize level for this run. Mirrors index.js TEST_ENV_DEFAULTS:
+/** Resolved optimize level for this run. Mirrors test/_env.js:
  *  no env → compiler default (2); `false` → 0; `size` → 2; `speed` → 3; numeric → itself. */
 export const OPT_LEVEL =
   env == null ? 2

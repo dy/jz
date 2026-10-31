@@ -48,7 +48,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SELF = join(ROOT, 'dist/jz.wasm')
 
 // Native's optimize default for an unspecified `optimize` — level 2 (resolveOptimize(undefined)),
-// overridable by JZ_TEST_OPTIMIZE the same way index.js's TEST_ENV_DEFAULTS applies it. The
+// overridable by JZ_TEST_OPTIMIZE the same way test/_env.js applies it. The
 // kernel doesn't pass through setupCtx, so the wat branch reconstructs the same default to keep
 // optimize-dependent shape tests comparing like-for-like.
 const DEFAULT_OPT = (() => {
@@ -169,7 +169,7 @@ export const compileViaKernel = (code, opts = {}) => {
     // Forward an optimize config so the self-compile runs the same COMPILE-level passes
     // (SIMD lift, int-array promotion, narrowing, unroll, SROA) native does and emits the
     // same shapes. An UNSPECIFIED optimize mirrors the native default — level 2
-    // (resolveOptimize(undefined), as TEST_ENV_DEFAULTS / JZ_TEST_OPTIMIZE applies it) —
+    // (resolveOptimize(undefined), as test/_env.js / JZ_TEST_OPTIMIZE applies it) —
     // not optimize:false, else every level-2 shape test compares native-level-2 codegen
     // against kernel-level-0 and diverges. The config (watr included) is forwarded
     // verbatim: self.js's compileWat now runs the full index.js optimization tail

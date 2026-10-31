@@ -214,7 +214,7 @@ if (!onWasi() && !onKernel()) test('sequence values: retained A/A/B outputs agre
   is(compile(a, options), savedA, 'A to A')
   const bytesB = compile(b, options), savedB = bytesB.slice()
   const fresh = spawnSync(process.execPath, ['--input-type=module', '-e',
-    `import {compile} from ${JSON.stringify(new URL('../index.js', import.meta.url).href)};
+    `import {compile} from ${JSON.stringify(new URL('./util.js', import.meta.url).href)};
      process.stdout.write(Buffer.from(compile(${JSON.stringify(b)},${JSON.stringify(options)})).toString('base64'))`], {encoding:'utf8', timeout:60000})
   is(fresh.error, undefined)
   is(fresh.signal, null)

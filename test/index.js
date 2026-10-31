@@ -406,5 +406,8 @@ if (onKernelTarget) {
   setCompileTarget(compileViaKernel)
 }
 
+// The leg's defaults (JZ_TEST_OPTIMIZE, JZ_TEST_HOST, JZ_TEST_STRICT) for every
+// in-process compile, installed before any test file compiles.
+await import('./_env.js')
 const result = await runFiles(selected.map(name => new URL(`./${name}.js`, import.meta.url).href))
 process.exit(result.failed.length ? 1 : 0)

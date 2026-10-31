@@ -1,6 +1,7 @@
 // Test utilities. Thin pass-throughs to jz / compile — no preset gating.
 // Internal representation is analysis-driven; tests assert behaviour and IR
 // shape, not preset names. Boundary variants belong on `opts.host`.
+import './_env.js'
 import publicJz, { instantiate } from '../index.js'
 import { compileInProcess as compileNative, compileInternal } from '../src/compiler.js'
 import { foldOptions } from '../src/options.js'
