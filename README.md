@@ -72,6 +72,14 @@ jz kernel.js --source-map   # debug build + kernel.wasm.map, with source content
 
 `jz --help` lists the rest: `-D`, `--memory`, `--no-simd`, `--no-tail-call`, `--names`, and `-O '{…}'` for the optimize object.
 
+A `--host wasi` module is a WASI command: its `_start`, which `wasmtime` runs, runs the top-level
+code, then the program's own `export function _start()` where it has one, then the timers they
+armed until none is pending. A program that exports its own `_initialize` and no `_start` is a
+reactor instead: its `_initialize` runs the top-level code, then its body. Every other export runs
+the top-level code first where the entry has not, so the module also serves `wasmtime --invoke f`; `run` and every other name are ordinary
+exports. In a JS host, `instantiate()` runs the top-level code and drives the timers;
+`instance.exports._start()` runs the rest of the command.
+
 ## Examples
 
 <table>

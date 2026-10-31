@@ -241,7 +241,6 @@ const setupCtx = (code, opts, jzify) => {
   if (opts._compactCollections) ctx.transform.compactCollections = true
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.randomSeed !== undefined) ctx.transform.randomSeed = opts.randomSeed
-  if (opts.nativeTimers) ctx.features.blockingTimers = true  // wasmtime CLI: include __timer_loop in _start
   if (opts._interp) {
     for (const [name, fn] of Object.entries(opts._interp)) {
       if (name.startsWith('__ext_')) continue

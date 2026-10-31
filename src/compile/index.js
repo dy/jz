@@ -676,14 +676,10 @@ export function assemble(ast, profiler) {
 
   sec.funcs.push(...closureFuncs, ...funcs)
 
-  // WASI command-mode entry legalization (`run`/`_start` re-exported as () -> ()) and
-  // the WASI reactor `_initialize` conversion used to live here and further down in this
-  // function, mutating `sec.funcs`/`sec.start` in place. Both are now target legalization
-  // (src/optimize/watr-tail.js legalizeForTarget), ported onto the fully assembled
-  // `['module', …]` tree — see that function's doc comment for why (and for the byte-
-  // identity evidence that the relocation is safe). Nothing here builds `wasiCommandExports`
-  // any more, so the "Named export aliases" loop below always emits the natural alias
-  // export entry for an aliased `run`/`_start` — legalizeForTarget rewrites it from there.
+  // The WASI command (`_start`: init, the program's own `_start`, its timers) and the
+  // reactor `_initialize` are target legalization (src/optimize/watr-tail.js
+  // legalizeForTarget), on the fully assembled `['module', …]` tree: the "Named export
+  // aliases" loop below emits an aliased `_start`'s natural entry, which it rewrites.
 
   if (ctx.closure.table?.length)
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
@@ -1037,10 +1033,10 @@ export function assemble(ast, profiler) {
   if (ctx.funcs.valueExports?.size)
     sec.customs.push(['@custom', '"jz:values"', `"${JSON.stringify([...ctx.funcs.valueExports]).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
-  // Named export aliases: export { name } or export { source as alias }. A `run`/`_start`
+  // Named export aliases: export { name } or export { source as alias }. A `_start`
   // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (TargetProfile
-  // stage, src/optimize/watr-tail.js) rewrites it into the () -> () wrapper afterward, keyed
-  // off this same customs entry shape (no wasiCommandExports skip needed).
+  // stage, src/optimize/watr-tail.js) calls it from the command afterward, keyed off this
+  // same customs entry shape.
   sec.customs.push(...lateFacts.namedExports)
 
   // The module assembles here in section order with the functions in

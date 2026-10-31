@@ -472,9 +472,7 @@ export function pullStdlib(sec) {
             for (const [name, type, off] of snapSlots)
               globalRestores.push(`(global.set $${name} (${type}.load offset=${off} (global.get $__gsnap_base)))`)
           }
-          const tail = startFn[startFn.length - 1]
-          if (Array.isArray(tail) && tail[0] === 'call' && tail[1] === '$__timer_loop') startFn.splice(startFn.length - 1, 0, ...inject)
-          else startFn.push(...inject)
+          startFn.push(...inject)
           // __heap_reset's DECLARED init is HEAP.START (the static-data-end address —
           // correct for the no-__start case, where it never gets overwritten and IS the
           // true rewind point). But every durable-vs-ephemeral guard (durableFwdLogIR/

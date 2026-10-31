@@ -5089,9 +5089,18 @@ no source at run time, and a library reaches it only behind a feature test that 
 
 A module whose initializer reaches into the host (a host global it names, a member read or a
 call on a host value) ships its init as the `_initialize` export, as a WASI reactor does
-(`legalizeReactorInit`, optimize/watr-tail.js), and the interop calls it once the memory is
+(`legalizeInit`, optimize/watr-tail.js), and the interop calls it once the memory is
 readable: nothing can serve `globalThis.document` from inside `new WebAssembly.Instance`. A
-pure module keeps its `start` section and instantiates bare.
+pure module keeps its `start` section and instantiates bare. A `host: 'wasi'` module is a
+command: `_start` (`$_start$wasi`) runs init, the program's own `_start` where it exports
+one (its result dropped: a command is `() -> ()`), then `__timer_loop` where the program arms
+timers; init alone is `__jz_init`, which a JS host calls while it ticks the timers from its own
+loop (`__jz_timer_tick`, wasi.js attachTimers). A program's own `_initialize` is honored the same
+way, init then its body as the one `_initialize` (`$_initialize$wasi`), under WASI a reactor with no
+`_start` beside it, under the JS host after a start section or as the merged reactor entry; only
+`memory` and `__jz_*` are reserved export names. Where the module exports `__jz_init`, the command's
+`_start` stays off the host's `exports` (`instance.exports._start()` runs the rest). `run` is an
+ordinary export.
 
 A module name that holds one regular expression for good is that expression where a method
 of it is called (`holdModuleRegexes`, plan/scope.js). jz compiles a regular expression where
@@ -5353,7 +5362,6 @@ below. The CLI checks its options with `normalizeOptions` and adds
 | `host: 'native'` | none | the wasm2c lane (scripts/native/): the JS host without tail calls or `__jz_table` |
 | `strict` | none | test-only: skips jzify and rejects the forms it lowers plus dynamic fallbacks |
 | `sourceType` | none | parse goal for test262 (`script`/`module`); the default `jz` goal keeps export-as-ABI |
-| `nativeTimers` | none | blocking `__timer_loop` in `_start` for the wasmtime CLI; a command-module auto rule is the intended replacement |
 | `importMetaUrl` | none | the CLI sets it from the entry file |
 | `profile`, `inspect`, `helperCounters`, `helperCallsites`, `_compactCollections`, `_eagerStdlib`, `_interp` | none | instrumentation and self-compile hooks |
 
@@ -5447,9 +5455,9 @@ Every export the program does not declare is the module's ABI: `memory`,
 under `__jz_`: the allocator (`__jz_alloc`, `__jz_clear`, `__jz_heap`), the
 closure table (`__jz_table`), the release and compaction handles, the async
 boundary, a class's members, a kernel's kind variants. A program export never
-takes one of those names (`compile` rejects it at the export), and
-`instantiate()`'s `exports` holds the program's exports alone; the ABI stays on
-`instance.exports`.
+takes `memory` or a `__jz_` name (`compile` rejects it at the export); its own
+`_initialize` or `_start` is the WASI entry, after jz's init. `instantiate()`'s
+`exports` holds the program's exports alone; the ABI stays on `instance.exports`.
 
 Prebuilt Wasm must use matching compiler and interop revisions. The raw ABI has
 no independent version marker and is not frozen: NaN-box layouts, the `__jz_`

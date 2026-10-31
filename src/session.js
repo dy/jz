@@ -45,15 +45,15 @@ import { resetNameUids } from 'watr/optimize'
  *   timer.js, console.js, fs.js setupWasi; module/math.js, crypto.js
  *   wasi_snapshot_preview1 random_get) instead of the JS-host shims (setupJsHost;
  *   env.rngSeed/env.random).
- * @property {boolean} commandEntry   legalize WASI command-mode module structure:
- *   re-export `run`/`_start` as `() -> ()` (wasmtime/wasmer reject f64-returning
- *   entries under those names) and convert module init from the wasm `start`
- *   section to the reactor `_initialize` export convention (WASI forbids WASI
- *   calls inside `start` — no memory is wired yet for a top-level console.log).
+ * @property {boolean} commandEntry   the module is a WASI command: `_start` runs
+ *   module init, the program's own `_start` where it exports one, then its timers
+ *   (`() -> ()`: wasmtime/wasmer reject f64-returning entries), init alone being
+ *   `__jz_init` for a JS host — not the wasm `start` section (WASI forbids WASI
+ *   calls inside `start`: no memory is wired yet for a top-level console.log).
  * @property {'host'|'blocking'} timerModel  'host': a JS event loop drives
  *   timers/rAF — jz emits no scheduler. 'blocking': no host scheduler exists, so
- *   `__timer_init`/`__timer_loop` run inline in `__start` when the program uses
- *   timers.
+ *   `__timer_init` runs in `__start` and the command `_start` runs `__timer_loop`
+ *   until no timer is pending.
  * @property {boolean} preserveClosureTable  keep the closure funcref table (and
  *   the `$ftN` call_indirect type) live even when this compile's own scan finds no
  *   `call_indirect` — a wasi build's embedder may supply table-calling host

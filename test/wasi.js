@@ -21,7 +21,7 @@ test('unused timer names do not initialize an absent timer queue', () => {
     const module = new WebAssembly.Module(bytes)
     ok(!WebAssembly.Module.imports(module).some(i => i.name === 'clock_time_get'), 'no unused timer import')
     const { exports: e } = new WebAssembly.Instance(module)
-    e._initialize?.()
+    e.__jz_init?.()
     is(e.f(), 42)
   }
 })
@@ -561,7 +561,7 @@ test('WASI: non-callable own methods throw TypeError', () => {
 function hasCmd(cmd) { try { execSync(`which ${cmd}`, { stdio: 'ignore' }); return true } catch { return false } }
 
 test('WASI: command-mode entry returns void', () => {
-  for (const name of ['run', '_start']) {
+  for (const name of ['_start']) {
     const captured = []
     const imports = wasi({ write: (fd, text) => captured.push(text) })
     const wasm = compile(`export let ${name} = () => { console.log("hi"); return 42 }`, { host: 'wasi' })
@@ -575,7 +575,7 @@ test('WASI: command-mode entry returns void', () => {
 })
 
 test('WASI: command-mode entry returns void through export alias', () => {
-  for (const name of ['run', '_start']) {
+  for (const name of ['_start']) {
     const captured = []
     const imports = wasi({ write: (fd, text) => captured.push(text) })
     const wasm = compile(`const main = () => { console.log("hi"); return 42 }; export { main as ${name} }`, { host: 'wasi' })
@@ -610,15 +610,45 @@ test('WASI: parametric run alias keeps direct export', () => {
   is(exps.run(7), 8)
 })
 
-test('WASI: non-entry exports keep their f64 return', () => {
+test('WASI: `run` and every name but `_start` is an ordinary export', () => {
   const wasm = compile(`export let run = () => 1; export let helper = (x) => x * 2`, { host: 'wasi' })
   const imports = wasi()
   const mod = new WebAssembly.Module(wasm)
   const inst = new WebAssembly.Instance(mod, imports)
   const exps = adaptI64(mod, inst.exports)
   imports._setMemory(exps.memory)
-  is(exps.run(), undefined)
+  is(exps.run(), 1)
   is(exps.helper(21), 42)
+  is(jz('export let run = () => 42', { host: 'wasi' }).exports.run(), 42, 'what the JS host answers too')
+})
+
+// The one WASI rule: the module is a command. `_start` runs the top-level code,
+// then the program's own `_start` where it exports one, then the timers they
+// armed until none is pending; `__jz_init` is the init alone, for a JS host.
+test('WASI: _start runs the top-level code, the program\'s _start, then its timers', () => {
+  const run = (src) => {
+    const captured = [], imports = wasi({ write: (fd, text) => captured.push(text) })
+    const mod = new WebAssembly.Module(compile(src, { host: 'wasi' }))
+    const inst = new WebAssembly.Instance(mod, imports)
+    imports._setMemory(inst.exports.memory)
+    inst.exports._start()
+    return { out: captured.join(''), exports: WebAssembly.Module.exports(mod).map(e => e.name) }
+  }
+  const top = run(`console.log('top')\nsetTimeout(() => console.log('timer fired'), 2)`)
+  is(top.out, 'top\ntimer fired\n', 'top-level code, then its timer')
+  ok(top.exports.includes('__jz_init') && !top.exports.includes('_initialize'), 'init alone is __jz_init, no reactor entry beside the command')
+  is(run(`console.log('init')\nexport function _start() { console.log('user'); setTimeout(() => console.log('after'), 2) }`).out, 'init\nuser\nafter\n', 'init, the program\'s _start, its timer')
+  is(run(`let n = 0; const id = setInterval(() => { console.log(++n); if (n === 3) clearInterval(id) }, 1)`).out, '1\n2\n3\n', 'an interval until cleared')
+  // one that takes parameters no command line supplies stays the export it is, init run first
+  const mod = new WebAssembly.Module(compile(`let k = 1\nconsole.log('init')\nexport let _start = (n) => (n | 0) + k`, { host: 'wasi' }))
+  is(WebAssembly.Module.exports(mod).filter(e => e.name === '_start').length, 1, 'one _start')
+  const captured = [], imports = wasi({ write: (fd, text) => captured.push(text) }), inst = new WebAssembly.Instance(mod, imports)
+  imports._setMemory(inst.exports.memory)
+  is(adaptI64(mod, inst.exports)._start(41), 42, 'its result kept')
+  is(captured.join(''), 'init\n', 'init ran first')
+  const hosted = jz(`console.log('top')\nexport let f = () => 1`, { host: 'wasi', wasi: { write: () => {} } })
+  is(Object.keys(hosted.exports), ['f'], 'in a JS host the command entry stays on instance.exports')
+  ok(typeof hosted.instance.exports._start === 'function', 'there it is')
 })
 
 test('WASI: wasmtime native', () => {
@@ -927,13 +957,14 @@ test('WASI polyfill: writes reach process.stdout as raw bytes', () => {
   is([...Buffer.concat(chunks)].join(), '200,0,0,0,255')
 })
 
-test('init: top-level WASI calls run via _initialize (reactor), not a start section', () => {
+test('init: top-level WASI calls run via _start (command), not a start section', () => {
   // The p1 ABI forbids WASI calls inside the wasm start section — it runs during
   // `new WebAssembly.Instance`, before ANY host can wire memory, so a top-level
   // console.log/Date.now crashed the JS shim ("Cannot read properties of null").
-  // host:'wasi' ships init as the standard `_initialize` reactor export instead.
+  // host:'wasi' ships init as the command `_start` (and `__jz_init`) instead.
   const mod = new WebAssembly.Module(compile(`console.log('init'); export let f = () => 1`, { host: 'wasi' }))
-  ok(WebAssembly.Module.exports(mod).some(e => e.name === '_initialize'), '_initialize exported')
+  ok(WebAssembly.Module.exports(mod).some(e => e.name === '_start'), '_start exported')
+  ok(!WebAssembly.Module.customSections(mod, 'start').length && WebAssembly.Module.exports(mod).some(e => e.name === '__jz_init'), '__jz_init exported')
   const { exports: e } = jz(`console.log('init side effect'); let t = Date.now(); export let f = () => t > 0`, { host: 'wasi' })
   is(Number(e.f()), 1, 'init ran after memory wiring')
 })
@@ -946,21 +977,21 @@ test('fs: host js rejects at compile with the wiring hint', () => {
   ok(e && /WASI host/.test(e.message), `hint present: ${e?.message?.slice(0, 60)}`)
 })
 
-// REACTOR self-arming: a raw `new WebAssembly.Instance` embedder that never
-// calls `_initialize` (wasmtime does it automatically; plain-JS consumers of
-// the import-free wasi build don't) must still see seeded state — every
-// exported function checks the once-guard. Without it, `_clear()` reset the
+// Self-arming: a raw `new WebAssembly.Instance` embedder that never calls
+// `_start` (wasmtime does; `wasmtime --invoke` and plain-JS consumers of the
+// import-free wasi build don't) must still see seeded state — every exported
+// function checks the once-guard. Without it, `_clear()` reset the
 // heap from a zero `__heap_reset` and the next alloc wrote out of bounds
 // (the color-space batch harness, jz 0.9.1 report).
-test('init: exports self-arm without _initialize (raw-instance _clear + grow)', () => {
+test('init: exports self-arm without _start (raw-instance clear + grow)', () => {
   const src = `
     let buf = new Float64Array(4)   // module-scope init: the start body exists
     export let alloc = (n) => { buf = new Float64Array(n * 3); return 1 }
     export let poke = (i, v) => { buf[i] = v; return buf[i] }`
   const bin = compile(src, { host: 'wasi', optimize: 'speed' })
   const ex = new WebAssembly.Instance(new WebAssembly.Module(bin), {}).exports
-  ok(!!ex._initialize, 'reactor _initialize exported')
-  // deliberately NO _initialize call
+  ok(!!ex._start && !!ex.__jz_init, 'command _start and init exported')
+  // deliberately NO _start call
   if (ex.__jz_clear) ex.__jz_clear()
   const f2b = (x) => new BigInt64Array(new Float64Array([x]).buffer)[0]
   const arg = (x) => { try { ex.alloc.length } catch {} ; return x }
@@ -984,7 +1015,7 @@ test('WASI clocks own scratch storage without overwriting static strings', () =>
       }`, { host: 'wasi', optimize }))
     const inst = new WebAssembly.Instance(mod, imports)
     imports._setMemory(inst.exports.memory)
-    inst.exports._initialize?.()
+    inst.exports.__jz_init?.()
     inst.exports.f()
     inst.exports.f()
     is(captured.join(''), `${label}\n${label}\n`, `O${optimize}: clocks preserve literals across calls`)
@@ -1015,4 +1046,41 @@ test('WASI: a timer callback prints its literal, the clock writing beside it', a
   jz(`setTimeout(() => console.log('timer fired'), 1)`, { host: 'wasi', wasi: { write: (fd, text) => out.push(text) } })
   await new Promise(resolve => setTimeout(resolve, 40))
   is(out.join(''), 'timer fired\n')
+})
+
+// A program's own WASI entry is honored under its name: jz's init (top-level
+// code, seeding) first, then the body, one export of that name. `_start` makes a
+// command, `_initialize` alone a reactor (no `_start` beside it, as WASI wants).
+test('WASI: the program\'s own _start and _initialize run after jz\'s init', () => {
+  const load = (src) => {
+    const captured = [], imports = wasi({ write: (fd, text) => captured.push(text) })
+    const mod = new WebAssembly.Module(compile(src, { host: 'wasi' }))
+    const inst = new WebAssembly.Instance(mod, imports)
+    imports._setMemory(inst.exports.memory)
+    return { inst, captured, names: WebAssembly.Module.exports(mod).map(e => e.name), wasm: compile(src, { host: 'wasi' }) }
+  }
+  const count = (names, name) => names.filter(n => n === name).length
+  const start = `const greeting = ['start'].join('')\nconsole.log('init')\nexport function _start() { console.log(greeting) }`
+  const bare = `export function _initialize() { console.log('reactor') }\nexport let f = () => 1`
+  const seeded = `const greeting = ['seeded'].join('')\nconsole.log('init')\nexport function _initialize() { console.log(greeting) }`
+  const s = load(start)
+  ok(count(s.names, '_start') === 1 && !s.names.includes('_initialize'), `one _start, no _initialize: ${s.names}`)
+  s.inst.exports._start()
+  is(s.captured.join(''), 'init\nstart\n', 'top-level code, then the program\'s _start')
+  const b = load(bare)
+  ok(count(b.names, '_initialize') === 1 && !b.names.includes('_start') && !b.names.includes('__jz_init'), `a reactor: one _initialize: ${b.names}`)
+  b.inst.exports._initialize()
+  is(b.captured.join(''), 'reactor\n', 'the program\'s _initialize, no top-level code before it')
+  const d = load(seeded)
+  ok(count(d.names, '_initialize') === 1 && !d.names.includes('_start') && !d.names.includes('__jz_init'), `one _initialize: ${d.names}`)
+  d.inst.exports._initialize()
+  is(d.captured.join(''), 'init\nseeded\n', 'top-level code, then the program\'s _initialize')
+  // the JS host calls the reactor entry once the memory is wired
+  const out = []
+  jz(seeded, { host: 'wasi', wasi: { write: (fd, text) => out.push(text) } })
+  is(out.join(''), 'init\nseeded\n', 'the JS host runs init and the body at instantiate')
+  if (hasCmd('wasmtime')) for (const [src, want] of [[start, 'init\nstart\n'], [bare, 'reactor\n'], [seeded, 'init\nseeded\n']]) {
+    writeFileSync('/tmp/jz_wasi_entry.wasm', compile(src, { host: 'wasi' }))
+    is(execSync('wasmtime /tmp/jz_wasi_entry.wasm 2>/dev/null', { encoding: 'utf-8' }), want, `wasmtime: ${JSON.stringify(want)}`)
+  }
 })

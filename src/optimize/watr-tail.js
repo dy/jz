@@ -185,129 +185,89 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   return watrOpts
 }
 
-/**
- * Find a `['func', …]` node by its `$name` (the name lives at index 1 when the func
- * is named; a raw-WAT stdlib func like module/core.js's `_alloc`/`_clear` has no
- * name — index 1 is its `['export', …]` node directly instead).
- */
+/** Find a `['func', …]` node by its `$name`. */
 function findFuncByName(module, name) {
   return module.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === name)
 }
 
-/** True when `funcNode` declares any wasm param — the () -> () command-entry rewrite
- *  skips parametric entries (a CLI invocation has no way to supply args). */
-function hasParams(funcNode) {
-  return funcNode.some(n => Array.isArray(n) && n[0] === 'param')
-}
+const isExport = (x, name) => Array.isArray(x) && x[0] === 'export' && (name === undefined || x[1] === name)
 
 /**
- * Insert a newly-legalized func node at the position it would hold had it been
- * pushed to `sec.funcs` in src/compile/index.js's `compile()` — immediately after
- * every already-compiled user/closure func and immediately before whichever comes
- * first, in the now-assembled/sorted tree, of: a pullStdlib raw-WAT func (unnamed —
- * `_alloc`/`_clear` from module/core.js, pulled in by `compile()` strictly AFTER
- * where this rewrite used to run) or `$__start` (always last into the pre-sort
- * array, via the `sortedFuncs` concat in `compile()`). Both are zero-call-count
- * ties under the `byCalls` sort (nothing `call`s an export-only leaf), and
- * `Array.prototype.sort` is stable, so a zero-tied node keeps its PRE-sort
- * insertion order — landing it here reproduces the exact func-section byte
- * position `compile()` used to give it, confirmed against the WASI test corpus
- * (see this function's caller's doc comment for the verification method).
+ * The function the program exports as a WASI entry (`"_start"`,
+ * `"_initialize"`), and the thunk that takes the export off it: an inline
+ * export (`export let _start = …`) or an alias's entry (`export { main as
+ * _start }`). Its JS-boundary wrapper where it has one (`$name$exp`, which
+ * carries the real arity). One that takes parameters, which no runtime
+ * supplies, stays the export it is (`params`).
  */
-function insertLikeCompileFuncsPush(module, funcNode) {
-  const first = module.findIndex(n => Array.isArray(n) && n[0] === 'func')
-  if (first === -1) { module.push(funcNode); return }
-  let i = first
-  while (i < module.length && Array.isArray(module[i]) && module[i][0] === 'func') {
-    const name = module[i][1]
-    if (typeof name !== 'string' || name === '$__start') break
-    i++
+function programEntry(module, name) {
+  let target = null, unexport = null
+  for (const n of module) {
+    if (!Array.isArray(n) || n[0] !== 'func') continue
+    const at = n.findIndex(x => isExport(x, name))
+    if (at === -1) continue
+    target = n[1]; unexport = () => n.splice(at, 1)
+    break
   }
-  module.splice(i, 0, funcNode)
-}
-
-// Command-mode export names iterated in this fixed order when a source exports both
-// — src/compile/index.js used to walk `Object.entries(ctx.funcs.exports)` (source
-// declaration order); no WASI test declares both `run` and `_start` as aliases of the
-// same target, so this fixed order is an intentional, disclosed narrowing (see
-// legalizeForTarget's doc comment), not a rediscovery of that removed ctx read.
-const WASI_COMMAND_ENTRIES = ['run', '_start']
-
-/**
- * WASI command-mode export legalization: `run`/`_start` must export as `() -> ()` —
- * wasmtime/wasmer reject f64-returning functions under those names. Ported from
- * src/compile/index.js's (removed) pre-assembly rewrite onto the assembled tree:
- * finds the target func by name instead of mutating `sec.funcs` in place. The
- * target is discovered structurally, not via `ctx.funcs.exports` — a direct
- * `export let run = …` shows up as an inline `['export', '"run"']` on the func
- * node itself; `export { main as run }` shows up as a customs alias entry
- * `['export', '"run"', ['func', '$main']]` (src/compile/index.js's "Named export
- * aliases" loop, which no longer skips WASI entries — see its updated comment).
- */
-function legalizeCommandEntries(module) {
-  for (const exportName of WASI_COMMAND_ENTRIES) {
-    const wantExport = `"${exportName}"`
-    let targetName = null
-    let removeExport = null // () => void — strips whatever currently carries `wantExport`
-
-    // Direct: `export let run = …` / `export function run() {…}` — inline export on the func itself.
-    for (let i = 1; i < module.length; i++) {
-      const n = module[i]
-      if (!Array.isArray(n) || n[0] !== 'func') continue
-      const expIdx = n.findIndex(x => Array.isArray(x) && x[0] === 'export' && x[1] === wantExport)
-      if (expIdx === -1) continue
-      targetName = typeof n[1] === 'string' ? n[1] : null
-      removeExport = () => n.splice(expIdx, 1)
-      break
-    }
-    // Alias: `export { main as run }` — a customs entry pointing at the real func.
-    if (targetName === null) {
-      const idx = module.findIndex(n => Array.isArray(n) && n[0] === 'export' &&
-        n[1] === wantExport && Array.isArray(n[2]) && n[2][0] === 'func')
-      if (idx !== -1) {
-        targetName = module[idx][2][1]
-        removeExport = () => module.splice(idx, 1)
-      }
-    }
-    if (targetName === null) continue
-
-    // Call through the JS-boundary `$name$exp` wrapper when one exists (it carries the
-    // real JS arity — a closure-convention `$name` would always show 0 params). Fall
-    // back to `$name` directly for a non-boundary-wrapped export.
-    const expFunc = findFuncByName(module, `${targetName}$exp`)
-    const inner = expFunc ? `${targetName}$exp` : targetName
-    const innerFunc = expFunc || findFuncByName(module, targetName)
-    if (!innerFunc || hasParams(innerFunc)) continue // parametric entries keep their direct f64 export
-
-    removeExport()
-    // The wrapper discards every result: a scalarized tuple result is several
-    // values. Nested `local.set` folds consume them one by one; watr's vacuum
-    // turns the dead outermost set into a drop and keeps the rest, where a run
-    // of bare drops after a multi-value call folds into one.
-    const results = innerFunc.flatMap(x => Array.isArray(x) && x[0] === 'result' ? x.slice(1) : [])
-    let body = ['call', inner]
-    for (let k = results.length - 1; k >= 0; k--) body = ['local.set', `$r${k}`, body]
-    insertLikeCompileFuncsPush(module,
-      ['func', `$${exportName}$wasi`, ['export', wantExport], ...results.map((t, k) => ['local', `$r${k}`, t]), body])
+  if (target === null) {
+    const at = module.findIndex(n => isExport(n, name) && Array.isArray(n[2]) && n[2][0] === 'func')
+    if (at === -1) return null
+    const node = module[at]
+    target = node[2][1]; unexport = () => module.splice(module.indexOf(node), 1)
   }
+  const func = findFuncByName(module, `${target}$exp`) || findFuncByName(module, target)
+  if (!func) return null
+  return { func, unexport, params: func.some(x => Array.isArray(x) && x[0] === 'param') }
 }
 
 /**
- * WASI reactor `_initialize` conversion: the p1 ABI forbids WASI calls inside the wasm
- * `start` section (no host can service `fd_write` etc. before `new WebAssembly.Instance`
- * finishes wiring memory — a top-level console.log/Date.now crashed with "Cannot read
- * properties of null"). Ships module init as the `_initialize` export instead, self-armed
- * from every other export via a `$__init_done` once-guard (a raw-instance embedder that
- * never calls `_initialize` — wasmtime does; a bare `new WebAssembly.Instance` doesn't —
- * must still see seeded state). Ported from src/compile/index.js's (removed) late-`compile()`
- * rewrite onto the assembled tree: finds `$__start` by name instead of reading `sec.start`.
+ * Module init as an export, not the wasm `start` section, which runs before
+ * any host can wire the memory (the WASI p1 ABI forbids WASI calls there; a JS
+ * host reads values through the memory). The program's own WASI entry is
+ * honored: its `_initialize` or `_start` runs after init, under that one name
+ * (`$_initialize$wasi`, `$_start$wasi`, each `() -> ()`).
  *
- * Must run AFTER legalizeCommandEntries in the same legalizeForTarget call (matching the
- * original in-`compile()` ordering) — its guard-injection loop below has to see any
- * `$run$wasi`/`$_start$wasi` wrapper already in the tree so those self-arm too.
+ * Under WASI the module is a command: `_start`, which wasmtime runs, is the
+ * top-level code, then the program's own `_start` where it exports one, then
+ * the timers they armed until none is pending (`__timer_loop`); the init alone
+ * is `__jz_init`, for a JS host, which drives the timers from its own loop
+ * (wasi.js attachTimers). A program that exports an `_initialize` and no
+ * `_start` is a reactor instead: its `_initialize`, init then its body, is the
+ * entry. Elsewhere init is the reactor's `_initialize`, which the interop calls
+ * once the memory is wired. Every other exported function runs init first
+ * where nothing has (`$__init_done`): an embedder that calls an export without
+ * the entry (`wasmtime --invoke`, a bare `new WebAssembly.Instance`) still
+ * sees seeded state.
  */
-function legalizeReactorInit(module) {
+function legalizeInit(module, wasi) {
   const sFn = findFuncByName(module, '$__start')
+  const ownInit = programEntry(module, '"_initialize"'), ownStart = wasi ? programEntry(module, '"_start"') : null
+  const entries = []
+  // An entry: init, the program's body of that name (its results dropped), then `tail`
+  const entry = (name, own, tail) => {
+    const f = ['func', `$${name}$wasi`, ['export', `"${name}"`]]
+    if (sFn) f.push(['call', '$__start'])
+    if (own) {
+      own.unexport()
+      // a result goes: nested `local.set` folds consume a tuple's values one by one
+      const results = own.func.flatMap(x => Array.isArray(x) && x[0] === 'result' ? x.slice(1) : [])
+      let call = ['call', own.func[1]]
+      for (let k = results.length - 1; k >= 0; k--) call = ['local.set', `$r${k}`, call]
+      f.splice(3, 0, ...results.map((t, k) => ['local', `$r${k}`, t]))
+      f.push(call)
+    }
+    f.push(...tail)
+    module.splice(module.indexOf(sFn ?? own.func) + 1, 0, f)
+    entries.push(f)
+  }
+  if (ownInit && !ownInit.params) entry('_initialize', ownInit, [])
+  if (wasi && (ownStart ? !ownStart.params : sFn && !ownInit)) {
+    // The timer loop stays exported through link (module/timer.js), that
+    // treeshake keeps it; the command calls it now.
+    const loop = findFuncByName(module, '$__timer_loop')
+    if (loop) { const e = loop.findIndex(x => isExport(x)); if (e !== -1) loop.splice(e, 1) }
+    entry('_start', ownStart, loop ? [['call', '$__timer_loop']] : [])
+  }
   if (!sFn) return
 
   let at = 2
@@ -315,87 +275,44 @@ function legalizeReactorInit(module) {
   sFn.splice(at, 0,
     ['if', ['global.get', '$__init_done'], ['then', ['return']]],
     ['global.set', '$__init_done', ['i32.const', 1]])
-  sFn.splice(2, 0, ['export', '"_initialize"'])
+  // the init alone, where the program's `_initialize` does not hold it
+  if (!ownInit || ownInit.params) sFn.splice(2, 0, ['export', wasi ? '"__jz_init"' : '"_initialize"'])
 
   const startDirIdx = module.findIndex(n => Array.isArray(n) && n[0] === 'start')
   if (startDirIdx !== -1) module.splice(startDirIdx, 1)
 
-  // REACTOR self-arming: every OTHER exported function ensures init ran first (`$__start`
-  // guards itself via the once-check spliced in above, not this call-guard — visiting it
-  // here too would splice a self-call into its own body).
   for (const f of module) {
-    if (!Array.isArray(f) || f[0] !== 'func' || f === sFn) continue
-    if (!f.some(x => Array.isArray(x) && x[0] === 'export')) continue
+    if (!Array.isArray(f) || f[0] !== 'func' || f === sFn || entries.includes(f)) continue
+    if (!f.some(x => isExport(x))) continue
     let g = 2
     while (g < f.length && Array.isArray(f[g]) &&
       (f[g][0] === 'export' || f[g][0] === 'param' || f[g][0] === 'result' || f[g][0] === 'local')) g++
     f.splice(g, 0, ['if', ['i32.eqz', ['global.get', '$__init_done']], ['then', ['call', '$__start']]])
   }
 
-  // `$__init_done` — appended after the existing globals in the original flow
-  // (`sec.globals.push`, before assembly); insert right before the func region here,
-  // which is the same position (globals immediately precede funcs in `sections`).
+  // `$__init_done` goes right before the func region (globals immediately precede funcs).
   const firstFunc = module.findIndex(n => Array.isArray(n) && n[0] === 'func')
   module.splice(firstFunc, 0, ['global', '$__init_done', ['mut', 'i32'], ['i32.const', 0]])
 }
 
 /**
- * Target legalization (audit P1, TargetProfile stage): the seam for module-level,
- * target-conditional rewrites — the fully assembled `['module', …]` tree, right
- * before watr's fixpoint runs — keyed off a TargetProfile (src/session.js
- * targetProfileFor), not a raw host string. Called unconditionally from watrTail
- * below, on both pipelines, so a future rewrite lands once here instead of being
- * re-derived per call site.
- *
- * Ports the two WASI-only, module-level rewrites the site inventory found (grepping
- * every `ctx.transform.host` read, ~24 sites): legalizeCommandEntries (`run`/`_start`
- * as `() -> ()`) and legalizeReactorInit (`start` → `_initialize`). Both used to run
- * inside src/compile/index.js's `compile()`, mutating the pre-assembly `sec.funcs`/
- * `sec.start` — one BEFORE `optimizeModule`+treeshake+the funcidx `byCalls` sort, one
- * between treeshake and that sort. Relocating them here is a real pipeline-order
- * change (this file's own `snapshotInit` placement comment in index.js declines a
- * structurally identical reorder for the same reason: moving a target-conditional
- * rewrite across `optimizeModule` or the final sort changes what those passes
- * observe, not merely where the code lives) — resolved per rewrite:
- *
- *   - legalizeReactorInit never adds/removes a func node and never touches a local
- *     (only a global + call-instructions), and in the ORIGINAL pipeline already ran
- *     AFTER treeshake's callCount computation and AFTER optimizeModule — so `compile()`
- *     never observed its output there either. The `byCalls` sort's stable ties are
- *     computed from a Map lookup keyed by name, unaffected by body mutations. Nothing
- *     it does can change a single byte of what optimizeModule, treeshake, or the sort
- *     produce — verified by direct comparison, not merely argued (see below).
- *   - legalizeCommandEntries DOES add new func nodes (the wrapper) that used to
- *     participate in the `byCalls` sort as zero-call-count ties — moving it here
- *     means that sort has already run. insertLikeCompileFuncsPush (above)
- *     reconstructs the same tie position from the invariant that ties preserve
- *     PRE-sort insertion order and the wrapper was always inserted immediately after
- *     the compiled user/closure funcs, before anything `compile()` pushes later
- *     (pullStdlib's raw-WAT funcs, `$__start`).
- *
- * Byte-identity is the actual arbiter, not this argument: verified by hashing
- * compiled .wasm/.wat for the full test/wasi.js source corpus (command/reactor/
- * alias/parametric/mixed-export/fs/optimize-tier variants) before and after this
- * function grew real behavior — all hashes match. `test:wasi` (40/40) stays green.
+ * Target legalization (TargetProfile stage): module-level, target-conditional
+ * rewrites of the fully assembled `['module', …]` tree, right before watr's
+ * fixpoint, keyed off a TargetProfile (src/session.js targetProfileFor). A WASI
+ * build is a command or, with the program's own `_initialize`, a reactor
+ * (`commandEntry`); a JS-host module whose init reaches the host (a host global
+ * it names, a member read or call on a host value, `__ext_*`, a host function's
+ * throw) ships its init as `_initialize`, the program's own `_initialize` after
+ * it; a pure module keeps its `start` section and instantiates bare.
  */
-// A module that reaches into the host from its initializer: a host global it names
-// (`globalThis`, `self`), a member read or a call on a host value (`__ext_*`). No
-// host can serve those before `new WebAssembly.Instance` returns (its memory is
-// not wired), so such a module ships its init as `_initialize` too (the reactor
-// convention above), which the interop calls once the memory is; a pure module
-// keeps its `start` section and instantiates bare.
 const HOST_ENV_GLOBALS = new Set(['WebAssembly', 'globalThis', 'self', 'window', 'global', 'process'])
 const initTouchesHost = (module) => module.some(n => Array.isArray(n) && n[0] === 'import' && n[1] === '"env"' &&
   typeof n[2] === 'string' && (HOST_ENV_GLOBALS.has(n[2].slice(1, -1)) || n[2].startsWith('"__ext_'))) ||
   !!findFuncByName(module, '$__jz_throw_host')
 
 export function legalizeForTarget(module, targetProfile) {
-  if (!targetProfile?.commandEntry) {
-    if (initTouchesHost(module)) legalizeReactorInit(module)
-    return module
-  }
-  legalizeCommandEntries(module)
-  legalizeReactorInit(module)
+  if (targetProfile?.commandEntry) legalizeInit(module, true)
+  else if (initTouchesHost(module)) legalizeInit(module, false)
   return module
 }
 

@@ -5,7 +5,7 @@ import { isInactiveFunction } from './compile/active-function.js'
 export const DBG_INVARIANTS = typeof process === 'undefined' ? false : process.env?.JZ_DEBUG_INVARIANTS === '1'
 
 const PHASE_ORDER = ['post-reset', 'post-prepare', 'post-compile']
-const FEATURE_KEYS = ['sso', 'blockingTimers', 'bigint', 'error', 'errorClasses', 'timers']
+const FEATURE_KEYS = ['sso', 'bigint', 'error', 'errorClasses', 'timers']
 let sessionPhase = null, _featureSnapshot = null, _postAnalyze = false, _preAssemble = false
 const snapFeatureVal = v => v instanceof Set ? [...v].sort() : v
 const snapFeatureEq = (a, b) => Array.isArray(a)

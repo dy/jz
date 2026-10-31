@@ -871,8 +871,10 @@ const codec = (mem, src) => {
   return S
 }
 
-// The module's ABI exports, every name the program cannot export (src/prepare/handlers.js
-// exportName): its memory, the reactor entry and the `__jz_` prefix.
+// The module's ABI exports, which the host's namespace leaves out: its memory, the
+// reactor entry `_initialize` the interop runs (jz's, or the program's after jz's init)
+// and the `__jz_` prefix, which with `memory` no program export takes
+// (src/prepare/handlers.js exportName).
 const ABI_EXPORT = /^(?:memory|_initialize)$|^__jz_/
 
 // An Error of the program as the host's Error of its class (jz:errcls): its
@@ -940,9 +942,12 @@ export const wrap = (src, state) => {
   const programExports = (all) => {
     // A description computed at run time crosses through the module's own export (jz:symbol)
     if (all.__jz_sym_desc) symbolsOf(realInst, mod, realInst.exports).describe = all.__jz_sym_desc
-    if (state) state.init = all._initialize
+    if (state) state.init = all.__jz_init ?? all._initialize
+    // A WASI command's `_start` (its init is `__jz_init`, which the host has run) is
+    // its entry, the rest of the command: called off `instance.exports`.
+    const command = '__jz_init' in all
     const exports = {}
-    for (const name of Object.keys(all)) if (!ABI_EXPORT.test(name)) exports[name] = all[name]
+    for (const name of Object.keys(all)) if (!ABI_EXPORT.test(name) && !(command && name === '_start')) exports[name] = all[name]
     if (values) for (const name of values)
       if (typeof exports[name] === 'function') Object.defineProperty(exports, name, { get: exports[name], enumerable: true, configurable: false })
     return exports
@@ -1084,10 +1089,11 @@ export const wrap = (src, state) => {
   }, { owners: new WeakMap(), classes: null }) : classes ? { owners: new WeakMap(), classes: null } : null
   if (state) state.fnOf = fnOf
   const all = {}
-  // The ABI functions the host calls as the program's are: the initializer, a
+  // The ABI functions the host calls as the program's are: the initializer (the
+  // reactor's `_initialize`, a WASI command's `__jz_init`), a
   // Symbol's description, a kernel's kind variants, a class's members. The
   // rest of the ABI (`__jz_alloc`, `__jz_base`, …) the runtime calls raw.
-  const hostCalled = new Set(['_initialize', '__jz_sym_desc'])
+  const hostCalled = new Set(['_initialize', '__jz_init', '__jz_sym_desc'])
   for (const ie of i64Exp.values()) for (const n of ie.v ?? []) hostCalled.add(n)
   for (const c of classes ?? []) for (const [key, kind] of [...c.members, ...c.statics]) hostCalled.add('__jz_' + c.tag + MARK + kind + key)
   const wrapped = (name, fn) => !ABI_EXPORT.test(name) || hostCalled.has(name) && typeof fn === 'function'

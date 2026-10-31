@@ -32,8 +32,8 @@ headers (`brew install simde`, `apt install libsimde-dev`, or `SIMDE_DIR`), or
 
 What the executable does:
 
-- it calls `_initialize` (top-level code), then `_start`, where exported, as
-  wasmtime does;
+- it calls `_initialize` where a reactor exports one, then `_start`, as wasmtime
+  does: a jz command's top-level code, its own `_start`, then its timers;
 - `fd_read` and `fd_write` are blocking `readv`/`writev` on the process's
   descriptors, partial counts as the OS returns them and 0 at EOF, so a byte
   protocol over `fs.readSync`/`fs.writeSync` (a Chrome Native Messaging host)

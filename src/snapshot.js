@@ -70,13 +70,14 @@ export function snapshotInit(module, watrCompile, binary = false) {
   if (typeof WebAssembly === 'undefined') return false
   if (!Array.isArray(module) || module[0] !== 'module') return false
 
-  // Init lives in a `(start)` directive (js host) or, under the WASI reactor
-  // convention, in a func exported as `_initialize` (host: 'wasi' never emits a
-  // start section — the p1 ABI forbids WASI calls there).
+  // Init lives in a `(start)` directive (js host) or in `$__start` exported as
+  // the reactor's `_initialize` or, under WASI, as `__jz_init` beside the
+  // command (optimize/watr-tail.js legalizeInit; the p1 ABI forbids WASI calls
+  // in a start section).
   const startDir = findNode(module, n => n[0] === 'start')
-  const startFn = startDir
-    ? findNode(module, n => n[0] === 'func' && n[1] === startDir[1])
-    : findNode(module, n => n[0] === 'func' && n.some(c => Array.isArray(c) && c[0] === 'export' && c[1] === '"_initialize"'))
+  const startFn = findNode(module, n => n[0] === 'func' && n[1] === (startDir ? startDir[1] : '$__start'))
+  const initExport = startFn?.find(c => Array.isArray(c) && c[0] === 'export')?.[1]?.slice(1, -1)
+  if (!startDir && !initExport) return false
   if (!startFn) return false                                       // nothing to snapshot
   const startName = startFn[1]
   const funcs = findAll(module, n => n[0] === 'func')
@@ -134,9 +135,9 @@ export function snapshotInit(module, watrCompile, binary = false) {
       else if (gl) (stubs[modName] ||= {})[name] = new WebAssembly.Global({ value: 'i64' }, 0n)
     }
     inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), stubs)
-    // Reactor form: init doesn't run at instantiation — drive it explicitly so the
+    // Exported init doesn't run at instantiation — drive it explicitly so the
     // hermeticity stubs get their chance to throw (start-section form ran above).
-    if (!startDir) inst.exports._initialize()
+    if (!startDir) inst.exports[initExport]()
   } catch (e) {
     module.length -= getters.length                                // restore, decline
     return false
@@ -198,8 +199,8 @@ export function snapshotInit(module, watrCompile, binary = false) {
   // __start is spent
   if (startDir) module.splice(module.indexOf(startDir), 1)
   module.splice(module.indexOf(startFn), 1)
-  // Reactor form: WASI command wrappers self-init via a void `call $__start` —
-  // init is baked into the image now, so those calls must go with the func.
+  // Exported init: the exports and the WASI command self-init via a void
+  // `call $__start` — init is baked into the image now, so those calls go with the func.
   const stripCalls = (n) => {
     for (let i = n.length - 1; i >= 0; i--) {
       const c = n[i]

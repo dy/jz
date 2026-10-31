@@ -11,13 +11,21 @@ const skip = !hasCmd('wasmtime') && !hasCmd('wasmer')
 function nativeRun(code, runtime = 'wasmtime') {
   if (!hasCmd(runtime)) runtime = runtime === 'wasmtime' ? 'wasmer' : 'wasmtime'
   if (!hasCmd(runtime)) throw new Error('No native runtime (wasmtime/wasmer) found')
-  const wasm = compile(code, { nativeTimers: true, host: 'wasi' })
+  const wasm = compile(code, { host: 'wasi' })
   const path = '/tmp/jz_timer_test.wasm'
   writeFileSync(path, wasm)
   return execSync(`${runtime} ${path} 2>/dev/null`, { encoding: 'utf-8' })
 }
 
 // === setTimeout ===
+
+test('setTimeout: a program of top-level code drains its timers as a command', { skip }, () => {
+  const out = nativeRun(`
+    console.log("top")
+    setTimeout(() => { console.log("fired") }, 1)
+  `)
+  ok(/top\nfired/.test(out), `output: ${out}`)
+})
 
 test('setTimeout: fires callback', { skip }, () => {
   const out = nativeRun(`

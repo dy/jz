@@ -16,9 +16,9 @@
  * jz-w2c lane.
  *
  * Entry, chosen from the module's exports by the builder: JZ_WASI when it
- * imports wasi_snapshot_preview1, then `_initialize` (JZ_INITIALIZE, idempotent
- * module init), `_start` (JZ_START) and `main` (JZ_MAIN, the bench's entry), in
- * that order. A trap prints its reason and exits with 134, as wasmtime does.
+ * imports wasi_snapshot_preview1, then `_initialize` (JZ_INITIALIZE, a reactor's
+ * init), `_start` (JZ_START, a jz command: its top-level code, its own `_start`,
+ * its timers) and `main` (JZ_MAIN, the bench's entry), in that order. A trap prints its reason and exits with 134, as wasmtime does.
  */
 
 #ifndef _DEFAULT_SOURCE

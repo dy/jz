@@ -2054,7 +2054,7 @@ test('module-scope: jzify hoisted bare var is global', () => {
     export let f = () => x
   `, { jzify: true })
   const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm))
-  inst.exports._initialize?.()  // wasi leg: reactor init (js leg ran the start section)
+  inst.exports.__jz_init?.()  // wasi leg: the command's init (js leg ran the start section)
   is(inst.exports.f(), 3)
 })
 

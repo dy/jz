@@ -828,7 +828,6 @@ export function reset(proto, globals, bridge) {
   ctx.features = {
     // SESSION
     sso: true,        // Short ASCII string packing. Default on; flip off to A/B the heap-only path.
-    blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
 
     // PROGRAM
     bigint: false,    // BigInt construction anywhere (tagged literal / BigInt() call — prep()'s

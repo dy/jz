@@ -92,10 +92,10 @@ test('abi: a raw host builds an array pointer and passes it as an i64 param', ()
   is(e.sum(mkbox(PTR.ARRAY, 0, data)), numI64(60))   // i64 param: pass the box bits as u64 directly
 })
 
-// The ABI is every export the program does not declare: `memory`, `_initialize`
-// and the `__jz_` prefix. The host's namespace holds the program's exports alone;
-// a program export cannot take an ABI name.
-const ABI_NAME = /^(?:memory|_initialize)$|^__jz_/
+// The ABI is every export the program does not declare: `memory`, `_initialize`,
+// a WASI command's `_start` and the `__jz_` prefix. The host's namespace holds
+// the program's exports alone; a program export cannot take `memory` or a `__jz_` name.
+const ABI_NAME = /^(?:memory|_initialize|_start)$|^__jz_/
 test('abi: exports holds the program\'s exports, the module the ABI', async () => {
   const { default: jz } = await import('../index.js')
   const small = jz('export let add = (a, b) => a + b; export let s = (x) => "ab" + x', { host: 'js' })
@@ -114,11 +114,13 @@ test('abi: exports holds the program\'s exports, the module the ABI', async () =
 })
 
 test('abi: a program export cannot take an ABI name', () => {
-  for (const [src, name] of [['export let memory = (x) => x + 1', 'memory'], ['export let _initialize = () => 1', '_initialize'],
+  for (const [src, name] of [['export let memory = (x) => x + 1', 'memory'],
     ['let a = 1\nexport { a as __jz_alloc }', '__jz_alloc'], ['export * from "./m.js"', 'memory']]) {
     let error
     try { compile(src, { modules: { './m.js': 'export let memory = 1' } }) } catch (e) { error = e }
     ok(error && error.message.includes(`export '${name}'`) && /at line \d+:\d+/.test(error.message), `${name}: a located compile error (${error?.message.split('\n')[0]})`)
   }
   ok(compile('export let _alloc = (x) => x + 1, _clear = 2, run = 3'), 'the former ABI names are the program\'s')
+  // a program's own _initialize or _start is its WASI entry, jz's init run first (test/wasi.js)
+  for (const host of ['js', 'wasi']) ok(new WebAssembly.Module(compile('console.log(1)\nexport let _initialize = () => 2, _start = () => 3', { host })), `${host}: _initialize and _start compile to one export each`)
 })

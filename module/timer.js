@@ -11,8 +11,9 @@
  *     the scheduling.
  *
  *   `host: 'wasi'`: pure-WASM timer queue using WASI clock_time_get for
- *     deadlines. Runs inline after __start (or via __timer_loop on wasmtime/
- *     wasmer). No JS host needed.
+ *     deadlines. The command `_start` runs __timer_loop after the program's
+ *     code (optimize/watr-tail.js legalizeInit); a JS host ticks the queue
+ *     through `__jz_timer_tick` (wasi.js attachTimers). No JS host needed.
  *
  * WASI queue layout: heap-allocated array of entries in linear memory.
  *   Each entry (40 bytes):
@@ -236,7 +237,8 @@ const setupWasi = (ctx) => {
 
   // __timer_loop() — blocking event loop. Polls clock, dispatches due timers.
   // Exits when no active timers remain (all timeouts fired, all intervals cleared).
-  // Intended for CLI/wasmtime/wasmer where JS event loop is unavailable.
+  // The command `_start` calls it (wasmtime/wasmer, no JS event loop); exported
+  // through link so treeshake keeps it, the legalization takes the export off.
   ctx.core.stdlib['__timer_loop'] = `(func $__timer_loop (export "__jz_timer_loop")
     (local $now i64)
     (local $any i32)

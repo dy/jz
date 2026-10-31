@@ -394,7 +394,6 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     startFn.push(...typeofInit, ...schemaInit,
       ...(wasiTimers ? [['call', '$__timer_init']] : []),
       ...moduleInits, ...initIR,
-      ...(ctx.features.blockingTimers ? [['call', '$__timer_loop']] : []),
     )
     sec.start.push(startFn, ['start', '$__start'])
   }

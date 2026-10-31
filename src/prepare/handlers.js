@@ -72,13 +72,14 @@ const moduleName = node => {
   return err('Invalid module export name — use an identifier or string literal')
 }
 
-// The export names the module's ABI owns: its memory, the reactor entry and
-// every `__jz_` export the host reads (interop.js). A program export never takes
-// one; a bundled module's export stays its own until the program re-exports it.
-const RESERVED_EXPORT = /^(?:memory|_initialize)$|^__jz_/
+// The export names the module's ABI owns: its memory and every `__jz_` export
+// the host reads (interop.js). A program export never takes one (its own
+// `_initialize` or `_start` is the WASI entry, after jz's init: optimize/watr-tail.js
+// legalizeInit); a bundled module's export stays its own until the program re-exports it.
+const RESERVED_EXPORT = /^memory$|^__jz_/
 const exportName = (name) => {
   if (ctx.module.moduleStack.length === 0 && RESERVED_EXPORT.test(name))
-    err(`export '${name}' takes a name the module's ABI reserves (memory, _initialize and the __jz_ prefix): rename it`)
+    err(`export '${name}' takes a name the module's ABI reserves (memory and the __jz_ prefix): rename it`)
   return name
 }
 
