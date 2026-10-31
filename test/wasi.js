@@ -671,7 +671,7 @@ test('fs: read + write round-trip under node:wasi preopens', async () => {
   const inst = new WebAssembly.Instance(new WebAssembly.Module(wasm), w.getImportObject())
   w.initialize(inst)
   const { memory } = await import('../interop.js')
-  const mem = memory({ exports: inst.exports })
+  const mem = memory(inst.exports.memory)
   is(mem.read(inst.exports.f()), 'hello wasi files')
   is(mem.read(inst.exports.unicode()), '\uFEFFĀ😀')
   is(readFileSync(join(dir, '😀.txt'), 'utf8'), '\uFEFFĀ😀')
