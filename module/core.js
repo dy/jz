@@ -2594,7 +2594,7 @@ export default (ctx) => {
         // on the premise that its nullish short-circuit makes the PTR.EXTERNAL
         // arm unreachable unless something else already demanded it — false: the
         // short-circuit rules out null/undefined only, and a marshalled object is
-        // neither. That silently dropped the __ext_prop fallback whenever `?.`
+        // neither. That silently dropped the __ext_get fallback whenever `?.`
         // was a receiver's only property read (every `opts?.factor ?? 1` read
         // the default, never the host value). No `.`/`?.` distinction here now.
         if (!isWasi) setLinkDemand('external')

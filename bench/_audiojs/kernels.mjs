@@ -60,8 +60,8 @@ let k = { fs: 44100 }, out = new Float64Array(2)
 export let run = (l, r) => kWeighting.ms([l, r], k, out)`,
     drive(js, wz, memory) {
       const NB = 256, [L, R] = signal(BS * NB)
-      const pl = memory.allocTyped(Float32Array, BS), pr = memory.allocTyped(Float32Array, BS)
-      const pv = b => b.view.buffer === memory.buffer ? b.view : (b.view = memory.read(b.box))
+      const pl = { box: memory.Float32Array(BS) }, pr = { box: memory.Float32Array(BS) }
+      const pv = b => b.view?.buffer === memory.buffer ? b.view : (b.view = memory.read(b.box))
       const blk = (a, b) => a.subarray(b * BS, b * BS + BS)
       const A = new Float64Array(NB * 2), B = new Float64Array(NB * 2)
       for (let b = 0; b < NB; b++) {
@@ -132,8 +132,8 @@ export let encode = (l, r) => enc.encode([l, r])`,
     async drive(js, wz, memory, bits) {
       const BLK = 65536, [L, R] = signal(BLK * 6)
       await js.open(44100, bits); await wz.open(44100, bits)
-      const l = memory.allocTyped(Float32Array, BLK), r = memory.allocTyped(Float32Array, BLK)
-      const pv = b => b.view.buffer === memory.buffer ? b.view : (b.view = memory.read(b.box))
+      const l = { box: memory.Float32Array(BLK) }, r = { box: memory.Float32Array(BLK) }
+      const pv = b => b.view?.buffer === memory.buffer ? b.view : (b.view = memory.read(b.box))
       let note = 'bit-exact'
       for (let o = 0; o + BLK <= L.length; o += BLK) {
         const a = js.encode(L.subarray(o, o + BLK), R.subarray(o, o + BLK))
@@ -165,8 +165,8 @@ export let encode = (l, r) => {
     drive(js, wz, memory) {
       const N = 88200, [L, R] = signal(N)
       js.open(); wz.open()
-      const l = memory.allocTyped(Float32Array, N), r = memory.allocTyped(Float32Array, N)
-      const pv = b => b.view.buffer === memory.buffer ? b.view : (b.view = memory.read(b.box))
+      const l = { box: memory.Float32Array(N) }, r = { box: memory.Float32Array(N) }
+      const pv = b => b.view?.buffer === memory.buffer ? b.view : (b.view = memory.read(b.box))
       pv(l).set(L); pv(r).set(R)
       const a = [...js.encode(L, R)], g = [...wz.encode(l.box, r.box)]
       const note = a.join() === g.join() ? `same bytes (${a[0]} frames, ${a[1]} B)` : `js ${a.join(' ')}, jz ${g.join(' ')}`

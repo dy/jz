@@ -32,8 +32,8 @@ import { resetNameUids } from 'watr/optimize'
  *
  * @typedef {Object} TargetProfile
  * @property {boolean} envImports     `env.*` host-JS bridge is available as a
- *   dynamic-dispatch fallback (__ext_call/__ext_set/__ext_prop, host globals via
- *   env import, fetch, navigator.hardwareConcurrency, opts._interp glue). false
+ *   dynamic-dispatch fallback (__ext_get/__ext_set/__ext_invoke, host globals via
+ *   env import, fetch, navigator.hardwareConcurrency, the interop's env glue). false
  *   under wasi — wasmtime/wasmer/deno have no JS runtime to satisfy `env.__ext_*`,
  *   so those paths must degrade (fold to undefined/1) or error at compile time
  *   instead of emitting an import nothing will service.

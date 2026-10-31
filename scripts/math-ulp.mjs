@@ -62,7 +62,7 @@ const id = (f) => 'k' + FNS.indexOf(f)
 const src = FNS.map(f => `export let ${id(f)} = (${f.arity === 2 ? 'a, b' : 'a'}, o, n) => { for (let i = 0; i < n; i++) o[i] = ${f.expr} }`).join('\n')
 const build = (optimize) => {
   const { exports, memory } = instantiate(compile(src, { optimize }))
-  const C = 1 << 18, [A, B, O] = [0, 1, 2].map(() => { const { view, box } = memory.allocTyped(Float64Array, C); return { off: view.byteOffset, box } })
+  const C = 1 << 18, [A, B, O] = [0, 1, 2].map(() => { const box = memory.Float64Array(C); return { off: memory.read(box).byteOffset, box } })
   // a view over the region as the buffer is now: a growth detaches the old one
   const view = (h) => new Float64Array(memory.buffer, h.off, C)
   // run f over (xs, ys) chunk by chunk into a fresh array

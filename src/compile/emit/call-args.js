@@ -238,7 +238,7 @@ function stageSpreadSource(expr, ranges = false) {
  * `includeForArrayLiteral()` call sites in prepare/index.js run for it. Most
  * callers are safe by COINCIDENCE (spread/rest syntax in the source already
  * pulled 'array' in during prepare — see prepare/index.js's `'...'`/rest-param
- * handlers), but externalMethodFallback's __ext_call arg-marshalling reaches
+ * handlers), but externalMethodFallback's __ext_invoke arg-marshalling reaches
  * here for a receiver whose method resolves via GENERIC_METHOD_MODULES/the
  * registration-derived RESOLVED_PROP_MODULES row alone (e.g. `.toFixed()`),
  * neither of which mention 'array' — that dependency belongs to THIS

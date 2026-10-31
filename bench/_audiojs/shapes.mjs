@@ -233,7 +233,7 @@ async function slow() {
     else if (!k.filled) { js.bufX().set(sig); js.bufY().set(sig); wz.bufX().set(sig); wz.bufY().set(sig) }
     let ja = [], wa = []
     if (k.host) {
-      const boxes = Array.from({ length: k.host }, () => memory.allocTyped(Float32Array, N).box)
+      const boxes = Array.from({ length: k.host }, () => memory.Float32Array(N))
       for (const b of boxes) memory.read(b).set(sig)          // after every allocation: growth detaches earlier views
       ja = boxes.map(() => sig); wa = boxes
     }

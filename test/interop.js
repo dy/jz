@@ -791,7 +791,7 @@ test('interop: typed argument dispatch requires explicit bigint handles', () => 
   }
 })
 
-// ── zero-copy I/O: allocTyped + Uint8Array memcpy ───────────────────────────
+// ── zero-copy I/O: a typed array by length + Uint8Array memcpy ──────────────
 
 test('interop: Uint8Array arg crosses via native memcpy (correct for stride-1)', () => {
   // Regression: the inbound TypedArray path gated the fast `.set` memcpy on stride>=2,

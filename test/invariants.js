@@ -1470,7 +1470,7 @@ test('debug lifecycle: repeated sessions, drift and failed-session recovery', ()
     core: { includes: new Set(), emit: {} }, module: {}, scope: {},
     funcs: { list: [], names: new Set(), map: new Map(), multiProp: new Map() },
     func: createActiveFunction(), transform: {}, plans: {}, linkDemand: {},
-    features: { sso: true, blockingTimers: false, bigint: false, error: false, errorClasses: null, timers: false },
+    features: { sso: true, bigint: false, error: false, errorClasses: null, timers: false },
   })
   const begin = c => { resetInvariants(bridge); assertCtxInvariants(c, 'post-reset'); assertCtxInvariants(c, 'post-prepare') }
   const end = c => { assertCtxInvariants(c, 'post-analyze'); assertCtxInvariants(c, 'pre-assemble'); assertCtxInvariants(c, 'post-compile') }

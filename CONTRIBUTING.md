@@ -1881,12 +1881,11 @@ call, avoiding a second object copy when a host callback rethrows them. Raw
 same-instance exceptions retain the existing exported tag. Imported slots are
 wrapped once even if multiple import records name them. Host method reads capture
 the callable before arguments, then `__ext_invoke` receives that callable and its
-receiver; `__ext_call` retains the object/key/arguments ABI of older modules.
+receiver.
 Generic host reads use `__ext_get`: functions retain identity and stay unbound
 until a member call supplies its receiver, while containers keep their native
 marshalling contract. Raw copy and call-reference reads use `__ext_method` to
 avoid inspecting the returned value. Both share one property-read routine.
-Legacy `__ext_prop` remains supported for previously compiled modules.
 A name no scope of its module declares and the target does not resolve
 (prepare `hostFree`, state.js `hostGlobalName`; ECMA-262's own globals JZ
 lacks, such as `Reflect` and `Intl`, excluded) reads as `__host_global(name)`

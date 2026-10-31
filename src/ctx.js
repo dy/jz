@@ -298,7 +298,7 @@ export function resolveIncludes(realize = true) {
   // Scanning the *realized* template keeps the graph honest, so a missing manual
   // entry can't silently drop a transitively-needed helper (the bug class the old
   // blanket `inc('__mkptr','__alloc')` masked). Factory templates are realized
-  // (called) so feature-gated branches — `${hasExt ? '(call $__ext_prop …)' : ''}`
+  // (called) so feature-gated branches — `${hasExt ? '(call $__ext_get …)' : ''}`
   // — resolve before scanning; reading raw source would over-pull the dead branch.
   // Some templates intern constants, so realize only after runtime-table setup.
   // A `$__foo` naming a global (not a stdlib func)
@@ -897,7 +897,7 @@ export function reset(proto, globals, bridge) {
   // itself — safe by the same "nothing has consulted it yet" construction as
   // every other DEMAND key.
   ctx.linkDemand = {
-    external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
+    external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or an __ext_* site.
     typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
     typedProperties: false, // computed keys may address typed elements or named properties
     typedRuntime: false, // an open-ctor indexed read/write uses the polymorphic typed helpers; pins them against hot-loop inlining.

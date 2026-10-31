@@ -1549,7 +1549,7 @@ const kindDispatch = (name, cands) => (...args) => {
   throw new TypeError(`jz: ${name}() stores into arguments and reads them back; pass them as one kind, all Float32Array or all Float64Array or Array`)
 }
 
-// Host-call return marshalling shared by opts.imports wrappers, __ext_call and
+// Host-call return marshalling shared by opts.imports wrappers, __ext_invoke and
 // the auto-wired web globals: a thenable becomes a jz promise (awaitable in
 // the module — settled via the async runtime's exports, then drain + sweep);
 // everything else boxes through wrapVal. `bigintEvidence` is reserved for a
