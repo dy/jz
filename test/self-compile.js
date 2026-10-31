@@ -23,7 +23,7 @@ import { selfBytes } from './_self-build.js'
 // Reuse the compiler across samples; compileSelf resets its state per call.
 let self
 const getSelf = () => {
-  if (!self) self = instantiate(selfBytes(), { memory: 8192 })
+  if (!self) self = instantiate(selfBytes())
   return self
 }
 
@@ -44,7 +44,7 @@ test('self-compile: build a fresh compiler', () => {
 })
 
 test('self-compile: memory configuration resets across empty, repeated and changed inputs', () => {
-  const s = instantiate(selfBytes(), { memory: 8192 })
+  const s = instantiate(selfBytes())
   const source = 'export function f(n) { return new Uint8Array(n & 7).length }'
   const owned = { memory: 2, maxMemory: 8 }
   for (const code of ['', source, source, 'export function g() { return "different" }', source, '']) {
@@ -167,7 +167,7 @@ for (const [label, src, expected] of SAMPLES) {
   test(`self-compile: ${label}`, () => {
     const bin = compileViaSelf(src)
     ok(bin.byteLength > 10, 'self-compile produced wasm bytes')
-    const inst = instantiate(bin, { memory: 256 })
+    const inst = instantiate(bin)
     is(inst.exports.main(), expected, `main() === ${expected}`)
   })
 }
@@ -190,7 +190,7 @@ test('self-compile: schema index capacities and backward offsets retain all i64 
   const src = `const A={${fields(12, 0)}}, B={${fields(40, 100)}};
     export function main(n){const o=n&1?A:B;return o['k'+(n%42)]}`
   for (const level of [1, 2]) {
-    const s = instantiate(selfBytes(), { memory: 8192 })
+    const s = instantiate(selfBytes())
     const native = compile(src, { optimize: level })
     for (let again = 0; again < 2; again++) {
       const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level })))
@@ -210,7 +210,7 @@ test('self-compile: runtime exports tied with user functions keep native byte or
     `export function props(k){return k==='b'?7:9}`,
   ]
   for (const level of [1, 2]) {
-    const s = instantiate(selfBytes(), { memory: 8192 })
+    const s = instantiate(selfBytes())
     for (const i of [0, 0, 1, 0]) {
       const src = sources[i], native = compile(src, { optimize: level })
       const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level })))
@@ -224,7 +224,7 @@ test('self-compile: runtime exports tied with user functions keep native byte or
 })
 
 test('self-compile: lazy arithmetic survives repeated speed and baseline compiles', () => {
-  const s = instantiate(selfBytes(), { memory: 8192 })
+  const s = instantiate(selfBytes())
   const src = `export const f = (x, a, b) => {
     const v = (((((x + 1) * x + 2) * x + 3) * x + 4) * x + 5) * x + 6
     const z = a > 0 ? v : b > 0 ? 0 - v : 7
@@ -254,13 +254,13 @@ test('self-compile: lazy arithmetic survives repeated speed and baseline compile
 // small scope; a future re-inline would re-break this. forEach's `x=>s+=x` is the single-
 // call helper inlineOnce lifts, so this routes straight through the once-trapping path.
 test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
-  const s = instantiate(selfBytes(), { memory: 8192 })  // fresh instance of this run's build
+  const s = instantiate(selfBytes())  // fresh instance of this run's build
   const src = 'export let main = () => { let s = 0; [1,2,3,4].forEach(x => s += x); return s }'
   const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
   const bin = s.memory.read(out)
   const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
   ok(bytes.length > 8, 'level-2 self-compile produced wasm bytes (no __set_add trap)')
-  is(instantiate(bytes, { memory: 256 }).exports.main(), 10, 'main() === 10 (1+2+3+4)')
+  is(instantiate(bytes).exports.main(), 10, 'main() === 10 (1+2+3+4)')
 })
 
 // Pins the LEVEL-2 f64-constant pool. hoistConstantPool used to key+emit a pooled constant
@@ -270,14 +270,14 @@ test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
 // exact 64 bits and emitting the number itself. A 17-digit literal used twice (so it pools) whose
 // reciprocal is a clean integer makes any precision loss numerically visible.
 test('self-compile: level-2 f64-constant pool keeps full precision', () => {
-  const s = instantiate(selfBytes(), { memory: 8192 })
+  const s = instantiate(selfBytes())
   // 0.041666666666666664 === 1/24 exactly; pooled (two uses) → its reciprocal must stay 24.
   const src = 'export let main = () => { const a = 0.041666666666666664; const b = 0.041666666666666664; return 1/a + 1/b }'
   const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
   const bin = s.memory.read(out)
   const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
-  is(instantiate(bytes, { memory: 256 }).exports.main(), 48, 'kernel-pooled 1/24 stays exact (1/a+1/b === 48)')
-  is(instantiate(bytes, { memory: 256 }).exports.main(), jz(src).exports.main(), 'kernel L2 === jz.js L2')
+  is(instantiate(bytes).exports.main(), 48, 'kernel-pooled 1/24 stays exact (1/a+1/b === 48)')
+  is(instantiate(bytes).exports.main(), jz(src).exports.main(), 'kernel L2 === jz.js L2')
 })
 
 // Pins the LEVEL-2 LICM hoist-local typing. resultType (src/optimize/index.js) classified a
@@ -289,14 +289,14 @@ test('self-compile: level-2 f64-constant pool keeps full precision', () => {
 // comparison mantissas with an explicit Set. Needs the LICM shape: Math.round(p0) loop-invariant in
 // the INNER of two nested loops, p0 reassigned in the OUTER → the round's f64.nearest is hoisted.
 test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.round in nested loops)', () => {
-  const s = instantiate(selfBytes(), { memory: 8192 })
+  const s = instantiate(selfBytes())
   const src = 'let f = (p0) => { let r = 0; let i = 0; while (i < 4) { let j = 0; while (j < 3) { r = r + Math.round(p0); j = j + 1; } p0 = p0 + 0.4; i = i + 1; } return r }; export let main = () => f(2.6)'
   const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
   const bin = s.memory.read(out)
   const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
   // instantiate THROWS if the kernel emitted invalid wasm (f64.nearest into an i32 local).
-  is(instantiate(bytes, { memory: 256 }).exports.main(), 39, 'kernel L2 round-in-nested-loops valid + correct (3+3+3+4 rounds ×3)')
-  is(instantiate(bytes, { memory: 256 }).exports.main(), jz(src, { optimize: 2 }).exports.main(), 'kernel L2 === jz.js L2')
+  is(instantiate(bytes).exports.main(), 39, 'kernel L2 round-in-nested-loops valid + correct (3+3+3+4 rounds ×3)')
+  is(instantiate(bytes).exports.main(), jz(src, { optimize: 2 }).exports.main(), 'kernel L2 === jz.js L2')
 })
 
 // Pins the f64x2 lane vectorizer under self-compile — it broke ENTIRELY two ways this regression hit:
@@ -308,7 +308,7 @@ test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.rou
 // A tone-map kernel lifts Math.log → f64x2.log_v, exercising both. Compile it SIMD ('speed') and
 // scalar (optimize:false) through the kernel; both must instantiate and yield the same checksum.
 test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib)', () => {
-  const s = instantiate(selfBytes(), { memory: 8192 })
+  const s = instantiate(selfBytes())
   const TONE = `
     let dens = new Uint32Array(64), px = new Uint32Array(64)
     export let main = () => {
@@ -326,7 +326,7 @@ test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late st
   ok(bytes.length > 8, 'self-compile produced wasm bytes (no ctx-shape malformed lift)')
   // instantiate would throw "Unknown func $math.log_v" if appendLateStdlib were missing; the
   // |0 truncation in the kernel absorbs the f64x2 poly's sub-ULP lane noise, so the checksum is exact.
-  is(instantiate(bytes, { memory: 256 }).exports.main(), native, 'kernel SIMD tone-map === native')
+  is(instantiate(bytes).exports.main(), native, 'kernel SIMD tone-map === native')
 })
 
 test('self-compile: checked gather maps pack lanes and preserve scalar tails across reuse', () => {
@@ -362,7 +362,7 @@ test('self-compile: fractional bounds and shared gather addresses survive compil
 })
 
 test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B state', () => {
-  const warm = instantiate(selfBytes(), { memory: 8192 })
+  const warm = instantiate(selfBytes())
   const compileWarm = (src) => {
     const opt = warm.memory.String(JSON.stringify({ level: 2 }))
     const out = warm.exports.default(warm.memory.String(src), 0, opt)
@@ -382,8 +382,8 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
   ok(!same(a1, b), 'A→B on one hosted compiler instance produces B, not stale A')
   ok(same(a1, a3), 'A after B recovers the original byte-identical artifact')
   ok(same(a1, nativeA) && same(b, nativeB), 'reused hosted output stays byte-identical to native output')
-  is(instantiate(a3, { memory: 256 }).exports.main(), 404, 'recovered A executes correctly')
-  is(instantiate(b, { memory: 256 }).exports.main(), 48, 'B executes correctly after A')
+  is(instantiate(a3).exports.main(), 404, 'recovered A executes correctly')
+  is(instantiate(b).exports.main(), 48, 'B executes correctly after A')
 })
 
 // Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles,
@@ -407,7 +407,7 @@ test('self-compile: warm-instance reuse — compile, _clear(), compile again, by
   const src = 'export let main = (s) => { let h = 0; for (let i = 0; i < 10; i++) h += i * i + s.charCodeAt(0); return h }'
   const level = '0'
   const fresh = () => {
-    const inst = instantiate(selfBytes(), { memory: 8192 })
+    const inst = instantiate(selfBytes())
     const out = inst.exports.default(inst.memory.String(src), 0, inst.memory.String(level))
     const bin = inst.memory.read(out)
     return (bin instanceof Uint8Array ? bin : new Uint8Array(bin)).slice()
@@ -415,14 +415,14 @@ test('self-compile: warm-instance reuse — compile, _clear(), compile again, by
   const baseline = fresh()
   ok(baseline.length > 8, 'fresh-instance baseline compiled')
 
-  const warm = instantiate(selfBytes(), { memory: 8192 })
+  const warm = instantiate(selfBytes())
   for (let round = 0; round < 3; round++) {
     const out = warm.exports.default(warm.memory.String(src), 0, warm.memory.String(level))
     const bin = warm.memory.read(out)
     const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
     is(bytes.length, baseline.length, `round ${round}: byte length matches fresh instance`)
     ok(bytes.every((b, i) => b === baseline[i]), `round ${round}: byte-identical to fresh instance`)
-    is(instantiate(bytes, { memory: 64 }).exports.main('a'), 1255, `round ${round}: sum of squares + 10 * charCodeAt('a')`)
+    is(instantiate(bytes).exports.main('a'), 1255, `round ${round}: sum of squares + 10 * charCodeAt('a')`)
     warm.instance.exports.__jz_clear()
   }
 })
@@ -441,7 +441,7 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
     'export let main=()=>{return}',
   ]
   const check = (id, bytes) => {
-    const { exports } = instantiate(bytes, { memory: 64 })
+    const { exports } = instantiate(bytes)
     if (id === 2) is(typeof exports.main, 'undefined', 'empty source exports no main')
     else is(exports.main(3, 4), [13, 14, undefined, undefined][id], `${id}: main preserves its result`)
   }
@@ -449,8 +449,8 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
     const out = inst.exports.default(inst.memory.String(src), 0, inst.memory.String('false'))
     return new Uint8Array(inst.memory.read(out))
   }
-  const baselines = sources.map(src => compileOn(instantiate(selfBytes(), { memory: 8192 }), src))
-  const warm = instantiate(selfBytes(), { memory: 8192 }), retained = []
+  const baselines = sources.map(src => compileOn(instantiate(selfBytes()), src))
+  const warm = instantiate(selfBytes()), retained = []
   for (const id of [0, 0, 1, 0, 2, 3, 0]) {
     const bytes = compileOn(warm, sources[id]), baseline = baselines[id]
     is([...bytes], [...baseline], `${id}: reused compile matches fresh bytes`)
@@ -504,7 +504,7 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
 // the correct outcome, not a bug). Keep at or above 40 rather than shrinking it
 // back down to "looks clean in a quick run".
 test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
-  const warm = instantiate(selfBytes(), { memory: 8192 })
+  const warm = instantiate(selfBytes())
   const PROGRAMS = [
     "export let go = () => { const m = new Map(); m.set('a', { zzqqxxdiagfield: true }); const g = m.get('a'); return g.zzqqxxdiagfield ? 1 : 0 }",
     "export let go = () => { const m = new Map(); m.set('a', { mut: true }); const g = m.get('a'); return g.mut ? 1 : 0 }",
@@ -515,7 +515,7 @@ test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-acc
       const bin = warm.memory.read(out)
       const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
       ok(bytes.length > 8, `round ${round}: compiled wasm bytes (no allocator trap)`)
-      is(instantiate(bytes, { memory: 64 }).exports.go(), 1, `round ${round}: g's own field reads back true`)
+      is(instantiate(bytes).exports.go(), 1, `round ${round}: g's own field reads back true`)
     }
   }
 })
@@ -755,7 +755,7 @@ test('kernel marks: the reader reports the phases past the record capacity, not 
 
 
 test('self-compile: WAT output shares checkpoints and bounds wide-node printer allocation', () => {
-  const s = instantiate(selfBytes(), {memory: 8192})
+  const s = instantiate(selfBytes())
   const source = 'export let f = x => x ** 2.4'
   const options = {crPow: true}
   const expected = compile(source, {wat: true, optimize: options})
@@ -771,7 +771,7 @@ test('self-compile: WAT output shares checkpoints and bounds wide-node printer a
 })
 
 test('self-compile: data packing bounds literal allocation and preserves output after errors', () => {
-  const s = instantiate(selfBytes(), { memory: 8192 })
+  const s = instantiate(selfBytes())
   const a = 'x'.repeat(4096), b = 'é😀\0"\\'.repeat(512)
   const source = value => `export function f(){return ${JSON.stringify(value)}}`
   let retained

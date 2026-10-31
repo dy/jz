@@ -1361,3 +1361,38 @@ test('interop: value exports read as the binding, live and read-only', () => {
     }
   }
 })
+
+// instantiate links the memory a module compiled to import one takes, and only
+// that: one the module owns takes none, one it imports must be passed (jz()
+// makes it from the descriptor, to the limits the module declares).
+test('interop: instantiate links the memory a module imports, and only that', () => {
+  const owns = compile('export let g = (s) => s + "!"')
+  throws(() => interop.instantiate(owns, { memory: new WebAssembly.Memory({ initial: 1 }) }), TypeError, 'a module that owns its memory takes none')
+  throws(() => interop.instantiate(owns, { memory: 64 }), TypeError, 'a page count is no memory')
+  const src = 'export let mk = (n) => { let a = []; for (let i = 0; i < n; i++) a.push(i); return a }'
+  const imported = compile(src, { memory: { import: true } })
+  let error
+  try { interop.instantiate(imported) } catch (e) { error = e }
+  ok(error instanceof TypeError && /\bmemory\b/.test(error.message), `a module that imports its memory names it: ${error?.message}`)
+  is(interop.instantiate(imported, { memory: jz.memory() }).exports.mk(3), [0, 1, 2], 'linked to the memory passed')
+  is(jz(src, { memory: { import: true } }).exports.mk(2), [0, 1], 'jz() makes the memory a descriptor imports')
+  is(jz(`const s = '${'x'.repeat(70000)}'; export let n = () => s.length`, { memory: { import: true } }).exports.n(), 70000, 'as many pages as its static data needs')
+})
+
+test('interop: an import the caller does not give is named', () => {
+  if (onWasi()) return   // a host module is the JS host's
+  const wasm = compile('import { foo } from "xyz"; export let f = (x) => foo(x)', { imports: { xyz: { foo: (x) => x * 2 } } })
+  let error
+  try { interop.instantiate(wasm) } catch (e) { error = e }
+  ok(error instanceof TypeError && error.message.includes('"foo"') && error.message.includes('"xyz"'), `module and import named: ${error?.message}`)
+  is(interop.instantiate(wasm, { imports: { xyz: { foo: (x) => x * 3 } } }).exports.f(2), 6, 'given, it links')
+})
+
+test('interop: instantiate writes nothing into its options', () => {
+  const memory = new WebAssembly.Memory({ initial: 1 }), imports = { host: { log: () => {} } }
+  const opts = { memory, imports }
+  interop.instantiate(compile('export let mk = () => ({ x: 1 })', { memory }), opts)
+  is(Object.keys(opts), ['memory', 'imports'], 'no key added')
+  ok(opts.memory === memory && opts.imports === imports && Object.keys(imports).join() === 'host', 'none replaced')
+})
+

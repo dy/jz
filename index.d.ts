@@ -184,7 +184,7 @@ export function compile(code: string, opts?: CompileOptions): CompiledWasm | str
 export interface InstantiateOptions {
   /** Host modules for the module's `import { fn } from "mod"` declarations. */
   imports?: Record<string, unknown>
-  /** Memory to link instead of the module's own export. */
+  /** The memory of a module compiled to import one (`memory: jz.memory()` or `{ import: true }`); a module that owns its memory takes none. */
   memory?: WebAssembly.Memory
   /** WASI stdout/stderr and stdin for `host: 'wasi'` modules. */
   write?: (fd: number, text: string) => void

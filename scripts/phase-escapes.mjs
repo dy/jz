@@ -51,7 +51,7 @@ const _interp = noting ? {
     }
   },
 } : undefined
-const k = instantiate(kernel, { memory: 65536, externref: false, _interp })
+const k = instantiate(kernel, { _interp })
 memory = k.instance.exports.memory
 if (noting && typeof k.exports.phaseOpenAddr !== 'function') { console.error('the kernel has no phaseOpenAddr: rebuild it'); process.exit(2) }
 openAt = noting ? k.exports.phaseOpenAddr() >>> 3 : 0

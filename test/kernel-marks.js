@@ -33,7 +33,7 @@ export const readStamp = () => stamp
 `
 const kernel = (optimize = 2) => {
   const wasm = compile(DRIVER, { modules: { './phase-marks.js': RECORDER }, optimize })
-  return instantiate(wasm, { memory: 256 })
+  return instantiate(wasm)
 }
 
 for (const optimize of levels(false, 1, 2, 3)) test(`kernel marks: first/repeated recording and readback allocate nothing O${optimize || 0}`, () => {

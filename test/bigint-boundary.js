@@ -26,7 +26,7 @@ import { compile } from './util.js'
 
 const HEX = 'const _hx8 = n => n.toString(16).padStart(8, "0")\n'
 const I64HEX = 'i64Hex = bits => "0x" + _hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + _hx8(Number(bits & 0xFFFFFFFFn))\n'
-const run = (src, level) => instantiate(compile(src, { optimize: level }), { memory: 64 }).exports
+const run = (src, level) => instantiate(compile(src, { optimize: level })).exports
 
 // The JS oracle, the same source evaluated by the host.
 const hx8 = n => n.toString(16).padStart(8, '0')
@@ -175,7 +175,7 @@ test('bigint boundary: a parameter proven BigInt by a typeof guard rides the box
     const b = boundary(wasm, 'g')
     is(b.type, 'f64', `the carrier is the boxed f64 (O${level})`)
     ok(b.lane && b.published && b.evidenced, `the boundary lane is i64, published and evidenced (O${level})`)
-    const ex = instantiate(wasm, { memory: 64 }).exports
+    const ex = instantiate(wasm).exports
     is(ex.f(), 3n)
     PAYLOADS.forEach((p, i) => {
       const expected = BigInt.asIntN(64, p + 1n)

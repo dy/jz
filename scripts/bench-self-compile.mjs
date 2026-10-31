@@ -99,7 +99,7 @@ const timeMin = (fn) => {
 // instantiation + source marshaling stay OUT of the timed region (the steady-state
 // per-compile cost is the fair comparison to the JS compiler's warmed path).
 const timeMinWasm = (src) => {
-  const setup = () => { const inst = instantiate(wasmBytes, { memory: 8192 }); const sp = inst.memory.String(src); const lp = inst.memory.String(LEVEL); return () => inst.memory.read(inst.exports.default(sp, 0, lp)) }
+  const setup = () => { const inst = instantiate(wasmBytes); const sp = inst.memory.String(src); const lp = inst.memory.String(LEVEL); return () => inst.memory.read(inst.exports.default(sp, 0, lp)) }
   for (let i = 0; i < WARM; i++) setup()()
   let best = Infinity
   for (let r = 0; r < RUNS; r++) { const fn = setup(); const t = performance.now(); fn(); best = Math.min(best, performance.now() - t) }
@@ -114,7 +114,7 @@ const timeMinWasm = (src) => {
 // Returns null if the case traps mid-run (caller records it as skipped rather than
 // reporting a bogus/partial time).
 const timeMinWasmWarm = (src) => {
-  const inst = instantiate(wasmBytes, { memory: 8192 })
+  const inst = instantiate(wasmBytes)
   const runOnce = () => { const sp = inst.memory.String(src); const lp = inst.memory.String(LEVEL); const out = inst.exports.default(sp, 0, lp); inst.memory.read(out); inst.instance.exports.__jz_clear() }
   try {
     for (let i = 0; i < WARM; i++) runOnce()
@@ -183,7 +183,7 @@ for (const name of CASES) {
   let jsBytes
   try { jsBytes = compileSelf(src, false, LEVEL) } catch (e) { skipped.push(`${name}(js:${e.message.slice(0,18)})`); continue }
   // WASM compiler — fresh instance, exclude instantiation from timing
-  const self = instantiate(wasmBytes, { memory: 8192 })
+  const self = instantiate(wasmBytes)
   if (PROFILE_HELPERS) self.instance.exports.__helper_counts_reset?.()
   const helperSitesBefore = COUNT_SITES ? readHelperSites(self.instance.exports) : null
   const compileWasm = () => self.memory.read(self.exports.default(self.memory.String(src), 0, self.memory.String(LEVEL)))

@@ -236,7 +236,7 @@ test('self-build: kernel cache fixture preserves empty→empty→A→A→B→err
     import { compile } from ${JSON.stringify(new URL('../index.js', import.meta.url).href)}
     import { instantiate } from ${JSON.stringify(new URL('../interop.js', import.meta.url).href)}
     const fixture = compile(${JSON.stringify(source)}, { optimize: false, host: 'js' })
-    const probe = instantiate(fixture, { memory: 64 })
+    const probe = instantiate(fixture)
     probe.exports.default(probe.memory.String('A'))
     assert.throws(() => probe.exports.default(probe.memory.String('A')), /fixture instance reused/)
     const exists = fs.existsSync, read = fs.readFileSync

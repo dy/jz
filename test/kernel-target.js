@@ -41,7 +41,7 @@ const freshSelf = () => {
   // Count attempts before allocating: a throwing compile must release just as
   // a successful one does, after the previous instance has left its stack.
   if (GC_EVERY && ++compileCount % GC_EVERY === 0) gc()
-  return instantiate(getSelfModule(), { memory: 8192 })
+  return instantiate(getSelfModule())
 }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -83,7 +83,7 @@ const getSelfModule = () => {
       if (!existsSync(SELF)) throw new Error('dist/jz.wasm missing: the jz.wasm leg consumes the built artifact by name (npm run build) and never builds or substitutes it')
       bytes = readFileSync(SELF)
     } else bytes = selfBytes()
-    return selfModule = instantiate(bytes, { memory: 8192 }).module
+    return selfModule = instantiate(bytes).module
   } catch (e) {
     selfFailure = e
     throw e

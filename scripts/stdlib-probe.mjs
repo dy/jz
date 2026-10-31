@@ -238,7 +238,7 @@ export let loop = (n) => { let s = 0; for (let i = 0; i < n; i++) { ${sum} } ret
   } catch (e) { return { ...out, status: 'compile-fail', err: String(e.message).split('\n')[0].slice(0, 200) } }
   Object.assign(out, { bytes: b.wasm.byteLength, compileMs: Math.round(b.ms), mods: b.mods })
   let inst
-  try { inst = instantiate(b.wasm, { memory: pages }) } catch (e) { return { ...out, status: 'instantiate-fail', err: String(e.message).split('\n')[0].slice(0, 200) } }
+  try { inst = instantiate(b.wasm) } catch (e) { return { ...out, status: 'instantiate-fail', err: String(e.message).split('\n')[0].slice(0, 200) } }
   if (c.length) inst.exports.cs().set(c)
 
   // Agreement with Node, bit for bit, at every point where Node answers: a point
@@ -389,7 +389,7 @@ export let xbuf = () => X
 export let ybuf = () => Y
 export let k = (N, a) => { ${k.call} }`
     let b, inst, text
-    try { b = build(driver, { memory: 64 }); inst = instantiate(b.wasm, { memory: 64 }); text = build(driver, { memory: 64, wat: true }).wasm }
+    try { b = build(driver, { memory: 64 }); inst = instantiate(b.wasm); text = build(driver, { memory: 64, wat: true }).wasm }
     catch (e) { console.log(name.padEnd(7), 'jz FAIL', String(e.message).split('\n')[0].slice(0, 140)); continue }
     const jx = new Float64Array(N), jy = new Float64Array(N); fill(jx, 1); fill(jy, 2)
     const cx = new Float64Array(cmem.buffer, 1024, N), cy = new Float64Array(cmem.buffer, 1024 + CAP * 8, N); cx.set(jx); cy.set(jy)
@@ -666,7 +666,7 @@ ${names.map(([k]) => `  if (k === ${k}) { k${k}(U, OUT, 0); return 1 }`).join('\
   const wasm = compile(src, { optimize: 'speed', memory: 4096 })
   const text = compile(src, { optimize: 'speed', memory: 4096, wat: true })
   console.log(`${names.length} functions, ${wasm.byteLength} B, compiled in ${Math.round((performance.now() - t0) / 2)} ms`)
-  const inst = instantiate(wasm, { memory: 4096 })
+  const inst = instantiate(wasm)
   const host = await import('data:text/javascript;base64,' + Buffer.from(src).toString('base64'))
   const fill = (u) => { let s = 0x1234abcd | 0; for (let i = 0; i < u.length; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; u[i] = (s >>> 0) / 4294967296 } }
   fill(inst.exports.us()); fill(host.us())

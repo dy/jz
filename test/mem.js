@@ -465,11 +465,14 @@ test('jz.memory(): JS-side Array + read roundtrip', () => {
 
 test('jz({ memory }): auto-wraps raw WebAssembly.Memory', () => {
   const raw = new WebAssembly.Memory({ initial: 1 })
-  const inst = jz('export let f = () => [1, 2]', { memory: raw })
+  const inst = jz('export let f = (n) => [n, n + 1]', { memory: raw })
   // raw should now be enhanced
   ok(typeof raw.read === 'function', 'raw is now enhanced')
   ok(inst.memory === raw, 'inst.memory is the same raw object')
-  is(inst.memory.read(inst.instance.exports.f())[0], 1)
+  is(inst.exports.f(1), [1, 2])
+  // a module that needs no memory imports none: it links nothing, and says so
+  const none = jz('export let f = () => 42', { memory: jz.memory() })
+  is(none.memory, null, 'no memory claimed for a module without one')
 })
 
 test('jz({ memory: pages }): creates owned memory with initial page count', () => {
@@ -537,7 +540,7 @@ test('allocator: geometric growth changes at the documented page thresholds', ()
 
 test('shared memory: inst.memory is the same object passed in', () => {
   const memory = jz.memory()
-  const a = jz('export let f = () => 42', { memory })
+  const a = jz('export let f = (n) => ({ n })', { memory })
   ok(a.memory === memory, 'same object')
 })
 

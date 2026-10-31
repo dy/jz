@@ -81,7 +81,43 @@ export default function jz(code, ...args) {
   for (const k of Object.keys(opts)) (INSTANTIATE_ONLY.includes(k) ? run : own)[k] = opts[k]
   if (own.wat) throw new TypeError('jz() instantiates; use compile(src, { wat: true }) for text')
   const flags = normalizeOptions(own)
+  const wasm = compileInternal(code, flags, jzify)
   if (flags.imports) run.imports = flags.imports
-  if (flags.memory instanceof WebAssembly.Memory) run.memory = flags.memory
-  return instantiate(compileInternal(code, flags, jzify), run)
+  const linked = linkedMemory(flags, wasm)
+  if (linked) run.memory = linked
+  return instantiate(wasm, run)
+}
+
+// The memory a module compiled to import one links: the caller's (a jz.memory(),
+// a WebAssembly.Memory), else one made to the limits the module declares
+// (`memory: { import: true }`, a shared descriptor), its initial pages covering
+// the static data. None for a module that owns its memory or needs none.
+const linkedMemory = (o, wasm) => {
+  const limits = memoryImport(wasm)
+  if (!limits) return undefined
+  return o.memory instanceof WebAssembly.Memory ? o.memory : memory(limits)
+}
+
+// The limits of the memory a module imports (`env.memory`), read off its import section, or null.
+const memoryImport = (bytes) => {
+  let i = 8
+  const leb = () => { let r = 0, s = 0, b; do { b = bytes[i++]; r += (b & 0x7f) * 2 ** s; s += 7 } while (b & 0x80); return r }
+  const name = () => { const n = leb(), t = String.fromCharCode(...bytes.subarray(i, i + n)); i += n; return t }
+  while (i < bytes.length) {
+    const id = bytes[i++], size = leb(), end = i + size
+    if (id !== 2) { i = end; continue }
+    for (let n = leb(); n > 0; n--) {
+      const module = name(), field = name(), kind = bytes[i++]
+      if (kind === 0) leb()                                                      // func: its type
+      else if (kind === 1) { i++; if (bytes[i++] & 1) leb(); leb() }             // table: reftype, limits
+      else if (kind === 2) {                                                     // memory: limits
+        const flags = bytes[i++], initial = leb(), maximum = flags & 1 ? leb() : undefined
+        if (module === 'env' && field === 'memory') return { initial, maximum, shared: !!(flags & 2) }
+      }
+      else if (kind === 3) i += 2                                                // global: type, mutability
+      else if (kind === 4) { i++; leb() }                                        // tag: attribute, type
+    }
+    return null
+  }
+  return null
 }

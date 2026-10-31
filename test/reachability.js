@@ -118,7 +118,7 @@ const oracle = ({ src, modules = {} }) => {
   } finally { setTimeout(() => rmSync(dir, { recursive: true, force: true }), 5000).unref() }
 }
 const behavior = (p, level) => {
-  const ex = instantiate(compile(p.src, { optimize: level, modules: p.modules }), { memory: 64 }).exports
+  const ex = instantiate(compile(p.src, { optimize: level, modules: p.modules })).exports
   const results = p.run(ex)
   return { results, calls: ex.trace() }
 }
@@ -143,7 +143,7 @@ for (const [title, p] of Object.entries(PROGRAMS)) test(`reachability: ${title}`
   }
   if (p.without) for (const level of levels(0, 2)) {
     const bytes = compile(p.src, { optimize: level }), pruned = compile(p.without, { optimize: level })
-    const exWithout = instantiate(pruned, { memory: 64 }).exports
+    const exWithout = instantiate(pruned).exports
     is(p.run(exWithout), p.results, `deleting the dead callable from the source changes nothing (O${level})`)
     is(exWithout.trace(), p.calls)
     ok(bytes.length === pruned.length && bytes.every((b, i) => b === pruned[i]), `and the compiled bytes are identical (O${level})`)

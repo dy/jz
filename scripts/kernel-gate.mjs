@@ -138,7 +138,7 @@ if (flag('--worker')) {
     }
   }
   const results = (bytes, calls) => {
-    const ex = instantiate(bytes, { memory: 64 }).exports
+    const ex = instantiate(bytes).exports
     return calls.map(([fn, a, expected]) => { let got; try { got = ex[fn](...a) } catch (e) { got = 'throws: ' + e.message } return { call: `${fn}(${a.map(x => JSON.stringify(x)).join(', ')})`, expected, got, ok: Object.is(got, expected) } })
   }
   const result = { gate, cases: [] }
@@ -204,7 +204,7 @@ if (flag('--worker')) {
       c.bytes = r.bytes.length; c.sha256 = sha(r.bytes)
       c.headroom = 0x100000000 - r.heap
       try {
-        const rec = instantiate(r.bytes, { memory: 65536, externref: false })
+        const rec = instantiate(r.bytes)
         const probe = rec.exports.default(rec.memory.String('export let f = x => x * 3 - 2'), 0, rec.memory.String('2'), 0, 0, 0, 0)
         const bytes = rec.memory.read(probe)
         c.probe = instantiate(new Uint8Array(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))).exports.f(7)

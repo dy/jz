@@ -1661,7 +1661,8 @@ const prepareInterop = (opts) => {
     return hostRet(state, as === 1 ? Number(value) : as === 2 ? !!value : as === 3 ? String(value) : value, !as && bigTyped(obj, value))
   }
   const invokeAs = (fnBig, recvBig, argsBig, as) => invoke(read(fnBig), read(recvBig), read(argsBig), as)
-  Object.assign(opts._interp ||= {}, {
+  // the env functions the runtime gives: the template's own (index.js, `_interp`) and these
+  state.env = Object.assign({ ...opts._interp }, {
     __ext_prop: (objBig, propBig) => readProperty(objBig, propBig, true),
     __ext_get: (objBig, propBig) => readProperty(objBig, propBig),
     // a raw Get, for reads, copies and method references: a function unbound
@@ -1847,7 +1848,7 @@ const buildImports = (mod, opts, state) => {
   const moduleImports = WebAssembly.Module.imports(mod)
   const needsWasi = moduleImports.some(i => i.module === 'wasi_snapshot_preview1')
   const imports = needsWasi ? wasi(opts) : {}
-  if (opts._interp) imports.env = { ...imports.env, ...opts._interp }
+  imports.env = { ...imports.env, ...state.env }
   for (const imp of moduleImports)
     if (imp.module === 'wasm:js-string' && JSS_POLYFILL[imp.name]) (imports['wasm:js-string'] ??= {})[imp.name] = JSS_POLYFILL[imp.name]
 
@@ -1862,16 +1863,19 @@ const buildImports = (mod, opts, state) => {
   }
 
   installDefaultEnvImports(mod, imports, state)
-  // A memory to share, enhanced; a module whose schemas would bind at other ids
-  // is refused before its start function writes into it. (A page count is the
-  // compiler's, not an import.)
-  if (opts.memory instanceof WebAssembly.Memory) {
+  // The memory: the caller's for a module compiled to import one (`memory:
+  // jz.memory()`, `{ import: true }`, a shared memory), enhanced, a module whose
+  // schemas would bind at other ids refused before its start function writes
+  // into it; a module that imports no memory links none.
+  const importsMemory = moduleImports.some(i => i.kind === 'memory')
+  if (opts.memory !== undefined) {
+    if (!(opts.memory instanceof WebAssembly.Memory)) throw new TypeError(`jz: instantiate's memory takes a WebAssembly.Memory (jz.memory() makes one), got ${opts.memory === null ? 'null' : typeof opts.memory}`)
+    if (!importsMemory) throw new TypeError('jz: this module imports no memory (it owns one or needs none), so instantiate has none to link: compile it with the memory it shares (`memory: jz.memory()` or `{ import: true }`)')
     const known = CODEC.get(opts.memory)
     if (known) mergeTables(known, moduleTables(mod))
     else memory(opts.memory)
-    if (!imports.env) imports.env = {}
     imports.env.memory = opts.memory
-  }
+  } else if (importsMemory) throw new TypeError('jz: this module imports its memory (env.memory): pass it, instantiate(wasm, { memory: jz.memory() })')
   // Host globals the module imports, boxed in i64 globals. One the program names
   // without declaring it (module/web.js): the host's value, or the absent
   // marker whose read throws a ReferenceError.
@@ -1908,6 +1912,12 @@ const buildImports = (mod, opts, state) => {
       ns[imp.name] = catchingImport(state, fn)
     }
   }
+  // An import neither the caller nor the runtime gives is named, not left to the engine's LinkError
+  for (const imp of moduleImports) {
+    if (imp.kind === 'memory' || imports[imp.module]?.[imp.name] !== undefined) continue
+    if (imp.module === 'wasi_snapshot_preview1') throw new TypeError(`jz: the module calls WASI's ${imp.name}, which the JS host's WASI shim (wasi.js) lacks: run it under a WASI runtime (wasmtime, node:wasi)`)
+    throw new TypeError(`jz: the module imports ${JSON.stringify(imp.name)} from ${JSON.stringify(imp.module)}: pass it, instantiate(wasm, { imports: { ${JSON.stringify(imp.module)}: { ${JSON.stringify(imp.name)}: … } } })`)
+  }
   return { imports, needsWasi }
 }
 
@@ -1938,7 +1948,7 @@ export const toModule = (wasm) => wasm instanceof WebAssembly.Module ? wasm : ne
 /**
  * Instantiate prebuilt jz wasm: WASI and host imports linked, exports wrapped.
  * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm
- * @param {{ imports?, memory?, write?, read? }} [opts]
+ * @param {{ imports?, memory?, write?, read? }} [opts] (index.d.ts InstantiateOptions)
  * @returns {{ exports, memory, instance, module }}
  */
 export const instantiate = (wasm, opts = {}) => {

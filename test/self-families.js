@@ -50,7 +50,7 @@ for (const { family, cases } of FAMILIES) for (const c of cases) test(`family ${
   if (onKernel()) return
   const js = await oracle(c.src)
   for (const [fn, args, expected] of c.calls) { const got = outcome(js[fn], args); ok(matches(got, expected), `Node: ${fn}(${args.map(show).join(', ')}) → ${describe(got)}, the authored ${show(expected)} is wrong`) }
-  for (const level of levels(0, 1, 2)) check(instantiate(compile(c.src, { optimize: level }), { memory: 64 }).exports, c.calls, `O${level}`)
+  for (const level of levels(0, 1, 2)) check(instantiate(compile(c.src, { optimize: level })).exports, c.calls, `O${level}`)
 })
 
 if (HOSTED) {
@@ -65,10 +65,10 @@ if (HOSTED) {
   }
   for (const { family, cases } of FAMILIES) for (const c of cases) test(`hosted family ${family}: ${c.name}${c.red?.hosted ? ` [red hosted: ${c.red.hosted}]` : ''}`, () => {
     for (const level of levels(1, 2)) {
-      const k = instantiate(selfBytes(), { memory: 8192 })
+      const k = instantiate(selfBytes())
       const bytes = compileOn(k, c.src, level)
       ok(same(bytes, compile(c.src, { optimize: level })), `O${level}: the kernel's bytes are the native compile's`)
-      check(instantiate(bytes, { memory: 64 }).exports, c.calls, `hosted O${level}`)
+      check(instantiate(bytes).exports, c.calls, `hosted O${level}`)
     }
   })
   // One compile's outcome on a kernel instance: its bytes, or the error it raised.
@@ -76,9 +76,9 @@ if (HOSTED) {
   const describeCompile = r => r.bytes ? `${r.bytes.length} bytes` : `throws ${r.error}`
   const sameCompile = (a, b) => a.bytes && b.bytes ? same(a.bytes, b.bytes) : a.error === b.error
   const fresh = new Map()
-  const freshCompile = c => { if (!fresh.has(c)) fresh.set(c, compiled(instantiate(selfBytes(), { memory: 8192 }), c.src)); return fresh.get(c) }
+  const freshCompile = c => { if (!fresh.has(c)) fresh.set(c, compiled(instantiate(selfBytes()), c.src)); return fresh.get(c) }
   for (const clear of [true, false]) test(`hosted families on one warm instance, A, A, B… ${clear ? 'with' : 'without'} _clear()`, () => {
-    const k = instantiate(selfBytes(), { memory: 8192 })
+    const k = instantiate(selfBytes())
     const all = FAMILIES.flatMap(f => f.cases)
     const check = (c, label) => {
       const got = compiled(k, c.src), expected = freshCompile(c)

@@ -64,7 +64,7 @@ const size = (n) => { if (!Array.isArray(n)) return 1; let s = 1; for (let i = 0
 export let main = (src) => size(parse(src))`
   const wasm = buildWasm('jessie-driver.js', driver)
   ok(wasm.byteLength > 10000, 'jessie graph compiled to wasm')
-  const inst = instantiate(wasm, { memory: 8192 })
+  const inst = instantiate(wasm)
 
   const { parse } = await import('subscript/feature/jessie')
   const size = (n) => { if (!Array.isArray(n)) return 1; let s = 1; for (let i = 0; i < n.length; i++) s += size(n[i]); return s }
@@ -86,7 +86,7 @@ test('eco-pin: watr.wasm assembles, agrees with watr.js, ratio reported', async 
 export let main = (src) => compile(src).length`
   const wasm = buildWasm('watr-driver.js', driver)
   ok(wasm.byteLength > 10000, 'watr graph compiled to wasm')
-  const inst = instantiate(wasm, { memory: 8192 })
+  const inst = instantiate(wasm)
 
   const { default: watrCompile } = await import('watr/compile')
   const want = watrCompile(watFixture).length

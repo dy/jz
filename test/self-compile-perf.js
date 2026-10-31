@@ -147,7 +147,7 @@ test('perf-pin: warm-instance self-compile stays within V8 parity band', () => {
       const js = () => compileSelf(src, false, LEVEL)
       // ONE instance, _clear between compiles — a trap here is a hard failure
       // (warm reuse is part of the milestone), so no try/catch.
-      const inst = instantiate(wasmBytes, { memory: 8192 })
+      const inst = instantiate(wasmBytes)
       const runOnce = () => {
         const out = inst.exports.default(inst.memory.String(src), 0, inst.memory.String(LEVEL))
         inst.memory.read(out)
@@ -185,7 +185,7 @@ test('perf-pin: fresh-instance self-compile compile < V8 JS', () => {
     const src = sourceFor(name)
     const js = () => compileSelf(src, false, LEVEL)
     const setup = () => {
-      const inst = instantiate(wasmBytes, { memory: 8192 })
+      const inst = instantiate(wasmBytes)
       const sp = inst.memory.String(src), lp = inst.memory.String(LEVEL)
       return () => inst.memory.read(inst.exports.default(sp, 0, lp))
     }
