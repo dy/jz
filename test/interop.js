@@ -1396,3 +1396,10 @@ test('interop: instantiate writes nothing into its options', () => {
   ok(opts.memory === memory && opts.imports === imports && Object.keys(imports).join() === 'host', 'none replaced')
 })
 
+
+test('interop: a WASI module\'s stdio goes through the wasi option', () => {
+  const out = []
+  const { exports } = jz('export let f = (x) => { console.log("hi", x); return x }', { host: 'wasi', wasi: { write: (fd, text) => out.push(text) } })
+  is(exports.f(2), 2)
+  is(out.join(''), 'hi 2\n')
+})

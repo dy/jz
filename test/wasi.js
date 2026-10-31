@@ -805,7 +805,7 @@ test('fs: a node:fs reader passed as a callback fills a typed array, no dynamic 
   const out = []
   const { instantiate } = await import('../interop.js')
   const inst = instantiate(compile(src, { host: 'wasi' }), {
-    read: (fd, buf) => { if (off >= input.length || !buf.length) return 0; buf[0] = input[off++]; return 1 },
+    wasi: { read: (fd, buf) => { if (off >= input.length || !buf.length) return 0; buf[0] = input[off++]; return 1 } },
   })
   const { stdout } = globalThis.process, write = stdout.write
   stdout.write = (b) => { out.push(Buffer.from(b)); return true }
@@ -894,7 +894,7 @@ test('fs: a Native Messaging host echoes length-prefixed frames byte-exact', asy
   const out = []
   const { instantiate } = await import('../interop.js')
   const inst = instantiate(compile(src, { host: 'wasi' }), {
-    read: (fd, buf) => { if (off >= input.length || !buf.length) return 0; buf[0] = input[off++]; return 1 },
+    wasi: { read: (fd, buf) => { if (off >= input.length || !buf.length) return 0; buf[0] = input[off++]; return 1 } },
   })
   const { stdout } = globalThis.process, write = stdout.write
   stdout.write = (b) => { out.push(Buffer.from(b)); return true }

@@ -54,5 +54,27 @@ jz('export let f = () => 1', { wat: true })
 // @ts-expect-error an import is a namespace, not a value
 compile('export let f = () => 1', { imports: { host: 1 } })
 
-void [decoded, wat, tuned, result, shared, wrapped, again]
+// the memory: its constructors take data or a length; the codec stays private
+const zeros: JzPointer = mem.Float32Array(4)
+const bigZeros: JzPointer = mem.BigInt64Array(3)
+const boxed: JzPointer = mem.BigInt(5n)
+const used: number = mem.used
+const fromDescriptor = jz.memory({ initial: 2, maximum: 8 })
+const enhanced = jz.memory(new WebAssembly.Memory({ initial: 1 }))
+// @ts-expect-error an instance's memory is its result's `memory`
+jz.memory(result)
+// @ts-expect-error the marshalling is the runtime's
+mem.wrapVal(1)
+// @ts-expect-error allocTyped goes: memory.read(memory.Uint8Array(n)) is the view
+mem.allocTyped(Uint8Array, 4)
+// instantiate: the memory a module imports, a WASI module's stdio
+const opened: InstantiateOptions = { memory: enhanced, wasi: { write: (fd, text) => void [fd, text], read: (fd, buffer) => buffer.length } }
+const linked = instantiate(bytes, opened)
+const viaJz = jz('export let f = () => 1', { host: 'wasi', wasi: { write: () => {} } })
+// @ts-expect-error stdio is instantiate's `wasi`
+instantiate(bytes, { write: () => {} })
+// @ts-expect-error a page count is the compiler's
+instantiate(bytes, { memory: 4 })
+
+void [decoded, wat, tuned, result, shared, wrapped, again, zeros, bigZeros, boxed, used, fromDescriptor, linked, viaJz]
 

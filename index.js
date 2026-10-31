@@ -21,7 +21,7 @@ jz.memory = memory
 
 // The options jz() hands to instantiate alone (index.d.ts Jz: those of
 // InstantiateOptions that are no compile option).
-const INSTANTIATE_ONLY = ['write', 'read']
+const INSTANTIATE_ONLY = ['wasi']
 
 /**
  * Compile and instantiate: jz('code', opts) or jz`code ${value}`.

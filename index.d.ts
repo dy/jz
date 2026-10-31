@@ -186,9 +186,11 @@ export interface InstantiateOptions {
   imports?: Record<string, unknown>
   /** The memory of a module compiled to import one (`memory: jz.memory()` or `{ import: true }`); a module that owns its memory takes none. */
   memory?: WebAssembly.Memory
-  /** WASI stdout/stderr and stdin for `host: 'wasi'` modules. */
-  write?: (fd: number, text: string) => void
-  read?: (fd: number, buffer: Uint8Array) => number | void
+  /** The WASI shim a `host: 'wasi'` module links in a JS host: where its stdout and stderr go, where its stdin comes from. */
+  wasi?: {
+    write?: (fd: number, text: string) => void
+    read?: (fd: number, buffer: Uint8Array) => number | void
+  }
 }
 
 /** Instantiate prebuilt jz wasm: marshals values, decodes errors, links WASI when present. */

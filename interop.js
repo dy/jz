@@ -1847,7 +1847,7 @@ const JSS_POLYFILL = {
 const buildImports = (mod, opts, state) => {
   const moduleImports = WebAssembly.Module.imports(mod)
   const needsWasi = moduleImports.some(i => i.module === 'wasi_snapshot_preview1')
-  const imports = needsWasi ? wasi(opts) : {}
+  const imports = needsWasi ? wasi(opts.wasi) : {}
   imports.env = { ...imports.env, ...state.env }
   for (const imp of moduleImports)
     if (imp.module === 'wasm:js-string' && JSS_POLYFILL[imp.name]) (imports['wasm:js-string'] ??= {})[imp.name] = JSS_POLYFILL[imp.name]
@@ -1948,7 +1948,7 @@ export const toModule = (wasm) => wasm instanceof WebAssembly.Module ? wasm : ne
 /**
  * Instantiate prebuilt jz wasm: WASI and host imports linked, exports wrapped.
  * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm
- * @param {{ imports?, memory?, write?, read? }} [opts] (index.d.ts InstantiateOptions)
+ * @param {{ imports?, memory?, wasi? }} [opts] (index.d.ts InstantiateOptions)
  * @returns {{ exports, memory, instance, module }}
  */
 export const instantiate = (wasm, opts = {}) => {

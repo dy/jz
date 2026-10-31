@@ -34,9 +34,10 @@ exports.square(7) // 49
 <summary><strong>Options</strong></summary><br>
 
 `jz(source, opts)` compiles and instantiates. `compile(source, opts)` returns the wasm, and
-`instantiate(wasm, { imports, memory })` runs it, also from `jz/interop` without the compiler:
-`memory` is the memory of a module compiled to import one (`jz()` makes it from the descriptor).
-An import or a memory the module needs and the call does not give is a TypeError naming it.
+`instantiate(wasm, { imports, memory, wasi })` runs it, also from `jz/interop` without the compiler:
+`memory` is the memory of a module compiled to import one (`jz()` makes it from the descriptor),
+`wasi: { write, read }` the stdio of a `host: 'wasi'` module in a JS host. An import or a memory the
+module needs and the call does not give is a TypeError naming it.
 These are all the options: any other key throws a `TypeError` naming it.
 
 | Option | Use |
