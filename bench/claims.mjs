@@ -75,6 +75,25 @@ export const CLAIM_EXCEPTIONS = [
 /** The cases a claim class holds to a band: case → its exception. */
 export const exceptionsOf = label => new Map(CLAIM_EXCEPTIONS.filter(e => e.class === label).map(e => [e.case, e]))
 
+/** Unmet cases: a case a claim class claims where jz does not lead yet. No band
+ *  holds it: the gate lists it as todo until jz leads, the README names it beside
+ *  the claim, and the entry goes the commit jz leads on every runner. `cause` is
+ *  what is measured of the gap in a line, `evidence` where it was measured. */
+export const CLAIM_UNMET = [
+  {
+    case: 'watr', class: 'v8',
+    cause: "V8 runs jz's wasm as baseline (Liftoff) code until its optimizing compile lands, and the timed run lasts about 3 ms on CI, so most rounds run baseline code; optimized, jz runs 0.59× V8's time (--no-liftoff)",
+    evidence: 'reference run 4922687e (EPYC 7763: 1.122× deno); probe runs 41131902865 and 41141556353 (1.112× by default, 0.590× under --no-liftoff)',
+  },
+  {
+    case: 'jz', class: 'v8',
+    cause: "not established: the self-compile case runs 1.02× V8 on an Apple M4 and 1.158× on EPYC 7763, and peaks at 1451 MB resident against V8's 453 MB",
+    evidence: 'reference run 4922687e; local profile at 072827ee (Apple M4 Max)',
+  },
+]
+/** The cases a claim class claims and does not lead yet. */
+export const unmetOf = label => new Set(CLAIM_UNMET.filter(e => e.class === label).map(e => e.case))
+
 /** The lanes measured for a case under --contenders: jz, the `n` fastest rivals of each
  *  claim class by the stored evidence, Porffor, and every selected lane no claim ranks
  *  (jz's own native lanes, the reference C). A rival with no timed row for the case

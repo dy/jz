@@ -333,7 +333,10 @@ open entries today are the dynamic programs, where the JIT speculates on the
 shapes and kinds each site has seen and jz's wasm carries only what it proves:
 `watr` at 1.45×, `jessie` at 1.2× and the `jz` self-compile case at 1.35×,
 each against bun/JSC. The V8 family excepts nothing: `watr` and the `jz`
-self-compile case trail it and stay red until fixed.
+self-compile case trail it, named in `CLAIM_UNMET` with what is measured of
+the gap and listed by the gate as todo until jz leads. `watr`'s timed run lasts
+about 3 ms on CI, so V8 runs most of it as baseline code before its optimizing
+compile lands; optimized, jz runs 0.59× V8's time.
 The class `rss` holds `webaudio`'s peak RSS to 1.15× V8's: V8's compiled code
 for the speed build's 1.19 MB of wasm outweighs jz's 4.5 MB heap.
 

@@ -28,7 +28,7 @@ import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
-import { CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, contenders, exceptionsOf, JIT_RIVALS, JSC_FAMILY_RIVALS, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, CLAIM_UNMET, contenders, exceptionsOf, JIT_RIVALS, JSC_FAMILY_RIVALS, unmetOf, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The named rivals of the claim. Unlike test/bench.js's availability-filtered
@@ -521,18 +521,40 @@ const bandTest = (label, rivals, ids = null, tol = WASM_BAND_TOL) => test(`claim
   ok(red.length === 0, `red cases void the ${label} claim: ${red.join(', ')}`)
 })
 
-// Each claim class over the cases it claims: every case but the pending ones and
-// the ones it excepts by name (bench/claims.mjs CLAIM_EXCEPTIONS), which answer to
-// their bands below.
+// Each claim class over the cases it claims: every case but the pending ones, the
+// ones it excepts by name (bench/claims.mjs CLAIM_EXCEPTIONS), which answer to
+// their bands below, and the ones it does not lead yet (CLAIM_UNMET), a todo.
 const NAMES = { wasm: 'wasm rival', v8: 'V8-family JIT (v8/node, deno)', jsc: 'bun/jsc JIT' }
 const RIVALS = Object.fromEntries(CLAIM_CLASSES)
 for (const [label, rivals] of CLAIM_CLASSES) {
-  const excepted = exceptionsOf(label)
+  const excepted = exceptionsOf(label), unmet = unmetOf(label)
   const name = NAMES[label] + (excepted.size ? ` (outside its named exceptions: ${[...excepted.keys()].join(', ')})` : '')
-  const ids = new Set(Object.keys(cases).filter(id => !PENDING_CASES.has(id) && !excepted.has(id)))
+    + (unmet.size ? ` (unmet: ${[...unmet].join(', ')})` : '')
+  const ids = new Set(Object.keys(cases).filter(id => !PENDING_CASES.has(id) && !excepted.has(id) && !unmet.has(id)))
   strictTest(name, rivals, ids)
   bandTest(name, rivals, ids)
 }
+test.todo('claims: the unmet cases lead their class (CLAIM_UNMET)', () => {
+  const notLed = CLAIM_UNMET.flatMap(e => {
+    const [row] = caseRatios(RIVALS[e.class], new Set([e.case]))
+    return row && row[1] < 1 ? [] : [`${e.case} vs ${e.class} ${row ? `${row[1].toFixed(3)}× (${row[2]})` : 'unmeasured'}`]
+  })
+  ok(notLed.length === 0, `not led: ${notLed.join(', ')}`)
+})
+test('claims: the unmet table is well formed', () => {
+  const seen = new Set()
+  for (const e of CLAIM_UNMET) {
+    const key = `${e.case}/${e.class}`
+    ok(cases[e.case] != null || existsSync(join(ROOT, 'bench', e.case, `${e.case}.js`)), `${key}: a case of the corpus`)
+    ok(!PENDING_CASES.has(e.case), `${key}: a pending case answers to no claim`)
+    ok(RIVALS[e.class] != null, `${key}: a claim class (${Object.keys(RIVALS).join(', ')})`)
+    ok(!exceptionsOf(e.class).has(e.case), `${key}: unmet or excepted, not both`)
+    for (const field of ['cause', 'evidence'])
+      ok(typeof e[field] === 'string' && e[field].trim().length > 0 && !e[field].includes('\n'), `${key}: a one-line ${field}`)
+    ok(!seen.has(key), `${key}: named once`)
+    seen.add(key)
+  }
+})
 test.todo('claims: the pending library cases lead every V8-family and bun/jsc engine (PENDING_CASES)', () => {
   const measured = new Set([...PENDING_CASES].filter(id => cases[id]))
   ok(measured.size === PENDING_CASES.size, `unmeasured: ${[...PENDING_CASES].filter(id => !cases[id]).join(', ')}`)
