@@ -97,7 +97,7 @@ test('array views: the view skips the copy', () => {
     const { instance } = jz(src, { optimize: { ...(typeof optimize === 'object' ? optimize : { level: optimize }), arenaRewind: false } })
     const { exports } = instance
     exports.run(200)
-    return exports.__heap?.value ?? new Uint8Array(exports.memory.buffer).length
+    return exports.__jz_heap?.value ?? new Uint8Array(exports.memory.buffer).length
   }
   ok(heapAfter('speed') < heapAfter(OFF), 'the slices no longer allocate')
 })

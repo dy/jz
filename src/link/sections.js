@@ -134,7 +134,7 @@ export function releaseSection(root, { releasable, flagged: conditional, rewound
     const set = (kind, name, value) => { const s = node(intern(kind)); push(s, str(name)); push(s, value); return s }
     const f = push(root, node(FUNC))
     push(f, str('$__base$set'))
-    push(push(f, node(intern('export'))), str('"__base"'))
+    push(push(f, node(intern('export'))), str('"__jz_base"'))
     const p = push(f, node(intern('param'))); push(p, str('$mark')); push(p, str('i32'))
     push(push(f, node(intern('result'))), str('i32'))
     const l = push(f, node(intern('local'))); push(l, str('$was')); push(l, str('i32'))
@@ -172,7 +172,7 @@ export function releaseSection(root, { releasable, flagged: conditional, rewound
   push(c, bytes([...utf8.encode(JSON.stringify({ release, ...(flag.length && { flag }), ...(host.length && { host }), ...(ask.length && { ask }), ...(number.length && { number }) }))]))
   if (flag.length && declared.has('$__esc')) {
     const e = push(root, node(intern('export')))
-    push(e, str('"__esc"'))
+    push(e, str('"__jz_esc"'))
     push(push(e, node(GLOBAL)), str('$__esc'))
   }
 }

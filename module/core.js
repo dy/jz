@@ -1010,7 +1010,7 @@ export default (ctx) => {
   } else {
     // Own memory: heap offset in a global, exported so the JS-side adapter
     // (alloc:false, no `_alloc` export) shares the pointer.
-    declGlobal('__heap', 'i32', HEAP.START, { export: '__heap' })
+    declGlobal('__heap', 'i32', HEAP.START, { export: '__jz_heap' })
     // `__clear` rewinds to the *post-module-init* high-water mark, not the static
     // data end: a module whose top-level code heap-allocates (e.g. the self-compile
     // compiler building its GLOBALS/atom tables in `__start`) leaves live state
@@ -1864,8 +1864,8 @@ export default (ctx) => {
   // only invoked by the host via its export string) as dead compiler
   // boilerplate, the same reason it hand-excludes `$__start`.
   ctx.core._allocRawFuncs = [
-    '(func $_alloc$exp (export "_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))',
-    '(func $_clear$exp (export "_clear") (call $__clear))',
+    '(func $_alloc$exp (export "__jz_alloc") (param $bytes i32) (result i32) (call $__alloc (local.get $bytes)))',
+    '(func $_clear$exp (export "__jz_clear") (call $__clear))',
   ]
 
   // Not-nullish check: f64 WAT node is neither NULL_NAN nor UNDEF_NAN.

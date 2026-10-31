@@ -95,11 +95,11 @@ async function one(fam, pkg, key) {
   at('run')
   let got
   try {
-    const { exports: wz, memory } = instantiate(wasm)
+    const { exports: wz, memory, instance } = instantiate(wasm), heap = instance.exports.__jz_heap
     const used = []
-    const r = render(wz, () => [wz.__heap?.value ?? 0, memory?.buffer.byteLength ?? 0], () => used.push(wz.__heap?.value ?? 0))
+    const r = render(wz, () => [heap?.value ?? 0, memory?.buffer.byteLength ?? 0], () => used.push(heap?.value ?? 0))
     got = r.res
-    rec.heapGrowth = (wz.__heap?.value ?? 0) - r.mark[0]
+    rec.heapGrowth = (heap?.value ?? 0) - r.mark[0]
     rec.heapPerBlock = Math.round((used[BLOCKS - 1] - used[(BLOCKS >> 1) - 1]) / (BLOCKS - (BLOCKS >> 1)))
     rec.memoryGrowth = (memory?.buffer.byteLength ?? 0) - r.mark[1]
   } catch (e) { done({ stage: 'run', error: first(e) }) }

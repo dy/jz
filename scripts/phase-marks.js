@@ -10,10 +10,10 @@
  * allocates nothing, first or repeated, and neither does reading the records
  * back. Every piece of state here, the count and the capacity included, is a
  * typed-array slot: the arrays are allocated at module init, below the mark the
- * arena rewind (`_clear`, and the checkpoint through `__park_rewind`) returns to,
+ * arena rewind (`__jz_clear`, and the checkpoint through `__park_rewind`) returns to,
  * and a rewind restores module globals to their post-init values but leaves
  * typed-array contents alone, so the records hold through a trap, a thrown
- * compile error, the checkpoint and `_clear`; they hold no pointer into a
+ * compile error, the checkpoint and `__jz_clear`; they hold no pointer into a
  * compile's own allocations. Every kernel entry resets them (setupSelf). Phases
  * past `phaseCapacity` are counted, not recorded; the host may lower the
  * capacity (up to PHASE_RECORDS) to exercise that through this recorder.

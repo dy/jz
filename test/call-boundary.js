@@ -96,7 +96,7 @@ test('call boundary: a helper the variants call runs typed in each kind', () => 
 })
 
 test('call boundary: a variant is minted where its kinds differ', () => {
-  const hidden = (fn, code = src) => WebAssembly.Module.exports(new WebAssembly.Module(compile(code))).map(e => e.name).filter(n => n.startsWith(fn + ':')).sort()
+  const hidden = (fn, code = src) => WebAssembly.Module.exports(new WebAssembly.Module(compile(code))).map(e => e.name).filter(n => n.startsWith('__jz_' + fn + ':')).map(n => n.slice(5)).sort()
   is(hidden('sum').join(), 'sum:Float32Array', 'a read-only slot: the Float32Array kinds only')
   is(hidden('gain').join(), 'gain:Float32Array', 'an in-place slot alone: the mixed kinds are Float32Array\'s')
   const mix = 'export let mix = (out, src) => { for (let i = 0; i < out.length; i++) out[i] = out[i] * 0.5 + src[i]; return out.length }'
@@ -116,7 +116,7 @@ test('call boundary: a variant is minted where its kinds differ', () => {
 // kernel reads element by element. The slots take the typed ABI through the
 // list (param-numeric.js paramArrayLikeList), and the kernel runs one copy per
 // list kind (narrow/param-abi.js splitByListKinds): no element read by kind.
-const hiddenOf = (code, fn) => WebAssembly.Module.exports(new WebAssembly.Module(compile(code))).map(e => e.name).filter(n => n.startsWith(fn + ':')).sort().join()
+const hiddenOf = (code, fn) => WebAssembly.Module.exports(new WebAssembly.Module(compile(code))).map(e => e.name).filter(n => n.startsWith('__jz_' + fn + ':')).map(n => n.slice(5)).sort().join()
 // An element the program's own functions read or store by its kind at run time.
 const byKind = (wat) => {
   let fn = ''

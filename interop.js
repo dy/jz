@@ -19,7 +19,7 @@ import { decodeUtf8 } from './utf8.js'
 // ── Allocator ───────────────────────────────────────────────────────────────
 // The heap top: the exported `$__heap` global, or for a shared memory the cell
 // at 1020 (globals are per instance, threads share the cell). An 8-byte aligned
-// bump; the module's `_alloc` takes over where it exports one. An i32 address
+// bump; the module's `__jz_alloc` takes over where it exports one. An i32 address
 // crosses into JS signed: `>>> 0` reads it unsigned past 2 GiB.
 const makeJsAllocator = (mem, heapGlobal) => {
   const dv = () => new DataView(mem.buffer)
@@ -146,14 +146,14 @@ const decodeSSO = (b) => {
 // Keep this table across arena resets: Symbols have identity but no heap storage.
 // A runtime identity's low bits are the slot of its description (layout.js
 // symbolCountMax): a literal of the program (`jz:symbol-slots`), else slot 1,
-// one `jz:symbol` keeps by the number the identity reads as (its `__sym_desc`
+// one `jz:symbol` keeps by the number the identity reads as (its `__jz_sym_desc`
 // export, once wrapped) or none. The host's own are slot 1.
 const symbolCodecs = new WeakMap()
 const SYMBOL_KEY_MASK = 0x00007FFFFFFFFFFFn
 const symbolsOf = (owner, mod, raw) => {
   let codec = symbolCodecs.get(owner)
   if (codec) return codec
-  const values = new Map(), ids = new Map(), counter = raw?.__symbol_id
+  const values = new Map(), ids = new Map(), counter = raw?.__jz_symbol_id
   let next = 0n
   const remember = (id, value) => { values.set(id, value); ids.set(value, id); return value }
   for (const [key, id] of (mod && jsonSection(mod, 'jz:symbols')) || [])
@@ -256,7 +256,7 @@ const moduleTables = (mod) => {
     return out
   }
   const bySid = (name, value) => new Map(list(name, r => [r.varint(), value(r)]))
-  // the schemas with an object literal's accessor: read through the module's data copy (`__view_data`)
+  // the schemas with an object literal's accessor: read through the module's data copy (`__jz_view_data`)
   const views = new Set(list('jz:views', r => r.varint()))
   const errorClasses = bySid('jz:errcls', r => r.str()), brands = bySid('jz:brand', r => r.str())
   const regexes = bySid('jz:regexp', r => [JSON.parse(r.str()), r.str()])
@@ -337,14 +337,14 @@ export const memory = (src) => {
 
   const dv = () => new DataView(mem.buffer)
 
-  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, base, markBase } = makeJsAllocator(mem, wasmExports?.__heap)
-  const wasmAlloc = wasmExports?._alloc && (bytes => wasmExports._alloc(bytes) >>> 0)
+  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, base, markBase } = makeJsAllocator(mem, wasmExports?.__jz_heap)
+  const wasmAlloc = wasmExports?.__jz_alloc && (bytes => wasmExports.__jz_alloc(bytes) >>> 0)
   // No call of the module runs while the host allocates for itself (`_busy`,
   // kept by the call wrappers below): that storage a compaction never moves,
   // its address being the host's to hold, so the pin keeps the floor above it.
   const pinned = (allocate) => (bytes) => { const p = allocate(bytes); if (!mem._busy) { mem._pin = top(); mem._pinSet?.(mem._pin) } return p }
   let alloc = pinned(wasmAlloc || jsAlloc)
-  const reset = wasmExports?._clear || jsReset
+  const reset = wasmExports?.__jz_clear || jsReset
   initHeapPtr()
 
   // A block with the module's 16-byte header (`__alloc_hdr`: properties, length,
@@ -361,9 +361,9 @@ export const memory = (src) => {
   // The module's tables joined to the memory's (rejected before anything
   // changes when the module compiled with other ids), committed as a whole
   Object.assign(mem, mergeTables(mem, mod ? moduleTables(mod) : NO_TABLES))
-  if (wasmExports?.__view_data) mem.viewData = wasmExports.__view_data
-  if (wasmExports?.__obj_props) mem.objProps = wasmExports.__obj_props
-  if (wasmExports?.__obj_deleted) mem.objDeleted = wasmExports.__obj_deleted
+  if (wasmExports?.__jz_view_data) mem.viewData = wasmExports.__jz_view_data
+  if (wasmExports?.__jz_obj_props) mem.objProps = wasmExports.__jz_obj_props
+  if (wasmExports?.__jz_obj_deleted) mem.objDeleted = wasmExports.__jz_obj_deleted
 
   mem._symbols = symbols
   // The compiled reset owns the post-init mark and durable state; a memory of
@@ -860,6 +860,10 @@ export const memory = (src) => {
   return mem
 }
 
+// The module's ABI exports, every name the program cannot export (src/prepare/handlers.js
+// exportName): its memory, the reactor entry and the `__jz_` prefix.
+const ABI_EXPORT = /^(?:memory|_initialize)$|^__jz_/
+
 /**
  * Adapt raw exports to the JS calling convention: arguments marshalled in by
  * their compiled lanes, results decoded, throws decoded, the call's heap
@@ -898,32 +902,39 @@ export const wrap = (src, state) => {
   // `export let n`), each a function returning the binding's current value,
   // read as an accessor: a live binding the host cannot write, as an ES module's
   const values = jsonSection(mod, 'jz:values')
-  const liveValues = (exports) => {
+  // The host's namespace: the program's own exports, every other one (`memory`,
+  // `_initialize`, the `__jz_` ones) the module's ABI, read off `instance.exports`.
+  // The wrapped ABI functions stay here: the initializer, a class's members
+  // (hostClasses), a kernel's kind variants, a Symbol's description.
+  const programExports = (all) => {
+    // A description computed at run time crosses through the module's own export (jz:symbol)
+    if (all.__jz_sym_desc) symbolsOf(realInst, mod, realInst.exports).describe = all.__jz_sym_desc
+    if (state) state.init = all._initialize
+    const exports = {}
+    for (const name of Object.keys(all)) if (!ABI_EXPORT.test(name)) exports[name] = all[name]
     if (values) for (const name of values)
       if (typeof exports[name] === 'function') Object.defineProperty(exports, name, { get: exports[name], enumerable: true, configurable: false })
-    // A description computed at run time crosses through the module's own export (jz:symbol)
-    if (exports.__sym_desc) symbolsOf(realInst, mod, realInst.exports).describe = exports.__sym_desc
     return exports
   }
-  const esc = realInst.exports.__esc, setBase = realInst.exports.__base, survive = realInst.exports.__survive
-  const compact = realInst.exports.__compact, pinGlobal = realInst.exports.__pin, cost = realInst.exports.__g_cost, viewed = realInst.exports.__viewed
+  const esc = realInst.exports.__jz_esc, setBase = realInst.exports.__jz_base, survive = realInst.exports.__jz_survive
+  const compact = realInst.exports.__jz_compact, pinGlobal = realInst.exports.__jz_pin, cost = realInst.exports.__jz_g_cost, viewed = realInst.exports.__jz_viewed
   const mem = memory(src)
-  // The module's pin (module/core/compact.js `__pin`): the heap below the
+  // The module's pin (module/core/compact.js `__jz_pin`): the heap below the
   // highest block the host holds by address never moves, in a compaction the
   // host asks for or one a loop runs inside a call. Raised as values decode.
   if (pinGlobal && mem) { mem._pinSet = (at) => { if (at > (pinGlobal.value >>> 0)) pinGlobal.value = at | 0 }; mem._pinReset = () => { pinGlobal.value = 0; if (viewed) viewed.value = 0 } }
   // A view the host holds detaches as the memory grows: once one is handed
   // out, a compaction finds its scratch in the memory as it stands or
-  // declines (`__viewed`, module/core/stub-log.js), as the program's own
+  // declines (`__jz_viewed`, module/core/stub-log.js), as the program's own
   // allocations alone grow it. The buffer the view shows marks how long:
   // once the program's allocation grew the memory past it (`settle`).
   if (viewed && mem) mem._viewSet = () => { viewed.value = 1; mem._viewBuf = mem.buffer }
-  // An async program exports __mt_drain, __p_state and __p_value (`jz:async`):
+  // An async program exports __jz_mt_drain, __jz_p_state and __jz_p_value (`jz:async`):
   // each export call ends a turn (the microtasks drain) and a promise result
   // becomes a host Promise, a pending one settled by the after-tick sweep.
-  const mtDrain = realInst.exports.__mt_drain
-  const pState = realInst.exports.__p_state
-  const pValue = realInst.exports.__p_value
+  const mtDrain = realInst.exports.__jz_mt_drain
+  const pState = realInst.exports.__jz_p_state
+  const pValue = realInst.exports.__jz_p_value
   const asyncMod = !!(mtDrain && pState && pValue)
   const pending = []
   // a promise reader called on its own lanes (jz:i64exp)
@@ -932,11 +943,11 @@ export const wrap = (src, state) => {
     return fn(typeof raw === 'bigint' ? (lane?.p?.has(0) ? raw : i64ToF64(raw)) : (lane?.p?.has(0) ? bits(raw) : raw))
   }
   const pStateOf = (raw) => {
-    const r = pcall(pState, '__p_state', raw)
+    const r = pcall(pState, '__jz_p_state', raw)
     return typeof r === 'bigint' ? i64ToF64(r) : r
   }
   const readSettled = (raw) => {
-    const v = pcall(pValue, '__p_value', raw)
+    const v = pcall(pValue, '__jz_p_value', raw)
     return mem ? readRet(v) : decode(v)
   }
   const sweep = () => {
@@ -960,9 +971,9 @@ export const wrap = (src, state) => {
   if (asyncMod && state) {
     state.afterTick = sweep
     // a thenable a host import returns becomes the module's promise
-    const mk = realInst.exports.__p_make, fin = realInst.exports.__p_finish
+    const mk = realInst.exports.__jz_p_make, fin = realInst.exports.__jz_p_finish
     if (mk && fin) {
-      const lanes = i64Exp.get('__p_finish')
+      const lanes = i64Exp.get('__jz_p_finish')
       state.pmake = () => mk()
       state.pfinish = (praw, st, vbits) => fin(
         lanes?.p?.has(0) ? (typeof praw === 'bigint' ? praw : bits(praw)) : (typeof praw === 'bigint' ? i64ToF64(praw) : praw),
@@ -1024,7 +1035,7 @@ export const wrap = (src, state) => {
   // module's trampoline as an export call runs; called as a method of an object
   // read from the module it takes that object as `this`. Arguments past the
   // inline lanes spill into an array.
-  const callClosure = mem ? realInst.exports.__call_closure : null
+  const callClosure = mem ? realInst.exports.__jz_call_closure : null
   const classes = mem && !mem.scalar ? jsonSection(mod, 'jz:class') : null
   const lanes = callClosure ? callClosure.length - 4 : 0
   const closureArg = (v) => typeof v === 'bigint' && !isBox(v) && mem.BigInt ? mem.BigInt(v) : numberArg(v)
@@ -1045,7 +1056,14 @@ export const wrap = (src, state) => {
     } finally { if (mark) leave(mark, false, false, returned) }
   }, { owners: new WeakMap(), classes: null }) : classes ? { owners: new WeakMap(), classes: null } : null
   if (state) state.fnOf = fnOf
-  const exports = {}
+  const all = {}
+  // The ABI functions the host calls as the program's are: the initializer, a
+  // Symbol's description, a kernel's kind variants, a class's members. The
+  // rest of the ABI (`__jz_alloc`, `__jz_base`, …) the runtime calls raw.
+  const hostCalled = new Set(['_initialize', '__jz_sym_desc'])
+  for (const ie of i64Exp.values()) for (const n of ie.v ?? []) hostCalled.add(n)
+  for (const c of classes ?? []) for (const [key, kind] of [...c.members, ...c.statics]) hostCalled.add('__jz_' + c.tag + MARK + kind + key)
+  const wrapped = (name, fn) => !ABI_EXPORT.test(name) || hostCalled.has(name) && typeof fn === 'function'
   // A call that crosses as it is: every slot a number, so the engine's ToNumber
   // is all the marshalling. A BigInt argument takes the general path, a result
   // that is no number its decoding (`settle`). Written out by arity so the call
@@ -1231,15 +1249,15 @@ export const wrap = (src, state) => {
   // anything (`mem._kept`, per nesting). An export whose frame runs escapes
   // (`flag`) releases only where none wrote below the mark (the escape flag,
   // saved and cleared around the call, optimize/arena-rewind.js); a call that
-  // threw releases nothing. `__base` sets the outermost frame's mark and
+  // threw releases nothing. `__jz_base` sets the outermost frame's mark and
   // answers the mark of a frame running around this call, or all ones.
   // JZ_DEBUG_POISON=1: a release overwrites what it frees, as a rewound frame does.
   const POISON = typeof process !== 'undefined' && process.env?.JZ_DEBUG_POISON === '1'
   const NO_MARK = -1 >>> 0
   let depth = 0
   // As the outermost call returns, every sixteenth, the module keeps what its
-  // roots reach (`__compact`, module/core/compact.js) once the memory above the
-  // floor holds twice what the last walk reached (`__g_cost`) and a page, or,
+  // roots reach (`__jz_compact`, module/core/compact.js) once the memory above the
+  // floor holds twice what the last walk reached (`__jz_g_cost`) and a page, or,
   // near the end of the address space, an eighth of that. The floor stands above
   // what the host allocated and what it was handed by address (`_pinAt`).
   const COMPACT_MIN = 65536, CAP = 2 ** 32, MARGIN = 64 << 20
@@ -1307,7 +1325,8 @@ export const wrap = (src, state) => {
   // A module without memory: values cross by their bits, no heap to release
   if (!mem || mem.scalar) {
     for (const [name, fn] of Object.entries(realInst.exports)) {
-      if (typeof fn !== 'function') { exports[name] = fn; continue }
+      if (!wrapped(name, fn)) continue
+      if (typeof fn !== 'function') { all[name] = fn; continue }
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
       const hostAbi = hostAbiExp.get(name)
@@ -1320,9 +1339,9 @@ export const wrap = (src, state) => {
         if (lastErrBitsWritable) lastErrBits.value = 0n   // a fresh call starts with no stale mark
         try { return result(fn(...a)) } catch (e) { decodeThrown(e) }
       }
-      exports[name] = plainLanes(ie, ext, hostAbi) && !asyncMod ? crossing(fn, general, result, always, idle, hostAbi?.skip) : general
+      all[name] = plainLanes(ie, ext, hostAbi) && !asyncMod ? crossing(fn, general, result, always, idle, hostAbi?.skip) : general
     }
-    return liveValues(exports)
+    return programExports(all)
   }
   const memWrapVal = mem.wrapVal.bind(mem)
   // A rest element: a handle as it is, a BigInt boxed where the export's
@@ -1333,8 +1352,8 @@ export const wrap = (src, state) => {
     throw new TypeError(`jz: BigInt argument in the rest arguments of ${name}() has no BigInt evidence in the compiled program — give the rest parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string`)
   }
   for (const [name, fn] of Object.entries(realInst.exports)) {
-    if (fn === setBase || fn === survive || name === '__root_reset') continue   // the host's own handles on the module, no exports of the program
-    if (typeof fn !== 'function') { exports[name] = fn; continue }
+    if (!wrapped(name, fn)) continue
+    if (typeof fn !== 'function') { all[name] = fn; continue }
     const ext = extExp.get(name), ie = i64Exp.get(name), hostAbi = hostAbiExp.get(name)
     const release = releases.has(name), flag = flagged.has(name), numeric = numberResult.has(name)
     const rest = restFuncs.has(name), fixed = rest ? restFuncs.get(name) : fn.length
@@ -1368,19 +1387,19 @@ export const wrap = (src, state) => {
     }
     // Numbers only, and nothing for the host to release (the frame releases or
     // keeps by itself): the call crosses as it is, counted as one that runs.
-    exports[name] = !rest && plainLanes(ie, ext, hostAbi) && !asyncMod && !(release && hostReleased.has(name))
+    all[name] = !rest && plainLanes(ie, ext, hostAbi) && !asyncMod && !(release && hostReleased.has(name))
       ? crossing(fn, general, (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : exportRet(ret), running, ran, hostAbi?.skip) : general
   }
   // An export whose typed slots take other kinds in variants (`v`, hidden
   // exports of the same body) calls the one the arguments fit.
   for (const [name, ie] of i64Exp) {
-    if (!ie.v || !exports[name]) continue
-    const cands = [name, ...ie.v].filter(n => exports[n])
-    exports[name] = kindDispatch(name, cands.map(n => [exports[n], slotsOf(i64Exp.get(n))]))
-    for (const n of ie.v) delete exports[n]
+    if (!ie.v || !all[name]) continue
+    const cands = [name, ...ie.v].filter(n => all[n])
+    all[name] = kindDispatch(name, cands.map(n => [all[n], slotsOf(i64Exp.get(n))]))
+    for (const n of ie.v) delete all[n]
   }
-  if (classes) hostClasses(classes, exports, fnOf, mem)
-  return liveValues(exports)
+  if (classes) hostClasses(classes, all, fnOf, mem)
+  return programExports(all)
 }
 
 // A class the module exports (`jz:class`, compile/emit/class-dispatch.js) is a
@@ -1406,7 +1425,7 @@ const hostClasses = (table, exports, fnOf, mem) => {
     const proto = C ? C.prototype : {}
     const self = (o, key) => { if (!mem._handles.has(o)) throw new TypeError(`${c.cls}.prototype.${key} called on an object that is not an instance of ${c.cls}`); return o }
     for (const [key, kind] of c.members) {
-      const f = take(MARK + c.tag + MARK + kind + key), had = Object.getOwnPropertyDescriptor(proto, key)
+      const f = take('__jz_' + c.tag + MARK + kind + key), had = Object.getOwnPropertyDescriptor(proto, key)
       if (kind === 'm') {
         const method = { [key](...args) {
           if (self(this, key)[key] !== method) throw new TypeError(`${c.cls}.prototype.${key} called on an instance whose class overrides it`)
@@ -1430,7 +1449,7 @@ const hostClasses = (table, exports, fnOf, mem) => {
     if (C) {
       const access = new Map()
       for (const [key, kind] of c.statics) {
-        const f = take(MARK + c.tag + MARK + kind + key)
+        const f = take('__jz_' + c.tag + MARK + kind + key)
         if (key === 'prototype') continue
         if (kind === 'M') { Object.defineProperty(C, key, { value: { [key](...args) { return f(...args) } }[key], writable: true, configurable: true }); continue }
         const d = access.get(key) ?? { configurable: true, enumerable: false }
@@ -1878,8 +1897,8 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
   state.errTag = inst.exports.__jz_err
   const exports = wrap(src, state)   // before init: an initializer may call a host function that calls back
   state.flushPrint?.()
-  if (inst.exports._initialize) {
-    exports._initialize()
+  if (state.init) {
+    state.init()
     enhanced._markBase?.()
   }
   // A memoryless module's reader stays internal: the result's `.memory` is null.

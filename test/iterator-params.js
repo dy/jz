@@ -48,10 +48,10 @@ test('iterator records: module-init reuse cannot overwrite a new allocation afte
       return s;
     }`
   for (const level of levels(0, 1, 2, 3, 'size')) for (const snapshotInit of [false, true]) {
-    const ex = jz(src, { optimize: { level, snapshotInit } }).exports
+    const { exports: ex, memory } = jz(src, { optimize: { level, snapshotInit } })
     for (const n of [0, 4096, 0, 8192, 8192]) {
       is(ex.f(n), 18 + 99 * n, `O${level}, snapshot=${snapshotInit}, n=${n}: new buffer is intact`)
-      ex._clear()
+      memory.reset()
     }
   }
 })
@@ -88,11 +88,11 @@ test('iterator records: nested close, errors, reuse and arena reset preserve the
     }`
   const modes = [0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8, 9]
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
-    const ex = jz(src, { optimize }).exports
+    const { exports: ex, memory } = jz(src, { optimize })
     for (let cycle = 0; cycle < 2; cycle++) {
       const js = oracle(src)
       is(modes.map(n => ex.f(n)), modes.map(n => js.f(n)), `O${optimize}: cycle ${cycle}`)
-      ex._clear()
+      memory.reset()
     }
   }
 })

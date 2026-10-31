@@ -38,7 +38,7 @@ const RUNS = Math.max(8, Number(process.env.JZ_BENCH_RUNS) || 18)
 const WARM = 8
 // Opt-in: one wasm instance per CASE, `_clear()` between the N timed runs (instead
 // of a fresh instance per run). Requires the warm-instance-reuse fix (module-level
-// caches that used to dangle across `_clear` — DOLLAR/stdlibParseCache/programFacts-
+// caches that used to dangle across `__jz_clear` — DOLLAR/stdlibParseCache/programFacts-
 // style Maps, the __dyn_props/__dyn_get_cache_* globals, NULL_IR's missing .slice(),
 // subscript's comment-list cache, watr's err.src/err.loc — see module/core.js
 // __clear, src/ir.js clearDollar, scripts/self.js setupSelf). Still fresh String
@@ -115,7 +115,7 @@ const timeMinWasm = (src) => {
 // reporting a bogus/partial time).
 const timeMinWasmWarm = (src) => {
   const inst = instantiate(wasmBytes, { memory: 8192 })
-  const runOnce = () => { const sp = inst.memory.String(src); const lp = inst.memory.String(LEVEL); const out = inst.exports.default(sp, 0, lp); inst.memory.read(out); inst.instance.exports._clear() }
+  const runOnce = () => { const sp = inst.memory.String(src); const lp = inst.memory.String(LEVEL); const out = inst.exports.default(sp, 0, lp); inst.memory.read(out); inst.instance.exports.__jz_clear() }
   try {
     for (let i = 0; i < WARM; i++) runOnce()
     let best = Infinity

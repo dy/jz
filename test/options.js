@@ -140,9 +140,9 @@ test('options: optimize object — exceptions:false drops the exceptions tag', (
 
 test('options: optimize object — alloc:false omits the allocator exports', () => {
   const wat = compile(GROW, { wat: true })
-  ok(/\(export "_alloc"/.test(wat) || /\(export "_clear"/.test(wat), 'a growing array exports the allocator (sanity)')
+  ok(/\(export "__jz_alloc"/.test(wat) || /\(export "__jz_clear"/.test(wat), 'a growing array exports the allocator (sanity)')
   const raw = compile(GROW, { wat: true, optimize: { alloc: false } })
-  ok(!/\(export "_alloc"/.test(raw) && !/\(export "_clear"/.test(raw), 'alloc:false is the raw ABI')
+  ok(!/\(export "__jz_alloc"/.test(raw) && !/\(export "__jz_clear"/.test(raw), 'alloc:false is the raw ABI')
 })
 
 test('options: optimize object — its seven keys; a pass name or a typo refused', () => {

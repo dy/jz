@@ -104,7 +104,7 @@ export function wasi(opts = {}) {
  * Drive a `host: 'wasi'` module's WASM timer queue from JS scheduling.
  *
  * The wasi timer lowering compiles `setTimeout`/`setInterval` into an in-wasm
- * queue drained by the exported `__timer_tick` (returns ms until the next due
+ * queue drained by the exported `__jz_timer_tick` (returns ms until the next due
  * callback, ≤0 when the queue is empty). A native runtime ticks it from its own
  * event loop; in a JS host we poll via `setInterval`, stopping once the queue
  * drains. No-op for modules without timers. (The `host: 'js'` build lowers to
@@ -113,8 +113,8 @@ export function wasi(opts = {}) {
  * @param {WebAssembly.Instance} inst
  */
 export const attachTimers = (inst) => {
-  if (!inst.exports.__timer_tick) return
-  const tick = inst.exports.__timer_tick
+  if (!inst.exports.__jz_timer_tick) return
+  const tick = inst.exports.__jz_timer_tick
   let hadTimers = false
   const id = setInterval(() => {
     const remaining = tick()

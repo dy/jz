@@ -106,7 +106,7 @@ if (flag('--worker')) {
     readMarks(k)   // a diagnostics ABI the reader rejects fails before any compile
     return k
   }
-  const heap = (k) => k.instance.exports.__heap.value >>> 0
+  const heap = (k) => k.instance.exports.__jz_heap.value >>> 0
   const memBytes = (k) => k.instance.exports.memory.buffer.byteLength
   const optJSON = (k, optimize) => k.memory.String(JSON.stringify(typeof optimize === 'number' ? { level: optimize } : optimize))
   // One compile through a kernel: the bytes copied out at once, validated, with the

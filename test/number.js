@@ -230,7 +230,7 @@ test('number formatting: scratch becomes the result without retaining temporary 
     const r = jz(src, { optimize, alloc })
     // The raw ABI deliberately hides its private heap cursor. Its alias and
     // value checks still run; measure allocation where the counter is exposed.
-    const heap = r.instance.exports.__heap
+    const heap = r.instance.exports.__jz_heap
     if (alloc) ok(heap, 'the owned allocator exposes its counter')
     for (let round = 0; round < 2; round++) {
       r.exports.hold(123456789, 2)
@@ -244,7 +244,7 @@ test('number formatting: scratch becomes the result without retaining temporary 
       is(r.exports.invalid(1), 'RangeError')
       is(r.exports.invalid(37), 'RangeError')
       is(r.exports.radix(17, 2), '10001', 'formatting still works after a rejected radix')
-      if (alloc) r.instance.exports._clear()
+      if (alloc) r.instance.exports.__jz_clear()
     }
   }
 })

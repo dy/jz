@@ -117,10 +117,10 @@ test('guard view: a reassigned binding and a guard in a loop keep the binding', 
 
 test('guard view: a call through the view allocates nothing that stays', () => {
   const src = `export let f = (a) => { if (!(a instanceof Float32Array)) throw new TypeError('x'); ${SUM} }`
-  const { exports, memory } = jz(src)
+  const { exports, memory, instance } = jz(src)
   const p = memory.Float32Array(f32(64))
   const want = oracle(src).f(f32(64))
-  const cursor = () => exports._alloc(1)
+  const cursor = () => instance.exports.__jz_alloc(1)
   const before = cursor()
   for (let i = 0; i < 2000; i++) is(exports.f(p), want)
   ok(cursor() - before <= 16, 'the heap cursor stays where the probes left it')

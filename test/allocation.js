@@ -149,13 +149,13 @@ test('allocation: full tiny collections reuse healed slots after reset', () => {
     }
     export function churn() { return new Float64Array(128).length }`
   for (const level of levels(0, 1, 2, 3, 'size')) for (const compact of [false, true]) {
-    const ex = jz(source, { optimize: { level, collectionInitCap: 2 }, _compactCollections: compact }).exports
+    const { exports: ex, memory } = jz(source, { optimize: { level, collectionInitCap: 2 }, _compactCollections: compact })
     for (const [round, n] of [[1, 2], [2, 2], [3, 0], [4, 2], [5, 3], [6, 2]]) {
       is(ex.fill(round, n), [n, n, n * (n + 1) / 2], `O${level} compact=${compact}: live keys after healed round=${round}`)
       is(ex.replace(), 0, 'updating a full table needs no new storage')
-      ex._clear(); ex.churn()
+      memory.reset(); ex.churn()
       is(ex.state(), [0, 0, 0], 'reset removes ephemeral keys before the next probe')
-      ex._clear()
+      memory.reset()
     }
   }
 })

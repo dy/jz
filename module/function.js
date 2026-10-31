@@ -80,7 +80,7 @@ export default (ctx) => {
   // spread call's $__closure_spill).
   ctx.core.stdlib.__call_closure = () => {
     const lanes = Array.from({ length: ctx.closure.width ?? MAX_CLOSURE_ARITY }, (_, i) => i)
-    return `(func $__call_closure (export "__call_closure") (param $clos i64) (param $argc i32) (param $spill i32) (param $this i64)${lanes.map(i => ` (param $a${i} i64)`).join('')} (result i64)
+    return `(func $__call_closure (export "__jz_call_closure") (param $clos i64) (param $argc i32) (param $spill i32) (param $this i64)${lanes.map(i => ` (param $a${i} i64)`).join('')} (result i64)
       ${ctx.scope.globals.has('__closure_spill') ? '(global.set $__closure_spill (local.get $spill))' : ''}
       (i64.reinterpret_f64 (call_indirect (type $ftN)
         (f64.reinterpret_i64 (local.get $clos))

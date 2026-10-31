@@ -2620,7 +2620,7 @@ test('devirtGlobalCalls: a call through a global that holds a builtin is the bui
     if (!dropped) continue
     is(JSON.stringify([...(ctx.funcs.globalDevirt?.keys() ?? [])]), '[]', `${name}: no global holds the wrapper`)
     ok(!/bw\d+_math_fround/.test(text), `${name}: the wrapper is not compiled`)
-    if (!belowOpt(2)) ok(!/"_alloc"|\(start /.test(compile(src, { modules, jzify: true, optimize: 2, wat: true })), `${name}: no allocator and no start function`)
+    if (!belowOpt(2)) ok(!/"__jz_alloc"|\(start /.test(compile(src, { modules, jzify: true, optimize: 2, wat: true })), `${name}: no allocator and no start function`)
   }
 })
 

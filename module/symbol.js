@@ -109,7 +109,7 @@ export default (ctx) => {
 
   ctx.core.emit['Symbol'] = (nameExpr, ...ignored) => {
     // the count of runtime identities made, shared with the host's (interop.js)
-    declGlobal('__symbol_id', 'i64', '0', { export: '__symbol_id' })
+    declGlobal('__symbol_id', 'i64', '0', { export: '__jz_symbol_id' })
     const primitive = nameExpr === undefined || primitiveKind(ctx.summary?.at(ctx.func.current), nameExpr)
     // (a description no literal fixes is `jz:symbol`'s to keep, jzify)
     const slot = slotOf(literalDescription(nameExpr))

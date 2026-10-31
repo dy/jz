@@ -1742,7 +1742,7 @@ export default (ctx) => {
   // undefined for a setter alone), then the keys a write added after the
   // literal, from its sidecar, in insertion order. A deleted field stays absent.
   // Bits in and out: the host passes a pointer as an i64, which keeps its payload.
-  ctx.core.stdlib['__view_data'] = `(func $__view_data (export "__view_data") (param $bits i64) (result i64)
+  ctx.core.stdlib['__view_data'] = `(func $__view_data (export "__jz_view_data") (param $bits i64) (result i64)
     (call $__view_copy (local.get $bits) (i32.const 1)))`
   ctx.core.stdlib['__view_copy'] = () => `(func $__view_copy (param $bits i64) (param $symbols i32) (result i64)
     (local $hash i32) (local $out i64) (local $side i64) (local $global i64) (local $key i64)
@@ -2397,7 +2397,7 @@ export default (ctx) => {
   // (bit0 marks a durable object's); 1, the one the table __dyn_props keys by
   // offset holds for a durable or static object. 0 when there is none. The
   // host decodes an object through it (interop.js mem.read).
-  ctx.core.stdlib['__obj_props'] = () => `(func $__obj_props (export "__obj_props") (param $bits i64) (param $global i32) (result i64)
+  ctx.core.stdlib['__obj_props'] = () => `(func $__obj_props (export "__jz_obj_props") (param $bits i64) (param $global i32) (result i64)
     (local $off i32) (local $props i64)
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (if (local.get $global)
@@ -2412,7 +2412,7 @@ export default (ctx) => {
     (select (local.get $props) (i64.const 0) (i32.eq (call $__ptr_type (local.get $props)) (i32.const ${PTR.HASH}))))`
 
   // An OBJECT's deleted-slot mask (layout.js deletedMaskWat), for the host.
-  ctx.core.stdlib['__obj_deleted'] = () => `(func $__obj_deleted (export "__obj_deleted") (param $bits i64) (result i32)
+  ctx.core.stdlib['__obj_deleted'] = () => `(func $__obj_deleted (export "__jz_obj_deleted") (param $bits i64) (result i32)
     (local $off i32)
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${deletedMaskWat('$off')})`

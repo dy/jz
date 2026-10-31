@@ -131,9 +131,9 @@ test('string padding: oversized allocation leaves the arena reusable', () => {
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const { exports: { f, empty }, instance } = jz(src, { optimize })
     is(f(2), 'xa')
-    const before = instance.exports.__heap.value
+    const before = instance.exports.__jz_heap.value
     throws(() => f(Infinity))
-    is(instance.exports.__heap.value, before, 'reject before allocation')
+    is(instance.exports.__jz_heap.value, before, 'reject before allocation')
     is(empty(Infinity), 'a', 'an empty fill needs no allocation')
     is(f(3), 'xxa', 'valid call after oversized request')
   }
@@ -199,22 +199,22 @@ test('encodeURIComponent: dynamic value compiles without JS host imports under W
 
 test('decodeURIComponent: decodes escaped component bytes', () => {
   const mod = run('export let f = () => decodeURIComponent("%3B%2F%3F%3A%40%26%3D%2B%24%2C%23")')
-  is(mod.memory.read(mod.f()), ';/?:@&=+$,#')
+  is(mod.f(), ';/?:@&=+$,#')
 })
 
 test('decodeURIComponent: accepts lowercase hex and UTF-8 bytes', () => {
   const mod = run('export let f = () => decodeURIComponent("%c3%a9%20%E2%98%83")')
-  is(mod.memory.read(mod.f()), 'é ☃')
+  is(mod.f(), 'é ☃')
 })
 
 test('decodeURIComponent: leaves unescaped text unchanged', () => {
   const mod = run('export let f = (x) => decodeURIComponent(x)')
-  is(mod.memory.read(mod.f(mod.memory.String('plain-value'))), 'plain-value')
+  is(mod.f('plain-value'), 'plain-value')
 })
 
 test('decodeURIComponent: missing argument decodes undefined', () => {
   const mod = run('export let f = () => decodeURIComponent()')
-  is(mod.memory.read(mod.f()), 'undefined')
+  is(mod.f(), 'undefined')
 })
 
 test('decodeURIComponent: malformed escape throws', () => {

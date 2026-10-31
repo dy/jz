@@ -9,9 +9,10 @@
  * specifier: one copy per compile, shared identity and one microtask queue.
  * Pay-per-use: a program referencing none of them compiles byte-identically.
  *
- * `STD_HOST_EXPORTS` lists the exports interop reads off the instance by
- * plain name (the async boundary); prepare re-exports them from the program
- * whenever the module is bundled, from whichever module pulled it in.
+ * `STD_HOST_EXPORTS` lists the exports interop reads off the instance (the
+ * async boundary); prepare re-exports each from the program under the ABI
+ * prefix (`__mt_drain` as `__jz_mt_drain`) whenever the module is bundled,
+ * from whichever module pulled it in.
  *
  * @module std
  */

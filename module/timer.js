@@ -220,7 +220,7 @@ const setupWasi = (ctx) => {
 
   // __timer_tick() → i32 — non-blocking tick. Dispatches due timers, returns remaining active count.
   // Called by JS runtime (host.js) via setInterval to drive timers without blocking.
-  ctx.core.stdlib['__timer_tick'] = `(func $__timer_tick (export "__timer_tick") (result i32)
+  ctx.core.stdlib['__timer_tick'] = `(func $__timer_tick (export "__jz_timer_tick") (result i32)
     (local $now i64)
     (if (i32.le_s (global.get $__timer_count) (i32.const 0))
       (then (return (i32.const 0))))
@@ -231,7 +231,7 @@ const setupWasi = (ctx) => {
   // __timer_loop() — blocking event loop. Polls clock, dispatches due timers.
   // Exits when no active timers remain (all timeouts fired, all intervals cleared).
   // Intended for CLI/wasmtime/wasmer where JS event loop is unavailable.
-  ctx.core.stdlib['__timer_loop'] = `(func $__timer_loop (export "__timer_loop")
+  ctx.core.stdlib['__timer_loop'] = `(func $__timer_loop (export "__jz_timer_loop")
     (local $now i64)
     (local $any i32)
     (block $exit (loop $poll

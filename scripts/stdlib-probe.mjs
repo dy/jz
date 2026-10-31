@@ -674,10 +674,10 @@ ${names.map(([k]) => `  if (k === ${k}) { k${k}(U, OUT, 0); return 1 }`).join('\
   for (const m of text.matchAll(/\n  \(func \$([^\s()]+)/g)) { const at = m.index + 1, nx = text.indexOf('\n  (func ', at + 10); bodies.set(m[1], text.slice(at, nx > 0 ? nx : undefined)) }
   const rows = names.map(([k, name]) => {
     for (let w = 0; w < 3; w++) { host.run(k); inst.exports.run(k) }
-    const heap = inst.exports.__heap?.value ?? 0
+    const heap = inst.exports.__jz_heap?.value ?? 0
     const t = performance.now(); host.run(k); const one = Math.max(performance.now() - t, 1e-3)
     inst.exports.run(k)
-    const kept = (inst.exports.__heap?.value ?? 0) - heap
+    const kept = (inst.exports.__jz_heap?.value ?? 0) - heap
     const calls = [...new Set([...(bodies.get(`k${k}`) ?? '').matchAll(/\((?:return_)?call(_indirect)? ?\$?([^\s()]*)/g)].map(m => m[1] ? 'indirect' : m[2]))]
     return { k, name: short('@stdlib/math/base/' + name), js: Infinity, jz: Infinity, reps: Math.max(1, Math.min(400, Math.ceil(0.25 / one))), kept, calls, own: bodies.has(`k${k}`) }
   })

@@ -325,7 +325,7 @@ test('shared decimal powers: parser and formatter instances keep separate table 
   for (let i = 0; i < 3; i++) {
     is(own.exports.num('5e-324'), 5e-324, 'subnormal parsing after clear')
     is(own.exports.text(1e200), '1e+200', 'formatting after clear')
-    own.instance.exports._clear()
+    own.instance.exports.__jz_clear()
   }
 })
 
@@ -490,7 +490,7 @@ test('allocator: page boundaries, exact-growth fallback, and unsigned overflow',
   if (onKernel()) return // memory limits are host compile options
   // the growth arithmetic alone: a large block's placement gap (allocation.js) off
   const { instance } = instantiate(compile('export let f=n=>new Uint8Array(n)', { memory: 1, maxMemory: 3, optimize: { placeLargeBlocks: false } }))
-  const { _alloc, __heap, memory } = instance.exports
+  const { __jz_alloc: _alloc, __jz_heap: __heap, memory } = instance.exports
   const start = __heap.value
   is(_alloc(0), start)
   is(__heap.value, start, 'zero work leaves the heap unchanged')
@@ -512,9 +512,9 @@ test('allocator: page boundaries, exact-growth fallback, and unsigned overflow',
   is(_alloc(0), saved, 'allocator remains usable after failure')
   // a large block's placement gap wrapping past 4 GiB traps too, the heap unmoved
   const placed = instantiate(compile('export let f=n=>new Uint8Array(n)', { memory: 1, maxMemory: 3 })).instance.exports
-  placed.__heap.value = -16
-  throws(() => placed._alloc(4096), WebAssembly.RuntimeError)
-  is(placed.__heap.value, -16)
+  placed.__jz_heap.value = -16
+  throws(() => placed.__jz_alloc(4096), WebAssembly.RuntimeError)
+  is(placed.__jz_heap.value, -16)
 })
 
 test('allocator: geometric growth changes at the documented page thresholds', () => {
@@ -522,7 +522,7 @@ test('allocator: geometric growth changes at the documented page thresholds', ()
   const src = 'export let f=n=>new Uint8Array(n)'
   for (const pages of [2047, 2048, 4095, 4096]) {
     const { instance } = instantiate(compile(src, { memory: pages, maxMemory: 8192 }))
-    const { _alloc, __heap, memory } = instance.exports
+    const { __jz_alloc: _alloc, __jz_heap: __heap, memory } = instance.exports
     // Reserve address space only: no large array is filled or read.
     __heap.value = pages * 65536 - 8
     _alloc(16)
@@ -583,7 +583,7 @@ test('memory.reset(): own memory keeps page count flat across allocating calls',
     export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }
   `
   ok(typeof memory.reset === 'function', 'memory.reset is a function')
-  ok(typeof instance.exports._clear === 'function', '_clear export is present')
+  ok(typeof instance.exports.__jz_clear === 'function', '_clear export is present')
   const before = memory.buffer.byteLength
   for (let i = 0; i < 500; i++) { exports.f(100); memory.reset() }
   is(memory.buffer.byteLength, before, 'no growth across 500 reset cycles')
@@ -689,8 +689,8 @@ test('memory.reset(): wires up after compile when memory was JS-only', () => {
 test('pure scalar module exposes no memory and no allocator exports', () => {
   const r = jz`export let add = (a, b) => a + b`
   ok(!r.memory, 'no memory on pure scalar module')
-  ok(!('_alloc' in r.instance.exports), 'no _alloc export')
-  ok(!('_clear' in r.instance.exports), 'no _clear export')
+  ok(!('__jz_alloc' in r.instance.exports), 'no _alloc export')
+  ok(!('__jz_clear' in r.instance.exports), 'no _clear export')
 })
 
 test('_clear() rewinds to the post-init heap mark, preserving module-init state', () => {
@@ -699,7 +699,7 @@ test('_clear() rewinds to the post-init heap mark, preserving module-init state'
   // reset to the static-data end, into the module's own init allocations), the next
   // probe's scratch would overwrite `table` and the sum would be wrong. This is the
   // self-compile arena-reuse corruption reduced to one module.
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     let table = new Float64Array(5)
     for (let i = 0; i < 5; i++) table[i] = (i + 1) * 10
     export let probe = (n) => {
@@ -708,21 +708,21 @@ test('_clear() rewinds to the post-init heap mark, preserving module-init state'
       return table[0] + table[4]
     }`, { optimize: false })
   is(exports.probe(256), 60, 'baseline: 10 + 50')
-  exports._clear()
+  memory.reset()
   is(exports.probe(256), 60, 'table survives one _clear')
-  exports._clear(); exports.probe(256); exports._clear()
+  memory.reset(); exports.probe(256); memory.reset()
   is(exports.probe(256), 60, 'table survives repeated _clear + alloc cycles')
 })
 
 test('_clear() restores runtime-written module globals to their post-init snapshot', () => {
   // The warm-reuse landmine class: a module-level lazy cache holds an ARENA pointer;
-  // `_clear` rewinds the arena; the next round's `if (!CACHE)` sees a stale truthy
+  // `__jz_clear` rewinds the arena; the next round's `if (!CACHE)` sees a stale truthy
   // handle and dereferences whatever now lives at that offset (watr's in-kernel NCLS
   // dict, json's __jbuf — every one was this shape). The contract that kills the whole
   // class: _clear restores every runtime-written module global to its post-__start
   // value — warm behaves as fresh, minus the init cost. `churn` reuses the freed arena
   // between rounds so a dangling read is REAL garbage, not accidentally-intact bytes.
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     let CACHE = null
     let hits = 0
     const get = () => { if (!CACHE) { CACHE = [7,8,9]; hits = hits + 1 }; return CACHE[1] }
@@ -731,7 +731,7 @@ test('_clear() restores runtime-written module globals to their post-init snapsh
     export let hitCount = () => hits`, { optimize: false })
   is(exports.main(), 8, 'round 1 builds the cache')
   is(exports.hitCount(), 1)
-  exports._clear()
+  memory.reset()
   exports.churn(999)   // overwrite the arena the stale CACHE pointed into
   is(exports.main(), 8, 'round 2 rebuilds — no dangling read through the stale handle')
   is(exports.hitCount(), 1, 'scalar warm state restores too (fresh-instance semantics: hits back to 0, then 1)')
@@ -746,7 +746,7 @@ test('_clear() heals ephemeral values written into DURABLE collection slots', ()
   // trap (a durable literal-text→node dict handing round-1 arrays into round-2's
   // tree). With it, the entry reads `undefined` after _clear and the memo
   // rebuilds.
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     const CACHE = new Map()
     let builds = 0
     const memo = (k) => {
@@ -760,7 +760,7 @@ test('_clear() heals ephemeral values written into DURABLE collection slots', ()
   is(exports.main(), 7, 'round 1 builds and caches')
   is(exports.main(), 7, 'same-round cache hit')
   is(exports.buildCount(), 1)
-  exports._clear()
+  memory.reset()
   exports.churn(999); exports.churn(123)   // reuse the arena the stale entry pointed into
   is(exports.main(), 7, 'round 2: healed entry reads undefined → memo rebuilds, no stale read')
 })
@@ -783,19 +783,19 @@ test('fused Map updates clear ephemeral keys and values across reset', () => {
     export let churn = n => new Float64Array(n).length
   `
   for (const optimize of levels(1, 2, 3)) for (const _compactCollections of [false, true]) {
-    const { exports: e } = jz(src, { optimize, _compactCollections })
+    const { exports: e, memory: m } = jz(src, { optimize, _compactCollections })
     for (const n of [0, 1, 6, 7, 64, 64, 0]) {
       is(e.update(n), n + 2, 'update inserts each missing key once')
       is(e.update(n), n + 2, 'a second update retains size')
       is(e.existing(), 'long runtime updatelong runtime update', 'existing entry gets both updates')
       is(e.value(), n ? 'long runtime valuelong runtime value' : undefined, 'new string gets both updates')
-      e._clear()
+      m.reset()
       e.churn(1024)
       is(e.size(), 2, 'reset removes inserted entries across table growth')
       is(e.seed(), 'initial long string', 'reset preserves the untouched initial value')
       is(e.existing(), undefined, 'reset clears the overwritten ephemeral value')
       is(e.value(), undefined, 'reset leaves no pointer into the reused arena')
-      e._clear()
+      m.reset()
     }
   }
 })
@@ -817,15 +817,15 @@ test('Map copies retain only live durable entries across reset and arena reuse',
     export let churn = n => new Float64Array(n).length
   `
   for (const optimize of levels(0, 1, 2, 3, 'size')) for (const _compactCollections of [false, true]) {
-    const { exports: e } = jz(src, { optimize, _compactCollections })
+    const { exports: e, memory: m } = jz(src, { optimize, _compactCollections })
     for (const n of [0, 1, 7, 64, 64, 0, 7]) {
       const count = Math.ceil(n / 2)
       const expected = `${count + 1}:${count + 1}:${7 + count * (count - 1)}`
       is(e.update(n), expected, `n=${n}: forwarded source with deleted entries`)
       is(e.snapshot(), expected, 'another copy of the same source')
-      e._clear(); e.churn(1024)
+      m.reset(); e.churn(1024)
       is(e.snapshot(), '1:1:7', 'reset removes ephemeral entries before copying')
-      e._clear()
+      m.reset()
     }
   }
 })
@@ -845,14 +845,14 @@ test('durable slot log reuses repeated writes and cancelled entries before _clea
     export let size = () => cache.size
   `
   for (const optimize of levels(false, 2, 3)) {
-    const { exports: e } = jz(source, { optimize })
+    const { exports: e, memory: m } = jz(source, { optimize })
     for (let round = 0; round < 2; round++) {
       is(e.write(4096, false), 2, 'repeated overwrites use one pending heal per slot')
       is(e.last(), 4095, 'the last write remains visible before reset')
       is(e.write(4096, true), 1, 'deleted entries leave reusable log slots')
       is(e.seed(), 7, 'unrelated durable entry survives')
       is(e.write(4096, false), 2, 'a cancelled slot can be logged again')
-      e._clear()
+      m.reset()
       is(e.size(), 1, 'reset removes the runtime entry exactly once')
       is(e.seed(), 7, 'reset preserves the initial entry')
     }
@@ -878,13 +878,13 @@ test('durable logs grow past their first buffers before _clear', () => {
     export let size = () => cache.size
   `
   for (const optimize of levels(false, 2, 3)) {
-    const { exports: e } = jz(source, { optimize })
+    const { exports: e, memory } = jz(source, { optimize })
     for (let round = 0; round < 2; round++) {
       is(e.write(2000), 3000, 'two thousand values written into entries made at init')
       is(e.value(1999), 2000, 'the last write reads back')
       is(e.grow(20), 300, 'three hundred collections made at init grown')
       is(e.sizes(), 6000, 'every grown collection holds its entries')
-      e._clear()
+      memory.reset()
       is(e.size(), 3000, 'the reset keeps every entry made at init')
       is(e.value(5), -1, 'a value the round wrote reads undefined after the reset')
       is(e.value(2500), 2500, 'a value the round left keeps its init value')
@@ -910,14 +910,14 @@ test('_clear() heals a durable array header past IN-PLACE growth, not just reloc
   // header's true (len, cap) on the FIRST touch of a round — in place or
   // relocating — so N in-place writes before an eventual grow all converge on
   // the one correct snapshot.
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     let site = []
     export let grow = (n) => { for (let i = 0; i < n; i++) site.push(i + '|' + i); return site.length }`,
     { optimize: false })
   is(exports.grow(150), 150, 'round 1: 150 real pushes')
-  exports._clear()
+  memory.reset()
   is(exports.grow(150), 150, 'round 2: healed length is exactly 150, not 154')
-  exports._clear()
+  memory.reset()
   is(exports.grow(150), 150, 'round 3: still exactly 150 — the fix is not a one-shot coincidence')
 })
 
@@ -931,12 +931,12 @@ test('_clear() heals a durable array a push of several values filled', () => {
     export let add = (i) => { rows.push([i, 'r' + i], [i + 1, 'r' + (i + 1)]); return rows.length }
     export let sum = () => { let s = 0; for (const v of kept) s += v; return s + ':' + rows.length + ':' + rows[0][1] }`
   for (const optimize of levels(false, 2, 3)) {
-    const { exports: e } = jz(source, { optimize })
+    const { exports: e, memory: m } = jz(source, { optimize })
     for (let round = 0; round < 3; round++) {
       is(e.fill(1), 4, `round ${round}: one push of four into the storage made at init`)
       is(e.add(1), 3, `round ${round}: one push of two arrays`)
       is(e.fill(5), 24, `round ${round}: pushes past the storage grow it`)
-      e._clear()
+      m.reset()
       is(e.sum(), '0:1:a', `round ${round}: the reset returns both arrays to their init state`)
     }
   }
@@ -951,7 +951,7 @@ test('_clear() heals in-place length writes on the OTHER durable-array length si
   // shrunk once, `_clear()`d, then repeated — the SAME operation must read back
   // the SAME result both rounds if the header truly reset to its post-__start
   // state.
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     let idx = [1, 2]
     export let setIdx = (n) => { idx[n] = 9; return idx.length }
     let len = [1, 2]
@@ -962,19 +962,19 @@ test('_clear() heals in-place length writes on the OTHER durable-array length si
     export let pop = (n) => { let v; for (let i = 0; i < n; i++) v = pp.pop(); return pp.length }`,
     { optimize: false })
   is(exports.setIdx(5), 6, 'round 1: index-assign grows past length in place')
-  exports._clear()
+  memory.reset()
   is(exports.setIdx(5), 6, 'round 2: same result — no leaked round-1 length')
 
   is(exports.setLen(6), 6, 'round 1: .length = grows within/past capacity')
-  exports._clear()
+  memory.reset()
   is(exports.setLen(6), 6, 'round 2: same result')
 
   is(exports.unshift(3), 5, 'round 1: unshift grows in place')
-  exports._clear()
+  memory.reset()
   is(exports.unshift(3), 5, 'round 2: same result')
 
   is(exports.pop(2), 3, 'round 1: pop shrinks in place')
-  exports._clear()
+  memory.reset()
   is(exports.pop(2), 3, 'round 2: same result — the original popped elements are back')
 })
 
@@ -998,15 +998,15 @@ test('_clear() heals in-place length writes on the OTHER durable-array length si
 // throughout init; the pre-existing end-of-body capture still sets the TRUE
 // watermark the instant `__start` finishes.
 test('_clear() does not corrupt a durable array whose header is mutated by MODULE-LEVEL (non-function) init code', () => {
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     let a = [1,2,3,4,5,6,7,8]
     a.length = 5
     export let dump = () => a.join(',')`,
     { optimize: false })
   is(exports.dump(), '1,2,3,4,5', 'post-init: the top-level truncate already ran')
-  exports._clear()
+  memory.reset()
   is(exports.dump(), '1,2,3,4,5', 'a bare _clear() with no other call must not revert past the top-level truncate')
-  exports._clear()
+  memory.reset()
   is(exports.dump(), '1,2,3,4,5', 'repeated bare _clear() — not a one-shot coincidence')
 })
 
@@ -1023,7 +1023,7 @@ test('_clear() does not corrupt a durable array whose header is mutated by MODUL
 // (starting from the same restored [1,2,3,4,5] baseline both times), not round 1's
 // leftover data feeding into round 2's computation.
 test('_clear() heals a durable array\'s ELEMENT DATA, not just its header, across every in-place mutator', () => {
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     let a1 = [1,2,3,4,5]
     export let idx = () => { a1[1] = 99; return a1.join(',') }
     let a2 = [1,2,3,4,5]
@@ -1047,9 +1047,9 @@ test('_clear() heals a durable array\'s ELEMENT DATA, not just its header, acros
     reverse: '5,4,3,2,1', sort: '1,2,3,4,5', fill: '1,9,9,4,5', unshiftInPlace: '9,1,2,3,4,5',
   }
   for (const [name, expect] of Object.entries(ops)) is(exports[name](), expect, `${name}: round 1`)
-  exports._clear()
+  memory.reset()
   for (const [name, expect] of Object.entries(ops)) is(exports[name](), expect, `${name}: round 2 — same answer as round 1, not round 1's leftover data`)
-  exports._clear()
+  memory.reset()
   for (const [name, expect] of Object.entries(ops)) is(exports[name](), expect, `${name}: round 3 — not a one-shot coincidence`)
 })
 
@@ -1058,12 +1058,12 @@ test('_clear() heals a durable array\'s ELEMENT DATA, not just its header, acros
 // original data with `undefined` unless the array-wide snapshot was taken before
 // EITHER length write this round (not just the second one).
 test('_clear() heals a durable array\'s data past a same-round shrink-then-grow `.length=` pair', () => {
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     let a = [1,2,3,4,5]
     export let f = () => { a.length = 2; a.length = 5; return a.join(',') }`,
     { optimize: false })
   is(exports.f(), '1,2,,,', 'round 1')
-  exports._clear()
+  memory.reset()
   is(exports.f(), '1,2,,,', 'round 2 — same answer, not a further-eroded array')
 })
 
@@ -1081,12 +1081,12 @@ test('_clear() heals thousands of durable arrays written in one round', () => {
     }`
   const want = (rounds) => { let s = 0; for (let i = 0; i < 4096; i++) s += i * 6 + 3 * rounds; return s }
   for (const optimize of levels(false, 2)) {
-    const { exports } = jz(src, { optimize })
+    const { exports, memory } = jz(src, { optimize })
     is(exports.step(1), want(1), 'first step of round 1')
     is(exports.step(1), want(2), 'a second step builds on the first')
-    exports._clear()
+    memory.reset()
     is(exports.step(1), want(1), 'round 2 starts from the state module init left')
-    exports._clear()
+    memory.reset()
     is(exports.step(1), want(1), 'round 3 likewise')
   }
 })
@@ -1101,14 +1101,14 @@ test('_clear() heals thousands of durable arrays written in one round', () => {
 // pinning the KNOWN, ACCEPTED behavior (compounds across rounds) so a future change
 // to this design is a deliberate, visible diff here, not a silent regression.
 test('_clear() does NOT heal .shift()\'s header rebasing (documented intentional, not a per-element data bug)', () => {
-  const { exports } = jz(`
+  const { exports, memory } = jz(`
     let a = [1,2,3,4,5]
     export let f = () => a.shift()
     export let dump = () => a.join(',')`,
     { optimize: false })
   is(exports.f(), 1, 'round 1: shift returns the first element')
   is(exports.dump(), '2,3,4,5', 'round 1: remaining elements, in place')
-  exports._clear()
+  memory.reset()
   is(exports.f(), 2, 'round 2: NOT healed back to 1 — the rebasing persisted through _clear()')
   is(exports.dump(), '3,4,5', 'round 2: one element shorter than round 1 — compounds, by design')
 })
@@ -1606,17 +1606,17 @@ test('checkpoint lane: every write checks its full width before the wasm32 bound
     }
     const k = jz(source, { optimize, memory: 65536 })
     const raw = k.instance.exports, ex = k.exports
-    const initialHeap = raw.__heap.value
-    const start = () => { raw.__heap.value = END - 8 - GAP; ex.begin() }
+    const initialHeap = raw.__jz_heap.value
+    const start = () => { raw.__jz_heap.value = END - 8 - GAP; ex.begin() }
     throws(() => ex.byte(0), /unreachable/, 'a writer requires an initialized lane')
-    start(); raw.__heap.value = END - 7
+    start(); raw.__jz_heap.value = END - 7
     throws(() => ex.byte(0), /unreachable/, 'serializer allocation cannot silently collide with its lane')
     throws(() => ex.finish(), /unreachable/, 'finish also rejects a collision after the last write')
-    start(); ex.byte(7); ex.finish(); ex.rewind(); raw.__heap.value = END - 7
+    start(); ex.byte(7); ex.finish(); ex.rewind(); raw.__jz_heap.value = END - 7
     throws(() => ex.readByte(), /unreachable/, 'a reader detects allocation into unread bytes')
-    raw.__heap.value = initialHeap
+    raw.__jz_heap.value = initialHeap
     const near = k.memory.String('ab')
-    start(); raw.string(near); ex.finish(); ex.rewind(); raw.__heap.value = END - 8
+    start(); raw.string(near); ex.finish(); ex.rewind(); raw.__jz_heap.value = END - 8
     throws(() => ex.readString(), /unreachable/, 'string output cannot overwrite its unread input')
     for (const [write, read, width, value] of [
       ['byte', 'readByte', 1, 37], ['word', 'readWord', 2, 12345],
@@ -1666,7 +1666,7 @@ test('checkpoint lane: every write checks its full width before the wasm32 bound
     // Empty → empty, A → A → different B, with a failed oversized write
     // between begin and each successful string. Rewind retains the stream end.
     for (const text of ['', '', 'ab', 'ab', 'π']) {
-      raw.__heap.value = initialHeap
+      raw.__jz_heap.value = initialHeap
       const oversized = k.memory.String('too long'), p = k.memory.String(text)
       start()
       throws(() => raw.string(oversized), /unreachable/, 'string size is checked before its length header is written')
@@ -1886,5 +1886,5 @@ export let g = (x) => Math.exp(x)`))
   memory.Float64Array(new Float64Array(n))
   const moved = xs.filter((x, i) => !Object.is(exports.g(x), before[i]))
   is(moved.length, 0, `exp after a host allocation differs at ${moved.slice(0, 3).join(', ')}`)
-  ok(WebAssembly.Module.exports(module).some(e => e.name === '__heap'), 'the module keeps its heap pointer in a global of its own')
+  ok(WebAssembly.Module.exports(module).some(e => e.name === '__jz_heap'), 'the module keeps its heap pointer in a global of its own')
 })

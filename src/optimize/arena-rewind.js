@@ -1190,7 +1190,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // Its log starts empty as the host sets its mark (link/sections.js `__base`).
   else if (reach && [...readers].some(n => hosted.has(n))) for (const name of [SURVIVE, ROOT_RESET]) {
     const e = push(root, node(intern('export')))
-    push(e, str(`"${name.slice(1)}"`))
+    push(e, str(`"__jz_${name.slice(3)}"`))
     push(push(e, node(FUNC)), str(name))
   }
   // The log the module makes as it starts (wat/assemble/stdlib-pull.js) goes

@@ -151,7 +151,7 @@ test('perf-pin: warm-instance self-compile stays within V8 parity band', () => {
       const runOnce = () => {
         const out = inst.exports.default(inst.memory.String(src), 0, inst.memory.String(LEVEL))
         inst.memory.read(out)
-        inst.instance.exports._clear()
+        inst.instance.exports.__jz_clear()
       }
       ratios.push(pairedRatio(js, () => runOnce))
     }

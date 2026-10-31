@@ -366,13 +366,13 @@ test('frame effects: the log of what the escapes wrote into is made as the modul
 })
 
 test('frame effects: the host keeps the mark of a frame that runs around its call', () => {
-  // `__base` answers the mark it replaced: the host puts an older one back, and the log starts empty only where none stood.
+  // `__jz_base` answers the mark it replaced: the host puts an older one back, and the log starts empty only where none stood.
   const src = `const st = { cur: null }
     export function f(xs, n) { st.cur = [xs.length, n]; const t = [n, n]; return t.length }
     export let read = () => st.cur.join()`
   const { instance, exports: m } = jz(src, { optimize: 2 })
-  const base = instance.exports.__base
-  ok(typeof base === 'function' && typeof instance.exports.__survive === 'function', 'the module hands the host its mark and its walk')
+  const base = instance.exports.__jz_base
+  ok(typeof base === 'function' && typeof instance.exports.__jz_survive === 'function', 'the module hands the host its mark and its walk')
   is(base(-1) >>> 0, 0xFFFFFFFF, 'no frame reads the flag between calls')
   is(base(4096) >>> 0, 0xFFFFFFFF, 'a mark set where none stood')
   is(base(8192) >>> 0, 4096, 'the mark it replaces is the answer: the older one, to put back')
@@ -738,7 +738,7 @@ test('frame effects: a receiver the emitter cannot read again is kept as it is e
     for (let i = 0; i < 40; i++) for (const f of calls) is(m.exports[f](i), js[f](i), `O${optimize}: ${f}(${i})`)
     is(m.exports.sum(), js.sum(), `O${optimize}: what the calls stored into older receivers they evaluated stays`)
     if (!optimize) continue
-    const heap = () => m.instance.exports.__heap?.value ?? 0
+    const heap = () => m.instance.exports.__jz_heap?.value ?? 0
     for (const f of ['ownCall', 'ownElem', 'init']) {
       m.exports[f](20)
       const before = heap()
@@ -966,7 +966,7 @@ test('frame effects: a rewound function with parameters computes the same values
     export function h(s, n) { let t = ""; for (let i = 0; i < n; i++) t += s; return t.length }`
   for (const optimize of levels(0, 2, 3)) {
     const m = jz(src, { optimize })
-    const heap = () => m.instance.exports.__heap?.value ?? 0
+    const heap = () => m.instance.exports.__jz_heap?.value ?? 0
     for (let r = 0; r < 50; r++) {
       is(m.exports.f(new Float64Array([1, 2, 3]), 2), 12, `O${optimize} round ${r}: f`)
       is(m.exports.g(10), 45, `O${optimize} round ${r}: g`)
@@ -992,7 +992,7 @@ test('frame effects: a loop building a temporary per iteration runs in constant 
   for (const optimize of levels(0, 2, 3)) {
     const m = jz(src, { optimize })
     for (const [name, value] of Object.entries(want)) is(m.exports[name](200), value, `O${optimize}: ${name}`)
-    const heap = () => m.instance.exports.__heap?.value ?? 0
+    const heap = () => m.instance.exports.__jz_heap?.value ?? 0
     const before = heap(); m.exports.temps(200); if (optimize >= 2) is(heap(), before, `O${optimize}: the Map temporaries never accumulate`)
   }
   const wat = compile(src, { wat: true, optimize: 2 })

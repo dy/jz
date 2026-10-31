@@ -438,7 +438,7 @@ function mintKindVariants(func, slots, paramReps, callSites) {
       const argList = cs.argList.map(at), node = at(cs.node)
       callSites.push(cs.synthetic ? { callee: cs.callee, argList, callerFunc: clone, node, synthetic: true } : { callee: cs.callee, argList, callerFunc: clone, node })
     }
-    const exportName = `${func.name}:${kinds.key}`
+    const exportName = `__jz_${func.name}:${kinds.key}`
     ctx.funcs.exports[exportName] = clone.name
     func.boundaryVariants.push({ exportName, func: clone })
   }

@@ -751,7 +751,7 @@ $('bench').addEventListener('click', benchExpr)
 
 // exports the prompt can call — drives the placeholder hint (to bench a kernel, use /bench/)
 const fnExports = () => Object.keys(state.exports || {})
-  .filter(k => typeof state.exports[k] === 'function' && !k.startsWith('_'))
+  .filter(k => typeof state.exports[k] === 'function')
 
 // ── download .wasm ────────────────────────────────────────────────────────────
 $('dl').addEventListener('click', () => {

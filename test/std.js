@@ -69,7 +69,8 @@ test('std: one promise runtime across modules – a promise settled in one modul
   is(await m.exports.k(), 2, 'a raw promise from an imported async function adopts at the boundary')
   const wat = compile(src, { modules, wat: true, optimize: { level: 2, watr: false } })
   is((wat.match(/\(func \$\S*__p_settle\S*/g) || []).length, 1, 'one settle function for the program')
-  ok(typeof m.exports.__mt_drain === 'function', 'the host-boundary contract is exported from the program')
+  ok(typeof m.instance.exports.__jz_mt_drain === 'function', 'the host-boundary contract is exported from the module')
+  ok(!('__jz_mt_drain' in m.exports), 'and stays off the program\'s namespace')
 })
 
 test('std: DOMException carries name and legacy code; `globalThis.X || Error` keeps the std class', () => {

@@ -633,7 +633,7 @@ test('JSON.parse: growing schema tables preserve earlier objects and stop before
   ok(stopped, 'schema IDs never wrap into another object shape')
   is(first(), '{"field0":0}', 'retained object survives the capacity error')
   is(parse(last), last, 'cached schema remains usable after the capacity error')
-  j.instance.exports._clear()
+  j.instance.exports.__jz_clear()
   is(parse('{"fresh":1}'), '{"fresh":1}', 'clear resets the table, capacity and schema IDs')
   is(first(), '{"fresh":1}', 'clear resets retained module state')
   for (let i = 0; i < 2000; i++) parse('{"other' + i + '":0}')
@@ -654,7 +654,7 @@ test('JSON.parse: schema cache is empty after arena reuse', () => {
     export function parse(s) { return JSON.stringify(JSON.parse(s)) }`
   for (const optimize of levels(0, 1, 2, 'speed', 'size')) {
     const j = instantiate(compile(source, { optimize }))
-    const clear = j.instance.exports._clear
+    const clear = j.instance.exports.__jz_clear
     clear() // zero work before the first parse
     for (const n of [-1, -1, 0, -1, 1, -1]) {
       const expected = n < 0 ? { level: 1 } : { ['k' + n]: 42, level: n + 100 }

@@ -452,10 +452,10 @@ for (const optimize of levels(2, 3))
       export function update(n) { for (let i = 0; i < n; i++) source.set('key' + i, [i]); for (let i = 1; i < n; i += 2) source.delete('key' + i); return snapshot() }
       export function snapshot() { const copy = new Map(source); let count = 0, sum = 0; for (const e of copy) { if (e == null) sink.push(e); count++; sum += e[1][0] } return copy.size + ':' + count + ':' + sum }
       export let churn = n => new Float64Array(n).length`
-    const want = oracle(src), { exports } = jz(src, { optimize })
+    const want = oracle(src), { exports, memory } = jz(src, { optimize })
     const both = (name, ...args) => is(exports[name](...args), want[name](...args), `${name}(${args.join()})`)
-    both('update', 0); both('snapshot'); exports._clear(); both('churn', 1024); both('snapshot'); exports._clear()
-    both('update', 1); both('snapshot'); exports._clear(); both('update', 4); both('snapshot')
+    both('update', 0); both('snapshot'); memory.reset(); both('churn', 1024); both('snapshot'); memory.reset()
+    both('update', 1); both('snapshot'); memory.reset(); both('update', 4); both('snapshot')
   })
 
 test('call release: an abandoned conditional frame preserves earlier escapes', () => {

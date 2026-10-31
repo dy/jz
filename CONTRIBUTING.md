@@ -5438,13 +5438,22 @@ forged pointers bypass these checks.
 
 ### Experimental ABI
 
+Every export the program does not declare is the module's ABI: `memory`,
+`_initialize` (the init of a module that reaches the host from it) and the names
+under `__jz_`: the allocator (`__jz_alloc`, `__jz_clear`, `__jz_heap`), the
+closure table (`__jz_table`), the release and compaction handles, the async
+boundary, a class's members, a kernel's kind variants. A program export never
+takes one of those names (`compile` rejects it at the export), and
+`instantiate()`'s `exports` holds the program's exports alone; the ABI stays on
+`instance.exports`.
+
 Prebuilt Wasm must use matching compiler and interop revisions. The raw ABI has
-no independent version marker and is not frozen: NaN-box layouts, `_alloc`/`_clear`,
-the closure table, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
-`jz:errcls`, `jz:brand`, `jz:class` and its members' exports, `jz:values`
+no independent version marker and is not frozen: NaN-box layouts, the `__jz_`
+exports, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
+`jz:errcls`, `jz:brand`, `jz:class`, `jz:values`
 and its getters, schema IDs,
 `jz:symbols` and `jz:symbol-slots` with the identity layout they decode,
-`memory.fieldContracts` and the `_`-prefixed exports are all current-toolchain
+and the field contracts are all current-toolchain
 policy, regression-tested in `test/abi.js` but not cross-release-stable. Use
 `jz/interop`'s `instantiate()` or pin the exact compiler version when
 implementing a raw host. BigInt arguments require compiler-emitted slot

@@ -58,7 +58,7 @@ export function adaptI64(mod, raw) {
       const Ctor = globalThis[ctor]
       const src = x instanceof Ctor ? x : Ctor.from(typeof x === 'number' && x !== x ? jzMemory(raw.memory).read(x) : x)
       const bytes = src.length * Ctor.BYTES_PER_ELEMENT
-      const hdr = raw._alloc(16 + bytes)
+      const hdr = raw.__jz_alloc(16 + bytes)
       const dv = new DataView(raw.memory.buffer)
       dv.setBigInt64(hdr, 0n, true); dv.setInt32(hdr + 8, bytes, true); dv.setInt32(hdr + 12, bytes, true)
       new Ctor(raw.memory.buffer, hdr + 16, src.length).set(src)

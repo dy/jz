@@ -1293,7 +1293,7 @@ test('interop: Symbol property keys marshal through explicit dictionaries and ho
 test('interop: memoryless Symbol codecs retain identity and reject numeric field carriers', () => {
   if(onKernel())return
   const source=String.raw`(module
-    (global $id (export "__symbol_id") (mut i64) (i64.const 0))
+    (global $id (export "__jz_symbol_id") (mut i64) (i64.const 0))
     (func (export "fresh") (result i64)
       (global.set $id (i64.add (global.get $id) (i64.const 1)))
       (i64.add (i64.const 0x7ff8001000000000) (i64.add (i64.shl (global.get $id) (i64.const 1)) (i64.const 1))))
@@ -1313,7 +1313,7 @@ test('interop: memoryless Symbol codecs retain identity and reject numeric field
   is(interop.memory(a).read(raw),held,'rebuilding a memoryless adapter reuses its codec')
   is(interop.wrap(a).echo(first),first,'another export wrapper shares identity')
   ok(f.fresh()!==host,'host ingress advances the runtime counter')
-  a.instance.exports.__symbol_id.value=symbolCountMax(1)
+  a.instance.exports.__jz_symbol_id.value=symbolCountMax(1)
   for(let i=0;i<2;i++)throws(()=>f.echo(Symbol()),RangeError,'host identity exhaustion never wraps')
   is(f.echo(first),first,'known identities remain usable after allocation errors')
   for(const optimize of levels(0,1,2,3,'size')){

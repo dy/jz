@@ -2,7 +2,7 @@
 // the kernel: the recorder compiled by jz and instantiated, so every claim below
 // is about jz's own runtime, not a host mock. A phase name is a static string
 // and a record two typed-array slots, so recording and reading back allocate
-// nothing; the arena rewind `_clear` performs (the checkpoint's `__park_rewind`
+// nothing; the arena rewind `__jz_clear` performs (the checkpoint's `__park_rewind`
 // calls the same `__clear`) leaves the records in place.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
@@ -127,7 +127,7 @@ test('kernel marks: a reset starts from zero; records survive the arena rewind a
   const heapGrown = ex.heap()
   ok(heapGrown > heapBefore, 'the arena grew')
   ex.writeStamp(7); is(ex.readStamp(), 7)
-  ex._clear()   // __clear mechanism only, NOT the full park/rewind/unpark pipeline
+  k.instance.exports.__jz_clear()   // __clear mechanism only, NOT the full park/rewind/unpark pipeline
   is(ex.readStamp(), 0, 'ordinary mutable globals still reset')
   ok(ex.heap() < heapGrown && ex.heap() <= heapBefore, 'the arena rewound')
   ex.grow(4000); ex.grow(4000)

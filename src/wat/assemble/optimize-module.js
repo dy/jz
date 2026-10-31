@@ -168,7 +168,7 @@ export function optimizeModule(sec, profiler) {
     // tail capture for modules that init-allocate; this seed serves modules with no
     // `__start`, where the data end IS the correct rewind point). `__clear` reads
     // `$__heap_reset` directly, so no per-function constant patch is needed.
-    declGlobal('__heap', 'i32', heapBase, { export: '__heap' })
+    declGlobal('__heap', 'i32', heapBase, { export: '__jz_heap' })
     if (ctx.scope.globals.has('__heap_reset')) declGlobal('__heap_reset', 'i32', heapBase)
     if (ctx.scope.globals.has('__heap_start')) declGlobal('__heap_start', 'i32', heapBase)
   }

@@ -154,7 +154,7 @@ test('fixed length: reads and stores inside the count call no helper', () => {
 })
 
 // The reset keeps its meaning: a durable array stored to directly is saved
-// before the round's first store and restored by `_clear`.
+// before the round's first store and restored by `__jz_clear`.
 test('fixed length: a reset restores a durable array stored to directly', () => {
   const src = `const out = [1, 2, 3]
     const ps = []
@@ -162,10 +162,10 @@ test('fixed length: a reset restores a durable array stored to directly', () => 
     export const bump = (k) => { out[0] = out[0] + k; out[2] = out[2] * 2; let s = out[0] + out[2]; for (let i = 0; i < 300; i++) { const p = ps[i]; p[1] = p[1] + k; s += p[1] } return s }`
   let base = 0; for (let i = 0; i < 300; i++) base += i
   for (const optimize of levels(0, 2)) {
-    const { exports } = jz(src, { optimize })
+    const { exports, memory } = jz(src, { optimize })
     is(exports.bump(1), 2 + 6 + base + 300, `round 1 at ${optimize}`)
     is(exports.bump(1), 3 + 12 + base + 600, 'a second call builds on the first')
-    exports._clear()
+    memory.reset()
     is(exports.bump(1), 2 + 6 + base + 300, 'round 2 starts from what module init left')
   }
 })
@@ -188,10 +188,10 @@ test('fixed length: a block saves its durable array where it binds it', () => {
   const m = new M()
   export const f = (s, t) => { m.scale(s, t); const e = m.elements; return e[0] + e[5] + e[10] + e[12] + e[13] }`
   for (const optimize of levels(0, 2)) {
-    const { exports } = jz(src, { optimize })
+    const { exports, memory } = jz(src, { optimize })
     is(exports.f(2, 1), 2 + 2 + 2 + 1 + 1, `round 1 at ${optimize}`)
     is(exports.f(2, 1), 4 + 4 + 4 + 2 + 2, 'a second call builds on the first')
-    exports._clear()
+    memory.reset()
     is(exports.f(2, 1), 2 + 2 + 2 + 1 + 1, 'round 2 starts from what module init left')
   }
   if (belowOpt(2)) return

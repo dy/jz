@@ -1127,7 +1127,7 @@ export const registerCompact = () => {
   }
 
   // The host's compaction, as the outermost call returns: no roots but the module's.
-  ctx.core.stdlib['__compact'] = () => `(func $__compact (export "__compact") (param $floor i32) (result i32)
+  ctx.core.stdlib['__compact'] = () => `(func $__compact (export "__jz_compact") (param $floor i32) (result i32)
     ${has('__stubn') ? '(global.set $__stubn (i32.const 0))' : ''}
     (if (i32.eqz (call $__gc_begin (local.get $floor))) (then (return (global.get $__heap))))
     (call $__gc_walk)

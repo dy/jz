@@ -639,9 +639,9 @@ test('codegen: no-arg scalar allocator rewinds heap on return', () => {
   // default once the kernel-L2 ratchet hit zero (the SIMD-vectorizer divergences
   // this guard once dodged are fixed).
   const { instance } = jz(src, { optimize: { watr: false, staticLocals: false } })
-  const before = instance.exports._alloc(0)
+  const before = instance.exports.__jz_alloc(0)
   for (let i = 0; i < 20; i++) is(instance.exports.f(), 7)
-  const after = instance.exports._alloc(0)
+  const after = instance.exports.__jz_alloc(0)
   is(after, before, 'heap pointer should be unchanged across rewound scalar calls')
 })
 

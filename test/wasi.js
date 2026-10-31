@@ -961,7 +961,7 @@ test('init: exports self-arm without _initialize (raw-instance _clear + grow)', 
   const ex = new WebAssembly.Instance(new WebAssembly.Module(bin), {}).exports
   ok(!!ex._initialize, 'reactor _initialize exported')
   // deliberately NO _initialize call
-  if (ex._clear) ex._clear()
+  if (ex.__jz_clear) ex.__jz_clear()
   const f2b = (x) => new BigInt64Array(new Float64Array([x]).buffer)[0]
   const arg = (x) => { try { ex.alloc.length } catch {} ; return x }
   const call1 = (fn, a) => { try { return fn(a) } catch (e) { if (/BigInt/.test(e.message)) return fn(f2b(a)); throw e } }

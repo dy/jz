@@ -1,6 +1,6 @@
 // Minimal-output invariants — every emitted construct must be mapped to something
 // the source actually needs. A constant carries no `__start`; a heap-free program
-// carries no memory/allocator; the allocator (`_alloc`/`_clear` + `__alloc`/
+// carries no memory/allocator; the allocator (`__jz_alloc`/`__jz_clear` + `__alloc`/
 // `__memgrow`/…) appears only when the program allocates. These pin the wins and
 // guard against the boilerplate creeping back. Baseline: smaller than AssemblyScript.
 import test from 'tst'
@@ -20,7 +20,7 @@ const skip = onWasi() || onKernel()
 const wat = (src, optimize = 0) => compile(src, { wat: true, optimize })
 const has = (src, frag, O) => wat(src, O).includes(frag)
 const hasMemory = (src, O) => has(src, '(memory', O)
-const hasAllocator = (src, O) => has(src, '_alloc', O)        // _alloc/_clear exports + __alloc
+const hasAllocator = (src, O) => has(src, '_alloc', O)        // __jz_alloc/__jz_clear exports + __alloc
 const hasStart = (src, O) => has(src, '$__start', O)
 const hasData = (src, O) => has(src, '(data', O)
 
@@ -72,7 +72,7 @@ for (const [name, src] of Object.entries(HEAP_FREE)) {
 
 // === Static strings: data segment, no allocator ===
 // A string literal too long for SSO lands in a static data segment with a constant
-// pointer. The segment needs memory, but nothing allocates — so no `_alloc`/`_clear`
+// pointer. The segment needs memory, but nothing allocates — so no `__jz_alloc`/`__jz_clear`
 // and (the pointer being constant) no `__start`.
 test('minimal: static string — data segment, no allocator, no __start', () => {
   if (skip) return
@@ -182,7 +182,7 @@ test('minimal: dead pure expression statement is eliminated at O2', () => {
 // === Constant aggregates: static data segment, no allocator ===
 // An all-literal array (≥4 elems) or object literal is a compile-time constant living in
 // a static data segment behind a const pointer, like a static string. Nothing allocates,
-// so no `_alloc`/`_clear`. Reachability-gated: an array/object module load no longer drags
+// so no `__jz_alloc`/`__jz_clear`. Reachability-gated: an array/object module load no longer drags
 // the allocator in wholesale — only a *reached* allocator does, and a module-scope const
 // reaches none. (≤3-element arrays are excluded — see the known-gap below.)
 const CONST_AGGREGATES = {
@@ -660,21 +660,22 @@ export let f = () => pick(${k})`
 // the object from 3 slots (['message','name','__errcls__']) to 2
 // (['message','name']) — class identity moved to the schema id, so this is
 // now a 16B payload + 16B header = 32B/instance, under the original design's
-// own ~60-100B ledger estimate. This is a claim about the `__heap` bump-
+// own ~60-100B ledger estimate. This is a claim about the `__jz_heap` bump-
 // allocator's growth per allocation, NOT compiled .wasm byte size (a single
 // construction call SITE costs the same code bytes whether it runs once or in
-// a hot loop) — measured directly via `exports.__heap` before/after a steady-
-// state batch (after `_clear()` resets any one-time init/data-segment cost so
+// a hot loop) — measured directly via `instance.exports.__jz_heap` before/after a steady-
+// state batch (after `__jz_clear()` resets any one-time init/data-segment cost so
 // only the repeated per-call growth is counted).
 if (!skip) {
   test('minimal: constructed Error heap footprint (audit-#9 P0-2: 2-slot object, ~32B/instance)', () => {
     const inst = jz(`export let f = (n) => { let t = 0; for (let i = 0; i < n; i++) { let e = new Error('boom'); t = t + e.message.length } return t }`)
     inst.exports.f(1)                    // pay one-time init (allocator/data segment) before measuring
-    const before = inst.exports.__heap.value
-    inst.exports._clear()
+    const { __jz_heap: heap, __jz_clear: clear } = inst.instance.exports
+    const before = heap.value
+    clear()
     const REPS = 2000
     inst.exports.f(REPS)
-    const perInstance = (inst.exports.__heap.value - before) / REPS
+    const perInstance = (heap.value - before) / REPS
     ok(perInstance <= 120, `${perInstance}B/instance steady-state heap growth (2-slot object: 16B payload + 16B header = 32B — well under the original 3-slot ~60-100B ledger estimate)`)
   })
 }

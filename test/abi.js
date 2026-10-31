@@ -82,7 +82,7 @@ test('abi: a raw host builds an array pointer and passes it as an i64 param', ()
   const { mod, e } = raw('export let sum = (a) => a[0] + a[1] + a[2]')
   ok(i64Map(mod).some(x => x.name === 'sum' && x.p.includes(0)), 'sum param 0 marked i64')
   const dv = new DataView(e.memory.buffer)
-  const p = e._alloc(16 + 24)        // 16-byte header + 3×f64
+  const p = e.__jz_alloc(16 + 24)        // 16-byte header + 3×f64
   dv.setBigInt64(p, 0n, true)        // [+0]  propsPtr (i64 = 0)
   dv.setInt32(p + 8, 3, true)        // [+8]  len
   dv.setInt32(p + 12, 3, true)       // [+12] cap
@@ -90,4 +90,35 @@ test('abi: a raw host builds an array pointer and passes it as an i64 param', ()
   ;[10, 20, 30].forEach((v, i) => dv.setFloat64(data + i * 8, v, true))
   ok(i64Map(mod).some(x => x.name === 'sum' && x.r), 'unknown array elements keep the dynamic result carrier')
   is(e.sum(mkbox(PTR.ARRAY, 0, data)), numI64(60))   // i64 param: pass the box bits as u64 directly
+})
+
+// The ABI is every export the program does not declare: `memory`, `_initialize`
+// and the `__jz_` prefix. The host's namespace holds the program's exports alone;
+// a program export cannot take an ABI name.
+const ABI_NAME = /^(?:memory|_initialize)$|^__jz_/
+test('abi: exports holds the program\'s exports, the module the ABI', async () => {
+  const { default: jz } = await import('../index.js')
+  const small = jz('export let add = (a, b) => a + b; export let s = (x) => "ab" + x', { host: 'js' })
+  is(Object.keys(small.exports), ['add', 's'], 'a string module: its two functions')
+  ok(Object.keys(small.instance.exports).some(n => n === '__jz_alloc') && 'memory' in small.instance.exports, 'the allocator and memory stay on the instance')
+  const big = jz(`export let counter = () => { let n = 0; return { next: () => ++n } }
+    export let later = async (x) => { await 0; return x + 1 }
+    export class P { constructor(x) { this.x = x } get d() { return this.x * 2 } m() { return this.x } }
+    export let sym = Symbol('s'); export let n = 5; export let bump = () => { n++ }
+    export let sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }`, { host: 'js' })
+  is(Object.keys(big.exports).sort(), ['P', 'bump', 'counter', 'later', 'n', 'sum', 'sym'], 'closures, async, a class, values and a typed kernel')
+  for (const name of Object.keys(big.instance.exports)) if (!(name in big.exports)) ok(ABI_NAME.test(name), `${JSON.stringify(name)} is an ABI name`)
+  is(await big.exports.later(1), 2, 'the async boundary works through its ABI exports')
+  is(big.exports.counter().next(), 1, 'closures call through the trampoline')
+  is(new big.exports.P(3).d, 6, 'class members come from their ABI exports')
+})
+
+test('abi: a program export cannot take an ABI name', () => {
+  for (const [src, name] of [['export let memory = (x) => x + 1', 'memory'], ['export let _initialize = () => 1', '_initialize'],
+    ['let a = 1\nexport { a as __jz_alloc }', '__jz_alloc'], ['export * from "./m.js"', 'memory']]) {
+    let error
+    try { compile(src, { modules: { './m.js': 'export let memory = 1' } }) } catch (e) { error = e }
+    ok(error && error.message.includes(`export '${name}'`) && /at line \d+:\d+/.test(error.message), `${name}: a located compile error (${error?.message.split('\n')[0]})`)
+  }
+  ok(compile('export let _alloc = (x) => x + 1, _clear = 2, run = 3'), 'the former ABI names are the program\'s')
 })

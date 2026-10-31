@@ -103,23 +103,23 @@ test('invariant: WAT token parsing uses source-sized storage', () => {
     const allocations = []
     // The raw exports: the host releases a wrapped call's memory once it has read the result out.
     for (const fn of [r.instance.exports.default, r.instance.exports.generated]) {
-      const input = r.memory.String(generated), before = r.instance.exports.__heap.value >>> 0
+      const input = r.memory.String(generated), before = r.instance.exports.__jz_heap.value >>> 0
       const output = fn(input)
-      allocations.push((r.instance.exports.__heap.value >>> 0) - before)
+      allocations.push((r.instance.exports.__jz_heap.value >>> 0) - before)
       const tree = r.memory.read(output)
       is(tree.length, 101)
       is(tree[100], ['func', ['result', 'i32'], ['i32.const', '3']])
-      r.instance.exports._clear()
+      r.instance.exports.__jz_clear()
     }
     // a node's offset takes 24 bytes in a record where the tiers lay one out, 64 or more in a dictionary
     ok(allocations[1] < allocations[0] * .8, 'generated trees avoid source-location storage')
     for (const token of ['', text, text, `"${text}"`, `$"${text}"`, `(;${text};)`, `;;${text}\n`, 'other', '']) {
-      const input = r.memory.String(token), before = r.instance.exports.__heap.value >>> 0
+      const input = r.memory.String(token), before = r.instance.exports.__jz_heap.value >>> 0
       const output = r.exports.default(input)
-      const allocated = (r.instance.exports.__heap.value >>> 0) - before
+      const allocated = (r.instance.exports.__jz_heap.value >>> 0) - before
       is(JSON.stringify(r.memory.read(output)), JSON.stringify(token || []), 'tokens retain exact UTF-16 source text')
       ok(allocated < 4096 + token.length * 8, 'a token allocates no growing prefixes')
-      r.instance.exports._clear()
+      r.instance.exports.__jz_clear()
     }
   }
 })
@@ -611,10 +611,10 @@ test('layout: fixed masks are formatted once across repeated calls and resets', 
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const r = instantiate(compile(source, { modules, optimize }))
     for (let round = 0; round < 3; round++) {
-      const before = r.instance.exports.__heap.value >>> 0
+      const before = r.instance.exports.__jz_heap.value >>> 0
       for (const i of [0, 0, 1, 2, 3, 4, 0]) is(r.exports.mask(i), expected[i])
-      is(r.instance.exports.__heap.value >>> 0, before, 'fixed mask reads allocate nothing')
-      r.instance.exports._clear()
+      is(r.instance.exports.__jz_heap.value >>> 0, before, 'fixed mask reads allocate nothing')
+      r.instance.exports.__jz_clear()
     }
   }
 })
@@ -627,11 +627,11 @@ test('layout: fixed-width hex formatting needs no general radix scratch', () => 
   for (const optimize of levels(0, 1, 2, 3, 'size')) {
     const r = instantiate(compile(source, { modules, optimize }))
     for (const hi of words) for (const lo of words) {
-      const before = r.instance.exports.__heap.value >>> 0
+      const before = r.instance.exports.__jz_heap.value >>> 0
       const expected = '0x' + ((BigInt(hi) << 32n) | BigInt(lo)).toString(16).toUpperCase().padStart(16, '0')
       is(r.exports.hex(hi, lo), expected)
-      ok((r.instance.exports.__heap.value >>> 0) - before < 512, 'fixed-width formatting has bounded scratch')
-      r.instance.exports._clear()
+      ok((r.instance.exports.__jz_heap.value >>> 0) - before < 512, 'fixed-width formatting has bounded scratch')
+      r.instance.exports.__jz_clear()
     }
   }
 })

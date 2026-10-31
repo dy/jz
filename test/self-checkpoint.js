@@ -84,7 +84,7 @@ const FORCED = selfBuildWith({
 })
 // module/core.js: the park lane's end. __park_begin grows the instance's memory to
 // it: that is address space the engine reserves (memory.buffer.byteLength); the OS
-// commits pages as they are touched. The heap cursor (`__heap`) is a third figure.
+// commits pages as they are touched. The heap cursor (`__jz_heap`) is a third figure.
 const PARK_END = 0xFFFFFFF0
 
 let normal, forced
@@ -93,7 +93,7 @@ const kernels = () => {
   forced ??= instantiate(FORCED(), { memory: 8192 })
   return { normal, forced }
 }
-const heap = k => k.instance.exports.__heap.value >>> 0
+const heap = k => k.instance.exports.__jz_heap.value >>> 0
 const memoryBytes = k => k.instance.exports.memory.buffer.byteLength
 const OPT = k => k.memory.String('2')
 // Compile through the kernel and copy the output out of its memory at once: the
@@ -240,7 +240,7 @@ test('checkpoint: _clear() keeps its meaning beside the checkpoint; retained byt
   const { normal, forced } = kernels()
   const a = compileOn(forced, A)
   const marks = readMarks(forced)
-  forced.exports._clear()
+  forced.memory.reset()
   is(JSON.stringify(readMarks(forced)), JSON.stringify(marks), 'the records read the same after _clear()')
   const b = compileOn(forced, B)
   const mb = readMarks(forced)

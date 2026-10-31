@@ -41,10 +41,10 @@ test('iteration release: a parser loop runs in the memory of one parse', () => {
 
 // The memory a call of `f` grows, on a fresh instance; `host` the functions a declared import takes.
 const grownBy = (src, opts = {}, host = undefined) => (...args) => {
-  const { exports } = instantiate(new WebAssembly.Module(compile(src, { optimize: 'speed', ...opts })), host && { imports: host })
-  const at = exports.memory.buffer.byteLength
+  const { exports, memory } = instantiate(new WebAssembly.Module(compile(src, { optimize: 'speed', ...opts })), host && { imports: host })
+  const at = memory.buffer.byteLength
   exports.f(...args)
-  return exports.memory.buffer.byteLength - at
+  return memory.buffer.byteLength - at
 }
 
 test('iteration release: a binding the next iteration replaces before reading carries the last one out, the rest goes', () => {

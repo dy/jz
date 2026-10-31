@@ -199,7 +199,7 @@ test('self-compile: schema index capacities and backward offsets retain all i64 
       const { main } = instantiate(bytes).exports
       for (const n of [0, 1, 11, 12, 39, 40])
         is(main(n), n & 1 ? n < 12 ? n : undefined : n < 40 ? 100 + n : undefined)
-      s.instance.exports._clear()
+      s.instance.exports.__jz_clear()
     }
   }
 })
@@ -218,7 +218,7 @@ test('self-compile: runtime exports tied with user functions keep native byte or
       ok(bytes.length === native.length && bytes.every((v, j) => v === native[j]), `O${level}: source ${i} matches native`)
       const { props } = instantiate(bytes).exports
       is(props('b'), i ? 7 : 110); is(props('z'), i ? 9 : 10)
-      s.instance.exports._clear()
+      s.instance.exports.__jz_clear()
     }
   }
 })
@@ -388,7 +388,7 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
 
 // Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles,
 // and pin byte-parity against a fresh instance compiling the same programs. Exercises
-// the caches that used to dangle across a warm `_clear` (all now reset/copy-on-tag
+// the caches that used to dangle across a warm `__jz_clear` (all now reset/copy-on-tag
 // per compile): DOLLAR (src/ir.js, with a new Map because the old backing
 // table is itself an arena allocation), the program-facts WeakMaps (src/compile/{analyze,analyze-scans,
 // program-facts}.js — same fresh-instance-not-clear fix), the runtime __dyn_props /
@@ -397,7 +397,7 @@ test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B 
 // mutating the shared template in place left a dangling props sidecar), and
 // subscript's comment-list cache (external fix, feature/comment.js — rebuilds once
 // per top-level parse() instead of once ever). compile-clear-compile-clear-compile:
-// three rounds catch a fix that only survives ONE `_clear` (e.g. a reset that clears
+// three rounds catch a fix that only survives ONE `__jz_clear` (e.g. a reset that clears
 // state but not a downstream 1-slot cache pointing at it).
 test('self-compile: warm-instance reuse — compile, _clear(), compile again, byte-parity vs fresh', () => {
   // charCodeAt-on-param is load-bearing: it pulls the abi/string.js param
@@ -423,7 +423,7 @@ test('self-compile: warm-instance reuse — compile, _clear(), compile again, by
     is(bytes.length, baseline.length, `round ${round}: byte length matches fresh instance`)
     ok(bytes.every((b, i) => b === baseline[i]), `round ${round}: byte-identical to fresh instance`)
     is(instantiate(bytes, { memory: 64 }).exports.main('a'), 1255, `round ${round}: sum of squares + 10 * charCodeAt('a')`)
-    warm.instance.exports._clear()
+    warm.instance.exports.__jz_clear()
   }
 })
 
@@ -456,7 +456,7 @@ test('self-compile: warm direct-call graph survives A→A→B→A→empty→bare
     is([...bytes], [...baseline], `${id}: reused compile matches fresh bytes`)
     check(id, bytes)
     retained.push([id, bytes])
-    warm.instance.exports._clear()
+    warm.instance.exports.__jz_clear()
   }
   for (const [id, bytes] of retained) {
     is([...bytes], [...baselines[id]], `${id}: earlier output survives later compiles and clears`)
@@ -532,7 +532,7 @@ test('self-compile: long literal decoding uses linear storage and preserves text
     ['"' + '\\u0061'.repeat(2000) + '"', 'a'.repeat(2000)], ['"other"', 'other']]
   for (const [literal, expected] of cases) {
     const source = `export function main(){return ${literal}}`
-    const before = s.instance.exports.__heap.value >>> 0
+    const before = s.instance.exports.__jz_heap.value >>> 0
     const out = s.exports.default(s.memory.String(source), 0, s.memory.String('1'))
     const bytes = new Uint8Array(s.memory.read(out))
     is(instantiate(bytes).exports.main(), expected, 'the decoded literal preserves every UTF-16 code unit')
@@ -736,7 +736,7 @@ test('self-compile: heap marks on empty work, an early failure, the other entry 
   const again = readMarks(s)
   is(again.phasesDone, whole.phasesDone)
   // _clear() rewinds the arena and restores the compiler's globals; the records stay readable, the next compile starts from zero
-  s.exports._clear()
+  s.memory.reset()
   is(JSON.stringify(readMarks(s)), JSON.stringify(again), 'the records through _clear()')
   s.exports.default(s.memory.String(src), 0, s.memory.String('2'))
   is(readMarks(s).phasesDone, whole.phasesDone)
@@ -760,12 +760,12 @@ test('self-compile: WAT output shares checkpoints and bounds wide-node printer a
   const options = {crPow: true}
   const expected = compile(source, {wat: true, optimize: options})
   for (const code of [source, source, 'export let f = () => 7', '']) {
-    s.exports._clear()
+    s.memory.reset()
     const out = s.memory.read(s.exports.compileWat(s.memory.String(code), 0, s.memory.String(JSON.stringify(options))))
     const marks = readMarks(s)
     ok(out === (code === source ? expected : compile(code, {wat: true, optimize: options})), 'native and kernel WAT are identical')
     ok(marks.heapCheckpoint > 0, 'the printer consumes the checkpointed module')
-    const allocated = (s.exports.__heap.value >>> 0) - marks.heapCheckpoint
+    const allocated = (s.instance.exports.__jz_heap.value >>> 0) - marks.heapCheckpoint
     ok(allocated < 256 * 1024 * 1024, `printer allocation ${allocated} bytes stays below 256 MiB`)
   }
 })
@@ -777,7 +777,7 @@ test('self-compile: data packing bounds literal allocation and preserves output 
   let retained
   for (const optimize of [0, 1, 2, 3]) {
     for (const value of ['', 'x', a, a, b, a, '']) {
-      s.exports._clear()
+      s.memory.reset()
       const out = s.exports.default(s.memory.String(source(value)), 0, s.memory.String(String(optimize)))
       const bytes = s.memory.read(out).slice(), marks = readMarks(s)
       const p = instantiate(bytes)

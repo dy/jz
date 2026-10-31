@@ -79,10 +79,10 @@ test('header hoist: the forwarding hop and the length leave the loop, the barrie
 // starts from what module init left, however many times the loop stored.
 test('header hoist: a reset restores the array the loop stored into', () => {
   for (const optimize of levels(0, 2)) {
-    const { exports } = jz(src, { optimize })
+    const { exports, memory } = jz(src, { optimize })
     const first = exports.run(64)
     is(exports.run(64), first, 'a second call sees no difference: out is overwritten each pass')
-    exports._clear()
+    memory.reset()
     is(exports.run(64), first, 'round 2 answers the same')
   }
 })

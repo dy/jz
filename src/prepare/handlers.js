@@ -72,6 +72,16 @@ const moduleName = node => {
   return err('Invalid module export name — use an identifier or string literal')
 }
 
+// The export names the module's ABI owns: its memory, the reactor entry and
+// every `__jz_` export the host reads (interop.js). A program export never takes
+// one; a bundled module's export stays its own until the program re-exports it.
+const RESERVED_EXPORT = /^(?:memory|_initialize)$|^__jz_/
+const exportName = (name) => {
+  if (ctx.module.moduleStack.length === 0 && RESERVED_EXPORT.test(name))
+    err(`export '${name}' takes a name the module's ABI reserves (memory, _initialize and the __jz_ prefix): rename it`)
+  return name
+}
+
 /** Lower one node. A written node is the current position while it lowers
  *  (ctx.js), and what it lowers to stands at its place. */
 export function prep(node) {
@@ -865,13 +875,13 @@ const handlers = {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
       for (const i of decl.slice(1))
         // `export let idx, cur, parse = …`: a declarator with no value is exported all the same
-        if (typeof i === 'string') ctx.funcs.exports[i] = true
+        if (typeof i === 'string') ctx.funcs.exports[exportName(i)] = true
         else if (Array.isArray(i) && i[0] === '=') {
-          if (typeof i[1] === 'string') ctx.funcs.exports[i[1]] = true
+          if (typeof i[1] === 'string') ctx.funcs.exports[exportName(i[1])] = true
           // `export let { a, b: c } = …` / `export let [x, y] = …` — every
           // BoundName of the declaration is an export (ES §16.2.3.2). Surfaced
           // by window-function's `export let { cos, sin, abs } = Math`.
-          else if (isDestructPattern(i[1])) for (const n of bindingNames(i[1])) ctx.funcs.exports[n] = true
+          else if (isDestructPattern(i[1])) for (const n of bindingNames(i[1])) ctx.funcs.exports[exportName(n)] = true
         }
     // export name → bare-identifier re-export (shorthand for `export { name }`).
     // Register the binding and emit nothing; without this the name falls through
@@ -879,7 +889,7 @@ const handlers = {
     // while the export itself is silently lost.
     if (typeof decl === 'string') {
       const resolved = ctx.scope.chain[decl]
-      ctx.funcs.exports[decl] = (resolved && resolved !== decl) ? resolved : decl
+      ctx.funcs.exports[exportName(decl)] = (resolved && resolved !== decl) ? resolved : decl
       return null
     }
     // export { name, name as alias } from './mod' or export * from './mod'
@@ -895,12 +905,12 @@ const handlers = {
           // same name shadows the star's (ES: star exports never override local
           // ones), whichever is declared first.
           for (const [name, mangled] of resolved.exports) {
-            if (name !== 'default' && !(name in ctx.funcs.exports)) ctx.funcs.exports[name] = mangled
+            if (name !== 'default' && !(name in ctx.funcs.exports)) ctx.funcs.exports[exportName(name)] = mangled
           }
         } else if (Array.isArray(decl[1]) && decl[1][0] === 'as' && decl[1][1] === '*') {
           // export * as ns from './mod' → the name is a namespace: an importer
           // binds it like `import * as ns` and resolves `ns.member` statically.
-          ctx.funcs.exports[moduleName(decl[1][2])] = resolved.exports
+          ctx.funcs.exports[exportName(moduleName(decl[1][2]))] = resolved.exports
         } else if (Array.isArray(decl[1]) && decl[1][0] === '{}') {
           // export { a, b as c } from './mod'
           const inner = decl[1][1]
@@ -911,7 +921,7 @@ const handlers = {
             const alias = moduleName(typeof item === 'string' ? item : item[2])
             const mangled = resolved.exports.get(name)
             if (!mangled) err(`'${name}' is not exported from '${mod}' — check the module's export list`)
-            ctx.funcs.exports[alias] = mangled
+            ctx.funcs.exports[exportName(alias)] = mangled
           }
         }
       }
@@ -925,11 +935,11 @@ const handlers = {
       for (const item of items) {
         if (typeof item === 'string') {
           const resolved = ctx.scope.chain[item]
-          ctx.funcs.exports[item] = (resolved && resolved !== item) ? resolved : item
+          ctx.funcs.exports[exportName(item)] = (resolved && resolved !== item) ? resolved : item
         } else if (Array.isArray(item) && item[0] === 'as') {
           const source = item[1], alias = moduleName(item[2])
           const resolved = ctx.scope.chain[source]
-          ctx.funcs.exports[alias] = (resolved && resolved !== source) ? resolved : source
+          ctx.funcs.exports[exportName(alias)] = (resolved && resolved !== source) ? resolved : source
         }
       }
       return null
@@ -3417,10 +3427,11 @@ function prepareModule(specifier, source) {
   const result = { exports: exported, spec: specifier, prefix, init: moduleInit }
   ctx.module.resolvedModules.set(specifier, result)
   // a std module's host-boundary contract (`__mt_drain`, `__p_state`, …)
-  // is read off the instance by plain name: re-export it from the program
-  // from whichever module pulled the runtime in
+  // is read off the instance as an ABI export (`__jz_mt_drain`, …): re-export
+  // it from the program from whichever module pulled the runtime in
   for (const name of STD_HOST_EXPORTS[specifier] ?? []) {
-    if (!(name in ctx.module.rootExports)) ctx.module.rootExports[name] = moduleExports.get(name)
+    const as = '__jz_' + name.slice(2)
+    if (!(as in ctx.module.rootExports)) ctx.module.rootExports[as] = moduleExports.get(name)
     if (STD_PRIMITIVE_EXPORTS.has(name)) ctx.funcs.primitiveArgs.add(moduleExports.get(name))
   }
   // and the ones the emitters call by name (std/index.js STD_RUNTIME_ROOTS)

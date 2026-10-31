@@ -429,11 +429,11 @@ test('compact: an element store asks the bit the snapshot sets, past the stub lo
     export const kept = () => { let bad = 0; for (let k = 0; k < arrs.length; k++) if (arrs[k][0] !== k) bad++; return bad }`
   for (const level of levels(2, 3)) {
     // a table of 1024 stubs (16 KB): three thousand arrays span several of it
-    const { exports: e } = jz(src, { optimize: { level, compactStubs: 1024 } })
+    const { exports: e, memory } = jz(src, { optimize: { level, compactStubs: 1024 } })
     e.churn(10)
     for (const down of [1, 0]) {
       is(e.touch(down), 3000, `O${level}: every array written, ${down ? 'from the last down' : 'from the first up'}`)
-      e._clear()
+      memory.reset()
       is(e.kept(), 0, `O${level}: the reset returns every array, ${down ? 'from the last down' : 'from the first up'}`)
     }
   }

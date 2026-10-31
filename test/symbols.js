@@ -11,7 +11,7 @@ import { ptrBits, PTR, symbolCountMax } from '../layout.js'
 test('Symbol: interned-only modules do not export an unused identity counter', () => {
   const source = `export function f(){return Symbol.for('shared')}`
   const bytes = compile(source)
-  ok(!WebAssembly.Module.exports(new WebAssembly.Module(bytes)).some(e => e.name === '__symbol_id'),
+  ok(!WebAssembly.Module.exports(new WebAssembly.Module(bytes)).some(e => e.name === '__jz_symbol_id'),
     'only a runtime factory needs the shared counter')
   if (!onWasi() && !onKernel()) {
     const one = jz(source).exports, two = jz(source).exports
@@ -37,7 +37,7 @@ test('Symbol: factory and loop invocations retain distinct identities across cal
   }
 })
 
-// A fresh identity counts the instance's identities (`__symbol_id`) above its
+// A fresh identity counts the instance's identities (`__jz_symbol_id`) above its
 // description slot (layout.js symbolCountMax): its offset is never zero, the
 // interned domain, at any count, and the last count stays below the tombstone.
 test('Symbol: a fresh identity never equals an interned one and exhaustion never wraps', () => {

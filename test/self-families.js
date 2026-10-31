@@ -83,7 +83,7 @@ if (HOSTED) {
     const check = (c, label) => {
       const got = compiled(k, c.src), expected = freshCompile(c)
       ok(sameCompile(got, expected), `${label}: ${describeCompile(got)}, a fresh instance gives ${describeCompile(expected)}`)
-      if (clear) k.exports._clear()
+      if (clear) k.memory.reset()
     }
     let previous = null
     for (const c of all) {

@@ -83,9 +83,9 @@ test('array literals: compact storage preserves growth, aliases and named proper
     export function shift() { const x = alias.shift(); return [x, box.a[0], box.a.length, box.a.note] }`
   for (const optimize of levels(0, 2, 3)) {
     const { exports: e, instance } = jz(src, { optimize })
-    const before = instance.exports._alloc(0)
+    const before = instance.exports.__jz_alloc(0)
     is(e.make(3), {a: [3]})
-    const allocated = instance.exports._alloc(0) - before
+    const allocated = instance.exports.__jz_alloc(0) - before
     ok(allocated <= 96, `one-element literal and wrapper use compact storage (${allocated} bytes)`)
     e.note()
     for (let i = 0; i < 20; i++) is(e.push(i), [3, i, i + 2, 9])
@@ -636,8 +636,8 @@ test('.join: decimal formatting uses linear arena space', () => {
     for (const n of [512, 1024]) {
       is(m.exports.f(n), expected(n))
       // the wrapper releases the call once it holds a copy of the string: the raw export shows what the call used
-      raw._clear(); const start = raw.__heap.value
-      raw.f(n); used.push(raw.__heap.value - start)
+      raw.__jz_clear(); const start = raw.__jz_heap.value
+      raw.f(n); used.push(raw.__jz_heap.value - start)
     }
     ok(used[1] < used[0] * 3, `O${optimize}: doubling input uses ${used[0]} → ${used[1]} bytes`)
   }

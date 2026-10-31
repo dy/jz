@@ -7818,7 +7818,7 @@ test('devirtSchemaReads: an empty inline cache cannot match zero or subnormal nu
       is(fn(0), undefined, 'a primitive still misses a populated cache')
       is(fn(7), 7, 'a different schema refills it')
     }
-    r.instance.exports._clear()
+    r.instance.exports.__jz_clear()
     is(r.exports.zero(0), undefined, 'reset preserves the receiver guard')
     is(r.exports.tiny(4), 4)
   }

@@ -69,7 +69,7 @@ test('snapshot: one full image replaces every split input data segment', () => {
     ['memory', ['export', '"memory"'], '1'],
     ['data', ['i32.const', '0'], '"abc"'],
     ['data', ['i32.const', '16'], '"xyz"'],
-    ['global', '$__heap', ['export', '"__heap"'], ['mut', 'i32'], ['i32.const', '32']],
+    ['global', '$__heap', ['export', '"__jz_heap"'], ['mut', 'i32'], ['i32.const', '32']],
     ['func', '$__start', ['i32.store', ['i32.const', 8], ['i32.const', 0x12345678]]],
     ['start', '$__start']]
   ok(snapshotInit(module, compileWat), 'synthetic hermetic init snapshots')
@@ -144,9 +144,9 @@ test('snapshot: _clear warm semantics survive baking', () => {
     const memo = (k) => { let v = CACHE.get(k); if (v === undefined) { v = [k.length, 7]; CACHE.set(k, v) } return v[1] }
     export let churn = (n) => { let a = [n + 0.5, n * 2]; return a[0] }
     export let main = () => memo('warm-key-x')`
-  const { exports: e } = jz(src, { optimize: SNAP })
+  const { exports: e, memory: m } = jz(src, { optimize: SNAP })
   is(Number(e.main()), 7)
-  e._clear()
+  m.reset()
   e.churn(9); e.churn(8)
   is(Number(e.main()), 7, 'healed entry rebuilds after _clear on a snapshotted module')
 })

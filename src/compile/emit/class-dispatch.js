@@ -467,7 +467,8 @@ export function synthesizeClassExports() {
       const params = names.map(n => ({ name: n, type: 'f64' }))
       const func = createFunction(name, ['{}', [';', access]], { params, results: ['f64'] }, false, null, rest)
       ctx.funcs.list.push(func); byName.set(name, func)
-      ctx.funcs.exports[name] = name
+      // an ABI export: the host takes it onto the class (interop.js hostClasses)
+      ctx.funcs.exports['__jz_' + name.slice(CLASS_T.length)] = name
       into.push([key, kind])
     }
     const guarded = (access) => ['if', ['instanceof', R, e.brand], ['return', access]]

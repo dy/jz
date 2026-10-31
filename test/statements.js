@@ -409,8 +409,8 @@ test('host:js timers: env.setTimeout/clearTimeout imports, __call_closure export
   ok(imports.includes('env.setTimeout'), `expected env.setTimeout: ${imports}`)
   ok(imports.includes('env.clearTimeout'), `expected env.clearTimeout: ${imports}`)
   ok(!imports.some(i => i.includes('clock_time_get')), `should not import clock_time_get: ${imports}`)
-  ok(exports.includes('__call_closure'), `expected __call_closure export: ${exports}`)
-  ok(!exports.includes('__timer_tick'), `should not export __timer_tick: ${exports}`)
+  ok(exports.includes('__jz_call_closure'), `expected __call_closure export: ${exports}`)
+  ok(!exports.includes('__jz_timer_tick'), `should not export __timer_tick: ${exports}`)
 })
 
 test('host:js timers import only the requested host functions', () => {

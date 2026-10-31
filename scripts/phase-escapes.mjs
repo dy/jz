@@ -69,7 +69,7 @@ try {
 } catch (e) { error = e.message }
 const m = readMarks(k)
 const MB = n => (n / 1048576).toFixed(0)
-console.log(`jz × jz: ${((performance.now() - t0) / 1000).toFixed(0)} s, ${error ? 'error: ' + error.split('\n')[0] : bytes.length + ' bytes'}; heap ${MB(k.instance.exports.__heap.value >>> 0)} MB; ` +
+console.log(`jz × jz: ${((performance.now() - t0) / 1000).toFixed(0)} s, ${error ? 'error: ' + error.split('\n')[0] : bytes.length + ' bytes'}; heap ${MB(k.instance.exports.__jz_heap.value >>> 0)} MB; ` +
   `checkpoints taken ${m.checkpoints}, declined ${m.declines}${noting ? `; ${notes} notes` : ''}`)
 const rows = []
 let prev = m.heapFront

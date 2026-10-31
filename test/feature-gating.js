@@ -307,8 +307,8 @@ test('alloc:false omits allocator helper exports', () => {
     return a.length
   }`
   const w = wat(src, { alloc: false })
-    is(/\(export "_alloc"/.test(w), false)
-    is(/\(export "_clear"/.test(w), false)
+    is(/\(export "__jz_alloc"/.test(w), false)
+    is(/\(export "__jz_clear"/.test(w), false)
     ok(/\(memory/.test(w))
 })
 
