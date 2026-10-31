@@ -609,37 +609,43 @@ function durableLoopArrays(init, cond, step, body) {
  * after one keeps all and starts a mark of its own. The loop's end, and a
  * return or a branch out of it, put the log's floor back.
  *
- * The flag the releases read is the iterations' own: each release clears it
- * once it has read it, so an escape one iteration made (a cache filled once)
+ * The flag the releases of a function's outermost released loop read is the
+ * iterations' own: each such release clears it once it has read it
+ * (`__iter_take`), so an escape one iteration made (a cache filled once)
  * leaves the next ones free to give their memory back. What the clearings
- * took is kept for the frame around the loop, the lowest, as its complement
- * (`ies`: 0, a local's start, while none took anything), and, in a program
- * that catches, handed to `$__esc_low` as a frame hands its flag (a handler
- * reads there what an exception left behind); the loop's end and a branch out
- * of it put the lowest back.
+ * took is kept for the frame around the loop, the lowest, in
+ * `$__esc_held` (all ones while none took anything), which the loop saves as
+ * it begins and its end, or a branch out of it, hands back with the lowest
+ * put back into the flag (`__iter_leave`); in a program that catches, a
+ * clearing hands what it took to `$__esc_low` as a frame hands its flag (a
+ * handler reads there what an exception left behind). A released loop inside
+ * another of the function reads the flag the outer one's release cleared and
+ * clears nothing: the outer release reads what its escapes left, and the
+ * inner loop carries no state of the take-over, in its body or around it.
  */
 const RELEASE_BYTES = 65536   // the iterations a release takes back together: a walk per 64 KiB they made, at most
-const iterationRelease = () => {
-  inc('__iter_release')
-  const mark = tempI32('irm'), was = tempI32('irb'), epoch = tempI32('ire'), held = tempI32('ies')
+const iterationRelease = (take) => {
+  inc(take ? '__iter_take' : '__iter_release')
+  if (take) inc('__iter_leave')
+  const mark = tempI32('irm'), was = tempI32('irb'), epoch = tempI32('ire'), held = take ? tempI32('ies') : null
   const top = () => ctx.memory.shared ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]] : ['global.get', '$__heap']
   const raise = () => ['if', ['i32.gt_u', ['local.get', `$${mark}`], ['global.get', '$__ibase']], ['then', ['global.set', '$__ibase', ['local.get', `$${mark}`]]]]
-  const lower = (g, v) => ['if', ['i32.lt_u', v, ['global.get', g]], ['then', ['global.set', g, v]]]
-  const not = (v) => ['i32.xor', v, ['i32.const', -1]]
   return {
     pre: [['local.set', `$${mark}`, top()], ['local.set', `$${was}`, ['global.get', '$__ibase']], raise(),
-      ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']], ['local.set', `$${held}`, ['i32.const', 0]]].map(releasing),
+      ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']],
+      ...(take ? [['local.set', `$${held}`, ['global.get', '$__esc_held']], ['global.set', '$__esc_held', ['i32.const', -1]]] : [])].map(releasing),
     top: releasing(['if', ['i32.ne', ['local.get', `$${epoch}`], ['global.get', '$__gc_epoch']],
       ['then', ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']], ['local.set', `$${mark}`, top()], raise()],
       ['else', ['if', ['i32.gt_u', ['i32.sub', top(), ['local.get', `$${mark}`]], ['i32.const', RELEASE_BYTES]],
-        ['then', ['local.set', `$${mark}`, ['call', '$__iter_release', ['local.get', `$${mark}`]]],
-          // the flag taken over: kept as the lowest, handed over, cleared
-          ['if', ['i32.gt_u', not(['global.get', '$__esc']), ['local.get', `$${held}`]], ['then', ['local.set', `$${held}`, not(['global.get', '$__esc'])]]],
-          ...(ctx.plans.catches ? [lower('$__esc_low', ['global.get', '$__esc'])] : []), ['global.set', '$__esc', ['i32.const', -1]]]]]]),
-    post: releasing(['block', ['global.set', '$__ibase', ['local.get', `$${was}`]], lower('$__esc', not(['local.get', `$${held}`]))]),
+        ['then', ['local.set', `$${mark}`, ['call', take ? '$__iter_take' : '$__iter_release', ['local.get', `$${mark}`]]]]]]]),
+    post: logFloor(was, held),
     cleanup: ['#logFloor', was, held],
   }
 }
+/** The loop's end, or a return or a branch out of it: the log's floor put back,
+ *  and where the loop takes the flag over, the lowest it took (iterationRelease). */
+const logFloor = (was, held) => releasing(held == null ? ['global.set', '$__ibase', ['local.get', `$${was}`]]
+  : ['block', ['global.set', '$__ibase', ['local.get', `$${was}`]], ['call', '$__iter_leave', ['local.get', `$${held}`]]])
 /** A statement of the release protocol: a program that allocates nothing has
  *  no heap to release, and the stdlib's pull takes them out (wat/assemble/stdlib-pull.js). */
 export const releasing = (n) => (n.iterRelease = true, n)
@@ -1385,9 +1391,15 @@ export const controlFlowOps = {
     for (const [name, fact] of initRefs) bodyRefs.set(name, bodyRefs.has(name) ? { ...bodyRefs.get(name), ...fact } : fact)
     // An iteration released by the escape flag: a return or a branch out of
     // the loop puts the log's floor back, as the loop's end does.
-    const release = ctx.plans.releaseLoops?.has(bodyNode0) && !ctx.memory.atomic ? iterationRelease() : null
+    // The function's outermost released loop takes the flag over at its releases; one inside it does not.
+    const release = ctx.plans.releaseLoops?.has(bodyNode0) && !ctx.memory.atomic ? iterationRelease(ctx.func.releaseDepth === 0) : null
     const bodyOf = () => withRefinements(bodyRefs, body, () => withRefinements(savedRefs, body, () => emitVoid(body)))
-    const emitLoopBody = release ? () => withFinallyStack((ctx.func.finallyStack || []).concat([{ cleanup: release.cleanup, depth: ctx.func.stack.length - 1 }]), bodyOf) : bodyOf
+    const releasedBody = () => {
+      ctx.func.releaseDepth++
+      try { return withFinallyStack((ctx.func.finallyStack || []).concat([{ cleanup: release.cleanup, depth: ctx.func.stack.length - 1 }]), bodyOf) }
+      finally { ctx.func.releaseDepth-- }
+    }
+    const emitLoopBody = release ? releasedBody : bodyOf
     const loopBody = []
     if (condForLoop) loopBody.push(['br_if', brk, ['i32.eqz',
       withRefinements(initRefs, condForLoop, () => withRefinements(testRefinements(facts), condForLoop, () => toBool(condForLoop)))]])
@@ -1444,9 +1456,7 @@ export const controlFlowOps = {
 
   'while': (cond, body) => controlFlowOps['for'](null, cond, null, body),
   // a released loop's floor put back where a return or a branch leaves it (iterationRelease)
-  '#logFloor': (was, held) => releasing(typed(['block', ['global.set', '$__ibase', ['local.get', `$${was}`]],
-    ['if', ['i32.lt_u', ['i32.xor', ['local.get', `$${held}`], ['i32.const', -1]], ['global.get', '$__esc']],
-      ['then', ['global.set', '$__esc', ['i32.xor', ['local.get', `$${held}`], ['i32.const', -1]]]]]], 'void')),
+  '#logFloor': (was, held) => typed(logFloor(was, held), 'void'),
   'label': (name, body) => {
     const brk = `$label${freshId(ctx)}`
     return withControlFrame({ label: name, brk }, () =>

@@ -53,7 +53,7 @@ const BOX = new Set(['f64', 'i64'])
 // The runtime calls that move a block only on a loop's cold paths: a push's or
 // an index store's growth, the iteration's release past its budget, a durable
 // array's first save of a round.
-const COLD = new Set(['$__arr_room', '$__arr_grow', '$__arr_grow_known', '$__arr_set_idx_ptr', '$__iter_release', '$__durable_arr_snap'])
+const COLD = new Set(['$__arr_room', '$__arr_grow', '$__arr_grow_known', '$__arr_set_idx_ptr', '$__iter_release', '$__iter_take', '$__durable_arr_snap'])
 const COPY = new Set(['i32.wrap_i64', 'i64.reinterpret_f64', 'f64.reinterpret_i64'])
 
 const same = (a, b) => {

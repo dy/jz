@@ -367,6 +367,17 @@ const ARRAY_CALLS = {
 //            index store into a receiver of no known kind keeps the grow in its loop's
 //            cold arm, 9 ops more there: buf +45 (5 seeds), condref +360 (40 seeds),
 //            no entered loop moved.
+//   cf012bfa1 a length the runtime takes from other data tested where it comes in: slice
+//            +192, entered +16, in the dictionary inserts' grow arms (`__hash_set_local`,
+//            `__ihash_set_local`); buf -40, condref -320 (3a367c915 counts 30843 and
+//            196581, 49d150e48 30803 and 196261).
+//   05c1fda89 each release clears the flag it read: the take-over in every released loop's
+//            cold arm, a local the loop carried and a restore at every end, the inner
+//            loop's in the outer one's body: slice +672, entered +288, all from the eight
+//            seeds whose loop is `a[o + i] = a[o + i]`.
+//   the take-over in the runtime, at a function's outermost released loop alone
+//            (module/core/reach.js `__iter_take`, `__iter_leave`): every loop body is what
+//            it was before 05c1fda89, slice -672, entered -288.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}

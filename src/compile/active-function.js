@@ -58,6 +58,7 @@ export function createActiveFunction({
     stack: [],
     uniq,
     inTry: false,
+    releaseDepth: 0,     // released loops around the code being emitted (emit/control-flow.js iterationRelease)
     noFill: false,       // the declarator being emitted is a read buffer (plan/read-buffers.js): its constructor skips the zero fill
     finallyStack: null,
     pendingLabel: null,

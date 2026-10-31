@@ -413,6 +413,22 @@ export const registerIterRelease = () => {
     ${setHeap('(local.get $top)')}
     (if (i32.gt_u (local.get $top) (global.get $__ibase)) (then (global.set $__ibase (local.get $top))))
     (local.get $top))`
+  // The release of a function's outermost released loop takes the flag over:
+  // read, kept as the lowest in `$__esc_held` for the frame around the loop,
+  // in a program that catches handed to `$__esc_low` as a frame hands its flag,
+  // and cleared, so the next release reads its own iterations' escapes alone.
+  // Realized after emission, which tells whether the program catches.
+  ctx.core.stdlib['__iter_take'] = () => `(func $__iter_take (param $mark i32) (result i32)
+    (local.set $mark (call $__iter_release (local.get $mark)))
+    (if (i32.lt_u (global.get $__esc) (global.get $__esc_held)) (then (global.set $__esc_held (global.get $__esc))))
+    ${ctx.plans.catches ? '(if (i32.lt_u (global.get $__esc) (global.get $__esc_low)) (then (global.set $__esc_low (global.get $__esc))))' : ''}
+    (global.set $__esc (i32.const -1))
+    (local.get $mark))`
+  // The loop's end, or a branch out of it: the lowest it took put back into the
+  // flag, no lower than its escapes made it, and the loop around's own held again.
+  ctx.core.stdlib['__iter_leave'] = `(func $__iter_leave (param $held i32)
+    (if (i32.lt_u (global.get $__esc_held) (global.get $__esc)) (then (global.set $__esc (global.get $__esc_held))))
+    (global.set $__esc_held (local.get $held)))`
 }
 
 /** Whether the program keeps properties in the runtime's table by address
@@ -431,4 +447,6 @@ export const REACH_DEPS = {
   __reach_in: () => ['__reach_new', '__reach_end', '__reach_fit', '__reach_cells', '__reach_see', '__reach_props', ...(keyedProps() ? ['__ihash_get_local'] : [])],
   __survive: ['__reach_room', '__reach_end', '__reach_fit', '__reach_see', '__reach_in'],
   __iter_release: ['__survive'],
+  __iter_take: ['__iter_release'],
+  __iter_leave: [],
 }

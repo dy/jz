@@ -324,7 +324,8 @@ export function assemble(ast, profiler) {
     // Those of them whose release stands after the loop's test: a binding carries the last iteration's value out.
     const afterTest = ctx.plans.releaseAfterTest = new WeakSet()
     // Whether a handler may catch what a released iteration throws: one reads the flag the frames it
-    // left handed over (emit/statements.js flagCaught), so a release hands over the flag it clears.
+    // left handed over (emit/statements.js flagCaught), so a release hands over the flag it clears
+    // (module/core/reach.js `__iter_take`).
     ctx.plans.catches = !!releases && [ast, ...(ctx.module.moduleInits ?? []), ...ctx.funcs.list.map(f => f.body)]
       .some(r => r != null && some(r, n => n[0] === 'catch' || n[0] === 'finally', { skipArrow: false }))
     let released = false
@@ -395,8 +396,11 @@ export function assemble(ast, profiler) {
     // Below it, while a loop releases its iterations, a receiver is logged
     // too: the walk from a loop's mark needs every way into what the
     // iteration made. And the count of compactions, which move what a mark
-    // names and empty the log (module/core/compact.js).
-    if (released) { declGlobal('__ibase', 'i32', 0); declGlobal('__gc_epoch', 'i32', 0) }
+    // names and empty the log (module/core/compact.js). And the lowest flag the
+    // releases of the outermost released loop running took over (all ones while
+    // none took anything), which the loop's end puts back (module/core/reach.js
+    // `__iter_take`, `__iter_leave`).
+    if (released) { declGlobal('__ibase', 'i32', 0); declGlobal('__gc_epoch', 'i32', 0); declGlobal('__esc_held', 'i32', -1) }
     ctx.plans.escapeFlag = true
     ctx.plans.hasSites = any
     ctx.plans.instrumented = new WeakSet()

@@ -227,10 +227,10 @@ export function pullStdlib(sec) {
     !!(ctx.memory.shared && dataLen() > 0)
   // A loop's release of its iterations (emit/control-flow.js iterationRelease)
   // in a program that allocates nothing: no heap, nothing to release.
-  if (!needsAlloc && reachable.has('__iter_release')) {
+  if (!needsAlloc && (reachable.has('__iter_release') || reachable.has('__iter_take'))) {
     const strip = (node) => { for (let i = node.length - 1; i > 0; i--) { const c = node[i]; if (!Array.isArray(c)) continue; if (c.iterRelease) node.splice(i, 1); else strip(c) } }
     for (const f of sec.funcs) strip(f)
-    ctx.core.includes.delete('__iter_release')
+    for (const name of ['__iter_release', '__iter_take', '__iter_leave']) ctx.core.includes.delete(name)
     reachable = reachableStdlib(sec)
   }
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
@@ -410,7 +410,7 @@ export function pullStdlib(sec) {
         const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
         const SNAP_PROTOCOL = new Set(['__heap', '__heap_reset', '__heap_start', '__symbol_id',
           '__dyn_get_cache_off', '__dyn_get_cache_props', '__durable_fwd_buf', '__durable_fwd_n', '__durable_fwd_cap', '__durable_slot_cap',
-          '__durable_arr_seen', '__durable_arr_log', '__gsnap_base', '__esc', '__base', '__esc_low', '__rootn', '__rootl'])
+          '__durable_arr_seen', '__durable_arr_log', '__gsnap_base', '__esc', '__base', '__esc_low', '__esc_held', '__rootn', '__rootl'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
           if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))

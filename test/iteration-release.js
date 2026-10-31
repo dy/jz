@@ -11,6 +11,7 @@ import { is, ok } from 'tst/assert.js'
 import { instantiate } from '../index.js'
 import { levels } from './_matrix.js'
 import { oracle, run, jz, compile } from './util.js'
+import parseWat from 'watr/parse'
 
 const agree = (src, ns = [1, 7, 200]) => {
   for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
@@ -18,7 +19,8 @@ const agree = (src, ns = [1, 7, 200]) => {
     for (const n of ns) is(m.f(n), host.f(n), `${optimize}: f(${n})`)
   }
 }
-const releases = (src) => (compile(src, { optimize: 'speed', wat: true }).match(/call \$__iter_release/g) || []).length
+// a release, or one that takes the flag over (the function's outermost released loop)
+const releases = (src) => (compile(src, { optimize: 'speed', wat: true }).match(/call \$__iter_(release|take)\b/g) || []).length
 // what the loop kept is read after this overwrites what it gave back
 const CHURN = `const junk = []; for (let k = 0; k < 3000; k++) junk.push([k, k + 1, k + 2])`
 // more than a release takes back at once (control-flow.js RELEASE_BYTES)
@@ -77,9 +79,53 @@ test('iteration release: an escape one iteration made leaves the next ones free 
       return cs }`
   const host = { host: { keep: () => 0 } }
   for (const n of [1, 9, 200]) is(instantiate(new WebAssembly.Module(compile(src, { optimize: 'speed', imports: host })), { imports: host }).exports.f(n), n * 7 + n * (n - 1) / 2, `f(${n})`)
-  ok(/call \$__iter_release/.test(compile(src, { optimize: 'speed', wat: true, imports: host })), 'the loop releases its iterations')
+  ok(/call \$__iter_take\b/.test(compile(src, { optimize: 'speed', wat: true, imports: host })), 'the loop releases its iterations, taking the flag over')
   const grown = grownBy(src, { imports: host }, host)
   is(grown(200), grown(2), 'two hundred iterations grow what two do')
+})
+
+test('iteration release: a released loop inside another takes nothing over, and its escapes reach the outer release', () => {
+  // The outermost released loop of a function takes the flag over at its releases
+  // (module/core/reach.js `__iter_take`); one inside it clears nothing, so neither
+  // its body nor its entry and end, which run in the outer loop's body, hold
+  // any state of the take-over: the perf corpus's slice kernel, whose inner loop
+  // copies `a[o + i]` on a receiver of no known kind (`o + i` may concatenate)
+  const kernel = `export let f = (a, offs, m, n) => { for (let b = 0; b < m; b = b + 1) { const o = offs[b]; for (let i = 0; i < n; i = i + 1) { a[o + i] = a[o + i] } } }`
+  const inLoops = (n, inLoop = false) => !Array.isArray(n) ? inLoop && (n === '$__esc_held' || n === '$__iter_leave')
+    : n.some(c => inLoops(c, inLoop || n[0] === 'loop'))
+  for (const optimize of levels(2, 3, 'speed')) {
+    const wat = compile(kernel, { optimize, wat: true })
+    ok(/call \$__iter_take/.test(wat) && /call \$__iter_release/.test(wat), `${optimize}: the outer loop takes the flag over, the inner one releases`)
+    ok(!inLoops(parseWat(wat)), `${optimize}: no loop holds the take-over's state`)
+  }
+  // the inner iterations store fresh keys into a parameter's table: the inner
+  // releases and the outer one keep them, and the reads after the churn find them
+  const src = `const tag = (a, offs, m, n) => { for (let b = 0; b < m; b++) { const o = offs[b]; for (let i = 0; i < n; i++) a[o + i] = b * 1000 + i } }
+    export let f = (m, n) => {
+      const a = [], offs = []
+      for (let b = 0; b < m; b++) offs.push(b % 2 ? 'k' + b + '_' : b * n)
+      tag(a, offs, m, n)
+      const junk = []; for (let q = 0; q < 40000; q++) junk.push([q, q])
+      let h = 0; for (let b = 1; b < m; b += 2) for (let i = 0; i < n; i += 7) h = (h * 31 + a['k' + b + '_' + i]) | 0
+      return h + junk.length + a.length }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size', 'speed')) {
+    const m = run(src, { optimize })
+    for (const [b, n] of [[1, 10], [4, 3000], [6, 5000]]) is(m.f(b, n), host.f(b, n), `${optimize}: f(${b}, ${n})`)
+  }
+  // where no frame reads the flag (test/perf.js's closure-heavy parser), link drops
+  // its writes and the take-over with them: the release alone stays, and folds away
+  const parser = `export let f = (s) => {
+    let i = 0, n = s.length
+    let peek = () => i < n ? s[i] : ''
+    let next = () => { let c = peek(); i++; return c }
+    let isDigit = (c) => c >= '0' && c <= '9'
+    let total = 0
+    while (i < n) { let c = next(); if (isDigit(c)) total = total * 10 + (c.charCodeAt(0) - 48) }
+    return total
+  }`
+  for (const optimize of levels(2, 3, 'speed'))
+    ok(!/\$__(iter_take|esc_held)\b/.test(compile(parser, { optimize, wat: true })), `${optimize}: a loop no reader reaches takes nothing over`)
 })
 
 test('iteration release: a store through a receiver the site keeps names the receiver, re-read through its owner', () => {

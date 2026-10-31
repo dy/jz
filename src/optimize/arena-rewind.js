@@ -123,7 +123,7 @@ const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__hea
   '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base', '$__esc_low',
   '$__jbuf', '$__jstack', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
-  '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch',
+  '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch', '$__esc_held',
   // the reset's log of an object (module/core/durable-log.js `__durable_obj_snap`), which lowers the flag itself
   '$__durable_arr_seen', '$__durable_arr_log',
   // the park lane's cursors (module/core.js): scratch above the heap a phase checkpoint writes and reads back at once
@@ -162,13 +162,13 @@ const LOWERS = new Set(['$__esc_at', '$__esc_val', '$__esc_elem', '$__esc_cell',
 // The log of what the escapes wrote into and the walk from it as a frame
 // returns (module/core/reach.js): kernels of the protocol itself, whose
 // stores go into the log and into scratch above the heap.
-const REACH = /^\$__(root|root_reset|survive|reach_\w+|gc_\w+|compact|iter_release)$/
+const REACH = /^\$__(root|root_reset|survive|reach_\w+|gc_\w+|compact|iter_release|iter_take|iter_leave)$/
 const SURVIVE = '$__survive', ROOTN = '$__rootn', ROOTS = '$__roots', ROOT_RESET = '$__root_reset'
 // The lowest the flag stood at since the outermost reading frame was entered:
 // a handler's flag (compile/emit/statements.js).
 const ESC_LOW = '$__esc_low'
-// The local a released loop keeps the lowest flag it took over in (emit/control-flow.js iterationRelease).
-const ESC_HELD = '$' + MARK + 'ies'
+// The lowest flag the releases of a loop took over (module/core/reach.js `__iter_take`).
+const ESC_HELD = '$__esc_held'
 // Below it a receiver is logged too while a loop releases its iterations (module/core/reach.js `__iter_release`).
 const IBASE = '$__ibase'
 // What asks of a stored value whether a running call made it: no lowering itself.
@@ -177,6 +177,10 @@ const ASKS = '$__esc_new'
 const PARK_SAFE = '$__park_safe'
 /** A loop's release of an iteration (module/core/reach.js, emit/control-flow.js iterationRelease): its frame reads the flag too. */
 const ITER_RELEASE = '$__iter_release'
+/** The release that takes the flag over, and the loop's end that puts the lowest it took back: they write the flag
+ *  where the loop's frame keeps its writes (reached from a reader with it); where it drops them, they go. */
+const ITER_TAKE = '$__iter_take', ITER_LEAVE = '$__iter_leave'
+const ITER_TAKES = new Set([ITER_TAKE, ITER_LEAVE])
 /** The checkpoint's other helpers before its verdict, and the heap's marks: they read and set the protocol's globals, no escape. */
 const PARK_CALLS = /^\$__(park_(mark|enter|low_enter|base_enter|worth|end)|durable_state|heap_since|heap_mark|heap_large|esc_get)$/
 // What asks of a frame's result whether the frame made it (module/core.js).
@@ -247,18 +251,13 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   const eachBody = (f, fn) => { for (let c = bodyStart(f); c !== NONE; c = T.next[c]) walk(c, fn) }
   const opText = (id) => T.syms[T.op[id]]
   // A write of the flag that lowers nothing: the flag cleared, or put back to the
-  // lowest a released loop took over from it (emit/control-flow.js iterationRelease),
+  // lowest a released loop took over from it (module/core/reach.js `__iter_leave`),
   // no lower than the loop's own escapes, flagged where they run, made it.
-  const allOnes = (v) => v !== NONE && opText(v) === 'i32.const' && T.a[v] !== NONE && T.op[T.a[v]] === OP_NUM && T.imm[T.a[v]] === -1
-  const heldGet = (v) => v !== NONE && opText(v) === 'local.get' && text(T.a[v])?.startsWith(ESC_HELD) === true
+  // (`-1` a number where the emitter built it, an atom where WAT text did: the runtime's kernels)
+  const allOnes = (v) => v !== NONE && opText(v) === 'i32.const' && T.a[v] !== NONE && (T.op[T.a[v]] === OP_NUM ? T.imm[T.a[v]] === -1 : text(T.a[v]) === '-1')
   const clearsFlag = (id) => {
     const v = T.next[T.a[id]]
-    if (v === NONE) return false
-    if (allOnes(v)) return true
-    // the loop keeps the lowest as its complement: `(i32.xor (local.get $ies…) (i32.const -1))`
-    if (opText(v) !== 'i32.xor') return false
-    const a = T.a[v], b = a === NONE ? NONE : T.next[a]
-    return (heldGet(a) && allOnes(b)) || (allOnes(a) && heldGet(b))
+    return v !== NONE && (allOnes(v) || opText(v) === 'global.get' && text(T.a[v]) === ESC_HELD)
   }
 
   // Imports: callees the module declares but does not define. Immutable
@@ -523,6 +522,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         const callee = text(T.a[id])
         if (callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n') rec.allocs = true
         if (LOWERS.has(callee)) { if (!LOWERS.has(name)) { rec.lowers = true; if (rec.censused) rec.ownFlag = true } return }
+        if (ITER_TAKES.has(callee)) { rec.calls.add(callee); return }
         if (callee !== null && REACH.test(callee)) return
         // the checkpoint's helpers write the flag: reached from their caller, a reader, so their writes stay
         if (callee === PARK_SAFE || callee === ITER_RELEASE || PARK_CALLS.test(callee)) { if (callee === PARK_SAFE || callee === ITER_RELEASE) rec.reader = true; rec.calls.add(callee); return }
@@ -1146,6 +1146,9 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
         // a mark moved for a check that goes with it
         if (T.op[id] === IF && marksOnly(id)) { remove(parent, id); return false }
         if (T.op[id] === GLOBAL_SET && text(T.a[id]) === '$__esc') { remove(parent, id); return false }
+        // a loop's take-over of a flag no reader reads: the release alone, nothing to put back
+        if (T.op[id] === CALL && text(T.a[id]) === ITER_TAKE) { T.sym[T.a[id]] = intern(ITER_RELEASE); return }
+        if (T.op[id] === CALL && text(T.a[id]) === ITER_LEAVE) { remove(parent, id); return false }
         // a lowering by a value: the value stays where reading it sets a local
         if (T.op[id] === CALL && LOWERS.has(text(T.a[id]))) {
           const value = T.next[T.a[id]]

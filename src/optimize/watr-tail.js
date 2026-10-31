@@ -43,10 +43,12 @@ import { forwardCheckedElements } from './forward-checked.js'
 // Static seed data is live through this helper. Preserve that ownership edge
 // until late data stripping; inlining would leave untracked raw addresses.
 // The arena rewind's cold paths (optimize/arena-rewind.js): a frame's release
-// and the outermost frame's entry, which every conditional frame would carry.
+// and the outermost frame's entry, which every conditional frame would carry,
+// and a loop's release that takes the flag over (module/core/reach.js
+// `__iter_take`), which a loop's cold arm calls once per 64 KiB its iterations made.
 const OUT_OF_LINE = ['$__rem_div', '$__len_tail', '$__length_tail', '$__length.value_tail', '$__typed_idx_tail',
   '$__typed_idx_tagged_tail', '$__arr_typed_set_idx_tail', '$__arr_typed_obj_set_idx_tail', '$__typed_set_idx_tagged_tail',
-  '$__str_eq_tail', '$__rec_set_tail', '$__static_str', '$__frame_give', '$__frame_outer']
+  '$__str_eq_tail', '$__rec_set_tail', '$__static_str', '$__frame_give', '$__frame_outer', '$__iter_take']
 
 /**
  * Compute the watr optimizer options for a resolved jz `optimize` config (see
