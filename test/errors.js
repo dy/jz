@@ -411,12 +411,12 @@ test('error: const reassignment message names the variable', () => {
   ok(error.message.includes('const'), `message should say 'const': ${error.message}`)
 })
 
-test('error: emitted errors include current AST context', () => {
+test('error: a rejection ends at its source line, naming no compiler tree', () => {
   let error
   try { compile('const x = 1; export let f = () => { x = 2; return x }') } catch (e) { error = e }
   ok(error, 'should throw')
-  ok(error.message.includes('current AST'), `message should include current AST: ${error.message}`)
-  ok(error.message.includes('["=","x"'), `message should include assignment node: ${error.message}`)
+  ok(/at line 1:\d+\n  const x = 1; export let f = \(\) => \{ x = 2; return x \}\n +\^$/.test(error.message), `the source line and a caret close the message: ${error.message}`)
+  ok(!/current AST|\["="/.test(error.message), `no AST in the message: ${error.message}`)
 })
 
 test('error: strict mode dynamic property access message', () => {

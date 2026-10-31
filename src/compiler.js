@@ -51,7 +51,7 @@ import watrCompile, { sourceMapURL } from "watr/compile";
 import { annotateSource, completeSourceMap } from './source-map.js'
 import { snapshotInit } from "./snapshot.js";
 import watrPrint from "watr/print";
-import { ctx, err, warn, setLinkDemand, flushWarnings } from './ctx.js'
+import { ctx, err, errorNode, warn, setLinkDemand, flushWarnings } from './ctx.js'
 import { GLOBALS } from './prepare/index.js'
 import { frontHalf } from './front.js'
 import { configureDiagnostics, configureMemory, beginSession } from './session.js'
@@ -186,7 +186,7 @@ export function compileInProcess(code, opts = {}, jzify = null) {
     // (Option errors throw before this, from foldOptions.)
     if (e?.name === 'TypeError' || e?.name === 'ReferenceError' || e?.name === 'RangeError') {
       // Pass `e` as the cause so the original stack (the real codegen site) survives.
-      err(`internal: ${e.message} (jz hit an unsupported case while compiling${ctx.error.node ? '; the AST node above shows the trigger' : ''}). This is a jz bug — please report.`, e)
+      err(`internal: ${e.message} (jz hit an unsupported case while compiling${ctx.error.node != null ? `, at ${errorNode()}` : ''}). This is a jz bug — please report.`, e)
     }
     throw e
   }

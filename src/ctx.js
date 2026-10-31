@@ -1109,6 +1109,37 @@ const shown = (msg) => {
   return msg
 }
 
+// A name in prose as the program spells it: one the compiler minted, led by a
+// private-use character (src/ast.js T, jzify/names.js), has no spelling in the
+// source and reads `<expr>`; a suffix minted onto a source name goes, a class's
+// member (`P` + CLASS_T + `get`) reads `P.get` and a class's receiver `this`.
+const wordChar = (c) => c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c === 95 || c === 36 || c >= 0x80 && (c < 0xE000 || c > 0xF8FF)
+export const userText = (msg) => {
+  msg = shown(msg)
+  let out = ''
+  for (let i = 0; i < msg.length; i++) {
+    const c = msg.charCodeAt(i)
+    if (c < 0xE000 || c > 0xF8FF) { out += msg[i]; continue }
+    let j = i + 1
+    while (j < msg.length && wordChar(msg.charCodeAt(j))) j++
+    const inWord = i > 0 && wordChar(msg.charCodeAt(i - 1))
+    if (inWord && c === 0xE003) { out += '.'; continue }
+    if (!inWord) out += c === 0xE003 && /^(self|obj)[0-9]+$/.test(msg.slice(i + 1, j)) ? 'this' : '<expr>'
+    i = j - 1
+  }
+  return out
+}
+
+/** A function's name as the program spells it (`P.get`, a module's `h`, `f` of
+ *  `$f` or of a loop's `f#2`); null for a function the compiler wrote. */
+export const userName = (fn) => {
+  let n = fn[0] === '$' ? fn.slice(1) : fn
+  const hash = n.lastIndexOf('#')
+  if (hash > 0 && /^[0-9]+$/.test(n.slice(hash + 1))) n = n.slice(0, hash)
+  n = userText(n)
+  return n && !n.includes('<expr>') && !n.includes(' ') ? n : null
+}
+
 /** A position as the lines a message ends with: source, line and column, the
  *  line, a caret under the column (a tab above stays a tab below). */
 export function where(loc) {
@@ -1116,17 +1147,12 @@ export function where(loc) {
   return at ? `\n  at ${at.file ? at.file + ':' : 'line '}${at.line}:${at.col}\n  ${at.text}\n  ${at.text.slice(0, at.col - 1).replace(/[^\t]/g, ' ')}^` : ''
 }
 
-/** Throw with source location context. */
+/** Throw with source location context: the source line, and the function it
+ *  stands in as the program names it. */
 export function err(msg, cause) {
   let detail = shown(msg) + where(here())
-
-  if (ctx.func.current?.name) {
-    detail += `\n  in function: ${ctx.func.current.name}`
-  }
-
-  if (ctx.error.node != null) {
-    detail += `\n  current AST: ${shown(formatErrorNode(ctx.error.node))}`
-  }
+  const fn = ctx.func.current?.name ? userName(ctx.func.current.name) : null
+  if (fn) detail += `\n  in function: ${fn}`
 
   // Preserve the triggering error (if any) as the cause: when an internal jz bug
   // is wrapped, the original stack — pointing at the actual codegen site — survives
@@ -1138,6 +1164,9 @@ export function err(msg, cause) {
   e.stack = `${e.name}: ${detail}\n${frames.join('\n')}`
   throw e
 }
+
+/** The node a fault stood at: a jz bug's report names it (compiler.js compileInProcess). */
+export const errorNode = () => ctx.error.node == null ? null : shown(formatErrorNode(ctx.error.node))
 
 // Recursive walk, NOT a stringify replacer — the kernel drops replacers, so
 // in-kernel error nodes would print with bigints/cycles unhandled. Cold path.
