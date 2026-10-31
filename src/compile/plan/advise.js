@@ -1,5 +1,5 @@
 import { ctx, warn, err } from '../../ctx.js'
-import { walkAst, some, refsName, REFS_IN_EXPR, callArgs } from '../../ast.js'
+import { walkAst, refsName, REFS_IN_EXPR, callArgs } from '../../ast.js'
 import { intLiteralValue } from '../../static.js'
 import { VAL } from '../../reps.js'
 import { adviseJsstringCarrier } from '../narrow.js'
