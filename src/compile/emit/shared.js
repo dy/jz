@@ -6,7 +6,7 @@
 
 import { MUTATE_OPS, REFS_THROUGH_ARROWS, some, walkAst } from '../../ast.js'
 import { jsstring } from '../../abi/string.js'
-import { ctx, getFactStore } from '../../ctx.js'
+import { ctx, getFactStore, holds } from '../../ctx.js'
 import { dataDependentFlag, hasExpensiveOp, isPureIR, resolveValType } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
@@ -24,6 +24,7 @@ export function isPresentArrayElement(source) {
 
 /** Captured receivers retain the facts their builtin emitter consumes. */
 export function copyReceiverFacts(source, target) {
+  holds(target, source)
   const kind = valTypeOf(source), ctor = plannedTypedStorageCtor(ctx, source)
   if (kind) ctx.func.localValTypesOverlay.set(target, kind)
   ctx.func.taggedLocals ??= new Set()

@@ -17,7 +17,7 @@
  */
 
 import { lowerIteratorPattern, hasArrayPattern } from '../iterator-pattern.js'
-import { addSource, ctx, declGlobal, derive, emitArity, err, here, setFeature, warn } from '../ctx.js'
+import { addSource, ctx, declGlobal, derive, emitArity, err, here, holds, setFeature, warn } from '../ctx.js'
 import { INTRINSIC_ARITY } from '../builtin-signatures.js'
 import { createFunction } from '../function.js'
 import { copyLoc, markSource, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, accessorOf, alwaysReturns, classifyParam, cloneNode, collectAllBoundNames, collectParamNames, extractParams, handlerArgs, hasOptionalChain, isBrand, refsName, walkAst, withLoc, isArrayIndexKey } from '../ast.js'
@@ -434,6 +434,7 @@ const handlers = {
 
       const normed = typeof rhs === 'string' ? prep(rhs) : rhs
       const tmp = `${T}d${freshPrepareId()}`
+      holds(tmp, normed)
       const decls = [['=', tmp, normed]]
       // Propagate schema to temp so rest destructuring can resolve it
       if (typeof normed === 'string' && ctx.schema.vars.has(normed))
@@ -2059,6 +2060,14 @@ function pushPatternAssign(target, valueExpr, out, decls = null) {
   out.push(['=', target, valueExpr])
 }
 
+// A read a pattern lowers to stands where the pattern names it: its item's
+// position, the pattern's, else the declaration's the walk stands in.
+const placed = (read, item, pattern) => {
+  copyLoc(item, read); copyLoc(pattern, read)
+  if (read.loc == null) { const at = here(); if (at != null) read.loc = at }
+  return read
+}
+
 function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   if (!isDestructPattern(pattern)) return
 
@@ -2101,6 +2110,7 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   // the pattern is empty. The source has already been captured once.
   const message = decls ? [, 'Cannot destructure null or undefined'] : ['str', 'Cannot destructure null or undefined']
   const checked = `${T}d${freshPrepareId()}`
+  holds(checked, source)
   if (decls) decls.push(checked)
   let fail = ['()', ['=>', null, ['{}', ['throw', ['()', 'TypeError', message]]]], null]
   if (!decls) fail = prep(fail)
@@ -2134,7 +2144,7 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
     if (typeof item === 'string' || item[0] === '=' && typeof item[1] === 'string') {
       const key = typeof item === 'string' ? item : item[1]
       excluded.push([null, key])
-      pushPatternAssign(item, ['.', source, key], out, decls)
+      pushPatternAssign(item, placed(['.', source, key], item, pattern), out, decls)
       continue
     }
     if (item[0] !== ':') continue
@@ -2170,7 +2180,7 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
       excluded.push([null, String(lit)])
       read = typeof lit === 'number' || isArrayIndexKey(lit) ? (includeForArrayAccess(), ['[]', source, [, +lit]]) : ['.', source, lit]
     }
-    pushPatternAssign(item[2], read, out, decls)
+    pushPatternAssign(item[2], placed(read, item, pattern), out, decls)
   }
 
   // Object rest: `{a, ...r} = o` binds `r` to the spread of `o` without `a`,
@@ -2569,6 +2579,7 @@ function prepDecl(op, ...inits) {
         continue
       }
       const tmp = `${T}d${freshPrepareId()}`
+      holds(tmp, normed)
       declareGlobal(tmp, false)
       rest.push(['=', tmp, normed])
       // Propagate schema to temp so rest destructuring can resolve it

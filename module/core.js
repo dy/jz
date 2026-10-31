@@ -22,7 +22,7 @@ import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { ctx, err, inc, warnDeopt, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
+import { ctx, err, inc, warnDeopt, holds, exprText, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, registerGetter, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, deletedMaskWat, SYMBOL_MIN, HIDDEN_PROPERTY_SEQ, ssoBitI64Hex, numTypedWat, numTypedBytesWat, numTypedBytesRzWat, numTypedElemWat, ptrIsWat } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, i64Hex, ARRAY_RAW } from '../layout.js'
 import { schemaValueIR, initSchema } from './schema.js'
@@ -2475,7 +2475,7 @@ export default (ctx) => {
     const advise = (how, vt) => {
       if (!ctx.warnings) return
       const shapes = ctx.summary?.at(ctx.func.current)?.shapesOfExpr(obj)?.length ?? 0
-      warnDeopt('deopt-prop-read', `property read \`${typeof obj === 'string' ? obj : '<expr>'}.${prop}\` has no static slot (${how}${shapes ? `, ${shapes} candidate shapes` : ''}): it goes through a runtime lookup`, { prop, how, vt: vt ?? null, shapes })
+      warnDeopt('deopt-prop-read', `property read \`${exprText(obj) ?? '<expr>'}.${prop}\` has no static slot (${how}${shapes ? `, ${shapes} candidate shapes` : ''}): it goes through a runtime lookup`, { prop, how, vt: vt ?? null, shapes })
     }
     // Monomorphic devirtualization first (emitSchemaSlotGuarded's doc), then
     // the summary's shape set (emitSchemaSlotGuardedMulti), else `slow`.
@@ -3129,6 +3129,7 @@ export default (ctx) => {
   // the useFn callback so it runs before the consumer IR consults reps.
   const evalOnce = (value, useFn, otherwise = undefExpr()) => {
     const t = temp()
+    holds(t, value)
     const va = asF64(numberCarrierIR(value, emit(value)))
     return ctx.summary?.at(ctx.func.current).kindOfExpr(value) === NUMBER
       ? typed(['block', ['result', 'f64'], ['local.set', `$${t}`, va], asF64(useFn(t))], 'f64')

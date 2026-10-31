@@ -5370,8 +5370,11 @@ returns, so a warning callback may compile again; a compile attempted while
 the pipeline is active is rejected.
 `warn()` (src/ctx.js) writes each entry in the program's names (`userText`:
 a scope-renamed local as written, a bundled module's binding unprefixed, a
-class member `P.get`, a minted temporary `<expr>`) and places an advisory with
-no position of its own at its function's. A callback receives the public
+class member `P.get`, a function the module names `$f` or `f$prop` as `f` or
+`f.prop`, a temporary the compiler minted as the name or member chain it
+copies, which its minting site records with `holds`, else `<expr>`), places an
+advisory with no position of its own at its function's, and reports one per
+source position and text (an inlined, cloned or devirtualized copy is the same). A callback receives the public
 `Warning` (index.d.ts, src/options.js `publicWarning`): `code`, `message`, `file`, `line`,
 `column`, `fn`, and nothing about a helper the compiler wrote; a sink object
 `{ onWarning }`, the internal entry's, receives every field recorded

@@ -20,7 +20,7 @@ import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion,
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf, repOfGlobal } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { stubLogIR } from './core/stub-log.js'
-import { ctx, inc, err, strictCode, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
+import { ctx, inc, err, strictCode, warnDeopt, holds, exprText, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { hasDurableReset, heapResetWat } from './collection/durable.js'
 import { isRecordWat, orRecordWat } from './collection/record.js'
@@ -946,6 +946,7 @@ export default (ctx) => {
         (typeof idx === 'string' || Array.isArray(idx) && idx[0] == null) && isPresentNumber(ctx, idx)
       const h = direct ? arr : temp('ai')
       if (!direct) {
+        holds(h, arr)
         // Fresh captures carry only this expression's payload facts.
         if (vtArr) ctx.func.localValTypesOverlay.set(h, vtArr)
         if (vtArr === VAL.TYPED && !nullable) (ctx.func.presentTemps ??= new Set()).add(h)
@@ -1149,6 +1150,7 @@ export default (ctx) => {
     // no proven kind).
     if (!strictCode() && methodReader?.active && !numericKey && vt == null && !plainComputed && !lean) {
       const r = temp('bcr'), k = temp('bck'), rG = typed(['local.get', `$${r}`], 'f64')
+      holds(r, arr)
       const collection = ['i32.or', ptrTypeEq(rG, PTR.MAP), ptrTypeEq(rG, PTR.SET)]
       plainComputed = true
       let plain
@@ -1178,7 +1180,7 @@ export default (ctx) => {
     }
     const dynLoad = (objExpr, keyExpr) => {
       if (strictCode()) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
-      warnDeopt('deopt-dyn-read', `dynamic property read \`${typeof arr === 'string' ? arr : '<expr>'}[…]\` couldn't resolve a static type — it falls back to a runtime hash lookup (~1.5–2× slower than a typed/slot read, far worse in a hot loop). Use a literal key, a typed-array receiver, or a Map for genuinely dynamic keys.`)
+      warnDeopt('deopt-dyn-read', `dynamic property read \`${exprText(arr) ?? '<expr>'}[…]\` couldn't resolve a static type — it falls back to a runtime hash lookup (~1.5–2× slower than a typed/slot read, far worse in a hot loop). Use a literal key, a typed-array receiver, or a Map for genuinely dynamic keys.`)
       const fn = ensureHostOpaqueGet() ? '__dyn_get_any' : '__dyn_get'
       if (fn === '__dyn_get') inc(fn)
       return ['f64.reinterpret_i64', ['call', `$${fn}`, ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]

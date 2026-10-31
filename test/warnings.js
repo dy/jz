@@ -23,16 +23,49 @@ test('warnings: a callback receives { code, message, file, line, column, fn } in
   const ws = []
   publicCompile('import { h } from "./dep.js"\nclass Q { constructor() { this.m = {} } g(k) { return this.m[k] } }\nexport let f = (o, k) => o[k] + h(k) + new Q().g(k)',
     { modules: { './dep.js': 'export let h = (x) => { let o = {}; o[x] = 1; return o[x] }' }, warnings: w => ws.push(w) })
-  ok(ws.length >= 3, `advisories: ${ws.length}`)
   for (const w of ws) {
     ok(Object.keys(w).every(k => ['code', 'message', 'file', 'line', 'column', 'fn'].includes(k)), `public fields only: ${JSON.stringify(w)}`)
-    ok(!/[\uE000-\uF8FF]/.test(w.message + (w.fn ?? '')), `no minted name: ${JSON.stringify(w)}`)
+    ok(!/[-]|<expr>/.test(w.message + (w.fn ?? '')), `no minted name: ${JSON.stringify(w)}`)
   }
   const write = ws.find(w => w.code === 'deopt-dyn-write')
   is([write.file, write.fn, write.line, write.column], ['./dep.js', 'h', 1, 42], 'a bundled module\'s function, at its own source')
   ok(/`o\[…\] = …`/.test(write.message), write.message)
-  ok(ws.some(w => w.fn === 'Q.g' && /`this\.m`/.test(w.message)), 'a class member and its receiver as written')
   is(ws.filter(w => w.line == null).length, 0, 'the helpers the compiler wrote for the dynamic reads report nothing')
+})
+
+// The names a warning reads are the program's on a program of classes, their
+// statics and helper functions (as a WebSocket server's SHA-1, compiled for WASI,
+// read `d4._byte`, `self0f12_0._size`, `tf12_1[…]`, `ai100[…]`): a receiver an
+// object pattern destructures, a class's member, a receiver held across its
+// guard, a class's static method, each at its source position though a static
+// member makes the compiler rewrite every function body.
+test('warnings: classes, statics and helpers read in the program\'s names, at their positions', () => {
+  const src = `class P {
+  static n = 1
+  constructor(k) { this.k = k }
+  m() { const { zz: a, yy: b } = this; return a + b + P.n }
+  static of(k) { return new P(k).m() }
+}
+let w
+const init = () => { w = { sha1: 1 } }
+var z = function (t) { return w[t] || w[t.toLowerCase()] }
+export function _start(k) { init(); return P.of(k) + z('SHA1') }`
+  const lines = src.split('\n')
+  for (const host of ['js', 'wasi']) {
+    const ws = []
+    publicCompile(src, { host, warnings: w => ws.push(w) })
+    for (const w of ws) {
+      ok(!/[-]|<expr>|\$/.test(w.message + (w.fn ?? '')), `${host}: no minted name: ${JSON.stringify(w)}`)
+      ok(w.line != null, `${host}: placed: ${JSON.stringify(w)}`)
+    }
+    // (a copy inlining splices into a caller stands at its call)
+    const reads = ws.filter(w => w.code === 'deopt-prop-read'), names = new Set(reads.map(w => w.message.match(/`([^`]+)`/)[1]))
+    is([...names], ['this.zz', 'this.yy'], `${host}: the pattern's reads, of \`this\``)
+    ok(reads.some(w => w.fn === 'P.m' && lines[w.line - 1].includes('const { zz: a, yy: b } = this')), `${host}: in P.m, on the pattern's line: ${JSON.stringify(reads)}`)
+    const dyn = ws.filter(w => w.code === 'deopt-dyn-read')
+    ok(dyn.length > 0 && dyn.every(w => /`w\[…\]`/.test(w.message) && lines[w.line - 1].includes('w[t')), `${host}: the captured receiver by its name, where it reads: ${JSON.stringify(dyn)}`)
+    is(new Set(ws.map(w => `${w.code}:${w.line}:${w.column}:${w.message}`)).size, ws.length, `${host}: one advisory per site`)
+  }
 })
 
 test('warnings: why reports stand at their function', () => {

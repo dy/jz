@@ -12,7 +12,7 @@ import { OPTF } from '../ctx.js'
  */
 
 import { primitiveKind } from '../evaluation-effects.js'
-import { ctx, err, strictCode, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
+import { ctx, err, strictCode, inc, warnDeopt, holds, exprText, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
 import { T, ACCESSOR_GET, ACCESSOR_SET } from '../ast.js'
 import { classAccessor, classesWith, lacksSlot } from './emit/class-dispatch.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey, intExprRange } from '../static.js'
@@ -183,7 +183,7 @@ function mayBeDeleted(obj) {
 // A name, or a member chain over one: reading it twice has no effect.
 const isPureChain = (n) => typeof n === 'string' || (Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string' && isPureChain(n[1]))
 function ensureDynSetAllowed(arr) {
-  const arrLabel = typeof arr === 'string' ? arr : '<expr>'
+  const arrLabel = exprText(arr) ?? '<expr>'
   warnDeopt('deopt-dyn-write', `dynamic property write \`${arrLabel}[…] = …\` couldn't resolve a static type — it falls back to a runtime hash store (~2× slower than a typed/slot write, far worse in a hot loop). Use a literal key, a numeric typed-array index, or a Map for genuinely dynamic keys.`)
   if (!strictCode()) return
   err(`strict mode: dynamic property assignment \`${arrLabel}[<expr>] = ...\` falls back to __dyn_set. Use a literal key or known array/typed-array numeric index, or pass { strict: false }.`)
@@ -565,6 +565,7 @@ function emitElementStore(arr, idx, val, node) {
   if (Array.isArray(arr) && arr[0] === '.' && typeof arr[2] === 'string' && valTypeOf(arr[1]) == null) {
     const [, obj, prop] = arr
     const objTmp = temp('eao'), arrTmp = temp('eaf'), resultTmp = temp('ear')
+    holds(objTmp, obj)
     ctx.func.locals.set(objTmp, 'f64')
     ctx.func.locals.set(arrTmp, 'f64')
     ctx.func.locals.set(resultTmp, 'f64')

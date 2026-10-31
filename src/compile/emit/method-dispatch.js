@@ -11,7 +11,7 @@ import { bitOf } from '../../summary/kind.js'
 import { bodyOnlyCharCodeAtCalls } from '../../abi/string.js'
 import { T, ACCESSOR_GET, isLeaf, isReassigned } from '../../ast.js'
 import { RESOLVED_PROP_MODULES, includeForRuntimeKeyIteration, includeModule } from '../../autoload.js'
-import { LAYOUT, PTR, ctx, emitArity, err, strictCode, inc, setLinkDemand, warnDeopt } from '../../ctx.js'
+import { LAYOUT, PTR, ctx, emitArity, err, strictCode, inc, setLinkDemand, warnDeopt, holds, exprText } from '../../ctx.js'
 import {
   BOXED_MUTATORS, TRUE_NAN, UNDEF_NAN, allocPtr, asF64, asI32, asI64, block64, boolBoxIR, cloneIR, deferBigintBox, dispatchByPtrType, freshId, isBoolAtom, isGlobal, isNullish, materializeDeferredBigint, ptrOffsetIR, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, throwTypeErrorIR, typed, undefExpr, usesDynProps,
 } from '../../ir.js'
@@ -843,6 +843,7 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
     if (strictCode())
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
     const objTmp = temp('mobj')
+    holds(objTmp, obj)
     const propTmp = temp('mprop')
     // The program summary names the receiver's shape (an element of an array
     // of one shape, a field of one shape), or that shape or nullish: one
@@ -964,6 +965,7 @@ function externalMethodFallback({ obj, method, parsed, leg = false }) {
     // and that census under-approximates an out-of-bounds element read anyway.
     // A property a host value filled may hold a host function, which the host calls.
     const rt = temp('mrecv')
+    holds(rt, obj)
     const recv = () => typed(['local.get', `$${rt}`], 'f64')
     const view = ctx.summary.at(ctx.func.current), hostFn = mayBeHostFn(view.kindOfExpr(['.', obj, method]))
     const value = asF64(emit(obj))
@@ -1004,7 +1006,7 @@ function externalMethodFallback({ obj, method, parsed, leg = false }) {
     // can target js and wasi from one source; users who want fail-fast
     // pass `strict: true` (handled above).
     if (!ctx.transform.targetProfile.envImports) return undefExpr()
-    if (!leg) warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_invoke\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
+    if (!leg) warnDeopt('deopt-method', `method call \`${exprText(obj) ?? '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_invoke\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
     includeForRuntimeKeyIteration()
     setLinkDemand('external')
     // The host method's result converts to the primitive the call is typed as.

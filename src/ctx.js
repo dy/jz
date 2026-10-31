@@ -1030,26 +1030,36 @@ export function warn(code, message, meta = {}, loc = null) {
   // A kind variant of an export (narrow/param-abi.js) is its origin's body
   // again: the origin's advisories speak for it.
   if (meta.fn != null && variantOf(String(meta.fn))) return
-  // One advisory per site: the source offset when the node kept one, else
-  // the message (a prepared node's rewrite drops `loc`).
-  const key = `${code}:${meta.fn || ''}:${loc ?? meta.line ?? message}`
+  // One advisory per site and text: the source offset when the node kept one
+  // (the copies inlining, a typed clone or a devirtualized helper make of it are
+  // one), else the function and the message (a prepared node's rewrite drops `loc`).
+  const fn = meta.fn != null ? String(meta.fn) : null, name = fn != null ? userName(fn) : null
+  const site = loc ?? (fn != null ? funcLoc(fn) : null), text = userText(message)
+  const key = site != null ? `${code}:${site}:${text}` : `${code}:${name ?? fn ?? ''}:${meta.line ?? ''}:${text}`
   if (ctx.warnings.seen.has(key)) return
   ctx.warnings.seen.add(key)
-  const entry = { code, message: userText(message), ...meta }
-  const fn = meta.fn != null ? String(meta.fn) : null, name = fn != null ? userName(fn) : null
+  const entry = { code, message: text, ...meta }
   if (name) entry.fn = name
-  const at = locate(loc ?? (fn != null ? funcLoc(fn) : null))
+  const at = locate(site)
   if (at) { entry.line = at.line; entry.column = at.col; if (at.file) entry.file = at.file }
   ctx.warnings.sink.entries.push(entry)
   ctx.warnings.pending.push(entry)
 }
 
-/** The source position of a function an advisory names (`f`, `$f`, a loop's `f#2`). */
+/** The source position of a function an advisory names (`f`, `$f`, a loop's `f#2`,
+ *  a clone's `f$spec`): its body's, else its first statement's (a lowered method's
+ *  body is a node the compiler wrote). */
 const funcLoc = (fn) => {
   let name = fn[0] === '$' ? fn.slice(1) : fn
   const hash = name.lastIndexOf('#')
   if (hash > 0) name = name.slice(0, hash)
-  return ctx.funcs.map?.get(name)?.body?.loc ?? null
+  return firstLoc((ctx.funcs.map?.get(name) ?? ctx.funcs.map?.get(origin(name)))?.body)
+}
+const firstLoc = (n) => {
+  if (!Array.isArray(n)) return null
+  if (n.loc != null) return n.loc
+  for (let i = 1; i < n.length; i++) { const at = firstLoc(n[i]); if (at != null) return at }
+  return null
 }
 
 /** Advise that an emit site fell back to generic runtime dispatch (the slow,
@@ -1121,33 +1131,68 @@ const shown = (msg) => {
   return msg
 }
 
-// A name in prose as the program spells it: one the compiler minted, led by a
-// private-use character (src/ast.js T, jzify/names.js), has no spelling in the
-// source and reads `<expr>`; a suffix minted onto a source name goes, a class's
-// member (`P` + CLASS_T + `get`) reads `P.get` and a class's receiver `this`.
-const wordChar = (c) => c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c === 95 || c === 36 || c >= 0x80 && (c < 0xE000 || c > 0xF8FF)
-export const userText = (msg) => {
+/** The text of a name or a member chain of names (`o`, `this.m`, `a.b?.c`) as an
+ *  advisory spells it; null for any other expression. */
+export const exprText = (n) => {
+  if (typeof n === 'string') return n
+  if (!Array.isArray(n) || n[0] !== '.' && n[0] !== '?.' || typeof n[2] !== 'string') return null
+  const base = exprText(n[1])
+  return base == null ? null : base + n[0] + n[2]
+}
+
+/** A temporary the compiler minted to copy a name or member chain of the program
+ *  (an object pattern's source, a receiver held across its guard): prose reads it as that. */
+export const holds = (temp, value) => {
+  const text = ctx.warnings ? exprText(value) : null
+  if (text != null && text !== temp) (ctx.names.held ??= new Map()).set(temp, text)
+}
+
+// A name in prose as the program spells it. One the compiler minted, led by a
+// private-use character (src/ast.js T, jzify/names.js), reads as the name it
+// copies (`holds`), a class's receiver as `this`, any other as `<expr>`; a suffix
+// minted onto a source name goes, a class's member (`P` + CLASS_T + `get`) reads
+// `P.get`; a function the module names `$f` reads as the program names it.
+const minted = (c) => c >= 0xE000 && c <= 0xF8FF
+const wordChar = (c) => c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c === 95 || c === 36 || c >= 0x80 && !minted(c)
+export const userText = (msg, depth = 0) => {
   msg = shown(msg)
   let out = ''
   for (let i = 0; i < msg.length; i++) {
     const c = msg.charCodeAt(i)
-    if (c < 0xE000 || c > 0xF8FF) { out += msg[i]; continue }
-    let j = i + 1
-    while (j < msg.length && wordChar(msg.charCodeAt(j))) j++
     const inWord = i > 0 && wordChar(msg.charCodeAt(i - 1))
+    if (c === 36 && !inWord) {
+      let j = i + 1
+      while (j < msg.length && (wordChar(msg.charCodeAt(j)) || minted(msg.charCodeAt(j)))) j++
+      const fn = msg.slice(i + 1, j)
+      if (ctx.funcs.map?.has(fn) || ctx.funcs.map?.has(origin(fn))) { out += userName(fn) ?? '<expr>'; i = j - 1; continue }
+    }
+    if (!minted(c)) { out += msg[i]; continue }
     if (inWord && c === 0xE003) { out += '.'; continue }
-    if (!inWord) out += c === 0xE003 && /^(self|obj)[0-9]+$/.test(msg.slice(i + 1, j)) ? 'this' : '<expr>'
+    let j = i + 1
+    if (inWord) { while (j < msg.length && wordChar(msg.charCodeAt(j))) j++; i = j - 1; continue }
+    // a minted name, whole (an inlined copy's `inl6_` + the name it renames)
+    while (j < msg.length && (wordChar(msg.charCodeAt(j)) || minted(msg.charCodeAt(j)))) j++
+    const held = depth < 8 ? ctx.names.held?.get(msg.slice(i, j)) : null
+    out += held != null ? userText(held, depth + 1) : c === 0xE003 && /^(self|obj)[0-9]+$/.test(msg.slice(i + 1, j)) ? 'this' : '<expr>'
     i = j - 1
   }
   return out
 }
 
-/** A function's name as the program spells it (`P.get`, a module's `h`, `f` of
- *  `$f` or of a loop's `f#2`); null for a function the compiler wrote. */
+// A typed clone's (narrow/specialize.js `f$spec`) or an export entry's (`f$exp`) origin
+const origin = (fn) => fn.endsWith('$spec') || fn.endsWith('$exp') ? fn.slice(0, fn.lastIndexOf('$')) : fn
+
+/** A function's name as the program spells it (`P.get`, a module's `h`, a class's
+ *  static `C.m`, `f` of `$f`, of a loop's `f#2` or of a clone's `f$spec`); null for
+ *  a function the compiler wrote. */
 export const userName = (fn) => {
   let n = fn[0] === '$' ? fn.slice(1) : fn
   const hash = n.lastIndexOf('#')
   if (hash > 0 && /^[0-9]+$/.test(n.slice(hash + 1))) n = n.slice(0, hash)
+  n = origin(n)
+  // a property lifted to a function of its own (`f.prop = …`, a class's static method): `f.prop`
+  for (let k = n.indexOf('$'); k > 0; k = n.indexOf('$', k + 1))
+    if (ctx.funcs.names?.has(n.slice(0, k)) && !ctx.module.prefixes?.has(n.slice(0, k))) { n = n.slice(0, k) + '.' + n.slice(k + 1); break }
   n = userText(n)
   return n && !n.includes('<expr>') && !n.includes(' ') ? n : null
 }

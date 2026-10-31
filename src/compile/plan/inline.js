@@ -28,7 +28,7 @@
  * @module compile/plan/inline
  */
 
-import { ctx } from '../../ctx.js'
+import { ctx, holds } from '../../ctx.js'
 import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { mixesNumericKinds } from '../numeric-mix.js'
 import {
@@ -235,6 +235,7 @@ const inlinedBody = (func, args) => {
     if (i < args.length && dflt != null && callerView?.mayBeNullishExpr(args[i]) !== false) {
       if (!steadyDefault(dflt, params, i)) return null
       const given = `${T}inarg${freshId(ctx)}`, tmp = `${T}inarg${freshId(ctx)}`
+      holds(given, params[i].name); holds(tmp, params[i].name)
       argPrefix.push(['const', ['=', given, args[i]]],
         [writesParams ? 'let' : 'const', ['=', tmp, ['?:', ['===', given, [, undefined]], cloneWithSubst(dflt, subst, new Map()), given]]])
       subst.set(params[i].name, tmp)
@@ -253,6 +254,7 @@ const inlinedBody = (func, args) => {
         (typeof arg === 'string' && noCoercion(leaf)))
     if (!writes(name) && (isLiteral(arg) || direct)) { subst.set(name, arg); continue }
     const tmp = `${T}inarg${freshId(ctx)}`
+    holds(tmp, name)   // the inlined body reads the callee's parameter through it
     // Parameter writes belong to the call's storage, never its caller's binding.
     argPrefix.push([writes(params[i].name) ? 'let' : 'const', ['=', tmp, arg]])
     subst.set(params[i].name, tmp)
@@ -264,7 +266,7 @@ const inlinedBody = (func, args) => {
   for (const p of params) locals.delete(p.name)
 
   const rename = new Map()
-  for (const name of locals) rename.set(name, `${T}inl${freshId(ctx)}_${name}`)
+  for (const name of locals) { const renamed = `${T}inl${freshId(ctx)}_${name}`; rename.set(name, renamed); holds(renamed, name) }
   // a body that makes closures is spliced with them: their bindings are named anew with the body's
   const clone = closures ? (n, sub, ren) => cloneWithSubst(n, sub, ren, true) : cloneWithSubst
 
