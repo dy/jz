@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run, oracle, compile } from './util.js'
-import { levels, onKernel } from './_matrix.js'
+import { levels, onKernel, belowOpt } from './_matrix.js'
 import { parse, loopCount } from '../scripts/wat-probe.mjs'
 import { forCounterBounds, forCounterRange, intExprRange } from '../src/static.js'
 import { typedStaticLen } from '../src/type/loop-versioning.js'
@@ -379,7 +379,8 @@ test('counter width: a parameter the loop never writes takes a word in the guard
     return h
   }`
   compare(source, [[0], [1], [9]])
-  if (!onKernel()) ok(/memory\.copy/.test(compile(source, { wat: true })), 'the copy reads a word offset')
+  // the lift to memory.copy is the level-2 vectorizer's (optimize/vectorize/memcpy.js): the leg's level compiles it
+  if (!onKernel() && !belowOpt(2)) ok(/memory\.copy/.test(compile(source, { wat: true })), 'the copy reads a word offset')
 })
 
 test('counter width: companion while cursors need progress on every continuing path', () => {
