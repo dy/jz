@@ -318,12 +318,12 @@ export function legalizeForTarget(module, targetProfile) {
 }
 
 // A module that carries jz sections, what the interop reads to marshal its
-// values (box-carrying exports, schemas, classes), says the ABI they are of
-// (layout.js ABI_VERSION) in `jz:abi`, one byte the interop checks; one that
-// exchanges numbers alone carries none.
+// values (box-carrying exports, schemas, classes), is of the ABI they are of
+// (layout.js ABI_VERSION). ABI 1 is implicit, a module of it carries no marker;
+// a later ABI writes its number in `jz:abi`, one byte the interop checks.
 const jzSection = (n) => Array.isArray(n) && n[0] === '@custom' && typeof n[1] === 'string' && n[1].startsWith('"jz:')
 export function markAbi(module) {
-  if (module.some(jzSection)) module.push(['@custom', '"jz:abi"', '"\\' + ABI_VERSION.toString(16).padStart(2, '0') + '"'])
+  if (ABI_VERSION > 1 && module.some(jzSection)) module.push(['@custom', '"jz:abi"', '"\\' + ABI_VERSION.toString(16).padStart(2, '0') + '"'])
   return module
 }
 

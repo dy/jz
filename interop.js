@@ -1939,20 +1939,20 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
 
 export const toModule = (wasm) => wasm instanceof WebAssembly.Module ? wasm : new WebAssembly.Module(wasm)
 
-// The ABI a module was built for (`jz:abi`, layout.js ABI_VERSION): one this
-// runtime does not read is refused, as is one built before the marker, which
-// its exports of the older layout or its sections tell.
-const PRE_ABI_SECTIONS = ['jz:i64exp', 'jz:hostabi', 'jz:release', 'jz:schema', 'jz:errcls', 'jz:rest', 'jz:extparam']
+// The ABI a module was built for: its `jz:abi` (layout.js ABI_VERSION), ABI 1
+// where it has none. One this runtime does not read is refused, as is one built
+// before 1.0, which its allocator exports tell: the `__heap` global of its own
+// memory (a name no program may declare), or `_alloc` and `_clear` beside an
+// imported memory with no `__jz_alloc`.
 const checkAbi = (mod) => {
   const marker = customSection(mod, 'jz:abi')
-  if (marker) {
-    const built = sectionReader(marker).varint()
-    if (built !== ABI_VERSION) throw new TypeError(`jz: this module was built for jz ABI ${built}, and this runtime reads ABI ${ABI_VERSION}: load it with the jz that built it, or rebuild it with this one`)
-    return
-  }
-  const names = new Set(WebAssembly.Module.exports(mod).map(e => e.name))
-  if (names.has('memory') && (names.has('_alloc') || names.has('__heap')) || PRE_ABI_SECTIONS.some(n => customSection(mod, n)))
-    throw new TypeError('jz: this module was built by a jz before 1.0 (it carries no jz:abi section): rebuild it with this version')
+  const built = marker ? sectionReader(marker).varint() : 1
+  if (built !== ABI_VERSION) throw new TypeError(`jz: this module was built for jz ABI ${built}, and this runtime reads ABI ${ABI_VERSION}: load it with the jz that built it, or rebuild it with this one`)
+  if (marker) return
+  const ex = WebAssembly.Module.exports(mod), has = (name, kind = 'function') => ex.some(e => e.name === name && e.kind === kind)
+  const importsMemory = WebAssembly.Module.imports(mod).some(i => i.kind === 'memory')
+  if (has('__heap', 'global') || importsMemory && has('_alloc') && has('_clear') && !has('__jz_alloc'))
+    throw new TypeError('jz: this module was built by a jz before 1.0 (it exports the older allocator): rebuild it with this version')
 }
 
 /**

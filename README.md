@@ -504,8 +504,8 @@ exceptions and evaluation order at every optimization level, outside the
 differences listed above: a value a call throws reaches the host as JavaScript
 throws it, an Error as the host's Error of its class. The raw wasm ABI (pointer
 layout, the `__jz_` exports, custom sections) is not stable across versions: a module
-says the one it was built for (`jz:abi`), and `instantiate` refuses a module of
-another.
+is of the ABI it was built for (1, or a later one its `jz:abi` names), and
+`instantiate` refuses a module of another.
 [CONTRIBUTING](CONTRIBUTING.md#public-contract-and-abi) has the details.
 
 <p align="center">

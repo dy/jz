@@ -6,9 +6,10 @@
  * @module layout
  */
 
-/** The ABI a module of jz's carries in its `jz:abi` section (optimize/watr-tail.js
- *  markAbi) and the interop reads: this layout, the `__jz_` exports, the custom
- *  sections. A module of another is refused, not misread. */
+/** The ABI a module of jz's is built for: this layout, the `__jz_` exports, the
+ *  custom sections the interop reads. ABI 1 is implicit; a later one is written in
+ *  the module's `jz:abi` section (optimize/watr-tail.js markAbi). A module of
+ *  another is refused, not misread. */
 export const ABI_VERSION = 1
 
 /** Bump-allocator cells in linear memory / globals. */

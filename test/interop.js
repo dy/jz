@@ -66,22 +66,31 @@ test('interop: host throws enter source catch without changing their values', ()
   is(ignored.exports.f(),7,'scalar source catch accepts heap-backed host BigInt')
 })
 
-// A module carries the ABI it was built for (`jz:abi`, one integer): instantiate
-// refuses one of another ABI, and one built before the marker, by its exports
-// of the older layout, instead of misreading its values.
+// A module is of the ABI it was built for: ABI 1 implicit, a later one in
+// `jz:abi` (one integer). instantiate refuses another ABI, and a module built
+// before 1.0, by its allocator exports, instead of misreading its values.
 test('interop: a module says its ABI, and instantiate refuses another', () => {
   const abiOf = (bytes) => { const s = WebAssembly.Module.customSections(new WebAssembly.Module(bytes), 'jz:abi'); return s.length ? [...new Uint8Array(s[0])] : null }
-  is(abiOf(compile('export let s = (x) => "ab" + x')), [ABI_VERSION], 'a module of the runtime\'s ABI marks it')
   is(ABI_VERSION, 1, 'the first ABI')
-  is(abiOf(compile('export let add = (a, b) => a + b')), null, 'a module of numbers alone carries none')
+  const own = compile('export let s = (x) => "ab" + x')
+  is(abiOf(own), null, 'ABI 1 is implicit: a module of it carries no jz:abi')
+  is(interop.instantiate(own).exports.s('c'), 'abc', 'a module without the section reads as ABI 1')
+  is(interop.instantiate(wasm('(module (func (export "f") (result f64) (f64.const 2)) (@custom "jz:abi" "\\01"))')).exports.f(), 2, 'an explicit ABI 1 reads')
   const later = wasm('(module (memory (export "memory") 1) (@custom "jz:abi" "\\02"))')
   throws(() => interop.instantiate(later), /ABI 2/, 'another ABI is refused')
+  const names = interop.instantiate(compile('export let _alloc = (n) => n + 1; export let _clear = () => 0')).exports
+  is(names._alloc(2), 3, 'a program\'s own _alloc and _clear are no older ABI')
+  const shared = wasm(`(module
+    (import "env" "memory" (memory 1))
+    (func (export "_alloc") (param i32) (result i32) (i32.const 0))
+    (func (export "_clear")))`)
+  throws(() => interop.instantiate(shared, { memory: new WebAssembly.Memory({ initial: 1 }) }), /before 1\.0/, 'the older allocator beside an imported memory is refused')
   const pre = wasm(`(module
     (import "env" "__ext_call" (func $call (param i64 i64 i64) (result i64)))
     (memory (export "memory") 1)
     (global (export "__heap") (mut i32) (i32.const 1024))
     (func (export "_alloc") (param i32) (result i32) (i32.const 0)))`)
-  throws(() => interop.instantiate(pre), /before 1\.0/, 'a module of the ABI before the marker is refused')
+  throws(() => interop.instantiate(pre), /before 1\.0/, 'the older allocator of its own memory is refused')
 })
 
 test('interop: duplicate import records wrap a host slot once', () => {
@@ -1303,7 +1312,6 @@ test('interop: memoryless Symbol codecs retain identity and reject numeric field
       (i64.add (i64.const 0x7ff8001000000000) (i64.add (i64.shl (global.get $id) (i64.const 1)) (i64.const 1))))
     (func (export "echo") (param i64) (result i64) (local.get 0))
     (func (export "registry") (result i64) (i64.const 0x7ff8001000000000))
-    (@custom "jz:abi" "\01")
     (@custom "jz:symbols" "[[\"jz:memoryless\",16]]")
     (@custom "jz:symbol-slots" "[1,null]")
     (@custom "jz:i64exp" "[{\"name\":\"fresh\",\"r\":true},{\"name\":\"echo\",\"p\":[0],\"r\":true},{\"name\":\"registry\",\"r\":true}]"))`
