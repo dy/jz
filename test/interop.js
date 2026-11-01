@@ -66,33 +66,6 @@ test('interop: host throws enter source catch without changing their values', ()
   is(ignored.exports.f(),7,'scalar source catch accepts heap-backed host BigInt')
 })
 
-// A module is of the ABI it was built for: ABI 1 implicit, a later one in
-// `jz:abi` (one integer). instantiate refuses another ABI, and a module built
-// before 1.0, by its allocator exports, instead of misreading its values.
-test('interop: a module says its ABI, and instantiate refuses another', () => {
-  const abiOf = (bytes) => { const s = WebAssembly.Module.customSections(new WebAssembly.Module(bytes), 'jz:abi'); return s.length ? [...new Uint8Array(s[0])] : null }
-  is(ABI_VERSION, 1, 'the first ABI')
-  const own = compile('export let s = (x) => "ab" + x')
-  is(abiOf(own), null, 'ABI 1 is implicit: a module of it carries no jz:abi')
-  is(interop.instantiate(own).exports.s('c'), 'abc', 'a module without the section reads as ABI 1')
-  is(interop.instantiate(wasm('(module (func (export "f") (result f64) (f64.const 2)) (@custom "jz:abi" "\\01"))')).exports.f(), 2, 'an explicit ABI 1 reads')
-  const later = wasm('(module (memory (export "memory") 1) (@custom "jz:abi" "\\02"))')
-  throws(() => interop.instantiate(later), /ABI 2/, 'another ABI is refused')
-  const names = interop.instantiate(compile('export let _alloc = (n) => n + 1; export let _clear = () => 0')).exports
-  is(names._alloc(2), 3, 'a program\'s own _alloc and _clear are no older ABI')
-  const shared = wasm(`(module
-    (import "env" "memory" (memory 1))
-    (func (export "_alloc") (param i32) (result i32) (i32.const 0))
-    (func (export "_clear")))`)
-  throws(() => interop.instantiate(shared, { memory: new WebAssembly.Memory({ initial: 1 }) }), /before 1\.0/, 'the older allocator beside an imported memory is refused')
-  const pre = wasm(`(module
-    (import "env" "__ext_call" (func $call (param i64 i64 i64) (result i64)))
-    (memory (export "memory") 1)
-    (global (export "__heap") (mut i32) (i32.const 1024))
-    (func (export "_alloc") (param i32) (result i32) (i32.const 0)))`)
-  throws(() => interop.instantiate(pre), /before 1\.0/, 'the older allocator of its own memory is refused')
-})
-
 test('interop: duplicate import records wrap a host slot once', () => {
   const bytes=wasm(`(module
     (import "host" "fail" (func $first)) (import "host" "fail" (func $second))
@@ -731,7 +704,7 @@ test('interop: semantic Number ingress does not decode NaN payloads as handles',
   ok(Number.isNaN(seen[0][0]),'earlier decoded values survive later allocations')
   is(mem.read(mem.Array([])),[],'empty ingress')
   const text=mem.String('legacy value'),legacy=interop.i64ToF64(text)
-  ok(Number.isNaN(mem.read(legacy)),'a Number reads as a number: its NaN payload is no handle (ABI 1 has no f64 carrier)')
+  ok(Number.isNaN(mem.read(legacy)),'a Number reads as a number: its NaN payload is no handle (no f64 carrier)')
   is(mem.read(text),'legacy value','the i64 carrier reads as its value')
   is(mem.read(mem.Array([text])),['legacy value'],'explicit bigint handles still cross semantic containers')
   const raw=nan(0x7ff80002,17),ptr=mem.Float64Array(a)

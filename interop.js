@@ -12,7 +12,7 @@
  */
 
 import { wasi, attachTimers } from './wasi.js'
-import { ABI_VERSION, HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, symbolCountMax, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_NAMES, encodeTypedElemAux, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
+import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_HI, LAYOUT, SYMBOL_MIN, symbolCountMax, TOMB_NAN, DATA_VIEW_FLAG, DATA_VIEW_AUX, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_NAMES, encodeTypedElemAux, ctorFromElemAux, HIDDEN_PROPERTY_SEQ, ARRAY_RAW, RESIZABLE_MARK } from './layout.js'
 import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
@@ -1939,22 +1939,6 @@ const finishInstantiation = (mod, inst, imports, needsWasi, opts, state) => {
 
 export const toModule = (wasm) => wasm instanceof WebAssembly.Module ? wasm : new WebAssembly.Module(wasm)
 
-// The ABI a module was built for: its `jz:abi` (layout.js ABI_VERSION), ABI 1
-// where it has none. One this runtime does not read is refused, as is one built
-// before 1.0, which its allocator exports tell: the `__heap` global of its own
-// memory (a name no program may declare), or `_alloc` and `_clear` beside an
-// imported memory with no `__jz_alloc`.
-const checkAbi = (mod) => {
-  const marker = customSection(mod, 'jz:abi')
-  const built = marker ? sectionReader(marker).varint() : 1
-  if (built !== ABI_VERSION) throw new TypeError(`jz: this module was built for jz ABI ${built}, and this runtime reads ABI ${ABI_VERSION}: load it with the jz that built it, or rebuild it with this one`)
-  if (marker) return
-  const ex = WebAssembly.Module.exports(mod), has = (name, kind = 'function') => ex.some(e => e.name === name && e.kind === kind)
-  const importsMemory = WebAssembly.Module.imports(mod).some(i => i.kind === 'memory')
-  if (has('__heap', 'global') || importsMemory && has('_alloc') && has('_clear') && !has('__jz_alloc'))
-    throw new TypeError('jz: this module was built by a jz before 1.0 (it exports the older allocator): rebuild it with this version')
-}
-
 /**
  * Instantiate prebuilt jz wasm: WASI and host imports linked, exports wrapped.
  * @param {Uint8Array|ArrayBuffer|WebAssembly.Module} wasm
@@ -1963,7 +1947,6 @@ const checkAbi = (mod) => {
  */
 export const instantiate = (wasm, opts = {}) => {
   const mod = toModule(wasm)
-  checkAbi(mod)
   const state = prepareInterop(opts)
   const { imports, needsWasi } = buildImports(mod, opts, state)
   const hasImports = Object.keys(imports).some(k => k !== '_setMemory')

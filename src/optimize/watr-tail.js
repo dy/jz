@@ -16,7 +16,6 @@ import { foldWrappedWords, narrowBoxedLocals, narrowFlagLocals } from './int-nar
 import { shareSplitSlots } from './split-slots.js'
 import watOptimize, { vacuum, mergeBlocks, propagate, mergeLocals, coalesceLocals, localReuse, bool, conditions, poolConstants } from 'watr/optimize'
 import { ctx } from '../ctx.js'
-import { ABI_VERSION } from '../../layout.js'
 import { constWords, hexHalf } from '../static-data.js'
 import {
   SIMD_PINNED, LANE_PINS, collectReachableGlobalWrites, hoistGlobalPtrOffset,
@@ -317,16 +316,6 @@ export function legalizeForTarget(module, targetProfile) {
   return module
 }
 
-// A module that carries jz sections, what the interop reads to marshal its
-// values (box-carrying exports, schemas, classes), is of the ABI they are of
-// (layout.js ABI_VERSION). ABI 1 is implicit, a module of it carries no marker;
-// a later ABI writes its number in `jz:abi`, one byte the interop checks.
-const jzSection = (n) => Array.isArray(n) && n[0] === '@custom' && typeof n[1] === 'string' && n[1].startsWith('"jz:')
-export function markAbi(module) {
-  if (ABI_VERSION > 1 && module.some(jzSection)) module.push(['@custom', '"jz:abi"', '"\\' + ABI_VERSION.toString(16).padStart(2, '0') + '"'])
-  return module
-}
-
 const hexNibble = (c) => c >= 48 && c <= 57 ? c - 48 : c >= 65 && c <= 70 ? c - 55 : c >= 97 && c <= 102 ? c - 87 : -1
 
 // A data segment's string, read in place (`"…"`, a byte a character or a `\xx`
@@ -591,7 +580,7 @@ export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
   lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null,
 } = {}) {
-  const legalized = markAbi(legalizeForTarget(module, targetProfile))
+  const legalized = legalizeForTarget(module, targetProfile)
   // A split binding of its predecessor's type takes that slot: the generic optimizer
   // then reads the function the source wrote.
   if (cfg.splitBindings !== false) time('shareSplitSlots', () => { for (const n of legalized) shareSplitSlots(n) })

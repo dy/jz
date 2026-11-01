@@ -503,9 +503,8 @@ major; its message may change. Accepted programs preserve JavaScript values,
 exceptions and evaluation order at every optimization level, outside the
 differences listed above: a value a call throws reaches the host as JavaScript
 throws it, an Error as the host's Error of its class. The raw wasm ABI (pointer
-layout, the `__jz_` exports, custom sections) is not stable across versions: a module
-is of the ABI it was built for (1, or a later one its `jz:abi` names), and
-`instantiate` refuses a module of another.
+layout, the `__jz_` exports, custom sections) is not stable across versions: load a
+prebuilt module with `jz/interop` from the jz that built it.
 [CONTRIBUTING](CONTRIBUTING.md#public-contract-and-abi) has the details.
 
 <p align="center">

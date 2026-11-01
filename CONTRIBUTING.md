@@ -5458,14 +5458,9 @@ takes `memory` or a `__jz_` name (`compile` rejects it at the export); its own
 `_initialize` or `_start` is the WASI entry, after jz's init. `instantiate()`'s
 `exports` holds the program's exports alone; the ABI stays on `instance.exports`.
 
-The ABI a module is of (layout.js `ABI_VERSION`) is implicit at 1: a module of
-ABI 1 carries no marker, and a later ABI writes its number in a `jz:abi` section
-of one byte (optimize/watr-tail.js `markAbi`). `instantiate()` reads a module
-without the section as ABI 1 and refuses another ABI, and a module built before
-1.0, by its allocator exports (the `__heap` global, or `_alloc`/`_clear` beside
-an imported memory with no `__jz_alloc`), so 1.0 reads 1.0 binaries and no older
-layout. A box crosses as its i64 bits only: no f64 NaN-box carrier, no
-`__ext_prop`/`__ext_call`.
+A prebuilt module loads with the interop of the jz that built it; nothing marks or
+checks the pairing. A box crosses as its i64 bits only: no f64 NaN-box carrier,
+no `__ext_prop`/`__ext_call`.
 
 The raw ABI is not frozen across versions: NaN-box layouts, the `__jz_`
 exports, `jz:hostabi`, `jz:i64exp`, `jz:schema`, `jz:fields`,
