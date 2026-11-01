@@ -11,7 +11,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import * as interop from '../interop.js'
 import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
-import { HEAP, symbolCountMax, ABI_VERSION } from '../layout.js'
+import { HEAP, symbolCountMax } from '../layout.js'
 import { oracle, jz, compile } from './util.js'
 import { compile as wasm } from 'watr'
 

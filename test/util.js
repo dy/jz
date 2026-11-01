@@ -3,6 +3,7 @@
 // shape, not preset names. Boundary variants belong on `opts.host`.
 import './_env.js'
 import publicJz, { instantiate } from '../index.js'
+import { linkedMemory } from '../interop.js'
 import { compileInProcess as compileNative, compileInternal } from '../src/compiler.js'
 import { foldOptions } from '../src/options.js'
 import jzify from '../jzify/index.js'
@@ -24,7 +25,11 @@ export function jz(code, ...args) {
   const opts = foldOptions(args[0])
   const out = compile(code, opts)
   const inspected = out && typeof out === 'object' && 'wasm' in out
-  const result = instantiate(inspected ? out.wasm : out, opts)
+  const wasm = inspected ? out.wasm : out
+  const run = { imports: opts.imports, wasi: opts.wasi }
+  const linked = linkedMemory(opts, wasm)
+  if (linked) run.memory = linked
+  const result = instantiate(wasm, run)
   if (inspected) result.inspect = out.inspect
   return result
 }
