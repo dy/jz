@@ -3071,8 +3071,9 @@ export default (ctx) => {
     // decline — f16/clamped's element conversion is a call, not a lane op;
     // BigInt lanes aren't a SIMD numeric kind at all. BigInt falls through
     // past the scalar branch below too — see its own comment — down to the
-    // runtime aux-dispatch loop, which is species-correct for it.)
-    if (thisArg === undefined && elemType != null && !r.isF16 && !r.isClamped && !r.isBigInt && Array.isArray(fn) && fn[0] === '=>') {
+    // runtime aux-dispatch loop, which is species-correct for it. A build
+    // without SIMD, `simd: false`, takes the scalar branch.)
+    if (!ctx.transform.noSimd && thisArg === undefined && elemType != null && !r.isF16 && !r.isClamped && !r.isBigInt && Array.isArray(fn) && fn[0] === '=>') {
       const [, rawParam, body] = fn
       const param = Array.isArray(rawParam) && rawParam[0] === '()' ? rawParam[1] : rawParam
       const pattern = analyzeSimd(body, param)

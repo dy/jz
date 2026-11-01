@@ -747,11 +747,13 @@ export default (ctx) => {
   const nByte = (j) => `(if (result i32) (local.get $nsso)
     (then ${ssoCharWat('(local.get $ndl)', j)})
     (else (i32.load16_u (i32.add (local.get $noff) (i32.shl ${j} (i32.const 1))))))`
+  // A build without SIMD (`simd: false`) scans the heap haystack with the scalar tail alone.
+  const simd = !ctx.transform.noSimd
   wat('__str_indexof', `(func $__str_indexof (param $hay i64) (param $ndl i64) (param $from i32) (result i32)
     (local $hlen i32) (local $nlen i32) (local $i i32) (local $j i32) (local $match i32)
     (local $hoff i32) (local $noff i32)
     (local $hsso i32) (local $nsso i32) (local $hb i32) (local $nb i32) (local $k i32)
-    (local $splat v128) (local $mask i32) (local $scanEnd i32)
+    ${simd ? '(local $splat v128) (local $mask i32) ' : ''}(local $scanEnd i32)
     ;; The search value is ToString'd at the call site (searchArg) per 21.1.3.9 step 4 —
     ;; a known-string needle passes raw, so this helper carries no float-pulling __to_str.
     (local.set $hlen (call $__str_length (local.get $hay)))
@@ -807,7 +809,7 @@ export default (ctx) => {
     (if (i32.eqz (local.get $hsso))
       (then
         (local.set $nb ${nByte('(i32.const 0)')})
-        (local.set $scanEnd (i32.sub (local.get $hlen) (local.get $nlen)))
+        (local.set $scanEnd (i32.sub (local.get $hlen) (local.get $nlen)))${simd ? `
         (local.set $splat (i16x8.splat (local.get $nb)))
         (block $vd (loop $vo
           (br_if $vd (i32.gt_s (local.get $i) (i32.sub (local.get $hlen) (i32.const 8))))
@@ -830,7 +832,7 @@ export default (ctx) => {
             (local.set $mask (i32.and (local.get $mask) (i32.sub (local.get $mask) (i32.const 1))))  ;; clear lowest match
             (br $bo)))
           (local.set $i (i32.add (local.get $i) (i32.const 8)))
-          (br $vo)))
+          (br $vo)))` : ''}
         ;; scalar tail: positions [i, scanEnd] the SIMD window couldn't cover
         (block $md (loop $mo
           (br_if $md (i32.gt_s (local.get $i) (local.get $scanEnd)))

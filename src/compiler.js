@@ -232,6 +232,8 @@ const setupCtx = (code, opts, jzify) => {
   // and the pure canonical subset is enforced. subscript handles ASI natively.
   if (!opts.strict) ctx.transform.jzify = jzify
   if (opts.noTailCall) ctx.transform.noTailCall = true
+  // set before any runtime module initializes: its scans read it (compilePipeline below)
+  if (opts.noSimd || opts.optimize?.noSimd) ctx.transform.noSimd = true
   if (opts.noEhAbort) ctx.transform.noEhAbort = true
   if (opts.inspect) ctx.transform.inspect = true
   if (opts.helperCounters) ctx.transform.helperCounters = true
@@ -296,8 +298,10 @@ const compilePipeline = (code, opts = {}, jzify) => {
   // true scalar baseline — the oracle SIMD-vs-scalar correctness tests compare
   // against (missing one let an SLP miscompile pass as "SIMD == scalar"). Explicit
   // f32x4/i32x4 intrinsics in source are the user's own opt-in and stay. Applied
-  // after auto-config so it wins over any re-resolved preset.
-  if (opts.noSimd) {
+  // after auto-config so it wins over any re-resolved preset. The runtime's own
+  // scans (module/string.js `__str_indexof`, a typed array's lane map) read
+  // `ctx.transform.noSimd`, set in setupCtx for either spelling of the option.
+  if (ctx.transform.noSimd) {
     ctx.transform.optimize.vectorizeLaneLocal = false
     ctx.transform.optimize.slp = false
   }

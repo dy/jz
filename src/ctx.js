@@ -761,6 +761,7 @@ export function reset(proto, globals, bridge) {
   ctx.transform = {
     jzify: null,
     noTailCall: false,  // when true, emit `return call` instead of `return_call` (wasm2c compat)
+    noSimd: false,      // when true, no v128 jz emits: the runtime's own scans too (opts.noSimd, `optimize: { simd: false }`)
     sourceMap: false,   // retain source origins on emitted IR for debug builds
     strict: false,      // when true, dynamic features (obj[k], for-in) error at compile time
                         // instead of pulling in dynamic-dispatch stdlib. See ProgramFacts walk.

@@ -5,6 +5,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { jz as jzInternal, compile as compileInternal } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
+import { oracle } from './util.js'
 
 const flat = s => s.replace(/\s+/g, ' ')
 const HEAP = 'export let f = (n) => { let a = new Float64Array(n); a[0] = 1.5; return a[0] }'
@@ -119,6 +120,29 @@ test('options: optimize object — simd:false leaves no v128', () => {
   if (belowOpt(2)) return
   ok(/v128|f64x2/.test(compile(LOOP, { wat: true })), 'default vectorizes (sanity)')
   ok(!/v128|f64x2|i32x4|f32x4/.test(compile(LOOP, { wat: true, optimize: { simd: false } })), 'simd:false is scalar')
+})
+
+test('options: optimize object — simd:false leaves no v128 in the runtime either: string search, a typed array map', () => {
+  // the runtime's own scans (module/string.js `__str_indexof`'s 16-wide first-unit
+  // window, a typed array's lane map) honor it at every level, as the vectorizer does:
+  // a native build without SIMD support (wasm2c with no SIMDe) needs none
+  const src = `export let f = (n) => {
+    let s = ''
+    for (let i = 0; i < n; i++) s += 'ab' + (i % 7) + 'cd'
+    const t = s + '|needle|' + s
+    const a = new Float64Array(8)
+    for (let i = 0; i < 8; i++) a[i] = i
+    const m = a.map(x => x * 2), w = new Int32Array(a).map(x => x + 3)
+    return t.indexOf('needle') + t.indexOf('6cdab0', 5) + (t.includes('|ne') ? 1 : 0) + t.lastIndexOf('ab3') +
+      t.split('cd').length + t.search(/d\\|n/) + t.replace('needle', 'x').length + m[7] + w[7]
+  }`
+  const host = oracle(src)
+  const simdIn = (wat) => /v128|\b[if](8x16|16x8|32x4|64x2)\./.test(wat.replace(/;;[^\n]*/g, ''))
+  for (const level of levels(0, 2, 3, 'size', 'speed')) for (const target of ['js', 'wasi']) {
+    ok(!simdIn(compile(src, { wat: true, host: target, optimize: { level, simd: false } })), `${target} O${level}: no v128`)
+    if (target === 'js') { const { f } = jz(src, { optimize: { level, simd: false } }).exports; for (const n of [1, 20, 200]) is(f(n), host.f(n), `O${level}: f(${n})`) }
+  }
+  if (!belowOpt(2)) ok(simdIn(compile(src, { wat: true })), 'the default build keeps its SIMD scans (sanity)')
 })
 
 test('options: optimize object — tailCall:false uses ordinary call frames', () => {
