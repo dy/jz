@@ -101,8 +101,9 @@ if (flag('--worker')) {
   const compile = (code, opts) => compileInternal(code, opts, jzify)
   const { corpus } = await import('./kernel-gate-corpus.js')
   const kernel = readFileSync(kernelPath)
-  const fresh = (bytes = kernel, pages = 8192) => {
-    const k = instantiate(bytes, { memory: pages, externref: false })
+  // The kernel owns its memory and grows it: instantiate takes no page count
+  const fresh = (bytes = kernel) => {
+    const k = instantiate(bytes)
     readMarks(k)   // a diagnostics ABI the reader rejects fails before any compile
     return k
   }
@@ -196,7 +197,7 @@ if (flag('--worker')) {
 
   if (gate === 'recursive') {
     const profile = resolveSelfCompileBuild()
-    const k = fresh(kernel, 65536)
+    const k = fresh()
     const inputBytes = Buffer.byteLength(profile.graph.code, 'utf8') + Object.values(profile.graph.modules).reduce((n, s) => n + Buffer.byteLength(s, 'utf8'), 0)
     const r = compileOn(k, profile.graph.code, { optimize: profile.optimize, modules: profile.graph.modules, build: { memory: profile.memory, compactCollections: profile.compactCollections } })
     const c = { name: 'jz × jz', level: profile.optimize?.level ?? profile.optimize, modules: Object.keys(profile.graph.modules).length, inputBytes, ...record(r) }

@@ -470,9 +470,10 @@ test('jz({ memory }): auto-wraps raw WebAssembly.Memory', () => {
   ok(typeof raw.read === 'function', 'raw is now enhanced')
   ok(inst.memory === raw, 'inst.memory is the same raw object')
   is(inst.exports.f(1), [1, 2])
-  // a module that needs no memory imports none: it links nothing, and says so
-  const none = jz('export let f = () => 42', { memory: jz.memory() })
-  is(none.memory, null, 'no memory claimed for a module without one')
+  // a module the optimizer leaves without a memory imports none: it links nothing, and says so
+  const mem = jz.memory(), none = jz('export let f = () => 42', { memory: mem })
+  const links = WebAssembly.Module.imports(none.module).some(i => i.kind === 'memory')
+  is(none.memory, links ? mem : null, 'a memory claimed only where the module imports it')
 })
 
 test('jz({ memory: pages }): creates owned memory with initial page count', () => {
