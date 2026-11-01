@@ -197,6 +197,7 @@ const TESTS = [
   'sentinel-guard',
   'twin-locals',
   'carry-elements',
+  'carry-keys',
   'array-view',
   'param-defaults',
   'accessor-enumeration',

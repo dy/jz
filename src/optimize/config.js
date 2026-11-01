@@ -64,7 +64,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
-const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, pointerExits: true, ringLaps: true, earlyStores: true, leadChains: true, issueOrder: true, jamItems: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, inlineTiny: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true, wordTruncation: 'add' })
+const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, pointerExits: true, ringLaps: true, earlyStores: true, leadChains: true, issueOrder: true, jamItems: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, inlineTiny: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, carryKeys: true, selectArmUpdates: true, wordTruncation: 'add' })
 const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, inlinePush: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false, loopPasses: false, pairIterations: false })
 
 const LEVEL_PRESETS = Object.freeze({
@@ -104,6 +104,10 @@ const LEVEL_PRESETS = Object.freeze({
   // halfword mask over `^`/`|` onto the operand it narrows (optimize/mask-operands.js):
   // x64 V8 zero-extends a value still live into a register of its own, a move the core
   // renames away, where over the combination it extends a register into itself.
+  // carryKeys gives a loop whose scalar reads a table at a key of itself and the
+  // iteration's input (a byte-wise CRC) the next key as a scalar of its own, the
+  // next input mixed into what the scalar keeps while the read is in flight
+  // (compile/loop-recurrence.js): one xor leaves the chain of every iteration.
   // searchLoops gives a loop whose body is a guarded loop an innermost loop that
   // scans for the guard (optimize/search-loops.js): V8 unrolls an innermost loop
   // under one stack check, where each round of the scan paid a header and two

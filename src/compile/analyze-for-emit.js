@@ -2,7 +2,8 @@ import { ctx } from '../ctx.js'
 import { T, isBlockBody, isReassigned, collectAssignedNames, walkAst, MUTATE_OPS, callArgs } from '../ast.js'
 import { plainMember } from '../member-uses.js'
 import { constIntExpr } from '../static.js'
-import { intLevelMap } from '../type.js'
+import { intLevelMap, typedElemCtor } from '../type.js'
+import { typedCtorName } from '../typed-provenance.js'
 import { boundedSteps } from '../type/bounded-counters.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
@@ -23,7 +24,7 @@ import { closureMutatedVars } from './loop-model.js'
 import { BIGINT_REP_BOXED, BIGINT_REP_RAW, mintRepresentationPlan, representationParamRep, representationProgramHasBigint } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
-import { unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
+import { unrollScalarChains, selectArmUpdatesIn, carryKeys } from './loop-recurrence.js'
 import { cseLoads, hoistLoopFields, UNTYPED, ARRAY, TYPED_ANY } from './cse-load.js'
 import { guardSentinels } from './sentinel-guard.js'
 import { splitTwins } from './twin-locals.js'
@@ -47,6 +48,32 @@ const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
 const ELEMENT_ONLY = [K.TYPED, K.ARRAY, K.STRING, K.NUMBER, K.BOOL, K.BIGINT, K.NULLISH, K.ABSENT].reduce((m, t) => m | bitOf(t), 0)
 // Kinds whose storage never holds typed elements: a store into one leaves cached typed loads intact.
 const UNTYPED_KINDS = new Set([VAL.ARRAY, VAL.OBJECT, VAL.HASH, VAL.STRING, VAL.SET, VAL.MAP])
+const isArr = (n) => Array.isArray(n)
+const sigParamNames = (func) => func.sig.params.map(p => p.name)
+// A typed array's constructor whose elements read as Numbers.
+const numberElems = (ctor) => {
+  const name = typedCtorName(ctor)
+  return !!name && name.endsWith('Array') && name !== 'ArrayBuffer' && !name.startsWith('Big')
+}
+/** Whether a name of `func` holds a typed array of Numbers wherever the body
+ *  reads it, by facts settled before analysis: a parameter every call passes
+ *  one, a local made as one or a module binding of one, which the body never
+ *  rebinds. */
+const numberArrays = (func, paramReps) => {
+  const body = frameNode(func), reps = paramReps.get(func.name), params = sigParamNames(func), local = new Map()
+  walkAst(body, { enter: n => {
+    if (n[0] !== 'let' && n[0] !== 'const') return
+    for (let k = 1; k < n.length; k++) {
+      const d = n[k]
+      if (isArr(d) && d[0] === '=' && typeof d[1] === 'string') local.set(d[1], local.has(d[1]) ? null : typedElemCtor(d[2]))
+    }
+  } })
+  return name => {
+    const k = params.indexOf(name)
+    const ctor = k >= 0 ? reps?.get(k)?.typedCtor : local.has(name) ? local.get(name) : ctx.scope.globalTypedElem?.get(name)
+    return numberElems(ctor) && !isReassigned(body, name)
+  }
+}
 // `value` is the only value ever written to `name` (its declaration aside).
 const soleWrite = (body, name, value) => {
   let writes = 0, own = true
@@ -68,6 +95,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     // Share the census, then let ordinary type analysis handle the new arithmetic.
     const cm = closureMutatedVars(frameNode(func))
     if (_o.loopSquare !== false) func.body = narrowBoundedSquare(func.body, cm)
+    if (_o.carryKeys === true) func.body = carryKeys(func.body, cm, numberArrays(func, paramReps), new Set(sigParamNames(func)))
     if (_o.unrollScalarChain === true) func.body = unrollScalarChains(func.body, cm)
     if (_o.selectArmUpdates === true) func.body = selectArmUpdatesIn(func.body, cm)
   }

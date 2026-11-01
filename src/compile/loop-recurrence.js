@@ -33,7 +33,7 @@ import { loopLitVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards, 
 import { setFuncBody } from './analyze.js'
 import { frameNode } from '../function.js'
 import { cloneIR } from '../ir.js'
-import { walkAst, some, isBlockBody, T } from '../ast.js'
+import { walkAst, some, isBlockBody, MUTATE_OPS, T } from '../ast.js'
 import { K, core, tagOf } from '../summary/kind.js'
 import { SOURCE_FULL, nodeSize } from '../growth.js'
 import { counterInit } from '../static.js'
@@ -332,6 +332,246 @@ function tryUnrollScalarChain(stmt, cm) {
 /** Speed-tier pass: ×2-unroll every serial-chain scan loop in `body`. */
 export function unrollScalarChains(body, cm) {
   return rewriteBlocks(body, stmt => tryUnrollScalarChain(stmt, cm))
+}
+
+// ── Keyed recurrence: the next key mixes off the chain (speed tier) ─────────
+//
+// A counted loop whose scalar reads a table at a key of itself and the
+// iteration's input, and keeps the rest of itself by xor:
+//   for (let i = LO; i < HI; i++) v = Q(T[M(P(v) ^ X(i))] ^ S(v))
+// a byte-wise CRC of any width, reflected (`c = table[(c ^ buf[i]) & 0xff] ^
+// (c >>> 8)`) or not (`c = table[((c >>> 24) ^ buf[i]) & 0xff] ^ (c << 8)`),
+// where P and Q are shifts by constants, masks and truncations: maps that keep
+// xor. An iteration's chain runs from the read through the xor of S(v), P, the
+// xor of the next input and M to the next read, though the input waits on
+// nothing. Xor is associative and P and Q distribute over it, so the next key
+// is P(Q(t)) ^ (P(Q(S(v))) ^ X(i + 1)): the input mixes into what the scalar
+// keeps while the read is in flight, and the loop carries the key beside the
+// scalar (back-substitution: Schlansker and Kathail, "Critical path reduction
+// for scalar programs", MICRO 1995). One xor leaves every iteration's chain:
+// crc32 runs 0.88x its time on an EPYC 7763, where it had tied V8's code for
+// the JS, and 0.81x on an Apple M4.
+//
+// The first key is taken before the loop, under its test, and the loop runs
+// from the second iteration on; the last runs as written, after it. X(i), any
+// reads that write and call nothing, is read and converted where it was,
+// between the tests of i and i + 1, in the order of its leaves (the next key is
+// the key's own xor with P(Q(s)) where P(v) stood): every element of the input
+// is read once, in its order, none past the range, and the bound, of the same
+// kind, is evaluated as often, where it was. What moves past a test is the
+// table's read, of a typed array of Numbers, M, arithmetic of literals and of
+// names the loop does not write, and S, arithmetic of the scalar, which holds a
+// Number or undefined on entry (no parameter: its every other write a Number
+// while it holds one). Temporaries the body declares for the update and other
+// declarations of the loop's head (reading no counter) are read in place.
+
+// operators that take Numbers to a Number and run nothing else
+const NUMERIC = new Set(['^', '|', '&', '<<', '>>', '>>>', '+', '-', '*', '/', '%', '~', 'u-', 'u+'])
+
+/** The operand of `n` a map that keeps xor carries (a shift by a constant, a
+ *  mask, a truncation), as its index, else 0. */
+const xorLinearArg = (n) => {
+  if (!isArr(n) || n.length !== 3) return 0
+  const op = n[0]
+  if (op === '>>>' || op === '>>' || op === '<<') return loopLitVal(n[2]) != null ? 1 : 0
+  if (op === '&') return loopLitVal(n[2]) != null ? 1 : loopLitVal(n[1]) != null ? 2 : 0
+  if (op === '|') return litN(n[2], 0) ? 1 : litN(n[1], 0) ? 2 : 0
+  return 0
+}
+/** The leaves of the xor tree at `n`, in evaluation order. */
+const xorLeaves = (n, out) => {
+  if (isArr(n) && n[0] === '^' && n.length === 3) { xorLeaves(n[1], out); xorLeaves(n[2], out) } else out.push(n)
+  return out
+}
+const xorOf = (leaves) => {
+  let e = cloneIR(leaves[0])
+  for (let k = 1; k < leaves.length; k++) e = ['^', e, cloneIR(leaves[k])]
+  return e
+}
+/** `e` under the maps of `chain` ([node, operand index], outermost first). */
+const rewrap = (chain, e) => {
+  for (let k = chain.length - 1; k >= 0; k--) {
+    const c = cloneIR(chain[k][0])
+    c[chain[k][1]] = e
+    e = c
+  }
+  return e
+}
+// the end of the operands of `n` that name values: a literal's value and a member read's key name none
+const ends = (n) => n[0] == null || n[0] === 'str' ? 1 : n[0] === '.' || n[0] === '?.' ? 2 : n.length
+/** The [node, operand index] links from `n` down to the name `v`, or null. */
+const pathTo = (n, v) => {
+  if (n === v) return []
+  if (!isArr(n)) return null
+  for (let k = 1; k < ends(n); k++) {
+    const p = pathTo(n[k], v)
+    if (p) return [[n, k], ...p]
+  }
+  return null
+}
+const countOf = (n, v) => {
+  if (n === v) return 1
+  if (!isArr(n)) return 0
+  let c = 0
+  for (let k = 1; k < ends(n); k++) c += countOf(n[k], v)
+  return c
+}
+/** `tree` with the node or name `at` replaced by `by`, copied above it. */
+const replaced = (tree, at, by) => {
+  if (tree === at) return by
+  if (!isArr(tree)) return tree
+  let out = null
+  for (let k = 1; k < ends(tree); k++) {
+    const c = replaced(tree[k], at, by)
+    if (c !== tree[k]) { out ??= tree.slice(); out[k] = c }
+  }
+  return out ?? tree
+}
+/** `e` is a Number of literals, the names `ok` takes and elements of typed arrays of Numbers. */
+const numeric = (e, ok, typed) => typeof e === 'string' ? ok(e)
+  : isArr(e) && (loopLitVal(e) != null
+    || e[0] === '[]' && e.length === 3 && typeof e[1] === 'string' && typed(e[1]) && numeric(e[2], ok, typed)
+    || NUMERIC.has(e[0]) && (e.length === 2 || e.length === 3) && numeric(e[1], ok, typed) && (e.length === 2 || numeric(e[2], ok, typed)))
+/** `e` reads and computes, writing and calling nothing: names, literals,
+ *  NUMERIC operators, element reads and member reads. */
+const pure = (e) => typeof e === 'string' || isArr(e) && (loopLitVal(e) != null
+  || e[0] === '.' && e.length === 3 && typeof e[2] === 'string' && pure(e[1])
+  || (e[0] === '[]' || NUMERIC.has(e[0])) && (e.length === 2 || e.length === 3) && pure(e[1]) && (e.length === 2 || pure(e[2])))
+/** `e` evaluates to a Number or undefined, or throws, where `v` holds one:
+ *  a literal, `v`, an element of a typed array of Numbers, or an operator of
+ *  NUMERIC over one (both operands of `+`, which joins a string). */
+const numberResult = (e, v, typed) => {
+  if (e === v) return true
+  if (!isArr(e)) return false
+  if (loopLitVal(e) != null) return true
+  if (e[0] === '[]') return e.length === 3 && typeof e[1] === 'string' && typed(e[1])
+  if (!NUMERIC.has(e[0]) || e.length < 2 || e.length > 3) return false
+  if (e.length === 2) return numberResult(e[1], v, typed)
+  return e[0] === '+' ? numberResult(e[1], v, typed) && numberResult(e[2], v, typed)
+    : numberResult(e[1], v, typed) || numberResult(e[2], v, typed)
+}
+/** The scalar `v` holds a Number or undefined where the update `upd` reads it:
+ *  declared once, as a statement of `body`, its value and every write's but
+ *  `upd`'s a Number while it holds one. */
+const numericScalar = (body, v, upd, typed) => {
+  let decls = 0, ok = true
+  walkAst(body, { enter: (n, parent) => {
+    if (!ok || n === upd) return false
+    if (n[0] === 'let' || n[0] === 'const' || n[0] === 'var') {
+      let here = 0
+      for (let k = 1; k < n.length; k++) {
+        const d = n[k]
+        if (d === v) here++
+        else if (isArr(d) && d[0] === '=' && d[1] === v) { here++; if (!numberResult(d[2], v, typed)) ok = false }
+        else if (isArr(d) && d[0] === '=' && countOf(d[1], v)) ok = false
+      }
+      if (here && !(isArr(parent) && parent[0] === ';')) ok = false
+      decls += here
+      return
+    }
+    if (n[1] !== v || !MUTATE_OPS.has(n[0])) return
+    const op = n[0]
+    if (op === '++' || op === '--') return
+    const base = op.slice(0, -1)
+    if (!(op === '=' ? numberResult(n[2], v, typed) : NUMERIC.has(base) && (base !== '+' || numberResult(n[2], v, typed)))) ok = false
+  } })
+  return ok && decls === 1
+}
+
+/** The statements of a loop body, unwrapped from its blocks. */
+const bodyStmts = (n) => {
+  while (isArr(n) && n[0] === '{}' && n.length === 2) n = n[1]
+  return isArr(n) && n[0] === ';' ? n.slice(1) : [n]
+}
+/** The update `stmts` end in, its temporaries read in place: the declarations
+ *  before it, each of a name the update reads once and nothing else names, of a
+ *  value that writes and calls nothing. Returns the update with them in place, or null. */
+const inlineTemps = (stmts, loopBody) => {
+  let upd = stmts[stmts.length - 1]
+  for (let k = stmts.length - 2; k >= 0; k--) {
+    const d = stmts[k]
+    if (!isArr(d) || (d[0] !== 'const' && d[0] !== 'let') || d.length !== 2 || !isArr(d[1]) || d[1][0] !== '=' || typeof d[1][1] !== 'string') return null
+    const name = d[1][1], init = d[1][2]
+    if (!pure(init) || countOf(upd, name) !== 1 || countOf(loopBody, name) !== 2) return null
+    upd = replaced(upd, name, init)
+  }
+  return upd
+}
+
+function tryCarryKey(stmt, cm, typed, body, params) {
+  const L = normalizeLoop(stmt)
+  if (!L || L.kind !== 'for') return null
+  const iv = unitIncVar(L.step)
+  if (!iv || !isArr(L.init) || L.init[0] !== 'let') return null
+  // the head declares the counter at a literal; its other declarations read no counter
+  const head = L.init.slice(1), at = head.findIndex(d => isArr(d) && d[0] === '=' && d[1] === iv)
+  const loVal = at < 0 ? null : loopLitVal(head[at][2])
+  if (loVal == null || !head.every((d, k) => k === at || (typeof d === 'string' ? d !== iv : isArr(d) && d[0] === '=' && typeof d[1] === 'string' && !countOf(d[2], iv)))) return null
+  if (!(isArr(L.cond) && (L.cond[0] === '<' || L.cond[0] === '<=') && L.cond.length === 3 && L.cond[1] === iv)) return null
+  // the bound reads and computes, as often and where it did
+  const HI = L.cond[2]
+  if (!pure(HI) || countOf(HI, iv)) return null
+  // the body is one update of the scalar, its temporaries read in place
+  const stmts = bodyStmts(L.body), node = stmts[stmts.length - 1]
+  const upd = inlineTemps(stmts, L.body)
+  if (!isArr(upd) || (upd[0] !== '=' && upd[0] !== '^=') || upd.length !== 3) return null
+  const v = upd[1]
+  if (typeof v !== 'string' || v === iv || countOf(HI, v) || cm.has(v) || params.has(v)) return null
+  const rhs = upd[0] === '^=' ? ['^', v, upd[2]] : upd[2]
+  // Q: the maps over the update's xor
+  const Q = []
+  let x = rhs
+  for (let k = xorLinearArg(x); k; k = xorLinearArg(x)) { Q.push([x, k]); x = x[k] }
+  if (!isArr(x) || x[0] !== '^') return null
+  // one leaf reads the table at a key of the scalar; the others, S, are Numbers of the scalar
+  let read = null
+  const S = []
+  for (const l of xorLeaves(x, [])) {
+    if (!(isArr(l) && l[0] === '[]' && countOf(l, v))) { S.push(l); continue }
+    if (read) return null
+    read = l
+  }
+  if (!read || !S.length || read.length !== 3 || typeof read[1] !== 'string' || !typed(read[1]) || countOf(read, v) !== 1) return null
+  if (!S.every(e => numeric(e, n => n === v, typed))) return null
+  // the key: the scalar under the maps P, a leaf of the xor of the inputs X, under M
+  const path = pathTo(read, v)
+  let j = path.length
+  while (j > 1 && xorLinearArg(path[j - 1][0]) === path[j - 1][1]) j--
+  if (j < 2 || path[j - 1][0][0] !== '^' || path[j - 1][0].length !== 3) return null
+  let top = j - 1
+  while (top > 1 && path[top - 1][0][0] === '^' && path[top - 1][0].length === 3) top--
+  const xorTop = path[top][0], P = path.slice(j), pv = j < path.length ? path[j][0] : v
+  const keyLeaves = xorLeaves(xorTop, []), X = keyLeaves.filter(l => l !== pv)
+  if (!X.length || X.length !== keyLeaves.length - 1 || !X.every(pure)) return null
+  // M is arithmetic of literals, names the loop does not write and typed reads
+  if (!numeric(replaced(read[2], xorTop, [null, 0]), n => n !== v && n !== iv, typed)) return null
+  if (!numericScalar(body, v, node, typed)) return null
+
+  // --- transform ---
+  const id = freshLoopId()
+  const w = `${v}${T}key${id}`, t = `${v}${T}t${id}`, s = `${v}${T}s${id}`
+  const keyed = () => cloneIR(replaced(read, xorTop, w))   // the read at the carried key
+  const PQ = (e) => rewrap(P, rewrap(Q, e))
+  const lo = [null, loVal]
+  // iteration i + 1 as written: the read, the scalar, and the key of the next,
+  // the key's own xor with P(Q(s)) where P(v) stood
+  const step = [';',
+    ['const', ['=', t, ['|', keyed(), [null, 0]]]],
+    ['const', ['=', s, ['|', xorOf(S), [null, 0]]]],
+    ['=', v, rewrap(Q, ['^', t, s])],
+    ['=', w, ['^', PQ(t), cloneIR(replaced(xorTop, pv, PQ(s)))]]]
+  const loop = ['for', ['let', ['=', iv, [null, loVal + 1]]], [L.cond[0], iv, cloneIR(HI)], ['++', iv], step]
+  const last = ['=', v, cloneIR(replaced(rhs, read, keyed()))]
+  const run = ['if', [L.cond[0], lo, cloneIR(HI)], [';', ['let', ['=', w, subIv(cloneIR(xorTop), iv, lo)]], loop, last]]
+  const others = head.filter((d, k) => k !== at)
+  return others.length ? [['{}', [';', ['let', ...others.map(cloneIR)], run]]] : [run]
+}
+
+/** Speed-tier pass: every keyed-recurrence loop of `body` (a function's, its
+ *  parameters `params`) carries its next key; `typed(name)`: the name holds a
+ *  typed array of Numbers wherever the function reads it. */
+export function carryKeys(body, cm, typed, params) {
+  return rewriteBlocks(body, stmt => tryCarryKey(stmt, cm, typed, body, params))
 }
 
 // ── Disjoint-arm update chain → select accumulation ─────────────────────────

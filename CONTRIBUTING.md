@@ -59,6 +59,16 @@ it, a filter cascade's state updates.
 Then `issueOrder` (src/optimize/issue-order.js, speed tier) writes a loop body of
 floating-point arithmetic in the order that issues its chain soonest on cores that
 bind an operation to a queue or a port as they dispatch it (Zen 3 and 4, Xeons).
+Before any of these, on the source, `carryKeys` (src/compile/loop-recurrence.js,
+speed tier) gives a counted loop whose scalar reads a table at a key of itself
+and the iteration's input, keeping the rest of itself by xor (a byte-wise CRC of
+any width or bit order, `c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8)`), the key as
+a scalar of its own: the next input mixes into what the scalar keeps while the
+read is in flight, `w = t ^ (s ^ buf[i + 1])`, so the next read waits on one xor
+fewer. The loop runs from the second iteration, the first key taken before it
+and the last iteration after it: the input and the bound, any reads that write
+and call nothing, keep their place between the loop's tests and none leaves the
+range. The table must be a typed array of Numbers and the scalar a Number on entry.
 
 Watr 5.11.5 also defers costly pure local initializers to the
 exclusive value arms that consume them. It runs before local reuse, replacing
