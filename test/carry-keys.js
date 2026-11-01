@@ -7,11 +7,10 @@
 // starts undefined, and trip counts that leave the paired loop a tail.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import jz from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { T, walkAst } from '../src/ast.js'
 import { onKernel, levels } from './_matrix.js'
-import { oracle, compileInProcess } from './util.js'
+import { jz, oracle, compileInProcess } from './util.js'
 
 const OFF = { level: 'speed', carryKeys: false }
 // the bytes and the table a kernel reads: `b` of n bytes, `t` the reflected CRC-32 table of `ctor`
