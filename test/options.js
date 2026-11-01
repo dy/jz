@@ -150,7 +150,7 @@ test('options: optimize object — its seven keys; a pass name or a typo refused
   ok(compile(LOOP, { optimize: { level: 'speed', compact: false, rationalConst: false } }).byteLength > 0, 'compact and rationalConst')
   throws(() => compile(LOOP, { optimize: { level: 'speed', stencil: false } }), /^TypeError: Unknown optimize option 'stencil' \(optimize takes level, simd, tailCall, exceptions, alloc, compact, rationalConst\)$/)
   throws(() => compile(LOOP, { optimize: { levle: 'size' } }), /Unknown optimize option 'levle'; did you mean 'level'\?/)
-  throws(() => compile(LOOP, { optimize: { noSimd: true } }), /'noSimd' is not an optimize option: use simd: false/)
+  throws(() => compile(LOOP, { optimize: { noSimd: true } }), /^TypeError: Unknown optimize option 'noSimd'; did you mean 'simd'\? \(optimize takes /)
   ok(compileInternal(LOOP, { optimize: { level: 'speed', stencil: false } }).byteLength > 0, 'a pass toggle is an internal flag')
 })
 
@@ -179,15 +179,15 @@ test('options: optimize level takes optimize\'s values; randomSeed takes a numbe
   if (process.env.JZ_TEST_OPTIMIZE == null) is(compile(LOOP, { optimize: { level: true } }), compile(LOOP), 'level:true is the default')
   throws(() => compile(HEAP, { randomSeed: true }), /finite number/)
   throws(() => compile(LOOP, { optimize: { level: 'speed', experimentalStencil: false } }), /Unknown optimize option/)
-  for (const [v, use] of [[0, 'false'], [1, null], [2, 'true'], [3, "'speed'"], ['fast', null], ['balanced', null]]) {
-    throws(() => compile(LOOP, { optimize: v }), new RegExp(`optimize takes true, false, 'size' or 'speed'; got ${typeof v === 'string' ? `'${v}'` : v}${use ? `: use ${use}` : '$'}`), `optimize: ${v}`)
+  for (const v of [0, 1, 2, 3, 'fast', 'balanced']) {
+    throws(() => compile(LOOP, { optimize: v }), new RegExp(`^TypeError: optimize takes true, false, 'size' or 'speed'; got ${typeof v === 'string' ? `'${v}'` : v}$`), `optimize: ${v}`)
     throws(() => compile(LOOP, { optimize: { level: v } }), /^TypeError: optimize\.level takes true, false, 'size' or 'speed'/, `optimize.level: ${v}`)
   }
 })
 
 // The 0.9 spellings and the internal flags are no options: each throws a
 // TypeError naming the key, before any compile state is touched.
-test('options: a closed set — an unknown key throws naming it, a 0.9 spelling its replacement', () => {
+test('options: a closed set — an unknown key throws naming it', () => {
   const refused = (opts, re) => {
     let error
     try { compile(HEAP, opts) } catch (e) { error = e }
@@ -195,11 +195,8 @@ test('options: a closed set — an unknown key throws naming it, a 0.9 spelling 
     ok(re.test(error.message), `${JSON.stringify(opts)}: ${error.message}`)
     ok(!/\n|jz bug|at line/.test(error.message), `an option error names no source line and no compiler bug: ${error.message}`)
   }
-  for (const [key, use] of [['maxMemory', 'memory: { maximum }'], ['importMemory', 'memory: { import: true }'], ['sharedMemory', 'memory: { shared: true }'],
-    ['noSimd', 'optimize: { simd: false }'], ['tailCall', 'optimize: { tailCall }'], ['noTailCall', 'optimize: { tailCall: false }'],
-    ['alloc', 'optimize: { alloc }'], ['noEhAbort', 'optimize: { exceptions: false }'], ['whyNotSimd', 'why: true with a warnings callback'],
-    ['resolve', 'modules'], ['strict', 'a warnings callback']])
-    refused({ [key]: key === 'maxMemory' ? 4 : true }, new RegExp(`^'${key}' is not an option: use ${use.replace(/[{}()]/g, '\\$&')}`))
+  for (const key of ['maxMemory', 'importMemory', 'sharedMemory', 'noSimd', 'tailCall', 'noTailCall', 'alloc', 'noEhAbort', 'whyNotSimd', 'resolve', 'strict'])
+    refused({ [key]: key === 'maxMemory' ? 4 : true }, new RegExp(`^Unknown option '${key}'(; did you mean '[a-zA-Z]+'\\?)? \\(options are modules, `))
   refused({ optimise: 'speed' }, /^Unknown option 'optimise'; did you mean 'optimize'\? \(options are modules, imports, define, host, memory, optimize, randomSeed, names, sourceMap, wat, warnings, why\)$/)
   for (const key of ['stencil', 'profile', 'inspect', 'sourceType', 'importMetaUrl', 'nativeTimers', '_interp', 'jzify'])
     refused({ [key]: true }, new RegExp(`^Unknown option '${key}'`))

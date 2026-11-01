@@ -5334,8 +5334,8 @@ tests that read analysis state).
 
 The public options are a closed set: `normalizeOptions` (src/options.js) checks
 every key and value of `compile()`'s and `jz()`'s options before the pipeline
-runs, throws a `TypeError` naming any other key (a 0.9 spelling names its
-replacement), and folds the `memory` and `optimize` objects onto the internal
+runs, throws a `TypeError` naming any other key (with the public key a typo
+likely meant), and folds the `memory` and `optimize` objects onto the internal
 flags. The internal entry, `compileInternal` in src/compiler.js (which index.js
 does not export), folds without that check (`foldOptions`) and takes the
 internal flags beside the public options: the numeric levels 0-3 and `'fast'`,

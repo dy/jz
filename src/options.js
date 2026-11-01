@@ -30,10 +30,7 @@ const pages = (key, min) => (v) => {
 }
 
 const LEVELS = [true, false, 'size', 'speed']
-// The 0.9 levels with a public spelling
-const LEVEL_OF = { 0: false, 2: true, 3: 'speed' }
-const level = (key) => (v) => LEVELS.includes(v) ||
-  fail(`${key} takes true, false, 'size' or 'speed'; got ${shown(v)}${v in LEVEL_OF ? `: use ${shown(LEVEL_OF[v])}` : ''}`)
+const level = (key) => (v) => LEVELS.includes(v) || fail(`${key} takes true, false, 'size' or 'speed'; got ${shown(v)}`)
 
 const MEMORY = {
   initial: pages('memory.initial', 0),
@@ -67,7 +64,7 @@ const OPTIONS = {
     if (v.initial != null && v.maximum != null && v.maximum < v.initial)
       throw new RangeError(`memory.maximum (${v.maximum}) is below the initial memory size (${v.initial} pages)`)
   },
-  optimize: (v) => plain(v) ? check(v, OPTIMIZE, 'optimize option', 'optimize takes', RENAMED_OPTIMIZE) : level('optimize')(v),
+  optimize: (v) => plain(v) ? check(v, OPTIMIZE, 'optimize option', 'optimize takes') : level('optimize')(v),
   randomSeed: (v) => typeof v === 'number' && Number.isFinite(v) ||
     fail(`randomSeed takes a finite number, the seed of a reproducible Math.random (without it Math.random seeds from host entropy); got ${shown(v)}`),
   names: bool('names'),
@@ -77,23 +74,11 @@ const OPTIONS = {
   why: bool('why'),
 }
 
-// The 0.9 spellings, by what replaced them
-const RENAMED = {
-  maxMemory: 'memory: { maximum }', importMemory: 'memory: { import: true }', sharedMemory: 'memory: { shared: true }',
-  fixedMemory: 'memory: { fixed }', noSimd: 'optimize: { simd: false }', tailCall: 'optimize: { tailCall }',
-  noTailCall: 'optimize: { tailCall: false }', noEhAbort: 'optimize: { exceptions: false }', alloc: 'optimize: { alloc }',
-  whyNotSimd: 'why: true with a warnings callback', whyNotRewind: 'why: true with a warnings callback',
-  resolve: 'modules (the CLI reads imports from disk)',
-  strict: 'a warnings callback, which reports each dynamic fallback',
-}
-const RENAMED_OPTIMIZE = { noSimd: 'simd: false', noTailCall: 'tailCall: false', noEhAbort: 'exceptions: false' }
-
 // Every key of `obj` one `table` names, each value checked; a key it does not
-// name throws, with its replacement or the key it most likely meant.
-function check(obj, table, what, takes, renamed = RENAMED) {
+// name throws, with the key it most likely meant.
+function check(obj, table, what, takes) {
   for (const k of Object.keys(obj)) {
     if (!Object.hasOwn(table, k)) {
-      if (Object.hasOwn(renamed, k)) fail(`'${k}' is not ${/^[aeiou]/.test(what) ? 'an' : 'a'} ${what}: use ${renamed[k]}`)
       const near = nearest(k, Object.keys(table))
       fail(`Unknown ${what} '${k}'${near ? `; did you mean '${near}'?` : ''} (${takes} ${Object.keys(table).join(', ')})`)
     }
