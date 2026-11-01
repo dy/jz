@@ -16,7 +16,7 @@ const runHost = source => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-bench-host-'))
   try {
     const file = join(dir, 'case.wasm')
-    writeFileSync(file, compile(source, { host: 'js', alloc: false, imports: {
+    writeFileSync(file, compile(source, { host: 'js', optimize: { alloc: false }, imports: {
       env: { logResult: { params: 5 } },
       performance: { now: { params: 0, returns: 'number' } },
       'optional-device': { absent: { params: 0 } },

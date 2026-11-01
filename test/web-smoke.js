@@ -63,8 +63,8 @@ test('web-smoke: dist/jz.js compiles the REPL sample + hero grid with no Node gl
     // Browser condition: no Node globals. Delete BEFORE the bundle loads so any
     // unguarded reference throws exactly as it would in a <script type=module>.
     const sources = JSON.parse(${JSON.stringify(JSON.stringify({
-      repl: { src: introMatch[1], opt: 3 },                                                 // repl/index.html default (optimize radio: speed)
-      gridCurrent: { src: readFileSync(join(ROOT, 'assets/grid-current.js'), 'utf8'), opt: 3 },  // index.html hero, dark theme
+      repl: { src: introMatch[1], opt: 'speed' },                                               // repl/index.html default (optimize radio: speed)
+      gridCurrent: { src: readFileSync(join(ROOT, 'assets/grid-current.js'), 'utf8'), opt: 'speed' },  // index.html hero, dark theme
     }))})
     const gridBytes = (await import('node:fs')).readFileSync(${JSON.stringify(join(ROOT, 'assets/grid-current.wasm'))})
     delete globalThis.process
