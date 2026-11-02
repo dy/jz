@@ -25,7 +25,7 @@
  * @module prepare/math-kernel
  */
 
-import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, RED_FIRST, RED_SECOND, SIN_C, COS_C, SINCOS_TAB, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, polyHorner, polySplit, fifthFold } from '../../module/math/trig-tables.js'
+import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, RED_FIRST, RED_SECOND, SINCOS_TAB, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from '../../module/math/trig-tables.js'
 
 // ---- bit-level helpers (i64.reinterpret_f64 / f64.reinterpret_i64) ----
 const _buf = new ArrayBuffer(8)
@@ -58,7 +58,7 @@ function nearest(x) {
 /** The shared evaluation tree (module/math/trig-tables.js `polyTree`) over plain
  *  numbers — the same tree the scalar and 2-wide WAT builders emit, so a folded
  *  `Math.cos(0.7)` and the compiled kernel's own answer agree bit for bit. */
-const horner = (cs, v) => polyTree(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, v)
+const horner = (cs, v, v2) => polyTree(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, v, v2)
 
 
 // $math.sin, $math.cos and $math.tan (module/math.js): x = n·π/2 + r − e by the Cody–Waite
@@ -90,14 +90,13 @@ function reduceTrig(x, tail) {
   RY = w - (u - RR)
   return true
 }
-// sin(r − e) = r − (e + z·r·P) and cos(r − e) = 1 − (z·(1/2 + z·P) − r·e), P the
-// negated polynomial (module/math/trig-tables.js)
+// sin(r − e) = r − (e + z·r·P) and cos(r − e) = 1 − (z/2 + (z²·P − r·e)), P the negated
+// polynomial (module/math/trig-tables.js) by the shared tree, z² given
 const SIN_N = SINCOS_TAB.filter((_, i) => !(i & 1)), COS_N = SINCOS_TAB.filter((_, i) => i & 1)
-const splitOf = (cs, z) => polySplit(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, z)
-const sinOf = (r, e, z) => r - (e + (z * r) * splitOf(SIN_N, z))
-const cosOf = (r, e, z) => 1 - (z * (0.5 + z * splitOf(COS_N, z)) - r * e)
+const sinOf = (r, e, z, zz) => r - (e + (z * r) * horner(SIN_N, z, zz))
+const cosOf = (r, e, z, zz) => 1 - (z * 0.5 + (zz * horner(COS_N, z, zz) - r * e))
 function quadrant(k, r, y) {
-  const z = r * r, v = k & 1 ? cosOf(r, y, z) : sinOf(r, y, z)
+  const z = r * r, zz = z * z, v = k & 1 ? cosOf(r, y, z, zz) : sinOf(r, y, z, zz)
   return k & 2 ? -v : v
 }
 function sin(x) {
@@ -108,12 +107,10 @@ function cos(x) {
   if (!reduceTrig(x, true)) return x - x === 0 ? undefined : NaN
   return quadrant(RK + 1, RR, RY)
 }
-// tan's kernels, each one Horner chain: r·(1 + z·S(z)) and 1 − z/2 + z²·C(z) (module/math.js)
-const TAN_S = [1, ...SIN_C], TAN_C = [1, -0.5, ...COS_C]
-const hornerOf = (cs, z) => polyHorner(cs, { konst: (c) => c, mul: (a, b) => a * b, add: (a, b) => a + b }, z)
+// tan(r − e): sin's form, e only from the second round, over 1 − (z/2 + z²·P) (module/math.js)
 function tan(x) {
   if (!reduceTrig(x, false)) return x - x === 0 ? undefined : NaN
-  const z = RR * RR, s = RR * hornerOf(TAN_S, z), c = hornerOf(TAN_C, z)
+  const z = RR * RR, zz = z * z, s = sinOf(RR, RY, z, zz), c = 1 - (z * 0.5 + zz * horner(COS_N, z, zz))
   return RK & 1 ? -c / s : s / c
 }
 

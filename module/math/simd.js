@@ -8,7 +8,7 @@
  */
 import { wat } from '../../src/bridge.js'
 import { ctx } from '../../src/ctx.js'
-import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, RED_FIRST, ATAN_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, SINCOS_TAB, polyTree, polySplit } from './trig-tables.js'
+import { PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, RED_FIRST, ATAN_C, LOG_C, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LN2HI, POW_LN2LO, POW_LOG_A, SINCOS_TAB, polyTree } from './trig-tables.js'
 
 export const registerMathSimd = () => {
   const crPow = !!ctx.transform.optimize?.crPow
@@ -33,31 +33,30 @@ export const registerMathSimd = () => {
   const [H1, T1] = PIO2_CW
   // the scalar kernels (module/math.js quadrant), op for op: sin(r − e) and cos(r − e)
   // with their own coefficients where both lanes' parities agree (a phase's neighbouring
-  // samples mostly share a quadrant), and where not, head − (tail + m·P) with each term
-  // picked by the lane's parity: each lane's coefficient pair (−S_i, −C_i) one load, its
-  // lane picked by $sel (the bytes 0–7 or 8–15)
-  const split2 = (cs, konst = splat) => polySplit(cs, {
+  // samples mostly share a quadrant), and where not, both forms over each lane's own
+  // polynomial, its coefficient pair (−S_i, −C_i) one load with its lane picked by $sel
+  // (the bytes 0–7 or 8–15), each lane taking its parity's form
+  const tree2 = (konst) => polyTree([0, 1, 2, 3, 4, 5], {
     konst,
     mul: (a, b) => `(f64x2.mul ${a} ${b})`,
     add: (a, b) => `(f64x2.add ${a} ${b})`,
-  }, '(local.get $z)')
-  const sincosP2 = split2([0, 1, 2, 3, 4, 5], (i) => `(i8x16.swizzle (v128.load offset=${16 * i} (global.get $math.sincos_tbl)) (local.get $sel))`)
-  const sin2K = `(f64x2.sub (local.get $r) (f64x2.add (local.get $y)
-              (f64x2.mul (f64x2.mul (local.get $z) (local.get $r)) ${split2(SINCOS_TAB.filter((_, i) => !(i & 1)))})))`
-  const cos2K = `(f64x2.sub ${splat(1)} (f64x2.sub
-              (f64x2.mul (local.get $z) (f64x2.add ${splat(0.5)} (f64x2.mul (local.get $z) ${split2(SINCOS_TAB.filter((_, i) => i & 1))})))
-              (f64x2.mul (local.get $r) (local.get $y))))`
-  // head − (tail + m·Q): sin r − (e + z·r·P), cos 1 − (−r·e + z·(1/2 + z·P))
-  const mixed2K = `(f64x2.sub
-              (v128.bitselect ${splat(1)} (local.get $r) (local.get $odd))
-              (f64x2.add
-                (v128.bitselect (f64x2.neg (f64x2.mul (local.get $r) (local.get $y))) (local.get $y) (local.get $odd))
-                (f64x2.mul (v128.bitselect (local.get $z) (f64x2.mul (local.get $z) (local.get $r)) (local.get $odd))
-                  (v128.bitselect (f64x2.add ${splat(0.5)} (f64x2.mul (local.get $z) (local.tee $w ${sincosP2}))) (local.get $w) (local.get $odd)))))`
+  }, '(local.get $z)', '(local.get $h)')
+  const column = (j) => (i) => splat(SINCOS_TAB[2 * i + j])
+  const sin2Of = (P) => `(f64x2.sub (local.get $r) (f64x2.add (local.get $y) (f64x2.mul (f64x2.mul (local.get $z) (local.get $r)) ${P})))`
+  const cos2Of = (P) => `(f64x2.sub ${splat(1)} (f64x2.add (f64x2.mul (local.get $z) ${splat(0.5)})
+              (f64x2.sub (f64x2.mul (local.get $h) ${P}) (f64x2.mul (local.get $r) (local.get $y)))))`
+  const sincos2K = `(if (result v128) (i64x2.all_true (local.get $odd))
+            (then ${cos2Of(tree2(column(1)))})
+            (else (if (result v128) (v128.any_true (local.get $odd))
+              (then
+                (local.set $sel (v128.or (v128.and (local.get $odd) ${i64s('0x0808080808080808')}) ${i64s('0x0706050403020100')}))
+                (local.set $w ${tree2((i) => `(i8x16.swizzle (v128.load offset=${16 * i} (global.get $math.sincos_tbl)) (local.get $sel))`)})
+                (v128.bitselect ${cos2Of('(local.get $w)')} ${sin2Of('(local.get $w)')} (local.get $odd)))
+              (else ${sin2Of(tree2(column(0)))}))))`
   // $t holds x·2/π + ROUND_MAGIC, whose low bits are each lane's quadrant; cos is the next quadrant
   const trig2 = (name, next) => wat(`math.${name}2`, `(func $math.${name}2 (param $x v128) (result v128)
     (local $ax v128) (local $t v128) (local $n v128) (local $u v128) (local $w v128) (local $r v128) (local $y v128)
-    (local $z v128) (local $odd v128) (local $sel v128)
+    (local $z v128) (local $h v128) (local $odd v128) (local $sel v128)
     (local.set $ax (f64x2.abs (local.get $x)))
     (local.set $t (f64x2.add (f64x2.mul (local.get $x) ${splat(INV_PIO2)}) ${splat(ROUND_MAGIC)}))
     (local.set $n (f64x2.sub (local.get $t) ${splat(ROUND_MAGIC)}))
@@ -69,15 +68,9 @@ export const registerMathSimd = () => {
         (local.set $y (f64x2.sub (local.get $w) (f64x2.sub (local.get $u) (local.get $r))))${next ? `
         (local.set $t (i64x2.add (local.get $t) ${i64s(1)}))` : ''}
         (local.set $z (f64x2.mul (local.get $r) (local.get $r)))
+        (local.set $h (f64x2.mul (local.get $z) (local.get $z)))
         (local.set $odd (i64x2.ne (v128.and (local.get $t) ${i64s(1)}) ${i64s(0)}))
-        (v128.xor
-          (if (result v128) (i64x2.all_true (local.get $odd))
-            (then ${cos2K})
-            (else (if (result v128) (v128.any_true (local.get $odd))
-              (then
-                (local.set $sel (v128.or (v128.and (local.get $odd) ${i64s('0x0808080808080808')}) ${i64s('0x0706050403020100')}))
-                ${mixed2K})
-              (else ${sin2K}))))
+        (v128.xor ${sincos2K}
           (i64x2.shl (v128.and (local.get $t) ${i64s(2)}) (i32.const 62))))
       (else
         (f64x2.replace_lane 1

@@ -4746,14 +4746,12 @@ log 4.1 and 3.0 (3.1), sin 4.2 and 2.4 (6.3), atan 2.9 and 2.2 (2.6).
 jz's Math is not V8's bit for bit: it keeps within 50 ulp of it, for 9% more
 time on the floatbeat corpus than the fast kernels it replaced, where porting
 V8's fdlibm exactly (branch `audiojs-math`) took 75% more. `sin`, `cos` and
-`tan` have since taken fdlibm's reduction and polynomials at that corpus time
-(1.00× the kernels before them, the median of six paired rounds, 0.92 to 1.17;
-`trig-tables.js` has the constants and their bounds): x = n·π/2 + r − e,
-|r| ≤ π/4 and e the tail below
-r's last place, then sin(r − e) or cos(r − e) by n's parity (a branch; a phase
-keeps it predicted), negated by n's second bit. An |x| ≤ π/4 (the double below
-it; x·2/π rounds to ½ and ties to n = 0) is its own remainder and skips the
-reduction. Below 2^24 the first Cody–Waite round is inline: n from x·2/π
+`tan` have since taken fdlibm's reduction and polynomials (`trig-tables.js` has
+the constants and their bounds): x = n·π/2 + r − e, |r| ≤ π/4 and e the tail
+below r's last place, then sin(r − e) or cos(r − e) by n's parity (a branch; a
+phase keeps it predicted), negated by n's second bit. An |x| ≤ π/4 (the double
+below it; x·2/π rounds to ½ and ties to n = 0) is its own remainder and skips
+the reduction. Below 2^24 the first Cody–Waite round is inline: n from x·2/π
 rounded by adding and removing 1.5·2^52 (whose low word is then n), r = (x −
 n·H1) − n·T1 with H1 π/2's leading 27 bits (so x − n·H1 is exact) and T1 the
 double nearest the rest, and e that subtraction's rounding error, exact by
@@ -4770,30 +4768,45 @@ remainder, the worst double of all (6381956970095103·2^797, |r| = 2^-61)
 included; no loop and no scratch memory. The kernels are fdlibm's polynomials
 (k_sin.c S1..S6, k_cos.c C1..C6, 2^-58 each) in a form that sums the small
 terms before the one rounding at the head's magnitude: sin = r − (e + z·r·P),
-cos = 1 − (z·(1/2 + z·P) − r·e), z = r², P the negated polynomial, which also
+cos = 1 − (z/2 + (z²·P − r·e)), z = r², P the negated polynomial, which also
 keeps sin(−0) = −0. One P serves both, its coefficients read from a table of the
-two interleaved at the offset the parity picks, evaluated as even + z·odd halves
-(`polySplit`, k_sin.c's order): 11 operations, 7 of them in a chain, where
-Horner takes 10 and 10 and the tree 12 and 6. A loop of independent calls is
-bound by the first number, a hash of a sine or an LFO into an oscillator by the
-second. `tan` is sin/cos (−cos/sin for an odd quadrant) without the
-tail, its sine r·(1 + z·S) and cosine 1 − z/2 + z²·C each one Horner chain, so
-the head is added once. The inline part is what V8 inlines into a loop that
+two interleaved at the offset the parity picks, evaluated by the shared tree
+with z² computed once: 11 operations, 5 deep, so sin ends three operations after
+P and cos four. Each side of the parity branch computes its own terms alone:
+selecting both sides' terms without a branch cost three.js's slerp
+(`threeanim`) 8% more time. Splitting P into even and odd halves (k_sin.c's
+order) saves an operation and adds two to the chain (threeanim about 1% slower).
+k_cos.c's own cosine, w − (((z/2 − (1 − w)) − r·e) + z²·P) with w = 1 − z/2, is
+one operation shorter after P for four more: a call that waits on the one before
+1 to 5% faster, threeanim 1.5% and a loop of independent calls 4 to 8% slower. Both
+polynomials as constants in their branches, with no table, ran threeanim 1 to
+2% faster at 321 bytes, and a loop of independent calls up to 17% slower (V8
+inlines a callee only into a caller at least its size). `tan` is sin/cos
+(−cos/sin for an odd quadrant), the sine's form with the tail where the second
+round found it and the cosine 1 − (z/2 + z²·P) without it, the quotient chosen
+by a branch: a select of its operands waited on both, up to 20% more time when
+each call waits on the last. The inline part is what V8 inlines into a loop that
 calls it, and only while the callee fits the caller's budget (about the
 caller's own size again: 317 bytes for a one-line loop over an array); `sin` is
-283 bytes, `cos` 288, `tan` 290, where the four-part kernels they replaced were
-297, 302 and 297. A first version of these, with fdlibm's tan kernel and the
-second round inline, reached 461 bytes and lost the inlining: 2.4× the time in
-that loop. The reduction's
-fast path leaves its block by `br_if` and the call falls through to the end: an
-if/else around the call made V8 reload the loop's counter, bounds and memory
-base from the stack every iteration. `sin2`/`cos2` do the same two lanes wide,
-bit-identical with the scalar: one kernel when both lanes' parities agree, and
-otherwise head − (tail + m·Q) with each term and each lane's coefficient pair
-(one load and a swizzle) picked by its parity; a lane whose first round
-cancels sends both to the scalar. The constant folder mirrors both rounds and
-leaves an argument Payne–Hanek reduces for run time (the compiler compiled by
-itself has 64-bit BigInt, which cannot mirror the 192-bit product).
+281 bytes, `cos` 286, `tan` 302, where the four-part kernels they replaced were
+297, 302 and 297. A first version, with fdlibm's tan kernel and the second round
+inline, reached 461 bytes and lost the inlining: 2.4× the time in that loop.
+The reduction's fast path leaves its block by `br_if` and the call falls
+through to the end: an if/else around the call made V8 reload the loop's
+counter, bounds and memory base from the stack every iteration. Against the
+four-part kernels on an Apple M4, the bench cases that call them run 0.99 to
+1.03 times as long (`bench.mjs --paired`, against the parent commit's build;
+threeanim, three sines a slerp, 1.02 to 1.03), and in CPU time, both builds in
+one process: the floatbeat corpus 1.01, a call that waits on the one before it
+(an LFO into an oscillator's phase) 1.00 to 1.12, a loop of independent calls
+0.89 to 1.04 but 1.05 to 1.07 for sin over [0, π/2], half its arguments skipping
+the reduction, the path the sixth coefficient and the tail lengthen most.
+`sin2`/`cos2` do the same two lanes wide, bit-identical with the scalar: one kernel when both lanes' parities agree, and otherwise both
+forms over each lane's own polynomial (its coefficient pair one load and a
+swizzle), each lane taking its parity's; a lane whose first round cancels sends
+both to the scalar. The constant folder mirrors both rounds and leaves an
+argument Payne–Hanek reduces for run time (the compiler compiled by itself has
+64-bit BigInt, which cannot mirror the 192-bit product).
 `atan` reduces |x| by three intervals and at most one division (as is, π/4 +
 atan((|x| − 1)/(|x| + 1)), π/2 + atan(−1/|x|)) to |t| ≤ tan(π/8) and a
 degree-19 odd polynomial (8.8 ulp minimax); `atan2` divides and calls it, and
@@ -4809,9 +4822,9 @@ and log1p, each the one that cancels nothing in its range; `log1p` takes the
 ratio x/(u − 1) before the product that overflowed past 2.5e305. Measured
 against V8 (`node scripts/math-ulp.mjs`: the floatbeat corpus's arguments,
 the doubles nearest k·π/2 to k = 1e6 with their ±4-ulp neighbours, 200k
-log-uniform arguments a function, the edges): sin 1, cos 1, tan 3 (1.3,
-1.3 and 3.2 from the true value, which `test/math-ulp.js` computes with
-1400-bit π), atan and atan2 10, sinh 5, cosh 3, tanh 5, asinh 4, acosh 5,
+log-uniform arguments a function, the edges): sin 1, cos 1, tan 3 (0.9,
+0.9 and 2.4 from the true value at 2000 bits; `test/math-ulp.js` holds them to
+1.5, 1.5 and 3.5 against its own, with 1400-bit π), atan and atan2 10, sinh 5, cosh 3, tanh 5, asinh 4, acosh 5,
 atanh 4, exp 1, expm1 3, log 4, log1p 4, log2 4, log10 2, cbrt 0, hypot 2,
 pow 11, a k/5 exponent 40; sin(π) is 1.2246467991473532e-16 and the kπ/2
 set stays within 2 ulp. `test/math-ulp.js` pins each bound with the lanes and

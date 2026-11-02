@@ -31,15 +31,15 @@ export const PIO2_C63 = '0xc90fdaa22168c235'
 export const TWO_OVER_PI_HEX = '00000000000000002915444e6e83f9a2c0dd34f5d15727fc4190433c999562db61c5bbdeab6351fee0d24d423a6e24b71c92d109ea2e49063ea729b11ceb1dfe8444bb2ef53582e8417e5fb426709ce9f439538339d691393b28f9bd8b5f849c0f9805deff97f81f1f6d0a5a8b112fefb709cb27cf7e366d2dea5f9e663f464f7bf1e5ebc7ba2775ea92528af739073d085d8d1fb15ffb6bab6b7bfc46300356'
 // The kernels on [−π/4, π/4], fdlibm's polynomials (the values are the words the
 // sources give; test/math-ulp.js checks them), with z = r²:
-//   sin(r − e) = r − (e + z·r·P(z)),            P = −(S1..S6)  (k_sin.c: 2^-58)
-//   cos(r − e) = 1 − (z·(1/2 + z·P(z)) − r·e),  P = −(C1..C6)  (k_cos.c: 2^-58)
+//   sin(r − e) = r − (e + z·r·P(z)),             P = −(S1..S6)  (k_sin.c: 2^-58)
+//   cos(r − e) = 1 − (z/2 + (z²·P(z) − r·e)),    P = −(C1..C6)  (k_cos.c: 2^-58)
 // e and r·e the tail's first-order terms; summing the small terms before the head
 // leaves one rounding at the head's magnitude. The negated polynomial keeps
-// sin(−0) = −0 (−0 − (+0 + −0)). One polynomial evaluates both (polySplit), its
-// coefficients read from SINCOS_TAB, −S_i and −C_i interleaved, at an offset the
-// quadrant's parity picks, and a two-lane kernel takes each lane's pair with one load.
-// tan(r) = sin/cos, or −cos/sin for an odd quadrant, with sin as r·(1 + z·S(z)), cos as
-// 1 − z/2 + z²·C(z) (polyHorner) and no tail.
+// sin(−0) = −0 (−0 − (+0 + −0)). P is the shared tree (polyTree, five operations deep
+// on six terms), its coefficients read from SINCOS_TAB, −S_i and −C_i interleaved, at an
+// offset the quadrant's parity picks; a two-lane kernel takes each lane's pair with one
+// load. tan(r − e) = sin/cos, or −cos/sin for an odd quadrant: sin's form, and cos as
+// 1 − (z/2 + z²·P(z)) without the tail.
 export const SIN_C = [-0.16666666666666632, 0.00833333333332249, -0.0001984126982985795, 0.0000027557313707070068, -2.5050760253406863e-8, 1.58969099521155e-10]
 export const COS_C = [0.0416666666666666, -0.001388888888887411, 0.00002480158728947673, -2.7557314351390663e-7, 2.087572321298175e-9, -1.1359647557788195e-11]
 export const SINCOS_TAB = SIN_C.flatMap((s, i) => [-s, -COS_C[i]])
@@ -64,14 +64,15 @@ export const ATAN_C = [1, -0.33333333333260085, 0.199999999826836, -0.1428571287
  * shrinks by the same factor.
  *
  * `ops` supplies the three constructors for the target: a constant, a multiply
- * and an add. `x` is the variable already in the target's own form.
+ * and an add. `x` is the variable already in the target's own form, `x2` its square
+ * where the caller holds it already (the same value either way).
  */
-export const polyTree = (cs, ops, x) => {
+export const polyTree = (cs, ops, x, x2 = ops.mul(x, x)) => {
   const { konst, mul, add } = ops
   let terms = []
   for (let i = 0; i < cs.length; i += 2)
     terms.push(i + 1 < cs.length ? add(konst(cs[i]), mul(x, konst(cs[i + 1]))) : konst(cs[i]))
-  let pow = mul(x, x)
+  let pow = x2
   while (terms.length > 1) {
     const next = []
     for (let i = 0; i < terms.length; i += 2)
@@ -80,38 +81,6 @@ export const polyTree = (cs, ops, x) => {
     pow = mul(pow, pow)
   }
   return terms[0]
-}
-
-/**
- * Horner's scheme over the same constructors, shared the same way: one multiply-add per
- * coefficient, in a chain. tan's two polynomials take it, sin as r·(1 + z·S(z)) and cos as
- * 1 − z/2 + z²·C(z): the chain ends in the one addition at the head's magnitude, where the
- * tree adds its leading pair to the rest and rounds there twice (an ulp more of tan's error).
- */
-export const polyHorner = (cs, ops, x) => {
-  const { konst, mul, add } = ops
-  let acc = konst(cs[cs.length - 1])
-  for (let i = cs.length - 2; i >= 0; i--) acc = add(konst(cs[i]), mul(x, acc))
-  return acc
-}
-
-/**
- * The even/odd split, shared the same way: c0 + c2·w + c4·w² + … and c1 + c3·w + … by
- * Horner in w = x², joined as even + x·odd (k_sin.c evaluates its sine so). The sine and
- * cosine kernels take it: on six terms it is 11 operations, 7 of them in a chain, where
- * Horner is 10 and 10 and the tree 12 and 6. A loop of independent calls is bound by the
- * operations, one that feeds a result into the next call (a hash of a sine, an LFO into
- * an oscillator's frequency) by the chain.
- */
-export const polySplit = (cs, ops, x) => {
-  const { konst, mul, add } = ops
-  const w = mul(x, x)
-  const half = (lo) => {
-    let i = lo + ((cs.length - 1 - lo) & ~1), acc = konst(cs[i])
-    for (i -= 2; i >= lo; i -= 2) acc = add(konst(cs[i]), mul(w, acc))
-    return acc
-  }
-  return add(half(0), mul(x, half(1)))
 }
 
 // atanh's series for log: log((1+s)/(1-s)) = 2s * (1 + s^2/3 + s^4/5 + …), the

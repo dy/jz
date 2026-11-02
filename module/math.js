@@ -21,7 +21,7 @@ import { roundedQuotient } from '../src/static.js'
 import { exprType, isUnsignedI32Expr } from '../src/type/expr-type.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
 import { powFold, powLog } from '../src/prepare/math-kernel.js'
-import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, RED_FIRST, RED_SECOND, PIO2_C63, TWO_OVER_PI_HEX, SIN_C, COS_C, SINCOS_TAB, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, polyHorner, polySplit, fifthFold } from './math/trig-tables.js'
+import { ASIN_PIO2_HI, ASIN_PIO2_LO, ASIN_PIO4_HI, ASIN_PI, ASIN_P, ASIN_Q, PI, HALF_PI, PIO2_CW, INV_PIO2, ROUND_MAGIC, CW_LIMIT, RED_FIRST, RED_SECOND, PIO2_C63, TWO_OVER_PI_HEX, SINCOS_TAB, ATAN_C, EXPM1_C, LOG_C, EXP2_TAB_HEX, EXP2_Q, EXP_Q, EXP_L1, EXP_L2, POW_LOG_TAB_HEX, POW_LOG_A, POW_LN2HI, POW_LN2LO, polyTree, fifthFold } from './math/trig-tables.js'
 import { hexBytes } from '../src/static-data.js'
 import { registerMathSimd } from './math/simd.js'
 import { registerSumPrecise } from './math/sum-precise.js'
@@ -578,29 +578,33 @@ export default (ctx) => {
       (br_if $red (f64.ge (f64.abs (local.get $r)) (f64.mul (local.get $ax) (f64.const ${RED_FIRST}))))
       (if (f64.ne (f64.sub (local.get $x) (local.get $x)) (f64.const 0)) (then (return (f64.const nan))))
       (local.set $k (local.set $r (local.set $y (call $math.rem_pio2 (local.get $x))))))`
-  const trigLocals = '(local $ax f64) (local $t f64) (local $n f64) (local $u f64) (local $w f64) (local $r f64) (local $y f64) (local $z f64) (local $k i32)'
-  // The kernels' polynomial in z = r² (trig-tables.js polySplit), its coefficients
-  // SINCOS_TAB's from the address `tb`: the sine's at +0, the cosine's at +8 (the two
-  // interleave)
+  const trigLocals = '(local $ax f64) (local $t f64) (local $n f64) (local $u f64) (local $w f64) (local $r f64) (local $y f64) (local $z f64) (local $h f64) (local $k i32) (local $q i32) (local $tb i32)'
+  // The kernels' polynomial in z = r², z² in $h (trig-tables.js polyTree), its
+  // coefficients SINCOS_TAB's from the address `tb`: the sine's at +0, the cosine's at +8
+  // (the two interleave), `off` further
   ctx.runtime.sincosTable = f64Bytes(SINCOS_TAB)
-  const sincosP = (tb, off = 0) => polySplit([0, 1, 2, 3, 4, 5], {
+  const sincosP = (tb, off = 0) => polyTree([0, 1, 2, 3, 4, 5], {
     konst: (i) => `(f64.load offset=${16 * i + off} ${tb})`,
     mul: (a, b) => `(f64.mul ${a} ${b})`,
     add: (a, b) => `(f64.add ${a} ${b})`,
-  }, '(local.get $z)')
-  // sin(r − e) = r − (e + z·r·P) and cos(r − e) = 1 − (z·(1/2 + z·P) − r·e), P the
-  // polynomial (trig-tables.js), given z = r² and e in $y
+  }, '(local.get $z)', '(local.get $h)')
+  // sin(r − e) = r − (e + z·r·P) and cos(r − e) = 1 − (z/2 + (z²·P − r·e)), P the negated
+  // polynomial (trig-tables.js), e in $y: the small terms summed before the one rounding
+  // at the head's magnitude, three and four operations after P
   const sinOf = (P) => `(f64.sub (local.get $r) (f64.add (local.get $y) (f64.mul (f64.mul (local.get $z) (local.get $r)) ${P})))`
-  const cosOf = (P) => `(f64.sub (f64.const 1) (f64.sub (f64.mul (local.get $z) (f64.add (f64.const 0.5) (f64.mul (local.get $z) ${P})))
-      (f64.mul (local.get $r) (local.get $y))))`
-  // sin(r − e) for an even quadrant, cos(r − e) for an odd one, then the sign by the
-  // second bit: one polynomial, its coefficients at the offset n's parity picks, and a
-  // branch on the parity for the terms around it (a phase advancing less than π/2 a
-  // step keeps it predicted)
+  const cosOf = (P) => `(f64.sub (f64.const 1) (f64.add (f64.mul (local.get $z) (f64.const 0.5))
+      (f64.sub (f64.mul (local.get $h) ${P}) (f64.mul (local.get $r) (local.get $y)))))`
+  // sin(r − e) for an even quadrant, cos(r − e) for an odd one, then the sign by the second
+  // bit: one polynomial, its coefficients at the offset n's parity picks, and a branch on
+  // the parity for the terms around it, each side computing its own alone (a phase
+  // advancing less than π/2 a step keeps it predicted)
   const quadrant = `
     (local.set $z (f64.mul (local.get $r) (local.get $r)))
-    (local.set $n ${sincosP(`(i32.add (global.get $math.sincos_tbl) (i32.shl (i32.and (local.get $k) (i32.const 1)) (i32.const 3)))`)})
-    (local.set $t (if (result f64) (i32.and (local.get $k) (i32.const 1)) (then ${cosOf('(local.get $n)')}) (else ${sinOf('(local.get $n)')})))
+    (local.set $h (f64.mul (local.get $z) (local.get $z)))
+    (local.set $q (i32.and (local.get $k) (i32.const 1)))
+    (local.set $tb (i32.add (global.get $math.sincos_tbl) (i32.shl (local.get $q) (i32.const 3))))
+    (local.set $n ${sincosP('(local.get $tb)')})
+    (local.set $t (if (result f64) (local.get $q) (then ${cosOf('(local.get $n)')}) (else ${sinOf('(local.get $n)')})))
     (select (f64.neg (local.get $t)) (local.get $t) (i32.and (local.get $k) (i32.const 2)))`
   wat('math.sin', `(func $math.sin (param $x f64) (result f64)
     ${trigLocals}${reduceTrig(true)}${quadrant})`)
@@ -608,23 +612,20 @@ export default (ctx) => {
   wat('math.cos', `(func $math.cos (param $x f64) (result f64)
     ${trigLocals}${reduceTrig(true)}
     (local.set $k (i32.add (local.get $k) (i32.const 1)))${quadrant})`)
-  // tan(r) = sin/cos for an even quadrant, −cos/sin for an odd one, sin as r·(1 + z·S(z))
-  // (−0 stays −0) and cos as 1 − z/2 + z²·C(z), each one Horner chain (trig-tables.js
-  // polyHorner), without the tail: sin's and cos's forms, tail and all, move tan's error
-  // against V8's by no ulp, for seven operations more
-  const hornerK = (cs) => polyHorner(cs, {
-    konst: (c) => `(f64.const ${c})`,
-    mul: (a, b) => `(f64.mul ${a} ${b})`,
-    add: (a, b) => `(f64.add ${a} ${b})`,
-  }, '(local.get $z)')
+  // tan(r − e) = sin/cos for an even quadrant, −cos/sin for an odd one, both polynomials
+  // from their columns of the table: sin's form as above, e only where $math.rem_pio2
+  // reduced x (its +0 otherwise keeps tan(−0) = −0), cos as 1 − (z/2 + z²·P) without it;
+  // the quotient by a branch on the parity, which a select of its operands made wait on both
   wat('math.tan', `(func $math.tan (param $x f64) (result f64)
-    ${trigLocals} (local $s f64)${reduceTrig(false)}
+    ${trigLocals}${reduceTrig(false)}
     (local.set $z (f64.mul (local.get $r) (local.get $r)))
-    (local.set $s (f64.mul (local.get $r) ${hornerK([1, ...SIN_C])}))
-    (local.set $t ${hornerK([1, -0.5, ...COS_C])})
+    (local.set $h (f64.mul (local.get $z) (local.get $z)))
+    (local.set $t ${sinOf(sincosP('(global.get $math.sincos_tbl)'))})
+    (local.set $n (f64.sub (f64.const 1) (f64.add (f64.mul (local.get $z) (f64.const 0.5))
+      (f64.mul (local.get $h) ${sincosP('(global.get $math.sincos_tbl)', 8)}))))
     (if (result f64) (i32.and (local.get $k) (i32.const 1))
-      (then (f64.div (f64.neg (local.get $t)) (local.get $s)))
-      (else (f64.div (local.get $s) (local.get $t)))))`)
+      (then (f64.div (f64.neg (local.get $n)) (local.get $t)))
+      (else (f64.div (local.get $t) (local.get $n)))))`)
 
   // The reduction past the inline round, for a finite |x| > π/4: the quadrant (in the
   // low bits of the i32) and x − n·π/2 = r − e, |r| ≤ π/4, e the tail negated. Below 2^24

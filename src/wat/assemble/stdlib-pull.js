@@ -348,7 +348,7 @@ export function pullStdlib(sec) {
   if (injectTable('math.rem_pio2', 'math.pio2_tbl', ctx.runtime.pio2Table)) ctx.runtime.pio2Table = null
   // sin's and cos's kernel coefficients, interleaved (module/math.js quadrant; the two-lane
   // $math.sin2/cos2 reach them through their scalar fallback's pull)
-  if (injectTable(['math.sin', 'math.cos'], 'math.sincos_tbl', ctx.runtime.sincosTable)) ctx.runtime.sincosTable = null
+  if (injectTable(['math.sin', 'math.cos', 'math.tan'], 'math.sincos_tbl', ctx.runtime.sincosTable)) ctx.runtime.sincosTable = null
   // The 2^(j/64) table both exponentials and pow reduce to (module/math/trig-tables.js
   // EXP2_TAB), and pow's log table: pow's default kernel (inline in $math.pow; crPow's has
   // tables of its own) and $math.pow_b read the first, $math.pow the second.
