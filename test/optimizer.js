@@ -17,7 +17,7 @@ import { fusedRewrite, lowerToInt32Tails, foldLoadCasts } from '../src/optimize/
 import { ctx } from '../src/ctx.js'
 import { T, walkAst } from '../src/ast.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
-import { optimize as watOptimize, OPTS as WATR_OPTS } from 'watr/optimize'
+import { optimize as watOptimize, OPTS as WATR_OPTS, schedule as watrSchedule } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import { unrollRecurrence } from '../src/compile/loop-recurrence.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
@@ -5787,6 +5787,83 @@ test('rec-unroll: the pair loop computes in integers (the plan sweep declares th
   is(loopCount(parseWat(wat), n => /^(?:f64\.(?:add|sub|lt|gt|le|ge)|i64\.trunc|i32\.trunc|f64\.convert)/.test(n[0])), 0, 'no float arithmetic or conversion in the loops')
   const host = oracle(src).f
   for (const seed of [1, 7, 12345, -3]) is(run(src, { optimize: 'speed' }).f(seed), host(seed), `seed ${seed}`)
+})
+
+test('min recurrence (watr): a cell joins the input carried from the cell before it last', () => {
+  if (onKernel() || belowOpt(2)) return
+  // An integer min recurrence (an edit distance's cell: min(up + 1, left + 1, diag + cost)):
+  // min commutes, so the input that carries the previous cell's result joins last and the
+  // chain from cell to cell is an add, a compare and a select. watr's scheduler orders the
+  // updates, following the carry through the copies the integral copy and the recurrence
+  // pair make, in both cells of the pair (the second under the pair's test), whichever
+  // order the source wrote them in.
+  // (a watr whose scheduler follows the carry one definition back leaves the order as
+  // written: the pins wait for the release that follows copies)
+  const probe = parseWat(`(module (func (param $n i32) (param $o i32) (result i32) (local $c i32) (local $w i32) (local $x i32) (local $m i32)
+    (loop $l (local.set $w (local.get $c)) (local.set $x (i32.add (local.get $w) (i32.const 1))) (local.set $m (local.get $n))
+      (if (i32.lt_s (local.get $x) (local.get $m)) (then (local.set $m (local.get $x))))
+      (if (i32.lt_s (local.get $o) (local.get $m)) (then (local.set $m (local.get $o))))
+      (local.set $c (local.get $m)) (br_if $l (local.get $m)))
+    (local.get $c)))`)
+  watrSchedule(probe)
+  if (probe[1].find(n => n?.[0] === 'loop').find(n => n?.[0] === 'if')[1][1][1] === '$x') return
+  const src = (first, second) => `
+    const LB = 64
+    const dist = (a, b, prev) => {
+      for (let j = 0; j <= LB; j++) prev[j] = j
+      for (let i = 1; i <= LB; i++) {
+        let diag = prev[0]
+        prev[0] = i
+        const ai = a[i - 1]
+        for (let j = 1; j <= LB; j++) {
+          const up = prev[j]
+          const sub = diag + (ai === b[j - 1] ? 0 : 1)
+          let m = up + 1
+          const ins = prev[j - 1] + 1
+          if (${first} < m) m = ${first}
+          if (${second} < m) m = ${second}
+          diag = up
+          prev[j] = m
+        }
+      }
+      return prev[LB]
+    }
+    export let f = (seed) => {
+      const a = new Uint8Array(LB), b = new Uint8Array(LB), prev = new Int32Array(LB + 1)
+      let s = seed | 0
+      for (let i = 0; i < LB; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; a[i] = s & 3; b[i] = (s >> 3) & 3 }
+      return dist(a, b, prev)
+    }`
+  // The two-deep integer min/max chains of each function, read in evaluation order: whether the
+  // outer select takes the input the pair's carried cell (`…rec<N>`) reaches and the inner one an
+  // input it does not.
+  const chains = (tree) => {
+    const out = []
+    for (const fn of tree.filter(n => n?.[0] === 'func')) {
+      const carried = new Map()
+      const ev = (n) => {
+        if (!Array.isArray(n)) return false
+        if (n[0] === 'local.get') return /rec\d/.test(n[1]) || carried.get(n[1]) === true
+        if (n[0] === 'local.set' || n[0] === 'local.tee') { const c = ev(n[2]); carried.set(n[1], c); return c }
+        if (n[0] === 'select' && n[2]?.[0] === 'local.tee' && n[2][2]?.[0] === 'select' && /^i32\.[lg][te]_[su]$/.test(n[3]?.[0])) {
+          const outer = ev(n[1]), inner = ev(n[2][2][1])
+          out.push({ outer, inner })
+        }
+        let any = false
+        for (let i = 1; i < n.length; i++) if (ev(n[i])) any = true
+        return any
+      }
+      ev(fn)
+    }
+    return out
+  }
+  for (const [first, second] of [['ins', 'sub'], ['sub', 'ins']]) {
+    const found = chains(parseWat(compile(src(first, second), { wat: true, optimize: { level: 'speed', coldTrap: true } })))
+    is(found.filter(c => c.outer).length, 2, `${first} first: a chain in each cell of the pair`)
+    for (const c of found) ok(c.outer && !c.inner, `${first} first: the carried input joins last`)
+    const host = oracle(src(first, second)).f
+    for (const seed of [1, 7, 12345, -3]) is(run(src(first, second), { optimize: 'speed' }).f(seed), host(seed), `${first} first: seed ${seed}`)
+  }
 })
 
 test('a bare let assigned on every path before its reads is typed by its assignments', () => {
