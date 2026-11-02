@@ -68,6 +68,8 @@ What this implies for HOW we optimize:
 - `npm run test:extended` — integration matrix plus generated correctness/WAT/
   codegen populations on native and WASI. These checks moved out of core, not out
   of CI. `test:integration` / `test:generated` run just the current leg.
+- Off a terminal, the suites print only failures and the totals; `TST_MUTE=0`
+  prints every test and assertion (the last name shown is the one that hangs).
 - `npm run test:bootstrap -- --full` — one fresh ordinary build shared across
   round-trip, O0/O2/O3 parity/oracles, checkpoint tests, the hosted suite and
   recursive compilation. The checkpoint overlay still has its own build.

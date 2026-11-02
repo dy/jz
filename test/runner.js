@@ -66,6 +66,17 @@ test('runner: failures propagate while later tests still run', () => {
   ok(r.output.includes('1..2'), 'one complete TAP plan')
 })
 
+test('runner: off a terminal a passing test prints nothing and a failure prints in full', () => {
+  const sources = [`test('quiet pass', ({ is }) => is(1, 1, 'pass detail'))
+    test('loud fail', ({ is }) => { is(2, 2, 'before'); is(1, 2, 'fail detail') })`]
+  const piped = fixture(sources)
+  is(piped.status, 1)
+  ok(!piped.output.includes('quiet pass') && !piped.output.includes('pass detail') && !piped.output.includes('before'), piped.output)
+  ok(piped.output.includes('► loud fail') && piped.output.includes('fail detail') && piped.output.includes('# pass 1'), piped.output)
+  const shown = fixture(sources, { TST_MUTE: '0' })
+  ok(shown.output.includes('quiet pass') && shown.output.includes('pass detail') && shown.output.includes('before'), 'TST_MUTE=0 shows every assertion')
+})
+
 test('runner: grep and only select across the complete file list', () => {
   const sources = [
     `test('early', () => { throw Error('must not run') })`,
