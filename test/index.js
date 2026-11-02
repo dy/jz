@@ -264,6 +264,7 @@ const TESTS = [
   'deopt',
   'minimal-output',
   'bench-svg',
+  'bench-shards',
   'bench-porffor',
   'bench-perry',
   'bench-competitors',
@@ -368,7 +369,7 @@ const LEG_INVARIANT = new Set([
   'source-map', // fixed debug build, V8 debugger and CLI in the JS host
   'pmath', // the benchmark's fixed JS host and speed build on every leg
   'self-checkpoint', 'self-build', 'self-compile-source', 'kernel-marks', 'eager-stdlib-parity',
-  'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-perry', 'bench-competitors', 'bench-memory', 'bench-svg', 'cli', 'native-lowering',
+  'reachability-mutants', 'bench-c', 'bench-porffor', 'bench-perry', 'bench-competitors', 'bench-memory', 'bench-svg', 'bench-shards', 'cli', 'native-lowering',
   'headline', 'site', 'guide', 'web-smoke',
 ])
 // Files that choose their own optimize levels (an explicit `optimize` on every
