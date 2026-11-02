@@ -283,8 +283,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (op === '?:' && e.length === 4) {   // join of both arms, each under its refinement
       visit(x)
       const saved = new Map(env)
-      const rT = refine(x, false), rE = refine(x, true)
-      if (rT) env.set(rT[0], rT[1])
+      // (every `&&` conjunct holds in the then arm, as in an `if`: `i >= 0 && i < a.length ? a[i] : d`;
+      // a test that writes keeps its first comparison alone: a later conjunct may move what an earlier one bounded)
+      const rE = refine(x, true)
+      const writes = some(x, n => MUTATE_OPS.has(n[0]))
+      for (const rT of writes ? [refine(x, false)].filter(Boolean) : refineAll(x)) if (!closureWrites.has(rT[0])) env.set(rT[0], rT[1])
       const a = ev(e[2])
       const afterThen = env
       env = saved
@@ -476,20 +479,22 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     const seedUnknown = namedSeed && typeof c2 === 'string' && boolDefs.has(c2)
     if (!seedUnknown) {
       const out = []
+      // (each conjunct refines from the same state: a name two of them bound takes both,
+      // where the test writes nothing that could move it between them)
+      const still = !some(c2, n => MUTATE_OPS.has(n[0]))
+      const meet = (h) => {
+        const i = out.findIndex(o => o[0] === h[0])
+        if (i < 0) { out.push(h); return }
+        const m = [Math.max(out[i][1][0], h[1][0]), Math.min(out[i][1][1], h[1][1])]
+        if (m[0] <= m[1]) out[i] = [h[0], m]
+      }
       const gatherKnown = (c3) => {
         if (Array.isArray(c3) && c3[0] === '&&') { gatherKnown(c3[1]); gatherKnown(c3[2]); return }
         const r = refineRaw(c3, false, false)
-        if (r && r[1][0] <= r[1][1] && ipOk(r[1])) out.push(r)
+        if (r && r[1][0] <= r[1][1] && ipOk(r[1])) { if (still) meet(r); else out.push(r) }
         // A read's hit refines its index name, intersected with that name's other conjuncts.
         const h = readHit(c3)
-        if (h) {
-          const i = out.findIndex(o => o[0] === h[0])
-          if (i < 0) out.push(h)
-          else {
-            const m = [Math.max(out[i][1][0], h[1][0]), Math.min(out[i][1][1], h[1][1])]
-            if (m[0] <= m[1]) out[i] = [h[0], m]
-          }
-        }
+        if (h) meet(h)
       }
       gatherKnown(c2)
       return out

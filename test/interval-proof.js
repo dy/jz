@@ -1565,3 +1565,31 @@ test('interval proof: implicit parameter returns invalidate caller storage facts
     }
   }
 })
+
+test('interval proof: every conjunct of a test bounds its arm, a ternary\'s as an if\'s', () => {
+  // `i >= 0 && i < a.length ? a[i] : d`: each conjunct bounds `i` from the same
+  // state, so the arm reads within both. A ternary refined by the first
+  // comparison alone, and two conjuncts on one name kept the later only: the
+  // read tested its bound again inside the guard that had just tested it. A
+  // walk over links (`j = j >= 0 && j < next.length ? next[j] : -1`) paid that
+  // second test every link.
+  for (const [label, body] of [
+    ['ternary', 'return (j >= 0 && j < nx.length) ? nx[j] : -1'],
+    ['ternary, bound first', 'return (j < nx.length && j >= 0) ? nx[j] : -1'],
+    ['if', 'if (j >= 0 && j < nx.length) return nx[j]; return -1'],
+  ]) {
+    const src = `let nx = new Int32Array(64)
+      export let fill = () => { let i = 0; while (i < 64) { nx[i] = i * 3 - 7; i++ } }
+      export let f = (j) => { j = j | 0; ${body} }`
+    const js = oracle(src); js.fill()
+    for (const optimize of levels(0, 2, 'speed')) {
+      const m = jz(src, { optimize }).exports; m.fill()
+      for (const j of [0, 1, 63, 64, 65, -1, -64, 2147483647, -2147483648, 4294967296 + 5, 3.75, NaN])
+        is(m.f(j), js.f(j), `${label} f(${j}) at ${optimize}`)
+    }
+    if (onKernel() || belowOpt(2)) continue
+    const text = funcWat(compile(src, { optimize: 'speed', wat: true }), 'f')
+    is((text.match(/i32\.load/g) || []).length, 1, `${label}: one read`)
+    ok(!/i32\.shr_u/.test(text), `${label}: the read tests no length past the guard`)
+  }
+})
