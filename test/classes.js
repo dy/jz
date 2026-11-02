@@ -756,6 +756,39 @@ test('class struct: an instance with no own properties skips the shadowing looku
   is((inst.instance?.exports ?? inst.exports).__hc_dyn_get_expr.value, 0n, 'no instance owns the name: no lookup')
 })
 
+// A receiver of several classes, one overriding the member, calls through the
+// member's dispatcher, which asks each class's instance for an own property of
+// the name by the class's layout: a field the class assigns under it (a node's
+// `dispose` storing `this.tick`) read in place, and a name outside the layout
+// nowhere on an instance whose properties word is zero. A receiver of no class,
+// or of a layout the class's test does not name, keeps the lookup.
+test('class struct: a dispatcher reads a shadowing own property by the class layout', () => {
+  const src = `class Node { constructor(v) { this.v = v } tick() { return this.v } dispose() { this.tick = () => -1 } }
+    class Gain extends Node { tick() { return this.v * 2 } }
+    class Osc extends Node { }
+    class Param { constructor(v) { this.w = v } tick() { return this.w + 100 } }
+    const poke = (x) => { x.tick = () => 55 }
+    export const f = (k) => {
+      const all = [new Node(1), new Gain(2), new Osc(3), new Param(4), { tick: () => 7 }]
+      let s = 0
+      for (let r = 0; r < 3; r++) {
+        if (r === 1 && k >= 0) { if (k < 3) all[k].dispose(); else poke(all[k]) }
+        for (const o of all) s = (s * 3 + o.tick()) | 0
+      }
+      return s
+    }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const k of [-1, 0, 1, 2, 3, 4]) is(f(k), want(k), `O${optimize}: own property at ${k}`)
+  }
+  if (onWasi() || onKernel()) return  // a host-only profiling option
+  const inst = instantiate(new WebAssembly.Module(compileWat(src.replace("{ tick: () => 7 }", "new Osc(7)"), { optimize: 2, helperCounters: true })), {})
+  const ex = inst.instance?.exports ?? inst.exports
+  is(inst.exports.f(-1), oracle(src.replace("{ tick: () => 7 }", "new Osc(7)")).f(-1))
+  is(ex.__hc_dyn_get_expr?.value ?? 0n, 0n, 'class instances answer by their layouts: no lookup')
+})
+
 test('class struct: nullable method values retain binding and reject missing receivers', () => {
   const src = `class P { constructor(x) { this.x = x } dbl() { return this.x * 2 } }
     export function f(i) {

@@ -348,14 +348,27 @@ const closureInstanceof = () => {
     (i32.const 0))` }
 }
 
-/** `['__own', r, ['str', prop]]`: whether `r` carries an own property `prop` where the
+/** `['__own', r, ['str', prop], brand]`: whether `r` carries an own property `prop` where the
  *  summary admits one stored under that name (the class contract); false
- *  otherwise, folding the probe away. Shared with the ToPrimitive prelude. */
+ *  otherwise, folding the probe away. Shared with the ToPrimitive prelude.
+ *  With `brand`, `r` is an instance of that class: where its pointer carries
+ *  the class's layout, the own property is the layout's field of the name,
+ *  read in place, or, where the layout holds none, one outside it, which an
+ *  object with no properties outside its layout holds nowhere; any other
+ *  layout (a class deriving from it) asks the generic lookup. */
 function defineOwnProbe() {
-  ctx.core.emit.__own = (r, propLit) => {
+  ctx.core.emit.__own = (r, propLit, brand) => {
     if (!ctx.summary.memberMayBeOwn(propLit[1])) return typed(['i32.const', 0], 'i32')
     inc('__dyn_get_expr', '__ptr_type')
-    return typed(['i32.eqz', isUndef(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', asF64(emit(r))], asI64(emit(propLit))]])], 'i32')
+    const probe = (v) => typed(['i32.eqz', isUndef(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', v], asI64(emit(propLit))]])], 'i32')
+    const sid = brand == null ? null : ctx.schema.sidOfBrand(brand), keys = sid == null ? null : ctx.schema.list[sid]
+    if (!keys || ctx.types.anyDelete || ctx.transform.dynamicAccessorNames?.has(propLit[1]) || keys.includes(propLit[1] + ACCESSOR_GET)) return probe(asF64(emit(r)))
+    const t = temp('own'), slot = keys.indexOf(propLit[1])
+    const inLayout = slot >= 0
+      ? ['i32.eqz', isUndef(typed(ctx.abi.object.ops.load(ptrOffsetIR(local(t), VAL.OBJECT), slot), 'f64'))]
+      : ['if', ['result', 'i32'], noOwnProps(t), ['then', ['i32.const', 0]], ['else', probe(local(t))]]
+    return typed(['block', ['result', 'i32'], ['local.set', `$${t}`, asF64(emit(r))],
+      ['if', ['result', 'i32'], tagEq(t, sid), ['then', inLayout], ['else', probe(local(t))]]], 'i32')
   }
 }
 
@@ -374,7 +387,8 @@ const inDispatcher = () => !!ctx.func?.current?.dispatcher
  * `r instanceof C` for each class with the member, most derived first, and
  * calls the class's function; any other receiver takes the access as it is,
  * with class dispatch off. An own property stored under the member's name
- * is probed first (the class contract, jzify/classes.js).
+ * is probed first, in each class's test by the class's layout (the class
+ * contract, jzify/classes.js).
  */
 export function synthesizeClassDispatchers() {
   if (!classes()?.size) return
@@ -393,9 +407,21 @@ export function synthesizeClassDispatchers() {
   defineOwnProbe()
   const define = (name, arity, arm, fallback, prop) => {
     if (byName.has(name)) return
-    const stmts = [['if', ['__own', R, ['str', prop]], ['return', fallback]]]
-    for (const e of entries) { const fn = e.methods.get(arm.key); if (fn) stmts.push(['if', ['instanceof', R, e.brand], ['return', arm.call(fn)]]) }
-    stmts.push(['return', fallback])
+    // each class's own property of the name first, by its layout, an instance owning one taking the
+    // access as it is, as a receiver of no class does: one copy of it, after the tests (the size tier
+    // asks the generic lookup once, before the tests: one probe, not one a class)
+    const arms = entries.filter(e => e.methods.get(arm.key))
+    let stmts
+    if (ctx.transform.optimize?.leanRuntime) stmts = [['if', ['__own', R, ['str', prop]], ['return', fallback]],
+      ...arms.map(e => ['if', ['instanceof', R, e.brand], ['return', arm.call(e.methods.get(arm.key))]]), ['return', fallback]]
+    else {
+      let chain = null
+      for (let i = arms.length - 1; i >= 0; i--) {
+        const e = arms[i], own = ['if', ['!', ['__own', R, ['str', prop], e.brand]], ['return', arm.call(e.methods.get(arm.key))]]
+        chain = chain ? ['if', ['instanceof', R, e.brand], own, chain] : ['if', ['instanceof', R, e.brand], own]
+      }
+      stmts = [...(chain ? [chain] : []), ['return', fallback]]
+    }
     const params = [{ name: R, type: 'f64' }, ...Array.from({ length: arity }, (_, i) => ({ name: A(i), type: 'f64' }))]
     const body = ['{}', [';', ...stmts]]
     const func = createFunction(name, body, { params, results: ['f64'], dispatcher: true })
