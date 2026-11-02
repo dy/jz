@@ -178,6 +178,7 @@ export const TUNING_KEYS = [
   'inlineTiny', 'tinyNodes',  // a function of at most tinyNodes instructions joins every caller (optimize/inline-tiny.js, speed tier)
   'loopNodes',                // and one of at most loopNodes, loop-free, joins the calls a loop makes (the same pass)
   'searchLoops',              // a loop whose body is a guarded loop scans for its guard in an innermost loop (optimize/search-loops.js, speed tier)
+  'leadGathers',              // a loop over items that searches from a slot it gathers reads the next item's slot a round ahead (optimize/lead-gathers.js, speed tier)
   'pointerExits',             // a loop keeping a counter only to stop stops by the pointer strength reduction steps beside it (optimize/pointer-exits.js, speed tier)
   'jumpPointers',             // a loop variable that jumps carries the address of the record it indexes beside it (optimize/jump-pointers.js, speed tier)
   'ringLaps',                 // a counted loop stepping a cursor around a ring runs a lap at a time (optimize/ring-laps.js, speed tier)

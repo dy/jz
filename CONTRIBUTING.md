@@ -66,6 +66,15 @@ it, a filter cascade's state updates.
 Then `issueOrder` (src/optimize/issue-order.js, speed tier) writes a loop body of
 floating-point arithmetic in the order that issues its chain soonest on cores that
 bind an operation to a queue or a port as they dispatch it (Zen 3 and 4, Xeons).
+A loop over items each of which searches from a slot it gathers (a hash join's
+probe side, a dictionary's lookups: `keys[hash(items[i])]`, then a probe chain)
+reads the next item's gather a round ahead under `leadGathers`
+(src/optimize/lead-gathers.js, speed tier, after watr): the search ends on a
+branch the core mispredicts about once an item, and the next slot's read, in
+flight before the search, no longer waits for it. The next round's inductions are
+selected against the loop's own test, so the last round reads its own slot again
+and nothing past what the loop reads; a loop that stores, calls or leaves but by
+its test keeps its shape.
 Before any of these, on the source, `carryKeys` (src/compile/loop-recurrence.js,
 speed tier) gives a counted loop whose scalar reads a table at a key of itself
 and the iteration's input, keeping the rest of itself by xor (a byte-wise CRC of
@@ -3210,6 +3219,7 @@ src/
                 quiet-loops.js (as the runtime is pulled: a loop that allocates nothing as emitted loses the compaction and the release the census gave it);
                 forward-hops.js (after the loop compaction, before watr: a receiver a loop never rebinds asks whether its block moved once before the loop and again after each of the runtime's cold calls that may move a block, a push's growth among them, not at every read; a block moves only inside a call, and a loop that calls other code keeps its hops; a compaction site's forward of a root the loop never writes hands back what the root held before the loop, below the floor, and is no write of it, so the hop is set again as the site re-enters the loop; an escape's lowering writes the flag and the log, no block);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
+                lead-gathers.js (after watr: a loop whose rounds search from a slot read at an address read from memory reads the next round's slot a round ahead);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 jump-pointers.js (after watr: a loop variable that steps and jumps carries the address of the record it indexes, advanced where it steps, formed again where it jumps);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);

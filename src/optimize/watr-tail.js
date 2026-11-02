@@ -28,6 +28,7 @@ import { truncChoice } from './trunc-choice.js'
 import { selectArms } from './select-arms.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
+import { leadGathers } from './lead-gathers.js'
 import { pointerExits } from './pointer-exits.js'
 import { jumpPointers } from './jump-pointers.js'
 import { ringLaps } from './ring-laps.js'
@@ -643,6 +644,8 @@ export function watrTail(module, cfg, {
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)
   if (cfg.searchLoops === true) time('searchLoops', () => searchLoops(optimized))
+  // (on the loops the optimizer leaves: its value numbering would read the gather back where the round uses it)
+  if (cfg.leadGathers === true) time('leadGathers', () => leadGathers(optimized))
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
   const user = name => ctx.funcs.map.has(name.slice(1)) || name.endsWith('$exp') && ctx.funcs.map.has(name.slice(1, -4))

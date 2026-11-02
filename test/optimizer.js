@@ -33,6 +33,7 @@ import { peelNarrowConv } from '../src/optimize/vectorize/lift.js'
 import { stripDeadCanons } from '../src/optimize/nan-canon.js'
 import { maskOperands } from '../src/optimize/mask-operands.js'
 import { searchLoops } from '../src/optimize/search-loops.js'
+import { leadGathers } from '../src/optimize/lead-gathers.js'
 import { pointerExits } from '../src/optimize/pointer-exits.js'
 import { jumpPointers } from '../src/optimize/jump-pointers.js'
 import { ringLaps } from '../src/optimize/ring-laps.js'
@@ -5158,6 +5159,132 @@ test('searchLoops: a loop whose body is a guarded loop scans for its guard in a 
   }
   ok(scans('speed') >= 2, `the pixel scan and the sieve scan for their guards (${scans('speed')})`)
   is(scans(2), 0, 'level 2 keeps its loops')
+})
+
+test('leadGathers: a loop over items that searches from a gathered slot reads the next item\'s slot a round ahead', () => {
+  const g = (n) => ['local.get', n], k = (v) => ['i32.const', v], set = (x, v) => ['local.set', x, v]
+  const slot = (h) => ['i32.load', ['i32.add', g('$keys'), ['i32.shl', h, k(2)]]]
+  // the item's key: read at a pointer stepped beside the counter, or at the counter itself
+  const byPtr = ['i32.load', g('$p')], byIdx = ['i32.load', ['i32.add', g('$items'), ['i32.shl', g('$i'), k(2)]]]
+  const gather = (item, root = true) => {
+    const r = slot(['local.tee', '$h', ['i32.and', ['i32.mul', ['local.tee', '$k', item], k(-1640531535)], k(15)]])
+    return root ? ['local.tee', '$r', r] : r
+  }
+  // a linear probe of a 16-slot table for each item, its hits' slots summed; `s1` runs first in a round,
+  // `s2` after the search, `head` before the loop's test
+  const fn = ({ item = byPtr, root = true, s1 = [], s2 = [], store = [], test = null } = {}) =>
+    ['func', '$f', ['param', '$keys', 'i32'], ['param', '$items', 'i32'], ['param', '$n', 'i32'], ['result', 'i32'],
+      ['local', '$i', 'i32'], ['local', '$p', 'i32'], ['local', '$k', 'i32'], ['local', '$h', 'i32'], ['local', '$r', 'i32'],
+      ['local', '$v', 'i32'], ['local', '$s', 'i32'],
+      set('$p', g('$items')),
+      ['block', '$B', ['br_if', '$B', ['i32.ge_s', g('$i'), g('$n')]],
+        ['loop', '$L', set('$v', k(-1)), ...s1,
+          ['block', '$F',
+            ['br_if', '$F', ['i32.eq', gather(item, root), k(-1)]],
+            ['loop', '$S',
+              ['if', ['i32.eq', root ? g('$r') : slot(g('$h')), g('$k')], ['then', set('$v', g('$h')), ['br', '$F']]],
+              ['br_if', '$S', ['i32.ne', ['local.tee', '$r', slot(['local.tee', '$h', ['i32.and', ['i32.add', g('$h'), k(1)], k(15)]])], k(-1)]]]],
+          ...store, ...s2,
+          set('$s', ['i32.add', ['i32.mul', g('$s'), k(31)], g('$v')]),
+          set('$p', ['i32.add', g('$p'), k(4)]),
+          ['br_if', '$L', test ?? ['i32.lt_s', ['local.tee', '$i', ['i32.add', g('$i'), k(1)]], g('$n')]]]],
+      // what the gather wrote lives on after the loop
+      ['i32.add', ['i32.add', g('$s'), ['i32.mul', g('$k'), k(7)]], ['i32.add', g('$h'), g('$r')]]]
+  const one = (f) => leadGathers(['module', f])[1]
+  // the items end where memory does: a read past the last one traps
+  const exec = (f, n, seed) => {
+    const mod = new WebAssembly.Module(encodeWat(['module', ['memory', ['export', '"mem"'], 1], [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]]))
+    const inst = new WebAssembly.Instance(mod), mem = new Int32Array(inst.exports.mem.buffer)
+    let x = seed
+    const rnd = () => (x = Math.imul(x, 1103515245) + 12345 | 0) >>> 8
+    for (let j = 0; j < 16; j++) mem[j] = rnd() % 3 ? rnd() & 63 : -1
+    const items = mem.length - n
+    for (let j = 0; j < n; j++) mem[items + j] = rnd() & 63
+    try { return inst.exports.f(0, items * 4, n) } catch (e) { return String(e) }
+  }
+  const shapes = {
+    'a key read at a stepped pointer': fn(),
+    'a key read at the counter': fn({ item: byIdx }),
+    'a slot read with no local of its own': fn({ root: false }),
+    'a statement of locals before the gather': fn({ s1: [set('$v', ['i32.add', g('$v'), k(0)])] }),
+    'a gather local read before the gather': fn({ s1: [set('$s', ['i32.xor', g('$s'), g('$k')])] }),
+  }
+  for (const [why, f] of Object.entries(shapes)) {
+    const before = JSON.stringify(f), after = one(JSON.parse(before))
+    ok(JSON.stringify(after) !== before && JSON.stringify(after).includes('$__lg'), `${why}: rewritten`)
+    let bad = 0, runs = 0
+    for (const n of [0, 1, 2, 3, 7, 16, 100]) for (const seed of [1, 2, 3, 99]) {
+      runs++
+      const want = exec(JSON.parse(before), n, seed), got = exec(after, n, seed)
+      if (!Object.is(got, want)) bad++
+    }
+    is(bad, 0, `${why}: same answer over ${runs} item counts and tables, the last item at memory's end`)
+  }
+  const kept = (f, why) => is(one(f), JSON.parse(JSON.stringify(f)), why)
+  kept(fn({ store: [['i32.store', g('$keys'), g('$v')]] }), 'a loop that stores stays')
+  kept(fn({ s2: [['drop', ['call', '$g', g('$v')]]] }), 'a loop that calls stays')
+  kept(fn({ s2: [['br_if', '$B', ['i32.eq', g('$v'), k(99)]]] }), 'a branch out of the loop stays')
+  kept(fn({ s2: [['br_if', '$L', ['i32.eq', g('$v'), k(99)]]] }), 'a branch back to the loop but by its test stays')
+  kept(fn({ s1: [set('$p', ['i32.add', g('$p'), k(0)])] }), 'a pointer stepped before the gather stays')
+  kept(fn({ item: ['i32.load', ['i32.add', g('$p'), g('$s')]] }), 'a gather reading what the round computes stays')
+  kept(fn({ s1: [set('$v', ['i32.load', g('$keys')])] }), 'a read before the gather stays')
+  kept(fn({ s1: [set('$v', ['i32.div_s', g('$n'), g('$v')])] }), 'a trap before the gather stays')
+  kept(fn({ item: g('$p') }), 'a search from a slot of no gather stays')
+  kept(fn({ test: ['i32.lt_s', ['local.tee', '$i', ['i32.add', g('$i'), k(1)]], g('$v')] }), 'a test reading what the round computes stays')
+
+  // a hash join's probe side and a dictionary's lookups, against the host at every tier
+  const src = `const CAP = 256, MASK = CAP - 1, BUILD = 64, PROBE = 999
+    const fill = (out, n, seed) => {
+      let s = seed | 0
+      for (let i = 0; i < n; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; out[i] = (s >>> 0) & 1023 }
+    }
+    const hash = (k) => (Math.imul(k, 0x9e3779b1) >>> 0) & MASK
+    const insert = (keys, vals, k, v) => {
+      let h = hash(k)
+      while (keys[h] !== -1) { if (keys[h] === k) { vals[h] = v; return } h = (h + 1) & MASK }
+      keys[h] = k
+      vals[h] = v
+    }
+    const probe = (keys, vals, k) => {
+      let h = hash(k)
+      while (keys[h] !== -1) { if (keys[h] === k) return vals[h]; h = (h + 1) & MASK }
+      return 0
+    }
+    const lookup = (keys, vals, k) => {
+      let h = hash(k)
+      while (keys[h] !== -1) { if (keys[h] === k) return vals[h]; h = (h + 1) & MASK }
+      return -1
+    }
+    const join = (keys, vals, build, probes) => {
+      let h = 0x811c9dc5 | 0
+      for (let it = 0; it < 3; it++) {
+        for (let i = 0; i < CAP; i++) keys[i] = -1
+        for (let i = 0; i < BUILD; i++) insert(keys, vals, build[i], (build[i] + it) | 0)
+        let sum = 0
+        for (let i = 0; i < PROBE; i++) sum = (sum + probe(keys, vals, probes[i])) | 0
+        for (let i = 0; i < PROBE; i++) h = Math.imul(h ^ lookup(keys, vals, build[(i * 7) & (BUILD - 1)]), 16777619)
+        h = Math.imul(h ^ sum, 16777619)
+      }
+      return h >>> 0
+    }
+    export let f = (seed) => {
+      const keys = new Int32Array(CAP), vals = new Int32Array(CAP), build = new Int32Array(BUILD), probes = new Int32Array(PROBE)
+      fill(build, BUILD, seed)
+      fill(probes, PROBE, seed ^ 0x5bd1e995)
+      for (let i = 0; i < PROBE; i += 2) probes[i] = build[(i >>> 1) & (BUILD - 1)]
+      return join(keys, vals, build, probes)
+    }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', { level: 'speed', leadGathers: false }, 2]) {
+    const f = run(src, { optimize }).f
+    for (const seed of [1, 0x1234abcd, -7, 99991]) is(f(seed), host(seed), `${JSON.stringify(optimize)} seed=${seed}`)
+  }
+  if (onKernel()) return
+  // the gathers read ahead, by the locals that carry them
+  const ahead = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local.set' && typeof n[1] === 'string' && n[1].startsWith('$__lg'))
+  ok(ahead('speed') >= 4, `both probe loops read a round ahead (${ahead('speed')} reads ahead)`)
+  is(ahead({ level: 'speed', leadGathers: false }), 0, 'leadGathers: false keeps the loops as written')
+  is(ahead(2), 0, 'level 2 keeps its loops')
 })
 
 test('pointerExits: a loop keeping a counter only to stop stops by the pointer stepped beside it', () => {
