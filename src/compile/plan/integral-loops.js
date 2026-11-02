@@ -1179,12 +1179,16 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const same = (a, b) => a === b || Array.isArray(a) && Array.isArray(b) && JSON.stringify(a) === JSON.stringify(b)
     // An end at the type's extreme (an int32 element's, a bit operation's) stands
     // for no bound: moved by anything but a literal it is open, and the hull is
-    // none (a test of it would hold for a width of one at most).
+    // none (a test of it would hold for a width of one at most). Moved by a
+    // literal past the extreme (`g - 1` under `if (g >= w) g = w - 1`, its floor
+    // `min(w - 1, -2^31)`) it is none too: a test of it would hold for no value.
     const open = (x, hi) => isLit(x) ? (hi ? x[1] >= I32_MAX : x[1] <= I32_MIN)
       : Array.isArray(x) && x[0] === '()' && (x[1] === 'math.max' || x[1] === 'math.min') && ((x[1] === 'math.max') === hi ? open(x[2][1], hi) || open(x[2][2], hi) : open(x[2][1], hi) && open(x[2][2], hi))
     const opened = (a, b) => a == null || b == null || !isLit(a) && (open(b, true) || open(b, false)) || !isLit(b) && (open(a, true) || open(a, false))
-    const add = (a, b) => isLit(a) && isLit(b) ? lit(a[1] + b[1]) : isLit(b) && b[1] === 0 ? a : isLit(a) && a[1] === 0 ? b : opened(a, b) ? null : ['+', a, b]
-    const sub = (a, b) => isLit(a) && isLit(b) ? lit(a[1] - b[1]) : isLit(b) && b[1] === 0 ? a : opened(a, b) ? null : ['-', a, b]
+    const past = (a, k) => k !== 0 && !isLit(a) && open(a, k > 0)
+    const add = (a, b) => isLit(a) && isLit(b) ? lit(a[1] + b[1]) : isLit(b) && b[1] === 0 ? a : isLit(a) && a[1] === 0 ? b
+      : opened(a, b) || isLit(b) && past(a, b[1]) || isLit(a) && past(b, a[1]) ? null : ['+', a, b]
+    const sub = (a, b) => isLit(a) && isLit(b) ? lit(a[1] - b[1]) : isLit(b) && b[1] === 0 ? a : opened(a, b) || isLit(b) && past(a, -b[1]) ? null : ['-', a, b]
     const mul = (a, b) => isLit(a) && isLit(b) ? lit(a[1] * b[1]) : isLit(a) && a[1] === 0 || isLit(b) && b[1] === 0 ? lit(0) : isLit(a) && a[1] === 1 ? b : isLit(b) && b[1] === 1 ? a : opened(a, b) ? null : ['*', a, b]
     const neg = (a) => a == null ? null : isLit(a) ? lit(-a[1]) : ['u-', a]
     // (the extreme absorbs the least of ends above the floor, the most below the ceiling)

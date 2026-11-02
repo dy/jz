@@ -1206,6 +1206,56 @@ test('integral loops: a divisor of fractions alone is no name of the guard', () 
   is(m.bin(), js.bin(), 'a fractional width runs the copy')
 })
 
+test('integral loops: an end moved by a literal past the type\'s extreme is no end', () => {
+  // `g = (x / cell) | 0` is any int32; `if (g >= cols) g = cols - 1` bounds it
+  // above alone, its floor `min(cols - 1, -2^31)`, and `c = g - 1` moves that
+  // floor past -2^31: a test of it holds for no value and left the loop as
+  // written, cold, on every run. The hull of `c` is none instead.
+  const src = `let count = 0, cols = 1, st, pos, head, next, out
+    export let setup = (n, cell) => {
+      count = n; st = new Float64Array(1); st[0] = cell
+      pos = new Float64Array(n); next = new Int32Array(n); out = new Float64Array(n)
+      cols = Math.ceil(100 / cell) | 0; head = new Int32Array(cols)
+      let c = 0
+      while (c < cols) { head[c] = -1; c++ }
+      let i = 0
+      while (i < n) { pos[i] = (i * 37.25) % 100; let g = (pos[i] / cell) | 0; if (g >= cols) g = cols - 1; next[i] = head[g]; head[g] = i; i++ }
+      return out
+    }
+    export let near = () => {
+      let cell = st[0], i = 0
+      while (i < count) {
+        let xi = pos[i]
+        let g = (xi / cell) | 0
+        if (g >= cols) g = cols - 1
+        let s = 0.0, c = g - 1
+        while (c <= g + 1) {
+          if (c >= 0 && c < cols) {
+            let j = head[c]
+            while (j >= 0) { if (j !== i) s += pos[j] - xi; j = next[j] }
+          }
+          c++
+        }
+        out[i] = s
+        i++
+      }
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [n, cell] of [[50, 7.5], [50, 10], [3, 40], [0, 5]]) {
+      const got = m.setup(n, cell), want = js.setup(n, cell)
+      m.near(); js.near()
+      is(Array.from(got), Array.from(want), `${n} by ${cell} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  const got = m.setup(50, 7.5), want = js.setup(50, 7.5)
+  m.near(); js.near()
+  is(Array.from(got), Array.from(want), 'the copy runs')
+})
+
 test('integral loops: a self-call\'s argument reading its own parameter ends the fraction check', () => {
   // `walk(n, x)` calling `walk(n - 1, x * 0.5)`: whether `x` is a fraction asks its
   // call sites, one of which passes an expression of `x` itself; the check once
