@@ -55,14 +55,19 @@ test('index words: a key with one product reads and writes the element JS names'
   }
 })
 
+// The speed tier's ToInt32 of a number of unknown range adds 1.5·2^52 to its
+// truncation and tests the sum's exponent (optimize/to-int32.js): the integer
+// test takes no floating-point instruction of its own, where a test of the
+// magnitude took two.
 test('index words: ToInt32 answers at every edge with its 32-bit test first', () => {
   const src = `export let t = (x) => x | 0
     export let m = (x) => (x * 1.5) | 0
     export let pack = (r, g, b) => (255 << 24) | ((b | 0) << 16) | ((g | 0) << 8) | (r | 0)`
-  // (the test and the add are read by their literals, kept inline: the speed tier pools float literals otherwise)
+  // (the add is read by its literal, kept inline: the speed tier pools float literals otherwise)
   const guarded = wat(src, { optimize: { level: 'speed', poolFloats: false } })
-  ok(/f64\.abs[\s\S]*?2251799813685248[\s\S]*?6755399441055744/.test(guarded), 'the speed tier tests the magnitude, then adds')
-  ok(!/f64\.abs/.test(wat(src, { optimize: 'size' })), 'the size tier keeps the single exact form')
+  ok(/6755399441055744[\s\S]*?\(i64\.const 52\)[\s\S]*?\(i64\.const 1075\)/.test(guarded), 'the speed tier adds, then tests the sum\'s exponent')
+  ok(!/f64\.abs/.test(guarded), 'no test of the magnitude')
+  ok(!/f64\.abs|i64\.shr_u/.test(wat(src, { optimize: 'size' })), 'the size tier keeps the single exact form')
   // (`|0` saturates past 2^63 by design, src/ir/numeric.js toI32: the edges below it)
   for (const optimize of levels(0, 2, 'speed', 'size')) {
     const got = jz(src, { optimize }).exports, host = oracle(src)
@@ -129,7 +134,7 @@ test('index words: a bounded ToInt32 after watr takes the add with no test', () 
   const before = new WebAssembly.Instance(new WebAssembly.Module(compileWat(parseWat(src)))).exports.f
   const ir = guardToInt32(parseWat(src), true)
   const text = JSON.stringify(ir)
-  is((text.match(/"f64\.abs"/g) || []).length, 1, 'only the unbounded number keeps its magnitude test')
+  is((text.match(/"i64\.shr_u"/g) || []).length, 1, 'only the unbounded number keeps its exponent test')
   is((text.match(/6755399441055744/g) || []).length, 3, 'the two bounded ones take the add, as does the tested one')
   is((text.match(/"f64\.trunc"/g) || []).length, 2, 'the floor plus 71 takes it with no truncation')
   ok(!/i32\.trunc_sat_f64_s/.test(text), 'the saturating truncation the interval keeps in the word is the add')

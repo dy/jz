@@ -8,8 +8,15 @@
 // (NaN fails the test and reads zero there).
 // With `add` (wordTruncation: 'add') the path is wider and has no conversion at
 // all: within ±2^51 the truncation plus 1.5·2^52 holds the integer in its low
-// bits. The same test then guards every other 64-bit truncation, and an element
-// key's exactness test takes the sum's bits as its word.
+// bits. The sum itself is the test: it is exact, with the exponent 52, exactly
+// where the truncation lies in [-2^51, 2^51), and NaN, ±Infinity and anything
+// past read another. Testing its bits takes integer instructions where a test
+// of the magnitude took two floating-point ones (the absolute value and its
+// comparison), and a floating-point loop issues those on the pipes its own
+// arithmetic queues for: V8's arm64 code runs a pixel's ToInt32 in three
+// floating-point instructions instead of five (bench/lowering.mjs). The same
+// test guards every other 64-bit truncation, and an element key's exactness
+// test takes the sum's bits as its word.
 // It runs after watr: every pass before reads the exact form. The functions are
 // then whole, with the bodies watr inlined, and their intervals
 // (optimize/int-range.js) bound what a helper's parameter could not: a number
@@ -40,6 +47,13 @@ const added = (x, w, whole = false) => {
   const bits = ['i64.reinterpret_f64', ['f64.add', whole ? x : ['f64.trunc', x], MAGIC()]]
   return w === 'i32' ? ['i32.wrap_i64', bits] : ['i64.sub', bits, ['i64.const', '0x4338000000000000']]
 }
+// Whether x truncates into [-2^51, 2^51), the bits of its truncation plus 1.5·2^52 teed
+// into the i64 local `b`: the sum then lies in [2^52, 2^53), exact, and its exponent field
+// reads 0x433 (52 biased); a sum anywhere else, NaN or ±Infinity reads another.
+const inNear = (b, x, whole = false) =>
+  ['i64.eq', ['i64.shr_u', ['local.tee', b, ['i64.reinterpret_f64', ['f64.add', whole ? x : ['f64.trunc', x], MAGIC()]]], ['i64.const', 52]], ['i64.const', 0x433]]
+// what `inNear` holds in `b`, as the word or the 64 bits
+const nearWord = (b, w) => w === 'i32' ? ['i32.wrap_i64', ['local.get', b]] : ['i64.sub', ['local.get', b], ['i64.const', '0x4338000000000000']]
 // the word or 64 bits a truncation keeps, where `n` is one: [operand slot, width]
 const wideOf = n => isArr(n) && n[0] === 'i32.wrap_i64' && isArr(n[1]) && n[1][0] === 'i64.trunc_sat_f64_s' ? { of: n[1], w: 'i32' }
   : isArr(n) && n[0] === 'i64.trunc_sat_f64_s' ? { of: n, w: 'i64' } : null
@@ -57,10 +71,10 @@ const lower = (n, s) => {
     if (f.x[0] === 'local.tee') f.x[2] = lower(f.x[2], s)
     if (inside(v, -NEAR, NEAR)) return s.add ? added(f.x, 'i32', v.int) : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', f.x]]
     const get = () => ['local.get', f.name]
+    const exact = ['select', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]], ['i32.const', 0], ['f64.ne', get(), ['f64.const', Infinity]]]
     // (new nodes throughout: the form may be shared, and its other reader keeps its tee)
-    return ['if', ['result', 'i32'], ['f64.lt', ['f64.abs', f.x], ['f64.const', s.add ? NEAR : 2147483648]],
-      ['then', s.add ? added(get(), 'i32', v?.int) : ['i32.trunc_sat_f64_s', get()]],
-      ['else', ['select', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]], ['i32.const', 0], ['f64.ne', get(), ['f64.const', Infinity]]]]]
+    if (s.add) { const b = s.temp('i64'); return ['if', ['result', 'i32'], inNear(b, f.x, v?.int), ['then', nearWord(b, 'i32')], ['else', exact]] }
+    return ['if', ['result', 'i32'], ['f64.lt', ['f64.abs', f.x], ['f64.const', 2147483648]], ['then', ['i32.trunc_sat_f64_s', get()]], ['else', exact]]
   }
   // A 64-bit truncation, or the word of one, with `add`: the add where its
   // interval keeps it within ±2^51, else the add where a test finds it there and
@@ -72,8 +86,8 @@ const lower = (n, s) => {
     if (inside(v, -NEAR, NEAR)) return added(x, wide.w, v.int)
     const t = isArr(x) && (x[0] === 'local.get' || x[0] === 'local.tee') ? x[1] : s.temp()
     const get = () => ['local.get', t], first = isArr(x) && x[0] === 'local.get' ? x : ['local.tee', t, x[0] === 'local.tee' ? x[2] : x]
-    return ['if', ['result', wide.w], ['f64.lt', ['f64.abs', first], ['f64.const', NEAR]],
-      ['then', added(get(), wide.w, v?.int)],
+    const b = s.temp('i64')
+    return ['if', ['result', wide.w], inNear(b, first, v?.int), ['then', nearWord(b, wide.w)],
       ['else', wide.w === 'i32' ? ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]] : ['i64.trunc_sat_f64_s', get()]]]
   }
   // A saturating truncation whose interval stays inside the word saturates nowhere: the add.
@@ -175,7 +189,7 @@ export function guardToInt32(module, add = false) {
     const av = facts?.av
     if (add) exactKeys(node)
     const decls = []
-    const temp = () => { const name = `$__w64_${k++}`; decls.push(['local', name, 'f64']); return name }
+    const temp = (type = 'f64') => { const name = `$__w64_${k++}`; decls.push(['local', name, type]); return name }
     const s = { add, temp, at: x => av?.get(x) ?? null }
     for (let i = at; i < node.length; i++) node[i] = lower(node[i], s)
     node.splice(at, 0, ...decls)

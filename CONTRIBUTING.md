@@ -4571,10 +4571,16 @@ literals, counters, `Math.floor` of a bounded product, a checked byte read) is
 that wide form at four times the cost, so the speed tier (`wordTruncation:
 'add'`) takes a word without any conversion: within ±2^51 and no NaN, the
 value's truncation plus 1.5·2^52 holds the integer in its low bits, exactly.
-Integer narrowing does that where the interval proves the range; elsewhere a
-test of the magnitude guards it, the wide form behind it, and an element
-key's exactness test (`convert(word) == key`) takes the sum's low bits as its
-word. `bench/lowering.mjs`, printed by examples-perf on each target: x64 4.1
+Integer narrowing does that where the interval proves the range; elsewhere the
+sum tests itself, the wide form behind it: its exponent field reads 52 exactly
+where the truncation lies in [-2^51, 2^51) (NaN, ±Infinity and anything past
+read another), so two integer instructions on its bits replace the absolute
+value and comparison a test of the magnitude spent on the floating-point pipes
+the loop's own arithmetic queues for. V8's arm64 code for a pixel's ToInt32
+then runs three floating-point instructions instead of five; on an Apple M4 a
+composite of three per pixel (1280×720) took 1.32 ms against 1.72 guarded by
+the magnitude. An element key's exactness test (`convert(word) == key`) takes
+the sum's low bits as its word. `bench/lowering.mjs`, printed by examples-perf on each target: x64 4.1
 ns wide against 1.0 added, arm64 0.82 against 0.93, Apple M1 0.73 against
 0.81; the gallery on x64 went from 39 to 44 of 65 pages ahead of JS, arm64
 from 45 to 46. An unproven value keeps the guarded select. After watr the

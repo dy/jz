@@ -138,6 +138,14 @@ const foldWord = n => {
   if (op(n, 'if') && op(n[1], 'result') && op(n[2], 'f64.lt') && op(n[2][1], 'f64.abs') && NEAR(n[2][2]) &&
       op(n[3], 'then') && op(n[3][1], 'word') && op(n[4], 'else') && op(n[4][1], 'word') &&
       sameLocal(n[2][1][1], n[3][1][1]) && sameLocal(n[2][1][1], n[4][1][1])) return word(n[2][1][1])
+  // the add tested by its own exponent (52 within the range), its bits the word, the other form past it
+  const sum = op(n, 'if') && op(n[1], 'result') && op(n[2], 'i64.eq') && op(n[2][1], 'i64.shr_u') && konst(n[2][1][2], 'i64', 52) &&
+    konst(n[2][2], 'i64', 1075, '0x433') && op(n[2][1][1], 'local.tee') && op(n[2][1][1][2], 'i64.reinterpret_f64') ? n[2][1][1][2][1] : null
+  if (op(sum, 'f64.add') && MAGIC(sum[2]) && op(n[3], 'then') && op(n[4], 'else') && op(n[4][1], 'word')) {
+    const x = op(sum[1], 'f64.trunc') ? sum[1][1] : sum[1]
+    const bits = n[2][1][1][1], held = op(n[3][1], 'i32.wrap_i64') ? n[3][1][1] : op(n[3][1], 'i64.sub') && BIAS(n[3][1][2]) ? n[3][1][1] : null
+    if (op(held, 'local.get') && held[1] === bits && sameLocal(x, n[4][1][1])) return word(x)
+  }
   return n
 }
 /** The WAT with every integer word taken from a number folded to `(word x)`,
