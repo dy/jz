@@ -1,0 +1,99 @@
+// nbody.tov: Tov port of nbody.js (same seed, same softened-gravity step, same
+// checksum over final positions and velocities). Struct-of-arrays as in the JS;
+// the state arrays are values, so seeding and stepping take them inout.
+
+import { checksumF64, medianUs, printResult, xorshift32 } from "../_lib/bench"
+
+const N = 1024
+const STEPS = 8
+const DT = 0.01
+const EPS2 = 0.05
+const N_RUNS = 21
+const N_WARMUP = 5
+
+// XorShift32 in [-1, 1), as nbody.js's r(): the state advances, then maps.
+function unit(s: int): f64 {
+  return (s / 4294967296) * 2 - 1
+}
+
+function seedState(inout px: f64[], inout py: f64[], inout pz: f64[],
+                   inout vx: f64[], inout vy: f64[], inout vz: f64[], inout m: f64[], n: int) {
+  let s = 0x1234abcd
+  for (let i = 0; i < n; i++) {
+    s = xorshift32(s)
+    px[i] = unit(s)
+    s = xorshift32(s)
+    py[i] = unit(s)
+    s = xorshift32(s)
+    pz[i] = unit(s)
+    s = xorshift32(s)
+    vx[i] = unit(s) * 0.1
+    s = xorshift32(s)
+    vy[i] = unit(s) * 0.1
+    s = xorshift32(s)
+    vz[i] = unit(s) * 0.1
+    s = xorshift32(s)
+    m[i] = unit(s) + 1.5
+  }
+}
+
+function step(inout px: f64[], inout py: f64[], inout pz: f64[],
+              inout vx: f64[], inout vy: f64[], inout vz: f64[], m: f64[], n: int) {
+  for (let i = 0; i < n; i++) {
+    const xi = px[i]!
+    const yi = py[i]!
+    const zi = pz[i]!
+    let ax = 0.0
+    let ay = 0.0
+    let az = 0.0
+    for (let j = 0; j < n; j++) {
+      const dx = px[j]! - xi
+      const dy = py[j]! - yi
+      const dz = pz[j]! - zi
+      const r2 = dx * dx + dy * dy + dz * dz + EPS2
+      const inv = 1 / (r2 * Math.sqrt(r2))
+      const f = m[j]! * inv
+      ax += dx * f
+      ay += dy * f
+      az += dz * f
+    }
+    vx[i] = vx[i]! + ax * DT
+    vy[i] = vy[i]! + ay * DT
+    vz[i] = vz[i]! + az * DT
+  }
+  for (let i = 0; i < n; i++) {
+    px[i] = px[i]! + vx[i]! * DT
+    py[i] = py[i]! + vy[i]! * DT
+    pz[i] = pz[i]! + vz[i]! * DT
+  }
+}
+
+function zeros(n: int): f64[] {
+  let xs: f64[] = []
+  for (let i = 0; i < n; i++) xs.push(0)
+  return xs
+}
+
+function main() {
+  let px = zeros(N)
+  let py = zeros(N)
+  let pz = zeros(N)
+  let vx = zeros(N)
+  let vy = zeros(N)
+  let vz = zeros(N)
+  let m = zeros(N)
+
+  for (let i = 0; i < N_WARMUP; i++) {
+    seedState(&px, &py, &pz, &vx, &vy, &vz, &m, N)
+    for (let s = 0; s < STEPS; s++) step(&px, &py, &pz, &vx, &vy, &vz, m, N)
+  }
+
+  let samples: f64[] = []
+  for (let i = 0; i < N_RUNS; i++) {
+    seedState(&px, &py, &pz, &vx, &vy, &vz, &m, N)
+    const t0 = performance.now()
+    for (let s = 0; s < STEPS; s++) step(&px, &py, &pz, &vx, &vy, &vz, m, N)
+    samples.push(performance.now() - t0)
+  }
+  printResult(medianUs(&samples), checksumF64(px) ^ checksumF64(vx), N * N * STEPS, STEPS, N_RUNS)
+}

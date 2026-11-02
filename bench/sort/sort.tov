@@ -1,0 +1,76 @@
+// sort.tov: Tov port of sort.js (same fill, same in-place heapsort, same
+// checksum). The array is a value, so heapsort takes it inout.
+
+import { checksumF64, medianUs, printResult, xorshift32 } from "../_lib/bench"
+
+const N = 8192
+const N_ITERS = 24
+const N_RUNS = 21
+const N_WARMUP = 5
+
+function fill(inout a: f64[]) {
+  let s = 0x9e3779b9
+  for (let i = 0; i < a.length; i++) {
+    s = xorshift32(s)
+    a[i] = s / 4294967296
+  }
+}
+
+function heapsort(inout a: f64[]) {
+  const n = a.length
+  for (let root = (n >> 1) - 1; root >= 0; root--) {
+    let i = root
+    let child = 2 * i + 1
+    while (child < n) {
+      if (child + 1 < n && a[child]! < a[child + 1]!) child++
+      if (a[i]! >= a[child]!) break
+      const t = a[i]!
+      a[i] = a[child]!
+      a[child] = t
+      i = child
+      child = 2 * i + 1
+    }
+  }
+  for (let end = n - 1; end > 0; end--) {
+    const t = a[0]!
+    a[0] = a[end]!
+    a[end] = t
+    let i = 0
+    let child = 1
+    while (child < end) {
+      if (child + 1 < end && a[child]! < a[child + 1]!) child++
+      if (a[i]! >= a[child]!) break
+      const u = a[i]!
+      a[i] = a[child]!
+      a[child] = u
+      i = child
+      child = 2 * i + 1
+    }
+  }
+}
+
+function runKernel(inout a: f64[], src: f64[]) {
+  for (let it = 0; it < N_ITERS; it++) {
+    for (let i = 0; i < a.length; i++) a[i] = src[i]! + it
+    heapsort(&a)
+  }
+}
+
+function main() {
+  let src: f64[] = []
+  let a: f64[] = []
+  for (let i = 0; i < N; i++) {
+    src.push(0)
+    a.push(0)
+  }
+  fill(&src)
+  for (let i = 0; i < N_WARMUP; i++) runKernel(&a, src)
+
+  let samples: f64[] = []
+  for (let i = 0; i < N_RUNS; i++) {
+    const t0 = performance.now()
+    runKernel(&a, src)
+    samples.push(performance.now() - t0)
+  }
+  printResult(medianUs(&samples), checksumF64(a), N * N_ITERS, 2, N_RUNS)
+}

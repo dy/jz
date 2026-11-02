@@ -3,11 +3,46 @@
 // (`import { checksumU32, medianUs, printResult } from "../_lib/bench"`). Output
 // is the one `median_us=…` line bench.mjs parses.
 //
-// Tov integers are 64-bit and overflow traps, so the 32-bit FNV multiply runs
-// in `int` and masks: h < 2^32 and the prime < 2^25 keep the product < 2^57.
+// Tov integers are 64-bit and overflow traps, so 32-bit JS arithmetic runs on
+// u32 values held in `int` and masked: in the FNV multiply, h < 2^32 and the
+// prime < 2^25 keep the product < 2^57.
 
 export function mix(h: int, x: int): int {
   return ((h ^ (x & 0xffffffff)) * 0x01000193) & 0xffffffff
+}
+
+// One XorShift32 step (`s ^= s << 13; s ^= s >>> 17; s ^= s << 5`) on a u32 state.
+export function xorshift32(s: int): int {
+  let x = s ^ ((s << 13) & 0xffffffff)
+  x = x ^ (x >> 17)
+  return x ^ ((x << 5) & 0xffffffff)
+}
+
+// Low 32 bits of x's IEEE-754 encoding. Tov has no bit cast, so this scales by
+// powers of two (exact) until the fraction field is an integer < 2^52. A NaN or
+// infinity traps in Math.trunc instead of hashing.
+export function lowWord(x: f64): int {
+  let a = Math.abs(x)
+  if (a === 0) return 0
+  let e = 0
+  while (a >= 2 && e < 1024) {
+    a = a / 2
+    e++
+  }
+  while (a < 1 && e > -1022) {
+    a = a * 2
+    e--
+  }
+  const field = a < 1 ? a * 4503599627370496.0 : (a - 1) * 4503599627370496.0
+  return Math.trunc(field) & 0xffffffff
+}
+
+// FNV-style hash over the low word of every 128th f64 (benchlib.js checksumF64,
+// which walks every 256th u32 of the buffer).
+export function checksumF64(xs: f64[]): int {
+  let h = 0x811c9dc5
+  for (let i = 0; i < xs.length; i += 128) h = mix(h, lowWord(xs[i]!))
+  return h
 }
 
 // FNV-style hash over every 128th element (the u32 checksum of benchlib.js).

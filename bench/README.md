@@ -463,8 +463,10 @@ counts so a fast path that stops firing reds CI machine-independently, while
 Install Tov with `curl -fsSL https://tov.sh/install.sh | sh` (needs Rust and a C
 compiler). It builds from a git checkout at `~/.tov/src` (`TOV_DIR`), whose
 commit the run records beside `tov version`: the version string stays `0.0.1`
-while the compiler changes daily. Ports share `_lib/bench.tov`; its FNV mix runs
-in 64-bit `int` and masks to 32 bits, since Tov traps on integer overflow.
+while the compiler changes daily. Ports share `_lib/bench.tov`. Tov traps on integer
+overflow, so JS's 32-bit arithmetic (FNV mix, XorShift32, `Math.imul`) runs on
+u32 values in 64-bit `int`, masked. Tov has no f64 bit cast, so the f64 checksum
+reads each low word by exact power-of-two scaling.
 
 Install the pinned Perry compiler with `npm install -g @perryts/perry@0.5.1520`,
 then run `node bench/bench.mjs --targets=perry`. CI uses the same package.
