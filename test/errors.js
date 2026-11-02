@@ -415,7 +415,8 @@ test('error: a rejection ends at its source line, naming no compiler tree', () =
   let error
   try { compile('const x = 1; export let f = () => { x = 2; return x }') } catch (e) { error = e }
   ok(error, 'should throw')
-  ok(/at line 1:\d+\n  const x = 1; export let f = \(\) => \{ x = 2; return x \}\n +\^$/.test(error.message), `the source line and a caret close the message: ${error.message}`)
+  // kernel: source-line error annotation is host-side (ctx.error.src in compile()), not in the wasm
+  if (!onKernel()) ok(/at line 1:\d+\n  const x = 1; export let f = \(\) => \{ x = 2; return x \}\n +\^$/.test(error.message), `the source line and a caret close the message: ${error.message}`)
   ok(!/current AST|\["="/.test(error.message), `no AST in the message: ${error.message}`)
 })
 
@@ -1622,6 +1623,7 @@ test('errors: an early error is the SyntaxError JavaScript throws', () => {
   for (const src of ['let a = 1; let a = 2', 'export let f = (x => x', 'let a = {}; a.1']) {
     let error
     try { compile(src) } catch (e) { error = e }
-    ok(error instanceof SyntaxError && /at line \d+:\d+/.test(error.message), `${JSON.stringify(src)}: ${error?.constructor?.name} ${error?.message.split('\n')[0]}`)
+    // kernel: source-line error annotation is host-side (ctx.error.src in compile()), not in the wasm
+    ok(error instanceof SyntaxError && (onKernel() || /at line \d+:\d+/.test(error.message)), `${JSON.stringify(src)}: ${error?.constructor?.name} ${error?.message.split('\n')[0]}`)
   }
 })

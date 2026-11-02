@@ -89,8 +89,8 @@ const PARK_END = 0xFFFFFFF0
 
 let normal, forced
 const kernels = () => {
-  normal ??= instantiate(selfBytes(), { memory: 8192 })
-  forced ??= instantiate(FORCED(), { memory: 8192 })
+  normal ??= instantiate(selfBytes())
+  forced ??= instantiate(FORCED())
   return { normal, forced }
 }
 const heap = k => k.instance.exports.__jz_heap.value >>> 0
@@ -197,7 +197,7 @@ test('checkpoint: empty → empty, A → A, A → B at once, and B on a fresh in
   const b = compileOn(forced, B)
   ok(same(b, compileOn(normal, B)), 'B right after A is the fresh kernel\'s B')
   is(run(b), B_OUT)
-  const fresh = instantiate(FORCED(), { memory: 8192 })
+  const fresh = instantiate(FORCED())
   ok(same(compileOn(fresh, B), b), 'B first on a fresh forced instance is the same B')
   const mb = readMarks(forced)
   ok(mb.heapCheckpoint > 0 && mb.heapCheckpoint < mb.heapOptimize, 'every compile on the forced kernel checkpointed')
