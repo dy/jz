@@ -3528,14 +3528,19 @@ as long as that call lasts, a driver's rounds and the kernel spliced into them i
 (stdlib-ddot's timed rounds). A function runs once when it is an export of the program's own
 that no function calls, its boundary wrapper (`$name$exp`, a void export's among them) too, or
 its one call sits outside every loop of a function that runs once;
-an outer loop of it that holds a loop and runs a few passes (`fewPasses`: a counter stepped by
-one, from zero or above on entry, to a constant of at most 256) gives up its longest run of
-whole statements holding the inner loop, branching only inside the run, its locals moving as
-an arm's do. The first pass runs as baseline code and spends the budget that queues the
-compile, the later passes run optimized code. A loop a runtime value counts stays (a frame's
-loop over its rows may run short passes, where a call each would cost), as does a run that
-compacts (a compaction site roots its own function's locals) and the runtime's exports, which
-the host calls again and again.
+a loop of it that holds a loop and runs a few passes over that call (`fewPasses`: a counter
+stepped by one, from zero or above on entry, to a constant of at most 256, which no loop
+around starts over) gives up its longest run of whole statements holding the inner loop,
+branching only inside the run, its locals moving as an arm's do. Exits may open a pass before
+the counter's test and other inductions step beside the counter (a strength-reduced pointer),
+so long as the last statement is the one way back to the next pass; a loop around that
+enters it again where it left, a compaction's (`optimize/loop-compact.js`, around rounds that
+keep what they allocate), is no obstacle (pcmconvert's 26 rounds ran in such a loop as
+baseline code, 2.6× slower). The first pass runs as baseline code and spends the budget that
+queues the compile, the later passes run optimized code. A loop a runtime value counts stays
+(a frame's loop over its rows may run short passes, where a call each would cost), as does a
+run that compacts (a compaction site roots its own function's locals) and the runtime's
+exports, which the host calls again and again.
 
 A loop is compiled twice where its values decide its types
 (`optimize/specialize.js`, the `specializeLoops` pass, off in the `size`

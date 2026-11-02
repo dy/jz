@@ -370,16 +370,18 @@ const COMPACTS = new Set(['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thre
  *
  * A function runs once when it is an export of the program's own (`entries`: the runtime's,
  * `__compact` and its kin, the host calls again and again) no function calls, or when its one call
- * is outside every loop of a function that runs once. A loop of it holding a loop, outside
- * any loop of its own, of a few passes (`fewPasses`: a counter stepped by one from zero or
- * above to a bound of at most PASS_MAX, so each of the passes a long call makes is long), gives up
- * the longest run of its statements that holds the inner loop: whole statements (`whole`),
- * between the loop's tests, branching only inside the run, whatever its size (a call per pass is
- * nothing beside the loop it runs once the pass is optimized code, and baseline code is slower by
- * more); its locals go in and come back by liveness as an arm's do. A loop of many passes or of
- * passes a runtime value counts stays, as a frame's loop over its rows does: its passes may be
- * short, where a call each would cost. A run that compacts stays: the compaction roots its own
- * function's locals.
+ * is outside every loop of a function that runs once. A loop of it holding a loop, of a few passes
+ * over the function's call (`fewPasses`: a counter stepped by one from zero or above to a bound of
+ * at most PASS_MAX, which no loop around starts over, so each of the passes a long call makes is
+ * long), gives up the longest run of its statements that holds the inner loop: whole statements
+ * (`whole`), between the loop's tests, branching only inside the run, whatever its size (a call
+ * per pass is nothing beside the loop it runs once the pass is optimized code, and baseline code
+ * is slower by more); its locals go in and come back by liveness as an arm's do. The loop may sit
+ * in another that enters it again where it left (a compaction's, optimize/loop-compact.js, around
+ * rounds that keep what they allocate: pcmconvert's ran all 26 as baseline code). A loop of many
+ * passes or of passes a runtime value counts stays, as a frame's loop over its rows does: its
+ * passes may be short, where a call each would cost. A run that compacts stays: the compaction
+ * roots its own function's locals.
  * @param {Array} module
  * @param {{ user?: (name: string) => boolean }} [opts] whether a function is the program's own
  *   (every function, where not given)
@@ -388,38 +390,59 @@ const COMPACTS = new Set(['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thre
 const PASS_MAX = 256
 /** The counter of `loop`'s passes and its bound: a test of a counter stepped by one, against a
  *  constant, as the loop's last statement (`br_if $loop (lt (local.tee $i (add (get $i) 1)) N)`,
- *  or the step the statement before it) or as its first, the step last before the branch back
- *  (`br_if $exit (ge (get $i) N) … (local.set $i (add (get $i) 1)) (br $loop)`). Null otherwise. */
+ *  or `(lt (get $i) N)`, the step a statement of the loop) or among the exits that open it, the
+ *  step a statement of the loop and its last the branch back (`br_if $exit (ge (get $i) N) …
+ *  (local.set $i (add (get $i) 1)) … (br $loop)`). Other exits may open a pass before the test (a
+ *  compaction's, optimize/loop-compact.js) and other inductions may step beside the counter (a
+ *  pointer the strength reduction advances): what counts is that the last statement is the one
+ *  way back, so a pass that goes on to the next has run its step. Null otherwise. */
 const passCounter = (loop) => {
   const label = isName(loop[1]) ? loop[1] : null, last = loop.at(-1)
   if (!label || !isArr(last)) return null
+  let start = 2
+  while (start < loop.length && isArr(loop[start]) && BLOCK_HEAD.has(loop[start][0])) start++
+  const back = (n) => isArr(n) && ((BR.has(n[0]) && n.includes(label)) || n.some(back))
+  for (let k = start; k < loop.length - 1; k++) if (back(loop[k])) return null
   const stepOf = (e, name, t) => isArr(e) && e[0] === `${t}.add` && isArr(e[1]) && e[1][0] === 'local.get' && e[1][1] === name && isArr(e[2]) && e[2][0] === `${t}.const` && Number(e[2][1]) === 1
   const typeOf = (op, lt) => (lt ? op === 'i32.lt_s' || op === 'i32.lt_u' : op === 'i32.ge_s' || op === 'i32.ge_u') ? 'i32' : op === (lt ? 'f64.lt' : 'f64.ge') ? 'f64' : null
-  const stepBefore = (name, t) => { const s = loop.at(-2); return isArr(s) && s[0] === 'local.set' && s[1] === name && stepOf(s[2], name, t) ? s : null }
+  // the one statement of the loop's own list after `from` stepping the counter
+  const stepIn = (name, t, from) => {
+    let step = null
+    for (let k = from; k < loop.length - 1; k++) {
+      const s = loop[k]
+      if (!isArr(s) || s[0] !== 'local.set' || s[1] !== name || !stepOf(s[2], name, t)) continue
+      if (step) return null
+      step = s
+    }
+    return step
+  }
   if (last[0] === 'br_if' && last[1] === label && isArr(last[2]) && last[2].length === 3) {
     const [op, test, bound] = last[2], t = typeOf(op, true)
     if (!t || !isArr(bound) || bound[0] !== `${t}.const` || !isArr(test)) return null
     if (test[0] === 'local.tee' && stepOf(test[2], test[1], t)) return { i: test[1], t, n: Number(bound[1]), step: test }
-    const step = test[0] === 'local.get' ? stepBefore(test[1], t) : null
+    const step = test[0] === 'local.get' ? stepIn(test[1], t, start) : null
     return step ? { i: test[1], t, n: Number(bound[1]), step } : null
   }
-  if (last[0] === 'br' && last[1] === label) {
-    let k = 2
-    while (k < loop.length && isArr(loop[k]) && BLOCK_HEAD.has(loop[k][0])) k++
-    const head = loop[k]
-    if (!isArr(head) || head[0] !== 'br_if' || head[1] === label || !isArr(head[2]) || head[2].length !== 3) return null
-    const [op, get, bound] = head[2], t = typeOf(op, false)
-    if (!t || !isArr(get) || get[0] !== 'local.get' || !isArr(bound) || bound[0] !== `${t}.const`) return null
-    const step = stepBefore(get[1], t)
-    return step ? { i: get[1], t, n: Number(bound[1]), step } : null
+  if (last[0] === 'br' && last[1] === label && last.length === 2) {
+    // the exits opening the pass, one of them the counter's test
+    for (let k = start; k < loop.length - 1; k++) {
+      const head = loop[k]
+      if (!isArr(head) || head[0] !== 'br_if' || head.length !== 3 || !isArr(head[2])) return null
+      if (head[2].length !== 3) continue
+      const [op, get, bound] = head[2], t = typeOf(op, false)
+      if (!t || !isArr(get) || get[0] !== 'local.get' || !isArr(bound) || bound[0] !== `${t}.const`) continue
+      const step = stepIn(get[1], t, k + 1)
+      return step ? { i: get[1], t, n: Number(bound[1]), step } : null
+    }
   }
   return null
 }
-/** Whether `loop`, outside every loop of `fn`, runs at most PASS_MAX passes: its counter
- *  (`passCounter`) is bounded by at most PASS_MAX, the loop writes it nowhere but its step, and
- *  what it holds on entry is zero or above: no parameter, the latest write before the loop a
- *  statement setting a constant (it runs on every way there: no loop is around), or none (a
- *  local starts at zero). */
+/** Whether `loop` runs at most PASS_MAX passes over its function's call: its counter
+ *  (`passCounter`) is bounded by at most PASS_MAX, neither the loop nor a loop around it writes
+ *  it but by its step (a loop around may enter it again, as a compaction's resumes the pass it
+ *  left, never with the count started over), and what it holds on entry is zero or above: no
+ *  parameter, the latest write before the loop a statement setting a constant (it runs on every
+ *  way there: a loop around writes none), or none (a local starts at zero). */
 const fewPasses = (loop, fn) => {
   const c = passCounter(loop)
   if (!c || !(c.n >= 1 && c.n <= PASS_MAX) || !isName(c.i) || fn.some(d => isArr(d) && d[0] === 'param' && d[1] === c.i)) return false
@@ -429,6 +452,7 @@ const fewPasses = (loop, fn) => {
   const path = []
   const find = (n) => { if (n === loop) return true; if (!isArr(n)) return false; for (let k = 1; k < n.length; k++) { path.push([n, k]); if (find(n[k])) return true; path.pop() } return false }
   if (!find(fn)) return false
+  for (const [node] of path) if (node[0] === 'loop' && writes(node, c.step)) return false
   for (let p = path.length - 1; p >= 0; p--) {
     const [node, k] = path[p]
     for (let j = k - 1; j >= 1; j--) if (writes(node[j]))
@@ -480,21 +504,25 @@ export function loopPasses(module, { user = () => true } = {}) {
   const compacts = (n) => isArr(n) && ((n[0] === 'call' && COMPACTS.has(n[1])) || n.some(compacts))
   for (const [name, fn] of funcs) {
     if (!once(name) || !holdsLoop(fn)) continue
-    // the loops outside any loop, each holding a loop
-    const outer = []
+    // the loops holding a loop, outer before inner (`fewPasses` takes one only where no loop
+    // around starts its count over)
+    const nests = []
     const find = (n) => {
       if (!isArr(n)) return
-      if (n[0] === 'loop') { if (n.some((c, i) => i > 0 && holdsLoop(c))) outer.push(n); return }
+      if (n[0] === 'loop' && n.some((c, i) => i > 0 && holdsLoop(c))) nests.push(n)
       for (let i = 1; i < n.length; i++) find(n[i])
     }
     find(fn)
-    if (!outer.length) continue
+    if (!nests.length) continue
     const m = mover(fn, ctx)
     if (!m) continue
     const before = ctx.made.length
-    for (const loop of outer) {
+    // a loop inside a pass moved went with it
+    const gone = new WeakSet()
+    const leave = (n) => { if (!isArr(n)) return; gone.add(n); for (let i = 1; i < n.length; i++) leave(n[i]) }
+    for (const loop of nests) {
       const at = m.seen.get(loop)
-      if (!at || shared.has(loop) || !fewPasses(loop, fn)) continue
+      if (!at || gone.has(loop) || shared.has(loop) || !fewPasses(loop, fn)) continue
       let start = 1
       while (start < loop.length && (isName(loop[start]) || (isArr(loop[start]) && BLOCK_HEAD.has(loop[start][0])))) start++
       // the longest window of whole statements, each branching only inside itself, that holds a loop
@@ -507,7 +535,9 @@ export function loopPasses(module, { user = () => true } = {}) {
         if (inner && (!best || s > best.s)) best = { from: i, end: j, s }
         i = j
       }
-      if (best) m.tryMove(loop, best.from, at, size(loop), [], best.end, true)
+      if (!best) continue
+      const moved = loop.slice(best.from, best.end)
+      if (m.tryMove(loop, best.from, at, size(loop), [], best.end, true)) moved.forEach(leave)
     }
     if (ctx.made.length !== before) m.finish()
   }

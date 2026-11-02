@@ -424,6 +424,53 @@ test('loop passes: a pass that branches out of itself, or that compacts, stays',
   is(passes(gc).made, 0, 'a compaction keeps the pass')
 })
 
+// A loop that keeps what its passes allocate sits in a compaction's loop (optimize/loop-compact.js):
+// an exit past the threshold opens each pass, and the loop around enters it again at the same
+// pass. The strength reduction steps a pointer beside the counter.
+const WRAPPED = ({ reset = '', mid = '' } = {}) => `(func $f (export "f") (param $n i32) (result i32)
+    (local $i i32) (local $j i32) (local $acc i32) (local $row i32) (local $p i32) (local $th i32) (local $w i32)
+    (local.set $th (i32.const 50))
+    (block $done (loop $again
+      ${reset}
+      (block $out (loop $rows
+        (br_if $out (i32.gt_s (local.get $acc) (local.get $th)))
+        (br_if $done (i32.ge_s (local.get $i) (i32.const 40)))
+        (local.set $row (i32.mul (local.get $i) (i32.add (local.get $n) (i32.const 3))))
+        (local.set $j (i32.const 0))
+        (block $cols (loop $col
+          (br_if $cols (i32.ge_s (local.get $j) (local.get $i)))
+          (local.set $acc (i32.add (local.get $acc) (i32.and (i32.xor (local.get $row) (local.get $j)) (i32.const 255))))
+          (local.set $j (i32.add (local.get $j) (i32.const 1)))
+          (br $col)))
+        ${mid}
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (local.set $p (i32.add (local.get $p) (i32.const 8)))
+        (br $rows)))
+      (local.set $th (i32.add (local.get $acc) (i32.const 900)))
+      (local.set $w (i32.add (local.get $w) (i32.const 1)))
+      (br $again)))
+    (i32.add (i32.add (local.get $acc) (local.get $p)) (i32.mul (local.get $w) (i32.const 100003))))`
+
+test('loop passes: a pass inside a compaction\'s loop moves, exits opening it and inductions beside its counter', () => {
+  const wat = `(module ${WRAPPED()})`
+  const ref = plain(wat), { made, exports } = passes(wat)
+  is(made, 1, 'the pass moved')
+  for (const n of [0, 1, 7, 30]) is(exports.f(n), ref.f(n), `f(${n})`)
+  ok(ref.f(7) > 100003, 'the loop around entered the pass again')
+})
+
+test('loop passes: a loop around that starts the count over, or a pass going back before its end, keeps the passes', () => {
+  // each pass of the loop around runs every pass again: the calls multiply
+  const reset = `(module ${WRAPPED({ reset: '(local.set $i (i32.const 0))' }).replace('(br_if $done (i32.ge_s (local.get $i) (i32.const 40)))', '(br_if $done (i32.ge_s (local.get $w) (local.get $n))) (br_if $out (i32.ge_s (local.get $i) (i32.const 40)))')})`
+  // a pass that goes on to the next skipping the step: the count bounds nothing
+  const mid = `(module ${WRAPPED({ mid: '(br_if $rows (i32.eq (i32.and (local.get $acc) (i32.const 7)) (i32.const 3)))' })})`
+  for (const [label, wat] of [['a count started over', reset], ['a branch back mid-pass', mid]]) {
+    const ref = plain(wat), { made, exports } = passes(wat)
+    is(made, 0, label)
+    for (const n of [0, 2, 9]) is(exports.f(n), ref.f(n), `${label}: f(${n})`)
+  }
+})
+
 const NEST_SRC = (rounds = 12) => `export let main = (n) => {
   const xs = new Float64Array(64)
   for (let i = 0; i < 64; i++) xs[i] = (i * 7) % 13 - 6
@@ -473,4 +520,34 @@ test('loop passes: a void export\'s rounds move out of its boundary wrapper', ()
   }
   if (onKernel()) return
   ok(/\(func \$main\$exp\$s\d+/.test(compile(VOID_SRC, { optimize: { level: 'speed' }, wat: true })), 'the rounds\' pass is a function')
+})
+
+// Rounds that keep what they allocate (a kernel returning a fresh array, held past the round)
+// compact it in place: optimize/loop-compact.js wraps them in a loop of its own (`$…lrcNagain`),
+// and the strength reduction steps the sums' pointer beside the counter (pcmconvert's driver).
+const KEPT_SRC = `const scale = (xs, k) => {
+  const out = new Float64Array(xs.length)
+  for (let i = 0; i < xs.length; i++) out[i] = xs[i] * k
+  return out
+}
+export let main = (n) => {
+  const xs = new Float64Array(256)
+  for (let i = 0; i < 256; i++) xs[i] = (i * 7) % 13 - 6
+  const sums = new Float64Array(12)
+  let out = xs
+  for (let r = 0; r < 12; r++) {
+    out = scale(out, 1 + (r + n) / 64)
+    sums[r] = out[r]
+  }
+  return out[3] + sums[11]
+}
+`
+
+test('loop passes: rounds that keep what they allocate move out of the compaction around them', () => {
+  const native = oracle(KEPT_SRC).main, main = jz(KEPT_SRC, { optimize: { level: 'speed' } }).exports.main
+  for (const n of [0, 1, 9]) is(main(n), native(n), `main(${n})`)
+  if (onKernel()) return
+  const wat = compile(KEPT_SRC, { optimize: { level: 'speed' }, wat: true })
+  ok(/\(loop \$\S*lrc\d+again/.test(wat), 'the rounds compact what they keep')
+  ok(/\(func \$main\$s\d+/.test(wat), 'the rounds\' pass is a function')
 })
