@@ -248,7 +248,7 @@ test('claims: memory evidence is fresh (no compiler commits past its measured co
   const validBase = typeof base === 'string' && /^[0-9a-f]{7,40}$/.test(base)
   ok(validBase, `${memoryPath}: missing measured commit`)
   if (!validBase) return
-  ok(!memorySnapshot.meta.partial, 'memory evidence is one complete same-machine run')
+  ok(!memorySnapshot.meta.partial, 'memory evidence is one complete run, each case on one machine')
   const nowWatr = JSON.parse(readFileSync(join(ROOT, 'node_modules/watr/package.json'), 'utf8')).version
   ok(memorySnapshot.meta.versions?.watr === nowWatr, 'memory evidence uses the installed watr')
   const swap = memorySnapshot.meta.machineState?.swapUsedMB
@@ -298,15 +298,6 @@ test('claims: jz-w2c native lowering within regression bands', () => {
   ok(gm <= W2C_GEOMEAN_MAX, `w2c/jz geomean ${gm.toFixed(3)}× > ${W2C_GEOMEAN_MAX}×`)
 })
 
-const parityRows = rival => {
-  let rows = 0
-  for (const c of Object.values(cases)) {
-    const t = c.targets?.[rival]
-    if (timedBenchmarkRow(t)) rows++
-  }
-  return rows
-}
-
 test('claims: contenders are the fastest stored rivals of each class, with jz and Porffor', () => {
   const row = medianUs => ({ medianUs, parity: 'ok' })
   const c = { targets: { jz: row(100), 'c-wasm': row(120), as: row(110), 'rust-wasm': row(300), tinygo: { status: 'fail', reason: 'no build' },
@@ -333,22 +324,26 @@ const wasmSource = id => WASM_SOURCES.some(ext => existsSync(join(ROOT, 'bench',
 // Over only the cases it has a source for, the wasm class must race nearly all of
 // them: COVERAGE_FLOOR sizes one lane's portability, not a class over its own field.
 const SOURCED_FLOOR = 0.95
+// A wasm producer's program for a case, the source its lane compiles.
+const RIVAL_SOURCE = { 'c-wasm': '.c', 'rust-wasm': '.rs', 'go-wasm': '.go', tinygo: '.go', 'zig-wasm': '.zig', as: '.as.ts' }
 test('claims: every named rival is contested (coverage ≥ floor of the corpus)', () => {
-  const total = Object.keys(cases).length
-  const need = Math.ceil(total * COVERAGE_FLOOR)
-  if (res.meta?.contenders) {
-    const covered = Object.entries(cases).filter(([id]) => !PENDING_CASES.has(id))
-    for (const [label, rivals] of [...CLAIM_CLASSES, ['porffor', ['porf-native']]]) {
-      const field = label === 'wasm' ? covered.filter(([id]) => wasmSource(id)) : covered
-      const needCovered = Math.ceil(field.length * (label === 'wasm' ? SOURCED_FLOOR : COVERAGE_FLOOR))
-      const rows = field.filter(([, c]) => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
-      ok(rows >= needCovered, `claim class '${label}' is contested on ${rows}/${field.length} cases (floor ${needCovered}) under --contenders=${res.meta.contenders}`)
-    }
-    return
+  const covered = Object.entries(cases).filter(([id]) => !PENDING_CASES.has(id))
+  for (const [label, rivals] of [...CLAIM_CLASSES, ['porffor', ['porf-native']]]) {
+    const field = label === 'wasm' ? covered.filter(([id]) => wasmSource(id)) : covered
+    const needCovered = Math.ceil(field.length * (label === 'wasm' ? SOURCED_FLOOR : COVERAGE_FLOOR))
+    const rows = field.filter(([, c]) => rivals.some(r => timedBenchmarkRow(c.targets?.[r]))).length
+    ok(rows >= needCovered, `claim class '${label}' is contested on ${rows}/${field.length} cases (floor ${needCovered})${res.meta?.contenders ? ` under --contenders=${res.meta.contenders}` : ''}`)
   }
+  if (res.meta?.contenders) return
+  // Every lane measured: each rival over the cases it has a program for. An engine or
+  // Porffor runs every case's JavaScript; a wasm producer only its own language's port,
+  // which the library cases (stdlib, three.js, pmndrs/math) have none of.
   for (const rival of [...CLAIM_RIVALS, ...JIT_RIVALS, 'porf-native']) {
-    const rows = parityRows(rival)
-    ok(rows >= need, `rival '${rival}' has ${rows}/${total} parity-valid rows (floor ${need}) — the claim is uncontested against it`)
+    const ext = RIVAL_SOURCE[rival]
+    const field = Object.keys(cases).filter(id => !ext || existsSync(join(ROOT, 'bench', id, id + ext)))
+    const need = Math.ceil(field.length * COVERAGE_FLOOR)
+    const rows = field.filter(id => timedBenchmarkRow(cases[id].targets?.[rival])).length
+    ok(rows >= need, `rival '${rival}' has ${rows}/${field.length} parity-valid rows (floor ${need}) — the claim is uncontested against it`)
   }
 })
 
