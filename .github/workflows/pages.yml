@@ -17,6 +17,7 @@ on:
       - 'test/**'
   workflow_dispatch:
   # Snapshot commits use GITHUB_TOKEN, which cannot trigger another push workflow.
+  # Only bench's scheduled and dispatched runs commit snapshots; its push gates do not.
   workflow_run:
     workflows: [bench]
     types: [completed]
@@ -37,7 +38,7 @@ jobs:
     if: >-
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
+       (github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
        github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:

@@ -38,10 +38,13 @@ against V8 under the class `rss`). The gate (`test/bench-claims.js`) holds an
 excepted case to its band instead of leadership and fails past it: every exception is a
 tripwire, not a claim, removed the commit jz leads on every runner.
 
-Evidence comes from the lean reference protocol, not a full matrix: `bench.yml`'s
-manual reference run (and `node bench/bench.mjs --contenders --paired=6 --json=…`)
-measures jz against the nearest rivals of each claim class per case; a full
-rerun re-ranks the rivals weekly.
+Evidence comes from `bench.yml`'s manual reference run (`gh workflow run bench.yml
+-f reference=true`): every lane of every case, the corpus sharded by case across CI
+jobs so each case runs whole on one machine (`bench/shards.mjs`), the claim lanes in
+paired rounds; it commits `bench/results.json` only when the claims gate passes. The
+weekly run refreshes `bench/results-ci.json` the same way. By hand, the lean protocol
+(`node bench/bench.mjs --contenders --paired=6 --json=…`) measures jz against the
+nearest rivals of each claim class per case.
 
 What this implies for HOW we optimize:
 

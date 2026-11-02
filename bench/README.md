@@ -68,11 +68,47 @@ the three.js cases, whose rotations go through `Math.sin`, `cos` and `acos`
 
 ## Run
 
-For release evidence on CI, dispatch the `bench` workflow with `reference=true`.
-It runs six alternating paired rounds on one runner, then applies the strict
-speed, size, coverage, freshness, native-lowering and allocation-heavy RSS gates to that run.
-The `reference-<commit>` artifact retains the dataset and logs even when a gate
-fails. A completed measurement is not a passing release verdict.
+### CI
+
+Push and pull-request runs of the `bench` workflow are gates: checksums, sizes and
+compilation, with timing informational. They publish nothing.
+
+Scheduled and dispatched runs measure every lane of every case. No GitHub-hosted
+job can do that within its 6-hour limit, so the corpus is split by case across
+jobs (`bench/shards.mjs plan`), sized from each case's wall time in the last
+sharded run of the same kind (`cases[].wallMs`; [shard-costs.json](shard-costs.json)
+seeds a case none has timed) to about two hours a job. A case runs whole on one
+machine, so every ratio within a case is same-machine; the publish job merges the
+shards (`bench/shards.mjs merge`) into one dataset that records each case's machine
+(`cases[id].host`) and each job's machine, date and state (`meta.shards`), with
+`meta.host` only when a single CPU model measured everything. The merge refuses a
+missing or repeated case and any shard whose commit, toolchain versions or memory
+method differ from the others'.
+
+- The weekly schedule (or a dispatch with `reference=false`) times every lane once
+  and commits `bench/results-ci.json`, the [CI runner view](https://jz.js.org/bench/?machine=ci).
+- A dispatch with `reference=true` runs the claim lanes (`bench/shards.mjs`
+  `CLAIM_LANES`: jz, the wasm producers, Porffor, the V8 and JSC engines, jz-w2c) in
+  six alternating paired rounds and every other lane once, then applies the strict
+  speed, size, coverage, freshness, native-lowering and allocation-heavy RSS gates.
+  When every claim holds, it commits `bench/results.json` with the chart
+  (`bench/bench.svg`) and this file's tables redrawn from it. When one fails, the
+  run fails with the failing claims and commits nothing.
+- A dispatch with `cases=…` is a probe: measured, merged, uploaded as `probe.json`,
+  never published.
+
+Every measurement run uploads its evidence (`reference-<commit>`, `ci-<commit>` or
+`probe-<commit>`, plus each job's `bench-shard-<n>` dataset and log), whether or not
+it published. `scripts/bench-publish.mjs` commits from the latest main and says in
+the job summary what it did: published, unchanged, or not published because main
+already holds a later commit's evidence. A completed measurement is not a passing
+release verdict.
+
+```sh
+gh workflow run bench.yml -f reference=true      # release evidence → bench/results.json
+gh workflow run bench.yml -f reference=false     # CI runner view → bench/results-ci.json
+gh workflow run bench.yml -f cases=vm,crc32      # probe, paired, never published
+```
 
 To check the downloaded artifact locally:
 
@@ -146,7 +182,8 @@ Porffor; the rest keep their stored rows under `--merge`, or are simply absent
 from a fresh `--json` file. A case with no stored evidence measures every
 selected lane, so a new case is ranked in full once. The gate then counts
 coverage by claim class rather than by lane (`meta.contenders`). This is the
-release protocol CI runs (`bench.yml` reference) and the one to run by hand:
+protocol to run by hand, a third of a full run; CI's reference measures every lane
+instead (see CI above):
 
 ```sh
 # release verdict: jz + the two nearest rivals per class, paired, ~1/3 of a full run
@@ -340,18 +377,17 @@ compile lands; optimized, jz runs 0.59× V8's time.
 The class `rss` holds `webaudio`'s peak RSS to 1.15× V8's: V8's compiled code
 for the speed build's 1.19 MB of wasm outweighs jz's 4.5 MB heap.
 
-Performance evidence describes the machine recorded in its metadata. The
-current `bench/results.json` records darwin/arm64, Apple M4 Max. Ordinary CI
-runs publish their separate measurements as `bench/results-ci.json`, visible
-in the [CI runner view](https://jz.js.org/bench/?machine=ci). Their timing checks
-are informational; checksums, sizes, coverage and compilation are hard gates.
-Successful benchmark runs on main trigger a Pages deployment of that snapshot.
+Performance evidence describes the machines recorded in its metadata: `meta.host`
+for a one-machine run, each case's `host` for a sharded CI run. The weekly CI run
+publishes its measurements as `bench/results-ci.json`, visible in the
+[CI runner view](https://jz.js.org/bench/?machine=ci). Gate runs' timing checks are
+informational; checksums, sizes, coverage and compilation are hard gates. A
+benchmark run that publishes triggers a Pages deployment of that snapshot.
 
-A manual `reference=true` run applies the strict release claims on CI as well.
-Its artifact is candidate release evidence only if every claim passes for the
-measured compiler. A failed run remains a list of gaps to fix; neither the host
-change nor the artifact upload waives a cap. Adopting a passing CI reference
-requires retaining its machine metadata with the dataset.
+A manual `reference=true` run applies the strict release claims on CI as well,
+and commits its dataset, machine metadata included, only when every claim passes
+for the measured compiler. A failed run remains a list of gaps to fix; neither the
+host change nor the artifact upload waives a cap.
 
 The scope of "every kernel class" is this matrix — each cell names the case that
 pins it. A domain need that has no case is a hole in the guarantee, and the fix

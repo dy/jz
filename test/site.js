@@ -724,19 +724,21 @@ test('site: primary menus keep the same destinations and the self-compile badge 
   ok(readFileSync(join(root, '.github/workflows/self-compile.yml'), 'utf8').includes('name: self-compile'), 'linked workflow exists')
 })
 
-test('site: Pages redeploys only successful main-push benchmark snapshots', () => {
+test('site: Pages redeploys after a successful benchmark publication on main', () => {
   const pages = readFileSync(join(root, '.github/workflows/pages.yml'), 'utf8')
   const trigger = pages.match(/  workflow_run:\n([\s\S]*?)(?=\n\S)/)[1]
   ok(trigger.includes('workflows: [bench]') && trigger.includes('types: [completed]'), 'benchmark completion triggers deployment')
   ok(trigger.includes('branches: [main]'), 'completion trigger is restricted to main')
   const condition = pages.match(/    if: >-\n([\s\S]*?)\n    runs-on:/)[1].trim()
-  const run = { conclusion: 'success', event: 'push', head_repository: { full_name: 'dy/jz' } }
+  const run = { conclusion: 'success', event: 'schedule', head_repository: { full_name: 'dy/jz' } }
   const allowed = (event_name, workflow_run) => runInNewContext(condition, {
     github: { event_name, repository: 'dy/jz', event: { workflow_run } },
   })
   is(allowed('push'), true, 'ordinary site pushes still deploy')
   is(allowed('workflow_dispatch'), true, 'manual site deployment still works')
-  is(allowed('workflow_run', run), true, 'successful main push deploys')
+  is(allowed('workflow_run', run), true, 'a successful weekly refresh deploys')
+  is(allowed('workflow_run', { ...run, event: 'workflow_dispatch' }), true, 'a successful dispatched refresh deploys')
+  is(allowed('workflow_run', { ...run, event: 'push' }), false, 'a push gate publishes nothing to deploy')
   for (const conclusion of ['failure', 'cancelled', 'skipped'])
     is(allowed('workflow_run', { ...run, conclusion }), false, conclusion + ' cannot deploy')
   is(allowed('workflow_run', { ...run, event: 'pull_request' }), false, 'PR completion cannot deploy')
@@ -745,72 +747,24 @@ test('site: Pages redeploys only successful main-push benchmark snapshots', () =
   ok(pages.includes('node test/headline.js'), 'deployment gates dataset loading and Perry rendering')
 })
 
-test('site: benchmark publication requires Perry evidence and a successful push', () => {
+// The pipeline's behavior is tested in test/bench-shards.js; this pins how bench.yml
+// wires it: gates publish nothing, measurement runs merge and publish through the
+// tested scripts, and a failed claim or shard stops the publication.
+test('site: benchmark publication runs only from a complete sharded measurement', () => {
   const workflow = readFileSync(join(root, '.github/workflows/bench.yml'), 'utf8')
-  const step = workflow.slice(workflow.indexOf('      - name: publish bench snapshot'))
-  const script = step.split('        run: |\n')[1].replace(/^          /gm, '')
-  ok(script.includes(',perry,'), 'published run includes Perry')
-  ok(script.includes('--json=bench/results-ci.json'), 'runner writes directly to its own dataset')
-  ok(script.includes('cp bench/results.json bench/results-ci.json'), 'refresh uses current reference checksums')
-  const dir = mkdtempSync(join(tmpdir(), 'jz-bench-publish-'))
-  try {
-    mkdirSync(join(dir, 'bin')); mkdirSync(join(dir, 'bench')); mkdirSync(join(dir, 'assets'))
-    writeFileSync(join(dir, 'package.json'), '{"type":"module"}')
-    writeFileSync(join(dir, 'bench/results.json'), '{"reference":"unchanged"}')
-    copyFileSync(join(root, 'assets/headline.js'), join(dir, 'assets/headline.js'))
-    writeFileSync(join(dir, 'bench/bench.mjs'), `import { writeFileSync } from 'node:fs'
-writeFileSync(process.env.ARGS_LOG, process.argv.slice(2).join(' '))
-if (process.env.BENCH_FAIL) { console.error(process.env.BENCH_FAIL); process.exit(1) }
-writeFileSync('bench/results-ci.json', process.env.SNAPSHOT)
-`)
-    // Execute the real publication shell with a local git fixture, never a remote.
-    writeFileSync(join(dir, 'bin/git'), `#!/bin/sh
-echo "$*" >> "$GIT_LOG"
-case "$1" in
-  push) test "$PUSH_OK" = 1 ;;
-  merge-base) test "$HISTORY_OK" = 1 ;;
-  diff) if test "$2" = --cached; then exit 1; fi; test "$INPUTS_SAME" = 1 ;;
-esac
-`, { mode: 0o755 })
-    const good = { cases: { alpha: { targets: { perry: { medianUs: 1, parity: 'ok' } } } } }
-    const run = (snapshot = good, extra = {}) => {
-      const log = join(dir, 'git.log'), args = join(dir, 'bench.args')
-      writeFileSync(log, ''); writeFileSync(args, '')
-      const result = spawnSync('bash', ['-e', '-c', script], { cwd: dir, encoding: 'utf8',
-        env: { ...process.env, PATH: join(dir, 'bin') + ':' + process.env.PATH, RUNNER_TEMP: dir,
-          GIT_LOG: log, ARGS_LOG: args, GITHUB_SHA: 'source', INPUTS_SAME: '1', HISTORY_OK: '1', PUSH_OK: '1', SNAPSHOT: JSON.stringify(snapshot), ...extra },
-      })
-      return { ...result, calls: readFileSync(log, 'utf8').trim().split('\n').filter(Boolean), args: readFileSync(args, 'utf8') }
-    }
-    const success = run()
-    is(success.status, 0, success.stderr)
-    is(success.calls.filter(c => c === 'push').length, 1, 'one successful push finishes publication')
-    is(success.calls.filter(c => c.startsWith('add ')), ['add bench/results-ci.json'], 'only CI evidence is staged')
-    is(readFileSync(join(dir, 'bench/results.json'), 'utf8'), '{"reference":"unchanged"}', 'reference evidence is preserved')
-    ok(/^--targets=jz,.*,perry,.* --contenders --json=bench\/results-ci\.json --merge --verify-anchors$/.test(success.args), 'a main push refreshes the contenders and Perry into the stored rows, anchored: ' + success.args)
-    const weekly = run(good, { GITHUB_EVENT_NAME: 'schedule' })
-    is(weekly.status, 0, weekly.stderr)
-    ok(weekly.args.startsWith('--targets=nat,') && weekly.args.includes(',perry,') && !weekly.args.includes('--merge'), 'the weekly run measures every lane afresh')
-    const drifted = run(good, { BENCH_FAIL: '[anchors] DRIFT DETECTED — stored evidence no longer matches this machine' })
-    is(drifted.status, 0, 'a drifted runner skips the refresh')
-    is(drifted.calls, [], 'a skipped refresh never reaches git')
-    const broken = run(good, { BENCH_FAIL: 'measurement failed' })
-    is(broken.status, 1, 'any other failed measurement fails CI')
-    is(broken.calls, [], 'a failed measurement never reaches git')
-    for (const perry of [undefined, { status: 'fail' }, { medianUs: 1, parity: 'DIFF' }, { medianUs: 0, parity: 'ok' }]) {
-      const rejected = run({ cases: { alpha: { targets: { perry } } } })
-      is(rejected.status, 1, 'missing, failed, wrong, or zero-time Perry evidence blocks publication')
-      is(rejected.calls, [], 'invalid snapshot never reaches git')
-    }
-    const exhausted = run(good, { PUSH_OK: '0' })
-    is(exhausted.status, 1, 'exhausted retries fail CI')
-    is(exhausted.calls.filter(c => c === 'push').length, 3, 'three publication attempts')
-    for (const extra of [{ INPUTS_SAME: '0' }, { HISTORY_OK: '0' }]) {
-      const stale = run(good, extra)
-      is(stale.status, 0, 'changed inputs or history yield to the newer run')
-      is(stale.calls.includes('push'), false, 'stale evidence is never pushed')
-    }
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+  const publish = workflow.slice(workflow.indexOf('\n  publish:\n'))
+  const bench = workflow.slice(workflow.indexOf('\n  bench:\n'), workflow.indexOf('\n  publish:\n'))
+  ok(!/git (push|commit)|bench-publish/.test(bench), 'gate and shard jobs never write to the repository')
+  ok(/permissions:\n      contents: read/.test(bench), 'the measuring job holds a read-only token')
+  ok(bench.includes('bench/bench.mjs --targets="$TARGETS" --cases="$CASES"'), 'a shard measures its cases on every planned lane')
+  ok(bench.includes('test -z "$BENCH_STRICT"'), 'a missing toolchain fails a shard instead of dropping its lane')
+  ok(publish.includes('node bench/shards.mjs merge'), 'the shards merge through the tested merger')
+  ok(publish.includes("if: needs.bench.result != 'success'"), 'a failed shard job blocks publication')
+  ok(publish.includes('node test/bench-claims.js'), 'a reference run is gated by the release claims')
+  ok(publish.includes('node scripts/bench-publish.mjs --mode="$MODE"'), 'publication goes through the tested publisher')
+  ok(publish.includes("if: env.CASES == '' && github.ref == 'refs/heads/main'"), 'only a whole-corpus run on main publishes')
+  const plan = workflow.slice(workflow.indexOf('\n  plan:\n'), workflow.indexOf('\n  bench:\n'))
+  ok(plan.includes('node bench/shards.mjs plan --mode=$mode'), 'shards are planned from measured wall times')
 })
 
 test('site: gallery stays current and renders into the deployment directory', () => {

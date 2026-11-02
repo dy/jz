@@ -1,29 +1,38 @@
 name: bench
-# Competitive-regression gate (see CONTRIBUTING.md "Performance & size invariant").
-# Runs on every push and PR. HARD-GATED here: checksums/parity, wasm sizes, and
+# Two kinds of run share this workflow (see bench/README.md "CI").
+#
+# Gate (push, pull_request): HARD-GATED here: checksums/parity, wasm sizes, and
 # compile success. TIMING ratios (speed pins, geomeans, fastest-wasm, examples,
 # floatbeat, perf-fuzz) print informational on CI — a shared 2-core runner reads
 # identical builds up to 15× slower, so timing is asserted off-CI where the
 # release discipline runs `npm run test:bench` on stable hardware (test/bench.js
-# okTiming).
-# Manual reference runs additionally enforce every claim against fresh paired
-# measurements and retain the source-pinned dataset and failures as artifacts.
+# okTiming). A gate publishes nothing: one runner cannot re-measure every lane of
+# every case within the 6-hour job limit, and rows from another machine would
+# break the case's same-machine ratios.
+#
+# Measurement (schedule, workflow_dispatch): every lane of every case, the corpus
+# split by case across jobs sized from measured wall times (bench/shards.mjs plan),
+# so each case runs whole on one machine; the publish job merges the shards into
+# one dataset (bench/shards.mjs merge) that names each case's machine.
+#   schedule, or reference=false: every lane once → bench/results-ci.json.
+#   reference=true: the claim lanes in 6 paired rounds, the rest once; the claims
+#     gate decides. Passed: bench/results.json, bench/bench.svg and the README
+#     tables are committed. Failed: the evidence is uploaded and the run fails
+#     with the failing claims.
+#   cases=…: a probe of those cases, uploaded as probe.json, never published.
+# A publication that does not happen says why, in the log and the job summary.
 on:
   workflow_dispatch:
     inputs:
       reference:
-        description: Measure fresh release evidence and enforce speed, size and memory claims
+        description: Pair the claim lanes, enforce the release claims, and on a pass commit bench/results.json (false refreshes bench/results-ci.json)
         type: boolean
         default: true
-      contenders:
-        description: Rivals measured per claim class and case (the nearest by stored evidence); 0 measures every lane
-        type: string
-        default: '2'
       cases:
-        description: Cases to measure, comma-separated (empty measures the corpus)
+        description: Cases to measure, comma-separated (empty measures the corpus); a subset is a probe and is never published
         type: string
         default: ''
-  # The full matrix re-ranks every lane weekly; a main push refreshes only the contenders.
+  # The CI runner view re-measures every lane weekly.
   schedule:
     - cron: '0 3 * * 1'
   push:
@@ -48,42 +57,111 @@ on:
       - 'bench/results.json'
       - 'bench/results-ci.json'
       - 'bench/results-linux.json'
+# Gates of one ref queue behind each other (a PR's newest push cancels its older
+# run); a reference run and a CI refresh queue separately, never interrupted.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # Publishing a main-branch snapshot must not be interrupted mid-transaction.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.reference && 'reference' || (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'ci' || 'gate' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  bench:
+  plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    # The publish step commits bench/results-ci.json back to main;
-    # the default GITHUB_TOKEN is read-only and 403s that push without this.
-    permissions:
-      contents: write
+    timeout-minutes: 15
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      targets: ${{ steps.plan.outputs.targets }}
+      paired: ${{ steps.plan.outputs.paired }}
+      paired-targets: ${{ steps.plan.outputs.paired-targets }}
+      node: ${{ steps.versions.outputs.node }}
+      deno: ${{ steps.versions.outputs.deno }}
+      bun: ${{ steps.versions.outputs.bun }}
+    env:
+      MEASURE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
+      - uses: actions/checkout@v4
+        if: env.MEASURE == 'true'
+      # Every shard runs the same engine builds: resolved once here, pinned there.
+      - uses: actions/setup-node@v4
+        if: env.MEASURE == 'true'
+        with:
+          node-version: '24'
+      - uses: denoland/setup-deno@v2
+        if: env.MEASURE == 'true'
+        with:
+          deno-version: v2.x
+      - uses: oven-sh/setup-bun@v2
+        if: env.MEASURE == 'true'
+      - id: versions
+        if: env.MEASURE == 'true'
+        run: |
+          echo "node=$(node --version | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+          echo "deno=$(deno --version | head -1 | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+          echo "bun=$(bun --version)" >> "$GITHUB_OUTPUT"
+      - if: env.MEASURE == 'true'
+        run: npm ci --ignore-scripts
+      - id: plan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REFERENCE: ${{ inputs.reference }}
+          CASES: ${{ inputs.cases }}
+        run: |
+          if [ "$MEASURE" != true ]; then
+            echo 'mode=gate' >> "$GITHUB_OUTPUT"
+            echo 'matrix=[{"kind":"gate","name":"bench"}]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mode=ci; [ "$EVENT" = workflow_dispatch ] && [ "$REFERENCE" = true ] && mode=reference
+          node bench/shards.mjs plan --mode=$mode ${CASES:+--cases=$CASES} > "$RUNNER_TEMP/plan.json"
+          node --input-type=module - "$mode" "$RUNNER_TEMP/plan.json" <<'JS' >> "$GITHUB_OUTPUT"
+          import { readFileSync } from 'node:fs'
+          const [mode, file] = process.argv.slice(2), plan = JSON.parse(readFileSync(file, 'utf8'))
+          const matrix = plan.shards.map(s => ({ ...s, name: `${mode} shard ${s.index}: ${s.cases.split(',').length} cases, ~${s.minutes} min` }))
+          console.log(`mode=${mode}\nmatrix=${JSON.stringify(matrix)}\ntargets=${plan.targets}\npaired=${plan.paired}\npaired-targets=${plan.pairedTargets}`)
+          JS
+          { echo "### bench $mode plan"; echo '```'; node -e 'for (const s of require(process.argv[1]).shards) console.log(`shard ${s.index}: ~${s.minutes} min  ${s.cases}`)' "$RUNNER_TEMP/plan.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  bench:
+    needs: plan
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    # Neither a gate nor a shard writes to the repository; the publish job does.
+    permissions:
+      contents: read
+    env:
+      # A measurement job fails on a missing toolchain instead of dropping its lane.
+      BENCH_STRICT: ${{ matrix.kind == 'shard' && '1' || '' }}
+    steps:
+      # Full history: every job of a run then abbreviates the measured commit alike.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ needs.plan.outputs.node || '24' }}
       - run: npm ci --ignore-scripts
       - run: npm rebuild esbuild
       # Extra "Run as JS" runtimes (Deno, Bun). bench.mjs gates every target on
-      # `available`, so a missing tool just drops its row — additive, never fails.
+      # `available`, so a missing tool just drops its row on a gate.
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          deno-version: ${{ needs.plan.outputs.deno || 'v2.x' }}
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ needs.plan.outputs.bun || 'latest' }}
       # Safari's engine: standalone JavaScriptCore shell via jsvu (→ ~/.jsvu/bin/jsc).
-      # Non-fatal — bench.mjs drops the jsc row if the install fails.
       - name: install jsc (JavaScriptCore)
         run: |
-          npx --yes jsvu --engines=javascriptcore --os=linux64 || true
+          npx --yes jsvu --engines=javascriptcore --os=linux64 || test -z "$BENCH_STRICT"
           echo "$HOME/.jsvu/bin" >> "$GITHUB_PATH"
       # NumPy native-reference rows (python3 is preinstalled on ubuntu).
       - name: install numpy
-        run: python3 -m pip install --break-system-packages numpy || pip install numpy || true
+        run: python3 -m pip install --break-system-packages numpy || pip install numpy || test -z "$BENCH_STRICT"
       # GNU time supplies RSS; SIMDe supplies wasm2c's SIMD headers. wasm2c includes
       # <simde/wasm/simd128.h>, which SIMDe has from 0.7.4; Ubuntu 24.04's
       # libsimde-dev is 0.7.2 (arm/ and x86/ only), so the release is pinned here.
@@ -97,9 +175,10 @@ jobs:
           test -f "$RUNNER_TEMP/simde/simde/wasm/simd128.h"
           echo "SIMDE_DIR=$RUNNER_TEMP/simde" >> "$GITHUB_ENV"
       # wasmtime runs the standalone `jz → wasmtime` / `jz → wasm2c` reference rows.
-      - name: install wasmtime
+      # Pinned: shards installing minutes apart must run one wasmtime.
+      - name: install wasmtime 50.0.1
         run: |
-          curl https://wasmtime.dev/install.sh -sSf | bash || true
+          curl https://wasmtime.dev/install.sh -sSf | bash -s -- --version v50.0.1 || test -z "$BENCH_STRICT"
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
       # Pin zig: the runner's preinstalled zig (0.13) fails every bench zig/
       # zig-wasm build (API churn) — 0/43 rows made those rivals silently
@@ -129,7 +208,7 @@ jobs:
       # rust-wasm case fails ("can't find crate for std") and the hero's Rust→wasm
       # stat goes null (why the 3rd hero stat was dropped in 83d6add5).
       - name: rust wasm target
-        run: rustup target add wasm32-wasip1 || true
+        run: rustup target add wasm32-wasip1 || test -z "$BENCH_STRICT"
       # Competitor toolchains + binaryen (provides wasm-opt), in one install: a
       # second --no-save install would prune this one's packages. jco builds the
       # ComponentizeJS lane, componentize-qjs its QuickJS twin; js2wasm is
@@ -181,6 +260,25 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/qjs-wasi.wasm" https://github.com/quickjs-ng/quickjs/releases/download/v0.17.0/qjs-wasi.wasm
           echo "42a732a676ec2d93488c19411e0fad283bf72658fdad746f089914b523c783b1  $RUNNER_TEMP/qjs-wasi.wasm" | sha256sum -c -
           echo "QJS_WASI=$RUNNER_TEMP/qjs-wasi.wasm" >> "$GITHUB_ENV"
+      # MoonBit, a wasm rival of the chart (bench/bench.svg). Measurement jobs only:
+      # the gate's test/bench.js does not time it. The release tarball is checked
+      # by its published SHA-256; the core library is pinned by the same version.
+      - name: install MoonBit 0.10.19
+        if: matrix.kind == 'shard'
+        env:
+          MOONBIT: 0.10.19+97801ee1b
+        run: |
+          v="${MOONBIT//+/%2B}" moon="$HOME/.moon"
+          curl -fsSL -o "$RUNNER_TEMP/moonbit.tar.gz" "https://cli.moonbitlang.com/binaries/$v/moonbit-linux-x86_64.tar.gz"
+          echo "b0feaf5b4a8d9f85b177e6cd7eee22aafc426dd72e84c021b75c8fff703da17f  $RUNNER_TEMP/moonbit.tar.gz" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/moonbit-core.tar.gz" "https://cli.moonbitlang.com/cores/core-$v.tar.gz"
+          mkdir -p "$moon/lib"
+          tar xzf "$RUNNER_TEMP/moonbit.tar.gz" -C "$moon"
+          tar xzf "$RUNNER_TEMP/moonbit-core.tar.gz" -C "$moon/lib"
+          chmod +x "$moon"/bin/* "$moon"/bin/internal/*
+          PATH="$moon/bin:$PATH" moon -C "$moon/lib/core" bundle --warn-list -a --all
+          echo "$moon/bin" >> "$GITHUB_PATH"
+          "$moon/bin/moonc" -v | grep -q "v${MOONBIT}"
       # Static Hermes has no release: build the pinned static_h source, cached by
       # the installer that pins it (shermes records its absolute paths at build).
       - uses: actions/cache@v4
@@ -228,44 +326,16 @@ jobs:
           "$RUNNER_TEMP"/wabt-1.0.41/bin/wasm2c --version
           echo "$RUNNER_TEMP/wabt-1.0.41/bin" >> "$GITHUB_PATH"
           echo "WABT_W2C_DIR=$RUNNER_TEMP/wabt-1.0.41/share/wabt/wasm2c" >> "$GITHUB_ENV"
+
+      # ── gate ───────────────────────────────────────────────────────────────
       - run: npm run test:bench
-        if: ${{ !inputs.reference && github.event_name != 'schedule' }}
+        if: matrix.kind == 'gate'
       # scripts/native/compile.mjs builds a Native Messaging host and every WASI
       # import through wasm2c + clang; output must match node and wasmtime byte
       # for byte. The test workflow has no WABT and skips these.
       - name: native executable (scripts/native/compile.mjs)
-        if: ${{ !inputs.reference && github.event_name != 'schedule' }}
+        if: matrix.kind == 'gate'
         run: node test/index.js native-lowering
-      # Same-machine, alternating paired rounds. The strict claims gate reads
-      # these fresh files; CI does not turn a timing loss into an informational row.
-      # A verdict needs only the lanes that could lead: --contenders measures jz
-      # against the nearest rivals of each claim class per case (bench/README.md).
-      - name: measure release reference
-        if: ${{ inputs.reference }}
-        shell: bash
-        env:
-          CONTENDERS: ${{ inputs.contenders }}
-          CASES: ${{ inputs.cases }}
-        run: |
-          flag=""; [ "${CONTENDERS:-2}" != "0" ] && flag="--contenders=${CONTENDERS:-2}"
-          [ -n "$CASES" ] && flag="$flag --cases=$CASES"
-          node bench/bench.mjs --targets=jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,porf-native,v8,deno,bun,jsc,jz-w2c $flag --paired=6 --json="$RUNNER_TEMP/reference.json" 2>&1 | tee "$RUNNER_TEMP/reference.log"
-      - name: enforce release claims
-        if: ${{ inputs.reference }}
-        shell: bash
-        env:
-          JZ_BENCH_RESULTS: ${{ runner.temp }}/reference.json
-        run: node test/bench-claims.js 2>&1 | tee "$RUNNER_TEMP/claims.log"
-      - name: retain release evidence
-        if: ${{ always() && inputs.reference }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: reference-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/reference.json
-            ${{ runner.temp }}/reference.log
-            ${{ runner.temp }}/claims.log
-          if-no-files-found: error
       # ── native-lane smoke gate (audit-#12 step 4) ──────────────────────────
       # This proves both native translators still (a) build, (b) run, (c) match
       # jz's own checksum on a few representative cases — the regression a
@@ -273,7 +343,7 @@ jobs:
       # opcode-0x12 defect) would trip. nqueens is that exact repro case, kept
       # in the smoke set as a permanent regression guard for it.
       - name: install w2c2 (build from source — no prebuilt/package exists)
-        if: ${{ !inputs.reference && github.event_name != 'schedule' }}
+        if: matrix.kind == 'gate'
         run: |
           mkdir "$RUNNER_TEMP/w2c2"
           curl -fsSL https://codeload.github.com/turbolent/w2c2/tar.gz/700f556539ea7c7995e6645b9b80e3edf9c9b271 | tar xz --strip-components=1 -C "$RUNNER_TEMP/w2c2"
@@ -281,7 +351,7 @@ jobs:
           cmake --build "$RUNNER_TEMP/w2c2/w2c2/build" --target w2c2 -j
           "$RUNNER_TEMP/w2c2/w2c2/build/w2c2" -h
       - name: native-lane smoke (jz-w2c + jz-w2c2, checksum-verified)
-        if: ${{ !inputs.reference && github.event_name != 'schedule' }}
+        if: matrix.kind == 'gate'
         env:
           WABT_W2C_DIR: ${{ runner.temp }}/wabt-1.0.41/share/wabt/wasm2c
           W2C2_DIR: ${{ runner.temp }}/w2c2/w2c2
@@ -308,60 +378,105 @@ jobs:
             if (bad.length) { console.error("native-lane smoke FAILED:\n" + bad.join("\n")); process.exit(1); }
             console.log("native-lane smoke OK — both translators match checksums; WABT also passes multi-value returns");
           '
-      # Refresh the runner dataset on main; pages.yml redeploys on completion.
-      # Weekly, every available target is measured on this one machine; a main
-      # push refreshes jz and the contenders of each case into the stored rows,
-      # certified by the anchors (a drifted runner skips the publish). Browser-
-      # runner artifacts (bench/web/*.wasm) are rebuilt separately by pages.yml.
-      - name: publish bench snapshot
-        if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main'
+
+      # ── shard ──────────────────────────────────────────────────────────────
+      # This job's cases, every lane, on this one machine: the claim lanes in
+      # alternating paired rounds for a reference run, every other lane once.
+      - name: measure this shard's cases
+        if: matrix.kind == 'shard'
+        shell: bash
+        env:
+          TARGETS: ${{ needs.plan.outputs.targets }}
+          PAIRED: ${{ needs.plan.outputs.paired }}
+          PAIRED_TARGETS: ${{ needs.plan.outputs.paired-targets }}
+          CASES: ${{ matrix.cases }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
-            # Seed the checksum oracle from current reference evidence, not old CI
-            # results. This is a full refresh: all timings below come from this runner.
-            cp bench/results.json bench/results-ci.json
-            node bench/bench.mjs --targets=nat,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,rust,zig,go,v8,deno,bun,jsc,as,porf-native,perry,scriptc,tslang,shermes,js2wasm,qjs-wasi,componentize-qjs,componentize-js,jz,jz-wasmtime,jz-w2c,wat,numpy --json=bench/results-ci.json || exit 1
-          else
-            set -o pipefail
-            log="${RUNNER_TEMP:-$(mktemp -d)}/publish.log"
-            if ! node bench/bench.mjs --targets=jz,c-wasm,rust-wasm,go-wasm,tinygo,zig-wasm,as,porf-native,v8,deno,bun,jsc,perry,jz-w2c --contenders --json=bench/results-ci.json --merge --verify-anchors 2>&1 | tee "$log"; then
-              grep -q '^\[anchors\] DRIFT' "$log" && { echo 'runner drifted from the stored rows: snapshot not refreshed'; exit 0; }
-              exit 1
-            fi
+          mkdir -p "$RUNNER_TEMP/shard"
+          paired=(); [ "$PAIRED" != 0 ] && paired=(--paired="$PAIRED" --paired-targets="$PAIRED_TARGETS")
+          node bench/bench.mjs --targets="$TARGETS" --cases="$CASES" "${paired[@]}" --json="$RUNNER_TEMP/shard/shard.json" --no-web 2>&1 | tee "$RUNNER_TEMP/shard/shard.log"
+      - name: retain this shard
+        if: always() && matrix.kind == 'shard'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-shard-${{ matrix.index }}
+          path: ${{ runner.temp }}/shard/
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, bench]
+    # After every shard, failed ones included, so a refusal names what is missing.
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode != 'gate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Commits the merged dataset to main.
+    permissions:
+      contents: write
+    env:
+      MODE: ${{ needs.plan.outputs.mode }}
+      CASES: ${{ inputs.cases }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # the claims gate's freshness check reads the history behind the measured commit
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.plan.outputs.node }}
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bench-shard-*
+          path: ${{ runner.temp }}/shards
+      # One dataset or a refusal that names what is missing or inconsistent.
+      - name: merge the shards
+        id: merge
+        shell: bash
+        run: |
+          file=results-ci.json; [ "$MODE" = reference ] && file=reference.json; [ -n "$CASES" ] && file=probe.json
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          EVIDENCE="$RUNNER_TEMP/evidence"; echo "EVIDENCE=$EVIDENCE" >> "$GITHUB_ENV"
+          mkdir -p "$EVIDENCE"
+          node bench/shards.mjs merge ${CASES:+--cases=$CASES} --out="$EVIDENCE/$file" "$RUNNER_TEMP"/shards/*/shard.json 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: every shard job succeeded
+        if: needs.bench.result != 'success'
+        run: |
+          echo "::error::a shard job ended ${{ needs.bench.result }}: its evidence is not trusted, nothing is published"
+          exit 1
+      - name: enforce release claims
+        if: env.MODE == 'reference' && env.CASES == ''
+        shell: bash
+        env:
+          JZ_BENCH_RESULTS: ${{ runner.temp }}/evidence/reference.json
+        run: |
+          set +e
+          node test/bench-claims.js 2>&1 | tee "$EVIDENCE/claims.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" != 0 ]; then
+            failed=$(grep '✗' "$EVIDENCE/claims.log" | sed 's/\x1b\[[0-9;]*m//g; s/^ *✗ *//')
+            { echo '### release claims failed: bench/results.json not refreshed'; echo '```'; echo "$failed"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            echo "$failed" | sed 's/^/::error::/'
           fi
-          # A missing/failed Perry lane must not silently disappear from the page.
-          node --input-type=module <<'JS'
-          import { readFileSync } from 'node:fs'
-          import { timedBenchmarkRow } from './assets/headline.js'
-          const r = JSON.parse(readFileSync('bench/results-ci.json', 'utf8'))
-          if (!timedBenchmarkRow(r.cases.alpha?.targets.perry))
-            throw new Error('Published snapshot is missing a checksum-verified Perry alpha timing')
-          JS
+          exit "$status"
+      - name: retain the evidence
+        if: always() && steps.merge.outputs.file
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.MODE }}-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence/
+          if-no-files-found: warn
+      # pages.yml redeploys when this run completes successfully.
+      - name: publish to main
+        if: env.CASES == '' && github.ref == 'refs/heads/main'
+        run: |
           git config user.name 'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          # Keep the reference-machine evidence in results.json. Only the
-          # runner's results-ci.json is committed by this workflow.
-          git add bench/results-ci.json
-          git diff --cached --quiet || git commit -m 'bench: refresh results-ci.json (runner dataset) [skip ci]'
-          # Overlapping runs refresh the same generated dataset. `-X theirs`
-          # (in rebase terms: the commit being replayed, i.e. OUR snapshot) auto-
-          # resolves. Retry covers a push landing mid-rebase. Skip publication
-          # if benchmark inputs changed; documentation and generated snapshots
-          # do not invalidate measurements or trigger a replacement bench run.
-          # Match the workflow's ignored paths, and reject rewritten history.
-          for i in 1 2 3; do
-            git fetch origin main
-            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
-               ! git diff --quiet "$GITHUB_SHA" origin/main -- . \
-                 ':(glob,exclude)**/*.md' ':(glob,exclude)**/*.svg' ':(glob,exclude)**/*.html' \
-                 ':(exclude).work/**' ':(exclude)LICENSE' \
-                 ':(exclude)bench/results.json' ':(exclude)bench/results-ci.json' \
-                 ':(exclude)bench/results-linux.json'; then
-              echo "stale snapshot: benchmark inputs or history changed since $GITHUB_SHA — skipping publish"
-              exit 0
-            fi
-            git push && exit 0
-            git pull --rebase -X theirs origin main || { git rebase --abort || true; exit 1; }
-          done
-          echo 'Could not publish the benchmark snapshot after 3 attempts' >&2
-          exit 1
+          node scripts/bench-publish.mjs --mode="$MODE" --dataset="$EVIDENCE/${{ steps.merge.outputs.file }}"
+      - name: not published
+        if: env.CASES != '' || github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+          ARTIFACT: ${{ env.MODE }}-${{ github.sha }}
+        run: |
+          why="measured on $REF, not main"; [ -n "$CASES" ] && why="a probe of $CASES"
+          echo "::notice::not published: $why; the evidence is the $ARTIFACT artifact"
+          echo "not published: $why; the evidence is the $ARTIFACT artifact" >> "$GITHUB_STEP_SUMMARY"
