@@ -3984,7 +3984,11 @@ store (class-dispatch.js `lacksSlot`). A field stored under a method's name
 (`this._onChangeCallback = cb` beside `_onChangeCallback() {}`) is the own
 property that shadows the method: the summary marks the name
 (`dynamicProps`), and the emitter's dispatch reads the field's slot in place
-before calling the member (class-dispatch.js `ownSlot`). A store to
+before calling the member (class-dispatch.js `ownSlot`); a member's dispatcher,
+for a receiver the summary cannot name, asks in each class's test by that
+class's layout (the field's slot, or a zero properties word where the layout
+holds no field of the name), the generic lookup left to other layouts and to a
+receiver of no class (`__own`). A store to
 `C.prototype.p` in a static block of `C` or among the statements of the scope
 declaring it, and `Object.assign(C.prototype, {…})`, name members of the class
 (`foldPrototypeStores`): a function is a method, a literal stored as the
@@ -4332,7 +4336,10 @@ record's lowering of the flag but allocates nothing of the closure's
 allocation, never run, it made an async function's continuation never resume
 (test/async.js, bare fetch).
 `whyNotRewind` names the reason
-for every candidate that keeps its heap. Load CSE (`src/compile/cse-load.js`) keeps a
+for every candidate that keeps its heap. A field cache of load CSE (`e.type`
+read once for several guards) that no emitted test reads, every one answering
+by the layout, keeps only the read's nullish throw (emit/field-caches.js).
+Load CSE (`src/compile/cse-load.js`) keeps a
 cached typed-array load across a call whose callee does not `writesOuter`; any other
 call or user conversion invalidates after its operands, which run first. A store keeps
 a cached load only when it cannot reach the element: storage that never holds typed
