@@ -55,3 +55,45 @@ test('forward hops: a source read while pushing asks before the loop', () => {
   const want = oracle(src).f(20)
   for (const optimize of levels(2, 'speed', 'size')) is(jz(src, { optimize }).exports.f(20), want, `f(20) at ${optimize}`)
 })
+
+// The immutable-update step (emit-assign.js tryStructInlineReplaceStore writes
+// each record into the cells it had) with a push on a rare path into a module
+// array: the push allocates and escapes, so the loop keeps the compaction of
+// what it keeps (optimize/loop-compact.js), whose site forwards every root it
+// reads and re-enters the loop past the set before it. A root the loop never
+// writes holds what it held before the loop, below the floor no compaction
+// moves: the forward hands it back as it was, and its hop is the loop's to
+// hoist. The push's lowering of the flag writes the log, never a block.
+test('forward hops: a loop that compacts asks for its receiver\'s hop as the compaction re-enters it', () => {
+  const src = `const init = () => { const ps = []; let s = 0x1234abcd | 0
+      for (let i = 0; i < 64; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+        const vx = ((s >>> 4) & 15) - 8, vy = ((s >>> 8) & 15) - 8
+        ps.push({ x: (s >>> 12) & 1023, y: (s >>> 20) & 1023, vx: (vx === 0 ? 1 : vx) | 0, vy: (vy === 0 ? 1 : vy) | 0 }) }
+      return ps }
+    const log = []
+    const step = (ps) => { let sum = 0
+      for (let it = 0; it < 8; it++) for (let i = 0; i < 64; i++) {
+        const p = ps[i]
+        const nx = (p.x + p.vx) | 0, ny = (p.y + p.vy) | 0
+        const hitX = nx < 0 || nx > 1023, hitY = ny < 0 || ny > 1023
+        const x = hitX ? p.x : nx, y = hitY ? p.y : ny
+        const vx = hitX ? -p.vx | 0 : p.vx, vy = hitY ? -p.vy | 0 : p.vy
+        ps[i] = { x: x, y: y, vx: vx, vy: vy }
+        sum = (sum + x + Math.imul(y, 31)) | 0
+        if ((sum & 4095) === 7) log.push([it, i]) }
+      return sum + log.length }
+    export let main = () => step(init())`
+  const want = oracle(src).main()
+  for (const optimize of levels(0, 2, 3, 'speed', 'size')) is(jz(src, { optimize }).exports.main(), want, `main() at ${optimize}`)
+  if (onKernel()) return  // kernel WAT shape differs; the in-process leg owns shape checks
+  // before watr, which inlines the step into the export
+  const body = funcWat(wat(src, { optimize: { level: 'speed', watr: false } }), 'step')
+  ok(/call \$__gc_begin/.test(body), 'the loop compacts what its rare arm keeps')
+  ok(/\$__fh\d+/.test(body), 'the hop is a local of the loop')
+  const isHop = n => n[0] === 'if' && Array.isArray(n[2]) && n[2][0] === 'i32.eq' && Array.isArray(n[2][1]) && n[2][1][0] === 'i32.load' &&
+    Array.isArray(n[2][2]) && n[2][2][0] === 'i32.const' && Number(n[2][2][1]) === -1
+  const find = (n, pred, out = []) => { if (Array.isArray(n)) { if (pred(n)) out.push(n); for (let i = 1; i < n.length; i++) find(n[i], pred, out) } return out }
+  const loops = find(parseWat(body), n => n[0] === 'loop' && find(n.slice(1), m => m[0] === 'loop').length === 0)
+  ok(loops.length > 0, 'the step keeps its loop')
+  for (const l of loops) is(find(l, isHop).length, 0, `no hop inside ${l[1]}`)
+})

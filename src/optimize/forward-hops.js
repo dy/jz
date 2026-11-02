@@ -79,8 +79,19 @@ const reads = (v, name) => {
   return false
 }
 
-// The allocator moves the heap's top, no block; a throw helper never returns.
-const stillByName = (callee) => callee.startsWith('$__alloc') || callee.startsWith('$__throw_')
+// The allocator moves the heap's top, no block; a throw helper never returns;
+// an escape's lowering writes the flag and the log made as the module starts
+// (module/core.js `__esc_*`, module/core/reach.js `__root`), no block.
+const LOWERINGS = new Set(['$__esc_at', '$__esc_val', '$__esc_elem', '$__esc_cell', '$__esc_root', '$__esc_new', '$__root'])
+const stillByName = (callee) => callee.startsWith('$__alloc') || callee.startsWith('$__throw_') || LOWERINGS.has(callee)
+// A compaction's forward of a local into itself (optimize/loop-compact.js):
+// `$x = __gc_fwd($x)`, through the box's reinterprets, or `__gc_fwd_raw`.
+const FORWARDS = new Set(['$__gc_fwd', '$__gc_fwd_raw'])
+const unbox = (v) => isArr(v) && v.length === 2 && (v[0] === 'f64.reinterpret_i64' || v[0] === 'i64.reinterpret_f64') ? unbox(v[1]) : v
+const forwards = (set) => {
+  const v = unbox(set[2])
+  return isArr(v) && v.length === 3 && v[0] === 'call' && FORWARDS.has(v[1]) && isGet(unbox(v[2])) && unbox(v[2])[1] === set[1]
+}
 
 /**
  * The functions that move no block, read off their bodies: no indirect call,
@@ -146,10 +157,16 @@ export function hoistForwardHops(fn, still, results) {
   const temps = new Map()   // a result type → the local a followed call parks its result in
   const temp = (type) => { if (!temps.has(type)) temps.set(type, fresh(type)); return temps.get(type) }
   const moves = (callee) => !(typeof callee === 'string' && (stillByName(callee) || still.has(callee)))
+  // What a loop writes. A compaction site's forward of a root (optimize/
+  // loop-compact.js, `$x = __gc_fwd($x)`) is no write: a root the loop it
+  // stands outside never writes holds what it held before that loop began,
+  // below the floor, which no compaction moves, so the forward hands it back
+  // as it was, and a copy of it stays one. A hop of such a root is then the
+  // loop's to hoist, set again as the compaction re-enters the loop.
   const writtenOf = new Map()
   const written = (n) => {
     let out = writtenOf.get(n)
-    if (!out) { out = new Set(); walkAst(n, { enter: c => { if (isSet(c)) out.add(c[1]) } }); writtenOf.set(n, out) }
+    if (!out) { out = new Set(); walkAst(n, { enter: c => { if (isSet(c) && !forwards(c)) out.add(c[1]) } }); writtenOf.set(n, out) }
     return out
   }
 
