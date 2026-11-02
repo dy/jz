@@ -67,7 +67,8 @@ html, body {
   transform: scale(1.035);
 }
 
-/* caption on the baseline grid: the name's baseline 24px under the shot, the description's lines 16px apart */
+/* caption on the baseline grid: the name's baseline 24px under the shot, the description's first 24px under
+   the name, its lines 16px apart */
 .cell .name {
   display: block;
   padding-top: calc(24px - 1cap);
@@ -82,7 +83,7 @@ html, body {
 
 .cell .desc {
   display: block;
-  padding-top: calc(16px - 1cap);
+  padding-top: calc(24px - 1cap);
   font-size: var(--fs-small);
   line-height: 16px;
   color: var(--dim);
