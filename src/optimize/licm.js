@@ -961,6 +961,12 @@ export function hoistInvariantLoop(fn) {
  * I64_MIN (below all counters). The counter may wrap by the source's explicit
  * word conversion; an increment is not a proof of permanent non-negativity.
  * Ordinary Number counters get bounded i32 copies at source-loop planning.
+ *
+ * A threshold no larger than a word (`Math.min(n, s.length)`, every write of it
+ * a minimum with an int32, a literal, a rounding of such) snaps to an i32: `i <
+ * n` is `i < ceil(n)`, `i <= n` is `i < floor(n) + 1`, the rounded threshold
+ * at most 2^31 - 1, and a threshold below every word saturates to I32_MIN, as
+ * NaN takes it, where no counter is below it.
  */
 export function narrowLoopBound(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
@@ -994,6 +1000,42 @@ export function narrowLoopBound(fn) {
   const freshLb = () => { while (usedLb.has(lbCounter)) lbCounter++; const id = lbCounter++; usedLb.add(id); return `$__lb${id}` }
   const newLocals = []
   const refcount = buildRefcount(fn)
+
+  // The most a Number local's value can be, NaN aside: every write of it and the
+  // zero a declared local starts at (a parameter: anything).
+  const params = new Set(), writes = new Map()
+  for (let i = 2; i < bodyStart; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'param') params.add(fn[i][1])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: n => {
+    if (!Array.isArray(n) || (n[0] !== 'local.set' && n[0] !== 'local.tee') || typeof n[1] !== 'string') return
+    let w = writes.get(n[1]); if (!w) writes.set(n[1], w = [])
+    w.push(n[2])
+  } })
+  const upper = (n, seen = new Set()) => {
+    if (!Array.isArray(n)) return Infinity
+    const op = n[0]
+    // (a NaN holds no value a counter compares below; a literal of a text this does not read, anything)
+    if (op === 'f64.const') {
+      const t = n[1]
+      if (typeof t === 'number') return Number.isNaN(t) ? -Infinity : t
+      if (typeof t !== 'string') return Infinity
+      if (/^[+-]?nan/i.test(t)) return -Infinity
+      if (/^[+-]?inf/i.test(t)) return t[0] === '-' ? -Infinity : Infinity
+      const v = Number(t)
+      return Number.isNaN(v) ? Infinity : v
+    }
+    if (op === 'f64.convert_i32_s') return 2147483647
+    if (op === 'f64.convert_i32_u') return 4294967295
+    if (op === 'f64.min') return Math.min(upper(n[1], seen), upper(n[2], seen))
+    if (op === 'f64.max') return Math.max(upper(n[1], seen), upper(n[2], seen))
+    if (op === 'f64.ceil' || op === 'f64.floor' || op === 'f64.trunc' || op === 'f64.nearest') return Math.ceil(upper(n[1], seen))
+    if (op === 'local.tee') return upper(n[2], seen)
+    if (op !== 'local.get' || typeof n[1] !== 'string' || params.has(n[1]) || seen.has(n[1])) return Infinity
+    seen.add(n[1])
+    let hi = 0
+    for (const v of writes.get(n[1]) ?? []) hi = Math.max(hi, v == null ? Infinity : upper(v, seen))
+    seen.delete(n[1])
+    return hi
+  }
 
   // `i <  bound` as `(f64.lt (convert i) bound)` or mirrored `(f64.gt bound (convert i))`.
   // `i <= bound` as `(f64.le (convert i) bound)` or mirrored `(f64.ge bound (convert i))`.
@@ -1038,19 +1080,24 @@ export function narrowLoopBound(fn) {
     const snaps = []
     for (const { node, m } of sites) {
       const key = `${m.bound}|${m.op}`
+      const b = () => ['local.get', m.bound]
+      // (a threshold no larger than a word: `i < n` as `i < ceil(n)`, `i <= n` as `i < floor(n) + 1`, an i32)
+      const word = upper(b()) <= (m.op === 'le' ? 2147483646 : 2147483647)
       let snap = snapFor.get(key)
       if (!snap) {
         snap = freshLb()
         snapFor.set(key, snap)
-        newLocals.push(['local', snap, 'i64'])
-        snaps.push(['local.set', snap, ['select',
-          ['i64.trunc_sat_f64_s', [m.op === 'le' ? 'f64.floor' : 'f64.ceil', ['local.get', m.bound]]],
-          ['i64.const', '-9223372036854775808'],
-          ['f64.eq', ['local.get', m.bound], ['local.get', m.bound]]]])
+        newLocals.push(['local', snap, word ? 'i32' : 'i64'])
+        snaps.push(['local.set', snap, word
+          ? ['select', ['i32.trunc_sat_f64_s', m.op === 'le' ? ['f64.add', ['f64.floor', b()], ['f64.const', 1]] : ['f64.ceil', b()]],
+            ['i32.const', -2147483648], ['f64.eq', b(), b()]]
+          : ['select', ['i64.trunc_sat_f64_s', [m.op === 'le' ? 'f64.floor' : 'f64.ceil', b()]],
+            ['i64.const', '-9223372036854775808'], ['f64.eq', b(), b()]]])
       }
       node.length = 3
-      node[0] = m.op === 'le' ? 'i64.le_s' : 'i64.lt_s'
-      node[1] = ['i64.extend_i32_s', ['local.get', m.ctr]]; node[2] = ['local.get', snap]
+      if (word) { node[0] = 'i32.lt_s'; node[1] = ['local.get', m.ctr] }
+      else { node[0] = m.op === 'le' ? 'i64.le_s' : 'i64.lt_s'; node[1] = ['i64.extend_i32_s', ['local.get', m.ctr]] }
+      node[2] = ['local.get', snap]
     }
     return snaps
   }

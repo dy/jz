@@ -8675,6 +8675,35 @@ test('unknown-receiver element reads: inline array arm at speed, the helper at s
 })
 
 
+test('narrowLoopBound: a threshold no larger than a word is an i32', () => {
+  // `i < Math.min(n, len)` (a char scan's bound): every write of the threshold a minimum with an
+  // int32; `i <= n` needs one below the top word (`floor(n) + 1` is the threshold), a literal here
+  for (const [compare, reverse] of [['lt', false], ['le', false], ['gt', true], ['ge', true]]) {
+    const i = ['f64.convert_i32_s', ['local.get', '$i']], n = ['local.get', '$b'], strict = compare === 'lt' || compare === 'gt'
+    const fn = ['func', '$f', ['export', '"f"'], ['param', '$i', 'i32'], ['param', '$n', 'f64'], ['param', '$k', 'i32'], ['result', 'i32'], ['local', '$b', 'f64'],
+      ['local.set', '$b', ['f64.min', ['local.get', '$n'], strict ? ['f64.convert_i32_s', ['local.get', '$k']] : ['f64.const', 2147483646]]],
+      ['loop', '$loop', ['return', [`f64.${compare}`, ...(reverse ? [n, i] : [i, n])]]], ['i32.const', 0]]
+    narrowLoopBound(fn)
+    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', fn]))).exports
+    const text = JSON.stringify(fn)
+    ok(text.includes('i32.trunc_sat_f64_s') && !text.includes('i64.'), `${compare}: one word threshold`)
+    for (const value of [-2147483648, -2, -1, 0, 1, 2147483646, 2147483647])
+      for (const bound of [NaN, -Infinity, -1e30, -2147483649, -2147483648, -2.5, -2, -0, 0.5, 2147483646.5, 2147483647, 1e30, Infinity])
+        for (const k of [-2147483648, -1, 0, 3, 2147483646, 2147483647]) {
+          const b = Math.min(bound, strict ? k : 2147483646)
+          is(m.f(value, bound, k), Number(strict ? value < b : value <= b), `${compare} i=${value}, n=${bound}, k=${k}`)
+        }
+  }
+  // a minimum with infinity, or with a parameter alone, is no bound: the wide threshold stays
+  for (const other of [['f64.const', 'inf'], ['local.get', '$n']]) {
+    const fn = ['func', '$f', ['param', '$i', 'i32'], ['param', '$n', 'f64'], ['result', 'i32'], ['local', '$b', 'f64'],
+      ['local.set', '$b', ['f64.min', ['local.get', '$n'], other]],
+      ['loop', '$loop', ['return', ['f64.lt', ['f64.convert_i32_s', ['local.get', '$i']], ['local.get', '$b']]]], ['i32.const', 0]]
+    narrowLoopBound(fn)
+    ok(JSON.stringify(fn).includes('i64.trunc_sat_f64_s'), `min with ${other[1]}: the wide threshold`)
+  }
+})
+
 test('narrowLoopBound: raw i32 comparisons preserve every Number threshold', () => {
   for (const [compare, reverse] of [['lt', false], ['le', false], ['gt', true], ['ge', true]]) {
     const i = ['f64.convert_i32_s', ['local.get', '$i']], n = ['local.get', '$n']

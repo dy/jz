@@ -1547,9 +1547,12 @@ calls, accessors and coercions keep the original repeated reads.
 Other written locals of fixed nonnumeric kinds keep their original binding in
 both arms; loop versioning must not create aliases of a private string builder.
 Explicitly wrapping i32 counters compare against exact invariant i64 thresholds;
-NaN selects a threshold below every i32 value. Primitive parameters consumed
-only by word operators may convert once at the call boundary, as established
-by the binding-use census.
+NaN selects a threshold below every i32 value. A threshold no larger than a word
+(every write of it a minimum with an int32, a literal or a rounding of such: a
+character scan's `Math.min(n, s.length)`) snaps to an i32 instead, `i < n` as
+`i < ceil(n)` and `i <= n` as `i < floor(n) + 1`, saturating below every word.
+Primitive parameters consumed only by word operators may convert once at the
+call boundary, as established by the binding-use census.
 Comparison emission and folding share one signedness proof: equal word bits
 do not imply equal numbers across signed and unsigned domains.
 An unsigned shift by a known nonzero masked count clears the high bit and
