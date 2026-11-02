@@ -139,8 +139,8 @@ test('options: optimize object — simd:false leaves no v128 in the runtime eith
   const host = oracle(src)
   const simdIn = (wat) => /v128|\b[if](8x16|16x8|32x4|64x2)\./.test(wat.replace(/;;[^\n]*/g, ''))
   for (const level of levels(0, 2, 3, 'size', 'speed')) for (const target of ['js', 'wasi']) {
-    ok(!simdIn(compile(src, { wat: true, host: target, optimize: { level, simd: false } })), `${target} O${level}: no v128`)
-    if (target === 'js') { const { f } = jz(src, { optimize: { level, simd: false } }).exports; for (const n of [1, 20, 200]) is(f(n), host.f(n), `O${level}: f(${n})`) }
+    ok(!simdIn(compileInternal(src, { wat: true, host: target, optimize: { level, simd: false } })), `${target} O${level}: no v128`)
+    if (target === 'js') { const { f } = jzInternal(src, { optimize: { level, simd: false } }).exports; for (const n of [1, 20, 200]) is(f(n), host.f(n), `O${level}: f(${n})`) }
   }
   if (!belowOpt(2)) ok(simdIn(compile(src, { wat: true })), 'the default build keeps its SIMD scans (sanity)')
 })
