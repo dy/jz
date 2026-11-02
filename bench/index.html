@@ -512,6 +512,7 @@ const FAMILY = {
   particle: 'math', spmv: 'math', bezfit: 'math', quatmul: 'math',
   'stdlib-special': 'math', 'stdlib-dists': 'math', 'stdlib-exp': 'math', 'stdlib-gamma': 'math',
   'stdlib-erf': 'math', 'stdlib-pow': 'math', 'stdlib-ddot': 'math',
+  threescene: 'math', threeanim: 'math', threecull: 'math', threegeom: 'math',
   // integer — i32 / bit / hash / sort / search / dispatch
   bitwise: 'integer', crc32: 'integer', hash: 'integer', sieve: 'integer',
   radixsort: 'integer', dict: 'integer', nqueens: 'integer', vm: 'integer', sort: 'integer',
@@ -523,6 +524,8 @@ const FAMILY = {
   // image — raster / pixel / render / procedural
   blur: 'image', conv2d: 'image', qoi: 'image', raytrace: 'image', noise: 'image', alpha: 'image',
   sdf: 'image', trace: 'image', worley: 'image',
+  a98rgb: 'image', cam16: 'image', hct: 'image', hsl: 'image', hwb: 'image', ipt: 'image',
+  jzazbz: 'image', jzczhz: 'image', munsell: 'image',
   // string — text / parse / codec / sequence
   tokenizer: 'string', json: 'string', base64: 'string', lz: 'string', levenshtein: 'string',
   strbuild: 'string', wordcount: 'string', glyfparse: 'string',
@@ -555,7 +558,11 @@ const TAGS = { biquad: 'dsp, f64', fft: 'fft, f64', synth: 'synth, adsr', bytebe
   worley: 'cellular, gather', sosfilter: 'biquad, records', movavg: 'boxcar, ring', upfirdn: 'resample, div/mod',
   pcmconvert: 'pcm, dtype table', 'stdlib-special': 'stdlib, 339 fns', 'stdlib-dists': 'stdlib, 429 fns',
   'stdlib-exp': 'stdlib, exp', 'stdlib-gamma': 'stdlib, gamma', 'stdlib-erf': 'stdlib, erf', 'stdlib-pow': 'stdlib, pow',
-  'stdlib-ddot': 'stdlib, blas1' }
+  'stdlib-ddot': 'stdlib, blas1',
+  a98rgb: 'gamma, 3×3', cam16: 'cam16, atan2', hct: 'cam16, cbrt', hsl: 'hue, branch', hwb: 'hue, branch',
+  ipt: 'signed pow, 3×3', jzazbz: 'pq curve, pow', jzczhz: 'pq curve, polar', munsell: 'newton, table',
+  threescene: 'scene graph, classes', threeanim: 'slerp, f32 buffers', threecull: 'frustum, raycast',
+  threegeom: 'f32 buffers, scratch' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade – every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -636,6 +643,19 @@ const INSIGHTS = {
   'stdlib-pow': '@stdlib/math/base/special/pow from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
   'stdlib-ddot': '@stdlib/blas/base/ddot from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
   deltae: 'CIEDE2000 color difference over Lab pairs – atan2 with quadrant fix-ups, four-way hue-mean branches, exp and a 7th power. JS-family only: engine transcendentals differ by ulps across languages.',
+  a98rgb: 'rgb → Adobe RGB over a batch of colors, color-space’s wasm kernel verbatim – the sRGB decode (** 2.4) and a sign-extended ** 256/563 around two 3×3 matrices, each edge returning a small array destructured at once. Checked at single precision.',
+  cam16: 'rgb → CAM16 over a batch of colors, color-space’s wasm kernel verbatim – chromatic adaptation, a fractional power per cone, atan2 and cos, viewing constants read from an object per call. Checked at single precision.',
+  hct: 'rgb → HCT over a batch of colors, color-space’s wasm kernel verbatim – CAM16 hue and chroma plus CIELAB L* through cbrt. Checked at single precision.',
+  hsl: 'rgb → HSL over a batch of colors, color-space’s wasm kernel verbatim – one edge: max/min, a branchy hue sector, 0–360 and 0–100 scaling, a small array returned and destructured per color. Checked at single precision.',
+  hwb: 'rgb → HWB over a batch of colors, color-space’s wasm kernel verbatim – one edge: max/min and the hue sector, as HSL, a small array returned and destructured per color. Checked at single precision.',
+  ipt: 'rgb → IPT over a batch of colors, color-space’s wasm kernel verbatim – a 3×3 matrix, a sign-extended ** 0.43 per cone, another 3×3. Checked at single precision.',
+  jzazbz: 'rgb → Jzazbz over a batch of colors, color-space’s wasm kernel verbatim – the sRGB decode, 3×3 matrices and the PQ curve, two fractional powers per channel. Checked at single precision.',
+  jzczhz: 'rgb → JzCzhz over a batch of colors, color-space’s wasm kernel verbatim – Jzazbz, then the polar step: Math.hypot, Math.atan2 and a degree wrap. Checked at single precision.',
+  munsell: 'xyY → Munsell HVC, color-space’s wasm kernel verbatim with the 2734-color renotation table – a Newton inverse of the value polynomial (x ** 2…5), a hue × chroma search and 2-D Newton steps, each lookup returning a small [x, y] array. Checked at single precision.',
+  threescene: 'Object3D.updateMatrixWorld over ten thousand chained nodes (three.js’s math classes, unmodified) – Matrix4.compose from a position, quaternion and scale held in arrays of class instances, then a multiply by the parent’s world matrix. Checked at single precision.',
+  threeanim: 'QuaternionLinearInterpolant’s slerp of ten thousand bones (three.js) – the static Quaternion.slerpFlat over flat Float32Array keyframe buffers at an offset, an acos and three sines per bone. Checked at single precision.',
+  threecull: 'A frame’s visibility queries (three.js) – WebGLRenderer.projectObject’s frustum test of ten thousand bounding spheres as the camera orbits, and Mesh.raycast against twenty thousand triangles through Vector3 scratch. Checked at single precision.',
+  threegeom: 'BufferAttribute.applyMatrix4, computeBoundingBox/Sphere and computeVertexNormals over Float32Array position buffers (three.js) – each vertex read into a module-level Vector3, transformed by chained methods, written back. Checked at single precision.',
 }
 // detected visitor engine
 const ENGINE = (() => {

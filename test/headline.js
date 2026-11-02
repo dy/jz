@@ -2,7 +2,7 @@
 // can't silently change the numbers the landing hero and the bench strip show. Pure
 // function over a synthetic results.json (no jz compile), so it runs on every leg.
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -237,14 +237,23 @@ test('bench page: every case has a family, tags and a description', () => {
   const page = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
   const literal = name => runInNewContext('(' + page.match(new RegExp(`const ${name} = (\\{[\\s\\S]*?\\}|\\[[^\\n]*\\])\\n`))[1] + ')')
   const [FAMILY, TAGS, INSIGHTS, CHIPS] = ['FAMILY', 'TAGS', 'INSIGHTS', 'CHIPS'].map(literal)
-  const ids = new Set(['results.json', 'results-ci.json', 'results-linux.json'].flatMap(f =>
-    Object.keys(JSON.parse(readFileSync(new URL('../bench/' + f, import.meta.url), 'utf8')).cases)))
+  // every case the bench runs (bench.mjs discoverCases), so a new case fails here in the commit that adds
+  // it, and every case a stored snapshot or LAB still names
+  const bench = new URL('../bench/', import.meta.url)
+  const ids = new Set([
+    ...readdirSync(bench, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(new URL(`${d.name}/${d.name}.js`, bench)))
+      .map(d => d.name),
+    ...['results.json', 'results-ci.json', 'results-linux.json'].flatMap(f =>
+      Object.keys(JSON.parse(readFileSync(new URL(f, bench), 'utf8')).cases)),
+    ...LAB,
+  ])
   for (const id of ids) {
     ok(CHIPS.includes(FAMILY[id]) && FAMILY[id] !== 'all', `${id}: family chip`)
     ok(TAGS[id], `${id}: tags`)
     ok(INSIGHTS[id], `${id}: description`)
+    is(FAMILY[id] === 'lab', LAB.has(id), `${id}: the lab chip holds the LAB cases and no other`)
   }
-  for (const id of LAB) is(FAMILY[id], 'lab', `${id}: a LAB case sits under the lab chip`)
 })
 
 test('bench page: an unchecked contender leaves the corpus and the cards; JZ stays', async () => {
