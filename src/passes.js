@@ -176,6 +176,7 @@ export const TUNING_KEYS = [
   'maskOperands',             // a byte or halfword mask over `^`/`|` moves onto the operand it narrows (optimize/mask-operands.js, speed tier)
   'carryKeys',                // a loop whose scalar reads a table at a key of itself and the next input carries the key, the input mixed off the chain (compile/loop-recurrence.js, speed tier)
   'inlineTiny', 'tinyNodes',  // a function of at most tinyNodes instructions joins every caller (optimize/inline-tiny.js, speed tier)
+  'loopNodes',                // and one of at most loopNodes, loop-free, joins the calls a loop makes (the same pass)
   'searchLoops',              // a loop whose body is a guarded loop scans for its guard in an innermost loop (optimize/search-loops.js, speed tier)
   'pointerExits',             // a loop keeping a counter only to stop stops by the pointer strength reduction steps beside it (optimize/pointer-exits.js, speed tier)
   'ringLaps',                 // a counted loop stepping a cursor around a ring runs a lap at a time (optimize/ring-laps.js, speed tier)

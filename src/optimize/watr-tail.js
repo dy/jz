@@ -640,20 +640,19 @@ export function watrTail(module, cfg, {
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)
   if (cfg.searchLoops === true) time('searchLoops', () => searchLoops(optimized))
+  // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
+  // the body it calls once is inlined there)
+  const user = name => ctx.funcs.map.has(name.slice(1)) || name.endsWith('$exp') && ctx.funcs.map.has(name.slice(1, -4))
   // (after the passes that read the runtime's calls by name: a helper of a few instructions joins
-  // its callers)
+  // its callers, a larger one the program's loops)
   if (cfg.inlineTiny === true && watrOpts)
-    time('inlineTiny', () => inlineTiny(optimized, { pin: watrOpts.pin, max: cfg.tinyNodes ?? 16 }))
+    time('inlineTiny', () => inlineTiny(optimized, { pin: watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, user }))
   // (last: the float literals every pass above reads as constants)
   if (cfg.poolFloats === true) time('poolFloatConstants', () => poolFloatConstants(optimized))
   // (after every pass that reads a function whole, the inliner above all, which would splice a
   // single-caller arm back)
   // (the same: an inliner would splice a pass back into the function that runs once)
-  // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
-  // the body it calls once is inlined there)
-  if (cfg.loopPasses === true) time('loopPasses', () => loopPasses(optimized, {
-    user: name => ctx.funcs.map.has(name.slice(1)) || name.endsWith('$exp') && ctx.funcs.map.has(name.slice(1, -4)),
-  }))
+  if (cfg.loopPasses === true) time('loopPasses', () => loopPasses(optimized, { user }))
   if (cfg.splitFuncs === true) time('splitFuncs', () => splitFuncs(optimized, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm }))
   return optimized
 }

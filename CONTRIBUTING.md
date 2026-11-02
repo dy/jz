@@ -3393,7 +3393,16 @@ V8 runs a short program mostly as baseline code, which inlines nothing and enter
 call's frame through a setup stub, so the runtime's tag tests, boxes and allocation headers
 cost more as calls than as code. watr's inliner splices them, every other function pinned,
 and the touched callers propagate the arguments in. The passes before it see the calls by
-name.
+name. A call takes watr's larger bound, 90 nodes (`loopNodes`), still loop-free, where the
+innermost loop around it, in one of the program's own functions, makes it on every iteration
+(outside an `if`'s arms) and calls nothing but the runtime: V8's optimizing compiler inlines
+within a budget its caller's size sets, which at a jz module's small share of functions under
+50 bytes is V8's floor (the caller may grow by its own size, past 640 wire bytes by a tenth),
+so a kernel that calls a digit count, a conversion, a string's length and
+copy per record gets one of them spliced and calls the rest. A loop that calls the program
+spends its time there, and an arm, a loop's compaction above all, may run once in many
+iterations. The sites call a copy of the callee (`$name$loop`) the inliner dissolves into them
+alone; every other caller keeps the function, which goes once a loop held its last call.
 
 Last of all at the speed tier, a large function's conditional arms become functions of
 their own (`optimize/split-funcs.js`, the `splitFuncs` pass): V8 compiles a function whole,
