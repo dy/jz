@@ -27,8 +27,14 @@ const deadline = (opts, ms) => {
   if (opts?.timeout !== ms || opts.killSignal !== 'SIGKILL') throw new Error('missing hard deadline')
   return mode.endsWith('-hang') ? { ...opts, timeout: 5000 } : opts
 }
-cp.execFileSync = (cmd, args, opts) => exec(cmd, args,
-  cmd === ${JSON.stringify(bin)} && !args.includes('--version') ? deadline(opts, 120_000) : opts)
+// A bounded build arrives wrapped in coreutils timeout(1) where the host has one:
+// test the compiler call inside it, under the limit the wrapper was given.
+const unwrap = (cmd, args, opts) => ['timeout', 'gtimeout'].includes(cmd.split('/').pop()) && args[0] === '-s' && args[1] === 'KILL'
+  ? [args[3], args.slice(4), { ...opts, timeout: Number(args[2]) * 1000 }] : [cmd, args, opts]
+cp.execFileSync = (...call) => {
+  const [cmd, args, opts] = unwrap(...call)
+  return exec(cmd, args, cmd === ${JSON.stringify(bin)} && !args.includes('--version') ? deadline(opts, 120_000) : opts)
+}
 cp.spawnSync = (cmd, args, opts) => {
   if ([cmd, ...args].some(a => a.endsWith('-${id}'))) {
     if (!cmd.endsWith('-${id}')) throw new Error('bounded executable is wrapped')
@@ -95,7 +101,7 @@ fs.chmodSync(out, 0o755)
     for (const [state, reason] of [
       ['no-artifact', /did not produce/], ['wrong'], ['fail', /unsupported fixture/],
       ['empty', /unparseable stdout/], ['exit', /exit 9: runtime fixture/],
-      ['compile-hang', /ETIMEDOUT/], ['run-hang', /timeout after 60000ms/],
+      ['compile-hang', /build exceeded 120s/], ['run-hang', /timeout after 60000ms/],
     ]) {
       writeFileSync(mode, state)
       writeFileSync(json, JSON.stringify(baseline))

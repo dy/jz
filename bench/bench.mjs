@@ -493,6 +493,7 @@ const boundedBuild = (cmd, args, opts = {}, limitS = BUILD_LIMIT_S) => {
       : execFileSync(cmd, args, { stdio: 'pipe', ...opts, timeout: limitS * 1000, killSignal: 'SIGKILL' })
   } catch (e) {
     const s = (performance.now() - start) / 1000
+    if (e.code === 'ETIMEDOUT') throw Error(`build exceeded ${limitS}s`)
     if (e.signal === 'SIGKILL' || e.status === 137) throw Error(s >= limitS ? `build exceeded ${limitS}s` : killedText(s))
     throw e
   }

@@ -38,7 +38,12 @@ cp.spawnSync = (cmd, args, opts) => {
   }
   return spawn(cmd, args, opts)
 }
-cp.execFileSync = (cmd, args, opts) => {
+// A bounded build arrives wrapped in coreutils timeout(1) where the host has one:
+// test the compiler call inside it, under the limit the wrapper was given.
+const unwrap = (cmd, args, opts) => ['timeout', 'gtimeout'].includes(cmd.split('/').pop()) && args[0] === '-s' && args[1] === 'KILL'
+  ? [args[3], args.slice(4), { ...opts, timeout: Number(args[2]) * 1000 }] : [cmd, args, opts]
+cp.execFileSync = (...call) => {
+  let [cmd, args, opts] = unwrap(...call)
   if (mode === 'compile-hang' && cmd === process.env.PERRY_BIN && args[0] === 'compile') opts = deadline(opts, 120_000)
   return exec(cmd, args, opts)
 }
@@ -102,7 +107,7 @@ fs.chmodSync(out, 0o755)
       ['fail', /intentional Perry compile failure/],
       ['empty', /unparseable stdout/],
       ['exit', /exit 9: intentional runtime failure/],
-      ['compile-hang', /ETIMEDOUT/],
+      ['compile-hang', /build exceeded 120s/],
       ['run-hang', /timeout after 60000ms/],
     ]) {
       writeFileSync(json, JSON.stringify(baseline))
