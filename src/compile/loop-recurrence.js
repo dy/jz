@@ -582,9 +582,11 @@ export function carryKeys(body, cm, typed, params) {
 // dominant residual vs LLVM's layout on the trace bench. Rewrite each updated
 // scalar to one unconditional add of a const ternary chain (branchless select):
 //   x += (dir === 0 ? 1 : dir === 2 ? -1 : 0); y += (dir === 1 ? 1 : dir === 3 ? -1 : 0)
-// SOUNDNESS: `v += 0` maps -0 → +0, so every updated scalar must be PROVEN
-// integer-valued: declared in this function with an int-literal init and only
-// ever written by ++/--/+= int-literal/-= int-literal (scanned function-wide).
+// SOUNDNESS: `v += 0` maps -0 → +0, so a scalar stepped by ++/--/+= K/-= K
+// must never carry its ±0 distinction to a sink that sees it (minusZeroSafe).
+// An int32 word stepped as the integral copy writes it, `v = (v ± K) | 0`
+// (plan/integral-loops.js), takes `v = (v + (…)) | 0` instead: every value it
+// holds is an int32 (int32Only), so `(v + 0) | 0` is v and no -0 arises.
 // The discriminant must be a plain local, not updated by the arms.
 
 const armUpdate = (s) => {
@@ -596,10 +598,31 @@ const armUpdate = (s) => {
     const c = loopLitVal(s[2])
     if (c != null && Number.isInteger(c)) return { v: s[1], d: s[0] === '+=' ? c : -c }
   }
+  const e = s[0] === '=' && typeof s[1] === 'string' && isArr(s[2]) && s[2][0] === '|' && s[2].length === 3 && litN(s[2][2], 0) ? s[2][1] : null
+  if (isArr(e) && (e[0] === '+' || e[0] === '-') && e.length === 3 && e[1] === s[1]) {
+    const c = loopLitVal(e[2])
+    if (c != null && Number.isInteger(c)) return { v: s[1], d: e[0] === '+' ? c : -c, word: true }
+  }
   return null
 }
 
-function trySelectArmUpdates(stmt, zeroSafe) {
+// Every value `v` holds is an int32: it is declared with one, and each write
+// assigns a ToInt32 result or an int32 literal.
+const INT32_OPS = new Set(['|', '&', '^', '<<', '>>', '~'])
+function int32Only(body, v) {
+  let ok = true, declared = false
+  walkAst(body, { enter: (n, parent) => {
+    if (!ok) return false
+    if ((n[0] === 'let' || n[0] === 'const') && n.includes(v)) ok = false
+    if (!MUTATE_OPS.has(n[0]) || n[1] !== v) return
+    if (parent?.[0] === 'let' || parent?.[0] === 'const') declared = true
+    const c = loopLitVal(n[2])
+    ok = n[0] === '=' && (isArr(n[2]) && INT32_OPS.has(n[2][0]) || c != null && (c | 0) === c && !Object.is(c, -0))
+  } })
+  return ok && declared
+}
+
+function trySelectArmUpdates(stmt, zeroSafe, wordSafe) {
   if (!isArr(stmt) || stmt[0] !== 'if') return null
   // walk the else-if spine collecting (const, {v, d}) arms
   const arms = []
@@ -622,9 +645,15 @@ function trySelectArmUpdates(stmt, zeroSafe) {
   }
   if (arms.length + (elseArm ? 1 : 0) < 3) return null
   if (new Set(arms.map(a => a.k)).size !== arms.length) return null
-  const vars = new Set([...arms.map(a => a.u.v), ...(elseArm ? [elseArm.v] : [])])
+  const ups = [...arms.map(a => a.u), ...(elseArm ? [elseArm] : [])]
+  const vars = new Set(ups.map(u => u.v))
   if (vars.has(d)) return null
-  if (!zeroSafe(vars)) return null
+  // (a scalar is stepped as a word in every arm or in none)
+  const words = new Set(ups.filter(u => u.word).map(u => u.v))
+  if (ups.some(u => !u.word && words.has(u.v))) return null
+  const plain = new Set([...vars].filter(v => !words.has(v)))
+  if (plain.size && !zeroSafe(plain)) return null
+  if (words.size && !wordSafe(words)) return null
   // per-var delta chain over the FULL arm list (an arm not touching v
   // contributes 0 — the else delta applies only when NO chain const matches):
   //   v += (d === k0 ? δ0 : d === k1 ? δ1 : … : elseδ)
@@ -633,7 +662,7 @@ function trySelectArmUpdates(stmt, zeroSafe) {
     let expr = [, elseArm && elseArm.v === v ? elseArm.d : 0]
     for (let i = arms.length - 1; i >= 0; i--)
       expr = ['?:', ['===', d, [, arms[i].k]], [, arms[i].u.v === v ? arms[i].u.d : 0], expr]
-    out.push(['+=', v, expr])
+    out.push(words.has(v) ? ['=', v, ['|', ['+', v, expr], [null, 0]]] : ['+=', v, expr])
   }
   return [out]
 }
@@ -694,6 +723,7 @@ export function selectArmUpdatesIn(body, cm) {
     if (r == null) memo.set(key, r = minusZeroSafe(body, vars))
     return r
   }
+  const wordSafe = (vars) => [...vars].every(v => !cm.has(v) && int32Only(body, v))
   // only rewrite chains INSIDE loops — straight-line chains predict fine
   const rewriteIn = (n) => {
     if (!isArr(n)) return n
@@ -702,13 +732,13 @@ export function selectArmUpdatesIn(body, cm) {
         if (!isArr(m)) return m
         if (m[0] === ';' || m[0] === '{}') {
           for (let i = 1; i < m.length; i++) {
-            const r = isArr(m[i]) && m[i][0] === 'if' ? trySelectArmUpdates(m[i], zeroSafe) : null
+            const r = isArr(m[i]) && m[i][0] === 'if' ? trySelectArmUpdates(m[i], zeroSafe, wordSafe) : null
             m[i] = r ? r[0] : walkStmts(m[i])
           }
           return m
         }
         if (m[0] === 'if') {
-          const r = trySelectArmUpdates(m, zeroSafe)
+          const r = trySelectArmUpdates(m, zeroSafe, wordSafe)
           if (r) return r[0]
         }
         for (let i = 1; i < m.length; i++) m[i] = walkStmts(m[i])

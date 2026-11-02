@@ -1543,6 +1543,64 @@ test('integral loops: a walk stepped up and down under a literal step count take
   for (const r of [3, 20]) is(m.main(r), js.main(r), `the copy traces r ${r}`)
 })
 
+test('integral loops: words stepped on the arms of a dense chain take one select-accumulated step', () => {
+  // The copy steps a word as `x = (x + 1) | 0`, which the select accumulation
+  // (compile/loop-recurrence.js selectArmUpdatesIn, speed tier) reads as it reads
+  // `x++`: `x = (x + (dir === 0 ? 1 : dir === 2 ? -1 : 0)) | 0`, exact since every
+  // value a word holds is an int32. A name some write of which may hold a fraction
+  // (`x = n / 2`) keeps its chain: `(x + 0) | 0` would drop the fraction.
+  const src = `const W = 64, H = 64, MAXCODES = 4096
+    const trace = (bmp, codes, nc, sx, sy) => {
+      let x = sx, y = sy, dir = 3, steps = 0
+      while (steps < MAXCODES) {
+        const inside = x >= 0 && x < W && y >= 0 && y < H && bmp[y * W + x] === 1
+        if (inside) dir = (dir + 3) & 3; else dir = (dir + 1) & 3
+        if (nc < MAXCODES) codes[nc++] = dir
+        if (dir === 0) x++; else if (dir === 1) y++; else if (dir === 2) x--; else y--
+        steps++
+        if (x === sx && y === sy && dir === 3) break
+      }
+      return nc
+    }
+    export let main = (r, off) => {
+      const bmp = new Uint8Array(W * H), codes = new Uint8Array(MAXCODES)
+      const R = r | 0
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const dx = x - 32, dy = y - 32; if (dx * dx + dy * dy <= R * R) bmp[y * W + x] = 1 }
+      let nc = 0, h = 0
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++)
+        if (bmp[y * W + x] === 1 && bmp[y * W + x - 1] === 0) { const start = nc; nc = trace(bmp, codes, nc, (off | 0) + x, y); h = Math.imul(h ^ (nc - start), 16777619) }
+      for (let i = 0; i < nc; i++) h = Math.imul(h ^ codes[i], 16777619)
+      return h
+    }`
+  const frac = `export let f = (n, d0, k) => {
+      let x = n / 2, y = 0, d = d0 | 0
+      for (let i = 0; i < k; i++) {
+        if (d === 0) x = (x + 1) | 0; else if (d === 1) y = (y + 1) | 0; else if (d === 2) x = (x - 1) | 0; else y = (y - 1) | 0
+        d = (d + 2) & 3
+      }
+      return x * 1000 + y
+    }`
+  const js = oracle(src), jf = oracle(frac)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports, g = jz(frac, { optimize }).exports
+    for (const [r, off] of [[3, 0], [20, 0], [10, 2147483600], [0, 0]]) is(m.main(r, off), js.main(r, off), `r ${r} off ${off} at ${optimize}`)
+    for (const [n, d0, k] of [[5, 1, 4], [5, 0, 4], [7, 3, 3], [-3, 2, 5], [4, 1, 0]]) is(g.f(n, d0, k), jf.f(n, d0, k), `f(${n}, ${d0}, ${k}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  // (the `if`s of the copy's loops that test the direction: none once the steps are selects)
+  const chain = (text) => {
+    let k = 0
+    const test = n => Array.isArray(n) && (n[0] === 'i32.eqz' || n[0] === 'i32.eq') && n[1]?.[0] === 'local.get' && String(n[1][1]).includes('dir')
+    const walk = (n, inLoop) => { if (!Array.isArray(n)) return; if (inLoop && n[0] === 'if' && n.some(test)) k++; for (const c of n) walk(c, inLoop || n[0] === 'loop') }
+    walk(parseWat(text), false)
+    return k
+  }
+  const opts = { level: 'speed', coldTrap: true }
+  is(chain(wat(src, { optimize: opts })), 0, 'the copy steps its words by selects')
+  ok(chain(wat(src, { optimize: { ...opts, selectArmUpdates: false } })) > 0, 'without the pass the steps branch')
+  is(loopFloats(wat(src, { optimize: opts })), 0, 'the words stay int32s')
+})
+
 test('integral loops: a walk entering from the counters of the loops around it stands alone, untested', () => {
   // The tracer inlined into its scan declares its cursors from the scan's counters
   // (`let x = sx`, `sx` a `for (let sx = 1; sx < W - 1; sx++)` stepped by its loop
