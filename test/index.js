@@ -119,6 +119,7 @@ const TESTS = [
   'typed-copy',
   'typed-sort',
   'typed-length',
+  'length-words',
   'declare-unseen-keys',
   'integral-loops',
   'index-words',

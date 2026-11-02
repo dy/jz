@@ -272,7 +272,8 @@ export default (ctx) => {
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_room: ['__arr_grow_known', '__ptr_offset_fwd'],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
-    __arr_set_length: ['__arr_grow_known', '__dense_check', '__ptr_offset', '__ptr_type', '__to_num', '__to_int32', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_set_len: () => ['__arr_grow_known', '__dense_check', '__ptr_offset', '__ptr_type', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_set_length: () => [...(leanRuntime() ? ['__arr_grow_known', '__dense_check', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])] : ['__arr_set_len']), '__ptr_type', '__to_num', '__to_int32'],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_flat: ['__arr_flat_in', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
@@ -783,18 +784,15 @@ export default (ctx) => {
   // matching JS sparse-array semantics. Non-ARRAY receivers are left unchanged so a
   // mistyped `.length =` cannot corrupt object/collection headers. Returns the
   // (possibly relocated) pointer; the assignment's value is N (computed at the call site).
-  ctx.core.stdlib['__arr_set_length'] = () => `(func $__arr_set_length (param $ptr i64) (param $value i64) (result f64)
-    (local $base i32) (local $p f64) (local $oldLen i32) (local $cap i32) (local $k i32) (local $n i32)
-    (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
+  // `__arr_set_len` resizes to a length already an array index (`$n`, read unsigned);
+  // a store of an integer word calls it directly (emit-assign.js), any other value
+  // converts in `__arr_set_length` first. The size tier keeps the one function:
+  // its word stores convert too (a function more cost a module bytes it saved nothing of).
+  // the receiver, which only an array's resize changes
+  const arrayOnly = `(local.set $p (f64.reinterpret_i64 (local.get $ptr)))
     (if (i32.ne (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.ARRAY}))
-      (then (return (local.get $p))))
-    ;; ArraySetLength performs two conversions, in order: observable valueOf
-    ;; calls may give different values. The assignment still yields $value.
-    (local.set $n (call $__to_int32 (call $__to_num (local.get $value))))
-    (if (f64.ne (f64.convert_i32_u (local.get $n)) (call $__to_num (local.get $value)))
-      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)})))
-        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)}))))
-    ;; A dense eight-byte-slot array cannot fit this many elements in wasm32.
+      (then (return (local.get $p))))`
+  const resizeTo = `;; A dense eight-byte-slot array cannot fit this many elements in wasm32.
     (call $__dense_check (local.get $n))
     (local.set $base (call $__ptr_offset (local.get $ptr)))
     (if (i32.lt_u (local.get $base) (i32.const 8)) (then (return (local.get $p))))
@@ -814,7 +812,22 @@ export default (ctx) => {
           (local.set $k (i32.add (local.get $k) (i32.const 1)))
           (br $fill)))))
     (i32.store (i32.sub (local.get $base) (i32.const 8)) (local.get $n))
-    (local.get $p))`
+    (local.get $p)`
+  const resizeLocals = '(local $base i32) (local $p f64) (local $oldLen i32) (local $cap i32) (local $k i32)'
+  ctx.core.stdlib['__arr_set_len'] = () => `(func $__arr_set_len (param $ptr i64) (param $n i32) (result f64)
+    ${resizeLocals}
+    ${arrayOnly}
+    ${resizeTo})`
+  ctx.core.stdlib['__arr_set_length'] = () => `(func $__arr_set_length (param $ptr i64) (param $value i64) (result f64)
+    ${leanRuntime() ? resizeLocals : '(local $p f64)'} (local $n i32)
+    ${arrayOnly}
+    ;; ArraySetLength performs two conversions, in order: observable valueOf
+    ;; calls may give different values. The assignment still yields $value.
+    (local.set $n (call $__to_int32 (call $__to_num (local.get $value))))
+    (if (f64.ne (f64.convert_i32_u (local.get $n)) (call $__to_num (local.get $value)))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)})))
+        (throw $__jz_err (f64.const ${errorCodeLiteral(ERR.ARRAY_LENGTH)}))))
+    ${leanRuntime() ? resizeTo : '(call $__arr_set_len (local.get $ptr) (local.get $n))'})`
 
   // === Array literal ===
 

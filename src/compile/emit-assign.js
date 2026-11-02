@@ -978,6 +978,31 @@ function recordStore(obj, prop, val) {
     ['i32.const', r.rid], ['i32.const', (r.slot << 8) | r.n]]], 'f64')
 }
 
+/**
+ * A length store's value `v` (its emitted Number) as an integer word, where it
+ * is one: a literal array index, or a word the emitter converted to a Number
+ * (`f64.convert_i32_s`). The resize takes the word (`__arr_set_len`), past the
+ * two ToNumber conversions and the integer test ArraySetLength makes of any
+ * other value; of a word the test fails only below zero, the RangeError it
+ * throws. Returns { setup, n, check, value } (`value` the store's result), or null.
+ */
+const lengthWord = (v, val) => {
+  // (the size tier links the converting resize alone: module/array.js)
+  if (!Array.isArray(v) || v.length !== 2 || ctx.transform.optimize?.leanRuntime) return null
+  if (v[0] === 'f64.const') {
+    const c = Number(v[1])
+    return Number.isInteger(c) && c >= 0 && c < 2147483648 && !Object.is(c, -0)
+      ? { setup: [], n: ['i32.const', c], check: [], value: typed(['f64.const', c], 'f64') } : null
+  }
+  if (v[0] !== 'f64.convert_i32_s') return null
+  const t = tempI32('alw'), n = ['local.get', `$${t}`], range = intExprRange(val)
+  return {
+    setup: [['local.set', `$${t}`, v[1]]], n,
+    check: range && range[0] >= 0 ? [] : [['if', ['i32.lt_s', n, ['i32.const', 0]], ['then', ['drop', throwErrorIR('RangeError', 'Invalid array length')]]]],
+    value: typed(['f64.convert_i32_s', n], 'f64'),
+  }
+}
+
 export function emitPropertyAssign(obj, prop, val, raw = false) {
   const prim = primitiveStore(obj, null, val)
   if (prim) return prim
@@ -999,33 +1024,52 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
     const recvVt = valTypeOf(obj)
     if (recvVt === VAL.TYPED) err(`Typed arrays are fixed-size — cannot assign to \`${typeof obj === 'string' ? obj : '<expr>'}.length\` — allocate a new typed array of the desired length instead`)
     if (recvVt == null) {
+      const recvTmp = temp('aln')
+      const recv = ['local.get', `$${recvTmp}`], recvIR = asF64(emit(obj)), v = storedValue(val), word = lengthWord(v, val)
+      if (word) {
+        // An array resizes to the word; anything else takes the word's Number as written.
+        inc('__arr_set_len', '__dyn_set', '__ptr_type')
+        return block64(
+          ['local.set', `$${recvTmp}`, recvIR],
+          ...word.setup,
+          ['if', ['i32.and', ['f64.ne', recv, recv], ptrTypeEq(recv, PTR.ARRAY)],
+            ['then', ...word.check, ['drop', ['call', '$__arr_set_len', ['i64.reinterpret_f64', recv], word.n]]],
+            ['else', ['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', recv], asI64(emit(['str', prop])), ['i64.reinterpret_f64', word.value]]]]],
+          word.value)
+      }
       inc('__arr_set_length', '__dyn_set', '__ptr_type')
-      const recvTmp = temp('aln'), valTmp = temp('alv')
-      const recv = ['local.get', `$${recvTmp}`], value = ['local.get', `$${valTmp}`]
+      const valTmp = temp('alv'), value = ['local.get', `$${valTmp}`]
       return block64(
-        ['local.set', `$${recvTmp}`, asF64(emit(obj))],
-        ['local.set', `$${valTmp}`, storedValue(val)],
+        ['local.set', `$${recvTmp}`, recvIR],
+        ['local.set', `$${valTmp}`, v],
         ['if', ['i32.and', ['f64.ne', recv, recv], ptrTypeEq(recv, PTR.ARRAY)],
           ['then', ['drop', ['call', '$__arr_set_length', ['i64.reinterpret_f64', recv], ['i64.reinterpret_f64', value]]]],
           ['else', ['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', recv], asI64(emit(['str', prop])), ['i64.reinterpret_f64', value]]]]],
         value)
     }
     if (recvVt === VAL.ARRAY) {
-      inc('__arr_set_length')
       const arrTmp = `${T}aln${freshId(ctx)}`
-      const nTmp = `${T}alv${freshId(ctx)}`
       ctx.func.locals.set(arrTmp, 'f64')
-      ctx.func.locals.set(nTmp, 'f64')
       // Write the relocated pointer back to a simple var receiver so later
       // reads skip the forwarding hop; complex receivers stay correct via it.
       const persist = typeof obj === 'string' ? persistBindingPtr(obj, ['local.get', `$${arrTmp}`]) : null
-      const body = [
-        ['local.set', `$${arrTmp}`, asF64(emit(obj))],
-        ['local.set', `$${nTmp}`, storedValue(val)],
-        ['local.set', `$${arrTmp}`, ['call', '$__arr_set_length', ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]], ['i64.reinterpret_f64', ['local.get', `$${nTmp}`]]]],
-      ]
+      const arr = ['local.get', `$${arrTmp}`], recvIR = asF64(emit(obj)), v = storedValue(val), word = lengthWord(v, val)
+      let body, value
+      if (word) {
+        inc('__arr_set_len')
+        body = [['local.set', `$${arrTmp}`, recvIR], ...word.setup, ...word.check,
+          ['local.set', `$${arrTmp}`, ['call', '$__arr_set_len', ['i64.reinterpret_f64', arr], word.n]]]
+        value = word.value
+      } else {
+        inc('__arr_set_length')
+        const nTmp = `${T}alv${freshId(ctx)}`
+        ctx.func.locals.set(nTmp, 'f64')
+        body = [['local.set', `$${arrTmp}`, recvIR], ['local.set', `$${nTmp}`, v],
+          ['local.set', `$${arrTmp}`, ['call', '$__arr_set_length', ['i64.reinterpret_f64', arr], ['i64.reinterpret_f64', ['local.get', `$${nTmp}`]]]]]
+        value = ['local.get', `$${nTmp}`]
+      }
       if (persist) body.push(persist)
-      body.push(['local.get', `$${nTmp}`])
+      body.push(value)
       return block64(...body)
     }
   }
