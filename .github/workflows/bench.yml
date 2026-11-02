@@ -296,6 +296,24 @@ jobs:
           PATH="$moon/bin:$PATH" moon -C "$moon/lib/core" bundle --warn-list -a --all
           echo "$moon/bin" >> "$GITHUB_PATH"
           "$moon/bin/moonc" -v | grep -q "v${MOONBIT}"
+      # Goose, a native contender run on hand ports (bench/<case>/<case>.goose).
+      # Measurement jobs only, like MoonBit. The release archive is checked by its
+      # published SHA-256; bench.mjs records its tag from the directory it unpacks
+      # to. `goose build` compiles the C it emits with the first C compiler it
+      # finds (`goose toolchain` prints which) at -O2; the smoke proves that path.
+      - name: install Goose v2026.3
+        if: matrix.kind == 'shard'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/goose.tar.gz" https://github.com/aardappel/goose/releases/download/v2026.3/goose-v2026.3-linux-x64.tar.gz
+          echo "06ac30284338269d3996d457412bf4f2b47c1f9a5601de65b6317187fe78d5c9  $RUNNER_TEMP/goose.tar.gz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/goose.tar.gz" -C "$RUNNER_TEMP"
+          goose="$RUNNER_TEMP/goose-v2026.3-linux-x64/goose"
+          echo "GOOSE_BIN=$goose" >> "$GITHUB_ENV"
+          "$goose" version
+          "$goose" toolchain
+          printf 'fn main() {\n    print("goose ready");\n}\n' > "$RUNNER_TEMP/goose-smoke.goose"
+          GOOSE_HOME="$RUNNER_TEMP/goose-smoke-home" "$goose" build "$RUNNER_TEMP/goose-smoke.goose" -o "$RUNNER_TEMP/goose-smoke"
+          test "$("$RUNNER_TEMP/goose-smoke")" = 'goose ready'
       # Static Hermes has no release: build the pinned static_h source, cached by
       # the installer that pins it (shermes records its absolute paths at build).
       - uses: actions/cache@v4
