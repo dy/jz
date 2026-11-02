@@ -75,12 +75,16 @@ jobs:
       node: ${{ steps.versions.outputs.node }}
       deno: ${{ steps.versions.outputs.deno }}
       bun: ${{ steps.versions.outputs.bun }}
+      jsc: ${{ steps.versions.outputs.jsc }}
+      asc: ${{ steps.versions.outputs.asc }}
     env:
       MEASURE: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
         if: env.MEASURE == 'true'
-      # Every shard runs the same engine builds: resolved once here, pinned there.
+      # Every shard runs the same engine builds, a rerun shard hours later included:
+      # each build the merge compares that would otherwise float is resolved once
+      # here and pinned there.
       - uses: actions/setup-node@v4
         if: env.MEASURE == 'true'
         with:
@@ -97,6 +101,9 @@ jobs:
           echo "node=$(node --version | sed 's/^v//')" >> "$GITHUB_OUTPUT"
           echo "deno=$(deno --version | head -1 | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
           echo "bun=$(bun --version)" >> "$GITHUB_OUTPUT"
+          # jsvu's own source of the latest Linux JavaScriptCore build
+          echo "jsc=$(curl -fsSL https://webkitgtk.org/jsc-built-products/x86_64/release/LAST-IS | grep -o '^[0-9]*')" >> "$GITHUB_OUTPUT"
+          echo "asc=$(npm view 'assemblyscript@~0.27.0' version --json | node -e 'console.log([].concat(JSON.parse(require("fs").readFileSync(0, "utf8"))).at(-1))')" >> "$GITHUB_OUTPUT"
       - if: env.MEASURE == 'true'
         run: npm ci --ignore-scripts
       - id: plan
@@ -116,7 +123,8 @@ jobs:
           node --input-type=module - "$mode" "$RUNNER_TEMP/plan.json" <<'JS' >> "$GITHUB_OUTPUT"
           import { readFileSync } from 'node:fs'
           const [mode, file] = process.argv.slice(2), plan = JSON.parse(readFileSync(file, 'utf8'))
-          const matrix = plan.shards.map(s => ({ ...s, name: `${mode} shard ${s.index}: ${s.cases.split(',').length} cases, ~${s.minutes} min` }))
+          const count = s => { const n = s.cases.split(',').length; return `${n} case${n === 1 ? '' : 's'}` }
+          const matrix = plan.shards.map(s => ({ ...s, name: `${mode} shard ${s.index}: ${count(s)}, ~${s.minutes} min` }))
           console.log(`mode=${mode}\nmatrix=${JSON.stringify(matrix)}\ntargets=${plan.targets}\npaired=${plan.paired}\npaired-targets=${plan.pairedTargets}`)
           JS
           { echo "### bench $mode plan"; echo '```'; node -e 'for (const s of require(process.argv[1]).shards) console.log(`shard ${s.index}: ~${s.minutes} min  ${s.cases}`)' "$RUNNER_TEMP/plan.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
@@ -154,10 +162,19 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ needs.plan.outputs.bun || 'latest' }}
-      # Safari's engine: standalone JavaScriptCore shell via jsvu (→ ~/.jsvu/bin/jsc).
+      # Safari's engine: standalone JavaScriptCore shell via jsvu (→ ~/.jsvu/bin/jsc),
+      # a measurement's at the build its plan pinned (→ ~/.jsvu/bin/jsc-<build>).
       - name: install jsc (JavaScriptCore)
+        env:
+          JSC: ${{ needs.plan.outputs.jsc }}
         run: |
-          npx --yes jsvu --engines=javascriptcore --os=linux64 || test -z "$BENCH_STRICT"
+          if [ -n "$JSC" ]; then
+            npx --yes jsvu --os=linux64 "javascriptcore@$JSC"
+            "$HOME/.jsvu/bin/jsc-$JSC" -e 'print("jsc ready")' | grep -q 'jsc ready'
+            echo "JSC_BIN=$HOME/.jsvu/bin/jsc-$JSC" >> "$GITHUB_ENV"
+          else
+            npx --yes jsvu --engines=javascriptcore --os=linux64 || test -z "$BENCH_STRICT"
+          fi
           echo "$HOME/.jsvu/bin" >> "$GITHUB_PATH"
       # NumPy native-reference rows (python3 is preinstalled on ubuntu).
       - name: install numpy
@@ -213,7 +230,7 @@ jobs:
       # second --no-save install would prune this one's packages. jco builds the
       # ComponentizeJS lane, componentize-qjs its QuickJS twin; js2wasm is
       # @loopdive/js2 (its wasm-opt pass takes binaryen ^132).
-      - run: npm install --ignore-scripts --no-save assemblyscript@~0.27.0 binaryen @bytecodealliance/jco@1.40.0 @bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0 @loopdive/js2@0.71.0
+      - run: npm install --ignore-scripts --no-save assemblyscript@${{ needs.plan.outputs.asc || '~0.27.0' }} binaryen @bytecodealliance/jco@1.40.0 @bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0 @loopdive/js2@0.71.0
       # Porffor's npm 0.61.x is the frozen pre-rewrite engine. The author's
       # install is the release binary (porffor.dev/install.sh); pin the tested
       # release, alpha 13 (547c781, 2026-09-30), by its tag so the comparison is
@@ -382,6 +399,13 @@ jobs:
       # ── shard ──────────────────────────────────────────────────────────────
       # This job's cases, every lane, on this one machine: the claim lanes in
       # alternating paired rounds for a reference run, every other lane once.
+      # A lane that exhausts memory must cost its own row, not the runner (run
+      # 41508597936 lost one with its log and 16 cases): no swap to thrash, where
+      # the runner stops answering long before the kernel acts, and the bench's
+      # process tree first in the OOM killer's line, its largest member first; the
+      # killed lane reads "killed by SIGKILL … (out of memory?)". memory.log keeps
+      # the machine's memory, disk and largest processes every 30 s, and the kernel's
+      # OOM kills, beside the shard's dataset.
       - name: measure this shard's cases
         if: matrix.kind == 'shard'
         shell: bash
@@ -391,9 +415,19 @@ jobs:
           PAIRED_TARGETS: ${{ needs.plan.outputs.paired-targets }}
           CASES: ${{ matrix.cases }}
         run: |
-          mkdir -p "$RUNNER_TEMP/shard"
+          out="$RUNNER_TEMP/shard"; mkdir -p "$out"
+          sudo swapoff -a || echo '::warning::swap stays on: a memory-hungry lane may stall the runner'
+          echo 1000 > /proc/self/oom_score_adj
+          ( while :; do { date -u +%T; free -m | sed -n 2p; df -m / | tail -1; ps -eo rss=,etimes=,args= --sort=-rss | head -3 | cut -c1-200; } >> "$out/memory.log"; sleep 30; done ) &
+          sampler=$!
           paired=(); [ "$PAIRED" != 0 ] && paired=(--paired="$PAIRED" --paired-targets="$PAIRED_TARGETS")
-          node bench/bench.mjs --targets="$TARGETS" --cases="$CASES" "${paired[@]}" --json="$RUNNER_TEMP/shard/shard.json" --no-web 2>&1 | tee "$RUNNER_TEMP/shard/shard.log"
+          set +e
+          node bench/bench.mjs --targets="$TARGETS" --cases="$CASES" "${paired[@]}" --json="$out/shard.json" --no-web 2>&1 | tee "$out/shard.log"
+          status=${PIPESTATUS[0]}
+          kill "$sampler"
+          sudo dmesg -T | grep -i -E 'out of memory|killed process' >> "$out/memory.log"
+          exit "$status"
+      # A rerun of this job (gh run rerun --failed) replaces the artifact it left.
       - name: retain this shard
         if: always() && matrix.kind == 'shard'
         uses: actions/upload-artifact@v4
@@ -401,6 +435,7 @@ jobs:
           name: bench-shard-${{ matrix.index }}
           path: ${{ runner.temp }}/shard/
           if-no-files-found: error
+          overwrite: true
 
   publish:
     needs: [plan, bench]
@@ -408,9 +443,10 @@ jobs:
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode != 'gate' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # Commits the merged dataset to main.
+    # Commits the merged dataset to main; reads the run's artifacts, every attempt's.
     permissions:
       contents: write
+      actions: read
     env:
       MODE: ${{ needs.plan.outputs.mode }}
       CASES: ${{ inputs.cases }}
@@ -423,10 +459,14 @@ jobs:
         with:
           node-version: ${{ needs.plan.outputs.node }}
       - run: npm ci --ignore-scripts
+      # Through the run's API rather than this attempt's own store: after
+      # `gh run rerun --failed`, the shards of the first attempt are still the run's.
       - uses: actions/download-artifact@v4
         with:
           pattern: bench-shard-*
           path: ${{ runner.temp }}/shards
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
       # One dataset or a refusal that names what is missing or inconsistent.
       - name: merge the shards
         id: merge
@@ -438,9 +478,13 @@ jobs:
           mkdir -p "$EVIDENCE"
           node bench/shards.mjs merge ${CASES:+--cases=$CASES} --out="$EVIDENCE/$file" "$RUNNER_TEMP"/shards/*/shard.json 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
       - name: every shard job succeeded
-        if: needs.bench.result != 'success'
+        if: ${{ !cancelled() && needs.bench.result != 'success' }}
+        env:
+          RESULT: ${{ needs.bench.result }}
+          RUN: ${{ github.run_id }}
         run: |
-          echo "::error::a shard job ended ${{ needs.bench.result }}: its evidence is not trusted, nothing is published"
+          echo "::error::a shard job ended $RESULT: nothing is published. The other shards' evidence stays with the run: gh run rerun $RUN --failed measures the failed shards again and merges them with it (bench-retry.yml does so once by itself)"
+          echo "a shard job ended $RESULT: nothing published; \`gh run rerun $RUN --failed\` re-measures the failed shards and merges them with the rest" >> "$GITHUB_STEP_SUMMARY"
           exit 1
       - name: enforce release claims
         if: env.MODE == 'reference' && env.CASES == ''
@@ -464,6 +508,7 @@ jobs:
           name: ${{ env.MODE }}-${{ github.sha }}
           path: ${{ runner.temp }}/evidence/
           if-no-files-found: warn
+          overwrite: true
       # pages.yml redeploys when this run completes successfully.
       - name: publish to main
         if: env.CASES == '' && github.ref == 'refs/heads/main'

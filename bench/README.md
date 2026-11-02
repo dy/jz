@@ -83,7 +83,26 @@ shards (`bench/shards.mjs merge`) into one dataset that records each case's mach
 (`cases[id].host`) and each job's machine, date and state (`meta.shards`), with
 `meta.host` only when a single CPU model measured everything. The merge refuses a
 missing or repeated case and any shard whose commit, toolchain versions or memory
-method differ from the others'.
+method differ from the others'; the plan pins every floating toolchain build the
+merge compares (Node, Deno, Bun, the JavaScriptCore build, AssemblyScript), so a
+shard measured again hours later still merges.
+
+The self-compile case `jz` runs on a runner of its own (`ALONE`): it builds the
+compiler twice in an 8 GB heap and hands its 6.9 MB bundle to every compiler of
+JavaScript, and a runner lost there once took fifteen other cases' evidence with it
+(run 41508597936). A compiler of the case's own JavaScript (Static Hermes, Porffor,
+Perry, scriptc, TypeScriptCompiler, js2wasm, the two componentizers) builds within a
+time limit that ends its whole process group (`JZ_BENCH_BUILD_LIMIT_S`, 600 s unless
+the lane sets its own). A shard runs without swap and with the bench's processes
+first in the OOM killer's line, so a lane that exhausts memory is a failed row
+(`killed by SIGKILL … (out of memory?)`), not a lost runner; its `memory.log` keeps
+the machine's memory, disk and largest processes every 30 s.
+
+A shard job that fails anyway costs the run its publication, never the other
+shards' evidence: `bench-retry.yml` reruns the run's failed jobs once by itself, and
+`gh run rerun <run> --failed` does it by hand. The rerun measures the failed shards
+again on fresh runners and the publish job merges them with the shards that
+succeeded, read from the run's artifacts across attempts.
 
 - The weekly schedule (or a dispatch with `reference=false`) times every lane once
   and commits `bench/results-ci.json`, the [CI runner view](https://jz.js.org/bench/?machine=ci).

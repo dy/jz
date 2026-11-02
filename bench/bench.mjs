@@ -6,7 +6,7 @@ import { GRAPH_CASES, HOST_ADAPTERS, OWN_GRAPH, graphSources } from './_lib/grap
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { compile } from '../index.js'
@@ -361,8 +361,16 @@ const graalJsBin = () => {
 // Safari's engine: the standalone `jsc` shell (same JavaScriptCore as WebKit/Safari).
 // Installed via `jsvu --engines=javascriptcore` (→ ~/.jsvu/bin/jsc); set JSC_BIN to override.
 const jscBin = () => JSC_BIN || firstAvailable(['jsc', join(process.env.HOME || '', '.jsvu/bin/jsc')])
-// jsvu's build number of the JavaScriptCore it installed (the jsc shell prints none).
-const jsvuBuild = engine => { try { return JSON.parse(readFileSync(join(homedir(), '.jsvu', 'status.json'), 'utf8'))[engine] ?? null } catch { return null } }
+// The WebKit build of a jsvu JavaScriptCore (the jsc shell prints none): a pinned
+// install is named for it (`jsvu javascriptcore@<build>` → jsc-<build>, as CI
+// installs it), the latest is recorded in jsvu's status file.
+const jscBuild = () => {
+  const bin = jscBin()
+  try { if (!bin || !whichPath(bin).includes('/.jsvu/')) return null } catch { return null }
+  const pinned = basename(bin).match(/^jsc-(\d+)$/)?.[1]
+  if (pinned) return pinned
+  try { return JSON.parse(readFileSync(join(homedir(), '.jsvu', 'status.json'), 'utf8')).javascriptcore ?? null } catch { return null }
+}
 const build = (...p) => join(BUILD, ...p)
 const caseBuild = c => build(c.id)
 
@@ -1923,7 +1931,7 @@ if (JSON_PATH) {
       // moonc names the compiler release; moon's own number is the build tool's.
       moonbit: has('moonc') && spawnSync('moonc', ['-v'], { encoding: 'utf8' }).stdout?.trim(),
       tov: has(TOV_BIN) && tovIdentity(),
-      jsc: (() => { try { return whichPath(jscBin()).includes('/.jsvu/') && jsvuBuild('javascriptcore') } catch { return null } })(),
+      jsc: jscBuild(),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),
       clang: has('clang') && ver('clang'),
