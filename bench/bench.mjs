@@ -1290,7 +1290,7 @@ const TARGET_CMDS = {
   'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
   'c-wasm': 'zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
   'jz-wasmtime': 'jz --host wasi -O3 <case>.js → wasmtime --invoke main',
-  'jz-w2c': 'jz --host wasi -O3 --no-tail-call → wasm2c → native postprocess → clang -O3 -mcpu/-march=native -flto',
+  'jz-w2c': 'jz --host wasi -O3 --no-tail-call → wasm2c → native postprocess → clang -O3 -mcpu/-march=native -flto -mllvm -min-jump-table-entries=13',
   'jz-w2c2': 'jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
   javy: 'javy compile <case>-flat.js → node (V8 wasm) · fenced interpreter reference',

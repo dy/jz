@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile as compileWat } from 'watr'
-import { declareV128, PROVIDED, toolchain, wasm2native } from '../scripts/native/compile.mjs'
+import { CFLAGS, declareV128, jumpTables, PROVIDED, sysroot, toolchain, wasm2native } from '../scripts/native/compile.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const POST = join(ROOT, 'scripts/native/postprocess-watr.awk')
@@ -263,4 +263,59 @@ test('native executable: a CC carrying arguments, and a C failure blamed on no t
   const bad = cc(`${NATIVE.cc} -fjz-no-such-flag`)
   is(bad.status, 1, 'a flag the compiler rejects fails the build')
   ok(!/tail call/.test(bad.stderr), 'without blaming a tail call the module does not make')
+}))
+
+// jz's tag dispatch (bench/shapes' measure): an if-chain on one i32 tag, each arm reading
+// its own fields of a 20-byte record. clang folds the chain into a switch, which x86 lowers
+// from 4 cases to one indirect jump through a table: a branch predictor learns that far
+// worse than the branches V8 runs once the stream repeats (shapes: 7.9× V8's time on Zen 5).
+const F = n => `(i32.load offset=${4 * n} (local.get $p))`
+const ARMS = [`(i32.add ${F(1)} ${F(2)})`, `(i32.mul ${F(1)} (i32.mul ${F(1)} (i32.const 3)))`, `(i32.mul ${F(1)} ${F(2)})`,
+  `(i32.sub ${F(4)} ${F(2)})`, `(i32.add (i32.add ${F(1)} ${F(2)}) ${F(3)})`, `(i32.sub (i32.mul ${F(1)} ${F(2)}) ${F(3)})`,
+  `(i32.add (i32.mul ${F(1)} ${F(2)}) ${F(1)})`, `(i32.mul ${F(3)} (i32.mul ${F(2)} ${F(2)}))`]
+const chain = (i = 0) => i === ARMS.length - 1 ? ARMS[i]
+  : `(if (result i32) (i32.eq (local.get $k) (i32.const ${i})) (then ${ARMS[i]}) (else ${chain(i + 1)}))`
+// Records i = 0..7: tag i, fields i+1..i+4. _start traps unless dispatch answers `expect`.
+const RECORDS = Array.from({ length: 8 }, (_, i) => [i, i + 1, i + 2, i + 3, i + 4]).flat()
+  .map(v => `\\${v.toString(16).padStart(2, '0')}\\00\\00\\00`).join('')
+const DISPATCH = expect => `(module
+  (memory (export "memory") 1)
+  (data (i32.const 0) "${RECORDS}")
+  (func $dispatch (export "dispatch") (param $p i32) (param $end i32) (result i32) (local $k i32) (local $s i32)
+    (block $done (loop $next
+      (br_if $done (i32.ge_u (local.get $p) (local.get $end)))
+      (local.set $k (i32.load (local.get $p)))
+      (local.set $s (i32.add (local.get $s) ${chain()}))
+      (local.set $p (i32.add (local.get $p) (i32.const 20)))
+      (br $next)))
+    (local.get $s))
+  (func (export "_start")
+    (if (i32.ne (call $dispatch (i32.const 0) (i32.const 160)) (i32.const ${expect})) (then unreachable))))`
+// x86 code from any host clang can target it: natively, or the macOS SDK's x86_64 slice.
+const X86 = process.arch === 'x64' ? [] : process.platform === 'darwin' ? ['-target', 'x86_64-apple-macos'] : null
+const OBJDUMP = spawnSync('objdump', ['--version'], { stdio: 'ignore' }).status === 0
+const indirectJumps = asm => (asm.match(/\bjmp[a-z]*\s+\*/g) || []).length
+test('native executable: a tag dispatch stays branches, not an x86 jump table', { skip: !!NATIVE.error }, () => scratchDir('dispatch', dir => {
+  const expect = new WebAssembly.Instance(new WebAssembly.Module(compileWat(DISPATCH(0)))).exports.dispatch(0, 160)
+  const wasm = join(dir, 'dispatch.wasm'), bin = join(dir, 'dispatch')
+  writeFileSync(wasm, compileWat(DISPATCH(expect)))
+  wasm2native(wasm, bin, { dir, tools: NATIVE })
+  is(spawnSync(bin).status, 0, `native answers V8's ${expect}`)
+  if (!X86 || !jumpTables(NATIVE.cc, []).length) return console.log('# x86 lowering unchecked: needs clang and an x86 target')
+  // The module's C as x86 assembly: the control makes the table the default build avoids.
+  const [cc, ...ccArgs] = NATIVE.cc.trim().split(/\s+/)
+  const asm = flags => execFileSync(cc, [...ccArgs, ...flags, ...X86, ...sysroot(), ...[dir, ...NATIVE.include].map(p => `-I${p}`),
+    '-S', join(dir, 'jz.c'), '-o', '-'], { encoding: 'utf8', maxBuffer: 64 << 20 })
+  ok(indirectJumps(asm([...CFLAGS, '-mllvm', '-min-jump-table-entries=4'])) > 0, 'control: from 4 cases x86 jumps through a table')
+  is(indirectJumps(asm([...jumpTables(NATIVE.cc, CFLAGS), ...CFLAGS])), 0, 'the native build keeps the chain branches')
+  // With LTO the linker runs codegen: the option must reach it there.
+  if (!OBJDUMP) return console.log('# LTO lowering unchecked: no objdump')
+  const lto = [...CFLAGS, '-flto', ...X86]
+  const jumps = extra => {
+    const out = join(dir, 'dispatch-lto')
+    wasm2native(wasm, out, { dir, cflags: [...lto, ...extra], tools: NATIVE })
+    if (!X86.length) is(spawnSync(out).status, 0, 'the LTO build answers as V8')
+    return indirectJumps(execFileSync('objdump', ['-d', out], { encoding: 'utf8', maxBuffer: 256 << 20 }))
+  }
+  ok(jumps([]) < jumps(jumpTables(NATIVE.cc, lto, 4)), 'under LTO too: fewer indirect jumps than the 4-case control')
 }))

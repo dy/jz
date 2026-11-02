@@ -30,6 +30,14 @@ build is `CFLAGS=-fprofile-instr-generate`, a run, `llvm-profdata merge`, then
 headers (`brew install simde`, `apt install libsimde-dev`, or `SIMDE_DIR`), or
 `--no-simd`.
 
+With clang, a switch becomes a jump table only from 13 cases on every target,
+as LLVM already does for AArch64; x86 would from 4. clang folds jz's dispatch
+chains into switches, and a table makes one indirect jump of what V8 runs as
+branches, which a predictor learns far worse once the dispatched stream repeats
+(bench/shapes: 7.9× V8's time on Zen 5). Under `-flto` the option goes to the
+linker too. `CFLAGS="-mllvm -min-jump-table-entries=N"` sets another threshold
+(with `-flto`, give the linker the same option).
+
 What the executable does:
 
 - it calls `_initialize` where a reactor exports one, then `_start`, as wasmtime

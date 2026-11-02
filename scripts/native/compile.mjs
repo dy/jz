@@ -24,7 +24,7 @@ const SHIM = join(HERE, 'wasi.c')
 /** The wasi_snapshot_preview1 imports wasi.c implements: every one jz emits. */
 export const PROVIDED = ['fd_read', 'fd_write', 'fd_close', 'fd_filestat_get', 'path_open', 'clock_time_get', 'random_get']
 /** wasm2c output keeps IEEE semantics only without contraction (no fused multiply-add). */
-const CFLAGS = ['-O3', '-ffp-contract=off']
+export const CFLAGS = ['-O3', '-ffp-contract=off']
 const RUNTIME = ['wasm-rt-impl.c', 'wasm-rt-mem-impl.c', 'wasm-rt-exceptions-impl.c']
 const PREFIXES = ['/opt/homebrew/opt/wabt', '/usr/local/opt/wabt', '/usr/local', '/usr']
 
@@ -99,6 +99,31 @@ export const declareV128 = h => /\bv128\b/.test(h) && !h.includes('WASM_RT_SIMD_
   ? h.replace('#include "wasm-rt.h"\n', `$&#include <simde/wasm/simd128.h>\n\n#ifndef WASM_RT_SIMD_TYPE_DEFINED\n#define WASM_RT_SIMD_TYPE_DEFINED\ntypedef simde_v128_t v128;\n#endif\n`)
   : h
 
+/** Whether a CC (possibly carrying arguments, as "zig cc") is clang: its --version says so. */
+const clangs = new Map()
+const isClang = cc => {
+  if (!clangs.has(cc)) {
+    const [bin, ...args] = cc.trim().split(/\s+/)
+    clangs.set(cc, /\bclang\b/.test(spawnSync(bin, [...args, '--version'], { encoding: 'utf8' }).stdout || ''))
+  }
+  return clangs.get(cc)
+}
+
+/** The clang flags that build a jump table only from `entries` switch cases. jz dispatches
+ *  through compare chains, which V8 runs as branches; clang folds a chain on one value into
+ *  a switch, and x86 lowers 4 or more cases to one indirect jump through a table, which a
+ *  branch predictor learns far worse than the branches once the dispatched stream repeats
+ *  (bench/shapes: 7.9× V8's time on Zen 5). 13 is LLVM's AArch64 default
+ *  (llvm/llvm-project#71166). A codegen option: under LTO the linker runs codegen, so it
+ *  goes there too. wasm2native puts these before the caller's flags, which may override
+ *  them. Other compilers keep their own policy. */
+export const jumpTables = (cc, cflags, entries = 13) => {
+  if (!isClang(cc)) return []
+  const opt = `-min-jump-table-entries=${entries}`
+  const lto = cflags.some(f => /^-flto(=|$)/.test(f))
+  return ['-mllvm', opt, ...lto ? [process.platform === 'darwin' ? `-Wl,-mllvm,${opt}` : `-Wl,-plugin-opt=${opt}`] : []]
+}
+
 /** Exception handling and tail calls: WABT 1.0.42 enables both by default and has no
  *  --enable-* flags for them; 1.0.41 and earlier need the flags. Its --help says which. */
 const featureFlags = new Map()
@@ -140,7 +165,7 @@ export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess, main
   // CC may carry its own arguments: CC="zig cc".
   const [cc, ...ccArgs] = tools.cc.trim().split(/\s+/)
   try {
-    run(cc, [...ccArgs, ...cflags, ...sysroot(), ...defines, ...[dir, ...tools.include].map(p => `-I${p}`),
+    run(cc, [...ccArgs, ...jumpTables(tools.cc, cflags), ...cflags, ...sysroot(), ...defines, ...[dir, ...tools.include].map(p => `-I${p}`),
       SHIM, c, ...RUNTIME.map(f => join(tools.runtime, f)), '-lm', '-o', out])
   } catch (e) {
     // WABT 1.0.39-1.0.41 emit invalid C for a tail call that passes several values.
