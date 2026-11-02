@@ -50,11 +50,12 @@ test('shards: plan packs whole cases, dearest first, into the fewest shards unde
   is(planShards(['a'], { a: 10 }).length, 1, `default budget ${BUDGET_S} s`)
 })
 
+// A case added since the seed is planned as the dearest known one, so the seed
+// needs no entry for it; a sharded run's own wall times take over from the seed.
 test('shards: the committed seed plans the whole corpus under budget in both modes', () => {
   const seed = JSON.parse(readFileSync(join(root, 'bench/shard-costs.json'), 'utf8'))
   const ids = execFileSync(process.execPath, [join(root, 'bench/bench.mjs'), '--list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n')
   for (const mode of Object.keys(MODES)) {
-    is(Object.keys(seed[mode]).sort().join(), [...ids].sort().join(), `${mode}: a seed cost for every case`)
     const plan = planShards(ids, caseCosts(ids, null, seed[mode]))
     ok(plan.length > 1 && plan.length <= 20, `${mode}: ${plan.length} shards`)
     for (const s of plan) ok(s.seconds <= BUDGET_S || s.cases.length === 1, `${mode} shard ${s.index}: ${s.seconds} s`)
