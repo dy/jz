@@ -392,15 +392,16 @@ const indexNames = (loop, writes, intArray) => {
 
 /** The names a remainder or a truncated quotient reaching an element index
  *  divides by (`buf[(i % w) * ch + ~~(i / w)]`, through a name the loop writes
- *  as well): above zero in the copy, a word's division there is the
- *  hardware's, with no zero to test and no float to round. */
+ *  as well), each with the dividends it divides: above zero in the copy, a
+ *  word's division there is the hardware's, with no zero to test and no float
+ *  to round. */
 const TRUNCATING = new Set(['~', '|', '&', '^', '<<', '>>', '>>>'])
 const divisorNames = (loop, writes, reaching) => {
-  const out = new Set()
+  const out = new Map()
   const visit = (e, trunc) => {
     if (!Array.isArray(e) || e[0] === '=>') return
     const op = e[0]
-    if (e.length === 3 && typeof e[2] === 'string' && (op === '%' || op === '/' && trunc)) out.add(e[2])
+    if (e.length === 3 && typeof e[2] === 'string' && (op === '%' || op === '/' && trunc)) { const l = out.get(e[2]); if (l) l.push(e[1]); else out.set(e[2], [e[1]]) }
     const t = TRUNCATING.has(op) || op === '()' && (e[1] === 'math.floor' || e[1] === 'math.trunc')
     for (let i = 1; i < e.length; i++) visit(e[i], t)
   }
@@ -596,6 +597,31 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     collectBindings(loop, inner)
     const loopWrites = writesIn(loop)
     bodyWrites ??= writesIn(body)
+    // A value visibly a fraction for most of its domain (`lpy / adx`, `0.5`,
+    // `math.sqrt(d)`, a sum, difference, product or arm with one in it), or a
+    // name any write of which is: the guard holds no such name to an int32,
+    // as its test would fail where the loop runs.
+    // (`foreign`: an argument of a call to this function, in its caller's scope: a
+    // local there is another binding, unknown here; a module binding is the same)
+    const fractional = (e, seen = new Set(), foreign = false) => {
+      if (typeof e === 'string') {
+        if (!locals.has(e)) { const g = ctx.scope.globals.get(e); return g != null && typeof g.init === 'number' && !Number.isInteger(g.init) }
+        if (foreign || seen.has(e)) return false
+        seen.add(e)
+        if (params.has(e)) return fractionalEntry(e, (a) => fractional(a, seen, true))
+        return (bodyWrites.get(e) ?? NO_WRITES).some(v => v != null && fractional(v, seen))
+      }
+      if (!Array.isArray(e)) return false
+      const op = e[0]
+      if (op == null) return typeof e[1] === 'number' && !Number.isInteger(e[1])
+      if (op === '/') return true
+      if (op === '[]' && e.length === 3 && typeof e[1] === 'string') return /^(new\.)?Float(32|64)Array$/.test(view?.typedPayloadCtorOfExpr(unrenamed(e[1])) ?? '')
+      if (op === '()' && e.length === 2) return fractional(e[1], seen, foreign)
+      if (op === '()' && e.length === 3 && typeof e[1] === 'string') return FRACTIONAL.has(e[1]) || (e[1] === 'math.abs' || e[1] === 'math.min' || e[1] === 'math.max') && (e[2]?.[0] === ',' ? e[2].slice(1) : [e[2]]).some(a => fractional(a, seen, foreign))
+      if (op === '+' || op === '-' || op === '*' || op === 'u-') return e.slice(1).some(a => fractional(a, seen, foreign))
+      if (op === '?:') return fractional(e[2], seen, foreign) || fractional(e[3], seen, foreign)
+      return false
+    }
     // a name every write of which, anywhere, is an integer of such names is
     // one already; so is a parameter every call passes an integer of none
     const already = (n, seen = new Set()) => {
@@ -772,8 +798,12 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // or counts, under a bound that is an integer, is affine over its counters, which the
     // typed-bounds versioning already proves; nor is such an index a Number to copy for
     // a divisor of an index's remainder or truncated quotient the program does not hold above zero
-    const allDivisors = [...divisorNames(loop, loopWrites, reaching)].filter(n => (outerOk(n) || stableGlobal(n)) && !loopWrites.has(n) && !inner.has(n) && mayBeNumber(n) &&
-      !(intExprRange(n)?.[0] >= 1) && !(view?.hullOf?.(n)?.[0] >= 1) && !(func && isExported(func) && params.has(n)))
+    // (one dividing only fractions, `(x / cell) | 0` over a float element, buys no word's
+    // division: the quotient stays a float's whatever the divisor, and a test holding the
+    // divisor to an int32 would fail where the loop runs)
+    const allDivisors = [...divisorNames(loop, loopWrites, reaching)].filter(([n, dividends]) => (outerOk(n) || stableGlobal(n)) && !loopWrites.has(n) && !inner.has(n) && mayBeNumber(n) &&
+      !(intExprRange(n)?.[0] >= 1) && !(view?.hullOf?.(n)?.[0] >= 1) && !(func && isExported(func) && params.has(n)) &&
+      dividends.some(a => !fractional(a))).map(([n]) => n)
     // (one an int32 by construction, a length, needs no word of its own: the copy tests it above zero as it is,
     // and keeps what an enclosing guard proved of it)
     const divisors = allDivisors.filter(n => !int32Held(n)), heldDivisors = allDivisors.filter(n => int32Held(n))
@@ -1188,31 +1218,6 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // to one, an i32 module binding, or a local every write of which is an
     // integer of such names (no typed element: one past the end is NaN).
     // `leaves` collects the stable names the guard must hold for that.
-    // A value visibly a fraction for most of its domain (`lpy / adx`, `0.5`,
-    // `math.sqrt(d)`, a sum, difference, product or arm with one in it), or a
-    // name any write of which is: the guard holds no such name to an int32,
-    // as its test would fail where the loop runs.
-    // (`foreign`: an argument of a call to this function, in its caller's scope: a
-    // local there is another binding, unknown here; a module binding is the same)
-    const fractional = (e, seen = new Set(), foreign = false) => {
-      if (typeof e === 'string') {
-        if (!locals.has(e)) { const g = ctx.scope.globals.get(e); return g != null && typeof g.init === 'number' && !Number.isInteger(g.init) }
-        if (foreign || seen.has(e)) return false
-        seen.add(e)
-        if (params.has(e)) return fractionalEntry(e, (a) => fractional(a, seen, true))
-        return (bodyWrites.get(e) ?? NO_WRITES).some(v => v != null && fractional(v, seen))
-      }
-      if (!Array.isArray(e)) return false
-      const op = e[0]
-      if (op == null) return typeof e[1] === 'number' && !Number.isInteger(e[1])
-      if (op === '/') return true
-      if (op === '[]' && e.length === 3 && typeof e[1] === 'string') return /^(new\.)?Float(32|64)Array$/.test(view?.typedPayloadCtorOfExpr(unrenamed(e[1])) ?? '')
-      if (op === '()' && e.length === 2) return fractional(e[1], seen, foreign)
-      if (op === '()' && e.length === 3 && typeof e[1] === 'string') return FRACTIONAL.has(e[1]) || (e[1] === 'math.abs' || e[1] === 'math.min' || e[1] === 'math.max') && (e[2]?.[0] === ',' ? e[2].slice(1) : [e[2]]).some(a => fractional(a, seen, foreign))
-      if (op === '+' || op === '-' || op === '*' || op === 'u-') return e.slice(1).some(a => fractional(a, seen, foreign))
-      if (op === '?:') return fractional(e[2], seen, foreign) || fractional(e[3], seen, foreign)
-      return false
-    }
     const intHere = (n, leaves, seen) => {
       if (n === counter || names.includes(n) || cursors.has(n) || words.has(n) || used.has(n)) return true
       if (!locals.has(n) && ctx.scope.globals.get(n)?.type === 'i32') return true

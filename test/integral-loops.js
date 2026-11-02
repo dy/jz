@@ -1166,6 +1166,46 @@ test('integral loops: optimize.coldTrap throws the version\'s number where the l
   is(plain.relax(40), js.relax(40), 'without the diagnostic the ring runs as written')
 })
 
+test('integral loops: a divisor of fractions alone is no name of the guard', () => {
+  // Binning a float by a width read from a float array (`(data[i] / w) | 0`):
+  // the quotient of a fraction is a float's whatever the divisor, so holding
+  // `w` to an int32 buys no word's division, and the test fails for every
+  // fractional width, where the loop runs. Fireflies' neighbour grid divides
+  // a position by a fractional cell so: its copy never ran.
+  const src = `let N = 0, st = new Float64Array(1), data, hist = new Int32Array(16)
+    export let setup = (n, w) => {
+      N = n; st[0] = w; data = new Float64Array(n)
+      let i = 0
+      while (i < n) { data[i] = (i * 7.25) % 40; i++ }
+      i = 0
+      while (i < 16) { hist[i] = 0; i++ }
+    }
+    export let bin = () => {
+      let w = st[0], i = 0
+      while (i < N) {
+        let b = (data[i] / w) | 0
+        if (b >= 0 && b < 16) hist[b] = hist[b] + 1
+        i++
+      }
+      let h = 0
+      i = 0
+      while (i < 16) { h = h * 31 + hist[i] | 0; i++ }
+      return h
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const [n, w] of [[50, 2.5], [50, 4], [9, 0.75], [0, 3], [20, -2], [7.5, 2.5], [30, NaN], [30, Infinity]]) {
+      m.setup(n, w); js.setup(n, w)
+      is(m.bin(), js.bin(), `${n} by ${w} at ${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const m = jz(src, { optimize: { level: 3, coldTrap: true } }).exports
+  m.setup(50, 2.5); js.setup(50, 2.5)
+  is(m.bin(), js.bin(), 'a fractional width runs the copy')
+})
+
 test('integral loops: a self-call\'s argument reading its own parameter ends the fraction check', () => {
   // `walk(n, x)` calling `walk(n - 1, x * 0.5)`: whether `x` is a fraction asks its
   // call sites, one of which passes an expression of `x` itself; the check once
