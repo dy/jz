@@ -195,7 +195,8 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
   const rivals = (await boot('?machine=ci')).nodes
   ok(rivals.geomean.innerHTML.includes('scriptc'), 'zero-coverage competitor remains visible')
   ok(rivals.geomean.innerHTML.includes('0 / 1 valid cases'), 'zero coverage is explicit')
-  const scriptc = rivals.geomean.innerHTML.match(/<div class="row[^"\n]*"[^>]*>\s*<span class="lab">scriptc[\s\S]*?<\/div>/)?.[0]
+  const scriptc = rivals.geomean.innerHTML.match(/<div class="row[^"\n]*"[^>]*>\s*<(?:span|a) class="lab[^"]*"[^>]*>(?:<svg(?:(?!<\/svg>)[\s\S])*<\/svg>)?scriptc[\s\S]*?<\/div>/)?.[0]
+  ok(scriptc?.includes('href="https://github.com/vercel-labs/scriptc"'), 'corpus label links the project page')
   ok(scriptc?.includes('<span class="bar"></span>'), 'failed competitor has no fabricated bar')
   is((scriptc?.match(/<span class="m"[^>]*>—<\/span>/g) || []).length, 3, 'failed competitor has no fabricated ratio in any column')
   ok(rivals.geomean.innerHTML.includes('TypeScriptCompiler'), 'tslang has a named corpus row')
@@ -246,6 +247,36 @@ test('bench page: every case has a family, tags and a description', () => {
   for (const id of LAB) is(FAMILY[id], 'lab', `${id}: a LAB case sits under the lab chip`)
 })
 
+test('bench page: an unchecked contender leaves the corpus and the cards; JZ stays', async () => {
+  const html = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
+  const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1].replace(/^import .*$/m, '')
+  const row = medianUs => ({ medianUs, bytes: 10, parity: 'ok' })
+  const data = { meta: { host: { cpu: 'cpu' }, date: 'd', commit: null },
+    cases: { alpha: C(row(100), { perry: row(200), v8: row(300) }) } }
+  const boot = async off => {
+    const nodes = {}
+    const document = { getElementById: id => nodes[id] ||= {
+      innerHTML: '', textContent: '', attrs: {}, addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v } } }
+    const localStorage = { getItem: () => JSON.stringify(off), setItem() {} }
+    await runInNewContext(`(async () => {${script}\n})()`, {
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB, document, localStorage,
+      URLSearchParams, location: { search: '' }, navigator: { userAgent: 'test' },
+      fetch: async () => ({ ok: true, json: async () => data }),
+    })
+    return nodes
+  }
+  const all = await boot([])
+  ok(all.picks.innerHTML.includes('data-pick="perry" checked'), 'measured contender is listed, checked')
+  ok(!all.picks.innerHTML.includes('data-pick="jz"'), 'JZ is the baseline, not a pick')
+  ok(all.geomean.innerHTML.includes('Perry') && all.cards.innerHTML.includes('Perry'), 'checked contender is drawn')
+  const some = await boot(['perry'])
+  ok(some.picks.innerHTML.includes('data-pick="perry">'), 'unchecked contender stays listed')
+  ok(!some.geomean.innerHTML.includes('Perry') && !some.cards.innerHTML.includes('Perry'), 'unchecked contender leaves corpus and cards')
+  ok(some.geomean.innerHTML.includes('Node') && some.cards.innerHTML.includes('JZ'), 'others and JZ stay')
+  ok(some.cards.innerHTML.includes('data-tid="v8"') && some.cards.innerHTML.includes('data-tid="jz"'), 'every target row is clickable')
+  ok(/<div class="row strong"[^>]*data-tid="jz"/.test(some.cards.innerHTML), 'JZ is lit until another row takes its place')
+})
+
 test('bench chart: tiny native RSS cannot clip hosted runtimes; missing memory sorts last', () => {
   const page = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
   const render = page.match(/const renderGeomean = \(\) => \{[\s\S]*?\n\}/)[0]
@@ -257,7 +288,7 @@ test('bench chart: tiny native RSS cannot clip hosted runtimes; missing memory s
       ['native', { label: 'native', band: 'native' }],
     ])),
     CORPUS: [{ targets: { jz: row(1000), missing: row(null), large: row(2000), small: row(500), native: row(1) } }],
-    benchmarkRatio, sortBy: 'mem', BREAK: 12,
+    benchmarkRatio, sortBy: 'mem', BREAK: 12, OFF: new Set(), hl: null, ABOUT: {},
     BANDS: [['wasm', 'WASM'], ['native', 'native']], CLS_ICO: {}, DESC: {},
     localGeo: () => null, coverage: () => ({ ran: 1, attempted: 1 }),
     nCases: n => `${n} cases`, esc: String, fmtX: String, stripClassSub: label => label,

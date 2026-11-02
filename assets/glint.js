@@ -96,7 +96,7 @@ const layout = () => {
     }
     ruler.el.setAttribute('viewBox', `0 0 ${width} ${height}`)
     ruler.path.setAttribute('d', lines.join(''))
-    const controls = new Set(document.querySelectorAll('.report, .install, #runAll, .chips button'))
+    const controls = new Set(document.querySelectorAll('.report, .install, #runAll, .picker > summary, .chips button'))
     for (const [el] of boxes) if (!controls.has(el)) boxes.delete(el)
     for (const el of controls) {
       if (!boxes.has(el)) { el.classList.add('reflect-box'); boxes.set(el, edge(el)) }

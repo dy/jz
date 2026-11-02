@@ -45,7 +45,7 @@ section { margin-top: var(--U); }
 h2 { height: var(--u2); padding-top: calc(20px - 1cap / 2); margin: 0; font-size: var(--fs-caps); font-weight: 700; text-transform: uppercase; letter-spacing: var(--ls-caps); }
 .shead { display: flex; align-items: flex-start; justify-content: space-between; gap: 0 24px; flex-wrap: wrap; }
 .shead h2 { flex: none; }
-@supports (text-box: trim-both cap alphabetic) { h2, .bandlab, #outro, p { text-box: trim-both cap alphabetic; } #outro, p { padding-top: var(--bl); } }
+@supports (text-box: trim-both cap alphabetic) { h2, #outro, p { text-box: trim-both cap alphabetic; } #outro, p { padding-top: var(--bl); } }
 p { font-size: var(--fs-body); line-height: 24px; max-width: 70ch; }
 p + p { margin-top: 16px; }
 .dim { color: var(--mid); }
@@ -78,7 +78,7 @@ code, .mono { font-family: var(--mono); font-size: var(--fs-mono); }
 /* Page title and CI badge, with the selected machine's provenance below. */
 .intro { display: flex; flex-direction: column; gap: 16px; }
 .introtop { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
-#speed .shead { justify-content: flex-start; align-items: center; gap: 0 16px; }
+#speed .shead { position: relative; justify-content: flex-start; align-items: center; gap: 0 16px; }
 #runAll { height: 32px; padding: 0 16px; }
 .ci { display: flex; line-height: 0; }
 .ci[aria-current] img { outline: 1px solid var(--ink); outline-offset: 2px; }   /* the CI view is on */
@@ -125,9 +125,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .bar { height: 16px; position: relative; background: transparent; }   /* no text: its foot is its baseline, so it sets the row's baseline 16 down, on a unit line */
 .bar i { position: absolute; inset: 8px auto 0 0; border: 1px solid var(--mid); background: var(--paper); min-width: 2px; }   /* competitors: paper fill (hides the grid under it) + mid-gray border; the solid-ink JZ bar stays dominant */
 .bar i.solid { background: var(--ink); }
-/* class glyph (.cico in assets/site.css) — here just its placement before each per-row label and on the
-   corpus group headers (.bandlab). */
-.bandlab .cico { margin-right: 6px; }
 .bar .cut { position: absolute; right: 8px; top: 8px; bottom: 0; width: 7px; background: var(--paper);
   border-left: 1px solid var(--ink); border-right: 1px solid var(--ink); transform: skewX(-20deg); }
 .row.strong .lab, .row.strong .val { font-weight: 700; }
@@ -137,18 +134,41 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .row.fail { opacity: .5; }
 .row.fail .val { color: var(--mid); font-style: italic; cursor: help; }
 .row.fail .bar::after { content: ''; position: absolute; inset: 12px 0 auto 0; border-top: 1px dotted var(--mid); }
-.bandlab { height: 24px; padding-top: calc(16px - 1cap); margin-top: 8px; font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--mid); }
+/* corpus classes follow one another, each a unit apart; the glyph before each label names the class */
+#geomean .row.band { margin-top: 24px; }
 
-/* Toolchain overview; the table keeps its columns on narrow screens. */
-.alternatives .table-wrap { overflow-x: auto; }
-.alternatives .table-wrap:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
-.alternatives table { width: 100%; min-width: 720px; border-collapse: separate; border-spacing: 0;
-  font-size: var(--fs-small); line-height: 24px; color: var(--soft); }
-.alternatives th, .alternatives td { padding: 4px 16px 4px 0; text-align: left; vertical-align: top; }
-.alternatives tr > :last-child { padding-right: 0; }
-.alternatives th { color: var(--ink); font-weight: 600; }
-.alternatives th[scope="row"] { white-space: nowrap; }
-.alternatives thead th { font-size: var(--fs-caps); letter-spacing: var(--ls-caps); text-transform: uppercase; }
+/* a clicked row lights its target everywhere in JZ's place, a second click gives it back; the label link keeps its own click */
+.row[data-tid] { cursor: pointer; }
+.row[data-tid]:hover .bar i { border-color: var(--ink); }
+
+/* contenders: a dropdown beside the run button, outlined and lit as it is (glint.js). Its panel holds a
+   line per class, the glyph first and four checkmark columns shared by every class, rows on the chart's
+   24px lines. The panel hangs under the button; on a narrow screen, from the heading row's left edge, the
+   column's width. Each tip drops below its own checkmark (clear of the button above), shifted left (--tx)
+   where it would cross the panel's right edge. */
+.picker { position: relative; }
+.picker > summary { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 16px; list-style: none; cursor: pointer;
+  font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); border: 1px solid light-dark(var(--ink), var(--rule)); }
+.picker > summary::-webkit-details-marker { display: none; }
+.picker > summary::after { content: ''; width: 6px; height: 6px; margin: -3px 0 0 4px; border: solid currentColor; border-width: 0 1px 1px 0; transform: rotate(45deg); }
+.picker[open] > summary::after { margin-top: 3px; transform: rotate(-135deg); }
+.picker > summary:hover, .picker[open] > summary { background: var(--ink); color: var(--paper); }
+.picker > summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.picker .n { color: var(--mid); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.picker > summary:hover .n, .picker[open] .n { color: inherit; opacity: .6; }
+.picker .pop { position: absolute; z-index: 20; left: 0; top: calc(100% + 8px); width: 640px; padding: 16px;
+  background: var(--paper); border: 1px solid light-dark(var(--ink), var(--rule)); box-shadow: 0 8px 24px rgba(0, 0, 0, .28); }
+.picks { display: grid; row-gap: var(--u); font-size: var(--fs-small); line-height: 24px; }
+.picks .grp { display: grid; grid-template-columns: 24px 1fr; }
+.picks .grp > .cico { margin-top: 6px; }
+.picks .its { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 8px; }
+.picks label { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; cursor: pointer; }
+.picks label[data-tip]::after { left: var(--tx, 0); top: calc(100% + 9px); bottom: auto; max-width: min(260px, calc(100vw - 32px)); }
+.picks label[data-tip]::before { top: calc(100% - 1px); bottom: auto; border-top-color: transparent; border-bottom-color: var(--ink); }
+.picks input { accent-color: var(--ink); width: 12px; height: 12px; margin: 0; flex: none; cursor: pointer; }
+#pickAll { display: block; background: none; border: 0; padding: 0; height: 24px; margin: 8px 0 0 24px; font: inherit; font-size: var(--fs-small); color: var(--link); text-transform: none; letter-spacing: normal;
+  text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 18%, transparent); text-underline-offset: .25em; }
+#pickAll:hover { background: none; color: var(--ink); }
 
 /* per-case cards; the family filter: outlined chips, three units tall, centred in the heading band
    (wrapped on a phone, the rows stay a unit apart) */
@@ -177,12 +197,18 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 .card .row { grid-column: 1 / -1; grid-template-columns: subgrid; }
 .card .val { text-align: right; }
 
+/* too narrow to hang a 640px panel under the button: it hangs from the heading row's left edge instead */
+@media (max-width: 1023px) {
+  .picker { position: static; }
+  .picker .pop { width: min(640px, 100%); }
+}
 @media (max-width: 640px) {
   .row, .card, #geomean .row { grid-template-columns: minmax(0, 1fr) minmax(24px, 1fr) max-content; gap: 0 8px; }
   .row .lab, .card .row .lab { text-align: left; }
   #geomean .val .m, #geomean .mh { width: 64px; }
   #geomean .mh { letter-spacing: .04em; }   /* MEMORY in a phone's slot */
   .cards { grid-template-columns: minmax(0, 1fr); }
+  .picks .its { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .card .val { max-width: calc(var(--cw) / 2); overflow: hidden; text-overflow: ellipsis; }
 }
 </style>
@@ -223,6 +249,13 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
     <h2>Corpus</h2>
     <div class="runall">
       <button id="runAll">▶ Run on this machine</button>
+      <details class="picker" id="picker">
+        <summary>Contenders <span class="n" id="pickN"></span></summary>
+        <div class="pop">
+          <div class="picks" id="picks"></div>
+          <button id="pickAll" type="button"></button>
+        </div>
+      </details>
       <span id="globalstat"></span>
     </div>
   </div>
@@ -240,29 +273,6 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <section id="honest">
   <p>Slower than your JS?</p>
   <a class="report" href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">Report a slow case</a>
-</section>
-
-<section class="alternatives" id="alternatives">
-  <div class="shead"><h2>Contenders</h2></div>
-  <div class="table-wrap" role="region" aria-label="Contenders" tabindex="0">
-    <table>
-      <thead>
-        <tr><td></td><th scope="col">Input → output</th><th scope="col">Method</th><th scope="col">Features &amp; limits</th></tr>
-      </thead>
-      <tbody>
-        <tr><th scope="row">JZ</th><td>JavaScript → WASM</td><td>Ahead-of-time, inferred types</td><td>SIMD, no GC; JavaScript subset</td></tr>
-        <tr><th scope="row"><a href="https://github.com/vercel-labs/scriptc" target="_blank" rel="noopener">scriptc</a></th><td>JS/TS → native, WASI</td><td>LLVM ahead-of-time</td><td>Node API subset; opt-in QuickJS fallback</td></tr>
-        <tr><th scope="row"><a href="https://github.com/ASDAlexander77/TypeScriptCompiler" target="_blank" rel="noopener">TypeScriptCompiler</a></th><td>TypeScript → native, WASM</td><td>LLVM/MLIR ahead-of-time or JIT</td><td>Default library, GC; typed subset</td></tr>
-        <tr><th scope="row"><a href="https://github.com/CanadaHonk/porffor" target="_blank" rel="noopener">Porffor</a></th><td>JavaScript → C → native</td><td>Ahead-of-time</td><td>Compiled JS engine; experimental</td></tr>
-        <tr><th scope="row"><a href="https://www.assemblyscript.org/concepts.html" target="_blank" rel="noopener">AssemblyScript</a></th><td>TypeScript-like → WASM</td><td>Ahead-of-time, explicit types</td><td>Managed memory; existing JS needs porting</td></tr>
-        <tr><th scope="row"><a href="https://github.com/bytecodealliance/javy" target="_blank" rel="noopener">Javy</a></th><td>JavaScript → WASI</td><td>Embedded QuickJS</td><td>Broad JS support; engine bundled or shared</td></tr>
-        <tr><th scope="row"><a href="https://github.com/bytecodealliance/ComponentizeJS" target="_blank" rel="noopener">ComponentizeJS</a></th><td>JS + WIT → WASM component</td><td>SpiderMonkey, optional AOT</td><td>Component interfaces, Web APIs; embedded engine</td></tr>
-        <tr><th scope="row"><a href="https://perryts.com/" target="_blank" rel="noopener">Perry</a></th><td>TypeScript → native, WASM</td><td>LLVM ahead-of-time</td><td>Native UI; linked runtime and GC</td></tr>
-        <tr><th scope="row"><a href="https://github.com/richiemcilroy/Tov" target="_blank" rel="noopener">Tov</a></th><td>TypeScript-like → C → native</td><td>Ahead-of-time, explicit types</td><td>Value semantics, checked overflow; existing JS needs porting</td></tr>
-        <tr><th scope="row"><a href="https://emscripten.org/docs/introducing_emscripten/about_emscripten.html" target="_blank" rel="noopener">Emscripten</a></th><td>C/C++ → WASM</td><td>LLVM ahead-of-time</td><td>C/C++ libraries, browser bindings; rewrite JS</td></tr>
-      </tbody>
-    </table>
-  </div>
 </section>
 
 </main>
@@ -388,6 +398,44 @@ const DESC = {
   perry: 'Perry – JavaScript compiled through LLVM to a native executable with its runtime and garbage collector.',
   tov: 'Tov – a TypeScript-shaped language compiled through C to a native binary (a hand port: it rejects untyped JS).',
   numpy: 'NumPy – vectorized C kernels driven from Python.',
+}
+// Each contender in two terse lines – the pipeline, then the method and its limits – plus the project
+// page for the less-known ones (the corpus label links it). The contender tip adds its coverage.
+const ABOUT = {
+  v8: ['JS → V8 JIT', 'Node.js'],
+  deno: ['JS → V8 JIT', 'Deno'],
+  bun: ['JS → JavaScriptCore JIT', 'Bun'],
+  jsc: ['JS → JavaScriptCore JIT', 'jsc shell, Safari’s engine'],
+  spidermonkey: ['JS → SpiderMonkey JIT', 'Firefox’s engine'],
+  graaljs: ['JS → GraalJS', 'GraalVM'],
+  wat: ['WAT → wasm', 'hand-written, the wasm floor'],
+  'jz-wasmtime': ['JS → wasm (JZ)', 'Wasmtime, no JS host'],
+  as: ['TypeScript-like → wasm', 'asc -O3; explicit types, JS needs porting', 'https://www.assemblyscript.org/concepts.html'],
+  'rust-wasm': ['Rust → wasm', 'rustc, in V8'],
+  'go-wasm': ['Go → wasm', 'gc, in V8'],
+  'c-wasm': ['C → wasm', 'clang, in V8'],
+  'zig-wasm': ['Zig → wasm', 'ReleaseFast, in V8'],
+  tinygo: ['Go → wasm', 'TinyGo, in V8'],
+  moonbit: ['MoonBit → wasm', 'moonrun (V8)'],
+  jawsm: ['JS → wasm', 'jawsm'],
+  javy: ['JS → wasm', 'QuickJS interpreter inside', 'https://github.com/bytecodealliance/javy'],
+  'qjs-wasi': ['JS → wasm', 'QuickJS-NG interpreter inside, WASI', 'https://github.com/quickjs-ng/quickjs'],
+  'componentize-qjs': ['JS → wasm component', 'QuickJS inside, Wasmtime', 'https://github.com/andreiltd/componentize-qjs'],
+  'componentize-js': ['JS → wasm component', 'SpiderMonkey inside, Wasmtime', 'https://github.com/bytecodealliance/ComponentizeJS'],
+  js2wasm: ['JS → WasmGC', 'ahead-of-time, no engine inside', 'https://github.com/loopdive/js2'],
+  nat: ['C → native', 'clang -O3, the ceiling'],
+  'jz-w2c': ['JS → wasm → native', 'JZ, wasm2c, clang -O3'],
+  'jz-w2c2': ['JS → wasm → native', 'JZ, w2c2, clang -O3; no SIMD'],
+  rust: ['Rust → native', 'rustc -O'],
+  zig: ['Zig → native', 'ReleaseFast'],
+  go: ['Go → native', 'gc'],
+  shermes: ['JS → native', 'Static Hermes, ahead-of-time'],
+  'porf-native': ['JS → C → native', 'Porffor, ahead-of-time; experimental', 'https://github.com/CanadaHonk/porffor'],
+  scriptc: ['JS/TS → native', 'LLVM, ahead-of-time; untyped values boxed', 'https://github.com/vercel-labs/scriptc'],
+  tslang: ['TypeScript → native', 'LLVM/MLIR, ahead-of-time; GC, typed subset', 'https://github.com/ASDAlexander77/TypeScriptCompiler'],
+  perry: ['TypeScript → native', 'LLVM, ahead-of-time; runtime and GC', 'https://perryts.com/'],
+  tov: ['TypeScript-like → C → native', 'explicit types, checked overflow; JS needs porting', 'https://github.com/richiemcilroy/Tov'],
+  numpy: ['Python → C kernels', 'NumPy, vectorized'],
 }
 // Per-target source file — each row links to the exact implementation it measured, so you
 // can see how that language wrote the kernel. (Every JS engine runs the same <case>.js.)
@@ -604,6 +652,13 @@ let CORPUS = []     // cases with a correct JZ timing: ratios and stats
 let CASES = []      // all cases: the per-case grid
 const local = {}    // caseId → { js, jzwasm }
 let filter = 'all'
+// Contenders the viewer unchecked (remembered per browser), and the one target lit by a row click.
+// One target is lit at a time, drawn solid and bold: JZ, until a click hands its place to another.
+const PICKS_KEY = 'jz-bench-off'
+const OFF = new Set((() => { try { return JSON.parse(localStorage.getItem(PICKS_KEY)) || [] } catch { return [] } })())
+const saveOff = () => { try { localStorage.setItem(PICKS_KEY, JSON.stringify([...OFF])) } catch {} }
+let hl = null
+const lit = tid => hl ? tid === hl : !!TARGETS[tid]?.strong
 // Corpus sort column — every row shows all three multipliers (speed · mem · size,
 // each a geomean vs JZ); clicking a column header re-sorts and re-draws the bars
 // on that metric. speed = median run time · mem = peak process RSS (results.json
@@ -637,9 +692,12 @@ const nCases = n => `${n} case${n === 1 ? '' : 's'}`
 const stripClassSub = (label, sub) =>
   !sub || sub === 'native' || /→ wasm$/.test(sub) ? label : `${label} ${sub.replace(/ → native$/, '')}`
 
+// A target's row is clickable to light it (your-browser rows aren't targets).
+const tidAttr = tid => TARGETS[tid] ? ` data-tid="${esc(tid)}"` : ''
+
 // Linear, zero-based bars; rows past BREAK× the chart anchor are cut (full bar
 // + cut glyph) with the exact number printed. maxLin = largest uncut ratio.
-const rowHtml = ({ label, sub, rel, maxLin, text, cells, solid, strong, parity, cls, tip, href, unranked }) => {
+const rowHtml = ({ tid, label, sub, rel, maxLin, text, cells, solid, strong, parity, cls, tip, href, unranked, band }) => {
   const cut = !unranked && rel > BREAK
   const w = unranked ? 0 : cut ? 100 : (rel / maxLin * 100)
   const barCls = solid ? 'solid' : ''
@@ -650,7 +708,7 @@ const rowHtml = ({ label, sub, rel, maxLin, text, cells, solid, strong, parity, 
   const lab = href ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>` : `<span class="lab">${inner}</span>`
   // cells = pre-built column HTML (the corpus' three fixed-width slots); text = a plain string
   const parityTag = unranked ? parity || 'unclassified' : null
-  return `<div class="row${strong ? ' strong' : ''}${unranked ? ' unranked' : ''}"${tip ? ` data-tip="${esc(tip)}"` : ''}>
+  return `<div class="row${strong ? ' strong' : ''}${unranked ? ' unranked' : ''}${band ? ' band' : ''}"${tidAttr(tid)}${tip ? ` data-tip="${esc(tip)}"` : ''}>
     ${lab}
     <span class="bar">${unranked || !rel ? '' : `<i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}`}</span>
     <span class="val">${cells ?? esc(text ?? '')}${parityTag ? `<span class="par">${esc(parityTag)}</span>` : ''}</span>
@@ -668,7 +726,7 @@ const failKind = reason => {
   if (/exit \d|RuntimeError|Error/i.test(r)) return 'runtime error'
   return 'did not run'
 }
-const failRow = (label, sub, cls, reason, href) => {
+const failRow = (tid, label, sub, cls, reason, href) => {
   const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
   const why = reason || 'did not compile/run'
   const tip = [why, href ? `→ ${label} issue tracker` : null].filter(Boolean).join('\n\n')
@@ -676,7 +734,7 @@ const failRow = (label, sub, cls, reason, href) => {
   const lab = href
     ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>`
     : `<span class="lab">${inner}</span>`
-  return `<div class="row fail" data-tip="${esc(tip)}">
+  return `<div class="row fail${lit(tid) ? ' strong' : ''}"${tidAttr(tid)} data-tip="${esc(tip)}">
     ${lab}
     <span class="bar"></span>
     <span class="val">${esc(failKind(reason))}</span>
@@ -706,6 +764,7 @@ const localGeo = () => {
 const renderGeomean = () => {
   const rows = []
   for (const [tid, t] of Object.entries(TARGETS)) {
+    if (OFF.has(tid)) continue
     // g = per-column geomeans vs jz: { speed|mem|size: {geo,n}|null }
     const g = Object.fromEntries(COLS.map(([m, , metric]) => [m, benchmarkRatio(CORPUS, tid, metric)]))
     if (g.speed || BENCHMARKS.some(c => c.targets[tid]))
@@ -728,15 +787,14 @@ const renderGeomean = () => {
   // exactly over their value slots; the active (sorting) one is inked.
   let html = `<div class="row cols"><span class="lab"></span><span class="bar"></span><span class="val">${
     COLS.map(([m, label, , tip]) => `<button class="mh${m === sortBy ? ' on' : ''}" data-sort="${m}" aria-pressed="${m === sortBy}" aria-label="${label}: ${esc(tip)}" data-tip="${esc(tip)}">${label}</button>`).join('')}</span></div>`
-  for (const [band, lab] of BANDS) {
+  let seen = 0   // classes drawn so far: each after the first starts a unit lower
+  for (const [band] of BANDS) {
     // `|| 0` keeps the comparator consistent when a whole column is unmeasured
     // (Infinity − Infinity = NaN would make the sort order undefined)
     const bandRows = rows.filter(r => r.band === band).sort((a, b) => (key(a) - key(b)) || 0)
     if (!bandRows.length) continue
-    // The class glyph rides the group header here (the group already names the class),
-    // so corpus rows stay icon-free — no redundant per-row glyph under the header.
-    html += `<div class="bandlab">${CLS_ICO[band] || ''}${lab}</div>`
-    for (const r of bandRows) {
+    // classes stay apart, one after another, untitled; each row carries its class glyph, as in the cards
+    for (const [i, r] of bandRows.entries()) {
       // coverage only for real targets — the synthetic your-browser rows (__jzlive/__jslive) aren't
       // in the corpus, so they'd read 0/N; they just show their case count.
       const cov = TARGETS[r.tid] && coverage(r.tid)
@@ -751,8 +809,9 @@ const renderGeomean = () => {
       // a better row reads <1×). Bars use that same JZ baseline; a tiny native
       // process must not force every hosted runtime past the memory cutoff.
       const cells = COLS.map(([m]) => `<span class="m" title="${r.g[m] ? `${nCases(r.g[m].n)}; target ÷ JZ` : 'No comparable measurements'}">${r.g[m] ? fmtX(r.g[m].geo) : '—'}</span>`).join('')
-      html += rowHtml({ label: stripClassSub(r.label, r.sub), sub, tip,
-        rel: isFinite(key(r)) ? key(r) : 0, maxLin, cells, solid: r.strong, strong: r.strong })
+      const on = hl ? r.tid === hl : !!r.strong
+      html += rowHtml({ tid: r.tid, label: stripClassSub(r.label, r.sub), sub, tip, href: ABOUT[r.tid]?.[2], cls: band, band: i === 0 && seen++ > 0,
+        rel: isFinite(key(r)) ? key(r) : 0, maxLin, cells, solid: on, strong: on })
     }
   }
   $('geomean').innerHTML = html
@@ -764,7 +823,71 @@ $('geomean').addEventListener('click', e => {
   sortBy = m; renderGeomean()
   $('geomean').querySelector(`[data-sort="${m}"]`).focus({ preventScroll: true })
 })
+// a row click lights that target in the corpus and every card in JZ's place; a second click, or a JZ row,
+// gives it back to JZ.
+// Links and buttons inside a row keep their own click.
+const lightRow = e => {
+  const row = e.target.closest?.('.row[data-tid]')
+  if (!row || e.target.closest('a, button')) return
+  const tid = row.dataset.tid
+  hl = tid === hl || TARGETS[tid].strong ? null : tid
+  renderAll()
+}
+$('geomean').addEventListener('click', lightRow)
+$('cards').addEventListener('click', lightRow)
 
+// ── contenders: which targets the corpus and the cards show ─────────────────
+// Every target the snapshot measured, grouped by class; JZ is the baseline, always shown.
+const contenders = () => Object.keys(TARGETS).filter(tid => !TARGETS[tid].strong && CASES.some(c => c.targets[tid]))
+const pickTip = tid => {
+  const [io, how] = ABOUT[tid] || [], cov = coverage(tid)
+  return [io, how, `${cov.ran} / ${cov.attempted} cases valid`].filter(Boolean).join('\n')
+}
+const renderPicks = () => {
+  const ids = contenders()
+  const shown = ids.filter(tid => !OFF.has(tid)).length
+  $('picker').hidden = !ids.length
+  $('pickN').textContent = `${shown}/${ids.length}`
+  $('pickAll').textContent = OFF.size ? 'all' : 'none'
+  $('picks').innerHTML = BANDS.map(([band, name]) => {
+    const own = ids.filter(tid => TARGETS[tid].band === band)
+    return own.length ? `<div class="grp" role="group" aria-label="${name}">${CLS_ICO[band] || ''}<div class="its">${own.map(tid =>
+      `<label data-tip="${esc(pickTip(tid))}"><input type="checkbox" data-pick="${esc(tid)}"${OFF.has(tid) ? '' : ' checked'}>${esc(stripClassSub(TARGETS[tid].label, TARGETS[tid].sub))}</label>`).join('')}</div></div>` : ''
+  }).join('')
+  fitTips()
+}
+// A tip starts over its checkmark; one that would cross the panel's right edge shifts left to end there.
+// A closed panel has no layout, so this runs again when it opens (the observer sees its size change).
+const fitTips = () => {
+  const box = $('picks').getBoundingClientRect?.()
+  if (!box) return
+  for (const l of $('picks').querySelectorAll('label')) {
+    l.style.removeProperty('--tx')
+    const w = parseFloat(getComputedStyle(l, '::after').width) || 0
+    l.style.setProperty('--tx', Math.min(0, box.right - l.getBoundingClientRect().left - w) + 'px')
+  }
+}
+if (globalThis.ResizeObserver) new ResizeObserver(fitTips).observe($('picks'))
+$('picks').addEventListener('change', e => {
+  const tid = e.target.dataset?.pick
+  if (!tid) return
+  e.target.checked ? OFF.delete(tid) : OFF.add(tid)
+  if (OFF.has(hl)) hl = null
+  saveOff(); renderPicks(); renderAll()
+  $('picks').querySelector(`[data-pick="${tid}"]`)?.focus({ preventScroll: true })
+})
+// the panel closes on Escape and on a click outside it
+document.addEventListener?.('click', e => { if (!$('picker').contains(e.target)) $('picker').open = false })
+document.addEventListener?.('keydown', e => {
+  if (e.key !== 'Escape' || !$('picker').open) return
+  $('picker').open = false
+  $('picker').querySelector('summary').focus()
+})
+$('pickAll').addEventListener('click', () => {
+  if (OFF.size) OFF.clear()
+  else { for (const tid of contenders()) OFF.add(tid); hl = null }
+  saveOff(); renderPicks(); renderAll()
+})
 
 // ── per-case cards ───────────────────────────────────────────────────────────
 const CHIPS = ['all', 'math', 'integer', 'audio', 'image', 'string', 'alloc', 'lab']
@@ -781,8 +904,8 @@ const renderChips = () => {
 // JS rows mix legibly; labels are cleaned of the now-redundant "native" / "→ wasm"
 // tags (stripClassSub) since the glyph carries the class. jz stays the solid row.
 const cardRows = c => {
-  const entries = Object.entries(c.targets).filter(([tid]) => TARGETS[tid])
-    .map(([tid, r]) => ({ tid, ...TARGETS[tid], ...r }))
+  const entries = Object.entries(c.targets).filter(([tid]) => TARGETS[tid] && !OFF.has(tid))
+    .map(([tid, r]) => ({ tid, ...TARGETS[tid], ...r, strong: lit(tid) }))
   // split attempted-but-failed targets out of the speed math — they have no median
   const failed = entries.filter(r => r.status === 'fail')
   const measured = entries
@@ -825,19 +948,19 @@ const cardRows = c => {
   // rows land in their proper place (each ratio is vs its group's fastest ≈ jz, machine-
   // independent), not dumped at the end. The raw µs differs by machine; the bar is the compare.
   const all = [
-    ...ranked.map(r => ({ rel: r.medianUs / base, p: {
+    ...ranked.map(r => ({ rel: r.medianUs / base, p: { tid: r.tid,
       label: lab(r), rel: r.medianUs / base, maxLin, cls: r.band,
       tip: rowTip(r.tid, r.parity, simdTip(r)), href: srcHref(r.tid, c.id),
       text: vals(r), solid: r.strong, strong: r.strong, parity: r.parity } })),
     ...lranked.map(r => ({ rel: r.medianUs / lbase, p: {
       label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin, cls: r.cls,
-      text: fmtMs(r.medianUs), solid: r.k === 'jzwasm', parity: r.parity } })),
+      text: fmtMs(r.medianUs), solid: r.k === 'jzwasm' && !hl, parity: r.parity } })),
   ]
   const unrankedHtml = [
-    ...unranked.map(r => ({ label: lab(r), cls: r.band,
+    ...unranked.map(r => ({ tid: r.tid, label: lab(r), cls: r.band, strong: r.strong,
       tip: rowTip(r.tid, r.status || r.parity), href: srcHref(r.tid, c.id),
       text: vals(r), parity: r.status || r.parity, unranked: true })),
-    ...unmeasured.map(r => ({ label: lab(r), cls: r.band,
+    ...unmeasured.map(r => ({ tid: r.tid, label: lab(r), cls: r.band, strong: r.strong,
       tip: rowTip(r.tid, r.status || r.parity), href: srcHref(r.tid, c.id),
       text: vals(r), parity: r.status || r.parity || 'unclassified', unranked: true })),
     ...lunranked.map(r => ({ label: `${r.label} browser`, cls: r.cls,
@@ -846,7 +969,7 @@ const cardRows = c => {
   // Attempted failures close the card as muted rows with the reason in a tooltip.
   // A missing competitor reads as "tried, couldn't" instead of disappearing.
   const failHtml = failed.sort((a, b) => lab(a).localeCompare(lab(b)))
-    .map(r => failRow(lab(r), r.sub, r.band, r.reason, issueHref(r.tid, c.id, r.reason))).join('')
+    .map(r => failRow(r.tid, lab(r), r.sub, r.band, r.reason, issueHref(r.tid, c.id, r.reason))).join('')
   return all.sort((a, b) => a.rel - b.rel).map(x => rowHtml(x.p)).join('') + unrankedHtml + failHtml
 }
 
@@ -987,7 +1110,7 @@ try {
   BENCHMARKS = all.filter(c => !LAB.has(c.id))
   CORPUS = BENCHMARKS.filter(jzRan)
   CASES = CORPUS.concat(all.filter(c => LAB.has(c.id) || !jzRan(c)))
-  renderMeta(); renderChips(); renderAll()
+  renderMeta(); renderChips(); renderPicks(); renderAll()
 } catch {
   $('geomean').innerHTML = `<p class="dim">Could not load <a href="${snapshot}">${snapshot}</a>.</p>`
   $('outro').textContent = ''
