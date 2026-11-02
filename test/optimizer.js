@@ -4364,6 +4364,72 @@ test('nanCanon: a loop\'s canon stays where its local may hold a box or a read i
   for (const optimize of levels(1, 2, 'speed')) { const f = run(bag, { optimize }).f; for (const n of [0, 1, 7]) is(f(n), js(n), `O${optimize} n=${n}`) }
 })
 
+// An undefined test (ir/coerce.js missToNaN) whose value a comparison reads,
+// through a sum and a local: stripped; a sum that leaves keeps it, the bits exact.
+const missDist = (tail) => `(module (memory (export "memory") 1)
+  (func $f (export "f") (param $p i32) (result f64)
+    (local $t f64) (local $u f64) (local $d f64)
+    (local.set $u (f64.load offset=8 (local.get $p)))
+    (local.set $d (f64.add
+      (f64.mul (block (result f64) (local.set $t (f64.load (local.get $p)))
+        (select (f64.const nan) (local.get $t) (i64.eq (i64.reinterpret_f64 (local.get $t)) (i64.const 0x7FF8000200000000))))
+        (f64.const 2))
+      (if (result f64) (i64.eq (i64.reinterpret_f64 (local.get $u)) (i64.const 0x7FF8000200000000))
+        (then (f64.const nan)) (else (local.get $u)))))
+    ${tail}))`
+test('nanCanon: an undefined test only a comparison reads is its value, one whose sum leaves stays', () => {
+  const undefTests = (fn) => { let n = 0; walk(fn, x => { if (x[0] === 'i64.const' && x[1] === '0x7FF8000200000000') n++ }); return n }
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  // (the result and the word the sum is stored to, for operands in memory: the undefined box, a Number)
+  const out = (i, a, b) => { const w = new BigUint64Array(i.memory.buffer); w[0] = a; w[1] = b; w[2] = 0n; const r = i.f(0); return `${r} ${w[2].toString(16)}` }
+  for (const [label, tail, left] of [
+    ['compared', '(f64.convert_i32_s (f64.lt (local.get $d) (f64.const 0)))', 0],
+    ['stored', '(f64.store offset=16 (local.get $p) (local.get $d)) (f64.const 0)', 2],
+    ['returned', '(local.get $d)', 2],
+  ]) {
+    const src = missDist(tail), tree = parseWat(src), fn = findFunc(tree, '$f')
+    stripDeadCanons(fn)
+    is(undefTests(fn), left, `${label}: ${left} tests left`)
+    const before = inst(parseWat(src)), after = inst(tree)
+    for (const [a, b] of [[0x7FF8000200000000n, 0x3FF0000000000000n], [0x3FF0000000000000n, 0x7FF8000200000000n], [0xBFF0000000000000n, 0x3FF0000000000000n]])
+      is(out(after, a, b), out(before, a, b), `${label}: ${a.toString(16)}, ${b.toString(16)}`)
+  }
+})
+
+// Frustum culling (three.js Frustum.intersectsSphere over Plane.distanceToPoint):
+// fields a typed read may leave undefined, a dot product compared with a radius.
+const CULL_SRC = `class V3 { constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z }
+    fromArray(a, i) { this.x = a[i]; this.y = a[i + 1]; this.z = a[i + 2]; return this }
+    dot(v) { return this.x * v.x + this.y * v.y + this.z * v.z } }
+  class Plane { constructor(n = new V3(1, 0, 0), d = 0) { this.normal = n; this.constant = d }
+    distanceToPoint(p) { return this.normal.dot(p) + this.constant } }
+  const buf = new Float64Array(12), planes = [new Plane(), new Plane(new V3(0, 1, 0), 2)], centers = []
+  for (let i = 0; i < 4; i++) centers.push(new V3(i - 2, 1 - i, i))
+  export let set = (k, v) => { buf[k] = v }
+  export let load = (c, i) => { centers[c].fromArray(buf, i); planes[1].normal.fromArray(buf, i) }
+  export let cull = (r) => { let seen = 0
+    for (let s = 0; s < centers.length; s++) { let inside = true
+      for (let i = 0; i < planes.length; i++) if (planes[i].distanceToPoint(centers[s]) < -r) { inside = false; break }
+      if (inside) seen++ }
+    return seen }
+  export let dist = (s) => planes[1].distanceToPoint(centers[s])`
+test('nanCanon: a culling test compares its fields\' dot product without their undefined tests', () => {
+  for (const optimize of levels(false, 2, 'speed')) {
+    const m = run(CULL_SRC, { optimize }), o = oracle(CULL_SRC)
+    const both = (label, f) => is(f(m), f(o), `O${optimize} ${label}`)
+    both('cull(0)', e => e.cull(0)); both('cull(3)', e => e.cull(3))
+    for (const [k, v] of [[0, 1], [1, -2], [2, 0.5], [9, 3], [10, -1], [11, 2]]) { m.set(k, v); o.set(k, v) }
+    both('loaded', e => { e.load(1, 0); return e.cull(1) }); both('dist(1)', e => e.dist(1))
+    // (buf[12] misses: a z undefined, its distance NaN, no comparison true)
+    both('missed', e => { e.load(2, 10); return e.cull(1) }); both('dist(2)', e => e.dist(2))
+    both('missed twice', e => { e.load(0, 11); return e.cull(5) }); both('dist(0)', e => e.dist(0))
+  }
+  if (onKernel()) return
+  const tests = (opt) => (funcWat(compile(CULL_SRC, { optimize: opt, wat: true }), 'cull').match(/i64\.const 0x7FF8000200000000/g) || []).length
+  ok(tests({ level: 'speed', nanCanon: false }) > 0, 'the fields convert in the loop without the pass')
+  is(tests({ level: 'speed' }), 0, 'and convert nothing with it')
+})
+
 test('narrowI32: const-divisor div/mod/mul loops run pure i32', () => {
   for (const stmt of [
     's = (s + ((a[i] / 4) | 0)) | 0',

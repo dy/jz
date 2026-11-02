@@ -1,4 +1,5 @@
-// A Number's canonical-NaN step whose value only arithmetic reads is dead.
+// A Number's canonical-NaN step whose value only arithmetic reads is dead, and
+// so is its undefined test whose value only comparisons read.
 //
 //   (block (result f64) (local.set $t V) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t))))
 //
@@ -16,9 +17,24 @@
 // a block's result, a unary operator and a reinterpretation to its consumer, or
 // into a local, every read of which must flow so too, through locals alike (a
 // cycle, an accumulator's, holds). Then the canon is its value.
+//
+// The undefined a read may answer converts to NaN the same way, by a test of its
+// bits (ir/coerce.js missToNaN, toNumF64):
+//
+//   (block (result f64) (local.set $t V) (select (f64.const nan) (local.get $t) (i64.eq (i64.reinterpret_f64 (local.get $t)) (i64.const UNDEF))))
+//
+// That test is NaN for NaN: a value flows through it, and its compare reads no
+// more of the bits than whether they are a NaN. A value whose every path ends in
+// a comparison, a saturating truncation or a drop, through arithmetic, which
+// carries a NaN on, has no payload anyone reads, so its test is its value: the
+// distance a culling or an intersection test compares (`n·c + d < -r` over fields
+// a reader may leave undefined). Arithmetic is no end here: it hands the box's
+// bits on to its result, and the test stays wherever a result may leave.
 import { walkAst } from '../ast.js'
+import { ATOM, atomNanHex } from '../../layout.js'
 
 const isArr = Array.isArray
+const UNDEF_BITS = atomNanHex(ATOM.UNDEF)
 // NaN-propagating consumers whose result is canonical where it escapes, or no Number
 const PROPAGATES = new Set(['f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.min', 'f64.max',
   'f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge', 'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u'])
@@ -28,6 +44,35 @@ const NUMERIC = new Set(['f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.min', 
   'f64.convert_i32_s', 'f64.convert_i32_u', 'f64.convert_i64_s', 'f64.convert_i64_u'])
 // (a unary operator passes a NaN on to its consumer, a reinterpretation the bits: that consumer decides)
 const THROUGH = new Set(['f64.neg', 'f64.abs', 'f64.sqrt', 'f64.floor', 'f64.ceil', 'f64.trunc', 'f64.nearest', 'i64.reinterpret_f64', 'f64.reinterpret_i64'])
+// Consumers that answer the same for every NaN, whatever its bits
+const BLIND = new Set(['f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge', 'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u'])
+// Operators that carry a NaN operand into a NaN result: the result's consumer decides
+const CARRIES = new Set(['f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.min', 'f64.max', 'f64.neg', 'f64.abs', 'f64.sqrt', 'f64.floor', 'f64.ceil', 'f64.trunc', 'f64.nearest'])
+
+// The undefined test of `t`'s bits, `(i64.eq (i64.reinterpret_f64 (local.get $t)) (i64.const UNDEF))`
+const isUndefTest = (c, t) => isArr(c) && c[0] === 'i64.eq' && c.length === 3 && isArr(c[1]) && c[1][0] === 'i64.reinterpret_f64' &&
+  isGet(c[1][1], t) && isArr(c[2]) && c[2][0] === 'i64.const' && c[2][1] === UNDEF_BITS
+/** A miss test's parts, or null: `test` its compare, `set` the write of its temp
+ *  (a value in that write goes where the test's own value goes), and `value` what
+ *  stands in for the test where it is dead. The block form, the tee form, the
+ *  select over a local, and the if a nullish conversion ends in. */
+const missOf = (n) => {
+  if (!isArr(n)) return null
+  if (n[0] === 'block' && n.length === 4 && n[1]?.[0] === 'result' && n[1][1] === 'f64' && n[2]?.[0] === 'local.set' && typeof n[2][1] === 'string') {
+    const s = n[3], t = n[2][1]
+    return isArr(s) && s[0] === 'select' && s.length === 4 && isNaN_(s[1]) && isGet(s[2], t) && isUndefTest(s[3], t) ? { test: s[3], set: n[2], value: n[2][2] } : null
+  }
+  if (n[0] === 'select' && n.length === 4 && isNaN_(n[1]) && isArr(n[2])) {
+    const v = n[2]
+    if (v[0] === 'local.tee' && typeof v[1] === 'string' && isUndefTest(n[3], v[1])) return { test: n[3], set: v, value: v }
+    if (v[0] === 'local.get' && typeof v[1] === 'string' && isUndefTest(n[3], v[1])) return { test: n[3], set: null, value: v }
+    return null
+  }
+  if (n[0] === 'if' && n.length === 5 && n[1]?.[0] === 'result' && n[1][1] === 'f64' && n[3]?.[0] === 'then' && n[3].length === 2 && isNaN_(n[3][1]) &&
+      n[4]?.[0] === 'else' && n[4].length === 2 && isArr(n[4][1]) && n[4][1][0] === 'local.get' && isUndefTest(n[2], n[4][1][1]))
+    return { test: n[2], set: null, value: n[4][1] }
+  return null
+}
 
 /** The value a canon normalizes, or null: the block form, and the tee form a propagation leaves. */
 const canonValue = (n) => {
@@ -47,14 +92,20 @@ const isCanonSelect = (s, t) => {
   return isArr(ne) && ne[0] === 'f64.ne' && isGet(ne[1], t) && isGet(ne[2], t)
 }
 
-/** Where the value of `chain[i]` goes: 'ok' (a propagating consumer, or dropped), a local's name, or 'escape'. */
-const sinkOf = (chain, i) => {
+/** Where the value of `chain[i]` goes: 'ok' (a propagating consumer, or dropped), a local's name, or 'escape'.
+ *  `blind`: 'ok' only where no NaN's bits matter, arithmetic carrying the value on.
+ *  A miss test (`miss`: its compares and its temps' writes) passes the value through. */
+const sinkOf = (chain, i, miss, blind = false) => {
   for (let k = i; k > 0; k--) {
     const node = chain[k].node, idx = chain[k].idx, parent = chain[k - 1].node, op = parent[0]
-    if (PROPAGATES.has(op)) return 'ok'
+    if (miss.tests.has(parent)) return 'ok'
+    if (blind ? BLIND.has(op) : PROPAGATES.has(op)) return 'ok'
+    if (blind && CARRIES.has(op)) continue
     if (op === 'drop') return 'ok'
     // (a statement's value a flat `drop` after it discards: an assignment expression's, in a body)
     if (parent[idx + 1] === 'drop' && (op === 'block' || op === 'loop' || op === 'then' || op === 'else' || op === 'func')) return 'ok'
+    // (on from the test itself, the write's parent)
+    if (miss.sets.has(parent)) { k--; continue }
     if (op === 'local.set' || op === 'local.tee') return typeof parent[1] === 'string' ? parent[1] : 'escape'
     if (THROUGH.has(op)) continue
     if (op === 'select' && (idx === 1 || idx === 2)) continue
@@ -73,19 +124,31 @@ export function stripDeadCanons(fn) {
   const readSites = new Map() // local → its reads: { sink, parent, idx, loops }
   const canons = new Map()    // canon node → the sinks of its positions (a node two parents share has two)
   const canonLoops = new Map()  // canon node → the loops around each position
+  const blindReads = new Map()  // local → the sinks of its reads where only a NaN's bits would matter
+  const misses = new Map()      // miss test → those sinks of its positions
+  const miss = { tests: new Set(), sets: new Set(), inner: new Set() }
   const chain = [], loops = []
   const visit = (node, parent, idx) => {
     if (!isArr(node)) return
     chain.push({ node, idx })
     const op = node[0]
+    const m = miss.inner.has(node) ? null : missOf(node)
+    if (m) {
+      miss.tests.add(m.test)
+      if (m.set) miss.sets.add(m.set)
+      if (op === 'block') miss.inner.add(node[3])
+      if (parent) { const s = sinkOf(chain, chain.length - 1, miss, true); const l = misses.get(node); if (l) l.push(s); else misses.set(node, [s]) }
+    }
     if ((op === 'local.get' || op === 'local.tee') && typeof node[1] === 'string') {
-      const s = sinkOf(chain, chain.length - 1)
+      const s = sinkOf(chain, chain.length - 1, miss)
       const l = reads.get(node[1]); if (l) l.push(s); else reads.set(node[1], [s])
       const site = { sink: s, parent, idx, loops: loops.slice() }
       const r = readSites.get(node[1]); if (r) r.push(site); else readSites.set(node[1], [site])
+      const b = sinkOf(chain, chain.length - 1, miss, true)
+      const lb = blindReads.get(node[1]); if (lb) lb.push(b); else blindReads.set(node[1], [b])
     }
     if (canonValue(node) != null && parent) {
-      const s = sinkOf(chain, chain.length - 1); const l = canons.get(node); if (l) l.push(s); else canons.set(node, [s])
+      const s = sinkOf(chain, chain.length - 1, miss); const l = canons.get(node); if (l) l.push(s); else canons.set(node, [s])
       const p = canonLoops.get(node); if (p) p.push(loops.slice()); else canonLoops.set(node, [loops.slice()])
     }
     if (op === 'loop') loops.push(node)
@@ -94,18 +157,22 @@ export function stripDeadCanons(fn) {
     chain.pop()
   }
   for (let i = 1; i < fn.length; i++) visit(fn[i], fn, i)
-  if (!canons.size) return false
+  if (!canons.size && !misses.size) return false
   // (a local every read of which flows to a propagating consumer, or to such a local)
-  const bad = new Set()
-  let grew = true
-  while (grew) {
-    grew = false
-    for (const [name, sinks] of reads) {
-      if (bad.has(name)) continue
-      if (sinks.some(s => s === 'escape' || (s !== 'ok' && bad.has(s)))) { bad.add(name); grew = true }
+  const badOf = (sinksOf) => {
+    const bad = new Set()
+    for (let grew = true; grew;) {
+      grew = false
+      for (const [name, sinks] of sinksOf) {
+        if (bad.has(name)) continue
+        if (sinks.some(s => s === 'escape' || (s !== 'ok' && bad.has(s)))) { bad.add(name); grew = true }
+      }
     }
+    return bad
   }
+  const bad = badOf(reads), blindBad = badOf(blindReads)
   const dead = (s) => s === 'ok' || (s !== 'escape' && !bad.has(s))
+  const unseen = (s) => s === 'ok' || (s !== 'escape' && !blindBad.has(s))
   // A canon in a loop whose value lands in locals that the loop reads only by
   // arithmetic, and that a read needing the one NaN reads only outside the loop
   // (`data[i] = x` after a cascade of stages, `x = y` in each): those reads take
@@ -156,9 +223,15 @@ export function stripDeadCanons(fn) {
   // (bottom up, in the tree as it stands: a canon in the value of another is
   // replaced there first, and one two parents share is replaced under each)
   let changed = wraps.size > 0
+  // (a miss test whose temp something else reads leaves the temp written)
+  const missValue = (n) => {
+    const m = missOf(n)
+    return n[0] !== 'block' || readSites.get(m.set[1])?.length === 2 ? m.value : ['local.tee', m.set[1], m.value]
+  }
   const replace = (n) => {
     if (!isArr(n)) return n
     for (let i = 1; i < n.length; i++) n[i] = replace(n[i])
+    if (misses.get(n)?.every(unseen)) { changed = true; return missValue(n) }
     const sinks = canons.get(n)
     if (sinks == null || !(sunk.has(n) || sinks.every(dead))) return n
     changed = true
