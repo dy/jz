@@ -128,7 +128,9 @@ html.paper:not(.jz-saver):not(.jz-embed) .ruler-refl { display: block; }
 
 /* Futura (the brand face) for every title, site-wide. */
 h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
-/* The brushed rim and diagonal silver glare follow the same cursor light. */
+/* The brushed rim and diagonal silver glare follow the same cursor light. The glare band scales by
+   --glare-w (width) and --glare-a (strength): on light paper its dark face reads as a smudge, so there it
+   narrows to a thin reflected streak. */
 .reflect-title { display: grid; position: relative; font-variant-ligatures: none; }
 .reflect-title > span { grid-area: 1 / 1; text-box: inherit; padding: .25em; margin: -.25em; }
 .title-outline { visibility: hidden; pointer-events: none; user-select: none; }
@@ -136,13 +138,16 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 .reflect-title[data-metal-ready="true"] > .title-outline { visibility: visible; }
 .metal-face {
   --glare: calc(var(--fill-x, 0px) * sin(120deg) - var(--fill-y, 0px) * cos(120deg));
-  mask-image: linear-gradient(120deg, transparent calc(var(--glare) - 260px),
-      #0005 calc(var(--glare) - 135px), #000c calc(var(--glare) - 55px), #000 var(--glare),
-      #000b calc(var(--glare) + 80px), transparent calc(var(--glare) + 220px)),
+  --gw: var(--glare-w, 1); --ga: var(--glare-a, 1);
+  mask-image: linear-gradient(120deg, transparent calc(var(--glare) - 260px * var(--gw)),
+      rgb(0 0 0 / calc(.33 * var(--ga))) calc(var(--glare) - 135px * var(--gw)),
+      rgb(0 0 0 / calc(.8 * var(--ga))) calc(var(--glare) - 55px * var(--gw)), rgb(0 0 0 / var(--ga)) var(--glare),
+      rgb(0 0 0 / calc(.73 * var(--ga))) calc(var(--glare) + 80px * var(--gw)), transparent calc(var(--glare) + 220px * var(--gw))),
     linear-gradient(145deg, #00000008, #00000002);
   pointer-events: none;
 }
 .reflect-title { --fill-x: calc(var(--shine-x, 50%) + .25em); --fill-y: calc(var(--shine-y, 50%) + .25em); }
+:root[data-theme="light"] .reflect-title { --glare-w: .15; --glare-a: .75; }
 .title-outline {
   -webkit-text-fill-color: transparent;
   background: repeating-linear-gradient(0deg, #ffffff18 0 .5px, #0000000d .5px 1px, transparent 1px 2.5px),
