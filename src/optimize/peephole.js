@@ -668,42 +668,50 @@ function mergeByteStores(list, start, reads) {
   }
 }
 
-// Two tests of one word against a range starting at zero, in one conjunction:
-// `x >= 0 & x < C` (C >= 0) is `x <u C` — a negative word is past every such C
-// unsigned. The tests may sit anywhere in a chain of `i32.and`s (the conjunction
-// of a bounds check `x >= 0 && x < W && y >= 0 && y < H`): the pair becomes one
-// test where its first stood. Null when no pair is found.
+// Two tests of one word against the ends of a range, in one conjunction:
+// `x >= A & x <= B` (A <= B) is `x - A <=u B - A`: subtracting A moves the range to
+// start at zero, and a word below it wraps past every such bound unsigned. From
+// zero it is `x <u B + 1`. The tests may sit anywhere in a chain of `i32.and`s (the
+// conjunction of a bounds check `x >= 0 && x < W && y >= 0 && y < H`): the pair
+// becomes one test where its first stood. Null when no pair is found.
+const I32_MAX = 2147483647, I32_MIN = -2147483648
 const constI32 = (n) => Array.isArray(n) && n[0] === 'i32.const' && Number.isInteger(Number(n[1])) ? Number(n[1]) | 0 : null
 const sameWord = (a, b) => Array.isArray(a) && Array.isArray(b) && a[0] === 'local.get' && b[0] === 'local.get' && a[1] === b[1] && a.length === 2 && b.length === 2
-/** `x >= 0` (as x >= 0, x > -1, 0 <= x, -1 < x): x, or null. */
-const atLeastZero = (t) => {
-  if (!Array.isArray(t) || t.length !== 3) return null
-  if ((t[0] === 'i32.ge_s' && constI32(t[2]) === 0) || (t[0] === 'i32.gt_s' && constI32(t[2]) === -1)) return t[1]
-  if ((t[0] === 'i32.le_s' && constI32(t[1]) === 0) || (t[0] === 'i32.lt_s' && constI32(t[1]) === -1)) return t[2]
-  return null
-}
-/** `x < C` with C >= 0 (as x < C, x <= C-1, C > x, C-1 >= x): [x, C], or null. */
-const belowConst = (t) => {
+/** `x >= A` (as x >= A, x > A-1, A <= x, A-1 < x): [x, A], or null. */
+const atLeast = (t) => {
   if (!Array.isArray(t) || t.length !== 3) return null
   const c1 = constI32(t[1]), c2 = constI32(t[2])
-  if (t[0] === 'i32.lt_s' && c2 != null && c2 >= 0) return [t[1], c2]
-  if (t[0] === 'i32.le_s' && c2 != null && c2 >= 0 && c2 < 0x7fffffff) return [t[1], c2 + 1]
-  if (t[0] === 'i32.gt_s' && c1 != null && c1 >= 0) return [t[2], c1]
-  if (t[0] === 'i32.ge_s' && c1 != null && c1 >= 0 && c1 < 0x7fffffff) return [t[2], c1 + 1]
+  if (t[0] === 'i32.ge_s' && c2 != null) return [t[1], c2]
+  if (t[0] === 'i32.gt_s' && c2 != null && c2 < I32_MAX) return [t[1], c2 + 1]
+  if (t[0] === 'i32.le_s' && c1 != null) return [t[2], c1]
+  if (t[0] === 'i32.lt_s' && c1 != null && c1 < I32_MAX) return [t[2], c1 + 1]
   return null
 }
+/** `x <= B` (as x <= B, x < B+1, B >= x, B+1 > x): [x, B], or null. */
+const atMost = (t) => {
+  if (!Array.isArray(t) || t.length !== 3) return null
+  const c1 = constI32(t[1]), c2 = constI32(t[2])
+  if (t[0] === 'i32.le_s' && c2 != null) return [t[1], c2]
+  if (t[0] === 'i32.lt_s' && c2 != null && c2 > I32_MIN) return [t[1], c2 - 1]
+  if (t[0] === 'i32.ge_s' && c1 != null) return [t[2], c1]
+  if (t[0] === 'i32.gt_s' && c1 != null && c1 > I32_MIN) return [t[2], c1 - 1]
+  return null
+}
+/** The test that `x` lies in [lo, hi], one comparison. */
+const inRange = (x, lo, hi) => lo === 0 ? ['i32.lt_u', x, ['i32.const', (hi + 1) | 0]]
+  : ['i32.le_u', ['i32.sub', x, ['i32.const', lo]], ['i32.const', (hi - lo) | 0]]
 function foldRangeChecks(node) {
   const terms = []
   const flat = (n) => { if (Array.isArray(n) && n[0] === 'i32.and' && n.length === 3) { flat(n[1]); flat(n[2]) } else terms.push(n) }
   flat(node)
   let did = false
   for (let i = 0; i < terms.length; i++) {
-    const x = atLeastZero(terms[i])
-    if (!x) continue
+    const lo = atLeast(terms[i])
+    if (!lo) continue
     for (let j = 0; j < terms.length; j++) {
-      const b = j !== i && belowConst(terms[j])
-      if (!b || !sameWord(x, b[0])) continue
-      terms[i] = ['i32.lt_u', x, ['i32.const', b[1]]]
+      const hi = j !== i && atMost(terms[j])
+      if (!hi || !sameWord(lo[0], hi[0]) || lo[1] > hi[1]) continue
+      terms[i] = inRange(lo[0], lo[1], hi[1])
       terms.splice(j, 1)
       if (j < i) i--
       did = true
@@ -711,6 +719,48 @@ function foldRangeChecks(node) {
     }
   }
   return did ? terms.reduce((a, b) => ['i32.and', a, b]) : null
+}
+
+// Two ranges of one word a bit apart, in one disjunction: `x in [A, B] | x in [A + k,
+// B + k]` with k a power of two and bit k clear across [A, B] (the letters of either
+// case, `[65, 90] | [97, 122]`, k = 32) is `(x | k) in [A + k, B + k]`: a word with
+// bit k set is itself, one with it clear moves up by k, onto the second range from
+// the first. The tests are the folded range tests above, anywhere in a chain of
+// `i32.or`s; the pair becomes one test where its first stood. Null when no pair is found.
+/** `x in [lo, hi]` as folded (x <u C, x - A <=u W), A >= 0: [x, lo, hi], or null. */
+const rangeTest = (t) => {
+  if (!Array.isArray(t) || t.length !== 3) return null
+  const c = constI32(t[2])
+  if (c == null || c < 0) return null
+  if (t[0] === 'i32.lt_u' && c > 0 && Array.isArray(t[1]) && t[1][0] === 'local.get') return [t[1], 0, c - 1]
+  if (t[0] === 'i32.le_u' && Array.isArray(t[1]) && t[1][0] === 'i32.sub' && t[1].length === 3) {
+    const a = constI32(t[1][2])
+    if (a != null && a >= 0 && a + c <= I32_MAX && Array.isArray(t[1][1]) && t[1][1][0] === 'local.get') return [t[1][1], a, a + c]
+  }
+  return null
+}
+function foldRangeUnions(node) {
+  const terms = []
+  const flat = (n) => { if (Array.isArray(n) && n[0] === 'i32.or' && n.length === 3) { flat(n[1]); flat(n[2]) } else terms.push(n) }
+  flat(node)
+  let did = false
+  for (let i = 0; i < terms.length; i++) {
+    const a = rangeTest(terms[i])
+    if (!a) continue
+    for (let j = 0; j < terms.length; j++) {
+      const b = j !== i && rangeTest(terms[j])
+      if (!b || !sameWord(a[0], b[0])) continue
+      const [lo, hi] = a[1] < b[1] ? [a, b] : [b, a], k = hi[1] - lo[1]
+      // (bit k clear across the lower range: its ends agree on every bit from k up, and bit k is clear)
+      if (hi[2] - hi[1] !== lo[2] - lo[1] || k <= 0 || (k & (k - 1)) || (lo[1] & k) || Math.floor(lo[1] / k) !== Math.floor(lo[2] / k)) continue
+      terms[i] = ['i32.le_u', ['i32.sub', ['i32.or', a[0], ['i32.const', k]], ['i32.const', hi[1]]], ['i32.const', hi[2] - hi[1]]]
+      terms.splice(j, 1)
+      if (j < i) i--
+      did = true
+      break
+    }
+  }
+  return did ? terms.reduce((x, y) => ['i32.or', x, y]) : null
 }
 
 function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTruthy) {
@@ -976,6 +1026,7 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
   }
 
   if (op === 'i32.and' && node.length === 3) { const r = foldRangeChecks(node); if (r) return r }
+  if (op === 'i32.or' && node.length === 3) { const r = foldRangeUnions(node); if (r) return r }
 
   // Canonical word scales expose the byte stride before lane recognition.
   if (op === 'i32.mul' && node.length === 3) {

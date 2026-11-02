@@ -8994,6 +8994,29 @@ export let h = (n) => { const a = new Float64Array(n); for (let i = 0; i < n; i+
   }
 })
 
+test('peephole: a word tested against both ends of a range is one unsigned test, two ranges a bit apart one test of the word with the bit', () => {
+  // `c >= 65 && c <= 90` (a letter), `x > -6 && x < 6`, and the letters of either case `[65, 90] | [97, 122]`
+  const conds = [
+    ['(i32.and (i32.ge_s (local.get $x) (i32.const 65)) (i32.le_s (local.get $x) (i32.const 90)))', 1, 0],
+    ['(i32.and (i32.gt_s (local.get $x) (i32.const -6)) (i32.gt_s (i32.const 6) (local.get $x)))', 1, 0],
+    ['(i32.or (i32.or (i32.and (i32.ge_s (local.get $x) (i32.const 65)) (i32.le_s (local.get $x) (i32.const 90))) (i32.and (i32.ge_s (local.get $x) (i32.const 97)) (i32.le_s (local.get $x) (i32.const 122)))) (i32.eq (local.get $x) (i32.const 95)))', 1, 1],
+    ['(i32.or (i32.and (i32.ge_s (local.get $x) (i32.const 48)) (i32.le_s (local.get $x) (i32.const 57))) (i32.and (i32.ge_s (local.get $x) (i32.const 65)) (i32.le_s (local.get $x) (i32.const 70))))', 2, 0],
+    ['(i32.and (i32.ge_s (local.get $x) (i32.const 9)) (i32.le_s (local.get $x) (i32.const 3)))', 0, 0],
+  ]
+  for (const [k, [cond, folds, cased]] of conds.entries()) {
+    const fn = parseWat(`(func $f (export "f") (param $x i32) (result i32) ${cond})`)
+    const instantiate = f => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', f]))).exports.f
+    const before = instantiate(fn)
+    fusedRewrite(fn)
+    const after = instantiate(fn)
+    const text = JSON.stringify(fn)
+    is((text.match(/i32\.(le|lt)_u/g) || []).length, folds, `condition ${k}: ${folds} range test(s)`)
+    is((text.match(/"i32\.or",\["local\.get"/g) || []).length, cased, `condition ${k}: ${cased ? 'the case bit' : 'no case bit'}`)
+    for (const x of [-2147483648, -6, -5, -1, 0, 3, 5, 6, 9, 31, 47, 48, 57, 58, 64, 65, 70, 71, 90, 91, 95, 96, 97, 122, 123, 2147483647])
+      is(after(x), before(x), `condition ${k}: x=${x}`)
+  }
+})
+
 test('peephole: a word tested against zero and a constant bound is one unsigned test', () => {
   // `x >= 0 && x < W && y >= 0 && y < H`, the tests in any order, both spellings
   const conds = [
