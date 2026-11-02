@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { LAB, timedBenchmarkRow } from '../assets/headline.js'
-import { benchSvg, completeBenchSvgRun, withReference, REFERENCE, SNAPSHOT, SNAPSHOT_N } from '../scripts/bench-svg.mjs'
+import { benchSvg, committedRows, completeBenchSvgRun, withReference, REFERENCE, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
 
 const rows = [{ label: 'JZ', sub: '-O3', ratio: 1 }, { label: 'V8', sub: 'Node', ratio: 2.45 }]
 
@@ -32,36 +32,48 @@ test('bench-svg: jz is labeled by optimization tier, not a pipeline', () => {
   // lives in the chart's scope line + the rival subs, so jz's own label stays a tier.
   const svg = benchSvg(rows, 12)
   ok(svg.includes('>-O3<'), 'jz sub-label is -O3 (parallel to clang/rustc/asc -O3)')
-  is(SNAPSHOT.find(r => r.label === 'JZ').sub, '-O3')
+  is(SVG_TARGETS.find(t => t.id === 'jz').sub, '-O3')
 })
 
-test('bench-svg: snapshot ratios reproduce committed accepted-checksum evidence', () => {
+// The committed chart is drawn from the committed dataset (scripts/bench-svg.mjs
+// svgRows): every lane, its ratio and its coverage reproduce bench/results.json.
+// Labels beyond those numbers are the renderer's, so they are not compared.
+const chartLanes = svg => [...svg.matchAll(/<g font-family[^>]*>([\s\S]*?)<\/g>/g)].map(([, g]) => ({
+  label: g.match(/font-size="14"[^>]*>([^<]+)<\/text>/)?.[1],
+  sub: g.match(/font-size="10"[^>]*>([^<]+)<\/text>/)?.[1] ?? '',
+  ratio: +g.match(/font-size="13"[^>]*>([\d.]+)×<\/text>/)?.[1],
+}))
+
+test('bench-svg: the committed chart reproduces the committed accepted-checksum evidence', () => {
+  const svg = readFileSync(new URL('../bench/bench.svg', import.meta.url), 'utf8')
   const results = JSON.parse(readFileSync(new URL('../bench/results.json', import.meta.url), 'utf8'))
-  const ids = Object.keys(results.cases).filter(id => !LAB.has(id))
-  is(SNAPSHOT_N, ids.length, 'snapshot case count matches the non-lab corpus')
-  const targetByLabel = new Map([
-    ['JZ', 'jz'], ['native C', 'nat'], ['C', 'c-wasm'], ['Rust', 'rust-wasm'],
-    ['AssemblyScript', 'as'], ['Zig', 'zig-wasm'], ['V8', 'v8'], ['Go', 'go-wasm'],
-    ['MoonBit', 'moonbit'], ['Porffor', 'porf-native'], ['scriptc', 'scriptc'], ['Perry', 'perry'],
-  ])
-  is(SNAPSHOT.map(r => r.label).sort().join(','), [...targetByLabel.keys()].sort().join(','),
-    'offline snapshot includes every chart lane')
-  for (const row of SNAPSHOT) {
-    const target = targetByLabel.get(row.label)
-    ok(target, `snapshot label ${row.label} has a results target`)
-    const ratios = []
-    for (const id of ids) {
-      const c = results.cases[id]
-      const jz = c.targets?.jz
-      const rival = c.targets?.[target]
-      if (timedBenchmarkRow(jz) && timedBenchmarkRow(rival))
-        ratios.push(rival.medianUs / jz.medianUs)
-    }
-    ok(ratios.length > 0, `${row.label} has accepted-checksum evidence`)
-    const geomean = Math.exp(ratios.reduce((sum, ratio) => sum + Math.log(ratio), 0) / ratios.length)
-    is(row.ratio, +geomean.toFixed(2), `${row.label} snapshot ratio matches results.json`)
-    if (['Porffor', 'scriptc', 'Perry'].includes(row.label)) ok(row.sub.includes(`${ratios.length} / ${ids.length}`), `${row.label} coverage label matches evidence`)
+  const { rows, cases } = svgRows(results.cases)
+  is(cases, Object.keys(results.cases).filter(id => !LAB.has(id)).length, 'the chart counts the non-lab corpus')
+  is(svg.match(/on the (\d+)-case benchmark corpus/)?.[1], String(cases), 'caption N is the dataset\'s non-lab case count')
+  const lanes = chartLanes(svg)
+  is(lanes.map(l => l.label).sort().join(','), SVG_TARGETS.map(t => t.label).sort().join(','), 'the chart draws every chart lane')
+  for (const lane of lanes) {
+    const row = rows.find(r => r.label === lane.label)
+    ok(row, `${lane.label} has accepted-checksum evidence in results.json`)
+    is(lane.ratio, row.ratio, `${lane.label} ratio matches results.json`)
+    const covered = row.sub.match(/runs (\d+ \/ \d+)/)?.[1]
+    if (covered) ok(lane.sub.includes(covered.replace('runs ', '')), `${lane.label} coverage label matches evidence (${covered})`)
   }
+})
+
+test('bench-svg: rows are the geomean of lane ÷ JZ over timed, accepted, non-lab cases', () => {
+  const t = (medianUs, parity = 'ok') => ({ medianUs, parity })
+  const { rows, cases } = svgRows({
+    a: { targets: { jz: t(10), v8: t(20), 'porf-native': t(40), nat: t(5) } },
+    b: { targets: { jz: t(10), v8: t(80), 'porf-native': t(1, 'DIFF') } },
+    c: { targets: { jz: { status: 'fail' }, v8: t(1) } },
+    jz: { targets: { jz: t(1), v8: t(1000) } },   // a lab case stays out
+  })
+  is(cases, 3, 'non-lab cases, the failed-JZ one included, are the denominator')
+  is(rows.find(r => r.label === 'V8').ratio, 4, 'geomean of 2× and 8×')
+  is(rows.find(r => r.label === 'Porffor').sub, 'native, runs 1 / 3', 'a wrong checksum is not coverage')
+  is(rows.find(r => r.label === 'native C').ratio, 0.5)
+  is(rows.some(r => r.label === 'Perry'), false, 'a lane without evidence has no row')
 })
 
 test('bench-svg: only a complete live run may replace the chart', () => {
@@ -101,22 +113,23 @@ test('bench-svg: only a complete live run may replace the chart', () => {
     'a positive measured reference row is complete')
 })
 
-test('bench-svg: snapshot render is internally consistent (caption N = Porffor denominator)', () => {
+test('bench-svg: a dataset render is internally consistent (caption N = Porffor denominator)', () => {
   // The crux of the fix — a reader must never see "12 cases" above a row reading
-  // "runs 4 / 13". SNAPSHOT_N drives both the caption and the Porffor denominator,
-  // so they can't disagree; the live bench.mjs path derives both from geoCases too.
-  const svg = benchSvg([...SNAPSHOT].sort((a, b) => a.ratio - b.ratio), SNAPSHOT_N)
+  // "runs 4 / 13". svgRows derives both the caption and the Porffor denominator
+  // from the same case set, so they can't disagree.
+  const { rows, cases } = committedRows()
+  const svg = benchSvg([...rows].sort((a, b) => a.ratio - b.ratio), cases)
   const capN = svg.match(/on the (\d+)-case benchmark corpus/)?.[1]
   const porfDenom = svg.match(/runs \d+ \/ (\d+)/)?.[1]
-  is(capN, String(SNAPSHOT_N), 'caption N = SNAPSHOT_N')
-  is(porfDenom, String(SNAPSHOT_N), 'Porffor denominator = SNAPSHOT_N')
+  is(capN, String(cases), 'caption N = the non-lab case count')
+  is(porfDenom, String(cases), 'Porffor denominator = the non-lab case count')
   is(capN, porfDenom, 'caption N and Porffor denominator must agree')
 })
 
 test('bench-svg: native C is always shown (the lone speed-of-light reference)', () => {
-  // every reference label must have a SNAPSHOT row to fall back to, else the
+  // every reference label must have a committed row to fall back to, else the
   // guarantee is silently empty — a relabel in one file and not the other
-  for (const label of REFERENCE) ok(SNAPSHOT.some(r => r.label === label), `SNAPSHOT has a "${label}" row to fall back to`)
+  for (const label of REFERENCE) ok(committedRows().rows.some(r => r.label === label), `results.json has a "${label}" row to fall back to`)
   const out = withReference(rows)   // rows has no native C
   ok(out.map(r => r.label).includes('native C'), 'native C injected when missing')
   // a measured row wins — the fallback fills only genuine gaps, never duplicates

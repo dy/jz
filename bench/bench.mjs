@@ -12,7 +12,7 @@ import { createRequire } from 'node:module'
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import EVENTS from '../src/std/events.js'
-import { completeBenchSvgRun, renderBenchSvg } from '../scripts/bench-svg.mjs'
+import { completeBenchSvgRun, renderBenchSvg, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
 import { classifyBenchmarkChecksum, LAB, timedBenchmarkRow } from '../assets/headline.js'
 import { contenders } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
@@ -1458,7 +1458,7 @@ if (EMIT_WEB) {
   process.exit(0)
 }
 
-// Per-(case, target) valid medians, collected to drive the geomean bench.svg.
+// Per case, the timed rows with accepted checksums (dataset shape), for bench.svg.
 const grid = {}
 const FMA_CHECKSUMS = {
   biquad: 3650557234, fft: 4196606268, synth: 1018085448,
@@ -1492,29 +1492,6 @@ const REFERENCE_CHECKSUMS = {
   munsell: 319975139, hsl: 782821123, hwb: 2131370600, jzazbz: 2539556348, jzczhz: 3569912359,
   cam16: 3498772996, hct: 2742489630, a98rgb: 4116453917, ipt: 3620802574,
 }
-// The engines in bench/bench.svg — the corpus headline: jz vs the WASM field
-// (Rust/Go/C/Zig compiled to wasm, AssemblyScript — all run in node's V8,
-// apples-to-apples with jz), V8 (plain JS), and Porffor (the 2026 rewrite:
-// an AOT engine through its own C backend — no wasm). native C is the lone
-// reference row, kept as a labeled speed-of-light ceiling, never a beat-claim.
-// The per-case page labels each substrate and includes jz-w2c (jz → wasm2c →
-// clang) as the peer for native toolchains. This corpus headline keeps native C
-// as the ceiling. A target with no data on a run is simply skipped.
-const SVG_TARGETS = [
-  { id: 'jz', label: 'JZ', sub: '-O3' },
-  { id: 'c-wasm', label: 'C', sub: 'clang → wasm' },
-  { id: 'rust-wasm', label: 'Rust', sub: 'rustc → wasm' },
-  { id: 'go-wasm', label: 'Go', sub: 'gc → wasm' },
-  { id: 'zig-wasm', label: 'Zig', sub: 'zig → wasm' },
-  { id: 'moonbit', label: 'MoonBit', sub: 'moonrun → wasm' },
-  { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
-  { id: 'porf-native', label: 'Porffor', sub: 'JS → C, AOT' },
-  { id: 'scriptc', label: 'scriptc', sub: 'JS → LLVM, AOT' },
-  { id: 'perry', label: 'Perry', sub: 'JS → LLVM, AOT' },
-  { id: 'v8', label: 'V8', sub: 'Node (JS)' },
-  { id: 'nat', label: 'native C', sub: 'clang -O3, ref' },
-]
-
 // The self-compile case checksums the bytes the compiler under test emits, so
 // every codegen change moves its answer and no stored checksum can be its
 // oracle (at a841739a every engine read DIFF against September's bytes). Its
@@ -1690,8 +1667,7 @@ for (const cid of selectedCases) {
     if (!Object.keys(pairedInfo).length) pairedInfo = null
   }
   // Record correct-result medians for the geomean SVG (a DIFF result is excluded).
-  grid[cid] = {}
-  for (const r of correctTimedResults) grid[cid][r.id] = r.medianUs
+  grid[cid] = { targets: Object.fromEntries(correctTimedResults.map(r => [r.id, { medianUs: r.medianUs, parity: parityOf(r.checksum) }])) }
   const nat = correctTimedResults.find(r => r.id === 'nat')
   const baseline = nat || [...correctTimedResults].sort((a, b) => a.medianUs - b.medianUs)[0]
 
@@ -1824,20 +1800,9 @@ if (VERIFY_ANCHORS) {
 // over correct-result cases both ran.
 const svgCases = allCases.map(c => c.id).filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid))
 if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases)) {
-  const geoCases = selectedCases.filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid))
-  const rows = []
-  for (const t of SVG_TARGETS) {
-    const ratios = []
-    for (const cid of geoCases) {
-      const g = grid[cid]
-      if (g && g[t.id] != null && g.jz != null) ratios.push(g[t.id] / g.jz)
-    }
-    if (!ratios.length) continue
-    const geo = Math.exp(ratios.reduce((s, r) => s + Math.log(r), 0) / ratios.length)
-    rows.push({ label: t.label, ratio: geo, sub: ['porf-native', 'scriptc', 'perry'].includes(t.id) ? `native, runs ${ratios.length} / ${geoCases.length}` : t.sub })
-  }
+  const { rows, cases: n } = svgRows(Object.fromEntries(selectedCases.map(cid => [cid, grid[cid] ?? { targets: {} }])))
   if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases, rows)) {
-    renderBenchSvg(rows, geoCases.length)
+    renderBenchSvg(rows, n)
     console.log(`\nwrote bench/bench.svg — ${rows.map(r => `${r.label} ${r.ratio.toFixed(2)}×`).join('  ')}`)
   }
 }

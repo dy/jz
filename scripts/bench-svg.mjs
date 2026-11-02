@@ -10,52 +10,73 @@
 // GitHub renders SMIL-animated SVG embedded via <img>, so the balls animate in
 // the README; the labels + "N×" numbers carry the meaning when frozen.
 //
-// `bench/bench.mjs` calls renderBenchSvg() at the end of a full run with freshly
-// measured geomeans; `node scripts/bench-svg.mjs` (no args) regenerates from the
-// last committed snapshot so the artifact never goes stale between full runs.
+// The chart is a function of a dataset: `node scripts/bench-svg.mjs [dataset]`
+// (default bench/results.json) draws it from the committed evidence and refuses a
+// dataset that leaves a lane without evidence; `bench/bench.mjs` draws it at the end
+// of a complete live run from what it just measured. Either way the rows come from
+// svgRows, so the chart reproduces its dataset.
 
-import { writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { LAB, timedBenchmarkRow } from '../assets/headline.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
+export const RESULTS_PATH = join(ROOT, 'bench', 'results.json')
 
-// Last measured snapshot (Apple Silicon, arm64). bench.mjs overwrites bench.svg
-// on a full run; this is the offline fallback so the artifact regenerates
-// deterministically between runs.
-//   ratio = geomean(engine median / jz median) over the cases the engine ran
-//           (lower = faster; jz is the 1.00× baseline). These reproduce from the
-//           committed results. The wasm rivals are the apples-to-apples field;
-//           native C is the speed-of-light reference and Porffor is the native
-//           AOT floor requested by the product contract.
-// SNAPSHOT_N = cases behind these geomeans; it drives both the caption and the
-// native coverage denominators, so the offline render is consistent. The live
-// bench.mjs run passes its own current count (geoCases.length) instead.
-export const SNAPSHOT_N = 55
-export const SNAPSHOT = [
-  { label: 'JZ', sub: '-O3', ratio: 1.00 },
-  { label: 'native C', sub: 'clang -O3, ref', ratio: 1.04 },
-  { label: 'C', sub: 'clang → wasm', ratio: 2.00 },
-  { label: 'Rust', sub: 'rustc → wasm', ratio: 2.08 },
-  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.23 },
-  { label: 'Zig', sub: 'zig → wasm', ratio: 2.21 },
-  { label: 'V8', sub: 'Node (JS)', ratio: 2.36 },
-  { label: 'MoonBit', sub: 'moonrun → wasm', ratio: 4.39 },
-  { label: 'Go', sub: 'gc → wasm', ratio: 4.71 },
-  { label: 'Porffor', sub: `native, runs 45 / ${SNAPSHOT_N}`, ratio: 16.19 },
-  // High host swap and older JZ baselines: see bench/README.md for this refresh.
-  { label: 'Perry', sub: `native, 53 / ${SNAPSHOT_N} (provisional)`, ratio: 61.71 },
-  { label: 'scriptc', sub: `native, runs 8 / ${SNAPSHOT_N}`, ratio: 150.10 },
+// The engines in the chart, the corpus headline: jz vs the WASM field (Rust/Go/C/Zig
+// compiled to wasm, AssemblyScript, MoonBit: all run in V8, apples-to-apples with jz),
+// V8 (plain JS), and the native AOT compilers of JS (Porffor, scriptc, Perry). native
+// C is the lone reference row, a labeled speed-of-light ceiling, never a beat-claim.
+// The per-case page labels each substrate and includes jz-w2c (jz → wasm2c → clang)
+// as the peer for native toolchains.
+export const SVG_TARGETS = [
+  { id: 'jz', label: 'JZ', sub: '-O3' },
+  { id: 'c-wasm', label: 'C', sub: 'clang → wasm' },
+  { id: 'rust-wasm', label: 'Rust', sub: 'rustc → wasm' },
+  { id: 'go-wasm', label: 'Go', sub: 'gc → wasm' },
+  { id: 'zig-wasm', label: 'Zig', sub: 'zig → wasm' },
+  { id: 'moonbit', label: 'MoonBit', sub: 'moonrun → wasm' },
+  { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
+  { id: 'porf-native', label: 'Porffor', sub: 'JS → C, AOT' },
+  { id: 'scriptc', label: 'scriptc', sub: 'JS → LLVM, AOT' },
+  { id: 'perry', label: 'Perry', sub: 'JS → LLVM, AOT' },
+  { id: 'v8', label: 'V8', sub: 'Node (JS)' },
+  { id: 'nat', label: 'native C', sub: 'clang -O3, ref' },
 ]
+// The native compilers of JS run a part of the corpus: their row names its coverage.
+const COVERAGE = new Set(['porf-native', 'scriptc', 'perry'])
+
+/** The chart rows of a dataset's cases ({ id: { targets } }): per lane, the geometric
+ *  mean of lane ÷ JZ median over the non-lab cases where both have a timed row with an
+ *  accepted checksum (lower = faster; JZ = 1.00×). `cases` = the non-lab cases, the
+ *  caption's N and the coverage denominator. A lane with no such case has no row. */
+export function svgRows(cases) {
+  const ids = Object.keys(cases).filter(id => !LAB.has(id))
+  const rows = []
+  for (const t of SVG_TARGETS) {
+    const logs = ids.flatMap(id => {
+      const r = cases[id].targets ?? {}
+      return timedBenchmarkRow(r.jz) && timedBenchmarkRow(r[t.id]) ? [Math.log(r[t.id].medianUs / r.jz.medianUs)] : []
+    })
+    // At the 2 decimals the chart prints, so the drawing reproduces from its numbers.
+    if (logs.length) rows.push({ label: t.label, sub: COVERAGE.has(t.id) ? `native, runs ${logs.length} / ${ids.length}` : t.sub,
+      ratio: +Math.exp(logs.reduce((s, x) => s + x, 0) / logs.length).toFixed(2) })
+  }
+  return { rows, cases: ids.length }
+}
+
+let committed
+/** The chart of the committed reference dataset, bench/results.json. */
+export const committedRows = () => committed ??= svgRows(JSON.parse(readFileSync(RESULTS_PATH, 'utf8')).cases)
 
 // native C (clang -O3, native binary) is the speed-of-light reference. Porffor
 // remains a measured native competitor rather than a REFERENCE fallback.
-// Native C is always drawn: on a box without clang its committed SNAPSHOT ratio
-// stands in. Rust/Go/C race here as wasm rivals (wasm32-wasi, run in V8), not as
-// the reference. Per case, jz-w2c supplies the peer row for native toolchains.
-// This corpus headline keeps native C as the ceiling; see
-// bench/index.html.
+// Native C is always drawn: a live run on a box without clang takes its row from
+// the committed dataset. Rust/Go/C race here as wasm rivals (wasm32-wasi, run in V8),
+// not as the reference. Per case, jz-w2c supplies the peer row for native toolchains.
+// This corpus headline keeps native C as the ceiling; see bench/index.html.
 export const REFERENCE = new Set(['native C'])
 
 /** Complete nonempty selection plus one positive finite row per measured lane. */
@@ -130,23 +151,29 @@ ${rows.map(lane).join('')}
 `
 }
 
-/** Write bench/bench.svg from `rows` (defaults to the committed snapshot).
- *  `cases` = case count for the caption; defaults to the snapshot's own count. */
-export function renderBenchSvg(rows = SNAPSHOT, cases = SNAPSHOT_N) {
+/** Write bench/bench.svg from `rows`; `cases` = the case count for the caption. */
+export function renderBenchSvg(rows, cases) {
   const sorted = withReference(rows).sort((a, b) => a.ratio - b.ratio)
   writeFileSync(SVG_PATH, benchSvg(sorted, cases))
   return SVG_PATH
 }
 
 /** Guarantee the native C reference row is present: a run that lacked clang
- *  drops it, so fall back to the committed SNAPSHOT ratio.
+ *  drops it, so fall back to the committed dataset's ratio.
  *  Measured rows win; the fallback only fills genuine gaps. */
 export function withReference(rows) {
   const have = new Set(rows.map(r => r.label))
-  return [...rows, ...SNAPSHOT.filter(r => REFERENCE.has(r.label) && !have.has(r.label))]
+  return [...rows, ...committedRows().rows.filter(r => REFERENCE.has(r.label) && !have.has(r.label))]
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  renderBenchSvg()
-  console.log('wrote', SVG_PATH)
+if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))) {
+  const path = process.argv[2] || RESULTS_PATH
+  const { rows, cases } = svgRows(JSON.parse(readFileSync(path, 'utf8')).cases)
+  const absent = SVG_TARGETS.filter(t => !rows.some(r => r.label === t.label)).map(t => t.id)
+  if (absent.length) {
+    console.error(`${path}: no timed, checksum-accepted rows beside JZ for ${absent.join(', ')}; the chart would drop them. Not written.`)
+    process.exit(1)
+  }
+  renderBenchSvg(rows, cases)
+  console.log(`wrote ${SVG_PATH} from ${path}: ${rows.map(r => `${r.label} ${r.ratio.toFixed(2)}×`).join('  ')}`)
 }
