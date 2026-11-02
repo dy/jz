@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — v1 preparation
+## 1.0.0
 
 - Carry the next key of a keyed recurrence (compile/loop-recurrence.js `carryKeys`, speed tier): a counted loop whose scalar reads a typed table at a key of itself and the iteration's input, keeping the rest of itself by xor (a byte-wise CRC of any width or bit order, `c = table[(c ^ buf[i]) & 0xff] ^ (c >>> 8)`, its byte in a temporary or its bound in the head as well), mixes the next input into what the scalar keeps while the read is in flight (`w = t ^ (s ^ buf[i + 1])`), so the next read waits on one xor fewer. The first key is taken before the loop and the last iteration runs after it; the input and the bound, an export's untyped argument and its length included, are read once each where they were. crc32, which tied V8 on an EPYC 7763 (1.005× over seven reference runs), runs 0.881× the tree before there and 0.888× V8, 0.892× JSC, 0.79× clang's and rustc's wasm (probe runs 41168267323 and 41168426512, six paired rounds each); on an Apple M4 Max (loaded) 0.81× the tree before and 0.725× V8, still 1.05× JSC. +68 bytes at speed, every other bench build byte-identical, the size tier untouched. Folding the table's constant base into the load's offset, where this started, runs 1.12× slower on the EPYC 7763 (hand-written WAT, probe run 41165733247): x64 V8 already merges `16 + (k << 2)` into one `lea`, and the folded offset moves into the load's address instead.
 - Read a name the compiler minted in a warning as what it copies (src/ctx.js `holds`, `userText`): a receiver an object pattern destructures (`this._byte`, where `d4._byte` reached the callback), one held across its guard (`w[…]`, `o.foo(…)`, where `ai100[…]`, `methodRecv0.foo`), an inlined body's parameter, a member chain (`this.m[…]`, where `<expr>[…]`), and a class's static method or a function the module names `$f` in a reason (`E.update`, where `$E.update`); an inlined, cloned or devirtualized copy of one site reports once, and an object pattern's reads stand at its declaration.
@@ -389,9 +389,6 @@
 - Compact as the heap nears `memory.maximum` or the address space, once per eighth of the live data, instead of failing to grow.
 - Compact the loops of closures, and keep a caller's alias of a container its callee's loop grew.
 - Keep the undefined arm of an optional chain through its continuation, so `o?.a.b ?? x` answers `x`.
-
-Release validation is still in progress. This is not a released v1, and the
-standing performance claims still require fresh reference measurements.
 
 ### Breaking changes
 

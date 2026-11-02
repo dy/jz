@@ -1,6 +1,6 @@
 <a href="https://jz.js.org/"><img src="jz.svg" alt="JZ logo" width="120"/></a>
 
-![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](https://www.npmjs.com/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
+![stability](https://img.shields.io/badge/stability-stable-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](https://www.npmjs.com/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
 **JZ** (_javascript zero_) compiles JavaScript to fast, minimal WASM.
 
@@ -483,8 +483,9 @@ JavaScript's bounds checks.
 <details>
 <summary><strong>Is JZ production-ready?</strong></summary>
 
-JZ is experimental and pre-1.0: pin a version and re-test upgrades. CI runs the
-core suite, selected test262 tests, the benchmark gate and a self-compile
+Since 1.0 the API, options and CLI flags change only in a major version: pin
+the major and re-test upgrades. CI runs the core suite, selected test262 tests,
+the benchmark gate and a self-compile
 (`npm run test:self` builds and tests a fresh compiler in a temporary directory).
 The same WASM lowers to a native executable through wasm2c
 (`node scripts/native/compile.mjs app.js`); see the
@@ -496,7 +497,7 @@ Adoption is ejectable: remove the JZ build step and the source remains JavaScrip
 
 ## Stability
 
-Pre-1.0. The entry points `jz` (the default export with `jz.memory`, `compile`
+The entry points `jz` (the default export with `jz.memory`, `compile`
 and `instantiate`), `jz/interop` (`instantiate`), the options above and the CLI flags are the contract; removing or
 changing them takes a major version. The class of an error is stable within a
 major; its message may change. Accepted programs preserve JavaScript values,
