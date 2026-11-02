@@ -24,6 +24,8 @@ import { pureKernel } from './pure-funcs.js'
 import { guardToInt32 } from './to-int32.js'
 import { poolFloatConstants } from './pool-floats.js'
 import { selectBits } from './select-bits.js'
+import { unsignedDivision } from './unsigned-div.js'
+import { unrollTrips } from './unroll-trips.js'
 import { truncChoice } from './trunc-choice.js'
 import { selectArms } from './select-arms.js'
 import { maskOperands } from './mask-operands.js'
@@ -625,6 +627,8 @@ export function watrTail(module, cfg, {
   // (on the checked reads and stores watr left, before the float literals are pooled)
   if (cfg.forwardChecked !== false) time('forwardChecked', () => forwardCheckedElements(optimized))
   stripDeadLateData(optimized, lazyDataSpans, staticDataSpan, dataRecords)
+  // (on the loops the optimizer leaves, before the passes below read a counted loop's counter)
+  if (cfg.unrollTrips === true) time('unrollTrips', () => unrollTrips(optimized))
   // (on the counted loops the optimizer leaves, before their counters become pointer tests)
   if (cfg.ringLaps === true) time('ringLaps', () => ringLaps(optimized))
   // (on the pointers watr's strength reduction left beside their counters)
@@ -653,6 +657,8 @@ export function watrTail(module, cfg, {
   // its callers, a larger one the program's loops)
   if (cfg.inlineTiny === true && watrOpts)
     time('inlineTiny', () => inlineTiny(optimized, { pin: watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, user }))
+  // (on every division the passes above left, the vectorizer's epilogues and the inlined helpers' among them)
+  if (cfg.unsignedDivision !== false) time('unsignedDivision', () => unsignedDivision(optimized))
   // (last: the float literals every pass above reads as constants)
   if (cfg.poolFloats === true) time('poolFloatConstants', () => poolFloatConstants(optimized))
   // (after every pass that reads a function whole, the inliner above all, which would splice a

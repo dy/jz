@@ -919,6 +919,11 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       case 'i32.load8_s': return loaded(rootAt(x), op) ?? val(-128, 127)
       case 'i32.load16_u': return loaded(rootAt(x), op) ?? val(0, 65535)
       case 'i32.load16_s': return loaded(rootAt(x), op) ?? val(-32768, 32767)
+      // (a lane read out of a vector is its lane's width, extended)
+      case 'i8x16.extract_lane_u': return val(0, 255)
+      case 'i8x16.extract_lane_s': return val(-128, 127)
+      case 'i16x8.extract_lane_u': return val(0, 65535)
+      case 'i16x8.extract_lane_s': return val(-32768, 32767)
       case 'i32.eqz': return a && (a.lo > 0 || a.hi < 0) ? answer(0) : a && a.lo === 0 && a.hi === 0 ? answer(1) : BOOL
       case 'i32.popcnt': case 'i32.clz': case 'i32.ctz': return val(0, 32)
     }

@@ -823,7 +823,8 @@ test('codegen: integer const-global folds to i32 — x % CONST_GLOBAL takes the 
       for (let it = 0; it < (iters | 0); it++) acc = (acc + (it % N)) | 0
       return acc | 0
     }`, { wat: true })
-  ok((wat.match(/i32\.rem_s/g) || []).length >= 1, 'x % CONST_GLOBAL lowers to i32.rem_s')
+  // (unsigned where the counter is proven no less than zero: optimize/unsigned-div.js)
+  ok((wat.match(/i32\.rem_[su]/g) || []).length >= 1, 'x % CONST_GLOBAL lowers to the i32 remainder')
   is((wat.match(/f64\.copysign/g) || []).length, 0, 'no software f64-remainder for the integer modulo')
 })
 

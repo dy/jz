@@ -40,6 +40,7 @@ import { ringLaps } from '../src/optimize/ring-laps.js'
 import { earlyStores } from '../src/optimize/early-stores.js'
 import { leadChains } from '../src/optimize/lead-chains.js'
 import { issueOrder } from '../src/optimize/issue-order.js'
+import { unrollTrips } from '../src/optimize/unroll-trips.js'
 import { foldWords, funcWat, run, oracle, compileInProcess, jz, compile } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -5095,6 +5096,103 @@ test('selectBits: a choice between its test\'s operands is their pseudo-minimum 
   ok(!/f64\.reinterpret_i64 \(select|reinterpret_i64\s*\(select/.test(body), 'none of them takes the bits')
   const scalar = compile(src, { wat: true, optimize: { level: 'speed', simd: false } })
   ok(!/v128|f64x2/.test(scalar), 'simd: false stays scalar')
+})
+
+// A signed division or remainder of a value the intervals prove non-negative by a positive one is
+// the unsigned one: an engine divides an unsigned word by a constant with a multiply-high and a
+// shift, the signed one adds a negative quotient's correction. A window's sum of bytes and a byte's
+// remainder divide unsigned; a dividend that may be negative stays signed.
+test('unsignedDivision: a non-negative dividend divides unsigned', () => {
+  const src = `export let f = (n) => {
+    const src = new Uint8Array(256), out = new Int32Array(256)
+    for (let i = 0; i < 256; i++) src[i] = (i * 37 + 11) & 255
+    let t = 0
+    for (let x = 0; x < n; x++) {
+      const s = src[x & 255] + src[(x + 1) & 255] + src[(x + 2) & 255]
+      out[x & 255] = (s / 3) | 0
+      t += out[x & 255] + src[(x + 5) & 255] % 7 + (((src[x & 255] - 128) / 3) | 0) + ((src[x & 255] - 128) % 5)
+    }
+    return t
+  }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', 2, 1]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 5, 300]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  if (onKernel()) return
+  for (const o of ['speed', 2]) {
+    const wat = compile(src, { wat: true, optimize: o }), body = wat.slice(wat.indexOf('(func $f'))
+    ok(/\(i32\.div_u/.test(body) && /\(i32\.rem_u/.test(body), `O${o}: the byte sum's quotient and the byte's remainder are unsigned`)
+    ok(/\(i32\.div_s/.test(body) && /\(i32\.rem_s/.test(body), `O${o}: a dividend that may be negative stays signed`)
+  }
+})
+
+// An innermost loop of 4 to 16 iterations known at compile time is its body written out once per
+// iteration at speed: V8 writes out only loops of fewer than four, and otherwise keeps the exit
+// test and the counter's step on every copy. A box window's nine taps (`k` from -r to r, r a
+// literal) are written out; a loop of seventeen stays a loop.
+test('unrollTrips: a loop of 4 to 16 known iterations is written out at speed', () => {
+  const src = `export let f = (n) => {
+    const src = new Uint8Array(256), out = new Int32Array(256)
+    for (let i = 0; i < 256; i++) src[i] = (i * 37 + 11) & 255
+    const r = 4
+    let t = 0
+    for (let x = 0; x < n; x++) {
+      let s = 0
+      for (let k = -r; k <= r; k++) s += src[(x + k) & 255]
+      let w = 0
+      for (let k = 0; k < 17; k++) w += src[(x * 3 + k) & 255]
+      out[x & 255] = (s / 9) | 0
+      t += out[x & 255] + w
+    }
+    return t
+  }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', 2, 'size']) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 300]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  if (onKernel()) return
+  const f = parseWat(compile(src, { wat: true, optimize: 'speed' })).find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$f')
+  let loads = 0, loops = 0
+  walk(f, n => {
+    if (n[0] === 'i32.load8_u') loads++
+    if (n[0] === 'loop' && !JSON.stringify(n.slice(2)).includes('"loop"') && JSON.stringify(n).includes('i32.load8_u')) loops++
+  })
+  ok(loads >= 9, `the nine taps read their bytes in a row (${loads} byte reads)`)
+  ok(loops >= 1, 'the loop of seventeen stays a loop')
+})
+
+// The loops `unrollTrips` writes out, and the ones it leaves: four to sixteen trips by the wasm
+// words' arithmetic, a counter stepped once by a literal and set on the straight path in, no
+// other branch to the head, at most 300 instructions written out (LLVM's -O3 full-unroll bar).
+test('unrollTrips: which loops it writes out', () => {
+  const g = n => ['local.get', n], c = v => ['i32.const', String(v)], set = (n, v) => ['local.set', n, v]
+  const step = (n, s) => set(n, ['i32.add', g(n), c(s)])
+  const work = set('$s', ['i32.add', g('$s'), ['i32.load8_u', ['i32.add', g('$p'), g('$k')]]])
+  const fn = (...body) => ['module', ['func', '$f', ['param', '$p', 'i32'], ['local', '$k', 'i32'], ['local', '$s', 'i32'], ['local', '$n', 'i32'], ...body]]
+  const top = (k0, cmp, hi, s = 1, body = [work]) => fn(set('$k', c(k0)), ['block', '$b', ['loop', '$l', ['br_if', '$b', [cmp, g('$k'), c(hi)]], ...body, step('$k', s), ['br', '$l']]])
+  const loops = m => JSON.stringify(m).split('"loop"').length - 1
+  const reads = m => JSON.stringify(m).split('"i32.load8_u"').length - 1
+  const nine = unrollTrips(top(-4, 'i32.gt_s', 4))
+  is([loops(nine), reads(nine)], [0, 9], 'k from -4 through 4: nine copies')
+  is(loops(unrollTrips(top(0, 'i32.ge_s', 3))), 1, 'three trips: V8 writes those out itself')
+  is(loops(unrollTrips(top(0, 'i32.ge_s', 16))), 0, 'sixteen trips')
+  is(loops(unrollTrips(top(0, 'i32.ge_s', 17))), 1, 'seventeen trips stay a loop')
+  is(loops(unrollTrips(top(0, 'i32.ge_s', 20, 2))), 0, 'a step of two: ten trips')
+  is(loops(unrollTrips(top(2147483644, 'i32.lt_s', 0))), 0, 'a counter that wraps: four trips to the negative words')
+  is(loops(unrollTrips(top(-4, 'i32.gt_s', 4, 1, Array(6).fill(work)))), 1, 'nine copies of six statements pass 300 instructions')
+  is(loops(unrollTrips(top(-4, 'i32.gt_s', 4, 1, [['br_if', '$l', g('$s')], work]))), 1, 'a branch to the head stays')
+  is(loops(unrollTrips(top(-4, 'i32.gt_s', 4, 1, [['br_if', '$b', g('$s')], work]))), 1, 'a break stays')
+  is(loops(unrollTrips(top(-4, 'i32.gt_s', 4, 1, [['if', g('$s'), ['then', set('$s', c(0))]], work]))), 1, 'a choice in the body stays: its branch would stand in every copy')
+  is(loops(unrollTrips(top(-4, 'i32.gt_s', 4, 1, [work, ['if', g('$s'), ['then', set('$k', c(0))]]]))), 1, 'a counter written elsewhere stays')
+  is(loops(unrollTrips(fn(['block', '$b', ['loop', '$l', ['br_if', '$b', ['i32.gt_s', g('$p'), c(4)]], work, step('$p', 1), ['br', '$l']]]))), 1, 'a counter from a parameter stays')
+  is(loops(unrollTrips(fn(set('$k', c(0)), ['loop', '$o', ['block', '$b', ['loop', '$l', ['br_if', '$b', ['i32.ge_s', g('$k'), c(8)]], work, step('$k', 1), ['br', '$l']]], ['br_if', '$o', g('$s')]]))), 2,
+    'a counter set above an enclosing loop stays: another iteration\'s value arrives')
+  const counted = ['block', '$b', ['loop', '$l', ['br_if', '$b', ['i32.ge_s', g('$k'), c(8)]], work, step('$k', 1), ['br', '$l']]]
+  is(loops(unrollTrips(fn(['if', g('$p'), ['then', set('$k', c(0))], ['else', structuredClone(counted)]]))), 1, 'a counter set in the then arm is unknown in the else arm')
+  is(loops(unrollTrips(fn(set('$k', c(0)), ['if', g('$p'), ['then', ['nop']], ['else', structuredClone(counted)]]))), 0, 'one set before the choice reaches either arm')
+  // the rotated form, stepped in its test against a bound a local holds, a labelled block in the body
+  const rot = unrollTrips(fn(set('$n', ['i32.add', ['i32.sub', c(4), ['local.tee', '$k', c(-4)]], c(1)]), set('$k', c(0)),
+    ['block', '$b', ['br_if', '$b', ['i32.ge_s', g('$k'), g('$n')]], ['loop', '$l', ['block', '$x', work],
+      ['br_if', '$l', ['i32.lt_s', ['local.tee', '$k', ['i32.add', g('$k'), c(1)]], g('$n')]]]]))
+  is([loops(rot), reads(rot)], [0, 9], 'a bottom test against a local bound of nine: nine copies')
+  is(new Set(JSON.stringify(rot).match(/\$x_u\d+/g)).size, 9, 'each copy names its block afresh')
+  is(JSON.stringify(rot).split('"$k"').length - 1, 2 + 2 + 9 * 3, 'each copy keeps the step the test made')
 })
 
 // x64 V8 lowers a byte or halfword mask to a zero extension; over `x ^ y` it extends a register

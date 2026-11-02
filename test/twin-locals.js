@@ -56,7 +56,8 @@ test('twin locals: the fast copy accumulates in i32 while its twin keeps f64', (
     // A finite trip count and present signed elements bound every addition.
     // GLYPH's dynamic cursor/trip facts do not yet prove that bounded region.
     // Inspect before watr can merge the two copies' local names.
-    const options={level:'speed',watr:false,sourceInline:false}
+    // (the copies' sixteen-trip loops stay loops: optimize/unroll-trips.js would write the fast one out)
+    const options={level:'speed',watr:false,sourceInline:false,unrollTrips:false}
     const split = kernelOf(compile(BOUNDED, { optimize: options, wat: true }))
     const shared = kernelOf(compile(BOUNDED, { optimize: {...options,twinLocals:false}, wat: true }))
     ok(/\(local \$(?:[^\s)]*_)?x i32\)/.test(split), 'the fast coordinate is an i32 local')

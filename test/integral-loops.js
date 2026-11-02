@@ -1909,7 +1909,8 @@ test('integral loops: an index divided by a segment length divides in words, a z
   }
   if (belowOpt(2)) return
   const body = funcWat(wat(src, { optimize: 2 }), 'go')
-  ok(body.includes('i32.div_s') && body.includes('i32.rem_s'), 'the copy divides in words')
+  // (signed or, the index and the segment proven no less than zero and above it, unsigned: optimize/unsigned-div.js)
+  ok(/i32\.div_[su]/.test(body) && /i32\.rem_[su]/.test(body), 'the copy divides in words')
 })
 
 // A while counting down (`while (i > n)`, every write of i a decrement) is a

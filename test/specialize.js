@@ -118,7 +118,8 @@ test('specialize: a counter that starts from a number', () => {
 }`
   shapes(src, w => {
     ok(copies(w) >= 1, 'the loop has a copy')
-    ok(count(w, 'i64.rem_s') + count(w, 'i32.rem_s') >= 2, 'its remainders are the integers\'')
+    // (unsigned where the counter is proven no less than zero: optimize/unsigned-div.js)
+    ok(count(w, 'i64.rem_s') + count(w, 'i32.rem_s') + count(w, 'i64.rem_u') + count(w, 'i32.rem_u') >= 2, 'its remainders are the integers\'')
   })
   for (const n of [...SIZES, -1, 0.5, 2.75, NaN, -0, 1000.5]) agree(src, 'f', [n])
 })

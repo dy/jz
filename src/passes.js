@@ -105,6 +105,7 @@ export const PASS_NAMES = [
   'hoistForwardHops',         // a receiver a loop never rebinds asks whether its block moved before the loop and after each call that may move one (optimize/forward-hops.js), off at the size tier
   'truncChoice',              // a choice of a float's ceiling below zero and its floor above is its truncation (optimize/trunc-choice.js)
   'selectArms',               // a choice whose arms compute one tree: the tree over a select of the leaves they differ in (optimize/select-arms.js)
+  'unsignedDivision',         // a signed division or remainder of a non-negative value by a positive one is the unsigned one (optimize/unsigned-div.js)
   'splitFuncs',               // a large function's conditional arms become functions of their own: V8 compiles what runs (optimize/split-funcs.js), speed-only
   'loopPasses',               // in a function that runs once, each pass of a loop that runs a loop is a call: V8 replaces code between calls only (optimize/split-funcs.js), speed-only
   'jsstring',                 // boundary opt-in: flip exported string params to externref
@@ -179,6 +180,7 @@ export const TUNING_KEYS = [
   'loopNodes',                // and one of at most loopNodes, loop-free, joins the calls a loop makes (the same pass)
   'searchLoops',              // a loop whose body is a guarded loop scans for its guard in an innermost loop (optimize/search-loops.js, speed tier)
   'leadGathers',              // a loop over items that searches from a slot it gathers reads the next item's slot a round ahead (optimize/lead-gathers.js, speed tier)
+  'unrollTrips',              // an innermost loop of 4 to 16 iterations known at compile time is its body written out (optimize/unroll-trips.js, speed tier)
   'pointerExits',             // a loop keeping a counter only to stop stops by the pointer strength reduction steps beside it (optimize/pointer-exits.js, speed tier)
   'jumpPointers',             // a loop variable that jumps carries the address of the record it indexes beside it (optimize/jump-pointers.js, speed tier)
   'ringLaps',                 // a counted loop stepping a cursor around a ring runs a lap at a time (optimize/ring-laps.js, speed tier)
