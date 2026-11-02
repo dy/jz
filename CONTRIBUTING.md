@@ -2604,7 +2604,15 @@ for it past the threshold (`br_if` out of a block around the loop) and a
 loop around both re-enters the loop at the same iteration after, so the
 body carries one comparison and no call (a call in a loop's body keeps every
 load in it from leaving the loop; the body's calls cost a parser five
-percent, a store to a global at the loop's entry as much again). The roots
+percent, a store to a global at the loop's entry as much again). A loop
+whose iterations are released as well (emit/control-flow.js
+iterationRelease) asks the compaction epoch past one comparison of the heap
+with its mark, and afresh: the site's kernels are calls a later pass puts in
+the function, which `collectReachableGlobalWrites` takes as `later`, and
+promoteGlobals asks the function's own row of it, so the epoch is never a
+local read as the function is entered (it was, and a release after a
+compaction of the loop's own walked the log the move had emptied and freed
+what an escape before it had kept, test/iteration-release.js). The roots
 are the f64 parameters and locals live at the loop's top, the i64 locals
 live there (a box the optimizer narrowed or an error's message; a number
 among them the kernel leaves, `__gc_box`), the f64 locals a live i32 or i64

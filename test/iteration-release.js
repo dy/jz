@@ -247,3 +247,23 @@ test('iteration release: a return, a throw or a branch out of a released loop le
     export let f = (n) => { let cs = 0; for (let k = 0; k < n; k++) cs += find('hello world', 111) + find('abc', 99); return cs }`
   agree(src)
 })
+
+test('iteration release: a release after a compaction of the loop\'s own starts a mark of its own', () => {
+  // The loop compacts what it keeps (optimize/loop-compact.js) and releases its
+  // iterations: a compaction moves what the escapes before it reached, empties
+  // the log and moves the epoch, which the release reads afresh. Snapshotted at
+  // the function's entry (optimize/globals.js promoteGlobals), the epoch missed
+  // every compaction the function's own sites ran, which a later pass adds, and
+  // a release walked the emptied log and freed what the window kept. A slack
+  // below a release's 64 KiB brings the compactions between two releases.
+  const src = `const keep = []
+    export let f = (n, a, b) => { let s = 0
+      for (let i = 0; i < n; i++) { const t = [i, i + 1, i + 2, i + 3]; if (i >= a && i < b) keep.push(t); s = (s + t[1]) | 0 }
+      let h = 0; for (let k = 0; k < keep.length; k++) h = (h * 31 + keep[k][2]) | 0
+      return s + h }`
+  for (const compactSlack of [4096, 32768, undefined])
+    for (const [n, a, b] of [[6000, 500, 3000], [20000, 3000, 4000], [50000, 10, 20000]])
+      is(jz(src, { optimize: { level: 'speed', ...(compactSlack ? { compactSlack } : {}) } }).exports.f(n, a, b), oracle(src).f(n, a, b),
+        `slack ${compactSlack ?? 'default'}: f(${n}, ${a}, ${b})`)
+  ok(releases(src) > 0, 'the loop releases its iterations')
+})
