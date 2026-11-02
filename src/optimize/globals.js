@@ -902,7 +902,7 @@ export function promoteGlobals(fn, globalTypes, reachableWrites) {
   // function makes a call (a callee may mutate a volatile global between reads).
   const getCounts = new Map()  // globalName → count
   const written = new Set(), callees = new Set()
-  let hasCall = false, hasIndirect = false
+  let hasIndirect = false
 
   const inspect = node => {
     if (!Array.isArray(node)) return
@@ -912,8 +912,8 @@ export function promoteGlobals(fn, globalTypes, reachableWrites) {
       return false
     }
     if (op === 'global.set' && typeof node[1] === 'string') written.add(node[1])
-    if (op === 'call' || op === 'return_call') { hasCall = true; if (typeof node[1] === 'string') callees.add(node[1]) }
-    else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect') { hasCall = true; hasIndirect = true }
+    if (op === 'call' || op === 'return_call') { if (typeof node[1] === 'string') callees.add(node[1]) }
+    else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect') hasIndirect = true
   }
 
   for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: inspect })
@@ -932,10 +932,13 @@ export function promoteGlobals(fn, globalTypes, reachableWrites) {
   const replacements = new Map()
   for (const [gName, count] of getCounts) {
     if (count < 3 || written.has(gName)) continue
-    // Unsound to cache a callee-mutable global across a call in this function:
-    // the test is exact per call edge (a global written only by init stays
-    // promotable in functions whose call graph never reaches init).
-    if (hasCall && reachableWrites && (hasIndirect || [...callees].some(c => reachableWrites.has(c, gName)))) continue
+    // Unsound to cache a global what the function runs may write: a callee
+    // (the test is exact per call edge: a global written only by init stays
+    // promotable in functions whose call graph never reaches init), or a
+    // kernel a later pass calls in it (`later` of collectReachableGlobalWrites:
+    // a loop's compaction, which bumps the epoch an iteration's release
+    // reads), which the function's own row holds.
+    if (reachableWrites && (hasIndirect || reachableWrites.has(fn[1], gName) || [...callees].some(c => reachableWrites.has(c, gName)))) continue
     // Determine type: use provided map, or infer from context
     const type = globalTypes?.get(gName) || inferTypeFromContext(fn, gName, bodyStart)
     if (!type) continue  // can't determine type, skip

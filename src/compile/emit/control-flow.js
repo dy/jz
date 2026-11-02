@@ -605,9 +605,14 @@ function durableLoopArrays(init, cond, step, body) {
  * it made and no escape reached, once the iterations since the mark made
  * more than RELEASE_BYTES (a walk costs its log and a bit per word: an
  * iteration of a few objects pays one comparison). A compaction moves what a
- * mark names and empties the log (`$__gc_epoch` counts them): the iteration
- * after one keeps all and starts a mark of its own. The loop's end, and a
- * return or a branch out of it, put the log's floor back.
+ * mark names and empties the log (`$__gc_epoch` counts them): the release
+ * after one keeps all and starts a mark of its own. The epoch is asked past
+ * the comparison, not before it: an iteration pays the one comparison, and a
+ * compaction that left the heap below the mark wraps it, so the mark it moved
+ * is let go at once; one that left the heap less than RELEASE_BYTES above it
+ * is let go once the iterations made that much, before any release reads the
+ * stale mark. The loop's end, and a return or a branch out of it, put the
+ * log's floor back.
  *
  * The flag the releases of a function's outermost released loop read is the
  * iterations' own: each such release clears it once it has read it
@@ -634,10 +639,10 @@ const iterationRelease = (take) => {
     pre: [['local.set', `$${mark}`, top()], ['local.set', `$${was}`, ['global.get', '$__ibase']], raise(),
       ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']],
       ...(take ? [['local.set', `$${held}`, ['global.get', '$__esc_held']], ['global.set', '$__esc_held', ['i32.const', -1]]] : [])].map(releasing),
-    top: releasing(['if', ['i32.ne', ['local.get', `$${epoch}`], ['global.get', '$__gc_epoch']],
-      ['then', ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']], ['local.set', `$${mark}`, top()], raise()],
-      ['else', ['if', ['i32.gt_u', ['i32.sub', top(), ['local.get', `$${mark}`]], ['i32.const', RELEASE_BYTES]],
-        ['then', ['local.set', `$${mark}`, ['call', take ? '$__iter_take' : '$__iter_release', ['local.get', `$${mark}`]]]]]]]),
+    top: releasing(['if', ['i32.gt_u', ['i32.sub', top(), ['local.get', `$${mark}`]], ['i32.const', RELEASE_BYTES]],
+      ['then', ['if', ['i32.ne', ['local.get', `$${epoch}`], ['global.get', '$__gc_epoch']],
+        ['then', ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']], ['local.set', `$${mark}`, top()], raise()],
+        ['else', ['local.set', `$${mark}`, ['call', take ? '$__iter_take' : '$__iter_release', ['local.get', `$${mark}`]]]]]]]),
     post: logFloor(was, held),
     cleanup: ['#logFloor', was, held],
   }
