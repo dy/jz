@@ -5,6 +5,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { oracle, wat, jz } from './util.js'
+import { FP_REGISTERS, FP_RESERVE } from '../src/compile/fp-registers.js'
 
 const loopsOf = (text) => {
   const out = []
@@ -142,10 +143,15 @@ export let run = (len) => { const d = new Float64Array(len).fill(1), st = []; fo
 export let shared = (len) => { const d = new Float64Array(len).fill(1), z = [0, 0], st = [z, z, [0, 0], z]; return filter(d, coefs, st) + (d[len - 1] ?? 0) + z[1] }`
 const record = (i) => `{ b0: ${0.2 + i * 0.01}, b1: 0.3, b2: 0.2, a1: ${-0.4 + i * 0.02}, a2: 0.1 }`
 const cascade = cascadeOf(`const coefs = [${[0, 1, 2, 3].map(record).join(', ')}]`, '4')
+// The sample loop's 8 carried values and 20 coefficients outnumber the 15 floating-point
+// registers V8 has on x64: it holds its state and the coefficients that leave room
+// (compile/fp-registers.js), reads the rest where it uses them, and writes the sample alone.
 const holdsState = (src) => {
+  const reads = 1 + 20 - Math.max(0, FP_REGISTERS - FP_RESERVE - 8)
   for (const optimize of levels(2, 3)) {
     const loops = loopsOf(wat(src, { optimize })).filter(l => (l.match(/f64\.mul/g) || []).length >= 20)
-    ok(loops.some(l => (l.match(/f64\.(load|store)/g) || []).length === 2 && !/call \$|i64\.load|i32\.load/.test(l)), `at ${optimize}: one loop reads and writes the sample alone`)
+    ok(loops.some(l => (l.match(/f64\.store/g) || []).length === 1 && (l.match(/f64\.load/g) || []).length === reads && !/call \$|i64\.load|i32\.load/.test(l)),
+      `at ${optimize}: one loop holds its state, reads the sample and the ${reads - 1} coefficients past the registers, and writes the sample`)
   }
 }
 
@@ -153,7 +159,7 @@ test('loop fields: a cascade of sections in pair arrays agrees with JS, its pair
   agrees(cascade, [['run', 9], ['run', 1], ['run', 0], ['shared', 9], ['shared', 0]])
 })
 
-test('loop fields: the sample loop of a cascade holds its coefficients and state in locals', () => holdsState(cascade))
+test('loop fields: the sample loop of a cascade holds its state and the coefficients its registers have room for in locals', () => holdsState(cascade))
 
 // The library's count is the length of the array its design function built
 // (`const n = coefs.length`, summary builtLenOf): a constant all the same.

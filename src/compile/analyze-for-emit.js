@@ -386,7 +386,8 @@ export function analyzeFuncForEmit(func, programFacts) {
     return tests && (k != null && tagOf(core(k)) === K.NUMBER || summary?.arrayCellOf(read) != null) ? s : null
   }
   const hoistedFields = loadsCached && fieldRead
-    ? hoistLoopFields(body, cacheName, fieldRead, n => summary.mayBeNullishExpr(n) === false, readonlyCall, userCode, fieldStore, summary.objectsDisjoint, hoistStorage, disjointArrays, n => valTypeOf(n) === VAL.NUMBER) : 0
+    ? hoistLoopFields(body, cacheName, fieldRead, n => summary.mayBeNullishExpr(n) === false, readonlyCall, userCode, fieldStore, summary.objectsDisjoint, hoistStorage, disjointArrays, n => valTypeOf(n) === VAL.NUMBER,
+      n => summary.shapesOfExpr(n[1])?.length === 1) : 0
   if ((loadsCached && (typedLoads || fieldRead)
       && cseLoads(body, loadStorage, cacheName, n => valTypeOf(n) === VAL.NUMBER, readonlyCall, userCode, fieldRead, fieldStore,
         disjointArrays, summary?.objectsDisjoint) > 0) || hoistedFields > 0)

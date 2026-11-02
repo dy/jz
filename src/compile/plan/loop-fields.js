@@ -89,6 +89,7 @@ import { invalidateBodies } from '../analyze.js'
 import { plainMember } from '../../member-uses.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { LOOP_OPS, collectBindings, nodeSize } from './common.js'
+import { fitting } from '../fp-registers.js'
 import { cloneWithSubst, smallConstForTripCount, containsNestedClosure, containsDeclOf } from '../../type.js'
 
 // (the bound of a plan copy, growth.js)
@@ -378,6 +379,7 @@ const planLoop = (loop, view, shared) => {
     if (others) { for (const el of group) elems.splice(elems.indexOf(el), 1); plain.delete(cell) }
   }
   if (!held.some(f => f.written) && !elems.some(e => e.written.size)) return null
+  fitRegisters(held, elems, accesses, receiverOf, view)
   // every receiver of the loop, present in the copy: nothing in it throws
   const bases = new Set(), chains = new Map()
   const chained = (r) => { chains.set(r.key, r); if (mayBeMissing(view.kindOfExpr(r.base))) bases.add(r.base) }
@@ -398,6 +400,25 @@ const planLoop = (loop, view, shared) => {
   }
   const distinct = [...plain.values()].filter(group => group.length > 1)
   return { held, elems, distinct, objects: [...distinctObjects.values()], bases: [...bases], chains: [...chains.values()], aliases, view }
+}
+
+/** Keep in `held` only the read-only Number fields the loop's registers have room for beside the
+ *  Numbers it carries in locals (the fields and elements it writes, the fields it tests for
+ *  presence), the most read first (compile/fp-registers.js); the others, each a slot of its
+ *  receiver's one layout, a load, are read where the loop reads them. */
+function fitRegisters(held, elems, accesses, receiverOf, view) {
+  const number = (f) => tagOf(core(view.kindOfExpr(['.', f.recv.expr ?? f.recv.key, f.p]) ?? 0)) === K.NUMBER
+  // (a field of the receiver's one layout is read with one load)
+  const loadAlone = (f) => (f.recv.expr ? view.shapesOfExpr(f.recv.expr) : view.shapesOfExpr(f.recv.key))?.length === 1
+  const carried = held.filter(f => (f.written || f.present) && number(f)).length + elems.reduce((s, e) => s + e.indices.length, 0)
+  const readOnly = held.filter(f => !f.written && !f.present && number(f) && loadAlone(f))
+  const reads = new Map()
+  for (const [n, isWrite] of accesses) {
+    const r = isWrite ? null : receiverOf(n[1])
+    if (r) reads.set(r.key + '|' + n[2], (reads.get(r.key + '|' + n[2]) ?? 0) + 1)
+  }
+  const kept = fitting(readOnly, carried, f => reads.get(f.recv.key + '|' + f.p) ?? 0)
+  for (let i = held.length - 1; i >= 0; i--) if (readOnly.includes(held[i]) && !kept.has(held[i])) held.splice(i, 1)
 }
 
 /** `loop` with each held field access naming its local, each chain its record's local, and each name it declares a name of its own. */

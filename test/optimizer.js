@@ -5195,6 +5195,54 @@ test('unrollTrips: which loops it writes out', () => {
   is(JSON.stringify(rot).split('"$k"').length - 1, 2 + 2 + 9 * 3, 'each copy keeps the step the test made')
 })
 
+// A Number a loop holds unchanged takes a register through the whole loop. Where the values it
+// carries and the ones a pass would hold for it outnumber the floating-point registers (V8: 15 on
+// x64), V8 spills what the loop carries, a store and a reload on its chain every iteration; the
+// coefficients of a cascade of eight sections (40, beside 16 carried values) are read where the
+// loop uses them instead, a load off every chain. Two sections (10 beside 4) still fit, held.
+test('fp-registers: a loop keeps the invariant reads its registers have no room for', () => {
+  const src = (stages) => `const design = (n) => { const sos = []; for (let i = 0; i < n; i++) sos.push({ b0: 0.1 + i * 0.001, b1: 0.2 - i * 0.0005, b2: 0.1, a1: -1.5 + i * 0.01, a2: 0.6 - i * 0.005 }); return sos }
+    const filter = (data, params) => {
+      const coefs = params.coefs, n = coefs.length
+      if (!params.state) { params.state = new Array(n); for (let i = 0; i < n; i++) params.state[i] = [0, 0] }
+      const state = params.state
+      for (let i = 0, l = data.length; i < l; i++) {
+        let x = data[i]
+        for (let j = 0; j < n; j++) { const c = coefs[j], s = state[j]; const y = c.b0 * x + s[0]; s[0] = c.b1 * x - c.a1 * y + s[1]; s[1] = c.b2 * x - c.a2 * y; x = y }
+        data[i] = x
+      }
+      return data
+    }
+    export let f = (len) => {
+      const data = new Float64Array(len)
+      for (let i = 0; i < len; i++) data[i] = ((i * 37) % 101) / 101 - 0.5
+      const params = { coefs: design(${stages}) }
+      filter(data, params)
+      filter(data, params)
+      let h = 0
+      for (let i = 0; i < len; i++) h = h * 0.5 + data[i]
+      return h
+    }`
+  // the loads of the innermost loop whose one store is the filtered sample (the copy that holds
+  // the state; the loop as written beside it stores the state too)
+  const hot = (wat) => {
+    let most = -1
+    walk(parseWat(wat), n => {
+      if (n[0] !== 'loop' || JSON.stringify(n.slice(2)).includes('"loop"')) return
+      const j = JSON.stringify(n), loads = (j.match(/"f64\.load"/g) ?? []).length
+      if ((j.match(/"f64\.store"/g) ?? []).length === 1) most = Math.max(most, loads)
+    })
+    return most
+  }
+  for (const stages of [8, 2]) {
+    const host = oracle(src(stages)).f
+    for (const optimize of ['speed', 2]) { const f = run(src(stages), { optimize }).f; for (const n of [0, 1, 7, 300]) is(f(n), host(n), `${stages} sections O${optimize} n=${n}`) }
+  }
+  if (onKernel()) return
+  ok(hot(compile(src(8), { wat: true, optimize: 'speed' })) >= 41, 'eight sections: the loop reads its 40 coefficients and its sample')
+  ok(hot(compile(src(2), { wat: true, optimize: 'speed' })) <= 1, 'two sections: the coefficients are held, the loop reads its sample alone')
+})
+
 // x64 V8 lowers a byte or halfword mask to a zero extension; over `x ^ y` it extends a register
 // into itself on every path, over `x` alone (still live after) it is a renamed move. The speed tier
 // masks the operand that sets bits past the mask; no path grows, the instruction count holds.

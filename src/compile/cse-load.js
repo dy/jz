@@ -49,6 +49,7 @@ import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_
 import { unitIncVar } from './loop-model.js'
 import { counterInit, intExprRange } from '../static.js'
 import { typedCtorView } from '../typed-provenance.js'
+import { fitting } from './fp-registers.js'
 
 /** Receiver storage families; typed receivers use their constructor name,
  *  or TYPED_ANY for a typed array of a constructor not known. */
@@ -480,6 +481,24 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
   return eliminated
 }
 
+/** How many Numbers of the function `loop` names, declared outside it: the values it holds
+ *  through itself, carried or only read. */
+const numbersThrough = (loop, isNumeric) => {
+  const inner = new Set(), named = new Set()
+  const walk = (n) => {
+    if (isName(n)) { named.add(n); return }
+    if (!isArr(n) || n[0] == null || n[0] === 'str' || n[0] === '=>') return
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) { const d = n[i]; if (isName(d)) inner.add(d); else if (isArr(d) && isName(d[1])) inner.add(d[1]) }
+    if ((n[0] === '.' || n[0] === '?.') && isName(n[2])) { walk(n[1]); return }
+    if (n[0] === ':') { walk(n[2]); return }
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(loop)
+  let count = 0
+  for (const name of named) if (!inner.has(name) && isNumeric(name)) count++
+  return count
+}
+
 /**
  * A field or an element a loop reads and nothing in it can write is read
  * once, before it.
@@ -519,9 +538,12 @@ export function cseLoads(body, storageOf, freshName, isNumeric, isReadonlyCall =
  * @param fieldOf, isReadonlyCall, runsUserCode, mayStoreField, objectsDisjoint — as for `cseLoads`
  * @param present     (name) => boolean: the binding never holds null or undefined
  * @param storageOf, disjointArrays, isNumeric — as for `cseLoads`; without `storageOf` no element moves
+ * @param loadAlone   (read) => boolean: the field read is one load (a slot of the receiver's one
+ *                    layout); such a Number moves only while the loop's registers hold it
+ *                    (compile/fp-registers.js), the rest stay where the loop reads them
  * @returns number of reads hoisted
  */
-export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCall = null, runsUserCode = null, mayStoreField = null, objectsDisjoint = null, storageOf = null, disjointArrays = null, isNumeric = null) {
+export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCall = null, runsUserCode = null, mayStoreField = null, objectsDisjoint = null, storageOf = null, disjointArrays = null, isNumeric = null, loadAlone = null) {
   if (!isArr(body) || !fieldOf && !storageOf) return 0
   const loops = []   // [statement list, loop], outer loops before the loops they hold
   walkAst(body, { enter: n => {
@@ -530,6 +552,7 @@ export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCal
   } })
   const F = storageOf ? indexFacts(body) : null
   const leaves = storageOf ? storeLeaves(storageOf, disjointArrays, F) : null
+  const pinned = new Set()   // reads a loop keeps where they are, for want of registers
   let hoisted = 0
   for (let k = loops.length - 1; k >= 0; k--) {
     const [seq, loop] = loops[k]
@@ -578,6 +601,7 @@ export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCal
         for (let i = 2; i < n.length; i++) scan(n[i], n, i)
         return
       }
+      if (pinned.has(n)) return
       if (fieldOf && op === '.' && isName(n[1]) && isName(n[2]) && !((parent[0] === '()' || parent[0] === '?.()') && pi === 1) && fieldOf(n)) {
         const key = `${n[1]}.${n[2]}`
         const occ = reads.get(key) ?? []
@@ -601,15 +625,31 @@ export function hoistLoopFields(body, freshName, fieldOf, present, isReadonlyCal
     // the binding a name of the loop copies, where the loop writes it nowhere else
     const source = (name) => { while (copies.has(name) && !assigned.has(name)) name = copies.get(name); return name }
     const decls = []
+    const fields = []
     for (const [key, occ] of reads) {
       const dot = key.indexOf('.'), recv = key.slice(0, dot), field = key.slice(dot + 1)
       if (written.has(recv) || !present(recv)) continue
       if (stores.some(([r, f]) => (f == null || f === field) && !objectsDisjoint?.(recv, r))) continue
-      const read = ['.', recv, field], temp = freshName(read)
-      decls.push(['const', ['=', temp, read]])
-      // (a name of the loop the read initialized copies the temp: `const e = m.elements`)
-      for (const o of occ) { o.parent[o.idx] = temp; if (o.parent[0] === '=' && o.idx === 2 && isName(o.parent[1])) copies.set(o.parent[1], temp) }
-      hoisted += occ.length
+      const read = ['.', recv, field]
+      const number = !!isNumeric?.(read)
+      fields.push({ occ, number, load: number && !!loadAlone?.(read), hoist: () => {
+        const temp = freshName(read)
+        decls.push(['const', ['=', temp, read]])
+        // (a name of the loop the read initialized copies the temp: `const e = m.elements`)
+        for (const o of occ) { o.parent[o.idx] = temp; if (o.parent[0] === '=' && o.idx === 2 && isName(o.parent[1])) copies.set(o.parent[1], temp) }
+        hoisted += occ.length
+      } })
+    }
+    // A Number held for the loop takes a register through it, beside the function's own Numbers
+    // the loop names (compile/fp-registers.js). A field read that is one load moves while the
+    // registers hold it, the most read first; the rest stay where the loop reads them, and stay
+    // there for the loops around it too. A read that is more than a load (another layout's
+    // dispatch, an element's test of its cell) moves whatever the registers hold.
+    const live = (isNumeric ? numbersThrough(loop, isNumeric) : 0) + fields.filter(c => c.number && !c.load).length
+    const kept = fitting(fields.filter(c => c.load), live, c => c.occ.length)
+    for (const c of fields) {
+      if (c.load && !kept.has(c)) for (const o of c.occ) pinned.add(o.parent[o.idx])
+      else c.hoist()
     }
     for (const e of elems.values()) {
       const recv = source(e.recv)
