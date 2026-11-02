@@ -137,7 +137,12 @@ What a program holds, at `optimize: 'speed'`:
 | any program under `memory: { maximum }` | within the cap while the live data leaves an eighth of it and 64 MB free |
 
 A real-time callback follows the first row: allocate buffers once at module
-level, write into them, return numbers or views of them. `optimize: {
+level, write into them, return numbers or views of them. A plain JS typed
+array passed to an export is copied in, and its numeric writes back out, on
+every call. For a kernel called repeatedly, allocate its buffer in the
+module's memory once (`const buf = memory.Float32Array(n)`) and pass that
+handle: nothing is copied, and `memory.read(buf)` is a view of the same bytes
+to fill and read (take it again after the memory grows). `optimize: {
 compact: false }` turns compaction off, as `optimize: 'size'` does
 (`{ level: 'size', compact: true }` keeps it); imported or shared memory never
 compacts. `memory.used` reads what the module keeps.
@@ -429,8 +434,8 @@ optimized (`--no-liftoff`), one runner timed it at 996 µs against JSC's 1866 µ
 
 Nothing ships that the program does not reach: a heap-free numeric module has
 no memory, allocator or startup, and an empty program is an empty module.
-Size-optimized JZ stays within 5% of AssemblyScript's geomean while keeping
-JavaScript's bounds checks.
+Size-optimized JZ is about a fifth smaller than AssemblyScript (geomean 0.79×
+over the 51 cases both compile) while keeping JavaScript's bounds checks.
 
 </details>
 
