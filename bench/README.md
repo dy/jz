@@ -11,6 +11,7 @@ bench/<case>/<case>.go      optional Go baseline
 bench/<case>/<case>.zig     optional Zig baseline
 bench/<case>/<case>.as.ts   optional AssemblyScript baseline
 bench/<case>/<case>.tov     optional Tov baseline
+bench/<case>/<case>.goose   optional Goose baseline
 bench/<case>/<case>.npy.py  optional NumPy baseline
 bench/<case>/<case>.wat     optional hand-written WAT baseline
 ```
@@ -478,6 +479,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
 | `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run on `moonrun` (MoonBit's V8 wasm runner, which supplies the monotonic clock) — a wasm-first-language rival, when `moon`/`moonrun` are installed |
 | `tov` | [Tov](https://github.com/richiemcilroy/Tov): a TypeScript-shaped language compiled through C to a native binary. `tov build <case>.tov -o <bin>` at its default (`-O3`, checked integer overflow), when a matching `.tov` port exists. A ported language like `rust` or `as`, not a JS host: it rejects the unchanged corpus (untyped parameters, no typed arrays, no `Math.imul`). Set `TOV_BIN` to override. |
+| `goose` | [Goose](https://github.com/aardappel/goose), Wouter van Oortmerssen's memory-safe systems language with no heap, compiled to one C file and built natively. `goose build <case>.goose -o <bin>` at its release defaults (`-O2` inlining; the emitted C compiled at `-O2` by the first C compiler it finds, which the run records), when a matching `.goose` port exists. A ported language like `tov` or `rust`. Set `GOOSE_BIN` to override. |
 
 Install Tov with `curl -fsSL https://tov.sh/install.sh | sh` (needs Rust and a C
 compiler). It builds from a git checkout at `~/.tov/src` (`TOV_DIR`), whose
@@ -486,6 +488,39 @@ while the compiler changes daily. Ports share `_lib/bench.tov`. Tov traps on int
 overflow, so JS's 32-bit arithmetic (FNV mix, XorShift32, `Math.imul`) runs on
 u32 values in 64-bit `int`, masked. Tov has no f64 bit cast, so the f64 checksum
 reads each low word by exact power-of-two scaling.
+
+Install Goose from its [v2026.3 release](https://github.com/aardappel/goose/releases/tag/v2026.3)
+(CI checks the Linux archive's SHA-256) and put `goose` on PATH or set
+`GOOSE_BIN`; `goose build` needs a C compiler. `goose version` names only its
+runtime's hash, so the run records the release tag from the directory the
+archive unpacks to and the C compiler `goose toolchain` reports: `goose
+v2026.3, runtime 4d3da949e563, C compiler clang 21.0.0` on an Apple M4 Max. The
+harness keeps Goose's intermediates in the bench build directory (`GOOSE_HOME`)
+and adds no flags. Goose's emitted C turns floating-point contraction off
+itself (`#pragma clang fp contract(off)` and the GCC equivalent), so its float
+cases give the strict checksums, with no FMA variants.
+
+The 30 ports share `_lib/bench.goose` and were written for this benchmark from
+each case's JavaScript and its C and Rust ports: the same algorithm, input
+generation, iteration counts and checksum, in the layouts Goose code reaches
+for. Buffers are grow-only arrays (`T[>..]`), lookup tables and small matrices
+fixed arrays (`u32[256]`, `f64[16]`), records inline structs; `shapes` stores
+its record stream as a variable-mode enum (each record the size of its own
+variant) and measures it through case functions, `wordcount` counts in the
+standard library's `dictionary` keyed by views of inline `u8[..8]` words, and
+`strbuild` formats each row as a fresh `str(…)`. Like the Rust ports they add
+no bounds-check hints (no `assert` of lengths, no `checkfree`): the compiler
+removes what it proves. They cover every family with cases that have C and Rust
+ports: float (mandelbrot, mat4, matmul, nbody, fft, spmv), integer (bitwise,
+crc32, sieve, nqueens, radixsort, sort, hash, vm, dict, levenshtein), image
+(blur, conv2d, qoi), audio (bytebeat, biquad, wav), text and codecs (base64,
+tokenizer, lz, strbuild, wordcount) and records (aos, immutable, shapes).
+`dispatch` has no port: its kernel calls through a table of first-class
+functions, and Goose has no function values at run time, only an enum's tag to
+dispatch on. Goose is a native contender like scriptc and Perry: it enters no
+claim, and the chart leaves it out as it leaves out the other native ports
+(native Rust, Zig and Go, and Tov), while the bench page shows it per case and
+in the corpus.
 
 Install the pinned Perry compiler with `npm install -g @perryts/perry@0.5.1520`,
 then run `node bench/bench.mjs --targets=perry`. CI uses the same package.
