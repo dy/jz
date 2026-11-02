@@ -2482,12 +2482,27 @@ emitter never flagged and a body the census never walked lower it as the
 frame is entered (compile/index.js checks each). The protocol is paid by a
 frame with a reason of its own and by every exported frame, the one a host
 calls block after block; an inner frame only a kernel's rare path flags keeps
-its heap until the frame around it returns. The flag has two readers: a
-frame link rewrote to restore by it, and the host, for an export whose calls
-it releases (`jz:release`). Lowerings no reader can reach are dropped, with
+its heap until the frame around it returns. The flag has four readers: a
+frame link rewrote to restore by it, the host, for an export whose calls it
+releases (`jz:release`), a loop's release of its iterations (emit/
+control-flow.js iterationRelease) and a phase checkpoint (`__park_safe`).
+Lowerings no reader can reach are dropped, with
 what their checks kept unless a pass before link made later code read it (a
 receiver read twice is read once into the site's local); a module with no
-reader carries no flag.
+reader carries no flag. A lowering matters only to a reader it runs inside
+of: a reader clears the flag, or saves and clears it, as its window opens
+and reads it as the window closes (a frame's window its call, a release's
+an iteration, a checkpoint's its phase), so every lowering it reads ran in
+code its function calls, directly, through the table or through a closure:
+code the reader reaches. A reader around another reads what the inner one
+read as well, since the inner one leaves the lower of the flag and the one
+it saved, and it reaches whatever the inner one reaches. A frame or a loop
+with no protocol of its own saves and clears nothing: its lowerings go to
+the flag as it stands, which the readers around it read, and from them it
+stays reached. So taking a reader away (a frame's rewind or a loop's release
+dropped) is sound by itself, since it only gives back less, and the
+lowerings that reader alone reached go with it: no reader left could read
+them.
 
 A frame that ran an escape keeps what the escape reaches, not all it
 allocated (`arenaReach`, module/core/reach.js; off at the size tier, where a
@@ -2647,6 +2662,27 @@ escape log names addresses the move changed and is emptied; a phase's
 compaction (`__gc_phase`) then sets it full, so the frames around the phase
 keep all rather than read an empty log as nothing escaped and release what
 the move kept.
+
+The census reads the source, and what a loop's body is emitted to may
+allocate less than the source says: a record literal the emitter writes into
+the cells its element had (emit-assign.js tryStructInlineReplaceStore), a
+builtin whose path the emitter chose builds nothing. Once every function is
+emitted, before the runtime is pulled (optimize/quiet-loops.js), each loop
+the census gave a compaction or a release is asked again: one whose body as
+emitted cannot move the heap's top on a path that stays in the loop keeps
+neither. What may move it: a write of `$__heap`, a call of the allocator or
+of a function that may (a fixpoint over the program's functions as emitted
+and the runtime's templates as written), an indirect call, an import's (the
+host may allocate in the module's memory as it hands a value back). A call
+that never returns (a throw helper, or one `unreachable` follows) counts only
+where a handler in the body could resume the loop. Dropping either is sound
+whatever the loop does, since both only give memory back; the release goes
+whole or not at all (each of its statements is tagged with it as it is
+emitted: one missing, or a read of its locals outside them, keeps it). A
+module none of whose loops compacts lays out no stub log. The
+immutable-update kernel (bench/immutable) paid 15% of its instructions for
+the two tests and for the forward hop the compaction's forward kept in its
+loop (optimize/forward-hops.js).
 
 A suspended frame's local names memory below the floor (allocated before
 the call), which never moves, and reaches memory above it only through a
@@ -3165,6 +3201,7 @@ src/
                 plan/object-reads.js: a key a loop reads of an object the function made and only reads, read once where the object is made
                 plan/site-receivers.js: a store's receiver the frame census cannot read again (`map.get(k).push(v)`, `(seen ??= new Set()).add(k)`), read once into a local before the statement, so the escape flag lowers to its address instead of zero
   optimize/     WAT-array passes + vectorize.js + loop-rewind.js (per-iteration heap restore, after the vectorizer);
+                quiet-loops.js (as the runtime is pulled: a loop that allocates nothing as emitted loses the compaction and the release the census gave it);
                 forward-hops.js (after the loop compaction, before watr: a receiver a loop never rebinds asks whether its block moved once before the loop and again after each of the runtime's cold calls that may move a block, a push's growth among them, not at every read; a block moves only inside a call, and a loop that calls other code keeps its hops);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);

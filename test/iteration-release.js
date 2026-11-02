@@ -9,7 +9,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { instantiate } from '../index.js'
-import { levels } from './_matrix.js'
+import { levels, onKernel } from './_matrix.js'
 import { oracle, run, jz, compile } from './util.js'
 import parseWat from 'watr/parse'
 
@@ -266,4 +266,54 @@ test('iteration release: a release after a compaction of the loop\'s own starts 
       is(jz(src, { optimize: { level: 'speed', ...(compactSlack ? { compactSlack } : {}) } }).exports.f(n, a, b), oracle(src).f(n, a, b),
         `slack ${compactSlack ?? 'default'}: f(${n}, ${a}, ${b})`)
   ok(releases(src) > 0, 'the loop releases its iterations')
+})
+
+// The immutable-update idiom: each step replaces every record with a literal
+// the emitter writes into the cells its element had (emit-assign.js
+// tryStructInlineReplaceStore). The census, reading the source, counts the
+// literal an allocation that escapes into the array; as emitted the loop
+// allocates nothing (optimize/quiet-loops.js).
+const IMMUTABLE = `const N = 256
+  const init = () => { const ps = []; let s = 0x1234abcd | 0
+    for (let i = 0; i < N; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+      const vx = ((s >>> 4) & 15) - 8, vy = ((s >>> 8) & 15) - 8
+      ps.push({ x: (s >>> 12) & 1023, y: (s >>> 20) & 1023, vx: (vx === 0 ? 1 : vx) | 0, vy: (vy === 0 ? 1 : vy) | 0 }) }
+    return ps }
+  const step = (ps) => { let h = 0x811c9dc5 | 0
+    for (let it = 0; it < 16; it++) { let sum = it | 0
+      for (let i = 0; i < N; i++) {
+        const p = ps[i]
+        const nx = (p.x + p.vx) | 0, ny = (p.y + p.vy) | 0
+        const hitX = nx < 0 || nx > 1023, hitY = ny < 0 || ny > 1023
+        const x = hitX ? p.x : nx, y = hitY ? p.y : ny
+        const vx = hitX ? -p.vx | 0 : p.vx, vy = hitY ? -p.vy | 0 : p.vy
+        ps[i] = { x: x, y: y, vx: vx, vy: vy }
+        sum = (sum + x + Math.imul(y, 31)) | 0 }
+      h = Math.imul(h ^ sum, 16777619) }
+    return h >>> 0 }
+  export let f = () => step(init())`
+// a forward hop: `(if (result i32) (i32.eq (i32.load A) (i32.const -1)) …)`
+const isHop = n => n[0] === 'if' && Array.isArray(n[2]) && n[2][0] === 'i32.eq' && Array.isArray(n[2][1]) && n[2][1][0] === 'i32.load' &&
+  Array.isArray(n[2][2]) && n[2][2][0] === 'i32.const' && Number(n[2][2][1]) === -1
+const find = (n, pred, out = []) => { if (Array.isArray(n)) { if (pred(n)) out.push(n); for (let i = 1; i < n.length; i++) find(n[i], pred, out) } return out }
+
+test('iteration release: a loop that allocates nothing as emitted carries no compaction and no release', () => {
+  is(run(IMMUTABLE, { optimize: 'speed' }).f(), oracle(IMMUTABLE).f(), 'f() as the host answers')
+  if (onKernel()) return  // the kernel leg's WAT differs; the in-process leg owns the shape
+  // before watr, which inlines the step into the export; the step and what the speed tier split off it
+  const text = compile(IMMUTABLE, { optimize: { level: 'speed', watr: false }, wat: true })
+  const steps = parseWat(text).filter(n => Array.isArray(n) && n[0] === 'func' && /^\$step(\$|$)/.test(n[1]))
+  const body = JSON.stringify(steps)
+  ok(steps.length > 0 && !/"call","\$__alloc/.test(body), 'the step allocates nothing as emitted')
+  ok(!/"call","\$__(gc_begin|iter_release|iter_take)"|"\$__ibase"|"\$__gc_epoch"/.test(body), 'its loops test neither the compaction\'s threshold nor the release\'s')
+  // and the receiver's forward hop leaves them (optimize/forward-hops.js): a compaction's forward rebound it
+  const loops = find(steps, n => n[0] === 'loop' && find(n.slice(1), m => m[0] === 'loop').length === 0)
+  ok(loops.length > 0, 'the step keeps its loops')
+  for (const l of loops) is(find(l, isHop).length, 0, `no hop inside ${l[1]}`)
+  // a call keeps nothing: the memory twenty calls leave is what one leaves
+  const { exports, memory } = jz(IMMUTABLE, { optimize: 'speed' })
+  exports.f()
+  const used = memory.used
+  for (let k = 0; k < 20; k++) exports.f()
+  is(memory.used, used, 'twenty calls keep what one does')
 })

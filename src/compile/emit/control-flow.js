@@ -633,16 +633,19 @@ const iterationRelease = (take) => {
   inc(take ? '__iter_take' : '__iter_release')
   if (take) inc('__iter_leave')
   const mark = tempI32('irm'), was = tempI32('irb'), epoch = tempI32('ire'), held = take ? tempI32('ies') : null
+  // the release each of its statements is tagged with: its locals, and how many it tagged
+  const rel = { locals: [mark, was, epoch, held].filter(n => n !== null).map(n => `$${n}`), count: 0 }
+  ;(ctx.func.releases ??= new Map()).set(was, rel)
   const top = () => ctx.memory.shared ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]] : ['global.get', '$__heap']
   const raise = () => ['if', ['i32.gt_u', ['local.get', `$${mark}`], ['global.get', '$__ibase']], ['then', ['global.set', '$__ibase', ['local.get', `$${mark}`]]]]
   return {
     pre: [['local.set', `$${mark}`, top()], ['local.set', `$${was}`, ['global.get', '$__ibase']], raise(),
       ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']],
-      ...(take ? [['local.set', `$${held}`, ['global.get', '$__esc_held']], ['global.set', '$__esc_held', ['i32.const', -1]]] : [])].map(releasing),
+      ...(take ? [['local.set', `$${held}`, ['global.get', '$__esc_held']], ['global.set', '$__esc_held', ['i32.const', -1]]] : [])].map(n => releasing(n, rel)),
     top: releasing(['if', ['i32.gt_u', ['i32.sub', top(), ['local.get', `$${mark}`]], ['i32.const', RELEASE_BYTES]],
       ['then', ['if', ['i32.ne', ['local.get', `$${epoch}`], ['global.get', '$__gc_epoch']],
         ['then', ['local.set', `$${epoch}`, ['global.get', '$__gc_epoch']], ['local.set', `$${mark}`, top()], raise()],
-        ['else', ['local.set', `$${mark}`, ['call', take ? '$__iter_take' : '$__iter_release', ['local.get', `$${mark}`]]]]]]]),
+        ['else', ['local.set', `$${mark}`, ['call', take ? '$__iter_take' : '$__iter_release', ['local.get', `$${mark}`]]]]]]], rel),
     post: logFloor(was, held),
     cleanup: ['#logFloor', was, held],
   }
@@ -650,10 +653,13 @@ const iterationRelease = (take) => {
 /** The loop's end, or a return or a branch out of it: the log's floor put back,
  *  and where the loop takes the flag over, the lowest it took (iterationRelease). */
 const logFloor = (was, held) => releasing(held == null ? ['global.set', '$__ibase', ['local.get', `$${was}`]]
-  : ['block', ['global.set', '$__ibase', ['local.get', `$${was}`]], ['call', '$__iter_leave', ['local.get', `$${held}`]]])
-/** A statement of the release protocol: a program that allocates nothing has
- *  no heap to release, and the stdlib's pull takes them out (wat/assemble/stdlib-pull.js). */
-export const releasing = (n) => (n.iterRelease = true, n)
+  : ['block', ['global.set', '$__ibase', ['local.get', `$${was}`]], ['call', '$__iter_leave', ['local.get', `$${held}`]]], ctx.func.releases?.get(was))
+/** A statement of the release protocol, tagged with the release it belongs to:
+ *  a loop that allocates nothing as emitted has nothing to release, and loses
+ *  every one of them (optimize/quiet-loops.js); a program that allocates
+ *  nothing has no heap to release, and the stdlib's pull takes them out
+ *  (wat/assemble/stdlib-pull.js). */
+export const releasing = (n, rel) => { if (rel) rel.count++; n.iterRelease = rel ?? true; return n }
 
 export const controlFlowOps = {
   // === Control flow ===

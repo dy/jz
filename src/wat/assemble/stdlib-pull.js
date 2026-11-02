@@ -21,6 +21,7 @@ import { DYN_CACHE_EMPTY } from '../../../layout.js'
 import { installHelperCounters, instrumentHelperCounter } from '../../helper-counters.js'
 import { ROOT_LOG_BYTES } from '../../../module/core/reach.js'
 import { compactOn, gcTableBytes, declarePin, declareSites, stubLogBytes } from '../../../module/core/compact.js'
+import { quietLoops } from '../../optimize/quiet-loops.js'
 
 // Each helper is parsed once into its owned, mutable IR. Late SIMD helpers
 // are parsed only when absent from the assembled module. Generated templates
@@ -201,6 +202,9 @@ export function pullStdlib(sec) {
   // the actual call sites in the emitted funcs + __start (+ elem table) and close
   // transitively over the stdlib call graph. An eagerly-included helper that nothing
   // calls never enters this set — so allocator, memory, and exports reflect real use.
+  // First, a loop that allocates nothing as emitted loses the compaction and the
+  // release the census gave it (optimize/quiet-loops.js), and with them what they call.
+  quietLoops(sec)
   let reachable = reachableStdlib(sec)
   const realize = (n) => { const v = ctx.core.stdlib[n]; try { return typeof v === 'function' ? v() : v } catch { return '' } }
 

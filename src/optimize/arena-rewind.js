@@ -48,11 +48,21 @@
  * of its own (`conditional`: a census site, or a flag lowered in censused
  * code it reaches) and by every exported frame, the one a host calls block
  * after block; an inner frame only a runtime kernel's rare path flags keeps
- * its heap until the frame around it returns. The flag has two readers: a
- * frame rewritten here to restore by it, and the host, for a function whose
- * calls it releases (`exportInner`). Its writes in functions no reader
- * reaches are dropped, and with them, where the module has no reader, the
- * flag itself.
+ * its heap until the frame around it returns. The flag has four readers: a
+ * frame rewritten here to restore by it, the host, for a function whose
+ * calls it releases (`exportInner`), a loop's release of its iterations and a
+ * phase checkpoint (`reader`). Its writes in functions no reader reaches are
+ * dropped, and with them, where the module has no reader, the flag itself.
+ * A lowering matters only to a reader it runs inside of: a reader clears the
+ * flag (saving it) as its window opens and reads it as the window closes, so
+ * what it reads ran in code its function reaches by calls, the table or a
+ * closure. A reader around another reads the inner one's lowerings too (the
+ * inner leaves the lower of the flag and the one it saved) and reaches all
+ * the inner one does. A frame or a loop without a protocol saves and clears
+ * nothing, its lowerings going to the flag as the readers around it read it.
+ * So a reader taken away (a rewind this pass declines, a release
+ * optimize/quiet-loops.js drops) only gives back less, and the lowerings it
+ * alone reached go with it: no reader left could read them.
  *
  * The rewrite saves the heap pointer into a local at entry and, at every
  * `return` and at the fall-through, moves the result into a local, restores
