@@ -361,6 +361,8 @@ const graalJsBin = () => {
 // Safari's engine: the standalone `jsc` shell (same JavaScriptCore as WebKit/Safari).
 // Installed via `jsvu --engines=javascriptcore` (→ ~/.jsvu/bin/jsc); set JSC_BIN to override.
 const jscBin = () => JSC_BIN || firstAvailable(['jsc', join(process.env.HOME || '', '.jsvu/bin/jsc')])
+// jsvu's build number of the JavaScriptCore it installed (the jsc shell prints none).
+const jsvuBuild = engine => { try { return JSON.parse(readFileSync(join(homedir(), '.jsvu', 'status.json'), 'utf8'))[engine] ?? null } catch { return null } }
 const build = (...p) => join(BUILD, ...p)
 const caseBuild = c => build(c.id)
 
@@ -1375,10 +1377,19 @@ let ALLOW_UNANCHORED = false
 // could lead. A case with no stored evidence measures every selected lane.
 // Default 2: the two nearest rivals per class. --targets narrows further.
 let CONTENDERS = 0
+// --paired-targets=a,b,…: under --paired, pair only these lanes, in this order (the
+// first is the ratio base, so name jz first); every other selected lane runs once,
+// in the same case on the same machine. The release protocol pairs the claim lanes
+// and times the rest once (bench/shards.mjs).
+let PAIRED_TARGETS = null
+// --list: print the selected cases in corpus order and exit (bench/shards.mjs plans from it).
+let LIST = false
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('--targets=')) selectedTargets = arg.slice(10).split(',').filter(Boolean)
   else if (arg === '--paired') PAIRED = 4
   else if (arg.startsWith('--paired=')) PAIRED = Math.max(2, +arg.slice(9) || 4)
+  else if (arg.startsWith('--paired-targets=')) PAIRED_TARGETS = arg.slice(17).split(',').filter(Boolean)
+  else if (arg === '--list') LIST = true
   else if (arg.startsWith('--cases=')) selectedCases = arg.slice(8).split(',').filter(Boolean)
   else if (arg.startsWith('--workloads=')) selectedCases = arg.slice(12).split(',').filter(Boolean)
   else if (arg === '--json') JSON_PATH = join(BENCH_DIR, 'results.json')
@@ -1404,6 +1415,9 @@ if (process.exitCode) process.exit(process.exitCode)
 
 for (const id of selectedTargets) if (!targets[id]) { console.error(`unknown target: ${id}`); process.exit(2) }
 for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case: ${id}`); process.exit(2) }
+if (PAIRED_TARGETS && !PAIRED) { console.error('--paired-targets needs --paired'); process.exit(2) }
+for (const id of PAIRED_TARGETS ?? []) if (!selectedTargets.includes(id)) { console.error(`--paired-targets: ${id} is not a selected target`); process.exit(2) }
+if (LIST) { console.log(allCases.map(c => c.id).filter(id => selectedCases.includes(id)).join('\n')); process.exit(0) }
 
 // Stored evidence, loaded before any write:
 //   PREV   — the file already at JSON_PATH, if any. --merge's own scope: it
@@ -1508,6 +1522,10 @@ const sourceOracle = c => {
 
 for (const cid of selectedCases) {
   const c = caseById[cid]
+  // The case's wall time on this machine, builds included: bench/shards.mjs sizes
+  // shards from it.
+  const caseStart = performance.now()
+  const wallMs = () => Math.round(performance.now() - caseStart)
   console.log(`\n# ${c.name} (${c.id})`)
   // A failed measurement cannot erase its oracle or make a later result its own reference.
   const refCs = SOURCE_ORACLE.has(cid) ? sourceOracle(c)
@@ -1523,11 +1541,13 @@ for (const cid of selectedCases) {
   let pairedInfo = null   // per-pair {ratios, median} when --paired (persisted into cases[id].paired)
   const lanes = caseTargets(c)
   if (CONTENDERS) console.log(`[contenders] ${lanes.join(' ')}`)
-  if (PAIRED) {
+  const pairedLanes = !PAIRED ? [] : PAIRED_TARGETS ? PAIRED_TARGETS.filter(tid => lanes.includes(tid)) : lanes
+  const singleLanes = lanes.filter(tid => !pairedLanes.includes(tid))
+  if (pairedLanes.length) {
     // Order-aware paired rounds (see --paired above): reverse the target order
     // every round, verdict = median of per-round ratios vs the first target.
-    const avail = lanes.filter(tid => targets[tid].available(c))
-    for (const tid of lanes) if (!avail.includes(tid))
+    const avail = pairedLanes.filter(tid => targets[tid].available(c))
+    for (const tid of pairedLanes) if (!avail.includes(tid))
       console.log(`[skip] ${tid.padEnd(targetIdWidth)} ${targets[tid].name}`)
     const rounds = []   // Array<Map<tid, result>> — round-aligned so ratios pair same-round runs
     // WARM round (uncounted): builds every artifact (tryRun memoizes the prep)
@@ -1602,8 +1622,8 @@ for (const cid of selectedCases) {
       console.log(`[paired] ${base}/${tid} per-round ratios ${ratios.map(r => r.toFixed(3)).join(' ')} → median ${med.toFixed(3)}×`)
       ;(pairedInfo ??= {})[`${base}/${tid}`] = { ratios: ratios.map(r => +r.toFixed(4)), median: +med.toFixed(4) }
     }
-  } else
-  for (const tid of lanes) {
+  }
+  for (const tid of singleLanes) {
     const t = targets[tid]
     if (!t.available(c)) {
       console.log(`[skip] ${tid.padEnd(targetIdWidth)} ${t.name}`)
@@ -1624,6 +1644,7 @@ for (const cid of selectedCases) {
     if (JSON_PATH && failures.length) jsonOut.cases[c.id] = {
       name: c.name, ref: refCs,
       targets: Object.fromEntries(failures.map(f => [f.id, { status: 'fail', reason: f.reason }])),
+      wallMs: wallMs(),
     }
     continue
   }
@@ -1690,6 +1711,7 @@ for (const cid of selectedCases) {
       // --paired: order-symmetric per-round ratios + median (the release
       // verdict form — consumers gate on these, never cross-run absolutes).
       ...(pairedInfo && { paired: pairedInfo }),
+      wallMs: wallMs(),
     }
   }
 
@@ -1882,7 +1904,10 @@ if (JSON_PATH) {
       js2wasm: has(JS2WASM_BIN) && ver(JS2WASM_BIN),
       tslang: has(TSLANG_BIN) && (versionText(TSLANG_BIN).match(/tslang version[^\n]*/)?.[0] || ver(TSLANG_BIN)),
       perry: has(PERRY_BIN) && ver(PERRY_BIN),
+      // moonc names the compiler release; moon's own number is the build tool's.
+      moonbit: has('moonc') && spawnSync('moonc', ['-v'], { encoding: 'utf8' }).stdout?.trim(),
       tov: has(TOV_BIN) && tovIdentity(),
+      jsc: (() => { try { return whichPath(jscBin()).includes('/.jsvu/') && jsvuBuild('javascriptcore') } catch { return null } })(),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),
       clang: has('clang') && ver('clang'),
