@@ -32,8 +32,8 @@ export const MODES = {
   ci: { file: 'results-ci.json', targets: LANES, paired: 0, pairedTargets: [] },
   reference: { file: 'results.json', targets: LANES, paired: 6, pairedTargets: CLAIM_LANES },
 }
-/** Estimated measurement per shard: under half the 6-hour job limit, so a runner
- *  1.5× slower than the one the costs came from still finishes with an hour to spare. */
+/** Estimated measurement per shard: two hours against bench.yml's 340-minute job
+ *  timeout, so a runner 2.5× slower than the one the costs came from still finishes. */
 export const BUDGET_S = 7200
 
 /** Seconds per case: the dataset's wall time when a sharded run wrote it, else the seed,
