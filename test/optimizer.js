@@ -34,6 +34,7 @@ import { stripDeadCanons } from '../src/optimize/nan-canon.js'
 import { maskOperands } from '../src/optimize/mask-operands.js'
 import { searchLoops } from '../src/optimize/search-loops.js'
 import { pointerExits } from '../src/optimize/pointer-exits.js'
+import { jumpPointers } from '../src/optimize/jump-pointers.js'
 import { ringLaps } from '../src/optimize/ring-laps.js'
 import { earlyStores } from '../src/optimize/early-stores.js'
 import { leadChains } from '../src/optimize/lead-chains.js'
@@ -5181,6 +5182,96 @@ test('pointerExits: a loop keeping a counter only to stop stops by the pointer s
   is(ends({ level: 'speed', pointerExits: false }), 0, 'pointerExits: false keeps the counter')
 })
 
+test('jumpPointers: a loop variable that jumps carries the address of its record beside it', () => {
+  const g = (n) => ['local.get', n], k = (v) => ['i32.const', v], set = (x, v) => ['local.set', x, v]
+  // records of three words at $b: [op, step, target]; the index steps by one, by two, jumps to a target, or stops
+  const rec = (pc, s = 12) => ['i32.add', g('$b'), ['i32.mul', g(pc), k(s)]]
+  const next = (pc = '$pc', s = 12) => ['block', '$j', ['result', 'i32'],
+    ['if', ['i32.eqz', ['i32.and', g('$op'), k(3)]], ['then', ['br', '$j', g('$t')]]],
+    ['if', ['i32.eq', ['i32.and', g('$op'), k(3)], k(1)], ['then', ['br', '$j', ['i32.add', g(pc), k(2)]]]],
+    ['if', ['i32.eq', ['i32.and', g('$op'), k(3)], k(2)], ['then', ['br', '$j', ['i32.load', 'offset=4', rec(pc, s)]]]],
+    ['i32.add', g(pc), k(1)]]
+  const fn = ({ s = 12, write = (v) => set('$pc', v), head = true, extra = [] } = {}) => ['func', '$f', ['param', '$b', 'i32'], ['param', '$n', 'i32'], ['result', 'i32'],
+    ['local', '$pc', 'i32'], ['local', '$op', 'i32'], ['local', '$t', 'i32'], ['local', '$s', 'i32'], ['local', '$fuel', 'i32'],
+    set('$fuel', k(500)),
+    ['block', '$B',
+      ['loop', '$L',
+        ['br_if', '$B', ['i32.ge_s', g('$pc'), g('$n')]],
+        ['br_if', '$B', ['i32.eqz', ['local.tee', '$fuel', ['i32.sub', g('$fuel'), k(1)]]]],
+        ...(head ? [set('$op', ['i32.load', rec('$pc', s)]), set('$t', ['i32.load', 'offset=8', rec('$pc', s)])]
+          : [['if', g('$fuel'), ['then', set('$op', ['i32.load', rec('$pc', s)]), set('$t', ['i32.load', 'offset=8', rec('$pc', s)])]]]),
+        set('$s', ['i32.add', ['i32.mul', g('$s'), k(31)], ['i32.xor', g('$op'), g('$pc')]]),
+        ...extra,
+        write(next('$pc', s)),
+        ['br', '$L']]],
+    ['i32.add', g('$s'), g('$pc')]]
+  const one = (f) => jumpPointers(['module', f])[1]
+  const has = (n, pred) => Array.isArray(n) && (pred(n) || n.some(c => has(c, pred)))
+  const pointer = (f) => has(f, n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__jp'))
+  const after = one(fn())
+  ok(pointer(after), 'a pointer is declared')
+  ok(has(after, n => n[0] === 'i32.load' && n[1] === 'offset=8' && n[2][0] === 'local.get' && n[2][1].startsWith('$__jp')), 'the record is read through it')
+  ok(has(after, n => n[0] === 'local.set' && n[1].startsWith('$__jp') && n[2][0] === 'i32.add' && n[2][1][0] === 'local.get' && n[2][2][1] === 24), 'a step by two advances it two records')
+  const loopOf = (f) => f[f.length - 2][f[f.length - 2].length - 1]
+  is(loopOf(after).slice(4, 6), [set('$op', ['i32.load', g('$__jp0')]), set('$t', ['i32.load', 'offset=8', g('$__jp0')])], 'the head reads the record through the pointer')
+  const kept = (f, why) => is(one(f), JSON.parse(JSON.stringify(f)), why)
+  kept(fn({ s: 8 }), 'a stride an x64 index scales keeps its addresses')
+  kept(fn({ write: (v) => ['drop', ['local.tee', '$pc', v]] }), 'a write inside an expression keeps the loop')
+  kept(fn({ extra: [set('$pc', ['i32.add', g('$pc'), k(0)])] }), 'two writes a pass keep the loop')
+  kept(fn({ head: false }), 'an address formed only off the head keeps the loop')
+  const jumps = fn({ write: (v) => set('$pc', ['i32.load', 'offset=4', rec('$pc')]) })
+  kept(jumps, 'a variable that only jumps forms its address at each jump anyway')
+  kept(fn({ write: (v) => set('$pc', ['i32.add', g('$pc'), k(1)]) }), 'a variable that only steps is left to strength reduction')
+  const byDepth = fn({ extra: [['if', g('$op'), ['then', ['br', 2]]]] })
+  kept(byDepth, 'a branch by depth keeps the function')
+
+  // the rewritten loops run as the originals, over records holding targets in and out of range
+  const exec = (f, fill, n) => {
+    const m = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', ['memory', '$m', ['export', '"m"'], 1], [...f.slice(0, 2), ['export', '"f"'], ...f.slice(2)]])))
+    const mem = new Int32Array(m.exports.m.buffer)
+    for (let i = 0; i < 4096; i++) mem[i] = fill(i)
+    try { return m.exports.f(64, n) } catch (e) { return String(e) }
+  }
+  const fills = [(i) => Math.imul(i, 2654435761) >>> 29, (i) => (Math.imul(i, 40503) >>> 7) % 23 - 3, (i) => i % 5 === 2 ? -1 : i % 7, (i) => i % 3 === 2 ? 0x15555556 : i & 7]
+  for (const shape of [fn(), fn({ s: 20 }), fn({ s: -12 }), fn({ extra: [set('$s', ['i32.add', g('$s'), ['i32.load', 'offset=4', rec('$pc')]])] })]) {
+    const before = JSON.stringify(shape), after = one(JSON.parse(before))
+    ok(JSON.stringify(after) !== before, 'rewritten')
+    for (const fill of fills) for (const n of [0, 5, 16, 40]) is(exec(after, fill, n), exec(JSON.parse(before), fill, n), `same answer: ${fill} ${n}`)
+  }
+
+  // an interpreter of four-word instructions: it steps, skips one, jumps to a target it reads
+  const src = `const run = (code, reg, n) => {
+      let pc = 0, steps = 0
+      while (pc < n) {
+        const o = pc * 4
+        const op = code[o], d = code[o + 1]
+        steps++
+        if (op === 0) { reg[d] = code[o + 3]; pc = pc + 1 }
+        else if (op === 1) { reg[d] = (reg[d] + reg[code[o + 2]]) | 0; pc = pc + 1 }
+        else if (op === 2) { reg[d] = Math.imul(reg[d], code[o + 3]) ^ (reg[d] >>> 7); pc = pc + 1 }
+        else if (op === 3) { reg[d] = (reg[d] - 1) | 0; pc = pc + 1 }
+        else if (op === 4) { if (reg[d] !== 0) pc = code[o + 3]; else pc = pc + 1 }
+        else if (op === 5) { if ((reg[d] & 1) === 0) pc = pc + 2; else pc = pc + 1 }
+        else pc = n
+      }
+      return (reg[0] ^ reg[1] ^ reg[2] ^ steps) | 0
+    }
+    export let f = (k) => {
+      const prog = [0, 0, 0, 7, 0, 1, 0, 50, 0, 2, 0, 3, 2, 0, 0, 40503, 1, 2, 0, 0, 5, 2, 0, 0, 1, 0, 2, 0, 3, 1, 0, 0, 4, 1, 0, 3, 6, 0, 0, 0]
+      const code = new Int32Array(40), reg = new Int32Array(4)
+      for (let i = 0; i < 40; i++) code[i] = prog[i] | 0
+      code[7] = (k & 63) + 1
+      return run(code, reg, 10)
+    }`
+  const want = oracle(src)
+  for (const optimize of ['speed', { level: 'speed', jumpPointers: false }, 2, 0])
+    for (const x of [0, 1, 13, 62, 1000]) is(run(src, { optimize }).f(x), want.f(x), `${JSON.stringify(optimize)} ${x}`)
+  if (onKernel()) return
+  const pointers = (optimize) => count(parseWat(compile(src, { wat: true, optimize })), n => n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__jp'))
+  ok(pointers('speed') >= 1, `the interpreter reads its instructions through a pointer (${pointers('speed')})`)
+  is(pointers({ level: 'speed', jumpPointers: false }), 0, 'jumpPointers: false keeps the index')
+})
+
 test('ringLaps: a counted loop stepping a cursor around a ring runs a lap at a time', () => {
   const g = (n) => ['local.get', n], k = (v) => ['i32.const', v], set = (x, v) => ['local.set', x, v]
   // the remainder below the divisor, as emit/arithmetic.js belowDivisorRem writes it
@@ -6920,8 +7011,9 @@ export let main = () => {
   const execWat = wat.split('(func ').find(c => /^\$exec\b/.test(c)) || ''
   ok(execWat.length > 0, 'inspect the fetch worker before backend inlining')
   ok(!/\$[^ )]*tbg/.test(execWat), 'known length and pc hull retire the fetch guard entirely')
-  ok(/i32\.load offset=4 \(local\.get \$__ab\d+\)/.test(execWat) &&
-    /i32\.load offset=8 \(local\.get \$__ab\d+\)/.test(execWat),
+  // (the fetch group's base, or the pointer to the instruction the index carries beside it: optimize/jump-pointers.js)
+  ok(/i32\.load offset=4 \(local\.get \$__(ab|jp)\d+\)/.test(execWat) &&
+    /i32\.load offset=8 \(local\.get \$__(ab|jp)\d+\)/.test(execWat),
   'adjacent fetches share one raw base address')
   is(run(src, { optimize: 'speed' }).main(), 37, 'interpreter result exact')
   const tooShort = src.replace('new Int32Array(9)', 'new Int32Array(8)')

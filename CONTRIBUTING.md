@@ -40,6 +40,13 @@ constants, jz's `pointerExits` (src/optimize/pointer-exits.js, speed tier)
 stops the loop where the pointer reaches the end set before it, and the
 counter's step leaves the iteration; a trip count the constants do not decide
 keeps the counter, since the end could then wrap.
+A variable `lsr` leaves alone because it also jumps (an interpreter's
+instruction index stepping to the next instruction and jumping to a target it
+loads) gets a pointer of its own where it addresses records at a stride an x64
+index cannot scale by: jz's `jumpPointers` (src/optimize/jump-pointers.js,
+speed tier, after `pointerExits`) advances the pointer where the variable steps
+and forms the address again only where it jumps, on each path a write's value
+yields from; the variable keeps its tests.
 A counted loop that steps a cursor around a ring (`p = (p + 1) % m` as the
 emitter writes it under `p >= 0`, a remainder by a constant, a mask
 `(p + 1) & (2^j - 1)`) runs a lap at a time under `ringLaps`
@@ -3153,6 +3160,7 @@ src/
                 forward-hops.js (after the loop compaction, before watr: a receiver a loop never rebinds asks whether its block moved once before the loop and again after each of the runtime's cold calls that may move a block, a push's growth among them, not at every read; a block moves only inside a call, and a loop that calls other code keeps its hops);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
+                jump-pointers.js (after watr: a loop variable that steps and jumps carries the address of the record it indexes, advanced where it steps, formed again where it jumps);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);
                 select-arms.js (after watr: a choice whose two arms compute one tree is the tree over a select of the leaves they differ in, a rounding its sign decides read as the truncation, a dead tee as its value);
                 arena-rewind, sort-locals are tape passes run by link

@@ -29,6 +29,7 @@ import { selectArms } from './select-arms.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
 import { pointerExits } from './pointer-exits.js'
+import { jumpPointers } from './jump-pointers.js'
 import { ringLaps } from './ring-laps.js'
 import { leadChains } from './lead-chains.js'
 import { issueOrder } from './issue-order.js'
@@ -627,6 +628,8 @@ export function watrTail(module, cfg, {
   if (cfg.ringLaps === true) time('ringLaps', () => ringLaps(optimized))
   // (on the pointers watr's strength reduction left beside their counters)
   if (cfg.pointerExits === true) time('pointerExits', () => pointerExits(optimized))
+  // (on the variables that strength reduction leaves for their jumps: a pointer beside each)
+  if (cfg.jumpPointers === true) time('jumpPointers', () => jumpPointers(optimized))
   // (on the loop bodies the optimizer leaves: its own passes would merge the split values back)
   if (cfg.leadChains === true) time('leadChains', () => leadChains(optimized))
   // (after them: a run they leave as written, an integrator's stages, the order the core issues soonest)

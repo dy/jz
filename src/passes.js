@@ -179,6 +179,7 @@ export const TUNING_KEYS = [
   'loopNodes',                // and one of at most loopNodes, loop-free, joins the calls a loop makes (the same pass)
   'searchLoops',              // a loop whose body is a guarded loop scans for its guard in an innermost loop (optimize/search-loops.js, speed tier)
   'pointerExits',             // a loop keeping a counter only to stop stops by the pointer strength reduction steps beside it (optimize/pointer-exits.js, speed tier)
+  'jumpPointers',             // a loop variable that jumps carries the address of the record it indexes beside it (optimize/jump-pointers.js, speed tier)
   'ringLaps',                 // a counted loop stepping a cursor around a ring runs a lap at a time (optimize/ring-laps.js, speed tier)
   'earlyStores',              // a store ready before a long computation it does not read goes ahead of it (optimize/early-stores.js, speed tier)
   'leadChains',               // a loop body of arithmetic computes its chain a few links ahead of the work hanging off it (optimize/lead-chains.js, speed tier)
