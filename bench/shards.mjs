@@ -32,6 +32,11 @@ export const MODES = {
   ci: { file: 'results-ci.json', targets: LANES, paired: 0, pairedTargets: [] },
   reference: { file: 'results.json', targets: LANES, paired: 6, pairedTargets: CLAIM_LANES },
 }
+/** Cases measured on a runner of their own. The self-compile case builds the compiler
+ *  twice in an 8 GB heap and hands its 6.9 MB bundle to every compiler of JavaScript;
+ *  sharing a runner, a lost runner there took 15 other cases' evidence with it
+ *  (run 41508597936, shard 1). */
+export const ALONE = new Set(['jz'])
 /** Estimated measurement per shard: two hours against bench.yml's 340-minute job
  *  timeout, so a runner 2.5× slower than the one the costs came from still finishes. */
 export const BUDGET_S = 7200
@@ -46,12 +51,14 @@ export const caseCosts = (ids, dataset, seed = {}) => {
 }
 
 /** Longest-first packing into the fewest shards whose estimate fits `budget`; a case
- *  dearer than the budget alone gets a shard of its own. `ids` in corpus order; each
- *  shard lists its cases in that order. Deterministic for the same costs. */
-export const planShards = (ids, costs, budget = BUDGET_S) => {
-  if (!ids.length) return []
-  const total = ids.reduce((s, id) => s + costs[id], 0)
-  const byCost = ids.map((id, i) => [id, i]).sort((a, b) => costs[b[0]] - costs[a[0]] || a[1] - b[1])
+ *  dearer than the budget, or one of `alone`, gets a shard of its own. `ids` in corpus
+ *  order; each shard lists its cases in that order. Deterministic for the same costs. */
+export const planShards = (ids, costs, budget = BUDGET_S, alone = ALONE) => {
+  const order = new Map(ids.map((id, i) => [id, i]))
+  const packed = ids.filter(id => !alone.has(id))
+  const single = ids.filter(id => alone.has(id)).map(id => ({ ids: [id], seconds: costs[id] }))
+  const total = packed.reduce((s, id) => s + costs[id], 0)
+  const byCost = packed.map((id, i) => [id, i]).sort((a, b) => costs[b[0]] - costs[a[0]] || a[1] - b[1])
   for (let n = Math.max(1, Math.ceil(total / budget)); ; n++) {
     const bins = Array.from({ length: n }, () => ({ ids: [], seconds: 0 }))
     for (const [id] of byCost) {
@@ -59,9 +66,8 @@ export const planShards = (ids, costs, budget = BUDGET_S) => {
       bin.ids.push(id)
       bin.seconds += costs[id]
     }
-    if (n < ids.length && bins.some(b => b.seconds > budget && b.ids.length > 1)) continue
-    const order = new Map(ids.map((id, i) => [id, i]))
-    return bins.filter(b => b.ids.length)
+    if (n < packed.length && bins.some(b => b.seconds > budget && b.ids.length > 1)) continue
+    return [...bins, ...single].filter(b => b.ids.length)
       .map(b => ({ cases: b.ids.sort((x, y) => order.get(x) - order.get(y)), seconds: Math.round(b.seconds) }))
       .sort((a, b) => order.get(a.cases[0]) - order.get(b.cases[0]))
       .map((b, index) => ({ index, ...b }))
@@ -165,7 +171,7 @@ if (process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(f
     const seed = loadJson(join(BENCH_DIR, 'shard-costs.json'))?.[opt('mode')]
     const costs = caseCosts(ids, dataset, seed)
     const shards = planShards(ids, costs, +(opt('budget') ?? BUDGET_S))
-    for (const s of shards) console.error(`shard ${s.index}: ${s.cases.length} cases, ~${Math.round(s.seconds / 60)} min (${s.cases.join(' ')})`)
+    for (const s of shards) console.error(`shard ${s.index}: ${s.cases.length} case${s.cases.length === 1 ? '' : 's'}, ~${Math.round(s.seconds / 60)} min (${s.cases.join(' ')})`)
     console.log(JSON.stringify({
       targets: mode.targets.join(','), paired: mode.paired, pairedTargets: mode.pairedTargets.join(','),
       shards: shards.map(s => ({ kind: 'shard', index: s.index, cases: s.cases.join(','), minutes: Math.ceil(s.seconds / 60) })),

@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { BUDGET_S, caseCosts, CLAIM_LANES, LANES, MODES, mergeShards, planShards } from '../bench/shards.mjs'
+import { ALONE, BUDGET_S, caseCosts, CLAIM_LANES, LANES, MODES, mergeShards, planShards } from '../bench/shards.mjs'
 import { CLAIM_RIVALS, JIT_RIVALS } from '../bench/claims.mjs'
 import { SVG_TARGETS } from '../scripts/bench-svg.mjs'
 
@@ -47,6 +47,9 @@ test('shards: plan packs whole cases, dearest first, into the fewest shards unde
   const huge = planShards(['big', 'x', 'y'], { big: 500, x: 10, y: 10 }, 100)
   is(huge.find(s => s.cases.includes('big')).cases, ['big'], 'a case over the budget runs alone')
   is(planShards([], {}, 100), [], 'nothing to plan')
+  const isolated = planShards(['a', 'jz', 'b', 'c'], { a: 10, jz: 20, b: 10, c: 10 }, 100, new Set(['jz']))
+  is(isolated.map(s => s.cases), [['a', 'b', 'c'], ['jz']], 'a case of `alone` runs by itself, whatever room the others leave')
+  is(isolated.map(s => s.index), [0, 1])
   is(planShards(['a'], { a: 10 }).length, 1, `default budget ${BUDGET_S} s`)
 })
 
@@ -58,6 +61,7 @@ test('shards: the committed seed plans the whole corpus under budget in both mod
   for (const mode of Object.keys(MODES)) {
     const plan = planShards(ids, caseCosts(ids, null, seed[mode]))
     ok(plan.length > 1 && plan.length <= 20, `${mode}: ${plan.length} shards`)
+    for (const id of ALONE) is(plan.find(s => s.cases.includes(id))?.cases, [id], `${mode}: ${id} runs alone`)
     for (const s of plan) ok(s.seconds <= BUDGET_S || s.cases.length === 1, `${mode} shard ${s.index}: ${s.seconds} s`)
   }
 })
