@@ -93,6 +93,10 @@ const PERRY_BIN = process.env.PERRY_BIN || 'perry'
 // checkout at TOV_DIR (default ~/.tov/src); `tov version` alone names no commit.
 const TOV_BIN = process.env.TOV_BIN || 'tov'
 const TOV_DIR = process.env.TOV_DIR || join(homedir(), '.tov/src')
+// Goose (aardappel/goose): a systems language with no heap, compiled to one C
+// file that `goose build` hands to the C compiler it finds. The release archive
+// unpacks to goose-<tag>-<platform>/ (https://github.com/aardappel/goose/releases).
+const GOOSE_BIN = process.env.GOOSE_BIN || 'goose'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
@@ -344,6 +348,19 @@ const tovIdentity = () => {
     return `${version} [git ${head}]`
   } catch { return version }
 }
+// Goose identity: `goose version` names only its runtime's hash, so the release
+// tag comes from the directory the archive unpacks to, and the C compiler is the
+// one `goose toolchain` reports, which compiles every build.
+let _gooseIdentity
+const gooseIdentity = () => _gooseIdentity ??= (() => {
+  const out = args => spawnSync(GOOSE_BIN, args, { encoding: 'utf8', env: gooseEnv }).stdout || ''
+  const runtime = out(['version']).trim().split('\n')[0].replace(/^goose /, '')
+  if (!runtime) return null
+  const cc = out(['toolchain']).match(/C compiler:\s*([^,\n]+)/)?.[1].trim()
+  let release = null
+  try { release = basename(dirname(whichPath(GOOSE_BIN))).match(/^goose-(v[^-]+)-/)?.[1] ?? null } catch {}
+  return [release && `goose ${release}`, runtime, cc && `C compiler ${cc}`].filter(Boolean).join(', ')
+})()
 const canRun = cmd => {
   try { return spawnSync(cmd, ['--help'], { stdio: 'ignore' }).status === 0 }
   catch { return false }
@@ -390,6 +407,7 @@ const discoverCases = () => readdirSync(BENCH_DIR, { withFileTypes: true })
       mbt: existsSync(join(dir, `${d.name}.mbt`)) ? join(dir, `${d.name}.mbt`) : null,
       as: existsSync(join(dir, `${d.name}.as.ts`)) ? join(dir, `${d.name}.as.ts`) : null,
       tov: existsSync(join(dir, `${d.name}.tov`)) ? join(dir, `${d.name}.tov`) : null,
+      goose: existsSync(join(dir, `${d.name}.goose`)) ? join(dir, `${d.name}.goose`) : null,
       npy: existsSync(join(dir, `${d.name}.npy.py`)) ? join(dir, `${d.name}.npy.py`) : null,
       wat: existsSync(join(dir, `${d.name}.wat`)) ? join(dir, `${d.name}.wat`) : null,
       watRun: existsSync(join(dir, 'run-wat.mjs')) ? join(dir, 'run-wat.mjs') : null,
@@ -518,7 +536,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
     const key = `${id}:${c.id}`
     if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) {
       const stamp = join(caseBuild(c), `.prep-${id}`)
-      const identity = id === 'porf-native' ? porfIdentity() : ''
+      const identity = id === 'porf-native' ? porfIdentity() : id === 'goose' ? gooseIdentity() : ''
       const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
         !['perry', 'scriptc', 'tslang', 'tov'].includes(id) &&
         !(id === 'porf-native' && _porfCheckoutDirty)
@@ -575,6 +593,7 @@ const hermesLibs = bin => {
 const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
 const tslangBinPath = c => join(caseBuild(c), `${c.id}-tslang`)
 const tovBinPath = c => join(caseBuild(c), `${c.id}-tov`)
+const gooseBinPath = c => join(caseBuild(c), `${c.id}-goose`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
@@ -875,6 +894,9 @@ const macSysrootArgs = sysroot()
 const sdkEnv = macSysrootArgs.length && !process.env.SDKROOT
   ? { ...process.env, SDKROOT: macSysrootArgs[1], CLANG_NO_DEFAULT_CONFIG: '1' }
   : process.env
+// goose build keeps its intermediates (the runtime object per C compiler, each
+// program's C) under GOOSE_HOME: the bench build directory unless the user set one.
+const gooseEnv = { ...sdkEnv, GOOSE_HOME: process.env.GOOSE_HOME || build('goose-home') }
 
 const targets = {
   nat: {
@@ -1055,6 +1077,20 @@ const targets = {
         cwd: BENCH_DIR, stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL',
       })
     }, [tovBinPath(c)]),
+  },
+  // Goose is a ported language like Tov: cases with a `<case>.goose` port
+  // (shared _lib/bench.goose) build at its release defaults: `goose build`
+  // inlines at -O2 and compiles the C it emits with the C compiler it finds, at
+  // -O2. The prep cache is keyed by gooseIdentity.
+  goose: {
+    name: 'Goose → native (C)',
+    available: c => !!c.goose && has(GOOSE_BIN),
+    bin: gooseBinPath,
+    run: c => tryRun('goose', c, () => {
+      execFileSync(GOOSE_BIN, ['build', c.goose, '-o', gooseBinPath(c)], {
+        cwd: BENCH_DIR, stdio: 'pipe', env: gooseEnv, timeout: 120_000, killSignal: 'SIGKILL',
+      })
+    }, [gooseBinPath(c)]),
   },
   graaljs: {
     name: 'GraalJS',
@@ -1306,6 +1342,7 @@ const TARGET_CMDS = {
   tslang: 'tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>-tslang.ts -o <case>-tslang (unchanged JS saved as .ts; clock_gettime host timer) → run binary',
   perry: 'perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary',
   tov: 'tov build <case>.tov -o <case>-tov (default -O3, checked integer overflow; C via clang -ffp-contract=off) → run binary',
+  goose: 'goose build <case>.goose -o <case>-goose (release defaults: -O2 inlining, the emitted C built at -O2 by the C compiler goose finds) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   'jz-base': 'the same builds by the checkout at JZ_BASE_ROOT, of its copy of the case (meta.base) → node (V8 wasm)',
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
@@ -1931,6 +1968,7 @@ if (JSON_PATH) {
       // moonc names the compiler release; moon's own number is the build tool's.
       moonbit: has('moonc') && spawnSync('moonc', ['-v'], { encoding: 'utf8' }).stdout?.trim(),
       tov: has(TOV_BIN) && tovIdentity(),
+      goose: has(GOOSE_BIN) && gooseIdentity(),
       jsc: jscBuild(),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),

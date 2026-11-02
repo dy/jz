@@ -1,7 +1,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -242,6 +242,69 @@ fs.chmodSync(out, 0o755)
     is(failed.status, 'fail', 'rejected port records a failure')
     ok(/T0301/.test(failed.reason), 'the compiler diagnostic is kept: ' + failed.reason)
     ok(run(join(dir, 'missing')).includes('[skip] tov'), 'missing compiler skips')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('goose bench: ported source only, release identity, cached build, parity and failures', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz goose '))
+  try {
+    const release = join(dir, 'goose-v2026.3-linux-x64'), bin = join(release, 'goose')
+    const mode = join(dir, 'mode'), builds = join(dir, 'builds'), json = join(dir, 'results.json')
+    const build = join(dir, 'build')
+    mkdirSync(release)
+    writeFileSync(mode, 'ok')
+    // Stand-in compiler: its runtime hash follows the mode, so each mode is a new
+    // identity; it builds only the case's own port, in the harness's GOOSE_HOME.
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs'), args = process.argv.slice(2)
+const mode = fs.readFileSync(${JSON.stringify(mode)}, 'utf8')
+if (args[0] === 'version') { console.log('goose runtime ' + mode); process.exit(0) }
+if (args[0] === 'toolchain') { console.log('C compiler:   cc-test 1.0, found on PATH\\nstyle:        cc'); process.exit(0) }
+if (args[0] !== 'build' || args[1] !== ${JSON.stringify(join(ROOT, 'bench/mandelbrot/mandelbrot.goose'))}) process.exit(2)
+if (process.env.GOOSE_HOME !== ${JSON.stringify(join(build, 'goose-home'))}) process.exit(4)
+fs.appendFileSync(${JSON.stringify(builds)}, 'x')
+if (mode === 'fail') { console.error('mandelbrot.goose:12: error: fixture'); process.exit(3) }
+const cs = mode === 'wrong' ? 1 : 3520419621
+const out = args[args.indexOf('-o') + 1]
+fs.writeFileSync(out, '#!/bin/sh\\necho median_us=10 checksum=' + cs + ' samples=65536 stages=256 runs=21\\n')
+fs.chmodSync(out, 0o755)
+`)
+    chmodSync(bin, 0o755)
+    const env = { ...process.env, JZ_BENCH_BUILD_DIR: build, JZ_BENCH_WEB_DIR: join(dir, 'web') }
+    delete env.GOOSE_HOME
+    delete env.JZ_BENCH_REBUILD
+    const run = (compiler = bin) => execFileSync(process.execPath, [
+      join(ROOT, 'bench/bench.mjs'), '--targets=goose', '--cases=mandelbrot,alpha', '--no-web', `--json=${json}`,
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...env, GOOSE_BIN: compiler } })
+    const read = () => JSON.parse(readFileSync(json, 'utf8'))
+    const built = () => existsSync(builds) ? readFileSync(builds, 'utf8').length : 0
+    ok(run().includes('[skip] goose'), 'a case without a .goose port is skipped')
+    const r = read()
+    is(r.cases.mandelbrot.targets.goose.parity, 'ok', 'port checksum matches the corpus oracle')
+    ok(r.cases.mandelbrot.targets.goose.bytes > 0, 'artifact size is recorded')
+    is(r.cases.alpha?.targets.goose, undefined, 'unported case has no row')
+    is(r.meta.versions.goose, 'goose v2026.3, runtime ok, C compiler cc-test 1.0', 'version names the release, its runtime and the C compiler')
+    ok(r.meta.invocations.goose.startsWith('goose build <case>.goose'), 'invocation is recorded')
+    is(built(), 1, 'one build')
+    run()
+    is(built(), 1, 'the same compiler reuses its artifact')
+    writeFileSync(mode, 'wrong')
+    run()
+    is(built(), 2, 'another compiler identity rebuilds')
+    is(read().cases.mandelbrot.targets.goose.parity, 'DIFF', 'wrong answer is labeled')
+    writeFileSync(mode, 'fail')
+    run()
+    const failed = read().cases.mandelbrot.targets.goose
+    is(failed.status, 'fail', 'rejected port records a failure')
+    ok(/error: fixture/.test(failed.reason), 'the compiler diagnostic is kept: ' + failed.reason)
+    writeFileSync(mode, 'ok')
+    const loose = join(dir, 'goose')
+    copyFileSync(bin, loose)
+    run(loose)
+    is(read().meta.versions.goose, 'runtime ok, C compiler cc-test 1.0', 'outside its release directory the tag is not guessed')
+    ok(run(join(dir, 'missing')).includes('[skip] goose'), 'missing compiler skips')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
