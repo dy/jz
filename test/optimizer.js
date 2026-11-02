@@ -42,6 +42,8 @@ import { leadChains } from '../src/optimize/lead-chains.js'
 import { issueOrder } from '../src/optimize/issue-order.js'
 import { unrollTrips } from '../src/optimize/unroll-trips.js'
 import { hoistVectorConsts } from '../src/optimize/vectorize/hoist-consts.js'
+import { wordRanges } from '../src/optimize/word-ranges.js'
+import { constBases } from '../src/optimize/const-bases.js'
 import { foldWords, funcWat, run, oracle, compileInProcess, jz, compile } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -9041,4 +9043,160 @@ test('selectArms: arms that share their tree select their leaves', () => {
     for (const x of [-3.7, -0.3, -0, 0, 0.3, 2.5, 709, NaN, Infinity, -Infinity, 1e300, -1e300])
       ok(Object.is(after(x), before(x)), `${label}: f(${x})`)
   }
+})
+
+// The interval each i32 value holds where it is computed (optimize/word-ranges.js),
+// read off control flow: a counter under its loop test, a mask, a byte; a sum a word
+// could wrap in has none. Every interval holds: each value the analysis bounds traps
+// when it leaves its interval, and the instrumented programs answer as before.
+const WORD_KERNELS = [
+  // an insertion sort: a counter stepped down past zero, `a[j + 1]` at j = -1
+  `export let f = () => {
+    const a = new Float64Array(21)
+    let s = 7
+    for (let i = 0; i < 21; i++) { s = (s * 1103515245 + 12345) | 0; a[i] = (s >>> 8) % 1000 }
+    for (let i = 1; i < 21; i++) { const v = a[i]; let j = i - 1; while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j-- } a[j + 1] = v }
+    let h = 0
+    for (let i = 0; i < 21; i++) h = (h * 31 + a[i]) | 0
+    return h
+  }`,
+  // a hash table: masked probes, a counter that wraps, unsigned tests
+  `export let f = () => {
+    const keys = new Int32Array(256), vals = new Int32Array(256)
+    let h = 0, x = 12345
+    for (let i = 0; i < 200; i++) {
+      x = (x * 1664525 + 1013904223) | 0
+      let k = x >>> 20, p = (Math.imul(k, 2654435761) >>> 24) & 255
+      while (keys[p] !== 0 && keys[p] !== k + 1) p = (p + 1) & 255
+      keys[p] = k + 1; vals[p] = (vals[p] + i) | 0
+    }
+    for (let i = 255; i >= 0; i -= 3) h = (h ^ vals[i]) * 16777619 | 0
+    return h
+  }`,
+  // nested loops, a break, a counter read past its loop
+  `export let f = () => {
+    const g = new Uint8Array(64 * 64)
+    let n = 0, last = 0
+    for (let y = 0; y < 64; y++) {
+      let x = 0
+      for (; x < 64; x++) { if (((x * y) & 31) === 7) break; g[y * 64 + x] = (x ^ y) & 255 }
+      last = x
+      for (let k = 63; k > x; k -= 2) n = (n + g[y * 64 + k]) | 0
+    }
+    return n * 64 + last
+  }`,
+]
+const wordInstrument = (fn, ranges) => {
+  let checks = 0
+  const wrap = (n) => {
+    for (let i = 1; i < n.length; i++) {
+      const c = n[i]
+      if (!Array.isArray(c)) continue
+      wrap(c)
+      const r = ranges.get(c)
+      if (!r || c[0] === 'i32.const') continue
+      checks++
+      n[i] = ['block', ['result', 'i32'], ['local.set', '$__chk', c],
+        ['if', ['i32.or', ['i32.lt_s', ['local.get', '$__chk'], ['i32.const', r.lo]], ['i32.gt_s', ['local.get', '$__chk'], ['i32.const', r.hi]]], ['then', ['unreachable']]],
+        ['local.get', '$__chk']]
+    }
+  }
+  wrap(fn)
+  let at = 2
+  while (Array.isArray(fn[at]) && ['param', 'result', 'local', 'export', 'type'].includes(fn[at][0])) at++
+  fn.splice(at, 0, ['local', '$__chk', 'i32'])
+  return checks
+}
+test('wordRanges: every interval holds where its value is computed', () => {
+  for (const src of WORD_KERNELS) {
+    const want = oracle(src).f()
+    const mod = parseWat(compile(src, { wat: true, optimize: 'speed' }))
+    let checks = 0
+    for (const fn of mod) if (Array.isArray(fn) && fn[0] === 'func') {
+      const ranges = wordRanges(fn)
+      ok(ranges, `${fn[1]}: the walk follows the function`)
+      if (ranges) checks += wordInstrument(fn, ranges)
+    }
+    ok(checks > 20, `${checks} values checked`)
+    is(new WebAssembly.Instance(new WebAssembly.Module(encodeWat(mod))).exports.f(), want, 'no value leaves its interval')
+  }
+  // the facts themselves: a counter, its step, a mask, a byte, a param, a sum that may wrap
+  const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
+  const i0 = g('$i'), i1 = g('$i'), step = ['i32.add', i1, k(1)], tee = ['local.tee', '$i', step], param = g('$p')
+  const mask = ['i32.and', ['i32.add', param, i0], k(63)], byte = ['i32.load8_u', mask], sum = ['i32.add', g('$s'), byte]
+  const back = ['br_if', '$L', ['i32.lt_s', tee, k(64)]], loop = ['loop', '$L', ['local.set', '$s', sum], back]
+  const fn = ['func', '$f', ['param', '$p', 'i32'], ['result', 'i32'], ['local', '$i', 'i32'], ['local', '$s', 'i32'],
+    ['block', '$B', ['br_if', '$B', ['i32.ge_s', g('$i'), k(64)]], loop], g('$s')]
+  const r = wordRanges(fn)
+  is(r.get(i0), { lo: 0, hi: 63 }, 'the counter under its test')
+  is(r.get(step), { lo: 1, hi: 64 }, 'its step')
+  is(r.get(mask), { lo: 0, hi: 63 }, 'a mask')
+  is(r.get(byte), { lo: 0, hi: 255 }, 'a byte')
+  is(r.get(param) ?? null, null, 'a parameter: no interval')
+  is(r.get(sum) ?? null, null, 'a sum stepped without bound: no interval')
+})
+
+// A constant base moves into the memarg (optimize/const-bases.js): where the flow holds a
+// local to one address, an access adding it to an index the flow holds non-negative reads
+// `offset=N` from the index. An index that may be negative keeps the add: `a[j + 1]` at
+// j = -1 adds -8 and takes its 8 from the memarg, the sum wrapping below the base.
+test('constBases: a base the flow holds to one address is the memarg offset', () => {
+  const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
+  const load = (base, index, off) => ['i32.load', ...(off ? [`offset=${off}`] : []), ['i32.add', g(base), index]]
+  const fn = (...body) => ['func', '$f', ['export', '"f"'], ['param', '$a', 'i32'], ['param', '$n', 'i32'], ['result', 'i32'],
+    ['local', '$i', 'i32'], ['local', '$s', 'i32'], ...body, g('$s')]
+  // a loop summing a[i], i in [0, 15], at the static address 64: the base write goes
+  const counted = (index, init = [['local.set', '$a', k(64)]]) => fn(...init,
+    ['block', '$B', ['br_if', '$B', ['i32.ge_s', g('$i'), k(16)]],
+      ['loop', '$L', ['local.set', '$s', ['i32.add', g('$s'), load('$a', index)]],
+        ['br_if', '$L', ['i32.lt_s', ['local.tee', '$i', ['i32.add', g('$i'), k(1)]], k(16)]]]])
+  const shl = (x) => ['i32.shl', g(x), k(2)]
+  const one = (f) => constBases(['module', f])[1]
+  const text = (f) => JSON.stringify(one(JSON.parse(JSON.stringify(f))))
+  ok(text(counted(shl('$i'))).includes('"i32.load","offset=64",["i32.shl"'), 'a counter\'s index reads the base from the memarg')
+  ok(!text(counted(shl('$i'))).includes('"local.set","$a"'), 'the base write goes with its last read')
+  ok(text(counted(shl('$i'), [['local.set', '$a', k(64)], ['if', g('$n'), ['then', ['local.set', '$a', k(64)]]]])).includes('"offset=64"'),
+    'a base written twice with one address')
+  const kept = (f, why) => ok(!text(f).includes('"offset=64"') && !text(f).includes('"offset=72"'), why)
+  kept(counted(shl('$n')), 'an index of no known sign keeps the add')
+  kept(counted(['i32.sub', shl('$i'), k(8)]), 'an index that reaches below zero keeps the add')
+  kept(counted(shl('$i'), [['if', g('$n'), ['then', ['local.set', '$a', k(64)]]]]), 'a base written on one way only keeps the add')
+  kept(counted(shl('$i'), []), 'a parameter no write fixes keeps the add')
+  // `a[j + 1]` down to j = -1: the index is j << 2, the 4 in the memarg
+  const shift = fn(['local.set', '$a', k(64)], ['local.set', '$i', ['i32.sub', g('$n'), k(1)]],
+    ['block', '$B', ['loop', '$L', ['br_if', '$B', ['i32.lt_s', g('$i'), k(-1)]],
+      ['local.set', '$s', ['i32.add', g('$s'), load('$a', shl('$i'), 4)]],
+      ['local.set', '$i', ['i32.sub', g('$i'), k(1)]], ['br', '$L']]])
+  ok(!text(shift).includes('"offset=68"'), 'an index reaching -4 keeps the add')
+  // the rewritten functions read what the originals read
+  for (const f of [counted(shl('$i')), counted(['local.get', '$i']), shift]) {
+    const exec = (m) => {
+      const inst = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(['module', ['memory', ['export', '"m"'], 1], m])))
+      const mem = new Int32Array(inst.exports.m.buffer)
+      for (let i = 0; i < 64; i++) mem[i] = Math.imul(i + 1, 2654435761)
+      return [0, 1, 5, 16].map(n => inst.exports.f(64, n))
+    }
+    is(exec(one(JSON.parse(JSON.stringify(f)))), exec(f), 'the folded loop reads the same words')
+  }
+  // a static array's histogram (compile/fixed-memory.js places it, the call's address a literal)
+  const hist = `
+const hist = (src, count) => {
+  for (let i = 0; i < 256; i++) count[i] = 0
+  for (let i = 0; i < 1024; i++) count[src[i]]++
+  let m = 0
+  for (let i = 0; i < 256; i++) m = (m + count[i] * i) | 0
+  return m
+}
+export let f = () => {
+  const src = new Uint8Array(1024), count = new Int32Array(256)
+  let h = 0
+  for (let it = 0; it < 3; it++) {
+    for (let i = 0; i < 1024; i++) src[i] = (i * 7 + it) & 255
+    h = (h + hist(src, count)) | 0
+  }
+  return h
+}`
+  const w = compile(hist, { wat: true, optimize: 'speed' })
+  is((w.match(/\(i32\.(?:load|store) offset=\d{3,}\s+\(i32\.shl/g) || []).length, 2, 'the count increment loads and stores at its address')
+  is(run(hist, { optimize: 'speed' }).f(), oracle(hist).f())
 })

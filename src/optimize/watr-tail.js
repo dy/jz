@@ -28,6 +28,7 @@ import { unsignedDivision } from './unsigned-div.js'
 import { unrollTrips } from './unroll-trips.js'
 import { hoistVectorConsts } from './vectorize/hoist-consts.js'
 import { truncChoice } from './trunc-choice.js'
+import { constBases } from './const-bases.js'
 import { selectArms } from './select-arms.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
@@ -660,6 +661,8 @@ export function watrTail(module, cfg, {
     time('inlineTiny', () => inlineTiny(optimized, { pin: watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, user }))
   // (on every division the passes above left, the vectorizer's epilogues and the inlined helpers' among them)
   if (cfg.unsignedDivision !== false) time('unsignedDivision', () => unsignedDivision(optimized))
+  // (after the passes that read an access's address as written, the inliner's constant arguments among them)
+  if (cfg.constBases !== false) time('constBases', () => constBases(optimized))
   // (last: the float literals every pass above reads as constants)
   if (cfg.poolFloats === true) time('poolFloatConstants', () => poolFloatConstants(optimized))
   // (after every pass that reads a function whole, the inliner above all, which would splice a

@@ -75,6 +75,15 @@ flight before the search, no longer waits for it. The next round's inductions ar
 selected against the loop's own test, so the last round reads its own slot again
 and nothing past what the loop reads; a loop that stores, calls or leaves but by
 its test keeps its shape.
+Late, from level 2 up, `constBases` (src/optimize/const-bases.js) moves a
+base the function's control flow holds to one address (a static parameter's entry
+write, its inlined copy) into the memarg of each access adding it to an index:
+`(i32.load (i32.add (local.get $a) E))` is `(i32.load offset=N E)`, which x64
+addresses as `[E + N]` with no add. The sum must not wrap, so the index needs an
+interval of non-negative values: optimize/word-ranges.js reads one for each i32
+value off the control flow (a counter under its loop's test, a masked hash, a
+byte, and nothing for a sum a word could wrap in). An index that may be negative
+(`a[j + 1]` at j = -1, its 8 in the memarg already) keeps the add.
 Before any of these, on the source, `carryKeys` (src/compile/loop-recurrence.js,
 speed tier) gives a counted loop whose scalar reads a table at a key of itself
 and the iteration's input, keeping the rest of itself by xor (a byte-wise CRC of

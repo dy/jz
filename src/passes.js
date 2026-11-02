@@ -104,6 +104,7 @@ export const PASS_NAMES = [
   'refreshGrown',             // after a call that may grow an array, the caller's binding of it takes the new block (compile/emit/call.js), off at the size tier
   'hoistForwardHops',         // a receiver a loop never rebinds asks whether its block moved before the loop and after each call that may move one (optimize/forward-hops.js), off at the size tier
   'truncChoice',              // a choice of a float's ceiling below zero and its floor above is its truncation (optimize/trunc-choice.js)
+  'constBases',               // a local written once with an address ahead of its reads: its accesses take the address as their memarg offset (optimize/const-bases.js)
   'selectArms',               // a choice whose arms compute one tree: the tree over a select of the leaves they differ in (optimize/select-arms.js)
   'unsignedDivision',         // a signed division or remainder of a non-negative value by a positive one is the unsigned one (optimize/unsigned-div.js)
   'splitFuncs',               // a large function's conditional arms become functions of their own: V8 compiles what runs (optimize/split-funcs.js), speed-only
