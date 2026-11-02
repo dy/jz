@@ -26,6 +26,7 @@ import { poolFloatConstants } from './pool-floats.js'
 import { selectBits } from './select-bits.js'
 import { unsignedDivision } from './unsigned-div.js'
 import { unrollTrips } from './unroll-trips.js'
+import { hoistVectorConsts } from './vectorize/hoist-consts.js'
 import { truncChoice } from './trunc-choice.js'
 import { selectArms } from './select-arms.js'
 import { maskOperands } from './mask-operands.js'
@@ -666,5 +667,7 @@ export function watrTail(module, cfg, {
   // (the same: an inliner would splice a pass back into the function that runs once)
   if (cfg.loopPasses === true) time('loopPasses', () => loopPasses(optimized, { user }))
   if (cfg.splitFuncs === true) time('splitFuncs', () => splitFuncs(optimized, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm }))
+  // (last: on the vector loops every pass above left, each where it will run)
+  if (cfg.hoistVectorConsts === true) time('hoistVectorConsts', () => hoistVectorConsts(optimized))
   return optimized
 }

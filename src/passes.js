@@ -181,6 +181,7 @@ export const TUNING_KEYS = [
   'searchLoops',              // a loop whose body is a guarded loop scans for its guard in an innermost loop (optimize/search-loops.js, speed tier)
   'leadGathers',              // a loop over items that searches from a slot it gathers reads the next item's slot a round ahead (optimize/lead-gathers.js, speed tier)
   'unrollTrips',              // an innermost loop of 4 to 16 iterations known at compile time is its body written out (optimize/unroll-trips.js, speed tier)
+  'hoistVectorConsts',        // a vector constant in a loop is read from a local set before it (optimize/vectorize/hoist-consts.js, speed tier)
   'pointerExits',             // a loop keeping a counter only to stop stops by the pointer strength reduction steps beside it (optimize/pointer-exits.js, speed tier)
   'jumpPointers',             // a loop variable that jumps carries the address of the record it indexes beside it (optimize/jump-pointers.js, speed tier)
   'ringLaps',                 // a counted loop stepping a cursor around a ring runs a lap at a time (optimize/ring-laps.js, speed tier)

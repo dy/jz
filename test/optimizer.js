@@ -41,6 +41,7 @@ import { earlyStores } from '../src/optimize/early-stores.js'
 import { leadChains } from '../src/optimize/lead-chains.js'
 import { issueOrder } from '../src/optimize/issue-order.js'
 import { unrollTrips } from '../src/optimize/unroll-trips.js'
+import { hoistVectorConsts } from '../src/optimize/vectorize/hoist-consts.js'
 import { foldWords, funcWat, run, oracle, compileInProcess, jz, compile } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -5241,6 +5242,42 @@ test('fp-registers: a loop keeps the invariant reads its registers have no room 
   if (onKernel()) return
   ok(hot(compile(src(8), { wat: true, optimize: 'speed' })) >= 41, 'eight sections: the loop reads its 40 coefficients and its sample')
   ok(hot(compile(src(2), { wat: true, optimize: 'speed' })) <= 1, 'two sections: the coefficients are held, the loop reads its sample alone')
+})
+
+// V8 builds a `v128.const` where it stands: a lane ramp `i32x4 0 1 2 3` is five instructions on
+// arm64, two immediates through a general register on x64, every iteration of the loop around it.
+// The speed tier reads a costly vector constant of a loop from a local set before it; all zeros
+// and all ones (one instruction on either target) stay.
+test('hoistVectorConsts: a vector loop reads its lane ramp from a local set before it', () => {
+  const src = `export let f = (n) => {
+    const buf = new Uint8Array(n)
+    for (let t = 0; t < n; t++) buf[t] = ((t * 5 & t >> 7) | (t * 3 & t >> 10)) + t * ((t >> 12 | t >> 8) & 63 & t >> 4) & 255
+    let h = 0
+    for (let i = 0; i < n; i++) h = (h * 31 + buf[i]) | 0
+    return h
+  }`
+  const host = oracle(src).f
+  for (const optimize of ['speed', 2]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 7, 64, 5000]) is(f(n), host(n), `O${optimize} n=${n}`) }
+  if (onKernel()) return
+  const f = parseWat(compile(src, { wat: true, optimize: 'speed' })).find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$f')
+  let inLoop = 0, before = 0
+  walk(f, n => {
+    if (n[0] === 'loop' && JSON.stringify(n).includes('"v128.const","i32x4","0","1","2","3"')) inLoop++
+    if (n[0] === 'local.set' && Array.isArray(n[2]) && n[2][0] === 'v128.const' && n[2][1] === 'i32x4' && n[2].slice(2).join() === '0,1,2,3') before++
+  })
+  ok(before >= 1 && inLoop === 0, `the ramp is set before the vector loop, read in it (${before} sets, ${inLoop} loops building it)`)
+
+  const k = (...lanes) => ['v128.const', 'i32x4', ...lanes.map(String)], g = n => ['local.get', n]
+  const use = (c) => ['local.set', '$v', ['i32x4.add', g('$v'), c]]
+  const loop = (label, ...body) => ['loop', label, ...body, ['br_if', label, g('$c')]]
+  const m = hoistVectorConsts(['module', ['func', '$f', ['local', '$v', 'v128'], ['local', '$c', 'i32'],
+    loop('$o', use(k(0, 1, 2, 3)), loop('$i', use(k(0, 1, 2, 3)), use(k(4, 5, 6, 7)), use(k(0, 0, 0, 0)), use(k(-1, -1, -1, -1))))]])
+  const fn = m[1], text = JSON.stringify(fn)
+  is(fn.filter(d => Array.isArray(d) && d[0] === 'local' && d[2] === 'v128').length, 3, 'one local per costly constant: the ramp, its second group')
+  ok(text.includes('["v128.const","i32x4","0","0","0","0"]') && text.includes('["v128.const","i32x4","-1","-1","-1","-1"]'), 'zeros and ones stay where they are')
+  const inner = []; walk(fn, n => { if (n[0] === 'loop' && n[1] === '$o') inner.push(...n.filter(c => Array.isArray(c) && c[0] === 'local.set' && c[2]?.[0] === 'v128.const')) })
+  is(inner.length, 2, 'the inner loop\'s constants are set before it, inside the outer loop, once each')
+  is(fn.filter(c => Array.isArray(c) && c[0] === 'local.set' && c[2]?.[0] === 'v128.const').length, 1, 'the outer loop\'s own ramp is set before it')
 })
 
 // x64 V8 lowers a byte or halfword mask to a zero extension; over `x ^ y` it extends a register
