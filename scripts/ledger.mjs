@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The speed ledger: one line per measured run in bench/ledger.jsonl, so a case's
-// history on each machine is read, never retold.
+// The speed ledger: one line per measured run and machine in bench/ledger.jsonl, so a
+// case's history on each machine is read, never retold.
 //
 //   ledger.mjs pull <run-id>           download a CI run's bench JSON and add it
 //   ledger.mjs add <bench.json> [--run=<label>] [--kind=reference|probe|ab|local]
@@ -27,48 +27,65 @@ const rows = () => existsSync(LEDGER)
   : []
 const flag = (args, name) => args.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3)
 
-/** A bench JSON as one ledger row: valid timings, the memory cases' RSS, jz/as bytes. */
-const rowOf = (bench, run, kind) => {
-  const cases = {}
-  for (const [id, c] of Object.entries(bench.cases)) {
-    const us = {}, entry = { us }
-    for (const [tid, t] of Object.entries(c.targets || {})) if (timed(t)) us[tid] = t.medianUs
-    if (!Object.keys(us).length) continue
-    if (MEMORY_CASES.includes(id)) {
-      const kb = {}
-      for (const tid of ['jz', 'v8']) if (c.targets[tid]?.memKb > 0) kb[tid] = Math.round(c.targets[tid].memKb)
-      if (Object.keys(kb).length) entry.kb = kb
-    }
-    const bytes = {}
-    for (const tid of ['jz', 'jz-base', 'as']) if (c.targets[tid]?.bytes > 0 && c.targets[tid].parity === 'ok') bytes[tid] = c.targets[tid].bytes
-    if (Object.keys(bytes).length) entry.bytes = bytes
-    cases[id] = entry
+/** A case's ledger entry: valid timings, the memory cases' RSS, jz/as bytes. */
+const entryOf = (id, c) => {
+  const us = {}, entry = { us }
+  for (const [tid, t] of Object.entries(c.targets || {})) if (timed(t)) us[tid] = t.medianUs
+  if (!Object.keys(us).length) return null
+  if (MEMORY_CASES.includes(id)) {
+    const kb = {}
+    for (const tid of ['jz', 'v8']) if (c.targets[tid]?.memKb > 0) kb[tid] = Math.round(c.targets[tid].memKb)
+    if (Object.keys(kb).length) entry.kb = kb
   }
+  const bytes = {}
+  for (const tid of ['jz', 'jz-base', 'as']) if (c.targets[tid]?.bytes > 0 && c.targets[tid].parity === 'ok') bytes[tid] = c.targets[tid].bytes
+  if (Object.keys(bytes).length) entry.bytes = bytes
+  return entry
+}
+
+/** A bench JSON as ledger rows, one per machine: a sharded run measures each case on
+ *  one machine (cases[id].host) and its cases on several, and a row is evidence for
+ *  the machine it names only. Its swap and load are the worst of that machine's shards. */
+const rowsOf = (bench, run, kind) => {
   const m = bench.meta
-  return {
-    run, kind: kind || (m.base ? 'ab' : Object.keys(cases).length >= 50 ? 'reference' : 'probe'),
-    date: m.date, commit: m.commit, ...(m.base && { base: m.base }),
-    cpu: m.host?.cpu ?? null, os: m.host?.platform ?? null,
-    versions: { watr: m.versions?.watr, node: m.versions?.node },
-    ...(m.machineState?.swapUsedMB != null && { swapMB: Math.round(m.machineState.swapUsedMB) }),
-    ...(m.machineState?.load1 != null && { load: +m.machineState.load1.toFixed(1) }),
-    cases,
+  kind ||= m.base ? 'ab' : Object.keys(bench.cases).length >= 50 ? 'reference' : 'probe'
+  const groups = new Map()
+  for (const [id, c] of Object.entries(bench.cases)) {
+    const host = c.host ?? m.host, key = JSON.stringify(host ?? null)
+    ;(groups.get(key) ?? groups.set(key, { host, cases: {} }).get(key)).cases[id] = c
   }
+  return [...groups].map(([key, { host, cases }]) => {
+    const states = (m.shards ?? []).filter(s => JSON.stringify(s.host ?? null) === key).map(s => s.machineState)
+    const worst = f => { const v = (states.length ? states : [m.machineState]).map(s => s?.[f]).filter(x => x != null); return v.length ? Math.max(...v) : null }
+    const swap = worst('swapUsedMB'), load = worst('load1')
+    return {
+      run, kind, date: m.date, commit: m.commit, ...(m.base && { base: m.base }),
+      cpu: host?.cpu ?? null, os: host?.platform ?? null,
+      versions: { watr: m.versions?.watr, node: m.versions?.node },
+      ...(swap != null && { swapMB: Math.round(swap) }),
+      ...(load != null && { load: +load.toFixed(1) }),
+      cases: Object.fromEntries(Object.entries(cases).map(([id, c]) => [id, entryOf(id, c)]).filter(([, e]) => e)),
+    }
+  })
 }
 
 const add = (file, run, kind) => {
-  const row = rowOf(JSON.parse(readFileSync(file, 'utf8')), run, kind)
-  if (!row.commit || !row.cpu) throw Error(`${file}: no commit or CPU in meta`)
-  if (rows().some(r => String(r.run) === String(row.run))) throw Error(`run ${row.run} is already in the ledger`)
-  appendFileSync(LEDGER, JSON.stringify(row) + '\n')
-  console.log(`added ${row.kind} ${row.run}: ${row.commit}${row.base ? ` vs ${row.base}` : ''} on ${row.cpu}, ${Object.keys(row.cases).length} cases`)
+  const have = rows(), fresh = rowsOf(JSON.parse(readFileSync(file, 'utf8')), run, kind)
+  for (const row of fresh) {
+    if (!row.commit || !row.cpu) throw Error(`${file}: no commit or CPU in meta`)
+    if (have.some(r => String(r.run) === String(row.run) && r.cpu === row.cpu)) throw Error(`run ${row.run} on ${row.cpu} is already in the ledger`)
+  }
+  for (const row of fresh) {
+    appendFileSync(LEDGER, JSON.stringify(row) + '\n')
+    console.log(`added ${row.kind} ${row.run}: ${row.commit}${row.base ? ` vs ${row.base}` : ''} on ${row.cpu}, ${Object.keys(row.cases).length} cases`)
+  }
 }
 
 const findJson = dir => {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
     if (statSync(p).isDirectory()) { const f = findJson(p); if (f) return f }
-    else if (name === 'reference.json' || name === 'probe.json') return p
+    else if (['reference.json', 'probe.json', 'results-ci.json'].includes(name)) return p
   }
   return null
 }
@@ -147,9 +164,13 @@ const median = xs => { const s = [...xs].sort((a, b) => a - b); return s.length 
 /** jz's change between two runs of one machine, beside the rivals' median change on
  *  the same case: the rivals did not change, so their drift is the machine's. */
 const diff = (a, b, min) => {
-  const all = rows(), A = all.find(r => String(r.run) === a), B = all.find(r => String(r.run) === b)
-  if (!A || !B) return console.log('no such run')
-  if (A.cpu !== B.cpu) return console.log(`different machines: ${A.cpu} / ${B.cpu}`)
+  const all = rows(), As = all.filter(r => String(r.run) === a), Bs = all.filter(r => String(r.run) === b)
+  if (!As.length || !Bs.length) return console.log('no such run')
+  const pairs = As.flatMap(A => Bs.filter(B => B.cpu === A.cpu).map(B => [A, B]))
+  if (!pairs.length) return console.log(`different machines: ${As.map(r => r.cpu).join(', ')} / ${Bs.map(r => r.cpu).join(', ')}`)
+  for (const [A, B] of pairs) diffRows(A, B, min)
+}
+const diffRows = (A, B, min) => {
   console.log(`${shortCpu(A.cpu)}: ${A.commit} → ${B.commit}; jz change net of the rivals' drift, |change| ≥ ${min}%\n`)
   console.log('case'.padEnd(12) + 'jz µs'.padStart(16) + 'jz'.padStart(9) + 'rivals'.padStart(9) + 'net'.padStart(9))
   const out = []
@@ -174,7 +195,7 @@ else if (cmd === 'pull' && pos[0]) {
   const dir = mkdtempSync(join(tmpdir(), 'jz-ledger-'))
   execFileSync('gh', ['run', 'download', pos[0], '-D', dir], { cwd: ROOT, stdio: 'inherit' })
   const file = findJson(dir)
-  if (!file) throw Error(`run ${pos[0]} holds no reference.json or probe.json`)
+  if (!file) throw Error(`run ${pos[0]} holds no reference.json, probe.json or results-ci.json`)
   add(file, +pos[0], flag(args, 'kind'))
 }
 else if (cmd === 'status') status(flag(args, 'cpu'))

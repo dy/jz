@@ -212,6 +212,19 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
   ok(!/\/commit\/(null|undefined)/.test(linux.nodes.outro.innerHTML), 'absent commit has no broken link')
   ok(linux.nodes.geomean.innerHTML.includes('TypeScriptCompiler'), 'failed-only dataset shows its compiler')
   ok(!linux.nodes.geomean.innerHTML.includes('Perry'), 'no reference-machine timings leak into validation')
+  // A sharded run (bench/shards.mjs): no single host, each case on its shard's machine.
+  const zen3 = { platform: 'linux', arch: 'x64', cpu: 'AMD EPYC 7763 64-Core Processor' }
+  const zen4 = { platform: 'linux', arch: 'x64', cpu: 'AMD EPYC 9V74 80-Core Processor' }
+  snapshots['./results-ci.json'] = {
+    meta: { date: '2026-11-02', commit: 'abc123', shards: [{ host: zen3, cases: ['alpha'] }, { host: zen4, cases: ['beta', 'gamma'] }] },
+    cases: { alpha: { ...C(row(100), { v8: row(300) }), host: zen3 }, beta: { ...C(row(100), { v8: row(500) }), host: zen4 }, gamma: { ...C(row(100), {}), host: zen4 } },
+  }
+  const sharded = (await boot('?machine=ci')).nodes
+  ok(sharded.outro.innerHTML.includes(`CI runner: 2 machines, each case measured whole on one (${zen3.cpu}: 1 case; ${zen4.cpu}: 2 cases)`), 'a sharded run names its machines: ' + sharded.outro.innerHTML)
+  ok(sharded.cards.innerHTML.includes(`title="measured on ${zen3.cpu}">EPYC 7763</span>`), 'each card names the machine that measured it')
+  ok(sharded.cards.innerHTML.includes(`title="measured on ${zen4.cpu}">EPYC 9V74</span>`), 'cases of another shard name theirs')
+  is((await boot('?machine=ci')).nodes.geomean.innerHTML.includes('Could not load'), false, 'a dataset without meta.host renders')
+  is((await boot('')).nodes.cards.innerHTML.includes('class="host"'), false, 'a one-machine dataset names its machine once, in the outro')
   snapshots['./results-ci.json'].cases = {}
   const { nodes } = await boot('?machine=ci')
   is(nodes.casecount.textContent, 0, 'empty CI snapshot has zero cases')

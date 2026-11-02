@@ -166,7 +166,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 .card h3 { grid-column: 1 / -1; position: relative; font-size: var(--fs-small); font-weight: 700; display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; line-height: 16px; min-height: 24px; padding-top: 3px; margin-bottom: 8px; }   /* a 16px line's baseline sits 13 down: 3 more puts it 16 down, on a unit line, as the rows' */
 .card h3 .fam { font-weight: 400; font-size: var(--fs-caps); text-transform: uppercase; letter-spacing: var(--ls-caps); color: var(--mid); }
 .card h3 .fam[data-tip] { position: static; text-decoration: underline dotted var(--faint); text-underline-offset: 3px; }
-.card h3 .size { font-family: var(--mono); font-weight: 400; font-size: var(--fs-mono); color: var(--mid); }
+.card h3 .size, .card h3 .host { font-family: var(--mono); font-weight: 400; font-size: var(--fs-mono); color: var(--mid); }
 .card h3 .play { display: inline-flex; align-items: center; gap: 4px;
   font-size: var(--fs-small); font-weight: 400; letter-spacing: .02em;
   text-transform: none; text-decoration: none; border: 0; padding: 0; cursor: pointer; background: none; color: var(--link); }
@@ -577,6 +577,14 @@ const fmtB = b => b == null ? '' : b < 1024 ? b + ' B' : (b / 1024).toFixed(1) +
 const fmtMem = kb => kb == null ? '' : kb < 1024 ? kb + ' kB' : (kb / 1024).toFixed(1) + ' MB'
 const fmtX = x => x >= 100 ? x.toFixed(0) + '×' : x >= 10 ? x.toFixed(1) + '×' : x.toFixed(2) + '×'
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+// A sharded run measures each case whole on one machine, and the corpus on several:
+// its meta names no single host, each shard names its own and each case carries it.
+const machines = m => m.host ? [{ ...m.host, n: null }] : (m.shards ?? []).reduce((all, sh) => {
+  const known = all.find(h => h.cpu === sh.host?.cpu)
+  if (known) known.n += sh.cases.length; else all.push({ ...sh.host, n: sh.cases.length })
+  return all
+}, [])
+const shortCpu = cpu => String(cpu ?? '').replace(/^(AMD|Intel\(R\)|Apple) /, '').replace(/ \d+-Core Processor$/, '')
 const geo = xs => Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length)
 const median = xs => { const a = [...xs].sort((x, y) => x - y); return a.length ? (a[a.length >> 1] + a[(a.length - 1) >> 1]) / 2 : null }
 const nCases = n => `${n} case${n === 1 ? '' : 's'}`
@@ -809,8 +817,9 @@ const renderCards = () => {
     const srcLink = `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" aria-label="source on GitHub">${ICO.code}src</a>`
     const play = `<span class="actions">${NO_RUN.has(c.id) ? '' : `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>`}${srcLink}</span>`
     const sz = c.targets.jz?.bytes
+    const host = !DATA.meta.host && c.host ? `<span class="host" title="measured on ${esc(c.host.cpu)}">${esc(shortCpu(c.host.cpu))}</span>` : ''
     html += `<div class="card" data-cid="${c.id}">
-      <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size">${fmtB(sz)}</span>` : ''}${play}</h3>
+      <h3>${esc(c.id)}<span class="fam"${INSIGHTS[c.id] ? ` tabindex="0" data-tip="${esc(INSIGHTS[c.id])}"` : ''}>${esc(TAGS[c.id] || '')}</span>${sz ? `<span class="size">${fmtB(sz)}</span>` : ''}${host}${play}</h3>
       ${rows}
     </div>`
   }
@@ -840,9 +849,12 @@ $('cards').addEventListener('click', async e => {
 
 // ── outro: selected machine + pointer to the repo ────────────────────────────
 const renderMeta = () => {
-  const m = DATA.meta
+  const m = DATA.meta, hosts = machines(m)
+  const where = !hosts.length ? 'machine not recorded'
+    : hosts.length === 1 ? `${esc(hosts[0].cpu)}${hosts[0].note ? ` (${esc(hosts[0].note)})` : ''}`
+    : `${hosts.length} machines, each case measured whole on one (${hosts.map(h => `${esc(h.cpu)}: ${nCases(h.n)}`).join('; ')})`
   $('outro').innerHTML =
-    `${machine === 'ci' ? 'CI runner' : machine === 'linux' ? 'Linux validation' : 'Reference'}: ${esc(m.host.cpu)}${m.host.note ? ` (${esc(m.host.note)})` : ''}, ${esc(m.date)}, ` +
+    `${machine === 'ci' ? 'CI runner' : machine === 'linux' ? 'Linux validation' : 'Reference'}: ${where}, ${esc(m.date)}, ` +
     (m.commit ? `<a href="https://github.com/dy/jz/commit/${esc(m.commit)}"><code>${esc(m.commit)}</code></a>, ` : '') +
     `<a href="${snapshot}"><code>${snapshot}</code></a>. ` +
     (machine === 'linux' ? '<a href="./">Reference results</a>.' : '<a href="?machine=linux">Linux validation</a>.')
