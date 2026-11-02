@@ -35,6 +35,7 @@ test('native wasm2c postprocess is module-generic and fail-closed', () => {
     'injects generated scalar, struct-return, and wrapped-signature functions only')
   ok(!/__asm__/.test(out), 'removes WABT FORCE_READ barriers')
   ok(/#define i32_load\(mem, addr\)/.test(out), 'shadows scalar memory helpers')
+  ok(/#define i32_store_default32\(mem, addr, val\) i32_store\(mem, addr, val\)/.test(out), 'and the _default32 forms newer WABT calls')
   ok(/#define v128_load\(mem, addr\).*_md/.test(out), 'shadows SIMD memory helpers')
   ok(!/init_globals[^}]*_md/s.test(out), 'does not read memory before initialization')
   ok(!/wasm2c_kernel_instantiate[^}]*_md/s.test(out), 'does not touch lifecycle functions')
@@ -318,4 +319,27 @@ test('native executable: a tag dispatch stays branches, not an x86 jump table', 
     return indirectJumps(execFileSync('objdump', ['-d', out], { encoding: 'utf8', maxBuffer: 256 << 20 }))
   }
   ok(jumps([]) < jumps(jumpTables(NATIVE.cc, lto, 4)), 'under LTO too: fewer indirect jumps than the 4-case control')
+}))
+
+// The bench lane's postprocess on real wasm2c output: once preprocessed, no load or store
+// reads the memory base from the instance; each goes through the hoisted `_md`.
+const ACCESS = `(module
+  (memory (export "memory") 1)
+  (func (export "_start")
+    (i32.store (i32.const 0) (i32.const 7))
+    (i64.store offset=8 (i32.const 0) (i64.extend_i32_u (i32.load (i32.const 0))))
+    (f64.store offset=16 (i32.const 0) (f64.load offset=8 (i32.const 0)))
+    (i32.store8 offset=24 (i32.const 0) (i32.load16_u offset=16 (i32.const 0)))
+    (if (i32.ne (i32.load8_u offset=24 (i32.const 0)) (i32.const 7)) (then unreachable))))`
+test('native wasm2c postprocess: every load and store goes through the hoisted memory base', { skip: !!NATIVE.error }, () => scratchDir('md', dir => {
+  const wasm = join(dir, 'access.wasm'), bin = join(dir, 'access')
+  const lane = ['-DWASM_RT_MEMCHECK_GUARD_PAGES', '-DWASM_RT_USE_MMAP=1']
+  writeFileSync(wasm, compileWat(ACCESS))
+  wasm2native(wasm, bin, { dir, cflags: [...CFLAGS, ...lane], postprocess: POST, tools: NATIVE })
+  is(spawnSync(bin).status, 0, 'loads and stores of each width agree')
+  const [cc, ...ccArgs] = NATIVE.cc.trim().split(/\s+/)
+  const c = execFileSync(cc, [...ccArgs, '-E', ...lane, ...sysroot(), ...[dir, ...NATIVE.include].map(p => `-I${p}`), join(dir, 'jz.c')],
+    { encoding: 'utf8', maxBuffer: 64 << 20 })
+  is(c.match(/\b\w*(?:load|store)\w*\(&instance->w2c_memory\b/g), null, 'no helper takes the instance memory')
+  ok(/__builtin_memcpy\(_md \+/.test(c), 'the accesses use _md')
 }))

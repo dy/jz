@@ -11,10 +11,18 @@
 # Three transforms:
 #   1. Nullify FORCE_READ_INT/FLOAT definitions containing inline asm.
 #   2. After the wasm2c DEFINE_STORE block, insert macros that shadow i32_load,
-#      f64_load, etc. so each call site uses `_md + addr` directly.
+#      f64_load, etc. so each call site uses `_md + addr` directly. WABT 1.0.39 and
+#      1.0.41 call each helper's `_default32` form (a 32-bit memory of the default
+#      page size), so those route through the same shadows.
 #   3. After the opening `{` of every generated module function whose first
 #      parameter is `w2c_<module>* instance`, declare `_md`. Functions that don't access memory
 #      keep an unused const local — DCE'd at -O3 with no register cost.
+
+# Route each helper's `_default32` form through its shadow macro.
+function default32(names, params,    n, i, list) {
+  n = split(names, list, " ")
+  for (i = 1; i <= n; i++) print "#define " list[i] "_default32(" params ") " list[i] "(" params ")"
+}
 
 function inject_memory_base() {
   print "  __attribute__((unused)) u8* const __restrict__ _md = instance->w2c_memory.data;"
@@ -60,6 +68,8 @@ BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_fu
   print "#define i32_store16(mem, addr, val) do { u16 _v = (u16)(val); __builtin_memcpy(_md + (addr), &_v, 2); } while (0)"
   print "#define i64_store16(mem, addr, val) do { u16 _v = (u16)(val); __builtin_memcpy(_md + (addr), &_v, 2); } while (0)"
   print "#define i64_store32(mem, addr, val) do { u32 _v = (u32)(val); __builtin_memcpy(_md + (addr), &_v, 4); } while (0)"
+  default32("i32_load i64_load f32_load f64_load i32_load8_s i32_load8_u i64_load8_s i64_load8_u i32_load16_s i32_load16_u i64_load16_s i64_load16_u i64_load32_s i64_load32_u", "mem, addr")
+  default32("i32_store i64_store f32_store f64_store i32_store8 i64_store8 i32_store16 i64_store16 i64_store32", "mem, addr, val")
   injected = 1
   next
 }
@@ -86,6 +96,8 @@ BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_fu
   print "#define v128_load32_zero(mem, addr)   v128_impl_load32_zero(_md + (addr))"
   print "#define v128_load64_zero(mem, addr)   v128_impl_load64_zero(_md + (addr))"
   print "#define v128_store(mem, addr, value)  simde_wasm_v128_store(_md + (addr), (value))"
+  default32("v128_load v128_load8_splat v128_load16_splat v128_load32_splat v128_load64_splat i16x8_load8x8 u16x8_load8x8 i32x4_load16x4 u32x4_load16x4 i64x2_load32x2 u64x2_load32x2 v128_load32_zero v128_load64_zero", "mem, addr")
+  default32("v128_store", "mem, addr, value")
   simd_injected = 1
   next
 }
