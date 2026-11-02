@@ -932,11 +932,6 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   // The log starts empty with the outermost frame, and the lowest flag clear.
   const lowSet = (value) => { const s = node(GLOBAL_SET); push(s, str(ESC_LOW)); push(s, value); return s }
   const lowGet = () => { const g = node(intern('global.get')); push(g, str(ESC_LOW)); return g }
-  const logFrom = (bsave) => {
-    const iff = node(intern('if')); push(iff, outermost(bsave))
-    const call = push(push(iff, node(intern('then'))), node(CALL)); push(call, str(outerKernel()))
-    return iff
-  }
   // A frame that clears the flag hands what it held to the lowest: a handler
   // reads there what the frames an exception left did not hand back.
   const handOver = (esave) => {
@@ -947,14 +942,25 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   }
   const baseGet = () => { const g = node(intern('global.get')); push(g, str('$__base')); return g }
   const baseSet = (value) => { const s = node(GLOBAL_SET); push(s, str('$__base')); push(s, value); return s }
-  // The mark of the outermost frame reading the flag: this one's where none runs yet.
-  const baseEnter = (save) => {
-    const lower = node(intern('i32.lt_u')); push(lower, localGet(save)); push(lower, baseGet())
-    const pick = node(intern('select')); push(pick, localGet(save)); push(pick, baseGet()); push(pick, lower)
-    return baseSet(pick)
+  // The mark of the outermost frame reading the flag: this one's where none
+  // runs yet (the base all ones, above every mark), and there the log starts
+  // empty and the lowest flag clear (`logs`). One comparison of the mark with
+  // the base the frame finds decides both: a frame inside another finds the
+  // outer one's mark at or below its own and does nothing more.
+  const baseEnter = (save, bsave, logs) => {
+    const lower = node(intern('i32.lt_u')); push(lower, localGet(save)); push(lower, localTee(bsave, baseGet()))
+    const iff = node(intern('if')); push(iff, lower)
+    const then = push(iff, node(intern('then')))
+    if (logs) {
+      const first = push(then, node(intern('if'))); push(first, outermost(bsave))
+      const call = push(push(first, node(intern('then'))), node(CALL)); push(call, str(outerKernel()))
+    }
+    push(then, baseSet(localGet(save)))
+    return iff
   }
   const localGet = (name) => { const g = node(LOCAL_GET); push(g, str(name)); return g }
   const localSet = (name, value) => { const s = node(LOCAL_SET); push(s, str(name)); push(s, value); return s }
+  const localTee = (name, value) => { const s = node(LOCAL_TEE); push(s, str(name)); push(s, value); return s }
 
   phase(() => { for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
     if (T.op[f] !== FUNC) continue
@@ -1068,7 +1074,7 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
     const entry = esave == null ? [local(save, 'i32'), ...results, localSet(save, heapGet())]
       : [local(save, 'i32'), local(esave, 'i32'), local(bsave, 'i32'), ...results, localSet(save, heapGet()), localSet(esave, escGet()),
         ...(folds ? [handOver(esave)] : []), escSet(i32c(-1)),
-        localSet(bsave, baseGet()), ...(reach || folds ? [logFrom(bsave)] : []), baseEnter(save)]
+        baseEnter(save, bsave, reach || folds)]
     for (const n of entry) { insertAfter(f, at, n); at = n }
     rewound.add(name)
     if (esave != null) { flagged.add(name); readers.add(name); report?.(name, 'kept on a call that runs an escape: ' + (conditional.get?.(name) ?? rec.tapeFlagWhy)) }

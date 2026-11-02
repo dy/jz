@@ -2412,7 +2412,13 @@ clear), are kernels out of line (`$__frame_give`, `$__frame_outer`), which
 every conditional frame calls and no frame carries. Every frame still takes
 the lower of its mark and the base as it is entered: the base a frame finds
 can stand above its mark (leaving it as it stood freed a string a module
-binding held, test/number.js under `alloc: false`).
+binding held, test/number.js under `alloc: false`). One comparison of the
+mark with the base it finds decides that and whether the frame is the
+outermost reader: where none runs the base is all ones, above every mark, and
+the frame calls `$__frame_outer` before it sets the base; a frame inside
+another finds the outer one's mark at or below its own and does nothing more
+(optimize/arena-rewind.js `baseEnter`; seven instructions less on every
+frame's entry than a test of the outermost beside a select of the lower).
 
 Four refinements keep a site from lowering the flag for nothing. A store of
 a value that holds no heap pointer escapes only by making its receiver grow

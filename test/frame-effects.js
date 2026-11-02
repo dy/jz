@@ -1291,6 +1291,26 @@ test('arena rewind on the tape: a frame whose result may be a heap value restore
   is(why, '$f: result: may hold a heap value', 'by name')
 })
 
+test('arena rewind on the tape: a frame inside another finds the base at or below its mark and does no more as it is entered', () => {
+  // The base all ones (no frame reading the flag runs) stands above every mark: one
+  // comparison of the mark with the base decides whether the frame is the outermost
+  // reader (it starts the log, then sets the base) or one inside another (nothing).
+  const m = ['module', HEAP,
+    ['global', '$__esc', ['mut', 'i32'], ['i32.const', -1]], ['global', '$__base', ['mut', 'i32'], ['i32.const', -1]],
+    ['global', '$__roots', ['mut', 'i32'], ['i32.const', 0]], ['global', '$__rootn', ['mut', 'i32'], ['i32.const', 0]],
+    ['global', '$__tab', ['mut', 'i32'], ['i32.const', 0]],
+    ['func', '$__survive', ['param', '$mark', 'i32'], ['result', 'i32'], ['global.get', '$__heap']],
+    ['func', '$__root_reset', ['global.set', '$__rootn', ['i32.const', 0]]],
+    ['func', '$f', ['param', '$c', 'i32'], ['result', 'i32'],
+      ['if', ['local.get', '$c'], ['then', ['global.set', '$__esc', ['i32.const', 0]], ['global.set', '$__tab', ['local.get', '$c']]]], alloc],
+  ]
+  const f = src(onTape(m, root => arenaRewind(root, { rewindable: new Map([['$f', 'i32']]), heapAddr: null, censused: new Set(['$f']), userGlobals: new Set(['__tab']),
+    conditional: new Map([['$f', 'outer binding tab']]) })).find(n => n[1] === '$f'))
+  ok(/\["if",\["i32.lt_u",\["local.get","\$[^"]*heap_save0"\],\["local.tee","\$[^"]*esc_base0",\["global.get","\$__base"\]\]\],\["then",\["if",\["i32.eq",\["local.get","\$[^"]*esc_base0"\],\["i32.const",-1\]\],\["then",\["call","\$__frame_outer"\]\]\],\["global.set","\$__base",\["local.get","\$[^"]*heap_save0"\]\]\]\]/.test(f),
+    'the outermost test and the base\'s lowering stand behind one comparison: ' + f.slice(0, 600))
+  ok(!/"select"/.test(f), 'no select of the base at entry')
+})
+
 test('arena rewind on the tape: mutually recursive clean kernels are safe callees, and allocation counts through them', () => {
   const m = ['module', HEAP,
     ['func', '$__a', ['param', '$n', 'i32'], ['result', 'i32'], ['if', ['result', 'i32'], ['local.get', '$n'], ['then', ['call', '$__b', ['i32.sub', ['local.get', '$n'], ['i32.const', 1]]]], ['else', alloc]]],
