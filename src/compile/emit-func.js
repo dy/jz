@@ -16,6 +16,7 @@ import { restoreActiveFunction, publishLoopRewinds } from './active-function.js'
 import { installFunctionPlan } from './function-plan.js'
 import { makeMapOverlay } from './map-overlay.js'
 import { emit, emitBlockBody, emitIdentitySafe, emitVoid, toBool, bindingStore } from './emit.js'
+import { dropUnreadFieldCaches } from './emit/field-caches.js'
 import { emitCharDecompPrologue } from '../abi/string.js'
 import { representationReturnAction } from './representation-plan.js'
 import { recordParamClosureDefault, recordDirectReturnClosure } from './dyn-closure-tables.js'
@@ -332,6 +333,7 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'pre-emit')
   if (block) {
     const stmts = emitBlockBody(body)
+    dropUnreadFieldCaches(stmts)
     const cursorUnboxInits = hoistUnionCursorUnbox(stmts, func)
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])

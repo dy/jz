@@ -19,6 +19,7 @@ import {
 } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { emit, emitBlockBody, emitIdentitySafe, bindingStore } from './emit.js'
+import { dropUnreadFieldCaches } from './emit/field-caches.js'
 import { enterFunc, emitPreboxedLocalInits, placePreboxedLocalInits, seedSummaryParam, seedSummaryLocals } from './func-entry.js'
 import { paramAllUsesNumeric } from './param-numeric.js'
 import { unbounded } from '../summary/index.js'
@@ -292,6 +293,7 @@ export function emitClosureBody(cb, functionPlan) {
       ? emitIdentitySafe(cb.body)
       : carrierF64(cb.body,
         applyBigintRepresentationAction(emit(cb.body), cb.body, representationReturnAction(ctx, cb.body)))]
+  if (block) dropUnreadFieldCaches(bodyIR)
 
   // Pre-allocate cache locals for env unpacking
   const envBase = cb.captures.length > 0 ? `${T}envBase${freshId(ctx)}` : null

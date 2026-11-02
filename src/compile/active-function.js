@@ -45,6 +45,7 @@ export function createActiveFunction({
     cellTypes: null,
     flatObjects: null,
     fieldCaches: null,   // cse temp → the field read it holds (compile/cse-load.js); a push rebinds the field
+    cacheGuards: null,   // `$temp` of a field cache → what its read does besides the load, kept where nothing reads the cache (emit-func.js dropUnreadFieldCaches)
     projectedCursors: null, // raw cursors present because their next statement projects them (analyze/ptr-eligibility.js)
     sliceViews: null,
     arrayViews: null,

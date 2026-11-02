@@ -35,6 +35,7 @@ import { GLOBAL_TYPEOF, builtinGlobalOf } from '../../prepare/state.js'
 import { CMP_SET, boolEagerBody, copyReceiverFacts, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
 import { K, NUMBER, hasTag, isNullable, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
 import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
+import { noteFieldCacheGuard } from './field-caches.js'
 
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
@@ -854,6 +855,8 @@ export function emitDecl(...inits) {
     if (!Array.isArray(i) || i[0] !== '=') continue
     const [, name, init] = i
     if (typeof name !== 'string' || init == null) continue
+    // A field cache: what its read does besides the load, kept where nothing reads it (field-caches.js).
+    noteFieldCacheGuard(name, init, emit)
     // Flag bindings initialized to a nullish literal so arithmetic on them coerces (null→0,
     // undefined→NaN) rather than propagating the raw sentinel. See toNumF64 / maybeNullish.
     if (isNullishLit(init)) (ctx.func.maybeNullish ??= new Set()).add(name)

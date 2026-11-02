@@ -83,6 +83,28 @@ test('field cse: the guards of one event read its type once', () => {
   ok(count(on) < count(off), `fewer reads with the cache (${count(on)} against ${count(off)})`)
 })
 
+// The guards of the library's own events, which each store one name: every
+// test answers by the layout the pointer carries (comparisons.js
+// slotLiteralTest), so nothing reads the cache. Its declaration keeps only the
+// throw a nullish event makes (emit/field-caches.js): no read of the type,
+// none of its dispatch, behind the function's own (a function called from two
+// sites, which the default tier keeps one).
+const named = guards.replace('export let f', 'export let g = (n) => { try { return timeOf(n > 0 ? mk(n) : undefined) } catch (e) { return e instanceof TypeError ? -1 : -2 } }\nexport let f')
+  .replace('h * 1.0001 + timeOf(list[i])', 'h * 1.0001 + timeOf(list[i]) - timeOf(list[(i + 4) % list.length]) * 0.5')
+
+test('field cse: a type every guard answers by layout is not read', () => {
+  agrees(named, [[0], [1], [2], [-1]], 'named')
+  if (belowOpt(2)) return
+  for (const optimize of [2]) {
+    const body = funcWat(wat(named, { optimize }), 'timeOf')
+    ok(body, `timeOf is a function at ${optimize}`)
+    const reads = (body.match(/\$__dyn_get/g) || []).length
+    // the three times, each a read: the cache adds none
+    ok(reads <= 3, `${optimize}: ${reads} reads, the type's among them`)
+    ok(!/\(drop\s*\(block \$__dsro/.test(body), `${optimize}: no dispatch whose value is dropped`)
+  }
+})
+
 test('field cse: branch traversal preserves typed-array reductions', () => {
   for (const [cmp, op] of [['>', 'pmax'], ['<', 'pmin']]) {
     const src = `let a = new Float64Array(17)
