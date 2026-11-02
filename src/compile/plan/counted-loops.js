@@ -11,7 +11,12 @@
  *     ix += 4                                }
  *   }                                        ix = c + 4 * T
  *
- * Two rewrites, each exact:
+ * Three rewrites, each exact:
+ *
+ *   - `unitWalks`: a walk to an end tested by equality (`while (x !== e)`),
+ *     its cursor stepped by one unit one way, runs under `x < e` (`x > e`
+ *     stepping down) where the cursor and the end are integers: the counted
+ *     form every later pass reads.
  *
  *   - `guardConstants`: inside `if (p === 1 && q === 1) { … }` a name the arm
  *     never writes is the literal it was tested against, so `ix += p` steps by
@@ -40,13 +45,14 @@ import { frameRoots } from '../../function.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
 import { cloneWithSubst } from '../../type.js'
-import { optimizing, nodeSize } from './common.js'
+import { optimizing, nodeSize, collectBindings } from './common.js'
 import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { intLevelMap } from '../../type.js'
 import { K, NUMBER, core, tagOf } from '../../summary/kind.js'
 
 const lit = (v) => [null, v]
 const TRY = new Set(['try', 'catch', 'finally'])
+const MAX_WALK = 800   // a walk copied for each way its step points: as large as a loop the copies take
 const isInt = (n) => Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && Number.isInteger(n[1]) && Math.abs(n[1]) <= 0x7fffffff
 /** The integer `n` is: a literal, or a module constant by name (`var M = 5`). Null otherwise. */
 const intOf = (n) => isInt(n) ? n[1] : typeof n === 'string' && ctx.scope.constInts?.has(n) ? ctx.scope.constInts.get(n) : null
@@ -130,6 +136,131 @@ export const guardConstants = () => {
       const arm = substitute(node[2], consts)
       if (arm !== node[2]) { node[2] = arm; changed = true }
     } })
+  }
+  return changed
+}
+
+// ── walks to an end tested by equality ──────────────────────────────────────
+
+/** A step of `x` by a name, `x += d`, `x = x + d` (sign 1) or `x -= d`, `x = x - d`
+ *  (sign -1): { by: d, sign }, else null. */
+const nameStep = (n, x) => {
+  if (!Array.isArray(n) || n[1] !== x) return null
+  const v = n[0] === '+=' || n[0] === '-=' ? n[2]
+    : n[0] === '=' && Array.isArray(n[2]) && (n[2][0] === '+' || n[2][0] === '-') && n[2].length === 3 && n[2][1] === x ? n[2][2] : null
+  return typeof v === 'string' && v !== x && intOf(v) == null ? { by: v, sign: n[0] === '-=' || n[0] === '=' && n[2][0] === '-' ? -1 : 1 } : null
+}
+/** The way every write of `x` in `body` steps it by one unit: `{ by: 1 | -1, sign: 1 }`
+ *  for literal steps (`x++`, `x -= 1`), `{ by: d, sign }` for steps by one name the
+ *  same way, null for any other write or a mix. */
+const unitSteps = (body, x) => {
+  let way = null, ok = true
+  walkAst(body, { enter: (n) => {
+    if (!ok || !MUTATE_OPS.has(n[0]) || n[1] !== x) return
+    const k = stepOf(n, x)
+    const w = k === 1 || k === -1 ? { by: k, sign: 1 } : nameStep(n, x)
+    if (w == null || way != null && (way.by !== w.by || way.sign !== w.sign)) ok = false
+    else way = w
+  } })
+  return ok ? way : null
+}
+
+/** `x !== e` (or `!=`, either way round) for a cursor `x` the body steps by units: { x, e, by }. */
+const walkTest = (test, body) => {
+  if (!Array.isArray(test) || (test[0] !== '!==' && test[0] !== '!=') || test.length !== 3) return null
+  for (const [x, e] of [[test[1], test[2]], [test[2], test[1]]]) {
+    if (typeof x !== 'string' || x === e || mentions(e, x)) continue
+    const s = unitSteps(body, x)
+    if (s) return { x, e, by: s.by, sign: s.sign }
+  }
+  return null
+}
+
+/**
+ * A walk to an end it tests by equality (`while (x !== xEnd)`), each write of
+ * its cursor a step of one unit the same way (`x += dx` or `x -= dx`, `dx` one or
+ * minus one, or `x++`), passes every integer between its start and the end: where both
+ * are integers and the cursor starts at or before the end the way it steps, it
+ * stops where `x < xEnd` (`x > xEnd` stepping down) first fails, since no step
+ * crosses an integer (past 2^53 a step lands on the next Number, or stays).
+ * The loop runs under that test in a copy for each way the step can point,
+ * the step a literal there, and as written for the rest: a fraction, NaN, a
+ * value of another kind, a cursor past its end the way it steps (which may
+ * never stop). The integral copies below then read the copies' counters: a
+ * scan a cellular automaton runs left and right on alternate rows keeps its
+ * cursor, and the index of every cell, in words.
+ */
+function unitWalk(node, parent, idx, locals, captured) {
+  const [, test, body] = node
+  const w = walkTest(test, body)
+  if (!w) return false
+  const { x, e, by, sign } = w
+  const stable = (n) => typeof n === 'string' && locals.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
+  if (!stable(x) || !(isInt(e) || stable(e) && !writes(body, e))) return false
+  if (typeof by === 'string' && (!stable(by) || by === e || writes(body, by))) return false
+  // (a jump to a label outside leaves the copy; a closure may write what the guard read)
+  if (some(body, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await' ||
+    (n[0] === 'break' || n[0] === 'continue') && typeof n[1] === 'string')) return false
+  // (a cursor read as a key, or through a name that is: the copy's words pay there)
+  if (!some(body, n => n[0] === '[]' && n.length === 3)) return false
+  const ways = typeof by === 'string' ? [1, -1] : [by]
+  // under the test the cursor and the end are integers, Numbers by the first conjuncts
+  const ints = [numberGuard(x), ['===', x, call('math.floor', x)]]
+  if (!isInt(e)) ints.push(numberGuard(e), ['===', e, call('math.floor', e)])
+  includeModule('math')
+  const inner = new Set()
+  collectBindings(body, inner)
+  const copy = (k) => {
+    // the copy's own declarations, fresh; the step a literal, written downward as a subtraction
+    const own = new Map([...inner].map(n => [n, `${n}${T}uw${freshId(ctx)}`]))
+    const out = cloneWithSubst(body, new Map(), own)
+    // (a step by the name, `x += dx` or `x = x - dx`, is the literal's: `x += 1`, `x -= 1`, the
+    // value it leaves the same; a literal step stays as written)
+    const step = (n) => {
+      if (!Array.isArray(n) || n[0] === '=>') return n
+      if (typeof by === 'string' && MUTATE_OPS.has(n[0]) && n[1] === x)
+        return like(n, n[0] === '=' ? ['=', x, [k > 0 ? '+' : '-', x, lit(1)]] : [k > 0 ? '+=' : '-=', x, lit(1)])
+      for (let i = 1; i < n.length; i++) n[i] = step(n[i])
+      return n
+    }
+    return ['while', [k > 0 ? '<' : '>', x, cloneNode(e)], step(out)]
+  }
+  let out = node
+  // (the name's value `v`, the cursor's way `v · sign`)
+  for (const v of ways.reverse()) {
+    const k = v * sign
+    const conj = [...(typeof by === 'string' ? [['===', by, lit(v)]] : []), ...ints.map(cloneNode), [k > 0 ? '<=' : '>=', x, cloneNode(e)]]
+    out = ['if', conj.reduce((l, r) => ['&&', l, r]), ['{}', [';', copy(k)]], ['{}', [';', out]]]
+  }
+  parent[idx] = out
+  return true
+}
+
+export const unitWalks = () => {
+  const cfg = ctx.transform.optimize
+  if (!cfg || !cfg.countedLoops) return false
+  let changed = false
+  for (const func of ctx.funcs.list) {
+    if (func.raw || !func.body) continue
+    const captured = new Set()
+    walkAst(func.body, { enter: (n) => {
+      if (n[0] !== '=>') return
+      walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i]) } })
+      return false
+    } })
+    const locals = new Set((func.sig?.params ?? []).map(p => p.name))
+    collectBindings(func.body, locals)
+    const loops = []
+    walkAst(func.body, { enter: (node, parent, idx) => {
+      if (node[0] === '=>') return false
+      if (node[0] === 'while' && node.length === 3 && parent && parent[0] !== 'label') loops.push([node, parent, idx])
+    } })
+    let size = nodeSize(func.body)
+    for (const [node, parent, idx] of loops.reverse()) {
+      if (size > SOURCE_FULL && !kernelLoop(node)) continue
+      if (parent[idx] !== node || nodeSize(node) > MAX_WALK) continue
+      if (unitWalk(node, parent, idx, locals, captured)) { size += 2 * nodeSize(node); changed = true }
+    }
   }
   return changed
 }

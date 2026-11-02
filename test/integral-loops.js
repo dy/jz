@@ -1821,3 +1821,94 @@ test('integral loops: an index divided by a segment length divides in words, a z
   const body = funcWat(wat(src, { optimize: 2 }), 'go')
   ok(body.includes('i32.div_s') && body.includes('i32.rem_s'), 'the copy divides in words')
 })
+
+// A while counting down (`while (i > n)`, every write of i a decrement) is a
+// counter of the copy as one counting up is: from the bound to its entry, the
+// guard holding the bound above the word's floor by the loop's descent.
+test('integral loops: down-counting while counters preserve full entries, bounds and landing values', () => {
+  for (const [cmp, step] of [['>', 'i--'], ['>=', 'i--'], ['>', 'i-=3'], ['>', 'i = i - 1;if(count&1)i--']]) {
+    const src = `export function run(start, n) {
+      const a = new Int32Array([2, 3, 5, 7, 11, 13, 17, 19]), out = []
+      let i = start, count = 0
+      while (i ${cmp} n) {
+        out.push(i, a[i & 7]); count++
+        if (count > 4) break
+        ${step}
+      }
+      return [out, i, 1 / i]
+    }`
+    const host = oracle(src)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const [start, n] of [[0, 0], [3, 0], [2.5, 0], [3, 0.5], [0, -0], [2, -0], [-1, -3],
+        [-2147483645, -2147483648], [-2147483646, -2147483649], [2147483647, 2147483645],
+        [2147483648, 2147483646], [4294967299, 4294967296], [3, 0.5], [NaN, 2],
+        [2, NaN], [0, Infinity], [0, -Infinity], [-Infinity, -Infinity], [5, 5], [3, 0]])
+        is(got.run(start, n), host.run(start, n), `O${optimize}: ${start} ${cmp} ${n}, ${step}`)
+    }
+  }
+})
+
+// A walk to an end tested by equality, its cursor stepped by one unit one way
+// (plan/counted-loops.js unitWalks), runs under `<` or `>` where the cursor and
+// the end are integers, the cursor at or before the end: a scan alternating
+// direction by row (a falling-sand automaton's) indexes its cells by words both
+// ways, and every other start runs the loop as written.
+test('integral loops: a walk to an end tested by equality indexes by words both ways', () => {
+  const src = `let W = 0, H = 0, cell
+    export let resize = (w, h) => { W = w; H = h; cell = new Int32Array(w * h > 0 ? w * h : 0); for (let i = 0; i < cell.length; i++) cell[i] = (i * 7) % 5 }
+    export let scan = (p) => {
+      let w = W, h = H, s = 0, y = h - 2
+      while (y >= 0) {
+        let ltr = ((y + p) & 1) === 0
+        let x = ltr ? 0 : w - 1, xend = ltr ? w : -1, dxs = ltr ? 1 : -1
+        while (x !== xend) {
+          let c = y * w + x
+          if (cell[c] === 1) s += x
+          else if (cell[c] === 3) cell[c] = 2
+          x += dxs
+        }
+        y--
+      }
+      return s
+    }
+    let k = new Int32Array([0, 1, 2, 3, 4, 3, 2, 1])
+    export let walk = (x, e, d) => { let s = 0, n = 0; while (x !== e) { s += k[x & 7] * 3 + x; x += d; if (++n > 99) return -1 } return [s, x, 1 / x] }
+    export let up = (x, e) => { let s = 0, n = 0; while (x != e) { s = s * 3 + k[x & 7]; x++; if (++n > 99) return -1 } return [s, x] }
+    export let down = (x, e) => { let s = 0, n = 0; while (e !== x) { if (k[x & 7] === 4) { x--; continue } s += k[x & 7]; x = x - 1; if (++n > 99) return -1 } return [s, x] }
+    export let stop = (x, e, d) => { let s = 0; while (x !== e) { if (k[x & 7] === 3) break; s += x; x += d } return [s, x] }
+    export let read = (x, e) => { let s = 0, n = 0; while (x !== e) { s += k[(x++) & 7]; if (++n > 99) return -1 } return [s, x] }
+    export let back = (x, e, d) => { let s = 0, n = 0; while (e !== x) { s += k[x & 7] + x; x = x - d; if (++n > 99) return -1 } return [s, x] }`
+  const host = oracle(src)
+  const ints = [0, 1, 5, -3, -0, 40, 2147483600, 2147483647, -2147483648, 4294967296, 9007199254740990]
+  const others = [[0.5, 3, 1], [0, 3, -1], [5, 3, 1], [NaN, 3, 1], [0, 2.5, 1], [0, 3, 2], [0, 3, 0.5], [3, 0, 1], [-0, 0, 1], [Infinity, Infinity, 1]]
+  for (const optimize of levels(0, 2, 'speed')) {
+    const m = jz(src, { optimize }).exports
+    // (a fractional or negative width never meets its row's end, in JS as here)
+    for (const [w, h] of [[6, 4], [5, 5], [0, 3], [1, 3], [7, 2.5], [3, 0], [4, -1]])
+      for (const p of [0, 1]) { m.resize(w, h); host.resize(w, h); is(m.scan(p), host.scan(p), `O${optimize}: scan ${w}×${h} (${p})`) }
+    for (const x of ints) for (const e of ints) {
+      if (!(Math.abs(x - e) < 90)) continue
+      for (const d of [1, -1]) if ((e - x) * d >= 0) {
+        is(m.walk(x, e, d), host.walk(x, e, d), `O${optimize}: walk ${x} → ${e} by ${d}`)
+        is(m.stop(x, e, d), host.stop(x, e, d), `O${optimize}: stop ${x} → ${e} by ${d}`)
+        is(m.back(x, e, -d), host.back(x, e, -d), `O${optimize}: back ${x} → ${e} by ${-d}`)
+      }
+      if (x <= e) { is(m.up(x, e), host.up(x, e), `O${optimize}: up ${x} → ${e}`); is(m.read(x, e), host.read(x, e), `O${optimize}: read ${x} → ${e}`) }
+      if (x >= e) is(m.down(x, e), host.down(x, e), `O${optimize}: down ${x} → ${e}`)
+    }
+    for (const [x, e, d] of others) {
+      is(m.walk(x, e, d), host.walk(x, e, d), `O${optimize}: walk ${x} → ${e} by ${d}`)
+      is(m.back(x, e, -d), host.back(x, e, -d), `O${optimize}: back ${x} → ${e} by ${-d}`)
+      // (a stride past the end with no break to stop it never ends, in JS as here)
+      if (x === x && d !== 2) is(m.stop(x, e, d), host.stop(x, e, d), `O${optimize}: stop ${x} → ${e} by ${d}`)
+      is(m.up(x, e), host.up(x, e), `O${optimize}: up ${x} → ${e}`)
+      is(m.read(x, e), host.read(x, e), `O${optimize}: read ${x} → ${e}`)
+      is(m.down(e, x), host.down(e, x), `O${optimize}: down ${e} → ${x}`)
+    }
+  }
+  if (belowOpt(2)) return
+  const scan = funcWat(wat(src, { optimize: 'speed' }), 'scan')
+  ok(/\(i32\.add \(local\.get \$x[^\s)]*int\d+\) \(i32\.const 1\)/.test(scan), 'the rightward cursor steps as a word')
+  ok(/\(i32\.sub \(local\.get \$x[^\s)]*int\d+\) \(i32\.const 1\)/.test(scan), 'the leftward cursor steps as a word')
+})

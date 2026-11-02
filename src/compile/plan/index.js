@@ -75,7 +75,7 @@ import { viewGuardedTyped } from './guard-views.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
 import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
-import { guardConstants, canonicalizeCountedLoops, adoptLoopCounters } from './counted-loops.js'
+import { guardConstants, canonicalizeCountedLoops, adoptLoopCounters, unitWalks } from './counted-loops.js'
 import { scalarizeModuleScratch } from './scratch.js'
 import { resolveAliases, splitSplicedBindings } from './alias.js'
 import { propagateConstants } from './constants.js'
@@ -238,6 +238,9 @@ export default function plan(ast, profiler, summarize) {
     // no kind for them, and a cursor the canonical form needs proved a Number is
     // one it cannot read.
     if (spliced || lambdas) ctx.summary = summarize()
+    // A walk to an end tested by equality, its cursor stepped by units one way: the
+    // loop under `<` (`>` stepping down), a copy for each way the step can point.
+    sweep('unitWalks', unitWalks)
     sweep('guardConstants', guardConstants)
     // A byte array a read fills and read only where the read wrote: no zero fill.
     // After inlining, which puts the read beside the array; ahead of the loop forms.

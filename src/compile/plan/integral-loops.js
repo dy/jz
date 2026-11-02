@@ -70,6 +70,11 @@
  * that, the copy's counter is a word stepped as wraps, and the stream cursor
  * beside it a word with its budget over the rounds.
  *
+ * A while counting down (`while (x > n)`, every write of x a decrement, one
+ * every time round) is the mirror of one counting up: its counter lies between
+ * the bound and its entry, and the guard holds the bound above the word's
+ * floor by the loop's descent, so no step of the copy's word wraps.
+ *
  * A cursor stepped inside a nested loop is the copy's whatever its entry and the
  * trips (the emitter's own cursor proofs read the loop's body alone): a loop
  * entered under the round's own test (`for (b < 8 && ip < n)` under `while (ip <
@@ -160,7 +165,7 @@ import { isExported } from '../func-exports.js'
 import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
 import { isExactDivision, markExactDivisions } from '../../type/int-certain.js'
 import { MAX_SMALL_FOR_UNROLL } from '../../type/loop-unroll.js'
-import { maxAdvanceBudget, minAdvanceBudget } from '../../type/canonical-bounds.js'
+import { maxAdvanceBudget, minAdvanceBudget, maxMovementBudget } from '../../type/canonical-bounds.js'
 import { runsAccessor, runsConversion } from '../../evaluation-effects.js'
 import { K, core, hasTag, tagOf, NUMBER } from '../../summary/kind.js'
 import { invalidateBodies } from '../analyze.js'
@@ -282,6 +287,31 @@ const unitStep = (body, counter) => {
   const walk = (n, inLoop) => {
     if (!ok || !Array.isArray(n) || n[0] === '=>') return
     if (MUTATE_OPS.has(n[0]) && n[1] === counter && !step(n)) ok = false
+    if (n[0] === 'continue' && !inLoop) ok = false
+    for (let i = 1; i < n.length; i++) walk(n[i], inLoop || ALL_LOOPS.has(n[0]))
+  }
+  walk(body, false)
+  return ok
+}
+/** A while's counter stepped down the same way (`c--`, `c -= k`, k ≥ 1): every write
+ *  of it a decrement, one among the body's own statements, no `continue` of the
+ *  loop's own. Within the body it lies between the loop's bound and its entry. */
+const unitFall = (body, counter) => {
+  const fall = (n) => {
+    const st = n?.[0] === 'postfix' ? n[1] : n
+    if (!Array.isArray(st) || st[1] !== counter) return false
+    if (st[0] === '--' || st[0] === '-1') return true
+    const k = st[0] === '-=' ? st[2] : st[0] === '=' && Array.isArray(st[2]) && st[2][0] === '-' && st[2].length === 3 && st[2][1] === counter ? st[2][2] : null
+    return Array.isArray(k) && k[0] == null && Number.isInteger(k[1]) && k[1] >= 1
+  }
+  const list = Array.isArray(body) && (body[0] === ';' || body[0] === '{}') ? body.slice(1) : [body]
+  const always = (n) => Array.isArray(n) && n[0] !== '=>' && n[0] !== 'if' && n[0] !== '?:' && n[0] !== '&&' && n[0] !== '||' && n[0] !== '??' && !ALL_LOOPS.has(n[0]) &&
+    (fall(n) || n.some((c, i) => i > 0 && always(c)))
+  if (!list.some(always)) return false
+  let ok = true
+  const walk = (n, inLoop) => {
+    if (!ok || !Array.isArray(n) || n[0] === '=>') return
+    if (MUTATE_OPS.has(n[0]) && n[1] === counter && !fall(n)) ok = false
     if (n[0] === 'continue' && !inLoop) ok = false
     for (let i = 1; i < n.length; i++) walk(n[i], inLoop || ALL_LOOPS.has(n[0]))
   }
@@ -701,6 +731,23 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
             min: -2147483648, max: 2147483647 - advance + (inclusive ? 0 : 1),
             // (the trips: a literal start, at least a unit step up every time round: literal steps, or a rise of at least one by the budget)
             trip: entry != null && (unitStep(loop[2], counter) || (minAdvanceBudget(loop[2], counter, budget) ?? 0) >= 1) ? { n, adj: inclusive ? 1 : 0, entry } : null }
+        }
+      }
+    }
+    // Counting down (`while (x > n)`, every write of x a decrement): the same, mirrored. For an
+    // integer x, `x > n` is `x > floor(n)` and `x >= n` is `x > ceil(n) - 1`; the guard holds
+    // that bound above the word's floor by the loop's descent, so no step of it wraps.
+    if (loop[0] === 'while' && (loop[1]?.[0] === '>' || loop[1]?.[0] === '>=')) {
+      const counter = loop[1][1], n = loop[1][2], inclusive = loop[1][0] === '>='
+      const terms = stableTerms(n)
+      if (typeof counter === 'string' && outerOk(counter) && mayBeNumber(counter) && terms && !intExprRange(n) && !(typeof n === 'string' && int32Held(n)) &&
+          unitFall(loop[2], counter)) {
+        const descent = maxMovementBudget(loop[2], counter, budget)
+        if (descent > 0 && descent <= 2147483647) {
+          const rounded = ['()', inclusive ? 'math.ceil' : 'math.floor', n]
+          counterBound = { name: n, terms, counter, entry: null, testAt: 1, comparison: '>',
+            bound: ['>>', inclusive ? ['-', rounded, [null, 1]] : rounded, [null, 0]],
+            min: -2147483648 + descent - (inclusive ? 0 : 1), max: 2147483647, trip: null }
         }
       }
     }
@@ -1124,6 +1171,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (typeof counter !== 'string') return null
       if (counterBound) {
         // (to the bound less one, or to the bound itself under `<=`)
+        // (counting down: from the bound plus one to its entry)
+        if (counterBound.comparison === '>') return unitFall(loop[2], counter) ? [add(cloneNode(counterBound.bound), lit(1)), counter] : null
         if (counterBound.comparison !== '<' && counterBound.comparison !== '<=') return null
         const entry = counterBound.trip ? lit(counterBound.trip.entry) : loop[0] === 'while' && unitStep(loop[2], counter) ? counter : null
         return entry == null ? null : [entry, counterBound.comparison === '<' ? sub(cloneNode(counterBound.bound), lit(1)) : cloneNode(counterBound.bound)]
