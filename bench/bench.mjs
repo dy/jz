@@ -433,19 +433,43 @@ const runProc = (argv, opts = {}) => {
   const limited = timed && TIMEOUT_BIN ? [TIMEOUT_BIN, '-s', 'KILL', String(RUN_LIMIT_S), ...argv] : argv
   const wrapped = timed ? [TIME_BIN, ...TIME_ARGS, ...limited] : argv
   const timeout = opts.timeout ?? (RUN_LIMIT_S + 30) * 1000
+  const start = performance.now()
   const r = spawnSync(wrapped[0], wrapped.slice(1), {
     cwd: BENCH_DIR,
     encoding: 'utf8',
     timeout, killSignal: 'SIGKILL',
   })
   if (r.error?.code === 'ETIMEDOUT') return { error: `timeout after ${timeout}ms`, timedOut: true }
-  // timeout(1) kills with SIGKILL: the program's status reads 137 through time(1)
-  if (timed && TIMEOUT_BIN && r.status === 137) return { error: `timeout after ${RUN_LIMIT_S}s`, timedOut: true }
+  // timeout(1) kills with SIGKILL: the program's status reads 137 through time(1).
+  // So does a kill from outside, the kernel's OOM killer's: told apart by the clock.
+  if (timed && TIMEOUT_BIN && r.status === 137) return (performance.now() - start) / 1000 >= RUN_LIMIT_S
+    ? { error: `timeout after ${RUN_LIMIT_S}s`, timedOut: true }
+    : { error: killedText((performance.now() - start) / 1000) }
   if (r.status !== 0) return { error: `exit ${r.status}: ${(r.stderr || r.stdout || r.signal || '').trim().slice(0, 240)}` }
   const parsed = parseLine(r.stdout)
   if (!parsed) return { error: `unparseable stdout: ${(r.stdout || r.stderr || '').trim().slice(0, 240)}` }
   parsed.memKb = timed && r.stderr ? parseMaxRss(r.stderr) : null
   return parsed
+}
+
+const killedText = s => `killed by SIGKILL after ${Math.round(s)}s, before any limit (out of memory?)`
+// A compiler of the case's own JavaScript scales with it: the self-compile case's
+// bundle is 6.9 MB, twelve times the next largest. Bound such a build in time and
+// end its whole process group, so the compiler's own children (cc, ld, LLVM) cannot
+// outlive the limit as Node's timeout, which kills the direct child only, lets them.
+// A kill is a failed row with its cause; the case's other lanes still run.
+const BUILD_LIMIT_S = Math.max(1, +(process.env.JZ_BENCH_BUILD_LIMIT_S || 600))
+const boundedBuild = (cmd, args, opts = {}, limitS = BUILD_LIMIT_S) => {
+  const start = performance.now()
+  try {
+    return TIMEOUT_BIN
+      ? execFileSync(TIMEOUT_BIN, ['-s', 'KILL', String(limitS), cmd, ...args], { stdio: 'pipe', ...opts, timeout: (limitS + 30) * 1000, killSignal: 'SIGKILL' })
+      : execFileSync(cmd, args, { stdio: 'pipe', ...opts, timeout: limitS * 1000, killSignal: 'SIGKILL' })
+  } catch (e) {
+    const s = (performance.now() - start) / 1000
+    if (e.signal === 'SIGKILL' || e.status === 137) throw Error(s >= limitS ? `build exceeded ${limitS}s` : killedText(s))
+    throw e
+  }
 }
 
 // In paired mode, each (target, case) builds ONCE — the warm round runs prep,
@@ -953,7 +977,7 @@ const targets = {
     bin: shermesBinPath,
     linked: c => hermesLibs(shermesBinPath(c)),
     run: c => runFlat('shermes', c, () => [shermesBinPath(c)], src => {
-      execFileSync(SHERMES_BIN, ['-O', src, '-o', shermesBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe', env: sdkEnv })
+      boundedBuild(SHERMES_BIN, ['-O', src, '-o', shermesBinPath(c)], { cwd: BENCH_DIR, env: sdkEnv })
     }),
   },
   // The ONE Porffor lane: `porf native` AOT-compiles JS through its C backend
@@ -967,7 +991,7 @@ const targets = {
     available: () => has(PORF_BIN) && porfIsNew(),
     bin: porfNatPath,
     run: c => runFlat('porf-native', c, () => [porfNatPath(c)], src => {
-      execFileSync(PORF_BIN, ['native', src, '-o', porfNatPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      boundedBuild(PORF_BIN, ['native', src, '-o', porfNatPath(c)], { cwd: BENCH_DIR })
     }, { nativePerformance: true }),
   },
   // scriptc (vercel-labs): TS/JS AOT via the TypeScript checker + LLVM, the
@@ -982,9 +1006,7 @@ const targets = {
     available: () => has(SCRIPTC_BIN),
     bin: scriptcBinPath,
     run: c => runFlat('scriptc', c, () => [scriptcBinPath(c)], src => {
-      execFileSync(SCRIPTC_BIN, ['build', src, '-o', scriptcBinPath(c)], {
-        cwd: caseBuild(c), stdio: 'pipe', env: sdkEnv, timeout: 120_000, killSignal: 'SIGKILL',
-      })
+      boundedBuild(SCRIPTC_BIN, ['build', src, '-o', scriptcBinPath(c)], { cwd: caseBuild(c), env: sdkEnv }, 120)
     }, { nativeGlobals: true, timeout: 60_000 }),
   },
   tslang: {
@@ -997,12 +1019,8 @@ const targets = {
       // tslang has no performance global. Bind only the host clock; no kernel
       // annotations, inferred-width hints, or replacement array implementations.
       writeFileSync(ts, 'declare function jz_bench_now(): number;\nconst performance = { now: () => jz_bench_now() };\n' + readFileSync(src, 'utf8'))
-      execFileSync('clang', ['-O2', '-fPIC', ...macSysrootArgs, '-c', join(LIB, 'tslang-clock.c'), '-o', clock], {
-        cwd: caseBuild(c), stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL',
-      })
-      execFileSync(TSLANG_BIN, ['--emit=exe', '--opt', '--opt_level=3', '--relocation-model=pic', `--obj=${clock}`, ts, '-o', tslangBinPath(c)], {
-        cwd: caseBuild(c), stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL',
-      })
+      boundedBuild('clang', ['-O2', '-fPIC', ...macSysrootArgs, '-c', join(LIB, 'tslang-clock.c'), '-o', clock], { cwd: caseBuild(c) }, 120)
+      boundedBuild(TSLANG_BIN, ['--emit=exe', '--opt', '--opt_level=3', '--relocation-model=pic', `--obj=${clock}`, ts, '-o', tslangBinPath(c)], { cwd: caseBuild(c) }, 120)
     }, { nativeGlobals: true, timeout: 60_000 }),
   },
   perry: {
@@ -1010,10 +1028,9 @@ const targets = {
     available: () => has(PERRY_BIN),
     bin: perryBinPath,
     run: c => runFlat('perry', c, () => [perryBinPath(c)], src => {
-      execFileSync(PERRY_BIN, ['compile', src, '-o', perryBinPath(c), '--fp-contract', 'off', '--cache-dir', join(BUILD, 'perry-cache')], {
-        cwd: caseBuild(c), stdio: 'pipe', timeout: 120_000, killSignal: 'SIGKILL',
-        env: { ...process.env, PERRY_NO_UPDATE_CHECK: '1', PERRY_UPDATE_MODE: 'off' },
-      })
+      boundedBuild(PERRY_BIN, ['compile', src, '-o', perryBinPath(c), '--fp-contract', 'off', '--cache-dir', join(BUILD, 'perry-cache')], {
+        cwd: caseBuild(c), env: { ...process.env, PERRY_NO_UPDATE_CHECK: '1', PERRY_UPDATE_MODE: 'off' },
+      }, 120)
     }, { nativeGlobals: true, timeout: 60_000 }),
   },
   // Tov is a ported language, like Rust/Go/AssemblyScript, not a JS host: it
@@ -1187,8 +1204,7 @@ const targets = {
     run: c => runFlat('js2wasm', c, () => ['node', '--no-warnings', join(LIB, 'run-js2wasm.mjs'), targets.js2wasm.bin(c),
       join(dirname(whichPath(JS2WASM_BIN)), 'runtime.js')], src => {
       mkdirSync(join(caseBuild(c), 'js2wasm'), { recursive: true })
-      execFileSync(JS2WASM_BIN, [src, '--target', 'node', '--no-wat', '--no-dts', '-q', '-o', join(caseBuild(c), 'js2wasm')], {
-        cwd: caseBuild(c), stdio: 'pipe', timeout: 300_000, killSignal: 'SIGKILL' })
+      boundedBuild(JS2WASM_BIN, [src, '--target', 'node', '--no-wat', '--no-dts', '-q', '-o', join(caseBuild(c), 'js2wasm')], { cwd: caseBuild(c) }, 300)
     }),
   },
   // QuickJS-NG's own WASI build, fenced like Javy: the release's engine module
@@ -1210,7 +1226,7 @@ const targets = {
     bin: c => componentPath(c, 'cqjs'),
     run: c => runFlat('componentize-qjs', c, () => [WASMTIME_BIN, 'run', componentPath(c, 'cqjs')], flat => {
       const src = componentSource(c, 'cqjs', flat, readFileSync(join(LIB, 'qjs-host.js'), 'utf8'))
-      execFileSync(CQJS_BIN, ['--wit', COMPONENT_WIT, '--js', src, '--sync', '-o', componentPath(c, 'cqjs')], { cwd: caseBuild(c), stdio: 'pipe' })
+      boundedBuild(CQJS_BIN, ['--wit', COMPONENT_WIT, '--js', src, '--sync', '-o', componentPath(c, 'cqjs')], { cwd: caseBuild(c) })
     }, { deferMain: true }),
   },
   // ComponentizeJS through `jco componentize`: StarlingMonkey (SpiderMonkey)
@@ -1222,8 +1238,8 @@ const targets = {
     available: () => has(JCO_BIN) && has(WASMTIME_BIN),
     bin: c => componentPath(c, 'sm'),
     run: c => runFlat('componentize-js', c, () => [WASMTIME_BIN, 'run', componentPath(c, 'sm')], flat => {
-      execFileSync(JCO_BIN, ['componentize', componentSource(c, 'sm', flat), '--wit', COMPONENT_WIT,
-        '--disable', 'http', 'fetch-event', '-o', componentPath(c, 'sm')], { cwd: caseBuild(c), stdio: 'pipe' })
+      boundedBuild(JCO_BIN, ['componentize', componentSource(c, 'sm', flat), '--wit', COMPONENT_WIT,
+        '--disable', 'http', 'fetch-event', '-o', componentPath(c, 'sm')], { cwd: caseBuild(c) })
     }, { deferMain: true }),
   },
   // TinyGo — the same .go sources as `go`/`go-wasm`, through LLVM instead of the gc
