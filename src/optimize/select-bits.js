@@ -19,6 +19,17 @@
  * branch predicts, and costs less than the two register transfers the integer
  * move needs.
  *
+ * A choice between the two operands of its own order test (`d < m ? d : m`, a
+ * running minimum, a nearest feature point, `a > b ? a : b`) is the SIMD
+ * pseudo-minimum or pseudo-maximum of those operands, whose definition is that
+ * choice (`pmin(m, d)` = `d < m ? d : m`, NaN and signed zeros included): lane 0
+ * of `f64x2.pmin` over the two splats. V8 lowers it to `minpd` on x64 and
+ * `fcmgt` + `bsl` on arm64, all in vector registers: no branch, and none of the
+ * transfers between register files the integer move puts on the chain a running
+ * minimum carries from one iteration to the next. The operands then evaluate in
+ * the other order, so one of them must be a read the other's evaluation does not
+ * change. Without SIMD (`optimize: { simd: false }`) the choice takes the bits.
+ *
  * @module optimize/select-bits
  */
 
@@ -58,21 +69,45 @@ const decidedByData = (c, fixed = isConst) => {
   return FLOAT_CMP.has(c[0]) && c.length === 3 && !fixed(c[1]) && !fixed(c[2]) && !sameRead(c[1], c[2]) && !sameRead(c[2], c[1])
 }
 
+// the locals `n` writes
+const writes = (n, set = new Set()) => {
+  if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') set.add(n[1])
+  for (let i = 1; i < n.length; i++) if (isArr(n[i])) writes(n[i], set)
+  return set
+}
 // the locals a loop writes, its nested loops included
 const writtenIn = (loop, memo) => {
   let set = memo.get(loop)
-  if (set) return set
-  memo.set(loop, set = new Set())
-  const walk = (n) => {
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') set.add(n[1])
-    for (let i = 1; i < n.length; i++) if (isArr(n[i])) walk(n[i])
-  }
-  walk(loop)
+  if (!set) memo.set(loop, set = writes(loop))
   return set
 }
 
-/** Rewrite the float selects of every function in `ast` (a module) to integer selects of their bits. */
-export function selectBits(ast) {
+// a read of a local, or a tee of one: the local, else null
+const readOf = (n) => isArr(n) && (n[0] === 'local.get' || n[0] === 'local.tee') && typeof n[1] === 'string' ? n[1] : null
+const PSEUDO = { f64: ['f64x2.splat', 'f64x2.pmin', 'f64x2.pmax', 'f64x2.extract_lane'], f32: ['f32x4.splat', 'f32x4.pmin', 'f32x4.pmax', 'f32x4.extract_lane'] }
+/** `select(a, b, c)` of type `t` as the pseudo-minimum or -maximum of its arms, or null.
+ *  `c` orders the arms' own values (`a < b`, `a > b`, `b < a`, `b > a`): `a < b ? a : b` is
+ *  `pmin(b, a)`, `b < a ? a : b` is `pmax(b, a)`. The arms then evaluate b first: one of them
+ *  is a bare read the other leaves alone, and b writes no local a or the test reads. */
+const pseudoMinMax = (a, b, c, t) => {
+  const x = readOf(a), y = readOf(b)
+  if (x == null || y == null || x === y || !isArr(c) || c.length !== 3 || c[1]?.[0] !== 'local.get' || c[2]?.[0] !== 'local.get') return null
+  const op = c[0].slice(4)
+  if (c[0].slice(0, 3) !== t || (op !== 'lt' && op !== 'gt')) return null
+  // which arm the test puts first: `a op b` or `b op a`
+  const first = c[1][1] === x && c[2][1] === y ? 'a' : c[1][1] === y && c[2][1] === x ? 'b' : null
+  if (!first) return null
+  // (the test reads a's value after b ran)
+  if (writes(b).has(x) || !(a[0] === 'local.get' || b[0] === 'local.get' && !writes(a).has(y))) return null
+  // `a < b` (`b > a`): the smaller wins
+  const min = (op === 'lt') === (first === 'a')
+  const [splat, pmin, pmax, lane] = PSEUDO[t]
+  return [lane, '0', [min ? pmin : pmax, [splat, b], [splat, a]]]
+}
+
+/** Rewrite the float selects of every function in `ast` (a module) to integer selects of their bits,
+ *  those of a choice between two ordered operands to their pseudo-minimum or -maximum where `simd`. */
+export function selectBits(ast, { simd = true } = {}) {
   if (!isArr(ast)) return ast
   const globals = new Map()
   for (const n of ast) {
@@ -101,6 +136,8 @@ export function selectBits(ast) {
         if (c.length !== at + 3 || !decidedByData(c[at + 2], fixed)) continue
         const t = floatType(c, locals, globals)
         if (!t) continue
+        const pm = simd ? pseudoMinMax(c[at], c[at + 1], c[at + 2], t) : null
+        if (pm) { n[i] = pm; continue }
         const [w, toBits, fromBits] = BITS[t]
         n[i] = [fromBits, ['select', ...(typed ? [['result', w]] : []), [toBits, c[at]], [toBits, c[at + 1]], c[at + 2]]]
       }

@@ -641,7 +641,7 @@ export function watrTail(module, cfg, {
   // (on the arms the truncations brought together: a select of their leaves, before the selects become bits)
   if (cfg.selectArms !== false) time('selectArms', () => selectArms(optimized))
   // (after the passes that read a float select as one)
-  if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized))
+  if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized, { simd: !ctx.transform.noSimd }))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)
   if (cfg.searchLoops === true) time('searchLoops', () => searchLoops(optimized))
   // (on the loops the optimizer leaves: its value numbering would read the gather back where the round uses it)

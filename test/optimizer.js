@@ -4986,8 +4986,9 @@ test('poolFloats: nonzero float literals read immutable globals at speed, bit fo
 })
 
 // x64 V8 branches around a float select; a condition the data decides (a hash bit picking a
-// gradient's sign, a running minimum) mispredicts half the time. The speed tier picks between
-// the operands' bits instead, a conditional move; a clamp against a literal keeps its select.
+// gradient's sign) mispredicts half the time. The speed tier picks between the operands' bits
+// instead, a conditional move; a running minimum is the operands' pseudo-minimum (below); a
+// clamp against a literal keeps its select.
 test('selectBits: a float select the data decides picks the operands\' bits at speed', () => {
   const src = `export let f = (n) => {
     const h = new Int32Array(64), v = new Float64Array(64)
@@ -5010,19 +5011,21 @@ test('selectBits: a float select the data decides picks the operands\' bits at s
   for (const optimize of ['speed', 2]) { const f = run(src, { optimize }).f; for (const n of [0, 1, 6, 64, 1000]) is(f(n), host(n), `O${optimize} n=${n}`) }
   if (onKernel()) return
   const ast = parseWat(compile(src, { wat: true, optimize: 'speed' }))
-  let bits = 0, plain = 0
+  let bits = 0, plain = 0, pmin = 0
   walk(ast, n => {
     if (n[0] === 'f64.reinterpret_i64' && Array.isArray(n[1]) && n[1][0] === 'select') bits++
     else if (n[0] === 'select' && Array.isArray(n[n.length - 1]) && n[n.length - 1][0] === 'f64.gt') plain++
+    else if (n[0] === 'f64x2.pmin') pmin++
   })
-  ok(bits >= 3, `the sign picks and the running minimum select bits (${bits})`)
+  ok(bits >= 2, `the sign picks select bits (${bits})`)
+  ok(pmin >= 1, `the running minimum is a pseudo-minimum (${pmin})`)
   ok(plain >= 1, 'the clamp against a literal keeps its float select')
 })
 
 // A clamp against limits its loop reads before it (a range record's min and max)
 // holds the same way nearly always, as one against a literal does: its select
 // stays a float select, whose branch predicts. A bound the loop writes (a running
-// minimum) is still the data's.
+// minimum) is still the data's: its choice is the pseudo-minimum.
 test('selectBits: a clamp against bounds its loop never writes keeps its float select', () => {
   const src = `export let f = (lo, hi, n) => {
     const v = new Float64Array(64)
@@ -5046,14 +5049,52 @@ test('selectBits: a clamp against bounds its loop never writes keeps its float s
   }
   if (onKernel()) return
   const ast = parseWat(compile(src, { wat: true, optimize: 'speed' }))
-  let bits = 0, plain = 0
+  let pmin = 0, plain = 0
   walk(ast, n => {
-    if (n[0] === 'f64.reinterpret_i64' && Array.isArray(n[1]) && n[1][0] === 'select') bits++
+    if (n[0] === 'f64x2.pmin') pmin++
     // (a bits select's own select picks i64 operands)
     else if (n[0] === 'select' && Array.isArray(n[n.length - 1]) && /^f64\.[lg]t$/.test(n[n.length - 1][0]) && !(Array.isArray(n[1]) && n[1][0] === 'i64.reinterpret_f64')) plain++
   })
   ok(plain >= 2, `the two clamps keep their float selects (${plain})`)
-  ok(bits >= 1, `the running minimum selects bits (${bits})`)
+  ok(pmin >= 1, `the running minimum is a pseudo-minimum (${pmin})`)
+})
+
+// A choice between the two operands of its own order test is their pseudo-minimum or
+// -maximum, `pmin(m, d)` = `d < m ? d : m` by definition, NaN and signed zeros included:
+// lane 0 of f64x2.pmin/pmax over splats, `minpd` on x64 and `fcmgt` + `bsl` on arm64,
+// where the bits route moved both operands between register files on the chain a running
+// extreme carries to the next iteration (worley's nine feature points). Without SIMD the
+// choice keeps the bits.
+test('selectBits: a choice between its test\'s operands is their pseudo-minimum or -maximum', () => {
+  const src = `export let f = (n, seed) => {
+    const v = new Float64Array(64)
+    let s = seed | 0
+    for (let i = 0; i < 64; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; v[i] = (s & 4095) / 512 - 4 }
+    v[3] = NaN; v[7] = -0; v[8] = 0; v[11] = -0; v[20] = NaN
+    let lo = Infinity, hi = -Infinity, a = 0, b = -0, acc = 0
+    for (let k = 0; k < n; k++) {
+      const x = v[k & 63], y = v[(k * 7 + 3) & 63]
+      lo = x < lo ? x : lo
+      hi = hi < x ? x : hi
+      a = x > a ? a : x
+      b = y > b ? y : b
+      acc += 1 / (x < y ? x : y) + (y > x ? x : y)
+    }
+    return [lo, hi, a, b, acc, 1 / lo, 1 / hi, 1 / a, 1 / b]
+  }`
+  const host = oracle(src).f
+  const same = (got, want, msg) => is(got.map(x => Object.is(x, -0) ? '-0' : String(x)), want.map(x => Object.is(x, -0) ? '-0' : String(x)), msg)
+  for (const optimize of [{ level: 'speed' }, 2, { level: 'speed', simd: false }]) {
+    const f = run(src, { optimize }).f
+    for (const seed of [0x2545f491, 7, -99]) for (const n of [0, 1, 4, 9, 64, 500]) same(f(n, seed), host(n, seed), `${JSON.stringify(optimize)} seed=${seed} n=${n}`)
+  }
+  if (onKernel()) return
+  const count = (wat, re) => (wat.match(re) ?? []).length
+  const fast = compile(src, { wat: true, optimize: 'speed' }), body = fast.slice(fast.indexOf('(func $f'))
+  ok(count(body, /f64x2\.pmin/g) >= 2 && count(body, /f64x2\.pmax/g) >= 2, 'the running extremes are pseudo-extremes')
+  ok(!/f64\.reinterpret_i64 \(select|reinterpret_i64\s*\(select/.test(body), 'none of them takes the bits')
+  const scalar = compile(src, { wat: true, optimize: { level: 'speed', simd: false } })
+  ok(!/v128|f64x2/.test(scalar), 'simd: false stays scalar')
 })
 
 // x64 V8 lowers a byte or halfword mask to a zero extension; over `x ^ y` it extends a register

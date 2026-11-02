@@ -100,7 +100,9 @@ const LEVEL_PRESETS = Object.freeze({
   // integer register at each use, where a global is one folded load. selectBits
   // makes a float select whose condition the data decides an integer select of
   // the operands' bits (optimize/select-bits.js): x64 V8 branches around a float
-  // select, a conditional move needs no prediction. maskOperands moves a byte or
+  // select, a conditional move needs no prediction; one between the two operands
+  // of its own test (a running minimum) their SIMD pseudo-minimum, no transfer
+  // between register files on the chain it carries. maskOperands moves a byte or
   // halfword mask over `^`/`|` onto the operand it narrows (optimize/mask-operands.js):
   // x64 V8 zero-extends a value still live into a register of its own, a move the core
   // renames away, where over the combination it extends a register into itself.
