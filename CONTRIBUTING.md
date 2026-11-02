@@ -1633,6 +1633,13 @@ bound rounding at every addition without reassociating the arithmetic. These
 bounds remove only the ToInt32 infinity guard, retaining the f64 accumulator
 and its captured value. The peephole and wide-accumulator pass share the exact
 conversion recognizer; arbitrary selects and property-key guards remain distinct.
+The wide accumulator reads the conversion's inline tail (lowerToInt32Tails) as a
+sink too, and a copy staging the carrier for a store (`t = sum; count[i] = t`)
+as the carrier. Where a counter bounds a loop's passes (word-ranges.js
+loopTrips: one step on every way round, within the interval its test holds it
+to), the passes times the steps' magnitudes bound the carrier: an entry within
+2^53 less that needs no test per pass, and an entry from a literal (a prefix
+sum's `0`, a declared local's zero) no test at all, the loop as written gone.
 Local typing and emission share the interval-product proof, including the
 negative-zero check; a product fitting i32's magnitude alone is insufficient.
 The emitter's mask and typed-load shortcuts use the same zero-sign proof,

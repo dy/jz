@@ -303,3 +303,44 @@ function writesIn(n, out = new Map()) {
   for (let i = 1; i < n.length; i++) writesIn(n[i], out)
   return out
 }
+
+/** The most passes a loop runs per entry, by the intervals `ranges` gives (wordRanges), or
+ *  Infinity: a counter the loop writes once, `i = i + k` (k > 0) as a statement of its body
+ *  or as a tee its one way back tests last, steps on every pass that goes round, never past
+ *  the word (its sum has an interval), so a pass that goes round takes one more of the
+ *  values its read holds, and one pass more may leave before the step. */
+export function loopTrips(loop, ranges) {
+  const label = loop[1]
+  if (!isArr(loop) || loop[0] !== 'loop' || typeof label !== 'string') return Infinity
+  let i = 2
+  while (isArr(loop[i]) && HEADER.has(loop[i][0])) i++
+  const body = loop.slice(i), last = body[body.length - 1]
+  if (!isArr(last) || (last[0] !== 'br' && last[0] !== 'br_if') || last[1] !== label) return Infinity
+  let backs = 0
+  const count = (n) => {
+    if (!isArr(n)) return
+    if ((n[0] === 'br' || n[0] === 'br_if') && n[1] === label) backs++
+    else if (n[0] === 'br_table' && n.includes(label)) backs += 2
+    for (let j = 1; j < n.length; j++) count(n[j])
+  }
+  count(loop)
+  if (backs !== 1) return Infinity
+  // the steps: statements of the body, and a tee the way back compares
+  const steps = []
+  const step = (n) => isArr(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && isArr(n[2]) && n[2][0] === 'i32.add' &&
+    isArr(n[2][1]) && n[2][1][0] === 'local.get' && n[2][1][1] === n[1] && constOf(n[2][2]) > 0 ? n : null
+  for (const s of body.slice(0, -1)) if (s?.[0] === 'local.set' && step(s)) steps.push(s)
+  if (last[0] === 'br_if') {
+    let c = last[last.length - 1]
+    if (isArr(c) && c[0] === 'i32.eqz') c = c[1]
+    if (isArr(c) && NEGATE[c[0]]) for (const o of [c[1], c[2]]) if (o?.[0] === 'local.tee' && step(o)) steps.push(o)
+  }
+  let trips = Infinity
+  for (const s of steps) {
+    if ((writesIn(loop).get(s[1]) || 0) !== 1) continue
+    const r = ranges.get(s[2][1])
+    if (!r || !ranges.get(s[2])) continue
+    trips = Math.min(trips, Math.floor((r.hi - r.lo) / constOf(s[2][2])) + 2)
+  }
+  return trips
+}

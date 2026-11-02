@@ -42,7 +42,7 @@ import { leadChains } from '../src/optimize/lead-chains.js'
 import { issueOrder } from '../src/optimize/issue-order.js'
 import { unrollTrips } from '../src/optimize/unroll-trips.js'
 import { hoistVectorConsts } from '../src/optimize/vectorize/hoist-consts.js'
-import { wordRanges } from '../src/optimize/word-ranges.js'
+import { wordRanges, loopTrips } from '../src/optimize/word-ranges.js'
 import { constBases } from '../src/optimize/const-bases.js'
 import { foldWords, funcWat, run, oracle, compileInProcess, jz, compile } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
@@ -6587,8 +6587,10 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
     }
     export let f = (src, out) => encode(src, out)
   `
+  // (no int32 admission: a Number, or the exact i64 a counted wide accumulator carries)
   const wOverflow = compile(overflowAdjacent, { wat: true, optimize: 'speed' })
-  ok(/\(local \$\S*op f64\)/.test(wOverflow), 'overflow-adjacent accumulator stays f64 (no unsound admission)')
+  ok(!/\(local \$(?:\S*_)?op i32\)/.test(wOverflow), 'overflow-adjacent accumulator is no int32 (no unsound admission)')
+  is(jz(overflowAdjacent, { optimize: 'speed' }).exports.f(new Uint8Array(4), new Uint8Array(1)), 3000000000, 'overflow-adjacent accumulator is exact')
 })
 
 // A peeled traversal has a tap loop with loads but no clamp conditional,
@@ -9186,6 +9188,9 @@ test('wordRanges: every interval holds where its value is computed', () => {
   is(r.get(byte), { lo: 0, hi: 255 }, 'a byte')
   is(r.get(param) ?? null, null, 'a parameter: no interval')
   is(r.get(sum) ?? null, null, 'a sum stepped without bound: no interval')
+  is(loopTrips(loop, r), 65, 'the loop runs a pass per value of its counter at the step, and one more')
+  loop[2] = ['br_if', '$L', g('$s')]
+  is(loopTrips(loop, wordRanges(fn)), Infinity, 'a loop no counter stops has no bound')
 })
 
 // A constant base moves into the memarg (optimize/const-bases.js): where the flow holds a

@@ -135,3 +135,45 @@ test('wide accumulator: deleted conversion tees cannot feed a later read', async
   wideAccumulator(fn)
   is(JSON.stringify(fn), before, 'live-out guard temporary prevents the rewrite')
 })
+
+// A loop whose passes a counter bounds (optimize/word-ranges.js loopTrips) moves its
+// carrier by at most passes × steps: entered from a literal, the carrier needs no test
+// on entry or per pass, and the loop as written does not stay beside it. A radix sort's
+// prefix sum, read through an Int32Array store (the conversion's inline tail), wraps
+// there past 2^31; a token counter steps under a string's length, its loop leaving to
+// a block past the arm that holds it.
+test('wide accumulator: a counted loop from a literal carries its sum alone', () => {
+  const prefix = `export let f = (seed) => {
+    const count = new Int32Array(256)
+    let s = seed | 0
+    for (let i = 0; i < 256; i++) { s = (s * 1103515245 + 12345) | 0; count[i] = s }
+    let sum = 0
+    for (let i = 0; i < 256; i++) { const c = count[i]; count[i] = sum; sum += c }
+    let h = 0
+    for (let i = 0; i < 256; i++) h = (h * 31 + count[i]) | 0
+    return h
+  }`
+  const tokens = `const scan = (s, len) => {
+    let tokens = 0, inWord = 0
+    for (let i = 0; i < len; i++) {
+      const c = s.charCodeAt(i)
+      if (c > 32) { if (!inWord) tokens++; inWord = 1 } else inWord = 0
+    }
+    return Math.imul(tokens, 16777619) ^ tokens
+  }
+  export let f = (k) => {
+    let s = ''
+    for (let i = 0; i < 4; i++) s = s + 'let alpha_12 = beta + 12345; if (alpha_12 >= 99) { total = total + alpha_12; }\\n'
+    return scan(s, s.length + 4 - (k & 15))
+  }`
+  const want = oracle(prefix).f, got = jz(prefix, { optimize: 'speed' }).exports.f
+  for (const seed of [0, 1, 7, -5, 2147483647]) is(got(seed), want(seed), `prefix seed=${seed}`)
+  const tw = oracle(tokens).f, tg = jz(tokens, { optimize: 'speed' }).exports.f
+  for (let k = 0; k < 16; k++) is(tg(k), tw(k), `tokens k=${k}`)
+  if (onKernel()) return
+  const pw = funcWat(compile(prefix, { optimize: 'speed', wat: true }), 'f')
+  ok(/i64\.add/.test(pw) && !/\$__to_int32/.test(pw), 'the sum adds as an integer and stores its low word')
+  is((pw.match(/\(loop /g) || []).length, 3, 'no loop as written beside the copy')
+  const tk = funcWat(compile(tokens, { optimize: 'speed', wat: true }), 'f')
+  ok(/i64\.add \(local\.get \$[^\s)]*__wa\d+\) \(i64\.const 1\)/.test(tk), 'the token count steps as an integer')
+})
