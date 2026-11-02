@@ -232,6 +232,20 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
   is(nodes.geomean.innerHTML.includes('Perry'), false, 'no fabricated Perry aggregate')
 })
 
+test('bench page: every case has a family, tags and a description', () => {
+  const page = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
+  const literal = name => runInNewContext('(' + page.match(new RegExp(`const ${name} = (\\{[\\s\\S]*?\\}|\\[[^\\n]*\\])\\n`))[1] + ')')
+  const [FAMILY, TAGS, INSIGHTS, CHIPS] = ['FAMILY', 'TAGS', 'INSIGHTS', 'CHIPS'].map(literal)
+  const ids = new Set(['results.json', 'results-ci.json', 'results-linux.json'].flatMap(f =>
+    Object.keys(JSON.parse(readFileSync(new URL('../bench/' + f, import.meta.url), 'utf8')).cases)))
+  for (const id of ids) {
+    ok(CHIPS.includes(FAMILY[id]) && FAMILY[id] !== 'all', `${id}: family chip`)
+    ok(TAGS[id], `${id}: tags`)
+    ok(INSIGHTS[id], `${id}: description`)
+  }
+  for (const id of LAB) is(FAMILY[id], 'lab', `${id}: a LAB case sits under the lab chip`)
+})
+
 test('bench chart: tiny native RSS cannot clip hosted runtimes; missing memory sorts last', () => {
   const page = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
   const render = page.match(/const renderGeomean = \(\) => \{[\s\S]*?\n\}/)[0]

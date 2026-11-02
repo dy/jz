@@ -461,24 +461,30 @@ const FAMILY = {
   // so "numeric" would wrongly swallow it — this bucket is specifically the float kernels)
   mat4: 'math', poly: 'math', dotprod: 'math', mandelbrot: 'math',
   matmul: 'math', heat: 'math', nbody: 'math', lorenz: 'math',
-  particle: 'math', spmv: 'math',
+  particle: 'math', spmv: 'math', bezfit: 'math', quatmul: 'math',
+  'stdlib-special': 'math', 'stdlib-dists': 'math', 'stdlib-exp': 'math', 'stdlib-gamma': 'math',
+  'stdlib-erf': 'math', 'stdlib-pow': 'math', 'stdlib-ddot': 'math',
   // integer — i32 / bit / hash / sort / search / dispatch
   bitwise: 'integer', crc32: 'integer', hash: 'integer', sieve: 'integer',
   radixsort: 'integer', dict: 'integer', nqueens: 'integer', vm: 'integer', sort: 'integer',
   hashjoin: 'integer', dispatch: 'integer',
   // audio — DSP / per-sample loop-carried signal
   biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio', wav: 'audio',
+  delayline: 'audio', resample: 'audio', slices: 'audio', fftplan: 'audio', provenance: 'audio',
+  gainclass: 'audio', webaudio: 'audio', sosfilter: 'audio', movavg: 'audio', upfirdn: 'audio', pcmconvert: 'audio',
   // image — raster / pixel / render / procedural
   blur: 'image', conv2d: 'image', qoi: 'image', raytrace: 'image', noise: 'image', alpha: 'image',
+  sdf: 'image', trace: 'image', worley: 'image',
   // string — text / parse / codec / sequence
   tokenizer: 'string', json: 'string', base64: 'string', lz: 'string', levenshtein: 'string',
-  strbuild: 'string', wordcount: 'string',
+  strbuild: 'string', wordcount: 'string', glyfparse: 'string',
   // alloc — allocation / closures / object layout
-  callback: 'alloc', aos: 'alloc', shapes: 'alloc', immutable: 'alloc',
+  callback: 'alloc', aos: 'alloc', shapes: 'alloc', immutable: 'alloc', entity: 'alloc',
+  polytri: 'alloc', fabrik: 'alloc',
   // lab — jz-internal probes: self-host compiler rows + JS-only intrinsic gap
   // trackers (no cross-language field; excluded from every aggregate)
   watr: 'lab', jessie: 'lab', jz: 'lab',
-  colorconv: 'lab', colorlch: 'lab', colorlog: 'lab', colorpq: 'lab',
+  colorconv: 'lab', colorlch: 'lab', colorlog: 'lab', colorpq: 'lab', deltae: 'lab',
 }
 const TAGS = { biquad: 'dsp, f64', fft: 'fft, f64', synth: 'synth, adsr', bytebeat: 'i32, audio',
   mat4: 'simd, f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot, simd',
@@ -493,7 +499,15 @@ const TAGS = { biquad: 'dsp, f64', fft: 'fft, f64', synth: 'synth, adsr', bytebe
   hashjoin: 'join, probe', dispatch: 'calls, megamorphic', shapes: 'shapes, megamorphic',
   colorconv: 'oklab, cbrt', colorlch: 'oklch, polar', colorlog: 'logc4, exp2', colorpq: 'jzazbz, pow',
   watr: 'compiler, self', jessie: 'parser, self', jz: 'selfhost, compiler',
-  strbuild: 'concat, alloc', wordcount: 'keys, dict-mode', immutable: 'alloc, gc' }
+  strbuild: 'concat, alloc', wordcount: 'keys, dict-mode', immutable: 'alloc, gc',
+  bezfit: 'fit, f64', delayline: 'ring, lerp', resample: 'hermite, gather', slices: 'subviews, offsets',
+  fftplan: 'fft, plan cache', provenance: 'kind, inference', gainclass: 'class, f64', webaudio: 'library, graph',
+  sdf: 'distance, hull', trace: 'contour, branch', glyfparse: 'font, bytes', entity: 'objects, in-place',
+  deltae: 'ciede2000, atan2', quatmul: 'quaternion, arrays', polytri: 'triangulate, arrays', fabrik: 'ik, object graph',
+  worley: 'cellular, gather', sosfilter: 'biquad, records', movavg: 'boxcar, ring', upfirdn: 'resample, div/mod',
+  pcmconvert: 'pcm, dtype table', 'stdlib-special': 'stdlib, 339 fns', 'stdlib-dists': 'stdlib, 429 fns',
+  'stdlib-exp': 'stdlib, exp', 'stdlib-gamma': 'stdlib, gamma', 'stdlib-erf': 'stdlib, erf', 'stdlib-pow': 'stdlib, pow',
+  'stdlib-ddot': 'stdlib, blas1' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade – every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -545,6 +559,35 @@ const INSIGHTS = {
   strbuild: 'Per-record CSV-line formatting – int→string, concat, char fold; the serializer inner loop. jz’s eager linear-memory strings land near V8’s rope-backed concat; AS’s leaner UTF-16 concat leads. (A single giant `out +=` accumulator is deliberately avoided: eager strings with no GC make it quadratic in allocation.)',
   wordcount: 'Token counting into a plain object with 512 computed string keys – in a JIT the object falls to dictionary mode, the keyed-store deopt. jz’s string-keyed hash store ties AS’s Map but trails V8’s tuned dictionary ~3× – string hashing/interning is the lever.',
   immutable: 'Every step replaces each particle with a fresh {x,y,vx,vy} – the React/Redux-style immutable update. Value-semantics natives get it free; V8’s young-gen GC + escape analysis wins the managed field; jz pays a real bump allocation per object with no scalar replacement – the escape-analysis/SROA probe.',
+  wav: 'PCM-16 WAV encoder – clamp each f64 sample, scale to int16, pack two little-endian bytes behind a 44-byte RIFF header; the export step every recorder ends with.',
+  entity: 'Plain {x,y,vx,vy} objects mutated in place every frame – the game-object / ECS step, the array-of-structs twin of particle (same state, same checksum). jz packs the records inline at a fixed stride; the store must reach a field as directly as the load.',
+  bezfit: 'Least-squares cubic Bézier fitting over digitized point runs (Schneider’s algorithm, as in potrace and FontForge) – short loops of dot products, polynomial evaluation, division and sqrt; bit-identical across languages.',
+  delayline: 'Modulated feedback comb (the flanger/chorus core) through a power-of-two ring buffer – wrap-masked taps, linear interpolation and a loop-carried feedback no target can vectorize.',
+  resample: 'Fractional-rate resampling with 4-point Hermite interpolation – gathers at float-derived indices plus a fractional phase accumulator; the sampler / time-stretch inner loop.',
+  slices: 'Block processing over runtime sub-views of one arena – every access is arena[base + i] with a runtime base the compiler must hoist; a one-pole smoother keeps a loop-carried scalar.',
+  fftplan: 'Cached-plan FFT – twiddle and permutation tables built once, kept in a Map-backed plan and handed to the kernel as returned-object fields: the shape JS DSP libraries ship. Probes whether a typed array keeps its kind through a return, a field or Map.get.',
+  provenance: 'One FFT butterfly fed bit-identical tables by four routes (returned array, object field, Map value, module memo) – isolates, route by route, where typed-array kind inference loses track.',
+  gainclass: 'A chain of class-based gain nodes over Float64Array – instances with a typed-array field built in a loop, the hot method called through an array of them: an audio node graph in small.',
+  webaudio: 'An offline render through the whole web-audio-api engine (120 modules) – sawtooth with vibrato → biquad lowpass → gain → panner, one second of stereo at 44.1 kHz.',
+  sdf: 'Exact Euclidean distance transform (Felzenszwalb–Huttenlocher) of a glyph bitmap – the SDF-atlas core; short dependent loops, divisions and a data-dependent hull pop.',
+  trace: 'Square-tracing contour following over a bitmap – the first stage of potrace-style vectorizers; a data-dependent state machine with unpredictable branches and 2-D indexing.',
+  glyfparse: 'TrueType glyf outline decoding – flag runs with repeat counts, variable-length coordinate deltas, running accumulators; the byte-grammar loop every font stack runs.',
+  quatmul: 'Quaternion products, inverses and normalizations (pmndrs/math) – each quaternion a four-element plain array read by index from an array of them; square roots and divisions only, so every target answers the same bits.',
+  polytri: 'Ear-clipping triangulation and convex decomposition of 2-D polygons in flat plain arrays (pmndrs/math) – index arrays built per call, out-buffers written past their length; nothing here is a typed array.',
+  fabrik: 'FABRIK inverse kinematics on a ten-bone chain (pmndrs/math) – forward and backward passes over bone objects holding arrays and joint records: fields of fields, a constraint switch per bone.',
+  worley: 'Worley (cellular) noise (pmndrs/math) – a permutation table read at Math.floor(x) + g & 255, nine (2-D) or twenty-seven (3-D) feature-point distances per sample, a running minimum.',
+  sosfilter: 'Second-order-section cascade in digital-filter’s idiom – coefficients as {b0, b1, b2, a1, a2} records, state as [z1, z2] pairs in a params bag created on the first call, read in the per-sample loop.',
+  movavg: 'Moving average in digital-filter’s idiom – a running sum over a ring of history kept in the caller’s params bag, created on the first call; a modulus by a runtime length, a generic array as sample history.',
+  upfirdn: 'Rational resampling in digital-filter’s idiom – the ratio reduced by a gcd, every output gathering the inputs on the upsampled grid: modulus and division by computed integers in the inner loop.',
+  pcmconvert: 'PCM format conversion in pcm-convert’s idiom – float32 interleaved stereo to int16 and back to float64 planar, with ranges and the destination constructor picked from a dtype table at run time.',
+  'stdlib-special': 'Every number-in, number-out function of @stdlib/math/base/special (339 packages) from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
+  'stdlib-dists': 'Every number-in, number-out function of @stdlib/stats/base/dists (429 packages) from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
+  'stdlib-exp': '@stdlib/math/base/special/exp from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
+  'stdlib-gamma': '@stdlib/math/base/special/gamma from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
+  'stdlib-erf': '@stdlib/math/base/special/erf from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
+  'stdlib-pow': '@stdlib/math/base/special/pow from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
+  'stdlib-ddot': '@stdlib/blas/base/ddot from stdlib 0.4.1, bundled from its CommonJS sources with nothing rewritten, swept as its own benchmark sweeps it.',
+  deltae: 'CIEDE2000 color difference over Lab pairs – atan2 with quadrant fix-ups, four-way hue-mean branches, exp and a 7th power. JS-family only: engine transcendentals differ by ulps across languages.',
 }
 // detected visitor engine
 const ENGINE = (() => {
