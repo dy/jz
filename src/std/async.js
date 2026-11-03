@@ -78,7 +78,9 @@ export let __p_settle = (p, st, v) => {
   if (st === 1 && v != null && typeof v === 'object') {
     // a promise resolved with itself rejects (27.2.1.3.2 step 7)
     if (v === p) { __p_fin(p, 2, new TypeError('Chaining cycle detected for promise')); return }
-    if (v.__p === 1) { p.rs = 1; __p_sub(v, (st2, v2) => __p_fin(p, st2, v2)); return }
+    // a promise adopted as a thenable is (NewPromiseResolveThenableJob): its
+    // then() runs in a job of its own, the settlement a reaction after it
+    if (v.__p === 1) { p.rs = 1; __job(() => __p_sub(v, (st2, v2) => __p_fin(p, st2, v2)), 0, undefined); return }
     // plain-object thenable (spec: any object with callable then): \`then\` is
     // read once, a throw of its getter rejecting, and called on the object in
     // a job; the resolve/reject pair shares one already-called latch, and a

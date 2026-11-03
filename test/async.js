@@ -910,3 +910,26 @@ export let g = () => { let res; const p = new Promise((r) => { res = r }); retur
     is([settled, await pending], [1, 5], `O${optimize}`)
   }
 })
+
+// Resolving a promise with a promise adopts it as a thenable
+// (NewPromiseResolveThenableJob): its then runs in a job of its own and the
+// settlement in a reaction after it, two jobs, as Node takes them; an await
+// takes one (PromiseResolve). An async return, a handler's result and an
+// executor's resolve all resolve so.
+test('async: resolving with a promise takes the two jobs Node takes', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `export const f = async () => {
+    const log = []
+    const inner = async () => 1
+    const ret = async () => inner()
+    ret().then(v => log.push('return ' + v))
+    Promise.resolve().then(() => inner()).then(v => log.push('handler ' + v))
+    new Promise(res => res(inner())).then(v => log.push('executor ' + v))
+    ;(async () => { log.push('await ' + await inner()) })()
+    Promise.resolve().then(() => log.push('t1')).then(() => log.push('t2')).then(() => log.push('t3')).then(() => log.push('t4')).then(() => log.push('t5'))
+    for (let i = 0; i < 8; i++) await null
+    return log.join('|')
+  }`
+  const want = await oracle(src).f()
+  for (const optimize of levels(0, 2, 'size')) is(await jz(src, { optimize }).exports.f(), want, `O${optimize}`)
+})

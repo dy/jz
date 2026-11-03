@@ -3948,6 +3948,10 @@ the jobs it ran once they are half the queue and a thousand, an allocation of
 the loop's own, so the loop compacts in place what settled promises left
 (optimize/loop-compact.js): every job of a call runs in one drain, and 200,000
 awaits in one call stay within a few megabytes.
+Resolving a promise with a runtime promise adopts it as a thenable
+(NewPromiseResolveThenableJob): its `then` runs in a job of its own and the
+settlement in a reaction after it, two jobs, as Node takes them; an await
+takes one (PromiseResolve returns the promise itself).
 A machine body's declarations are its factory's locals, so `resolveLocals`
 spells each apart first: a top-level one keeps its name (a `var` hoisted
 under a parameter's name is the parameter), a block's keeps it unless a
