@@ -314,6 +314,24 @@ jobs:
           printf 'fn main() {\n    print("goose ready");\n}\n' > "$RUNNER_TEMP/goose-smoke.goose"
           GOOSE_HOME="$RUNNER_TEMP/goose-smoke-home" "$goose" build "$RUNNER_TEMP/goose-smoke.goose" -o "$RUNNER_TEMP/goose-smoke"
           test "$("$RUNNER_TEMP/goose-smoke")" = 'goose ready'
+      # Bend 2, a native contender run on hand ports (bench/<case>/<case>.bend).
+      # Measurement jobs only, like Goose. The release archive is checked by its
+      # published SHA-256 and runs where it unpacks: bin/bend reads its Base
+      # library from bend2/ beside it. `bend <file> -o <bin>` builds the C it
+      # emits with the first clang 14 or newer it finds (the apt clang above), at
+      # -O3; the smoke proves that path and the one-core flags the bench passes.
+      - name: install Bend 2.0.39
+        if: matrix.kind == 'shard'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bend.tar.gz" https://github.com/bendlang/bend/releases/download/v2.0.39/bend-2.0.39-linux-x64.tar.gz
+          echo "6cf462fd8f70b094a4950ebb709a9c4ffd8f1d1189d9cedf1fd63cd5d041c7ab  $RUNNER_TEMP/bend.tar.gz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/bend.tar.gz" -C "$RUNNER_TEMP"
+          bend="$RUNNER_TEMP/bend/bin/bend"
+          echo "BEND_BIN=$bend" >> "$GITHUB_ENV"
+          test "$("$bend" version)" = 'bend 2.0.39'
+          printf 'import Base\n\ndef main() -> IO(Unit):\n  do IO<Unit>:\n    IO.print("bend ready")\n' > "$RUNNER_TEMP/bend-smoke.bend"
+          "$bend" "$RUNNER_TEMP/bend-smoke.bend" -o "$RUNNER_TEMP/bend-smoke"
+          test "$("$RUNNER_TEMP/bend-smoke" +RTS --threads 1 --gpu off -RTS)" = 'bend ready'
       # Static Hermes has no release: build the pinned static_h source, cached by
       # the installer that pins it (shermes records its absolute paths at build).
       - uses: actions/cache@v4

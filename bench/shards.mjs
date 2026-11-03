@@ -24,7 +24,7 @@ const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
  *  (the ratio base). jz-w2c answers the native-lowering bands. */
 export const CLAIM_LANES = ['jz', ...CLAIM_RIVALS, 'porf-native', ...JIT_RIVALS, 'jz-w2c']
 /** Every lane CI installs: the claim lanes, then the references the page and chart show. */
-export const LANES = [...CLAIM_LANES, 'nat', 'moonbit', 'rust', 'zig', 'go', 'goose', 'perry', 'scriptc', 'tslang',
+export const LANES = [...CLAIM_LANES, 'nat', 'moonbit', 'rust', 'zig', 'go', 'goose', 'bend', 'perry', 'scriptc', 'tslang',
   'shermes', 'js2wasm', 'qjs-wasi', 'componentize-qjs', 'componentize-js', 'jz-wasmtime', 'wat', 'numpy']
 /** ci: every lane timed once (the CI runner view, results-ci.json). reference: the
  *  claim lanes in 6 paired rounds, every other lane once (results.json, gated). */
