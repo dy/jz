@@ -12,6 +12,7 @@ bench/<case>/<case>.zig     optional Zig baseline
 bench/<case>/<case>.as.ts   optional AssemblyScript baseline
 bench/<case>/<case>.tov     optional Tov baseline
 bench/<case>/<case>.goose   optional Goose baseline
+bench/<case>/<case>.bend    optional Bend baseline
 bench/<case>/<case>.npy.py  optional NumPy baseline
 bench/<case>/<case>.wat     optional hand-written WAT baseline
 ```
@@ -480,6 +481,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run on `moonrun` (MoonBit's V8 wasm runner, which supplies the monotonic clock) — a wasm-first-language rival, when `moon`/`moonrun` are installed |
 | `tov` | [Tov](https://github.com/richiemcilroy/Tov): a TypeScript-shaped language compiled through C to a native binary. `tov build <case>.tov -o <bin>` at its default (`-O3`, checked integer overflow), when a matching `.tov` port exists. A ported language like `rust` or `as`, not a JS host: it rejects the unchanged corpus (untyped parameters, no typed arrays, no `Math.imul`). Set `TOV_BIN` to override. |
 | `goose` | [Goose](https://github.com/aardappel/goose), Wouter van Oortmerssen's memory-safe systems language with no heap, compiled to one C file and built natively. `goose build <case>.goose -o <bin>` at its release defaults (`-O2` inlining; the emitted C compiled at `-O2` by the first C compiler it finds, which the run records), when a matching `.goose` port exists. A ported language like `tov` or `rust`. Set `GOOSE_BIN` to override. |
+| `bend` | [Bend](https://github.com/bendlang/bend) 2, Victor Taelin and the Higher Order Company's typed, pure, affine language with proofs, compiled to one C file and built natively. `bend <case>.bend -o <bin>` at its release default (the emitted C compiled by `clang -std=c11 -O3`, with the first clang 14 or newer it finds, which the run records), run as `<bin> +RTS --threads 1 --gpu off -RTS`: one core and no GPU, the flags of Bend's own SEQ-CPU measurements. When a matching `.bend` port exists. A ported language like `goose`. Set `BEND_BIN` to override. |
 
 Install Tov with `curl -fsSL https://tov.sh/install.sh | sh` (needs Rust and a C
 compiler). It builds from a git checkout at `~/.tov/src` (`TOV_DIR`), whose
@@ -540,6 +542,59 @@ Goose is a native contender like scriptc and Perry: it enters no
 claim, and the chart leaves it out as it leaves out the other native ports
 (native Rust, Zig and Go, and Tov), while the bench page shows it per case and
 in the corpus.
+
+Install Bend from its [v2.0.39 release](https://github.com/bendlang/bend/releases/tag/v2.0.39)
+(CI checks the Linux archive's SHA-256, which GitHub publishes beside it) and
+put `bend/bin/bend` on PATH or set `BEND_BIN`. It reads its Base library from
+the archive's `bend2/`, so it runs where it unpacks, and its builds need clang
+14 or newer. The run records `bend version` and the clang Bend's compiler picks
+(`$CC`, then `clang`, then the newest `clang-N`): `bend 2.0.39, C compiler clang
+19.1.6` on an Apple M4 Max. The harness adds no build flags. A Bend program runs
+in parallel only where it says so, with a parallel call (`a b = f(x) g(y)`) or a
+GPU call (`f!(x)`). The ports make neither, and each binary still runs with
+`--threads 1`, which also puts the runtime's work loop on its sequential path,
+and `--gpu off`: the comparison is single-threaded, like every other lane's.
+
+The 19 ports share `_lib/bench.bend` and were written for this benchmark from
+each case's JavaScript and its C port: the same algorithm, input generation,
+iteration counts and checksum, in the shapes of Bend's own benchmarks
+(`bench/runtime` in its repository). A loop is a recursive def counting down a
+`Nat`, its index a `U32` beside it. Bend checks that recursion ends, so a loop
+whose bound is a test (`j < LIMIT`, a probe that stops at an empty slot, an
+interpreter's `pc < NINSTR`) also carries a `Nat` fuel no smaller than its trip
+count beside the test's `Bool`. A `match` reads only a parameter or a pattern's
+variable, so a branch is a def taking its caller's `Bool`; an array read hands
+the array back beside its word, so a loop step is a chain of stage defs, each
+read's pair the next stage's parameter, the arrays riding in a record. Buffers
+are `Array<U32>`, a byte or an int32 in each word (the native runtime stores an
+array as a flat block). `immutable` rebuilds a list of `P` records every step,
+`shapes` matches a datatype of 8 constructors kept in an `Array<Shape>`,
+`wordcount` counts in Base's string-keyed `Map`, a bitwise trie over each key
+whose operations take nearly all of the case's time, and `strbuild` formats
+each row as a fresh `String` with `++` and `U32.show`. Bend has no signed
+integer: an int32 is a `U32` in two's complement whose sign tests read bit 31.
+`immutable` bounces with the one unsigned test `nx > LIM`, `blur` clamps by
+comparing `x + k` with the radius, `conv2d` and `strbuild` shift arithmetically
+by filling the sign, and `conv2d` wraps its perturbed byte as Int8Array does.
+The clock is the helper module's own effect, `now_us` (`_lib/bend-clock.c`, with
+a `.js` twin so `bend <case>.bend` runs a port without a build), since Base's
+`IO.now` counts whole milliseconds. The ports cover integer (bitwise, crc32,
+sieve, nqueens, radixsort, hash, vm, dict, levenshtein), image (alpha, blur,
+conv2d), audio (bytebeat), text and codecs (base64, tokenizer, strbuild,
+wordcount) and records (immutable, shapes).
+
+Bend has no 64-bit float (its numbers are `Nat`, `U32` and `F32`), so no f64
+case has a port: in `F32` a kernel computes a narrower result than the case's,
+or, where small integers keep it exact (dotprod, poly), moves half the bytes.
+`callback` and `dispatch` have none either: a Bend closure is affine, called at
+most once, and a template argument is fixed at compile time, so neither
+`a.map(x => x * scale + i)` over every element nor a table of operators called
+through one site has a Bend form; a def taking `scale` and `i`, or a match on
+the opcode, would be the hand-fused loop or the switch, not the call the case
+measures. Of the integer cases with C ports, lz, qoi, json, glyfparse, hashjoin
+and trace have no Bend port yet. Bend is a native contender like Goose: it
+enters no claim, and the chart leaves it out as it leaves out the other native
+ports, while the bench page shows it per case and in the corpus.
 
 Install the pinned Perry compiler with `npm install -g @perryts/perry@0.5.1520`,
 then run `node bench/bench.mjs --targets=perry`. CI uses the same package.

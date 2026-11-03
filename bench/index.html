@@ -365,6 +365,7 @@ const TARGETS = {
   perry: { label: 'Perry', sub: 'native', band: 'native', hatch: true },
   tov:   { label: 'Tov', sub: 'native', band: 'native', hatch: true },
   goose: { label: 'Goose', sub: 'native', band: 'native', hatch: true },
+  bend:  { label: 'Bend', sub: 'native', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
 }
 // One-line engine descriptions — surfaced as the per-row label tooltip so the chart
@@ -405,6 +406,7 @@ const DESC = {
   perry: 'Perry – JavaScript compiled through LLVM to a native executable with its runtime and garbage collector.',
   tov: 'Tov – a TypeScript-shaped language compiled through C to a native binary (a hand port: it rejects untyped JS).',
   goose: 'Goose – a memory-safe systems language with no heap, compiled through C to a native binary (a hand port in Goose).',
+  bend: 'Bend 2 – a typed, pure, affine language with proofs, compiled through C to a native binary, run on one core (a hand port in Bend).',
   numpy: 'NumPy – vectorized C kernels driven from Python.',
 }
 // Each contender in two terse lines – the pipeline, then the method and its limits – plus the project
@@ -444,6 +446,7 @@ const ABOUT = {
   perry: ['TypeScript → native', 'LLVM, ahead-of-time; runtime and GC', 'https://perryts.com/'],
   tov: ['TypeScript-like → C → native', 'explicit types, checked overflow; JS needs porting', 'https://github.com/richiemcilroy/Tov'],
   goose: ['Goose → C → native', 'no heap: data stacks, inline records; JS needs porting', 'https://github.com/aardappel/goose'],
+  bend: ['Bend → C → native', 'pure, affine, checked termination; one core; JS needs porting', 'https://github.com/bendlang/bend'],
   numpy: ['Python → C kernels', 'NumPy, vectorized'],
 }
 // Per-target source file — each row links to the exact implementation it measured, so you
@@ -453,7 +456,7 @@ const REPO = 'https://github.com/dy/jz/blob/main/bench'
 // limitation to fix, so the row links to a search of that project's issues for the error (find the
 // existing report, or file one from there). jz's own targets point back at jz.
 const REPOS = {
-  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', tslang: 'ASDAlexander77/TypeScriptCompiler', perry: 'PerryTS/perry', tov: 'richiemcilroy/Tov', goose: 'aardappel/goose', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
+  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', tslang: 'ASDAlexander77/TypeScriptCompiler', perry: 'PerryTS/perry', tov: 'richiemcilroy/Tov', goose: 'aardappel/goose', bend: 'bendlang/bend', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
   'qjs-wasi': 'quickjs-ng/quickjs', 'componentize-qjs': 'andreiltd/componentize-qjs', 'componentize-js': 'bytecodealliance/ComponentizeJS', js2wasm: 'loopdive/js2',
   moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
   'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
@@ -464,7 +467,7 @@ const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
   'porf-native': '.js', scriptc: '.js', tslang: '.js', perry: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
   'qjs-wasi': '.js', 'componentize-qjs': '.js', 'componentize-js': '.js', js2wasm: '.js',
-  as: '.as.ts', tov: '.tov', goose: '.goose', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
+  as: '.as.ts', tov: '.tov', goose: '.goose', bend: '.bend', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
   'go-wasm': '.go', go: '.go', tinygo: '.go', 'zig-wasm': '.zig', zig: '.zig',
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',
 }
