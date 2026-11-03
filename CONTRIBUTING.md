@@ -1004,7 +1004,11 @@ one hop however often it grew (the size tier calls the chase for that hop). A Ma
 since it was stored as the live block's pointer and stores it back (not in a
 table the reset keeps), so `m.get(k).push(v)` leaves no stub for the next read.
 The speed tier computes a number's, a string's and a reference's hash in the
-probe, `__map_hash`'s value exactly; the size tier calls it. A Set or Map copy
+probe, `__map_hash`'s value exactly; the size tier calls it. A probe keyed by
+the key a walk took (`for (const w of a) if (b.has(w))`) takes the hash the
+walked entry stores, which the cursor's step reads, where that hash is the
+key's value alone (a string's, a number's; emit/dispatch.js emitDecl names
+the bindings, module/collection.js `cursorKeyHash`). A Set or Map copy
 takes the source's block whole where its capacity fits the copy's size, else
 rebuilds the live entries; own-property sidecars are excluded. A HASH keeps
 the probe layout: `collectionStride` for the entry and optional hash lane; a

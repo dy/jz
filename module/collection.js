@@ -19,9 +19,9 @@ import { representationProgramHasBigint } from '../src/compile/representation-pl
 import { isNumericIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
 import { emit, deps, call, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
-import { NUMBER, K as KIND, hasTag } from '../src/summary/kind.js'
+import { NUMBER, K as KIND, hasTag, tagOf, core } from '../src/summary/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
-import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET, STATIC_BASE } from '../src/ast.js'
+import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET, STATIC_BASE, isReassigned } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, FORWARDING_MASK, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { stringHash } from '../src/string-data.js'
 import { OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex, deletedMaskWat, deletedSlotWat, markDeletedSlotWat, DATA_VIEW_FLAG, HIDDEN_PROPERTY_SEQ, DYN_CACHE_EMPTY, nanPrefixHex, nanPrefixMaskHex } from '../layout.js'
@@ -178,11 +178,18 @@ const numKeyHashIR = (k) => {
         ['local.set', `$${h}`, ['i32.xor', hv, ['i32.shr_u', hv, ['i32.const', 13]]]],
         ['select', ['i32.add', hv, ['i32.const', 2]], hv, ['i32.le_u', hv, ['i32.const', 1]]]]]]]]
 }
-const keyHashIR = (h, k) => typeof h === 'number' ? ['i32.const', h] : h === NUM_HASH ? numKeyHashIR(k) : ['call', `$${h}`, ['local.get', `$${k}`]]
+const keyHashIR = (h, k) => typeof h === 'number' ? ['i32.const', h] : h === NUM_HASH ? numKeyHashIR(k) : typeof h === 'object' ? h.ir : ['call', `$${h}`, ['local.get', `$${k}`]]
+// A walked entry's key (a binding of `__coll_key`, emit/dispatch.js emitDecl)
+// probes with the hash its entry stores, read by the cursor's step, where the
+// key's hash is its value's alone (a string's content, a number's bits): no
+// compaction since the step has changed it. Set as the module loads (cursorOf).
+let cursorKeyHash = () => null
 // A proven string uses the same content hash without generic key dispatch; a proven Number its bits' mix.
 const probeKeyHash = key => {
   const lit = litKeyHash(key)
   if (lit != null) return lit
+  const walked = cursorKeyHash(key)
+  if (walked != null) return walked
   const vt = valTypeOf(key)
   if ((vt !== VAL.STRING && vt !== VAL.NUMBER) || ctx.summary?.at(ctx.func.current).mayBeNullishExpr(key) !== false) return null
   return vt === VAL.STRING ? '__str_hash' : NUM_HASH
@@ -865,14 +872,22 @@ export default (ctx) => {
         ['local.set', `$${c.i}`, ['i32.add', g(c.i), ['i32.const', 1]]],
         ['br_if', `${label}s`, ['i64.eq', ['i64.load', 'offset=8', entry(g(c.at))], ['i64.const', TOMB_NAN]]]],
       ['local.set', `$${c.s}`, ['i32.load', 'offset=4', entry(g(c.at))]],
-      // the entry's key and value as the step takes it, where JS makes its pair
+      // the entry's key and value as the step takes it, where JS makes its pair, and the key's stored hash
       ['local.set', `$${c.k}`, ['i64.load', 'offset=8', entry(g(c.at))]],
+      ['local.set', `$${c.h}`, ['i32.load', entry(g(c.at))]],
       ...(E === MAP_ENTRY ? [['local.set', `$${c.v}`, ['i64.load', 'offset=16', entry(g(c.at))]]] : []),
       ['i32.const', 1]], 'i32')
   }
   // The key (8) or the value (16) of the entry cursor `c` took last, read by its step.
   const cursorField = (c, field) => typed(['f64.reinterpret_i64', ['local.get', `$${field === 8 ? c.k : c.v}`]], 'f64')
-  const newCursor = () => ({ i: tempI32('cci'), s: tempI32('ccs'), at: tempI32('cca'), off: tempI32('cco'), used: tempI32('ccu'), k: tempI64('cck'), v: tempI64('ccv') })
+  const newCursor = () => ({ i: tempI32('cci'), s: tempI32('ccs'), at: tempI32('cca'), off: tempI32('cco'), used: tempI32('ccu'), k: tempI64('cck'), v: tempI64('ccv'), h: tempI32('cch') })
+  cursorKeyHash = (key) => {
+    const id = typeof key === 'string' ? ctx.func.cursorKeys?.get(key) : undefined
+    if (id == null || isReassigned(ctx.func.body, key)) return null
+    let t
+    try { t = tagOf(core(ctx.summary.at(ctx.func.current).kindOfExpr(key))) } catch { return null }
+    return t === KIND.STRING || t === KIND.NUMBER ? { ir: ['local.get', `$${cursorOf(id).h}`] } : null
+  }
   ctx.core.emit['__coll_next'] = (coll, id, es) => cursorStep(cursorOf(id), asF64(emit(coll)), entryBytes(es))
   // (the collection a read names is the cursor's own binding: reading it has no effect)
   const cursorRead = (field) => (coll, id) => cursorField(cursorOf(id), field)

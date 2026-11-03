@@ -573,6 +573,33 @@ test('Map/Set: a key of -0 is stored as +0', () => {
     for (const name of ['lit', 'ctor', 'copy', 'spread', 'update', 'counted', 'fused']) is(jz(src, { optimize }).exports[name](0), js[name](0), `${name}, O${optimize}`)
 })
 
+// A probe keyed by the key a walk took (`for (const w of a) if (b.has(w))`, a
+// Map's keys too) takes the hash the walked entry stores, read by the cursor's
+// step (module/collection.js cursorKeyHash), where the hash is the key's value
+// alone: a string's or a number's. A key that is rebound, or that hashes by
+// its identity (an object, whose address a compaction may move), hashes anew.
+test('Map/Set: a probe keyed by a walked key takes its stored hash', () => {
+  const src = `
+    export let inter = (n) => { const a = new Set(), b = new Set(); for (let i = 0; i < n; i++) { a.add('w' + (i % 37) + 'long-enough'); b.add('w' + (i % 23) + 'long-enough') } let c = 0; for (const w of a) if (b.has(w)) c++; return c }
+    export let short = (n) => { const a = new Set(['x', 'y', 'zz', '']), b = new Set(['y', '', 'q']); let c = 0; for (const w of a) if (b.has(w)) c++; return c * 10 + n * 0 }
+    export let nums = (n) => { const a = new Set([0, -0, NaN, 1.5, 2 ** 40, -7]), b = new Set([NaN, 0, -7, 3]); let c = 0; for (const x of a) if (b.has(x)) c++; return c + n * 0 }
+    export let mapKeys = (n) => { const m = new Map(), o = new Map(); for (let i = 0; i < n; i++) { m.set('k' + i, i); if (i % 3 === 0) o.set('k' + i, -i) } let t = 0; for (const [k, v] of m) if (o.has(k)) t += o.get(k) + v; for (const k of m.keys()) if (o.has(k)) t++; return t }
+    export let walking = (n) => { const a = new Set(), b = new Set(); for (let i = 0; i < n; i++) a.add('s' + i); let c = 0; for (const w of a) { if (a.size < 3 * n) a.add(w + '!'); b.add(w); if (b.has(w)) c++ } return c + ':' + b.size }
+    export let rebound = (n) => { const a = new Set(['p', 'q']), b = new Set(['q-']); let c = 0; for (let w of a) { w = w + '-'; if (b.has(w)) c++ } return c + n * 0 }
+    export let objects = (n) => { const os = []; for (let i = 0; i < n; i++) os.push({ i }); const a = new Set(os), b = new Set(os.filter(o => o.i % 2)); let c = 0; for (const o of a) if (b.has(o)) c++; return c }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const e = jz(src, { optimize }).exports
+    for (const n of [0, 5, 300]) for (const name of ['inter', 'short', 'nums', 'mapKeys', 'walking', 'rebound', 'objects']) is(e[name](n), js[name](n), `${name}(${n}), O${optimize}`)
+  }
+  const stored = (body) => {
+    const f = funcWat(compile(`export let f = (n) => { ${body} }`, { optimize: 'speed', wat: true }), 'f')
+    return /call \$__set_has_h\b[^]{0,240}?cch\d/.test(f)
+  }
+  ok(stored(`const a = new Set(), b = new Set(); for (let i = 0; i < n; i++) { a.add('w' + i); b.add('v' + i) } let c = 0; for (const w of a) if (b.has(w)) c++; return c`), 'a walked string key: the stored hash')
+  ok(!stored(`const a = new Set(), b = new Set(); for (let i = 0; i < n; i++) { const o = { i }; a.add(o); if (i % 2) b.add(o) } let c = 0; for (const o of a) if (b.has(o)) c++; return c`), 'a walked object key hashes anew')
+})
+
 // A statement, or two adjacent ones, that ask a Set or a Map about a key and
 // then store it probe once (compile/emit/fuse-probes.js): the find leaves the
 // key's entry or the empty bucket it ended at, and the store writes the entry

@@ -800,6 +800,14 @@ export function bindTuple(tmp, init, list, from) {
   return { ir, pulls: j - from }
 }
 
+// `let k = __coll_key(c, id, E)`, or a binding of such a binding: the cursor's id.
+const noteCursorKey = (name, init) => {
+  const id = typeof init === 'string' ? ctx.func.cursorKeys?.get(init)
+    : Array.isArray(init) && init[0] === '()' && init[1] === '__coll_key' && Array.isArray(init[2]) && init[2][0] === ',' ? init[2][2]?.[1] : undefined
+  if (id != null) (ctx.func.cursorKeys ??= new Map()).set(name, id)
+  else ctx.func.cursorKeys?.delete(name)
+}
+
 export function emitDecl(...inits) {
   const result = []
   // A `let`/`const` declared inside a loop creates a *fresh* binding each
@@ -858,6 +866,9 @@ export function emitDecl(...inits) {
     if (typeof name !== 'string' || init == null) continue
     // A field cache: what its read does besides the load, kept where nothing reads it (field-caches.js).
     noteFieldCacheGuard(name, init, emit)
+    // A binding of the key a Set's or a Map's walk took (plan cursorLoop): a probe
+    // keyed by it may take the hash the entry stores (module/collection.js).
+    noteCursorKey(name, init)
     // Flag bindings initialized to a nullish literal so arithmetic on them coerces (null→0,
     // undefined→NaN) rather than propagating the raw sentinel. See toNumF64 / maybeNullish.
     if (isNullishLit(init)) (ctx.func.maybeNullish ??= new Set()).add(name)
