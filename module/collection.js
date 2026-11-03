@@ -6,7 +6,7 @@
  * Map: type=9, the same with entries [hash|seq:8, key:8, val:8] (24B each).
  * HASH: type=7, an open addressing table of Map-sized entries placed by hash,
  * content-based string hash + equality. Normal outputs additionally carry an
- * i32 HASH LANE (cap × 4 B) AFTER its entry region — the only thing hot probes
+ * i32 HASH LANE (cap × 4 B) AFTER its entry region, the only thing hot probes
  * walk. The self-compile artifact can omit this redundant lane and probe the
  * hash already stored in each entry; entry offsets and iteration are identical
  * in both layouts.
@@ -698,10 +698,10 @@ export default (ctx) => {
   // stdlib reads the ptr tag to pick the entry stride.
   ctx.core.emit['.clear'] = call('__coll_clear', 'I')
 
-  // Zero the whole table — entries, buckets and the appended count — and reset
-  // the length header. Entry stride is 16 for a SET, 24 for a MAP — `(t == MAP)
-  // << 3` adds the 8-byte value column. Returns undefined; a non-collection arg
-  // is a guarded no-op.
+  // Zero the whole table (entries, buckets and the appended count) and reset
+  // the length header. A Set's block is 12 bytes a bucket, a Map's 16
+  // (collection/ordered.js ordStride): `(t == MAP) << 2` adds the difference.
+  // Returns undefined; a non-collection arg is a guarded no-op.
   ctx.core.stdlib['__coll_clear'] = `(func $__coll_clear (param $coll i64) (result f64)
     (local $off i32) (local $cap i32) (local $t i32)
     (local.set $t (call $__ptr_type (local.get $coll)))

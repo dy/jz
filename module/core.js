@@ -1347,7 +1347,7 @@ export default (ctx) => {
   // `__prop_order`/`__own_order` a HASH's, whose table places its entries by
   // hash. Returns a fresh i32 array (live-count entries) of slot offsets; a
   // HASH's are sorted by packed sequence (the insertion counter rides in each
-  // entry's hash-word high 32 bits — see collection/upsert.js's seqStore).
+  // entry's hash-word high 32 bits: collection/upsert.js's seqStore).
   // Every order-sensitive iteration (keys/values/entries, for-in, spread,
   // JSON, Map copy) walks this instead of raw slot order, so jz matches the JS
   // spec's insertion order. Lives in core (not collection) because object and
