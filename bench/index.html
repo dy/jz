@@ -540,11 +540,12 @@ const FAMILY = {
   // string — text / parse / codec / sequence, compilers and parsers among them
   tokenizer: 'string', json: 'string', base64: 'string', lz: 'string', levenshtein: 'string',
   strbuild: 'string', wordcount: 'string', glyfparse: 'string',
-  stringify: 'string', jsontransform: 'string', mapstr: 'string', setops: 'string',
+  stringify: 'string', jsontransform: 'string', jsonroundtrip: 'string', mapstr: 'string', setops: 'string',
   watr: 'string', jessie: 'string', jz: 'string',
   // alloc — allocation / closures / object layout / promises
   callback: 'alloc', aos: 'alloc', shapes: 'alloc', immutable: 'alloc', entity: 'alloc',
   polytri: 'alloc', fabrik: 'alloc', mapobj: 'alloc', async: 'alloc',
+  arraynumeric: 'alloc', arraydowngrade: 'alloc',
 }
 const TAGS = { biquad: 'dsp, f64', fft: 'fft, f64', synth: 'synth, adsr', bytebeat: 'i32, audio',
   mat4: 'simd, f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot, simd',
@@ -573,7 +574,8 @@ const TAGS = { biquad: 'dsp, f64', fft: 'fft, f64', synth: 'synth, adsr', bytebe
   threescene: 'scene graph, classes', threeanim: 'slerp, f32 buffers', threecull: 'frustum, raycast',
   threegeom: 'f32 buffers, scratch',
   stringify: 'json, escapes', jsontransform: 'json, parse+write', mapstr: 'map, string keys',
-  mapint: 'map, int keys', mapobj: 'map, object keys', setops: 'set, algebra', async: 'await, promises' }
+  mapint: 'map, int keys', mapobj: 'map, object keys', setops: 'set, algebra', async: 'await, promises',
+  jsonroundtrip: 'json, round trip', arraynumeric: 'array, numeric', arraydowngrade: 'array, mixed kinds' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade – every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -674,6 +676,9 @@ const INSIGHTS = {
   mapobj: 'A bundler’s pass over a module graph with object-keyed Maps – in-degrees, reverse edges, topological order and depths, then a deep copy through a memo Map that keeps shared modules shared and a Set of distinct copies.',
   setops: 'Near-duplicate documents with Sets – stop words removed by membership, a vocabulary union, Jaccard similarity from probed intersections, and set differences by copy and delete.',
   async: 'Async request handlers – each awaits a user lookup (inactive users throw into a catch), the user’s orders, a price per line and a coupon, batches served with Promise.all and a tail served one await at a time.',
+  jsonroundtrip: 'Perry’s JSON round trip – JSON.parse of a 1 MB array of 10,000 records (an id, a name, a float value, two tags, a nested {x, y}) and JSON.stringify of the result: the shortest digits of every float written back, the text unchanged byte for byte.',
+  arraynumeric: 'Perry’s numeric array – a quarter million integers pushed into a plain array, then 25 passes adding 1 to every slot: an array that stays numeric, whose elements can live unboxed. The positive control of arraydowngrade.',
+  arraydowngrade: 'Perry’s array downgrade – the arraynumeric array with an object and a string stored mid-array, then the same 25 passes over its numeric slots on both sides: every + stays JS’s + over slots of mixed kinds.',
 }
 // detected visitor engine
 const ENGINE = (() => {

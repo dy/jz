@@ -1,5 +1,5 @@
 {
-  "source": "Wall seconds per case, builds included, on GitHub-hosted ubuntu-24.04 (AMD EPYC). ci: the weekly all-lane run 41382173501, which timed 79 cases before its 6-hour cancel; the other cases are their time in the paired run 41439115302 times the 75th-percentile ratio between the two runs, and the self-compile case jz (a 48-minute build in 41439115302) is 3600. reference: 41439115302 times 13/9 (the paired claim lanes against its 9 contenders), plus the single-run lanes of 41382173501 (estimated the same way where it has none). MoonBit adds 15 s where a port exists. Goose adds 5 s where a port exists: 0.3 to 1.0 s a case on an Apple M4 Max, its build included. Bend adds 5 s where a port exists, 10 s for mapstr and setops and 20 s for wordcount: 1.4 to 3.4 s a case on an Apple M4 Max under load, its build included, 5 to 8 s for mapstr and setops and 14 s for wordcount, whose maps dominate. The C and Rust ports of the library, JSON and Map/Set cases add 5 to 15 s a case in ci and 5 to 35 s in reference: twice their lanes build and run on an Apple M4 Max under load (0.6 to 5.6 s a case), the c-wasm and rust-wasm runs six times in reference, rounded up to 5 s. bench/shards.mjs reads these only for a case its dataset has not timed (cases[].wallMs of a sharded run). The JSON, Map/Set and async cases (stringify, jsontransform, mapstr, mapint, mapobj, setops, async) are estimates from their nearest relatives (json, wordcount, dict), raised for Perry's slow Map and Set rows, plus their Goose and Bend ports as above, until a sharded run times them.",
+  "source": "Wall seconds per case, builds included, on GitHub-hosted ubuntu-24.04 (AMD EPYC). ci: the weekly all-lane run 41382173501, which timed 79 cases before its 6-hour cancel; the other cases are their time in the paired run 41439115302 times the 75th-percentile ratio between the two runs, and the self-compile case jz (a 48-minute build in 41439115302) is 3600. reference: 41439115302 times 13/9 (the paired claim lanes against its 9 contenders), plus the single-run lanes of 41382173501 (estimated the same way where it has none). MoonBit adds 15 s where a port exists. Goose adds 5 s where a port exists: 0.3 to 1.0 s a case on an Apple M4 Max, its build included. Bend adds 5 s where a port exists, 10 s for mapstr and setops and 20 s for wordcount: 1.4 to 3.4 s a case on an Apple M4 Max under load, its build included, 5 to 8 s for mapstr and setops and 14 s for wordcount, whose maps dominate. The C and Rust ports of the library, JSON and Map/Set cases add 5 to 15 s a case in ci and 5 to 35 s in reference: twice their lanes build and run on an Apple M4 Max under load (0.6 to 5.6 s a case), the c-wasm and rust-wasm runs six times in reference, rounded up to 5 s. bench/shards.mjs reads these only for a case its dataset has not timed (cases[].wallMs of a sharded run). The JSON, Map/Set and async cases (stringify, jsontransform, mapstr, mapint, mapobj, setops, async) are estimates from their nearest relatives (json, wordcount, dict), raised for Perry's slow Map and Set rows, plus their Goose and Bend ports as above, until a sharded run times them. The cases from Perry's suite are estimates until a sharded run times them: jsonroundtrip as jsontransform, arraynumeric from a local run of every installed lane (Apple M4 Max, load 12), arraydowngrade the same raised for its Go → wasm row, whose []any boxes every sum (0.33 s a run, 25 runs an invocation, seven invocations in reference).",
   "ci": {
     "alpha": 170,
     "bezfit": 95,
@@ -98,7 +98,10 @@
     "mapint": 130,
     "mapobj": 105,
     "setops": 130,
-    "async": 90
+    "async": 90,
+    "jsonroundtrip": 105,
+    "arraynumeric": 100,
+    "arraydowngrade": 150
   },
   "reference": {
     "alpha": 170,
@@ -198,6 +201,9 @@
     "mapint": 170,
     "mapobj": 135,
     "setops": 170,
-    "async": 120
+    "async": 120,
+    "jsonroundtrip": 135,
+    "arraynumeric": 120,
+    "arraydowngrade": 240
   }
 }

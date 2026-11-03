@@ -317,6 +317,7 @@ all prep steps to run.
 | [`json`](json/json.js) | runtime `JSON.parse` of one module-local source plus heterogeneous object/array walk with a stable inferred JSON shape |
 | [`stringify`](stringify/stringify.js) | `JSON.stringify` of 1024 order records (nested objects and arrays, strings with escapes and non-ASCII text, integers past 2^32, decimal fractions, exponent-notation rates), one NDJSON line each and a pretty-printed dump of every 16th: the writer side of every server and logger |
 | [`jsontransform`](jsontransform/jsontransform.js) | an API gateway's round trip: `JSON.parse` of a 1024-order document built at run time, a total, filter and tag count over the generic objects, `JSON.stringify` of the response |
+| [`jsonroundtrip`](jsonroundtrip/jsonroundtrip.js) | [Perry](https://github.com/PerryTS/perry/tree/main/benchmarks/suite)'s JSON round trip: `JSON.parse` of a 1 MB array of 10,000 records (an integer id, a name, a float value, two tags, a nested `{x, y}`) and `JSON.stringify` of the parsed value, nothing between; the text comes back byte for byte, its 9,999 floats written back in Number::toString's shortest digits |
 | [`sort`](sort/sort.js) | in-place heapsort over a typed array; exposes call-heavy nested loops and typed-array index propagation |
 | [`crc32`](crc32/crc32.js) | table-driven CRC-32 over a mutable byte buffer; exposes integer narrowing and typed-array parameter propagation |
 | [`dotprod`](dotprod/dotprod.js) | multiply-accumulate reduction; JZ reassociates to 4 SIMD accumulators, beating strict-fp serial native |
@@ -350,6 +351,8 @@ all prep steps to run.
 | [`mapint`](mapint/mapint.js) | graph search over sparse 30-bit ids with integer-keyed `Map`s: adjacency lists, a degree histogram, breadth-first distance maps from four sources |
 | [`mapobj`](mapobj/mapobj.js) | a bundler's pass over a module graph with object-keyed `Map`s: in-degrees, reverse edges, topological order and depths, a deep copy through a memo `Map` that keeps shared modules shared and a `Set` of distinct copies |
 | [`setops`](setops/setops.js) | near-duplicate documents with `Set`s: stop words removed by membership, a vocabulary union, Jaccard similarity from probed intersections, set differences by copy and delete |
+| [`arraynumeric`](arraynumeric/arraynumeric.js) | [Perry](https://github.com/PerryTS/perry/tree/main/benchmarks/suite)'s numeric array: 250,000 integers pushed into a plain array, then 25 passes of `arr[i] = arr[i] + 1`; an array that stays numeric, whose elements a compiler can hold unboxed: the positive control of `arraydowngrade` |
+| [`arraydowngrade`](arraydowngrade/arraydowngrade.js) | [Perry](https://github.com/PerryTS/perry/tree/main/benchmarks/suite)'s array downgrade: the `arraynumeric` array with an object and a string stored mid-array, then the same passes over its numeric slots on both sides of them; a JIT drops the array to generic elements, a static compiler sees one array of mixed values, and every `+` stays JS's `+` |
 | [`immutable`](immutable/immutable.js) | integer particle step in the immutable-update idiom — every step replaces each record with a fresh `{x,y,vx,vy}` (React/Redux-style state); value-semantics natives get it free, a JIT leans on young-gen GC + escape analysis, jz pays a bump allocation per object — the escape-analysis/SROA probe |
 | [`async`](async/async.js) | async request handlers: each awaits a user lookup (an inactive user throws into the handler's `catch`), the user's orders, a price per line and a coupon; batches served with `Promise.all`, a tail served one `await` at a time. Every stage settles at once, so the time is the promise machinery |
 | [`colorconv`](colorconv/colorconv.js) | sRGB → Oklab over an image buffer — EOTF pow → 3×3 → cbrt → 3×3; probe for pow/cbrt intrinsic quality |
@@ -607,7 +610,7 @@ and adds no flags. Goose's emitted C turns floating-point contraction off
 itself (`#pragma clang fp contract(off)` and the GCC equivalent), so its float
 cases give the strict checksums, with no FMA variants.
 
-The 80 ports share `_lib/bench.goose` and were written for this benchmark from
+The 83 ports share `_lib/bench.goose` and were written for this benchmark from
 each case's JavaScript, and from its C and Rust ports where it has them: the
 same algorithm, input generation, iteration counts and checksum, in the layouts
 Goose code reaches for. Buffers are grow-only arrays (`T[>..]`), lookup tables
@@ -627,7 +630,13 @@ it, since a Goose array cannot hold a resizable value. `stringify` and
 it has its callers do, and `jsontransform` parses into its document tree.
 That writer finds Number::toString's shortest digits but lays them out as
 serde_json does (`1.0`, `1.05e-6`, `1e21`), so `_lib/ecmajson.goose` lays
-them out as JSON.stringify does (`1`, `0.00000105`, `1e+21`). The library
+them out as JSON.stringify does (`1`, `0.00000105`, `1e+21`). `jsonroundtrip`
+parses into the document tree and writes it back by walking it, each number
+through a buffer of its own: `format_number_js` shrinks the buffer it rewrites,
+and a walk holding a reference into the tree may only grow `out`. `arraynumeric`
+grows an `f64` array; `arraydowngrade` holds an enum of a number, the object and a
+string view in fixed mode (each slot the size of the largest variant), indexed
+and replaced slot by slot. The library
 cases (the color-space kernels, pmndrs/math's,
 three.js's, @stdlib's ddot) port the library code they call as written, a JS
 object becoming an inline struct and a method a function; libm functions
@@ -680,7 +689,7 @@ GPU call (`f!(x)`). The ports make neither, and each binary still runs with
 `--threads 1`, which also puts the runtime's work loop on its sequential path,
 and `--gpu off`: the comparison is single-threaded, like every other lane's.
 
-The 27 ports share `_lib/bench.bend` and were written for this benchmark from
+The 29 ports share `_lib/bench.bend` and were written for this benchmark from
 each case's JavaScript and its C port where it has one: the same algorithm,
 input generation, iteration counts and checksum, in the shapes of Bend's own benchmarks
 (`bench/runtime` in its repository). A loop is a recursive def counting down a
@@ -712,7 +721,13 @@ whole after each event, and the fresh session a miss opens is the default
 `Map.get` answers, built on every event. `setops` keeps each document's words
 in a Base `Set`: a set is a persistent value, so `new Set(a)` shares it and
 each delete rebuilds the path it changes, and `Set.size` walks the set, read
-once for each of the two sets a comparison takes. Bend has no signed
+once for each of the two sets a comparison takes. A Bend array has a fixed
+power-of-two slot count and no push, so `arraynumeric` and `arraydowngrade` make
+one of 2^18 slots each run and store their 250,000 values in order where the JS
+pushes them; `arraydowngrade`'s is an `Array<Value>` of a datatype of three
+constructors (a number, the object as a record, a `String`), read with
+`Array.get` and written with `Array.set`. Their numbers are integers below 2^23,
+which U32 holds as the JS's doubles do. Bend has no signed
 integer: an int32 is a `U32` in two's complement whose sign tests read bit 31.
 `immutable` bounces with the one unsigned test `nx > LIM`, `blur` clamps by
 comparing `x + k` with the radius, `qoi` tests `-2 <= vr <= 1` as the one
@@ -724,12 +739,15 @@ without a build), since Base's `IO.now` counts whole milliseconds. The ports
 cover integer (bitwise, crc32, sieve, nqueens, radixsort, hash, vm, dict,
 levenshtein, hashjoin), image (alpha, blur, conv2d, qoi, trace), audio
 (bytebeat), text, codecs and parsers (base64, tokenizer, strbuild, wordcount,
-lz, json, glyfparse), maps and sets (mapstr, setops) and records (immutable,
-shapes).
+lz, json, glyfparse), maps and sets (mapstr, setops), records (immutable,
+shapes) and plain arrays (arraynumeric, arraydowngrade).
 
 Bend has no 64-bit float (its numbers are `Nat`, `U32` and `F32`), so no f64
 case has a port: in `F32` a kernel computes a narrower result than the case's,
-or, where small integers keep it exact (dotprod, poly), moves half the bytes.
+or, where small integers keep it exact (dotprod, poly), moves half the bytes of
+their Float64Arrays. The array cases hold small integers in a plain array, whose
+element representation each engine chooses for itself, so U32 changes neither
+their values nor what they measure.
 `callback` and `dispatch` have none either: a Bend closure is affine, called at
 most once, and a template argument is fixed at compile time, so neither
 `a.map(x => x * scale + i)` over every element nor a table of operators called
@@ -740,8 +758,8 @@ keyed by 30-bit ids and hold growing adjacency lists, has no port: a key
 formatted by `U32.show` would measure string building, and a table of the
 port's own would not be Base's. `mapobj` keys its maps by object identity,
 which a Bend value does not have (equality is structural), and its deep copy
-through a memo map would copy nothing. The JSON pair (`stringify`,
-`jsontransform`) formats and parses f64 numbers. `async` has no port either,
+through a memo map would copy nothing. The JSON cases (`stringify`,
+`jsontransform`, `jsonroundtrip`) format and parse f64 numbers. `async` has no port either,
 though Bend's IO runs computations on one event loop (`IO.fork`, `IO.join`,
 channels) and a port of it reproduces the checksum: IO is
 continuation-passing, so an await on a stage that answers at once is a
@@ -1441,6 +1459,91 @@ it has no ratio:
 | `mapobj` | 2.13 ms | 687 µs | 1.05 ms | 3.42 | 516 µs | 905 µs |
 | `stringify` | 5.47 ms (wrong) | 14.2 ms | 2.72 ms | – | 4.35 ms | 1.62 ms |
 | `jsontransform` | 1.98 ms | 5.12 ms | 2.12 ms | 0.94 | 1.11 ms | 2.22 ms |
+
+### Perry's suite: a JSON round trip and an array's element kinds
+
+Three cases come from [Perry's benchmark suite](https://github.com/PerryTS/perry/tree/main/benchmarks/suite)
+(PerryTS/perry, MIT), which Perry's author suggested as ground the corpus lacked:
+`jsonroundtrip` is its `bench_json_roundtrip.ts`, `arraynumeric`
+`bench_numeric_array_numeric.ts` and `arraydowngrade` `bench_numeric_array_downgrade.ts`.
+Each keeps Perry's algorithm, sizes and data as written. The harness's timing replaces
+Perry's `Date.now()` around one run (the array cases) or 50 round trips
+(`jsonroundtrip`): the median of 21 samples after 3 warm-ups (5 for `jsonroundtrip`),
+each sample one run of an array case or one round trip. The checksums fold more than Perry's: `jsonroundtrip` folds
+Perry's sum (each run's parsed length and text length), then every UTF-16 code unit of
+the last run's text; the array cases fold every timed run's result, then every slot of
+one more run's array (a number as itself, the object by its field, the string by its
+length). For that extra run the mutation takes the array its run builds as a
+parameter, where Perry's one function builds and mutates; both stay in the timed
+region. `jsontransform` parses, reshapes and writes; `jsonroundtrip` is the plain round
+trip of a generic value with no logic between, its writer bound by Number::toString on
+the 9,999 floats `i * 3.14159`, of up to 17 digits each.
+
+Ports, each reproducing its case's checksum natively and as wasm:
+
+- C (`nat`, `c-wasm`): `jsonroundtrip` takes `jsontransform.c`'s parser and writer
+  unchanged (a C port is one file, so the helpers are copied, not shared); the array
+  cases are growable buffers that `realloc` doubles, `arraydowngrade`'s of a tagged
+  union (a double, an object pointer, a string) whose add tests the tag and adds to a
+  number in place, concatenating a string or the object's string form as JS's `+` would.
+- Rust (`rust`, `rust-wasm`): `jsontransform.rs`'s parser and writer; a `Vec<f64>`; a
+  `Vec` of an enum `Num(f64)`, `Obj(Box<Obj>)`, `Str(String)`.
+- Go (`go`, `go-wasm`, `tinygo`): `encoding/json` over tagged structs, as
+  `jsontransform.go` has it (a `[]any` of `map[string]any` would write each object's
+  keys sorted); a `[]float64`; a `[]any` of `float64`, `*Obj` and `string` with a type
+  switch, where storing a `float64` in an interface boxes it, so every sum allocates.
+- AssemblyScript (`as`): the array cases, an `Array<f64>` and an `Array` of a
+  kind-tagged flat class (`shapes.as.ts`'s idiom). The stub runtime frees nothing, so
+  each sum goes into its slot's own cell: a fresh cell for every sum would allocate
+  6.25 million cells a run. No `jsonroundtrip`: AssemblyScript has no JSON in its
+  standard library, as for the JSON pair.
+- Goose ports all three and Bend the array cases (native contenders, described under
+  Targets); Bend has no `jsonroundtrip`, whose numbers are f64.
+- Zig, MoonBit and Tov have none.
+
+A local measurement (2026-11-03, Apple M4 Max, load average 10 to 14 from other work;
+node 25.9, deno 2.6.7, bun 1.3.14, jsvu's jsc shell, Porffor alpha 19;
+`node bench/bench.mjs --cases=jsonroundtrip,arraydowngrade,arraynumeric
+--targets=jz,v8,deno,bun,jz-wasmtime,jz-w2c,nat,c-wasm,rust,rust-wasm,go,go-wasm,as,goose,bend
+--paired=4`, then `--targets=jz,v8,jsc,porf-native --paired=4`) is not reference
+evidence. Every lane answered its case's reference checksum. Columns are JZ's time
+over each lane's, the median of the paired rounds (below 1, JZ leads). The TinyGo lane
+did not run: TinyGo 0.34 here takes Go 1.19 to 1.23, and Go is 1.26.
+
+| case | JZ | ÷ Node | ÷ Deno | ÷ Bun | ÷ JSC | ÷ C → wasm | ÷ Rust → wasm | ÷ AS | ÷ Go → wasm | ÷ Porffor |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `jsonroundtrip` | 3.21 ms | 0.67 | 0.79 | 0.86 | 1.08 | 0.12 | 0.35 | – | 0.06 | 0.14 |
+| `arraynumeric` | 2.26 ms | 0.64 | 0.75 | 0.85 | 0.88 | 1.11 | 0.58 | 0.29 | 0.32 | 0.07 |
+| `arraydowngrade` | 20.8 ms | 5.43 | 6.49 | 6.06 | 6.12 | 1.53 | 3.77 | 2.27 | 0.06 | 0.70 |
+
+JZ's builds at each optimize level and for WASI, each over Node's time in the same
+4 paired rounds (the host builds through `compileJzAt`, the WASI builds through the CLI
+and run under node's WASI), with the wasmtime and wasm2c rows of the run above and the
+bytes of each build:
+
+| case | -O2 (default) | -O3 (speed) | -Os (size) | WASI -O2 | WASI -O3 | wasmtime | wasm2c |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `jsonroundtrip` | 0.56, 35.9 kB | 0.54, 41.2 kB | 0.72, 24.0 kB | 0.66 | 0.68 | 4.52 ms | 3.42 ms |
+| `arraynumeric` | 0.48, 8.9 kB | 0.57, 7.1 kB | 2.18, 1.8 kB | 0.48 | 0.45 | 2.68 ms | 1.21 ms |
+| `arraydowngrade` | 6.96, 28.0 kB | 5.23, 30.5 kB | 9.78, 14.7 kB | 6.42 | 4.67 | 20.2 ms | 13.7 ms |
+
+`jsonroundtrip` leads every V8-family engine, Bun, every wasm port and Porffor, and
+trails the jsc shell by 8%; Goose's native build, whose json module finds the digits
+with Ryu's digit loop, is the fastest row (1.81 ms). Perry's notes put perry-wit at 1.62×
+Node's time on this program, measured on its own machine and harness, not this one.
+JZ's WASI builds peak at 196 MB (wasm2c) and 209 MB (wasmtime) against the host
+build's 76 MB. `arraynumeric` leads every engine and every wasm port but C → wasm
+(1.11×): JZ holds the array unboxed and presized, and its increment stores each sum
+through a NaN-canonicalizing select, where clang's loop loads, adds and stores; its
+size build runs 2.2× Node's time. `arraydowngrade` is the gap: `arr[i] + 1` over slots
+the compiler sees as number, object or string is the dynamic add, in a loop that may
+allocate (a string slot would concatenate), so each element also pays the in-loop
+collector's heap and iterator tests, a forwarding check of the array's header, a
+bounds and a hole test, where every engine speculates on the small integers it has
+seen. `--why` adds that the mutation keeps its memory (`kept on a call that runs an
+escape: grows arr`): a store `arr[i] =` under a constant bound, not `arr.length`, may
+lengthen the array. Go's boxed `[]any` makes its row the slowest, 332 ms a run on wasm.
+All three are listed in `PENDING_CASES` (`test/bench-claims.js`) until JZ leads.
 
 ### watr — WAT-to-wasm compiler on small corpus
 

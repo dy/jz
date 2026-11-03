@@ -149,6 +149,7 @@ const CASE_NAMES = {
   json: 'JSON parse+walk (single literal source)',
   stringify: 'JSON.stringify of nested records (NDJSON + pretty)',
   jsontransform: 'JSON parse, reshape, stringify (API round trip)',
+  jsonroundtrip: 'JSON.parse + JSON.stringify of a 1 MB document',
   sort: 'in-place heapsort',
   crc32: 'CRC-32 table hash',
   matmul: 'matrix multiply (A·Bᵀ)',
@@ -177,6 +178,8 @@ const CASE_NAMES = {
   mapobj: 'module-graph plan + deep copy (object-keyed Map)',
   setops: 'near-duplicate documents (Set algebra)',
   immutable: 'immutable-update particle step',
+  arraynumeric: 'numeric array push + in-place increments',
+  arraydowngrade: 'numeric array downgraded by an object and a string',
   async: 'async request handlers (await + Promise.all)',
   colorconv: 'sRGB → Oklab batch',
   colorlch: 'sRGB → OkLCh (fused)',
@@ -1632,6 +1635,9 @@ const REFERENCE_CHECKSUMS = {
   stringify: 1432176915, jsontransform: 3050146119,
   mapstr: 1026625040, mapint: 3954235254, mapobj: 854729057, setops: 1463522228,
   async: 535752168,
+  // Perry's benchmark suite (PerryTS/perry benchmarks/suite): node 25, deno 2.6 and
+  // bun 1.3 agree on each, and so does every port
+  jsonroundtrip: 513158889, arraydowngrade: 4159919390, arraynumeric: 2668943355,
 }
 // The self-compile case checksums the bytes the compiler under test emits, so
 // every codegen change moves its answer and no stored checksum can be its

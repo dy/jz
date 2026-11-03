@@ -48,15 +48,16 @@ test('strbuild.c: sanitized build runs clean and keeps the pinned checksum', { s
   ok(!/ERROR|runtime error/i.test(out), 'no sanitizer findings')
 })
 
-// The C ports that manage memory by hand (hash tables, JSON writers and parser,
-// growable buffers, cached plans), each at its case's reference checksum
+// The C ports that manage memory by hand (hash tables, JSON writers and parsers,
+// growable buffers and tagged-union arrays, cached plans), each at its case's reference checksum
 // (REFERENCE_CHECKSUMS in bench/bench.mjs; fftplan and provenance: results.json's
 // ref). Built with ASan and UBSan where the ASan runtime starts, else UBSan alone:
 // a probe of a trivial program decides once, so a host whose ASan hangs before
 // main (the macOS runtime) pays one short timeout, not one per port.
 const HAND_MEMORY = { mapstr: 1026625040, mapint: 3954235254, setops: 1463522228, mapobj: 854729057,
   stringify: 1432176915, jsontransform: 3050146119, polytri: 84696351, fabrik: 2711562489,
-  fftplan: 2894300847, provenance: 842980037 }
+  fftplan: 2894300847, provenance: 842980037,
+  jsonroundtrip: 513158889, arraynumeric: 2668943355, arraydowngrade: 4159919390 }
 
 test('C ports with hand-managed memory: sanitized builds run clean at their reference checksums', { skip: !clangAvailable }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-bench-c-'))
