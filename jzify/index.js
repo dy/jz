@@ -442,8 +442,8 @@ const genErr = (msg) => err('jzify: ' + msg)
 // change first. The program's keys come from every module the witness reads.
 let census = { names: new Map(), props: new Set(), receivers: new Set(), stored: new Set() }, programProps = new Set(), programStored = new Set(), witnessed = new WeakSet()
 const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr, enterBody, leaveBody } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr, censusOf: () => census })
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, isGenerator, direct, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope })
-bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, isGenerator, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal, frames } = createGeneratorLowering({ transform, transformParams, err: genErr, isGenerator, direct, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope })
+bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, isGenerator, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal, isFrame: (name) => frames.has(name) })
 transformSwitch = createSwitchLowering(transform, names)
 
 
@@ -715,6 +715,7 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   // member names `[K]() {}` (const guarantees the binding never changes).
   constStrings.clear()
   generatorNames.clear()
+  frames.clear()
   generatorCloses.clear()
   iterProto.on = iterProto.program
   iterProto.helpers = iterProto.programHelpers

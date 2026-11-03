@@ -670,7 +670,11 @@ export function createTransform(opts) {
       // class the host passes in): the host constructs one that is a host
       // value, as `new` does; a value of the program (a class's factory) is
       // called. Each arm evaluates the arguments once, after the callee.
-      if (typeof callee === 'string' && opts.isValue?.(callee) && !opts.classBrand(callee) && !opts.programCallable?.(callee) && ctx.transform.targetProfile?.envImports && !ctx.transform.strict)
+      // A binding of a generator's or an async function's machine is a field of
+      // its frame (generators.js `frames`): read twice, which reads nothing else.
+      const field = Array.isArray(callee) && callee[0] === '.' && callee.length === 3 && typeof callee[2] === 'string' && _gen?.isFrame?.(callee[1]) ? callee[2] : null
+      if ((typeof callee === 'string' && opts.isValue?.(callee) && !opts.programCallable?.(callee) || field != null) && !opts.classBrand(field ?? callee)
+          && ctx.transform.targetProfile?.envImports && !ctx.transform.strict)
         return ['?', ['__ptr_is', callee, [null, PTR.EXTERNAL]],
           ['()', '__host_new', [',', callee, ...items.map(transform)]],
           ['()', callee, items.length ? [',', ...items.map(transform)] : null]]

@@ -41,6 +41,8 @@ test('new of a host constructor constructs on the host, its arguments evaluated 
     ['wasm', new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 5, 1, 0x60, 0, 1, 0x7f, 3, 2, 1, 0, 7, 5, 1, 1, 0x66, 0, 0, 0x0a, 6, 1, 4, 0, 0x41, 0x2a, 0x0b])]])
 })
 
+// (a binding of a generator's or an async function's machine is a field of its
+// frame, and constructs as a variable does)
 test('new of a constructor a binding holds constructs a host one on the host and calls a class of the program', async () => {
   if (onWasi()) return
   await agree(`
@@ -51,7 +53,10 @@ test('new of a constructor a binding holds constructs a host one on the host and
     export const param = (C, s) => new C(s).pathname
     export const later = async (s) => { let M = null; M = Response; return await new M(s).text() }
     export const order = () => { const log = [], R = Response; try { new R(log.push('arg')) } catch {} return log.join() }
-  `, [['local', 2, true], ['local', 2, false], ['alias', 'abc'], ['param', URL, 'http://x.y/z'], ['later', 'def'], ['order']])
+    export const held = async (s) => { const R = Response; await null; const r = new R(s); await null; return [typeof R, await r.text()] }
+    const steps = function* (s) { const R = Response; yield 1; yield new R(s) instanceof Response }
+    export const stepped = (s) => [...steps(s)]
+  `, [['local', 2, true], ['local', 2, false], ['alias', 'abc'], ['param', URL, 'http://x.y/z'], ['later', 'def'], ['order'], ['held', 'ghi'], ['stepped', 'jkl']])
   // a class of the program held in a const compiles as its call, with no host arm
   const held = `class A { constructor(o) { this.v = o.a * 2 } }
     class B { constructor(o) { this.v = o.a * 3 } }

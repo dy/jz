@@ -211,6 +211,9 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
   // the scope is entered (a for-head's copied into a fresh one each
   // iteration, as JS copies it), and a closure reads the cells it was made
   // with: `((x) => () => x.v)(x)`. Nested functions keep their bindings.
+  // The frame records of the machines lowered, by name: a binding the frame
+  // holds reads as its field, `frame.name` (transform.js \`new\` of one).
+  const frames = new Set()
   const resolveLocals = (stmts, params, frame = null, framed = null) => {
     const deep = (n) => Array.isArray(n) ? noted(n, n.map(deep)) : n
     stmts = stmts.map(deep)
@@ -641,6 +644,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     // closures share, where each would be a cell of its own; a binding of a
     // statement that never suspends stays a local of that statement.
     const frame = genTemp('fr'), framed = []
+    frames.add(frame)
     const framedRef = (t) => Array.isArray(t) && t[0] === '.' && (t[1] === frame || framedRef(t[1]))
     const written = enterMachineScope?.(owners, body, false)
     try {
@@ -1648,5 +1652,5 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     ]]
   }
 
-  return { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal: (h) => TERMINAL_HELPERS.has(h) }
+  return { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal: (h) => TERMINAL_HELPERS.has(h), frames }
 }
