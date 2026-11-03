@@ -488,6 +488,11 @@ export function reset(proto, globals, bridge) {
     // its own already-loaded early return; includeAllMods()'s bulk preload
     // deliberately does NOT (see src/autoload.js loadModule/includeModule).
     demanded: new Set(),
+    // The demanded modules and every module they depend on (autoload.js
+    // MOD_DEPS): exactly what a compile without eager preload loads. A gate on
+    // a module's presence in emitted code reads THIS, not `modules`, which
+    // preload makes true for every module whatever the source asks for.
+    required: new Set(),
     importSources: null,  // user compile's bundled source graph; reset() clears it every session
     importAsts: null,   // self-compile: pre-parsed [specifier, ast] pairs (the kernel can't parse).
     rootExports: null,  // the program's export table while a nested module prepares (std host-boundary re-exports)

@@ -1657,7 +1657,7 @@ export default (ctx) => {
           ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
           ['then', numericIndexed],
           ['else', opaqueDynExprLoad(ptrExpr, keyExpr)] ]
-        if (ctx.module.modules['string'] && !notString) {
+        if (ctx.module.required.has('string') && !notString) {
           return ['if', ['result', 'f64'],
             ptrTypeEq(ptrExpr, PTR.STRING),
             ['then', (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])],
@@ -1720,7 +1720,7 @@ export default (ctx) => {
         ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
         ['then', arrayLoad],
         ['else', opaqueDynExprLoad(ptrExpr, storedValue(idx))] ]
-      if (ctx.module.modules['string'] && !notString)
+      if (ctx.module.required.has('string') && !notString)
         return typed(['if', ['result', 'f64'],
           ptrTypeEq(ptrExpr, PTR.STRING),
           ['then', stringLoad()],
@@ -1728,7 +1728,7 @@ export default (ctx) => {
       return typed(guarded, 'f64')
     }
     // Unknown → runtime dispatch (string module loaded → check ptr_type)
-    if (ctx.module.modules['string'] && !notString)
+    if (ctx.module.required.has('string') && !notString)
       return typed(
         ['if', ['result', 'f64'],
           ptrTypeEq(ptrExpr, PTR.STRING),

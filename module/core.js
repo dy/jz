@@ -767,7 +767,7 @@ export default (ctx) => {
   // through the prelude (compile/emit/to-primitive.js) when the program has
   // one, else the kind's inherited string. Callers pass a heap value.
   ctx.core.stdlib['__to_prim_dflt'] = () => `(func $__to_prim_dflt (param $v i64) (result i64)
-    ${ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.and
+    ${ctx.module.required.has('date') && ctx.schema.dateSid != null ? `(if (i32.and
       (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
       (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))
       (then (return ${ctx.funcs.runtimeRoots.has('__jz_tp_str')
@@ -785,7 +785,7 @@ export default (ctx) => {
     ${ctx.funcs.runtimeRoots.has('__jz_tp_num') ? `(if (i32.or (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
       (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.HASH})))
       (then (return (i64.reinterpret_f64 (call $__jz_tp_num (f64.reinterpret_i64 (local.get $v)))))))`
-      : ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.and
+      : ctx.module.required.has('date') && ctx.schema.dateSid != null ? `(if (i32.and
           (i32.eq (call $__ptr_type (local.get $v)) (i32.const ${PTR.OBJECT}))
           (i32.eq (call $__ptr_aux (local.get $v)) (i32.const ${ctx.schema.dateSid})))
           (then (return (i64.load (i32.wrap_i64 (local.get $v))))))` : ''}

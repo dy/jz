@@ -331,7 +331,16 @@ export function includeModule(name, onRegister) {
   const modName = MOD_ALIAS[name] || name
   if (!mods[modName]) return err(`Module not found: ${name}`)
   ctx.module.demanded.add(modName)
+  markRequired(modName)
   loadModule(modName, onRegister)
+}
+
+// ctx.module.required: a demanded module and, transitively, what loadModule
+// loads beside it — the same closure, whether or not preload ran first.
+function markRequired(modName) {
+  if (ctx.module.required.has(modName)) return
+  ctx.module.required.add(modName)
+  for (const dep of MOD_DEPS[modName] || []) markRequired(dep)
 }
 
 export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])

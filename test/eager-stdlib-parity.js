@@ -65,3 +65,16 @@ test('eager-stdlib parity: unknown method on a proven array still rejects under 
   ok(eagerMsg && /frobnicate/.test(eagerMsg), `eager must ALSO reject mentioning 'frobnicate' (Class 2 regression if this compiles), got: ${eagerMsg}`)
   is(eagerMsg, lazyMsg, 'the reject message must be identical, not just "some error"')
 })
+
+// A runtime helper's arm for a module (ToString's typed-array join, a Date's
+// text, ToPrimitive's Date time) follows what the source requires, the demanded
+// modules and what they depend on (ctx.module.required), not what preload ran.
+test('eager-stdlib parity: ToString of an unknown value is byte-identical under eager preload', () => {
+  if (skip) return
+  for (const src of ['export let s = (n) => String(n)', 'export let s = (n) => `<${{ v: n }}>` + String(n > 1 ? null : { k: n })',
+    'export let s = (n) => [n, n + 1].join() + ("" + { v: n })'])
+    for (const host of ['js', 'wasi']) {
+      const lazy = compile(src, { host, optimize: 0 }), eager = compile(src, { host, optimize: 0, _eagerStdlib: true })
+      ok(bytesEqual(lazy, eager), `${src} @${host}: ${lazy.length}B lazy, ${eager.length}B eager`)
+    }
+})

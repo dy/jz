@@ -43,7 +43,7 @@ export function usesDynProps(vt) {
  *  mismatch lesson, module/schema.js:441-453 — the write side and every
  *  read-side dyn-props probe must agree at IDENTICAL schema granularity). */
 export function needsDynShadow(target, sid) {
-  if (!ctx.module.modules.collection) return false
+  if (!ctx.module.required.has('collection')) return false
   // Functions/CLOSURE always need dynamic props so cross-module property
   // access (fn.parse, i32.parse aliases) sees the same value as schema slots.
   const vt = typeof target === 'string' ? (ctx.func.localReps?.get(target)?.val || ctx.scope.globalValTypes?.get(target)) : null

@@ -246,7 +246,7 @@ export default (ctx) => {
     __key_eq: ['__str_eq'],
     __to_key: ['__is_symbol', '__to_str'],
     __to_str: () => [...(ctx.schema.regexSids.size ? ['__is_regexp', '__regex_string'] : []), '__ftoa', '__static_str', '__str_join', '__mkptr',
-      ...(ctx.module.modules.date && ctx.schema.dateSid != null ? ['__ptr_aux', '__date_to_string'] : []),
+      ...(ctx.module.required.has('date') && ctx.schema.dateSid != null ? ['__ptr_aux', '__date_to_string'] : []),
       ...(symbolsMade() ? ['__is_symbol', symbolToStringThrow()] : [])],
     __str_length: ['__ptr_type', '__ptr_aux', '__str_len'],
   })
@@ -1151,7 +1151,7 @@ export default (ctx) => {
     ${representationProgramHasBigint(ctx) && ctx.core.stdlib['__radix_str'] ? `;; A boxed BigInt: its payload in decimal
     (if (i32.eq (local.get $type) (i32.const ${PTR.BIGINT}))
       (then (return (i64.reinterpret_f64 (call $__radix_str (i64.load (call $__ptr_offset (local.get $val))) (i32.const 10))))))` : ''}
-    ${ctx.module.modules.typedarray ? `;; A typed array joins like an Array (its @@toStringTag is not consulted by %TypedArray%.prototype.toString)
+    ${ctx.module.required.has('typedarray') ? `;; A typed array joins like an Array (its @@toStringTag is not consulted by %TypedArray%.prototype.toString)
     (if (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
       (then (return (i64.reinterpret_f64 (call $__str_join (local.get $val)
         (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${ssoAux(1)}) (i32.const 44))))))))` : ''}
@@ -1161,7 +1161,7 @@ export default (ctx) => {
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then
         ${ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(return (call $__to_str (i64.reinterpret_f64 (call $__jz_tp_str (f64.reinterpret_i64 (local.get $val))))))`
-          : ctx.module.modules.date && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $val)) (i32.const ${ctx.schema.dateSid}))
+          : ctx.module.required.has('date') && ctx.schema.dateSid != null ? `(if (i32.eq (call $__ptr_aux (local.get $val)) (i32.const ${ctx.schema.dateSid}))
           (then (return (i64.reinterpret_f64 (call $__date_to_string (f64.load (i32.wrap_i64 (local.get $val))))))))` : ''}
         ${ctx.schema.regexSids.size && !ctx.funcs.runtimeRoots.has('__jz_tp_str') ? `(if (call $__is_regexp (local.get $val))
           (then (return (call $__regex_string (local.get $val)))))` : ''}

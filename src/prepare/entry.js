@@ -232,7 +232,7 @@ export default function prepare(node) {
   // and depth-0 arrows in any other position (object property, ternary arm, return
   // value, ...) skip the depth>0 prep-time include, so they reach emit unsupported
   // unless we catch them here.
-  if (!ctx.module.modules.fn) {
+  if (!ctx.module.required.has('fn')) {
     const funcNames = new Set(ctx.funcs.list.map(f => f.name))
     // A bare reference is a first-class function VALUE if it names either a user
     // function (including a normalized builtin wrapper) needs a closure-table entry
