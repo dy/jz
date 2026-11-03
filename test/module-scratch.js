@@ -10,7 +10,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
-import { oracle, run, wat, compile } from './util.js'
+import { oracle, run, wat, compile, funcWat } from './util.js'
 
 // A helper that writes two results at a stride: over its second copy's budget, so two sites keep the call.
 const ASSIGN = `const SMALLEST = 2.2250738585072014e-308, SCALE = 4503599627370496
@@ -109,6 +109,42 @@ const memory = {
 
 test('module scratch: an array with any other use stays, and answers the same', () => {
   for (const [name, [src, calls]] of Object.entries(memory)) agreeCalls(src, calls, name)
+})
+
+// A function that names the array calls a user of it, itself included (a library's
+// `pow` takes the words of x and y through its module's array and calls itself for
+// `-Infinity`): a read before the call, or after a store after it, holds the value
+// its own call stored. [source, the calls]
+const calling = {
+  'a recursion that reads before it calls': [DEEP('deep', '') + 'const W = [0, 0]\nfunction pw(x, y) { W[0] = x * 2; W[1] = y - 1; if (W[1] > 3) return pw(W[0] * 0.5, W[1] - 1); return W[0] + W[1] }\nexport let f = (x, y) => pw(x, y) + deep(x, 2)',
+    rows.map(a => ['f', ...a]).concat([['f', 1, 9], ['f', -3, 12]])],
+  'a store after a call that writes it': ['const W = [0]\nfunction deep(v, d) { W[0] = v; if (d > 0) return deep(W[0] * 0.5 + d, d - 1); return W[0] }\nexport let f = (x) => { W[0] = x; const r = deep(W[0], 3); W[0] = r + 1; return W[0] * 2 }',
+    [['f', 1], ['f', 8], ['f', -0], ['f', NaN]]],
+  'a store in each arm after the call': ['const W = [0, 0]\nfunction deep(v, d) { W[1] = v; if (d > 0) return deep(W[1] + d, d - 1); return W[1] }\nexport let f = (x, c) => { W[0] = x; const r = deep(W[0], 2); if (c > 0) W[0] = r; else W[0] = -r; return W[0] }',
+    [['f', 1, 0], ['f', 2, 1], ['f', -5, 1]]],
+}
+// [source, the calls]: a read past such a call with no store after it reads what the callee stored
+const calledOver = {
+  'a read after a recursion without a store': ['const S = [0]\nfunction rec(v, d) { S[0] = v; if (d > 0) { rec(v + 1, d - 1) } return S[0] }\nexport let f = (x) => rec(x, 3)',
+    [['f', 1], ['f', 8], ['f', -2]]],
+  'a store in one arm after the call': ['const S = [0]\nfunction deep(v, d) { S[0] = v; if (d > 0) return deep(S[0] + d, d - 1); return S[0] }\nexport let f = (x, c) => { S[0] = x; deep(S[0], 2); if (c > 0) S[0] = 7; return S[0] }',
+    [['f', 1, 0], ['f', 2, 1], ['f', -5, 0]]],
+}
+
+test('module scratch: a call that writes the array between, the stores after it are what a read holds', () => {
+  for (const [name, [src, calls]] of Object.entries({ ...calling, ...calledOver })) agreeCalls(src, calls, name)
+  if (belowOpt(2)) return
+  for (const [name, [src]] of Object.entries(calling)) {
+    const text = wat(src, { optimize: 3 })
+    ok(!/\(global \$[WS]\b/.test(text), `${name}: no binding left`)
+    // (the program's own functions: a value the host passes may be a string, whose runtime loads)
+    for (const fn of ['f', 'pw', 'deep']) ok(!/\bf64\.(load|store)/.test(funcWat(text, fn)), `${name}: no load and no store in ${fn}`)
+  }
+  // (in memory: a store of the element a callee reads back, whether a global or static data holds the array)
+  for (const [name, [src]] of Object.entries(calledOver)) {
+    const text = wat(src, { optimize: 3 })
+    ok(['rec', 'deep'].some(fn => /\bf64\.store/.test(funcWat(text, fn))), `${name}: the array stays`)
+  }
 })
 
 test('module scratch: the array left in memory answers the same', () => {

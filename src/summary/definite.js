@@ -26,8 +26,11 @@ const LOGICAL_ASSIGN = new Set(['||=', '&&=', '??='])
  *  frame mentions transitively, since a function named where a
  *  binding is not yet assigned may run from there on, and what it reads is
  *  read there; `later` are the names read once the statements have ended (a
- *  function the host calls), which every path to the end must have assigned. */
-export function definitelyAssigned(body, reach = null, later = null) {
+ *  function the host calls), which every path to the end must have assigned.
+ *  `clobber` ({ at(call), names }): a call `at` answers true for leaves `names`
+ *  unassigned after it, its operands read before: a read past it needs a store
+ *  of its own (plan/scratch.js, where a callee may write what the names hold). */
+export function definitelyAssigned(body, reach = null, later = null, clobber = null) {
   const bare = new Set()
   const declared = (n) => {
     if (!Array.isArray(n) || n[0] === '=>') return
@@ -91,6 +94,12 @@ export function definitelyAssigned(body, reach = null, later = null) {
       return join(walk(n[2], yes), n[3] == null ? no : walk(n[3], no))
     }
     if (op === '&&' || op === '||') { const [yes, no] = split(n, a); return join(yes, no) }
+    if (clobber && (op === '()' || op === '?.()' || op === 'new') && clobber.at(n)) {
+      // an optional call's arguments may not run: they assign nothing past it
+      if (op === '?.()') { a = walk(n[1], a); seq(n, fork(a), 2) } else a = seq(n, a)
+      if (a !== null) for (const x of clobber.names) a.delete(x)
+      return a
+    }
     if (op === '??' || op === '?.' || op === '?.()' || op === '?.[]') {
       a = walk(n[1], a)
       seq(n, fork(a), 2)

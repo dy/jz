@@ -15,9 +15,11 @@
  *     any closure;
  *   - each read follows a store of that element on every path to it
  *     (summary/definite.js), so no call reads what another stored;
- *   - no call reaches a function that names the array, itself included, or a
- *     callee the program cannot name: between a store and its read nothing else
- *     writes the element.
+ *   - no call reaches a callee the program cannot name, and between a read and
+ *     the store it follows no call reaches a function that names the array,
+ *     itself included: nothing else writes the element there. A call that does
+ *     (a recursion, `return pow( -0, -y )`) leaves the elements for stores after
+ *     it; what the callee stores goes to locals of its own.
  * A mention of any other form (an argument, a value, an index that is not
  * constant, a statement of the module) keeps the array.
  *
@@ -202,10 +204,20 @@ export const scalarizeModuleScratch = (programFacts, ast) => {
       if (uses) users.push(f)
     }
     if (!ok || !users.length) continue
-    // no user reaches a user, and none calls what the program cannot name
+    // no user calls what the program cannot name; a call of a user, or of a function
+    // that reaches one (a recursion's own), may write the elements: one read after it
+    // needs a store after it (`clobber`), where the callee's writes went to its own locals
     const userNames = new Set(users.map(f => f.name))
     const reaches = (from) => { const seen = new Set(), work = [...(callees.get(from) ?? [])]; while (work.length) { const c = work.pop(); if (userNames.has(c)) return true; if (seen.has(c)) continue; seen.add(c); work.push(...(callees.get(c) ?? [])) } return false }
-    if (users.some(f => reaches(f.name) || opaque(bodies.get(f) ?? f.body))) continue
+    if (users.some(f => opaque(bodies.get(f) ?? f.body))) continue
+    const writes = new Set()
+    for (const cs of programFacts.callSites) {
+      if (!cs.callerFunc || !userNames.has(cs.callerFunc.name) || !(userNames.has(cs.callee) || reaches(cs.callee))) continue
+      // a site the call graph resolved through a member or a table names no callee at the node: it keeps the array
+      if (cs.synthetic) { ok = false; break }
+      writes.add(cs.callee)
+    }
+    if (!ok) continue
     const next = new Map()
     for (const f of users) {
       // named apart from the array: a name that begins with a module binding's reads as a member of it
@@ -214,7 +226,8 @@ export const scalarizeModuleScratch = (programFacts, ast) => {
       if (!isArr(body) || body[0] !== '{}' || body.length !== 2) { ok = false; break }
       const list = isArr(body[1]) && body[1][0] === ';' ? body[1].slice(1) : [body[1]]
       const local = ['{}', [';', ['let', ...names], ...list]]
-      const assigned = definitelyAssigned(local)
+      const assigned = definitelyAssigned(local, null, null,
+        writes.size ? { at: (n) => (n[0] === '()' || n[0] === '?.()') && writes.has(n[1]), names } : null)
       // an element the function never names is declared for nothing: only a named one must hold
       const used = new Set()
       const note = (n) => { if (typeof n === 'string') { if (names.includes(n)) used.add(n) } else if (isArr(n) && n[0] !== 'str') for (let i = 1; i < n.length; i++) note(n[i]) }
