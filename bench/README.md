@@ -467,7 +467,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `jz-w2c` | JZ Wasm translated by wabt `wasm2c`, then clang `-O3`; built with `--no-tail-call` as described above |
 | `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only; unsupported SIMD and multi-value cases record build failures. Set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
-| `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 13 (`547c781`, 2026-09-30); a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
+| `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 19 (`0c135ce`, 2026-10-21); a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
 | `scriptc` | [scriptc](https://github.com/vercel-labs/scriptc) 0.4.6: JS/TS compiled through the TypeScript checker and LLVM to a native executable with its static runtime, no embedded engine. `scriptc build <case>-native-flat.js -o <bin>` uses default release optimization and native `performance.now()`. No annotations are added, so untyped values compile to its dynamic tier (native code that checks types at run time). Set `SCRIPTC_BIN` to override. |
 | `tslang` | [TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler) pre-alpha87: LLVM/MLIR native output with its default library and Boehm GC. The unchanged flattened JS is saved as `.ts`; a C `clock_gettime(CLOCK_MONOTONIC)` binding supplies `performance.now()`. `tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>.ts -o <bin>`. Set `TSLANG_BIN` to override. |
 | `perry` | [Perry](https://perryts.com/): JS/TS compiled through LLVM to a native executable with its runtime and GC. `perry compile <case>-native-flat.js -o <bin> --fp-contract off`, then run the binary. Uses the unchanged JS kernels, native `performance.now()`, default optimization and host CPU tuning; no type annotations, fast-math, or V8 fallback. Set `PERRY_BIN` to override. |
@@ -675,7 +675,9 @@ Each failure retains its diagnostic. The other competitors' stored rows are
 unchanged; all three timing anchors passed within the 10% drift limit. These
 remain partial, mixed-vintage measurements on a host with high swap use,
 recorded in `meta.machineState`. The chart labels each native lane's comparable
-coverage; wrong checksums and failures never enter its geomean.
+coverage; wrong checksums and failures never enter its geomean. `results.json`
+keeps these alpha 13 rows until a reference run measures the alpha 19 pin; the
+2026-11-02 run below measures both releases.
 
 A 2026-10-30 local run on the same machine measured the lanes added or changed
 since on all 91 cases, JZ at `135e1bd`. It is not reference evidence and
@@ -730,6 +732,51 @@ by case:
 The engines-in-wasm lanes run the self-compile case too: QuickJS-NG 2.91 s,
 componentize-qjs 2.48 s, ComponentizeJS 4.83 s, each with the oracle's checksum
 (JZ's own row there, which takes over an hour to build, was not rerun).
+
+A 2026-11-02 local run on the same machine measured Porffor alpha 19 (`0c135ce`,
+the pin) beside JZ at `839dad3` on the 90 cases but `jz`, then alpha 13
+(`547c781`) alone on the same cases. It is not reference evidence: the load
+average was 23–30 from other work with 25–27 GB of swap in use, and each lane
+ran once. Columns as in the 2026-10-30 table; alpha 13's run had no JZ row of
+its own to time against.
+
+| Porffor | agree | wrong | failed | timed out | time ÷ JZ | size ÷ JZ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| alpha 13 `547c781` | 53 (3 FMA variants) | 18 | 18 | 1 | – | 68× |
+| alpha 19 `0c135ce` | 64 (3 FMA variants) | 18 | 8 | 0 | 21.8× (63) | 118× |
+
+Alpha 19 newly answers jessie (5.7× JZ's time), radixsort, threecull, movavg and
+seven of the nine color-space kernels (hsl, hwb, jzczhz, cam16, hct, a98rgb,
+ipt), where alpha 13 crashed, returned a wrong checksum, or on movavg passed the
+300-second limit. Its accepted FMA variants are fft, biquad and gainclass (all
+in `FMA_CHECKSUMS`, gainclass's as native Go's); resample and synth left theirs.
+Eleven of its 18 wrong answers are fused multiply-add alone: built with
+`CC='cc -ffp-contract=off'`, lorenz, resample, synth, slices, nbody, raytrace,
+fftplan, sosfilter, jzazbz, worley and fabrik return the strict reference, and
+none of those alternates is in `FMA_CHECKSUMS`. threescene and threegeom stay
+wrong with FMA off; deltae and the four color probes are the cases JZ misses
+too. stdlib-special, stdlib-dists, stdlib-exp, stdlib-gamma and stdlib-erf still
+do not build: the generated C redefines `floorf` and `ceilf` and passes an `int`
+where a `jsval` is expected, which clang rejects. watr ends in a bare
+`Uncaught TypeError` (alpha 13: `Bad export name at 5:9`); webaudio
+(`Cannot get property of null`) and threeanim (three.js's `.setFromEuler()
+encountered an unknown order: undefined`, then a signal) fail as under alpha 13.
+
+On the 51 cases both releases answer correctly, alpha 19 takes 1.04× alpha 13's
+time (geomean; both binaries built per case and run alternately, four runs
+each): more than 10% faster on 10 cases (bezfit 3.3×, mandelbrot 2.3×,
+quatmul 2.0×, json 1.7×, polytri 1.7×), within 10% on 15, slower on 26 (blur
+1.84×, alpha 1.79×, bitwise 1.61×). Its binaries are 2.0× alpha 13's (geomean
+over the 71 cases both build). JZ is faster and smaller than alpha 19 on every
+case both answer correctly; the closest, paired over six rounds, is hct (1.88×
+JZ's time). Of the FMA-only rows, synth (1.26×) and fabrik (2.2×) pair
+closest, and on lorenz alpha 19 is faster than JZ: paired at a load average of
+13, 11.6 ms against JZ's 15.0 ms with its FMA checksum, and 14.9 ms against
+15.1 ms built with FMA off, where it returns the strict reference. The row does
+not compare here while its checksum is unclassified. On CI's x64 runners clang
+emits no FMA and the row compares: alpha 13 took 1.05× JZ's time in the
+2026-11-03 CI run (`results-ci.json`), and with FMA off alpha 19 runs lorenz at
+alpha 13's speed (14.8 ms each, run alternately).
 
 TypeScriptCompiler pre-alpha87 also produced no usable results on the 74 discovered
 cases. Its compiler and monotonic-clock installation smoke passed; corpus failures
@@ -1110,18 +1157,20 @@ has the advantage of profile-guided tiering on a long-running compiler.
 The compiler workloads (`jz`, `watr`, `jessie`) run through the same native
 lanes as the smaller kernels. scriptc 0.4.6's type checker rejects the `jz` and
 `jessie` bundles, and `watr` stops at `new BigInt64Array` (2026-10-30 run
-above). Porffor alpha 13 compiles them, but the executables fail at runtime:
+above). Porffor alpha 19 compiles them; `jessie` now runs with the oracle's
+checksum at 5.7× JZ's time, and the others fail at runtime (2026-11-02 run
+above):
 
-| case | Porffor alpha 13 runtime error |
+| case | Porffor alpha 19 runtime error |
 | --- | --- |
-| `jz` | `Cannot mix BigInts and non-BigInts in numeric expressions` |
-| `watr` | `Bad export name at 5:9` |
-| `jessie` | `Unexpected token at 833:1` |
-| `webaudio` | `EventTarget is not defined` |
+| `jz` | not rerun; alpha 13: `Cannot mix BigInts and non-BigInts in numeric expressions` |
+| `watr` | `Uncaught TypeError`, no message (alpha 13: `Bad export name at 5:9`) |
+| `webaudio` | `Cannot get property of null` |
 
-These failures retain their diagnostics in `results.json` and do not enter
-speed ratios. Static Hermes runs `watr` and `jessie` (1.91× and 9.84× JZ's
-time in the 2026-10-30 run) and fails `jz` and `webaudio`, as listed there.
+`results.json` keeps alpha 13's diagnostics until a reference run measures the
+pin; failures do not enter speed ratios. Static Hermes runs `watr` and `jessie`
+(1.91× and 9.84× JZ's time in the 2026-10-30 run) and fails `jz` and
+`webaudio`, as listed there.
 
 **No-EH build variant for the native lab rows (`jz-w2c2`).** The lab cases'
 compiled wasm carries a wasm-exceptions tag section (jz lowers `try`/`catch`/

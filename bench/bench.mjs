@@ -105,7 +105,7 @@ const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
 // Porffor: the release binary its installer puts under ~/.local/bin
 // (`curl -fsSL https://porffor.dev/install.sh | sh`, the install the author
-// asks for; alpha 4 at the 2026-09-05 refresh), else a git checkout of the
+// asks for; CI pins alpha 19, test/_porffor-floor.js), else a git checkout of the
 // same line, else PATH; npm's 0.61.x is the frozen pre-rewrite engine. Same
 // committed-absolute-path pattern as WABT_W2C_DIR; override via PORF_BIN.
 const PORF_RELEASE = join(process.env.PORFFOR_INSTALL || join(homedir(), '.local/bin'), 'porf')
@@ -309,7 +309,7 @@ const npmVersion = (cmd, pkg) => {
   return null
 }
 // Porffor identity for evidence metadata and the prep cache. A release binary
-// names its commit in its version text (`alpha 13 (547c781 2026-09-30)`), which
+// names its commit in its version text (`alpha 19 (0c135ce 2026-10-21)`), which
 // identifies the artifact. Alpha 3's checkout `porf --version` still prints
 // alpha 1, so clean checkouts use git HEAD. Dirty checkouts, and a PATH entry
 // with no commit in its version, are labeled and bypass persistent caching.

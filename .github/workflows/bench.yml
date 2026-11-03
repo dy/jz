@@ -233,13 +233,13 @@ jobs:
       - run: npm install --ignore-scripts --no-save assemblyscript@${{ needs.plan.outputs.asc || '~0.27.0' }} binaryen @bytecodealliance/jco@1.40.0 @bytecodealliance/componentize-js@0.23.0 componentize-qjs@0.5.0 @loopdive/js2@0.71.0
       # Porffor's npm 0.61.x is the frozen pre-rewrite engine. The author's
       # install is the release binary (porffor.dev/install.sh); pin the tested
-      # release, alpha 13 (547c781, 2026-09-30), by its tag so the comparison is
+      # release, alpha 19 (0c135ce, 2026-10-21), by its tag so the comparison is
       # reproducible; a failed rival install is fatal rather than silently
       # weakening coverage.
-      - name: porffor alpha 13 (release, pinned)
+      - name: porffor alpha 19 (release, pinned)
         env:
-          PORFFOR_RELEASE: alpha-13
-          PORFFOR_REV: 547c7815125b6f02474591950f8b0dd7031a03f0
+          PORFFOR_RELEASE: alpha-19
+          PORFFOR_REV: 0c135ce2f36fdd3467d5a58daa92283810705a51
         run: |
           curl -fsSL https://porffor.dev/install.sh | sh -s -- "$PORFFOR_RELEASE"
           test -x "$HOME/.local/bin/porf"
