@@ -242,15 +242,14 @@ export default (ctx) => {
     __jput_raw: ['__jput', '__str_length', '__char_at'],
     __jput_str: ['__char_at', '__str_length', '__jput', '__jreserve'],
     __jreserve: ['__alloc'],
-    __jp: ['__jp_ws', '__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_length'],
-    __jp_val: ['__jp_ws', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj'],
+    __jp: ['__jp_ws', '__jp_val', '__jp_str', '__jp_num', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_length'],
+    __jp_val: ['__jp_ws', '__jp_str', '__jp_num', '__jp_obj', '__jp_schema_get', '__alloc', '__alloc_hdr', '__mkptr', '__dense_check'],
     __jp_str: ['__sso_char', '__char_at', '__str_length', '__hex4', '__ishex', '__sso_norm', '__mkptr'],
     __hex4: ['__hex1'],
     __jp_num: ['__jp_num_full'],
     __jp_num_full: ['__pow10', '__dec_to_f64', '__char_at'],
-    __jp_arr: ['__jp_ws', '__jp_val', '__dense_check'],
-    __jp_obj: () => ['__jp_ws', '__jp_val', '__jp_str', '__jp_schema_get', '__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__jp_key_idx', ...(lean ? [] : ['__jp_shape_hit']), '__str_length'],
-    __jp_shape_hit: ['__str_length'],
+    __jp_obj: () => ['__jp_str', '__jp_schema_get', '__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__jp_key_idx', ...(lean ? [] : ['__jp_layout_hit']), '__str_length'],
+    __jp_layout_hit: ['__str_length'],
     __jp_schema_get: ['__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__str_hash', '__jp_schema_limit'],
     __jp_schema_limit: ['__alloc_hdr', '__mkptr'],
     __jp_key_idx: ['__str_length', '__char_at'],
@@ -1023,13 +1022,6 @@ export default (ctx) => {
   // Sticky (never cleared mid-parse) so recursive descent need not thread an
   // error result through every call — __jp resets it per invocation.
   declGlobal('__jp_err', 'i32')
-  // The parse's key stack: an object reads its members' key spans and values
-  // here, one 16-byte entry each, a nested object's above its parent's, and
-  // gives them back as it ends. Made with the parse (\`__jp\`), as the writer's
-  // buffer is with \`__stringify\`: byte offsets from \`$__jp_ks\`, which grows.
-  declGlobal('__jp_ks', 'i32')
-  declGlobal('__jp_kcap', 'i32')
-  declGlobal('__jp_ktop', 'i32')
   // Runtime schema infrastructure. __schema_next points at the first free slot
   // in $__schema_tbl reserved for runtime registration; compile.js initializes
   // it to ctx.schema.list.length when __jp_obj is included. The schema cache
@@ -1178,12 +1170,16 @@ export default (ctx) => {
               (local.set $len (i32.add (local.get $len) (i32.const 1)))
               (br $l2))
             (else
-              ;; Decode simple escape: n→10 t→9 r→13 b→8 f→12, else literal char.
-              (if (i32.eq (local.get $ch) (i32.const 110)) (then (local.set $ch (i32.const 10))))
-              (if (i32.eq (local.get $ch) (i32.const 116)) (then (local.set $ch (i32.const 9))))
-              (if (i32.eq (local.get $ch) (i32.const 114)) (then (local.set $ch (i32.const 13))))
-              (if (i32.eq (local.get $ch) (i32.const 98))  (then (local.set $ch (i32.const 8))))
-              (if (i32.eq (local.get $ch) (i32.const 102)) (then (local.set $ch (i32.const 12)))))))
+              ;; Decode simple escape: n→10 t→9 r→13 b→8 f→12; '"', '\\' and '/' stand
+              ;; for themselves, and no other unit follows a backslash (JSON's escapes).
+              (if (i32.eq (local.get $ch) (i32.const 110)) (then (local.set $ch (i32.const 10)))
+              (else (if (i32.eq (local.get $ch) (i32.const 116)) (then (local.set $ch (i32.const 9)))
+              (else (if (i32.eq (local.get $ch) (i32.const 114)) (then (local.set $ch (i32.const 13)))
+              (else (if (i32.eq (local.get $ch) (i32.const 98)) (then (local.set $ch (i32.const 8)))
+              (else (if (i32.eq (local.get $ch) (i32.const 102)) (then (local.set $ch (i32.const 12)))
+              (else (if (i32.eqz (i32.or (i32.or (i32.eq (local.get $ch) (i32.const 34)) (i32.eq (local.get $ch) (i32.const 92)))
+                  (i32.eq (local.get $ch) (i32.const 47))))
+                (then (global.set $__jp_err (i32.const 1)))))))))))))))))
         (else ${ADV(1)}))
       (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $len) (i32.const 1))) (local.get $ch))
       (local.set $len (i32.add (local.get $len) (i32.const 1)))
@@ -1290,54 +1286,6 @@ export default (ctx) => {
     (local.get $result))`
 
   // Parse array
-  ctx.core.stdlib['__jp_arr'] = `(func $__jp_arr (result f64)
-    (local $ptr i32) (local $len i32) (local $cap i32) (local $new i32) (local $ch i32)
-    (local.set $cap (i32.const 8))
-    ;; Alloc via the canonical header allocator (NOT a hand-rolled
-    ;; (i32.const 8)+cap*8 alloc) — __dyn_get_t_h's ARRAY branch
-    ;; unconditionally reads the propsPtr word at off-16 for every ARRAY
-    ;; receiver (module/collection.js); a short header leaves it aliasing
-    ;; whatever memory preceded the allocation (FOURTH mechanism,
-    ;; .work/evidence.md §Region arena). $ptr is the DATA pointer
-    ;; __alloc_hdr returns (already past the 16-byte header) — every store
-    ;; site below drops the old scheme's extra +8 offset.
-    (local.set $ptr (call $__alloc_hdr (i32.const 0) (local.get $cap)))
-    ${WS}
-    (if (i32.eq ${PEEK} (i32.const 93))
-      (then ${ADV(1)}
-        (return (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))))
-    (block $d (loop $l
-      ${WS}
-      ;; Grow if needed: fresh __alloc_hdr buffer + a plain data copy. This
-      ;; array is purely function-local until the final mkptr below — no
-      ;; other pointer can alias it mid-construction, so (unlike
-      ;; __arr_grow) there is no forwarding header or dyn-props sidecar to
-      ;; preserve across the copy.
-      (if (i32.ge_s (local.get $len) (local.get $cap))
-        (then
-          (call $__dense_check (i32.shl (local.get $cap) (i32.const 1)))
-          (local.set $new (call $__alloc_hdr (local.get $len) (i32.shl (local.get $cap) (i32.const 1))))
-          (memory.copy (local.get $new) (local.get $ptr) (i32.shl (local.get $len) (i32.const 3)))
-          (local.set $cap (i32.shl (local.get $cap) (i32.const 1)))
-          (local.set $ptr (local.get $new))))
-      (f64.store (i32.add (local.get $ptr) (i32.shl (local.get $len) (i32.const 3))) (call $__jp_val))
-      (local.set $len (i32.add (local.get $len) (i32.const 1)))
-      ${WS}
-      (local.set $ch ${PEEK})
-      (br_if $d (i32.eq (local.get $ch) (i32.const 93)))
-      ;; After an element only a comma (more) or close-bracket (done) is
-      ;; valid; anything else (incl. EOF) is a syntax error. Break to terminate.
-      (if (i32.eq (local.get $ch) (i32.const 44))
-        (then ${ADV(1)})
-        (else (global.set $__jp_err (i32.const 1)) (br $d)))
-      (br $l)))
-    ${ADV(1)}
-    ;; Patch final length into the header (cap is already correct from the
-    ;; last __alloc_hdr call above; propsPtr was zeroed by __alloc_hdr and
-    ;; never touched since — a fresh internal array).
-    (i32.store (i32.sub (local.get $ptr) (i32.const 8)) (local.get $len))
-    (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))`
-
   // Schema cache lookup/register. Cache is a 64-entry open-addressed table
   // keyed by FNV of (key1_hash, key2_hash, ..., n). On hit, sid is reused
   // and the OBJECT is allocated with that schemaId so subsequent property
@@ -1444,13 +1392,13 @@ export default (ctx) => {
   // A repeated shape (any program parsing many objects of one layout): each key
   // is scanned as a span of the input, its units folded into one raw hash of
   // the key sequence; the layout last built for that hash (the cache's second
-  // half, `__jp_shape_hit`) is verified unit by unit against the spans, and on a
+  // half, `__jp_layout_hit`) is verified unit by unit against the spans, and on a
   // hit no key string is made, compared or hashed. Another object makes its keys
   // from their spans and keeps one slot per property as it reads them: an
   // overwrite keeps its first position, array indices precede other strings in
   // ascending order. A layout read in source order with no escape, duplicate or
   // index key earns the raw hash's entry.
-  ctx.core.stdlib['__jp_shape_hit'] = `(func $__jp_shape_hit (param $kbuf i32) (param $kn i32) (param $hh i32) (result i32)
+  ctx.core.stdlib['__jp_layout_hit'] = `(func $__jp_layout_hit (param $kbuf i32) (param $kn i32) (param $hh i32) (result i32)
     (local $e i32) (local $sid i32) (local $karr i32) (local $i i32) (local $j i32) (local $key i64) (local $span i64)
     (local $at i32) (local $len i32) (local $src i32) (local $sso i32)
     (if (i32.eqz (global.get $__schema_cache)) (then (return (i32.const -1))))
@@ -1489,95 +1437,17 @@ export default (ctx) => {
       (return (local.get $sid)))
     (i32.const -1))`
 
-  ctx.core.stdlib['__jp_obj'] = `(func $__jp_obj (result f64)
-    (local $kbuf i32) (local $kn i32) (local $base i32)
-    (local $key i64) (local $val i64) (local $ch i32)
-    (local $sid i32) (local $obj i32) (local $i i32) (local $newbuf i32)
-    (local $at i32) (local $idx i32) (local $prior i32)
-    (local $hh i32) (local $ks i32) (local $slow i32) (local $end i32) (local $out i32) (local $on i32) (local $plain i32) (local $o i32)
-    (local $p i32) (local $kw i64) (local $ascii i32)
-    (local.set $base (global.get $__jp_ktop))
-    ${WS}
-    ;; Empty object — alloc an empty OBJECT with sid 0 (schema slot 0 may be
-    ;; empty/unused; downstream Object.keys handles 0-length names array).
-    (if (i32.eq ${PEEK} (i32.const 125))
-      (then ${ADV(1)}
-        (local.set $sid (call $__jp_schema_get (global.get $__jp_ks) (i32.const 0)))
-        (return (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $sid)
-          (call $__alloc_hdr (i32.const 0) (i32.const 1))))))
-    (local.set $hh (i32.const 0x811c9dc5))
-    (block $d (loop $l
-      ;; a value's nested object stacks its entries above this one's
-      (global.set $__jp_ktop (i32.add (local.get $base) (i32.shl (local.get $kn) (i32.const 4))))
-      ${WS}
-      (if (i32.eq ${PEEK} (i32.const 34))
-        (then ${ADV(1)})
-        (else (local.set $slow (i32.const 1))))
-      ;; the key's span: its units to the closing quote, through a local cursor; an
-      ;; escape or a control unit leaves its string to __jp_str. A key of ≤6 ASCII
-      ;; units is packed as it goes: the pointer its string is (\`len << 32 | start\`
-      ;; for any other, whose top bits no string's are).
-      (local.set $ks (global.get $__jppos))
-      (local.set $p (local.get $ks))
-      (local.set $kw (i64.const 0))
-      (local.set $ascii (i32.const 1))
-      (block $kd (loop $kl
-        (if (i32.ge_u (local.get $p) (global.get $__jplen)) (then (local.set $ch (i32.const -1)) (br $kd)))
-        (local.set $ch (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (local.get $p) (i32.const 1)))))
-        (br_if $kd (i32.eq (local.get $ch) (i32.const 34)))
-        (if (i32.or (i32.eq (local.get $ch) (i32.const 92)) (i32.lt_u (local.get $ch) (i32.const 32)))
-          (then
-            (local.set $slow (i32.const 1))
-            (if (i32.eq (local.get $ch) (i32.const 92)) (then (local.set $p (i32.add (local.get $p) (i32.const 1)))))))
-        (if (i32.gt_u (local.get $ch) (i32.const 127)) (then (local.set $ascii (i32.const 0))))
-        (if (i32.lt_u (i32.sub (local.get $p) (local.get $ks)) (i32.const 6))
-          (then (local.set $kw (i64.or (local.get $kw) (i64.shl (i64.extend_i32_u (local.get $ch))
-            (i64.extend_i32_u (i32.mul (i32.sub (local.get $p) (local.get $ks)) (i32.const 7))))))))
-        (local.set $hh (i32.mul (i32.xor (local.get $hh) (local.get $ch)) (i32.const 0x01000193)))
-        (local.set $p (i32.add (local.get $p) (i32.const 1)))
-        (br $kl)))
-      (global.set $__jppos (local.get $p))
-      ;; a boundary no unit spells
-      (local.set $hh (i32.mul (i32.xor (local.get $hh) (i32.or (i32.sub (local.get $p) (local.get $ks)) (i32.const 0x10000))) (i32.const 0x01000193)))
-      (local.set $key (if (result i64) (i32.and (i32.and (local.get $ascii) (i32.eqz (local.get $slow)))
-            (i32.le_u (i32.sub (local.get $p) (local.get $ks)) (i32.const 6)))
-        (then (i64.or (i64.or (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
-          (i64.shl (i64.extend_i32_u (i32.sub (local.get $p) (local.get $ks))) (i64.const 42))) (local.get $kw)))
-        (else (i64.or (i64.shl (i64.extend_i32_u (i32.sub (local.get $p) (local.get $ks))) (i64.const 32)) (i64.extend_i32_u (local.get $ks))))))
-      (if (i32.eq (local.get $ch) (i32.const 34)) (then ${ADV(1)}) (else (local.set $slow (i32.const 1))))
-      ${WS}
-      (if (i32.eq ${PEEK} (i32.const 58))
-        (then ${ADV(1)}))
-      ${WS}
-      (local.set $val (i64.reinterpret_f64 (call $__jp_val)))
-      ;; Grow the stack if this entry passes it: entries are offsets, so the copy keeps them.
-      (local.set $at (i32.add (local.get $base) (i32.shl (i32.add (local.get $kn) (i32.const 1)) (i32.const 4))))
-      (if (i32.gt_u (local.get $at) (global.get $__jp_kcap))
-        (then
-          (local.set $newbuf (call $__alloc (i32.shl (local.get $at) (i32.const 1))))
-          (memory.copy (local.get $newbuf) (global.get $__jp_ks) (i32.sub (local.get $at) (i32.const 16)))
-          (global.set $__jp_ks (local.get $newbuf))
-          (global.set $__jp_kcap (i32.shl (local.get $at) (i32.const 1)))))
-      (local.set $kbuf (i32.add (global.get $__jp_ks) (local.get $base)))
-      (i64.store (i32.add (local.get $kbuf) (i32.shl (local.get $kn) (i32.const 4))) (local.get $key))
-      (i64.store offset=8 (i32.add (local.get $kbuf) (i32.shl (local.get $kn) (i32.const 4))) (local.get $val))
-      (local.set $kn (i32.add (local.get $kn) (i32.const 1)))
-      ${WS}
-      (local.set $ch ${PEEK})
-      (br_if $d (i32.eq (local.get $ch) (i32.const 125)))
-      ;; After a member only a comma (more) or close-brace (done) is
-      ;; valid; anything else (incl. EOF) is a syntax error. Break to terminate.
-      (if (i32.eq (local.get $ch) (i32.const 44))
-        (then ${ADV(1)})
-        (else (global.set $__jp_err (i32.const 1)) (br $d)))
-      (br $l)))
-    ${ADV(1)}
-    (global.set $__jp_ktop (local.get $base))
-    (local.set $kbuf (i32.add (global.get $__jp_ks) (local.get $base)))
+  // An object from its members: \`$kn\` entries at \`$kbuf\`, each a key (packed, or
+  // \`len << 32 | start\`, a span of the input) and its value, with the raw hash of
+  // the keys in order and whether any key took the slow path (an escape or a
+  // control unit) — the parse stack's frame for the object (\`__jp_val\`).
+  ctx.core.stdlib['__jp_obj'] = `(func $__jp_obj (param $kbuf i32) (param $kn i32) (param $hh i32) (param $slow i32) (result f64)
+    (local $key i64) (local $val i64) (local $sid i32) (local $obj i32) (local $i i32)
+    (local $at i32) (local $idx i32) (local $prior i32) (local $end i32) (local $out i32) (local $on i32) (local $plain i32) (local $o i32)
     (if (i32.eqz (local.get $hh)) (then (local.set $hh (i32.const 1))))
     (local.set $sid (i32.const -1))
     ${lean ? '' : `(if (i32.eqz (local.get $slow))
-      (then (local.set $sid (call $__jp_shape_hit (local.get $kbuf) (local.get $kn) (local.get $hh)))))`}
+      (then (local.set $sid (call $__jp_layout_hit (local.get $kbuf) (local.get $kn) (local.get $hh)))))`}
     (local.set $out (local.get $kbuf))
     (local.set $on (local.get $kn))
     (if (i32.lt_s (local.get $sid) (i32.const 0))
@@ -1666,31 +1536,161 @@ export default (ctx) => {
     }
     return acc
   }
-  const litCase = (ch, word, valIR, adv) => `(if (i32.eq (local.get $ch) (i32.const ${ch}))
+  // A value at the cursor, without recursion. An array or object being read is a
+  // frame on the parse stack, 24 bytes (its kind, the frame below it, its count,
+  // its keys' raw hash, whether a key took the slow path), its entries above it:
+  // an element's 8 bytes, a member's key and value. So any depth parses, the
+  // stack growing with the input, as Node's parser does, not with the call stack.
+  const SYNTAX = `(global.set $__jp_err (i32.const 1)) (return ${NULL_WAT})`
+  const growStack = (need) => `(if (i32.gt_u (i32.add (local.get $top) (i32.const ${need})) (local.get $kcap))
+      (then
+        (local.set $kcap (i32.shl (i32.add (local.get $top) (i32.const ${need})) (i32.const 1)))
+        (local.set $newbuf (call $__alloc (local.get $kcap)))
+        (memory.copy (local.get $newbuf) (local.get $ks) (local.get $top))
+        (local.set $ks (local.get $newbuf))))`
+  // open a frame of kind 1 (array) or 2 (object), the open one's state kept in its own
+  const openFrame = (kind) => `(if (i32.ge_s (local.get $fr) (i32.const 0))
+      (then
+        (i32.store offset=8 (i32.add (local.get $ks) (local.get $fr)) (local.get $n))
+        (i32.store offset=12 (i32.add (local.get $ks) (local.get $fr)) (local.get $hh))
+        (i32.store offset=16 (i32.add (local.get $ks) (local.get $fr)) (local.get $slow))))
+    ${growStack(24)}
+    (i32.store (i32.add (local.get $ks) (local.get $top)) (i32.const ${kind}))
+    (i32.store offset=4 (i32.add (local.get $ks) (local.get $top)) (local.get $fr))
+    (local.set $fr (local.get $top))
+    (local.set $top (i32.add (local.get $top) (i32.const 24)))
+    (local.set $kind (i32.const ${kind}))
+    (local.set $n (i32.const 0))
+    (local.set $hh (i32.const 0x811c9dc5))
+    (local.set $slow (i32.const 0))`
+  // close the top frame: the one below it resumes
+  const closeFrame = `(local.set $top (local.get $fr))
+    (local.set $fr (i32.load offset=4 (i32.add (local.get $ks) (local.get $fr))))
+    (if (i32.ge_s (local.get $fr) (i32.const 0))
+      (then
+        (local.set $kind (i32.load (i32.add (local.get $ks) (local.get $fr))))
+        (local.set $n (i32.load offset=8 (i32.add (local.get $ks) (local.get $fr))))
+        (local.set $hh (i32.load offset=12 (i32.add (local.get $ks) (local.get $fr))))
+        (local.set $slow (i32.load offset=16 (i32.add (local.get $ks) (local.get $fr))))))`
+  const literal = (ch, word, valIR) => `(if (i32.eq (local.get $ch) (i32.const ${ch}))
       (then (if ${litMatch(word)}
-        (then ${ADV(adv)} (return ${valIR}))
-        (else (global.set $__jp_err (i32.const 1)) (return ${NULL_WAT})))))`
-
-  // Main value dispatcher
+        (then ${ADV(word.length)} (local.set $v ${valIR}) (br $got))
+        (else ${SYNTAX}))))`
   ctx.core.stdlib['__jp_val'] = `(func $__jp_val (result f64)
-    (local $ch i32)
-    ${WS}
-    (local.set $ch ${PEEK})
-    (if (i32.eq (local.get $ch) (i32.const 34))
-      (then ${ADV(1)} (return (call $__jp_str (i32.const 0)))))
-    (if (i32.eq (local.get $ch) (i32.const 91))
-      (then ${ADV(1)} (return (call $__jp_arr))))
-    (if (i32.eq (local.get $ch) (i32.const 123))
-      (then ${ADV(1)} (return (call $__jp_obj))))
-    (if (i32.or (i32.and (i32.ge_s (local.get $ch) (i32.const 48)) (i32.le_s (local.get $ch) (i32.const 57)))
-                (i32.eq (local.get $ch) (i32.const 45)))
-      (then (return (call $__jp_num))))
-    ${litCase(116, 'true', `(f64.const nan:${TRUE_NAN})`, 4)}
-    ${litCase(102, 'false', `(f64.const nan:${FALSE_NAN})`, 5)}
-    ${litCase(110, 'null', NULL_WAT, 4)}
-    ;; No production matched — malformed JSON value.
-    (global.set $__jp_err (i32.const 1))
-    ${NULL_WAT})`
+    (local $ch i32) (local $v f64) (local $ks i32) (local $kcap i32) (local $top i32) (local $newbuf i32) (local $ptr i32)
+    (local $fr i32) (local $kind i32) (local $n i32) (local $hh i32) (local $slow i32)
+    (local $kst i32) (local $p i32) (local $kw i64) (local $ascii i32) (local $key i64)
+    (local.set $kcap (i32.const 1024))
+    (local.set $ks (call $__alloc (local.get $kcap)))
+    (local.set $fr (i32.const -1))
+    (loop $value
+      (block $member
+        (block $got
+          ${WS}
+          (local.set $ch ${PEEK})
+          (if (i32.eq (local.get $ch) (i32.const 34))
+            (then ${ADV(1)} (local.set $v (call $__jp_str (i32.const 0))) (br $got)))
+          (if (i32.or (i32.le_u (i32.sub (local.get $ch) (i32.const 48)) (i32.const 9)) (i32.eq (local.get $ch) (i32.const 45)))
+            (then (local.set $v (call $__jp_num)) (br $got)))
+          (if (i32.eq (local.get $ch) (i32.const 91))
+            (then ${ADV(1)} ${WS}
+              (if (i32.eq ${PEEK} (i32.const 93))
+                (then ${ADV(1)}
+                  (local.set $v (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (call $__alloc_hdr (i32.const 0) (i32.const 8))))
+                  (br $got)))
+              ${openFrame(1)}
+              (br $value)))
+          (if (i32.eq (local.get $ch) (i32.const 123))
+            (then ${ADV(1)} ${WS}
+              (if (i32.eq ${PEEK} (i32.const 125))
+                (then ${ADV(1)}
+                  ;; an empty layout's id (schema slot 0 may be unused; Object.keys reads no names)
+                  (local.set $v (call $__mkptr (i32.const ${PTR.OBJECT}) (call $__jp_schema_get (local.get $ks) (i32.const 0))
+                    (call $__alloc_hdr (i32.const 0) (i32.const 1))))
+                  (br $got)))
+              ${openFrame(2)}
+              (br $member)))
+          ${literal(116, 'true', `(f64.const nan:${TRUE_NAN})`)}
+          ${literal(102, 'false', `(f64.const nan:${FALSE_NAN})`)}
+          ${literal(110, 'null', NULL_WAT)}
+          ;; No production matched — malformed JSON value.
+          ${SYNTAX})
+        ;; $v goes to the frame on top; a frame it completes closes, its value going on down
+        (loop $deliver
+          (if (i32.lt_s (local.get $fr) (i32.const 0)) (then (return (local.get $v))))
+          (if (i32.eq (local.get $kind) (i32.const 1))
+            (then
+              ${growStack(8)}
+              (f64.store (i32.add (local.get $ks) (local.get $top)) (local.get $v))
+              (local.set $top (i32.add (local.get $top) (i32.const 8)))
+              (local.set $n (i32.add (local.get $n) (i32.const 1)))
+              ${WS}
+              (local.set $ch ${PEEK})
+              ;; after an element, a comma (another) or the close; anything else, EOF too, is an error
+              (if (i32.eq (local.get $ch) (i32.const 44)) (then ${ADV(1)} (br $value)))
+              (if (i32.ne (local.get $ch) (i32.const 93)) (then ${SYNTAX}))
+              ${ADV(1)}
+              (call $__dense_check (local.get $n))
+              (local.set $ptr (call $__alloc_hdr (local.get $n) (local.get $n)))
+              (memory.copy (local.get $ptr) (i32.add (local.get $ks) (i32.add (local.get $fr) (i32.const 24))) (i32.shl (local.get $n) (i32.const 3)))
+              (local.set $v (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $ptr)))
+              ${closeFrame}
+              (br $deliver)))
+          ;; a member's value goes in the slot its key took
+          (f64.store (i32.add (local.get $ks) (i32.sub (local.get $top) (i32.const 8))) (local.get $v))
+          ${WS}
+          (local.set $ch ${PEEK})
+          (if (i32.eq (local.get $ch) (i32.const 44)) (then ${ADV(1)} (br $member)))
+          (if (i32.ne (local.get $ch) (i32.const 125)) (then ${SYNTAX}))
+          ${ADV(1)}
+          (local.set $v (call $__jp_obj (i32.add (local.get $ks) (i32.add (local.get $fr) (i32.const 24))) (local.get $n) (local.get $hh) (local.get $slow)))
+          ${closeFrame}
+          (br $deliver)))
+      ;; a member: its key's quote, the key, a colon; then its value
+      ${WS}
+      (if (i32.ne ${PEEK} (i32.const 34)) (then ${SYNTAX}))
+      ${ADV(1)}
+      ;; the key's span: its units to the closing quote, through a local cursor; an
+      ;; escape or a control unit leaves its string to __jp_str. A key of ≤6 ASCII
+      ;; units is packed as it goes: the pointer its string is (\`len << 32 | start\`
+      ;; for any other, whose top bits no string's are).
+      (local.set $kst (global.get $__jppos))
+      (local.set $p (local.get $kst))
+      (local.set $kw (i64.const 0))
+      (local.set $ascii (i32.const 1))
+      (block $kd (loop $kl
+        (if (i32.ge_u (local.get $p) (global.get $__jplen)) (then (local.set $ch (i32.const -1)) (br $kd)))
+        (local.set $ch (i32.load16_u (i32.add (global.get $__jpstr) (i32.shl (local.get $p) (i32.const 1)))))
+        (br_if $kd (i32.eq (local.get $ch) (i32.const 34)))
+        (if (i32.or (i32.eq (local.get $ch) (i32.const 92)) (i32.lt_u (local.get $ch) (i32.const 32)))
+          (then
+            (local.set $slow (i32.const 1))
+            (if (i32.eq (local.get $ch) (i32.const 92)) (then (local.set $p (i32.add (local.get $p) (i32.const 1)))))))
+        (if (i32.gt_u (local.get $ch) (i32.const 127)) (then (local.set $ascii (i32.const 0))))
+        (if (i32.lt_u (i32.sub (local.get $p) (local.get $kst)) (i32.const 6))
+          (then (local.set $kw (i64.or (local.get $kw) (i64.shl (i64.extend_i32_u (local.get $ch))
+            (i64.extend_i32_u (i32.mul (i32.sub (local.get $p) (local.get $kst)) (i32.const 7))))))))
+        (local.set $hh (i32.mul (i32.xor (local.get $hh) (local.get $ch)) (i32.const 0x01000193)))
+        (local.set $p (i32.add (local.get $p) (i32.const 1)))
+        (br $kl)))
+      (global.set $__jppos (local.get $p))
+      ;; a boundary no unit spells
+      (local.set $hh (i32.mul (i32.xor (local.get $hh) (i32.or (i32.sub (local.get $p) (local.get $kst)) (i32.const 0x10000))) (i32.const 0x01000193)))
+      (local.set $key (if (result i64) (i32.and (i32.and (local.get $ascii) (i32.eqz (local.get $slow)))
+            (i32.le_u (i32.sub (local.get $p) (local.get $kst)) (i32.const 6)))
+        (then (i64.or (i64.or (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
+          (i64.shl (i64.extend_i32_u (i32.sub (local.get $p) (local.get $kst))) (i64.const 42))) (local.get $kw)))
+        (else (i64.or (i64.shl (i64.extend_i32_u (i32.sub (local.get $p) (local.get $kst))) (i64.const 32)) (i64.extend_i32_u (local.get $kst))))))
+      (if (i32.eq (local.get $ch) (i32.const 34)) (then ${ADV(1)}) (else (local.set $slow (i32.const 1))))
+      ${WS}
+      (if (i32.ne ${PEEK} (i32.const 58)) (then ${SYNTAX}))
+      ${ADV(1)}
+      ${growStack(16)}
+      (i64.store (i32.add (local.get $ks) (local.get $top)) (local.get $key))
+      (local.set $top (i32.add (local.get $top) (i32.const 16)))
+      (local.set $n (i32.add (local.get $n) (i32.const 1)))
+      (br $value))
+    (unreachable))`
 
   function canSpecializeJsonShape(v) {
     if (v == null) return true
@@ -1934,9 +1934,6 @@ ${localDecls}
     (global.set $__jplen (local.get $len))
     (global.set $__jppos (i32.const 0))
     (global.set $__jp_err (i32.const 0))
-    (global.set $__jp_kcap (i32.const 1024))
-    (global.set $__jp_ks (call $__alloc (i32.const 1024)))
-    (global.set $__jp_ktop (i32.const 0))
     (local.set $r (call $__jp_val))
     ;; Any non-whitespace byte after the top-level value is a syntax error.
     ${WS}

@@ -553,6 +553,30 @@ test('JSON.parse: runtime decimals share Number rounding and reject incomplete t
   }
 })
 
+test('JSON.parse: malformed text throws SyntaxError where Node does', () => {
+  // A member without its key's quote or its colon, and an escape JSON does not
+  // have, read as a value before.
+  const { f } = run(`export function f(s) { try { return JSON.stringify(JSON.parse(s)) } catch (e) { return e instanceof SyntaxError ? 'SyntaxError' : 'other' } }`)
+  const node = (s) => { try { return JSON.stringify(JSON.parse(s)) } catch (e) { return e instanceof SyntaxError ? 'SyntaxError' : 'other' } }
+  for (const s of ['{"a" 1}', '{"a" "b"}', '{"a"}', '{a:1}', "{'a':1}", '{"a":1,b:2}', '{1:2}', '{"a":1,}', '{,}',
+    '"\\x"', '"\\U0041"', '"back\\slash"', '"\\a"', '"\\0"', "\"\\'\"", '{"\\x":1}', '{"a":"\\q"}', '"\\u12"', '"\\',
+    // and what stays valid beside them
+    '"\\"\\\\\\/\\b\\f\\n\\r\\t\\u0041"', '{"a":1}', '{ "\\u0061" : 1 , "b" :[ ] }'])
+    is(f(s), node(s), s)
+})
+
+test('JSON.parse: any depth parses, as in Node', () => {
+  // An open array or object is a frame on a parse stack that grows with the
+  // input: a parser recursing per level overflowed the call stack near 5000.
+  const { d } = run(`export function d(s) { try { let o = JSON.parse(s), n = 0; while (typeof o === 'object' && o !== null) { o = Array.isArray(o) ? o[0] : o.a; n++ } return n } catch (e) { return e instanceof SyntaxError ? -2 : -3 } }`)
+  for (const n of [1, 300, 20000, 100000]) {
+    is(d('['.repeat(n) + '1' + ']'.repeat(n)), n, `${n} arrays`)
+    is(d('{"a":'.repeat(n) + '1' + '}'.repeat(n)), n, `${n} objects`)
+    is(d('['.repeat(n) + ']'.repeat(n - 1)), -2, `${n} arrays, one unclosed`)
+  }
+  is(d('[{"a":[{"a":[1]}]}]'), 5, 'arrays and objects in turn')
+})
+
 test('JSON.parse: canonical object slots overwrite duplicate keys and order indices', () => {
   const { f, prop, keys } = run(`
     export function f(s) { return JSON.stringify(JSON.parse(s)) }
