@@ -38,6 +38,13 @@
  * heap below what it holds. Memory below the loop's mark never moves, so no
  * address a caller holds changes.
  *
+ * A later loop's floor never moves either: what an earlier loop of the same
+ * call made after its last walk would stay below it for the rest of the call
+ * (bench/stringify's warm-up loop left 5 MB under its timed loop). So an
+ * outermost loop that ends at its own test walks once more as it ends, where
+ * its last walk freed most of what it saw and the memory above its mark holds
+ * the slack and half its window (\`__gc_end\`).
+ *
  * Placed like the per-iteration rewind: after the lane vectorizer and the
  * loop passes, the loop found in its own function by its label. The marker
  * locals (`$<mark>lrcN`, `$<mark>lrcNth`) carry the mark and the threshold;
@@ -83,7 +90,8 @@ const union = (a, b) => { for (const x of b) a.add(x); return a }
  * an inlined loop, or a specialized path's copy of one, is live where its
  * reads say so.
 
- * `at` receives the live set before each loop the caller asked about.
+ * `at` receives the live set before each loop the caller asked about, and
+ * past each block it asked about.
  */
 const liveIn = (n, out, env, at) => {
   if (!Array.isArray(n)) return out
@@ -97,7 +105,10 @@ const liveIn = (n, out, env, at) => {
   }
   if (op === 'block' || op === 'loop') {
     const label = typeof n[1] === 'string' ? n[1] : null
-    if (op !== 'loop' || !label) return liveSeq(n, out, label ? new Map(env).set(label, out) : env, at)
+    if (op !== 'loop' || !label) {
+      if (at.has(n)) at.set(n, out)
+      return liveSeq(n, out, label ? new Map(env).set(label, out) : env, at)
+    }
     // a branch back to the loop brings in its own live-in: the least fixed
     // point, from what is live past the loop
     const inner = new Map(env)
@@ -224,10 +235,27 @@ export function insertLoopCompacts(funcs, owners) {
         ['else', ['local.set', thresh, ['select', later, ['i32.const', -1], ['i32.gt_u', later, ['global.get', '$__heap']]]]]]
     }
     const locals = [], done = new Set()
+    const setsIn = (n, into) => { if (!Array.isArray(n)) return into; if (n[0] === 'local.set' || n[0] === 'local.tee') into.add(n[1]); for (let i = 1; i < n.length; i++) setsIn(n[i], into); return into }
     // the locals live at each site loop's top, before any site reads them
     const liveAt = new Map(), all = new Set([...params, ...f64Locals, ...raws.map(([n]) => n)])
-    const find = (n) => { if (!Array.isArray(n)) return; if (n[0] === 'loop' && own.labels.has(written(n[1]))) liveAt.set(n, null); for (let i = 1; i < n.length; i++) find(n[i]) }
-    find(fn)
+    // A site loop's own test: the first \`br_if\` among its statements that
+    // leaves it for an enclosing block, and that block, past which what is live
+    // is what a compaction as the loop ends keeps. A site loop inside another
+    // leaves what it made above the outer one's mark, which the outer one's
+    // walks reach: only an outermost one has an end.
+    const breakOf = new Map()
+    const find = (n, scope, inSite) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === 'block' && typeof n[1] === 'string') scope = new Map(scope).set(n[1], n)
+      if (n[0] === 'loop' && own.labels.has(written(n[1]))) {
+        liveAt.set(n, null)
+        const t = n.slice(2).find(c => Array.isArray(c) && c[0] === 'br_if')
+        if (!inSite && t && t.length === 3 && scope.has(t[1])) { breakOf.set(n, { block: scope.get(t[1]), test: t }); liveAt.set(scope.get(t[1]), null) }
+        inSite = true
+      }
+      for (let i = 1; i < n.length; i++) find(n[i], scope, inSite)
+    }
+    find(fn, new Map(), false)
     let body = 1
     for (let i = 1; i < fn.length; i++) if (Array.isArray(fn[i]) && HEADER.has(fn[i][0])) body = i + 1
     liveSeq(['func', ...fn.slice(body)], NONE, new Map(), liveAt)
@@ -239,7 +267,7 @@ export function insertLoopCompacts(funcs, owners) {
           : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && own.labels.has(written(n[2][1])) ? n[2] : null
         if (loopNode !== null && !done.has(loopNode)) {
           done.add(loopNode)
-          const mark = `$${MARK}lrc${id}`, thresh = `$${MARK}lrc${id}th`, out = `$${MARK}lrc${id}out`, again = `$${MARK}lrc${id}again`, exit = `$${MARK}lrc${id}exit`
+          const mark = `$${MARK}lrc${id}`, thresh = `$${MARK}lrc${id}th`, out = `$${MARK}lrc${id}out`, again = `$${MARK}lrc${id}again`, exit = `$${MARK}lrc${id}exit`, ended = `$${MARK}lrc${id}end`, endBlock = `$${MARK}lrc${id}ends`
           id++
           locals.push(['local', mark, 'i32'], ['local', thresh, 'i32'])
           // The loop keeps no call of the kernel in its body (a call in a loop
@@ -251,8 +279,40 @@ export function insertLoopCompacts(funcs, owners) {
           //     loop $again
           //       block $out  loop $L  (br_if $out past?) body…  end  (br $exit)  end
           //       compaction  (br $again)
+          // and with an end, the loop's test leaves for a block in $out that sets
+          // $end, and the compaction runs if the end is worth a walk, then leaves:
+          //       block $out  block $ends  loop $L … (br_if $ends test) …  end  (br $exit)  end  ($end = 1)  end
+          //       (if (!$end || __gc_end) compaction)  (br_if $brk $end)  (br $again)
+          const top = liveAt.get(loopNode) ?? all
+          // The loop's end: what it made since its last compaction stays below
+          // whatever runs after it, a later loop's floor among them, which never
+          // moves. Where the loop ends at its own test (its first \`br_if\` to an
+          // enclosing block), the end leaves through the compaction and walks
+          // where \`__gc_end\` finds it worth it (module/core/compact.js): only a
+          // loop that compacted inside (its window past the slack) and drops
+          // what it makes, not a builder keeping it. The walk is the iteration's
+          // own, its roots what is live at the top, which holds at the test as
+          // nothing walks between them; so what is live past the loop must be
+          // live at the top or untouched by the loop (made before the mark,
+          // which never moves), or the loop has no end walk.
+          const { block: brk, test } = breakOf.get(loopNode) ?? {}
+          const past = brk && liveAt.get(brk)
+          const sets = past && setsIn(loopNode, new Set())
+          const ends = past && [...past].every(x => top.has(x) || !sets.has(x))
+          if (ends) {
+            locals.push(['local', ended, 'i32'])
+            // the test keeps its shape (a later pass reads a loop's exit as a \`br_if\`), to a block of its own
+            loopNode[loopNode.indexOf(test)] = ['br_if', endBlock, test[2]]
+          }
           loopNode.splice(2, 0, ['br_if', out, ['i32.gt_u', ['global.get', '$__heap'], ['local.get', thresh]]])
-          const around = ['block', exit, ['loop', again, ['block', out, loopNode, ['br', exit]], compaction(mark, thresh, liveAt.get(loopNode) ?? all), ['br', again]]]
+          const walk = compaction(mark, thresh, top)
+          const around = ends
+            ? ['block', exit, ['loop', again,
+              ['block', out, ['block', endBlock, loopNode, ['br', exit]], ['local.set', ended, ['i32.const', 1]]],
+              ['if', ['i32.or', ['i32.eqz', ['local.get', ended]], ['call', '$__gc_end', ['local.get', mark], ['local.get', thresh]]], ['then', walk]],
+              ['br_if', brk[1], ['local.get', ended]],
+              ['br', again]]]
+            : ['block', exit, ['loop', again, ['block', out, loopNode, ['br', exit]], walk, ['br', again]]]
           if (n === loopNode) list[i] = around
           else n.splice(n.indexOf(loopNode), 1, around)
           // The entry: the mark, and the threshold a slack past it, which is
@@ -260,10 +320,12 @@ export function insertLoopCompacts(funcs, owners) {
           // own floor is the same; a wrapped sum only asks a compaction early,
           // which sets the threshold properly). Nothing else: a store to a
           // global here cost a parser five percent.
-          list.splice(i, 0, ['local.set', mark, ['global.get', '$__heap']],
-            ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', compactSlack()]]])
-          // past the two, at the loop: the walk goes on with the statement after it (a second loop)
-          i += 2
+          const entry = [['local.set', mark, ['global.get', '$__heap']],
+            ['local.set', thresh, ['i32.add', ['local.get', mark], ['i32.const', compactSlack()]]]]
+          if (ends) entry.push(['local.set', ended, ['i32.const', 0]])
+          list.splice(i, 0, ...entry)
+          // past them, at the loop: the walk goes on with the statement after it (a second loop)
+          i += entry.length
         }
         visit(n, 1)
       }

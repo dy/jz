@@ -323,6 +323,20 @@ export const registerCompact = () => {
     (if (i64.gt_u (local.get $t) (i64.const 0xFFFFFFFF)) (then (local.set $t (i64.const 0xFFFFFFFF))))
     (i32.wrap_i64 (local.get $t)))`
 
+  // Whether a site loop's end walks (optimize/loop-compact.js): the memory
+  // above its mark holds the slack and half the loop's window, and the window
+  // says the last walk freed most of what it saw (a yield of 1 puts it at twice
+  // the walk and the slack; up to sixteen times the walk is a builder's).
+  ctx.core.stdlib['__gc_end'] = `(func $__gc_end (param $mark i32) (param $thresh i32) (result i32)
+    (local $above i32) (local $window i32)
+    (local.set $above (i32.sub (global.get $__heap) (local.get $mark)))
+    (local.set $window (i32.sub (local.get $thresh) (local.get $mark)))
+    (i32.and (i32.and
+      (i32.gt_u (local.get $above) (i32.const ${compactSlack()}))
+      (i32.gt_u (local.get $above) (i32.shr_u (local.get $window) (i32.const 1))))
+      (i64.le_u (i64.extend_i32_u (local.get $window))
+        (i64.add (i64.const ${compactSlack()}) (i64.mul (i64.extend_i32_u (global.get $__g_cost)) (i64.const 3))))))`
+
   // The words of [start, end) stay: live where they lie above the floor,
   // walked wherever they lie.
   ctx.core.stdlib['__gc_keep'] = `(func $__gc_keep (param $start i32) (param $end i32)
@@ -1203,6 +1217,7 @@ export const COMPACT_DEPS = {
   __gc_seen: [],
   __gc_stub: [],
   __gc_thresh: [],
+  __gc_end: [],
   __gc_rekey_dyn: ['__gc_rehash', '__gc_box', '__gc_room', '__gc_fwd_raw', '__gc_was', '__map_hash'],
   __gc_keep: [],
   __gc_row: [],

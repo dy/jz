@@ -10,6 +10,7 @@ import { is, ok } from 'tst/assert.js'
 import { levels, onWasi, onKernel, belowOpt } from './_matrix.js'
 import { execFileSync } from 'node:child_process'
 import { oracle, jz, compile } from './util.js'
+import { instantiate } from '../interop.js'
 
 // Calls `step(i)` on both the module and the oracle, comparing each result;
 // counts the compactions (the kept memory shrinking between calls) and the peak.
@@ -337,6 +338,41 @@ console.log(JSON.stringify({
   ok(bRuns <= 2, `the builder walks ${bRuns} times`)
   ok(bWords < 2_500_000, `the builder walks ${bWords} words in all`)
   ok(cRuns >= 100, `the carried string is still walked as it churns (${cRuns} times)`)
+})
+
+// A later loop's floor never moves: what an earlier loop of the same function
+// made after its last walk stays below it for the rest of the call. A loop that
+// drops what it makes (strings replaced each round) and compacted inside walks
+// once more as it ends, so the next loop starts where its live data ends, not
+// past its garbage (bench/stringify's warm-up and timed loops, 5 MB of it).
+test('compact: a loop that drops what it makes leaves no garbage below the loop after it', () => {
+  if (onWasi() || onKernel()) return
+  const src = `import { at } from 'host'
+    const make = (i, r) => 'item ' + i + ' of round ' + r + ' ' + 'x'.repeat(40 + (i & 31))
+    export let f = (rounds) => {
+      const out = []
+      at(0)
+      for (let r = 0; r < rounds; r++) { for (let i = 0; i < 8000; i++) out[i] = make(i, r) }
+      at(1)
+      for (let r = 0; r < rounds; r++) { for (let i = 0; i < 8000; i++) out[i] = make(i, r + 1) }
+      return out[7999].length
+    }`
+  for (const optimize of levels(2, 'speed')) {
+    const left = (rounds) => {
+      let inst
+      const h = []
+      inst = instantiate(compile(src, { optimize, imports: { host: { at: { params: 1 } } } }),
+        { imports: { host: { at: () => h.push(inst.instance.exports.__jz_heap.value >>> 0) } } })
+      is(inst.exports.f(rounds), 'item 7999 of round '.length + String(rounds).length + 1 + 40 + 31, `${optimize}: ${rounds} rounds answer`)
+      return h[1] - h[0]
+    }
+    // two rounds stay under the first walk's slack: one round's strings live, the other's gone
+    const live = left(2)
+    for (const rounds of [3, 4, 6]) {
+      const kept = left(rounds)
+      ok(kept < live * 1.2, `${optimize}: ${rounds} rounds leave ${(kept / 1048576).toFixed(2)} MB below the second loop, one round's ${(live / 1048576).toFixed(2)} MB live`)
+    }
+  }
 })
 
 test('compact: dynamic properties on a static literal, replaced call after call, at every level', () => {

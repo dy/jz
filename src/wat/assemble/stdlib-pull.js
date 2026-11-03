@@ -283,7 +283,7 @@ export function pullStdlib(sec) {
   if (pullCompact()) { declarePin(); inc('__compact'); resolveIncludes() }
   // A loop that compacts what it keeps (optimize/loop-compact.js) calls the kernel's halves itself.
   if (needsAlloc && compactOn() && ctx.plans.compactLoopLabels?.size && ctx.core.stdlib['__gc_begin'] != null) {
-    declareSites(); inc('__gc_begin', '__gc_walk', '__gc_move', '__gc_mark', '__gc_fwd', '__gc_fwd_raw', '__mkptr', '__gc_stub', '__gc_thresh'); resolveIncludes()
+    declareSites(); inc('__gc_begin', '__gc_walk', '__gc_move', '__gc_mark', '__gc_fwd', '__gc_fwd_raw', '__mkptr', '__gc_stub', '__gc_thresh', '__gc_end'); resolveIncludes()
     // the stub log's table, made as the module starts, below every mark (module/core/compact.js)
     let start = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
     if (!start) sec.start.push(start = ['func', '$__start'], ['start', '$__start'])
