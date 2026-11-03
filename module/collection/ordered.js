@@ -54,6 +54,11 @@ const geometry = (es) => `(local.set $ecap ${ordEntriesWat('(local.get $cap)')})
     (local.set $ix (i32.add (local.get $off) (i32.mul (local.get $ecap) (i32.const ${es}))))
     (local.set $m (i32.sub (local.get $cap) (i32.const 1)))`
 
+// An inserted key of -0 is stored as +0, as Map.prototype.set and
+// Set.prototype.add store it (ECMA-262 CanonicalizeKeyedCollectionKey): the
+// probe finds either zero (SameValueZero), a walk hands out +0.
+const keyStore = `(i64.store offset=8 (local.get $slot)
+          (select (i64.const 0) (local.get $key) (i64.eq (local.get $key) (i64.const 0x8000000000000000))))`
 const bucketAt = (b) => `(i32.add (local.get $ix) (i32.shl ${b} (i32.const 2)))`
 const entryOf = (w, es) => `(i32.add (local.get $off) (i32.mul (i32.sub (i32.and ${w} (i32.const ${IDX})) (i32.const 1)) (i32.const ${es})))`
 
@@ -156,7 +161,7 @@ export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, has
       (then
         (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $used) (i32.const ${es}))))
         ${seqStore()}
-        (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${storeVal}
+        ${keyStore}${durableEntryLogIR('slot', 'off')}${storeVal}
         (i32.store ${bucketAt('(local.get $b)')}
           (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (i32.add (local.get $used) (i32.const 1))))
         (i32.store ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', `(i32.const ${es})`)} (i32.add (local.get $used) (i32.const 1)))
@@ -258,7 +263,7 @@ export function genOrdPutAt(name, es, hasVal, fallback) {
     (local.set $ix (i32.add (local.get $off) (i32.mul (local.get $ecap) (i32.const ${es}))))
     (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $used) (i32.const ${es}))))
     ${seqStore()}
-    (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${hasVal ? `
+    ${keyStore}${durableEntryLogIR('slot', 'off')}${hasVal ? `
     (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}` : ''}
     (i32.store (i32.add (local.get $ix) (i32.shl (local.get $b) (i32.const 2)))
       (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (i32.add (local.get $used) (i32.const 1))))

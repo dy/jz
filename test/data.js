@@ -529,6 +529,23 @@ test('a binding the summary shapes stores into the slot its reads use', () => {
   ok(stores(mixed) > 0, 'two layouts: the dynamic store stays')
 })
 
+// Map.prototype.set and Set.prototype.add store a key of -0 as +0 (ECMA-262
+// CanonicalizeKeyedCollectionKey), so a walk hands out +0 whichever zero went
+// in: by a set, an add, a constructor, a copy, a fused statement.
+test('Map/Set: a key of -0 is stored as +0', () => {
+  const src = `
+    export let lit = () => { const s = new Set(); s.add(-0); const m = new Map(); m.set(-0, 'a'); let r = ''; for (const x of s) r += 1 / x; for (const [k] of m) r += ',' + 1 / k; return r }
+    export let ctor = () => { const s = new Set([-0, 0]); const m = new Map([[-0, 1]]); return [...s].map(x => 1 / x).join() + '|' + [...m.keys()].map(x => 1 / x).join() + '|' + s.size }
+    export let copy = (z) => { const s = new Set([z * -1]); const t = new Set(s); const m = new Map([[z * -1, 2]]); const n = new Map(m); let r = 0; t.forEach(x => { r += 1 / x }); n.forEach((v, k) => { r += 1 / k }); return r }
+    export let spread = (z) => { const s = new Set(); s.add(z * -1); return [...s].map(x => Object.is(x, -0)).join() + [...s.entries()].map(e => Object.is(e[0], -0)).join() }
+    export let update = (z) => { const m = new Map(); m.set(0, 1); m.set(z * -1, 2); return [...m].map(e => 1 / e[0] + ':' + e[1]).join() }
+    export let counted = (z) => { const m = new Map(); const k = z * -1; m.set(k, (m.get(k) | 0) + 1); m.set(k, (m.get(k) | 0) + 1); return [...m].map(e => 1 / e[0] + ':' + e[1]).join() }
+    export let fused = (z) => { const m = new Map(), s = new Set(); const k = z * -1; if (!m.has(k)) m.set(k, 1); if (!s.has(k)) s.add(k); let r = 0; for (const x of m.keys()) r += 1 / x; for (const x of s) r += 1 / x; return r }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size'))
+    for (const name of ['lit', 'ctor', 'copy', 'spread', 'update', 'counted', 'fused']) is(jz(src, { optimize }).exports[name](0), js[name](0), `${name}, O${optimize}`)
+})
+
 // A statement, or two adjacent ones, that ask a Set or a Map about a key and
 // then store it probe once (compile/emit/fuse-probes.js): the find leaves the
 // key's entry or the empty bucket it ended at, and the store writes the entry
