@@ -2642,7 +2642,8 @@ drops what the round added. Nothing below the
 floor moves: the floor stands at the reset mark, raised by the host over its
 own allocations and to the heap's top after any call during which it decoded
 a view of the module's memory or a closure (a result, a host import's
-argument, a value stored into a host object: `mem.read` marks `_held`). Shared and imported memory, fixed-memory modules, the size tier
+argument, a value stored into a host object: `mem.read` marks `_held`). An object a closure was read from is held and pinned with it, a
+method that captures nothing (a closure with no environment) included: the host calls it on that object. Shared and imported memory, fixed-memory modules, the size tier
 (`compact: false`, memory-for-size as `arenaReach`) and hosts other than the
 JS one do not compact; a walk that finds no room for its
 scratch above the heap leaves the heap as it was. Once the host holds a view

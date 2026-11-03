@@ -712,7 +712,11 @@ const codec = (mem, src) => {
     }
     if (t === 11 && S.extMap) return S.extMap[off]
     if (t === 10 && typeof fnOf === 'function') {
-      if (off >= S.above) { S.held = true; S.fns++; if (off >= 16) pinAt(blockEnd(m, off)) }
+      // a closure with no environment (a method that captures nothing) holds
+      // no memory, but the object it was read from, which the host calls it
+      // on, is held all the same (below)
+      S.fns++
+      if (off >= S.above) { S.held = true; if (off >= 16) pinAt(blockEnd(m, off)) }
       return fnOf(p)
     }
     if (t === 1) {  // ARRAY
@@ -787,7 +791,7 @@ const codec = (mem, src) => {
         if (d) for (const [key, value] of pairs(forward(dv(), offset(d)), 7, fnOf)) obj[key] = value
       }
       fnOf?.owners.set(obj, p)
-      if (fnOf && S.fns !== fns && off >= S.above) pinAt(blockEnd(m, off))
+      if (fnOf && S.fns !== fns && off >= S.above) { S.held = true; pinAt(blockEnd(m, off)) }
       return obj
     }
     if (t >= 7 && t <= 9) {  // HASH / SET / MAP share the insertion sequence.

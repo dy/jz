@@ -1380,3 +1380,21 @@ test('interop: a WASI module\'s stdio goes through the wasi option', () => {
   is(exports.f(2), 2)
   is(out.join(''), 'hi 2\n')
 })
+
+// A method that captures nothing is a closure with no environment; the host
+// calls it on the object it read it from, so that object stays held as long
+// as the host holds it, though the closure holds no memory itself (interop.js
+// S.read: every decoded closure counts toward pinning its owner). The module
+// churning memory between the read and the call reused the object's block.
+test('interop: an object whose methods capture nothing stays held while the host calls them', () => {
+  if (onWasi() || onKernel()) return
+  for (const optimize of levels(false, 2, 'speed')) {
+    const r = jz(`const mk = (x) => ({ x, y: 6, m() { return this.x + this.y } })
+export let f = () => ({ o: mk(5), q: 2 })
+export let churn = (n) => { let keep = []; for (let i = 0; i < n; i++) { const a = [i, i + 1, i + 2]; if (i % 1000 === 0) keep.push(a) } return keep.length }`, { optimize }).exports
+    const a = r.f()
+    is(a.o.m(), 11, `O${optimize}: before`)
+    for (let k = 0; k < 20; k++) r.churn(200000)
+    is(a.o.m(), 11, `O${optimize}: after the module reused its memory`)
+  }
+})
