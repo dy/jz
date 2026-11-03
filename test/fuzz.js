@@ -10,13 +10,14 @@
 //   node test/fuzz.js --count=20000        longer sweep
 //   node test/fuzz.js --seed=12345         reproduce/diagnose one program (verbose)
 //   node test/fuzz.js --opt=0,2 --inputs=40
+//   node test/fuzz.js --records --count=500   record arrays across frames
 //   npm test                               the seeded gate below (deterministic)
 //
 // @module test/fuzz
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import {
-  fuzz, fuzzTyped, fuzzTypedMap, fuzzTypedInt, fuzzTypedIntMinMax, fuzzTypedIVSR, fuzzTypedByteScan, fuzzLoopBound,
+  fuzz, fuzzTyped, fuzzTypedMap, fuzzTypedInt, fuzzTypedIntMinMax, fuzzTypedIVSR, fuzzTypedByteScan, fuzzLoopBound, fuzzRecords,
   check, report, same, inContract, DEFAULTS, genScalarProgram as genProgram, scalarSource as toSource,
 } from './_fuzz.js'
 
@@ -131,6 +132,12 @@ if (!isMain) {
       ? `loop-bound divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} args=[${f.args}] jz=${f.got} js=${f.want}\n  ${f.src}`).join('\n\n')}`
       : 'jz param-bound loops == JS')
   })
+  test('fuzz: record arrays built in one frame and read in another match JS in seeds 1..120 × opt {0,1,2,3}', () => {
+    const findings = fuzzRecords({ ...GATE, count: N(120) })
+    ok(findings.length === 0, findings.length
+      ? `record-flow divergence:\n\n${findings.map(f => `seed=${f.seed} ${f.kind} opt=${f.opt} ${f.fn ?? ''} jz=${f.got ?? f.err} js=${f.want}\n  ${f.src}`).join('\n\n')}`
+      : 'jz record arrays == JS across frames')
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,7 +157,18 @@ if (isMain) {
     inputSeed: Number(arg('inputSeed', 7)),
     optLevels, cfg: DEFAULTS, maxFindings: Number(arg('maxFindings', 20)),
   }
-  if (process.argv.includes('--typed-int')) {
+  if (process.argv.includes('--records')) {
+    // Record arrays built in one frame and read in another (struct/union inline layout), jz vs JS.
+    const t0 = performance.now()
+    const findings = fuzzRecords(opts)
+    console.log(`fuzzed ${opts.count} record-flow programs (seeds ${opts.seedStart}..${opts.seedStart + opts.count - 1}), opt {${optLevels}}: ${(performance.now() - t0).toFixed(0)}ms`)
+    if (!findings.length) console.log('✓ no divergence: jz record arrays == JS for every program')
+    else {
+      console.log(`✗ ${findings.length} finding(s):\n`)
+      for (const f of findings) console.log(`seed=${f.seed} kind=${f.kind}${f.opt != null ? ` opt=${f.opt}` : ''} ${f.fn ?? ''}\n  jz=${f.got ?? f.err} js=${f.want}\n  ${f.src}\n`)
+      process.exit(1)
+    }
+  } else if (process.argv.includes('--typed-int')) {
     // FUZZ-1: Int32Array map + i32 sum reduction (exercises (i32±i32)|0 fold), jz vs JS.
     const t0 = performance.now()
     const findings = fuzzTypedInt(opts)

@@ -12,7 +12,8 @@
 // IEEE-identical between wasm f64 and JS f64 (floor/ceil/round/trunc/abs/sqrt/
 // min/max/imul). Transcendental Math.* and fractional `**` are excluded — their
 // last-ULP differences are not jz bugs. Strings/objects/arrays are future work
-// (the generator is feature-gated so they can be added without touching the loop).
+// (the generator is feature-gated so they can be added without touching the loop);
+// arrays of records read across frames have a mode of their own (record-flow).
 //
 // The generators, oracles and shrinker live here; the seeded suite gate and the
 // exploratory CLI are test/fuzz.js, and test/wat-invariants.js sweeps the same
@@ -856,6 +857,118 @@ export const fuzzLoopBound = (opts) => {
   return findings
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Record-flow mode: an array of same-shaped records built in one frame, read in
+// another.
+// ─────────────────────────────────────────────────────────────────────────────
+// jz stores such an array inline (structInline; unionInline for a closed set of
+// shapes: the fields of every element in place, no object per record) only when
+// every frame that sees it agrees on the layout. The generators above build no
+// records and run in one function, so none tests that agreement: 1.0.0 shipped
+// reading a top-level binding of such an array with half its elements' worth of
+// garbage. Each program builds its records in `mk`, keeps the layout engaged
+// through `keep` (a reader the layout serves), hands `mk`'s result through one
+// SITE (the module's top level, an export the host reads, a callback, a closure,
+// a parameter default, a wrapper, a container) and reads it with one READER.
+const REC_FIELDS = ['x', 'y', 'vx', 'vy', 'm']
+const recordSource = (seed) => {
+  const g = mkRng(seed)
+  const union = g.chance(0.3)
+  const N = g.int(6)
+  let fields, F0, FL, readers, keepRead
+  if (union) {
+    // Two int shapes under a discriminant `k`: the packed union carrier's domain.
+    fields = null
+    readers = {
+      cursor: `let h = 0; for (let i = 0; i < R.length; i++) { const o = R[i]; const k = o.k; if (k === 0) h = (h + o.a + o.b) | 0; else h = (h + o.c) | 0 } out = '' + h`,
+      tag: `let h = 0; for (let i = 0; i < R.length; i++) h = (h * 31 + R[i].k) | 0; out = '' + h`,
+      length: `out = '' + R.length`,
+      map: `out = R.map(o => o.k === 0 ? o.a + o.b : o.c).join(',')`,
+      forof: `let h = 0; for (const o of R) h = (h + o.k + 1) | 0; out = '' + h`,
+    }
+    keepRead = readers.cursor
+  } else {
+    const k = 1 + g.int(4), names = REC_FIELDS.slice()
+    for (let i = names.length - 1; i > 0; i--) { const j = g.int(i + 1); [names[i], names[j]] = [names[j], names[i]] }
+    const val = (n) => g.chance(0.5) ? `${n}: (i * ${1 + g.int(5)} + ${g.int(9)}) | 0` : `${n}: i * 0.5 + ${g.int(4)}.25`
+    fields = names.slice(0, k).map(val).join(', ')
+    F0 = names[0]; FL = names[k - 1]
+    readers = {
+      index: `let s = 0; for (let i = 0; i < R.length; i++) s = s + R[i].${F0} * 2 + R[i].${FL}; out = '' + s`,
+      cursor: `let s = 0; for (let i = 0; i < R.length; i++) { const p = R[i]; s = s + p.${F0} - p.${FL} } out = '' + s`,
+      write: `for (let i = 0; i < R.length; i++) R[i].${F0} = R[i].${F0} + 1; let s = 0; for (let i = 0; i < R.length; i++) s = s + R[i].${F0}; out = '' + s`,
+      length: `out = '' + R.length`,
+      map: `out = R.map(p => p.${F0} + p.${FL}).join(',')`,
+      forof: `let s = 0; for (const p of R) s = s + p.${F0}; out = '' + s`,
+      forEach: `let s = 0; R.forEach(p => { s = s + p.${FL} }); out = '' + s`,
+      reduce: `out = '' + R.reduce((a, p) => a + p.${F0}, 0)`,
+      json: `out = JSON.stringify(R)`,
+    }
+    keepRead = readers.index
+  }
+  const mkBody = union
+    ? `for (let i = 0; i < n; i++) { if ((i & 1) === 0) r.push({ k: 0, a: (i * 3 + 1) | 0, b: (i + 7) | 0 }); else r.push({ k: 1, c: (i * 5) | 0 }) }`
+    : `for (let i = 0; i < n; i++) r.push({ ${fields} })`
+  const exportMk = g.chance(0.15)
+  const mk = `${exportMk ? 'export ' : ''}const mk = (n) => { const r = []; ${mkBody} return r }`
+  const keep = `const keep = () => { let out = ''; const R = mk(6); ${keepRead}; return out }`
+  const rd = readers[g.pick(Object.keys(readers))]
+  const frame = (init) => `{ let out = ''; ${init}; ${rd}; return out }`
+  const lit = union ? `{ k: 1, c: 9 }` : `{ ${fields.replace(/\bi\b/g, '3')} }`
+  const SITES = {
+    local: () => `const go = () => ${frame(`const R = mk(${N})`)}\nexport let main = () => keep() + '|' + go()`,
+    top: () => `const R = mk(${N})\nconst go = () => ${frame('')}\nexport let main = () => keep() + '|' + go()`,
+    topRead: () => `let res = ''\n{ const R = mk(${N}); let out = ''; ${rd}; res = out }\nexport let main = () => keep() + '|' + res`,
+    exportTop: () => `export const R = mk(${N})\nconst go = () => ${frame('')}\nexport let main = () => keep() + '|' + go()`,
+    closure: () => `export let main = () => { const f = () => ${frame(`const R = mk(${N})`)}; return keep() + '|' + f() }`,
+    capture: () => `export let main = () => { const R = mk(${N}); const f = () => ${frame('')}; return keep() + '|' + f() }`,
+    callback: () => `export let main = () => { const R = [${N}].map(mk)[0]; let out = ''; ${rd}; return keep() + '|' + out }`,
+    wrapper: () => `const w = () => mk(${N})\nexport let main = () => { const R = w(); let out = ''; ${rd}; return keep() + '|' + out }`,
+    param: () => `const use = (R) => ${frame('')}\nexport let main = () => keep() + '|' + use(mk(${N}))`,
+    plainArg: () => `const use = (R) => ${frame('')}\nconst P = [${lit}, ${lit}]\nexport let main = () => keep() + '|' + use(mk(${N})) + '|' + use(P)`,
+    defaults: () => `const use = (R = mk(${N})) => ${frame('')}\nexport let main = () => keep() + '|' + use() + '|' + use(mk(2))`,
+    container: () => `export let main = () => { const o = { r: mk(${N}) }; const R = o.r; let out = ''; ${rd}; return keep() + '|' + out }`,
+    spread: () => `export let main = () => { const R = [...mk(${N})]; let out = ''; ${rd}; return keep() + '|' + out }`,
+    ternary: () => `export let main = () => { const R = ${N} > 2 ? mk(${N}) : mk(1); let out = ''; ${rd}; return keep() + '|' + out }`,
+    moduleLoop: () => `const fs = []\nfor (let q = 0; q < 2; q++) { const R = mk(${N} + q); fs.push(() => { let out = ''; ${rd}; return out }) }\nexport let main = () => keep() + '|' + fs[0]() + '|' + fs[1]()`,
+    host: () => `export let get = () => mk(${N})\nexport let main = () => keep()`,
+  }
+  return `${mk}\n${keep}\n${SITES[g.pick(Object.keys(SITES))]()}`
+}
+// Every export the program defines, called with no argument (`mk` with one),
+// compared as JSON: a record array the host reads must arrive whole.
+const REC_CALLS = [['main', []], ['get', []], ['mk', [3]]]
+const checkRecords = (seed, opts) => {
+  const src = recordSource(seed)
+  let js
+  try { js = oracle(src) } catch { return { kind: 'invalid' } }
+  const calls = REC_CALLS.filter(([n]) => typeof js[n] === 'function')
+  const wants = []
+  for (const [n, a] of calls) { try { wants.push(JSON.stringify(js[n](...a))) } catch { return { kind: 'invalid' } } }
+  for (const opt of opts.optLevels) {
+    let ex
+    try { ex = jz(src, { optimize: opt }).exports } catch (e) { return { kind: 'jz-compile', opt, err: String(e && e.message || e), src } }
+    for (let c = 0; c < calls.length; c++) {
+      const [n, a] = calls[c]
+      let got
+      try { got = JSON.stringify(ex[n](...a)) } catch (e) { return { kind: 'wasm-threw', opt, fn: n, err: String(e && e.message || e), want: wants[c], src } }
+      if (got !== wants[c]) return { kind: 'mismatch', opt, fn: n, got, want: wants[c], src }
+    }
+  }
+  return null
+}
+export const fuzzRecords = (opts) => {
+  const findings = []
+  for (let i = 0; i < opts.count; i++) {
+    const seed = opts.seedStart + i
+    const r = checkRecords(seed, opts)
+    collect()
+    if (r && r.kind !== 'invalid') findings.push({ seed, ...r })
+    if (findings.length >= (opts.maxFindings || Infinity)) break
+  }
+  return findings
+}
+
 // Source generators — exported so the STRUCTURAL-invariant verifier
 // (test/wat-invariants.js) sweeps the SAME seeded programs the correctness
 // fuzzer runs, but checks the optimized WAT for absence-of-overhead (no f64
@@ -864,5 +977,5 @@ export const fuzzLoopBound = (opts) => {
 export {
   genProgram as genScalarProgram, toSource as scalarSource,
   typedSource, typedMapSource, typedIntSource, typedIntMinMaxSource,
-  typedIVSRSource, typedByteScanSource, loopBoundSource,
+  typedIVSRSource, typedByteScanSource, loopBoundSource, recordSource,
 }
