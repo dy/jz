@@ -937,13 +937,12 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
           const pre = []; const rhs = hExpr(s[1][2], pre, false, effState())
           return pre.length ? [...pre, [s[0], ['=', s[1][1], rhs]]] : [s]
         }
-        // Several declarators evaluate left to right; one effect state threads
-        // through them (a declared name is out of the callee's scope, so the
-        // binding itself is not an effect the callee can observe).
+        // Several declarators are as many declarations, in order: a later one's
+        // value may read an earlier one's name (`const p = g(n), e = p && f(n)`),
+        // so what it hoists goes just before it, never ahead of the statement.
         if (s.length > 2 && s.slice(1).every(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && !directCall(d[2]))) {
-          const pre = [], eff = effState()
-          const decls = s.slice(1).map(d => ['=', d[1], hExpr(d[2], pre, false, eff)])
-          return pre.length ? [...pre, [s[0], ...decls]] : [s]
+          const decls = s.slice(1).map(d => hStmt([s[0], d]))
+          return decls.every(d => d.length === 1) ? [s] : decls.flat()
         }
         return [s]
       }

@@ -97,4 +97,15 @@ export let f = (s) => g(s) === false`,
   // re-read for element k+1 after element k's emit() — reachable when one
   // literal element is itself a nested same-family typed-array construction.
   fromnested: `export let f = () => Int32Array.from([Float64Array.from([5])[0], 2])`,
+  // A result that is a Boolean or null keeps its null where it joins one
+  // (summary/contract.js contractVal), and a later declarator's hoisted call
+  // reads the name the earlier one set (plan/inline.js hoistNestedCalls).
+  // Observed without String: __to_str's typed-array arm follows the module's
+  // registration, not its demand, so eager preload changes its bytes.
+  boolnull: `const f = (n) => { if (n > 2) return null; if (n > 1) return true; return false }
+const parts = (n) => n > 0 ? { k: n } : null
+const id = (e) => e === null ? 3 : e === undefined ? 4 : e === true ? 1 : e === false ? 0 : 5
+export let tern = (n) => id(n > 0 ? f(n) : null)
+export let and = (n) => { const p = parts(n), e = p && f(n); return id(e) }
+export let type = (n) => typeof (n > 0 ? f(n) : null)`,
 }
