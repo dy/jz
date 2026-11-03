@@ -216,7 +216,7 @@ const isBigIntCarrierBits = (get) => ['i32.and',
 // (no STRING branch exists for them), so a `null` domain is a safe
 // runtime-heuristic target.
 //
-// ADR-0001 consequence #2 (.work/adr-0001-bigint-representation.md): plan-driven
+// CONTRIBUTING, Decisions, "BigInt representation": plan-driven
 // gating — a program that can never produce a BigInt value anywhere makes EVERY
 // `bigIntDomain(node)` call below resolve to 'number'/null/'skip' (never
 // 'bigint'/'census', both of which require an actual VAL.BIGINT-kinded node or a

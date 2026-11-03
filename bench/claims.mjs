@@ -39,17 +39,17 @@ export const CLAIM_EXCEPTIONS = [
   {
     case: 'vm', class: 'jsc', band: 1.5,
     cause: "JSC's adaptive JIT runs the register VM's dispatch loop faster than V8 runs jz's wasm, whose loop is one fully inlined br_table over pure i32 (1.21-1.23× on EPYC 7763, 1.12× on EPYC 9V45)",
-    evidence: "PLAN.md, the vm row of 'Active focus, September 25'; reference runs e62d7a1c, 2c8f08ac, a841739a",
+    evidence: "`git show c41d43f10:PLAN.md`, the vm row of 'Active focus, September 25'; reference runs e62d7a1c, 2c8f08ac, a841739a",
   },
   {
     case: 'dict', class: 'jsc', band: 1.5,
     cause: "JSC's JIT runs the hash-probe chain faster than V8 runs jz's, which carries no bounds checks under a proven mask (four-round median 1.408, six-round repeat 1.350)",
-    evidence: "PLAN.md, the dict row of 'Active focus, September 25'",
+    evidence: "`git show c41d43f10:PLAN.md`, the dict row of 'Active focus, September 25'",
   },
   {
     case: 'crc32', class: 'jsc', band: 1.5,
     cause: 'V8 adds the table base as a wrapped 32-bit word before each table load where JSC indexes base plus scaled index (paired 1.401; about 1.26 with the table at a constant address)',
-    evidence: "PLAN.md, the crc32 row of 'Active focus, September 25'",
+    evidence: "`git show c41d43f10:PLAN.md`, the crc32 row of 'Active focus, September 25'",
   },
   {
     case: 'watr', class: 'jsc', band: 1.45, open: true,

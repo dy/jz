@@ -150,7 +150,7 @@ const SPEED = {
   // jessie is the subscript parser (jz compiling a Pratt parser: descriptor
   // dispatch, closure-set calls, AST arrays with a `loc` property). It ran at
   // 1.48× V8 before the closure-property, loop-guard and boolean-condition
-  // work (PLAN.md, September 18), 1.13× after it, and 0.99× once the
+  // work (September 18), 1.13× after it, and 0.99× once the
   // comment loop's for-in unrolled over its declared keys (jz 1.32 ms, V8
   // 1.33, paired on a quiet machine). `tie` (1.05×) gates that standing
   // without flaking on the hair's breadth; the residual (the dispatch

@@ -11,7 +11,7 @@
 // given on the command line. Peak memory is the child's maxRSS; time is the
 // median of three compiles inside one child (the first is discarded as warm-up).
 // With --baseline, a row more than `tolerance` slower or heavier than its
-// baseline fails the run. This is the v1 gate for compile cost (PLAN.md).
+// baseline fails the run. This is the gate for compile cost.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

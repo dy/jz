@@ -657,7 +657,6 @@ early SIMD preparation, and watr uses it in its final identity sweep. Narrow
 stores discard irrelevant casts and masks. Integer constant pooling uses
 canonical bits rather than source spellings and skips literals too cheap to pool.
 The downstream watr workflow builds and tests with the same current JZ package.
-See [PLAN.md](PLAN.md) for remaining gates and DSP evidence.
 
 Native and Wasm-hosted compiler entries share memory-option configuration.
 The kernel ABI carries page limits and distinct imported/shared flags; the
@@ -3192,8 +3191,10 @@ Literal folding and front-end lowering share `rewriteChildren` in `ast.js`.
 It preserves unchanged subtrees and function bodies instead of allocating an
 AST copy merely to discover that nothing changed.
 
-Historical `.work/` citations below refer to retired evidence, recoverable using
-[.work/README.md](.work/README.md). [PLAN.md](PLAN.md) is the active product plan.
+A comment citing a `.work/` path or `PLAN.md` that the tree no longer holds refers to Git
+history: the notes retired on 2026-09-08 read as `git show 66e72c46:<path>`, PLAN.md and the
+notes retired with it as `git show c41d43f10:<path>`. The owner's product notes stay in
+`.work/` (todo, marketing, strategy, ecosystem, audiojs); this file and the README hold the rest.
 
 Compiler lifecycle diagnostics live in `src/debug.js`. `JZ_DEBUG_INVARIANTS=1`
 enables phase, representation and mutation checks for development. Source builds
@@ -3327,7 +3328,7 @@ to its module, line and column, and a message shows the names the source wrote
 
 **One shared optimizer, owned by watr (`~/projects/watr`).** Generic optimizer changes belong there, with tests in both projects. JZ supplies language-specific analysis, representation contracts, and lowering. The existing generic passes in `src/optimize/` are migration work: consolidate them into watr and delete JZ copies, rather than building a competing optimizer. Never patch only `node_modules`.
 
-The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. [PLAN.md](PLAN.md) prioritizes reliable builds and stateful audio DSP. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
+The tape (`src/ir/tape.js`) transports WAT through link. Settled program summaries own semantic facts; watr owns generic optimization. Reliable builds and stateful audio DSP come first. Further IR or state refactors need a demonstrated defect, bottleneck, or deletion. Each migration slice deletes the authority it replaces.
 
 Float32Array storage does not lower JavaScript arithmetic precision. Maps and
 stencils choose their computation lanes together: f32 loads promote to f64x2,
@@ -5273,6 +5274,221 @@ and a property read through the value answer what the host answers (stdlib's
 - **A finite speed dialect, not an open-ended escape hatch.** Compiled output follows the semantics explicitly listed under [“What differs from JS?”](README.md#what-differs-from-js): wide bitwise operands, 64-bit BigInt, constant rounding and the other enumerated cases. Outside that list, preserve JavaScript answers, exceptions, evaluation order, and effects or reject. “A native compiler could do it” is not sufficient authority for a new divergence: update the public contract and add cross-tier exact tests before landing one. Never trade away a meaningful result's f64 accuracy (no mantissa trimming or arbitrary precision loss).
 - **Minimal surface.** Every feature must justify its weight. If it can be a library, it should be.
 - **No external runtime and no GC.** Needed JZ runtime operations are linked into the module; unused operations are omitted.
+
+## Decisions
+
+The decisions that shaped the tree, kept from the v1 plan. A change that reverses one says
+so in its commit.
+
+### Architecture
+
+- One lowering pipeline: parse → jzify → prepare → summary (a fixpoint solver
+  behind a query view) → plan sweeps → narrow → emit → optimize → link. Watr
+  owns generic propagation, folding, LICM, local-slot allocation and the final
+  optimizer. There is no second IR layer.
+- The summary is the authority for shapes: construction identity, side
+  properties, bounded shape sets, collection cells, positional rest facts and
+  closure properties. Plan passes consume its views (`openSidOfExpr`,
+  `spreadSidOfExpr`, `sideKeysOfSid`) and the frame-effects census
+  (`writesOuter`, `arenaUnsafe`, `callsUnknown`, transitive callees). No source-plan pass
+  keeps a private call or effect analyzer; where the shared evidence is
+  silent, the optimization declines.
+- Frame effects gate the arena rewind by age: an escape lowers the escape
+  flag, where it runs, to the address it wrote into, and a frame restores the
+  heap when the flag stands at or above its own mark. A temporary a call
+  builds of closures, cells and objects goes with the call; a state made on
+  the first call is kept once; a call the census cannot name is no escape,
+  since what it runs lowers the flag itself. A store of no heap value lowers
+  it only where the store allocated, an assignment only for a value a running
+  call made. An escape with no address that every call runs, and a frame
+  that suspends, keep the frame whole; a loop whose iteration lets nothing
+  escape restores the heap pointer per iteration, and `whyNotRewind` names
+  each candidate that keeps its heap and each flagged frame's first site. A
+  store into a parameter the export boundary types is a number into fixed
+  storage, not a growth; the loop to rewind is found by its label, which the
+  peephole walk keeps where it copies the loop's node. A render loop with a
+  block per iteration holds the memory flat (`test/mem.js`). A frame that
+  ran an escape keeps what the escape reaches and what lies below it
+  (`arenaReach`, module/core/reach.js): the walk from the receivers its
+  escapes wrote into moves nothing and frees the heap above the highest block
+  reached. What a call replaces in older storage is never freed: that needs
+  a collector.
+- Only a DEFINITE store declares a key in a literal's layout. Static
+  enumeration stands down whenever the layout is open; the open-layout for-in
+  unrolls the closed keys only when neither the layout nor the keys added at
+  the receiver's construction sites contain an array index, since JS
+  enumerates integer keys first (a layout's added-key facts are per site: two
+  literals of one layout keep their own).
+- Class identity survives serialization: `jz:brand` names each class layout
+  (`Name#id`) beside `jz:schema`, `jz:fields` and `jz:errcls`, so two classes
+  with one field list stay two schemas, and a host object that matches only
+  such layouts by keys is ambiguous. A pointer carries the schema id its
+  module compiled with, so a module whose schema would bind at another id in
+  the memory it joins is rejected at instantiation, before the memory's tables
+  change: modules sharing a memory are one compilation or the same module
+  again, and their host references live in one table.
+- A class is a schema across modules: prepare brings a module's imports in
+  ahead of its lowering, so a base class of another module resolves; async
+  and generator methods hoist with their kind; `'m' in o` sees members. A
+  class keeps its closures only inside a function, under a base the module
+  cannot see, or as an expression with statics (`class-generic` says which).
+- The summary consumes what the emitter does: `fn.call`/`fn.apply`, a static
+  call through its lifted function, an optional call, a call through a nullish
+  slot, `Object.defineProperty` as a store, an inlined callback's element
+  parameter as the element, a class member on an unknown receiver with the
+  family of classes that share it. A method inherited by a family reads its
+  fields as slots (`commonSlot`) and calls a member every layout resolves to
+  one function directly. `why` and any `warnings` sink report `shape-lost`,
+  `class-generic` and `deopt-prop-read`: the census a dynamic library is read
+  by (`scripts/why-census.mjs <case>`).
+- Warnings are delivered after the pipeline returns, so a warning callback
+  may compile again; a compile attempted while the pipeline is active is
+  rejected. The compiler context is a singleton by design.
+- `E[Symbol.iterator]()` is the iterator over E for every receiver
+  (`__it_from`); the protocol lowerings are gated by the program's iterator
+  producers, witnessed over every module before any is lowered, so a module
+  iterates what another one mints. The summary names each minted record by
+  its call node and keeps the source (or a generator's own closures) beside
+  it: `it.next().value` is the element, not the join of every mint. A class
+  initializer runs once per receiver layout in the summary (initializer
+  contexts), so a derived class's `super(…)` no longer joins its arguments
+  into every layout of the family; a lost shape escapes only the fields a
+  read through an unknown receiver cannot answer precisely. The summary
+  walks what the program reaches (exports, escaped and host-held callables,
+  module initializers, and what their walks call): an API surface the
+  program never exercises cannot pollute the allocations the exercised one
+  shares.
+- Booleans ride either carrier, the raw 0/1 or the atom box. A test of a
+  BOOL-typed f64 is the number test, then the atom compare.
+- Export boundary: an array argument runs in its own element kind (the
+  export's Float32Array variants, chosen by the host), is copied back after
+  the call nested arrays included, and is released with what the call made
+  unless the call keeps it; a typed array stored on a host object stays the
+  module's storage.
+- Export boundary: a parameter an exported function never uses as a string is
+  compiled as a number and converted at the boundary (README lists it);
+  typed-array index parameters are numeric; property keys cross as strings.
+  Named typed-array keys use property storage, canonical numeric keys convert
+  to elements. Array indices follow the documented i32-truncating contract;
+  object keys keep fractional names.
+- Numeric lowering (CONTRIBUTING has the forms): range-proven values avoid
+  general conversion helpers. Checked integer reads stay in words through
+  integer conversions and comparisons; missing elements remain undefined
+  until the consumer decides their result. Load CSE keeps an exit-only
+  `if`'s loads, small-constant unrolling has a cost budget, and watr's `ifset`
+  leaves a branchy condition alone.
+- Transcendental polynomials share one evaluation tree (`polyTree`) across the scalar
+  WAT, the two-wide WAT and the JS constant folder, so the three agree bit
+  for bit. exp and exp2 are one table kernel at 0.5 ulp; atan keeps its
+  minimax speed trade. Asin and acos use fdlibm with a 1-ULP gate. The LAB colour cases gate
+  through `LAB_SPEED` with a named, measured divergence from V8 instead of
+  checksum equality.
+- The source inliner splices a multi-declarator declaration only in an
+  innermost loop, the loops the vectorizer takes. A `let`-declared local
+  arrow inlines like a const one.
+- The bench measures the first call of a fresh process, so a large speed-tier
+  module pays Liftoff until TurboFan lands. watr's ratio is that tier-up
+  (`CLAIM_UNMET` in bench/claims.mjs has the measure). The lever is a smaller hot module
+  (cold paths out of line, a size-aware branch-speculation budget), not a
+  different steady state.
+- Gated invariant checks stay: frame effects, kernel parity, output-size and
+  loop-count ratchets and the speed pins in `test/bench.js` protect compiler
+  development and are not the source of complexity.
+- A per-iteration rewind is registered under its function's name by the
+  loop's label: labels count from zero in every function, and a module-wide
+  registry handed the first function's loop of that label another function's
+  proof.
+- A module joining a shared memory is validated before it is instantiated:
+  its tables are read from the custom sections and merged on copies, so a
+  rejected module's start function, data segments and tables never touch the
+  memory, and a merge commits whole or not at all.
+- An object literal's accessor is the one own property it defines wherever a
+  property is listed, copied, keyed or deleted: Object.keys, values and entries,
+  for-in, `in`, JSON.stringify, Object.assign, spread, structuredClone, a
+  computed key and an object the host receives see it through the layout's
+  enumeration view (`layoutView`), which reads it through its getter once;
+  JSON.stringify calls a value's toJSON, its own or its class's, with the key
+  (CONTRIBUTING has the forms).
+- A layout slot marked hidden (`ctx.schema.hidden`) reads, writes and calls
+  as before, but the enumeration view drops it: an Error's `message` and
+  `name` and a closure-lowered class's methods and accessors are not listed,
+  copied or serialized, as in JS. A program with neither pays nothing.
+- A host object that matches no layout stays a host reference: `in`, keys,
+  values, entries, for-in, spread, Object.assign and JSON.stringify go through
+  the host, so the caller sees the module's writes (README states it).
+- A runtime key reads a string's index and an array's `length` in the
+  lookup chain's string and array arms, which ended at `length` and at the
+  indices; a first-character digit test read in place keeps an identifier
+  key off the index parse. A canonical index literal takes the index dispatch.
+- Derived closure-class methods use a hidden rank in the existing property hash;
+  growth preserves it and an own assignment restores enumeration. Runtime keys
+  read Map/Set size and source function arity through the shared lookup chain.
+  Function arities stay beside closure table entries after body deduplication.
+- An array hole is an `undefined` element: `[1, , 3]` lists `"1"`. The
+  divergence is in the README; a hole would need an element value apart
+  from undefined, tested on every read.
+- An array pattern over a value the summary proves an array reads by index
+  (a plan sweep): the protocol's cursor record and its pool are module state
+  no rewound frame may touch, and the protocol cost a call per element.
+- The frame census names the class functions a member reaches on the
+  receiver's listed layouts, a receiver that may be nullish or of several
+  classes included, and reads through the function's own summary view; a
+  loop's callee allocations belong to the iteration. Before this, every
+  accessor-named read anywhere made its frame unsafe, and the census ran on
+  the module's view, where a parameter had no kind.
+- A loop marker is validated against the loop's own tape at link, not the
+  whole function's; the schema-keyed inline caches and the coherent
+  dynamic-get cache are no veto. webaudio's per-sample loops rewind: one
+  render allocates 87 MB and keeps 9.
+- A derived class's accessor is a class function of its own schema, not a
+  dynamic install: the dispatcher's fallback probes for an accessor slot only
+  where an object literal's schema or a static pair may carry it.
+- `slice` yields an array with a cell of its own: the receiver's positional
+  row carried over unshifted, so `['func', [..]].slice(1)[0]` read as a
+  string.
+- Object methods receive `this` at invocation through the closure ABI,
+  including optional calls, accessors and callbacks with `thisArg`. Generators
+  capture it before suspension. This removes the per-object receiver capture;
+  programs without receiver reads omit the ABI slot. Class methods retain
+  the documented bound-method contract.
+- Prepared statement lists share the block emitter's flow facts and
+  invalidation. A throwing typeof guard retains its callable proof, so an
+  unshadowed closure `call` uses the invocation ABI without a property probe.
+
+### BigInt representation
+
+Mixed dynamic BigInt is a core feature, not compat sugar: the self-compiled
+compiler parses `i64.const` operands through it, a raw BigInt∪Number union is
+physically ambiguous (tagged Number 0 bit-equals raw 0n, Number.MIN_VALUE
+bit-equals 1n), and a raw-only, reject-the-rest mode was reverted once already.
+
+- The tagged carrier is the universal correct crossing for any BigInt∪other edge
+  (call, storage, closure, return, host). Raw i64 is an optimization applied only
+  where the plan proves single-representation flow end to end.
+- Each identity and edge has one representation authority. ProgramIndex owns every
+  parameter/result boundary (named sources, specialization variants, the anonymous
+  closure/start space); RepresentationPlan owns body-local actions. Analysis
+  discovers facts, the owning plan chooses actions, emission never reconstructs a
+  decision, and optimizers preserve plan-materialized unions or invalidate the plan.
+- The host boundary is evidence-based per slot, one descriptor: the wrapper
+  dispatches on a per-export, per-slot policy the compiler emits (RAW_BIGINT,
+  TAGGED_VALUE, NUMBER, EXTERNREF, plus a rest-element policy), never on the
+  absence of a box marker. BigInt ingress with no evidence rejects with a TypeError;
+  it never stringifies or misdecodes.
+- `JZ_BIGINT_STRICT=1` stays opt-in (reject what is unprovable, a lint or deploy
+  mode), never the default.
+- No accepted program returns a known-wrong value at any optimization level, and
+  the jz×jz self-compile completes under wasm32's 4 GiB ceiling.
+
+### Dependencies
+
+- subscript and watr come from npm at the versions package.json pins; watr carries the two
+  optimizer rules the speed rows rely on (the mixed-sign truncation-of-convert
+  fold for base64, `ifset` declining a branchy condition for sort), so a clean
+  install includes those rules and the lazy-select/partial-operand fixes.
+- CI runs one self-compile workflow (build, round-trip, the suite through
+  `dist/jz.wasm`, the recursive check). The self-compile perf gate is
+  `npm run test:self:perf`, a local release step.
 
 ## Testing
 

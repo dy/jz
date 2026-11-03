@@ -869,7 +869,7 @@ test('summary codegen: a typed field read through a parameter, a factory, a clas
     ok(at > 0, `${name}: the loop stores f32`)
     const loop = wat.slice(wat.lastIndexOf('(loop', at), at)
     // The factory shape still versions its loop on the receiver's runtime kind: the
-    // parameter's representation follows the summary in the next slice (PLAN.md step 3).
+    // parameter's representation follows the summary in the next slice.
     if (name !== 'factory') ok(!/__typed_idx|__typed_set_idx|__dyn_get|__arr_typed/.test(loop), `${name}: no element dispatch in the loop`)
     is(jz(src).exports.run(64), 0.5, `${name}: 2 * 0.5 * 0.5`)
   }

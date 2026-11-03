@@ -9,8 +9,7 @@
  * `seedParamKinds` copies it onto the parameter record. The remaining
  * channels are call-site lattices over `programFacts.callSites`: the wasm
  * type (i32 for integer arguments), integer constants, static lengths, length
- * bounds and element ranges, which one range domain replaces (PLAN.md step
- * 3), and the closed schema unions (`schemaIdSet`, `arrayElemSchemaSet`).
+ * bounds and element ranges, which one range domain replaces, and the closed schema unions (`schemaIdSet`, `arrayElemSchemaSet`).
  *
  * Reads programFacts.callSites plus ProgramIndex address-taken facts; mutates
  * sig.params/results, func.valResult, and programFacts.paramReps. Pure w.r.t.

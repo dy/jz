@@ -1,6 +1,6 @@
 # jz promotion & adoption strategy
 
-*Owner notes, subordinate to [PLAN.md](../PLAN.md). SEO/distribution actions updated 2026-09-10.
+*Owner notes. SEO/distribution actions updated 2026-09-10.
 Earlier research includes sourced VOC quotes, a competitor scan, and 10 adoption precedents.
 Personas in [`marketing.md`](marketing.md); integration surfaces in [`ecosystem.md`](ecosystem.md).
 Goal: real adoption (kernels shipped with jz), not stars.*

@@ -37,7 +37,7 @@
  * A read then has the kind its source has: `o.buf` with `o: OBJECT(sid)`
  * has the kind of that slot, and a loop over it lowers to typed storage.
  * The per-function families read the summary through `ctx.summary` and
- * are retired as it takes over their censuses (PLAN.md, step 3).
+ * are retired as it takes over their censuses.
  *
  * The host boundary is a contract, not a poison: an object that reaches the
  * host (returned, or passed to an import) keeps its field kinds, and a host

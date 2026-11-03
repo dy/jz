@@ -1,6 +1,6 @@
 /**
- * RepresentationPlan owns BigInt body-local actions (ADR-0001,
- * .work/adr-0001-bigint-representation.md). ProgramIndex owns every
+ * RepresentationPlan owns BigInt body-local actions (CONTRIBUTING, Decisions,
+ * "BigInt representation"). ProgramIndex owns every
  * parameter/result boundary: named sources, specialization variants, and the
  * anonymous closure/start space. Every edge (call arg, binding
  * write, return, storage, join arm, host boundary) gets exactly one action
