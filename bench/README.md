@@ -95,10 +95,16 @@ JavaScript, and a runner lost there once took fifteen other cases' evidence with
 (run 41508597936). A compiler of the case's own JavaScript (Static Hermes, Porffor,
 Perry, scriptc, TypeScriptCompiler, js2wasm, the two componentizers) builds within a
 time limit that ends its whole process group (`JZ_BENCH_BUILD_LIMIT_S`, 600 s unless
-the lane sets its own). A shard runs without swap and with the bench's processes
-first in the OOM killer's line, so a lane that exhausts memory is a failed row
-(`killed by SIGKILL … (out of memory?)`), not a lost runner; its `memory.log` keeps
-the machine's memory, disk and largest processes every 30 s.
+the lane sets its own). A shard runs its bench in a memory cgroup of its own, 3 GiB
+short of the machine's memory and outside the runner's systemd service, whose
+default `OOMPolicy=stop` ends the service, the runner with it, once the OOM killer
+takes any process of it: run 41656880970 lost the self-compile shard so twice, 44 s
+into Perry's build, which holds 13 GB of the runner's 16. A lane that outgrows the
+cgroup is killed there and is a failed row (`out of memory: killed by the kernel
+after … at the … GiB limit`), not a lost runner. Swap is off, so a lane at the limit
+fails rather than thrashes, and the bench runs in a session of its own. Its
+`memory.log` keeps the machine's memory, disk and largest processes every 30 s,
+and the cgroup's limit, peak and OOM kills.
 
 A shard job that fails anyway costs the run its publication, never the other
 shards' evidence: `bench-retry.yml` reruns the run's failed jobs once by itself, and

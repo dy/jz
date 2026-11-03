@@ -479,7 +479,7 @@ const runProc = (argv, opts = {}) => {
   const limited = timed && TIMEOUT_BIN ? [TIMEOUT_BIN, '-s', 'KILL', String(RUN_LIMIT_S), ...argv] : argv
   const wrapped = timed ? [TIME_BIN, ...TIME_ARGS, ...limited] : argv
   const timeout = opts.timeout ?? (RUN_LIMIT_S + 30) * 1000
-  const start = performance.now()
+  const start = performance.now(), kills = oomKills()
   const r = spawnSync(wrapped[0], wrapped.slice(1), {
     cwd: BENCH_DIR,
     encoding: 'utf8',
@@ -490,7 +490,8 @@ const runProc = (argv, opts = {}) => {
   // So does a kill from outside, the kernel's OOM killer's: told apart by the clock.
   if (timed && TIMEOUT_BIN && r.status === 137) return (performance.now() - start) / 1000 >= RUN_LIMIT_S
     ? { error: `timeout after ${RUN_LIMIT_S}s`, timedOut: true }
-    : { error: killedText((performance.now() - start) / 1000) }
+    : { error: killedText((performance.now() - start) / 1000, kills) }
+  if (r.signal === 'SIGKILL') return { error: killedText((performance.now() - start) / 1000, kills) }
   if (r.status !== 0) return { error: `exit ${r.status}: ${(r.stderr || r.stdout || r.signal || '').trim().slice(0, 240)}` }
   const parsed = parseLine(r.stdout)
   if (!parsed) return { error: `unparseable stdout: ${(r.stdout || r.stderr || '').trim().slice(0, 240)}` }
@@ -498,7 +499,26 @@ const runProc = (argv, opts = {}) => {
   return parsed
 }
 
-const killedText = s => `killed by SIGKILL after ${Math.round(s)}s, before any limit (out of memory?)`
+// Linux counts each process its OOM killer takes from a cgroup (cgroup v2
+// memory.events `oom_kill`, the groups below included). A SIGKILL during which
+// the bench's own group's count rose is out of memory, named with the group's
+// limit if it has one; with no count to read (macOS, cgroup v1) it stays a question.
+const MEM_CGROUP = (() => {
+  try {
+    const dir = join('/sys/fs/cgroup', readFileSync('/proc/self/cgroup', 'utf8').match(/^0::(\/\S*)$/m)[1])
+    return existsSync(join(dir, 'memory.events')) ? dir : null
+  } catch { return null }
+})()
+const oomKills = () => {
+  try { return +readFileSync(join(MEM_CGROUP, 'memory.events'), 'utf8').match(/^oom_kill (\d+)$/m)[1] } catch { return null }
+}
+const killedText = (s, kills) => {
+  if (kills == null) return `killed by SIGKILL after ${Math.round(s)}s, before any limit (out of memory?)`
+  if (!(oomKills() > kills)) return `killed by SIGKILL after ${Math.round(s)}s, before any limit`
+  let max = NaN
+  try { max = +readFileSync(join(MEM_CGROUP, 'memory.max'), 'utf8') } catch {}
+  return `out of memory: killed by the kernel after ${Math.round(s)}s${max > 0 ? ` at the ${(max / 2 ** 30).toFixed(1)} GiB limit` : ''}`
+}
 // A compiler of the case's own JavaScript scales with it: the self-compile case's
 // bundle is 6.9 MB, twelve times the next largest. Bound such a build in time and
 // end its whole process group, so the compiler's own children (cc, ld, LLVM) cannot
@@ -506,7 +526,7 @@ const killedText = s => `killed by SIGKILL after ${Math.round(s)}s, before any l
 // A kill is a failed row with its cause; the case's other lanes still run.
 const BUILD_LIMIT_S = Math.max(1, +(process.env.JZ_BENCH_BUILD_LIMIT_S || 600))
 const boundedBuild = (cmd, args, opts = {}, limitS = BUILD_LIMIT_S) => {
-  const start = performance.now()
+  const start = performance.now(), kills = oomKills()
   try {
     return TIMEOUT_BIN
       ? execFileSync(TIMEOUT_BIN, ['-s', 'KILL', String(limitS), cmd, ...args], { stdio: 'pipe', ...opts, timeout: (limitS + 30) * 1000, killSignal: 'SIGKILL' })
@@ -514,7 +534,7 @@ const boundedBuild = (cmd, args, opts = {}, limitS = BUILD_LIMIT_S) => {
   } catch (e) {
     const s = (performance.now() - start) / 1000
     if (e.code === 'ETIMEDOUT') throw Error(`build exceeded ${limitS}s`)
-    if (e.signal === 'SIGKILL' || e.status === 137) throw Error(s >= limitS ? `build exceeded ${limitS}s` : killedText(s))
+    if (e.signal === 'SIGKILL' || e.status === 137) throw Error(s >= limitS ? `build exceeded ${limitS}s` : killedText(s, kills))
     // A compiler's own failure names the compiler: the wrapper's command line
     // (`timeout -s KILL 120 …`) reads like a time limit that was never reached.
     if (TIMEOUT_BIN) e.message = e.message.replace(`Command failed: ${TIMEOUT_BIN} -s KILL ${limitS} `, 'Command failed: ')

@@ -435,13 +435,20 @@ jobs:
       # ── shard ──────────────────────────────────────────────────────────────
       # This job's cases, every lane, on this one machine: the claim lanes in
       # alternating paired rounds for a reference run, every other lane once.
-      # A lane that exhausts memory must cost its own row, not the runner (run
-      # 41508597936 lost one with its log and 16 cases): no swap to thrash, where
-      # the runner stops answering long before the kernel acts, and the bench's
-      # process tree first in the OOM killer's line, its largest member first; the
-      # killed lane reads "killed by SIGKILL … (out of memory?)". memory.log keeps
-      # the machine's memory, disk and largest processes every 30 s, and the kernel's
-      # OOM kills, beside the shard's dataset.
+      # A lane must cost its own row, never the runner. The runner is a systemd
+      # service, and systemd's default OOMPolicy=stop ends a whole service, the
+      # runner with it, once the kernel's OOM killer takes any process of it: run
+      # 41656880970 lost the self-compile shard so twice, 44 s into Perry's build of
+      # its 6.9 MB bundle, which holds 13 GB of the machine's 16. So the bench runs
+      # in a memory cgroup of its own, outside that service and 3 GiB short of the
+      # machine's memory: a lane that outgrows it is killed there, and its row
+      # reads "out of memory: killed by the kernel … at the … GiB limit", while the
+      # runner keeps its memory. No swap, where a lane at the limit would thrash
+      # instead of failing; the bench's processes first in the OOM killer's line;
+      # and a session of their own, so no signal to a lane's process group reaches
+      # the runner. memory.log keeps the machine's memory, disk and largest
+      # processes every 30 s, the cgroup's limit, peak and OOM kills, and the
+      # kernel's OOM lines, beside the shard's dataset.
       - name: measure this shard's cases
         if: matrix.kind == 'shard'
         shell: bash
@@ -453,14 +460,24 @@ jobs:
         run: |
           out="$RUNNER_TEMP/shard"; mkdir -p "$out"
           sudo swapoff -a || echo '::warning::swap stays on: a memory-hungry lane may stall the runner'
-          echo 1000 > /proc/self/oom_score_adj
+          # The sampler stays in the runner's group, outside the limit it reports on.
           ( while :; do { date -u +%T; free -m | sed -n 2p; df -m / | tail -1; ps -eo rss=,etimes=,args= --sort=-rss | head -3 | cut -c1-200; } >> "$out/memory.log"; sleep 30; done ) &
           sampler=$!
+          cg=/sys/fs/cgroup/jz-bench
+          limit=$(( $(awk '/^MemTotal:/ { print $2 }' /proc/meminfo) * 1024 - 3 * 2**30 ))
+          if echo +memory | sudo tee /sys/fs/cgroup/cgroup.subtree_control > /dev/null && sudo mkdir -p "$cg" &&
+             echo "$limit" | sudo tee "$cg/memory.max" > /dev/null && echo $$ | sudo tee "$cg/cgroup.procs" > /dev/null; then
+            echo "bench cgroup $cg, memory.max $((limit >> 20)) MiB" | tee -a "$out/memory.log"
+          else
+            echo '::warning::no cgroup of its own: a lane the OOM killer takes stops the runner with it'
+          fi
+          echo 1000 > /proc/self/oom_score_adj
           paired=(); [ "$PAIRED" != 0 ] && paired=(--paired="$PAIRED" --paired-targets="$PAIRED_TARGETS")
           set +e
-          node bench/bench.mjs --targets="$TARGETS" --cases="$CASES" "${paired[@]}" --json="$out/shard.json" --no-web 2>&1 | tee "$out/shard.log"
+          setsid -w node bench/bench.mjs --targets="$TARGETS" --cases="$CASES" "${paired[@]}" --json="$out/shard.json" --no-web 2>&1 | tee "$out/shard.log"
           status=${PIPESTATUS[0]}
           kill "$sampler"
+          [ -f "$cg/memory.peak" ] && echo "bench cgroup peak $(( $(cat "$cg/memory.peak") >> 20 )) MiB; $(tr '\n' ' ' < "$cg/memory.events")" >> "$out/memory.log"
           sudo dmesg -T | grep -i -E 'out of memory|killed process' >> "$out/memory.log"
           exit "$status"
       # A rerun of this job (gh run rerun --failed) replaces the artifact it left.

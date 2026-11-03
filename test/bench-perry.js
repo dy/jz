@@ -18,13 +18,22 @@ test('Perry bench lane: native globals, paired reuse, parity, failures, and hard
     const json = join(scratch, 'results.json')
     const pid = join(scratch, 'pid')
     const hook = join(scratch, 'deadline.mjs')
+    const oom = join(scratch, 'oom_kill')
     const hang = `process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(${JSON.stringify(pid)}, String(process.pid)); setInterval(() => {}, 1000)`
     // Exercise real process termination without waiting the production 60/120s.
     // Reject a soft deadline before spawning, so a regression cannot hang CI.
     writeFileSync(hook, `import cp from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import fs, { readFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 const mode = readFileSync(${JSON.stringify(mode)}, 'utf8')
+// A memory cgroup of 12 GiB whose OOM kills the fake compiler and binary count.
+if (mode.endsWith('-killed') || mode.endsWith('-oom')) {
+  const cg = '/sys/fs/cgroup/jz-bench-test', read = fs.readFileSync, exists = fs.existsSync
+  fs.readFileSync = (path, ...rest) => path === '/proc/self/cgroup' ? '0::/jz-bench-test\\n'
+    : path === cg + '/memory.events' ? 'oom 0\\noom_kill ' + read(${JSON.stringify(oom)}, 'utf8') + '\\n'
+    : path === cg + '/memory.max' ? 12 * 2 ** 30 + '\\n' : read(path, ...rest)
+  fs.existsSync = path => path === cg + '/memory.events' || exists(path)
+}
 const spawn = cp.spawnSync, exec = cp.execFileSync
 const deadline = (opts, ms) => {
   if (opts?.timeout !== ms || opts.killSignal !== 'SIGKILL') throw new Error('missing hard deadline')
@@ -63,11 +72,15 @@ if (process.env.PERRY_NO_UPDATE_CHECK !== '1' || process.env.PERRY_UPDATE_MODE !
 const mode = fs.readFileSync(${JSON.stringify(mode)}, 'utf8')
 if (mode === 'no-artifact') process.exit(0)
 if (mode === 'fail') { console.error('intentional Perry compile failure'); process.exit(7) }
+const oom = () => fs.writeFileSync(${JSON.stringify(oom)}, String(+fs.readFileSync(${JSON.stringify(oom)}, 'utf8') + 1))
+if (mode === 'compile-oom') oom()
+if (mode === 'compile-killed' || mode === 'compile-oom') process.kill(process.pid, 'SIGKILL')
 if (mode === 'compile-hang') { ${hang} }
 else {
 fs.appendFileSync(${JSON.stringify(builds)}, 'build\\n')
 const out = args[args.indexOf('-o') + 1]
 const body = mode === 'run-hang' ? ${JSON.stringify(hang)} : mode === 'empty' ? '' :
+  mode === 'run-oom' ? 'require("node:fs").writeFileSync(' + JSON.stringify(${JSON.stringify(oom)}) + ', "1"); process.kill(process.pid, "SIGKILL")' :
   mode === 'exit' ? 'console.error("intentional runtime failure"); process.exit(9)' :
   'console.log("median_us=10 checksum=' + (mode === 'wrong' ? '1' : '633180752') + ' samples=1048576 stages=1 runs=21")'
 fs.writeFileSync(out, '#!/usr/bin/env node\\n' + body + '\\n')
@@ -109,9 +122,13 @@ fs.chmodSync(out, 0o755)
       ['exit', /exit 9: intentional runtime failure/],
       ['compile-hang', /build exceeded 120s/],
       ['run-hang', /timeout after 60000ms/],
+      ['compile-killed', /^killed by SIGKILL after \d+s, before any limit$/],
+      ['compile-oom', /^out of memory: killed by the kernel after \d+s at the 12\.0 GiB limit$/],
+      ['run-oom', /^out of memory: killed by the kernel after \d+s at the 12\.0 GiB limit$/],
     ]) {
       writeFileSync(json, JSON.stringify(baseline))
       writeFileSync(mode, state)
+      writeFileSync(oom, '0')
       rmSync(pid, { force: true })
       bench([`--json=${json}`, '--merge', '--allow-unanchored'])
       const failed = read().cases.alpha.targets.perry
