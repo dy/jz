@@ -56,6 +56,20 @@ fn checksum_f64(xs: f64[:]) -> u32 {
     return h;
 }
 
+// Every value at single precision, its 32 bits hashed (benchlib.js
+// checksumF64Near): engines a few ulp apart agree, a wrong result does not.
+fn checksum_f64_near(xs: f64[:]) -> u32 {
+    var fs: f32[>..] = [];
+    for x in xs { fs.push(x as f32); }
+    let b = bytes_of(fs);
+    var h: u32 = 0x811c9dc5;
+    for i in fs.len {
+        let k = i * 4;
+        h = mix(h, b[k] | b[k + 1] as u32 << 8 | b[k + 2] as u32 << 16 | b[k + 3] as u32 << 24);
+    }
+    return h;
+}
+
 // Middle sample in microseconds, truncated (benchlib.js medianUs).
 fn median_us(samples: f64[:]) -> i64 {
     for i in 1..samples.len {

@@ -282,7 +282,7 @@ fs.chmodSync(out, 0o755)
     delete env.GOOSE_HOME
     delete env.JZ_BENCH_REBUILD
     const run = (compiler = bin) => execFileSync(process.execPath, [
-      join(ROOT, 'bench/bench.mjs'), '--targets=goose', '--cases=mandelbrot,alpha', '--no-web', `--json=${json}`,
+      join(ROOT, 'bench/bench.mjs'), '--targets=goose', '--cases=mandelbrot,dispatch', '--no-web', `--json=${json}`,
     ], { cwd: ROOT, encoding: 'utf8', env: { ...env, GOOSE_BIN: compiler } })
     const read = () => JSON.parse(readFileSync(json, 'utf8'))
     const built = () => existsSync(builds) ? readFileSync(builds, 'utf8').length : 0
@@ -290,7 +290,7 @@ fs.chmodSync(out, 0o755)
     const r = read()
     is(r.cases.mandelbrot.targets.goose.parity, 'ok', 'port checksum matches the corpus oracle')
     ok(r.cases.mandelbrot.targets.goose.bytes > 0, 'artifact size is recorded')
-    is(r.cases.alpha?.targets.goose, undefined, 'unported case has no row')
+    is(r.cases.dispatch?.targets.goose, undefined, 'unported case has no row (dispatch: Goose has no function values)')
     is(r.meta.versions.goose, 'goose v2026.3, runtime ok, C compiler cc-test 1.0', 'version names the release, its runtime and the C compiler')
     ok(r.meta.invocations.goose.startsWith('goose build <case>.goose'), 'invocation is recorded')
     is(built(), 1, 'one build')
