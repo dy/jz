@@ -47,6 +47,7 @@ import { K, tagOf, hasTag, bitOf, paramOf, TAGS, UNKNOWN } from '../summary/kind
 import { typed } from '../ir/tag.js'
 import { mkPtrIR } from '../ir/pointers.js'
 import { frameRoots } from '../function.js'
+import { CLASS_T } from '../ast.js'
 
 // The operators an array can be the value of: a name, a member, a call, a
 // choice, an assignment, a sequence, a construction. Any other answers a primitive.
@@ -73,6 +74,7 @@ const BUILTINS_SERVED = new Set(['Array.isArray', 'new.Array'])
 const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
 const member = (n) => Array.isArray(n) && (n[0] === '.' || n[0] === '?.')
 const NUMBER_TAG = bitOf(K.NUMBER)
+const BIND = CLASS_T + 'bind'
 // The literals a function returns as lanes: each return's (an arm of a returned choice), or an expression body; a closure's returns are its own.
 const laneLiterals = (body) => {
   const out = []
@@ -132,8 +134,22 @@ export function planNumericArrays(moduleRoots, funcs) {
     return false
   }
 
+  // A value read from a name the summary tracks and no value ever reached, a member of one at
+  // any depth: a parameter of a function no call binds (a class member nothing calls, walked for
+  // its value: Euler's `setFromQuaternion`, Plane's `applyMatrix4` reading `this.normal`). Not
+  // in a function emitted code calls past the summary's sight, a class dispatcher or a binder,
+  // whose parameters it leaves unbound: what they forward is the summary's at the calls it models.
+  let synthesized = false
+  const unbound = (view, e) => {
+    if (synthesized) return false
+    while (Array.isArray(e) && (e[0] === '.' || e[0] === '?.' || e[0] === '[]' || e[0] === '?.[]')) e = e[1]
+    return typeof e === 'string' && view.keyOfName(e) !== null && tagOf(view.kindOfExpr(e)) === K.NONE
+  }
   const visitCall = (n, view) => {
     const callee = n[1]
+    // a call through a receiver or a callee no value reaches never runs: it reads nothing
+    // (its arguments would hold `_matrix`, whose elements every call that runs reads as Numbers)
+    if (unbound(view, member(callee) ? callee[1] : callee)) return
     // the program's own function, closure or method: its parameters hold what it is passed, and its uses are walked
     const own = view.calleeOf(n) != null
     let argsServed = own || BUILTINS_SERVED.has(callee), argsOwn = false
@@ -192,7 +208,12 @@ export function planNumericArrays(moduleRoots, funcs) {
 
   const top = scoped('')
   for (const root of moduleRoots) visit(root, top)
-  for (const f of funcs) { const view = scoped(f.body); for (const root of frameRoots(f)) visit(root, view) }
+  for (const f of funcs) {
+    synthesized = f.sig?.dispatcher === true || f.name.endsWith(BIND)
+    const view = scoped(f.body)
+    for (const root of frameRoots(f)) visit(root, view)
+  }
+  synthesized = false
   // A function whose result is lanes (prepare/handlers.js detectResults: each
   // return a literal of two to eight elements) makes no array where it
   // returns: a call builds one of the lanes (emit/call-args.js
