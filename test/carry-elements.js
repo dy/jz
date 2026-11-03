@@ -132,8 +132,9 @@ test('carried elements: a pushed counter whose bottom holds the index before the
   }
   if (onKernel()) return
   const local = (src) => /\(local \$[^\s)]*ce\d+_v (i32|f64)\)/.test(funcWat(compile(src, { optimize: { level: 'speed', watr: false }, wat: true }), 'f'))
-  // (the speed tier inlines `f` into `run`: the module's divisions are the kernel's)
-  const divides = (src) => /\(f64\.div\b/.test(compile(src, { optimize: 'speed', wat: true }))
+  // (the speed tier inlines `f` into `run`: its divisions are the kernel's; the
+  // runtime's number formatting, `s + '/'`, divides in a function of its own)
+  const divides = (src) => /\(f64\.div\b/.test(funcWat(compile(src, { optimize: 'speed', wat: true }), 'run'))
   ok(!local(cases.lag1) && !local(cases.lag2), 'the lagged counter needs no carried local')
   ok(!divides(cases.lag1) && !divides(cases.lag2), 'its difference with the counter cancels: no division')
   ok(local(cases.offByOne) && divides(cases.offByOne), 'a bottom that is not the counter\'s previous value is carried, and divides')

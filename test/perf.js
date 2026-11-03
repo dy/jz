@@ -2057,8 +2057,10 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 55)
 // A proven dictionary writes its own table; computed keys still coerce at runtime.
 // The two-digit integer writer (`__itoa_sn`, the number-to-string of the computed key)
-// and the 4 KiB block colouring in `__alloc`: 11007 -> 11149.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 11149)
+// and the 4 KiB block colouring in `__alloc`: 11007 -> 11149. Number::toString's exact
+// short-decimal path (`__ftoa_short`), Ryū's three products in one (`__ryu_mulshift3`)
+// and its four-digit removal: 11407 (as measured at a9fd0e1a0) -> 11991.
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 11991)
 // Parsing and formatting now share the power generator and unsigned product.
 // Keep this closure/string-dispatch fixture's behavior beside its tighter size pin.
 const parserFixture = `export let f = (s) => {
