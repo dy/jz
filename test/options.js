@@ -2,7 +2,7 @@
 // optimize objects folding onto the internal flags (src/options.js normalizeOptions).
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz, { compile } from '../index.js'
+import jz, { compile, instantiate } from '../index.js'
 import { jz as jzInternal, compile as compileInternal } from './util.js'
 import { belowOpt, levels } from './_matrix.js'
 import { oracle } from './util.js'
@@ -167,6 +167,28 @@ test('options: optimize object — alloc:false omits the allocator exports', () 
   ok(/\(export "__jz_alloc"/.test(wat) || /\(export "__jz_clear"/.test(wat), 'a growing array exports the allocator (sanity)')
   const raw = compile(GROW, { wat: true, optimize: { alloc: false } })
   ok(!/\(export "__jz_alloc"/.test(raw) && !/\(export "__jz_clear"/.test(raw), 'alloc:false is the raw ABI')
+})
+
+test('options: optimize object, alloc:false: instantiation and calls write no word of the static data', () => {
+  // A module that owns its memory and exports no heap top keeps its heap private;
+  // a host that took the cell at 1020 for its own heap top wrote a word of static
+  // data there at instantiation, any word below the heap start (1.0.0, 1.0.1).
+  // One-unit strings below U+0400 make every word of their run such a word (a
+  // length 1, or a unit and its zero pad).
+  const C = Array.from({ length: 300 }, (_, i) => String.fromCharCode(0xC0 + i))
+  const src = `const C = ${JSON.stringify(C)}\nexport let one = (i) => JSON.stringify(C[i])\nexport let all = () => C.join('')`
+  const mod = new WebAssembly.Module(compile(src, { host: 'js', optimize: { level: 'size', alloc: false } }))
+  const stubs = {}
+  for (const i of WebAssembly.Module.imports(mod)) if (i.kind === 'function') (stubs[i.module] ??= {})[i.name] = () => {}
+  const word = new DataView(new WebAssembly.Instance(mod, stubs).exports.memory.buffer).getUint32(1020, true)
+  ok(word < 1024, `the string run covers the cell at 1020 (word ${word}), else this pins nothing`)
+  const { exports, memory } = instantiate(mod)
+  is(exports.all(), C.join(''), 'every string reads back whole')
+  is(C.map((_, i) => exports.one(i)), C.map(c => JSON.stringify(c)), 'JSON.stringify reads each length')
+  is(new DataView(memory.buffer).getUint32(1020, true), word, 'the word at 1020 is the data\'s')
+  // the host still allocates where it must: a typed array handed to a module with no heap of its own
+  const typed = instantiate(compile('export let f = (a) => a[0] + a[a.length - 1]', { host: 'js', optimize: { alloc: false } })).exports
+  is(typed.f(new Float64Array([1, 2, 3])), 4, 'a host allocation claims the cell')
 })
 
 test('options: optimize object — its seven keys; a pass name or a typo refused', () => {
