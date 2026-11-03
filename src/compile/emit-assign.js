@@ -1016,8 +1016,7 @@ function guardedFieldStore(obj, prop, val, slow) {
  * throws. Returns { setup, n, check, value } (`value` the store's result), or null.
  */
 const lengthWord = (v, val) => {
-  // (the size tier links the converting resize alone: module/array.js)
-  if (!Array.isArray(v) || v.length !== 2 || ctx.transform.optimize?.leanRuntime) return null
+  if (!Array.isArray(v) || v.length !== 2) return null
   if (v[0] === 'f64.const') {
     const c = Number(v[1])
     return Number.isInteger(c) && c >= 0 && c < 2147483648 && !Object.is(c, -0)

@@ -4,7 +4,7 @@
 // `__memgrow`/…) appears only when the program allocates. These pin the wins and
 // guard against the boilerplate creeping back. Baseline: smaller than AssemblyScript.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import { onWasi, onKernel, levels, adaptI64 } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
@@ -1100,5 +1100,24 @@ test('minimal: an enumeration of a receiver no layout names is one function, wha
   for (const optimize of levels(0, 2)) {
     const { f } = jz(src, { optimize }).exports
     for (const mode of [0, 1]) is(f(mode), js.f(mode), `O${optimize} f(${mode})`)
+  }
+})
+
+// A length store of an integer word resizes without ToNumber at every tier
+// (module/array.js `__arr_set_len`, emit-assign.js lengthWord): `q.length = 0`
+// links no conversion, whose string parser and number printer were most of a
+// small program's bytes at the size tier. Any other value still converts, its
+// RangeError kept.
+test('minimal: a word length store links no conversion at the size tier', () => {
+  if (skip) return
+  const src = `export let f = () => { const q = [1, 2, 3]; for (let i = 0; i < 4; i++) q.push(i); q.length = 2; const a = q.length; q.length = 5; return a * 100 + q.length * 10 + (q[4] === undefined ? 1 : 0) }`
+  ok(!compile(src, { wat: true, optimize: 'size' }).includes('$__to_num'), 'no ToNumber linked')
+  const conv = `export let f = (v) => { const q = [1, 2, 3]; q.length = v; return q.length }`
+  for (const optimize of levels(0, 2, 'size')) {
+    is(jz(src, { optimize }).exports.f(), oracle(src).f(), `O${optimize}: word stores`)
+    is(jz(conv, { optimize }).exports.f(1), 1, `O${optimize}: a number`)
+    is(jz(conv, { optimize }).exports.f('2'), 2, `O${optimize}: a string converts`)
+    throws(() => jz(conv, { optimize }).exports.f(-1), RangeError, `O${optimize}: a negative length throws`)
+    throws(() => jz(conv, { optimize }).exports.f(1.5), RangeError, `O${optimize}: a fraction throws`)
   }
 })
