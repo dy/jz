@@ -671,6 +671,13 @@ export function summaryQueries(facts, internal = false) {
           !methods.get(site)?.size && !methods.get(layouts[site])?.size && !iterRecord(site) && !lostSchema(site) &&
           !indexedSchemas?.has(site) && !openSchemas.has(site) && tagOf(sideOf(site, prop)) === K.NONE && !facts.foldedLayouts.has(layouts[site]))
       },
+      // absentMember's test of a layout: no object of any site of it ever
+      // holds the name (a layout registered after the summary may hold any).
+      layoutLacks: (sid, prop) => typeof prop === 'string' && !INHERITED.has(prop) && !memberMayBeOwn(prop) &&
+        sid < facts.layoutCount && !facts.untracked.has(sid) && (sitesByLayout.get(sid) ?? [sid]).every(site =>
+          !schemas[site].includes(prop) && !schemas[site].includes(getterOf(prop)) &&
+          !methods.get(site)?.size && !methods.get(layouts[site])?.size && !iterRecord(site) && !lostSchema(site) &&
+          !indexedSchemas?.has(site) && !openSchemas.has(site) && tagOf(sideOf(site, prop)) === K.NONE && !facts.foldedLayouts.has(layouts[site])),
       openSidOfExpr: e => { const k = kindOfExpr(e), sid = publicSid(k); return tagOf(core(k)) === K.OBJECT && sid !== UNKNOWN && (isNullable(k) || shapesOf(paramOf(k)).some(site => openSchemas.has(site))) ? sid : null },
       typedCtorOf: name => { const k = readKind(name); return tagOf(k) === K.TYPED && typedAux(k) !== UNKNOWN && !isNullable(k) ? ctorFromElemAux(typedAux(k)) : null },
       // The fixed length of the array a name or an expression holds; null when it may change or differ.

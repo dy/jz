@@ -2237,7 +2237,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
       if (callee === '__tdz') return K.NONE // a frame field before its binding's step (src/ast.js TDZ_VALUE)
       // the async runtime's proof that a value is one of its promises, and the promise it then is (std/async.js)
-      if (callee === '__p_is') return BOOL
+      if (callee === '__p_is' || callee === '__p_plain') return BOOL
       if (callee === '__p_cast') return promiseKind()
       // a value the runtime awaits for a consumer the summary does not type (an async generator's)
       if (callee === '__escaping') { const k = n ? ks[base] : K.NONE; escape(awaited(k)); return k }

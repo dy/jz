@@ -15,7 +15,8 @@
  * carry without their identities (src/summary/index.js `opaque`, which reads
  * an awaited value off the promise it names), and a promise only where
  * `__p_is` proves one, `__p_cast` then typing it as any promise: so each of
- * its reads of a promise's fields is a slot's.
+ * its reads of a promise's fields is a slot's. A value it resolves with is
+ * probed for a `then` only where its layout may hold one (`__p_plain`).
  *
  * Divergences (documented): unhandled rejections don't report; job ordering
  * is per-drain-cycle (boundary/timer granularity), not per-continuation;
@@ -78,7 +79,7 @@ export let __p_fin = (p, st, v) => {
 }
 export let __p_settle = (p, st, v) => {
   if (p.st > 0 || p.rs === 1) return
-  if (st === 1 && v != null && typeof v === 'object') {
+  if (st === 1 && v != null && typeof v === 'object' && !__p_plain(v)) {
     // a promise resolved with itself rejects (27.2.1.3.2 step 7)
     if (v === p) { __p_fin(p, 2, new TypeError('Chaining cycle detected for promise')); return }
     // a promise adopted as a thenable is (NewPromiseResolveThenableJob): its
@@ -179,7 +180,7 @@ export let __p_done = (v, k) => {
 // or, for a value that adopts (a promise, a thenable, its \`then\` read here
 // once), from a promise resolved with it, which k then awaits.
 export let __k_ret = (k, v) => {
-  if (v != null && typeof v === 'object') {
+  if (v != null && typeof v === 'object' && !__p_plain(v)) {
     if (__p_is(v)) { let p = __p_new(); __p_settle(p, 1, v); __p_sub(p, k); return }
     let then = undefined
     try { then = __p_thenOf(v) } catch (e) { __job(k, 2, e); return }

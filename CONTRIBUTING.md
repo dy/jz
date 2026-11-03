@@ -4066,7 +4066,10 @@ thenable keeps its identity, the runtime calling its `then`, and a closure
 its own. The runtime regains a promise's identity only where it proves one,
 `__p_is(v)` testing that the box names the promise literal's schema and
 `__p_cast(v)` typing it any promise of the program, so its own bindings hold
-promises alone and read their fields as slots. A value the summary tracked
+promises alone and read their fields as slots. It reads the `then` of a value
+it resolves with only where the value's layout may hold one (`__p_plain`, a
+mask of the layouts no object of which ever holds `then`, src/summary/query.js
+`layoutLacks`): a record of a closed layout settles without the lookup. A value the summary tracked
 leaves its sight through a `then`, `catch` or `finally` handler, which
 receives it untyped, and through an async generator's consumer
 (`__escaping`): there it escapes. The host reaches a promise only through the

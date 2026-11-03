@@ -1129,3 +1129,11 @@ test('async: a machine\'s frame holds what crosses a suspension, its dispatch wh
   is(await jz(src).exports.f(), await oracle(src).f())
 })
 
+// The runtime probes a value an async function resolves with for a `then`
+// only where its layout may hold one (module/core.js `__p_plain`, src/summary/
+// query.js layoutLacks): a record of a closed layout settles without the
+// lookup, a thenable of any kind is adopted (the test above).
+test('async: a record of a closed layout settles without a then lookup', () => {
+  const wat = compile('const r = async (x) => ({ a: x }); export const f = async () => (await r(1)).a', { wat: true })
+  ok(/\(i64\.shr_u\s*\(i64\.const 0x[0-9a-f]+\)/.test(wat), 'a mask of the layouts answers')
+})

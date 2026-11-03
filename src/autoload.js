@@ -213,6 +213,7 @@ const CALL_MODULES = dict({
   '__tdz': ['core'],
   '__p_is': ['core'],
   '__p_cast': ['core'],
+  '__p_plain': ['core'],
   '__escaping': ['core'],
   'String.fromCodePoint': ['core', 'string'],
   'Uint8Array.fromBase64': ['core', 'typedarray', 'string'],

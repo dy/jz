@@ -2862,6 +2862,24 @@ export default (ctx) => {
     return typed(['i64.eq', ['i64.and', asI64(emit(v)), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]], 'i32')
   }
   ctx.core.emit.__p_cast = (v) => asF64(emit(v))
+  // Whether a value the runtime resolves with is an object no thenable can
+  // be (std/async.js \`__k_ret\`, \`__p_settle\`): one of a layout no object of
+  // which ever holds \`then\` (src/summary/query.js layoutLacks), its \`then\`
+  // undefined without a lookup. The layouts below 64 answer from one mask.
+  ctx.core.emit.__p_plain = (v) => {
+    const q = ctx.summary?.at?.(ctx.func.current), n = Math.min(ctx.schema.list.length, 64)
+    let mask = 0n
+    for (let sid = 0; sid < n; sid++) if (q?.layoutLacks?.(sid, 'then')) mask |= 1n << BigInt(sid)
+    if (mask === 0n) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(v))], ['i32.const', 0]], 'i32')
+    const t = temp('pp'), aux = tempI32('pa')
+    return typed(['block', ['result', 'i32'],
+      ['local.set', `$${t}`, asF64(emit(v))],
+      ['if', ['result', 'i32'], ptrTypeEq(['local.get', `$${t}`], PTR.OBJECT),
+        ['then', ['i32.and',
+          ['i32.lt_u', ['local.tee', `$${aux}`, ['i32.and', ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]]], ['i32.const', LAYOUT.AUX_MASK]]], ['i32.const', n]],
+          ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['i64.const', '0x' + mask.toString(16)], ['i64.extend_i32_u', ['local.get', `$${aux}`]]], ['i64.const', 1]]]]],
+        ['else', ['i32.const', 0]]]], 'i32')
+  }
   ctx.core.emit.__escaping = (v) => asF64(emit(v))
   // A generator function's mark on an object it makes (jzify/generators.js
   // genMark): a hidden property where the program asks `instanceof` of a
