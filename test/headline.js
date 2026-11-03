@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'tst'
 import { is, almost, ok } from 'tst/assert.js'
-import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
+import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, newerDataset, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
 
@@ -122,6 +122,19 @@ test('figure: missing-parity and zero-time rows are excluded', () => {
   almost(figure(r, 'speed', 'v8'), 3, 1e-12, 'only positive rows with accepted checksums contribute; zero time cannot produce Infinity')
 })
 
+test('landing and bench page read one dataset: the newer by measured date, the reference on a tie', () => {
+  const at = date => ({ meta: { date }, cases: {} })
+  is(newerDataset(at('2026-09-30 16:18 UTC'), at('2026-11-03 05:10 UTC')), 'ci', 'a newer CI run is the current one')
+  is(newerDataset(at('2026-11-03 09:00 UTC'), at('2026-11-03 05:10 UTC')), 'reference', 'a newer reference run is')
+  is(newerDataset(at('2026-11-03'), at('2026-11-03')), 'reference', 'a tie is the reference run')
+  is(newerDataset(at('2026-09-30'), null), 'reference', 'a missing CI dataset is never the newer')
+  is(newerDataset(null, at('2026-09-30')), 'ci', 'nor a missing reference')
+  const home = readFileSync(new URL('../index.html', import.meta.url), 'utf8'), page = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
+  is(home.includes("const results = newerDataset(ref, ci) === 'ci' ? ci : ref"), true, "the landing's figures take the newer dataset")
+  is(home.includes("fetch('bench/results.json')"), false, 'the landing reads no dataset of its own')
+  is(page.includes('machine = newerDataset(ref, ci)'), true, "the bench page's plain view takes the same one")
+})
+
 test('bench page: invalid rows stay outside corpus and per-case ratio bars', () => {
   const page = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
   is(page.includes('const jzRan = c => timedBenchmarkRow(c.targets.jz)'), true,
@@ -156,7 +169,7 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
       addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v },
     } }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB, newerDataset,
       document, URLSearchParams, location: { search }, navigator: { userAgent: 'test' },
       fetch: async path => {
         fetched.push(path)
@@ -273,7 +286,7 @@ test('bench page: an unchecked contender leaves the corpus and the cards; JZ sta
       innerHTML: '', textContent: '', attrs: {}, addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v } } }
     const localStorage = { getItem: () => JSON.stringify(off), setItem() {} }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB, document, localStorage,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB, newerDataset, document, localStorage,
       URLSearchParams, location: { search: '' }, navigator: { userAgent: 'test' },
       fetch: async () => ({ ok: true, json: async () => data }),
     })

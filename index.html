@@ -867,7 +867,7 @@
       <!-- five rotating figures, each JZ ÷ a target in the named quantity: speed (above 1× = faster), memory and
        size (below 1× = less). Each cell is one class of targets — JS, WASM or native — marked by the icon leading
        its label; it cycles through that field, holds under hover or focus, steps on click. Pre-filled with each
-       field's first; the numbers come from bench/results.json through assets/headline.js. -->
+       field's first; the numbers come from the bench page's dataset (bench/results.json or results-ci.json, the newer) through assets/headline.js. -->
       <div class="metrics">
         <button class="stat" type="button" :scope="{ f: fields[0] }" :onclick="step(f)" :onpointerenter="f.hold = true" :onpointerleave="f.hold = false" :onfocus="f.hold = true" :onblur="f.hold = false" :title="tip(f)"><b :text="fmt(f.shown)">2.36×</b><span class="under"><i class="ic" data-cls="js"></i><span class="lab" :text="label(f)">V8 speed</span></span></button>
         <button class="stat" type="button" :scope="{ f: fields[1] }" :onclick="step(f)" :onpointerenter="f.hold = true" :onpointerleave="f.hold = false" :onfocus="f.hold = true" :onblur="f.hold = false" :title="tip(f)"><b :text="fmt(f.shown)">2.23×</b><span class="under"><i class="ic" data-cls="wasm"></i><span class="lab" :text="label(f)">AS speed</span></span></button>
@@ -1085,7 +1085,7 @@ exports.square(7) // 49</code></pre>
 
     <script type="module">
       import sprae from './assets/sprae.js'
-      import { figure, CLS_ICO } from './assets/headline.js'
+      import { figure, CLS_ICO, newerDataset } from './assets/headline.js'
       import rhythm, { snap } from './assets/rhythm.js'
       import { highlight } from './assets/highlight.js'
       const $ = id => document.getElementById(id)
@@ -1131,8 +1131,11 @@ exports.square(7) // 49</code></pre>
             label: f => cur(f).n + ' ' + f.q,
             tip: f => `JZ ${f.q} ÷ ${cur(f).d}, bench ${f.q === 'size' ? 'median' : 'geomean'} – ${HOW[f.q]}`,
           })
-          let results
-          try { results = await (await fetch('bench/results.json')).json() } catch { return }   // no data → the pre-filled figures stay put
+          // the bench page's plain view's dataset (headline.js newerDataset), so both show one set of numbers
+          const load = f => fetch('bench/' + f).then(r => r.ok ? r.json() : null).then(d => d?.meta ? d : null).catch(() => null)
+          const [ref, ci] = await Promise.all([load('results.json'), load('results-ci.json')])
+          const results = newerDataset(ref, ci) === 'ci' ? ci : ref
+          if (!results) return   // no data → the pre-filled figures stay put
           st.fields.forEach((f, k) => {
             f.items = f.items.map(it => ({ ...it, x: figure(results, f.q, it.t, f.base) })).filter(it => it.x > 0)
             if (!f.items.length) return

@@ -300,11 +300,12 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript – the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
-import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
+import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB, newerDataset } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 // The view the URL names, else the newer of the reference and CI datasets by the date each
-// was measured: until a reference run publishes, the CI runner's data is the current one.
-// Either way the page shows one machine's dataset, never a merge.
+// was measured (headline.js `newerDataset`, the rule the landing's figures read by): until a
+// reference run publishes, the CI runner's data is the current one. Either way the page shows
+// one machine's dataset, never a merge.
 const requestedMachine = new URLSearchParams(location.search).get('machine')
 const pinned = ['ci', 'linux', 'reference'].includes(requestedMachine) ? requestedMachine : null
 const snapshotOf = m => m === 'reference' ? 'results.json' : `results-${m}.json`
@@ -1137,10 +1138,9 @@ try {
   const load = file => fetch('./' + file).then(r => { if (!r.ok) throw 0; return r.json() }).then(d => { if (!d?.meta) throw 0; return d })
   if (pinned) DATA = await load(snapshot)
   else {
-    const measured = d => d ? Date.parse(String(d.meta.date).replace(' UTC', 'Z').replace(' ', 'T')) || 0 : -1
     const [ref, ci] = await Promise.all(['results.json', 'results-ci.json'].map(f => load(f).catch(() => null)))
     if (!ref && !ci) throw 0
-    if (measured(ci) > measured(ref)) machine = 'ci'
+    machine = newerDataset(ref, ci)
     snapshot = snapshotOf(machine)
     DATA = machine === 'ci' ? ci : ref
   }

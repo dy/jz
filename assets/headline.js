@@ -1,5 +1,5 @@
 // Shared benchmark evidence — row validity, paired ratios, and the landing's bench-row figures
-// (`figure`), computed from bench/results.json with the same rules as the bench page.
+// (`figure`), computed from the bench page's dataset with the same rules as the bench page.
 // Rows count only with `ok` or the documented `fma` checksum. Failed, wrong, and
 // unclassified rows are not evidence for speed, size, or memory comparisons.
 // The LAB set — jz-internal probe cases: the self-compile compiler rows (jz/watr/
@@ -43,6 +43,12 @@ const sizeRatios = (cases, tgt) => { const a = []; for (const c of cases) { cons
 // time, geomean: above 1 = JZ faster), memory (JZ RSS ÷ target RSS, geomean: below 1 = less) or size
 // (JZ bytes ÷ target bytes, median: below 1 = smaller). `base` picks the JZ lane — 'jz-w2c' (JZ built
 // natively) for like-for-like memory against native binaries. LAB cases excluded; null when unmeasured.
+// The dataset both the landing's figures and the bench page's plain view read, so they agree:
+// the newer by the date each was measured, the reference run's (results.json) on a tie, else the
+// weekly CI run's (results-ci.json). A missing dataset is never the newer.
+export const measuredAt = d => d?.meta ? Date.parse(String(d.meta.date).replace(' UTC', 'Z').replace(' ', 'T')) || 0 : -1
+export const newerDataset = (reference, ci) => measuredAt(ci) > measuredAt(reference) ? 'ci' : 'reference'
+
 export function figure(results, quantity, target, base = 'jz') {
   const cases = corpus(results)
   if (quantity === 'size') return median(sizeRatios(cases, target))
