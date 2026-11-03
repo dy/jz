@@ -601,6 +601,22 @@ test('Map/Set: a probe keyed by a walked key takes its stored hash', () => {
   ok(!stored(`const a = new Set(), b = new Set(); for (let i = 0; i < n; i++) { const o = { i }; a.add(o); if (i % 2) b.add(o) } let c = 0; for (const o of a) if (b.has(o)) c++; return c`), 'a walked object key hashes anew')
 })
 
+// A Map read-modify-write of Number values (`m.set(k, (m.get(k) || 0) + 1)`,
+// the fused slot of compile/slot-update.js) adds as numbers: the old value
+// stands for the read it replaced, whose kind is the Map's values, so no
+// string concatenation is linked. A Map holding strings still concatenates.
+test('Map: a fused read-modify-write of Number values adds as numbers', () => {
+  const src = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = i % 5; m.set(k, (m.get(k) || 0) + i); m.set(k + 10, m.get(k + 10) + 1) }
+    let t = 0; for (const [k, v] of m) t += k < 10 ? v : (v !== v ? 1000 : v); return t }`
+  const strs = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = i % 3; m.set(k, (m.get(k) || '') + i) } return [...m.values()].join('|') }`
+  for (const optimize of levels(0, 2, 'speed', 'size'))
+    for (const n of [0, 7, 40]) {
+      is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `numbers, O${optimize}, n=${n}`)
+      is(jz(strs, { optimize }).exports.f(n), oracle(strs).f(n), `strings, O${optimize}, n=${n}`)
+    }
+  ok(!/call \$__(str_concat|add_slow)/.test(compile(src, { optimize: 'size', wat: true })), 'Number values: no concatenation linked')
+})
+
 // A statement, or two adjacent ones, that ask a Set or a Map about a key and
 // then store it probe once (compile/emit/fuse-probes.js): the find leaves the
 // key's entry or the empty bucket it ended at, and the store writes the entry

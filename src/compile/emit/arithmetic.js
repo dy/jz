@@ -368,12 +368,34 @@ const mayBeMissing = (node) => {
 
 // Whether the summary holds `node` to a number or a missing value: a field a
 // literal declared undefined and every store made a number, an element past
-// the end of a number array. A call's result keeps the generic sum: its kind
-// is the callee's, which a closure table's call sites pin as open
-// (test/closures.js, the fail-open pins of the parameter lattice).
+// the end of a number array, a Map's read of its Number values. Any other
+// call's result keeps the generic sum: its kind is the callee's, which a
+// closure table's call sites pin as open (test/closures.js, the fail-open
+// pins of the parameter lattice).
 const NUMBER_OR_ABSENT = bitOf(K.NUMBER) | bitOf(K.ABSENT)
+// A Map's own read (`m.get(k)` of a proven Map no own `get` shadows) is no
+// callee's: its kind is the summary's of the Map's values, or missing.
+const mapRead = (node) => {
+  if (node[0] !== '()' || !Array.isArray(node[1]) || node[1][0] !== '.' || node[1][2] !== 'get') return false
+  let t
+  try { t = tagOf(core(ctx.summary.at(ctx.func.current).kindOfExpr(node[1][1]))) } catch { return false }
+  return t === K.MAP && !ctx.summary.memberMayBeOwnOn('get', VAL.MAP)
+}
+const opaqueCall = (node) => Array.isArray(node) && (node[0] === '()' || node[0] === '?.()') && !mapRead(node)
+// A fused read-modify-write's old value (compile/slot-update.js) stands for the
+// read it replaced, in an operand of its own (`(m.get(k) || 0) + 1`) too.
+const readOf = (node) => {
+  const reads = ctx.func.slotReads
+  if (!reads) return node
+  if (typeof node === 'string') return reads.get(node) ?? node
+  if (!Array.isArray(node) || node[0] == null || node[0] === 'str') return node
+  let changed = false
+  const out = node.map((c, i) => { if (i === 0) return c; const r = readOf(c); if (r !== c) changed = true; return r })
+  return changed ? out : node
+}
 export const numberOrMissing = (node) => {
-  if (Array.isArray(node) && (node[0] === '()' || node[0] === '?.()')) return false
+  node = readOf(node)
+  if (opaqueCall(node)) return false
   const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
   return k != null && tagOf(core(k)) === K.NUMBER
 }
@@ -384,7 +406,8 @@ export const numberOrMissing = (node) => {
 // call's result keeps the generic sum, as `numberOrMissing` reads it.
 const NUMERIC_PRIMITIVE = bitOf(K.NUMBER) | bitOf(K.BOOL) | NULL_BITS
 const numericPrimitive = (node) => {
-  if (Array.isArray(node) && (node[0] === '()' || node[0] === '?.()')) return false
+  node = readOf(node)
+  if (opaqueCall(node)) return false
   const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
   return k != null && (k & TAGS & ~NULL_BITS) !== 0 && (k & TAGS & ~NUMERIC_PRIMITIVE) === 0
 }

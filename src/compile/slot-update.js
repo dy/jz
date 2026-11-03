@@ -65,6 +65,8 @@ export function trySlotUpdate(arr, idx, val, map = false) {
   const i32Values = lean && ctx.func.i32HashLocals?.has(arr)
   // Lean dictionary counts keep the existing i32 cell representation.
   const oT = temp('rmo'), kT = temp('rmk'), oldT = i32Values ? tempI32('rmold') : temp('rmold'), resT = i32Values ? tempI32('rmres') : temp('rmres')
+  // the old value is the read's: an operator over it reads the read's kind (emit/arithmetic.js)
+  ;(ctx.func.slotReads ??= new Map()).set(oldT, readNode)
   const slotT = tempI32('rms')
   const domain = lean ? ctx.func.leanHashDomains?.get(arr) : null
   const domainLen = domain ? repOf(domain)?.arrayLen : null
