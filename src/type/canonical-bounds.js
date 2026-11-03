@@ -133,8 +133,8 @@ export function scanBoundedLoops(node, set, view = ctx.summary?.at(ctx.func.curr
       const decls = new Map()
       collectDecls(init, decls)
       idx = cond[1]
-      // index must be declared in `init` as `let i = C`, C an integer literal ≥ 0
-      const start = decls.has(idx) ? intLiteralValue(counterInit(init, idx)) : null
+      // index must be declared in `init` as `let i = C`, C a constant integer ≥ 0 (`N + 1` of a module const)
+      const start = decls.has(idx) ? constIntExpr(counterInit(init, idx)) : null
       if (start == null || start < 0) idx = null
       // bound is `recv.length`, directly or via a hoisted temp declared in `init`
       let bound = cond[2]
@@ -254,7 +254,7 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
       const decls = new Map()
       collectDecls(init, decls)
       idx = cond[1]
-      const start = decls.has(idx) ? intLiteralValue(counterInit(init, idx)) : null
+      const start = decls.has(idx) ? constIntExpr(counterInit(init, idx)) : null
       if (start == null || start < 0) idx = null
       let bound = cond[2]
       if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
@@ -282,10 +282,10 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
         const decls = new Map()
         collectDecls(init, decls)
         const idx2 = cond[1]
-        const start = decls.has(idx2) ? intLiteralValue(counterInit(init, idx2)) : null
+        const start = decls.has(idx2) ? constIntExpr(counterInit(init, idx2)) : null
         let bound = cond[2]
         if (typeof bound === 'string' && decls.has(bound)) bound = decls.get(bound)
-        const B = intLiteralValue(bound)
+        const B = constIntExpr(bound)
         if (start != null && start >= 0 && B != null && B >= 0
             && isUnitIncrement(step, idx2) && !isReassigned(body, idx2) && !redeclaresName(body, idx2)) {
           const recvs = new Set()

@@ -173,6 +173,7 @@ const TESTS = [
   'definite-assign',
   'number-eq',
   'index-store',
+  'array-scan',
   'present-receiver',
   'block-present',
   'header-hoist',
