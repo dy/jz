@@ -300,7 +300,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript – the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
-import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB, newerDataset } from '../assets/headline.js'
+import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, newerDataset } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 // The view the URL names, else the newer of the reference and CI datasets by the date each
 // was measured (headline.js `newerDataset`, the rule the landing's figures read by): until a
@@ -495,11 +495,6 @@ const rowTip = (tid, parity, note) => {
   ].filter(Boolean).join('\n\n')
 }
 const BREAK = 12      // linear bars; rows past this are cut, number printed
-// LAB (imported — one definition in assets/headline.js): the jz-internal probe
-// cases (self-host compiler rows + JS-only intrinsic color* probes). They answer
-// jz-internal questions, not the cross-language comparison, so they sit out
-// every aggregate (geomeans, coverage, run-all) but stay visible as
-// cards under the `lab` chip.
 // Self-host graph rows: no bench/web wasm (multi-MB) and no browser-resolvable
 // module graph — their cards carry no repl/run actions.
 const NO_RUN = new Set(['watr', 'jessie', 'jz'])
@@ -539,17 +534,15 @@ const FAMILY = {
   sdf: 'image', trace: 'image', worley: 'image',
   a98rgb: 'image', cam16: 'image', hct: 'image', hsl: 'image', hwb: 'image', ipt: 'image',
   jzazbz: 'image', jzczhz: 'image', munsell: 'image',
-  // string — text / parse / codec / sequence
+  colorconv: 'image', colorlch: 'image', colorlog: 'image', colorpq: 'image', deltae: 'image',
+  // string — text / parse / codec / sequence, compilers and parsers among them
   tokenizer: 'string', json: 'string', base64: 'string', lz: 'string', levenshtein: 'string',
   strbuild: 'string', wordcount: 'string', glyfparse: 'string',
   stringify: 'string', jsontransform: 'string', mapstr: 'string', setops: 'string',
+  watr: 'string', jessie: 'string', jz: 'string',
   // alloc — allocation / closures / object layout / promises
   callback: 'alloc', aos: 'alloc', shapes: 'alloc', immutable: 'alloc', entity: 'alloc',
   polytri: 'alloc', fabrik: 'alloc', mapobj: 'alloc', async: 'alloc',
-  // lab — jz-internal probes: self-host compiler rows + JS-only intrinsic gap
-  // trackers (no cross-language field; excluded from every aggregate)
-  watr: 'lab', jessie: 'lab', jz: 'lab',
-  colorconv: 'lab', colorlch: 'lab', colorlog: 'lab', colorpq: 'lab', deltae: 'lab',
 }
 const TAGS = { biquad: 'dsp, f64', fft: 'fft, f64', synth: 'synth, adsr', bytebeat: 'i32, audio',
   mat4: 'simd, f64', poly: 'typed dispatch', bitwise: 'i32', dotprod: 'dot, simd',
@@ -690,7 +683,7 @@ const ENGINE = (() => {
 
 // ── data ─────────────────────────────────────────────────────────────────────
 let DATA = null
-let BENCHMARKS = [] // every non-lab case: coverage and run-all
+let BENCHMARKS = [] // every case: coverage and run-all
 let CORPUS = []     // cases with a correct JZ timing: ratios and stats
 let CASES = []      // all cases: the per-case grid
 const local = {}    // caseId → { js, jzwasm }
@@ -933,7 +926,7 @@ $('pickAll').addEventListener('click', () => {
 })
 
 // ── per-case cards ───────────────────────────────────────────────────────────
-const CHIPS = ['all', 'math', 'integer', 'audio', 'image', 'string', 'alloc', 'lab']
+const CHIPS = ['all', 'math', 'integer', 'audio', 'image', 'string', 'alloc']
 const famCount = f => f === 'all' ? CASES.length : CASES.filter(c => FAMILY[c.id] === f).length
 const renderChips = () => {
   $('chips').innerHTML = CHIPS.map(f => {
@@ -1133,9 +1126,10 @@ const runCase = async cid => {
 
 $('runAll').addEventListener('click', async () => {
   $('runAll').disabled = true
-  for (let i = 0; i < BENCHMARKS.length; i++) {
-    $('globalstat').textContent = `${i + 1}/${BENCHMARKS.length}: ${BENCHMARKS[i].id}`
-    await runCase(BENCHMARKS[i].id)
+  const playable = BENCHMARKS.filter(c => !NO_RUN.has(c.id))
+  for (let i = 0; i < playable.length; i++) {
+    $('globalstat').textContent = `${i + 1}/${playable.length}: ${playable[i].id}`
+    await runCase(playable[i].id)
   }
   $('globalstat').textContent = 'done'
   $('runAll').disabled = false
@@ -1158,12 +1152,11 @@ try {
   markMachine()
   const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c }))
   // CORPUS = aggregate cases: jz actually RAN (a {status:'fail'} jz entry carries
-  // no median, so it must not seed the geomeans) and not LAB — the jz-internal
-  // probes stay out of geomeans/coverage/run-all but render as cards.
+  // no median, so it must not seed the geomeans).
   const jzRan = c => timedBenchmarkRow(c.targets.jz)
-  BENCHMARKS = all.filter(c => !LAB.has(c.id))
+  BENCHMARKS = all
   CORPUS = BENCHMARKS.filter(jzRan)
-  CASES = CORPUS.concat(all.filter(c => LAB.has(c.id) || !jzRan(c)))
+  CASES = CORPUS.concat(all.filter(c => !jzRan(c)))
   renderMeta(); renderChips(); renderPicks(); renderAll()
 } catch {
   $('geomean').innerHTML = `<p class="dim">Could not load <a href="${snapshot}">${snapshot}</a>.</p>`

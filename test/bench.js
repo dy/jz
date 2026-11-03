@@ -178,11 +178,11 @@ const SPEED = {
   'stdlib-ddot':    { v8: 'win', as: 'na' },
 }
 
-// LAB cases (assets/headline.js `LAB`) answer a jz-internal question — they are
-// intrinsic gap trackers with no cross-language port — so they feed no aggregate
-// and stay out of SPEED, whose keys drive the geomeans, the fastest-wasm sweep
-// and the coverage count. Their speed is still gated here: a tracker nobody
-// asserts is a tracker that slips.
+// The color intrinsic probes are gap trackers with no cross-language port and
+// checksums that depend on the host's libm, so they stay out of SPEED, whose keys
+// drive this gate's geomeans, the fastest-wasm sweep and the coverage count
+// (the published aggregates count them, bench/README.md). Their speed is still
+// gated here: a tracker nobody asserts is a tracker that slips.
 //
 // Their jz row need not match V8 bit for bit, and where it does not, the
 // divergence is NAMED, MEASURED and PINNED — that is the whole licence for
@@ -610,7 +610,7 @@ console.log(`  ${'case'.padEnd(13)}  ${'jz_ms'.padStart(6)}  spd.v8       spd.C 
 console.log(`  ${'-'.repeat(13)}  ${'-'.repeat(6)}  -----------  -----------  -----------  ${'-'.repeat(7)}  -----------  ------`)
 // A case absent from a claim table has no expectation there: the cell prints
 // its ratio unmarked, and the assertion loops below never visit it.
-// The curated v8/as/native/size table, then the LAB trackers under it (the
+// The curated v8/as/native/size table, then the color trackers under it (the
 // fastest-wasm gate covers the full corpus below).
 for (const id of [...Object.keys(SPEED), ...Object.keys(LAB_SPEED)]) {
   const claim = SPEED[id] ?? LAB_SPEED[id]
@@ -668,7 +668,7 @@ for (const [id, claims] of Object.entries(SPEED)) {
     })
   }
 }
-// The LAB trackers: same tolerance vocabulary, no aggregate, and a pinned jz
+// The color trackers: same tolerance vocabulary, no aggregate, and a pinned jz
 // checksum in place of the checksum-equality every SPEED case must meet.
 for (const [id, claim] of Object.entries(LAB_SPEED)) {
   const tol = SPEED_TOL[claim.v8]

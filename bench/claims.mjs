@@ -11,6 +11,11 @@ export const JSC_FAMILY_RIVALS = ['bun', 'jsc']
 export const JIT_RIVALS = [...V8_FAMILY_RIVALS, ...JSC_FAMILY_RIVALS]
 /** A ratio inside the band is a tie, never a lead. */
 export const WASM_BAND_TOL = 1.05
+/** Cases the gate does not require a correct JZ timing for: the compiler workloads
+ *  (watr, jessie, the jz self-compile, whose build can outlast a runner) and the color
+ *  intrinsic probes, whose stored checksums depend on the host's libm. They enter every
+ *  aggregate; only this check passes over them. */
+export const PARITY_EXEMPT = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq', 'deltae'])
 
 /** The claim classes as [label, rivals]. */
 export const CLAIM_CLASSES = [

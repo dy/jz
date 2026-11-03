@@ -24,11 +24,11 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.js'
+import { correctBenchmarkRow, timedBenchmarkRow } from '../assets/headline.js'
 import { machineState } from '../bench/machine-state.mjs'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
 import { MEMORY_CASES, memoryFloor } from './_memory-floor.js'
-import { CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, CLAIM_UNMET, contenders, exceptionsOf, JIT_RIVALS, JSC_FAMILY_RIVALS, unmetOf, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
+import { CLAIM_CLASSES, CLAIM_EXCEPTIONS, CLAIM_RIVALS, CLAIM_UNMET, contenders, exceptionsOf, JIT_RIVALS, JSC_FAMILY_RIVALS, PARITY_EXEMPT, unmetOf, V8_FAMILY_RIVALS, WASM_BAND_TOL } from '../bench/claims.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The named rivals of the claim. Unlike test/bench.js's availability-filtered
@@ -347,13 +347,13 @@ test('claims: every named rival is contested (coverage ≥ floor of the corpus)'
   }
 })
 
-test('claims: every non-lab JZ timing has correct-result parity', () => {
+test('claims: every JZ timing outside PARITY_EXEMPT has correct-result parity', () => {
   const invalid = Object.entries(cases)
-    .filter(([id, c]) => !LAB.has(id) && !timedBenchmarkRow(c.targets?.jz))
+    .filter(([id, c]) => !PARITY_EXEMPT.has(id) && !timedBenchmarkRow(c.targets?.jz))
     .map(([id, c]) => `${id}:${c.targets?.jz?.parity || c.targets?.jz?.status || 'missing'}`)
   ok(invalid.length === 0, invalid.length
-    ? `non-lab JZ rows without correct timing evidence: ${invalid.join(', ')}`
-    : 'every non-lab JZ timing has correct-result parity')
+    ? `JZ rows without correct timing evidence: ${invalid.join(', ')}`
+    : 'every JZ timing outside PARITY_EXEMPT has correct-result parity')
 })
 
 test('Porffor floor: ties pass, losses surface, and invalid rows do not compare', () => {

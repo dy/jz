@@ -16,7 +16,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.js'
+import { correctBenchmarkRow, timedBenchmarkRow } from '../assets/headline.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const RESULTS = process.env.JZ_BENCH_RESULTS_JSON || join(ROOT, 'bench', 'results.json')
@@ -98,9 +98,7 @@ for (let i = 0; i < lines.length; i++) {
 let text = out.join('\n')
 
 // ── aggregate geomean table (V8 + AssemblyScript rows; Porffor needs its own subset, left alone) ──
-// LAB (imported — one definition in assets/headline.js): the jz-internal probe
-// cases sit out the aggregate.
-const okCases = Object.keys(C).filter((c) => !LAB.has(c) && correctBenchmarkRow(C[c].targets?.jz))
+const okCases = Object.keys(C).filter((c) => correctBenchmarkRow(C[c].targets?.jz))
 const ratios = (t, metric) => okCases.map((c) => {
   const jz = C[c].targets.jz, o = C[c].targets[t]
   if (!correctBenchmarkRow(o)) return null

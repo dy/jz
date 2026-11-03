@@ -273,10 +273,10 @@ all prep steps to run.
 | [`setops`](setops/setops.js) | near-duplicate documents with `Set`s: stop words removed by membership, a vocabulary union, Jaccard similarity from probed intersections, set differences by copy and delete |
 | [`immutable`](immutable/immutable.js) | integer particle step in the immutable-update idiom — every step replaces each record with a fresh `{x,y,vx,vy}` (React/Redux-style state); value-semantics natives get it free, a JIT leans on young-gen GC + escape analysis, jz pays a bump allocation per object — the escape-analysis/SROA probe |
 | [`async`](async/async.js) | async request handlers: each awaits a user lookup (an inactive user throws into the handler's `catch`), the user's orders, a price per line and a coupon; batches served with `Promise.all`, a tail served one `await` at a time. Every stage settles at once, so the time is the promise machinery |
-| [`colorconv`](colorconv/colorconv.js) | sRGB → Oklab over an image buffer — EOTF pow → 3×3 → cbrt → 3×3; lab probe for pow/cbrt intrinsic quality |
-| [`colorlch`](colorlch/colorlch.js) | sRGB → OkLCh fused in one loop (pow → 3×3 → cbrt → 3×3 → sqrt + atan2); lab probe — the fused body must never lose to the split loops |
-| [`colorlog`](colorlog/colorlog.js) | ARRI LogC4 → XYZ — runtime-base exp2 decode + 3×3; lab probe for runtime-exponent pow/exp2 |
-| [`colorpq`](colorpq/colorpq.js) | sRGB → JzAzBz — 3×3 → ST 2084 PQ (≈12 signed-pow) → 3×3; lab probe for signed pow with non-constant exponent |
+| [`colorconv`](colorconv/colorconv.js) | sRGB → Oklab over an image buffer — EOTF pow → 3×3 → cbrt → 3×3; probe for pow/cbrt intrinsic quality |
+| [`colorlch`](colorlch/colorlch.js) | sRGB → OkLCh fused in one loop (pow → 3×3 → cbrt → 3×3 → sqrt + atan2); the fused body must never lose to the split loops |
+| [`colorlog`](colorlog/colorlog.js) | ARRI LogC4 → XYZ — runtime-base exp2 decode + 3×3; probe for runtime-exponent pow/exp2 |
+| [`colorpq`](colorpq/colorpq.js) | sRGB → JzAzBz — 3×3 → ST 2084 PQ (≈12 signed-pow) → 3×3; probe for signed pow with non-constant exponent |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
 | [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-compile row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
@@ -288,7 +288,7 @@ all prep steps to run.
 | [`resample`](resample/resample.js) | fractional-rate audio resampling, 4-point Hermite — float-derived gather indices + fractional phase accumulator |
 | [`delayline`](delayline/delayline.js) | modulated feedback comb through a power-of-two ring — wrap-masked indexing, genuine loop-carried feedback, q16 fraction splits |
 | [`glyfparse`](glyfparse/glyfparse.js) | TrueType `glyf`-style flag/coordinate decoding — variable-length byte grammar, bit tests, running accumulators |
-| [`deltae`](deltae/deltae.js) | CIEDE2000 over Lab pairs — branchy transcendental colorimetry (lab row, like the other colorjs probes: per-libm checksums) |
+| [`deltae`](deltae/deltae.js) | CIEDE2000 over Lab pairs — branchy transcendental colorimetry (per-libm checksums, like the other colorjs probes) |
 | [`polytri`](polytri/polytri.js) | ear-clipping triangulation + convex decomposition of flat plain-array polygons ([pmndrs/math](_lib/pmath/README.md), unmodified) — index arrays built per call, out-buffers written past their length, polygon copies pushed element by element: the runtime-built-array kernel |
 | [`worley`](worley/worley.js) | Worley (cellular) noise field, 2-D + 3-D (pmndrs/math) — `perm[Math.floor(x) + g & 255]` byte-table gathers through a `{ perm }` record, 9 + 27 feature distances per sample, a running minimum: the hash-noise kernel |
 | [`fabrik`](fabrik/fabrik.js) | FABRIK inverse kinematics, ten bones (pmndrs/math) — forward/backward passes over an array of bone objects holding `start`/`end` arrays and a `joint` record, directions normalized into module scratch arrays, the best solution saved and restored: the object-graph kernel |
@@ -298,14 +298,17 @@ all prep steps to run.
 | [`threecull`](threecull/threecull.js) | WebGLRenderer.projectObject's frustum test of ten thousand bounding spheres as the camera orbits, and Mesh.raycast against twenty thousand triangles (three.js) – `lookAt`, `invert`, a Frustum's planes, `intersectsSphere`, `intersectTriangle` through Vector3 scratch: the culling and picking kernel |
 | [`threegeom`](threegeom/threegeom.js) | BufferAttribute.applyMatrix4, computeBoundingBox/Sphere and computeVertexNormals over Float32Array position buffers (three.js) – each vertex read into a module-level Vector3, chained methods, written back: the buffer-geometry kernel |
 
-The **`lab` rows** — the self-referential `watr`/`jessie`/`jz` (JZ or its deps
-compiling code) and the JS-only intrinsic probes `colorconv`/`colorlch`/
-`colorlog`/`colorpq` (pow/cbrt/exp2/atan2 gap trackers with no cross-language
-ports; their transcendental checksums legitimately diverge per libm) — answer
-jz-internal questions, not the cross-language kernel comparison. They sit out
-every aggregate (the geomean SVG, the page strip and geomeans, the aggregate
-table below) but stay visible on the bench page under the `lab` chip and
-runnable via `--cases=…`; the self-compile rows stay gated in `test/bench.js`.
+Every case enters every aggregate: the geomean chart, the page's geomeans and
+coverage, the aggregate table below and the landing's figures. That includes the
+compiler workloads (`watr`, `jessie`, the `jz` self-compile) and the colorjs
+intrinsic probes (`colorconv`, `colorlch`, `colorlog`, `colorpq`, `deltae`), which
+were once set apart as `lab` rows. A row counts where its checksum is accepted:
+the probes hash their exact transcendental bits, which differ by libm. In the CI
+dataset no lane matches their stored checksums; in the reference dataset JZ matches
+three of them and the JS engines the other two. They add few pairs to any ratio until
+they are checked at single precision as the color-space cases are (`checksumF64Near`)
+and their references re-pinned. The claims gate still passes over all eight when it
+requires a correct JZ timing per case (`PARITY_EXEMPT` in `claims.mjs`).
 
 Native rows for `json` are fixed-source references, not semantic equivalents
 of JavaScript `JSON.parse`: C/Rust/Zig hand-parse the known schema from a
@@ -1270,7 +1273,7 @@ JZ is 1.30× slower than V8 raw JS on this large compiler bundle. The 284 kB
 artifact contains the jz-compiled watr parser, encoder, and optimizer; V8's JIT
 has the advantage of profile-guided tiering on a long-running compiler.
 
-### Lab-case native coverage: JS→native compilers and the no-EH build variant
+### Compiler-workload native coverage: JS→native compilers and the no-EH build variant
 
 The compiler workloads (`jz`, `watr`, `jessie`) run through the same native
 lanes as the smaller kernels. scriptc 0.4.6's type checker rejects the `jz` and
@@ -1290,7 +1293,7 @@ pin; failures do not enter speed ratios. Static Hermes runs `watr` and `jessie`
 (1.91× and 9.84× JZ's time in the 2026-10-30 run) and fails `jz` and
 `webaudio`, as listed there.
 
-**No-EH build variant for the native lab rows (`jz-w2c2`).** The lab cases'
+**No-EH build variant for the native compiler rows (`jz-w2c2`).** These cases'
 compiled wasm carries a wasm-exceptions tag section (jz lowers `try`/`catch`/
 bare `throw` through it), which `w2c2` does not translate. `wasm2c` does:
 `scripts/native/compile.mjs` passes `--enable-exceptions` to a WABT that takes
@@ -1346,11 +1349,11 @@ Aggregate geomean (JZ / target):
 
 | target | speed | size |
 | --- | ---: | ---: |
-| V8 (node) | **0.42×** | – |
+| V8 (node) | **0.44×** | – |
 | AssemblyScript | **0.45×** | **0.84×** |
 
 JZ wins or ties V8 on every dense kernel case; the open V8 losses are the
-self-compile lab rows (`watr`, `jessie`) and the deliberate deopt probes above
+self-compile rows (`watr`, `jessie`) and the deliberate deopt probes above
 (`dispatch`, `shapes`, `wordcount`, `immutable`, `strbuild` — the dynamic-JS
 work list). AS is beaten on speed across the shared cases except the tracked
 gather/probe gaps (`dict`, `noise`, `levenshtein`) and the deopt probes

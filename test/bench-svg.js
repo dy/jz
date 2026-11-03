@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs'
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
-import { LAB, timedBenchmarkRow } from '../assets/headline.js'
+import { timedBenchmarkRow } from '../assets/headline.js'
 import { benchSvg, committedRows, completeBenchSvgRun, withReference, REFERENCE, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
 
 const rows = [{ label: 'JZ', sub: '-O3', ratio: 1 }, { label: 'V8', sub: 'Node', ratio: 2.45 }]
@@ -48,8 +48,8 @@ test('bench-svg: the committed chart reproduces the committed accepted-checksum 
   const svg = readFileSync(new URL('../bench/bench.svg', import.meta.url), 'utf8')
   const results = JSON.parse(readFileSync(new URL('../bench/results.json', import.meta.url), 'utf8'))
   const { rows, cases } = svgRows(results.cases)
-  is(cases, Object.keys(results.cases).filter(id => !LAB.has(id)).length, 'the chart counts the non-lab corpus')
-  is(svg.match(/on the (\d+)-case benchmark corpus/)?.[1], String(cases), 'caption N is the dataset\'s non-lab case count')
+  is(cases, Object.keys(results.cases).length, 'the chart counts every case')
+  is(svg.match(/on the (\d+)-case benchmark corpus/)?.[1], String(cases), 'caption N is the dataset\'s case count')
   const lanes = chartLanes(svg)
   is(lanes.map(l => l.label).sort().join(','), SVG_TARGETS.map(t => t.label).sort().join(','), 'the chart draws every chart lane')
   for (const lane of lanes) {
@@ -61,17 +61,17 @@ test('bench-svg: the committed chart reproduces the committed accepted-checksum 
   }
 })
 
-test('bench-svg: rows are the geomean of lane ÷ JZ over timed, accepted, non-lab cases', () => {
+test('bench-svg: rows are the geomean of lane ÷ JZ over timed, accepted cases', () => {
   const t = (medianUs, parity = 'ok') => ({ medianUs, parity })
   const { rows, cases } = svgRows({
     a: { targets: { jz: t(10), v8: t(20), 'porf-native': t(40), nat: t(5) } },
     b: { targets: { jz: t(10), v8: t(80), 'porf-native': t(1, 'DIFF') } },
     c: { targets: { jz: { status: 'fail' }, v8: t(1) } },
-    jz: { targets: { jz: t(1), v8: t(1000) } },   // a lab case stays out
+    jz: { targets: { jz: t(1), v8: t(32) } },   // the self-compile counts like any case
   })
-  is(cases, 3, 'non-lab cases, the failed-JZ one included, are the denominator')
-  is(rows.find(r => r.label === 'V8').ratio, 4, 'geomean of 2× and 8×')
-  is(rows.find(r => r.label === 'Porffor').sub, 'native, runs 1 / 3', 'a wrong checksum is not coverage')
+  is(cases, 4, 'every case, the failed-JZ one included, is the denominator')
+  is(rows.find(r => r.label === 'V8').ratio, 8, 'geomean of 2×, 8× and 32×')
+  is(rows.find(r => r.label === 'Porffor').sub, 'native, runs 1 / 4', 'a wrong checksum is not coverage')
   is(rows.find(r => r.label === 'native C').ratio, 0.5)
   is(rows.some(r => r.label === 'Perry'), false, 'a lane without evidence has no row')
 })
@@ -121,8 +121,8 @@ test('bench-svg: a dataset render is internally consistent (caption N = Porffor 
   const svg = benchSvg([...rows].sort((a, b) => a.ratio - b.ratio), cases)
   const capN = svg.match(/on the (\d+)-case benchmark corpus/)?.[1]
   const porfDenom = svg.match(/runs \d+ \/ (\d+)/)?.[1]
-  is(capN, String(cases), 'caption N = the non-lab case count')
-  is(porfDenom, String(cases), 'Porffor denominator = the non-lab case count')
+  is(capN, String(cases), 'caption N = the case count')
+  is(porfDenom, String(cases), 'Porffor denominator = the case count')
   is(capN, porfDenom, 'caption N and Porffor denominator must agree')
 })
 

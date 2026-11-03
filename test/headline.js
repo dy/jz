@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'tst'
 import { is, almost, ok } from 'tst/assert.js'
-import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, newerDataset, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
+import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, newerDataset, timedBenchmarkRow, CLS_ICO } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
 
@@ -95,15 +95,15 @@ test('benchmark ratios: paired positive finite measurements, independent columns
   }
 })
 
-test('figure: size median excludes invalid and lab cases; RSS direction is explicit for V8 and AssemblyScript', () => {
+test('figure: size median excludes invalid rows and counts every case; RSS direction is explicit for V8 and AssemblyScript', () => {
   const pair = (bytes, memKb = 50) => C({ bytes, memKb, parity: 'ok' }, {
     as: { bytes: 100, memKb: 100, parity: 'ok' }, v8: { memKb: 100, parity: 'ok' },
   })
-  const cases = { a: pair(100), b: pair(300), c: pair(900), jz: pair(99999), bad: pair(Infinity) }
-  is(figure({ cases }, 'size', 'as'), 3, 'odd median over valid finite sizes outside LAB')
+  const cases = { a: pair(100), b: pair(300), jz: pair(700), bad: pair(Infinity) }
+  is(figure({ cases }, 'size', 'as'), 3, 'odd median over valid finite sizes, the self-compile among them')
   almost(figure({ cases }, 'memory', 'v8'), .5, 1e-12, 'half the RSS reads as half of V8')
   almost(figure({ cases }, 'memory', 'as'), .5, 1e-12, 'half the RSS reads as half of AssemblyScript')
-  delete cases.c
+  delete cases.jz
   is(figure({ cases }, 'size', 'as'), 2, 'even median averages middle values')
   cases.a.targets.as.parity = 'DIFF'
   is(figure({ cases }, 'size', 'as'), 3, 'wrong AssemblyScript row excluded')
@@ -169,7 +169,7 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
       addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v },
     } }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB, newerDataset,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, newerDataset,
       document, URLSearchParams, location: { search }, navigator: { userAgent: 'test' },
       fetch: async path => {
         fetched.push(path)
@@ -256,7 +256,7 @@ test('bench page: every case has a family, tags and a description', () => {
   const literal = name => runInNewContext('(' + page.match(new RegExp(`const ${name} = (\\{[\\s\\S]*?\\}|\\[[^\\n]*\\])\\n`))[1] + ')')
   const [FAMILY, TAGS, INSIGHTS, CHIPS] = ['FAMILY', 'TAGS', 'INSIGHTS', 'CHIPS'].map(literal)
   // every case the bench runs (bench.mjs discoverCases), so a new case fails here in the commit that adds
-  // it, and every case a stored snapshot or LAB still names
+  // it, and every case a stored snapshot still names
   const bench = new URL('../bench/', import.meta.url)
   const ids = new Set([
     ...readdirSync(bench, { withFileTypes: true })
@@ -264,13 +264,11 @@ test('bench page: every case has a family, tags and a description', () => {
       .map(d => d.name),
     ...['results.json', 'results-ci.json', 'results-linux.json'].flatMap(f =>
       Object.keys(JSON.parse(readFileSync(new URL(f, bench), 'utf8')).cases)),
-    ...LAB,
   ])
   for (const id of ids) {
     ok(CHIPS.includes(FAMILY[id]) && FAMILY[id] !== 'all', `${id}: family chip`)
     ok(TAGS[id], `${id}: tags`)
     ok(INSIGHTS[id], `${id}: description`)
-    is(FAMILY[id] === 'lab', LAB.has(id), `${id}: the lab chip holds the LAB cases and no other`)
   }
 })
 
@@ -286,7 +284,7 @@ test('bench page: an unchecked contender leaves the corpus and the cards; JZ sta
       innerHTML: '', textContent: '', attrs: {}, addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v } } }
     const localStorage = { getItem: () => JSON.stringify(off), setItem() {} }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB, newerDataset, document, localStorage,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, newerDataset, document, localStorage,
       URLSearchParams, location: { search: '' }, navigator: { userAgent: 'test' },
       fetch: async () => ({ ok: true, json: async () => data }),
     })

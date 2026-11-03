@@ -2,14 +2,8 @@
 // (`figure`), computed from the bench page's dataset with the same rules as the bench page.
 // Rows count only with `ok` or the documented `fma` checksum. Failed, wrong, and
 // unclassified rows are not evidence for speed, size, or memory comparisons.
-// The LAB set — jz-internal probe cases: the self-compile compiler rows (jz/watr/
-// jessie compiling code) and the JS-only intrinsic probes (color* — pow/cbrt/
-// exp2/atan2 gap trackers with no cross-language ports). They answer jz-internal
-// questions, not the cross-language comparison, so every aggregate excludes them.
-// The ONE definition, shared by every consumer: bench/bench.mjs (geomean SVG +
-// web emit), bench/index.html (page corpus + `lab` chip), scripts/bench-readme.mjs
-// (README aggregate table), and figure below (the landing's bench row).
-export const LAB = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq', 'deltae'])
+// Every case enters every aggregate: the chart, the page's geomeans and stats, the README
+// table and the landing's figures below. A case's row counts where its checksum is accepted.
 
 export const classifyBenchmarkChecksum = (checksum, reference, fma) =>
   (Array.isArray(fma) ? fma.some(value => value != null && checksum === value) : fma != null && checksum === fma) ? 'fma'
@@ -35,20 +29,20 @@ export function benchmarkRatio(cases, target, metric, base = 'jz') {
   return n ? { geo: Math.exp(sum / n), n } : null
 }
 
-const corpus = results => Object.entries(results.cases || {}).filter(([id]) => !LAB.has(id)).map(([, c]) => c)
+const corpus = results => Object.values(results.cases || {})
 const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? (s[s.length >> 1] + s[(s.length - 1) >> 1]) / 2 : null }
 const sizeRatios = (cases, tgt) => { const a = []; for (const c of cases) { const t = c.targets; if (correctBenchmarkRow(t.jz) && correctBenchmarkRow(t[tgt]) && t.jz.bytes > 0 && t[tgt].bytes > 0 && Number.isFinite(t.jz.bytes) && Number.isFinite(t[tgt].bytes)) a.push(t.jz.bytes / t[tgt].bytes) } return a }
 
-// One figure for the landing's bench row: JZ ÷ target in the named quantity — speed (target time ÷ JZ
-// time, geomean: above 1 = JZ faster), memory (JZ RSS ÷ target RSS, geomean: below 1 = less) or size
-// (JZ bytes ÷ target bytes, median: below 1 = smaller). `base` picks the JZ lane — 'jz-w2c' (JZ built
-// natively) for like-for-like memory against native binaries. LAB cases excluded; null when unmeasured.
 // The dataset both the landing's figures and the bench page's plain view read, so they agree:
 // the newer by the date each was measured, the reference run's (results.json) on a tie, else the
 // weekly CI run's (results-ci.json). A missing dataset is never the newer.
 export const measuredAt = d => d?.meta ? Date.parse(String(d.meta.date).replace(' UTC', 'Z').replace(' ', 'T')) || 0 : -1
 export const newerDataset = (reference, ci) => measuredAt(ci) > measuredAt(reference) ? 'ci' : 'reference'
 
+// One figure for the landing's bench row: JZ ÷ target in the named quantity — speed (target time ÷ JZ
+// time, geomean: above 1 = JZ faster), memory (JZ RSS ÷ target RSS, geomean: below 1 = less) or size
+// (JZ bytes ÷ target bytes, median: below 1 = smaller). `base` picks the JZ lane — 'jz-w2c' (JZ built
+// natively) for like-for-like memory against native binaries. Null when unmeasured.
 export function figure(results, quantity, target, base = 'jz') {
   const cases = corpus(results)
   if (quantity === 'size') return median(sizeRatios(cases, target))

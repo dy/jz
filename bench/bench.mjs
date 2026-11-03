@@ -13,7 +13,7 @@ import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import EVENTS from '../src/std/events.js'
 import { completeBenchSvgRun, renderBenchSvg, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
-import { classifyBenchmarkChecksum, LAB, timedBenchmarkRow } from '../assets/headline.js'
+import { classifyBenchmarkChecksum, timedBenchmarkRow } from '../assets/headline.js'
 import { contenders } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
 import { releaseBytes } from './_lib/release-bytes.js'
@@ -197,16 +197,8 @@ const CASE_NAMES = {
 }
 
 const HOST_STUB = join(BENCH_DIR, '_lib', 'host-stub.js')
-// The LAB set (imported — one definition in assets/headline.js): self-referential
-// 'compiler' cases (jz/watr/jessie compiling code) plus the JS-only intrinsic
-// probes (color*). Excluded from every aggregate — the headline geomean SVG here,
-// the page/hero stats, the README aggregate table — because they answer
-// jz-internal questions (self-compile throughput, open intrinsic gaps), not the
-// cross-language kernel comparison. Still measured, still on the bench page under
-// the `lab` chip.
-const HIDDEN_FROM_GEOMEAN = LAB
 // Only the self-compile graph bundles stay out of bench/web/ — their wasm is multi-MB
-// (jz.wasm embeds the whole compiler). The color* lab kernels stay playable in-page.
+// (jz.wasm embeds the whole compiler). The color* kernels stay playable in-page.
 // webaudio stays out too: its host-adapter imports need the stubs
 // run-jz-host.mjs wires, which the page's instantiate does not. The pmndrs/math
 // cases import a vendored module graph, the three.js cases node_modules: the page serves neither.
@@ -1955,13 +1947,11 @@ if (VERIFY_ANCHORS) {
   }
 }
 
-// Regenerate bench/bench.svg only when every non-hidden case and every chart
-// target were selected. A case-filtered or target-filtered run must not clobber
-// the committed artifact with a partial chart. The SVG geomean excludes the
-// self-referential cases, so the slow self-compile rows need not run to refresh
-// it. ratio = geomean(engine / jz)
-// over correct-result cases both ran.
-const svgCases = allCases.map(c => c.id).filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid))
+// Regenerate bench/bench.svg only when every case and every chart target were
+// selected. A case-filtered or target-filtered run must not clobber the committed
+// artifact with a partial chart. ratio = geomean(engine / jz) over correct-result
+// cases both ran.
+const svgCases = allCases.map(c => c.id)
 if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases)) {
   const { rows, cases: n } = svgRows(Object.fromEntries(selectedCases.map(cid => [cid, grid[cid] ?? { targets: {} }])))
   if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases, rows)) {

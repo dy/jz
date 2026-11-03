@@ -19,7 +19,7 @@
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { LAB, timedBenchmarkRow } from '../assets/headline.js'
+import { timedBenchmarkRow } from '../assets/headline.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
@@ -49,11 +49,11 @@ export const SVG_TARGETS = [
 const COVERAGE = new Set(['porf-native', 'scriptc', 'perry'])
 
 /** The chart rows of a dataset's cases ({ id: { targets } }): per lane, the geometric
- *  mean of lane ÷ JZ median over the non-lab cases where both have a timed row with an
- *  accepted checksum (lower = faster; JZ = 1.00×). `cases` = the non-lab cases, the
- *  caption's N and the coverage denominator. A lane with no such case has no row. */
+ *  mean of lane ÷ JZ median over the cases where both have a timed row with an accepted
+ *  checksum (lower = faster; JZ = 1.00×). `cases` = every case, the caption's N and the
+ *  coverage denominator. A lane with no such case has no row. */
 export function svgRows(cases) {
-  const ids = Object.keys(cases).filter(id => !LAB.has(id))
+  const ids = Object.keys(cases)
   const rows = []
   for (const t of SVG_TARGETS) {
     const logs = ids.flatMap(id => {
