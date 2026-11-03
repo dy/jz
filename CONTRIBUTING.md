@@ -989,13 +989,15 @@ A Set's and a Map's table (module/collection/ordered.js) keeps its entries in
 insertion order in front of its buckets: a bucket holds an entry's index under
 the top six bits of its hash, a delete tombstones the entry in place (its key
 TOMB_NAN, its bucket's gap closed by backward shift), and an append past the
-usable entries (three in four buckets, less one) rebuilds the live ones into a
+usable entries (half the buckets, less one) rebuilds the live ones into a
 new block, twice the buckets or as many when half are tombstones, the old block
 forwarding to it. A table that ends at the heap top above the reset mark grows
 where it stands instead, as an array's storage does: its live entries close up,
 the rest of the block clears and its buckets re-index, and no stub is left for a
-holder to hop. The block is the table's buckets times its entry stride, the
-count of appended entries in its last word; a walker reads the entries below
+holder to hop. The block is the table's buckets times half its entry stride and
+a bucket word, the count of appended entries in its last word; fewer than half
+the buckets are taken, so a probe that misses ends after a bucket or two. A
+walker reads the entries below
 that count, in order, past the tombstones. A growth points the stub its
 holder names at the new block, and a probe hops one stub inline, so a table reached through its first pointer pays
 one hop however often it grew (the size tier calls the chase for that hop). A Map read hands out an array value that grew

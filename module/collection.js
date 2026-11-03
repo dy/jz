@@ -81,6 +81,8 @@ const builtinPropDeps = () => [
 // Shared physical layout constants for collection helpers and diagnostics.
 const SET_ENTRY = 16  // hash + key
 export const MAP_ENTRY = 24  // hash + key + value
+// a Set's and a Map's table block: bytes per bucket (collection/ordered.js ordStride)
+const SET_BLOCK = ordStride(SET_ENTRY), MAP_BLOCK = ordStride(MAP_ENTRY)
 const INIT_CAP = 8    // user-program default (must be power of 2)
 const collectionInitCap = () => {
   const cap = ctx.transform.optimize?.collectionInitCap | 0
@@ -213,7 +215,7 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
-import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdFind, genOrdPutAt, genSlotHeal } from './collection/ordered.js'
+import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdFind, genOrdPutAt, genSlotHeal, ordStride, ordStrideWat } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
 import registerIdentity, { arrayKeysOn, noteKeys, pinKeyWat } from './collection/identity.js'
@@ -545,18 +547,18 @@ export default (ctx) => {
   // __map_new() → f64 — allocate empty Map (for JSON.parse, runtime creation)
   ctx.core.stdlib['__map_new'] = `(func $__map_new (result f64)
     (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_ENTRY}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_BLOCK}))))`
 
   // new Set(set): the source's table copied (collection/ordered.js __ord_copy),
   // sized as a seeding of its live entries would be; a missing source, empty.
   const capFor = (n) => `(select (i32.const ${initCap})
-      (i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz (i32.sub (i32.shl ${n} (i32.const 1)) (i32.const 1)))))
-      (i32.le_u ${n} (i32.const ${initCap / 2})))`
+      (i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz (i32.add (i32.shl ${n} (i32.const 1)) (i32.const 1)))))
+      (i32.lt_u ${n} (i32.const ${initCap / 2})))`
   ctx.core.stdlib['__set_from'] = () => `(func $__set_from (param $src i64) (result f64)
     (local $off i32) (local $want i32)
     (if (call $__is_nullish (local.get $src))
       (then (return (call $__mkptr (i32.const ${PTR.SET}) (i32.const 0)
-        (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${SET_ENTRY}))))))
+        (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${SET_BLOCK}))))))
     (local.set $off (call $__ptr_offset (local.get $src)))
     (local.set $want ${capFor(`(i32.load (i32.sub (local.get $off) (i32.const 8)))`)})
     (call $__table_check (local.get $want))
@@ -567,7 +569,7 @@ export default (ctx) => {
   ctx.core.emit['new.Set'] = (iterExpr, ...ignored) => withIgnoredArgs(iterExpr, ignored, iterExpr => {
     setLinkDemand('set')
     if (iterExpr == null) {
-      const out = allocPtr({ type: PTR.SET, len: 0, cap: initCap, stride: SET_ENTRY, tag: 'set' })
+      const out = allocPtr({ type: PTR.SET, len: 0, cap: initCap, stride: SET_BLOCK, tag: 'set' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
     }
     // new Set(iterable): __iter_arr normalizes any iterable to an index-iterable
@@ -577,10 +579,10 @@ export default (ctx) => {
     // argument skips iteration; every other non-iterable throws.
     //
     // __set_add grows on demand, but pre-sizing the table to fit the source array
-    // skips the rehash churn of building it up from initCap. Round 2*len up
+    // skips the rehash churn of building it up from initCap. Round 2*len + 1 up
     // to a power of two, with initCap as a floor rather than added reserve:
-    // distinct entries ≤ len, so the table lands ≤50% full and never needs to grow
-    // while seeding. Floors at initCap for the empty/short case.
+    // distinct entries ≤ len fit its usable entries (half its buckets, less one),
+    // so it never grows while seeding. Floors at initCap for the empty/short case.
     // A Set copies a Set's table (a missing one makes an empty Set).
     if (valTypeOf(iterExpr) === VAL.SET) { inc('__set_from'); return typed(['call', '$__set_from', asI64(storedValue(iterExpr))], 'f64') }
     const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
@@ -592,9 +594,9 @@ export default (ctx) => {
     // array's length reaches 2^31)
     const capExpr = ['select', ['i32.const', initCap],
       ['i32.shl', ['i32.const', 1], ['i32.sub', ['i32.const', 32], ['i32.clz',
-        ['i32.sub', ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', 1]], ['i32.const', 1]]]]],
-      ['i32.le_u', ['local.get', `$${lenL}`], ['i32.const', initCap / 2]]]
-    const out = allocPtr({ type: PTR.SET, len: 0, cap: ['local.get', `$${capL}`], stride: SET_ENTRY, tag: 'set' })
+        ['i32.add', ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', 1]], ['i32.const', 1]]]]],
+      ['i32.lt_u', ['local.get', `$${lenL}`], ['i32.const', initCap / 2]]]
+    const out = allocPtr({ type: PTR.SET, len: 0, cap: ['local.get', `$${capL}`], stride: SET_BLOCK, tag: 'set' })
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr_ctor', [',', iterExpr]]))],
       ['local.set', `$${lenL}`, ['i32.const', 0]],
@@ -702,8 +704,8 @@ export default (ctx) => {
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
         (memory.fill (local.get $off) (i32.const 0)
           (i32.mul (local.get $cap)
-            (i32.add (i32.const ${SET_ENTRY})
-              (i32.shl (i32.eq (local.get $t) (i32.const ${PTR.MAP})) (i32.const 3)))))
+            (i32.add (i32.const ${SET_BLOCK})
+              (i32.shl (i32.eq (local.get $t) (i32.const ${PTR.MAP})) (i32.const 2)))))
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))))
     (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
 
@@ -764,7 +766,7 @@ export default (ctx) => {
   ctx.core.emit['new.Map'] = (iterExpr, ...ignored) => withIgnoredArgs(iterExpr, ignored, iterExpr => {
     setLinkDemand('map')
     if (iterExpr == null) {
-      const out = allocPtr({ type: PTR.MAP, len: 0, cap: initCap, stride: MAP_ENTRY, tag: 'map' })
+      const out = allocPtr({ type: PTR.MAP, len: 0, cap: initCap, stride: MAP_BLOCK, tag: 'map' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
     }
     // Keep a Map copy on its direct table path. Other sources use the same
@@ -852,7 +854,7 @@ export default (ctx) => {
     return typed(['block', label, ['result', 'i32'],
       ...tableOf(recv, c.off),
       ['local.set', `$${c.used}`, ['i32.load', ['i32.sub', ['i32.add', g(c.off),
-        ['i32.mul', ['i32.load', ['i32.sub', g(c.off), ['i32.const', 4]]], ['i32.const', E]]], ['i32.const', 4]]]],
+        ['i32.mul', ['i32.load', ['i32.sub', g(c.off), ['i32.const', 4]]], ['i32.const', ordStride(E)]]], ['i32.const', 4]]]],
       ['if', ['i32.and', ['i32.ne', g(c.i), ['i32.const', 0]],
           ['i32.or', ['i32.gt_u', g(c.i), g(c.used)],
             ['i32.ne', ['i32.load', 'offset=4', entry(['i32.sub', g(c.i), ['i32.const', 1]])], g(c.s)]]],
@@ -1043,7 +1045,7 @@ export default (ctx) => {
     const resI64 = ['i64.reinterpret_f64', ['local.get', `$${result}`]]
     const nb = allocPtr({ type: PTR.ARRAY, len: 0, cap: 0, tag: 'gbn' })
     const initResult = isMap
-      ? (() => { const out = allocPtr({ type: PTR.MAP, len: 0, cap: initCap, stride: MAP_ENTRY, tag: 'gbm' })
+      ? (() => { const out = allocPtr({ type: PTR.MAP, len: 0, cap: initCap, stride: MAP_BLOCK, tag: 'gbm' })
           return ['block', ['result', 'f64'], out.init, out.ptr] })()
       : ['call', '$__hash_new']
     const keyOf = (cbResult) => isMap ? asI64(cbResult) : ['call', '$__to_key', asI64(cbResult)]
@@ -1104,7 +1106,7 @@ export default (ctx) => {
   ctx.core.stdlib['__sclone'] = `(func $__sclone (param $v f64) (result f64)
     (call $__sclone_rec (local.get $v)
       (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-        (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_ENTRY}))))))`
+        (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_BLOCK}))))))`
 
   // Save keys, not values or hash-slot addresses: a nested getter may mutate
   // any later source property before its recursive serialization begins.
@@ -1225,7 +1227,7 @@ export default (ctx) => {
         (local.set $src (call $__ptr_offset (local.get $bits)))
         (local.set $cap (i32.load (i32.sub (local.get $src) (i32.const 4))))
         (local.set $out (call $__mkptr (local.get $t) (i32.const 0)
-          (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (local.get $stride))))
+          (call $__alloc_hdr_n (i32.const 0) (local.get $cap) ${ordStrideWat('(local.get $stride)')})))
         (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
         ;; walk the source in insertion order; ≤len inserts into cap slots never grow,
         ;; so $out's bits stay canonical (the memo entry above remains the pointer).
@@ -1358,8 +1360,8 @@ export default (ctx) => {
         (then (local.set $n (call $__len (local.get $src)))))))
     (local.set $newcap (select (i32.const ${initCap})
       (i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz
-        (i32.sub (i32.shl (local.get $n) (i32.const 1)) (i32.const 1)))))
-      (i32.le_u (local.get $n) (i32.const ${initCap / 2}))))
+        (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const 1)))))
+      (i32.lt_u (local.get $n) (i32.const ${initCap / 2}))))
     (call $__table_check (local.get $newcap))
     ;; A shallow Map copy takes the source's table (collection/ordered.js
     ;; __ord_copy): whole where it fits the copy's size, its live entries in
@@ -1368,7 +1370,7 @@ export default (ctx) => {
       (then (return (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
         (call $__ord_copy (local.get $off) (i32.const ${MAP_ENTRY}) (local.get $newcap))))))
     (local.set $map (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${MAP_ENTRY})))))
+      (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${MAP_BLOCK})))))
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
       (then
         (block $da (loop $la

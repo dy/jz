@@ -615,7 +615,8 @@ const codec = (mem, src) => {
   // A pair: its key and value read.
   const liveSlots = (off, t) => {
     const m = dv(), cap = m.getInt32(off - 4, true), stride = t === 8 ? 16 : 24, slots = []
-    const n = t === 7 ? cap : m.getInt32(off + cap * stride - 4, true)
+    // a table's block is cap times half its entry stride and a word (ordered.js ordStride)
+    const n = t === 7 ? cap : m.getInt32(off + cap * (stride / 2 + 4) - 4, true)
     for (let i = 0; i < n; i++) {
       const slot = off + i * stride, hash = m.getBigUint64(slot, true)
       if (hash && (t !== 7 || Number(hash >> 32n) !== HIDDEN_PROPERTY_SEQ) && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)

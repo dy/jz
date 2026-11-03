@@ -49,7 +49,7 @@ import { ctx, PTR, LAYOUT, HEAP, FORWARDING_MASK, declGlobal } from '../../src/c
 import { TOMB_NAN } from '../../src/ir.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, STR_HCACHE_BIT, ARRAY_RAW } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
-import { ordEntriesWat, ordUsedAddrWat } from '../collection/ordered.js'
+import { ordEntriesWat, ordUsedAddrWat, ordStrideWat } from '../collection/ordered.js'
 import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP, compactSlack, PRESSURE_SLACK, MARGIN } from './stub-log.js'
 export { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP }
 import { valKindToPtr } from '../../src/ir/pointers.js'
@@ -508,8 +508,8 @@ export const registerCompact = () => {
       (then
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
         ;; a HASH's slots carry the hash lane after them; a Set's or a Map's
-        ;; table is its entries' stride alone (module/collection/ordered.js)
-        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) (local.get $e) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
+        ;; block is half its entry stride and a bucket word per bucket (module/collection/ordered.js)
+        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideWat('(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (local.get $stride)))
         (call $__gc_keep (i32.sub (local.get $p) (i32.const 16)) (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $stride))))
         (call $__gc_list (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))) (local.get $p))
@@ -685,7 +685,7 @@ export const registerCompact = () => {
         (if (i32.ne (local.get $t) (i32.const ${PTR.HASH})) (then ${fwdProps('(local.get $p)')}))
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4)))
-          (select (i32.const ${MAP_ENTRY + lane}) (local.get $e) (i32.eq (local.get $t) (i32.const ${PTR.HASH})))))
+          (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideWat('(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH})))))
         (if (i32.ne (local.get $t) (i32.const ${PTR.HASH}))
           (then (local.set $cap ${ordFit('(local.get $p)', '(local.get $cap)', '(local.get $e)')})))
         (local.set $n (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $e))))

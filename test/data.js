@@ -132,7 +132,8 @@ test('Map copy allocates one table for a dense source', () => {
     for (let i = 0; i < 2; i++) {
       const before = r.instance.exports.__jz_heap.value >>> 0
       is(r.exports.clone(), 32)
-      ok((r.instance.exports.__jz_heap.value >>> 0) - before <= 16 + 64 * (_compactCollections ? 24 : 28),
+      // 32 entries take 128 buckets (half of them less one hold 63), 16 bytes a bucket (collection/ordered.js)
+      ok((r.instance.exports.__jz_heap.value >>> 0) - before <= 16 + 128 * 16,
         `O${optimize}, compact=${_compactCollections}: no ordering buffer or enlarged table`)
       is(r.exports.get(31), 32)
     }
@@ -2021,7 +2022,7 @@ test('self-compile compact collections: entry hash replaces the redundant probe 
   ok(!fn(compact, '__hash_get_local').includes('(i32.load (local.get $ls))'), 'compact probe has no side-lane load')
 
   // Two consecutive empty allocations expose the exact block stride: 16-byte
-  // header + 8 initial buckets of the entry's width, in either profile.
+  // header + 8 initial buckets of half the entry's width and a bucket word, in either profile.
   const allocSrc = 'export let map=()=>new Map(); export let set=()=>new Set()'
   const blockDelta = (compactCollections, name) => {
     const raw = jz(allocSrc, { optimize: false, _compactCollections: compactCollections }).instance.exports[name]
@@ -2029,10 +2030,10 @@ test('self-compile compact collections: entry hash replaces the redundant probe 
     const a = off(raw()), b = off(raw())
     return b - a
   }
-  is(blockDelta(false, 'map'), 208) // 16 + 8*24
-  is(blockDelta(true, 'map'), 208)
-  is(blockDelta(false, 'set'), 144) // 16 + 8*16
-  is(blockDelta(true, 'set'), 144)
+  is(blockDelta(false, 'map'), 144) // 16 + 8*16
+  is(blockDelta(true, 'map'), 144)
+  is(blockDelta(false, 'set'), 112) // 16 + 8*12
+  is(blockDelta(true, 'set'), 112)
   is(run(src, { optimize: false, _compactCollections: true }).f(), 860)
   is(run(src, { optimize: 3, _compactCollections: true }).f(), 860)
 })

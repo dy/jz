@@ -13,16 +13,17 @@
  * An append past the last usable entry rebuilds the live entries, still in
  * order, into a new block of twice the buckets (or as many, when half the
  * entries are tombstones), and the old block forwards to it as a grown
- * array's does.
+ * array's does; a block at the heap top grows where it stands instead.
  *
  *   cap buckets (a power of two), E bytes an entry (16 a Set's, 24 a Map's):
- *   block = cap × E bytes = [entries: ecap × E][buckets: cap × 4][zero…][used: 4]
- *   ecap = cap − cap/4 − 1
+ *   block = cap × (E/2 + 4) bytes = [entries: ecap × E][buckets: cap × 4][zero…][used: 4]
+ *   ecap = cap/2 − 1
  *
  * At most ecap entries, and so at most ecap buckets, are ever filled: an
- * empty bucket ends every probe, at most three in four full. The block keeps
- * the cap × E bytes every allocator and walker computes; past the buckets,
- * (cap/4 + 1) × E − 4·cap ≥ 12 bytes are free, the last 4 the count.
+ * empty bucket ends every probe, fewer than half of them full, so a probe
+ * that misses ends after a bucket or two. Every allocator and walker computes
+ * the block's bytes from cap (`ordStride`); past the buckets, E bytes are
+ * free, the last 4 the count.
  *
  * @module collection/ordered
  */
@@ -39,12 +40,25 @@ const TAG = 0xFC000000 | 0      // a bucket's hash bits
 const IDX = 0x03FFFFFF          // a bucket's entry index plus one (TABLE_MAX buckets hold fewer entries)
 const GROW_QUAD_CAP = 8192      // past it a table quadruples (module/collection/upsert.js nextCapIR)
 
+// A table of `cap` buckets holds half as many entries of `es` bytes, less one,
+// then a bucket word per bucket, the count of appended entries in its last word:
+// its block is `cap` times half the entry stride and a word. At most half its
+// buckets are taken, so a probe that misses ends after a bucket or two.
+/** A table block's bytes per bucket, for entries of `es` bytes (12 a Set's, 16 a Map's). */
+export const ordStride = (es) => es / 2 + 4
+/** The same as an i32 WAT expression, of a constant or a runtime entry stride. */
+export const ordStrideWat = (es) => {
+  const c = /^\(i32\.const (\d+)\)$/.exec(es)
+  return c ? `(i32.const ${ordStride(+c[1])})` : `(i32.add (i32.shr_u ${es} (i32.const 1)) (i32.const 4))`
+}
 /** The usable entries of a table of `cap` buckets, an i32 WAT expression. */
-export const ordEntriesWat = (cap) => `(i32.sub (i32.sub ${cap} (i32.shr_u ${cap} (i32.const 2))) (i32.const 1))`
+export const ordEntriesWat = (cap) => `(i32.sub (i32.shr_u ${cap} (i32.const 1)) (i32.const 1))`
+/** The bytes of the block of a table of `cap` buckets. */
+export const ordBytesWat = (cap, es) => `(i32.mul ${cap} ${ordStrideWat(es)})`
 /** The address of the appended-entry count of the table at `off`. */
-export const ordUsedAddrWat = (off, cap, es) => `(i32.sub (i32.add ${off} (i32.mul ${cap} ${es})) (i32.const 4))`
+export const ordUsedAddrWat = (off, cap, es) => `(i32.sub (i32.add ${off} ${ordBytesWat(cap, es)}) (i32.const 4))`
 /** The same geometry in JS, for the host's decoder (interop.js). */
-export const ordUsed = (view, off, cap, es) => view.getInt32(off + cap * es - 4, true)
+export const ordUsed = (view, off, cap, es) => view.getInt32(off + cap * ordStride(es) - 4, true)
 
 const resolve = (recv) => `(local.set $off (i32.wrap_i64 (i64.and (local.get ${recv}) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -326,11 +340,11 @@ export const genOrdGrow = () => {
       (i32.lt_u (i32.shl (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1))
         (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))))
     (call $__table_check (local.get $newcap))${inPlace ? `
-    (local.set $next (i32.add (local.get $off) (i32.mul (local.get $newcap) (local.get $es))))
+    (local.set $next (i32.add (local.get $off) ${ordBytesWat('(local.get $newcap)', '(local.get $es)')}))
     (if (i32.and
           (i32.and (i32.ge_u (local.get $off) ${heapResetWat()}) (i32.ge_u (local.get $next) (local.get $off)))
           (i32.or (i32.eq (local.get $newcap) (local.get $cap))
-            (i32.eq (i32.add (local.get $off) (i32.mul (local.get $cap) (local.get $es))) (global.get $__heap))))
+            (i32.eq (i32.add (local.get $off) ${ordBytesWat('(local.get $cap)', '(local.get $es)')}) (global.get $__heap))))
       (then
         (if (i32.gt_u (local.get $next) (global.get $__heap))
           (then
@@ -383,8 +397,8 @@ export const genOrdCopy = () => `(func $__ord_copy (param $off i32) (param $es i
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.le_u (local.get $cap) (local.get $want))
       (then
-        (local.set $dst (call $__alloc_hdr_n (i32.load (i32.sub (local.get $off) (i32.const 8))) (local.get $cap) (local.get $es)))
-        (memory.copy (local.get $dst) (local.get $off) (i32.mul (local.get $cap) (local.get $es)))
+        (local.set $dst (call $__alloc_hdr_n (i32.load (i32.sub (local.get $off) (i32.const 8))) (local.get $cap) ${ordStrideWat('(local.get $es)')}))
+        (memory.copy (local.get $dst) (local.get $off) ${ordBytesWat('(local.get $cap)', '(local.get $es)')})
         (return (local.get $dst))))
     (local.set $dst (call $__ord_rebuild (local.get $off) (local.get $cap) (local.get $es) (local.get $want)))
     (i64.store (i32.sub (local.get $dst) (i32.const 16)) (i64.const 0))
@@ -398,7 +412,7 @@ export const genOrdRebuild = () => `(func $__ord_rebuild (param $off i32) (param
     (local $i i32) (local $j i32) (local $slot i32) (local $dst i32) (local $h i32) (local $b i32)
     (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))
     (local.set $live (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (local.get $es)))
+    (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) ${ordStrideWat('(local.get $es)')}))
     ;; the table's own properties stay its own
     (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))
     (local.set $nix (i32.add (local.get $newptr) (i32.mul ${ordEntriesWat('(local.get $newcap)')} (local.get $es))))
