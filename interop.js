@@ -16,6 +16,9 @@ import { HEAP, PTR, FIELD, encodePtrHi, decodePtrType, decodePtrAux, ATOM, ATOM_
 import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
+// The async runtime's promise layout (src/std/async.js PROMISE_KEYS, kept equal by test/async.js).
+const PROMISE_KEYS = ['__p', 'st', 'rs', 'val', 'cbs', 'then', 'catch', 'finally']
+
 // ── Allocator ───────────────────────────────────────────────────────────────
 // The heap top: the exported `$__heap` global, or else the cell at 1020 (for a
 // shared memory: globals are per instance, threads share the cell). An 8-byte
@@ -774,6 +777,8 @@ const codec = (mem, src) => {
     if (t === 5) return m.getBigInt64(off, true)  // BIGINT
     if (t === 6) {  // OBJECT
       const keys = S.schemas[a], fns = S.fns
+      // a promise of the module's runtime: a host Promise of it (wrap's promiseOf)
+      if (S.promiseOf && keys && keys.length === PROMISE_KEYS.length && keys.every((k, i) => k === PROMISE_KEYS[i])) return S.promiseOf(p)
       // an instance of a class the module exports: the host's handle on it,
       // even where its layout hides a slot (a private name's) from the copy below
       const proto = keys && fnOf?.classes?.get(a)
@@ -1014,6 +1019,19 @@ export const wrap = (src, state) => {
     if (st === 1) return Promise.resolve(readSettled(raw))
     if (st === 2) return Promise.reject(readSettled(raw))
     return new Promise((resolve, reject) => pending.push({ raw, resolve, reject }))
+  }
+  // A promise the host reads inside a value (a result's field, an import's
+  // argument) is a host Promise of it, settled as it stands or by the sweep
+  // after the next turn: the host reaches a promise only through the runtime's
+  // exports, never its methods or fields (the summary keeps its layout closed,
+  // src/summary/index.js escapeHostValue). Its rejection, which the host may
+  // never ask for, reports nothing, as the module's own do not.
+  if (asyncMod && mem && !mem.scalar) mem.promiseOf = (raw) => {
+    const st = pStateOf(raw)
+    const out = st === 1 ? Promise.resolve(readSettled(raw)) : st === 2 ? Promise.reject(readSettled(raw))
+      : new Promise((resolve, reject) => pending.push({ raw, resolve, reject }))
+    out.catch(() => {})
+    return out
   }
   if (asyncMod && state) {
     state.afterTick = sweep

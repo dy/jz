@@ -4035,6 +4035,26 @@ Resolving a promise with a runtime promise adopts it as a thenable
 (NewPromiseResolveThenableJob): its `then` runs in a job of its own and the
 settlement in a reaction after it, two jobs, as Node takes them; an await
 takes one (PromiseResolve returns the promise itself).
+The runtime's bindings carry the values of every promise of the program,
+and no layout survives such a join (an object beside an array loses both), so
+the runtime holds what an async function returns (`__p_done`,
+`__async_ret`), what one awaits (`__await`) and what a combinator awaits
+without its identity (src/summary/index.js `opaque`): the summary answers
+those calls at their nodes and reads an awaited value off the promise it
+names there (`awaited`, `promiseSites`), Promise.all's as an array of its
+inputs' settled values, race's and any's as one of them (`COMBINED`). A
+thenable keeps its identity, the runtime calling its `then`, and a closure
+its own. The runtime regains a promise's identity only where it proves one,
+`__p_is(v)` testing that the box names the promise literal's schema and
+`__p_cast(v)` typing it any promise of the program, so its own bindings hold
+promises alone and read their fields as slots. A value the summary tracked
+leaves its sight through a `then`, `catch` or `finally` handler, which
+receives it untyped, and through an async generator's consumer
+(`__escaping`): there it escapes. The host reaches a promise only through the
+runtime's exports: a promise inside a value it reads (a result's field, an
+import's argument) is a host Promise of it (interop.js `promiseOf`), settled as
+it stands or by the sweep that ends each call, so a promise handed to the host
+keeps its layout and only what it settles with is the host's.
 A machine keeps the bindings of the scopes it splits into states, its
 temporaries and its own state (`__s`, `__sent`, the try regions' `__err`,
 `__thr`, `__thrset`) as fields of one frame record its closures share

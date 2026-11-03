@@ -11,7 +11,11 @@
  * `__p_make` / `__p_finish` adopt host promises. A WASI build drains it
  * itself at the same boundaries (optimize/watr-tail.js wasiTurns). One copy
  * per program: every module that awaits imports it, so a promise settled in
- * one module resolves an await in another.
+ * one module resolves an await in another. Its bindings hold the values they
+ * carry without their identities (src/summary/index.js `opaque`, which reads
+ * an awaited value off the promise it names), and a promise only where
+ * `__p_is` proves one, `__p_cast` then typing it as any promise: so each of
+ * its reads of a promise's fields is a slot's.
  *
  * Divergences (documented): unhandled rejections don't report; job ordering
  * is per-drain-cycle (boundary/timer granularity), not per-continuation;
@@ -42,8 +46,9 @@ export let __drain = () => {
   }
   __mt.length = 0; __mh = 0
 }
-export let __state = (p) => p != null && typeof p === 'object' && p.__p === 1 ? p.st : -1
-export let __value = (p) => p.val
+// the host's reads of a value it holds: a promise's state (-1: none) and value
+export let __state = (p) => __p_is(p) ? __p_cast(p).st : -1
+export let __value = (p) => __p_cast(p).val
 export let __p_new = () => ({ __p: 1, st: 0, rs: 0, val: undefined, cbs: null,
   then(ok, err) {
     let q = __p_new()
@@ -78,7 +83,7 @@ export let __p_settle = (p, st, v) => {
     if (v === p) { __p_fin(p, 2, new TypeError('Chaining cycle detected for promise')); return }
     // a promise adopted as a thenable is (NewPromiseResolveThenableJob): its
     // then() runs in a job of its own, the settlement a reaction after it
-    if (v.__p === 1) { p.rs = 1; __job(() => __p_sub(v, (st2, v2) => __p_fin(p, st2, v2)), 0, undefined); return }
+    if (__p_is(v)) { let q = __p_cast(v); p.rs = 1; __job(() => __p_sub(q, (st2, v2) => __p_fin(p, st2, v2)), 0, undefined); return }
     // plain-object thenable (spec: any object with callable then): \`then\` is
     // read once, a throw of its getter rejecting, and called on the object in
     // a job; the resolve/reject pair shares one already-called latch, and a
@@ -136,7 +141,7 @@ export let __p_exec = (fn) => {
   return p
 }
 export let __p_resolve = (v) => {
-  if (v != null && typeof v === 'object' && v.__p === 1) return v
+  if (__p_is(v)) return __p_cast(v)
   let p = __p_new(); __p_settle(p, 1, v); return p
 }
 export let __p_reject = (e) => { let p = __p_new(); __p_settle(p, 2, e); return p }
@@ -232,5 +237,6 @@ export let __mt_drain = () => __drain()
 export let __p_state = (p) => __state(p)
 export let __p_value = (p) => __value(p)
 export let __p_make = () => __p_new()
-export let __p_finish = (p, st, v) => __p_settle(p, st, v)
+// (the host settles only a promise it made, \`__p_make\`'s)
+export let __p_finish = (p, st, v) => { if (__p_is(p)) __p_settle(__p_cast(p), st, v) }
 `

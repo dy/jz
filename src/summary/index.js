@@ -105,9 +105,11 @@ const BIND = CLASS_T + 'bind'
 // returns is read off its call, never its body, so a call of one stays one.
 const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/, ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
 const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/, DONE = /\$__p_done$/
-const ASYNC_P = /\$__p_async$/, ASYNC_RET = /\$__async_ret$/
-// one pattern, the ten's alternatives: the compiler compiles itself, which resolves a regex where it is written
-const AT_CALL = /\$__(it_from|it_mk|it_drain|it_arr|async_run|awaited|p_reject|p_done|p_async|async_ret)$/
+const ASYNC_P = /\$__p_async$/, ASYNC_RET = /\$__async_ret$/, AWAIT = /\$__await$/
+// the combinators whose promise the summary names at its call: what each fulfills with is its inputs' settled values
+const COMBINED = /\$__p_(all|race|any)$/
+// one pattern, the alternatives above: the compiler compiles itself, which resolves a regex where it is written
+const AT_CALL = /\$__(it_from|it_mk|it_drain|it_arr|async_run|awaited|p_reject|p_done|p_async|async_ret|await|p_all|p_race|p_any)$/
 export const answeredAtCall = (name) => AT_CALL.test(name)
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
@@ -1551,6 +1553,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     else if (t === K.OBJECT) for (const sid of shapesOf(p)) {
       if (seen.has(sid) || hostSchemas.has(sid)) continue
+      // A promise reaches the host as a host Promise (interop.js promiseOf):
+      // the host reads its value through the runtime's exports and holds no
+      // method or field of it, so its layout stays closed; what it fulfills
+      // or rejects with is the host's.
+      if (layouts[sid] === PROMISE_LAYOUT) {
+        seen.add(sid)
+        if (promiseSites.has(sid)) { retain(promiseSites.get(sid)); escapeToHost(promiseSites.get(sid), seen) }
+        const vi = schemas[sid].indexOf('val')
+        if (vi >= 0) escapeToHost(slots(sid)[vi], seen)
+        continue
+      }
       if (onLose && !opaqueSchemas.has(sid)) onLose(layouts[sid], 'handed to the host', current, site)
       seen.add(sid); hostSchemas.add(sid); changed = true
       forFolded(sid, s => escapeToHost(kind(K.OBJECT, s), seen))
@@ -2084,6 +2097,30 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (nf !== f) { promiseSites.set(sid, nf); changed = true }
     return kind(K.OBJECT, sid)
   }
+  // A value the async runtime holds without its identity: what an async
+  // function returns, what one awaits. The runtime's own bindings carry the
+  // values of every promise of the program, which no layout survives being
+  // joined with; the summary reads an awaited value off the promise it names
+  // instead (`awaited`, promiseSites). A thenable keeps its identity, the
+  // runtime calling its `then`, and so does a closure; a promise regains its
+  // own where the runtime proves it one (`__p_cast`).
+  const opaque = (k) => {
+    if (paramOf(k) === UNKNOWN || tagOf(k) === K.CLOSURE) return k
+    if (tagOf(k) === K.OBJECT && shapesOf(paramOf(k)).some(sid => layouts[sid] !== PROMISE_LAYOUT && thenable(sid))) return k
+    return k | UNKNOWN
+  }
+  /** Any promise of the program: the runtime's literal and every promise it names. */
+  const promiseKind = () => {
+    if (PROMISE_LAYOUT === undefined) return ANY
+    let r = kind(K.OBJECT, PROMISE_LAYOUT)
+    for (const sid of promiseSites.keys()) r = merge(r, kind(K.OBJECT, sid))
+    return r
+  }
+  /** What the promises a kind may be fulfill with leaves to code the summary does not type (a `then` handler, an async generator's consumer). */
+  const escapeFulfilled = (k) => {
+    if (tagOf(k) !== K.OBJECT || paramOf(k) === UNKNOWN) return
+    for (const sid of shapesOf(paramOf(k))) { const f = promiseSites.get(sid); if (f !== undefined) losingAs('handed to a promise\'s handler', escape, f) }
+  }
   const call = (callee, base, n, node = null) => {
     if (typeof callee === 'string') {
       if (callee.startsWith('new.')) {
@@ -2151,13 +2188,26 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       }
       // The async runtime's answers at its call nodes (promiseAt, awaited): the
       // driver runs over the machine itself, `__awaited` over kinds without identity.
-      if (node && (ASYNC_RUN.test(callee) || REJECT.test(callee) || DONE.test(callee) || ASYNC_P.test(callee) || ASYNC_RET.test(callee) || AWAITED.test(callee)) && funcByName.has(callee)) {
+      if (node && (ASYNC_RUN.test(callee) || REJECT.test(callee) || DONE.test(callee) || ASYNC_P.test(callee) || ASYNC_RET.test(callee) || AWAIT.test(callee) || COMBINED.test(callee) || AWAITED.test(callee)) && funcByName.has(callee)) {
         const f = funcByName.get(callee)
+        // the runtime's body runs over these arguments, the values among them without their identities (opaque)
+        const bindOpaque = (values) => { const b = sp; for (let i = 0; i < n; i++) pushK(values.includes(i) ? opaque(ks[base + i]) : ks[base + i], kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
         let r
-        if (ASYNC_RET.test(callee)) {
+        if (AWAIT.test(callee)) {
+          // an await's operand: its settled value resumes the machine, typed off the operand (`__awaited`)
+          bindOpaque([0])
+          r = resultAt(callee, base, n, node)
+        } else if (COMBINED.test(callee)) {
+          // Promise.all fulfills with an array of its inputs' settled values, race and any with one of them
+          bind(callee, paramNamesOf(f), base, n, f.defaults)
+          const own = resultAt(callee, base, n, node), settled = awaited(n ? elemOf(ks[base]) : K.NONE)
+          let v = settled
+          if (/all$/.test(callee)) { v = arrayOf(node, K.NONE); raiseElem(v, settled) }
+          r = escaped.has(callee) ? own : promiseAt(node, v, own)
+        } else if (ASYNC_RET.test(callee)) {
           // what an async function's machine resolves its promise with: the
           // value every promise site the first argument names fulfills with
-          bind(callee, paramNamesOf(f), base, n, f.defaults)
+          bindOpaque([1])
           const p = n ? ks[base] : K.NONE, v = awaited(n > 1 ? ks[base + 1] : NULLISH)
           if (tagOf(p) === K.OBJECT && paramOf(p) !== UNKNOWN) for (const sid of shapesOf(paramOf(p))) {
             const fl = promiseSites.get(sid)
@@ -2171,7 +2221,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           if (escaped.has(callee)) escapeArgs(base, n)
           else { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
         } else {
-          bind(callee, paramNamesOf(f), base, n, f.defaults)
+          if (DONE.test(callee)) bindOpaque([0])
+          else bind(callee, paramNamesOf(f), base, n, f.defaults)
           const own = resultAt(callee, base, n, node)
           // an async function that never awaits returns `__p_done(v)`: the promise resolved with v, a thenable adopted
           // (an async function's own promise fulfills with what its `__async_ret`s resolve it with)
@@ -2185,6 +2236,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (callee === '__keys_ro' || callee === '__keys_dyn') { if (!node) return kind(K.ARRAY); const out = arrayOf(node, K.NONE); raiseElem(out, STRING); return out }
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
       if (callee === '__tdz') return K.NONE // a frame field before its binding's step (src/ast.js TDZ_VALUE)
+      // the async runtime's proof that a value is one of its promises, and the promise it then is (std/async.js)
+      if (callee === '__p_is') return BOOL
+      if (callee === '__p_cast') return promiseKind()
+      // a value the runtime awaits for a consumer the summary does not type (an async generator's)
+      if (callee === '__escaping') { const k = n ? ks[base] : K.NONE; escape(awaited(k)); return k }
       if (callee === '__object_toString') return STRING // the class of a value, `[object X]` (module/object.js)
       const f = funcByName.get(callee)
       if (f) {
@@ -3614,6 +3670,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (tagOf(optional) === K.NONE) { sp = base; return K.NONE }
       }
       if (memberCall) {
+        // a handler receives the value untyped: what the summary tracked for it leaves its sight
+        if (callee[2] === 'then' || callee[2] === 'catch' || callee[2] === 'finally') escapeFulfilled(recv)
         r = optionalResult(chainOp(callee[0], callee[1]), recv, method(recv, callee[2], base, count, n))
       }
       else if (callee === 'new.Map') r = mapOf(n, base, count)

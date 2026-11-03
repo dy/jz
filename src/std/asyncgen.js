@@ -23,7 +23,7 @@ export let __ag_call = (st, g, k, v) => {
   let t = r.value
   // a delegate's value (a yield*'s) is yielded as it is
   if (t.a === 2) { __ag_yield(st, g, t.v); return }
-  __await(t.v, (s, x) => { if (s === 2) __ag_call(st, g, 1, x); else if (t.a === 0) __ag_yield(st, g, x); else __ag_call(st, g, 0, x) })
+  __await(__escaping(t.v), (s, x) => { if (s === 2) __ag_call(st, g, 1, x); else if (t.a === 0) __ag_yield(st, g, x); else __ag_call(st, g, 0, x) })
 }
 // AsyncGeneratorYield: the oldest request settles, a queued one resumes at once
 export let __ag_yield = (st, g, x) => {
@@ -35,7 +35,7 @@ export let __ag_yield = (st, g, x) => {
 export let __ag_resume = (st, g) => {
   st.s = 2
   let job = st.q[0]
-  if (job.k === 2) __await(job.v, (s, x) => __ag_call(st, g, s === 1 ? 2 : 1, x))
+  if (job.k === 2) __await(__escaping(job.v), (s, x) => __ag_call(st, g, s === 1 ? 2 : 1, x))
   else __ag_call(st, g, job.k, job.v)
 }
 // the body completed: the oldest request settles, then the queued ones
@@ -50,7 +50,7 @@ export let __ag_drain = (st) => {
     let job = st.q[0]
     if (job.k === 2) {
       st.s = 3
-      __await(job.v, (s, x) => { st.s = 4; st.q.shift(); __p_settle(job.p, s, s === 1 ? { value: x, done: true } : x); __ag_drain(st) })
+      __await(__escaping(job.v), (s, x) => { st.s = 4; st.q.shift(); __p_settle(job.p, s, s === 1 ? { value: x, done: true } : x); __ag_drain(st) })
       return
     }
     st.q.shift()
@@ -78,7 +78,7 @@ export let __ag_ask = (st, g, k, v) => {
 export let __ag_cont = (it, r, close) => {
   if (r == null || typeof r !== 'object' && typeof r !== 'function') throw new TypeError('iterator result is not an object')
   let p = __p_new(), done = r.done
-  __await(r.value, (s, x) => {
+  __await(__escaping(r.value), (s, x) => {
     if (s === 1) { __p_settle(p, 1, { value: x, done: done }); return }
     if (close && !done) { try { if (it.return != null) it.return() } catch (y) {} }
     __p_settle(p, 2, x)

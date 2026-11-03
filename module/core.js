@@ -16,6 +16,7 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, T
 import { emit, emitReference, emitIdentitySafe, storedValue, deps, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
+import { PROMISE_KEYS } from '../src/std/async.js'
 import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
 import { copyReceiverFacts } from '../src/compile/emit/shared.js'
 import { restViewLength } from '../src/compile/rest-view.js'
@@ -2852,6 +2853,16 @@ export default (ctx) => {
   ctx.core.emit['__raw_prop'] = (obj, prop) => dotRead(obj, prop, true)
   // a generator frame's field before its binding's step (src/ast.js TDZ_VALUE)
   ctx.core.emit.__tdz = () => undefExpr()
+  // The async runtime's proof that a value is one of its promises: its box
+  // names the promise literal's schema (std/async.js PROMISE_KEYS), so no
+  // other object passes; the value itself, as the promise the summary then
+  // types it (`__p_cast`); and a value it awaits for an untyped consumer.
+  ctx.core.emit.__p_is = (v) => {
+    const sid = ctx.schema.register(PROMISE_KEYS, null)
+    return typed(['i64.eq', ['i64.and', asI64(emit(v)), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]], 'i32')
+  }
+  ctx.core.emit.__p_cast = (v) => asF64(emit(v))
+  ctx.core.emit.__escaping = (v) => asF64(emit(v))
   // A generator function's mark on an object it makes (jzify/generators.js
   // genMark): a hidden property where the program asks `instanceof` of a
   // value (class-dispatch.js valueInstanceof), as a nominal class's instance

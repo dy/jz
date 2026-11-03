@@ -991,3 +991,42 @@ test('async: an async function\'s machine drives itself from one frame record', 
   ok(!out.includes('"__async_run"') && !out.includes('[":","done",') && !out.includes('[":","next",'), 'no driver, step record or iterator')
   ok(/\[":","t",\["\(\)","__tdz",null\]\]/.test(out) && /\[":","i",\["\(\)","__tdz",null\]\]/.test(out), 'its bindings are fields of the frame')
 })
+
+// An awaited value keeps the layout its producer gave it: the async runtime
+// holds what an async function returns and what one awaits without its
+// identity (src/summary/index.js opaque), the summary reading an awaited value
+// off the promise it names, Promise.all's an array of its inputs' (COMBINED).
+// A record and an array of records, which the runtime's one value binding
+// would join and lose, read as slots.
+test('async: an awaited value keeps the layout its producer gave it', async () => {
+  const src = `const ORD = [[{ qty: 1, cents: 2 }], [{ qty: 3, cents: 4 }, { qty: 5, cents: 6 }]]
+const USR = [{ id: 7, tier: 1 }]
+const getOrders = async (i) => ORD[i]
+const getUser = async (i) => USR[i]
+const price = async (line) => line.qty * line.cents
+export const f = async () => {
+  const u = await getUser(0), lines = await getOrders(1)
+  let t = 0
+  for (let k = 0; k < lines.length; k++) t += await price(lines[k])
+  const rs = await Promise.all([getUser(0), getUser(0)])
+  return t + u.id + rs[0].tier + rs[1].id
+}`
+  const deopt = []
+  compile(src, { warnings: (w) => { if (/deopt-prop-read|deopt-dyn-read/.test(w.code) && /line\.|u\.|\.tier|\.id/.test(w.message)) deopt.push(w.message) } })
+  is(deopt, [], 'fields read as slots')
+  if (onWasi() || onKernel()) return
+  is(await jz(src).exports.f(), await oracle(src).f())
+})
+
+// What reaches the host through a promise is the host's: a promise inside a
+// value is a host Promise (interop.js promiseOf), a closure inside what an
+// async function returns or what a then handler passes on stays callable.
+test('async: what reaches the host through a promise is the host\'s', async () => {
+  if (onWasi() || onKernel()) return
+  const r = jz(`const rec = async () => ({ fn: (x) => x * 2 })
+export const f = async () => ({ p: Promise.resolve(1), fn: (x) => x + 1 })
+export const g = () => rec().then(o => o)`).exports
+  const v = await r.f()
+  ok(v.p instanceof Promise, 'a host Promise')
+  is([await v.p, v.fn(2), (await r.g()).fn(4)], [1, 3, 8])
+})
