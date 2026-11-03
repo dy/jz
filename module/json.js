@@ -201,6 +201,9 @@ function jsonShapeStrings(ctx, expr) {
 }
 
 export default (ctx) => {
+  // The size tier keeps the general paths alone: no packed-string or four-unit
+  // copies in the writer, no layout-by-raw-hash or fraction fast path in the parser.
+  const lean = !!ctx.transform.optimize?.leanRuntime
   // JSON.stringify's toJSON step (compile/emit/to-json.js): a program defining
   // toJSON passes each value through it, with its key, before the omit test.
   const toJSON = () => !!ctx.funcs.runtimeRoots?.has(TO_JSON)
@@ -246,7 +249,7 @@ export default (ctx) => {
     __jp_num: ['__jp_num_full'],
     __jp_num_full: ['__pow10', '__dec_to_f64', '__char_at'],
     __jp_arr: ['__jp_ws', '__jp_val', '__dense_check'],
-    __jp_obj: ['__jp_ws', '__jp_val', '__jp_str', '__jp_schema_get', '__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__jp_key_idx', '__jp_shape_hit', '__str_length'],
+    __jp_obj: () => ['__jp_ws', '__jp_val', '__jp_str', '__jp_schema_get', '__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__jp_key_idx', ...(lean ? [] : ['__jp_shape_hit']), '__str_length'],
     __jp_shape_hit: ['__str_length'],
     __jp_schema_get: ['__alloc', '__alloc_hdr', '__mkptr', '__str_eq', '__str_hash', '__jp_schema_limit'],
     __jp_schema_limit: ['__alloc_hdr', '__mkptr'],
@@ -433,7 +436,7 @@ export default (ctx) => {
     (if (local.get $q) (then
       (i32.store16 (local.get $dst) (i32.const 34))
       (local.set $dst (i32.add (local.get $dst) (i32.const 2)))))
-    (if (local.get $sso) (then
+    ${lean ? '' : `(if (local.get $sso) (then
       ${ssoPutWat('$ptr', '$len', '$dst', '$ok', '$lo', '$hi')}
       (if (local.get $ok) (then
         (local.set $dst (i32.add (local.get $dst) (i32.shl (local.get $len) (i32.const 1))))
@@ -442,7 +445,7 @@ export default (ctx) => {
           (local.set $dst (i32.add (local.get $dst) (i32.const 2)))))
         (global.set $__jpos (i32.shr_u (i32.sub (local.get $dst) (global.get $__jbuf)) (i32.const 1)))
         (return))))
-      (else ${quadCopyWat('$src', '$len', '$i', '$dst', '$lo')}))
+      (else ${quadCopyWat('$src', '$len', '$i', '$dst', '$lo')}))`}
     (block $d (loop $l
       (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
       (local.set $ch (if (result i32) (local.get $sso)
@@ -518,12 +521,12 @@ export default (ctx) => {
     (local.set $dst (i32.add (local.get $dst) (i32.const 2)))
     (block $esc
       (block $clean
-        (if (local.get $sso) (then
+        ${lean ? '' : `(if (local.get $sso) (then
           ${ssoPutWat('$key', '$len', '$dst', '$ok', '$lo', '$hi')}
           (br_if $esc (i32.eqz (local.get $ok)))
           (local.set $dst (i32.add (local.get $dst) (i32.shl (local.get $len) (i32.const 1))))
           (br $clean))
-          (else ${quadCopyWat('$src', '$len', '$i', '$dst', '$lo')}))
+          (else ${quadCopyWat('$src', '$len', '$i', '$dst', '$lo')}))`}
         (loop $l
         (br_if $clean (i32.ge_u (local.get $i) (local.get $len)))
         (local.set $ch (if (result i32) (local.get $sso)
@@ -1221,7 +1224,7 @@ export default (ctx) => {
           (local.set $acc (i32.add (i32.mul (local.get $acc) (i32.const 10)) (local.get $c)))
           (local.set $i (i32.add (local.get $i) (i32.const 1)))
           (br $more)))))
-      ;; A fraction whose digits keep the whole under 10^9 (a price, a rate): the
+      ${lean ? '' : `;; A fraction whose digits keep the whole under 10^9 (a price, a rate): the
       ;; integer of all its digits over 10^f, both exact, one correctly rounded
       ;; division (Clinger). An exponent, more digits or none after the point is
       ;; the full grammar's.
@@ -1244,7 +1247,7 @@ export default (ctx) => {
             (then (br_if $slow (i32.eq (i32.or ${numChar('(local.get $i)')} (i32.const 32)) (i32.const 101)))))
           (global.set $__jppos (local.get $i))
           (local.set $q (f64.div (f64.convert_i32_u (local.get $acc)) (local.get $p)))
-          (return (select (f64.neg (local.get $q)) (local.get $q) (local.get $neg)))))
+          (return (select (f64.neg (local.get $q)) (local.get $q) (local.get $neg)))))`}
       ;; the token ends here: no '.', no 'e'/'E', no digit after a lone 0
       (if (i32.lt_u (local.get $i) (local.get $len))
         (then
@@ -1573,8 +1576,8 @@ export default (ctx) => {
     (local.set $kbuf (i32.add (global.get $__jp_ks) (local.get $base)))
     (if (i32.eqz (local.get $hh)) (then (local.set $hh (i32.const 1))))
     (local.set $sid (i32.const -1))
-    (if (i32.eqz (local.get $slow))
-      (then (local.set $sid (call $__jp_shape_hit (local.get $kbuf) (local.get $kn) (local.get $hh)))))
+    ${lean ? '' : `(if (i32.eqz (local.get $slow))
+      (then (local.set $sid (call $__jp_shape_hit (local.get $kbuf) (local.get $kn) (local.get $hh)))))`}
     (local.set $out (local.get $kbuf))
     (local.set $on (local.get $kn))
     (if (i32.lt_s (local.get $sid) (i32.const 0))
@@ -1628,11 +1631,11 @@ export default (ctx) => {
         (global.set $__jppos (local.get $end))
         ;; Resolve schema sid (cached or freshly registered).
         (local.set $sid (call $__jp_schema_get (local.get $out) (local.get $on)))
-        (if (local.get $plain)
+        ${lean ? '' : `(if (local.get $plain)
           (then
             (local.set $i (i32.add (i32.add (global.get $__schema_cache) (i32.const 512)) (i32.shl (i32.and (local.get $hh) (i32.const 63)) (i32.const 3))))
             (i32.store (local.get $i) (local.get $hh))
-            (i32.store offset=4 (local.get $i) (local.get $sid))))))
+            (i32.store offset=4 (local.get $i) (local.get $sid))))`}))
     ;; Allocate OBJECT slot region: on × 8 bytes, with header (size at -8,
     ;; cap at -4) matching the static-fold path's emitJsonConstValue layout.
     (local.set $obj (call $__alloc_hdr (i32.const 0) (local.get $on)))

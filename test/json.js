@@ -701,6 +701,19 @@ test('JSON.parse: a property read caches a parsed layout, and a reset empties th
   is([j.exports.f('{"b":5,"a":6}'), j.exports.f('{"b":5,"a":6}')], [5, 5], 'a reissued id reads its own slot')
 })
 
+test('JSON at the size tier: the writer, the parser and Number::toString keep their general paths', () => {
+  // A heap string's four-unit copy and a fraction's exact short decimal are the
+  // speed tier's: the size tier links neither, and answers the same.
+  const src = `export let f = (t) => JSON.stringify(JSON.parse(t)) + String(1.5)`
+  const speed = compile(src, { wat: true, optimize: 'speed' }), size = compile(src, { wat: true, optimize: 'size' })
+  for (const [what, re] of [['the four-unit copy', /0x005C005C005C005C/i], ['the short decimal', /8\.881784197001252e-16/]]) {
+    ok(re.test(speed), `${what} at the speed tier`)
+    ok(!re.test(size), `no ${what} at the size tier`)
+  }
+  const t = '{"a":"q\\"r","b":[1.25,0.1,{"c":-3.5e-7}]}'
+  is(instantiate(compile(src, { optimize: 'size' })).exports.f(t), t + '1.5')
+})
+
 test('JSON.parse: schema cache is empty after arena reuse', () => {
   const shapes = Array.from({ length: 30 }, (_, i) => `{k${i}:42,level:${i + 100}}`).join(',')
   const source = `const shapes = [${shapes}]

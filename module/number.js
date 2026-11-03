@@ -379,7 +379,8 @@ const DEC_TO_F64_WAT = `(func $__dec_to_f64
         (local.get $mant52))))`
 
 export default (ctx) => {
-  // The size tier renders a digit a step inside __itoa, as it always has.
+  // The size tier renders a digit a step inside __itoa, as it always has, and a
+  // fraction by Ryu alone (no exact short-decimal path, __ftoa_short).
   const lean = !!ctx.transform.optimize?.leanRuntime
   deps({
     __mkstr: ['__alloc'],
@@ -396,7 +397,7 @@ export default (ctx) => {
     __fmt_exp: ['__ftoa', '__alloc', '__dec_sig', '__dec_to_f64', '__fmt_exp_tail', '__mkstr'],
     __fmt_prec: ['__ftoa', '__alloc', '__dec_sig', '__fmt_exp_tail', '__mkstr'],
     __ftoa_shortest: ['__mkstr_scratch', '__static_str', '__alloc', '__ftoa_into'],
-    __ftoa_into: ['__itoa', '__ryu_mulshift3', '__ryu_pow5', '__ryu_pow5div', '__ftoa_short'],
+    __ftoa_into: ['__itoa', '__ryu_mulshift3', '__ryu_pow5', '__ryu_pow5div', ...(lean ? [] : ['__ftoa_short'])],
     __ryu_mulshift3: ['__umul128'],
     __ryu_pow5: ['__umul128'],
     __dec_to_f64: ['__ryu_pow5', '__umul128', '__pow10'],
@@ -1376,7 +1377,7 @@ export default (ctx) => {
       (then
         (i32.store16 (local.get $buf) (i32.const 48))
         (return (i32.const 1))))
-    (if (local.tee $pos (call $__ftoa_short (local.get $val) (local.get $buf))) (then (return (local.get $pos))))
+    ${lean ? '' : '(if (local.tee $pos (call $__ftoa_short (local.get $val) (local.get $buf))) (then (return (local.get $pos))))'}
     (local.set $bits (i64.reinterpret_f64 (local.get $val)))
     (if (i64.lt_s (local.get $bits) (i64.const 0))
       (then
