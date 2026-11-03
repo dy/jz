@@ -500,24 +500,43 @@ and adds no flags. Goose's emitted C turns floating-point contraction off
 itself (`#pragma clang fp contract(off)` and the GCC equivalent), so its float
 cases give the strict checksums, with no FMA variants.
 
-The 30 ports share `_lib/bench.goose` and were written for this benchmark from
-each case's JavaScript and its C and Rust ports: the same algorithm, input
-generation, iteration counts and checksum, in the layouts Goose code reaches
-for. Buffers are grow-only arrays (`T[>..]`), lookup tables and small matrices
-fixed arrays (`u32[256]`, `f64[16]`), records inline structs; `shapes` stores
-its record stream as a variable-mode enum (each record the size of its own
-variant) and measures it through case functions, `wordcount` counts in the
-standard library's `dictionary` keyed by views of inline `u8[..8]` words, and
-`strbuild` formats each row as a fresh `str(…)`. Like the Rust ports they add
-no bounds-check hints (no `assert` of lengths, no `checkfree`): the compiler
-removes what it proves. They cover every family with cases that have C and Rust
-ports: float (mandelbrot, mat4, matmul, nbody, fft, spmv), integer (bitwise,
-crc32, sieve, nqueens, radixsort, sort, hash, vm, dict, levenshtein), image
-(blur, conv2d, qoi), audio (bytebeat, biquad, wav), text and codecs (base64,
-tokenizer, lz, strbuild, wordcount) and records (aos, immutable, shapes).
-`dispatch` has no port: its kernel calls through a table of first-class
-functions, and Goose has no function values at run time, only an enum's tag to
-dispatch on. Goose is a native contender like scriptc and Perry: it enters no
+The 75 ports share `_lib/bench.goose` and were written for this benchmark from
+each case's JavaScript, and from its C and Rust ports where it has them: the
+same algorithm, input generation, iteration counts and checksum, in the layouts
+Goose code reaches for. Buffers are grow-only arrays (`T[>..]`), lookup tables
+and small matrices fixed arrays (`u32[256]`, `f64[16]`), records inline structs;
+`shapes` stores its record stream as a variable-mode enum (each record the size
+of its own variant) and measures it through case functions, `wordcount` counts
+in the standard library's `dictionary` keyed by views of inline `u8[..8]`
+words, `strbuild` formats each row as a fresh `str(…)`, `json` parses with the
+standard library's JSON parser, and `callback` and `poly` call its `map` and
+generic `sum`. The library cases (the color-space kernels, pmndrs/math's,
+three.js's, @stdlib's ddot) port the library code they call as written, a JS
+object becoming an inline struct and a method a function; libm functions
+Goose's `math` module does not bind (`cbrt`, `hypot`) come through `extern fn`.
+Like the Rust ports they add no bounds-check hints (no `assert` of lengths, no
+`checkfree`): the compiler removes what it proves. They cover every case with C
+and Rust ports but `dispatch`, the C-only library idioms (sosfilter, movavg,
+upfirdn, pcmconvert), and, among the cases with no C or Rust port, the nine
+color-space kernels, the four three.js and four pmndrs/math cases, fftplan,
+provenance, gainclass and stdlib-ddot.
+
+Sixteen cases have no port:
+
+- `dispatch` calls through a table of first-class functions, and Goose has no
+  function values at run time, only an enum's tag to dispatch on.
+- @stdlib's exp, erf, pow, gamma, special functions and distributions build
+  float64 values from their 32-bit words (`fromWords`, `setHighWord`) on their
+  hot paths, which Goose cannot express without C of its own; the last two are
+  20,000-line namespace bundles besides.
+- The lab probes colorconv, colorlch, colorlog, colorpq and deltae check the
+  exact bits of transcendental results, which follow one engine family's math
+  library; no native lane has a port of them.
+- jessie, jz and watr (parsers and compilers bundled from npm packages) and
+  webaudio (the whole web-audio-api library) are programs of thousands of
+  lines, not kernels.
+
+Goose is a native contender like scriptc and Perry: it enters no
 claim, and the chart leaves it out as it leaves out the other native ports
 (native Rust, Zig and Go, and Tov), while the bench page shows it per case and
 in the corpus.
