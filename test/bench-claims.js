@@ -436,9 +436,21 @@ test('claims: JZ does not lose to pinned Porffor native by case or geomean', () 
 //   on all seven, the Rust and AssemblyScript wasm ports on the four Map and Set cases,
 //   and Porffor on async (an Apple M4, loaded: mapstr 1.97× Node, async 2.99× Node and
 //   1.51× Porffor after its job-queue rework); their work is in progress.
+// - jsonroundtrip, arraynumeric and arraydowngrade, Perry's benchmark suite
+//   (PerryTS/perry benchmarks/suite) added on 2026-11-03, paired on an Apple M4 at
+//   load 10 to 14: jsonroundtrip leads node (0.66×), deno, bun and every wasm port
+//   and trails the jsc shell (1.08×); arraynumeric leads every engine (node 0.64×,
+//   jsc 0.88×) and trails C → wasm (1.11×), its increment storing each sum through a
+//   NaN-canonicalizing select where clang's loop loads, adds and stores;
+//   arraydowngrade trails every engine (node 5.4×, deno 6.5×, bun and jsc 6.1×) and
+//   the C, Rust and AssemblyScript wasm ports (1.53×, 3.77×, 2.27×): its `arr[i] + 1`
+//   over slots of number, object and string is the dynamic add in a loop that may
+//   allocate, so each element also pays the in-loop collector's heap and iterator
+//   tests, a forwarding check of the array's header, a bounds and a hole test.
 // Excluded from the strict and band tests, the Porffor floor and the corpus-coverage
 // test until the todo below flips; a case leaves this set the commit it leads.
-const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'stringify', 'jsontransform', 'mapstr', 'mapint', 'mapobj', 'setops', 'async'])
+const PENDING_CASES = new Set(['stdlib-exp', 'polytri', 'fabrik', 'stringify', 'jsontransform', 'mapstr', 'mapint', 'mapobj', 'setops', 'async',
+  'jsonroundtrip', 'arraynumeric', 'arraydowngrade'])
 
 // A claimed case answers for jz with a timed, parity-valid row: a failed, wrong or
 // missing JZ row leaves no ratio, and the claims then held without it. Only a case
