@@ -115,6 +115,12 @@ export function optimizeModule(sec, profiler) {
     for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, writes)
     ctx.scope.headerSafeFuncs = null
   })
+  // A site's inline cache (optimize/devirt.js) may hold a layout JSON.parse
+  // registered, whose id `__clear` reissues: the reset empties every site.
+  if (ctx.runtime.icSites) {
+    const clear = sec.stdlib.find(f => Array.isArray(f) && f[0] === 'func' && f[1] === '$__clear')
+    if (clear) for (let s = 1; s <= ctx.runtime.icSites; s++) clear.push(['global.set', `$__ic_hi${s}`, ['i64.const', -1]])
+  }
   // Per-iteration arena rewinds go in once the vectorizer has matched its loop
   // shapes (optimize/loop-rewind.js); a loop it lifted is a new node this never sees.
   if (ctx.plans.rewindLoopLabels) t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopLabels); ctx.plans.rewindLoopLabels = null })

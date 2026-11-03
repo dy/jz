@@ -133,7 +133,7 @@ const sliceSsoPackWat = () => `
 // evaluated at pullStdlib, after buildInternTable). FNV-1a must match
 // __str_hash's heap branch. Both slice paths supply a heap $srcOff and code-unit $start.
 // Locals: $ip src ptr, $h, $j, $slot, $cand, $k.
-const internProbeWat = () => ctx.scope.globals.has('__internBase') ? `
+export const internProbeWat = () => ctx.scope.globals.has('__internBase') ? `
     (if (i32.le_u (local.get $nlen) (i32.const 32))
       (then
         (local.set $ip (i32.add (local.get $srcOff) (i32.shl (local.get $start) (i32.const 1))))

@@ -1833,10 +1833,10 @@ export default (ctx) => {
         (local.set $idx (call $__schema_slot_h (local.get $obj) (local.get $key) (local.get $h)))
         (if (i32.ge_s (local.get $idx) (i32.const 0))
           (then ${!presence
-            ? `${lean ? '' : `;; a static schema's slot feeds the reading site's inline cache (optimize/devirt.js)
-               (if (i32.lt_u (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))) (i32.const ${ctx.schema.list.length}))
-                 (then (global.set $__ic_found_slot (local.get $idx))
-                       (global.set $__ic_found_hi (i64.and (local.get $obj) (i64.const ${OBJECT_SCHEMA_HI_MASK})))))`}
+            ? `${lean ? '' : `;; the slot feeds the reading site's inline cache (optimize/devirt.js), which
+               ;; \`__clear\` empties as it reissues the ids JSON.parse registered
+               (global.set $__ic_found_slot (local.get $idx))
+               (global.set $__ic_found_hi (i64.and (local.get $obj) (i64.const ${OBJECT_SCHEMA_HI_MASK})))`}
                (return (call $__schema_value (local.get $obj) (local.get $idx) (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))))))`
             : `(local.set $val (call $__schema_value (local.get $obj) (local.get $idx) (i64.load (i32.add (local.get $off) (i32.shl (local.get $idx) (i32.const 3))))))
                (local.set $dmask ${deletedMaskWat('$off')})

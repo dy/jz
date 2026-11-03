@@ -665,6 +665,19 @@ test('JSON.parse: a layout registered past the reserve reads no row of the key i
   is(wrong, 0, 'every layout past the reserve reads as itself')
 })
 
+test('JSON.parse: objects of a repeated layout make no key strings', () => {
+  // The keys are read as spans of the text and checked against the layout the
+  // last such sequence built: a non-ASCII key (a heap string where one is made)
+  // costs what a packed ASCII one does.
+  const j = instantiate(compile(`let kept
+    export let keep = (t) => { kept = JSON.parse(t); return kept.length }`))
+  const heap = () => j.instance.exports.__jz_heap.value >>> 0
+  const doc = (keys, n) => '[' + Array.from({ length: n }, (_, i) => '{' + keys.map((k, x) => JSON.stringify(k) + ':' + (i + x)).join(',') + '}').join(',') + ']'
+  const growth = (keys) => { is(j.exports.keep(doc(keys, 1)), 1); const at = heap(); is(j.exports.keep(doc(keys, 1000)), 1000); return heap() - at }
+  const packed = growth(['a', 'b', 'c']), heapKeys = growth(['\u00e9', '\u00fc', '\u00f6'])
+  ok(heapKeys - packed < 1000, `${(heapKeys - packed) / 1000} bytes of keys per object`)
+})
+
 test('JSON.stringify: a number writes its digits into the buffer', () => {
   // A fraction's shortest digits go where the output is, as an integer's do: no
   // string per number. Equal lengths: 9 characters each.
@@ -676,6 +689,16 @@ test('JSON.stringify: a number writes its digits into the buffer', () => {
   const integers = Float64Array.from({ length: 1000 }, (_, i) => 123456781 + 10 * i)
   const extra = growth(fractions) - growth(integers)
   ok(extra < 8000, `${extra / 1000} bytes per fraction beyond an integer's`)
+})
+
+test('JSON.parse: a property read caches a parsed layout, and a reset empties the cache', () => {
+  // A read site keeps the slot it last resolved for a layout, a parsed one too;
+  // \`__jz_clear\` reissues parsed layouts' ids, so it empties every site's cache.
+  const j = instantiate(compile(`const lit = { a: 0, b: 0 }
+    export let f = (t) => { const o = JSON.parse(t); return o.b + lit.b }`))
+  is([j.exports.f('{"a":1,"b":2}'), j.exports.f('{"a":1,"b":2}')], [2, 2], 'the cached slot reads again')
+  j.instance.exports.__jz_clear()
+  is([j.exports.f('{"b":5,"a":6}'), j.exports.f('{"b":5,"a":6}')], [5, 5], 'a reissued id reads its own slot')
 })
 
 test('JSON.parse: schema cache is empty after arena reuse', () => {

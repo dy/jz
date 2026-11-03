@@ -859,7 +859,7 @@ export const registerCompact = () => {
     // schema table's registered entries name key arrays, in the static
     // reserve or in the table's grown copy (whose tail is unwritten arena
     // memory); the cache holds hashes and ids.
-    if (has('__schema_cache')) bytes('__schema_cache', '(i32.const 512)')
+    if (has('__schema_cache')) bytes('__schema_cache', '(i32.const 1024)')
     if (has('__schema_tbl') && has('__schema_cap') && has('__schema_next')) lines.push(`(local.set $p (global.get $__schema_tbl))
     (local.set $e (i32.add (local.get $p) (i32.shl (global.get $__schema_next) (i32.const 3))))
     (if (local.get $fwd)

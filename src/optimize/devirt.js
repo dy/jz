@@ -185,22 +185,20 @@ export function devirtSchemaReads(fn) {
         typeof slot === 'number' ? ['i32.const', slot] : cloneIR(slot), load]
     }
     const out = `$__dsro${id}`, dflt = `$__dsrd${id}`
-    // Inline cache: the generic read records the static schema slot it
-    // resolved (module/collection.js buildObjectSchemaArm) in two shared
-    // globals; the site copies them into its own pair, and a later receiver of
-    // that schema loads the slot behind one high-word compare. Runtime-
-    // registered schemas (their ids are reused across sessions) are never
-    // recorded; any other receiver takes the generic read each time.
-    if (useCache) {
+    // Inline cache: the generic read records the schema slot it resolved
+    // (module/collection.js buildObjectSchemaArm) in two shared globals; the
+    // site copies them into its own pair, and a later receiver of that schema
+    // loads the slot behind one high-word compare. A layout JSON.parse
+    // registered has an id a reset reissues: `__clear` empties every site
+    // (optimize-module.js). Any other receiver takes the generic read.
+    const cached = (fallback) => {
       const site = ctx.runtime.icSites = (ctx.runtime.icSites ?? 0) + 1
       const hiG = `__ic_hi${site}`, slotG = `__ic_slot${site}`, vT = `$__dsrv${id}`
       // Cached highs have zero low bits. -1 cannot match any masked receiver,
       // including numeric zero before the site's first successful object read.
       declGlobal(hiG, 'i64', -1); declGlobal(slotG, 'i32')
       newDecls.push(['local', vT, 'i64'])
-      const fallback = [...genericCall]
-      if (!stable) fallback[2] = ['local.get', rT]
-      const dispatch = ['if', ['result', 'i64'],
+      return ['if', ['result', 'i64'],
         ['i64.eq', ['i64.and', recvBits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['global.get', `$${hiG}`]],
         ['then', slotLoad(['global.get', `$${slotG}`])],
         ['else', ['block', ['result', 'i64'],
@@ -209,8 +207,15 @@ export function devirtSchemaReads(fn) {
           ['if', ['i32.ge_s', ['global.get', '$__ic_found_slot'], ['i32.const', 0]],
             ['then', ['global.set', `$${hiG}`, ['global.get', '$__ic_found_hi']], ['global.set', `$${slotG}`, ['global.get', '$__ic_found_slot']]]],
           ['local.get', vT]]]]
+    }
+    // A layout the program never wrote (JSON.parse's) reaches the generic read
+    // past every arm below: such a read keeps a cache of its own there.
+    const runtimeLayouts = ctx.core.includes.has('__jp_obj')
+    if (useCache) {
+      const fallback = [...genericCall]
+      if (!stable) fallback[2] = ['local.get', rT]
       parent[i] = ['block', out, ['result', 'i64'], ...teeHoists,
-        ...(stable ? [] : [['local.set', rT, genericCall[2]]]), dispatch]
+        ...(stable ? [] : [['local.set', rT, genericCall[2]]]), cached(fallback)]
       return
     }
     const lo = withProp[0].id, hi = withProp[withProp.length - 1].id
@@ -227,7 +232,7 @@ export function devirtSchemaReads(fn) {
       const dispatch = ['if', ['result', 'i64'],
         ['i32.lt_u', sidRead(stable), ['i32.const', schemas.length]],
         ['then', slotLoad(slot, withProp.map(p => p.id))],
-        ['else', genericCall]]
+        ['else', runtimeLayouts ? cached(genericCall) : genericCall]]
       parent[i] = teeHoists.length
         ? ['block', out, ['result', 'i64'], ...teeHoists, dispatch]
         : dispatch
@@ -236,7 +241,7 @@ export function devirtSchemaReads(fn) {
     if (sparse) {
       const fallback = [...genericCall]
       if (!stable) fallback[2] = ['local.get', rT]
-      let choice = fallback
+      let choice = runtimeLayouts ? cached(fallback) : fallback
       for (let k = withProp.length - 1; k >= 0; k--) {
         const { id: sid, slot } = withProp[k]
         choice = ['if', ['result', 'i64'],
@@ -281,7 +286,7 @@ export function devirtSchemaReads(fn) {
       ...teeHoists,
       ...(stable ? [] : [['local.set', rT, genericCall[2]]]),
       inner,
-      dfltCall]
+      runtimeLayouts ? cached(dfltCall) : dfltCall]
   }
   let seen = 0
   // pre-scan: count tagged reads per stable receiver (sidRead's entry-hoist

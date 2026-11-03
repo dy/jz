@@ -124,14 +124,14 @@ const DECLS = ['export', 'import', 'type', 'param', 'result', 'local']
 // miss, which strands nothing. The count a collection's ordering leaves for
 // its caller (`__coll_order_n`, module/core.js) is a number read at once.
 // Scratch of one call of the runtime, set anew before it is read: the JSON
-// writer's buffer, position and depth and the parser's input and cursor
-// (module/json.js: `__stringify` and `__jp` start each from their own), the
+// writer's buffer, position and depth and the parser's input, cursor and key
+// stack (module/json.js: `__stringify` and `__jp` start each from their own), the
 // argument array a call publishes for its callee's rest parameter
 // (`__closure_spill`, module/function.js). Numbers the runtime keeps: the
 // random generator's state, a regex's last index and its groups' bounds.
 const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__heap_start', '$__heap_reset', '$__jz_last_err_bits', '$__seq',
   '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base', '$__esc_low',
-  '$__jbuf', '$__jstack', '$__jscap', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
+  '$__jbuf', '$__jstack', '$__jscap', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err', '$__jp_ks', '$__jp_kcap', '$__jp_ktop',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
   '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch', '$__esc_held',
   // the reset's log of an object (module/core/durable-log.js `__durable_obj_snap`), which lowers the flag itself
