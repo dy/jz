@@ -3945,6 +3945,10 @@ suspends; the summary names that promise at its `__p_done` call node as it
 names `__async_run`'s. Parameters bind by name (a default or a pattern keeps
 the machine, which rejects for it), and a body with a finally or a `using`
 keeps it too, since either may throw or return after a return was settled.
+The machine a driver runs (`internal`: an async function's, an async
+generator's) is `{ next, throw }`, `next` its `__next` itself, with `return`
+for an async generator's driver (std/asyncgen.js); a generator the program
+sees keeps the whole protocol.
 The job queue (std/async.js) holds a job as three entries in arrays of their
 own, its handler, the state it settles with and the value (`__job(h, st, v)`;
 state 0 is a job of its own, `queueMicrotask`'s, called with no arguments), so

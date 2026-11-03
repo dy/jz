@@ -12,6 +12,8 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { batch, oracle, jz, compile } from './util.js'
 import { onWasi, onKernel, levels } from './_matrix.js'
+import { parse } from '../src/parse.js'
+import jzify from '../jzify/index.js'
 
 const val = async (src, ...args) => {
   const r = jz(src).exports.f(...args)
@@ -975,4 +977,13 @@ test('async: a function that never awaits runs no machine', () => {
   const settled = compile('const g = async (x) => x + 1\nexport const f = () => g(1)', { wat: true, optimize: false })
   ok(!/__async_run/.test(settled) && /__p_done/.test(settled), 'no driver, a settled promise')
   ok(/__async_run/.test(compile('const g = async (x) => (await x) + 1\nexport const f = () => g(1)', { wat: true, optimize: false })), 'an await keeps the driver')
+})
+
+// A driver's machine answers what the driver asks of it (jzify/generators.js
+// `internal`): an async function's next and throw, no generator protocol
+// beside them; an async generator's driver also asks return.
+test('async: the machine an async function runs carries next and throw alone', () => {
+  const out = JSON.stringify(jzify(parse('const g = async (x) => { const y = await x; return y + 1 }\nexport const f = () => g(1)')))
+  ok(out.includes('[":","next","__next"]') && out.includes('[":","throw",'), 'next and throw')
+  ok(!out.includes('@@iterator') && !out.includes('[":","return",'), 'no return, no @@iterator')
 })

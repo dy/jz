@@ -1209,12 +1209,16 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
         ['const', ['=', iterator, ['()', '__it_mk', [',', nextFn, returnFn, throwFn]]]],
         ...(internal ? [] : [genMark(iterator)]), ['return', iterator]]]]
     }
-    const genObj = ['{}', [',',
-      [':', 'next', nextFn],
-      [':', 'return', returnFn],
-      [':', 'throw', throwFn],
-      [':', '@@iterator', ['=>', null, iterator]],
-    ]]
+    // the machine a driver runs (`internal`) answers what the driver asks of
+    // it: next and throw, and return for an async generator's (std/asyncgen.js)
+    const genObj = internal
+      ? ['{}', [',', [':', 'next', '__next'], [':', 'throw', throwFn], ...(agen ? [[':', 'return', returnFn]] : [])]]
+      : ['{}', [',',
+        [':', 'next', nextFn],
+        [':', 'return', returnFn],
+        [':', 'throw', throwFn],
+        [':', '@@iterator', ['=>', null, iterator]],
+      ]]
 
     return ['=>', transformParams(params), ['{}', [';', ...paramInit, ...decls,
       ['const', ['=', iterator, genObj]], ...(internal ? [] : [genMark(iterator)]), ['return', iterator]]]]
