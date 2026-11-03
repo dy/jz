@@ -8,6 +8,7 @@ import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
 import { mix } from '../bench/_lib/benchlib.js'
+import { releaseBytes, wasmStrippedBytes } from '../bench/_lib/release-bytes.js'
 import { agreement, exactAgreement, channelsAgree, agrees } from '../bench/_audiojs/compare.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
@@ -113,6 +114,26 @@ test('bench build: the stdlib sweeps hash a NaN as one encoding', () => {
     b[2] = 0.25
     ok(checksum(b) !== checksum(a), `${file}: a number's sign is`)
   }
+})
+
+// The size column counts a module without debug info, names or toolchain
+// metadata, and keeps every other custom section: jz's interop reads its own.
+test('bench build: the size column strips debug info and names, in a component\'s modules too', () => {
+  const leb = n => { const out = []; do { out.push(n & 0x7f | (n >= 0x80 ? 0x80 : 0)); n >>>= 7 } while (n); return Buffer.from(out) }
+  const section = (id, body) => Buffer.concat([Buffer.from([id]), leb(body.length), body])
+  const custom = (name, size) => section(0, Buffer.concat([leb(name.length), Buffer.from(name), Buffer.alloc(size, 7)]))
+  const core = Buffer.from(compile('export let f = (x) => x * 2'))
+  const keep = custom('jz:abi', 40)
+  const module = Buffer.concat([core, custom('.debug_info', 300), custom('name', 90), keep, custom('producers', 20), custom('target_features', 9)])
+  is(wasmStrippedBytes(module), core.length + keep.length, 'debug, name and toolchain sections go, a runtime\'s stays')
+  const component = Buffer.concat([Buffer.from([0, 0x61, 0x73, 0x6d, 0x0d, 0, 1, 0]), custom('producers', 30), section(1, module)])
+  const inner = core.length + keep.length
+  is(wasmStrippedBytes(component), 8 + 1 + leb(inner).length + inner, 'a nested core module is stripped in place')
+  const dir = mkdtempSync(join(tmpdir(), 'jz-release-bytes-'))
+  try {
+    writeFileSync(join(dir, 'case.js'), 'export let main = () => 1\n')
+    is(releaseBytes(join(dir, 'case.js'), join(dir, 'tmp')), 26, 'a source counts as it is')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('audio comparison: every channel and encoded byte contributes to the verdict', () => {

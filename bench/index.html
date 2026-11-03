@@ -700,7 +700,7 @@ let sortBy = 'speed'
 const COLS = [
   ['speed', 'speed', 'medianUs', 'Geometric mean of target time ÷ JZ time on matched, correct cases. 2× means twice as long.'],
   ['mem', 'memory', 'memKb', 'Geometric mean of target RSS ÷ JZ RSS on matched, correct cases. 2× means twice the memory. Includes the host, not just the WASM heap.'],
-  ['size', 'size', 'bytes', 'Geometric mean of target bytes ÷ JZ bytes on matched, correct cases. 2× means twice the size. WASM module, native binary or JS source, depending on target.'],
+  ['size', 'size', 'bytes', 'Geometric mean of target bytes ÷ JZ bytes on matched, correct cases. 2× means twice the size. WASM module, native binary or JS source, depending on target; a module or binary counts without debug info or symbol names.'],
 ]
 
 const fmtMs = us => us >= 100000 ? (us / 1000).toFixed(0) + ' ms' : us >= 1000 ? (us / 1000).toFixed(2) + ' ms' : us + ' µs'

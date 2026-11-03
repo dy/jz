@@ -832,6 +832,25 @@ executable), or the source file for raw-JS interpreters where there is no
 compile step. For source files with imports, raw-JS size is only the entry file;
 JZ size is the bundled wasm artifact.
 
+A binary or module counts as a release ships it, without debug info or symbol
+names ([`_lib/release-bytes.js`](_lib/release-bytes.js)): a native binary or
+shared library as `strip(1)` leaves it, and a wasm module, or each core module of
+a component, without its `name`, `.debug_*`, `producers` and `target_features`
+sections, as `rustc -C strip=symbols`, `zig cc -s` and wasm-ld's `--strip-all`
+leave it (byte for byte on alpha's rust-wasm and c-wasm). Other custom sections
+stay: JZ's interop reads its `jz:*` ones. The harness strips a copy, so each row
+times the binary its toolchain built. `results.json` and `results-ci.json` as
+committed on 2026-11-03 count the files as built, where three wasm rivals were
+mostly DWARF; on CI's runner (probe run 41679169594), alpha's c-wasm is 955,519
+bytes as built and 24,162 stripped, zig-wasm 978,968 and 47,429, rust-wasm
+2,192,980 and 63,421, the native zig binary 3,672,600 and 509,880, and
+QuickJS-NG's released `qjs-wasi.wasm` 1,569,050 and 1,177,993. Builds that already
+strip: `nat` (`strip`), `rust` (`-C link-arg=-s`), `go` and `go-wasm`
+(`-ldflags=-s -w`) and Perry; JZ, AssemblyScript, js2wasm, MoonBit and hand-WAT
+emit no debug sections. TinyGo's `-no-debug` keeps a name section, and Porffor,
+scriptc, Static Hermes (with its VM libraries), Goose, Bend and `jz-w2c` keep
+symbol tables.
+
 Note the preset trade: these speed tables build JZ at the default
 (`optimize: 2`, speed-leaning — loop unroll + SIMD lift), while the dedicated
 size comparison (`npm run bench:size`) builds with `optimize: 'size'` —

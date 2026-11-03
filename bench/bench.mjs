@@ -16,6 +16,7 @@ import { completeBenchSvgRun, renderBenchSvg, SVG_TARGETS, svgRows } from '../sc
 import { classifyBenchmarkChecksum, LAB, timedBenchmarkRow } from '../assets/headline.js'
 import { contenders } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
+import { releaseBytes } from './_lib/release-bytes.js'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(BENCH_DIR, '..')
@@ -1761,13 +1762,15 @@ for (const cid of selectedCases) {
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
   }
   // `linked`: the shared libraries an artifact cannot run without, counted in.
+  // Each counts as a release ships it, without debug info or symbol names
+  // (_lib/release-bytes.js), measured on a copy.
   const sizeOf = id => {
     const t = targets[id]
     if (!t.bin) return null
     try {
       const paths = [t.bin(c), ...t.linked?.(c) ?? []]
-      return paths.every(p => p && existsSync(p)) ? paths.reduce((s, p) => s + statSync(p).size, 0) : null
-    } catch { return null }
+      return paths.every(p => p && existsSync(p)) ? paths.reduce((s, p) => s + releaseBytes(p, join(caseBuild(c), '.strip')), 0) : null
+    } catch (e) { console.warn(`[bench] ${id} size unmeasured: ${e.message.split('\n')[0]}`); return null }
   }
 
   for (const r of results) r.bytes = sizeOf(r.id)
