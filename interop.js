@@ -1006,8 +1006,9 @@ export const wrap = (src, state) => {
       st === 1 ? e.resolve(readSettled(e.raw)) : e.reject(readSettled(e.raw))
     }
   }
+  // (a call ends a turn: its jobs run, and a host Promise of a module promise they settled settles)
   const adopt = (raw, read) => {
-    mtDrain()
+    sweep()
     const st = pStateOf(raw)
     if (st < 0) return read(raw)                    // not a promise — plain value
     if (st === 1) return Promise.resolve(readSettled(raw))

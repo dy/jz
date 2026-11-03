@@ -1398,3 +1398,14 @@ export let churn = (n) => { let keep = []; for (let i = 0; i < n; i++) { const a
     is(a.o.m(), 11, `O${optimize}: after the module reused its memory`)
   }
 })
+
+// A call ends a turn: the jobs it queued run, and a host Promise of a module
+// promise they settled settles (interop.js adopt sweeps), where it waited for
+// a timer or a host promise to tick.
+test('interop: a pending result settles when a later call settles it', async () => {
+  if (onWasi() || onKernel()) return
+  const r = jz('let res; export let wait = () => new Promise(r => { res = r }); export let go = () => { res(5); return 1 }').exports
+  const p = r.wait()
+  is(r.go(), 1)
+  is(await Promise.race([p, new Promise(res => setTimeout(() => res('pending'), 200))]), 5)
+})
