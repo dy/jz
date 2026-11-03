@@ -747,7 +747,7 @@ export function watrTail(module, cfg, {
   // (after the passes that read the runtime's calls by name: a helper of a few instructions joins
   // its callers, a larger one the program's loops)
   if (cfg.inlineTiny === true && watrOpts)
-    time('inlineTiny', () => inlineTiny(optimized, { pin: watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, user }))
+    time('inlineTiny', () => inlineTiny(optimized, { pin: watrOpts.pin, max: cfg.tinyNodes ?? 16, loop: cfg.loopNodes ?? 90, kernel: cfg.kernelNodes ?? 300, user }))
   // (on every division the passes above left, the vectorizer's epilogues and the inlined helpers' among them)
   if (cfg.unsignedDivision !== false) time('unsignedDivision', () => unsignedDivision(optimized))
   // (after the passes that read an access's address as written, the inliner's constant arguments among them)

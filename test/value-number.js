@@ -79,7 +79,8 @@ test('value numbering: an if arm feeds neither the other arm nor what follows', 
 test('value numbering: a loop body shares within an iteration, never across', () => {
   const src = `export let k = (n) => { let x = 0.5, s = 0; for (let i = 0; i < n; i++) { s += Math.sin(x); x = Math.sin(x) } return s }
 export let k2 = (n) => { let x = 0.5, s = 0; for (let i = 0; i < n; i++) { s += Math.sin(x); x = x * 2; s += Math.sin(x) } return s }`
-  const w = wat(src, ON)
+  // (the calls counted as calls: past value numbering the speed tier splices a kernel a loop calls, optimize/inline-tiny.js)
+  const w = wat(src, { optimize: { level: 'speed', kernelNodes: 0 } })
   eachLoopCalls(funcWat(w, 'k'), 'math.sin', 1, 'both reads of x precede its write: one call')
   eachLoopCalls(funcWat(w, 'k2'), 'math.sin', 2, 'x changes between the calls: two')
   const on = run(src, ON), off = run(src, OFF)

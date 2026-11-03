@@ -43,9 +43,24 @@
  * the touched callers propagate the arguments into the bodies, as watr's own
  * inlining round does.
  *
+ * A math kernel (sin, acos, exp, ...: optimize/pure-funcs.js) is past that
+ * bound and past what the engine takes into a loop: three's `slerpFlat`, an
+ * acos and three sines in an arm of its loop, makes a kernel loop of 1046
+ * bytes, which V8 grows by 104 at most, while a sine is 282 bytes and an acos
+ * 578. Each call of one that such a loop makes, in an arm of an `if` within it
+ * too, takes a copy of its own (`kernel` instruction nodes at most), which
+ * watr's single-caller inliner dissolves into the site, while the caller stays
+ * within `IR_FULL` (src/growth.js) with the copies. The kernel's own work is
+ * the loop's where the arm runs; a kernel the vectorizer lifted is a call no
+ * more, so its pin (the scalar transcendentals it reads by name) no longer
+ * holds here. A two-wide kernel stays a call: past its vector fast path it
+ * calls the scalar one for each lane, and a copy of it would carry those calls.
+ *
  * @module optimize/inline-tiny
  */
-import { inline, propagate, mergeBlocks, vacuum, coalesceLocals } from 'watr/optimize'
+import { inline, inlineOnce, propagate, mergeBlocks, vacuum, coalesceLocals } from 'watr/optimize'
+import { pureKernel } from './pure-funcs.js'
+import { IR_FULL, irSize } from '../growth.js'
 
 const isArr = Array.isArray
 const HEAD = new Set(['export', 'import', 'type', 'param', 'result', 'local'])
@@ -109,11 +124,68 @@ const leafLoopSites = (fns, warm, runtime) => {
   for (const n of fns) for (let i = bodyStart(n); i < n.length; i++) walk(n[i], false)
 }
 
-/** Splice every function of at most `max` instruction nodes into its callers, and one of at most
+// (a two-wide kernel the vectorizer lifted calls the scalar one per lane where its fast path ends)
+const scalar = (fn) => !fn.some(d => isArr(d) && (d[0] === 'param' || d[0] === 'result') && d.includes('v128'))
+
+/** Splice each call of a math kernel of at most `bound` instruction nodes that a loop of a `user`
+ *  function makes, where that loop calls only the runtime, through a copy of its own: the
+ *  functions spliced into, which their caller's propagation then reads. */
+const spliceKernels = (module, bound, user) => {
+  const byName = new Map(funcs(module).map(n => [n[1], n]))
+  const copies = [], spliced = [], made = new Set()
+  // (a site already pointed at its copy is the kernel's: a loop around it still calls the runtime alone)
+  const runtime = name => byName.has(name) && !user(name) || made.has(name)
+  const fits = new Map()
+  const kernel = (name) => {
+    if (!fits.has(name)) {
+      const fn = byName.get(name)
+      fits.set(name, !!fn && pureKernel(name) && scalar(fn) && !exported(fn) && !calls(fn, name) && tinySize(fn, bound) <= bound)
+    }
+    return fits.get(name)
+  }
+  let k = 0
+  for (const fn of funcs(module)) {
+    if (!user(fn[1])) continue
+    let room = IR_FULL - irSize(fn)
+    const before = copies.length
+    const walk = (x, hot) => {
+      if (!isArr(x)) return
+      if (x[0] === 'loop') hot = runtimeOnly(x, runtime)
+      if (hot && x[0] === 'call' && kernel(x[1])) {
+        const body = byName.get(x[1]), size = irSize(body)
+        if (size <= room) {
+          room -= size
+          const name = `${x[1]}$at${k++}`
+          copies.push(['func', name, ...copy(body.slice(2))])
+          made.add(name)
+          x[1] = name
+        }
+      }
+      for (let i = 1; i < x.length; i++) walk(x[i], hot)
+    }
+    for (let i = bodyStart(fn); i < fn.length; i++) walk(fn[i], false)
+    if (copies.length > before) spliced.push(fn)
+  }
+  if (!copies.length) return spliced
+  const names = new Map(copies.map(c => [c[1], c[1].slice(0, c[1].lastIndexOf('$at'))]))
+  module.push(...copies)
+  // (every function but the copies keeps its body: the single-caller inliner takes only them,
+  // sixteen a call, so it is called until none is left or a round lifts none)
+  const pin = new Set(funcs(module).map(n => n[1]).filter(n => !names.has(n)))
+  const left = () => funcs(module).filter(n => names.has(n[1])).length
+  for (let n = left(), was = Infinity; n > 0 && n < was; was = n, n = left()) inlineOnce(module, { pin })
+  // (a copy the inliner could not lift goes: its site calls the kernel again)
+  drop(module, n => names.has(n[1]))
+  retarget(funcs(module), names)
+  return spliced
+}
+
+/** Splice every function of at most `max` instruction nodes into its callers, one of at most
  *  `loop` into the calls a loop of a `user` function makes where that loop calls only the
- *  runtime, in place. */
-export function inlineTiny(module, { pin = [], max = 16, loop = max, user = () => true } = {}) {
+ *  runtime, and a math kernel of at most `kernel` into each call such a loop makes, in place. */
+export function inlineTiny(module, { pin = [], max = 16, loop = max, kernel = 0, user = () => true } = {}) {
   if (!isArr(module) || module[0] !== 'module') return module
+  const kernelSites = kernel > 0 ? spliceKernels(module, kernel, user) : []
   const pins = new Set(pin)
   const fns = funcs(module)
   // (a function a body names by `ref.func` is a value: watr's inliner counts only its calls)
@@ -136,7 +208,10 @@ export function inlineTiny(module, { pin = [], max = 16, loop = max, user = () =
     for (const n of fns) if (called.has(warm.get(n[1]))) { module.push(['func', warm.get(n[1]), ...copy(n.slice(2))]); tiny++ }
     for (const name of [...warm.keys()]) if (!called.has(warm.get(name))) warm.delete(name)
   }
-  if (!tiny) return module
+  if (!tiny) {
+    if (kernelSites.length) { for (const f of kernelSites) propagate(f); coalesceLocals(vacuum(mergeBlocks(module))) }
+    return module
+  }
   // watr's inliner takes one callee a round, sixteen rounds a call: call it until no
   // candidate remains (a callee it could not splice everywhere stays and stops being picked)
   const touched = new Set()
@@ -156,6 +231,7 @@ export function inlineTiny(module, { pin = [], max = 16, loop = max, user = () =
     for (const n of module) if (isArr(n)) names(n[0] === 'func' ? n.slice(1) : n)
     drop(module, n => warm.has(n[1]) && !named.has(n[1]))
   }
+  for (const f of kernelSites) touched.add(f)
   if (!touched.size) return module
   for (const f of touched) propagate(f)
   coalesceLocals(vacuum(mergeBlocks(module)))

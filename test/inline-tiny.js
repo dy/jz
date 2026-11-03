@@ -167,3 +167,86 @@ test('inline tiny: a loop formatting records splices the runtime it calls per ro
   is(called({ level: 'speed' }), [], 'the speed tier splices each into the loop')
   is(called({ level: 2 }), HELPERS, 'the default tier keeps its calls')
 })
+
+// A math kernel (optimize/pure-funcs.js) past the loop bound joins each call a kernel loop makes,
+// in an arm of an `if` too, through a copy of its own the single-caller inliner dissolves: V8 grows
+// a loop's function past 640 bytes by a tenth at most, less than a sine. A call outside a loop
+// keeps the function; a loop that calls the program keeps the call.
+const horner = (depth) => depth ? `(f64.add (f64.const ${(depth * 0.37) % 1}) (f64.mul (local.get $x) ${horner(depth - 1)}))` : '(f64.const 0.5)'
+const KERNEL = `(module
+  (func $math.k (param $x f64) (result f64)
+    (if (f64.ne (local.get $x) (local.get $x)) (then (return (local.get $x))))
+    ${horner(40)})
+  (func $sum (export "sum") (param $n i32) (result f64) (local $i i32) (local $s f64)
+    (block $done (loop $next
+      (br_if $done (i32.ge_s (local.get $i) (local.get $n)))
+      (if (i32.and (local.get $i) (i32.const 1))
+        (then (local.set $s (f64.add (local.get $s) (call $math.k (f64.mul (f64.convert_i32_s (local.get $i)) (f64.const 0.01)))))))
+      (local.set $s (f64.add (local.get $s) (call $math.k (f64.convert_i32_s (local.get $i)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $next)))
+    (local.get $s))
+  (func $once (export "once") (param $x f64) (result f64) (call $math.k (local.get $x))))`
+
+test('inline tiny: a math kernel joins each call a kernel loop makes, an arm\'s too', () => {
+  const ref = run(parseWat(KERNEL))
+  is(callsTo(inlineTiny(parseWat(KERNEL), { max: 16, loop: 90, user: USER }), '$sum', '$math.k'), 2, 'past the loop bound the loop calls')
+  const mod = inlineTiny(parseWat(KERNEL), { max: 16, loop: 90, kernel: 300, user: USER })
+  is(callsTo(mod, '$sum', '$math.k'), 0, 'both of the loop\'s calls are spliced')
+  is(callsTo(mod, '$once', '$math.k'), 1, 'a call outside a loop stays')
+  ok(funcs(mod).includes('$math.k') && !funcs(mod).some(n => /\$at\d+$/.test(n)), 'the kernel stays, no copy is left')
+  const out = run(mod)
+  for (const n of [0, 1, 12, 150]) is(out.sum(n), ref.sum(n), `sum(${n})`)
+  for (const x of [0.25, NaN, -3]) is(out.once(x), ref.once(x), `once(${x})`)
+  const callsProgram = KERNEL.replace('(local.set $i (i32.add', '(drop (call $once (f64.const 1)))\n      (local.set $i (i32.add')
+  is(callsTo(inlineTiny(parseWat(callsProgram), { max: 16, loop: 90, kernel: 300, user: USER }), '$sum', '$math.k'), 2, 'a loop that also calls the program keeps its calls')
+  // a two-wide kernel calls the scalar one per lane past its fast path: it stays a call
+  const wide = KERNEL.replace('(func $once', `(func $math.k_v (param $v v128) (result v128)
+    (if (i32.eqz (v128.any_true (f64x2.ne (local.get $v) (local.get $v)))) (then (return (f64x2.mul (local.get $v) (local.get $v)))))
+    (f64x2.replace_lane 1 (f64x2.splat (call $math.k (f64x2.extract_lane 0 (local.get $v)))) (call $math.k (f64x2.extract_lane 1 (local.get $v)))))
+  (func $once`).replace('(local.set $i (i32.add', '(drop (call $math.k_v (f64x2.splat (local.get $s))))\n      (local.set $i (i32.add')
+  // (past the loop bound too, as a lifted kernel's lanes and their checks make it)
+  const wideMod = inlineTiny(parseWat(wide), { max: 16, loop: 16, kernel: 300, user: USER })
+  is(callsTo(wideMod, '$sum', '$math.k_v'), 1, 'a two-wide kernel stays a call')
+  is(callsTo(wideMod, '$sum', '$math.k'), 0, 'beside the scalar one spliced')
+})
+
+// three's Quaternion.slerpFlat over a buffer: an acos and three sines in an arm of the loop
+const SLERP = `
+export let main = (n, t) => {
+  const a = new Float64Array(n * 4), b = new Float64Array(n * 4), out = new Float64Array(n * 4)
+  for (let i = 0; i < n * 4; i++) { a[i] = Math.cos(i * 0.37); b[i] = Math.cos(i * 0.53 + 1) }
+  let h = 0
+  for (let i = 0; i < n; i++) {
+    const o = i * 4
+    let s = 1 - t, u = t
+    const dot = a[o] * b[o] + a[o + 1] * b[o + 1] + a[o + 2] * b[o + 2] + a[o + 3] * b[o + 3]
+    if (dot < 0.9995 && dot > -0.9995) {
+      const theta = Math.acos(dot), sin = Math.sin(theta)
+      s = Math.sin(s * theta) / sin
+      u = Math.sin(u * theta) / sin
+    }
+    for (let k = 0; k < 4; k++) out[o + k] = a[o + k] * s + b[o + k] * u
+    h += out[o] + out[o + 3]
+  }
+  return h
+}
+`
+
+test('inline tiny: the speed tier splices the math kernels an arm of a loop calls', () => {
+  // the splice is the kernel's own code: every tier answers the same bits, and the host within
+  // the last bits its libm differs in
+  const native = oracle(SLERP).main, ref = jz(SLERP, { optimize: { level: 'speed', kernelNodes: 0 } }).exports.main
+  for (const optimize of [{ level: 'speed' }, { level: 2 }]) {
+    const main = jz(SLERP, { optimize }).exports.main
+    for (const [n, t] of [[0, 0.5], [1, 0.25], [64, 0.75], [300, 0.1]]) {
+      is(main(n, t), ref(n, t), `${JSON.stringify(optimize)}: main(${n}, ${t})`)
+      ok(Math.abs(main(n, t) - native(n, t)) <= 1e-12 * Math.max(1, Math.abs(native(n, t))), `main(${n}, ${t}) near the host's`)
+    }
+  }
+  if (onKernel()) return
+  const called = (optimize) => ['$math.acos', '$math.sin'].filter(k => new RegExp(`\\(call \\${k}\\b`).test(compile(SLERP, { optimize, wat: true })))
+  is(called({ level: 'speed', kernelNodes: 0 }), ['$math.acos', '$math.sin'], 'without the kernel bound each is a call')
+  is(called({ level: 'speed' }), [], 'the speed tier splices each into the loop')
+  is(called({ level: 2 }), ['$math.acos', '$math.sin'], 'the default tier keeps its calls')
+})
