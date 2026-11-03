@@ -449,7 +449,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `natgcc` | gcc `-O3`, when real gcc is installed |
 | `rust` | Rust `rustc -C opt-level=3 -C target-cpu=native` — native baseline; the headline rival is `rust-wasm` |
 | `go` | Go native compiler — native baseline; the headline rival is `go-wasm` |
-| `zig` | Zig `build-exe -O ReleaseFast -lc` — native baseline |
+| `zig` | Zig `build-exe -O ReleaseFast -lc` — native baseline. Zig 0.16, like 0.17, turns off LLVM's loop vectorizer (zig `032319c942`, for [llvm/llvm-project#186922](https://github.com/llvm/llvm-project/issues/186922); on again in zig's master), so its loops stay scalar where clang's vectorize: alpha takes 763 µs on CI's EPYC 9V74 against C's 130, and the same port's IR optimized by clang `-O3` 59. `zig-wasm` is built the same way |
 | `numpy` | vectorized NumPy, when a matching `.npy.py` exists |
 | `v8` | raw JavaScript on Node/V8 |
 | `deno` | raw JavaScript on Deno/V8 |
