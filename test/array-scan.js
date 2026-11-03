@@ -206,3 +206,10 @@ test('array scan: a store inside the length grows nothing', () => {
     ok(!/global\.get \$__heap(?![\w.])/.test(body), `at ${level}: no mark of the heap's top around the store`)
   }
 })
+
+// The size tier stores in place inside the length as the speed tiers do, with
+// no growth call beside the store (emit-assign.js storeArrayPayload).
+test('array scan: the size tier stores in place inside the length', () => {
+  const body = funcWat(wat(bounded, { optimize: { level: 'size', ...shape } }), 'bump')
+  ok(/f64\.store/.test(body) && !/\$__arr_set_idx_ptr/.test(body), 'the size tier stores in place, no growth call')
+})

@@ -102,9 +102,11 @@ const persistBinding = name => ptr => persistBindingPtr(name, ptr)
 /** Emit an ARRAY element write via `__arr_set_idx_ptr`. The helper may relocate
  *  the array header (capacity grow); `persist` writes the new pointer back to
  *  the receiver binding. Returns the stored value as the block result.
- *  In the speed tiers an index inside the length stores in place first: the
- *  header is left alone and the pointer stays, so the call is only for an index
- *  at or past the end (`out[dst++] = v` filling an array it grew last round). */
+ *  An index proven inside the length stores in place at every tier: the header
+ *  is left alone and the pointer stays. Any other index, in the speed tiers,
+ *  stores in place where it is inside the length, so the call is only for an
+ *  index at or past the end (`out[dst++] = v` filling an array it grew last
+ *  round); the size tier calls the helper for it. */
 function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = false, arrName = null) {
   const arrTmp = `${T}asi${freshId(ctx)}`
   const idxTmp = `${T}asj${freshId(ctx)}`
@@ -112,31 +114,33 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = fals
   ctx.func.locals.set(arrTmp, 'f64')
   ctx.func.locals.set(idxTmp, 'i32')
   ctx.func.locals.set(valTmp, 'f64')
-  inc('__arr_set_idx_ptr')
+  const lean = !!ctx.transform.optimize?.leanRuntime
   const arrG = ['local.get', `$${arrTmp}`], idxG = ['local.get', `$${idxTmp}`], valG = ['local.get', `$${valTmp}`]
-  const helper = ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', arrG], idxG, valG]]
+  const helper = () => (inc('__arr_set_idx_ptr'), ['local.set', `$${arrTmp}`, ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', arrG], idxG, valG]])
   // (an in-bounds store of a named binding reads the binding for its hop: no
-  // temp, so a loop's hoist (optimize/licm.js presentPtr) can lift the hop)
-  const direct = inBounds && arrName != null && !ctx.transform.optimize?.leanRuntime
+  // temp, so a loop's hoist (optimize/licm.js presentPtr, hoistParamPtrOffset) can lift the hop)
+  const direct = inBounds && arrName != null
   const body = [
     ...(direct ? [] : [['local.set', `$${arrTmp}`, arrExpr]]),
     ['local.set', `$${idxTmp}`, keyIndex(typed(idxNode, 'f64'))],
     ['local.set', `$${valTmp}`, valueExpr],
   ]
-  if (ctx.transform.optimize?.leanRuntime) body.push(helper)
+  if (lean && !inBounds) body.push(helper())
   else {
     const base = tempI32('asb'), baseG = ['local.get', `$${base}`]
     // (a binding the loop around saved for the reset ahead of it needs no snapshot test here: control-flow.js durableLoopArrays)
     const held = arrName != null ? ctx.func.refinements?.get(arrName) : null
     const saved = hasDurableReset() && !held?.saved ? [durableArrSnapNode(base, ['i64.reinterpret_f64', direct ? cloneIR(arrExpr) : arrG])] : []
     if (saved.length) inc('__durable_arr_snap')
-    body.push(['local.set', `$${base}`, fwdOffsetIR(typed(direct ? arrExpr : arrG, 'f64'))])
+    // (the size tier asks the offset of its helper, the speed tiers hop inline)
+    const recv = typed(direct ? arrExpr : arrG, 'f64')
+    body.push(['local.set', `$${base}`, lean ? ptrOffsetIR(recv, VAL.ARRAY) : fwdOffsetIR(recv)])
     // An index proven inside the length (type/canonical-bounds.js
     // inBoundsArrIdx) stores in place alone: the header stays, nothing grows.
     if (inBounds) body.push(...saved, ctx.abi.array.ops.store(baseG, idxG, valG))
     else body.push(['if', ['i32.lt_u', idxG, ['i32.load', ['i32.sub', baseG, ['i32.const', 8]]]],
         ['then', ...saved, ctx.abi.array.ops.store(baseG, idxG, valG)],
-        ['else', helper]])
+        ['else', helper()]])
   }
   if (persist && !inBounds) body.push(persist(['local.get', `$${arrTmp}`]))
   body.push(['local.get', `$${valTmp}`])
