@@ -17,7 +17,7 @@ import { fusedRewrite, lowerToInt32Tails, foldLoadCasts } from '../src/optimize/
 import { ctx } from '../src/ctx.js'
 import { T, walkAst } from '../src/ast.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
-import { optimize as watOptimize, OPTS as WATR_OPTS, schedule as watrSchedule } from 'watr/optimize'
+import { optimize as watOptimize, OPTS as WATR_OPTS } from 'watr/optimize'
 import parseWat from 'watr/parse'
 import { unrollRecurrence } from '../src/compile/loop-recurrence.js'
 import { compileJzAt } from '../bench/_lib/compile.js'
@@ -6216,16 +6216,6 @@ test('min recurrence (watr): a cell joins the input carried from the cell before
   // updates, following the carry through the copies the integral copy and the recurrence
   // pair make, in both cells of the pair (the second under the pair's test), whichever
   // order the source wrote them in.
-  // (a watr whose scheduler follows the carry one definition back leaves the order as
-  // written: the pins wait for the release that follows copies)
-  const probe = parseWat(`(module (func (param $n i32) (param $o i32) (result i32) (local $c i32) (local $w i32) (local $x i32) (local $m i32)
-    (loop $l (local.set $w (local.get $c)) (local.set $x (i32.add (local.get $w) (i32.const 1))) (local.set $m (local.get $n))
-      (if (i32.lt_s (local.get $x) (local.get $m)) (then (local.set $m (local.get $x))))
-      (if (i32.lt_s (local.get $o) (local.get $m)) (then (local.set $m (local.get $o))))
-      (local.set $c (local.get $m)) (br_if $l (local.get $m)))
-    (local.get $c)))`)
-  watrSchedule(probe)
-  if (probe[1].find(n => n?.[0] === 'loop').find(n => n?.[0] === 'if')[1][1][1] === '$x') return
   const src = (first, second) => `
     const LB = 64
     const dist = (a, b, prev) => {

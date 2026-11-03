@@ -169,7 +169,8 @@ retain their bits. Number property receivers normalize before generic tag tests.
 Guarded scalar updates are converted to selects in watr using Wasm types,
 after JZ lowers the original branches with their settled representation facts.
 The statement scheduler orders adjacent integer min/max updates so an input
-carried from the prior iteration is consumed last. Only commuting local-only
+carried from the prior iteration is consumed last, through copies and steps and
+in a loop's arms (a recurrence pair's second cell). Only commuting local-only
 updates of the same signedness qualify; floating comparisons, mixed extrema
 and observable intermediate updates retain their order. This uses the existing
 loop statement walk and adds no runtime guard or new representation.
