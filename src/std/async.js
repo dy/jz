@@ -4,8 +4,8 @@
  * An async function body lowers to the generator state machine (await ≡
  * yield) and `__async_run` drives it, parking on awaited promises. Promises
  * are fixed-shape objects whose `then`, `catch` and `finally` are methods of
- * their literal; a reaction queues as a job, its handler, state and value in
- * the arrays `__mt`, `__ms`, `__mv` (no closure per job), drained at host
+ * their literal; a reaction queues as a job, its handler, state and value
+ * three entries of the array `__mt` (no closure per job), drained at host
  * boundaries (export return, timer tick): interop calls the exported
  * `__mt_drain` and settles host Promises through `__p_state` / `__p_value`;
  * `__p_make` / `__p_finish` adopt host promises. A WASI build drains it
@@ -25,24 +25,22 @@
 export const PROMISE_KEYS = ['__p', 'st', 'rs', 'val', 'cbs', 'then', 'catch', 'finally']
 
 export default `
-// The job queue: each job's handler, the state it settles with (0: a job of
-// its own, called with no arguments) and the value, in arrays of their own,
-// the handlers one closure family; \`__mh\` the next job. The jobs run take
-// no room for long: once they are half the queue, and a thousand, they go.
+// The job queue: each job three entries, its handler, the state it settles
+// with (0: a job of its own, called with no arguments) and the value;
+// \`__mh\` the next job. The jobs run take no room for long: once they are
+// half the queue, and a thousand, they go.
 export let __mt = []
-export let __ms = []
-export let __mv = []
 export let __mh = 0
-export let __job = (h, st, v) => { __mt.push(h); __ms.push(st); __mv.push(v) }
+export let __job = (h, st, v) => { __mt.push(h, st, v) }
 export let __drain = () => {
   while (__mh < __mt.length) {
     let i = __mh
-    __mh = i + 1
-    if (i >= 1024 && i * 2 >= __mt.length) { __mt.splice(0, i); __ms.splice(0, i); __mv.splice(0, i); __mh = 1; i = 0 }
-    let h = __mt[i], st = __ms[i], v = __mv[i]
+    __mh = i + 3
+    if (i >= 3072 && i * 2 >= __mt.length) { __mt.splice(0, i); __mh = 3; i = 0 }
+    let h = __mt[i], st = __mt[i + 1], v = __mt[i + 2]
     if (st === 0) h(); else h(st, v)
   }
-  __mt.length = 0; __ms.length = 0; __mv.length = 0; __mh = 0
+  __mt.length = 0; __mh = 0
 }
 export let __state = (p) => p != null && typeof p === 'object' && p.__p === 1 ? p.st : -1
 export let __value = (p) => p.val

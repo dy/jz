@@ -3958,10 +3958,10 @@ The machine a driver runs (`internal`: an async function's, an async
 generator's) is `{ next, throw }`, `next` its `__next` itself, with `return`
 for an async generator's driver (std/asyncgen.js); a generator the program
 sees keeps the whole protocol.
-The job queue (std/async.js) holds a job as three entries in arrays of their
-own, its handler, the state it settles with and the value (`__job(h, st, v)`;
-state 0 is a job of its own, `queueMicrotask`'s, called with no arguments), so
-queueing allocates nothing and the handlers stay one closure family. The
+The job queue (std/async.js) holds a job as three entries of one array, its
+handler, the state it settles with and the value (`__job(h, st, v)`; state 0
+is a job of its own, `queueMicrotask`'s, called with no arguments), so
+queueing allocates nothing. The
 driver resumes a machine through one handler per call (`step(st, x)`), a
 promise's `then`, `catch` and `finally` are methods of its literal (one shared
 function each, not a closure per promise), and its reactions list is made at
