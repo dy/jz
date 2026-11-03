@@ -105,8 +105,9 @@ const BIND = CLASS_T + 'bind'
 // returns is read off its call, never its body, so a call of one stays one.
 const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/, ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
 const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/, DONE = /\$__p_done$/
-// one pattern, the eight's alternatives: the compiler compiles itself, which resolves a regex where it is written
-const AT_CALL = /\$__(it_from|it_mk|it_drain|it_arr|async_run|awaited|p_reject|p_done)$/
+const ASYNC_P = /\$__p_async$/, ASYNC_RET = /\$__async_ret$/
+// one pattern, the ten's alternatives: the compiler compiles itself, which resolves a regex where it is written
+const AT_CALL = /\$__(it_from|it_mk|it_drain|it_arr|async_run|awaited|p_reject|p_done|p_async|async_ret)$/
 export const answeredAtCall = (name) => AT_CALL.test(name)
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
@@ -2150,10 +2151,22 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       }
       // The async runtime's answers at its call nodes (promiseAt, awaited): the
       // driver runs over the machine itself, `__awaited` over kinds without identity.
-      if (node && (ASYNC_RUN.test(callee) || REJECT.test(callee) || DONE.test(callee) || AWAITED.test(callee)) && funcByName.has(callee)) {
+      if (node && (ASYNC_RUN.test(callee) || REJECT.test(callee) || DONE.test(callee) || ASYNC_P.test(callee) || ASYNC_RET.test(callee) || AWAITED.test(callee)) && funcByName.has(callee)) {
         const f = funcByName.get(callee)
         let r
-        if (AWAITED.test(callee)) {
+        if (ASYNC_RET.test(callee)) {
+          // what an async function's machine resolves its promise with: the
+          // value every promise site the first argument names fulfills with
+          bind(callee, paramNamesOf(f), base, n, f.defaults)
+          const p = n ? ks[base] : K.NONE, v = awaited(n > 1 ? ks[base + 1] : NULLISH)
+          if (tagOf(p) === K.OBJECT && paramOf(p) !== UNKNOWN) for (const sid of shapesOf(paramOf(p))) {
+            const fl = promiseSites.get(sid)
+            if (fl === undefined) continue
+            const nf = merge(fl, v)
+            if (nf !== fl) { promiseSites.set(sid, nf); changed = true }
+          }
+          r = resultAt(callee, base, n, node)
+        } else if (AWAITED.test(callee)) {
           r = awaited(n ? ks[base] : NULLISH)
           if (escaped.has(callee)) escapeArgs(base, n)
           else { const b = sp; for (let i = 0; i < n; i++) pushK(ks[base + i] | UNKNOWN, kspread[base + i]); bind(callee, paramNamesOf(f), b, n, f.defaults); sp = b }
@@ -2161,7 +2174,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           bind(callee, paramNamesOf(f), base, n, f.defaults)
           const own = resultAt(callee, base, n, node)
           // an async function that never awaits returns `__p_done(v)`: the promise resolved with v, a thenable adopted
-          const v = REJECT.test(callee) ? K.NONE : DONE.test(callee) ? awaited(n ? ks[base] : NULLISH) : awaited(completion(n ? ks[base] : K.NONE))
+          // (an async function's own promise fulfills with what its `__async_ret`s resolve it with)
+          const v = REJECT.test(callee) || ASYNC_P.test(callee) ? K.NONE : DONE.test(callee) ? awaited(n ? ks[base] : NULLISH) : awaited(completion(n ? ks[base] : K.NONE))
           r = escaped.has(callee) ? own : promiseAt(node, v, own)
         }
         siteResults.set(node, r)
@@ -2170,6 +2184,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // for…in's key list: property keys, strings, in an array of the call's own
       if (callee === '__keys_ro' || callee === '__keys_dyn') { if (!node) return kind(K.ARRAY); const out = arrayOf(node, K.NONE); raiseElem(out, STRING); return out }
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
+      if (callee === '__tdz') return K.NONE // a frame field before its binding's step (src/ast.js TDZ_VALUE)
       if (callee === '__object_toString') return STRING // the class of a value, `[object X]` (module/object.js)
       const f = funcByName.get(callee)
       if (f) {

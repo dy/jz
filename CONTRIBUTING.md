@@ -3997,27 +3997,33 @@ suspends the machine as a yield does, and the value it resumes with is
 `__awaited(a, v)`, `a` holding
 the operand: the summary types it as the operand's settled value, the operand
 itself when it is no thenable, the value an async call's promise fulfills with
-(the promise is named at its `__async_run` call node, as the iterator runtime's
-records are, beside what the machine completes with, a promise or thenable it
-completes with adopted), anything for a promise made another way.
+(the promise is named at its `__p_async` call node in the machine's frame, as
+the iterator runtime's records are, beside what each `__async_ret` of the
+machine resolves it with, a promise or thenable adopted), anything for a
+promise made another way.
 An async function whose body never awaits (no `await`, `for await` or `await
 using`) runs no machine (jzify/async.js `settledAsync`): its body stands under
 a try in the function itself, each `return E` returns `__p_done(E)`, a new
 promise resolved with E as the driver resolves one, and a throw returns
 `__p_reject(e)`, as ECMA-262's AsyncFunctionStart runs a body that never
 suspends; the summary names that promise at its `__p_done` call node as it
-names `__async_run`'s. Parameters bind by name (a default or a pattern keeps
+names `__p_async`'s. Parameters bind by name (a default or a pattern keeps
 the machine, which rejects for it), and a body with a finally or a `using`
 keeps it too, since either may throw or return after a return was settled.
-The machine a driver runs (`internal`: an async function's, an async
-generator's) is `{ next, throw }`, `next` its `__next` itself, with `return`
-for an async generator's driver (std/asyncgen.js); a generator the program
+An async function's machine drives itself (jzify/generators.js `self`): one
+closure in its frame (`__m`, resumed with a settlement's state and value)
+suspends by subscribing itself to what it awaits (`__await`, one call after
+its dispatch loop, which a suspension leaves with its operand), completes by
+settling its promise (`__async_ret` of the frame's `__pr`, made by
+`__p_async`), and rejects it with an exception no region of it handles; the
+async function returns the promise. No driver, iterator object or step record
+per resume. The machine an async generator's driver runs (std/asyncgen.js) is
+`{ next, throw, return }`, `next` its `__next` itself; a generator the program
 sees keeps the whole protocol.
 The job queue (std/async.js) holds a job as three entries of one array, its
 handler, the state it settles with and the value (`__job(h, st, v)`; state 0
 is a job of its own, `queueMicrotask`'s, called with no arguments), so
-queueing allocates nothing. The
-driver resumes a machine through one handler per call (`step(st, x)`), a
+queueing allocates nothing. A
 promise's `then`, `catch` and `finally` are methods of its literal (one shared
 function each, not a closure per promise), and its reactions list is made at
 its first pending subscription. The drain reads the queue by index and drops
@@ -4029,8 +4035,18 @@ Resolving a promise with a runtime promise adopts it as a thenable
 (NewPromiseResolveThenableJob): its `then` runs in a job of its own and the
 settlement in a reaction after it, two jobs, as Node takes them; an await
 takes one (PromiseResolve returns the promise itself).
-A machine body's declarations are its factory's locals, so `resolveLocals`
-spells each apart first: a top-level one keeps its name (a `var` hoisted
+A machine keeps the bindings of the scopes it splits into states, its
+temporaries and its own state (`__s`, `__sent`, the try regions' `__err`,
+`__thr`, `__thrset`) as fields of one frame record its closures share
+(jzify/generators.js `frame`, `fieldsOf`), one object a call where each
+binding was a heap cell; a binding of a statement that never suspends stays a
+local of that statement. A field holds no value before its binding's step
+(`__tdz()`, src/ast.js TDZ_VALUE: the summary gives it no kind, the slot
+censuses count no write), so its kind is what the steps store, as a TDZ
+declaration's was. A pattern declaration binding fields destructures into
+locals declared where it stands and sets each field from its local, a
+destructuring into fields losing their kinds. `resolveLocals` spells each
+binding apart first: a top-level one keeps its name (a `var` hoisted
 under a parameter's name is the parameter), a block's keeps it unless a
 parameter, a name the body reads from outside or an earlier binding holds
 it, and every reference reads the binding its scope resolves to, a forward
@@ -4039,7 +4055,8 @@ it splits) that a closure captures lives in a cell `{ v }` made at each
 entry, a for-head's copied into a fresh cell after the initializer and
 before each step (ECMA-262 CreatePerIterationEnvironment), and a closure
 made there reads the cells it was made with, through the parameters of a
-call made where it stands. A destructuring declaration assigns its pattern
+call made where it stands (a cell's home is its frame field; an accessor,
+which no such call wraps, reads the cell through the frame). A destructuring declaration assigns its pattern
 to the hoisted names as a destructuring assignment does, a catch clause's
 and a for-of head's too; one whose default or computed key suspends runs
 the steps ECMA-262 takes (`patternSteps`: keys read in turn, an iterator
@@ -4058,10 +4075,11 @@ machine hoists, under which the nodes `resolveLocals` copied are scoped
 again: a class there is a function's local class, not a module's, and a name
 the body binds shadows a builtin or a module class throughout. The
 machine's locals are declared ahead of the steps that initialize them behind
-the TDZ mark (`src/ast.js`), a declaration that defines no value; a bare
+the TDZ value (`src/ast.js`), a field that defines no value; a bare
 `let x` in the body defines its undefined where it stands. An async function
-passes its arguments straight to its machine, `(a, b) =>
-__async_run(M(a, b))`, all of them packed only when it reads `arguments`. A
+passes its arguments straight to its machine, `(a, b) => M(a, b)`, the
+machine returning its promise, all of them packed only when it reads
+`arguments`. A
 closure made inside an async function or a generator reads the kinds the same
 closure made inside a plain function does (`test/async-factory.js`).
 Class lowering (`jzify/classes.js`) takes `static async` methods on both of

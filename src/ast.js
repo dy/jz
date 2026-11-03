@@ -84,6 +84,12 @@ export const STATIC_BASE = '\u0001base'
 // defines none (the program summary's `decl`).
 export const TDZ = '\uE005'
 export const isTdzDecl = (n) => Array.isArray(n) && n[0] === 'let' && typeof n[1] === 'string' && n[1].startsWith(TDZ)
+/** The value a field of a generator's frame record holds before the step that
+ *  initializes its binding (jzify/generators.js): as a TDZ declaration it
+ *  defines none, so the field's kind is what its steps store (`__tdz()`, an
+ *  undefined no census counts). */
+export const TDZ_VALUE = ['()', '__tdz', null]
+export const isTdzValue = (n) => Array.isArray(n) && n[0] === '()' && n[1] === '__tdz'
 
 /** Prepared undefined literal, including the empty literal form. */
 export const isUndefinedLiteral = node =>

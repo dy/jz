@@ -2850,6 +2850,8 @@ export default (ctx) => {
     ['drop', asF64(emit(obj))], asF64(emit(['{}']))], 'f64'))
 
   ctx.core.emit['__raw_prop'] = (obj, prop) => dotRead(obj, prop, true)
+  // a generator frame's field before its binding's step (src/ast.js TDZ_VALUE)
+  ctx.core.emit.__tdz = () => undefExpr()
   // A generator function's mark on an object it makes (jzify/generators.js
   // genMark): a hidden property where the program asks `instanceof` of a
   // value (class-dispatch.js valueInstanceof), as a nominal class's instance

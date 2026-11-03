@@ -1,5 +1,5 @@
 /** Exact integer tags in object literals, used to discriminate schema unions. */
-import { MUTATE_OPS, walkAst } from '../../ast.js'
+import { MUTATE_OPS, walkAst, isTdzValue } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { staticObjectProps, constNumExpr } from '../../static.js'
 import { frameNode } from '../../function.js'
@@ -108,6 +108,7 @@ export function collectSlotConstants(ast) {
         const sid = ctx.schema.register(parsed.names, parsed.brand)
         for (let i = 0; i < parsed.values.length; i++) {
           const value = parsed.values[i]
+          if (isTdzValue(value)) continue   // a frame field's TDZ value is no write (src/ast.js TDZ_VALUE)
           observeConstInt(sid, i, intLiteral(value) ?? (typeof value === 'string' && typeof intRefs?.get(value) === 'number' ? intRefs.get(value) : null))
         }
       }
@@ -152,6 +153,7 @@ export function collectSlotConstants(ast) {
             const sid = ctx.schema.register(parsed.names, parsed.brand)
             for (let i = 0; i < parsed.values.length; i++) {
               const value = parsed.values[i]
+              if (isTdzValue(value)) continue   // a frame field's TDZ value is no write (src/ast.js TDZ_VALUE)
               record(sid, i,
                 intLiteral(value) ?? (typeof value === 'string' ? intRefs?.get(value) : null))
             }

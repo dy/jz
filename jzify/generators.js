@@ -2,10 +2,12 @@
  * Generators — regenerator-style state machines, no stack suspension.
  *
  * `function* g(a) { … yield E … }` lowers to a factory arrow returning
- * `{ next, return }` closures over shared mutable state: the body becomes a
- * dispatch loop over a state local, each yield splits a state boundary, and
- * `next(v)` is an ordinary closure call through the uniform ABI (mutable
- * captures already ship). Sync only — no event loop, no microtasks.
+ * `{ next, return }` closures over one frame record: the body becomes a
+ * dispatch loop over a state field, each yield splits a state boundary, the
+ * bindings that live across one are fields of the frame, and `next(v)` is an
+ * ordinary closure call through the uniform ABI. An async function's machine
+ * drives itself (`self`): one closure that subscribes itself to what it
+ * awaits and settles the promise its frame holds.
  *
  * v1 surface (everything else rejects with a precise message):
  *   - yield as a statement, or as the RHS of `let x = yield E` / `x = yield E`;
@@ -41,7 +43,7 @@
  * @module jzify/generators
  */
 
-import { walkAst, some, TDZ, withLoc, noted, collectParamName, extractParams, CLASS_T } from '../src/ast.js'
+import { walkAst, some, TDZ_VALUE, withLoc, noted, collectParamName, extractParams, CLASS_T } from '../src/ast.js'
 import { ctx } from '../src/ctx.js'
 import { isResourceDecl, resourceScope, resourceSteps } from './using.js'
 
@@ -123,7 +125,22 @@ const blockStmts = (b) =>
   : Array.isArray(b) && b[0] === ';' ? b.slice(1)
   : [b]
 
-const S = { NEXT: '__s', SENT: '__sent', ERR: '__err', THR: '__thr', THRSET: '__thrset' }
+const S = { NEXT: '__s', SENT: '__sent', ERR: '__err', THR: '__thr', THRSET: '__thrset', PROMISE: '__pr', MACHINE: '__m' }
+/** `node` with each name of `names` read as a field of the record `frame`:
+ *  the machine's own state and temporaries, names no source spells or binds
+ *  again (a member's key, an object literal's key and a label are no reads).
+ *  A declaration of one assigns its field. */
+const fieldsOf = (node, names, frame) => {
+  if (typeof node === 'string') return names.has(node) ? ['.', frame, node] : node
+  if (!Array.isArray(node) || node[0] == null) return node
+  const op = node[0], f = (c) => fieldsOf(c, names, frame)
+  if (op === 'str' || op === 'break' || op === 'continue') return node
+  if (op === '.' || op === '?.') return withLoc([op, f(node[1]), node[2]], node)
+  if (op === ':' || op === 'label') return withLoc([op, Array.isArray(node[1]) && node[1][0] === '[]' && node.length === 3 && node[1].length === 2 ? ['[]', f(node[1][1])] : node[1], ...node.slice(2).map(f)], node)
+  if ((op === 'let' || op === 'const') && node.slice(1).some(d => names.has(Array.isArray(d) && d[0] === '=' ? d[1] : d)))
+    return withLoc([';', ...node.slice(1).map(d => Array.isArray(d) && d[0] === '=' ? ['=', f(d[1]), f(d[2])] : typeof d === 'string' && names.has(d) ? ['=', f(d), [null, undefined]] : [op, d])], node)
+  return withLoc(node.map((c, i) => i === 0 ? c : f(c)), node)
+}
 
 /** A loop over an iterator, closed when its body leaves early (IteratorClose):
  *  `open` is set while the body runs. A break, return or outward jump runs
@@ -187,7 +204,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
   // the scope is entered (a for-head's copied into a fresh one each
   // iteration, as JS copies it), and a closure reads the cells it was made
   // with: `((x) => () => x.v)(x)`. Nested functions keep their bindings.
-  const resolveLocals = (stmts, params) => {
+  const resolveLocals = (stmts, params, frame = null, framed = null) => {
     const deep = (n) => Array.isArray(n) ? noted(n, n.map(deep)) : n
     stmts = stmts.map(deep)
     const scopes = new WeakMap(), reads = new WeakMap(), free = new Set(), seen = new Set(), tops = [], nested = []
@@ -195,9 +212,16 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     for (const p of params) paramScope.names.set(p, { name: p, spelling: p })
     const root = { parent: paramScope, names: new Map(), machine: true, top: true, flat: true, reenter: false }
     let emitting = false, outer = null
+    // a framed pattern declaration binds its names to locals first (`declaration`)
+    let viaTemps = null
     const UNDEF = [null, undefined]
     const cellOf = (v) => ['{}', [':', 'v', v]]
-    const at = (b) => b.cell ? ['.', b.spelling, 'v'] : b.spelling
+    // where a binding lives: a field of the frame record (`frame`) for one of
+    // a scope the machine splits into states, its own name otherwise
+    const home = (b) => b.frame ? ['.', frame, b.spelling] : b.spelling
+    // its value: a cell's slot, which a closure reads through the parameter of
+    // the call that made it (`fn`), not through the frame
+    const at = (b, crossed = false) => !b.cell ? home(b) : ['.', crossed ? b.spelling : home(b), 'v']
     const items = (n) => n == null ? [] : Array.isArray(n) && n[0] === ',' ? n.slice(1) : [n]
     const commas = (list) => list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]
     // a scope per node and role, made while scanning and found again while emitting
@@ -216,7 +240,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       if (typeof name !== 'string' || !name || s.names.has(name)) return
       // a top-level `var` (a bare `let`) under a parameter's name is the parameter
       if (s.top && paramScope.names.has(name)) return
-      const b = { name, spelling: name, cell: false, captured: false, machine: s.machine, top: s.top, reenter: s.reenter }
+      const b = { name, spelling: name, cell: false, captured: false, machine: s.machine, top: s.top, reenter: s.reenter, frame: frame != null && s.machine && s.flat }
       s.names.set(name, b)
       if (b.machine) (b.top ? tops : nested).push(b)
     }
@@ -239,7 +263,9 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
         const b = t.names.get(name)
         if (b) {
           if (!emitting && crossed && b.machine) { b.captured = true; reads.get(outer)?.add(b) }
-          return emitting && b.machine ? at(b) : name
+          if (emitting && viaTemps?.has(b)) return viaTemps.get(b)
+          // (a cell crosses as a parameter into a function `fn` wraps, an accessor reads its home)
+          return emitting && b.machine ? at(b, crossed && outer != null) : name
         }
         if (t.fn) crossed = true
       }
@@ -259,7 +285,11 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     // A declaration's target: each name's spelling, a cell's slot where `slot`
     // (the declaration assigns it), defaults and computed keys read in `s`.
     const target = (p, s, slot) => {
-      if (typeof p === 'string') { const b = lookup(p, s); return b?.machine ? (slot ? at(b) : b.spelling) : p }
+      if (typeof p === 'string') {
+        const b = lookup(p, s)
+        if (viaTemps && b?.frame) { const t = genTemp(b.spelling); viaTemps.set(b, t); return t }
+        return b?.machine ? (slot ? at(b) : home(b)) : p
+      }
       if (!Array.isArray(p) || p[0] == null) return p
       const op = p[0]
       if (op === '=') return ['=', target(p[1], s, slot), expr(p[2], s)]
@@ -271,7 +301,10 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     }
     const hasCell = (p, s) => patternNames(p).some(n => lookup(n, s)?.cell)
     const cellsOf = (s) => [...s.names.values()].filter(b => b.cell)
-    const makeCells = (s) => emitting ? cellsOf(s).map(b => ['let', ['=', b.spelling, cellOf(UNDEF)]]) : []
+    const makeCells = (s) => emitting ? cellsOf(s).map(b => b.frame ? ['=', home(b), cellOf(UNDEF)] : ['let', ['=', b.spelling, cellOf(UNDEF)]]) : []
+    // the declaration of names a pattern binds besides its cells: a frame's field takes its undefined
+    const declared = (bs) => [...(bs.some(b => !b.frame) ? [['let', ...bs.filter(b => !b.frame).map(b => b.spelling)]] : []),
+      ...bs.filter(b => b.frame).map(b => ['=', home(b), UNDEF])]
     const own = ownStmts
     // what a block lowers to keeps its spelling: braces, a list or a lone statement
     const shaped = (orig, out) => {
@@ -308,11 +341,23 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
           if (assigns) { flush(); parts.push(['=', t, init]) }
           continue
         }
+        // A pattern binding frame fields destructures into locals declared
+        // where it stands, then sets each field (or the cell it holds) from
+        // its local: a destructuring into fields would lose their kinds. (One
+        // whose default or computed key suspends runs as steps, patternSteps,
+        // each a plain assignment.)
+        if (emitting && assigns && Array.isArray(t) && !hasYield(t) && patternNames(t).some(x => lookup(x, s)?.frame)) {
+          flush()
+          const temps = viaTemps = new Map()
+          let local
+          try { local = target(t, s, false) } finally { viaTemps = null }
+          parts.push(Object.assign(['let', ['=', local, init]], { inPlace: true }), ...[...temps].map(([b, tmp]) => ['=', at(b), tmp]))
+          continue
+        }
         if (emitting && hasCell(t, s)) {
           // a cell's declaration assigns its slot; the pattern's other names declare apart
           flush()
-          const plain = patternNames(t).map(x => lookup(x, s)).filter(b => !b.cell).map(b => b.spelling)
-          if (plain.length) parts.push(['let', ...plain])
+          parts.push(...declared(patternNames(t).map(x => lookup(x, s)).filter(b => !b.cell)))
           parts.push(['=', target(t, s, true), assigns ? init : UNDEF])
           continue
         }
@@ -343,8 +388,8 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
         if (c[1] == null || !emitting || !hasCell(c[1], cs)) return ['catch', c[1] == null ? c[1] : target(c[1], cs, false), shaped(c[2] ?? ['{}', null], out)]
         // a captured parameter lives in a cell the body makes first
         const caught = genTemp('ce'), made = cellsOf(cs).length
-        const plain = patternNames(c[1]).map(x => cs.names.get(x)).filter(b => !b.cell).map(b => b.spelling)
-        return ['catch', caught, ['{}', [';', ...out.slice(0, made), ...(plain.length ? [['let', ...plain]] : []),
+        const plain = declared(patternNames(c[1]).map(x => cs.names.get(x)).filter(b => !b.cell))
+        return ['catch', caught, ['{}', [';', ...out.slice(0, made), ...plain,
           ['=', target(c[1], cs, true), caught], ...out.slice(made)]]]
       })]
       if (op === 'switch') {
@@ -381,7 +426,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       const body = block(n[2], h, inner, true), cells = emitting ? cellsOf(h) : []
       if (!cells.length) return ['for', [';', init2, cond2, step2], body]
       // the head's bindings copy into fresh cells after the initializer and before each step
-      const copy = () => cells.map(b => ['=', b.spelling, cellOf(['.', b.spelling, 'v'])])
+      const copy = () => cells.map(b => ['=', home(b), cellOf(['.', home(b), 'v'])])
       const steps = [...copy(), ...(step2 == null ? [] : [step2])]
       return ['for', [';', [';', ...makeCells(h), ...(init2 == null ? [] : [init2]), ...copy()], cond2, commas(steps)], body]
     }
@@ -394,9 +439,9 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       const out = fnAt(n, s, decl)
       if (!top) return out
       outer = null
-      const cells = emitting ? [...reads.get(n)].filter(b => b.cell).map(b => b.spelling) : []
+      const cells = emitting ? [...reads.get(n)].filter(b => b.cell) : []
       if (!cells.length) return out
-      return ['()', ['=>', ['()', commas(cells)], out], commas(cells.slice())]
+      return ['()', ['=>', ['()', commas(cells.map(b => b.spelling))], out], commas(cells.map(home))]
     }
     const fnParams = (p, f) => {
       if (!emitting) for (const x of extractParams(p)) bindPattern(f, x)
@@ -458,6 +503,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       b.spelling = sp; taken.add(sp)
     }
     emitting = true
+    if (framed) for (const b of [...tops, ...nested]) if (b.frame) framed.push(b.spelling)
     return list(stmts, root, true)
   }
   // Collect every let/const binding name in the body, a pattern's names too:
@@ -583,13 +629,21 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     // assigns hoisted locals before dispatch reaches any user statement, so a
     // call before the declaration works. The body prepares in a scope of the
     // names it binds as written: a call of one is no module generator's.
+    // The frame record: the bindings of the scopes the machine splits into
+    // states, its temporaries and its own state are fields of one object its
+    // closures share, where each would be a cell of its own; a binding of a
+    // statement that never suspends stays a local of that statement.
+    const frame = genTemp('fr'), framed = []
+    const framedRef = (t) => Array.isArray(t) && t[0] === '.' && (t[1] === frame || framedRef(t[1]))
     const written = enterMachineScope?.(owners, body, false)
     try {
       body.splice(0, body.length, ...flatList(body))
-      body.splice(0, body.length, ...resolveLocals(body, [...new Set(extractParams(params).flatMap(patternNames))]))
+      body.splice(0, body.length, ...resolveLocals(body, [...new Set(extractParams(params).flatMap(patternNames))], frame, framed))
     } finally { if (enterMachineScope) leaveBuiltinScope(written) }
     const locals = new Set()
     for (const st of body) collectLocals(st, locals)
+    // (these declare where they stand: what the lowering adds after them are its temporaries)
+    const inPlace = new Set(locals)
 
     // ---- state machine ----
     // states[i] = list of statements; terminators are written explicitly as
@@ -612,6 +666,15 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     const stmtsOf = (id) => states[id]
     const gotoIR = (id) => [[';;set', id], [';;continue']]
     const record = (value, done) => ['{}', [',', [':', 'value', value], [':', 'done', [null, done]]]]
+    // An async function's machine drives itself (`self`): it suspends by
+    // subscribing itself to what it awaits and completes by settling its
+    // promise, both fields of its frame, where a driver's machine hands a
+    // step record back.
+    const self = internal && !agen
+    // (a suspension leaves the dispatch loop with its operand, which one
+    // `__await` after the loop subscribes the machine to: one call a machine)
+    const ret = (value, done) => !self ? [['return', record(value, done)]]
+      : done ? [['()', '__async_ret', [',', ['.', frame, S.PROMISE], value]], ['return']] : [['=', '__aw', value], ['break']]
     const THROWN = -2
     // The finally blocks a jump from `fin` to a point outside `until` crosses, innermost first.
     const crossing = (fin, until = null) => {
@@ -637,11 +700,11 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       return returned
     }
     const leaveReturn = (fin, value) => {
-      if (!fin) return [[';;set', -1], ['return', record(value, true)]]
+      if (!fin) return [[';;set', -1], ...ret(value, true)]
       const slot = returnSlot()
       if (completeS < 0) {
         completeS = newState()
-        stmtsOf(completeS).push([';;set', -1], ['return', record(slot, true)])
+        stmtsOf(completeS).push([';;set', -1], ...ret(slot, true))
       }
       return [...(value === slot ? [] : [['=', slot, value]]), ...leave(crossing(fin), completeS)]
     }
@@ -667,7 +730,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
         value = a; sent = ['()', '__awaited', [',', a, S.SENT]]
       }
       if (agen) value = ['{}', [',', [':', 'a', [null, op === 'await' ? 1 : kind ? 2 : 0]], [':', 'v', value]]]
-      stmtsOf(cur).push([';;set', resume], ['return', record(value, false)])
+      stmtsOf(cur).push([';;set', resume], ...ret(value, false))
       if (target) stmtsOf(resume).push(['=', target, sent])
       // an await is resumed only by its own settling
       if (kind) delivered.push({ resume, kind })
@@ -815,7 +878,8 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
         if (st[1][2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[1][2][1], st[1][1]), cur, jumps)
         return emitYield(cur, st[1][2], st[1][1])
       }
-      if (op === '=' && typeof st[1] === 'string' && isYield(st[2])) {
+      // (a frame's field, or a cell it holds, is as settled a target as a name)
+      if (op === '=' && (typeof st[1] === 'string' || framedRef(st[1])) && isYield(st[2])) {
         if (st[2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[2][1], st[1]), cur, jumps)
         return emitYield(cur, st[2], st[1])
       }
@@ -862,11 +926,14 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
         // let/const initializers become assignments (names are hoisted), a
         // declaration without one the undefined it declares
         if (op === 'let' || op === 'const') {
+          // (a framed pattern's locals, resolveLocals `declaration`)
+          if (st.inPlace) { stmtsOf(cur).push(transform(st)); return cur }
           for (let i = 1; i < st.length; i++) {
             const d = st[i]
             // a pattern assigns its names as any destructuring assignment does
             if (Array.isArray(d) && d[0] === '=') stmtsOf(cur).push(Array.isArray(d[1]) ? transform(withLoc(['=', d[1], d[2]], d)) : withLoc(['=', d[1], transform(d[2])], d))
-            else if (typeof d === 'string') stmtsOf(cur).push(['=', d, [null, undefined]])
+            // (a frame's field, `let x` of a scope the machine splits)
+            else if (typeof d === 'string' || Array.isArray(d) && d[0] === '.') stmtsOf(cur).push(['=', d, [null, undefined]])
           }
           return cur
         }
@@ -1123,7 +1190,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     const outer = enterMachineScope?.(owners, body)
     let end
     try { end = flattenList(body, entry, null) } finally { if (enterMachineScope) leaveBuiltinScope(outer) }
-    if (end != null) stmtsOf(end).push([';;set', -1], ['return', record([null, undefined], true)])
+    if (end != null) stmtsOf(end).push([';;set', -1], ...ret([null, undefined], true))
 
     // return(v) at a suspended yield is a return completion there (its value in
     // `returned`): the enclosing finally blocks run first. Elsewhere it just
@@ -1150,7 +1217,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       return withLoc(n.map(resolve), n)
     }
     // if-chain over states (highest → the shape jz compiles tightly)
-    let dispatch = ['return', record([null, undefined], true)]
+    let dispatch = [';', ...ret([null, undefined], true)]
     for (let i = states.length - 1; i >= 0; i--)
       dispatch = ['if', ['===', S.NEXT, [null, i]], ['{}', [';', ...states[i].map(resolve), ['continue']]], ['{}', [';', dispatch]]]
 
@@ -1161,7 +1228,9 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     const handlers = new Map()
     stateHandler.forEach((h, i) => { if (h >= 0) (handlers.get(h) ?? handlers.set(h, []).get(h)).push(i) })
     const guarded = handlers.size > 0
-    let route = [';', ['=', S.NEXT, [null, -1]], ['throw', '__e']]
+    // (an exception no region handles closes the machine: its driver's, or its own promise, rejects)
+    const reject = (e) => [['()', '__p_settle', [',', ['.', frame, S.PROMISE], [null, 2], e]], ['return']]
+    let route = [';', ['=', S.NEXT, [null, -1]], ...(self ? reject('__e') : [['throw', '__e']])]
     for (const [h, ids] of handlers) {
       const cond = ids.map(i => ['===', S.NEXT, [null, i]]).reduce((a, b) => ['||', a, b])
       route = ['if', cond, ['{}', [';', ['=', S.ERR, '__e'], ['=', S.NEXT, [null, h]], ['continue']]], ['{}', route]]
@@ -1174,15 +1243,35 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       ['while', [null, true], ['{}', [';', loopBody]]],
     ]]
 
-    // The locals are declared ahead of the steps that initialize them, each
-    // where its declaration stood: they hold no value before (TDZ, src/ast.js).
+    // The frame's fields: the machine's state, then the bindings and
+    // temporaries, each holding nothing until the step that initializes it.
+    const temps = [...locals].filter(n => !inPlace.has(n))
+    const own = new Set([...Object.values(S), ...temps])
+    const fields = [[S.NEXT, [null, 0]], [S.SENT, [null, undefined]],
+      ...(guarded ? [[S.ERR, [null, undefined]], [S.THR, [null, undefined]], [S.THRSET, [null, false]]] : []),
+      ...[...framed, ...temps].map(n => [n, TDZ_VALUE.slice()])]
+    const framedFn = (n) => fieldsOf(n, own, frame)
     const decls = [
-      ['let', ['=', S.NEXT, [null, 0]], ['=', S.SENT, [null, undefined]],
-        ...(guarded ? [['=', S.ERR, [null, undefined]], ['=', S.THR, [null, undefined]], ['=', S.THRSET, [null, false]]] : [])],
-      ...(locals.size ? [['let', TDZ, ...locals]] : []),
-      ['const', ['=', '__next', ['=>', '__in', nextBody]]],
+      ['const', ['=', frame, ['{}', [',', ...fields.map(([k, v]) => [':', k, v])]]]],
+      ['const', ['=', '__next', ['=>', '__in', framedFn(nextBody)]]],
     ]
 
+    if (self) {
+      // resumed with a settlement: a rejection is raised where it stands
+      // (its region's catch routes it) or, with no region, rejects at once
+      const enter = ['if', ['===', '__st', [null, 2]],
+        ['{}', [';', ...(guarded ? [['=', S.THR, '__in'], ['=', S.THRSET, [null, true]]] : [['=', S.NEXT, [null, -1]], ...reject('__in')])]],
+        ['{}', [';', ['=', S.SENT, '__in']]]]
+      const machine = ['=>', ['()', [',', '__st', '__in']], ['{}', [';', enter, ['let', '__aw'],
+        ['while', [null, true], ['{}', [';', loopBody]]],
+        ['()', '__await', [',', '__aw', ['.', frame, S.MACHINE]]]]]]
+      const selfFields = [[S.PROMISE, ['()', '__p_async', null]], [S.MACHINE, TDZ_VALUE.slice()], ...fields]
+      return ['=>', transformParams(params), ['{}', [';', ...paramInit,
+        ['const', ['=', frame, ['{}', [',', ...selfFields.map(([k, v]) => [':', k, v])]]]],
+        ['=', ['.', frame, S.MACHINE], framedFn(machine)],
+        ['()', ['.', frame, S.MACHINE], [',', [null, 1], [null, undefined]]],
+        ['return', ['.', frame, S.PROMISE]]]]]
+    }
     const nextFn = ['=>', '__v', ['()', '__next', '__v']]
     const at = (ids) => ids.map(i => ['===', S.NEXT, [null, i]]).reduce((a, b) => ['||', a, b])
     // a yield*'s yield resumes with the completion's kind and value
@@ -1191,15 +1280,15 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     const closing = []
     for (const { s, ids } of entries.values()) closing.push(['if', at(ids),
       ['{}', [';', ['=', returned, '__v'], ['=', S.NEXT, [null, s]], ['return', ['()', '__next', [null, undefined]]]]]])
-    const returnFn = ['=>', '__v', ['{}', [';', ...deliver(2), ...closing,
+    const returnFn = framedFn(['=>', '__v', ['{}', [';', ...deliver(2), ...closing,
       ['=', S.NEXT, [null, -1]],
-      ['return', record('__v', true)]]]]
+      ['return', record('__v', true)]]]])
     // throw(v): with try regions the exception is raised at the resume point
     // (the machine's own catch routes it); without, no handler can exist, so
     // close the machine and rethrow to the caller of throw().
-    const throwFn = guarded
+    const throwFn = framedFn(guarded
       ? ['=>', '__v', ['{}', [';', ...deliver(1), ['=', S.THR, '__v'], ['=', S.THRSET, [null, true]], ['return', ['()', '__next', [null, undefined]]]]]]
-      : ['=>', '__v', ['{}', [';', ...deliver(1), ['=', S.NEXT, [null, -1]], ['throw', '__v']]]]
+      : ['=>', '__v', ['{}', [';', ...deliver(1), ['=', S.NEXT, [null, -1]], ['throw', '__v']]]])
 
     // Helper-bearing programs mint through __it_mk (decorated iterator —
     // map/filter/… as value-position methods); others keep the bare record.

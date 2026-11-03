@@ -140,6 +140,12 @@ export let __p_resolve = (v) => {
   let p = __p_new(); __p_settle(p, 1, v); return p
 }
 export let __p_reject = (e) => { let p = __p_new(); __p_settle(p, 2, e); return p }
+// An async function's promise, a field of its machine's frame
+// (jzify/generators.js \`self\`), and its completion: the summary names the
+// promise at its \`__p_async\` call node and joins into it what each
+// \`__async_ret\` resolves it with (src/summary/index.js).
+export let __p_async = () => __p_new()
+export let __async_ret = (p, v) => { __p_settle(p, 1, v) }
 // What an async function that never awaits returns (jzify/async.js
 // settledAsync): a new promise resolved with \`v\`, a thenable adopted.
 export let __p_done = (v) => { let p = __p_new(); __p_settle(p, 1, v); return p }

@@ -977,14 +977,17 @@ test('async: a function that never awaits settles its promise in the jobs Node t
 test('async: a function that never awaits runs no machine', () => {
   const settled = compile('const g = async (x) => x + 1\nexport const f = () => g(1)', { wat: true, optimize: false })
   ok(!/__async_run/.test(settled) && /__p_done/.test(settled), 'no driver, a settled promise')
-  ok(/__async_run/.test(compile('const g = async (x) => (await x) + 1\nexport const f = () => g(1)', { wat: true, optimize: false })), 'an await keeps the driver')
+  ok(/__async_ret/.test(compile('const g = async (x) => (await x) + 1\nexport const f = () => g(1)', { wat: true, optimize: false })), 'an await keeps a machine')
 })
 
-// A driver's machine answers what the driver asks of it (jzify/generators.js
-// `internal`): an async function's next and throw, no generator protocol
-// beside them; an async generator's driver also asks return.
-test('async: the machine an async function runs carries next and throw alone', () => {
-  const out = JSON.stringify(jzify(parse('const g = async (x) => { const y = await x; return y + 1 }\nexport const f = () => g(1)')))
-  ok(out.includes('[":","next","__next"]') && out.includes('[":","throw",'), 'next and throw')
-  ok(!out.includes('@@iterator') && !out.includes('[":","return",'), 'no return, no @@iterator')
+// An async function's machine drives itself (jzify/generators.js `self`):
+// its frame record holds its promise, its state and the bindings that live
+// across an await; it suspends by subscribing itself (`__await`) and completes
+// by settling its promise (`__async_ret`). No driver, iterator object or step
+// record, no cell per binding.
+test('async: an async function\'s machine drives itself from one frame record', () => {
+  const out = JSON.stringify(jzify(parse('const g = async (x) => { let t = 0; for (let i = 0; i < x; i++) t += await i; return t }\nexport const f = () => g(3)')))
+  ok(out.includes('"__p_async"') && out.includes('"__async_ret"') && out.includes('"__await"'), 'its promise, completion and suspension')
+  ok(!out.includes('"__async_run"') && !out.includes('[":","done",') && !out.includes('[":","next",'), 'no driver, step record or iterator')
+  ok(/\[":","t",\["\(\)","__tdz",null\]\]/.test(out) && /\[":","i",\["\(\)","__tdz",null\]\]/.test(out), 'its bindings are fields of the frame')
 })

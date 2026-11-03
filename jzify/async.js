@@ -414,7 +414,7 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
   }
 
   // async (a, b) => body / async function (a, b) { body } →
-  //   (a, b) => __async_run(MACHINE_FACTORY(a, b))
+  //   (a, b) => MACHINE_FACTORY(a, b), the machine driving itself to its promise
   // The factory is the standard generator lowering of the body.
   function lowerAsync(params, body) {
     // Source-level desugar: (a, b) => __async_run((function* (a, b) { mappedBody })(a, b))
@@ -436,7 +436,8 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     const own = usesArguments(body) || usesArguments(params) ? [['...', genTemp('aa')]]
       : list.map(p => typeof p === 'string' ? p : Array.isArray(p) && p[0] === '...' ? ['...', genTemp('aa')] : genTemp('ap'))
     const seq = (l) => l.length === 0 ? null : l.length === 1 ? l[0] : [',', ...l]
-    const run = ['()', '__async_run', ['()', machine, seq(own.map(p => Array.isArray(p) ? p.slice() : p))]]
+    // (the machine drives itself and returns its promise, jzify/generators.js `self`)
+    const run = ['()', machine, seq(own.map(p => Array.isArray(p) ? p.slice() : p))]
     if (list.every(p => typeof p === 'string')) return ['=>', ['()', seq(own)], run]
     // Defaults and destructuring run in the factory, before the driver can
     // catch body exceptions. An async call rejects for either kind of failure.

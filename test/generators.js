@@ -1,13 +1,15 @@
 // Generators (Ring 1 pivot, extension-surface plan): regenerator-style state
 // machines — no stack suspension. `function*` lowers to a factory arrow whose
-// body is a dispatch loop over hoisted locals; `{ next, return }` are ordinary
-// closures over that state (mutable captures). for-of over a KNOWN generator
+// body is a dispatch loop over a frame record's fields; `{ next, return }` are
+// ordinary closures over that record. for-of over a KNOWN generator
 // call desugars to while-next (inside AND outside generator bodies). Sync only.
 // v1 rejects (precise messages): yield in arbitrary expressions, yield inside
 // for-of/for-in bodies over values not known to be generators.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { oracle, batch, jz, compile } from './util.js'
+import { parse } from '../src/parse.js'
+import jzify from '../jzify/index.js'
 
 const j = (code) => jz(code).exports.f()
 
@@ -799,4 +801,19 @@ test('iterator values: [Symbol.iterator]() on any receiver', () => {
         export let f = () => { const l = new L(); let s = 0; for (const e of l) s += e.v; return s + [...l].length + Array.from(l).length }`), 7)
   is(j(`function* g() { yield 1; yield 2 }
         export let f = () => { const it = g()[Symbol.iterator](); let s = 0; for (const v of it) s += v; return s }`), 3)
+})
+
+// A generator's machine keeps the bindings of the scopes it splits into
+// states, and its temporaries and state, as fields of one frame record its
+// closures share (jzify/generators.js `frame`): one object a call, where each
+// binding was a heap cell. A field holds no value before its binding's step
+// (`__tdz()`, src/ast.js TDZ_VALUE), so its kind is what its steps store; a
+// binding of a statement that never suspends stays a local of that statement.
+test('generators: the bindings a machine splits live in one frame record', () => {
+  const src = 'function* fib(n) { let a = 0, b = 1; for (let i = 0; i < n; i++) { yield a; for (let k = 0; k < 1; k++) [a, b] = [b, a + b] } }\nexport const f = () => [...fib(10)].join()'
+  const out = JSON.stringify(jzify(parse(src)))
+  for (const name of ['a', 'b', 'i', '__s']) ok(out.includes(`[":","${name}",`), `${name} is a field`)
+  ok(/\[":","a",\["\(\)","__tdz",null\]\]/.test(out), 'a field holds nothing before its step')
+  ok(!out.includes('[":","k",'), 'a statement that never suspends keeps its binding')
+  is(jz(src).exports.f(), oracle(src).f())
 })
