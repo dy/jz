@@ -1381,6 +1381,15 @@ raw i32 load still needs the summary's field kind to be a number: the per-schema
 census marks certainty from the sites it registers, and a literal it did not
 register (one assigned to a parameter inside a closure) can store a string under
 the same schema.
+A member store through a receiver whose layout the emitter cannot name (one the
+summary lost, or of no known kind) is guarded as such a read is
+(emit-assign.js `guardedFieldStore`): where the one layout holding the name, or
+each of the receiver's few shapes, passes a masked compare of the receiver's
+box, the value goes to that layout's slot; any other receiver takes the store's
+dynamic path (`__rec_set`, `__dyn_set`). A schema slot is its field's only home,
+so the slot store is what the dynamic store does there. The receiver is read
+once, before the value; a receiver a delete may reach, a slot holding a raw
+BigInt carrier and the size tier keep the dynamic store.
 
 A condition is a boolean question, not a value: `toBool` asks each operand of
 `&&`, `||` and `!` in place, from `if`, loop tests and `!` alike (the value form

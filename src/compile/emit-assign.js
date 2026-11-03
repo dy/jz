@@ -24,7 +24,7 @@ import { K, NUMBER, kindOfVal, bitOf as summaryBitOf, tagOf as summaryTagOf, tag
 import { errorCodeLiteral, ERR } from '../../err-codes.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
-  typed, asF64, asI32, asI64, keyIndex, temp, tempI32, withTemp, block64,
+  typed, asF64, asI32, asI64, keyIndex, temp, tempI32, tempI64, withTemp, block64,
   ptrOffsetIR, fwdOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
   freshId, boxBigInt, isNullish, throwTypeErrorIR, throwErrorIR, capturedCellSave, cellSnap, cloneIR,
@@ -974,8 +974,40 @@ function recordStore(obj, prop, val) {
   ctx.module.include('array')
   ctx.module.include('collection')
   inc('__rec_set')
-  return typed(['f64.reinterpret_i64', ['call', '$__rec_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val)),
-    ['i32.const', r.rid], ['i32.const', (r.slot << 8) | r.n]]], 'f64')
+  const record = (bits, value) => ['call', '$__rec_set', bits, asI64(emit(['str', prop])), ['i64.reinterpret_f64', value],
+    ['i32.const', r.rid], ['i32.const', (r.slot << 8) | r.n]]
+  return guardedFieldStore(obj, prop, val, record) ??
+    typed(['f64.reinterpret_i64', record(asI64(emit(obj)), storedValue(val))], 'f64')
+}
+
+/** \`obj.prop = val\` through a receiver whose layout the store cannot name
+ *  (one the summary lost, or of no known kind): the slot of the layout a
+ *  masked compare proves, as a read through such a receiver takes it
+ *  (module/core.js \`guarded\`: the one layout holding the name, else the
+ *  receiver's few shapes), and the store's own dynamic path (\`slow\`, given
+ *  the receiver's bits and the stored value) for any other receiver. A schema
+ *  slot is its field's only home (module/collection.js
+ *  buildObjectSchemaSetArm): where the guard holds, the slot store is what
+ *  the dynamic store does. The receiver is read once, before the value. Null
+ *  where no layout holds the name, the receiver may meet a delete (the
+ *  presence mask is the dynamic store's), or the size tier links no guards. */
+function guardedFieldStore(obj, prop, val, slow) {
+  if (ctx.transform.optimize?.leanRuntime || ctx.types.anyDelete && mayBeDeleted(obj)) return null
+  const one = ctx.schema.guardedSlotOf?.(prop)
+  const all = one ? [one] : ctx.schema.shapeGuardsOn?.() ? ctx.schema.guardsFor(ctx.summary?.at(ctx.func.current).shapesOfExpr(obj), prop) : null
+  // a slot holding a raw BigInt carrier takes its value through the dynamic store's conversion
+  const guards = all?.filter(({ sid, slot }) => !ctx.schema.slotRawBigint?.get(sid)?.has(slot))
+  if (!guards?.length) return null
+  const r = tempI64('gsr'), v = temp('gsv')
+  const bits = () => ['local.get', `$${r}`], value = () => typed(['local.get', `$${v}`], 'f64')
+  let chain = ['drop', slow(bits(), value())]
+  for (let i = guards.length - 1; i >= 0; i--) {
+    const { sid, slot } = guards[i]
+    chain = ['if', ['i64.eq', ['i64.and', bits(), ['i64.const', OBJECT_SCHEMA_HI_MASK]], ['i64.const', objectSchemaGuardHex(sid)]],
+      ['then', storeObjectField(['i32.wrap_i64', ['i64.and', bits(), ['i64.const', LAYOUT.OFFSET_MASK]]], slot, value(), val, sid)],
+      ['else', chain]]
+  }
+  return block64(['local.set', `$${r}`, asI64(asF64(emit(obj)))], ['local.set', `$${v}`, storedValue(val)], chain, value())
 }
 
 /**
@@ -1209,7 +1241,8 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       ctx.module.include('array')
       ctx.module.include('collection')
       inc('__dyn_set')
-      return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
+      const guarded = objType === VAL.OBJECT ? guardedFieldStore(obj, prop, val, (bits, value) => ['call', '$__dyn_set', bits, asI64(emit(['str', prop])), ['i64.reinterpret_f64', value]]) : null
+      return guarded ?? typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
     }
     if (objType == null && ctx.transform.targetProfile.envImports) {
       setLinkDemand('external')
@@ -1236,5 +1269,6 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   }
   if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
   inc('__dyn_set')
-  return typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
+  return guardedFieldStore(obj, prop, val, (bits, value) => ['call', '$__dyn_set', bits, asI64(emit(['str', prop])), ['i64.reinterpret_f64', value]]) ??
+    typed(['f64.reinterpret_i64', ['call', '$__dyn_set', asI64(emit(obj)), asI64(emit(['str', prop])), asI64(storedValue(val))]], 'f64')
 }

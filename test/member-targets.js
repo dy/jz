@@ -8,9 +8,9 @@
 // out, and a deleted slot stayed. The host now asks the module for both
 // (module/collection.js __obj_props, __obj_deleted; interop.js mem.read).
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { levels, onWasi } from './_matrix.js'
-import { oracle, jz } from './util.js'
+import { oracle, jz, compile } from './util.js'
 
 const show = (v) => JSON.stringify(v, (k, x) => x === undefined ? '<undefined>' : x)
 const agree = (cases) => {
@@ -266,4 +266,26 @@ test('member targets: native sidecars retain identity and Symbol stores', () => 
       for(const mode of [0,0,1,0])is(got(mode),want(mode),`O${optimize}, ${init}, ${mode}`)
     }
   }
+})
+
+// A store through a receiver whose layout is lost (an exported function's
+// parameter, which the host may hand anything) takes the slot of the one
+// layout holding the name where a schema guard proves the receiver one of
+// its objects, as a read through it does, and the dynamic store for any
+// other receiver: the record, a Map, an object without the name, the host's
+// object (emit-assign.js guardedFieldStore).
+test('member store: a receiver of lost layout stores the slot a schema guard proves', () => {
+  const src = `const rec = { stamp: 1, other: 2 }
+export const set = (x, v) => { x.stamp = v; return x.stamp }
+export const f = () => { const a = set(rec, 5); const m = new Map(); const b = set(m, 6); const o = { other: 1 }; const c = set(o, 7); return [a, rec.stamp, rec.other, b, m.stamp, c, o.stamp, o.other].join(',') }`
+  for (const optimize of levels(0, 2, 3)) {
+    if (onWasi()) continue
+    const m = jz(src, { optimize }).exports
+    is(m.f(), oracle(src).f(), `O${optimize}`)
+    is(m.set({ stamp: 0 }, 3), 3, `O${optimize}: the host's object`)
+  }
+  // the guard, its slot store, the dynamic store behind it (unoptimized: nothing folded)
+  const wat = compile(src, { wat: true, optimize: false })
+  const at = wat.indexOf('(func $set\n'), set = wat.slice(at, wat.indexOf('\n  (func ', at + 1))
+  ok(/\(i64\.const 0x7FFB0+\)\s*\)\s*\(then[\s\S]*?\(f64\.store[\s\S]*?\(else\s*\(drop\s*\(call \$__(rec|dyn)_set/.test(set), 'guarded slot store')
 })
