@@ -469,7 +469,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
 | `porf-native` | Porffor's release binary (`curl -fsSL https://porffor.dev/install.sh \| sh`, alpha 19 (`0c135ce`, 2026-10-21); a git checkout of the same line or `PORF_BIN` otherwise), compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
 | `scriptc` | [scriptc](https://github.com/vercel-labs/scriptc) 0.4.6: JS/TS compiled through the TypeScript checker and LLVM to a native executable with its static runtime, no embedded engine. `scriptc build <case>-native-flat.js -o <bin>` uses default release optimization and native `performance.now()`. No annotations are added, so untyped values compile to its dynamic tier (native code that checks types at run time). Set `SCRIPTC_BIN` to override. |
-| `tslang` | [TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler) pre-alpha87: LLVM/MLIR native output with its default library and Boehm GC. The unchanged flattened JS is saved as `.ts`; a C `clock_gettime(CLOCK_MONOTONIC)` binding supplies `performance.now()`. `tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>.ts -o <bin>`. Set `TSLANG_BIN` to override. |
+| `tslang` | [TypeScriptCompiler](https://github.com/ASDAlexander77/TypeScriptCompiler) pre-alpha113: LLVM/MLIR native output with its default library and Boehm GC. The unchanged flattened JS is saved as `.ts`; a C `clock_gettime(CLOCK_MONOTONIC)` binding supplies `performance.now()`. `tslang --emit=exe --opt --opt_level=3 --relocation-model=pic --obj=tslang-clock.o <case>.ts -o <bin>`. Set `TSLANG_BIN` to override. |
 | `perry` | [Perry](https://perryts.com/): JS/TS compiled through LLVM to a native executable with its runtime and GC. `perry compile <case>-native-flat.js -o <bin> --fp-contract off`, then run the binary. Uses the unchanged JS kernels, native `performance.now()`, default optimization and host CPU tuning; no type annotations, fast-math, or V8 fallback. Set `PERRY_BIN` to override. |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
 | `javy` | Javy (`javy compile`, JS in embedded QuickJS) when installed; fenced interpreter reference, never in the headline geomean |
@@ -644,7 +644,7 @@ CI installs all of them. Not wired:
   cannot read `--wit`; `jco componentize` drives the same package.
 
 For TypeScriptCompiler, extract the
-[pre-alpha87 Ubuntu 24.04 x64 release](https://github.com/ASDAlexander77/TypeScriptCompiler/releases/tag/v0.0-pre-alpha87),
+[pre-alpha113 Ubuntu 24.04 x64 release](https://github.com/ASDAlexander77/TypeScriptCompiler/releases/tag/v0.0-pre-alpha113),
 set `TSLANG_BIN` to its `tslang` executable, and set `GC_LIB_PATH`,
 `TSLANG_LIB_PATH`, and `DEFAULT_LIB_PATH` to the extracted directory.
 Install `clang` and `libcurl4-openssl-dev`, then run

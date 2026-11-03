@@ -259,11 +259,11 @@ jobs:
           npm install --global scriptc@0.4.6
           echo "SCRIPTC_BIN=$(command -v scriptc)" >> "$GITHUB_ENV"
           scriptc --version
-      - name: install TypeScriptCompiler pre-alpha87
+      - name: install TypeScriptCompiler pre-alpha113
         run: |
           sudo apt-get install -y clang libcurl4-openssl-dev
-          curl -fsSL -o "$RUNNER_TEMP/tslang.tar.gz" https://github.com/ASDAlexander77/TypeScriptCompiler/releases/download/v0.0-pre-alpha87/tslang-v0.0-pre-alpha87-ubuntu-24.04-x64.tar.gz
-          echo "e1b0cbb0f7325326a2aa83921cd96d3c0a5850321b68f97cc7d9c76b8b3f13a7  $RUNNER_TEMP/tslang.tar.gz" | sha256sum -c -
+          curl -fsSL -o "$RUNNER_TEMP/tslang.tar.gz" https://github.com/ASDAlexander77/TypeScriptCompiler/releases/download/v0.0-pre-alpha113/tslang-v0.0-pre-alpha113-ubuntu-24.04-x64.tar.gz
+          echo "ddabe81b8bc0b1edaf81bd06742433ac7df7055d59d53ede9e50f59807f3633b  $RUNNER_TEMP/tslang.tar.gz" | sha256sum -c -
           mkdir -p "$RUNNER_TEMP/tslang"
           tar xzf "$RUNNER_TEMP/tslang.tar.gz" -C "$RUNNER_TEMP/tslang"
           for var in GC_LIB_PATH TSLANG_LIB_PATH DEFAULT_LIB_PATH; do
