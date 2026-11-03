@@ -395,13 +395,14 @@ export const unrollRowLenPadLoops = () => {
 // yields NaN, which forces the char local to f64 and every classifier compare
 // to f64 ops (the tokenizer/watr substrate cost). Split the iteration space:
 //
-//   for (let __ccm = Math.min(N, s.length), i = 0; i < __ccm; i++) BODY
-//   for (let i2 = Math.ceil(__ccm); i2 < N; i2++) BODY′
+//   let __cce = 0
+//   for (let __ccm = (__cce = Math.min(N, s.length)), i = 0; i < __ccm; i++) BODY
+//   for (let i2 = Math.ceil(__cce); i2 < N; i2++) BODY′
 //
 // The main loop's bound proof (scanBoundedLoops, via the min-aware lengthRecv)
 // makes charCodeAt emit the raw i32 fast path — the char carrier narrows to
 // i32 and the classifier chain follows. The tail keeps the original NaN
-// semantics and only runs past the string's end (cold). `Math.ceil(__ccm)` is
+// semantics and only runs past the string's end (cold). `Math.ceil(__cce)` is
 // exactly the main loop's exit value (unit increments from 0): integral min →
 // min itself, fractional → first integer above, NaN → NaN (zero-trip tail,
 // matching the original's zero trips). BODY′ renames the body's decls and the
@@ -494,11 +495,14 @@ const trySplitFor = (node, parent, idx, view) => {
   if (view && tagOf(core(view.kindOfExpr(recv))) === K.STRING) tailBody = propagateNaNConsts(charCodeAtNaN(tailBody, recv, i2))
 
   includeModule('math')  // plan-time injection of math.min/math.ceil — prepare's auto-import has already run
-  const M = `${T}ccm${freshId(ctx)}`
-  node[1] = ['let', ['=', M, ['()', 'math.min', [',', B, ['.', recv, 'length']]]], iDecl]
+  // The tail reads the bound through `E`, declared before both loops: a copy a
+  // later pass makes of the main loop (unswitch-loops.js, integral-loops.js)
+  // renames what the loop declares, `M`, and still assigns `E` as it enters.
+  const M = `${T}ccm${freshId(ctx)}`, E = `${T}cce${freshId(ctx)}`
+  node[1] = ['let', ['=', M, ['=', E, ['()', 'math.min', [',', B, ['.', recv, 'length']]]]], iDecl]
   node[2] = ['<', i, M]
-  const tailFor = ['for', ['let', ['=', i2, ['()', 'math.ceil', M]]], ['<', i2, B], tailStep, tailBody]
-  parent[idx] = [';', node, tailFor]
+  const tailFor = ['for', ['let', ['=', i2, ['()', 'math.ceil', E]]], ['<', i2, B], tailStep, tailBody]
+  parent[idx] = [';', ['let', ['=', E, [null, 0]]], node, tailFor]
   return true
 }
 

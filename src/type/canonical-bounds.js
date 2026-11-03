@@ -89,6 +89,8 @@ export const lengthRecv = (expr) => lengthRecvs(expr)[0] ?? null
  *  proof carries to every one: the shape plan/loops.js plants for the in-bounds
  *  main loop of a split scan, `Math.min(B, a.length, b.length)`. */
 export function lengthRecvs(expr, out = []) {
+  // (an assignment's value is its right side: the char scan's bound hands it on, plan/loops.js)
+  while (Array.isArray(expr) && expr[0] === '=' && expr.length === 3 && typeof expr[1] === 'string') expr = expr[2]
   if (Array.isArray(expr) && expr[0] === '|' && intLiteralValue(expr[2]) === 0) expr = expr[1]
   if (Array.isArray(expr) && expr[0] === '.' && expr[2] === 'length' && typeof expr[1] === 'string') out.push(expr[1])
   else if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.min') {

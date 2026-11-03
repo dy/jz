@@ -602,6 +602,8 @@ export const topOf = (e, rangeOf = intExprRange) => {
   const r = rangeOf(e)
   if (r) return r[1]
   if (!Array.isArray(e)) return null
+  // (an assignment's value is its right side)
+  if (e[0] === '=' && e.length === 3 && typeof e[1] === 'string') return topOf(e[2], rangeOf)
   if (e[0] === '()' && e[1] === 'math.min' && e.length === 3) {
     const tops = operands(e[2]).map(a => topOf(a, rangeOf)).filter(t => t != null)
     return tops.length ? Math.min(...tops) : null

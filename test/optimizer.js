@@ -4149,6 +4149,27 @@ test('splitCharScan: the tail reads no character past a string\'s end', () => {
     is(main(n, k), want(n, k), `n=${n} k=${k}`)
 })
 
+test('splitCharScan: a copy a later pass makes of the main loop leaves the tail where it stopped', () => {
+  // unswitch-loops.js copies the main loop for each answer of `flag`, its
+  // declarations renamed: the tail reads the bound through a binding declared
+  // before both loops, which each copy assigns as it enters
+  const src = `export const f = (s, n, flag) => {
+    let h = 0
+    for (let i = 0; i < n; i++) {
+      const c = s.charCodeAt(i)
+      if (flag) h = (h * 31 + c) | 0
+      else h = (h * 17 - c) | 0
+    }
+    return h
+  }
+  export const g = (n, flag) => f('hello world', n, flag) + f('abc', n, !flag)`
+  const js = oracle(src)
+  for (const optimize of levels(2, 3)) {
+    const { g } = run(src, { optimize })
+    for (const [n, flag] of [[20, true], [5, false], [11, true], [2.5, true], [NaN, false], [0, true]]) is(g(n, flag), js.g(n, flag), `g(${n}, ${flag}) O${optimize}`)
+  }
+})
+
 test('splitCharScan: break in body disables the split (a main-loop break must not fall into the tail)', () => {
   const src = `export let find = (s, n) => {
     let at = -1
