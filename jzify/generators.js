@@ -4,10 +4,13 @@
  * `function* g(a) { … yield E … }` lowers to a factory arrow returning
  * `{ next, return }` closures over one frame record: the body becomes a
  * dispatch loop over a state field, each yield splits a state boundary, the
- * bindings that live across one are fields of the frame, and `next(v)` is an
+ * bindings that live across one are fields of the frame (one a single step
+ * writes and reads is a local of the step), a jump to a state one jump
+ * reaches runs that state in place, and `next(v)` is an
  * ordinary closure call through the uniform ABI. An async function's machine
  * drives itself (`self`): one closure that subscribes itself to what it
- * awaits and settles the promise its frame holds.
+ * awaits and settles the promise its frame holds, or resumes the machine
+ * that called it to await it (`K_PARAM`, jzify/async.js splitDirectAsync).
  *
  * v1 surface (everything else rejects with a precise message):
  *   - yield as a statement, or as the RHS of `let x = yield E` / `x = yield E`;
@@ -666,6 +669,11 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     // finds the finally blocks it must run.
     const stateFinally = []
     let curFinally = null
+    // (a catch pattern that suspends reads the exception after a suspension: `__err` stays the frame's)
+    let errAcross = false
+    // An await's operand, held where it resumes only for the summary to type
+    // the value it resumes with (`__awaited`): no step after its own reads it.
+    const typing = new Set()
     const newState = () => (states.push([]), stateHandler.push(curHandler), stateFinally.push(curFinally), states.length - 1)
     const stmtsOf = (id) => states[id]
     const gotoIR = (id) => [[';;set', id], [';;continue']]
@@ -741,7 +749,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
         const invoke = transform(['()', impl, [',', S.MACHINE, ...args]])
         stmtsOf(cur).push([';;set', resume])
         if (target) {
-          const a = genTemp('av'); locals.add(a)
+          const a = genTemp('av'); typing.add(a)
           stmtsOf(cur).push(['=', a, invoke], ['return'])
           stmtsOf(resume).push(['=', target, ['()', '__awaited', [',', a, S.SENT]]])
         } else stmtsOf(cur).push(invoke, ['return'])
@@ -749,7 +757,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       }
       let value = yexpr[1] === undefined ? [null, undefined] : transform(yexpr[1]), sent = S.SENT
       if (target && op === 'await') {
-        const a = genTemp('av'); locals.add(a)
+        const a = genTemp('av'); typing.add(a)
         stmtsOf(cur).push(['=', a, value])
         value = a; sent = ['()', '__awaited', [',', a, S.SENT]]
       }
@@ -1092,7 +1100,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
           if (catchC[1] != null) {
             for (const name of patternNames(catchC[1])) locals.add(name)
             if (typeof catchC[1] === 'string') stmtsOf(catchS).push(['=', catchC[1], S.ERR])
-            else if (hasYield(catchC[1])) at = flattenList(patternSteps('let', catchC[1], S.ERR), catchS, jumps)
+            else if (hasYield(catchC[1])) { errAcross = true; at = flattenList(patternSteps('let', catchC[1], S.ERR), catchS, jumps) }
             else stmtsOf(catchS).push(transform(['=', catchC[1], S.ERR]))
           }
           finish(flattenList(blockStmts(catchC[2]), at, jumps))
@@ -1232,18 +1240,100 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       entries.get(fin).ids.push(resume)
     }
 
+    // A binding no step but the one writing it reads, and no closure holds,
+    // lives for one step: a local of the step, not a field of the frame. Each
+    // state that reads it writes it first, at its top level; a name the
+    // iterator's own return() and throw() reach stays the frame's.
+    const temps = [...locals].filter(n => !inPlace.has(n))
+    const stepBound = new Set()
+    {
+      const isTemp = new Set(temps), isFramed = new Set(framed), pinned = new Set([returned, ...delivered.map(d => d.kind)])
+      const nameOf = (n) => typeof n === 'string' ? (isTemp.has(n) ? n : null)
+        : Array.isArray(n) && n[0] === '.' && n[1] === frame && isFramed.has(n[2]) ? n[2] : null
+      const held = new Set(), seen = new Set()
+      const reads = (n, written, inFn) => {
+        const x = nameOf(n)
+        if (x) { seen.add(x); if (inFn || !written.has(x)) held.add(x); return }
+        if (!Array.isArray(n) || n[0] == null || n[0] === 'str') return
+        if (n[0] === '.' || n[0] === '?.') return reads(n[1], written, inFn)
+        if (n[0] === ':' && typeof n[1] === 'string') return reads(n[2], written, inFn)
+        const fn = inFn || FN_BOUNDARY_OPS.has(n[0])
+        for (let i = 1; i < n.length; i++) reads(n[i], written, fn)
+      }
+      for (const list of states) {
+        const written = new Set()
+        for (const st of list) {
+          const x = Array.isArray(st) && st[0] === '=' ? nameOf(st[1]) : null
+          if (x) { reads(st[2], written, false); written.add(x); seen.add(x); continue }
+          reads(st, written, false)
+        }
+      }
+      for (const x of [...isTemp, ...isFramed]) if (seen.has(x) && !held.has(x) && !pinned.has(x)) stepBound.add(x)
+      const unframe = (n) => {
+        if (!Array.isArray(n)) return n
+        if (n[0] === '.' && n[1] === frame && stepBound.has(n[2])) return n[2]
+        return withLoc(n.map(unframe), n)
+      }
+      if (stepBound.size) states.forEach((list, i) => { states[i] = list.map(unframe) })
+    }
+
     // ---- assemble the dispatch loop ----
     // Internal markers resolve here: [';;set', k] → __s = k; [';;continue'] → continue.
-    const resolve = (n) => {
+    // A jump to a state one jump reaches runs that state where the jump
+    // stands, the state set first (an exception raised there routes as the
+    // state's own), in place of a pass through the dispatch; a jump back into
+    // the states it runs in goes through the dispatch. The dispatch then holds
+    // the states something enters by number: the first, each a suspension
+    // resumes, each a catch or a finally continues at, and each a jump leaves
+    // to it.
+    const isJump = (list, j) => Array.isArray(list[j]) && list[j][0] === ';;set' && Array.isArray(list[j + 1]) && list[j + 1][0] === ';;continue'
+    const jumps = states.map(() => 0), roots = new Set([0])
+    const census = (n) => {
+      if (!Array.isArray(n)) return
+      for (let j = 0; j < n.length; j++) {
+        const m = n[j]
+        if (isJump(n, j) && m[1] >= 0) jumps[m[1]]++
+        else if (Array.isArray(m) && m[0] === ';;set' && m[1] >= 0) roots.add(m[1])
+        // a state held as data: a finally's continuation
+        else if (Array.isArray(m) && m[0] === '=' && typeof m[1] === 'string' && Array.isArray(m[2]) && m[2][0] == null && Number.isInteger(m[2][1]) && m[2][1] >= 0 && m[2][1] < states.length) roots.add(m[2][1])
+        census(m)
+      }
+    }
+    states.forEach(census)
+    stateHandler.forEach(h => { if (h >= 0) roots.add(h) })
+    for (const { s } of entries.values()) roots.add(s)
+    const resolve = (n, chain) => {
       if (!Array.isArray(n)) return n
       if (n[0] === ';;set') return ['=', S.NEXT, [null, n[1]]]
       if (n[0] === ';;continue') return ['continue']
-      return withLoc(n.map(resolve), n)
+      if (n[0] === ';') return withLoc([';', ...thread(n.slice(1), chain)], n)
+      return withLoc(n.map(c => resolve(c, chain)), n)
+    }
+    const thread = (list, chain) => {
+      const out = []
+      for (let j = 0; j < list.length; j++) {
+        if (!isJump(list, j)) { out.push(resolve(list[j], chain)); continue }
+        const k = list[j][1]
+        out.push(['=', S.NEXT, [null, k]])
+        if (k >= 0 && jumps[k] === 1 && !chain.includes(k)) {
+          out.push(...thread(states[k], [...chain, k]))
+        } else {
+          if (k >= 0) roots.add(k)
+          out.push(['continue'])
+        }
+        return out
+      }
+      return out
+    }
+    const entered = new Map()
+    for (let grew = true; grew;) {
+      grew = false
+      for (const i of [...roots]) if (!entered.has(i)) { entered.set(i, thread(states[i], [i])); grew = true }
     }
     // if-chain over states (highest → the shape jz compiles tightly)
     let dispatch = [';', ...ret([null, undefined], true)]
-    for (let i = states.length - 1; i >= 0; i--)
-      dispatch = ['if', ['===', S.NEXT, [null, i]], ['{}', [';', ...states[i].map(resolve), ['continue']]], ['{}', [';', dispatch]]]
+    for (let i = states.length - 1; i >= 0; i--) if (entered.has(i))
+      dispatch = ['if', ['===', S.NEXT, [null, i]], ['{}', [';', ...entered.get(i), ['continue']]], ['{}', [';', dispatch]]]
 
     // try regions: the dispatch runs under one catch that routes an exception
     // raised in a region state to its handler (`__err` carries it) and closes
@@ -1263,18 +1353,24 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     const loopBody = ['try', guarded
       ? [';', ['if', S.THRSET, ['{}', [';', ['=', S.THRSET, [null, false]], ['throw', S.THR]]]], dispatch]
       : dispatch, ['catch', '__e', ['{}', route]]]
+    // What a resumption brings (`__sent`), the exception a catch takes
+    // (`__err`) and, where the machine resumes itself, the throw it raises
+    // where it stands (`__thr`, `__thrset`) live for one step: locals of the
+    // step, where a generator's throw() hands over its own through the frame.
+    const stepLocal = new Set([S.SENT, ...typing, ...stepBound, ...(guarded && !errAcross ? [S.ERR] : []), ...(self && guarded ? [S.THR, S.THRSET] : [])])
+    const errDecl = [...(guarded && !errAcross ? [S.ERR] : []), ...typing, ...stepBound]
     const nextBody = ['{}', [';',
-      ['=', S.SENT, '__in'],
+      ['let', ['=', S.SENT, '__in'], ...errDecl],
       ['while', [null, true], ['{}', [';', loopBody]]],
     ]]
 
     // The frame's fields: the machine's state, then the bindings and
     // temporaries, each holding nothing until the step that initializes it.
-    const temps = [...locals].filter(n => !inPlace.has(n))
-    const own = new Set([...Object.values(S), ...temps])
-    const fields = [[S.NEXT, [null, 0]], [S.SENT, [null, undefined]],
-      ...(guarded ? [[S.ERR, [null, undefined]], [S.THR, [null, undefined]], [S.THRSET, [null, false]]] : []),
-      ...[...framed, ...temps].map(n => [n, TDZ_VALUE.slice()])]
+    const own = new Set([...Object.values(S), ...temps].filter(n => !stepLocal.has(n)))
+    const fields = [[S.NEXT, [null, 0]],
+      ...(guarded && errAcross ? [[S.ERR, [null, undefined]]] : []),
+      ...(guarded && !self ? [[S.THR, [null, undefined]], [S.THRSET, [null, false]]] : []),
+      ...[...framed, ...temps].filter(n => !stepBound.has(n)).map(n => [n, TDZ_VALUE.slice()])]
     const framedFn = (n) => fieldsOf(n, own, frame)
     const decls = [
       ['const', ['=', frame, ['{}', [',', ...fields.map(([k, v]) => [':', k, v])]]]],
@@ -1285,9 +1381,9 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       // resumed with a settlement: a rejection is raised where it stands
       // (its region's catch routes it) or, with no region, rejects at once
       const enter = ['if', ['===', '__st', [null, 2]],
-        ['{}', [';', ...(guarded ? [['=', S.THR, '__in'], ['=', S.THRSET, [null, true]]] : [['=', S.NEXT, [null, -1]], ...reject('__in')])]],
-        ['{}', [';', ['=', S.SENT, '__in']]]]
-      const machine = ['=>', ['()', [',', '__st', '__in']], ['{}', [';', enter, ['let', '__aw'],
+        ['{}', [';', ...(guarded ? [['=', S.THR, '__in'], ['=', S.THRSET, [null, true]]] : [['=', S.NEXT, [null, -1]], ...reject('__in')])]]]
+      const step = ['let', ['=', S.SENT, '__in'], ...errDecl, ...(guarded ? [S.THR, ['=', S.THRSET, [null, false]]] : [])]
+      const machine = ['=>', ['()', [',', '__st', '__in']], ['{}', [';', step, enter, ['let', '__aw'],
         ['while', [null, true], ['{}', [';', loopBody]]],
         ['()', '__await', [',', '__aw', ['.', frame, S.MACHINE]]]]]]
       const selfFields = [[S.PROMISE, ['()', '__p_async', cont ? K_PARAM : null]], ...(cont ? [[S.CONT, K_PARAM]] : []), [S.MACHINE, TDZ_VALUE.slice()], ...fields]

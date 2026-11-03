@@ -1111,3 +1111,21 @@ test('async: an awaited call resumes its caller in microtask order, no promise b
   is(await num(41), 42, 'the name an export binds')
 })
 
+// A machine keeps in its frame what crosses a suspension and no more: a
+// binding one step writes and then reads, the value a resumption brings, the
+// exception a catch takes and an await's operand held for the summary are
+// locals of the step (jzify/generators.js stepBound). A jump to a state
+// nothing else enters by number runs it in place: a loop awaiting in its body
+// dispatches to its first state, its test and its resumption only.
+test('async: a machine\'s frame holds what crosses a suspension, its dispatch what is entered by number', async () => {
+  const src = 'const g = async (x) => { const a = x + 1; let b = 0; if (a > 2) b = a; await null; const c = a * 2; b += c; try { await null } catch (e) { return e } return a + b }\nexport const f = () => g(3)'
+  const out = JSON.stringify(jzify(parse(src)))
+  const frame = /\["const",\["=","[^"]*fr\d+",\["\{\}",\[",",(.*?)\]\]\]\]/.exec(out)?.[1] ?? ''
+  ok(/\[":","a",/.test(frame) && /\[":","b",/.test(frame), 'what crosses a suspension is the frame\'s')
+  ok(frame && !/\[":","c",/.test(frame) && !/\[":","e",/.test(frame) && !/__sent|__err|__thr|av\d/.test(frame), 'what one step holds is not')
+  const loop = JSON.stringify(jzify(parse('const h = async (n) => { let t = 0; for (let i = 0; i < n; i++) t += await i; return t }\nexport const f = () => h(4)')))
+  is(loop.match(/\["===",\["\.","[^"]*fr\d+","__s"\],\[null,\d+\]\]/g)?.length, 3, 'three states entered by number')
+  if (onWasi() || onKernel()) return
+  is(await jz(src).exports.f(), await oracle(src).f())
+})
+

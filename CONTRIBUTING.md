@@ -4075,11 +4075,21 @@ import's argument) is a host Promise of it (interop.js `promiseOf`), settled as
 it stands or by the sweep that ends each call, so a promise handed to the host
 keeps its layout and only what it settles with is the host's.
 A machine keeps the bindings of the scopes it splits into states, its
-temporaries and its own state (`__s`, `__sent`, the try regions' `__err`,
-`__thr`, `__thrset`) as fields of one frame record its closures share
-(jzify/generators.js `frame`, `fieldsOf`), one object a call where each
+temporaries and its state `__s` as fields of one frame record its closures
+share (jzify/generators.js `frame`, `fieldsOf`), one object a call where each
 binding was a heap cell; a binding of a statement that never suspends stays a
-local of that statement. A field holds no value before its binding's step
+local of that statement. A binding each state that reads it writes first, at
+the state's top level, and no closure holds lives for one step: a local of the
+step (`stepBound`), as are what a resumption brings (`__sent`), the exception
+a catch takes (`__err`; a catch pattern that suspends keeps it the frame's),
+an await's operand held for the summary, and, where the machine resumes
+itself, the throw it raises where it stands (`__thr`, `__thrset`; a
+generator's `throw()` hands its own over through the frame). A jump to a
+state one jump reaches runs that state in place, the state set first, so an
+exception raised there routes as the state's own; the dispatch holds the
+states something enters by number: the first, each a suspension resumes, each
+a catch or a finally continues at, and each a jump leaves to it (a back jump,
+a state several jumps reach). A field holds no value before its binding's step
 (`__tdz()`, src/ast.js TDZ_VALUE: the summary gives it no kind, the slot
 censuses count no write), so its kind is what the steps store, as a TDZ
 declaration's was. A pattern declaration binding fields destructures into
