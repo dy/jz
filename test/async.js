@@ -933,3 +933,46 @@ test('async: resolving with a promise takes the two jobs Node takes', async () =
   const want = await oracle(src).f()
   for (const optimize of levels(0, 2, 'size')) is(await jz(src, { optimize }).exports.f(), want, `O${optimize}`)
 })
+
+// An async function that never awaits runs its body as it is called and
+// settles its promise where the body returns or throws (jzify/async.js
+// settledAsync): a value, nothing, a throw, a thenable, another async call's
+// promise, an early return, a nested function's return left alone.
+test('async: a function that never awaits settles its promise in the jobs Node takes', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `export const f = async () => {
+    const log = []
+    const plain = async (x) => { log.push('body ' + x); return x * 2 }
+    const none = async () => { log.push('none') }
+    const thrower = async (x) => { if (x) throw new Error('bad ' + x); return 'ok' }
+    const thenable = async () => ({ then(res) { log.push('then called'); res(7) } })
+    const adopt = async () => plain(5)
+    const early = async (x) => { if (x > 1) return 'big'; log.push('small') }
+    const nested = async () => { const g = () => { return 3 }; return g() + 1 }
+    const hoisted = async function () { return g() + h; function g() { return 1 } var h = 2 }
+    const p1 = plain(1); log.push('after call')
+    none().then(v => log.push('none=' + v))
+    p1.then(v => log.push('p1=' + v))
+    thrower(1).then(v => log.push('t=' + v), e => log.push('t! ' + e.message))
+    thrower(0).then(v => log.push('t0=' + v))
+    thenable().then(v => log.push('thenable=' + v))
+    adopt().then(v => log.push('adopt=' + v))
+    early(2).then(v => log.push('early2=' + v)); early(0).then(v => log.push('early0=' + v))
+    nested().then(v => log.push('nested=' + v))
+    hoisted().then(v => log.push('hoisted=' + v))
+    Promise.resolve().then(() => log.push('tick1')).then(() => log.push('tick2')).then(() => log.push('tick3')).then(() => log.push('tick4'))
+    for (let i = 0; i < 6; i++) await null
+    return log.join('|')
+  }`
+  const want = await oracle(src).f()
+  for (const optimize of levels(0, 2, 'size')) is(await jz(src, { optimize }).exports.f(), want, `O${optimize}`)
+})
+
+// …and compiles to no machine and no driver: the body under a try, its
+// promise made where it returns (`__p_done`). One that awaits keeps both.
+// (Unoptimized: the runtime's names stand, none inlined.)
+test('async: a function that never awaits runs no machine', () => {
+  const settled = compile('const g = async (x) => x + 1\nexport const f = () => g(1)', { wat: true, optimize: false })
+  ok(!/__async_run/.test(settled) && /__p_done/.test(settled), 'no driver, a settled promise')
+  ok(/__async_run/.test(compile('const g = async (x) => (await x) + 1\nexport const f = () => g(1)', { wat: true, optimize: false })), 'an await keeps the driver')
+})

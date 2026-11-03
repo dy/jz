@@ -427,6 +427,8 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     // An async function is no generator: its machine would take a yield for a suspension.
     if (suspendsIn([null, params, body], n => n[0] === 'yield' || n[0] === 'yield*'))
       err('yield outside a generator body: an async function yields nothing, an `async function*` does')
+    const settled = settledAsync(params, body)
+    if (settled) return settled
     const prior = enterBody(params, body)
     let hoisted
     try { hoisted = hoistSuspensions(body) } finally { leaveBody(prior) }
@@ -441,6 +443,33 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     const error = genTemp('ae')
     return ['=>', ['()', seq(own)], ['{}', [';',
       ['try', ['{}', ['return', run]], ['catch', error, ['{}', ['return', ['()', '__p_reject', error]]]]]]]]
+  }
+
+  // An async function that never awaits runs its body to completion as it is
+  // called (ECMA-262 AsyncFunctionStart), and its promise settles where the
+  // body returns or throws: no machine, `(a, b) => { try { … return
+  // __p_done(E) … } catch (e) { return __p_reject(e) } }`, `__p_done(E)` a
+  // promise resolved with E as the driver resolves one (a thenable adopted).
+  // Its parameters must bind as a plain function's do, by name (a default or a
+  // pattern throws into the promise), and a return must be the body's last
+  // word: a finally, or a \`using\` disposing as the block ends, may still
+  // throw or return after it. One that reads \`arguments\` keeps the machine.
+  function settledAsync(params, body) {
+    const list = extractParams(params)
+    if (!list.every(p => typeof p === 'string') || usesArguments(body) || usesArguments(params)) return null
+    if (suspendsIn(body, n => isAwait(n) || n[0] === 'finally' || n[0] === 'using')) return null
+    const done = (e) => ['()', '__p_done', e ?? 'undefined']
+    const settle = (n) => {
+      if (!Array.isArray(n) || FN_OPS.has(n[0])) return n
+      if (n[0] === 'return') return withLoc(['return', done(settle(n[1]))], n)
+      return withLoc(n.map((c, i) => i === 0 ? c : settle(c)), n)
+    }
+    const inner = Array.isArray(body) && body[0] === '{}' ? body[1] : body
+    const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : inner == null ? [] : [inner]
+    const error = genTemp('ae')
+    return ['=>', ['()', list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]], ['{}', [';',
+      ['try', ['{}', [';', ...stmts.map(settle), ['return', done()]]],
+        ['catch', error, ['{}', ['return', ['()', '__p_reject', error]]]]]]]]
   }
 
   // async function* (params) { body } → (...aa) => __ag_run(TAGGED_MACHINE(...aa)):

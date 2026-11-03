@@ -104,9 +104,9 @@ const BIND = CLASS_T + 'bind'
 // promise rejected, an await's settled value (promiseAt, awaited). What one
 // returns is read off its call, never its body, so a call of one stays one.
 const ITER_FROM = /\$__it_from$/, ITER_MK = /\$__it_mk$/, ITER_DRAIN = /\$__it_drain$/, ITER_ARR = /\$__it_arr$/
-const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/
-// one pattern, the seven's alternatives: the compiler compiles itself, which resolves a regex where it is written
-const AT_CALL = /\$__(it_from|it_mk|it_drain|it_arr|async_run|awaited|p_reject)$/
+const ASYNC_RUN = /\$__async_run$/, AWAITED = /\$__awaited$/, REJECT = /\$__p_reject$/, DONE = /\$__p_done$/
+// one pattern, the eight's alternatives: the compiler compiles itself, which resolves a regex where it is written
+const AT_CALL = /\$__(it_from|it_mk|it_drain|it_arr|async_run|awaited|p_reject|p_done)$/
 export const answeredAtCall = (name) => AT_CALL.test(name)
 const STRING_METHODS = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toUpperCase', 'toLowerCase', 'padStart', 'padEnd', 'repeat', 'replace', 'replaceAll', 'concat', 'normalize', 'at', 'charAt'])
 const STRING_NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt', 'indexOf', 'lastIndexOf', 'search', 'localeCompare'])
@@ -2019,7 +2019,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // An async function is `(…) => __async_run(M(…))` (jzify/async.js): the
   // runtime's promise, which it settles with what the machine M completes
   // with (a `{ value, done: true }` step), adopting a promise or a thenable;
-  // one whose parameters throw returns `__p_reject(e)`, which never fulfills.
+  // one whose parameters throw returns `__p_reject(e)`, which never fulfills;
+  // one that never awaits returns `__p_done(v)` (jzify/async.js settledAsync),
+  // the promise resolved with v as the driver resolves one.
   // Every promise is the runtime's one literal, whose `val` slot joins every
   // settlement in the program: the summary names each such promise by its
   // call node, a site of that layout (std/async PROMISE_KEYS) with the
@@ -2137,7 +2139,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       }
       // The async runtime's answers at its call nodes (promiseAt, awaited): the
       // driver runs over the machine itself, `__awaited` over kinds without identity.
-      if (node && (ASYNC_RUN.test(callee) || REJECT.test(callee) || AWAITED.test(callee)) && funcByName.has(callee)) {
+      if (node && (ASYNC_RUN.test(callee) || REJECT.test(callee) || DONE.test(callee) || AWAITED.test(callee)) && funcByName.has(callee)) {
         const f = funcByName.get(callee)
         let r
         if (AWAITED.test(callee)) {
@@ -2147,7 +2149,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         } else {
           bind(callee, paramNamesOf(f), base, n, f.defaults)
           const own = resultAt(callee, base, n, node)
-          r = escaped.has(callee) ? own : promiseAt(node, REJECT.test(callee) ? K.NONE : awaited(completion(n ? ks[base] : K.NONE)), own)
+          // an async function that never awaits returns `__p_done(v)`: the promise resolved with v, a thenable adopted
+          const v = REJECT.test(callee) ? K.NONE : DONE.test(callee) ? awaited(n ? ks[base] : NULLISH) : awaited(completion(n ? ks[base] : K.NONE))
+          r = escaped.has(callee) ? own : promiseAt(node, v, own)
         }
         siteResults.set(node, r)
         return r

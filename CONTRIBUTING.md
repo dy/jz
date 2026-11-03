@@ -3936,6 +3936,15 @@ itself when it is no thenable, the value an async call's promise fulfills with
 (the promise is named at its `__async_run` call node, as the iterator runtime's
 records are, beside what the machine completes with, a promise or thenable it
 completes with adopted), anything for a promise made another way.
+An async function whose body never awaits (no `await`, `for await` or `await
+using`) runs no machine (jzify/async.js `settledAsync`): its body stands under
+a try in the function itself, each `return E` returns `__p_done(E)`, a new
+promise resolved with E as the driver resolves one, and a throw returns
+`__p_reject(e)`, as ECMA-262's AsyncFunctionStart runs a body that never
+suspends; the summary names that promise at its `__p_done` call node as it
+names `__async_run`'s. Parameters bind by name (a default or a pattern keeps
+the machine, which rejects for it), and a body with a finally or a `using`
+keeps it too, since either may throw or return after a return was settled.
 The job queue (std/async.js) holds a job as three entries in arrays of their
 own, its handler, the state it settles with and the value (`__job(h, st, v)`;
 state 0 is a job of its own, `queueMicrotask`'s, called with no arguments), so

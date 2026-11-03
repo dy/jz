@@ -142,6 +142,9 @@ export let __p_resolve = (v) => {
   let p = __p_new(); __p_settle(p, 1, v); return p
 }
 export let __p_reject = (e) => { let p = __p_new(); __p_settle(p, 2, e); return p }
+// What an async function that never awaits returns (jzify/async.js
+// settledAsync): a new promise resolved with \`v\`, a thenable adopted.
+export let __p_done = (v) => { let p = __p_new(); __p_settle(p, 1, v); return p }
 // GetIterator for the combinators: arrays pass through, iterator-protocol
 // values drain, anything else (non-iterable input, or an @@iterator that is
 // non-callable / returns a non-object) yields null → the combinator REJECTS
