@@ -395,7 +395,9 @@ export default (ctx) => {
     __fmt_fixed: ['__ftoa', '__alloc', '__dec_scaled', '__mkstr'],
     __fmt_exp: ['__ftoa', '__alloc', '__dec_sig', '__dec_to_f64', '__fmt_exp_tail', '__mkstr'],
     __fmt_prec: ['__ftoa', '__alloc', '__dec_sig', '__fmt_exp_tail', '__mkstr'],
-    __ftoa_shortest: ['__mkstr_scratch', '__static_str', '__alloc', '__itoa', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
+    __ftoa_shortest: ['__mkstr_scratch', '__static_str', '__alloc', '__ftoa_into'],
+    __ftoa_into: ['__itoa', '__ryu_mulshift3', '__ryu_pow5', '__ryu_pow5div', '__ftoa_short'],
+    __ryu_mulshift3: ['__umul128'],
     __ryu_pow5: ['__umul128'],
     __dec_to_f64: ['__ryu_pow5', '__umul128', '__pow10'],
     __ryu_mulshift: ['__umul128'],
@@ -1188,6 +1190,42 @@ export default (ctx) => {
     (i64.or (i64.shr_u (local.get $mid) (local.get $d))
       (i64.shl (local.get $top) (i64.sub (i64.const 64) (local.get $d)))))`
 
+  // vr, vp and vm of one entry at once (Ryū d2s.c mulShiftAll64): the 192-bit
+  // product of 2m and the entry, and that product plus or less the entry, shifted
+  // by j; $mv is 4m. One product where three were.
+  ctx.core.stdlib['__ryu_mulshift3'] = `(func $__ryu_mulshift3
+    (param $mv i64) (param $lo i64) (param $hi i64) (param $j i32) (param $mmShift i64) (result i64 i64 i64)
+    (local $plo i64) (local $pmid i64) (local $phi i64) (local $d i64)
+    (local $lo2 i64) (local $mid2 i64) (local $hi2 i64) (local $lo3 i64) (local $mid3 i64) (local $hi3 i64) (local $lo4 i64) (local $mid4 i64) (local $hi4 i64)
+    (call $__umul128 (i64.shr_u (local.get $mv) (i64.const 1)) (local.get $lo) (local.get $hi))
+    (local.set $phi)
+    (local.set $pmid)
+    (local.set $plo)
+    (local.set $d (i64.extend_i32_u (i32.sub (local.get $j) (i32.const 65))))
+    (local.set $lo2 (i64.add (local.get $plo) (local.get $lo)))
+    (local.set $mid2 (i64.add (i64.add (local.get $pmid) (local.get $hi)) (i64.extend_i32_u (i64.lt_u (local.get $lo2) (local.get $plo)))))
+    (local.set $hi2 (i64.add (local.get $phi) (i64.extend_i32_u (i64.lt_u (local.get $mid2) (local.get $pmid)))))
+    ;; vr
+    (i64.or (i64.shr_u (local.get $pmid) (local.get $d)) (i64.shl (local.get $phi) (i64.sub (i64.const 64) (local.get $d))))
+    ;; vp
+    (i64.or (i64.shr_u (local.get $mid2) (local.get $d)) (i64.shl (local.get $hi2) (i64.sub (i64.const 64) (local.get $d))))
+    ;; vm: 2m less the entry where mmShift is 1, else 4m less it, shifted one further
+    (if (result i64) (i64.eq (local.get $mmShift) (i64.const 1))
+      (then
+        (local.set $lo3 (i64.sub (local.get $plo) (local.get $lo)))
+        (local.set $mid3 (i64.sub (i64.sub (local.get $pmid) (local.get $hi)) (i64.extend_i32_u (i64.gt_u (local.get $lo3) (local.get $plo)))))
+        (local.set $hi3 (i64.sub (local.get $phi) (i64.extend_i32_u (i64.gt_u (local.get $mid3) (local.get $pmid)))))
+        (i64.or (i64.shr_u (local.get $mid3) (local.get $d)) (i64.shl (local.get $hi3) (i64.sub (i64.const 64) (local.get $d)))))
+      (else
+        (local.set $lo3 (i64.add (local.get $plo) (local.get $plo)))
+        (local.set $mid3 (i64.add (i64.add (local.get $pmid) (local.get $pmid)) (i64.extend_i32_u (i64.lt_u (local.get $lo3) (local.get $plo)))))
+        (local.set $hi3 (i64.add (i64.add (local.get $phi) (local.get $phi)) (i64.extend_i32_u (i64.lt_u (local.get $mid3) (local.get $pmid)))))
+        (local.set $lo4 (i64.sub (local.get $lo3) (local.get $lo)))
+        (local.set $mid4 (i64.sub (i64.sub (local.get $mid3) (local.get $hi)) (i64.extend_i32_u (i64.gt_u (local.get $lo4) (local.get $lo3)))))
+        (local.set $hi4 (i64.sub (local.get $hi3) (i64.extend_i32_u (i64.gt_u (local.get $mid4) (local.get $mid3)))))
+        (local.set $d (i64.add (local.get $d) (i64.const 1)))
+        (i64.or (i64.shr_u (local.get $mid4) (local.get $d)) (i64.shl (local.get $hi4) (i64.sub (i64.const 64) (local.get $d)))))))`
+
   // Rebuild the power-of-five entry for index $i as a pair of i64 lanes:
   // seed × 5^offset, shifted back into the 125/126-bit window, plus the stored
   // 2-bit rounding offset (reference double_computePow5/double_computeInvPow5).
@@ -1255,23 +1293,90 @@ export default (ctx) => {
   // names where possible: mv/vp/vr/vm, q, e10, acceptBounds≡$even) and renders
   // per ES Number::toString: n = e10+len is the decimal-point position; k≤n≤21
   // plain integer, 0<n≤21 embedded point, -6<n≤0 leading zeros, else d.dddde±k.
-  ctx.core.stdlib['__ftoa_shortest'] = () => `(func $__ftoa_shortest (param $val f64) (result f64)
+  // A short decimal's string (any program formatting prices, coordinates,
+  // rates): the units at $buf, their count returned, 0 where the value is none.
+  // For 10^-6 <= |v| < 10^15 not an integer, the first f whose integer c, the one below
+  // |v|·10^f or the one above it, reads back (c / 10^f, the parse of its decimal)
+  // is the shortest form, f digits after the point, where c < 10^15: the product's
+  // error and the form's distance sum under 1, and two decimals of 15 digits or
+  // fewer never round to one double (DBL_DIG), so one candidate at most reads
+  // back and none is closer. A longer form, or a smaller value, is Ryū's.
+  ctx.core.stdlib['__ftoa_short'] = `(func $__ftoa_short (param $val f64) (param $buf i32) (result i32)
+    (local $a f64) (local $p f64) (local $s f64) (local $c f64) (local $t f64)
+    (local $f i32) (local $len i32) (local $i i32) (local $at i32) (local $m i64) (local $q i64)
+    (local.set $a (f64.abs (local.get $val)))
+    ;; an integer is its own digits (__ftoa_into)
+    (if (i32.or (i32.eqz (i32.and (f64.ge (local.get $a) (f64.const 1e-6)) (f64.lt (local.get $a) (f64.const 1e15))))
+          (f64.eq (f64.floor (local.get $a)) (local.get $a)))
+      (then (return (i32.const 0))))
+    (local.set $p (f64.const 1))
+    (block $hit (loop $try
+      (local.set $f (i32.add (local.get $f) (i32.const 1)))
+      (local.set $p (f64.mul (local.get $p) (f64.const 10)))
+      (local.set $s (f64.mul (local.get $a) (local.get $p)))
+      (if (f64.ge (local.get $s) (f64.const 1e15)) (then (return (i32.const 0))))
+      (local.set $c (f64.floor (local.get $s)))
+      ;; a candidate reads back only within s·2^-52 of s (the product's rounding and
+      ;; the form's distance, half an ulp each): farther from both integers, none does
+      (local.set $t (f64.sub (local.get $s) (local.get $c)))
+      (br_if $try (i32.and (f64.gt (local.get $t) (f64.mul (local.get $s) (f64.const 8.881784197001252e-16)))
+        (f64.lt (local.get $t) (f64.sub (f64.const 1) (f64.mul (local.get $s) (f64.const 8.881784197001252e-16))))))
+      (br_if $hit (f64.eq (f64.div (local.get $c) (local.get $p)) (local.get $a)))
+      (local.set $c (f64.add (local.get $c) (f64.const 1)))
+      (br_if $hit (f64.eq (f64.div (local.get $c) (local.get $p)) (local.get $a)))
+      (br $try)))
+    ;; |v| >= 1: its integer's digits, the point, f digits; below 1: "0.", f digits
+    (local.set $len (i32.add (local.get $f) (i32.const 2)))
+    (if (f64.ge (local.get $a) (f64.const 1)) (then
+      (local.set $len (i32.add (local.get $f) (i32.const 1)))
+      (local.set $t (f64.const 1))
+      (block $nd (loop $digit
+        (br_if $nd (f64.gt (local.get $t) (local.get $a)))
+        (local.set $len (i32.add (local.get $len) (i32.const 1)))
+        (local.set $t (f64.mul (local.get $t) (f64.const 10)))
+        (br $digit)))))
+    (local.set $at (local.get $buf))
+    (if (f64.lt (local.get $val) (f64.const 0)) (then
+      (i32.store16 (local.get $at) (i32.const 45))
+      (local.set $at (i32.add (local.get $at) (i32.const 2)))
+      (local.set $len (i32.add (local.get $len) (i32.const 1)))))
+    (local.set $at (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))))
+    (local.set $m (i64.trunc_f64_u (local.get $c)))
+    (block $fd (loop $frac
+      (br_if $fd (i32.ge_u (local.get $i) (local.get $f)))
+      (local.set $at (i32.sub (local.get $at) (i32.const 2)))
+      (local.set $q (i64.div_u (local.get $m) (i64.const 10)))
+      (i32.store16 (local.get $at) (i32.add (i32.const 48) (i32.wrap_i64 (i64.sub (local.get $m) (i64.mul (local.get $q) (i64.const 10))))))
+      (local.set $m (local.get $q))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $frac)))
+    (local.set $at (i32.sub (local.get $at) (i32.const 2)))
+    (i32.store16 (local.get $at) (i32.const 46))
+    (loop $int
+      (local.set $at (i32.sub (local.get $at) (i32.const 2)))
+      (local.set $q (i64.div_u (local.get $m) (i64.const 10)))
+      (i32.store16 (local.get $at) (i32.add (i32.const 48) (i32.wrap_i64 (i64.sub (local.get $m) (i64.mul (local.get $q) (i64.const 10))))))
+      (local.set $m (local.get $q))
+      (br_if $int (i64.ne (local.get $m) (i64.const 0))))
+    (local.get $len))`
+
+  // The units of a finite value's string at $buf, the count returned: 192 bytes
+  // there are its room (the digits reversed at +64), so a caller writes them into
+  // its own buffer (JSON.stringify's) with no string between.
+  ctx.core.stdlib['__ftoa_into'] = () => `(func $__ftoa_into (param $val f64) (param $buf i32) (result i32)
     (local $bits i64) (local $ieeeM i64) (local $ieeeE i32)
     (local $e2 i32) (local $m2 i64) (local $even i32) (local $mmShift i64) (local $mv i64)
     (local $vr i64) (local $vp i64) (local $vm i64) (local $h0 i64) (local $t i64) (local $d10 i64)
     (local $e10 i32) (local $q i32) (local $k i32) (local $sh i32) (local $powLo i64) (local $powHi i64)
     (local $vmTZ i32) (local $vrTZ i32) (local $removed i32) (local $last i32) (local $roundUp i32)
-    (local $out i64) (local $buf i32) (local $scr i32) (local $pos i32) (local $olen i32) (local $n i32) (local $i i32)
+    (local $out i64) (local $scr i32) (local $pos i32) (local $olen i32) (local $n i32) (local $i i32)
     (local $a f64)
-    (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
-    (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
-    (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
-    (local.set $buf (call $__alloc (i32.const 192)))
     (local.set $scr (i32.add (local.get $buf) (i32.const 64)))
     (if (f64.eq (local.get $val) (f64.const 0))
       (then
         (i32.store16 (local.get $buf) (i32.const 48))
-        (return (call $__mkstr_scratch (local.get $buf) (i32.const 1)))))
+        (return (i32.const 1))))
+    (if (local.tee $pos (call $__ftoa_short (local.get $val) (local.get $buf))) (then (return (local.get $pos))))
     (local.set $bits (i64.reinterpret_f64 (local.get $val)))
     (if (i64.lt_s (local.get $bits) (i64.const 0))
       (then
@@ -1312,9 +1417,10 @@ export default (ctx) => {
         (call $__ryu_pow5 (local.get $q) (i32.const 1))
         (local.set $powHi)
         (local.set $powLo)
-        (local.set $vr (call $__ryu_mulshift (local.get $mv) (local.get $powLo) (local.get $powHi) (local.get $sh)))
-        (local.set $vp (call $__ryu_mulshift (i64.add (local.get $mv) (i64.const 2)) (local.get $powLo) (local.get $powHi) (local.get $sh)))
-        (local.set $vm (call $__ryu_mulshift (i64.sub (i64.sub (local.get $mv) (i64.const 1)) (local.get $mmShift)) (local.get $powLo) (local.get $powHi) (local.get $sh)))
+        (call $__ryu_mulshift3 (local.get $mv) (local.get $powLo) (local.get $powHi) (local.get $sh) (local.get $mmShift))
+        (local.set $vm)
+        (local.set $vp)
+        (local.set $vr)
         (if (i32.le_u (local.get $q) (i32.const 21))
           (then
             (if (i64.eqz (i64.rem_u (local.get $mv) (i64.const 5)))
@@ -1337,9 +1443,10 @@ export default (ctx) => {
         (call $__ryu_pow5 (local.get $k) (i32.const 0))
         (local.set $powHi)
         (local.set $powLo)
-        (local.set $vr (call $__ryu_mulshift (local.get $mv) (local.get $powLo) (local.get $powHi) (local.get $sh)))
-        (local.set $vp (call $__ryu_mulshift (i64.add (local.get $mv) (i64.const 2)) (local.get $powLo) (local.get $powHi) (local.get $sh)))
-        (local.set $vm (call $__ryu_mulshift (i64.sub (i64.sub (local.get $mv) (i64.const 1)) (local.get $mmShift)) (local.get $powLo) (local.get $powHi) (local.get $sh)))
+        (call $__ryu_mulshift3 (local.get $mv) (local.get $powLo) (local.get $powHi) (local.get $sh) (local.get $mmShift))
+        (local.set $vm)
+        (local.set $vp)
+        (local.set $vr)
         (if (i32.le_u (local.get $q) (i32.const 1))
           (then
             (local.set $vrTZ (i32.const 1))
@@ -1389,17 +1496,32 @@ export default (ctx) => {
             (i32.or (i32.eqz (local.get $even)) (i32.eqz (local.get $vmTZ))))
           (i32.ge_s (local.get $last) (i32.const 5)))))))
       (else
-        ;; common fast path (~99.3%): two digits at a time first
-        (local.set $t (i64.div_u (local.get $vp) (i64.const 100)))
-        (local.set $d10 (i64.div_u (local.get $vm) (i64.const 100)))
-        (if (i64.gt_u (local.get $t) (local.get $d10))
-          (then
-            (local.set $h0 (i64.div_u (local.get $vr) (i64.const 100)))
-            (local.set $roundUp (i64.ge_u (i64.sub (local.get $vr) (i64.mul (local.get $h0) (i64.const 100))) (i64.const 50)))
-            (local.set $vr (local.get $h0))
-            (local.set $vp (local.get $t))
-            (local.set $vm (local.get $d10))
-            (local.set $removed (i32.add (local.get $removed) (i32.const 2)))))
+        ;; common fast path (~99.3%): four digits at a time while the bounds
+        ;; differ past them (a short decimal sheds a dozen), two once, then
+        ;; one; each step is that many one-digit steps, the last digit it
+        ;; drops the top of what it drops
+        (block $f4d (loop $f4l
+          (local.set $t (i64.div_u (local.get $vp) (i64.const 10000)))
+          (local.set $d10 (i64.div_u (local.get $vm) (i64.const 10000)))
+          (br_if $f4d (i64.le_u (local.get $t) (local.get $d10)))
+          (local.set $h0 (i64.div_u (local.get $vr) (i64.const 10000)))
+          (local.set $roundUp (i64.ge_u (i64.sub (local.get $vr) (i64.mul (local.get $h0) (i64.const 10000))) (i64.const 5000)))
+          (local.set $vr (local.get $h0))
+          (local.set $vp (local.get $t))
+          (local.set $vm (local.get $d10))
+          (local.set $removed (i32.add (local.get $removed) (i32.const 4)))
+          (br $f4l)))
+        (block $f2d (loop $f2l
+          (local.set $t (i64.div_u (local.get $vp) (i64.const 100)))
+          (local.set $d10 (i64.div_u (local.get $vm) (i64.const 100)))
+          (br_if $f2d (i64.le_u (local.get $t) (local.get $d10)))
+          (local.set $h0 (i64.div_u (local.get $vr) (i64.const 100)))
+          (local.set $roundUp (i64.ge_u (i64.sub (local.get $vr) (i64.mul (local.get $h0) (i64.const 100))) (i64.const 50)))
+          (local.set $vr (local.get $h0))
+          (local.set $vp (local.get $t))
+          (local.set $vm (local.get $d10))
+          (local.set $removed (i32.add (local.get $removed) (i32.const 2)))
+          ))
         (block $f1 (loop $fl1
           (local.set $t (i64.div_u (local.get $vp) (i64.const 10)))
           (local.set $d10 (i64.div_u (local.get $vm) (i64.const 10)))
@@ -1497,7 +1619,14 @@ export default (ctx) => {
             (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
             (local.set $pos (i32.add (local.get $pos)
               (call $__itoa (local.get $n) (i32.add (local.get $buf) (i32.shl (local.get $pos) (i32.const 1))))))))))))
-    (call $__mkstr_scratch (local.get $buf) (local.get $pos)))`
+    (local.get $pos))`
+  ctx.core.stdlib['__ftoa_shortest'] = `(func $__ftoa_shortest (param $val f64) (result f64)
+    (local $buf i32)
+    (if (f64.ne (local.get $val) (local.get $val)) (then (return (call $__static_str (i32.const 0)))))
+    (if (f64.eq (local.get $val) (f64.const inf)) (then (return (call $__static_str (i32.const 1)))))
+    (if (f64.eq (local.get $val) (f64.const -inf)) (then (return (call $__static_str (i32.const 2)))))
+    (local.set $buf (call $__alloc (i32.const 192)))
+    (call $__mkstr_scratch (local.get $buf) (call $__ftoa_into (local.get $val) (local.get $buf))))`
 
 
   // === Number constants ===

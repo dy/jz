@@ -131,7 +131,7 @@ const DECLS = ['export', 'import', 'type', 'param', 'result', 'local']
 // random generator's state, a regex's last index and its groups' bounds.
 const HEAP_GLOBALS = new Set(['$__heap', '$__heap_end', '$__heap_end64', '$__heap_start', '$__heap_reset', '$__jz_last_err_bits', '$__seq',
   '$__ic_found_slot', '$__ic_found_hi', '$__dyn_get_cache_off', '$__dyn_get_cache_props', '$__enumc_epoch', '$__coll_order_n', '$__esc', '$__base', '$__esc_low',
-  '$__jbuf', '$__jstack', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
+  '$__jbuf', '$__jstack', '$__jscap', '$__jpos', '$__jcap', '$__jgap', '$__jgaplen', '$__jdepth', '$__jsp', '$__jpstr', '$__jplen', '$__jppos', '$__jp_err',
   '$__closure_spill', '$math.rng_state', '$math.rng_seeded',
   '$__roots', '$__rootn', '$__rootl', '$__r_mark', '$__r_top', '$__r_bits', '$__r_sp', '$__r_lim', '$__r_end', '$__ibase', '$__gc_epoch', '$__esc_held',
   // the reset's log of an object (module/core/durable-log.js `__durable_obj_snap`), which lowers the flag itself

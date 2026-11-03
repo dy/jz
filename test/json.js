@@ -665,6 +665,19 @@ test('JSON.parse: a layout registered past the reserve reads no row of the key i
   is(wrong, 0, 'every layout past the reserve reads as itself')
 })
 
+test('JSON.stringify: a number writes its digits into the buffer', () => {
+  // A fraction's shortest digits go where the output is, as an integer's do: no
+  // string per number. Equal lengths: 9 characters each.
+  const j = instantiate(compile(`let out = ''
+    export let keep = (a) => { out = JSON.stringify(a); return out.length }`))
+  const heap = () => j.instance.exports.__jz_heap.value >>> 0
+  const growth = (a) => { j.exports.keep(a.slice(0, 1)); const at = heap(); is(j.exports.keep(a), JSON.stringify(a).length); return heap() - at }
+  const fractions = Float64Array.from({ length: 1000 }, (_, i) => (12345671 + 10 * i) / 1e6)
+  const integers = Float64Array.from({ length: 1000 }, (_, i) => 123456781 + 10 * i)
+  const extra = growth(fractions) - growth(integers)
+  ok(extra < 8000, `${extra / 1000} bytes per fraction beyond an integer's`)
+})
+
 test('JSON.parse: schema cache is empty after arena reuse', () => {
   const shapes = Array.from({ length: 30 }, (_, i) => `{k${i}:42,level:${i + 100}}`).join(',')
   const source = `const shapes = [${shapes}]
