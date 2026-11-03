@@ -190,3 +190,23 @@ test('inplace-store: alien-schema element at runtime takes the generic arm', () 
   const { main } = run(src, { optimize: 'speed' })
   is(main(), oracle(src).main(), 'mixed-schema array stays bit-exact')
 })
+
+test('inplace-store: an alias in a loop beside the store leaves it in place', () => {
+  // Two loops over the same records, each reading its element through a
+  // const and replacing it: the one loop's alias is gone where the other's
+  // store runs, so neither withdraws the other's in-place store.
+  const src = `
+  const init = () => { const ps = []; for (let i = 0; i < 16; i++) ps.push({ x: i, y: 2 * i }); return ps }
+  const step = (ps) => {
+    for (let i = 0; i < ps.length; i++) { const p = ps[i]; const x = p.y, y = p.x; ps[i] = { x: x, y: y } }
+    for (let i = 0; i < ps.length; i++) { const q = ps[i]; const x = (q.x + 1) | 0, y = q.y; ps[i] = { x: x, y: y } }
+    let s = 0
+    for (let i = 0; i < ps.length; i++) s = (s + ps[i].x * 3 + ps[i].y) | 0
+    return s
+  }
+  export let main = () => step(init())`
+  is(run(src, { optimize: 'speed' }).main(), oracle(src).main(), 'both steps bit-match plain JS')
+  const wat = compile(src, { wat: true, optimize: PRE_WATR })
+  const stepBody = wat.split(/\(func /).find(c => /^\$step\b/.test(c)) || ''
+  ok(stepBody && !/__alloc_hdr/.test(stepBody), 'neither loop allocates its record')
+})

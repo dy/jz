@@ -53,7 +53,9 @@ export function scanInplaceStores(programFacts) {
   const poisoned = new Set()   // sids with a possible surviving alias
   let poisonAll = false
   const aliases = []           // { fn, sid, name, block, declIdx }
-  const candidates = []        // { fn, sid, lit, block, stmtIdx, arrName }
+  const candidates = []        // { fn, sid, lit, block, stmtIdx, arrName, within }
+  // the statement lists around the one the walk stands in, outermost first
+  const lists = []
 
   const paramReps = programFacts.paramReps
 
@@ -184,7 +186,9 @@ export function scanInplaceStores(programFacts) {
       // ['{}', [';', ...stmts]]), not an object literal
       if (op === ';' || op === '{}') {
         const list = n.slice(1)
+        lists.push(list)
         for (let i = 0; i < list.length; i++) walkStmt(list[i], list, i)
+        lists.pop()
         return
       }
       if (op === 'let' || op === 'const') {
@@ -212,7 +216,7 @@ export function scanInplaceStores(programFacts) {
         if (Array.isArray(rhs) && rhs[0] === '{}') {
           const { sid, mayBeObject } = elemInfo(lhs[1])
           const s = mayBeObject ? litSid(rhs) : null
-          if (s != null && s === sid) candidates.push({ fn, sid: s, lit: rhs, block: stmts, stmtIdx, arrName: lhs[1], idxName: typeof lhs[2] === 'string' ? lhs[2] : null })
+          if (s != null && s === sid) candidates.push({ fn, sid: s, lit: rhs, block: stmts, stmtIdx, arrName: lhs[1], idxName: typeof lhs[2] === 'string' ? lhs[2] : null, within: new Set(lists) })
           // literal is a fresh value — walk only its slot values
           for (let i = 1; i < rhs.length; i++) walkSlotValues(rhs[i], stmts, stmtIdx)
         } else walkVal(rhs, stmts, stmtIdx)
@@ -301,8 +305,11 @@ export function scanInplaceStores(programFacts) {
     for (const a of aliases) {
       if (!ok) break
       if (a.sid !== c.sid) continue
-      // an alias in another function (or another block) could live across the
-      // call/iteration into this store — reject
+      // an alias in another function, or in a list around the store's own,
+      // could live across the call/iteration into this store — reject; one in
+      // a list the store stands outside of (a loop beside this one, a copy of
+      // this loop) is gone where the store runs
+      if (a.fn === c.fn && a.block !== c.block && !c.within.has(a.block)) continue
       if (a.fn !== c.fn || a.block !== c.block || a.declIdx >= c.stmtIdx) { ok = false; break }
       // any mention after the store in the same block observes the overwrite
       for (let i = c.stmtIdx + 1; i < c.block.length && ok; i++)
