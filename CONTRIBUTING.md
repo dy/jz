@@ -969,7 +969,11 @@ census after the last summary, over every function and closure in its scope,
 admits only the uses the emitter's own element paths serve: an index read or
 store under a Number key, `.length`, `.push`, `.fill`, a call of the program's
 own functions, identity, presence and truth tests, and the value bound or
-passed on. A use that copies or compares the elements of the array it is
+passed on. A call through a receiver or a callee no value reaches (a parameter of a function
+no call binds, or a member of one: three's `Euler.setFromQuaternion` handing the module's
+`_matrix` to a method of `this`, which nothing calls) never runs and reads nothing; a class
+dispatcher's and a binder's parameters, which emitted code fills past the summary's sight,
+keep the generic reading. A use that copies or compares the elements of the array it is
 called on (`slice`, `map`, a spread into a literal) reads that array's cell;
 any other (a join, a conversion, `in`, a builtin's argument) reads every cell
 its value reaches at any depth (summary `arrayCellsReachedByExpr`), and those
@@ -3575,6 +3579,13 @@ copy per record gets one of them spliced and calls the rest. A loop that calls t
 spends its time there, and an arm, a loop's compaction above all, may run once in many
 iterations. The sites call a copy of the callee (`$name$loop`) the inliner dissolves into them
 alone; every other caller keeps the function, which goes once a loop held its last call.
+A scalar math kernel (`optimize/pure-funcs.js`) of at most 300 nodes (`kernelNodes`) joins
+each call such a loop makes, in an arm of an `if` too, through a copy of its own that watr's
+single-caller inliner dissolves, while the caller stays within `IR_FULL` (`src/growth.js`): a
+sine is 282 bytes and an acos 578, past what V8 adds to a loop of 640 bytes or more, and the
+kernel's work is the loop's where the arm runs (three's `slerpFlat`, an acos and three sines in
+an arm, 0.76x the time spliced). A two-wide kernel the vectorizer lifted stays a call: past its
+vector fast path it calls the scalar one per lane.
 
 Last of all at the speed tier, a large function's conditional arms become functions of
 their own (`optimize/split-funcs.js`, the `splitFuncs` pass): V8 compiles a function whole,
@@ -5165,8 +5176,11 @@ FRAC, 1, 0 ); frac = FRAC[ 0 ]; exp += FRAC[ 1 ]`, a library's way to return two
 array is a module constant bound to a literal of numbers, not exported; in every function that
 runs each mention is an element at a constant index inside the literal's count, outside any
 closure; each read follows a store of that element on every path to it
-(`summary/definite.js`); and no call between them reaches another function that names the
-array or a callee the program cannot name. Each function then holds the elements in locals of
+(`summary/definite.js`); no call reaches a callee the program cannot name; and between a read
+and the store it follows no call reaches a function that names the array, itself included. A
+call that does (a library's `pow` calls itself for `-Infinity`, `return pow( -0, -y )`) leaves
+the elements for stores after it (definite assignment's `clobber`): what the callee stores
+goes to locals of its own. Each function then holds the elements in locals of
 its own, and the array, its stores and the reset's snapshot of it are gone. A function runs
 when the host holds it, a value names it, a statement of the module calls it, or one that runs
 calls it (`liveFunctions`); the inliner counts a callee's sites among those only, so a
@@ -5237,7 +5251,10 @@ two hundred sites, tested for `undefined` and `null` at each because one passed 
 known kind); a straight-line body of up to 200 nodes splices at a site in a loop of any depth
 (`warm`) while the caller is under 3000 nodes; a body takes the calls it keeps along (`lcm`
 over `gcd`, whose loops stay a function), outside a cycle of calls, whose copy would hold the
-cycle's call again; and a function a value names is still the body of its direct calls
+cycle's call again, and so does a body of any size at its one site where that site is in a
+loop: the splice copies nothing and takes a call out of the loop that V8 would not inline (it
+takes at most 500 bytes; stdlib's `erf` swept over its arguments, 0.72x the time spliced);
+and a function a value names is still the body of its direct calls
 (`modf( x )` beside `modf.assign = assign`). A call in an arm of a conditional runs only
 where the arm does, so the conditional itself moves ahead of its statement, as a statement:
 `c ? a : f( x )` is `let t; if ( c ) t = a; else t = f( x )` and then `t`, `a && f( x )` is
