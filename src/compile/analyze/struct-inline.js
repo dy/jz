@@ -11,6 +11,7 @@ import { ASSIGN_OPS, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 import { K, core, tagOf } from '../../summary/kind.js'
 import { forEachFunctionPlanRep, functionPlanRepField } from '../function-plan.js'
+import { isExported } from '../func-exports.js'
 import { staticArrayElems, objLiteralSchemaId, inplaceKey } from '../../static.js'
 
 /**
@@ -42,15 +43,22 @@ import { staticArrayElems, objLiteralSchemaId, inplaceKey } from '../../static.j
  * and emission never disagree on
  * which bindings are inline-carried.
  *
- * Conservative corners (sound, give up the optimization): closures and module
- * inits are not walked in detail — any schema reachable as a `.push({S})`
- * argument, an `Array<S>`-returning call, an `[{S}, …]` literal, or a captured
- * tracked array inside one is poisoned.
+ * Every frame that can see an inline value is walked. A named function owns
+ * its `Array<S>` bindings. The module's top-level statements (entry and
+ * imported) and closure bodies own none: their reps settle after this pass, so
+ * the emitter never gives them the carrier (static.js `carrierFrame`), and
+ * they are walked as consumers only: an `Array<S>`-returning call outside a
+ * sanctioned position, a plain argument for an `Array<S>` parameter, or a
+ * captured tracked array poisons S. A function whose callers no walk sees
+ * (an export, called by the host; an address-taken function, called through a
+ * closure, a callback or a table) has no sanctioned boundary: its `Array<S>`
+ * result and parameters poison S.
  */
 export function structInlinePass(programFacts) {
   const inlineArray = ctx.schema?.inlineArray
   if (!inlineArray || !ctx.schema?.list) return null
   const { paramReps } = programFacts
+  const addressTaken = programFacts.programIndex?.addressTaken
   const cand = new Set()      // sids observed as an `Array<S>` element schema
   // env-gated debug — dist/jz.js runs in browsers where `process` doesn't
   // exist, and WASI hosts strip `process.env`
@@ -67,33 +75,6 @@ export function structInlinePass(programFacts) {
     return a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
   }
 
-
-  // Poison every schema whose `Array<S>` could materialize inside an un-walked
-  // subtree (closure body / module init): `.push({S})` args, `Array<S>`-returning
-  // calls, `[{S}, …]` array literals. Standalone `{S}` objects are independent
-  // of array layout and intentionally left alone.
-  const poisonAll = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '()') {
-      const callee = node[1]
-      if (typeof callee === 'string') {
-        const sid = ctx.funcs.map?.get(callee)?.arrayElemSchema
-        if (sid != null) black.add(sid)
-      } else if (Array.isArray(callee) && callee[0] === '.' && callee[2] === 'push') {
-        for (const a of argsOf(node)) {
-          const sid = objLiteralSchemaId(a)
-          if (sid != null) black.add(sid)
-        }
-      }
-    } else if (op === '[' || op === '[]') {
-      for (const el of staticArrayElems(node) || []) {
-        const sid = objLiteralSchemaId(el)
-        if (sid != null) black.add(sid)
-      }
-    }
-    for (let i = 1; i < node.length; i++) poisonAll(node[i])
-  }
 
   const cursorsByFunc = new Map()   // sig → Map<name, sid> — feeds inlineCellCursors
   const bracketKeyed = new Set()    // sids with `p['x']` cursor reads — those route
@@ -133,6 +114,20 @@ export function structInlinePass(programFacts) {
       cand.add(sid)
       arrName.set(name, sid)
     })
+    // Callers no walk sees (the host for an export; a closure call, callback
+    // or table for an address-taken function) read the result and pass the
+    // arguments as plain arrays.
+    if (isExported(func) || addressTaken?.has(func.name)) {
+      if (func.arrayElemSchema != null) black.add(func.arrayElemSchema)
+      for (const p of func.sig.params) if (arrName.has(p.name)) black.add(arrName.get(p.name))
+    }
+    verifyFrame(body, arrName, functionPlan, func.sig, func.arrayElemSchema, func.defaults, func.name)
+  }
+
+  // The walk of one frame: a function's body and parameter defaults with its
+  // tracked bindings, or a top-level statement list with none (`ret` null: no
+  // caller of a module or a closure body agrees on a result fact).
+  function verifyFrame(body, arrName, functionPlan, sig, ret, defaults, fname) {
     // A frame with no tracked arrays of its own still gets the walk when the
     // program has Array<S>-returning functions: it can FORWARD inline-carried
     // returns through call compositions (`use(mk())` in a helper-free main,
@@ -142,8 +137,10 @@ export function structInlinePass(programFacts) {
     // an arrayElemSchema fact: this frame could be the one CALLING it with a
     // fresh array-literal argument (`pick([{gain: 2}])`), and verifyCall's
     // default-disqualify poisoning is the only thing that ever sees that
-    // call site. When NEITHER holds, the walk is provably a no-op.
+    // call site. When NEITHER holds, the walk is provably a no-op: a closure
+    // inside builds only plain arrays (static.js carrierFrame).
     if (!arrName.size && !anyArrRetFn && !anyParamArrFn) return
+    let frameRet = ret              // null inside a closure body
 
     // A structInline `Array<S>` value is only ever born from an empty `[]`
     // grown by structInline `.push`. `expr` is such a producer of `Array<sid>`
@@ -163,7 +160,7 @@ export function structInlinePass(programFacts) {
       return expr[0] === '()' && typeof expr[1] === 'string' &&
         ctx.funcs.map?.get(expr[1])?.arrayElemSchema === sid
     }
-    const summary = ctx.summary?.at(func.sig)
+    const summary = ctx.summary?.at(sig)
     // Packed cells have no boxed side-property store. A Number key alone
     // does not prove an element: negative/fractional/wide keys name properties.
     for (const [name, sid] of arrName) if (!summary?.arrayNumericPropertiesAbsent(name)) black.add(sid)
@@ -192,7 +189,7 @@ export function structInlinePass(programFacts) {
         }
       }
     } })
-    if (cursor.size) cursorsByFunc.set(func.sig, cursor)
+    if (cursor.size) cursorsByFunc.set(sig, cursor)
 
     // A `['[]', arrName, idx]` element read of a tracked array → its sid.
     const elemArrSid = (n) => {
@@ -224,13 +221,13 @@ export function structInlinePass(programFacts) {
       const known = typeof callee === 'string' && ctx.funcs.map?.has(callee)
       const cParams = known ? paramReps?.get(callee) : null
       for (let k = 0; k < args.length; k++) {
-        const arg = args[k]
+        const arg = args[k], psid = cParams?.get(k)?.arrayElemSchema
         if (typeof arg === 'string' && arrName.has(arg)) {
           const sid = arrName.get(arg)
-          if (!(known && cParams?.get(k)?.arrayElemSchema === sid)) black.add(sid)
+          if (!(known && psid === sid)) { black.add(sid); if (psid != null) black.add(psid) }
         } else if (isUserCall(arg) && ctx.funcs.map?.get(arg[1])?.arrayElemSchema != null) {
           const rsid = ctx.funcs.map.get(arg[1]).arrayElemSchema
-          if (!(known && cParams?.get(k)?.arrayElemSchema === rsid)) black.add(rsid)
+          if (!(known && psid === rsid)) { black.add(rsid); if (psid != null) black.add(psid) }
           verifyCall(arg)
         } else {
           // Any other argument shape — array literal (`f([{S}, …])`,
@@ -253,7 +250,6 @@ export function structInlinePass(programFacts) {
           // `inputs` was inline-packed: it read the NaN-boxed element
           // pointer's raw bits as the `gain` field itself (test/objects.js's
           // `inputs[0].gain` silently returned 0, not 2).
-          const psid = cParams?.get(k)?.arrayElemSchema
           if (psid != null) black.add(psid)
           if (!flag(arg)) verify(arg)
         }
@@ -264,10 +260,16 @@ export function structInlinePass(programFacts) {
       if (!Array.isArray(node)) return
       const op = node[0]
       if (op === 'str') return
-      if (op === '=>') {                       // closure — un-walked, poison
+      if (op === '=>') {
+        // A closure frame owns no inline array (static.js carrierFrame): a
+        // tracked binding it captures poisons, and the rest of its body is
+        // walked as a consumer whose result has no agreeing caller.
         for (const n of arrName.keys()) if (refsName(node, n, REFS_IN_EXPR)) black.add(arrName.get(n))
         for (const [n, s] of cursor) if (refsName(node, n, REFS_IN_EXPR)) black.add(s)
-        poisonAll(node)
+        const outer = frameRet
+        frameRet = null
+        for (let i = 1; i < node.length; i++) visitChild(node[i])
+        frameRet = outer
         return
       }
       if (op === ':') { visitChild(node[2]); return }
@@ -345,7 +347,7 @@ export function structInlinePass(programFacts) {
         const ok = idxIntCertain && entry != null && (presentCursor.has(entry.alias) || entry.requiresElement) && entry.idx === idx &&
           objLiteralSchemaId(rhs) === sid
         if (!ok) {
-          if (DBG) console.error('[inlarr-store-reject]', func.name, node[1][1], 'sid', sid,
+          if (DBG) console.error('[inlarr-store-reject]', fname, node[1][1], 'sid', sid,
             'idxIntCertain', idxIntCertain,
             'entry', entry, 'litSid', Array.isArray(rhs) ? objLiteralSchemaId(rhs) : null)
           black.add(sid)
@@ -406,7 +408,7 @@ export function structInlinePass(programFacts) {
           // expression-bodied arrow's whole body is its return position —
           // sanction it under the same fact agreement.
           const retSid = ctx.funcs.map?.get(callee)?.arrayElemSchema
-          if (retSid != null && !(node === body && func.arrayElemSchema === retSid)) black.add(retSid)
+          if (retSid != null && !(node === body && frameRet === retSid)) black.add(retSid)
           verifyCall(node)
           return
         }
@@ -418,14 +420,13 @@ export function structInlinePass(programFacts) {
       if (op === 'return') {
         const e = node[1]
         if (typeof e === 'string') {
-          if (arrName.has(e)) { if (func.arrayElemSchema !== arrName.get(e)) black.add(arrName.get(e)) }
+          if (arrName.has(e)) { if (frameRet !== arrName.get(e)) black.add(arrName.get(e)) }
           else flag(e)
           return
         }
         // A function typed `Array<S>` must return a structInline producer —
         // a non-empty literal / builtin call here yields a taggedLinear array.
-        if (func.arrayElemSchema != null && !safeArrSource(e, func.arrayElemSchema))
-          black.add(func.arrayElemSchema)
+        if (frameRet != null && !safeArrSource(e, frameRet)) black.add(frameRet)
         const esid = elemArrSid(e)
         if (esid != null) { black.add(esid); visitChild(e[2]); return }
         if (isUserCall(e)) {
@@ -433,7 +434,7 @@ export function structInlinePass(programFacts) {
           // inline-carried array escape into fact-less land — poison unless
           // the facts agree (the agreeing case is the sanctioned position).
           const rsid = ctx.funcs.map?.get(e[1])?.arrayElemSchema
-          if (rsid != null && func.arrayElemSchema !== rsid) black.add(rsid)
+          if (rsid != null && frameRet !== rsid) black.add(rsid)
           verifyCall(e)
           return
         }
@@ -445,38 +446,45 @@ export function structInlinePass(programFacts) {
         for (let i = 1; i < node.length; i++) {
           const d = node[i]
           if (!Array.isArray(d) || d[0] !== '=') { if (Array.isArray(d)) visitChild(d); continue }
-          const name = d[1], rhs = d[2]
-          if (typeof name === 'string' && cursor.has(name) &&
-              Array.isArray(rhs) && rhs[0] === '[]') {
-            if (rhs[2] != null) visitChild(rhs[2])   // cursor decl — verify index only
-            continue
-          }
-          if (typeof name === 'string' && arrName.has(name)) {
-            const sid = arrName.get(name)
-            if (!safeArrSource(rhs, sid)) black.add(sid)               // non-structInline producer
-            // [] / fact-agreeing user call — sanctioned; verify args/subtree
-            else if (isUserCall(rhs)) verifyCall(rhs)
-            else if (typeof rhs !== 'string') visitChild(rhs)
-            continue
-          }
-          if (typeof name !== 'string') visitChild(name)
-          visitChild(rhs)
+          declare(d[1], d[2])
         }
         return
       }
 
       for (let i = 1; i < node.length; i++) visitChild(node[i])
     }
+
+    // One binding initialized by `rhs`: a declarator, or a parameter default.
+    function declare(name, rhs) {
+      if (typeof name === 'string' && cursor.has(name) &&
+          Array.isArray(rhs) && rhs[0] === '[]') {
+        if (rhs[2] != null) visitChild(rhs[2])   // cursor decl — verify index only
+        return
+      }
+      if (typeof name === 'string' && arrName.has(name)) {
+        const sid = arrName.get(name)
+        if (!safeArrSource(rhs, sid)) black.add(sid)               // non-structInline producer
+        // [] / fact-agreeing user call — sanctioned; verify args/subtree
+        else if (isUserCall(rhs)) verifyCall(rhs)
+        else if (typeof rhs !== 'string') visitChild(rhs)
+        return
+      }
+      if (typeof name !== 'string') visitChild(name)
+      visitChild(rhs)
+    }
+
+    if (defaults) for (const name in defaults) declare(name, defaults[name])
     verify(body)
   }
 
-  // Program decision: merges only collected summaries, module inits, and
-  // schema censuses. No FunctionPlan or function body is read after the
-  // analyze loop.
+  // Program decision: merges only collected summaries, the module's top-level
+  // statements, and schema censuses. No FunctionPlan or function body is read
+  // after the analyze loop.
   const finish = () => {
-  // Module inits are not walked in detail — poison any schema whose array form
-  // could appear there (struct-array consumed/built at module scope).
-  if (ctx.module?.moduleInits) for (const mi of ctx.module.moduleInits) poisonAll(mi)
+  // The entry module's statements and every imported module's, as frames that
+  // own no array (the start frame never carries the layout).
+  for (const root of [ctx.module?.entryInit, ...(ctx.module?.moduleInits ?? [])])
+    if (root != null && typeof root === 'object') verifyFrame(root, new Map(), null, '', null, null, '<module>')
 
   for (const sid of cand) if (!black.has(sid)) inlineArray.add(sid)
 

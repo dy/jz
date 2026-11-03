@@ -26,6 +26,7 @@ export function createActiveFunction({
   directClosures = null,
   exported = false,
   moduleScope = false,
+  closure = false,
 } = {}) {
   return {
     current: sig,
@@ -34,6 +35,7 @@ export function createActiveFunction({
     body,
     exported: !!exported,
     atModuleScope: !!moduleScope,
+    closure: !!closure,  // a closure body's frame (closure-emit.js), entered for its analysis and again for its emission
     freshObjects: null,  // frame-census literal origins; no reset save for direct field writes
 
     locals: new Map(),
@@ -149,7 +151,7 @@ export function isInactiveFunction(ctx) {
   // first writer created it, the record is no longer the session frame.
   const unallocated = value => value === null
   return frame.current === null && frame.body === null && frame.exported === false &&
-    frame.atModuleScope === false && frame.freshObjects === null && emptyMap(frame.locals) && frame.localReps === null &&
+    frame.atModuleScope === false && frame.closure === false && frame.freshObjects === null && emptyMap(frame.locals) && frame.localReps === null &&
     frame.typedElem === null && frame.typedLen === null &&
     frame.lenBoundOf === null &&
     emptyMap(frame.boxed) &&

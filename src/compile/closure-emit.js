@@ -43,6 +43,7 @@ const closureSig = cb => {
 const enterClosureFrame = cb => enterFunc(closureSig(cb), cb.body, {
   uniq: Math.max(ctx.func.uniq, 100),
   directClosures: cb.directClosures ? new Map(cb.directClosures) : null,
+  closure: true,
 })
 
 /** Seed the closure's captured/call-site facts on its active analysis frame. */

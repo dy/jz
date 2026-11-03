@@ -13,7 +13,7 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { ctx } from '../src/ctx.js'
-import { run, oracle, compile } from './util.js'
+import { run, oracle, compile, compileInProcess } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 
 
@@ -670,4 +670,105 @@ test('packed bounds: unhinted host keys preserve numeric and string element sema
       is(wasm.main(0,1),js.main(0,1),`host key recovery ${key}, ${optimize}`)
     }
   }
+})
+
+
+// --- carrier ownership: the frame that builds the records and every frame
+// that reads them agree on the layout ---
+// Only a named function owns an inline record array. The module's top-level
+// statements and closure bodies hold plain arrays (static.js carrierFrame), and
+// a function called from where no walk reaches (the host for an export; a
+// callback, closure or table for an address-taken function) keeps a plain
+// boundary. Each shape below once read inline cells as plain elements or the
+// reverse: twice the length, fields of garbage.
+const MK = `const init = (n) => { const ps = []; for (let i = 0; i < n; i++) ps.push({ x: i + 1, y: i + 2 }); return ps }\n`
+const SUM = `const sum = (ps) => { let s = 0; for (let i = 0; i < ps.length; i++) s += ps[i].x * 10 + ps[i].y; return s }\n`
+// A function-local carrier of the same schema, so the layout is in play.
+const KEEP = `const keep = () => { const b = []; b.push({ x: 5, y: 6 }); b.push({ x: 7, y: 8 }); let s = 0; for (let i = 0; i < b.length; i++) s += b[i].x; return s }\n`
+const agreesAll = (label, src, calls = [['main', []]]) => {
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(src, { optimize })
+    for (const [name, args] of calls)
+      is(JSON.stringify(wasm[name](...args)), JSON.stringify(js[name](...args)), `${label}: ${name} (optimize:${optimize})`)
+  }
+}
+
+test('struct-inline ownership: a top-level binding of a returned carrier reads as JS', () => {
+  // The 1.0.0 report: 8 items of garbage for 4 pushes.
+  agreesAll('map in an export', MK + `const ps = init(4); export let dump = () => ps.map(p => p.x + ',' + p.y).join(' ')`, [['dump', []]])
+  agreesAll('index loop in an export', MK + `const ps = init(4); export let main = () => { let s = 0; for (let i = 0; i < ps.length; i++) s += ps[i].x * 10 + ps[i].y; return s }`)
+  agreesAll('length at top level', MK + `const n = init(4).length; export let main = () => n`)
+  agreesAll('through a wrapper', MK + `const wrap = () => init(3); const ps = wrap(); export let main = () => ps.length`)
+  agreesAll('in a container', MK + `const o = { ps: init(3) }; export let main = () => o.ps.map(p => p.x).join()`)
+  agreesAll('spread', MK + `const all = [...init(3)]; export let main = () => all.map(p => p.x).join()`)
+  agreesAll('ternary', MK + `const ps = 1 ? init(3) : []; export let main = () => ps.map(p => p.x).join()`)
+  agreesAll('IIFE', `const ps = (() => { const a = []; a.push({ x: 1, y: 2 }); a.push({ x: 3, y: 4 }); return a })(); export let main = () => ps.map(p => p.x).join()`)
+  agreesAll('block binding', MK + `let out = 0; { const a = init(3); for (let i = 0; i < a.length; i++) out += a[i].x } export let main = () => out`)
+  agreesAll('module loop capture', KEEP + `const fs = []; for (let k = 0; k < 2; k++) { const a = []; a.push({ x: k, y: 1 }); a.push({ x: k + 1, y: 1 }); fs.push(() => a.length * 10 + a[1].x) } export let main = () => fs[0]() * 1000 + fs[1]() * 100 + keep()`)
+  // A plain array at top level into a parameter that also takes the carrier.
+  agreesAll('plain argument at top level', MK + SUM + `const r = sum(JSON.parse('[{"x":5,"y":6}]')); export let main = () => r * 1000 + sum(init(3))`)
+  agreesAll('plain global into a carried parameter', MK + SUM + KEEP + `let out = 0; { const a = []; a.push({ x: 1, y: 2 }); out = sum(a) } export let main = () => out * 100 + keep() + sum(init(2))`)
+})
+
+test('struct-inline ownership: the host and callbacks receive plain arrays', () => {
+  const rows = '[{"x":1,"y":2},{"x":2,"y":3},{"x":3,"y":4}]'
+  for (const src of [
+    MK + `export let main = () => init(3)`,
+    MK + `export let main = () => { const a = init(3); return a }`,
+    MK + `export { init }; export let main = () => init(3).length`,
+    `export let init = (n) => { const ps = []; for (let i = 0; i < n; i++) ps.push({ x: i + 1, y: i + 2 }); return ps }; export let main = () => { const a = init(3); let s = 0; for (let i = 0; i < a.length; i++) s += a[i].x; return s }`,
+  ]) {
+    const name = /export \{ init \}|export let init/.test(src) ? 'init' : 'main'
+    agreesAll('result to the host', src, [[name, [3]]])
+    is(JSON.stringify(run(src)[name](3)), rows, 'three whole records')
+  }
+  agreesAll('address-taken producer', MK + `export let main = () => [3].map(init)[0].map(p => p.x).join()`)
+})
+
+test('struct-inline ownership: closure frames and parameter defaults', () => {
+  agreesAll('callback-local array', KEEP + `export let main = () => { let t = ''; [1, 2].forEach(k => { const a = []; a.push({ x: k, y: 1 }); a.push({ x: k + 1, y: 2 }); t += a.map(p => p.x).join() + a.length }); return t + keep() }`)
+  agreesAll('closure-local array', KEEP + `export let main = () => { const f = () => { const a = []; a.push({ x: 1, y: 2 }); a.push({ x: 3, y: 4 }); return a.map(p => p.x).join() }; return f() + keep() }`)
+  agreesAll('literal default for a carried parameter', MK + `const f = (ps = [{ x: 7, y: 8 }]) => { let s = 0; for (let i = 0; i < ps.length; i++) s += ps[i].x; return s }; export let main = () => f(init(3)) * 100 + f()`)
+  agreesAll('parsed default for a carried parameter', MK + `const f = (ps = JSON.parse('[{"x":5,"y":1}]')) => { let s = 0; for (let i = 0; i < ps.length; i++) s += ps[i].x; return s }; export let main = () => f(init(3)) * 100 + f()`)
+})
+
+test('struct-inline ownership: agreeing flows keep the carrier', () => {
+  // The walks verify the module and closures as consumers; they do not
+  // blanket-poison. A carrier read where its producer's facts agree stays.
+  const carried = (src) => { compileInProcess(src, { optimize: 'speed' }); return [...ctx.schema.inlineArray].map(sid => ctx.schema.list[sid].join()) }
+  for (const src of [
+    MK + SUM + `const r = sum(init(4)); export let main = () => r`,
+    MK + SUM + `export let main = () => { const f = () => sum(init(3)); return f() + [1].push({ x: 1, y: 2 }) }`,
+    MK + SUM + `export let main = () => sum(init(3))`,
+  ]) {
+    is(carried(src).join(';'), 'x,y', 'Array<{x, y}> stays inline')
+    agreesAll('agreeing flow', src)
+  }
+  is(carried(MK + `const ps = init(4); export let main = () => ps.length`).join(';'), '', 'a top-level binding poisons')
+  is(carried(MK + `export let main = () => init(3)`).join(';'), '', 'an exported result poisons')
+})
+
+// The union carrier shares the contract: a union-returning call outside an
+// agreeing binding, return or parameter once read packed cells as elements.
+const ROWS = `const initRows = () => { const rows = []; let s = 0x1234abcd | 0; for (let i = 0; i < 16; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; const k = s & 1; const a = (s >>> 3) & 255, b = (s >>> 13) & 255; if (k === 0) rows.push({ k: k, x: a, y: b }); else rows.push({ k: k, r: a }) } return rows }
+const total = (rows) => { let h = 0; for (let i = 0; i < rows.length; i++) { const o = rows[i]; const k = o.k; if (k === 0) h = (h + o.x + o.y) | 0; else h = (h + o.r) | 0 } return h }
+`
+const BUILD = `const rows = []; let s = 0x1234abcd | 0; for (let i = 0; i < 16; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; const k = s & 1; const a = (s >>> 3) & 255, b = (s >>> 13) & 255; if (k === 0) rows.push({ k: k, x: a, y: b }); else rows.push({ k: k, r: a }) }`
+
+test('union inline ownership: every consumer of a returned union reads as JS', () => {
+  agreesAll('length of a call', ROWS + `export let main = () => initRows().length * 10000 + total(initRows())`)
+  agreesAll('map of a call', ROWS + `export let main = () => initRows().map(o => o.k).join('')`)
+  agreesAll('through a wrapper', ROWS + `const w = () => initRows(); export let main = () => w().length`)
+  agreesAll('in a container', ROWS + `export let main = () => { const o = { r: initRows() }; return o.r.length }`)
+  agreesAll('spread', ROWS + `export let main = () => [...initRows()].length`)
+  agreesAll('ternary', ROWS + `export let main = () => (1 ? initRows() : []).length`)
+  agreesAll('top-level binding', ROWS + `const rows = initRows(); export let main = () => rows.length * 10000 + total(rows)`)
+  agreesAll('top-level length', ROWS + `const n = initRows().length; export let main = () => n`)
+  agreesAll('module loop capture', ROWS + `const fs = []; for (let q = 0; q < 1; q++) { ${BUILD} fs.push(() => rows.length) } export let main = () => fs[0]() * 10000 + total(initRows())`)
+  agreesAll('closure-local rows', ROWS + `export let main = () => { const f = () => { ${BUILD} return rows.map(o => o.k).join('') }; return f() + total(initRows()) }`)
+  agreesAll('closure returns rows', ROWS + `export let main = () => { const f = () => { ${BUILD} return rows }; return f().length * 10000 + total(initRows()) }`)
+  agreesAll('result to the host', ROWS + `export let main = () => initRows()`)
+  const carried = (src) => { compileInProcess(src, { optimize: 'speed' }); return [...(ctx.schema.inlineUnion?.keys() || [])].length }
+  is(carried(ROWS + `export let main = () => total(initRows())`), 1, 'an agreeing argument keeps the union carrier')
 })

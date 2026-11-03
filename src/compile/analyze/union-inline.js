@@ -11,6 +11,7 @@ import { ASSIGN_OPS, MUTATE_OPS } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 import { K, core, tagOf } from '../../summary/kind.js'
 import { forEachFunctionPlanRep, functionPlanRepField } from '../function-plan.js'
+import { isExported } from '../func-exports.js'
 import { staticArrayElems, objLiteralSchemaId } from '../../static.js'
 import { scanBoundedArrIdx, isTerminator } from '../../type.js'
 
@@ -26,7 +27,11 @@ import { scanBoundedArrIdx, isTerminator } from '../../type.js'
  *  of every union-array binding and cursor — across all functions — is a
  *  handled shape, and every cursor field read RESOLVES statically (agreeing
  *  slot, or discriminant-narrowed members that agree). Anything else
- *  blacklists the union. v1 scope: packed-only (every member all-slots
+ *  blacklists the union. The frames that own no union array (the module's
+ *  top-level statements, closure bodies: static.js carrierFrame) are walked
+ *  as consumers, and a function whose callers no walk sees (an export, an
+ *  address-taken function) has no sanctioned boundary, as in
+ *  structInlinePass. v1 scope: packed-only (every member all-slots
  *  strict-int32), same-function cursors (`measure(rows[i])` param cursors are
  *  stage 3 — the pointer-ABI seam), reads only (element replace poisons).
  */
@@ -36,6 +41,11 @@ export function unionInlinePass(programFacts) {
   const DBG = typeof process !== 'undefined' && process.env?.JZ_DBG_INLARR
   const propsOf = (sid) => ctx.schema.list[sid] || []
   const keyOf = (sids) => sids.join(',')
+  // A param's settled schemaIdSet as a canonical key, when it names a union.
+  const unionKeyOf = (set) => {
+    const key = typeof set === 'string' ? set : Array.isArray(set) ? keyOf(set) : null
+    return key && key.includes(',') ? key : null
+  }
   const black = new Set()                    // union keys disqualified
   const cand = new Map()                     // key → sids
   const uArraysByFunc = new Map(), uCursorsByFunc = new Map()
@@ -55,13 +65,32 @@ export function unionInlinePass(programFacts) {
     return slot ?? -1
   }
 
+  const addressTaken = programFacts.programIndex?.addressTaken
+  const argsOf = (node) => node[2] == null ? [] : (Array.isArray(node[2]) && node[2][0] === ',') ? node[2].slice(1) : [node[2]]
+  // The union a user call returns (narrowReturnArrayElemSets' canonical key).
+  const retKeyOf = (node) => Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string'
+    ? ctx.funcs.map?.get(node[1])?.arrayElemSchemaSet ?? null : null
+  // As in structInlinePass: a frame with no union binding of its own still
+  // walks when a union can reach it through a call result or a parameter.
+  const anyUnionRet = ctx.funcs.list.some(f => !f.raw && typeof f.arrayElemSchemaSet === 'string')
+  const anyUnionParam = programFacts.paramReps != null && [...programFacts.paramReps.values()].some(m =>
+    m && [...m.values()].some(r => r?.arrayElemSchemaSet != null || unionKeyOf(r?.schemaIdSet) != null))
+
   // Per-function summary collection inside the analyzeFuncs loop; every fact
   // read here settles before that loop starts (same contract as
   // structInlinePass.collect).
   const collect = (func) => {
-    const functionPlan = ctx.plans.functions.get(func)
-    const body = func?.body
-    if (func?.raw || body == null || typeof body !== 'object') return
+    if (func?.raw || func?.body == null || typeof func.body !== 'object') return
+    // Callers no walk sees read the result and pass the arguments plain.
+    const escaping = isExported(func) || !!addressTaken?.has(func.name)
+    if (escaping && typeof func.arrayElemSchemaSet === 'string') black.add(func.arrayElemSchemaSet)
+    verifyFrame(func, ctx.plans.functions.get(func), escaping)
+  }
+
+  // One frame's walk: a function, or a top-level statement list (`frame.body`,
+  // no plan, no result fact) whose bindings are never union-carried.
+  function verifyFrame(func, functionPlan, escaping) {
+    const body = func.body
 
     // Union-array bindings of this frame (rep channel — the landed census).
     const uArr = new Map()                   // name → key
@@ -83,13 +112,17 @@ export function unionInlinePass(programFacts) {
     const cursorParams = new Map()
     const preps = programFacts.paramReps?.get(func.name)
     if (preps && func.sig?.params) for (let k = 0; k < func.sig.params.length; k++) {
-      const set = preps.get(k)?.schemaIdSet
-      const key = typeof set === 'string' ? set : Array.isArray(set) ? keyOf(set) : null
-      if (!key || !key.includes(',')) continue
+      const key = unionKeyOf(preps.get(k)?.schemaIdSet)
+      if (!key) continue
       cursorParams.set(func.sig.params[k].name, key)
       if (!cand.has(key)) cand.set(key, key.split(',').map(Number))
     }
-    if (!uArr.size && !cursorParams.size) return
+    if (escaping) for (const p of func.sig.params) {
+      if (uArr.has(p.name)) black.add(uArr.get(p.name))
+      if (cursorParams.has(p.name)) black.add(cursorParams.get(p.name))
+    }
+    if (!uArr.size && !cursorParams.size && !anyUnionRet && !anyUnionParam) return
+    let frameRet = func.arrayElemSchemaSet ?? null   // null inside a closure body
     const summary = ctx.summary?.at(func.sig)
     for (const [name, key] of uArr) if (!summary?.arrayNumericPropertiesAbsent(name)) black.add(key)
     if (uArr.size) uArraysByFunc.set(func.sig, uArr)
@@ -240,7 +273,7 @@ export function unionInlinePass(programFacts) {
       return false
     }
 
-    ;(function verify(node, refs) {
+    function verify(node, refs) {
       if (!Array.isArray(node)) return
       const op = node[0]
       if (op === 'str') return
@@ -266,11 +299,18 @@ export function unionInlinePass(programFacts) {
         }
         return
       }
-      if (op === '=>') {                     // closures un-walked — poison mentions
+      if (op === '=>') {
+        // A closure frame owns no union array: a captured union binding
+        // poisons, and the body is walked as a consumer whose result has no
+        // agreeing caller.
         const touches = (n, name) => typeof n === 'string' ? n === name
           : Array.isArray(n) ? n.slice(1).some(c => touches(c, name)) : false
         for (const [n, k] of uArr) if (touches(node, n)) black.add(k)
         for (const [n, k] of cursor) if (touches(node, n)) black.add(k)
+        const outer = frameRet
+        frameRet = null
+        for (let i = 1; i < node.length; i++) visit(node[i])
+        frameRet = outer
         return
       }
       if (op === 'if' || op === '?:') {
@@ -331,12 +371,7 @@ export function unionInlinePass(programFacts) {
             // OR from a user call whose settled return union IS this key
             // (`const rows = initRows()`), OR aliased from another union-key
             // binding. Any other producer poisons.
-            const elems = staticArrayElems(rhs)
-            const bornEmpty = elems && elems.length === 0
-            const bornCall = Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' &&
-              ctx.funcs.map?.get(rhs[1])?.arrayElemSchemaSet === key
-            const bornAlias = typeof rhs === 'string' && uArr.get(rhs) === key
-            if (!(bornEmpty || bornCall || bornAlias)) black.add(key)
+            born(key, rhs, refs)
             continue
           }
           // Shadow decl of a cursor name (a block-scoped `const o = other`
@@ -365,7 +400,7 @@ export function unionInlinePass(programFacts) {
       }
       if (op === '()') {
         const callee = node[1]
-        const args = node[2] == null ? [] : (Array.isArray(node[2]) && node[2][0] === ',') ? node[2].slice(1) : [node[2]]
+        const args = argsOf(node)
         if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string' && uArr.has(callee[1])) {
           const key = uArr.get(callee[1])
           if (callee[2] !== 'push' || !args.length) { black.add(key); return }
@@ -389,17 +424,12 @@ export function unionInlinePass(programFacts) {
         //      reach one — trivially safe. (Passing a union array itself as a
         //      grow-capable arg is covered by case 1's array-agreement gate.)
         if (typeof callee === 'string') {
-          const cParams = programFacts.paramReps?.get(callee)
-          for (let k = 0; k < args.length; k++) {
-            const a = args[k]
-            if (typeof a === 'string' && uArr.has(a)) {
-              if (cParams?.get(k)?.arrayElemSchemaSet !== uArr.get(a)) black.add(uArr.get(a))
-            } else if (Array.isArray(a) && a[0] === '[]' && typeof a[1] === 'string' && uArr.has(a[1]) &&
-                       inbCursorPairs.has(a[1] + '\x00' + a[2])) {
-              // element cursor crossing — needs param schemaIdSet agreement.
-              if (cParams?.get(k)?.schemaIdSet !== uArr.get(a[1])) black.add(uArr.get(a[1]))
-            } else visit(a)
-          }
+          // A union-returning call reached here sits where no binding, return
+          // or parameter agrees on its layout (those take verifyCall directly;
+          // an expression body is its function's return).
+          const rkey = retKeyOf(node)
+          if (rkey != null && !(node === body && frameRet === rkey)) black.add(rkey)
+          verifyCall(node, refs)
           return
         }
         if (callee != null && typeof callee !== 'string') visit(callee)
@@ -411,19 +441,76 @@ export function unionInlinePass(programFacts) {
       if (op === 'return') {
         const v = node[1]
         if (typeof v === 'string' && uArr.has(v)) {
-          if (func.arrayElemSchemaSet !== uArr.get(v)) black.add(uArr.get(v))
+          if (frameRet !== uArr.get(v)) black.add(uArr.get(v))
+          return
+        }
+        const rkey = retKeyOf(v)
+        if (rkey != null) {
+          if (frameRet !== rkey) black.add(rkey)
+          verifyCall(v, refs)
           return
         }
         if (v != null) visit(v)
         return
       }
       for (let i = 1; i < node.length; i++) visit(node[i])
-    })(body, null)
+    }
+
+    // The arguments of a direct user call: a union array, a cursor or a
+    // union-returning call crosses only into a parameter that agrees; any
+    // other argument is plain, so a union parameter it fills poisons.
+    function verifyCall(node, refs) {
+      const cParams = programFacts.paramReps?.get(node[1])
+      const args = argsOf(node)
+      for (let k = 0; k < args.length; k++) {
+        const a = args[k], pkey = cParams?.get(k)?.arrayElemSchemaSet ?? null
+        const akey = typeof a === 'string' && uArr.has(a) ? uArr.get(a) : retKeyOf(a)
+        if (akey != null) {
+          if (pkey !== akey) { black.add(akey); if (pkey != null) black.add(pkey) }
+          if (typeof a !== 'string') verifyCall(a, refs)
+        } else if (Array.isArray(a) && a[0] === '[]' && typeof a[1] === 'string' && uArr.has(a[1]) &&
+                   inbCursorPairs.has(a[1] + '\x00' + a[2])) {
+          // element cursor crossing — needs param schemaIdSet agreement.
+          if (cParams?.get(k)?.schemaIdSet !== uArr.get(a[1])) black.add(uArr.get(a[1]))
+        } else {
+          if (pkey != null) black.add(pkey)
+          if (!flag(a)) verify(a, refs)
+        }
+      }
+    }
+
+    // A union binding initialized by `rhs` (a declarator or a parameter
+    // default) is born from an empty `[]` (built by member pushes), a user call
+    // whose settled return union IS this key (`const rows = initRows()`), or
+    // another binding of the key. Any other producer poisons.
+    function born(key, rhs, refs) {
+      if (typeof rhs === 'string' && uArr.get(rhs) === key) return
+      if (retKeyOf(rhs) === key) { verifyCall(rhs, refs); return }
+      const elems = staticArrayElems(rhs)
+      if (!(elems && elems.length === 0)) black.add(key)
+      if (rhs != null && !flag(rhs)) verify(rhs, refs)
+    }
+
+    if (func.defaults) for (const name in func.defaults) {
+      const rhs = func.defaults[name]
+      if (uArr.has(name)) born(uArr.get(name), rhs, null)
+      else {
+        if (cursor.has(name)) black.add(cursor.get(name))
+        if (!flag(rhs)) verify(rhs, null)
+      }
+    }
+    verify(body, null)
   }
 
-  // Program decision over collected summaries and schema censuses only; no
-  // FunctionPlan or function body is read after the analyze loop.
+  // Program decision over collected summaries, the module's top-level
+  // statements and schema censuses; no FunctionPlan or function body is read
+  // after the analyze loop.
   const finish = () => {
+  // The entry module's statements and every imported module's, as frames that
+  // own no union array (the start frame never carries the layout).
+  for (const root of [ctx.module?.entryInit, ...(ctx.module?.moduleInits ?? [])])
+    if (root != null && typeof root === 'object')
+      verifyFrame({ body: root, sig: '', name: '', arrayElemSchemaSet: null, defaults: null }, null, false)
   // v1: packed-only — every member all-slots strict-int32 and stride ≥ 2.
   for (const [key, sids] of cand) {
     if (black.has(key)) continue
