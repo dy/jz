@@ -10,6 +10,9 @@ import { oracle, jz, compile, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 import { walk } from '../scripts/wat-probe.mjs'
 import { skipLatches } from '../src/optimize/skip-latches.js'
+import { SELF_OPTIMIZE } from '../scripts/build-profile.mjs'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
 const elem = ['f64.load', ['i32.add', g('$z'), ['i32.shl', g('$k'), k(3)]]]
@@ -106,4 +109,29 @@ test('skipLatches: scans agree with the host with and without the copies', () =>
     return most
   }
   ok(backs('speed') > backs({ level: 'speed', skipLatches: false }), 'the scan\'s skip takes a latch of its own')
+})
+
+// The pass runs inside the self-compiled compiler too (dist/jz.wasm, built at SELF_OPTIMIZE):
+// compiled by jz at that profile, it copies what it copies natively. A test the way leaves
+// open keeps its conditional in the copy, one the way decides keeps the arm it takes (the
+// answers are words: a null beside literal booleans read back as false self-compiled, and the
+// copy dropped open conditionals, the kernel-parity corpus's durable-forward scan, lz's best
+// match update).
+test('skipLatches: compiled at the self-compile profile, the pass copies what it copies natively', () => {
+  const src = readFileSync(join(import.meta.dirname, '../src/optimize/skip-latches.js'), 'utf8')
+  const driver = `import { skipLatches } from './skip-latches.js'
+export let run = (json) => JSON.stringify(skipLatches(JSON.parse(json)))`
+  const hosted = jz(driver, { modules: { './skip-latches.js': src }, optimize: SELF_OPTIMIZE }).exports.run
+  const skip = ['br_if', '$B', ['i32.eqz', ['f64.lt', elem, g('$x')]]]
+  const guard = ['br_if', '$B', ['i32.gt_s', g('$k'), k(383)]]
+  const open = ['if', ['i32.eqz', ['global.get', '$buf']], ['then', ['global.set', '$buf', k(1)]]]
+  const openWord = ['if', ['i32.ge_u', g('$n'), ['global.get', '$cap']], ['then', ['local.set', '$s', k(2)]]]
+  const flag = ['if', g('$left'), ['then', ['local.set', '$s', k(3)]], ['else', ['local.set', '$s', k(4)]]]
+  const range = ['if', ['i32.le_s', g('$k'), k(383)], ['then', ['local.set', '$s', k(5)]], ['else', ['local.set', '$s', k(6)]]]
+  const exit = ['br_if', '$brk', ['i32.gt_s', g('$k'), k(400)]]
+  const body = ['loop', '$L', ['local.set', '$left', k(0)], ['block', '$B', guard, skip, scan], open, openWord, flag, range, exit, tail, latch]
+  const module = ['module', ['func', '$f', ['block', '$brk', body]]]
+  const native = JSON.stringify(skipLatches(JSON.parse(JSON.stringify(module))))
+  ok(native.includes('"$buf"') && native.split('"global.get","$cap"').length === 3, 'the open conditionals stand in the copy and after it')
+  is(hosted(JSON.stringify(module)), native, 'the self-compile profile copies the same')
 })

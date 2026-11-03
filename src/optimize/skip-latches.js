@@ -99,20 +99,24 @@ const not = (t) => ({ x: t.x, op: NEG[t.op], c: t.c })
 // What the way holds of words: a range [lo, hi] for each word it bounded.
 const MIN = -2147483648, MAX = 2147483647
 const range = (facts, x) => facts.get(x) || [MIN, MAX]
-/** Whether `t` holds for every word the way allows (true), for none (false), or neither (null). */
+// A test's answer along the way: it holds, it fails, or the way leaves it open. Words, not
+// true/false/null: the self-compiled compiler (level 1) reads a literal null that shares an
+// expression with literal booleans as false, which would drop the conditional's arm.
+const HOLDS = 1, FAILS = 0, OPEN = -1
+/** Whether `t` holds for every word the way allows, for none, or neither. */
 const decide = (facts, t) => {
   const r = range(facts, t.x)
   let lo = r[0], hi = r[1], c = t.c, op = t.op
   if (op === 'ltu' || op === 'leu' || op === 'gtu' || op === 'geu') {
-    if (lo < 0 && hi >= 0) return null
+    if (lo < 0 && hi >= 0) return OPEN
     lo = lo >>> 0; hi = hi >>> 0; c = c >>> 0; op = op.slice(0, 2)
   }
-  if (op === 'lt') return hi < c ? true : lo >= c ? false : null
-  if (op === 'le') return hi <= c ? true : lo > c ? false : null
-  if (op === 'gt') return lo > c ? true : hi <= c ? false : null
-  if (op === 'ge') return lo >= c ? true : hi < c ? false : null
-  if (op === 'eq') return lo === c && hi === c ? true : c < lo || c > hi ? false : null
-  return lo === c && hi === c ? false : c < lo || c > hi ? true : null
+  if (op === 'lt') return hi < c ? HOLDS : lo >= c ? FAILS : OPEN
+  if (op === 'le') return hi <= c ? HOLDS : lo > c ? FAILS : OPEN
+  if (op === 'gt') return lo > c ? HOLDS : hi <= c ? FAILS : OPEN
+  if (op === 'ge') return lo >= c ? HOLDS : hi < c ? FAILS : OPEN
+  if (op === 'eq') return lo === c && hi === c ? HOLDS : c < lo || c > hi ? FAILS : OPEN
+  return lo === c && hi === c ? FAILS : c < lo || c > hi ? HOLDS : OPEN
 }
 /** Narrow what the way holds by `t`, which held. */
 const bound = (facts, t) => {
@@ -143,9 +147,9 @@ const step = (facts, s) => {
 }
 /** What `t` decides along the way, where its test writes nothing. */
 const decided = (facts, e) => {
-  if (writes(e)) return null
+  if (writes(e)) return OPEN
   const t = testOf(e)
-  return t ? decide(facts, t) : null
+  return t ? decide(facts, t) : OPEN
 }
 const parts = (s) => {
   const k = label(s) ? 2 : 1, th = s[k + 1], el = s[k + 2]
@@ -158,9 +162,9 @@ const fold = (stmts, facts, out) => {
   for (const s of stmts) {
     if (!isArr(s)) { out.push(s); continue }
     if (s[0] === 'if' && !typed(s)) {
-      const p = parts(s), d = p && decided(facts, s[p.k])
-      if (d != null) {
-        const arm = d ? p.th : p.el, body = arm ? arm.slice(1) : []
+      const p = parts(s), d = p ? decided(facts, s[p.k]) : OPEN
+      if (d !== OPEN) {
+        const arm = d === HOLDS ? p.th : p.el, body = arm ? arm.slice(1) : []
         // (an arm whose branches name the conditional: a block of that name)
         if (label(s)) { const b = ['block', s[1], ...body]; out.push(b); step(facts, b) }
         else if (!fold(body, facts, out)) return null
@@ -170,8 +174,8 @@ const fold = (stmts, facts, out) => {
     }
     if (s[0] === 'br_if' && s.length === 3) {
       const d = decided(facts, s[2])
-      if (d === false) continue
-      if (d === true) { out.push(['br', s[1]]); return out }
+      if (d === FAILS) continue
+      if (d === HOLDS) { out.push(['br', s[1]]); return out }
     }
     out.push(s)
     if (ENDS.has(s[0])) return out
