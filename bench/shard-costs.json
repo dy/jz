@@ -1,5 +1,5 @@
 {
-  "source": "Wall seconds per case, builds included, on GitHub-hosted ubuntu-24.04 (AMD EPYC). ci: the weekly all-lane run 41382173501, which timed 79 cases before its 6-hour cancel; the other cases are their time in the paired run 41439115302 times the 75th-percentile ratio between the two runs, and the self-compile case jz (a 48-minute build in 41439115302) is 3600. reference: 41439115302 times 13/9 (the paired claim lanes against its 9 contenders), plus the single-run lanes of 41382173501 (estimated the same way where it has none). MoonBit adds 15 s where a port exists. Goose adds 5 s where a port exists: 0.3 to 1.0 s a case on an Apple M4 Max, its build included. Bend adds 5 s where a port exists, 20 s for wordcount: 1.4 to 3.4 s a case on an Apple M4 Max under load, its build included, and 14 s for wordcount, whose Map dominates. bench/shards.mjs reads these only for a case its dataset has not timed (cases[].wallMs of a sharded run).",
+  "source": "Wall seconds per case, builds included, on GitHub-hosted ubuntu-24.04 (AMD EPYC). ci: the weekly all-lane run 41382173501, which timed 79 cases before its 6-hour cancel; the other cases are their time in the paired run 41439115302 times the 75th-percentile ratio between the two runs, and the self-compile case jz (a 48-minute build in 41439115302) is 3600. reference: 41439115302 times 13/9 (the paired claim lanes against its 9 contenders), plus the single-run lanes of 41382173501 (estimated the same way where it has none). MoonBit adds 15 s where a port exists. Goose adds 5 s where a port exists: 0.3 to 1.0 s a case on an Apple M4 Max, its build included. Bend adds 5 s where a port exists, 20 s for wordcount: 1.4 to 3.4 s a case on an Apple M4 Max under load, its build included, and 14 s for wordcount, whose Map dominates. bench/shards.mjs reads these only for a case its dataset has not timed (cases[].wallMs of a sharded run). The JSON, Map/Set and async cases (stringify, jsontransform, mapstr, mapint, mapobj, setops, async) are estimates from their nearest relatives (json, wordcount, dict), raised for Perry's slow Map and Set rows, until a sharded run times them.",
   "ci": {
     "alpha": 170,
     "bezfit": 95,
@@ -91,7 +91,14 @@
     "threescene": 365,
     "threeanim": 395,
     "threecull": 605,
-    "threegeom": 2595
+    "threegeom": 2595,
+    "stringify": 90,
+    "jsontransform": 90,
+    "mapstr": 150,
+    "mapint": 120,
+    "mapobj": 100,
+    "setops": 110,
+    "async": 90
   },
   "reference": {
     "alpha": 170,
@@ -184,6 +191,13 @@
     "threescene": 415,
     "threeanim": 435,
     "threecull": 675,
-    "threegeom": 2905
+    "threegeom": 2905,
+    "stringify": 120,
+    "jsontransform": 120,
+    "mapstr": 200,
+    "mapint": 160,
+    "mapobj": 130,
+    "setops": 150,
+    "async": 120
   }
 }

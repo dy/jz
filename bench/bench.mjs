@@ -147,6 +147,8 @@ const CASE_NAMES = {
   entity: 'in-place entity field updates',
   mandelbrot: 'mandelbrot escape',
   json: 'JSON parse+walk (single literal source)',
+  stringify: 'JSON.stringify of nested records (NDJSON + pretty)',
+  jsontransform: 'JSON parse, reshape, stringify (API round trip)',
   sort: 'in-place heapsort',
   crc32: 'CRC-32 table hash',
   matmul: 'matrix multiply (A·Bᵀ)',
@@ -170,7 +172,12 @@ const CASE_NAMES = {
   shapes: 'polymorphic shape scan',
   strbuild: 'per-record string formatting',
   wordcount: 'word-frequency map (string keys)',
+  mapstr: 'request-log sessions (string-keyed Map)',
+  mapint: 'sparse-id graph search (integer-keyed Map)',
+  mapobj: 'module-graph plan + deep copy (object-keyed Map)',
+  setops: 'near-duplicate documents (Set algebra)',
   immutable: 'immutable-update particle step',
+  async: 'async request handlers (await + Promise.all)',
   colorconv: 'sRGB → Oklab batch',
   colorlch: 'sRGB → OkLCh (fused)',
   colorlog: 'ARRI LogC4 → XYZ',
@@ -223,8 +230,9 @@ const caseMemory = () => ({})
 // jzczhz, munsell and worley's in 2026-10): such a row fails, not skips, on a
 // wasmtime or w2c2 without EH. webaudio catches in its render loop
 // (OfflineAudioContext `_continueRendering`): wasmtime 25 rejected it with
-// "exceptions proposal not enabled".
-const NEEDS_EH = new Set(['jessie', 'jz', 'watr', 'webaudio'])
+// "exceptions proposal not enabled". async catches in its handlers, and the
+// promise runtime's `then` reactions catch what a callback throws.
+const NEEDS_EH = new Set(['jessie', 'jz', 'watr', 'webaudio', 'async'])
 const wasmtimeHasEH = (() => {
   let v
   return () => v ??= /\bexceptions\b/.test(spawnSync(WASMTIME_BIN, ['run', '-W', 'help'], { encoding: 'utf8' }).stdout || '')
@@ -1631,6 +1639,11 @@ const REFERENCE_CHECKSUMS = {
   // color-space's kernels (checksumF64Near, single precision): V8, Deno, bun and jz agree
   munsell: 319975139, hsl: 782821123, hwb: 2131370600, jzazbz: 2539556348, jzczhz: 3569912359,
   cam16: 3498772996, hct: 2742489630, a98rgb: 4116453917, ipt: 3620802574,
+  // JSON, Map/Set and async workloads: node 25, deno 2.6 and bun 1.3 agree on each,
+  // and so does every port (Go's encoding/json for the JSON pair)
+  stringify: 1432176915, jsontransform: 3050146119,
+  mapstr: 1026625040, mapint: 3954235254, mapobj: 854729057, setops: 1463522228,
+  async: 535752168,
 }
 // The self-compile case checksums the bytes the compiler under test emits, so
 // every codegen change moves its answer and no stored checksum can be its

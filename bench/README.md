@@ -236,6 +236,8 @@ all prep steps to run.
 | [`aos`](aos/aos.js) | array-of-object rows copied into typed arrays; exposes schema-slot read cost |
 | [`mandelbrot`](mandelbrot/mandelbrot.js) | 256×256 escape-time iteration; dense f64 hot loop with conditional break and i32 counter |
 | [`json`](json/json.js) | runtime `JSON.parse` of one module-local source plus heterogeneous object/array walk with a stable inferred JSON shape |
+| [`stringify`](stringify/stringify.js) | `JSON.stringify` of 1024 order records (nested objects and arrays, strings with escapes and non-ASCII text, integers past 2^32, decimal fractions, exponent-notation rates), one NDJSON line each and a pretty-printed dump of every 16th: the writer side of every server and logger |
+| [`jsontransform`](jsontransform/jsontransform.js) | an API gateway's round trip: `JSON.parse` of a 1024-order document built at run time, a total, filter and tag count over the generic objects, `JSON.stringify` of the response |
 | [`sort`](sort/sort.js) | in-place heapsort over a typed array; exposes call-heavy nested loops and typed-array index propagation |
 | [`crc32`](crc32/crc32.js) | table-driven CRC-32 over a mutable byte buffer; exposes integer narrowing and typed-array parameter propagation |
 | [`dotprod`](dotprod/dotprod.js) | multiply-accumulate reduction; JZ reassociates to 4 SIMD accumulators, beating strict-fp serial native |
@@ -265,7 +267,12 @@ all prep steps to run.
 | [`shapes`](shapes/shapes.js) | per-variant measure summed over records of 8 heterogeneous object shapes — every access site sees 8 hidden classes; the megamorphic property-load / hidden-class kernel (JSON rows, AST nodes, ECS entities), the classic load-IC deopt shape — and JZ's widest gap (the schema union falls to dynamic-property probes) |
 | [`strbuild`](strbuild/strbuild.js) | per-record string formatting (`id,name,value\n` per row: int→string + concat + char fold) — the serializer/logger inner loop, the string-allocation deopt shape (a giant `+=` accumulator is deliberately avoided: eager no-GC strings make it quadratic in allocation — jz exhausts memory on it) |
 | [`wordcount`](wordcount/wordcount.js) | token-frequency counting into a plain object with 512 computed string keys over a skewed stream — the group-by/histogram kernel; a JIT drops the object to dictionary mode (the keyed-store deopt), while jz's string-keyed hash store + interning carry it |
+| [`mapstr`](mapstr/mapstr.js) | sessionizing a request log with string-keyed `Map`s: route counts, sessions opened and swept closed, rate-limit bans checked and lifted (`get`, `set`, `has`, `delete`, deletion while iterating) on keys that arrive as fresh strings |
+| [`mapint`](mapint/mapint.js) | graph search over sparse 30-bit ids with integer-keyed `Map`s: adjacency lists, a degree histogram, breadth-first distance maps from four sources |
+| [`mapobj`](mapobj/mapobj.js) | a bundler's pass over a module graph with object-keyed `Map`s: in-degrees, reverse edges, topological order and depths, a deep copy through a memo `Map` that keeps shared modules shared and a `Set` of distinct copies |
+| [`setops`](setops/setops.js) | near-duplicate documents with `Set`s: stop words removed by membership, a vocabulary union, Jaccard similarity from probed intersections, set differences by copy and delete |
 | [`immutable`](immutable/immutable.js) | integer particle step in the immutable-update idiom — every step replaces each record with a fresh `{x,y,vx,vy}` (React/Redux-style state); value-semantics natives get it free, a JIT leans on young-gen GC + escape analysis, jz pays a bump allocation per object — the escape-analysis/SROA probe |
+| [`async`](async/async.js) | async request handlers: each awaits a user lookup (an inactive user throws into the handler's `catch`), the user's orders, a price per line and a coupon; batches served with `Promise.all`, a tail served one `await` at a time. Every stage settles at once, so the time is the promise machinery |
 | [`colorconv`](colorconv/colorconv.js) | sRGB → Oklab over an image buffer — EOTF pow → 3×3 → cbrt → 3×3; lab probe for pow/cbrt intrinsic quality |
 | [`colorlch`](colorlch/colorlch.js) | sRGB → OkLCh fused in one loop (pow → 3×3 → cbrt → 3×3 → sqrt + atan2); lab probe — the fused body must never lose to the split loops |
 | [`colorlog`](colorlog/colorlog.js) | ARRI LogC4 → XYZ — runtime-base exp2 decode + 3×3; lab probe for runtime-exponent pow/exp2 |
@@ -1182,6 +1189,75 @@ shape-set devirt — a bounded schema union lowering to a tag-switch over direct
 slot loads, the static mirror of a polymorphic IC. `dispatch` passes the
 fastest-wasm gate; `shapes`, `wordcount`, `immutable`, and `strbuild` are
 pinned red in `WASM_TODO` — the deopt work list, loudest first.
+
+### JSON, Map/Set and async – the server and tooling surface
+
+Seven cases measure what servers, tools and data pipelines spend their time in:
+`stringify` and `jsontransform` (JSON writing, and a parse, reshape and write round
+trip of text that arrives at run time), `mapstr`, `mapint` and `mapobj` (`Map`s keyed
+by string, by integer and by object identity), `setops` (`Set` membership and
+algebra) and `async` (async functions and promises). Each is one program with one
+checksum. The JSON pair folds every UTF-16 code unit of its output, which ECMAScript
+fixes exactly (Number::toString's shortest digits, JSON's escapes); the `Map` and
+`Set` cases fold a map's entries as sums, so a port's iteration order changes
+nothing; `async` folds the responses in request order, which `Promise.all` keeps.
+
+Ports where the language has the structure in its standard library: Go for the six
+synchronous cases (`encoding/json` over tagged structs, which formats floats as
+ECMAScript does and escapes the same characters, the data holding none of the `<`,
+`>`, `&`, U+2028 and U+2029 that only Go escapes; `map[string]T`, `map[int32]T`,
+`map[*Module]T`, `map[string]struct{}`), which the go, go-wasm and tinygo lanes
+take; Rust for `mapstr`, `mapint` and `setops` (`HashMap`, `HashSet`; Rust holds a
+graph by index, not by an object-keyed map, so `mapobj` has none); AssemblyScript for
+the four `Map` and `Set` cases. C has no standard map or JSON and Rust no standard
+JSON, so those ports are absent rather than hand-rolled; Zig has both (`std.json`,
+`std.HashMap`) and no port yet.
+
+`async` times itself inside an async function. Every stage settles at once, so each
+sample spans awaits that settle as microtasks: the engine drains its job queue inside
+the timed region and the result line prints when the last job ends. A JS engine needs
+nothing new from the harness (Node, Deno and Bun keep the process alive until the
+queue is empty, a shell runs its queue after the script), and the bench page's
+runners await `main`. Three lanes cannot run it, each for a cause outside the harness:
+
+- jz's WASI build (`jz-wasmtime`, `jz-w2c`, `jz-w2c2`): its microtask queue drains
+  only at a JS host's export boundary, where interop calls `__jz_mt_drain`. A WASI
+  command drains it neither after `_start` nor after an invoked export, so `main`'s
+  promise never settles and nothing prints: `Promise.resolve(1).then(f)` never calls
+  `f` under `--host wasi`. A compiler gap.
+- componentize-qjs 0.5.0: QuickJS runs pending jobs only when its embedder asks, and
+  neither its sync nor its async runtime asks after the exported `run` returns,
+  whether `run` returns the promise or not.
+- Javy 3.0.1 (a local lane): its CLI is built without the `experimental_event_loop`
+  feature and traps on the pending jobs.
+
+A first local measurement (2026-11-03, Apple M4 Max, node 25.9, deno 2.6.7, bun 1.3.14;
+`node bench/bench.mjs --cases=… --targets=jz,v8,deno,bun,jsc,as,rust-wasm,go-wasm,tinygo
+--paired=4 --paired-targets=jz,v8,deno,bun`) is not reference evidence: the load
+average stood at 33 to 37 from other work. Columns are JZ's time over each engine's,
+the median of the paired rounds (above 1, JZ is slower); `fastest port` is the
+fastest wasm port's time.
+
+| case | JZ | ÷ Node | ÷ Deno | ÷ Bun | JSC | fastest port |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `stringify` | 16.81 ms (DIFF) | 7.23 | 7.57 | 10.75 | 1.50 ms | Go → wasm 28.13 ms |
+| `jsontransform` | 3.64 ms | 1.07 | 1.35 | 1.89 | 1.53 ms | Go → wasm 57.83 ms |
+| `mapstr` | 18.39 ms | 1.97 | 3.38 | 2.81 | 5.30 ms | Rust → wasm 5.54 ms |
+| `mapint` | 14.14 ms | 1.49 | 1.71 | 2.27 | 3.57 ms | Rust → wasm 7.88 ms |
+| `mapobj` | 5.01 ms | 1.60 | 1.61 | 2.47 | 1.50 ms | AssemblyScript 1.54 ms |
+| `setops` | 11.01 ms | 1.95 | 2.88 | 4.38 | 2.11 ms | Rust → wasm 7.71 ms |
+| `async` | 11.70 ms | 6.30 | 6.21 | 10.76 | 1.54 ms | – |
+
+JZ leads no case here; these are open gaps, not claims. `stringify`'s JZ row is
+wrong as well as slow: the host build (`alloc: false`, optimize 2 and up) reads past
+the end of a string from a module-level string table in `JSON.stringify`, so lines
+run on into the static data after it; its WASI builds answer correctly (jz → wasm2c
+5.40 ms). `async` stays 4.5 to 10 times Node's time whichever part is removed (the
+rejections, the per-line awaits, `Promise.all`), so the cost is in every await: the
+compiler reports the promise record's layout lost (joined with an unknown value), so
+the runtime reads its fields by name, and nothing an await allocates is reclaimed
+within the call (420 MB peak RSS against Node's 58.5 MB). `mapstr` reads its session
+records' fields by name where they come out of `Map.get` and a `Map`'s entries.
 
 ### watr — WAT-to-wasm compiler on small corpus
 

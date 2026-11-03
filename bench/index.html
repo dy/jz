@@ -529,7 +529,7 @@ const FAMILY = {
   // integer — i32 / bit / hash / sort / search / dispatch
   bitwise: 'integer', crc32: 'integer', hash: 'integer', sieve: 'integer',
   radixsort: 'integer', dict: 'integer', nqueens: 'integer', vm: 'integer', sort: 'integer',
-  hashjoin: 'integer', dispatch: 'integer',
+  hashjoin: 'integer', dispatch: 'integer', mapint: 'integer',
   // audio — DSP / per-sample loop-carried signal
   biquad: 'audio', fft: 'audio', synth: 'audio', bytebeat: 'audio', wav: 'audio',
   delayline: 'audio', resample: 'audio', slices: 'audio', fftplan: 'audio', provenance: 'audio',
@@ -542,9 +542,10 @@ const FAMILY = {
   // string — text / parse / codec / sequence
   tokenizer: 'string', json: 'string', base64: 'string', lz: 'string', levenshtein: 'string',
   strbuild: 'string', wordcount: 'string', glyfparse: 'string',
-  // alloc — allocation / closures / object layout
+  stringify: 'string', jsontransform: 'string', mapstr: 'string', setops: 'string',
+  // alloc — allocation / closures / object layout / promises
   callback: 'alloc', aos: 'alloc', shapes: 'alloc', immutable: 'alloc', entity: 'alloc',
-  polytri: 'alloc', fabrik: 'alloc',
+  polytri: 'alloc', fabrik: 'alloc', mapobj: 'alloc', async: 'alloc',
   // lab — jz-internal probes: self-host compiler rows + JS-only intrinsic gap
   // trackers (no cross-language field; excluded from every aggregate)
   watr: 'lab', jessie: 'lab', jz: 'lab',
@@ -575,7 +576,9 @@ const TAGS = { biquad: 'dsp, f64', fft: 'fft, f64', synth: 'synth, adsr', bytebe
   a98rgb: 'gamma, 3×3', cam16: 'cam16, atan2', hct: 'cam16, cbrt', hsl: 'hue, branch', hwb: 'hue, branch',
   ipt: 'signed pow, 3×3', jzazbz: 'pq curve, pow', jzczhz: 'pq curve, polar', munsell: 'newton, table',
   threescene: 'scene graph, classes', threeanim: 'slerp, f32 buffers', threecull: 'frustum, raycast',
-  threegeom: 'f32 buffers, scratch' }
+  threegeom: 'f32 buffers, scratch',
+  stringify: 'json, escapes', jsontransform: 'json, parse+write', mapstr: 'map, string keys',
+  mapint: 'map, int keys', mapobj: 'map, object keys', setops: 'set, algebra', async: 'await, promises' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
   biquad: 'IIR cascade – every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
@@ -669,6 +672,13 @@ const INSIGHTS = {
   threeanim: 'QuaternionLinearInterpolant’s slerp of ten thousand bones (three.js) – the static Quaternion.slerpFlat over flat Float32Array keyframe buffers at an offset, an acos and three sines per bone. Checked at single precision.',
   threecull: 'A frame’s visibility queries (three.js) – WebGLRenderer.projectObject’s frustum test of ten thousand bounding spheres as the camera orbits, and Mesh.raycast against twenty thousand triangles through Vector3 scratch. Checked at single precision.',
   threegeom: 'BufferAttribute.applyMatrix4, computeBoundingBox/Sphere and computeVertexNormals over Float32Array position buffers (three.js) – each vertex read into a module-level Vector3, transformed by chained methods, written back. Checked at single precision.',
+  stringify: 'JSON.stringify of order records – nested objects and arrays, strings with quotes, control characters and non-ASCII text, integers past 2^32, decimal fractions and 1.5e-7: an NDJSON log line per record and a pretty-printed dump of every 16th.',
+  jsontransform: 'An API gateway’s round trip – JSON.parse a page of orders from runtime text, total and filter them, count their tags, JSON.stringify the response.',
+  mapstr: 'Sessionizing a request log with string-keyed Maps – route counts, sessions opened and closed, rate-limit bans checked and lifted: get, set, has and delete on keys that arrive as fresh strings.',
+  mapint: 'Graph search over sparse 30-bit ids with integer-keyed Maps – adjacency lists, a degree histogram and breadth-first distance maps, all keyed by number.',
+  mapobj: 'A bundler’s pass over a module graph with object-keyed Maps – in-degrees, reverse edges, topological order and depths, then a deep copy through a memo Map that keeps shared modules shared and a Set of distinct copies.',
+  setops: 'Near-duplicate documents with Sets – stop words removed by membership, a vocabulary union, Jaccard similarity from probed intersections, and set differences by copy and delete.',
+  async: 'Async request handlers – each awaits a user lookup (inactive users throw into a catch), the user’s orders, a price per line and a coupon, batches served with Promise.all and a tail served one await at a time.',
 }
 // detected visitor engine
 const ENGINE = (() => {
@@ -1084,9 +1094,10 @@ const fetchText = async p => {
 }
 let runSeq = 0
 const RUNNERS = {
+  // awaited: an async case prints its result line when main's promise settles
   js: async cid => captureLine(async () => {
     const m = await import(`./${cid}/${cid}.js?r=${++runSeq}`)   // fresh module record per run
-    m.main()
+    await m.main()
   }),
   jzwasm: async cid => {
     const res = await fetch(`./web/${cid}.wasm`)
@@ -1095,7 +1106,7 @@ const RUNNERS = {
     const { instantiate } = await loadInterop()
     return captureLine(async () => {
       const { exports } = await instantiate(bytes)
-      exports.main()
+      await exports.main()
     })
   },
 }
