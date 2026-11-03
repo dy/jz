@@ -514,6 +514,9 @@ const boundedBuild = (cmd, args, opts = {}, limitS = BUILD_LIMIT_S) => {
     const s = (performance.now() - start) / 1000
     if (e.code === 'ETIMEDOUT') throw Error(`build exceeded ${limitS}s`)
     if (e.signal === 'SIGKILL' || e.status === 137) throw Error(s >= limitS ? `build exceeded ${limitS}s` : killedText(s))
+    // A compiler's own failure names the compiler: the wrapper's command line
+    // (`timeout -s KILL 120 …`) reads like a time limit that was never reached.
+    if (TIMEOUT_BIN) e.message = e.message.replace(`Command failed: ${TIMEOUT_BIN} -s KILL ${limitS} `, 'Command failed: ')
     throw e
   }
 }
