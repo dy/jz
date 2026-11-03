@@ -341,7 +341,7 @@ export default (ctx) => {
     __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_set_value: ['__hash_set_local', '__to_key', '__is_nullish'],
     __map_slot: () => ordUpsertDeps(),
-    __ord_grow: ['__ord_rebuild', '__table_check'],
+    __ord_grow: ['__ord_rebuild', '__table_check', '__memgrow'],
     __map_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd'],
     __set_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd'],
     __map_put_at: () => ['__map_set', '__ptr_offset_fwd', ...slotLogDeps()],

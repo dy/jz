@@ -215,6 +215,8 @@ const LOOPS = {
   map: `export const f = n => { let a = [1, 2, 3, 4]; for (let i = 0; i < n; i++) a = a.map(x => x + i); return a[0] + a[3] }`,
   shifted: `export const f = n => { let a = []; for (let i = 0; i < 40; i++) a.push({ i: -i }); for (let i = 0; i < n; i++) { a.push({ i }); a.shift() } let s = 0; for (const o of a) s += o.i; return s + a.length }`,
   mapKeys: `export const f = n => { const m = new Map(); let keys = []; for (let i = 0; i < n; i++) { const k = { id: i }; keys.push(k); m.set(k, i * 3); if (keys.length > 50) m.delete(keys.shift()) } let s = 0; for (const k of keys) s += m.get(k); return s + m.size }`,
+  // a Set made at the heap top before the loop grows in place inside it, across the loop's mark
+  setGrows: `export const f = n => { const s = new Set(); let t = ''; for (let i = 0; i < n; i++) { if (i % 50 === 0) for (let k = 0; k < 40; k++) s.add(i * 40 + k); t = (i % 10) + t } let c = 0; for (const x of s) c = (c + x) % 1000003; return c + s.size + t.length }`,
   closures: `export const f = n => { let fs = []; for (let i = 0; i < n; i++) { let c = i; fs.push(() => ++c); if (fs.length > 30) fs = fs.slice(10) } let s = 0; for (const g of fs) s += g() + g(); return s }`,
   views: `export const f = n => { let views = []; for (let i = 0; i < n; i++) { const buf = new Float32Array(16); for (let k = 0; k < 16; k++) buf[k] = i + k; views.push(buf.subarray(4, 12)); if (views.length > 10) views = views.slice(5) } let s = 0; for (const v of views) s += v[0] + v.length; return s }`,
   typed: `export const f = n => { let a = new Float64Array(32); for (let i = 0; i < n; i++) { const b = new Float64Array(32); for (let k = 0; k < 32; k++) b[k] = a[k] + k; a = b } return a[3] + a[31] }`,

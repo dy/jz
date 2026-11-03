@@ -171,16 +171,19 @@ export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, has
     ;; full: the live entries move to a new block, the old one forwards there
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (local.set $newptr (call $__ord_grow (local.get $off) (local.get $cap) (i32.const ${es})))
-    ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
-    (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
-    (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
-    ${stubLogIR('off', 'newptr', expectedType)}
-    ;; the stub the holder names forwards straight to the new block (upsert.js retargetStub)
-    (local.set $o0 (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (if (i32.ne (local.get $o0) (local.get $off))
-      (then${durableLenLogIR('o0')}
-        (i32.store (i32.sub (local.get $o0) (i32.const 8)) (local.get $newptr))
-        ${stubLogIR('o0', 'newptr', expectedType)}))
+    ;; a table that moved leaves a stub (one grown in place stands where it was)
+    (if (i32.ne (local.get $newptr) (local.get $off))
+      (then
+        ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+        ${stubLogIR('off', 'newptr', expectedType)}
+        ;; the stub the holder names forwards straight to the new block (upsert.js retargetStub)
+        (local.set $o0 (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (if (i32.ne (local.get $o0) (local.get $off))
+          (then${durableLenLogIR('o0')}
+            (i32.store (i32.sub (local.get $o0) (i32.const 8)) (local.get $newptr))
+            ${stubLogIR('o0', 'newptr', expectedType)}))))
     (local.set $off (local.get $newptr))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (br $retry)))
@@ -305,17 +308,71 @@ export function genOrdDelete(name, es, hashFn, eqExpr, expectedType) {
     (i32.const 1))`
 }
 
-/** The cold rebuild of a full table: a new block of twice the buckets (four
- *  times past GROW_QUAD_CAP), or as many when at least half the usable entries
- *  are tombstones. Returns the new block; the caller forwards the old. */
-export const genOrdGrow = () => `(func $__ord_grow (param $off i32) (param $cap i32) (param $es i32) (result i32)
-    (local $newcap i32)
+/** The cold rebuild of a full table: twice the buckets (four times past
+ *  GROW_QUAD_CAP), or as many when at least half the usable entries are
+ *  tombstones. A table that ends at the heap top above the reset mark grows
+ *  where it stands (as an array's storage does, module/array.js): its live
+ *  entries close up in place, the rest of the block clears, the heap top
+ *  moves to the new end and the buckets re-index from the stored hashes; no
+ *  copy, and no stub for a holder to hop. Any other table moves to a new block
+ *  (`__ord_rebuild`). Returns the table's block; the caller forwards the old
+ *  one where it moved. */
+export const genOrdGrow = () => {
+  const inPlace = !ctx.memory.shared && (ctx.transform.alloc !== false || !ctx.transform.optimize?.leanRuntime)
+  return `(func $__ord_grow (param $off i32) (param $cap i32) (param $es i32) (result i32)
+    (local $newcap i32)${inPlace ? ' (local $used i32) (local $next i32) (local $i i32) (local $j i32) (local $slot i32) (local $nix i32) (local $m i32) (local $h i32) (local $b i32)' : ''}
     (local.set $newcap (select (local.get $cap)
       (i32.shl (local.get $cap) (select (i32.const 2) (i32.const 1) (i32.ge_u (local.get $cap) (i32.const ${GROW_QUAD_CAP}))))
       (i32.lt_u (i32.shl (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1))
         (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))))
-    (call $__table_check (local.get $newcap))
+    (call $__table_check (local.get $newcap))${inPlace ? `
+    (local.set $next (i32.add (local.get $off) (i32.mul (local.get $newcap) (local.get $es))))
+    (if (i32.and
+          (i32.and (i32.ge_u (local.get $off) ${heapResetWat()}) (i32.ge_u (local.get $next) (local.get $off)))
+          (i32.or (i32.eq (local.get $newcap) (local.get $cap))
+            (i32.eq (i32.add (local.get $off) (i32.mul (local.get $cap) (local.get $es))) (global.get $__heap))))
+      (then
+        (if (i32.gt_u (local.get $next) (global.get $__heap))
+          (then
+            (if (i32.gt_u (local.get $next) (global.get $__heap_end)) (then (call $__memgrow (local.get $next))))
+            (global.set $__heap (local.get $next))))
+        ;; the live entries close up, in their order (none move without a tombstone)
+        (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))
+        (block $closed (loop $close
+          (br_if $closed (i32.ge_u (local.get $i) (local.get $used)))
+          (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $es))))
+          (if (i64.ne (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
+            (then
+              (if (i32.ne (local.get $i) (local.get $j))
+                (then (memory.copy (i32.add (local.get $off) (i32.mul (local.get $j) (local.get $es))) (local.get $slot) (local.get $es))))
+              (local.set $j (i32.add (local.get $j) (i32.const 1)))))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $close)))
+        ;; past them the block clears: the old buckets, the old count, the new room
+        (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $j) (local.get $es))))
+        (memory.fill (local.get $slot) (i32.const 0) (i32.sub (local.get $next) (local.get $slot)))
+        (local.set $nix (i32.add (local.get $off) (i32.mul ${ordEntriesWat('(local.get $newcap)')} (local.get $es))))
+        (local.set $m (i32.sub (local.get $newcap) (i32.const 1)))
+        (local.set $i (i32.const 0))
+        (local.set $slot (local.get $off))
+        (block $indexed (loop $index
+          (br_if $indexed (i32.ge_u (local.get $i) (local.get $j)))
+          (local.set $h (i32.load (local.get $slot)))
+          (local.set $b (i32.and (local.get $h) (local.get $m)))
+          (block $placed (loop $probe
+            (br_if $placed (i32.eqz (i32.load (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2))))))
+            (local.set $b (i32.and (i32.add (local.get $b) (i32.const 1)) (local.get $m)))
+            (br $probe)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (i32.store (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2)))
+            (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (local.get $i)))
+          (local.set $slot (i32.add (local.get $slot) (local.get $es)))
+          (br $index)))
+        (i32.store ${ordUsedAddrWat('(local.get $off)', '(local.get $newcap)', '(local.get $es)')} (local.get $j))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $newcap))
+        (return (local.get $off))))` : ''}
     (call $__ord_rebuild (local.get $off) (local.get $cap) (local.get $es) (local.get $newcap)))`
+}
 
 /** A copy of the table at `off` (`new Set(set)`, `new Map(map)`), sized for
  *  `want` buckets: the block whole where it holds no more (its entries keep

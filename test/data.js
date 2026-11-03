@@ -3,7 +3,7 @@
 import test from 'tst'
 import { is, ok, almost, throws } from 'tst/assert.js'
 import { onWasi, onKernel, adaptI64, levels, boxed } from './_matrix.js'
-import { UNDEF_NAN } from '../interop.js'
+import { UNDEF_NAN, instantiate } from '../interop.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 import { cases, oracle, compileInProcess, jz, compile, funcWat } from './util.js'
 import parseWat from 'watr/parse'
@@ -391,6 +391,32 @@ test('Map/Set: a holder of a grown table reaches it in one hop', async () => {
     const once = chases(1), many = chases(20)
     if (optimize === 'speed') is(many, once, `${optimize}: ${once} chases for one pass over the grown tables, ${many} for twenty`)
   }
+})
+
+// A table that ends at the heap top grows where it stands (collection/ordered.js
+// genOrdGrow): its live entries close up past its tombstones, its buckets
+// re-index, and its holders find its block live, no stub to hop. A walk that
+// reaches it mid-growth goes on from the last entry it took. A table something
+// was allocated after moves and leaves a stub, as before.
+test('Map/Set: a table at the heap top grows in place', () => {
+  const src = `
+    export let built = (n) => { const s = new Set(); for (let i = 0; i < n; i++) s.add(i * 3); return s }
+    export let interleaved = (n) => { const s = new Set(), keep = []; for (let i = 0; i < n; i++) { s.add(i * 3); keep.push([i]) } return s }
+    export let count = (n) => { const s = built(n); let t = 0; for (let i = 0; i < n * 3; i++) if (s.has(i)) t++; return t + ':' + s.size }
+    export let tombs = (n) => { const s = new Set(); for (let i = 0; i < n; i++) { s.add(i); if (i % 3 === 0) s.delete(i - 3) } let t = ''; for (const x of s) t += x + ','; return t + s.size }
+    export let mapTombs = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { m.set('k' + (i % 50), i); m.set(i, -i); if (i % 2) m.delete(i - 1) } let t = 0; for (const [k, v] of m) t = (t * 31 + v + (typeof k === 'string' ? k.length : k)) | 0; return t + ':' + m.size }
+    export let walkGrows = (n) => { const s = new Set([1, 2, 3]); let t = 0, c = 0; for (const x of s) { t += x; if (++c < n) { s.add(x + 100); if (x % 4 === 0) s.delete(x - 50) } } return t + ':' + s.size + ':' + [...s].slice(0, 9).join() }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const e = jz(src, { optimize }).exports
+    for (const n of [0, 5, 40, 3000]) for (const name of ['count', 'tombs', 'mapTombs', 'walkGrows']) is(e[name](n), js[name](n), `${name}(${n}), O${optimize}`)
+  }
+  if (onWasi() || onKernel()) return
+  const ex = instantiate(compile(src, { optimize: 'speed' })).instance.exports
+  const dv = () => new DataView(ex.memory.buffer)
+  const capOf = (bits) => dv().getInt32(Number(bits & 0xFFFFFFFFn) - 4, true)
+  ok(capOf(ex.built(5000)) >= 8192, 'grown at the heap top: the holder names the live table')
+  is(capOf(ex.interleaved(5000)), -1, 'grown under later allocations: the holder names a stub')
 })
 
 // A Set's and a Map's table keeps its entries in insertion order
