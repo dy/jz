@@ -17,14 +17,18 @@ import { ERROR_CODE_HI, ERR_INFO, ERR_CLASS_NAMES } from './err-codes.js'
 import { decodeUtf8 } from './utf8.js'
 
 // ── Allocator ───────────────────────────────────────────────────────────────
-// The heap top: the exported `$__heap` global, or for a shared memory the cell
-// at 1020 (globals are per instance, threads share the cell). An 8-byte aligned
-// bump; the module's `__jz_alloc` takes over where it exports one. An i32 address
-// crosses into JS signed: `>>> 0` reads it unsigned past 2 GiB.
-const makeJsAllocator = (mem, heapGlobal) => {
+// The heap top: the exported `$__heap` global, or else the cell at 1020 (for a
+// shared memory: globals are per instance, threads share the cell). An 8-byte
+// aligned bump; the module's `__jz_alloc` takes over where it exports one. An i32
+// address crosses into JS signed: `>>> 0` reads it unsigned past 2 GiB.
+// A module that owns its memory and exports no heap top (`alloc: false`) never
+// reads the cell, and its static data may cover it: the host claims the cell
+// only when it allocates, so instantiation and its calls write no word there.
+const makeJsAllocator = (mem, heapGlobal, owned) => {
   const dv = () => new DataView(mem.buffer)
-  const getPtr = heapGlobal ? () => heapGlobal.value >>> 0 : () => dv().getUint32(HEAP.PTR_ADDR, true)
-  const setPtr = heapGlobal ? v => { heapGlobal.value = v } : v => dv().setInt32(HEAP.PTR_ADDR, v, true)
+  let claimed = !!heapGlobal || !owned
+  const getPtr = heapGlobal ? () => heapGlobal.value >>> 0 : () => claimed ? dv().getUint32(HEAP.PTR_ADDR, true) : HEAP.START
+  const setPtr = heapGlobal ? v => { heapGlobal.value = v } : v => { if (claimed) dv().setInt32(HEAP.PTR_ADDR, v, true) }
   // Rewind target: the global's post-static-init value, else the fixed start.
   let base = heapGlobal ? (heapGlobal.value >>> 0) : HEAP.START
   // A block of 4 KiB or more starts at the next quarter-page colour mod 4096,
@@ -32,6 +36,7 @@ const makeJsAllocator = (mem, heapGlobal) => {
   // hands a kernel do not share their low address bits (4K aliasing).
   let color = 0
   const alloc = (bytes) => {
+    if (!claimed) { claimed = true; initHeapPtr() }
     // aligned by arithmetic: `& ~7` would read the address signed again
     const ptr = getPtr()
     let aligned = Math.ceil(ptr / 8) * 8
@@ -47,7 +52,7 @@ const makeJsAllocator = (mem, heapGlobal) => {
   const reset = () => setPtr(base)
   // the module sets its global; a memory's cell may still read below the heap start
   const initHeapPtr = () => {
-    if (heapGlobal) return
+    if (heapGlobal || !claimed) return
     const d = dv()
     if (d.getUint32(HEAP.PTR_ADDR, true) < HEAP.START) d.setInt32(HEAP.PTR_ADDR, HEAP.START, true)
   }
@@ -338,7 +343,9 @@ const bind = (src) => {
     read: (v, fnOf) => decode(v, fnOf, symbols),
     wrapVal: v => typeof v === 'symbol' ? symbols.write(v) : coerce(v),
   }
-  return codec(mem, { exports: { ...raw, memory: mem }, module: src.module || null, extMap: src.extMap || null, symbols })
+  // jz exports the memory a module owns and never one it imports
+  const owned = !!raw.memory && !(src.module && WebAssembly.Module.imports(src.module).some(i => i.kind === 'memory'))
+  return codec(mem, { exports: { ...raw, memory: mem }, module: src.module || null, extMap: src.extMap || null, symbols, owned })
 }
 
 // The tables of a memory no module has bound yet
@@ -353,7 +360,7 @@ const codec = (mem, src) => {
   const tables = mergeTables(known ?? NO_MEMORY_TABLES, mod ? moduleTables(mod) : NO_TABLES)
   const dv = () => new DataView(mem.buffer)
 
-  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, base, markBase } = makeJsAllocator(mem, wasmExports?.__jz_heap)
+  const { alloc: jsAlloc, reset: jsReset, initHeapPtr, top, setTop, used, base, markBase } = makeJsAllocator(mem, wasmExports?.__jz_heap, src?.owned)
   const wasmAlloc = wasmExports?.__jz_alloc && (bytes => wasmExports.__jz_alloc(bytes) >>> 0)
   // No call of the module runs while the host allocates for itself (`busy`,
   // kept by the call wrappers in wrap): that storage a compaction never moves,

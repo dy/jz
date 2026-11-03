@@ -912,8 +912,9 @@ export default (ctx) => {
   // wasm globals are per-instance, so threads sharing one memory must share one
   // pointer cell. Non-shared memory (incl. alloc:false) uses the `$__heap`
   // global — exported so the JS-side adapter (memory.String etc) bumps the same
-  // pointer. Storing it in memory would collide with the static data section
-  // whenever the data exceeds HEAP.PTR_ADDR bytes.
+  // pointer (alloc:false keeps it private; the host then claims no cell until it
+  // allocates, interop.js). Storing it in memory would collide with the static
+  // data section whenever the data exceeds HEAP.PTR_ADDR bytes.
   // Geometric memory growth shared by `__alloc` and the in-place string
   // bump-extend paths (string.js). Ensures linear memory covers byte offset
   // `$next`, growing when short. Growing one page at a time turns a long-running
