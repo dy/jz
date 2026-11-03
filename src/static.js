@@ -866,12 +866,19 @@ export function exprSchemaId(expr, localSchemaMap) {
   return null
 }
 
+/** Whether the active frame may own an inline carrier. structInlinePass and
+ *  unionInlinePass prove a layout per binding by walking named functions
+ *  with their settled reps. The module start frame and closure frames settle
+ *  their reps after that proof, so no walk ever owns their bindings: they hold
+ *  plain arrays, and the passes verify them only as consumers. */
+const carrierFrame = () => !ctx.func.atModuleScope && !ctx.func.closure
+
 /** Closed-union inline carrier for `name` (Array of a packed heterogeneous
  *  union — unionInlinePass). Same function-local-only rule as
  *  inlineArraySid, keyed by the rep's canonical set. */
 export function inlineArrayUnion(name) {
   if (typeof name !== 'string') return null
-  if (ctx.scope.globals?.has(name)) return null
+  if (ctx.scope.globals?.has(name) || !carrierFrame()) return null
   const set = ctx.func.localReps?.get(name)?.arrayElemSchemaSet
   if (!set || set.length < 2) return null
   const key = set.join(',')              // canonical key — tiny join, no expando on the shared rep array
@@ -888,7 +895,7 @@ export function inlineArraySid(name) {
   // function flattens the struct into K cells, while `G.length` / `G[i].a` in
   // another sees a plain array (K=1) and reads garbage. Never inline a global's
   // element struct — the plain Array<ptr> representation is consistent everywhere.
-  if (ctx.scope.globals?.has(name)) return null
+  if (ctx.scope.globals?.has(name) || !carrierFrame()) return null
   const sid = ctx.func.localReps?.get(name)?.arrayElemSchema
   return sid != null && ctx.schema.inlineArray?.has(sid) ? sid : null
 }
