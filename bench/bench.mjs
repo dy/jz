@@ -949,7 +949,7 @@ const targets = {
     bin: natBinPath,
     run: c => tryRun('nat', c, () => {
       // native-tuned, symmetric with rustc -C target-cpu=native (arm64 clang rejects -march=native)
-      execFileSync('clang', ['-O3', process.arch === 'arm64' ? '-mcpu=native' : '-march=native', '-ffp-contract=off', ...macSysrootArgs, '-o', natBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('clang', ['-O3', process.arch === 'arm64' ? '-mcpu=native' : '-march=native', '-ffp-contract=off', ...macSysrootArgs, '-o', natBinPath(c), c.c, '-lm'], { cwd: BENCH_DIR, stdio: 'pipe' })
       try { execFileSync('strip', [natBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' }) } catch {}
     }, [natBinPath(c)]),
   },
@@ -958,7 +958,7 @@ const targets = {
     available: c => !!c.c && has('gcc') && spawnSync('gcc', ['--version'], { encoding: 'utf8' }).stdout.includes('gcc'),
     bin: natgccBinPath,
     run: c => tryRun('natgcc', c, () => {
-      execFileSync('gcc', ['-O3', '-ffp-contract=off', ...macSysrootArgs, '-o', natgccBinPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('gcc', ['-O3', '-ffp-contract=off', ...macSysrootArgs, '-o', natgccBinPath(c), c.c, '-lm'], { cwd: BENCH_DIR, stdio: 'pipe' })
       try { execFileSync('strip', [natgccBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' }) } catch {}
     }, [natgccBinPath(c)]),
   },
@@ -1384,8 +1384,8 @@ const targets = {
 // page methodology table renders from data, not a hand-maintained copy.
 // <case> stands for the case id.
 const TARGET_CMDS = {
-  nat: 'clang -O3 -march=native -ffp-contract=off <case>.c',
-  natgcc: 'gcc -O3 -ffp-contract=off <case>.c',
+  nat: 'clang -O3 -march=native -ffp-contract=off <case>.c -lm',
+  natgcc: 'gcc -O3 -ffp-contract=off <case>.c -lm',
   rust: 'rustc -C opt-level=3 -C target-cpu=native <case>.rs',
   go: 'go build -ldflags="-s -w" <case>.go',
   zig: 'zig build-exe <case>.zig -O ReleaseFast -lc (shared _lib/bench.zig)',
