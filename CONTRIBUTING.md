@@ -3100,6 +3100,14 @@ and the next pass's read may write I's names, store to A at a maybe-equal
 index, store to an array that may share A's buffer, or call. An integer
 element always takes its conversion (`E | 0` for Int32Array): a copy of a
 loop counter would otherwise rate the local unbounded and widen it to f64.
+A pushed counter (`v[k] = q`, the counter a word, an Int32Array or Float64Array
+element) whose element the statements before the loop left at the counter's
+first value less its step (`v[0] = 0` with `k = 0` before `for (let q = 1; …;
+q++)`) reads as `q - 1` on every pass, with no local across the back edge; a
+shared load's temp of the read reads so too, and the emitter folds a
+difference whose integer names cancel (`2 * q - 2 * (q - 1)` is 2,
+`cancelledIntExpr` in static.js), so the lower envelope's first boundary
+divides by nothing: a multiply by 0.5.
 Loop versioning
 groups cursor offsets by their shared extent and omits already-covered nest
 guards; negative offsets participate in the lower bound. A cursor read in a

@@ -6,6 +6,12 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { onKernel, levels } from './_matrix.js'
 import { funcWat, oracle, jz, compile } from './util.js'
+import { compileJzAt } from '../bench/_lib/compile.js'
+import { compileInternal } from '../src/compiler.js'
+import jzify from '../jzify/index.js'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const CARRY_OFF = { level: 'speed', carryElements: false }
 const kernel = (ctor, store) => `
@@ -94,6 +100,56 @@ test('carried elements: an unproven store, a skipped store, a moved index and a 
       for (const n of [0, 1, 2, 7, 20]) is(wasm(n), native(n), `${name}(${n}), O${optimize}`)
     }
   }
+})
+
+// A pushed counter (`v[k] = q`, a monotone stack's top) whose element the list before the
+// loop left at the counter's first value less its step: every pass reads `q - step`, no
+// local crosses the back edge, and a difference with the counter cancels (`2 * q - 2 * t`).
+// (a counter the compiler holds to a word: below a masked bound)
+const LAGGED = (bottom, step, ctor) => `
+const f = (v, n, seed) => { let k = 0, s = seed | 0
+  v[0] = ${bottom}
+  for (let q = 1; q < (n & 255); q += ${step}) {
+    const t = v[k]
+    s = (s * 31 + 3 / (2.0 * q - 2.0 * t) * 7 + t) | 0
+    k = (s >>> 3) & 7
+    v[k] = q
+  }
+  return s + '/' + v[k] }
+export let run = (n, seed) => f(new ${ctor}(8), n | 0, seed | 0)`
+
+test('carried elements: a pushed counter whose bottom holds the index before the first reads the counter less its step', () => {
+  const cases = { lag1: LAGGED(0, 1, 'Int32Array'), lag2: LAGGED(-1, 2, 'Int32Array'), lagF64: LAGGED(0, 1, 'Float64Array'),
+    offByOne: LAGGED(1, 1, 'Int32Array'), bytes: LAGGED(0, 1, 'Uint8Array'),
+    // a bottom stored past the array's end is dropped: the first pass reads undefined
+    dropped: LAGGED(0, 1, 'Int32Array').replace('let k = 0', 'let k = 8').replace('v[0] = 0', 'v[8] = 0') }
+  for (const [name, src] of Object.entries(cases)) {
+    const native = oracle(src).run
+    for (const optimize of [...levels(0, 2, 3, 'size'), CARRY_OFF]) {
+      const wasm = jz(src, { optimize }).exports.run
+      for (const n of [0, 1, 2, 3, 9, 40, 300]) for (const seed of [0, 5]) is(wasm(n, seed), native(n, seed), `${name} ${JSON.stringify(optimize)}: run(${n}, ${seed})`)
+    }
+  }
+  if (onKernel()) return
+  const local = (src) => /\(local \$[^\s)]*ce\d+_v (i32|f64)\)/.test(funcWat(compile(src, { optimize: { level: 'speed', watr: false }, wat: true }), 'f'))
+  // (the speed tier inlines `f` into `run`: the module's divisions are the kernel's)
+  const divides = (src) => /\(f64\.div\b/.test(compile(src, { optimize: 'speed', wat: true }))
+  ok(!local(cases.lag1) && !local(cases.lag2), 'the lagged counter needs no carried local')
+  ok(!divides(cases.lag1) && !divides(cases.lag2), 'its difference with the counter cancels: no division')
+  ok(local(cases.offByOne) && divides(cases.offByOne), 'a bottom that is not the counter\'s previous value is carried, and divides')
+})
+
+// The lower envelope's first parabola meets the one pushed last pass: `v[k]` is `q - 1`, its
+// denominator `2q - 2v[k]` is 2, and the division a multiply (the sdf bench, whose arrays the
+// compiler places, so the push is proven in bounds).
+test('carried elements: the envelope\'s first boundary divides by nothing', () => {
+  if (onKernel()) return
+  const c = { id: 'sdf', js: join(ROOT, 'bench/sdf/sdf.js') }
+  const edt = (optimize) => funcWat(compileJzAt(c, optimize, (code, opts) => compileInternal(code, { ...opts, wat: true }, jzify)), 'edt1d')
+  const divs = (w) => (w.match(/\(f64\.div\b/g) || []).length
+  const lagged = edt({ level: 'speed' }), carried = edt(CARRY_OFF)
+  is(divs(lagged), divs(carried) - 1, 'a division fewer')
+  ok(!/ce\d+_v/.test(lagged), 'no carried local')
 })
 
 // A difference whose integer names cancel is its literal; a Number that is not an integer keeps
