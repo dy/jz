@@ -20,7 +20,7 @@ import { isReassigned, MUTATE_OPS, some, isBrand, canonicalKeyOrder, spreadExclu
 import { staticObjectProps, dictCapacity } from '../src/static.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { deletedMaskIR, deletedSlotIR, HEAP, DATA_VIEW_FLAG, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
-import { schemaValueIR, enumView, enumKeys, ownKeys, inheritingSids, viewsOn, enumViewsOn, ownViewsOn, ENUM_DATA, ENUM_GET } from './schema.js'
+import { schemaValueIR, enumView, enumKeys, ownKeys, inheritingSids, viewsOn, enumViewsOn, ownViewsOn, ENUM_DATA, ENUM_GET, schemaRows } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
 import { isGlobal } from '../src/ir/vars.js'
@@ -1132,7 +1132,8 @@ const enumEntries = (names) => {
 const viewRowIR = (sid, src, sn, map, table = '__schema_view') => {
   const at = (k) => ['i64.load', ['i32.add', ['global.get', `$${table}`], ['i32.add', ['i32.shl', ['local.get', `$${sid}`], ['i32.const', 4]], ['i32.const', k]]]]
   const off = (k) => ['i32.wrap_i64', ['i64.and', at(k), ['i64.const', LAYOUT.OFFSET_MASK]]]
-  return ['if', ['i32.ne', ['global.get', `$${table}`], ['i32.const', 0]], ['then',
+  // a layout registered at run time has no row (module/schema.js schemaRows)
+  return ['if', ['i32.and', ['i32.ne', ['global.get', `$${table}`], ['i32.const', 0]], ['i32.lt_u', ['local.get', `$${sid}`], ['global.get', `$${schemaRows()}`]]], ['then',
     ['if', ['i64.ne', at(0), ['i64.const', 0]], ['then',
       ['local.set', `$${src}`, off(0)],
       ['local.set', `$${sn}`, ['i32.load', ['i32.sub', ['local.get', `$${src}`], ['i32.const', 8]]]],

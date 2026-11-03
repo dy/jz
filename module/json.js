@@ -21,7 +21,7 @@ import { throwErrorWat } from './core/error-object.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { canonicalKeyOrder } from '../src/ast.js'
 import { walkObjectProperties } from './object.js'
-import { ENUM_DATA, ENUM_GET, viewsOn, enumViewsOn } from './schema.js'
+import { ENUM_DATA, ENUM_GET, viewsOn, enumViewsOn, hasSchemaRow } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 import { TO_JSON } from '../src/compile/emit/to-json.js'
 import { demandHostReceiver } from '../src/compile/func-exports.js'
@@ -757,7 +757,7 @@ export default (ctx) => {
         (local.set $nkeys (call $__len
           (i64.load (i32.add (global.get $__schema_tbl) (i32.shl (local.get $sid) (i32.const 3))))))))
     ${views ? `(local.set $map (i32.const 0))
-    (if (i32.ne (global.get $__schema_view) (i32.const 0))
+    (if (i32.and (i32.ne (global.get $__schema_view) (i32.const 0)) ${hasSchemaRow('(local.get $sid)')})
       (then (if (i64.ne ${print(viewRow(0))} (i64.const 0))
         (then
           (local.set $koff (call $__ptr_offset ${print(viewRow(0))}))

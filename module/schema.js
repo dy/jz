@@ -11,7 +11,7 @@ import { typed, asF64, asI64, canonicalNumberIR } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { K, NUMBER, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { ctx, inc } from '../src/ctx.js'
+import { ctx, inc, declGlobal } from '../src/ctx.js'
 import { BRAND, isBrand, canonicalKeyOrder, isArrayIndexKey, schemaKey, layoutView, accessorOf, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { PROMISE_KEYS } from '../src/std/async.js'
@@ -89,6 +89,17 @@ export const ownViewsOn = () => {
  *  copy) and the data copy the module exports turn on with it, and a program
  *  without one, or with one only in code nothing reaches, pays nothing. Settled
  *  after the plan (settleViews). */
+/** The layouts with rows in the per-layout side tables (the key index and the
+ *  view tables, src/wat/assemble/start-fn.js): the program's own, laid out when
+ *  the tables are, 0 before. A layout registered at run time (JSON.parse, past
+ *  the program's) has no row, and a table its id would index ends before it. */
+export const schemaRows = () => {
+  if (!ctx.scope.globals.has('__schema_rows')) declGlobal('__schema_rows', 'i32', 0, { mut: false })
+  return '__schema_rows'
+}
+/** WAT: whether layout id `sid` (an i32 expression) has a side-table row. */
+export const hasSchemaRow = (sid) => `(i32.lt_u ${sid} (global.get $${schemaRows()}))`
+
 export const viewsOn = () => ctx.schema.views
 
 /** Whether enumeration may meet a view: an accessor's (viewsOn) or a layout's
