@@ -4671,7 +4671,14 @@ an element index of such an array, itself or through a binding made from it
 (`indexesByCounter`): the copies are what turns the index into a literal. A
 loop whose counter reaches none is the same in every copy (bezfit's six
 passes over a 48-element scratch array wrote the whole nest out six times,
-16.4 kB for 3.8, and scalarized nothing).
+16.4 kB for 3.8, and scalarized nothing). Where the body holds a loop the
+unroll keeps (of a runtime count, or of more passes than it copies out),
+the index must sit inside such a loop (a channel's accumulator read and
+written per element): one the pass alone touches, a
+driver's round storing its time into `samples[i]`, saved a store a round
+for a copy of the round's inlined kernel, and left the rounds no loop for
+`loopPasses` to make calls of (jzczhz's eleven rounds, 64 kB, ran as
+baseline code in a `main` called once; 24 kB rolled).
 watr's `ifset` (one-armed `if` → `select`, the speed profile) leaves a
 condition that branches itself alone: heapsort's child pick `if (child + 1 <
 n && a[child] < a[child + 1]) child++` as a select over the lowered `&&` ran

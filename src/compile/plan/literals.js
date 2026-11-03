@@ -539,10 +539,19 @@ const reachedBy = (body, counter) => {
 // the body reads or writes an element of `names` at an index the counter
 // reaches. A body that never does is the same in every copy (bezfit's six
 // passes over a 48-element scratch array wrote the whole nest out six times
-// and scalarized nothing).
+// and scalarized nothing). A body holding a loop the unroll keeps (of a
+// runtime count, or of more passes than it copies out) repeats that loop's
+// code in every copy, so the index must sit inside such a loop, where each
+// of its passes reads the literal (a channel's accumulator); one the pass
+// alone touches (a driver's round storing its time) saves a store a pass for
+// a copy of the round's whole kernel, and leaves the rounds no loop for
+// optimize/split-funcs.js loopPasses to make calls of: a function run once
+// then runs them all as baseline code (jzczhz's eleven rounds).
+const keptLoop = n => n[0] === 'while' || n[0] === 'do' || (n[0] === 'for' && !smallScalarTypedForTrip(n[1], n[2], n[3]))
 const indexesByCounter = (body, names, counter) => {
   const reached = reachedBy(body, counter)
-  return some(body, n => n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && names.has(n[1]) && mentionsAny(n[2], reached))
+  const indexed = n => n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && names.has(n[1]) && mentionsAny(n[2], reached)
+  return some(body, keptLoop) ? some(body, n => keptLoop(n) && some(n, indexed)) : some(body, indexed)
 }
 
 function smallScalarTypedForTrip(init, cond, step) {

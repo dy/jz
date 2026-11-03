@@ -551,3 +551,38 @@ test('loop passes: rounds that keep what they allocate move out of the compactio
   ok(/\(loop \$\S*lrc\d+again/.test(wat), 'the rounds compact what they keep')
   ok(/\(func \$main\$s\d+/.test(wat), 'the rounds\' pass is a function')
 })
+
+// A round storing its sample into a small typed array (a timing loop) indexes the array by the
+// counter, which a copy per round would make literal (plan/literals.js unrollTypedArrayLoops):
+// eleven copies of the inlined kernel, no rounds left to make calls of. An accumulator per
+// channel, indexed inside the inner loop, still unrolls.
+const SAMPLED_SRC = `const kernel = (xs, out, k) => { for (let i = 0; i < xs.length; i++) out[i] = xs[i] * k + out[i] * 0.5 }
+export let main = (n) => {
+  const xs = new Float64Array(64), out = new Float64Array(64)
+  for (let i = 0; i < 64; i++) xs[i] = (i * 7) % 13 - 6
+  const samples = new Float64Array(11)
+  for (let r = 0; r < 11; r++) { kernel(xs, out, r + n); samples[r] = out[r] }
+  let s = 0
+  for (let r = 0; r < 11; r++) s += samples[r] * (r + 1)
+  return s
+}
+`
+const CHANNEL_SRC = `export let main = (n) => {
+  const src = new Float64Array(96)
+  for (let i = 0; i < 96; i++) src[i] = (i * 5) % 11 - 3
+  const acc = new Float64Array(3)
+  for (let c = 0; c < 3; c++) for (let i = 0; i < n; i++) acc[c] += src[(i * 3 + c) % 96]
+  return acc[0] * 100 + acc[1] * 10 + acc[2]
+}
+`
+
+test('loop passes: rounds storing a sample each stay a loop and move; an accumulator per channel unrolls', () => {
+  for (const src of [SAMPLED_SRC, CHANNEL_SRC]) {
+    const native = oracle(src).main, main = jz(src, { optimize: { level: 'speed' } }).exports.main
+    for (const n of [0, 2, 40]) is(main(n), native(n), `main(${n})`)
+  }
+  if (onKernel()) return
+  ok(/\(func \$main\$s\d+/.test(compile(SAMPLED_SRC, { optimize: { level: 'speed' }, wat: true })), 'the rounds\' pass is a function')
+  const channels = (o) => compile(CHANNEL_SRC, { optimize: { level: 'speed', ...o }, wat: true })
+  ok(channels() !== channels({ scalarTypedLoopUnroll: 0 }), 'the channels unroll')
+})
