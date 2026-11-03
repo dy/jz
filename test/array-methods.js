@@ -2675,6 +2675,21 @@ test('Array constructor lengths, toSpliced, and a bare splice', () => {
   }
 })
 
+// A splice whose value goes unread removes its range and builds no array of
+// the removed elements (module/array.js `.splice`): a queue's compaction, a
+// deletion. One whose value is read returns them, as before.
+test('a splice statement builds no array of what it removes', () => {
+  const src = `export let drop = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); let s = 0; while (a.length > 2) { a.splice(0, 2); s += a[0] } return s + a.length }
+    export let keep = () => { const a = [1, 2, 3, 4, 5]; const r = a.splice(1, 2); a.splice(-1); return [a, r, [7, 8, 9].splice(1)] }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    is([m.drop(9), m.drop(10), m.keep()], [want.drop(9), want.drop(10), want.keep()], `O${optimize}: the same values as V8`)
+  }
+  const allocs = (body) => (funcWat(compile(`export let drop = (n) => { const a = [1, 2, 3, n]; ${body} }`, { wat: true }), 'drop').match(/call \$__alloc/g) || []).length
+  is(allocs('a.splice(0, 2); return a.length'), allocs('const r = a.splice(0, 2); return a.length + r.length') - 1, 'one allocation fewer: none for the removed elements')
+})
+
 test('array callbacks: an inlined callback reads the element through its layouts', () => {
   // the callback's parameter is the array's element to the summary: a member read is a slot read, not a dynamic lookup
   const src = 'const evs = [{ t: 1, v: 2 }, { t: 3, v: 4 }]; export let f = (x) => { const i = evs.findIndex((e) => e.t > x); return i < 0 ? -1 : evs[i].v }'

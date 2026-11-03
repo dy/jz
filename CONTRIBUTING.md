@@ -4046,8 +4046,9 @@ queueing allocates nothing. A
 promise's `then`, `catch` and `finally` are methods of its literal (one shared
 function each, not a closure per promise), and its reactions list is made at
 its first pending subscription. The drain reads the queue by index and drops
-the jobs it ran once they are half the queue and a thousand, an allocation of
-the loop's own, so the loop compacts in place what settled promises left
+the jobs it ran once they are half the queue and a thousand (a splice whose
+removed elements no array holds: module/array.js builds none for a splice
+whose value goes unread), and the loop compacts in place what settled promises left
 (optimize/loop-compact.js): every job of a call runs in one drain, and 200,000
 awaits in one call stay within a few megabytes.
 Resolving a promise with a runtime promise adopts it as a thenable

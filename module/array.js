@@ -2191,6 +2191,8 @@ export default (ctx) => {
   // durableArrSnapNode below closes both at once (header len/cap AND element data,
   // one call).
   ctx.core.emit['.splice'] = (arr, start, deleteCount) => {
+    // a splice whose value goes unread (a statement's) removes the range and builds no array of it
+    const unread = ctx.func._expect === 'void'
     if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
     const recv = hoistArrayValue(arr)
     const va = recv.value
@@ -2242,13 +2244,12 @@ export default (ctx) => {
                 ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]]],
               ['then', ['local.set', `$${cnt}`,
                 ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${s}`]]]]]],
-      // allocate result array of size cnt
-      out.init,
-      // copy removed elements into new array
-      ['memory.copy',
-        ['local.get', `$${out.local}`],
-        ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${s}`], ['i32.const', 3]]],
-        ['i32.shl', ['local.get', `$${cnt}`], ['i32.const', 3]]],
+      // allocate result array of size cnt, and copy the removed elements into it
+      ...(unread ? [] : [out.init,
+        ['memory.copy',
+          ['local.get', `$${out.local}`],
+          ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${s}`], ['i32.const', 3]]],
+          ['i32.shl', ['local.get', `$${cnt}`], ['i32.const', 3]]]]),
       // shift remaining elements left: copy arr[s+cnt..len] → arr[s..]
       ['memory.copy',
         ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${s}`], ['i32.const', 3]]],
@@ -2259,9 +2260,8 @@ export default (ctx) => {
           ['i32.const', 3]]],
       // update length (write directly via the offset we already hold)
       ['i32.store', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]], ['i32.sub', ['local.get', `$${len}`], ['local.get', `$${cnt}`]]],
-      out.ptr,
     ]
-    return typed(['block', ['result', 'f64'], ...body], 'f64')
+    return unread ? typed(['block', ...body], 'void') : typed(['block', ['result', 'f64'], ...body, out.ptr], 'f64')
   }
 
   // .unshift(...vals) → prepend elements, shift existing right. Multi-arg per ES:
