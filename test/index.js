@@ -199,6 +199,7 @@ const TESTS = [
   'twin-locals',
   'carry-elements',
   'carry-stores',
+  'skip-latches',
   'carry-keys',
   'array-view',
   'param-defaults',

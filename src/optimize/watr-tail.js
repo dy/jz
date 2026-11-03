@@ -33,6 +33,7 @@ import { selectArms } from './select-arms.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
 import { leadGathers } from './lead-gathers.js'
+import { skipLatches } from './skip-latches.js'
 import { carryStores } from './carry-stores.js'
 import { pointerExits } from './pointer-exits.js'
 import { jumpPointers } from './jump-pointers.js'
@@ -655,6 +656,8 @@ export function watrTail(module, cfg, {
   if (cfg.leadGathers === true) time('leadGathers', () => leadGathers(optimized))
   // (while each loop has one latch: a round's last store, read back first by the next round, through a local)
   if (cfg.carryStores === true) time('carryStores', () => carryStores(optimized))
+  // (on the scans the passes above leave: a round that skips one takes the latch without a jump past it)
+  if (cfg.skipLatches === true) time('skipLatches', () => skipLatches(optimized))
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
   const user = name => ctx.funcs.map.has(name.slice(1)) || name.endsWith('$exp') && ctx.funcs.map.has(name.slice(1, -4))

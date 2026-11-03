@@ -81,7 +81,15 @@ round's pop test; a filter state kept at a fixed channel), passes the value
 through a local under `carryStores` (src/optimize/carry-stores.js, speed tier,
 after watr): the first round loads the address where it would, under the tests of
 the conditionals around the read, and each store also sets the local. V8 forwards
-nothing across a back edge, so the next round read the store queue.
+nothing across a back edge, so the next round read the store queue. Then
+`skipLatches` (src/optimize/skip-latches.js, speed tier) gives a test that skips a
+loop's inner scan, a test of the scan's data (a hull's pop, a scan to the next
+boundary, an insertion sort's shift), the rest of the round in a copy of its own,
+ending in the latch: V8 lays a function out as written, and the round that skipped
+the scan jumped past it, and past the arms its slow path keeps after it, to the
+latch. The copy folds the tests the way to the branch decides (a flag the round
+cleared, a cursor an earlier test bounded); a copy that would keep a loop, and a
+test of words alone (a counted loop's entry test), keep their shape.
 Late, from level 2 up, `constBases` (src/optimize/const-bases.js) moves a
 base the function's control flow holds to one address (a static parameter's entry
 write, its inlined copy) into the memarg of each access adding it to an index:
@@ -3250,6 +3258,7 @@ src/
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
                 lead-gathers.js (after watr: a loop whose rounds search from a slot read at an address read from memory reads the next round's slot a round ahead);
                 carry-stores.js (after watr: a round's last store to an address its next round reads first passes the value through a local);
+                skip-latches.js (after watr: a test that skips a loop's inner scan, testing the scan's data, runs the rest of the round in a copy of its own ending in the latch);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 jump-pointers.js (after watr: a loop variable that steps and jumps carries the address of the record it indexes, advanced where it steps, formed again where it jumps);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);
