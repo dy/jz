@@ -1,5 +1,5 @@
 /**
- * The Tarjan-verified 15-member SCC (emit/emitDecl/liftOptionalChain/toBool/emitIdentitySafe/emitIdentitySafeArms/storedValueNarrow/argIR/emitCallArgs/emitBoolStr/tryConcatChain/tryConcatBufferDecl/tryI32Index + the 2-member emitVoid⇄emitBlockBody SCC) plus every small helper whose only caller lives inside that SCC. emit() dispatches via ctx.core.emit[op], never a direct call into any family module - this is why every other family module can import from here without a back-edge.
+ * The Tarjan-verified 15-member SCC (emit/emitDecl/liftOptionalChain/toBool/emitIdentitySafe/emitIdentitySafeArms/argIR/emitCallArgs/emitBoolStr/tryConcatChain/tryConcatBufferDecl/tryI32Index + the 2-member emitVoid⇄emitBlockBody SCC) plus every small helper whose only caller lives inside that SCC. emit() dispatches via ctx.core.emit[op], never a direct call into any family module - this is why every other family module can import from here without a back-edge.
  *
  * @module compile/emit/dispatch
  */
@@ -36,6 +36,7 @@ import { GLOBAL_TYPEOF, builtinGlobalOf } from '../../prepare/state.js'
 import { CMP_SET, boolEagerBody, copyReceiverFacts, eagerSelectOK, isCanonicalBoolExpr, isCmp, selectOK } from './shared.js'
 import { K, NUMBER, hasTag, isNullable, orAbsent, valOf, core as summaryCore, tagOf as summaryTagOf, tagsOf as summaryTagsOf, bitOf as summaryBitOf, NULL_BITS as SUMMARY_NULL_BITS } from '../../summary/kind.js'
 import { durableArrSnapNode, hasDurableReset } from '../../../module/collection/durable.js'
+import { flatStoredValue } from '../../bridge.js'
 import { noteFieldCacheGuard } from './field-caches.js'
 
 
@@ -404,11 +405,6 @@ export function toBool(node) {
  *  the ambiguous case — a real side-effecting double-eval for an arg like
  *  `f() > 0 && 1`). Callers pass this instead of a bare `emit(a)`. */
 export const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)
-// Narrow-admission twin — see carrierF64Narrow's own doc comment (ir.js) for
-// why the SRoA flat-object/array field locals below need THIS, not the plain
-// storedValue above: a flat field's reads/writes are all rewritten to plain
-// local access, with no registry-aware dynamic reader ever downstream of it.
-const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64Narrow(node, emit(node))
 
 // A plan BOX/UNBOX must preserve the nullish member of a genuine
 // BigInt/nullish ternary. Use AST provenance, never a runtime bit-pattern
@@ -898,20 +894,12 @@ export function emitDecl(...inits) {
       for (let j = 0; j < flatDecl.names.length; j++) {
         const v = valueOf ? valueOf.get(flatDecl.names[j]) : flatDecl.values[j]
         // research.md §Carrier invariant: a flat/SRoA field local is the same
-        // untyped boxed-value slot a heap object's schema store is (module/
-        // object.js's storedValue, now bridge.js's chokepoint) — the previous
-        // bare `asF64(emit(v))` never boxed a proven-BOOL value at all (asF64
-        // is pure WASM-type coercion, weaker than carrierF64), and never
-        // re-emitted an ambiguous BOOL∪NUMBER merge through emitIdentitySafe
-        // either — a distinct, previously-undiscovered site of the same gap.
-        // storedValueNarrow, NOT the plain storedValue: see carrierF64Narrow's
-        // own doc comment (ir.js) for why an unconditional inline-BIGINT box
-        // is wrong here specifically — a flat field's reads/writes are ALL
-        // rewritten to plain local access (the `.`/`[]` flat hooks just
-        // above, no dynamic $__dyn_get fallback), so there is no registry-
-        // aware reader to justify boxing a bare literal/expression on write.
-        // BOOL keeps the exact same unconditional atom-box either way.
-        result.push(['local.set', `$${name}#${j}`, v === undefined ? undefExpr() : storedValueNarrow(v)])
+        // untyped value slot a heap object's schema store is: a proven-BOOL
+        // value boxes to its atom, an ambiguous BOOL∪NUMBER merge re-emits
+        // through emitIdentitySafe, and a BigInt takes the slot's own carrier,
+        // raw only where every value the slot holds is a BigInt (bridge.js
+        // flatStoredValue, ir/bigint.js flatSlotRaw).
+        result.push(['local.set', `$${name}#${j}`, v === undefined ? undefExpr() : flatStoredValue(name, flatDecl.names[j], v)])
       }
       continue
     }

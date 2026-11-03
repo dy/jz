@@ -368,6 +368,14 @@ const nullableOperand = (n) => {
   return ctx.summary?.at(ctx.func.current)?.mayBeNullishExpr(n) === true
 }
 
+// A side of a relational comparison that may be null or undefined where it
+// stands: one a guard proves present or of a kind (`typeof n === 'bigint' &&
+// n > 0x7fffffffffffffffn`) is neither.
+const nullableSide = (n) => {
+  const r = typeof n === 'string' ? ctx.func.refinements?.get(n) : null
+  return !(r?.notNullish || r?.val != null) && nullableOperand(n)
+}
+
 // A boolean that may be nullish is not statically boolean: its nullish member
 // equals no boolean and no number, so the exact-kind arms must not claim it.
 // Its carrier (the atom or the sentinel) keeps the identity for `===`; loose
@@ -888,8 +896,12 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
   // Date conversion may run own hooks and return either numeric domain.
   // Keep its number hint in the shared primitive comparator, before selecting
   // a BigInt payload or the timestamp-only fast path.
+  // A BigInt beside a side that may be null or undefined compares as
+  // JavaScript does in the shared helper (ES2024 7.2.13): null is 0, undefined
+  // NaN. Read as an i64, the sentinel's bits would order as a payload.
   if ((vta === VAL.DATE || vtb === VAL.DATE) &&
-      (ctx.funcs.runtimeRoots.has('__jz_tp_num') || vta === VAL.BIGINT || vtb === VAL.BIGINT)) {
+      (ctx.funcs.runtimeRoots.has('__jz_tp_num') || vta === VAL.BIGINT || vtb === VAL.BIGINT) ||
+      (vta === VAL.BIGINT || vtb === VAL.BIGINT) && (nullableSide(a) || nullableSide(b))) {
     ctx.module.include('string')
     ctx.module.include('number')
     inc('__cmp')

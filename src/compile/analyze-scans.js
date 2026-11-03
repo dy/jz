@@ -660,8 +660,10 @@ const FLAT_ARRAY_MAX = 8
 const SELF_PRESERVING_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
 
 /** Which of `written`'s keys on binding `name` are safely still described by
- *  the literal initializer's kind — see SELF_PRESERVING_OPS above. */
-function selfPreservingWrittenKeys(body, name, written) {
+ *  the literal initializer's kind — see SELF_PRESERVING_OPS above — and the
+ *  value each write stores, by key (a slot's carrier is decided by every
+ *  value it can hold: ir/bigint.js flatSlotRaw). */
+function writtenSlotFacts(body, name, written) {
   const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : staticIndexKey(k)
   const keyOf = (t) => {
     if (!Array.isArray(t) || t[1] !== name) return null
@@ -687,29 +689,34 @@ function selfPreservingWrittenKeys(body, name, written) {
     return preserves(other, key)
   }
   const safe = new Map()  // key → observed-safe-so-far (absent = unobserved)
-  const observe = (key, ok) => { if (safe.get(key) !== false) safe.set(key, ok) }
+  const writes = new Map()  // key → the values its writes store
+  const observe = (key, value) => {
+    if (safe.get(key) !== false) safe.set(key, preserves(value, key))
+    const list = writes.get(key)
+    if (list) list.push(value); else writes.set(key, [value])
+  }
   walkAst(body, { enter: n => {
     const op = n[0]
     if (op === '=' && Array.isArray(n[1])) {
       const key = keyOf(n[1])
-      if (key != null && written.has(key)) observe(key, preserves(n[2], key))
+      if (key != null && written.has(key)) observe(key, n[2])
     } else if (MUTATE_OPS.has(op) && op !== '=' && Array.isArray(n[1])) {
       // Covers '+=' et al AND '++'/'--' (MUTATE_OPS = ASSIGN_OPS ∪ {++,--}) —
       // though a member '++'/'--' never reaches here today (prepare/index.js
       // desugars it to a plain '=' before analyze runs), effectiveWriteValue
       // handles that shape too if that ever changes.
       const key = keyOf(n[1])
-      if (key != null && written.has(key)) observe(key, preserves(effectiveWriteValue(op, n[1], n[2]), key))
+      if (key != null && written.has(key)) observe(key, effectiveWriteValue(op, n[1], n[2]))
     }
   } })
-  const out = new Set()
-  for (const k of written) if (safe.get(k) === true) out.add(k)
-  return out
+  const selfPreserving = new Set()
+  for (const k of written) if (safe.get(k) === true) selfPreserving.add(k)
+  return { selfPreserving, writes }
 }
 
 // Flat-object (SRoA) classification of one binding, run inside
 // scanObjectArrayFacts' single scanBindingUses(body) loop. Returns the
-// `{names, values, written, selfPreserving}` entry, or null when `name`
+// `{names, values, written, selfPreserving, writes}` entry, or null when `name`
 // doesn't dissolve.
 function flatObjectCandidate(name, s, body) {
   if (s[BINDING_USE_DECLS] !== 1 || !Array.isArray(s[BINDING_USE_INIT])) return null
@@ -779,8 +786,8 @@ function flatObjectCandidate(name, s, body) {
   const names = props.names.slice(), values = props.values.slice()
   for (const k of schema)
     if (!names.includes(k)) { names.push(k); values.push(undefined) }
-  const selfPreserving = written.size ? selfPreservingWrittenKeys(body, name, written) : null
-  return { names, values, written, selfPreserving }
+  const facts = written.size ? writtenSlotFacts(body, name, written) : null
+  return { names, values, written, selfPreserving: facts && facts.selfPreserving, writes: facts && facts.writes }
 }
 
 /**

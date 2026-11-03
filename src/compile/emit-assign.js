@@ -29,7 +29,7 @@ import {
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
   freshId, boxBigInt, isNullish, throwTypeErrorIR, throwErrorIR, capturedCellSave, cellSnap, cloneIR,
 } from '../ir.js'
-import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue } from '../bridge.js'
+import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue, flatStoredValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx, wholeKey } from '../type.js'
@@ -588,11 +588,8 @@ function emitElementStore(arr, idx, val, node) {
   if (inplace) return inplace
   // SRoA flat object/array: `o['k'] = x` / `a[2] = x` → `local.set $o#i` (no
   // heap store). Checked EARLY, before keyExpr/valueExpr below, so `val`
-  // emits exactly once through storedValueNarrow — NOT the generic
-  // storedValue every other branch shares: see carrierF64Narrow's own doc
-  // comment (ir.js) for why an unconditional inline-BIGINT box is wrong for a
-  // flat field (reads/writes are all rewritten to plain local access, no
-  // registry-aware dynamic reader ever downstream of it). Key resolution
+  // emits exactly once, in the slot's own carrier (bridge.js
+  // flatStoredValue: a BigInt raw only in a slot of BigInts alone). Key resolution
   // mirrors the original `litKey ?? staticIndexKey(idx)` fallback chain
   // exactly (a literal string key, else a static property key for an
   // OBJECT-typed receiver, else a bare integer index) — `litKey` itself is
@@ -602,7 +599,7 @@ function emitElementStore(arr, idx, val, node) {
     const flatLitKey = isLiteralStr(idx) ? idx[1] : lookupValType(arr) === VAL.OBJECT ? staticPropertyKey(idx) : null
     const flatKey = flatLitKey != null ? flatLitKey : staticIndexKey(idx)
     const fi = flatKey != null ? fo.names.indexOf(flatKey) : -1
-    if (fi >= 0) return withTemp(storedValueNarrow(val), t => [
+    if (fi >= 0) return withTemp(flatStoredValue(arr, flatKey, val), t => [
       ['local.set', `$${arr}#${fi}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]])
   }
@@ -1105,14 +1102,12 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       return block64(...body)
     }
   }
-  // SRoA flat object: `o.prop = x` → `local.set $o#i` (no heap store).
-  // storedValueNarrow, NOT storedValue: see carrierF64Narrow's own doc
-  // comment (ir.js) — a flat field's reads/writes are all rewritten to plain
-  // local access, no registry-aware dynamic reader ever downstream of it.
+  // SRoA flat object: `o.prop = x` → `local.set $o#i` (no heap store), in the
+  // slot's own carrier (bridge.js flatStoredValue).
   const flatW = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
   if (flatW) {
     const fi = flatW.names.indexOf(prop)
-    if (fi >= 0) return withTemp(storedValueNarrow(val), t => [
+    if (fi >= 0) return withTemp(flatStoredValue(obj, prop, val), t => [
       ['local.set', `$${obj}#${fi}`, ['local.get', `$${t}`]],
       ['local.get', `$${t}`]])
   }

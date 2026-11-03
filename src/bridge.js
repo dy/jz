@@ -9,7 +9,7 @@
  */
 
 import { ctx, emitter, registerName } from './ctx.js'
-import { callWithArgs, typed, block64, undefExpr, asF64, asI32, asI32Sat, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow, numberCarrierIR, temp, tempI32, toNumF64, isUndef } from './ir.js'
+import { callWithArgs, typed, block64, undefExpr, asF64, asI32, asI32Sat, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow, numberCarrierIR, temp, tempI32, toNumF64, isUndef, flatSlotRaw, isPlanRawBigint, readI64, readI64MayUnbox } from './ir.js'
 import { isUndefinedLiteral } from './ast.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationStorageWriteAction } from './compile/representation-plan.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from './kind.js'
@@ -63,13 +63,20 @@ export const storedValue = node => {
 
 // Narrow-admission twin of storedValue — same single-emission/BOOL-identity
 // discipline, but routes the non-ambiguous fallback through carrierF64Narrow
-// (ir.js) instead of carrierF64: for a genuinely non-dynamic boxed-value slot
-// (SRoA flat-object/array field storage — no heap allocation, every read/
-// write rewritten to a plain local, no registry-aware dynamic reader ever
-// observes it) where carrierF64's unconditional inline-BIGINT fallback boxes
-// a value nothing downstream knows to unbox. See carrierF64Narrow's own doc
-// comment for the two call sites and the live incident that found this gap.
+// (ir.js) instead of carrierF64: for a statically narrow slot (a typed or
+// numeric array's element; a flat SRoA field's value other than a BigInt,
+// whose carrier flatStoredValue below decides).
 export const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64Narrow(node, emit(node))
+
+// A write of a flat (SRoA) slot `name.key` takes the slot's own carrier
+// (ir/bigint.js flatSlotRaw): a raw slot the payload, unboxed where the
+// source is tagged; a tagged slot a BigInt boxed, as every ordinary storage
+// slot does, and anything else as the narrow slot takes it.
+export const flatStoredValue = (name, key, node) => {
+  if (flatSlotRaw(name, key))
+    return readI64MayUnbox(node) ? typed(['f64.reinterpret_i64', readI64(node, emit(node))], 'f64') : storedValueNarrow(node)
+  return valTypeOf(node) === VAL.BIGINT || isPlanRawBigint(node) ? storedValue(node) : storedValueNarrow(node)
+}
 
 // Schema storage owns the host decoder's raw-carrier evidence as well as boxing.
 export const storedFieldValue = (node, sid, prop, boxed = ctx.schema.slotBigintBoxedBySid(sid, prop)) => {

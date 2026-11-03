@@ -1818,8 +1818,15 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // nonnumeric outer values keep their binding, so copying a loop creates
     // no alias of a private string builder. A
     // number (every write an integer) is read by `+`: a plain read would
-    // count as an integer use of the loop's own name.
-    const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && mayBeNumber(n) && !already(n))
+    // count as an integer use of the loop's own name. A name a write gives a
+    // BigInt, no Number (`c ? null : BigInt(i)`, `a[0] + a[1]`), is no Number
+    // the copy writes: it keeps its binding, whose carrier is the
+    // representation plan's, which names no copy (a field the plan scalarized
+    // has no kind of its own to name one by).
+    bodyWrites ??= writesIn(body)
+    const bigintKind = (k) => tagOf(core(k)) === K.BIGINT
+    const holdsBigint = (n) => bigintKind(kindOf(n)) || (bodyWrites.get(n) ?? NO_WRITES).some(v => v != null && bigintKind(kindOfExpr(v)))
+    const written = [...locals].filter(n => loopWrites.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n) && mayBeNumber(n) && !holdsBigint(n) && !already(n))
     const outer = [...new Set([...names, ...counters, ...numbers, ...present, ...written])]
     const own = new Map([...outer, ...inner].map(n => [n, `${n}${T}int${freshId(ctx)}`]))
     for (const n of [...names, ...numbers]) fresh.add(own.get(n))

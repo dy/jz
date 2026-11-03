@@ -264,6 +264,7 @@ const TESTS = [
   'booleans',
   'bool-number',
   'bool-null',
+  'bigint-slots',
   'warnings',
   'deopt',
   'minimal-output',

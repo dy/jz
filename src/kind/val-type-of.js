@@ -34,6 +34,7 @@ import { typedIndexKnown } from '../type/canonical-bounds.js'
 import { K, NUMBER, TAGS, NULL_BITS, UNKNOWN, bitOf, tagsOf } from '../summary/kind.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
 import { spreadExclusions } from '../ast.js'
+import { flatSlotRaw } from '../compile/flat-slots.js'
 
 /**
  * Per-op val-type rules — the dispatch table behind `valTypeOf`. Each entry
@@ -277,11 +278,12 @@ VT['[]'] = (args) => {
     const flat = ctx.func.flatObjects?.get(args[0])
     if (flat) {
       const k = staticIndexKey(args[1])
+      if (k != null && flatSlotRaw(args[0], k)) return VAL.BIGINT
       if (k != null && (!flat.written?.has(k) || flat.selfPreserving?.has(k))) {
         const i = flat.names.indexOf(k)
         if (i >= 0 && flat.values[i] !== undefined) {
           const kind = flatSlotVal(flat.values[i])
-          if (!flat.written?.has(k) || kind === VAL.NUMBER || kind === VAL.BIGINT) return kind
+          if (kind !== VAL.BIGINT && (!flat.written?.has(k) || kind === VAL.NUMBER)) return kind
         }
       }
     }
@@ -365,16 +367,19 @@ VT['.'] = (args) => {
   // `n` is numeric-by-divergence — are only seeded at emit. A reassigned slot
   // (`p.x = …`) stays untyped UNLESS every write is provably self-preserving
   // (`p.x = p.x + 1`, `p.x += 1`, prepare's `p.x++`/`--` desugar — see
-  // analyze-scans.js selfPreservingWrittenKeys, the flat-SRoA sibling of the
+  // analyze-scans.js writtenSlotFacts, the flat-SRoA sibling of the
   // schema-slot census's self-read neutrality): only Number and BigInt initializers
   // retain their kind under numeric updates; other kinds may be coerced.
+  // A slot holding BigInts alone is one, written or not; any other slot that
+  // may hold a BigInt is tagged storage and claims no kind for it (flatSlotRaw).
   if (typeof args[0] === 'string') {
     const flat = ctx.func.flatObjects?.get(args[0])
+    if (flat && flatSlotRaw(args[0], args[1])) return VAL.BIGINT
     if (flat && (!flat.written?.has(args[1]) || flat.selfPreserving?.has(args[1]))) {
       const i = flat.names.indexOf(args[1])
       if (i >= 0 && flat.values[i] !== undefined) {
         const kind = flatSlotVal(flat.values[i])
-        if (!flat.written?.has(args[1]) || kind === VAL.NUMBER || kind === VAL.BIGINT) return kind
+        if (kind !== VAL.BIGINT && (!flat.written?.has(args[1]) || kind === VAL.NUMBER)) return kind
       }
     }
   }

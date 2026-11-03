@@ -54,8 +54,8 @@ const JOIN = {
   json: () => `(n) => JSON.stringify([f(n)])`,
   type: () => `(n) => typeof f(n)`,
 }
-// JSON.stringify throws on a BigInt (25.5.2.2 step 10); a BigInt field is the todo below.
-const SKIP = { bigintNull: ['json', 'field'] }
+// JSON.stringify throws on a BigInt (25.5.2.2 step 10).
+const SKIP = { bigintNull: ['json'] }
 // One module per kind of `f`: an export per join.
 const program = (fn) => [F[fn], ...Object.entries(JOIN).map(([name, join], i) => {
   const out = join(i), [pre, body] = Array.isArray(out) ? out : [null, out]
@@ -70,19 +70,6 @@ for (const optimize of levels(0, 1, 2, 3, 'size'))
         if (!SKIP[fn]?.includes(name))
           is(got[name](n), want[name](n), `${fn} ${name}(${n}) at ${optimize}`)
     })
-
-// A field holding a BigInt or null: a local bound to its read takes the
-// field's BigInt kind without its null (typeof says "bigint", String prints
-// the box's bits), and a field one arm stores null and the other a BigInt
-// literal reads the literal's bits as a Number. Open in 1.0.1, at every level.
-test.todo('bool or null: a field holding a BigInt or null reads as one', () => {
-  const src = `export let local = (n) => { const o = { v: n > 2 ? null : BigInt(n) }; const e = o.v; return typeof e + String(e) }
-export let arms = (n) => { const o = { v: 0n }; if (n > 2) o.v = null; else o.v = 5n; return String(o.v) }`
-  for (const optimize of levels(0, 2, 3)) {
-    const want = oracle(src), got = run(src, { optimize })
-    for (const n of [0, 3]) for (const name of ['local', 'arms']) is(got[name](n), want[name](n), `${name}(${n}) at ${optimize}`)
-  }
-})
 
 // The value from places other than a result: an element, a field, a Map
 // value, a parameter, a literal merge.

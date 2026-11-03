@@ -21,6 +21,7 @@ import { typed } from './tag.js'
 import { temp, tempI32, blockTyped } from './locals.js'
 import { mkPtrIR, ptrOffsetIR } from './pointers.js'
 import { asF64, asI64, fromI64 } from './numeric.js'
+import { flatSlotOf, flatSlotRaw } from '../compile/flat-slots.js'
 
 // === BigInt carrier boxing (.work/archive/carrier-representation-design.md) —
 // PTR.BIGINT (layout.js, tag 5) is THE representation for an unprovable
@@ -299,6 +300,8 @@ const isTaggedCallResult = node => {
   return !(Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.'))
 }
 
+const isTaggedFlatRead = node => { const slot = flatSlotOf(node); return slot != null && !flatSlotRaw(slot.name, slot.key) }
+
 /** An array element is a tagged slot: every element write boxes a BigInt
  *  (the plan's storage-write edge, module/array.js taggedStoredValue), so an
  *  indexed read of any non-typed receiver carries a box, and a write's own
@@ -306,8 +309,11 @@ const isTaggedCallResult = node => {
  *  own their carrier: isSchemaSlotBigintPossible. */
 export const isTaggedElemRead = node => {
   if (!Array.isArray(node)) return false
-  if (node[0] === '=') return isTaggedElemRead(node[1]) || isSchemaSlotBigintPossible(node[1])
+  if (node[0] === '=') return isTaggedElemRead(node[1]) || isSchemaSlotBigintPossible(node[1]) || isTaggedFlatRead(node[1])
   if (node[0] !== '[]') return false
+  // a flat array's element is a local of the slot's own carrier
+  const slot = flatSlotOf(node)
+  if (slot) return !flatSlotRaw(slot.name, slot.key)
   const recv = valTypeOf(node[1])
   return recv === VAL.TYPED ? !isPresentNumber(ctx, node[2]) : recv !== VAL.OBJECT
 }
@@ -320,7 +326,7 @@ export const readI64MayUnbox = node => {
   while (Array.isArray(node) && (node[0] === ',' || node[0] === '(')) node = node[node.length - 1]
   return (typeof node === 'string' && (isTaggedLocal(node) || isBoxedGlobal(node))) ||
     isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node) || isBoxedStorageMethodRead(node) ||
-    isTaggedElemRead(node) || isTaggedCallResult(node)
+    isTaggedElemRead(node) || isTaggedFlatRead(node) || isTaggedCallResult(node)
 }
 
 export function readI64(node, emitted) {
