@@ -81,7 +81,8 @@ export const HIDDEN_PROPERTY_SEQ = 0xffffffff
 // entries of `es` bytes: from ORD_HALF buckets on, `load` eighths of the buckets
 // less one hold entries (4 in a program, so a missed key's probe ends soon; 6 in
 // the compact collections of the compiler's own artifact, which keep its memory
-// small); below ORD_HALF, six eighths less one. A bucket's bytes are that share
+// small, and at the size tier, whose code then has one geometry); below
+// ORD_HALF, six eighths less one. A bucket's bytes are that share
 // of the entry's stride and its index word; the block is `cap ×
 // ordStride(es, cap, load)` bytes, its last word the count of appended entries.
 export const ORD_HALF = 16

@@ -133,8 +133,8 @@ test('Map copy allocates one table for a dense source', () => {
       const before = r.instance.exports.__jz_heap.value >>> 0
       is(r.exports.clone(), 32)
       // 32 entries take 128 buckets of 16 bytes (half of them less one hold 63), or
-      // in compact collections 64 of 22 (three in four less one hold 47) (layout.js)
-      ok((r.instance.exports.__jz_heap.value >>> 0) - before <= 16 + (_compactCollections ? 64 * 22 : 128 * 16),
+      // in compact collections and at the size tier 64 of 22 (three in four less one hold 47) (layout.js)
+      ok((r.instance.exports.__jz_heap.value >>> 0) - before <= 16 + (_compactCollections || optimize === 'size' ? 64 * 22 : 128 * 16),
         `O${optimize}, compact=${_compactCollections}: no ordering buffer or enlarged table`)
       is(r.exports.get(31), 32)
     }

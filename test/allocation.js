@@ -55,11 +55,12 @@ test('allocation: collection replacement at the growth threshold preserves its t
       return JSON.stringify([m.size, s.size, values, setValues])
     }`
   // A table of `cap` buckets holds three in four less one below 16 buckets, and
-  // from there half less one, or three in four in compact collections (layout.js
-  // ordEntries): the key after the ones that fill it grows the table.
-  const usable = (cap, compact) => cap < 16 ? cap - (cap >> 2) - 1 : (cap >> 3) * (compact ? 6 : 4) - 1
+  // from there half less one, or three in four in compact collections and at the
+  // size tier (layout.js ordEntries): the key after the ones that fill it grows the table.
+  const usable = (cap, dense) => cap < 16 ? cap - (cap >> 2) - 1 : (cap >> 3) * (dense ? 6 : 4) - 1
   for (const level of levels(0, 1, 2, 3, 'size')) for (const floor of [2, 8]) for (const compact of [false, true]) {
-    const full = (n) => { let cap = floor; while (usable(cap, compact) < n) cap <<= 1; return usable(cap, compact) === n }
+    const dense = compact || level === 'size'
+    const full = (n) => { let cap = floor; while (usable(cap, dense) < n) cap <<= 1; return usable(cap, dense) === n }
     const e = jz(source, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
     const ref = oracle(source.replaceAll('__heap_mark()', '0'))
     for (const [n, mixed] of [[0, 0], [2, 0], [3, 0], [5, 0], [6, 0], [11, 0], [12, 0], [23, 0], [24, 0], [6, 1], [6, 1], [0, 0], [6, 0]]) {

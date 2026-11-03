@@ -18,7 +18,7 @@
  *   cap buckets (a power of two), E bytes an entry (16 a Set's, 24 a Map's):
  *   block = [entries: ecap × E][buckets: cap × 4][zero…][used: 4]
  *   block = cap × (E·k/8 + 4) bytes, ecap = cap·k/8 − 1
- *   k = 6 below ORD_HALF buckets; from there 4 (a program's), 6 (compact collections)
+ *   k = 6 below ORD_HALF buckets; from there 4 (a program's), 6 (compact collections, the size tier)
  *
  * At most ecap entries, and so at most ecap buckets, are ever filled: an
  * empty bucket ends every probe. A small table keeps three in four buckets
@@ -26,7 +26,8 @@
  * keeps fewer than half full, so a probe that misses ends after a bucket or
  * two. The compiler's own artifact (`compactCollections`, the build that
  * also drops a dictionary's probe lane) keeps its large tables three in four
- * full too: its memory is the hosted compiler's, held to a bound. Every
+ * full too: its memory is the hosted compiler's, held to a bound. So does the
+ * size tier, whose code then computes one geometry for every table. Every
  * allocator and walker computes the block's bytes from cap (layout.js
  * `ordStride`); past the buckets E bytes are free, the last 4 the count. The
  * host's decoder reads entries until it has the table's size, so it needs
@@ -48,9 +49,10 @@ const IDX = 0x03FFFFFF          // a bucket's entry index plus one (TABLE_MAX bu
 const GROW_QUAD_CAP = 8192      // past it a table quadruples (module/collection/upsert.js nextCapIR)
 
 // The geometry (layout.js): from ORD_HALF buckets a program's table fills half
-// its buckets less one, the compact collections of the compiler's own artifact
-// three in four (upsert.js collectionLaneBytes reads the same flag).
-const load = () => ctx.transform.compactCollections ? 6 : 4
+// its buckets less one; the compact collections of the compiler's own artifact
+// (upsert.js collectionLaneBytes reads the same flag) and the size tier, whose
+// code then computes one geometry for every table, three in four.
+const load = () => ctx.transform.compactCollections || ctx.transform.optimize?.leanRuntime ? 6 : 4
 export { ORD_HALF }
 const constOf = (w) => { const c = /^\(i32\.const (-?\d+)\)$/.exec(w); return c ? +c[1] : null }
 /** A table block's bytes per bucket, for `cap` buckets and entries of `es` bytes

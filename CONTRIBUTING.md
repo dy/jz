@@ -1002,7 +1002,8 @@ holder to hop. A table below 16 buckets fills three in four of them less one,
 a larger one half less one, so a probe that misses ends after a bucket or two;
 in the compiler's own artifact (`compactCollections`) a larger one fills three
 in four too, which keeps the hosted compiler's memory under its bound (the
-summary of 512 guards: 621,912 B half full, 524,408 B so). The block is the
+summary of 512 guards: 621,912 B half full, 524,408 B so), and so does the size
+tier, whose code then computes one geometry for every table. The block is the
 table's buckets times that share of its entry stride and a bucket word
 (layout.js `ordStride`), the count of appended entries in its last word. A
 walker reads the entries below
