@@ -3936,6 +3936,18 @@ itself when it is no thenable, the value an async call's promise fulfills with
 (the promise is named at its `__async_run` call node, as the iterator runtime's
 records are, beside what the machine completes with, a promise or thenable it
 completes with adopted), anything for a promise made another way.
+The job queue (std/async.js) holds a job as three entries in arrays of their
+own, its handler, the state it settles with and the value (`__job(h, st, v)`;
+state 0 is a job of its own, `queueMicrotask`'s, called with no arguments), so
+queueing allocates nothing and the handlers stay one closure family. The
+driver resumes a machine through one handler per call (`step(st, x)`), a
+promise's `then`, `catch` and `finally` are methods of its literal (one shared
+function each, not a closure per promise), and its reactions list is made at
+its first pending subscription. The drain reads the queue by index and drops
+the jobs it ran once they are half the queue and a thousand, an allocation of
+the loop's own, so the loop compacts in place what settled promises left
+(optimize/loop-compact.js): every job of a call runs in one drain, and 200,000
+awaits in one call stay within a few megabytes.
 A machine body's declarations are its factory's locals, so `resolveLocals`
 spells each apart first: a top-level one keeps its name (a `var` hoisted
 under a parameter's name is the parameter), a block's keeps it unless a

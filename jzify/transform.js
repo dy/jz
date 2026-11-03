@@ -431,11 +431,14 @@ export function createTransform(opts) {
             !shadowsBuiltin('Promise') && P_STATIC[callee[2]]) {
           return ['()', P_STATIC[callee[2]], ...rest.map(a => a == null ? a : transform(a))]
         }
-        // queueMicrotask(fn) IS the runtime's job queue: push onto __mt, drained
-        // at the same host boundaries promise jobs are. Evaluates to undefined
-        // per spec (push's return length is discarded by the comma).
+        // queueMicrotask(fn) IS the runtime's job queue: a job of its own
+        // (`__job(fn, 0, …)`, called with no arguments), drained at the same
+        // boundaries promise jobs are; the arguments after fn are evaluated in
+        // the slot the job ignores. Evaluates to undefined per spec.
         if (callee === 'queueMicrotask' && !shadowsBuiltin('queueMicrotask') && rest.length) {
-          return [',', ['()', ['.', '__mt', 'push'], ...rest.map(a => a == null ? a : transform(a))], 'undefined']
+          const args = rest[0] == null ? ['undefined'] : Array.isArray(rest[0]) && rest[0][0] === ',' ? rest[0].slice(1).map(transform) : [transform(rest[0])]
+          const [fn, ...extra] = args
+          return [',', ['()', '__job', [',', fn, [null, 0], extra.length ? [',', ...extra, 'undefined'] : 'undefined']], 'undefined']
         }
       }
       // `Object.defineProperties(o, { k: d, … })` with a literal map is each

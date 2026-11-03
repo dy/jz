@@ -869,3 +869,44 @@ export let rejected = async (p) => { try { await p } catch (e) { return 'caught 
   const expected = await drive(want)
   for (const optimize of levels(0, 2, 'size')) is(await drive(jz(src, { optimize }).exports), expected, `O${optimize}`)
 })
+
+// The job queue runs every job of one call in one drain, and the drain loop
+// compacts what the settled promises left (std/async.js `__drain`): 200,000
+// awaits, each allocating, stay within a few megabytes (204 MB before).
+test('async: a long chain of awaits in one call keeps its memory bounded', async () => {
+  if (onWasi() || onKernel()) return
+  const r = jz(`const mk = async (i) => ({ v: i, w: [i] })
+    export const f = async (n) => { let s = 0; for (let i = 0; i < n; i++) { const o = await mk(i); s += o.v + o.w[0] } return s }`)
+  is(await r.exports.f(200000), 200000 * 199999)
+  const mb = r.instance.exports.memory.buffer.byteLength / 1048576
+  ok(mb < 32, `memory ${mb.toFixed(1)} MB`)
+})
+
+// queueMicrotask's callback is a job of its own: called with no arguments,
+// after the arguments past it are evaluated, in its place among the jobs.
+test('async: queueMicrotask runs its callback with no arguments, in order', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `export const f = () => {
+    const log = []
+    queueMicrotask(() => log.push('a'))
+    queueMicrotask((...xs) => log.push('n' + xs.length), log.push('x'))
+    Promise.resolve().then(() => log.push('p'))
+    return Promise.resolve().then(() => log.join(','))
+  }`
+  is(await jz(src).exports.f(), await oracle(src).f())
+})
+
+// A promise's then, catch and finally are methods of its literal: the host
+// calls them on a promise it reads inside a result, settled or not, as it
+// called the closures they were.
+test('async: the host calls then on a promise inside a result', async () => {
+  if (onWasi() || onKernel()) return
+  for (const optimize of levels(false, 2, 'speed')) {
+    const r = jz(`export let f = () => ({ p: Promise.resolve(1), q: 2 })
+export let g = () => { let res; const p = new Promise((r) => { res = r }); return { p, go: () => res(5) } }`, { optimize }).exports
+    const settled = await new Promise((res) => r.f().p.then(res))
+    const o = r.g(), pending = new Promise((res) => o.p.then(res))
+    o.go()
+    is([settled, await pending], [1, 5], `O${optimize}`)
+  }
+})
