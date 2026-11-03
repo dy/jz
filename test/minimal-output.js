@@ -1121,3 +1121,23 @@ test('minimal: a word length store links no conversion at the size tier', () => 
     throws(() => jz(conv, { optimize }).exports.f(1.5), RangeError, `O${optimize}: a fraction throws`)
   }
 })
+
+// The size tier links the key hash and equality arms a program's Set and Map
+// keys reach (module/collection/identity.js noteProbeKey, module/collection.js
+// keyArms): Number and atom keys take the number arms (no string walks), string
+// keys the string arm, object keys neither. A seeding notes its elements' kind.
+test('minimal: the size tier links the key arms its keys reach', () => {
+  if (skip) return
+  const nums = `export let f = (n) => { const m = new Map(), s = new Set(); for (let i = 0; i < n; i++) { m.set(i % 7, i); s.add((i % 5) * 0.5) }
+    const zs = new Set([0, -0, NaN, NaN, undefined, null, true, false, 1]); m.set(undefined, 9)
+    return (m.get(3) | 0) + s.size * 100 + zs.size * 10000 + (zs.has(NaN) ? 1 : 0) + (zs.has(-0) ? 2 : 0) + (zs.has(undefined) ? 4 : 0) + (zs.has(0 / 0) ? 8 : 0) + (zs.has(null) ? 16 : 0) + (m.get(undefined) | 0) * 1000000 + (m.has(NaN) ? 32 : 0) }`
+  const strs = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = 'key' + (i % 9); m.set(k, (m.get(k) | 0) + 1) } return m.size * 100 + (m.get('key' + 3) | 0) }`
+  const objs = `export let f = (n) => { const os = [], m = new Map(); for (let i = 0; i < n; i++) { const o = { i }; os.push(o); m.set(o, i) } let t = 0; for (const o of os) t += m.get(o); return t + m.size }`
+  for (const optimize of levels(0, 2, 'size')) for (const [name, src] of [['numbers', nums], ['strings', strs], ['objects', objs]])
+    for (const n of [0, 20]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `${name}, O${optimize}, n=${n}`)
+  // (before watr, which inlines a helper of one caller under its caller's name)
+  const w = (src) => compile(src, { wat: true, optimize: { level: 'size', watr: false } })
+  ok(!/\$__str_(eq|hash)\b/.test(w(nums)), 'Number and atom keys: no string arms')
+  ok(/\$__str_hash\b/.test(w(strs)), 'string keys: the string hash')
+  ok(!/\$__str_eq\b/.test(w(objs)), 'object keys: no string equality')
+})

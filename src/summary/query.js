@@ -361,6 +361,7 @@ export function summaryQueries(facts, internal = false) {
       if (op === 'str' || op === 'strcat' || op === '`') return STRING
       if (op === 'this') return escaped.has(scope) ? ANY : receivers.get(scope) ?? K.NONE
       if (op === 'bool') return BOOL
+      if (op === 'nan') return NUMBER   // the solver's rule (summary/index.js): NaN's own literal
       if (op === 'bigint') return BIGINT
       if (op === '//') return kind(K.REGEX)
       if (op === '{}' && n.length === 2 && n[1]?.[0] === '...' && !spreadExclusions(n[1])) {

@@ -908,6 +908,7 @@ export function reset(proto, globals, bridge) {
     typedProperties: false, // computed keys may address typed elements or named properties
     typedRuntime: false, // an open-ctor indexed read/write uses the polymorphic typed helpers; pins them against hot-loop inlining.
     set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
+    keyStrings: false, keyBigints: false, keyRefs: false, keyUnknown: false, // the kinds a Set's or a Map's keys take (module/collection/identity.js noteProbeKey)
     map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
     hiddenMembers: false, // closure-lowered derived methods stored in property hashes

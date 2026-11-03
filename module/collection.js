@@ -183,7 +183,10 @@ const keyHashIR = (h, k) => typeof h === 'number' ? ['i32.const', h] : h === NUM
 // compaction since the step has changed it. Set as the module loads (cursorOf).
 let cursorKeyHash = () => null
 // A proven string uses the same content hash without generic key dispatch; a proven Number its bits' mix.
+// The size tier probes with the hash the probe computes, one probe function a kind.
 const probeKeyHash = key => {
+  noteProbeKeyOf(key)
+  if (ctx.transform.optimize?.leanRuntime) return null
   const lit = litKeyHash(key)
   if (lit != null) return lit
   const walked = cursorKeyHash(key)
@@ -223,7 +226,8 @@ import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUps
 import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideIR, ordStrideWat, ordBytesWat } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
-import registerIdentity, { arrayKeysOn, noteKeys, pinKeyWat } from './collection/identity.js'
+import registerIdentity, { arrayKeysOn, noteKeys, noteProbeKeyOf, keyArmsOn, pinKeyWat } from './collection/identity.js'
+import { setLinkDemand as noteDemand } from '../src/ctx.js'
 import { recordsOn } from '../src/compile/array-records.js'
 import { classHasMember, classMemberIn } from '../src/compile/emit/class-dispatch.js'
 export { collectionLaneBytes }
@@ -496,7 +500,36 @@ export default (ctx) => {
     (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 13))))`
   inc('__hash')
 
-  ctx.core.stdlib['__same_value_zero'] = () => `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
+  // A size-tier program links the arms of the key equality and hash its keys
+  // reach (identity.js keyArmsOn): a string's content, a BigInt's payload,
+  // where its keys may be such. Keys of Numbers and atoms alone take the
+  // number arms: equal bits (an atom is its bits), equal numbers (0 and -0),
+  // or two numeric NaNs; any NaN pattern (an atom's too) hashes as one, a zero
+  // as either zero, any other number by its bits' mix.
+  const keyArms = () => lean ? keyArmsOn() : null
+  const numberKeysOnly = () => { const a = keyArms(); return a != null && !a.strings && !a.bigints && !a.refs }
+  // the content-identity chain the keys reach (layout-kinds.js sameValueZeroIdentityChain, its two arms)
+  const identityChain = () => {
+    const a = keyArms()
+    if (a == null || a.strings && a.bigints) return sameValueZeroIdentityChain()
+    if (a.strings) return `(if (result i32)
+              (i32.and
+                (i32.and (f64.ne (local.get $fa) (local.get $fa)) (i32.eq (local.get $ta) (i32.const ${PTR.STRING})))
+                (i32.and (f64.ne (local.get $fb) (local.get $fb)) (i32.eq (local.get $tb) (i32.const ${PTR.STRING}))))
+              (then (call $__str_eq (local.get $a) (local.get $b)))
+              (else (i32.const 0)))`
+    if (a.bigints) return `(if (result i32)
+              (i32.and (i32.eq (local.get $ta) (i32.const ${PTR.BIGINT})) (i32.eq (local.get $tb) (i32.const ${PTR.BIGINT})))
+              (then (i64.eq (i64.load (call $__ptr_offset (local.get $a))) (i64.load (call $__ptr_offset (local.get $b)))))
+              (else (i32.const 0)))`
+    return '(i32.const 0)'
+  }
+  ctx.core.stdlib['__same_value_zero'] = () => numberKeysOnly() ? `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
+    (local $fa f64) (local $fb f64)
+    (local.set $fa (f64.reinterpret_i64 (local.get $a)))
+    (local.set $fb (f64.reinterpret_i64 (local.get $b)))
+    (i32.or (i32.or (i64.eq (local.get $a) (local.get $b)) (f64.eq (local.get $fa) (local.get $fb)))
+      (i32.and ${print(numberNanIR(['local.get', '$fa']))} ${print(numberNanIR(['local.get', '$fb']))})))` : `(func $__same_value_zero (param $a i64) (param $b i64) (result i32)
     (local $fa f64) (local $fb f64) (local $ta i32) (local $tb i32)
     (if (i64.eq (local.get $a) (local.get $b)) (then (return (i32.const 1))))
     (local.set $fa (f64.reinterpret_i64 (local.get $a)))
@@ -515,9 +548,17 @@ export default (ctx) => {
     ;; and one after (core.js __same_ref; collection/identity.js)
     (if (i32.and (i32.shr_u (i32.const ${FORWARDING_MASK}) (local.get $ta)) (i32.eq (local.get $ta) (local.get $tb)))
       (then (return (call $__same_ref (local.get $a) (local.get $b)))))` : ''}
-    ${sameValueZeroIdentityChain()})`
+    ${identityChain()})`
 
-  ctx.core.stdlib['__map_hash'] = () => `(func $__map_hash (param $v i64) (result i32)
+  ctx.core.stdlib['__map_hash'] = () => numberKeysOnly() ? `(func $__map_hash (param $v i64) (result i32)
+    (local $f f64) (local $h i32)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (if (f64.ne (local.get $f) (local.get $f)) (then (return (i32.const 3))))
+    (if (f64.eq (local.get $f) (f64.const 0)) (then (return (i32.const 2))))
+    (local.set $h (i32.wrap_i64 (i64.xor (local.get $v) (i64.shr_u (local.get $v) (i64.const 32)))))
+    (local.set $h (i32.mul (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 16))) (i32.const 0x85EBCA6B)))
+    (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 13))))
+    (select (i32.add (local.get $h) (i32.const 2)) (local.get $h) (i32.le_u (local.get $h) (i32.const 1))))` : `(func $__map_hash (param $v i64) (result i32)
     (local $f f64) (local $t i32) (local $h i32) (local $aux i32) (local $off i32)${arrayKeysOn() ? ' (local $w i64)' : ''}
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     ;; Numeric NaNs share one bucket; only genuine boxes may decode a tag.
@@ -525,8 +566,8 @@ export default (ctx) => {
       (then
         (if ${print(numberNanIR(['local.get', '$f']))} (then (return (i32.const 3))))
         (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $v) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
-        ${mapHashStringArm(lean)}
-        ${mapHashBigintArm()}
+        ${keyArms()?.strings === false ? '' : mapHashStringArm(lean)}
+        ${keyArms()?.bigints === false ? '' : mapHashBigintArm()}
         ${arrayKeysOn() ? `;; an array by its identity (collection/identity.js), its high word kept
         (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
           (then
@@ -556,6 +597,14 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_BLOCK}))))`
 
+  // The element node a seeding iterates, as the summary reads its kind: an
+  // array's or a typed array's element, a string's character; anything else
+  // (another collection, an iterator) is unknown here.
+  const elementOf = (iter) => {
+    let t
+    try { t = tagOf(core(ctx.summary.at(ctx.func.current).kindOfExpr(iter))) } catch { return undefined }
+    return t === KIND.ARRAY || t === KIND.TYPED || t === KIND.STRING ? ['[]', iter, [null, 0]] : undefined
+  }
   // The table every seeded or copied Set and Map takes: the smallest that holds
   // its entries, at least an empty one's (collection/ordered.js genOrdCap).
   ctx.core.stdlib['__ord_cap'] = () => genOrdCap(initCap)
@@ -595,7 +644,7 @@ export default (ctx) => {
     if (valTypeOf(iterExpr) === VAL.SET) { inc('__set_from'); return typed(['call', '$__set_from', asI64(storedValue(iterExpr))], 'f64') }
     const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
     inc('__set_add', '__ptr_type', '__len', read, '__table_check', '__ord_cap')
-    noteKeys()
+    noteKeys(elementOf(iterExpr))
     const setL = temp('nss'), arrL = temp('nsa')
     const iL = tempI32('nsi'), lenL = tempI32('nsl'), capL = tempI32('nsc')
     // the table a source of this length takes, held to TABLE_MAX (a typed
@@ -660,6 +709,7 @@ export default (ctx) => {
   // tagged or SameValueZero on bits misses. Mirrors slice 4c's array-literal
   // helper; REJECT (or a bigint-free program) falls back to storedValue.
   const collProbeDyn = (mapFn, setFn, h) => (collExpr, key, ...ignored) => {
+    noteProbeKeyOf(key)
     inc(mapFn, setFn, '__ptr_type')
     const o = temp('cp'), k = tempI64('cpk')
     if (typeof h === 'string') inc(h)
@@ -689,7 +739,8 @@ export default (ctx) => {
   // Known-key probes retain the precomputed hash; calls share argument effects
   // and boxed-value conversion with every other intrinsic.
   ctx.core.emit[`.${VAL.SET}:has`] = collectionProbe('__set_has', 'i32')
-  ctx.core.emit[`.${VAL.SET}:delete`] = call('__set_delete', 'II', 'i32')
+  const setDelete = call('__set_delete', 'II', 'i32')
+  ctx.core.emit[`.${VAL.SET}:delete`] = Object.assign((set, key, ...rest) => (noteProbeKeyOf(key), setDelete(set, key, ...rest)), { argc: setDelete.argc })
 
   // Map.prototype.clear / Set.prototype.clear — drop every entry. `.clear` only
   // exists on Map/Set in JS, so a single generic emitter is unambiguous; the
@@ -775,7 +826,9 @@ export default (ctx) => {
     // Keep a Map copy on its direct table path. Other sources use the same
     // nullish-tolerant iterable check as Set before the entry reader runs.
     inc('__map_from')
-    noteKeys()
+    // a Map's source's keys were noted where it took them; an array's pairs hold their keys first
+    const src = elementOf(iterExpr)
+    if (valTypeOf(iterExpr) !== VAL.MAP) noteKeys(src === undefined ? undefined : elementOf(src))
     ctx.runtime.throws = true
     const vt = valTypeOf(iterExpr)
     if (vt === VAL.MAP || vt === VAL.ARRAY)
@@ -791,8 +844,9 @@ export default (ctx) => {
 
   const mapSet = call('__map_set', 'III', 'i64')
   ctx.core.emit['.set'] = Object.assign((map, key, ...rest) => (noteKeys(key), mapSet(map, key, ...rest)), { argc: mapSet.argc })
+  // (the fused read-modify-write inserts the key too: its kind is noted first)
   ctx.core.emit[`.${VAL.MAP}:set`] = (map, key, value, ...ignored) =>
-    (!ignored.length && value != null && trySlotUpdate(map, key, value, true)) ||
+    (noteKeys(key), !ignored.length && value != null && trySlotUpdate(map, key, value, true)) ||
     ctx.core.emit['.set'](map, key, value, ...ignored)
 
   const emitMapGet = collectionProbe('__map_get', 'i64')
@@ -801,7 +855,8 @@ export default (ctx) => {
   ctx.core.emit[`.${VAL.MAP}:get`] = emitMapGet
 
   ctx.core.emit[`.${VAL.MAP}:has`] = collectionProbe('__map_has', 'i32')
-  ctx.core.emit[`.${VAL.MAP}:delete`] = call('__map_delete', 'II', 'i32')
+  const mapDelete = call('__map_delete', 'II', 'i32')
+  ctx.core.emit[`.${VAL.MAP}:delete`] = Object.assign((map, key, ...rest) => (noteProbeKeyOf(key), mapDelete(map, key, ...rest)), { argc: mapDelete.argc })
 
   // A for…of over a Set or a Map walks its table where it stands
   // (compile/plan/index-array-patterns.js cursorLoop, collection/ordered.js):
@@ -1314,6 +1369,8 @@ export default (ctx) => {
     ctx.module.include('object')
     includeCopyKeys()
     inc('__sclone')
+    // its memo Map is keyed by the cloned values' bits
+    noteDemand('keyUnknown')
     // __obj_clone/__sclone_rec read $__schema_tbl but only join includes via the
     // pullStdlib dep-closure — after assemble has already decided whether to build
     // the table. Flag the consumption explicitly (same hook as the enumeration

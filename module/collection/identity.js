@@ -66,7 +66,25 @@ export const arrayKeysOn = () => ctx.linkDemand.arrayKeys === true
 export const noteKeys = (node) => {
   const k = node === undefined ? null : ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
   if (k == null || (tagsOf(k) & bitOf(K.ARRAY)) !== 0) setLinkDemand('arrayKeys')
+  noteProbeKey(k)
 }
+
+/** A key a Set or a Map stores or asks for (`k` its kind, null unknown): the
+ *  kinds the program's keys may take, beyond Numbers and atoms (a boolean,
+ *  null, undefined), as the key hash and equality read them (module/
+ *  collection.js `keyArms`): strings, BigInts, references, or any. */
+const SCALAR_KEYS = bitOf(K.NUMBER) | bitOf(K.BOOL) | bitOf(K.NULLISH) | bitOf(K.ABSENT)
+export const noteProbeKey = (k) => {
+  if (k == null) return setLinkDemand('keyUnknown')
+  const t = tagsOf(k)
+  if (t & bitOf(K.STRING)) setLinkDemand('keyStrings')
+  if (t & bitOf(K.BIGINT)) setLinkDemand('keyBigints')
+  if (t & ~SCALAR_KEYS & ~bitOf(K.STRING) & ~bitOf(K.BIGINT)) setLinkDemand('keyRefs')
+}
+export const noteProbeKeyOf = (node) => noteProbeKey(node === undefined ? null : ctx.summary?.at(ctx.func.current)?.kindOfExpr(node))
+/** The arms the program's keys reach: null where any key may be any value. */
+export const keyArmsOn = () => ctx.linkDemand.keyUnknown === true ? null
+  : { strings: ctx.linkDemand.keyStrings === true, bigints: ctx.linkDemand.keyBigints === true, refs: ctx.linkDemand.keyRefs === true }
 
 /** The identity word's high half; no pointer, the global table's mark or a
  *  shifted array's base mark has it. */
