@@ -23,6 +23,7 @@ import { HEAP } from '../../../layout.js'
 import { appendLateStdlib } from './stdlib-pull.js'
 import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
 import { insertLoopCompacts } from '../../optimize/loop-compact.js'
+import { quietOptimizedLoops } from '../../optimize/quiet-loops.js'
 import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
 import { hoistForwardHops, collectStillFuncs, collectResults } from '../../optimize/forward-hops.js'
 const COMPACT_KERNELS = ['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thresh']
@@ -123,6 +124,8 @@ export function optimizeModule(sec, profiler) {
   }
   // Per-iteration arena rewinds go in once the vectorizer has matched its loop
   // shapes (optimize/loop-rewind.js); a loop it lifted is a new node this never sees.
+  // A specialized copy that allocates nothing as optimized: no release test, rewind or compaction (optimize/quiet-loops.js).
+  t('quietCopies', () => quietOptimizedLoops(sec))
   if (ctx.plans.rewindLoopLabels) t('loopRewinds', () => { insertLoopRewinds(sec.funcs, ctx.plans.rewindLoopLabels); ctx.plans.rewindLoopLabels = null })
   if (ctx.plans.compactLoopLabels) t('loopCompacts', () => { insertLoopCompacts(sec.funcs, ctx.plans.compactLoopLabels); ctx.plans.compactLoopLabels = null })
   // A receiver a loop never rebinds: its forward hop once before the loop and

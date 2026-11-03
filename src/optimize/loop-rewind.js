@@ -50,7 +50,7 @@ export function insertLoopRewinds(funcs, owners) {
         if (!Array.isArray(n)) continue
         const loopNode = n[0] === 'loop' && labels.has(written(n[1])) ? n
           : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && labels.has(written(n[2][1])) ? n[2] : null
-        if (loopNode !== null && !done.has(loopNode)) {
+        if (loopNode !== null && !done.has(loopNode) && !ctx.plans.quietLoopNodes?.has(loopNode)) {
           done.add(loopNode)
           const name = `$${MARK}lrw${id++}`
           locals.push(['local', name, 'i32'])

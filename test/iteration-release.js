@@ -333,3 +333,33 @@ test('iteration release: a loop whose one allocation is the reset log\'s save ca
   const steps = parseWat(text).filter(n => Array.isArray(n) && n[0] === 'func' && /^\$step(\$|$)/.test(n[1]))
   ok(steps.length > 0 && !/"call","\$__(gc_begin|iter_release|iter_take)"|"\$__ibase"|"\$__gc_epoch"/.test(JSON.stringify(steps)), 'its loops test neither the compaction\'s threshold nor the release\'s')
 })
+
+// A loop whose `+` may concatenate keeps its compaction and its release; the
+// copy the speed tier makes for the slots that hold numbers (optimize/
+// specialize.js), every other value left to the loop as written, allocates
+// nothing and carries neither (optimize/quiet-loops.js quietOptimizedLoops).
+const MIXED = `const N = 50
+  const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); a[N] = { value: 7 }; a[N + 1] = 'tail'; return a }
+  const bump = (a) => {
+    let sum = 0
+    for (let r = 0; r < 3; r++) {
+      for (let i = 0; i < N; i++) a[i] = a[i] + 1
+      for (let i = N + 2; i < a.length; i++) a[i] = a[i] + 1
+      sum = sum + a[0] + a[a.length - 1] + a[N].value
+    }
+    return sum
+  }
+  export const f = (n) => bump(build(n)) + bump(build(n + 1))`
+
+test('iteration release: a specialized copy that allocates nothing carries no compaction and no release', () => {
+  agree(MIXED, [0, 10, 50, 60])
+  if (onKernel()) return  // the kernel leg's WAT differs; the in-process leg owns the shape
+  const text = compile(MIXED, { optimize: { level: 'speed', sourceInline: false, watr: false }, wat: true })
+  const bump = parseWat(text).find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$bump')
+  const inner = find(bump, n => n[0] === 'loop' && find(n.slice(1), m => m[0] === 'loop').length === 0)
+  const copy = l => /(\.f\d+)+$/.test(l[1]) && find(l, m => m[0] === 'br' && /^\$__sp/.test(m[1])).length > 0
+  const heap = l => JSON.stringify(l).includes('"$__heap"')
+  ok(inner.some(copy), 'the speed tier copies the loops for the slots that hold numbers')
+  ok(inner.some(l => copy(l) && !heap(l)), 'a copy that allocates nothing tests neither the compaction\'s threshold nor the release\'s')
+  ok(inner.some(l => !copy(l) && heap(l)), 'the loop as written keeps both')
+})

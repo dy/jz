@@ -265,7 +265,7 @@ export function insertLoopCompacts(funcs, owners) {
         if (!Array.isArray(n)) continue
         const loopNode = n[0] === 'loop' && own.labels.has(written(n[1])) ? n
           : n[0] === 'block' && Array.isArray(n[2]) && n[2][0] === 'loop' && own.labels.has(written(n[2][1])) ? n[2] : null
-        if (loopNode !== null && !done.has(loopNode)) {
+        if (loopNode !== null && !done.has(loopNode) && !ctx.plans.quietLoopNodes?.has(loopNode)) {
           done.add(loopNode)
           const mark = `$${MARK}lrc${id}`, thresh = `$${MARK}lrc${id}th`, out = `$${MARK}lrc${id}out`, again = `$${MARK}lrc${id}again`, exit = `$${MARK}lrc${id}exit`, ended = `$${MARK}lrc${id}end`, endBlock = `$${MARK}lrc${id}ends`
           id++

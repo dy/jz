@@ -62,6 +62,8 @@ const DIRECT = new Set(['call', 'return_call'])
 const TEXT_HANDLER = /\((?:try|try_table|catch|catch_all|delegate)\b/
 const TEXT_RAISES = /global\.set\s+\$__heap(?![\w.])|\b(?:call_indirect|call_ref|return_call_indirect|return_call_ref)\b|\(import\b/
 const TEXT_CALL = /\b(?:call|return_call)\s+(\$[A-Za-z_][\w.]*)/g
+// A specialized copy's label: the loop's own and a tag per copy around it (optimize/specialize.js)
+const COPY = /(?:\.f\d+)+$/
 
 /** A call that never returns: a throw helper, or one `unreachable` follows. */
 const neverReturns = (callee, next) => callee.startsWith('$__throw') ||
@@ -229,5 +231,49 @@ export function quietLoops(sec) {
       if (!own.labels.size) compacts.delete(fn[1])
     }
     if (rel) dropRelease(fn, rel)
+  }
+}
+
+/**
+ * Ask the question again of the loops as the optimizer left them. A loop
+ * whose generic arm a specialized copy turned into a leave for the loop as
+ * written (optimize/specialize.js: a dynamic `+` that may concatenate, its
+ * strings and objects left to the loop as written) allocates nothing in the
+ * copy, though the loop it copies does: the copy's iterations pay no release
+ * test, and no compaction or rewind goes in around it (loop-compact.js,
+ * loop-rewind.js, `ctx.plans.quietLoopNodes`). Only the test the copy carries
+ * at its top goes: the release's marks before the loop and its floor after it
+ * are the loop as written's too, and a test only gives memory back.
+ */
+export function quietOptimizedLoops(sec) {
+  const compacts = ctx.plans.compactLoopLabels, rewinds = ctx.plans.rewindLoopLabels
+  if (!compacts?.size && !rewinds?.size && !ctx.core.includes.has('__iter_take')) return
+  const loops = []
+  for (const list of [sec.funcs, sec.start]) for (const fn of list) {
+    if (!isArr(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
+    const compact = compacts?.get(fn[1])?.labels, rewind = rewinds?.get(fn[1])
+    const visit = (n) => {
+      for (let i = 1; i < n.length; i++) {
+        const c = n[i]
+        if (!isArr(c)) continue
+        if (c[0] === 'loop' && typeof c[1] === 'string' && COPY.test(c[1])) {
+          const base = c[1].replace(COPY, '')
+          if (compact?.has(base) || rewind?.has(base) || releaseOf(c)) loops.push(c)
+        }
+        visit(c)
+      }
+    }
+    visit(fn)
+  }
+  if (!loops.length) return
+  const heap = heapRaisers(sec)
+  const scans = loops.map(loop => ({ loop, s: scan(loop), handles: hasHandler(loop) }))
+  heap.reach(scans.flatMap(({ s }) => [...s.calls, ...s.throws]))
+  const quiet = ctx.plans.quietLoopNodes ??= new WeakSet()
+  for (const { loop, s, handles } of scans) {
+    if (handles ? s.raises || s.thrown || [...s.calls, ...s.throws].some(c => heap.raises(c, false))
+      : s.raises || [...s.calls].some(c => heap.raises(c, true))) continue
+    quiet.add(loop)
+    for (let i = loop.length - 1; i >= 2; i--) if (isArr(loop[i]) && loop[i].iterRelease) loop.splice(i, 1)
   }
 }
