@@ -4020,6 +4020,25 @@ async function returns the promise. No driver, iterator object or step record
 per resume. The machine an async generator's driver runs (std/asyncgen.js) is
 `{ next, throw, return }`, `next` its `__next` itself; a generator the program
 sees keeps the whole protocol.
+An await of a call of a module async function hands the call the awaiting
+machine (jzify/async.js `splitDirectAsync`). The function is its name's only
+declaration in the module, at the top level (a `const` arrow or a function
+declaration), which nothing assigns, of plain parameters, reading no
+`arguments` (a declaration no `this` either), and some await calls it: every
+call of the name is then a call of it. It splits in two: its body takes the
+machine first (`K_PARAM`, `__kc`) under a name of its own, and the name binds a
+function of the same parameters passing null, which an export, a value passed
+on and Promise.all's input go through. Called with a machine, the body makes
+no promise: `__p_async(k)`, `__p_done(v, k)` and `__p_reject(e, k)` answer
+the one promise that never settles (`__p_k`), which only the summary reads,
+typing the value the await resumes with as the promise named at that call
+node, and the completion resumes the machine a job later (`__k_ret`,
+`__async_rej`), as the promise's settlement would have: a value that adopts (a
+promise, a thenable, its `then` read once, through `__p_thenOf` as
+`__p_settle` reads it) settles a promise of its own first, which the machine
+then awaits. The await sets its state before the call and returns as it
+returns; no code runs between the call and the suspension, so the job lands
+where the promise's would.
 The job queue (std/async.js) holds a job as three entries of one array, its
 handler, the state it settles with and the value (`__job(h, st, v)`; state 0
 is a job of its own, `queueMicrotask`'s, called with no arguments), so

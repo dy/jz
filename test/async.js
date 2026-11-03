@@ -1030,3 +1030,84 @@ export const g = () => rec().then(o => o)`).exports
   ok(v.p instanceof Promise, 'a host Promise')
   is([await v.p, v.fn(2), (await r.g()).fn(4)], [1, 3, 8])
 })
+
+// An await of a call of a module async function hands the call the awaiting
+// machine (jzify/async.js splitDirectAsync): no promise between them, the call
+// resuming its caller where the promise would have, in Node's order for every
+// value it settles with (a value, a promise, a thenable, a getter that throws,
+// a rejection), at once or after awaits of its own. The name still binds a
+// function returning a promise: a value passed on, an export, Promise.all's
+// input; a second declaration of the name keeps every await of it a promise's.
+test('async: an awaited call resumes its caller in microtask order, no promise between', async () => {
+  const out = JSON.stringify(jzify(parse('const g = async (x) => x + 1\nexport const f = async () => (await g(1)) + (await g(2))')))
+  ok(/\["\(\)","__p_done",\[",",[^\]]*"__kc"\]\]/.test(out), 'the callee resumes the machine it is handed')
+  ok(/\["\(\)","[^"]*g\d+",\[",",\["\.","[^"]*fr\d+","__m"\]/.test(out), 'the await hands the call its machine')
+  ok(/\["=","g",\["=>",\["\(\)","x"\],\["\(\)","[^"]*g\d+",\[",",\[null,null\],"x"\]\]\]\]/.test(out), 'the name passes none')
+  if (onWasi() || onKernel()) return
+  await agreeAsync(`let log = ''
+    const ticker = async (n) => { for (let i = 0; i < n; i++) { log += i % 10; await null } }
+    const num = async (x) => x + 1
+    const obj = async (x) => ({ x })
+    const prom = async (x) => Promise.resolve(x)
+    const thn = async (x) => ({ then(r) { log += 'T'; r(x) } })
+    const bad = async (x) => ({ get then() { throw 'G' + x } })
+    const rej = async (x) => { throw 'R' + x }
+    const later = async (x) => { await null; log += 'l'; return x * 2 }
+    const laterRej = async (x) => { await null; throw 'L' + x }
+    const nested = async (x) => (await later(x)) + (await num(x))
+    const sum = async (n) => n === 0 ? 0 : n + await sum(n - 1)
+    const twice = async (x) => x * 2
+    const shadow = async () => 1
+    const later2 = async (o) => { await null; return o }
+    const gained = async () => { const o = { x: 1 }; o.then = (r) => r('g'); return o }
+    const keyed = async () => { const o = { x: 1 }, k = 'th' + 'en'; o[k] = (r) => r('k'); return o }
+    const plainRec = async (x) => ({ x, y: x + 1 })
+    export const thenables = async () => {
+      log = ''
+      const t = ticker(20)
+      log += await gained() + await keyed() + (await plainRec(1)).y + (await later2({ then: (r) => r('L') }))
+      await t
+      return log
+    }
+    export const order = async () => {
+      log = ''
+      const t = ticker(40)
+      log += 'n' + await num(1)
+      log += 'o' + (await obj(2)).x
+      log += 'p' + await prom(3)
+      log += 't' + await thn(4)
+      try { await bad(5) } catch (e) { log += 'b' + e }
+      try { await rej(6) } catch (e) { log += 'r' + e }
+      log += 'L' + await later(7)
+      try { await laterRej(8) } catch (e) { log += 'x' + e }
+      log += 'N' + await nested(9)
+      log += 'S' + await sum(5)
+      await t
+      return log
+    }
+    export const params = async () => {
+      const f = async (e) => { const a = e; try { await null; throw 1 } catch (e) { return a + e } }
+      const g = async (n) => { let fs = []; for (let i = 0; i < n; i++) { const j = i * 2; fs.push(() => j); await null } let s = 0; for (const h of fs) s += h(); return s }
+      const h = async (x) => { let y = x + 1; const read = () => y; await null; y = y * 2; await null; return read() }
+      return [await f(10), await g(4), await h(3)]
+    }
+    export const values = async () => {
+      const all = await Promise.all([1, 2, 3].map(twice))
+      const own = async () => { const shadow = async () => 2; return await shadow() }
+      return [await twice(4), all, await own(), await shadow(), await twice.length]
+    }`)
+  // (a class instance's \`then\` method, in a program of its own: beside an
+  // object literal's \`then\` getter it reads undefined through an unknown
+  // receiver, an accessor read's fallback that skips class methods, as it did
+  // before direct awaits)
+  await agreeAsync(`let log = ''
+    class Th { then(r) { log += 'T'; r('c') } }
+    const inst = async () => new Th()
+    const tick = async () => { log += 1; await null; log += 2; await null; log += 3 }
+    export const instance = async () => { log = ''; const t = tick(); log += await inst(); await t; return log }`)
+  const { num } = jz(`const num = async (x) => x + 1
+    const use = async () => await num(1)
+    export { num, use }`).exports
+  is(await num(41), 42, 'the name an export binds')
+})
+

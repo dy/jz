@@ -24,7 +24,7 @@
  * @module jzify/async
  */
 
-import { FN_BOUNDARY_OPS, isAccessor, suspendsIn, probe, closingLoop, labeled, bindTo, genMark } from './generators.js'
+import { FN_BOUNDARY_OPS, isAccessor, suspendsIn, probe, closingLoop, labeled, bindTo, genMark, K_PARAM } from './generators.js'
 import { usesArguments } from './arguments.js'
 import { ASSIGN_OPS, extractParams, withLoc, collectParamName } from '../src/ast.js'
 
@@ -57,6 +57,77 @@ export const assignCensus = (node, deep, names = new Map(), props = new Set(), r
   }
   walk(node)
   return { names, props, receivers, stored }
+}
+
+const NULL_ARG = [null, null]
+const commas = (l) => l.length === 0 ? null : l.length === 1 ? l[0] : [',', ...l]
+const usesThis = (n) => n === 'this' || Array.isArray(n) && n[0] != null && n[0] !== 'function' && n[0] !== 'function*' && n[0] !== 'class' &&
+  (n[0] === '.' || n[0] === '?.' ? usesThis(n[1]) : n[0] === ':' ? usesThis(n[2]) : n.some((c, i) => i > 0 && usesThis(c)))
+/**
+ * The module's async functions an await calls with its continuation
+ * (generators.js emitYield, std/async.js `__k_ret`): an await of a call of
+ * one hands the call the awaiting machine, which the call resumes where its
+ * promise would have, no promise between them. Each is its name's only
+ * declaration in the module (`declared`: name → count), at the top level, a
+ * `const` arrow or a function declaration, which nothing assigns, of plain
+ * parameters, reading no `arguments` (a declaration no `this` either), and
+ * some await calls it: every call of the name is then a call of it. It
+ * splits in two: its body takes the machine first (K_PARAM) under a name of
+ * its own, and the name binds a function of the same parameters passing null.
+ * Returns the module and each name's body's name.
+ */
+export function splitDirectAsync(ast, genTemp, declared) {
+  const direct = new Map()
+  if (!Array.isArray(ast)) return { ast, direct }
+  const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
+  const plain = (params, body) => extractParams(params).every(p => typeof p === 'string' && !p.startsWith('__')) && !usesArguments(body) && !usesArguments(params)
+  const arrowOf = (d) => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === 'async' &&
+    Array.isArray(d[2][1]) && d[2][1][0] === '=>' && plain(d[2][1][1], d[2][1][2]) ? d[2][1] : null
+  const declOf = (s) => Array.isArray(s) && s[0] === 'async' && Array.isArray(s[1]) && s[1][0] === 'function' && typeof s[1][1] === 'string' &&
+    plain(s[1][2], s[1][3]) && !usesThis(s[1][3]) ? s[1] : null
+  const unexport = (st) => Array.isArray(st) && st[0] === 'export' ? st[1] : st
+  const found = new Set()
+  for (const st of stmts) {
+    const s = unexport(st)
+    if (Array.isArray(s) && s[0] === 'const') { for (let i = 1; i < s.length; i++) if (arrowOf(s[i])) found.add(s[i][1]) }
+    else if (declOf(s)) found.add(s[1][1])
+  }
+  if (!found.size) return { ast, direct }
+  const awaited = new Set()
+  const walk = (n) => {
+    if (!Array.isArray(n) || n[0] == null) return
+    if (n[0] === 'await' && Array.isArray(n[1]) && n[1][0] === '()' && found.has(n[1][1])) awaited.add(n[1][1])
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(ast)
+  if (!awaited.size) return { ast, direct }
+  const assigned = assignCensus(ast, true).names, counts = declared(ast)
+  for (const name of awaited) if (counts.get(name) === 1 && !assigned.has(name)) direct.set(name, genTemp(name))
+  if (!direct.size) return { ast, direct }
+  const list = (params) => extractParams(params), seq = commas
+  const pass = (impl, params) => ['()', impl, [',', NULL_ARG, ...list(params)]]
+  const out = []
+  for (const st of stmts) {
+    const s = unexport(st), wrap = (n) => n === s ? st : ['export', n]
+    if (Array.isArray(s) && s[0] === 'const' && s.some((d, i) => i > 0 && arrowOf(d) && direct.has(d[1]))) {
+      const decls = s.slice(1).map(d => {
+        const fn = arrowOf(d), impl = fn && direct.get(d[1])
+        if (!impl) return d
+        out.push(withLoc(['const', ['=', impl, ['async', ['=>', ['()', seq([K_PARAM, ...list(fn[1])])], fn[2]]]]], st))
+        return withLoc(['=', d[1], ['=>', ['()', seq(list(fn[1]))], pass(impl, fn[1])]], d)
+      })
+      out.push(withLoc(st === s ? ['const', ...decls] : ['export', ['const', ...decls]], st))
+      continue
+    }
+    const fn = declOf(s), impl = fn && direct.get(fn[1])
+    if (impl) {
+      out.push(withLoc(['async', ['function', impl, seq([K_PARAM, ...list(fn[2])]), fn[3]]], st))
+      out.push(withLoc(st === s ? ['function', fn[1], fn[2], ['return', pass(impl, fn[2])]] : ['export', ['function', fn[1], fn[2], ['return', pass(impl, fn[2])]]], st))
+      continue
+    }
+    out.push(st)
+  }
+  return { ast: out.length === 1 ? out[0] : [';', ...out], direct }
 }
 
 export function createAsyncLowering({ genTemp, err, censusOf }) {
@@ -459,7 +530,9 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     const list = extractParams(params)
     if (!list.every(p => typeof p === 'string') || usesArguments(body) || usesArguments(params)) return null
     if (suspendsIn(body, n => isAwait(n) || n[0] === 'finally' || n[0] === 'using')) return null
-    const done = (e) => ['()', '__p_done', e ?? 'undefined']
+    // (a body an await may call with its machine passes it on, std/async.js)
+    const k = list[0] === K_PARAM ? [K_PARAM] : []
+    const done = (e) => ['()', '__p_done', commas([e ?? 'undefined', ...k])]
     const settle = (n) => {
       if (!Array.isArray(n) || FN_OPS.has(n[0])) return n
       if (n[0] === 'return') return withLoc(['return', done(settle(n[1]))], n)
@@ -468,9 +541,9 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
     const inner = Array.isArray(body) && body[0] === '{}' ? body[1] : body
     const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : inner == null ? [] : [inner]
     const error = genTemp('ae')
-    return ['=>', ['()', list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]], ['{}', [';',
+    return ['=>', ['()', commas(list)], ['{}', [';',
       ['try', ['{}', [';', ...stmts.map(settle), ['return', done()]]],
-        ['catch', error, ['{}', ['return', ['()', '__p_reject', error]]]]]]]]
+        ['catch', error, ['{}', ['return', ['()', '__p_reject', commas([error, ...k])]]]]]]]]
   }
 
   // async function* (params) { body } → (...aa) => __ag_run(TAGGED_MACHINE(...aa)):

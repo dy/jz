@@ -85,25 +85,30 @@ export let __p_settle = (p, st, v) => {
     // then() runs in a job of its own, the settlement a reaction after it
     if (__p_is(v)) { let q = __p_cast(v); p.rs = 1; __job(() => __p_sub(q, (st2, v2) => __p_fin(p, st2, v2)), 0, undefined); return }
     // plain-object thenable (spec: any object with callable then): \`then\` is
-    // read once, a throw of its getter rejecting, and called on the object in
-    // a job; the resolve/reject pair shares one already-called latch, and a
-    // then() throw after that latch is ignored (27.2.1.3.2, 27.2.2.2).
+    // read once, a throw of its getter rejecting
     let then = undefined
-    try { then = v.then } catch (e) { __p_fin(p, 2, e); return }
-    if (typeof then === 'function') {
-      p.rs = 1
-      __job(() => {
-        let done = 0
-        try {
-          then.call(v,
-            (x) => { if (done) return; done = 1; p.rs = 0; __p_settle(p, 1, x) },
-            (e) => { if (done) return; done = 1; __p_fin(p, 2, e) })
-        } catch (e2) { if (done === 0) __p_fin(p, 2, e2) }
-      }, 0, undefined)
-      return
-    }
+    try { then = __p_thenOf(v) } catch (e) { __p_fin(p, 2, e); return }
+    if (typeof then === 'function') { __p_then(p, v, then); return }
   }
   __p_fin(p, st, v)
+}
+// A resolution's \`then\`, read once: one read for both resolutions (a
+// promise's here, an awaiting machine's, \`__k_ret\`), its receiver every
+// value either resolves with, which the summary holds as one binding.
+export let __p_thenOf = (v) => v.then
+// A thenable resolving p: its \`then\`, read once where it resolved p, is
+// called on it in a job; the resolve/reject pair shares one already-called
+// latch, and a then() throw after that latch is ignored (27.2.1.3.2, 27.2.2.2).
+export let __p_then = (p, v, then) => {
+  p.rs = 1
+  __job(() => {
+    let done = 0
+    try {
+      then.call(v,
+        (x) => { if (done) return; done = 1; p.rs = 0; __p_settle(p, 1, x) },
+        (e) => { if (done) return; done = 1; __p_fin(p, 2, e) })
+    } catch (e2) { if (done === 0) __p_fin(p, 2, e2) }
+  }, 0, undefined)
 }
 // An object awaited is resolved as a promise is (its \`then\` read there, once);
 // any other value resumes a job later. \`h(st, x)\` takes the settlement.
@@ -144,16 +149,44 @@ export let __p_resolve = (v) => {
   if (__p_is(v)) return __p_cast(v)
   let p = __p_new(); __p_settle(p, 1, v); return p
 }
-export let __p_reject = (e) => { let p = __p_new(); __p_settle(p, 2, e); return p }
+// A promise rejected with \`e\`; with a continuation \`k\`, none: k resumes
+// with the rejection a job later, as an await of that promise would.
+export let __p_reject = (e, k) => {
+  if (k != null) { __job(k, 2, e); return __p_k }
+  let p = __p_new(); __p_settle(p, 2, e); return p
+}
 // An async function's promise, a field of its machine's frame
 // (jzify/generators.js \`self\`), and its completion: the summary names the
 // promise at its \`__p_async\` call node and joins into it what each
-// \`__async_ret\` resolves it with (src/summary/index.js).
-export let __p_async = () => __p_new()
-export let __async_ret = (p, v) => { __p_settle(p, 1, v) }
+// \`__async_ret\` resolves it with (src/summary/index.js). A call an await
+// makes directly (jzify/async.js \`direct\`) passes the awaiting machine as
+// \`k\`: then there is no promise, only the one that never settles,
+// \`__p_k\`, which stands for it where the summary reads its type, and the
+// completion resumes k (\`__k_ret\`).
+let __p_k = __p_new()
+export let __p_async = (k) => k != null ? __p_k : __p_new()
+export let __async_ret = (p, v, k) => { if (k != null) __k_ret(k, v); else __p_settle(p, 1, v) }
+export let __async_rej = (p, e, k) => { if (k != null) __job(k, 2, e); else __p_settle(p, 2, e) }
 // What an async function that never awaits returns (jzify/async.js
-// settledAsync): a new promise resolved with \`v\`, a thenable adopted.
-export let __p_done = (v) => { let p = __p_new(); __p_settle(p, 1, v); return p }
+// settledAsync): a new promise resolved with \`v\`, a thenable adopted, or,
+// called with a continuation, none.
+export let __p_done = (v, k) => {
+  if (k != null) { __k_ret(k, v); return __p_k }
+  let p = __p_new(); __p_settle(p, 1, v); return p
+}
+// The awaiting machine \`k\` resumed with what the call it awaits resolved
+// its promise with, where that promise would have resumed it: a job later,
+// or, for a value that adopts (a promise, a thenable, its \`then\` read here
+// once), from a promise resolved with it, which k then awaits.
+export let __k_ret = (k, v) => {
+  if (v != null && typeof v === 'object') {
+    if (__p_is(v)) { let p = __p_new(); __p_settle(p, 1, v); __p_sub(p, k); return }
+    let then = undefined
+    try { then = __p_thenOf(v) } catch (e) { __job(k, 2, e); return }
+    if (typeof then === 'function') { let p = __p_new(); __p_then(p, v, then); __p_sub(p, k); return }
+  }
+  __job(k, 1, v)
+}
 // GetIterator for the combinators: arrays pass through, iterator-protocol
 // values drain, anything else (non-iterable input, or an @@iterator that is
 // non-callable / returns a non-object) yields null → the combinator REJECTS

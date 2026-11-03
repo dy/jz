@@ -125,7 +125,11 @@ const blockStmts = (b) =>
   : Array.isArray(b) && b[0] === ';' ? b.slice(1)
   : [b]
 
-const S = { NEXT: '__s', SENT: '__sent', ERR: '__err', THR: '__thr', THRSET: '__thrset', PROMISE: '__pr', MACHINE: '__m' }
+const S = { NEXT: '__s', SENT: '__sent', ERR: '__err', THR: '__thr', THRSET: '__thrset', PROMISE: '__pr', MACHINE: '__m', CONT: '__k' }
+/** The first parameter of an async function an await may call with the
+ *  awaiting machine (jzify/async.js `direct`): that machine, or null where
+ *  the call wants a promise. */
+export const K_PARAM = '__kc'
 /** `node` with each name of `names` read as a field of the record `frame`:
  *  the machine's own state and temporaries, names no source spells or binds
  *  again (a member's key, an object literal's key and a label are no reads).
@@ -191,7 +195,7 @@ export const labeled = (labels, loop) => labels ? labels.reduceRight((l, name) =
 // receiver) or tests `instanceof Iterator`; generator objects then mint
 // through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
-export function createGeneratorLowering({ transform, transformParams, err, isGenerator, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope }) {
+export function createGeneratorLowering({ transform, transformParams, err, isGenerator, direct, generatorCloses, genTemp, iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope }) {
   // ---- the body's bindings, resolved ----
   // The machine hoists every declaration of its body into the factory scope,
   // where all its states see it, so each takes a spelling of its own: a
@@ -671,10 +675,13 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     // promise, both fields of its frame, where a driver's machine hands a
     // step record back.
     const self = internal && !agen
+    // An async function an await may call directly takes the awaiting
+    // machine first (K_PARAM), a field of its frame its completion resumes.
+    const cont = self && extractParams(params)[0] === K_PARAM
     // (a suspension leaves the dispatch loop with its operand, which one
     // `__await` after the loop subscribes the machine to: one call a machine)
     const ret = (value, done) => !self ? [['return', record(value, done)]]
-      : done ? [['()', '__async_ret', [',', ['.', frame, S.PROMISE], value]], ['return']] : [['=', '__aw', value], ['break']]
+      : done ? [['()', '__async_ret', [',', ['.', frame, S.PROMISE], value, ...(cont ? [['.', frame, S.CONT]] : [])]], ['return']] : [['=', '__aw', value], ['break']]
     const THROWN = -2
     // The finally blocks a jump from `fin` to a point outside `until` crosses, innermost first.
     const crossing = (fin, until = null) => {
@@ -723,6 +730,23 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     // value, yielded as it is.
     const emitYield = (cur, yexpr, target) => {
       const resume = newState(), op = yexpr[0], kind = op === 'yield' ? yexpr[2] : null
+      // An await of a call of a module async function hands the call this
+      // machine (jzify/async.js `direct`): set to resume first, it suspends
+      // as the call returns, no promise between them. The call's result is
+      // the promise only the summary reads, which types the value it resumes
+      // with as an awaited promise's.
+      const call = op === 'await' && self && yexpr[1], impl = Array.isArray(call) && call[0] === '()' && typeof call[1] === 'string' ? direct?.(call[1]) : null
+      if (impl && !(Array.isArray(call[2]) && (call[2][0] === '...' || call[2][0] === ',' && call[2].some(a => Array.isArray(a) && a[0] === '...')))) {
+        const args = call[2] == null ? [] : Array.isArray(call[2]) && call[2][0] === ',' ? call[2].slice(1) : [call[2]]
+        const invoke = transform(['()', impl, [',', S.MACHINE, ...args]])
+        stmtsOf(cur).push([';;set', resume])
+        if (target) {
+          const a = genTemp('av'); locals.add(a)
+          stmtsOf(cur).push(['=', a, invoke], ['return'])
+          stmtsOf(resume).push(['=', target, ['()', '__awaited', [',', a, S.SENT]]])
+        } else stmtsOf(cur).push(invoke, ['return'])
+        return resume
+      }
       let value = yexpr[1] === undefined ? [null, undefined] : transform(yexpr[1]), sent = S.SENT
       if (target && op === 'await') {
         const a = genTemp('av'); locals.add(a)
@@ -1229,7 +1253,8 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     stateHandler.forEach((h, i) => { if (h >= 0) (handlers.get(h) ?? handlers.set(h, []).get(h)).push(i) })
     const guarded = handlers.size > 0
     // (an exception no region handles closes the machine: its driver's, or its own promise, rejects)
-    const reject = (e) => [['()', '__p_settle', [',', ['.', frame, S.PROMISE], [null, 2], e]], ['return']]
+    const reject = (e) => [cont ? ['()', '__async_rej', [',', ['.', frame, S.PROMISE], e, ['.', frame, S.CONT]]]
+      : ['()', '__p_settle', [',', ['.', frame, S.PROMISE], [null, 2], e]], ['return']]
     let route = [';', ['=', S.NEXT, [null, -1]], ...(self ? reject('__e') : [['throw', '__e']])]
     for (const [h, ids] of handlers) {
       const cond = ids.map(i => ['===', S.NEXT, [null, i]]).reduce((a, b) => ['||', a, b])
@@ -1265,7 +1290,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       const machine = ['=>', ['()', [',', '__st', '__in']], ['{}', [';', enter, ['let', '__aw'],
         ['while', [null, true], ['{}', [';', loopBody]]],
         ['()', '__await', [',', '__aw', ['.', frame, S.MACHINE]]]]]]
-      const selfFields = [[S.PROMISE, ['()', '__p_async', null]], [S.MACHINE, TDZ_VALUE.slice()], ...fields]
+      const selfFields = [[S.PROMISE, ['()', '__p_async', cont ? K_PARAM : null]], ...(cont ? [[S.CONT, K_PARAM]] : []), [S.MACHINE, TDZ_VALUE.slice()], ...fields]
       return ['=>', transformParams(params), ['{}', [';', ...paramInit,
         ['const', ['=', frame, ['{}', [',', ...selfFields.map(([k, v]) => [':', k, v])]]]],
         ['=', ['.', frame, S.MACHINE], framedFn(machine)],

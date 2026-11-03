@@ -8,7 +8,7 @@
  */
 
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
-import { createAsyncLowering, assignCensus } from './async.js'
+import { createAsyncLowering, assignCensus, splitDirectAsync } from './async.js'
 import { STD_GLOBALS } from '../src/std/index.js'
 import { TYPED_CTORS, TYPED_BYTES } from '../src/std/typed.js'
 import { createNames } from './names.js'
@@ -35,8 +35,12 @@ let builtinScopes = new WeakMap()
 let activeBuiltinScope = null
 // Every declared name: the shadow test filters by SHADOW_SENSITIVE, the
 // class lowering also resolves the nearest lexical declaration scope.
+// (counting, the scopes that declare each name: declarationCounts)
+let declTally = null
 const addBuiltinName = (scope, name) => {
-  if (typeof name === 'string') scope.names.add(name)
+  if (typeof name !== 'string') return
+  if (declTally && !scope.names.has(name)) declTally.set(name, (declTally.get(name) ?? 0) + 1)
+  scope.names.add(name)
 }
 // A variable or parameter binds a value; a class, function or import names itself.
 const addPatternNames = (scope, pattern) => {
@@ -330,6 +334,8 @@ const scopeBuilder = (map) => {
   }
   return { childScope, strictBody, declarations, vars, visit }
 }
+/** How many scopes of the module declare each name. */
+const declarationCounts = (root) => { declTally = new Map(); try { buildBuiltinScopes(root); return declTally } finally { declTally = null } }
 const buildBuiltinScopes = root => {
   const map = new WeakMap(), { childScope, strictBody, declarations, vars, visit } = scopeBuilder(map)
   const program = childScope(null)
@@ -407,6 +413,10 @@ const generatorCloses = new Set()
 // A call of `name` calls the module's generator declaration: no nearer scope
 // binds the name, and nothing in the module assigns it another value.
 const isGenerator = (name) => generatorNames.has(name) && !classBindingScope(name)?.parent && !census.names.has(name)
+// The module async functions an await calls with its machine, by name: the
+// name of the body that takes it (jzify/async.js splitDirectAsync).
+let directAsync = new Map()
+const direct = (name) => directAsync.get(name) ?? null
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
 // programs without iterator producers compile byte-identically.
@@ -432,7 +442,7 @@ const genErr = (msg) => err('jzify: ' + msg)
 // change first. The program's keys come from every module the witness reads.
 let census = { names: new Map(), props: new Set(), receivers: new Set(), stored: new Set() }, programProps = new Set(), programStored = new Set(), witnessed = new WeakSet()
 const { lowerAsync, lowerAsyncGen, hoistSuspensions, hoistExpr, enterBody, leaveBody } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr, censusOf: () => census })
-const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, isGenerator, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope })
+const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal } = createGeneratorLowering({ transform, transformParams, err: genErr, isGenerator, direct, generatorCloses, genTemp: (t) => names.genTemp(t), iterProto, lowerArguments, hoistSuspensions, hoistExpr, enterBody, leaveBody, enterMachineScope, leaveBuiltinScope })
 bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, isGenerator, iterProto, unwindChain, fuseTerminal, fusedLoop, bindTo, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
@@ -739,6 +749,7 @@ export default function jzify(ast, { structs = true, importedBinding = null, std
   if (hoisted.size) ast = prependDecls(ast, hoisted)
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
   if (Array.isArray(ast)) { const stmts = foldPrototypeStores(ast[0] === ';' ? ast.slice(1) : [ast]); ast = stmts.length === 1 ? stmts[0] : [';', ...stmts] }
+  ;({ ast, direct: directAsync } = splitDirectAsync(ast, (t) => names.genTemp(t), declarationCounts))
   builtinScopes = buildBuiltinScopes(ast)
   census = assignCensus(ast, true)
   if (witnessed.has(entry)) { for (const key of programProps) census.props.add(key); for (const key of programStored) census.stored.add(key) }
