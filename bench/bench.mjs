@@ -6,7 +6,7 @@ import { GRAPH_CASES, HOST_ADAPTERS, OWN_GRAPH, graphSources } from './_lib/grap
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, homedir, tmpdir } from 'node:os'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { compile } from '../index.js'
@@ -96,6 +96,10 @@ const TOV_DIR = process.env.TOV_DIR || join(homedir(), '.tov/src')
 // file that `goose build` hands to the C compiler it finds. The release archive
 // unpacks to goose-<tag>-<platform>/ (https://github.com/aardappel/goose/releases).
 const GOOSE_BIN = process.env.GOOSE_BIN || 'goose'
+// Bend 2 (bendlang/bend): a typed, pure, affine language with proofs that
+// `bend <file> -o <bin>` compiles to one C file and builds with clang. The
+// release archive unpacks to bend/bin/bend (https://github.com/bendlang/bend/releases).
+const BEND_BIN = process.env.BEND_BIN || 'bend'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
@@ -360,6 +364,21 @@ const gooseIdentity = () => _gooseIdentity ??= (() => {
   try { release = basename(dirname(whichPath(GOOSE_BIN))).match(/^goose-(v[^-]+)-/)?.[1] ?? null } catch {}
   return [release && `goose ${release}`, runtime, cc && `C compiler ${cc}`].filter(Boolean).join(', ')
 })()
+// Bend identity: `bend version` names the release. Its build hands the emitted C
+// to the first clang 14 or newer among $CC, clang and the newest clang-N on PATH
+// (cc_find in its compiler), so the run records that compiler by the same rule.
+let _bendIdentity
+const bendIdentity = () => _bendIdentity ??= (() => {
+  const version = spawnSync(BEND_BIN, ['version'], { encoding: 'utf8' }).stdout?.trim().split('\n')[0]
+  if (!version) return null
+  const listed = dir => { try { return readdirSync(dir) } catch { return [] } }
+  const numbered = [...new Set((process.env.PATH || '').split(delimiter).flatMap(listed).filter(f => /^clang-\d+$/.test(f)))]
+    .sort((a, b) => b.slice(6) - a.slice(6))
+  const cc = [...new Set([process.env.CC, 'clang', ...numbered].filter(Boolean))]
+    .map(c => spawnSync(c, ['--version'], { encoding: 'utf8', env: sdkEnv }).stdout?.match(/^(Apple )?(?:\w+ )?clang version (\d+)[^\s]*/m))
+    .find(m => m && +m[2] >= 14)
+  return [version, cc && `C compiler ${cc[1] || ''}clang ${cc[0].split(' ').pop()}`].filter(Boolean).join(', ')
+})()
 const canRun = cmd => {
   try { return spawnSync(cmd, ['--help'], { stdio: 'ignore' }).status === 0 }
   catch { return false }
@@ -407,6 +426,7 @@ const discoverCases = () => readdirSync(BENCH_DIR, { withFileTypes: true })
       as: existsSync(join(dir, `${d.name}.as.ts`)) ? join(dir, `${d.name}.as.ts`) : null,
       tov: existsSync(join(dir, `${d.name}.tov`)) ? join(dir, `${d.name}.tov`) : null,
       goose: existsSync(join(dir, `${d.name}.goose`)) ? join(dir, `${d.name}.goose`) : null,
+      bend: existsSync(join(dir, `${d.name}.bend`)) ? join(dir, `${d.name}.bend`) : null,
       npy: existsSync(join(dir, `${d.name}.npy.py`)) ? join(dir, `${d.name}.npy.py`) : null,
       wat: existsSync(join(dir, `${d.name}.wat`)) ? join(dir, `${d.name}.wat`) : null,
       watRun: existsSync(join(dir, 'run-wat.mjs')) ? join(dir, 'run-wat.mjs') : null,
@@ -536,7 +556,7 @@ const tryRun = (id, c, prep, argv, opts = {}) => {
     const key = `${id}:${c.id}`
     if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) {
       const stamp = join(caseBuild(c), `.prep-${id}`)
-      const identity = id === 'porf-native' ? porfIdentity() : id === 'goose' ? gooseIdentity() : ''
+      const identity = { 'porf-native': porfIdentity, goose: gooseIdentity, bend: bendIdentity }[id]?.() || ''
       const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
         !['perry', 'scriptc', 'tslang', 'tov'].includes(id) &&
         !(id === 'porf-native' && _porfCheckoutDirty)
@@ -594,6 +614,7 @@ const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
 const tslangBinPath = c => join(caseBuild(c), `${c.id}-tslang`)
 const tovBinPath = c => join(caseBuild(c), `${c.id}-tov`)
 const gooseBinPath = c => join(caseBuild(c), `${c.id}-goose`)
+const bendBinPath = c => join(caseBuild(c), `${c.id}-bend`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
@@ -1092,6 +1113,21 @@ const targets = {
       })
     }, [gooseBinPath(c)]),
   },
+  // Bend is a ported language like Goose: cases with a `<case>.bend` port
+  // (shared _lib/bench.bend) build at its release default, `bend <case>.bend -o
+  // <bin>`, which checks the file and compiles the C it emits at clang -O3. The
+  // binary runs on one core with no GPU: `+RTS --threads 1 --gpu off`, the flags
+  // of Bend's own SEQ-CPU column. The prep cache is keyed by bendIdentity.
+  bend: {
+    name: 'Bend → native (C)',
+    available: c => !!c.bend && has(BEND_BIN),
+    bin: bendBinPath,
+    run: c => tryRun('bend', c, () => {
+      execFileSync(BEND_BIN, [c.bend, '-o', bendBinPath(c)], {
+        cwd: BENCH_DIR, stdio: 'pipe', env: sdkEnv, timeout: 120_000, killSignal: 'SIGKILL',
+      })
+    }, [bendBinPath(c), '+RTS', '--threads', '1', '--gpu', 'off', '-RTS']),
+  },
   graaljs: {
     name: 'GraalJS',
     available: () => !!graalJsBin(),
@@ -1343,6 +1379,7 @@ const TARGET_CMDS = {
   perry: 'perry compile <case>-native-flat.js -o <case>-perry --fp-contract off --cache-dir <build>/perry-cache (default LLVM optimization, native CPU, linked runtime + GC) → run binary',
   tov: 'tov build <case>.tov -o <case>-tov (default -O3, checked integer overflow; C via clang -ffp-contract=off) → run binary',
   goose: 'goose build <case>.goose -o <case>-goose (release defaults: -O2 inlining, the emitted C built at -O2 by the C compiler goose finds) → run binary',
+  bend: 'bend <case>.bend -o <case>-bend (release default: the emitted C built by clang -std=c11 -O3) → <case>-bend +RTS --threads 1 --gpu off -RTS (one core, no GPU)',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   'jz-base': 'the same builds by the checkout at JZ_BASE_ROOT, of its copy of the case (meta.base) → node (V8 wasm)',
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
@@ -1969,6 +2006,7 @@ if (JSON_PATH) {
       moonbit: has('moonc') && spawnSync('moonc', ['-v'], { encoding: 'utf8' }).stdout?.trim(),
       tov: has(TOV_BIN) && tovIdentity(),
       goose: has(GOOSE_BIN) && gooseIdentity(),
+      bend: has(BEND_BIN) && bendIdentity(),
       jsc: jscBuild(),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),

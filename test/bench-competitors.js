@@ -315,3 +315,61 @@ fs.chmodSync(out, 0o755)
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('bend bench: ported source only, release and clang identity, one core, cached build, parity and failures', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jz bend '))
+  try {
+    const tools = join(dir, 'tools'), bin = join(tools, 'bend'), clang = join(tools, 'clang')
+    const mode = join(dir, 'mode'), builds = join(dir, 'builds'), json = join(dir, 'results.json')
+    mkdirSync(tools)
+    writeFileSync(mode, 'ok')
+    // Stand-in compiler: its version follows the mode, so each mode is a new
+    // identity; it builds only the case's own port into a binary that answers
+    // only under the one-core flags (+RTS --threads 1 --gpu off -RTS).
+    writeFileSync(bin, `#!/usr/bin/env node
+const fs = require('node:fs'), args = process.argv.slice(2)
+const mode = fs.readFileSync(${JSON.stringify(mode)}, 'utf8')
+if (args[0] === 'version') { console.log('bend 2.0.39-' + mode); process.exit(0) }
+if (args[0] !== ${JSON.stringify(join(ROOT, 'bench/nqueens/nqueens.bend'))} || args[1] !== '-o') process.exit(2)
+fs.appendFileSync(${JSON.stringify(builds)}, 'x')
+if (mode === 'fail') { console.error('nqueens.bend:31: SOME PROOFS FAIL'); process.exit(1) }
+const cs = mode === 'wrong' ? 1 : 1121018765
+fs.writeFileSync(args[2], '#!/bin/sh\\n[ "$*" = "+RTS --threads 1 --gpu off -RTS" ] || exit 9\\necho median_us=10 checksum=' + cs + ' samples=16072 stages=11 runs=21\\n')
+fs.chmodSync(args[2], 0o755)
+`)
+    // The C compiler bend would pick: the first clang 14 or newer on PATH.
+    writeFileSync(clang, '#!/bin/sh\necho "Ubuntu clang version 18.1.3 (1ubuntu1)"\n')
+    chmodSync(bin, 0o755)
+    chmodSync(clang, 0o755)
+    const env = { ...process.env, PATH: `${tools}:${process.env.PATH}`, JZ_BENCH_BUILD_DIR: join(dir, 'build'), JZ_BENCH_WEB_DIR: join(dir, 'web') }
+    delete env.CC
+    delete env.JZ_BENCH_REBUILD
+    const run = (compiler = bin) => execFileSync(process.execPath, [
+      join(ROOT, 'bench/bench.mjs'), '--targets=bend', '--cases=nqueens,mandelbrot', '--no-web', `--json=${json}`,
+    ], { cwd: ROOT, encoding: 'utf8', env: { ...env, BEND_BIN: compiler } })
+    const read = () => JSON.parse(readFileSync(json, 'utf8'))
+    const built = () => existsSync(builds) ? readFileSync(builds, 'utf8').length : 0
+    ok(run().includes('[skip] bend'), 'a case without a .bend port is skipped')
+    const r = read()
+    is(r.cases.nqueens.targets.bend.parity, 'ok', 'port checksum matches the corpus oracle, run on one core')
+    ok(r.cases.nqueens.targets.bend.bytes > 0, 'artifact size is recorded')
+    is(r.cases.mandelbrot?.targets.bend, undefined, 'unported case has no row')
+    is(r.meta.versions.bend, 'bend 2.0.39-ok, C compiler clang 18.1.3', 'version names the release and the clang that builds it')
+    ok(r.meta.invocations.bend.includes('+RTS --threads 1 --gpu off -RTS'), 'invocation records the one-core flags')
+    is(built(), 1, 'one build')
+    run()
+    is(built(), 1, 'the same compiler reuses its artifact')
+    writeFileSync(mode, 'wrong')
+    run()
+    is(built(), 2, 'another compiler identity rebuilds')
+    is(read().cases.nqueens.targets.bend.parity, 'DIFF', 'wrong answer is labeled')
+    writeFileSync(mode, 'fail')
+    run()
+    const failed = read().cases.nqueens.targets.bend
+    is(failed.status, 'fail', 'rejected port records a failure')
+    ok(/SOME PROOFS FAIL/.test(failed.reason), 'the compiler diagnostic is kept: ' + failed.reason)
+    ok(run(join(dir, 'missing')).includes('[skip] bend'), 'missing compiler skips')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
