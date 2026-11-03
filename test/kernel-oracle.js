@@ -86,6 +86,10 @@ const AGREE = [
   // Store-side BigInt carrier pairing: both compiler hosts must match Node on
   // the materialized and raw-tag-shaped paths, not merely emit equal bytes.
   { name: 'biginttypedstore', src: CORPUS.biginttypedstore, calls: BIGINT_TYPED_STORE_CALLS },
+  // A Boolean-or-null result joined with null and a later declarator's
+  // hoisted call: the missing value survives each.
+  { name: 'boolnull', src: CORPUS.boolnull,
+    calls: ['tern', 'and', 'type'].flatMap(fn => [0, 1, 2, 3].map(n => ({ fn, args: [n] }))) },
   // New (oracle-only): the SUBVIEW branch of the same new.${name} closure family
   // as nestedtyped/fromnested (module/typedarray.js's per-iteration emitter) —
   // `new T(buffer, off, len)` with the len argument itself a nested typed-array

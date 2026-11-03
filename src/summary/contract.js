@@ -76,5 +76,9 @@ export function buildResultContracts({ results, funcs, closureCount, closureSets
 /** The one value kind a contract names for `valTypeOf`: the kind's single
  *  non-nullish tag, or NUMBER for a result the range channel narrowed to i32
  *  (narrow/results.js commits i32 only for tails it proved numeric; a Boolean
- *  member beside a Number crosses that i32 as 0/1, the range half's own choice). */
-export const contractVal = c => valOf(core(c.kind)) ?? (c.carrier === CARRIER.I32 ? VAL.NUMBER : null)
+ *  member beside a Number crosses that i32 as 0/1, the range half's own choice).
+ *  A Boolean that may be null or undefined names none: its carrier holds the
+ *  atoms and the nullish sentinels (the callee boxes each return so), and a
+ *  caller reading it as a Boolean boxes by truth, a null as false. */
+export const contractVal = c => tagOf(core(c.kind)) === K.BOOL && (c.kind & NULL_BITS) !== 0 ? null
+  : valOf(core(c.kind)) ?? (c.carrier === CARRIER.I32 ? VAL.NUMBER : null)

@@ -23,7 +23,7 @@ import { typed } from './tag.js'
 import { temp, tempI32, tempI64 } from './locals.js'
 import { asF64, asI64 } from './numeric.js'
 import { isPlanTaggedBigint, isPlanRawBigint, materializeDeferredBigint, readI64 } from './bigint.js'
-import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, truthyIR, nullableBoolBoxIR } from './sentinels.js'
+import { NULL_NAN, UNDEF_NAN, TRUE_NAN, FALSE_NAN, truthyIR, nullableBoolBoxIR, isNullish } from './sentinels.js'
 import { PURE_F64_OPS, isLit, isNumericIR } from './classify.js'
 
 /** Object coercion uses the same prepared OrdinaryToPrimitive functions as
@@ -624,9 +624,9 @@ export function toStrI64(node, v) {
       ['if', ['result', 'i64'],
         guard,
         ['then', errToStringIR(off)],
-        ['else', coerceRest(node, get(), vt)]]], 'i64')
+        ['else', coerceRest(node, get(), vt, summaryNullable || missing)]]], 'i64')
   }
-  return coerceRest(node, v, vt)
+  return coerceRest(node, v, vt, summaryNullable || missing)
 }
 
 /** Everything toStrI64 did before the Error-schema special case existed — split
@@ -635,7 +635,7 @@ export function toStrI64(node, v) {
  *  falls to EXACTLY this, unchanged. When ctx.features.error is false (no Error
  *  ever constructed) toStrI64 calls this directly with no wrapping at all — the
  *  zero-cost path for every Error-free program. */
-function coerceRest(node, v, vt) {
+function coerceRest(node, v, vt, nullable = false) {
   // An empty closed object literal may use the dictionary carrier because it
   // has no schema slots, but its JS ToString is still the inherited ordinary-
   // object tag, never the dictionary's JSON-like debug rendering.
@@ -645,6 +645,16 @@ function coerceRest(node, v, vt) {
   if (Array.isArray(node) && node[0] === '//')
     return asI64(ctx.core.emit['.regex:toString'](node))
   if (vt === VAL.OBJECT || vt === VAL.REGEX) {
+    // An object that may be null or undefined prints that value as such:
+    // ToPrimitive runs for the object only (7.1.17: null is "null").
+    if (nullable) {
+      const t = temp('ots'), get = () => typed(['local.get', `$${t}`], 'f64')
+      inc('__to_str')
+      return typed(['block', ['result', 'i64'], ['local.set', `$${t}`, asF64(v)],
+        ['if', ['result', 'i64'], isNullish(get()),
+          ['then', ['call', '$__to_str', ['i64.reinterpret_f64', get()]]],
+          ['else', ['call', '$__to_str', objectToPrimitive(get(), 'string')]]]], 'i64')
+    }
     const prim = objectToPrimitive(v, 'string')
     if (prim) {
       inc('__to_str')
