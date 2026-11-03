@@ -792,7 +792,8 @@ export default (ctx) => {
   // the collection, `__coll_next(c, id, E)` takes the next live entry (0 past
   // the last), `__coll_key`/`__coll_val` read the entry taken. A cursor is its
   // locals: the next index, the insertion sequence of the entry taken last,
-  // and that entry's index. The table is found again at each step (a growth
+  // that entry's index, and its key and value as the step read them (JS makes
+  // the entry's pair as it takes it). The table is found again at each step (a growth
   // forwards it, a compaction moves it); where the entry before the next index
   // is no longer the one taken (a rebuild dropped tombstones, a clear emptied
   // the table), the cursor seeks the first entry inserted after it, which the
@@ -850,18 +851,17 @@ export default (ctx) => {
         ['local.set', `$${c.i}`, ['i32.add', g(c.i), ['i32.const', 1]]],
         ['br_if', `${label}s`, ['i64.eq', ['i64.load', 'offset=8', entry(g(c.at))], ['i64.const', TOMB_NAN]]]],
       ['local.set', `$${c.s}`, ['i32.load', 'offset=4', entry(g(c.at))]],
+      // the entry's key and value as the step takes it, where JS makes its pair
+      ['local.set', `$${c.k}`, ['i64.load', 'offset=8', entry(g(c.at))]],
+      ...(E === MAP_ENTRY ? [['local.set', `$${c.v}`, ['i64.load', 'offset=16', entry(g(c.at))]]] : []),
       ['i32.const', 1]], 'i32')
   }
-  // The key (8) or the value (16) of the entry cursor `c` took last.
-  const cursorField = (c, recv, E, field) => {
-    inc('__ptr_offset_fwd')
-    return typed(['block', ['result', 'f64'],
-      ...tableOf(recv, c.off),
-      ['f64.load', `offset=${field}`, ['i32.add', ['local.get', `$${c.off}`], ['i32.mul', ['local.get', `$${c.at}`], ['i32.const', E]]]]], 'f64')
-  }
-  const newCursor = () => ({ i: tempI32('cci'), s: tempI32('ccs'), at: tempI32('cca'), off: tempI32('cco'), used: tempI32('ccu') })
+  // The key (8) or the value (16) of the entry cursor `c` took last, read by its step.
+  const cursorField = (c, field) => typed(['f64.reinterpret_i64', ['local.get', `$${field === 8 ? c.k : c.v}`]], 'f64')
+  const newCursor = () => ({ i: tempI32('cci'), s: tempI32('ccs'), at: tempI32('cca'), off: tempI32('cco'), used: tempI32('ccu'), k: tempI64('cck'), v: tempI64('ccv') })
   ctx.core.emit['__coll_next'] = (coll, id, es) => cursorStep(cursorOf(id), asF64(emit(coll)), entryBytes(es))
-  const cursorRead = (field) => (coll, id, es) => cursorField(cursorOf(id), asF64(emit(coll)), entryBytes(es), field)
+  // (the collection a read names is the cursor's own binding: reading it has no effect)
+  const cursorRead = (field) => (coll, id) => cursorField(cursorOf(id), field)
   ctx.core.emit['__coll_key'] = cursorRead(8)
   ctx.core.emit['__coll_val'] = cursorRead(16)
   // The first of a table's `n` appended entries inserted after sequence `s`:
@@ -941,7 +941,7 @@ export default (ctx) => {
       ['local.set', `$${c.s}`, ['i32.const', 0]],
       ['block', `$febrk${id}`, ['loop', `$feloop${id}`,
         ['br_if', `$febrk${id}`, ['i32.eqz', cursorStep(c, recv(), stride)]],
-        ['drop', asF64(callback.call([cursorField(c, recv(), stride, valOff), cursorField(c, recv(), stride, keyOff), recv()]))],
+        ['drop', asF64(callback.call([cursorField(c, valOff), cursorField(c, keyOff), recv()]))],
         ['br', `$feloop${id}`]]],
       ['f64.const', 0]], 'f64')
   }
