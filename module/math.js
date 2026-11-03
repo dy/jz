@@ -644,7 +644,8 @@ export default (ctx) => {
   // normalization below never sees it zero. No loop and no scratch memory: the table is
   // read-only.
   const M32 = '(i64.const 0xffffffff)'
-  const C63 = BigInt(PIO2_C63), C63H = `(i64.const 0x${(C63 >> 32n).toString(16)})`, C63L = `(i64.const 0x${(C63 & 0xffffffffn).toString(16)})`
+  // its halves by their hex digits: a BigInt is an i64 in jz, and this code runs in the compiler that compiles itself
+  const C63H = `(i64.const 0x${PIO2_C63.slice(2, 10)})`, C63L = `(i64.const 0x${PIO2_C63.slice(10)})`
   // hi:lo = m·w for m < 2^53 (split in $mh:$ml), w < 2^64, from four 32×32 products
   const mul128 = (w, hi, lo) => `
     (local.set $ll (i64.mul (local.get $ml) (i64.and ${w} ${M32})))
