@@ -302,11 +302,17 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <script type="module">
 import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
+// The view the URL names, else the newer of the reference and CI datasets by the date each
+// was measured: until a reference run publishes, the CI runner's data is the current one.
+// Either way the page shows one machine's dataset, never a merge.
 const requestedMachine = new URLSearchParams(location.search).get('machine')
-const machine = ['ci', 'linux'].includes(requestedMachine) ? requestedMachine : 'reference'
-const snapshot = machine === 'reference' ? 'results.json' : `results-${machine}.json`
-$('machine-' + machine)?.setAttribute('aria-current', 'page')   // the CI badge marks the CI view; the reference view is the plain page
-if (machine === 'ci') { $('machine-ci').href = './'; $('machine-ci').title = "Back to the reference machine's results" }
+const pinned = ['ci', 'linux', 'reference'].includes(requestedMachine) ? requestedMachine : null
+const snapshotOf = m => m === 'reference' ? 'results.json' : `results-${m}.json`
+let machine = pinned ?? 'reference', snapshot = snapshotOf(machine)
+const markMachine = () => {
+  $('machine-' + machine)?.setAttribute('aria-current', 'page')   // the CI badge marks the CI view
+  if (machine === 'ci') { $('machine-ci').href = '?machine=reference'; $('machine-ci').title = "Show the reference run's results" }
+}
 
 // ── targets: band = substrate class (JS / WASM / Native) ─────────────────────
 // The corpus groups by class. Per case it's one intermixed list sorted by
@@ -1046,7 +1052,8 @@ const renderMeta = () => {
     `${machine === 'ci' ? 'CI runner' : machine === 'linux' ? 'Linux validation' : 'Reference'}: ${where}, ${esc(m.date)}, ` +
     (m.commit ? `<a href="https://github.com/dy/jz/commit/${esc(m.commit)}"><code>${esc(m.commit)}</code></a>, ` : '') +
     `<a href="${snapshot}"><code>${snapshot}</code></a>. ` +
-    (machine === 'linux' ? '<a href="./">Reference results</a>.' : '<a href="?machine=linux">Linux validation</a>.')
+    [['reference', 'Reference results'], ['ci', 'CI runner results'], ['linux', 'Linux validation']]
+      .filter(([m]) => m !== machine).map(([m, label]) => `<a href="?machine=${m}">${label}</a>`).join(' · ') + '.'
 }
 
 // ── live runner ──────────────────────────────────────────────────────────────
@@ -1124,7 +1131,17 @@ const b64url = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).re
 
 // ── boot ─────────────────────────────────────────────────────────────────────
 try {
-  DATA = await fetch('./' + snapshot).then(r => { if (!r.ok) throw 0; return r.json() })
+  const load = file => fetch('./' + file).then(r => { if (!r.ok) throw 0; return r.json() }).then(d => { if (!d?.meta) throw 0; return d })
+  if (pinned) DATA = await load(snapshot)
+  else {
+    const measured = d => d ? Date.parse(String(d.meta.date).replace(' UTC', 'Z').replace(' ', 'T')) || 0 : -1
+    const [ref, ci] = await Promise.all(['results.json', 'results-ci.json'].map(f => load(f).catch(() => null)))
+    if (!ref && !ci) throw 0
+    if (measured(ci) > measured(ref)) machine = 'ci'
+    snapshot = snapshotOf(machine)
+    DATA = machine === 'ci' ? ci : ref
+  }
+  markMachine()
   const all = Object.entries(DATA.cases).map(([id, c]) => ({ id, ...c }))
   // CORPUS = aggregate cases: jz actually RAN (a {status:'fail'} jz entry carries
   // no median, so it must not seed the geomeans) and not LAB — the jz-internal

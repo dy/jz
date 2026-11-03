@@ -167,13 +167,18 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
     return { nodes, fetched }
   }
   // Navigation reloads the document, so each boot also discards browser-run rows.
-  for (const [search, machine, ratio] of [
-    ['', 'reference', '2.00×'], ['', 'reference', '2.00×'],
-    ['?machine=ci', 'ci', '7.00×'], ['?machine=unknown', 'reference', '2.00×'],
+  // A URL that names a view loads that dataset alone; the plain page loads both and shows the
+  // newer by measured date (the reference on a tie), one machine's dataset, never a merge.
+  const both = ['./results.json', './results-ci.json']
+  for (const [search, machine, ratio, ciDate] of [
+    ['', 'reference', '2.00×'], ['', 'reference', '2.00×'], ['', 'ci', '7.00×', '2026-11-03 05:10 UTC'],
+    ['?machine=ci', 'ci', '7.00×'], ['?machine=reference', 'reference', '2.00×', '2026-11-03 05:10 UTC'],
+    ['?machine=unknown', 'reference', '2.00×'],
   ]) {
+    snapshots['./results-ci.json'].meta.date = ciDate ?? '2026-09-24'
     const { nodes, fetched } = await boot(search)
     const file = machine === 'ci' ? 'results-ci.json' : 'results.json'
-    is(fetched, ['./' + file], 'one machine per page, no cross-machine merge')
+    is(fetched, /machine=(ci|reference)/.test(search) ? ['./' + file] : both, 'a named view loads its dataset alone, the plain page both')
     is(nodes['machine-' + machine].attrs['aria-current'], 'page', 'selected machine is announced')
     is(nodes.geomean.innerHTML.includes('Perry'), true, 'Perry has a corpus row')
     is(nodes.geomean.innerHTML.includes(ratio), true, 'ratio comes from the selected machine')
@@ -225,7 +230,7 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
   ok(sharded.cards.innerHTML.includes(`title="measured on ${zen3.cpu}">EPYC 7763</span>`), 'each card names the machine that measured it')
   ok(sharded.cards.innerHTML.includes(`title="measured on ${zen4.cpu}">EPYC 9V74</span>`), 'cases of another shard name theirs')
   is((await boot('?machine=ci')).nodes.geomean.innerHTML.includes('Could not load'), false, 'a dataset without meta.host renders')
-  is((await boot('')).nodes.cards.innerHTML.includes('class="host"'), false, 'a one-machine dataset names its machine once, in the outro')
+  is((await boot('?machine=reference')).nodes.cards.innerHTML.includes('class="host"'), false, 'a one-machine dataset names its machine once, in the outro')
   snapshots['./results-ci.json'].cases = {}
   const { nodes } = await boot('?machine=ci')
   is(nodes.casecount.textContent, 0, 'empty CI snapshot has zero cases')
