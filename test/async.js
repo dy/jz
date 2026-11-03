@@ -11,7 +11,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { batch, oracle, jz, compile } from './util.js'
-import { onWasi, onKernel, levels } from './_matrix.js'
+import { onWasi, onKernel, levels, belowOpt } from './_matrix.js'
 import { parse } from '../src/parse.js'
 import jzify from '../jzify/index.js'
 
@@ -876,7 +876,8 @@ export let rejected = async (p) => { try { await p } catch (e) { return 'caught 
 // compacts what the settled promises left (std/async.js `__drain`): 200,000
 // awaits, each allocating, stay within a few megabytes (204 MB before).
 test('async: a long chain of awaits in one call keeps its memory bounded', async () => {
-  if (onWasi() || onKernel()) return
+  // (O0 and hosts other than the JS one compact nothing: the bound is the compaction's)
+  if (onWasi() || onKernel() || belowOpt(1)) return
   const r = jz(`const mk = async (i) => ({ v: i, w: [i] })
     export const f = async (n) => { let s = 0; for (let i = 0; i < n; i++) { const o = await mk(i); s += o.v + o.w[0] } return s }`)
   is(await r.exports.f(200000), 200000 * 199999)
