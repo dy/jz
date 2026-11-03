@@ -111,19 +111,34 @@ const isClang = cc => {
   return clangs.get(cc)
 }
 
-/** The clang flags that build a jump table only from `entries` switch cases. jz dispatches
- *  through compare chains, which V8 runs as branches; clang folds a chain on one value into
- *  a switch, and x86 lowers 4 or more cases to one indirect jump through a table, which a
- *  branch predictor learns far worse than the branches once the dispatched stream repeats
- *  (bench/shapes: 7.9× V8's time on Zen 5). 13 is LLVM's AArch64 default
- *  (llvm/llvm-project#71166). A codegen option: under LTO the linker runs codegen, so it
- *  goes there too. wasm2native puts these before the caller's flags, which may override
- *  them. Other compilers keep their own policy. */
-export const jumpTables = (cc, cflags, entries = 13) => {
+/** Whether clang targets x86 under these flags: -target, --target= or -arch names the target,
+ *  else the host is it. */
+const targetsX86 = cflags => {
+  const i = cflags.findIndex(f => f === '-target' || f === '-arch')
+  const target = i >= 0 ? cflags[i + 1] : cflags.find(f => f.startsWith('--target='))?.slice(9) ?? process.arch
+  return /^(x86_64|x64|amd64|i[3-6]86|ia32)/.test(target)
+}
+
+/** The LLVM options of the native lowering. Each keeps a choice jz's wasm already made, which
+ *  V8 keeps too:
+ *  - -min-jump-table-entries=13: jz dispatches through compare chains, which V8 runs as branches.
+ *    clang folds a chain on one value into a switch, and x86 lowers 4 or more cases to one
+ *    indirect jump through a table, which a branch predictor learns far worse than the branches
+ *    once the dispatched stream repeats (bench/shapes: 7.9× V8's time on Zen 5). 13 is LLVM's
+ *    AArch64 default (llvm/llvm-project#71166).
+ *  - -x86-cmov-converter=false, on x86: jz writes a data-dependent min, max or clamp as a select,
+ *    which V8 keeps a cmov. x86's cmov converter turns one on a loop-carried chain into a branch,
+ *    betting it predicts; a DP's min of three does not (bench/levenshtein: 1.77× V8's time on a
+ *    Zen 3). AArch64 has no such pass. */
+const llvmOptions = cflags => ['-min-jump-table-entries=13', ...targetsX86(cflags) ? ['-x86-cmov-converter=false'] : []]
+
+/** Clang flags that hand LLVM options to codegen: to the compiler, and under LTO to the linker
+ *  too, which runs codegen there. wasm2native puts them before the caller's flags, which may
+ *  override them. Other compilers keep their own policy. */
+export const codegen = (cc, cflags, opts = llvmOptions(cflags)) => {
   if (!isClang(cc)) return []
-  const opt = `-min-jump-table-entries=${entries}`
   const lto = cflags.some(f => /^-flto(=|$)/.test(f))
-  return ['-mllvm', opt, ...lto ? [process.platform === 'darwin' ? `-Wl,-mllvm,${opt}` : `-Wl,-plugin-opt=${opt}`] : []]
+  return opts.flatMap(o => ['-mllvm', o, ...lto ? [process.platform === 'darwin' ? `-Wl,-mllvm,${o}` : `-Wl,-plugin-opt=${o}`] : []])
 }
 
 /** Exception handling and tail calls: WABT 1.0.42 enables both by default and has no
@@ -169,7 +184,7 @@ export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess = POS
   // CC may carry its own arguments: CC="zig cc".
   const [cc, ...ccArgs] = tools.cc.trim().split(/\s+/)
   try {
-    run(cc, [...ccArgs, ...jumpTables(tools.cc, cflags), ...cflags, ...sysroot(), ...defines, ...[dir, ...tools.include].map(p => `-I${p}`),
+    run(cc, [...ccArgs, ...codegen(tools.cc, cflags), ...cflags, ...sysroot(), ...defines, ...[dir, ...tools.include].map(p => `-I${p}`),
       SHIM, c, ...RUNTIME.map(f => join(tools.runtime, f)), '-lm', '-o', out])
   } catch (e) {
     // WABT 1.0.39-1.0.41 emit invalid C for a tail call that passes several values.

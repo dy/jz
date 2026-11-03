@@ -39,13 +39,20 @@ whose value goes unused may be dropped, and with it an out-of-bounds trap it wou
 have raised. A 32-bit host, or `CFLAGS=-DWASM_RT_MEMCHECK_BOUNDS_CHECK`, gets
 explicit bounds checks and WABT's own memory helpers.
 
-With clang, a switch becomes a jump table only from 13 cases on every target,
-as LLVM already does for AArch64; x86 would from 4. clang folds jz's dispatch
-chains into switches, and a table makes one indirect jump of what V8 runs as
-branches, which a predictor learns far worse once the dispatched stream repeats
-(bench/shapes: 7.9× V8's time on Zen 5). Under `-flto` the option goes to the
-linker too. `CFLAGS="-mllvm -min-jump-table-entries=N"` sets another threshold
-(with `-flto`, give the linker the same option).
+With clang, two LLVM codegen options keep choices jz's wasm already made, as V8
+keeps them; under `-flto` they go to the linker too:
+
+- a switch becomes a jump table only from 13 cases, as LLVM already does for
+  AArch64; x86 would from 4. clang folds jz's dispatch chains into switches, and a
+  table makes one indirect jump of what V8 runs as branches, which a predictor
+  learns far worse once the dispatched stream repeats (bench/shapes: 7.9× V8's
+  time on Zen 5);
+- on x86, jz's selects stay cmovs: x86's cmov converter would turn a select on a
+  loop-carried value into a branch, which a DP's min of three mispredicts
+  (bench/levenshtein: 1.77× V8's time on a Zen 3).
+
+`CFLAGS="-mllvm -min-jump-table-entries=N"` or `-mllvm -x86-cmov-converter=true`
+overrides one (with `-flto`, give the linker the same option).
 
 What the executable does:
 

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile as compileWat } from 'watr'
-import { CFLAGS, declareV128, jumpTables, PROVIDED, sysroot, toolchain, wasm2native } from '../scripts/native/compile.mjs'
+import { CFLAGS, codegen, declareV128, PROVIDED, sysroot, toolchain, wasm2native } from '../scripts/native/compile.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const POST = join(ROOT, 'scripts/native/postprocess-watr.awk')
@@ -302,13 +302,13 @@ test('native executable: a tag dispatch stays branches, not an x86 jump table', 
   writeFileSync(wasm, compileWat(DISPATCH(expect)))
   wasm2native(wasm, bin, { dir, tools: NATIVE })
   is(spawnSync(bin).status, 0, `native answers V8's ${expect}`)
-  if (!X86 || !jumpTables(NATIVE.cc, []).length) return console.log('# x86 lowering unchecked: needs clang and an x86 target')
+  if (!X86 || !codegen(NATIVE.cc, []).length) return console.log('# x86 lowering unchecked: needs clang and an x86 target')
   // The module's C as x86 assembly: the control makes the table the default build avoids.
   const [cc, ...ccArgs] = NATIVE.cc.trim().split(/\s+/)
   const asm = flags => execFileSync(cc, [...ccArgs, ...flags, ...X86, ...sysroot(), ...[dir, ...NATIVE.include].map(p => `-I${p}`),
     '-S', join(dir, 'jz.c'), '-o', '-'], { encoding: 'utf8', maxBuffer: 64 << 20 })
   ok(indirectJumps(asm([...CFLAGS, '-mllvm', '-min-jump-table-entries=4'])) > 0, 'control: from 4 cases x86 jumps through a table')
-  is(indirectJumps(asm([...jumpTables(NATIVE.cc, CFLAGS), ...CFLAGS])), 0, 'the native build keeps the chain branches')
+  is(indirectJumps(asm([...codegen(NATIVE.cc, CFLAGS), ...CFLAGS])), 0, 'the native build keeps the chain branches')
   // With LTO the linker runs codegen: the option must reach it there.
   if (!OBJDUMP) return console.log('# LTO lowering unchecked: no objdump')
   const lto = [...CFLAGS, '-flto', ...X86]
@@ -318,7 +318,65 @@ test('native executable: a tag dispatch stays branches, not an x86 jump table', 
     if (!X86.length) is(spawnSync(out).status, 0, 'the LTO build answers as V8')
     return indirectJumps(execFileSync('objdump', ['-d', out], { encoding: 'utf8', maxBuffer: 256 << 20 }))
   }
-  ok(jumps([]) < jumps(jumpTables(NATIVE.cc, lto, 4)), 'under LTO too: fewer indirect jumps than the 4-case control')
+  ok(jumps([]) < jumps(codegen(NATIVE.cc, lto, ['-min-jump-table-entries=4'])), 'under LTO too: fewer indirect jumps than the 4-case control')
+}))
+
+// jz's min of three (bench/levenshtein's DP): a select on the loop-carried cell, which V8 keeps
+// a cmov. x86's cmov converter would branch on it, and a DP's branch mispredicts.
+const DP = 64, DP_DATA = Array.from({ length: 2 * DP }, (_, i) => `\\0${(Math.imul(i + 1, 2654435761) >>> 29) & 3}`).join('')
+const MIN3 = expect => `(module
+  (memory (export "memory") 1)
+  (data (i32.const 0) "${DP_DATA}")
+  (func $lev (export "lev") (result i32) (local $i i32) (local $j i32) (local $ai i32) (local $diag i32) (local $up i32) (local $m i32) (local $ins i32) (local $sub i32)
+    (loop $init
+      (i32.store offset=256 (i32.shl (local.get $j) (i32.const 2)) (local.get $j))
+      (br_if $init (i32.le_u (local.tee $j (i32.add (local.get $j) (i32.const 1))) (i32.const ${DP}))))
+    (local.set $i (i32.const 1))
+    (loop $rows
+      (local.set $diag (i32.load offset=256 (i32.const 0)))
+      (i32.store offset=256 (i32.const 0) (local.get $i))
+      (local.set $ins (local.get $i))
+      (local.set $ai (i32.load8_u (i32.sub (local.get $i) (i32.const 1))))
+      (local.set $j (i32.const 1))
+      (loop $cells
+        (local.set $up (i32.load offset=256 (i32.shl (local.get $j) (i32.const 2))))
+        (local.set $sub (i32.add (local.get $diag) (i32.ne (local.get $ai) (i32.load8_u offset=${DP - 1} (local.get $j)))))
+        (local.set $m (i32.add (local.get $up) (i32.const 1)))
+        (local.set $ins (i32.add (local.get $ins) (i32.const 1)))
+        (local.set $m (select (local.get $ins) (local.get $m) (i32.lt_s (local.get $ins) (local.get $m))))
+        (local.set $m (select (local.get $sub) (local.get $m) (i32.lt_s (local.get $sub) (local.get $m))))
+        (local.set $diag (local.get $up))
+        (local.set $ins (local.get $m))
+        (i32.store offset=256 (i32.shl (local.get $j) (i32.const 2)) (local.get $m))
+        (br_if $cells (i32.le_u (local.tee $j (i32.add (local.get $j) (i32.const 1))) (i32.const ${DP}))))
+      (br_if $rows (i32.le_u (local.tee $i (i32.add (local.get $i) (i32.const 1))) (i32.const ${DP}))))
+    (i32.load offset=${256 + 4 * DP} (i32.const 0)))
+  (func (export "_start") (if (i32.ne (call $lev) (i32.const ${expect})) (then unreachable))))`
+test('native executable: a DP min stays a cmov on x86, not a branch', { skip: !!NATIVE.error }, () => scratchDir('min3', dir => {
+  const expect = new WebAssembly.Instance(new WebAssembly.Module(compileWat(MIN3(0)))).exports.lev()
+  const wasm = join(dir, 'min3.wasm'), bin = join(dir, 'min3')
+  writeFileSync(wasm, compileWat(MIN3(expect)))
+  wasm2native(wasm, bin, { dir, tools: NATIVE })
+  is(spawnSync(bin).status, 0, `native answers V8's ${expect}`)
+  if (!X86 || !codegen(NATIVE.cc, []).length) return console.log('# x86 lowering unchecked: needs clang and an x86 target')
+  // An x86 model the converter acts on (it weighs each CPU's latencies), whatever the host.
+  const x86 = [...CFLAGS, ...X86, '-march=x86-64-v3']
+  const [cc, ...ccArgs] = NATIVE.cc.trim().split(/\s+/)
+  const cmovs = s => (s.match(/\bcmov/g) || []).length
+  const asm = flags => cmovs(execFileSync(cc, [...ccArgs, ...flags, ...sysroot(), ...[dir, ...NATIVE.include].map(p => `-I${p}`),
+    '-S', join(dir, 'jz.c'), '-o', '-'], { encoding: 'utf8', maxBuffer: 64 << 20 }))
+  const branched = asm(x86), kept = asm([...codegen(NATIVE.cc, x86), ...x86])
+  ok(branched < kept, `control: the converter branches on ${kept - branched} of ${kept} cmovs; the native build keeps them`)
+  // With LTO the linker runs codegen: the option must reach it there.
+  if (!OBJDUMP) return console.log('# LTO lowering unchecked: no objdump')
+  const lto = [...x86, '-flto']
+  const linked = extra => {
+    const out = join(dir, 'min3-lto')
+    wasm2native(wasm, out, { dir, cflags: [...lto, ...extra], tools: NATIVE })
+    if (!X86.length) is(spawnSync(out).status, 0, 'the LTO build answers as V8')
+    return cmovs(execFileSync('objdump', ['-d', out], { encoding: 'utf8', maxBuffer: 256 << 20 }))
+  }
+  ok(linked([]) > linked(codegen(NATIVE.cc, lto, ['-x86-cmov-converter=true'])), 'under LTO too: more cmovs than the converter leaves')
 }))
 
 // The postprocess every native build gets on real wasm2c output: once preprocessed, no load or
