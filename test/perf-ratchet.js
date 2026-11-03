@@ -378,6 +378,24 @@ const ARRAY_CALLS = {
 //   the take-over in the runtime, at a function's outermost released loop alone
 //            (module/core/reach.js `__iter_take`, `__iter_leave`): every loop body is what
 //            it was before 05c1fda89, slice -672, entered -288.
+//   27e67b6cc (8a507967a in its batch) Number::toString's exact short-decimal path
+//            (module/number.js `__ftoa_short`: a double that is a decimal of at most 15
+//            significant digits formats from a scaled integer before Ryu) and Ryu's
+//            four-digit removal step, both inside `__ftoa`, where watr inlines
+//            `__ftoa_into`: 152 ops a program that formats a fraction, buf +760 (5 seeds),
+//            slice +6080 and condref +6080 (40 seeds each); a per-function comparison
+//            against a651f7e94 finds no other function changed, no program loop among them,
+//            and no entered loop moved. They run while a fraction is formatted, not per
+//            iteration of a loop that formats none: String(x) at level 2, 200,000 values,
+//            best of 7, Apple M4 Max: a price (k/100 + 0.01) 56 to 59 -> 29 to 31 ns,
+//            a rate (k * 1.5e-4) 60 to 64 -> 54 to 56 ns, a random double 81 to 84 -> 72
+//            to 75 ns (at speed 62 to 70 -> 27 to 29, 67 to 69 -> 53, 83 to 88 -> 72 to 76).
+//            Its two-digit step, once, is a block, not a loop that never loops (-33 a program).
+//   the loop's end walk (optimize/loop-compact.js, 2026-11-03): an outermost compacting
+//            loop's end gate, `(if (i32.or (i32.eqz end) (call $__gc_end …)) …)`, its flag
+//            and its exit, about 13 ops beside the cold block the count leaves out, which
+//            run once per walk or loop end: slice f$exp +208, entered +104 (the gate sits
+//            in the loop the site's re-entry makes, which the calls enter).
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}

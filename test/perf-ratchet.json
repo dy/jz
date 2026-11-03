@@ -16,7 +16,7 @@
     "entered": 581
   },
   "buf": {
-    "total": 30803,
+    "total": 31483,
     "entered": 2830
   },
   "nest": {
@@ -24,15 +24,15 @@
     "entered": 2034
   },
   "slice": {
-    "total": 226180,
-    "entered": 31144
+    "total": 231828,
+    "entered": 30800
   },
   "ring": {
     "total": 30720,
     "entered": 4720
   },
   "condref": {
-    "total": 196261,
+    "total": 201701,
     "entered": 7587
   },
   "fgather": {

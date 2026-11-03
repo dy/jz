@@ -1512,7 +1512,7 @@ export default (ctx) => {
           (local.set $vm (local.get $d10))
           (local.set $removed (i32.add (local.get $removed) (i32.const 4)))
           (br $f4l)))
-        (block $f2d (loop $f2l
+        (block $f2d
           (local.set $t (i64.div_u (local.get $vp) (i64.const 100)))
           (local.set $d10 (i64.div_u (local.get $vm) (i64.const 100)))
           (br_if $f2d (i64.le_u (local.get $t) (local.get $d10)))
@@ -1521,8 +1521,7 @@ export default (ctx) => {
           (local.set $vr (local.get $h0))
           (local.set $vp (local.get $t))
           (local.set $vm (local.get $d10))
-          (local.set $removed (i32.add (local.get $removed) (i32.const 2)))
-          ))
+          (local.set $removed (i32.add (local.get $removed) (i32.const 2))))
         (block $f1 (loop $fl1
           (local.set $t (i64.div_u (local.get $vp) (i64.const 10)))
           (local.set $d10 (i64.div_u (local.get $vm) (i64.const 10)))
