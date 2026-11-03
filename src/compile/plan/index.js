@@ -74,7 +74,7 @@ import { foldKindTests } from './fold-kind-tests.js'
 import { viewGuardedTyped } from './guard-views.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
-import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops } from './loops.js'
+import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops, splitArrayScanLoops } from './loops.js'
 import { guardConstants, canonicalizeCountedLoops, adoptLoopCounters, unitWalks } from './counted-loops.js'
 import { scalarizeModuleScratch } from './scratch.js'
 import { resolveAliases, splitSplicedBindings } from './alias.js'
@@ -247,6 +247,8 @@ export default function plan(ast, profiler, summarize) {
     t('markReadBuffers', markReadBuffers)
     sweep('canonicalizeCountedLoops', canonicalizeCountedLoops)
     sweep('splitCharScan', splitCharScanLoops)
+    // An array the counter indexes under another bound: in bounds up to its length, the rest as written.
+    sweep('splitArrayScan', splitArrayScanLoops)
     // Record parameters read field by field become lanes before the object
     // scalarizer looks: a literal passed to such a callee has no reader left.
     sweep('laneRecordParams', () => laneRecordParams(facts()))

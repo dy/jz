@@ -33,6 +33,7 @@ export const PASS_NAMES = [
   'specializeLoops',          // a copy of a loop for reads that hit and integers that are integers, beside the loop as written (optimize/specialize.js)
   'combineGuards',            // the guards of a specialized loop: one test ahead of the loop or of a run of reads decides many (optimize/guards.js)
   'splitCharScan',            // charCodeAt scan loops: split at min(N, s.length) → i32 char carrier (plan-level)
+  'splitArrayScan',           // counted loops indexing arrays: split at min(N, a.length) → in-bounds reads, in-place stores (plan-level)
   'countedLoops',             // cursors, computed starts and unrolled bodies → one counter from 0, unit stride versioned (plan/counted-loops.js)
   // Pre-analyze loop-shape transforms — applied in compile/index.js (NOT this pass pipeline), but
   // gated by these flags. Listing them here is load-bearing: ALL_OFF sets them false so level 0/1

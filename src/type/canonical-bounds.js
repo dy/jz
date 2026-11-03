@@ -195,7 +195,7 @@ function collectBoundedArrIdx(node, recv, idxVar, set, nodes) {
 // The condition describes the read only while no intervening effect changes
 // its receiver or index. Arrays also need their extent preserved through aliases;
 // strings are immutable, but their bindings can be replaced by called closures.
-function preservesLoopBounds(root, view, bindings, callees, mutable = true) {
+export function preservesLoopBounds(root, view, bindings, callees = new Map(), mutable = true) {
   return !some(root, n => {
     if (runsAccessor(view, n, true) || runsConversion(view, n)) return true
     const op = n[0]

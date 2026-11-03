@@ -25,7 +25,8 @@ import { containsDeclOf, cloneWithSubst, isUnitIncrement } from '../../type.js'
 import { includeModule } from '../../autoload.js'
 import { clonePlain, forLoopBodyIndex, withForLoopBody, collectBindings, nodeSize, optimizing } from './common.js'
 import { SOURCE_FULL } from '../../growth.js'
-import { K, core, tagOf } from '../../summary/kind.js'
+import { K, NULL_BITS, core, tagOf } from '../../summary/kind.js'
+import { lengthRecvs, preservesLoopBounds } from '../../type/canonical-bounds.js'
 
 // Nested int row literal: `[[1,2],[3]]` → { flat, starts, lens }.
 const parseNestedIntRowLit = (expr) => {
@@ -521,6 +522,136 @@ export const splitCharScanLoops = () => {
     } })
     // body root itself can't be a bare `for` without a parent slot — wrap-walk
     // handles every nested position; a top-level-for body is `{}`-wrapped.
+  }
+  return changed
+}
+
+// === Array-scan range splitting ===
+//
+// A counted loop indexing an array by its counter under another bound, a
+// constant, a count or another array's length, may run past the array's end:
+// there a read is undefined and a store grows the array. So every `a[i]` keeps
+// its bounds test, every store its growth call, and the receiver is read anew
+// after each store, which may have moved it. The same split as the char scan:
+//
+//   const __asm = Math.min(B, a.length, b.length)
+//   for (let i = C; i < __asm; i++) BODY
+//   for (let i2 = Math.max(C, Math.ceil(__asm)) & 0x7fffffff; i2 < B; i2++) BODY′
+//
+// The main loop's counter stays below each array's length at entry, and the
+// body shrinks no array (canonical-bounds.js preservesLoopBounds, the proof's
+// own condition), so every `a[i]` in it is in bounds (scanBoundedArrIdx, a
+// bound a constant declared before the loop holds below the lengths): a read
+// loads, a store stores in place, nothing moves. The
+// tail is the loop as written for the steps past the shortest end, its
+// counter starting where the main loop's stopped (or at C, where the main
+// loop ran none). A NaN bound runs neither, as the loop as written runs none.
+//
+// The bound is evaluated once for the main loop and again at each step of
+// the tail, so it must not change in the main loop: a constant, a local Number
+// no closure names and the loop never writes, or the length of such an array,
+// which the main loop may grow but never shrinks (the tail reads it live). The
+// receivers are arrays of the same standing, never nullish, so reading their
+// lengths ahead of the loop throws nothing. Gates as the char scan's: a unit
+// counter from a constant at or above zero, no break or label (a main-loop
+// break must not fall into the tail), no closure (the clone would duplicate
+// it), at most 250 body nodes; `splitArrayScan: false` under optimize:'size'.
+const isArrayKind = (k) => k != null && tagOf(k) === K.ARRAY && (k & NULL_BITS) === 0
+const isNumberKind = (k) => k != null && tagOf(k) === K.NUMBER && (k & NULL_BITS) === 0
+const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
+  const [, init, cond, step, body] = node
+  if (!Array.isArray(cond) || cond[0] !== '<' || typeof cond[1] !== 'string') return false
+  const i = cond[1], B = cond[2]
+  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return false
+  const iDecl = init[1]
+  if (!Array.isArray(iDecl) || iDecl[0] !== '=' || iDecl[1] !== i) return false
+  // (a -0 start the tail could not hand back where the main loop ran no step)
+  const C = constIntExpr(iDecl[2])
+  if (C == null || C < 0 || Object.is(C, -0) || !isUnitIncrement(step, i)) return false
+  if (hasOp(body, SPLIT_BLOCKERS) || nodeSize(body) > 250) return false
+  if (isReassigned(body, i) || containsDeclOf(body, i)) return false
+  const loop = [';', body, step]
+  const steady = (name) => typeof name === 'string' && name !== i && stable(name) && !isReassigned(loop, name)
+  // the bound: a constant, a steady Number, or a steady array's length (a
+  // constant holding one, `const n = a.length`, is that length)
+  const intBound = constIntExpr(B) != null
+  const boundRecvs = intBound ? [] : lengthRecvs(typeof B === 'string' ? consts.get(B) : B)
+  if (!intBound && !(typeof B === 'string' && steady(B) && isNumberKind(view.kindOfExpr(B))) &&
+      !(boundRecvs.length === 1 && steady(boundRecvs[0]) && isArrayKind(view.kindOfExpr(boundRecvs[0])))) return false
+  // the arrays the counter indexes, those the bound does not already hold it
+  // below, nor a length the program fixes (a literal never resized) at or past it
+  const recvs = [], fixedPast = (r) => intBound && (view.fixedLenOfExpr?.(r) ?? -1) >= constIntExpr(B)
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === '[]' && n.length === 3 && n[2] === i && typeof n[1] === 'string' && !recvs.includes(n[1]) && !boundRecvs.includes(n[1]) &&
+        n[1] !== B && steady(n[1]) && isArrayKind(view.kindOfExpr(n[1])) && !fixedPast(n[1])) recvs.push(n[1])
+  } })
+  if (!recvs.length || !preservesLoopBounds(body, view, [...recvs, ...boundRecvs, i])) return false
+
+  const declNames = new Set()
+  collectBindings(body, declNames)
+  const rename = new Map()
+  for (const d of declNames) rename.set(d, `${T}as${freshId(ctx)}_${d}`)
+  const i2 = `${T}asi${freshId(ctx)}`
+  const subst = new Map([[i, i2]])
+  const tailBody = cloneWithSubst(body, subst, rename)
+  const tailStep = cloneWithSubst(step, subst, new Map())
+
+  includeModule('math')  // plan-time injection of math.min/max/ceil — prepare's auto-import has already run
+  // The bound, a constant both loops see (a copy a later pass makes of the
+  // main loop renames what the loop declares, never what it reads), with the
+  // summary's hull of it (summary/index.js noteHull): the counted loop's span.
+  // (a min of int32s, a constant's or a length's, is one: in a word, so no later
+  // pass versions the main loop on its integrality)
+  const M = `${T}asm${freshId(ctx)}`, min = ['()', 'math.min', [',', clonePlain(B), ...recvs.map(r => ['.', r, 'length'])]]
+  const bound = ['=', M, intBound || boundRecvs.length ? ['|', min, [null, 0]] : min]
+  const top = 0x1fffffff   // an array holds fewer than 2^29 elements
+  bound.lo = intBound ? Math.min(constIntExpr(B), 0) : boundRecvs.length ? 0 : null
+  bound.hi = intBound ? Math.max(Math.min(constIntExpr(B), top), bound.lo) : top
+  if (bound.lo == null) { delete bound.lo; delete bound.hi }
+  node[2] = ['<', i, M]
+  // The main loop's exit value: an integral min itself, a fraction the first
+  // integer above it, C where it ran no step; masked to a word, so the tail
+  // indexes the arrays as the loop as written does. It is below 2^29 there,
+  // and NaN, which the mask makes 0, only for a NaN bound, past which the
+  // tail runs no step.
+  const end = intBound ? M : ['()', 'math.ceil', M]
+  const start = ['&', ['()', 'math.max', [',', [null, C], end]], [null, 0x7fffffff]]
+  const tailInit = ['let', ['=', i2, start]]
+  parent[idx] = [';', ['const', bound], node, ['for', tailInit, ['<', i2, clonePlain(B)], tailStep, tailBody]]
+  return true
+}
+
+export const splitArrayScanLoops = () => {
+  if (!optimizing() || ctx.transform.optimize?.splitArrayScan === false) return false
+  let changed = false
+  for (const func of ctx.funcs.list) {
+    if (func.raw || !func.body) continue
+    // (a split loop runs a copy of its body past the array: none past the function's growth budget, src/growth.js)
+    if (nodeSize(func.body) > SOURCE_FULL) continue
+    const view = ctx.summary?.at(func.sig) ?? null
+    if (!view) continue
+    // a local no closure names: only the function's own statements write it
+    const captured = new Set()
+    walkAst(func.body, { enter: (n) => {
+      if (n[0] !== '=>') return
+      walkAst(n, { enter: (m) => { for (let k = 1; k < m.length; k++) if (typeof m[k] === 'string') captured.add(m[k]) } })
+      return false
+    } })
+    const locals = new Set((func.sig?.params ?? []).map(p => p.name))
+    collectBindings(func.body, locals)
+    const stable = (name) => locals.has(name) && !captured.has(name)
+    // what each constant holds (prepared names are the function's own, one each)
+    const consts = new Map()
+    walkAst(func.body, { enter: (n) => {
+      if (n[0] === '=>') return false
+      if (n[0] === 'const') for (let k = 1; k < n.length; k++) if (Array.isArray(n[k]) && n[k][0] === '=' && typeof n[k][1] === 'string') consts.set(n[k][1], n[k][2])
+    } })
+    walkAst(func.body, { enter: (node, parent, idx) => {
+      if (node[0] === '=>') return false
+      if (node[0] === 'for' && node.length === 5 && parent &&
+          trySplitArrayFor(node, parent, idx, view, stable, consts)) { changed = true; return false }
+    } })
   }
   return changed
 }

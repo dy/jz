@@ -17,6 +17,20 @@ import { run, oracle, compile, compileInProcess } from './util.js'
 import { levels, onKernel } from './_matrix.js'
 
 
+// The innermost loops of a function's text: the kernel's own, apart from what
+// stands before them in the loops around (a save of the array for the reset,
+// once ahead of a loop whose stores are in bounds, emit/control-flow.js).
+const innerLoops = (text) => {
+  const out = []
+  for (let at = text.indexOf('(loop '); at >= 0; at = text.indexOf('(loop ', at + 1)) {
+    let depth = 0, end = at
+    for (; end < text.length; end++) { if (text[end] === '(') depth++; else if (text[end] === ')' && --depth === 0) break }
+    const body = text.slice(at, end)
+    if (!body.slice(6).includes('(loop ')) out.push(body)
+  }
+  return out
+}
+
 const both = (src, name = 'main') => {
   const truth = oracle(src)[name]()
   for (const optimize of levels(false, true))
@@ -67,7 +81,7 @@ test('struct-inline: replace store engages the packed i32 layout (values + wat)'
   ok(/i32\.store offset=12/.test(loop), 'packed 4×i32 element: last field at +12')
   ok(!/trunc_sat/.test(loop), 'no f64→i32 conversions in the kernel loop')
   ok(!/call \$__mkptr/.test(loop), 'no element re-boxing in the kernel loop')
-  ok(!/call \$__alloc/.test(loop), 'no allocation in the kernel loop')
+  ok(innerLoops(body).every(l => !/call \$__alloc/.test(l)), 'no allocation in the kernel loop')
 })
 
 test('struct-inline: float fields stay on f64 cells, replace store still engages', () => {
@@ -78,7 +92,7 @@ test('struct-inline: float fields stay on f64 cells, replace store still engages
   const body = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
   const loop = body.slice(body.indexOf('(loop'))
   ok(/f64\.store offset=24/.test(loop), 'f64 cells: last field at +24')
-  ok(!/call \$__alloc/.test(loop), 'no allocation in the kernel loop')
+  ok(innerLoops(body).every(l => !/call \$__alloc/.test(l)), 'no allocation in the kernel loop')
 })
 
 test('struct-inline: odd field count packs with a pad cell', () => {

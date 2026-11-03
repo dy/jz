@@ -81,12 +81,12 @@ const LEVEL_PRESETS = Object.freeze({
   // const + op per site) that only pays off on serial recurrences — speed-tier only.
   2: L2_PRESET,
   // 'fast': COMPILE-BUDGET preset — level-2 shapes with watr (the final WAT
-  // fixpoint) and splitCharScan off. ~2-3× faster compiles on large inputs at
+  // fixpoint) and the scan splits off. ~2-3× faster compiles on large inputs at
   // ~+30% output size (measured). This is the EXPLICIT form of the retired
   // hidden auto-tuner that used to flip watr:false past AST-size thresholds
   // (dead code changed retained code's bytes — the default must name ONE
   // stable pipeline). For REPL/bundler feedback loops, not shipping builds.
-  fast: Object.freeze({ ...L2_PRESET, watr: false, splitCharScan: false }),
+  fast: Object.freeze({ ...L2_PRESET, watr: false, splitCharScan: false, splitArrayScan: false }),
   // Empty builders reserve four elements. A sixteen-element floor retains
   // unused storage in short-lived lists; larger builders grow geometrically
   // or use their proven capacity. Named-property sidecars keep the common two-slot policy:
@@ -128,7 +128,7 @@ const LEVEL_PRESETS = Object.freeze({
   size: Object.freeze({
     ...ALL_ON,
     watrProfile: null,        // keep watr's OWN size-leaning default (outline/tailmerge/rettail on) — the one tier where those size-for-speed folds belong
-    smallConstForUnroll: false, nestedSmallConstForUnroll: false, splitScratch: false, vectorizeLaneLocal: false, splitCharScan: false,
+    smallConstForUnroll: false, nestedSmallConstForUnroll: false, splitScratch: false, vectorizeLaneLocal: false, splitCharScan: false, splitArrayScan: false,
     countedLoops: false,      // a versioned loop keeps its original as the other arm — speed-for-size
     hoistGlobalConstLoads: false, maskedSuffixGuard: false,
     recursionUnroll: false,   // body tripling is a size regression — speed-only

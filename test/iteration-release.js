@@ -307,7 +307,8 @@ test('iteration release: a loop that allocates nothing as emitted carries no com
   ok(steps.length > 0 && !/"call","\$__alloc/.test(body), 'the step allocates nothing as emitted')
   ok(!/"call","\$__(gc_begin|iter_release|iter_take)"|"\$__ibase"|"\$__gc_epoch"/.test(body), 'its loops test neither the compaction\'s threshold nor the release\'s')
   // and the receiver's forward hop leaves them (optimize/forward-hops.js): a compaction's forward rebound it
-  const loops = find(steps, n => n[0] === 'loop' && find(n.slice(1), m => m[0] === 'loop').length === 0)
+  // (every step function's: `find` reads a node's operands, from its second entry)
+  const loops = steps.flatMap(f => find(f, n => n[0] === 'loop' && find(n.slice(1), m => m[0] === 'loop').length === 0))
   ok(loops.length > 0, 'the step keeps its loops')
   for (const l of loops) is(find(l, isHop).length, 0, `no hop inside ${l[1]}`)
   // a call keeps nothing: the memory twenty calls leave is what one leaves
