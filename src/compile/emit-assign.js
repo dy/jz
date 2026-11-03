@@ -1202,8 +1202,11 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
   // self-compile `ctx.func.X = …` writes (e.g. finallyStack), dropping try/finally.
   // A binding the summary shapes but that may be nullish (an element of a
   // holey array) holds no layout of its own; its reads take the summary's
-  // with a nullish test, and so does its write.
-  const nameSid = typeof obj === 'string' && ctx.schema.idOf(obj) == null && !ctx.schema.poisoned?.has(obj)
+  // with a nullish test, and so does its write. So does a binding prepare
+  // could bind to no one literal (`let s = m.get(k); if (!s) s = {…}`, a
+  // poisoned name): the summary's layout is the one every value it holds has,
+  // the layout its reads take.
+  const nameSid = typeof obj === 'string' && ctx.schema.idOf(obj) == null
     ? ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj) : null
   if (typeof obj !== 'string' || nameSid != null) {
     const sid = typeof obj === 'string' ? nameSid : ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)

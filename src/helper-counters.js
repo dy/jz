@@ -18,6 +18,7 @@ export const HELPER_COUNTERS = [
   ['__is_truthy', 'is_truthy'],
   ['__ptr_type', 'ptr_type'],
   ['__ptr_offset', 'ptr_offset'],
+  ['__ptr_offset_fwd', 'ptr_offset_fwd'],
   ['__len', 'len'],
   ['__length', 'length'],
   ['__typed_idx', 'typed_idx'],

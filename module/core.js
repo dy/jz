@@ -28,6 +28,7 @@ import { nanPrefixHex, nanPrefixMaskHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuar
 import { schemaValueIR, initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes, stringIndexWat } from './collection.js'
 import { hasDurableReset } from './collection/durable.js'
+import { ordUsedAddrWat } from './collection/ordered.js'
 import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
 import { registerErrorClasses, throwErrorWat, requireReceiverWat, throwHelperName } from './core/error-object.js'
@@ -199,7 +200,7 @@ export default (ctx) => {
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
     __hash_keys_ro: ['__ptr_offset', '__prop_order', '__alloc_hdr', '__mkptr'],
-    __coll_order: ['__alloc', '__order_sort'],
+    __coll_order: ['__alloc'],
     __own_order: () => ['__alloc', '__order_sort', '__is_str_key', ...(ctx.core.stdlib['__char_at'] ? ['__str_index_key'] : [])],
     __prop_order: () => ['__alloc', '__order_sort', '__is_str_key', ...(ctx.core.stdlib['__char_at'] ? ['__str_index_key'] : [])],
     __order_sort: ['__alloc'],
@@ -1340,18 +1341,20 @@ export default (ctx) => {
 
   }
 
-  // Build an insertion-ordered list of live slot offsets for a Set/Map/HASH
-  // backing table at $off (cap slots of $stride bytes). Returns a fresh i32 array
-  // (live-count entries) of slot offsets sorted by packed sequence (the insertion
-  // counter rides in each entry's hash-word high 32 bits — see collection.js's
-  // seqStore). Every order-sensitive iteration (keys/values/entries, for-in,
-  // spread, JSON, Map copy) walks this instead of raw slot order, so jz matches
-  // the JS spec's insertion order. Lives in core (not collection) because object
-  // and json iterate HASH tables without pulling the collection module. A table
-  // places its entries by hash, so the slots come in no order: up to
-  // ORDER_SORT_MIN entries an insertion sort orders them, past it a radix sort
-  // (`__order_sort`), linear in the entries where the insertion sort's work
-  // grows with their square.
+  // Build an insertion-ordered list of live slot offsets for a backing table at
+  // $off (cap slots of $stride bytes): `__coll_order` a Set's or a Map's, whose
+  // table already holds its entries in order (module/collection/ordered.js),
+  // `__prop_order`/`__own_order` a HASH's, whose table places its entries by
+  // hash. Returns a fresh i32 array (live-count entries) of slot offsets; a
+  // HASH's are sorted by packed sequence (the insertion counter rides in each
+  // entry's hash-word high 32 bits — see collection/upsert.js's seqStore).
+  // Every order-sensitive iteration (keys/values/entries, for-in, spread,
+  // JSON, Map copy) walks this instead of raw slot order, so jz matches the JS
+  // spec's insertion order. Lives in core (not collection) because object and
+  // json iterate HASH tables without pulling the collection module. A HASH's
+  // slots come in no order: up to ORDER_SORT_MIN entries an insertion sort
+  // orders them, past it a radix sort (`__order_sort`), linear in the entries
+  // where the insertion sort's work grows with their square.
   //
   // $__coll_order_n: the buffer's REAL live-entry extent, stamped into this global
   // right before return. Every caller that treats the returned buffer as a bound
@@ -1379,7 +1382,28 @@ export default (ctx) => {
   // the most entries the insertion sort orders; past it the radix sort's
   // passes cost less than its moves (__order_sort below)
   const ORDER_SORT_MIN = 64
-  for (const [name, propKeys, symbols] of [['__coll_order', false, true], ['__prop_order', true, false], ['__own_order', true, true]])
+  // A Set's or a Map's live entries: its table keeps them in insertion order
+  // (module/collection/ordered.js), so the list is a walk of the appended
+  // entries past the tombstones, sized by the appended count (never below the
+  // live one), with no ranks and no sort.
+  ctx.core.stdlib['__coll_order'] = () => `(func $__coll_order (param $off i32) (param $cap i32) (param $stride i32) (result i32)
+    (local $i i32) (local $n i32) (local $slot i32) (local $buf i32) (local $used i32)
+    (global.set $__coll_order_n (i32.const 0))
+    (if (i32.lt_u (local.get $off) (i32.const ${HEAP.START})) (then (return (call $__alloc (i32.const 0)))))
+    (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $stride)')}))
+    (local.set $buf (call $__alloc (i32.shl (local.get $used) (i32.const 2))))
+    (block $done (loop $each
+      (br_if $done (i32.ge_u (local.get $i) (local.get $used)))
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $stride))))
+      (if (i64.ne (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
+        (then
+          (i32.store (i32.add (local.get $buf) (i32.shl (local.get $n) (i32.const 2))) (local.get $slot))
+          (local.set $n (i32.add (local.get $n) (i32.const 1)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $each)))
+    (global.set $__coll_order_n (local.get $n))
+    (local.get $buf))`
+  for (const [name, propKeys, symbols] of [['__prop_order', true, false], ['__own_order', true, true]])
   ctx.core.stdlib[name] = () => `(func $${name} (param $off i32) (param $cap i32) (param $stride i32) (result i32)
     (local $i i32) (local $n i32) (local $slot i32) (local $buf i32) (local $rk i32) ${propKeys ? '(local $ix i32)' : ''}
     (local $j i32) (local $k i32) (local $cur i32) (local $rank i64)

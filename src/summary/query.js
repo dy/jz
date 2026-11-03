@@ -32,6 +32,7 @@ export function summaryQueries(facts, internal = false) {
   const holdsCell = k => celled(k) || primArray(k)
   const canon = k => holdsCell(k) ? (k & ~UNKNOWN) | cell(paramOf(k)) : k
   const elemOf = k => celled(k) ? elems[cell(paramOf(k))] : ANY
+  const keysOf = k => celled(k) ? mapKeys?.get(cell(paramOf(k))) ?? K.NONE : ANY
   // The length of the array a value holds, where no array it can be changes
   // length (index.js `lens`): the literals' count, every stored index under it.
   const fixedLen = k => {
@@ -423,6 +424,13 @@ export function summaryQueries(facts, internal = false) {
         if (ATOMICS_VALUE_OPS.has(n[1])) {
           const recv = kindOfExpr(args(n[2])[0])
           return tagOf(recv) === K.NONE ? K.NONE : tagOf(recv) === K.TYPED ? typedElemKind(recv) : join(NUMBER, BIGINT)
+        }
+        // a Set's or a Map's for…of cursor (the solver's rule, summary/index.js)
+        if (n[1] === '__coll_start') return kindOfExpr(args(n[2])[0])
+        if (n[1] === '__coll_next') return BOOL
+        if (n[1] === '__coll_key' || n[1] === '__coll_val') {
+          const src = kindOfExpr(args(n[2])[0]), t = tagOf(src)
+          return t === K.MAP ? n[1] === '__coll_key' ? keysOf(src) : elemOf(src) : t === K.SET ? elemOf(src) : t === K.NONE ? K.NONE : ANY
         }
         return imports.has(n[1]) ? kindOfVal(imports.get(n[1])) : builtinResult(n[1])
       }

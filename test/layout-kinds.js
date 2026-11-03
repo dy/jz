@@ -262,9 +262,11 @@ test('golden[sameValueZeroIdentityChain]: $__same_value_zero\'s generated chain 
 // heap string, it dereferenced the float's low 32 bits as a string offset
 // via __str_eq and OOB-TRAPPED. Natural full-hash collisions are ~2^-32, far
 // outside what a jz-source fuzz probe could hit — this test reaches the same
-// runtime arm the way the runtime itself would (a genuine LANE hash-word
-// match), by writing the Set's own LANE/entry words directly, exactly as
-// __set_add itself does on an insert. See layout-kinds-doc.js's
+// runtime arm the way the runtime itself would (a genuine bucket and entry
+// hash match), by writing the Set's own bucket and entry hash words directly,
+// as __set_add itself does on an insert (module/collection/ordered.js: the
+// entries in insertion order, then the buckets, each `(hash & 0xFC000000) |
+// (entry index + 1)`). See layout-kinds-doc.js's
 // FINDINGS[identity-arm-divergence] for the full writeup.
 test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-aliasing hash collision (regression pin)', () => {
   const SET_ENTRY = 16
@@ -284,13 +286,12 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   const sBits = ex.mk()
   const off = Number(sBits & 0xFFFFFFFFn)
   const cap = dv.getInt32(off - 4, true)
-  const laneBase = off + cap * SET_ENTRY
-  let idx0 = -1
-  for (let i = 0; i < cap; i++) if (dv.getInt32(laneBase + i * 4, true) !== 0) { idx0 = i; break }
-  ok(idx0 >= 0, 'the string entry landed somewhere in the table')
-  const entryAddr = off + idx0 * SET_ENTRY
-  const hashWord = dv.getBigInt64(entryAddr, true)
-  const keyBits = dv.getBigInt64(entryAddr + 8, true)
+  const buckets = off + (cap - (cap >> 2) - 1) * SET_ENTRY
+  let b0 = -1
+  for (let b = 0; b < cap; b++) if (dv.getInt32(buckets + b * 4, true) !== 0) { b0 = b; break }
+  ok(b0 >= 0, 'the string entry is indexed by a bucket')
+  is(dv.getInt32(buckets + b0 * 4, true) & 0x03FFFFFF, 1, 'the bucket names the first entry')
+  const keyBits = dv.getBigInt64(off + 8, true)
 
   // 0x3ff20000ffffffff: exponent=0x3ff (finite), mantissa bits 47-50 = 4 (PTR.STRING),
   // aux bits (32-46) = 0 (no SSO/SLICE/INTERN alias), low 32 bits = 0xffffffff (a wildly
@@ -301,12 +302,10 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   const numberBits = new DataView(new ArrayBuffer(8))
   numberBits.setBigInt64(0, craftedBits, true)
   const hTarget = numHashLiteral(numberBits.getFloat64(0, true)) >>> 0
-  const idxTarget = hTarget & (cap - 1)
-  const targetEntryAddr = off + idxTarget * SET_ENTRY
-  dv.setBigInt64(targetEntryAddr, hashWord, true)
-  dv.setBigInt64(targetEntryAddr + 8, keyBits, true)
-  dv.setInt32(laneBase + idxTarget * 4, hTarget, true)
-  if (idxTarget !== idx0) dv.setInt32(laneBase + idx0 * 4, 0, true)
+  // the string entry takes the number's hash and the number's home bucket names it
+  dv.setUint32(off, hTarget, true)
+  dv.setInt32(buckets + b0 * 4, 0, true)
+  dv.setUint32(buckets + (hTarget & (cap - 1)) * 4, ((hTarget & 0xFC000000) | 1) >>> 0, true)
 
   // The fixed $__same_value_zero must return false (not crash) — it must reject
   // the non-NaN-boxed operand exactly like $__eq/$__eq_strict already do. `hasQ`'s

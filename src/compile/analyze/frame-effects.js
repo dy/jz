@@ -212,6 +212,9 @@ const PURE_CALLEES = /^(\uE000key|__to_property_key|__object_rest|Function|readS
 const ENUMERATING = /^(__object_rest|Object\.(values|entries)|JSON\.stringify|structuredClone)$/
 const runsGetters = (name) => viewsOn() && ENUMERATING.test(name) || name === 'JSON.stringify' && !!ctx.funcs.runtimeRoots?.has(TO_JSON)
 
+// A Set's or a Map's for…of cursor (module/collection.js `__coll_next`): reads of its table.
+const COLL_CURSOR = /^__coll_(start|next|key|val)$/
+
 // Callees whose result is a scalar: no allocation. A predicate's is a boolean.
 const SCALAR_CALLEES = /^((f32x4|f64x2|i32x4|v128)\.\w+|crypto\.getRandomValues|fs\.readSync|[Mm]ath\.\w+|Number(\.\w+)?|Boolean|isNaN|isFinite|parseInt|parseFloat|Date\.now|performance\.now|Array\.isArray|ArrayBuffer\.isView|Object\.(is|hasOwn|isFrozen|isSealed|isExtensible))$/
 
@@ -313,7 +316,7 @@ const ctorOf = (callee) => isName(callee) && callee.startsWith('new.') ? callee.
 export const listedBuiltin = (callee) => {
   const c = ctorOf(callee)
   if (c !== null) return FRESH_CTORS.test(c)
-  return callee === '__iter_arr' || callee === '__keys_ro' || callee === '__keys_dyn' || PURE_CALLEES.test(callee) ||
+  return callee === '__iter_arr' || callee === '__keys_ro' || callee === '__keys_dyn' || COLL_CURSOR.test(callee) || PURE_CALLEES.test(callee) ||
     FRESH_CTORS.test(callee) || WRITES_FIRST.test(callee) || READS_POINTER.test(callee) || PARK_LANE.test(callee) || callee === '__park_read_str'
 }
 
@@ -799,6 +802,8 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         return unknownCall('call __iter_arr')
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') { allocates(); return }
+      // a Set's or a Map's for…of cursor reads its table in place: no allocation, no store
+      if (COLL_CURSOR.test(callee)) return
       if (PURE_CALLEES.test(callee)) return pure(callee, args)
       if (FRESH_CTORS.test(callee)) { allocates(); if (callee === 'Map') mapEntries(args); return }   // constructors lowered to plain calls still read Map entries
       // a builtin writing into its first argument: a store into it

@@ -94,6 +94,7 @@ export function createActiveFunction({
     concatBufs: null,
     probeHoist: null,
     lenHoist: null,
+    collCursors: null,   // a Set's or a Map's for…of cursors by id → their locals (module/collection.js `__coll_next`)
     hoistTempDefs: null,
 
     // Expression-dispatch scopes. They are fields rather than module globals so

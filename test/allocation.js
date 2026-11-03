@@ -54,10 +54,14 @@ test('allocation: collection replacement at the growth threshold preserves its t
       for (const key of s) setValues.push(m.get(key))
       return JSON.stringify([m.size, s.size, values, setValues])
     }`
+  // A table of `cap` buckets holds cap - cap/4 - 1 entries (module/collection/ordered.js):
+  // the key after the ones that fill it grows the table.
+  const usable = cap => cap - (cap >> 2) - 1
+  const full = (n, floor) => { let cap = floor; while (usable(cap) < n) cap <<= 1; return usable(cap) === n }
   for (const level of levels(0, 1, 2, 3, 'size')) for (const floor of [2, 8]) for (const compact of [false, true]) {
     const e = jz(source, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
     const ref = oracle(source.replaceAll('__heap_mark()', '0'))
-    for (const [n, mixed] of [[0, 0], [2, 0], [3, 0], [6, 0], [12, 0], [24, 0], [6, 1], [6, 1], [0, 0], [6, 0]]) {
+    for (const [n, mixed] of [[0, 0], [2, 0], [3, 0], [5, 0], [6, 0], [11, 0], [12, 0], [23, 0], [24, 0], [6, 1], [6, 1], [0, 0], [6, 0]]) {
       e.init(n, mixed); ref.init(n, mixed)
       for (const rounds of [0, 1, 3, 1]) {
         is(e.replace(rounds), 0, `O${level} floor=${floor} compact=${compact}, size=${n}: replacements allocate nothing`)
@@ -65,7 +69,8 @@ test('allocation: collection replacement at the growth threshold preserves its t
         is(e.state(), ref.state(), 'replacement keeps size, key identity and insertion order')
       }
       const growth = e.append(); ref.append()
-      if (n === 6 || n === 12 || n === 24 || floor === 2 && (n === 2 || n === 3)) ok(growth > 0, 'a new key at the threshold still grows')
+      if (full(n, floor)) ok(growth > 0, 'a new key at the threshold still grows')
+      else is(growth, 0, 'a new key below the threshold takes a free entry')
       is(e.state(), ref.state(), 'new-key insertion retains every collision-chain entry')
       e.remove(); ref.remove(); e.replace(2); ref.replace(2)
       is(e.state(), ref.state(), 'delete and reinsert retain their new insertion order')
@@ -388,9 +393,10 @@ test('allocation: seeded collections apply their capacity floor without adding a
     const ex = jz(src, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
     for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 16, 0, 4, 4]) {
       const cap = Math.max(floor, 2 ** Math.ceil(Math.log2(Math.max(1, n * 2))))
-      const mapBytes = 16 + cap * (compact ? 24 : 28)
+      // a Set's and a Map's table is its entries' stride a bucket, in either profile (module/collection/ordered.js)
+      const mapBytes = 16 + cap * 24
       is(ex.map(n), mapBytes, `Map(${n}), floor ${floor}, compact ${compact}, O${level}`)
-      is(ex.set(n), 16 + cap * (compact ? 16 : 20), `Set(${n}), floor ${floor}, compact ${compact}, O${level}`)
+      is(ex.set(n), 16 + cap * 16, `Set(${n}), floor ${floor}, compact ${compact}, O${level}`)
       is(ex.copy(), mapBytes, 'a dense copy allocates only its table')
       is(ex.read(), JSON.stringify([Array.from({ length: n }, (_, i) => [i, i + 1]), Array.from({ length: n }, (_, i) => i)]), 'contents and insertion order survive copying and repeated construction')
     }

@@ -623,6 +623,12 @@ VT['()'] = (args) => {
   }
   // for-in's read-only key list (src/prepare) — always an Array of key strings.
   if (callee === '__keys_ro' || callee === '__keys_dyn') return VAL.ARRAY
+  // A Set's or a Map's for…of cursor (module/collection.js `__coll_next`): the
+  // opening yields the collection, a step a boolean carrier, the reads the
+  // summary's kinds of a key and a value.
+  if (callee === '__coll_start') return valTypeOf(args[1]?.[0] === ',' ? args[1][1] : args[1])
+  if (callee === '__coll_next') return VAL.BOOL
+  if ((callee === '__coll_key' || callee === '__coll_val') && ctx.summary) return summaryVal(ctx.summary.at(ctx.func.current).kindOfExpr(['()', ...args]))
   // Closure-table dispatch `NAME[idx](args)` on a table the lattice scans
   // proved indexed-call-only (dyn-closure-tables.js): the summary's contract of
   // the closure set the table holds, the join of its members' results.

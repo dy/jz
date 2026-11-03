@@ -2126,6 +2126,17 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         if (t === K.MAP) { escape(keysOf(src)); escape(elemOf(src)) }
         return t === K.MAP || t === K.SET || t === K.STRING ? kind(K.ARRAY) : ANY
       }
+      // A for…of over a Set or a Map walks its table (compile/plan/index-array-patterns.js
+      // cursorLoop, module/collection.js): the opening yields the collection, a step
+      // answers whether an entry is taken, and the reads are its key and value.
+      if (callee === '__coll_start') return n ? ks[base] : K.NONE
+      if (callee === '__coll_next') return BOOL
+      if (callee === '__coll_key' || callee === '__coll_val') {
+        const src = n ? ks[base] : K.NONE, t = tagOf(src)
+        if (t === K.NONE) return K.NONE
+        if (t === K.MAP) return callee === '__coll_key' ? keysOf(src) : elemOf(src)
+        return t === K.SET ? elemOf(src) : ANY
+      }
       if (node && ITER_STEP.test(callee)) { const r = cursorStep(callee, node); if (r !== null) return r }
       // The iterator helpers' results are the summary's own (above); their
       // bodies still run over the arguments' kinds without their identities,

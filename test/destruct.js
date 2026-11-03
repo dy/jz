@@ -1016,17 +1016,19 @@ test('destruct: observable Map entry identities keep their pairs', () => {
   }
 })
 
-test('destruct: private Map columns retain the original entry snapshot', () => {
+test('destruct: a destructured Map walk sees the body\'s writes, as JS iterates', () => {
   const src=`export function f(){
     const m=new Map([[1,2],[3,4]]);let s=0
     for(const [k,v] of m){m.set(3,40);m.set(5,6);s+=k+v}
     return [s,m.size,m.get(3)]
   }`
-  // Collection iteration is a documented snapshot in jz.
-  const ref=oracle(src.replace('of m)', 'of [...m])'))
+  // The walk reads each entry where the table holds it as the loop reaches it
+  // (compile/plan/index-array-patterns.js cursorLoop): an updated value and an
+  // added entry are seen.
+  const ref=oracle(src)
   for(const optimize of ownedLevels(0,1,2,3,'size')){
     const p=run(src,{optimize})
-    is(p.f(),ref.f(),`${optimize}: snapshot precedes every body write`)
+    is(p.f(),ref.f(),`${optimize}: the body's writes are seen`)
     is(p.f(),ref.f(),'repeat')
   }
 })

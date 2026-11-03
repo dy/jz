@@ -49,6 +49,7 @@ import { ctx, PTR, LAYOUT, HEAP, FORWARDING_MASK, declGlobal } from '../../src/c
 import { TOMB_NAN } from '../../src/ir.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, STR_HCACHE_BIT, ARRAY_RAW } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
+import { ordEntriesWat, ordUsedAddrWat } from '../collection/ordered.js'
 import { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP, compactSlack, PRESSURE_SLACK, MARGIN } from './stub-log.js'
 export { compactOn, sitesOn, stubEntries, stubLogBytes, declarePin, declareSites, stubLogIR, COST_CAP }
 import { valKindToPtr } from '../../src/ir/pointers.js'
@@ -131,6 +132,13 @@ export const registerCompact = () => {
   const isBox = (b) => `(i64.eq (i64.and ${b} (i64.const ${nanPrefixMaskHex()})) (i64.const ${nanPrefixHex()}))`
   const lane = collectionLaneBytes()
   const has = (g) => ctx.scope.globals.has(g)
+  // A Set's or a Map's entries to walk: its appended count, where the block fits
+  // whole (`__gc_fit` returned all its buckets); none of a block cut short,
+  // whose count lies past what fits (the load stays inside what does).
+  const ordFit = (p, fit, e) => `(select
+            (i32.load ${ordUsedAddrWat(p, fit, e)})
+            (i32.const 0)
+            (i32.eq ${fit} (i32.load (i32.sub ${p} (i32.const 4)))))`
 
   // Whether the word names memory of the module's: a box with a heap tag, not
   // a string held in its pointer.
@@ -499,11 +507,16 @@ export const registerCompact = () => {
     (if (i32.and (i32.shl (i32.const 1) (local.get $t)) (i32.const ${(1 << PTR.HASH) | (1 << PTR.SET) | (1 << PTR.MAP)}))
       (then
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
-        (local.set $stride (i32.add (local.get $e) (i32.const ${lane})))
+        ;; a HASH's slots carry the hash lane after them; a Set's or a Map's
+        ;; table is its entries' stride alone (module/collection/ordered.js)
+        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) (local.get $e) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (local.get $stride)))
         (call $__gc_keep (i32.sub (local.get $p) (i32.const 16)) (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $stride))))
         (call $__gc_list (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))) (local.get $p))
         (if (i32.ne (local.get $t) (i32.const ${PTR.HASH})) (then ${props('(local.get $p)')}))
+        ;; a Set's or a Map's entries end at its appended count
+        (if (i32.ne (local.get $t) (i32.const ${PTR.HASH}))
+          (then (local.set $cap ${ordFit('(local.get $p)', '(local.get $cap)', '(local.get $e)')})))
         (local.set $n (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $e))))
         (block $done (loop $entry
           (br_if $done (i32.ge_u (local.get $p) (local.get $n)))
@@ -671,7 +684,10 @@ export const registerCompact = () => {
       (then
         (if (i32.ne (local.get $t) (i32.const ${PTR.HASH})) (then ${fwdProps('(local.get $p)')}))
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
-        (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (i32.add (local.get $e) (i32.const ${lane}))))
+        (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4)))
+          (select (i32.const ${MAP_ENTRY + lane}) (local.get $e) (i32.eq (local.get $t) (i32.const ${PTR.HASH})))))
+        (if (i32.ne (local.get $t) (i32.const ${PTR.HASH}))
+          (then (local.set $cap ${ordFit('(local.get $p)', '(local.get $cap)', '(local.get $e)')})))
         (local.set $n (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $e))))
         (block $done (loop $entry
           (br_if $done (i32.ge_u (local.get $p) (local.get $n)))
@@ -801,6 +817,52 @@ export const registerCompact = () => {
       (br $entry)))
     (i32.store (i32.sub (local.get $p) (i32.const 8)) (local.get $n))${addr ? '\n    (i32.const 1)' : ''})`
   }
+
+  // A Set's or a Map's table keyed by identity, after the move: its entries stay
+  // where they stand, in order (module/collection/ordered.js), so only the
+  // buckets are laid anew, each moved key's hash stored back into its entry
+  // beside its insertion sequence. A tombstone's bucket goes; no entry moves,
+  // so no reset log follows one.
+  ctx.core.stdlib['__gc_rehash_ord'] = `(func $__gc_rehash_ord (param $p i32) (param $es i32)
+    (local $cap i32) (local $used i32) (local $ix i32) (local $m i32) (local $i i32) (local $slot i32)
+    (local $key i64) (local $h i32) (local $b i32) (local $any i32)
+    (local.set $cap (i32.load (i32.sub (local.get $p) (i32.const 4))))
+    (local.set $used (i32.load ${ordUsedAddrWat('(local.get $p)', '(local.get $cap)', '(local.get $es)')}))
+    ;; keys hashed by their bits: any that names memory the move may have changed
+    (block $scan (loop $probe
+      (br_if $scan (i32.ge_u (local.get $i) (local.get $used)))
+      (local.set $key (i64.load offset=8 (i32.add (local.get $p) (i32.mul (local.get $i) (local.get $es)))))
+      (if (call $__gc_box (local.get $key))
+        (then (if (i32.and (i32.shl (i32.const 1) ${tagOf('(local.get $key)')}) (i32.const ${IDENTITY_TAGS})) (then (local.set $any (i32.const 1))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $probe)))
+    (if (i32.eqz (local.get $any)) (then (return)))
+    (local.set $ix (i32.add (local.get $p) (i32.mul ${ordEntriesWat('(local.get $cap)')} (local.get $es))))
+    (local.set $m (i32.sub (local.get $cap) (i32.const 1)))
+    (memory.fill (local.get $ix) (i32.const 0) (i32.shl (local.get $cap) (i32.const 2)))
+    (local.set $i (i32.const 0))
+    (block $done (loop $entry
+      (br_if $done (i32.ge_u (local.get $i) (local.get $used)))
+      (local.set $slot (i32.add (local.get $p) (i32.mul (local.get $i) (local.get $es))))
+      (local.set $key (i64.load offset=8 (local.get $slot)))
+      (if (i64.ne (local.get $key) (i64.const ${TOMB_NAN}))
+        (then
+          (local.set $h (i32.load (local.get $slot)))
+          (if (call $__gc_box (local.get $key))
+            (then (if (i32.and (i32.shl (i32.const 1) ${tagOf('(local.get $key)')}) (i32.const ${IDENTITY_TAGS}))
+              (then
+                (local.set $h (call $__map_hash (local.get $key)))
+                (i32.store (local.get $slot) (local.get $h))))))
+          (local.set $b (i32.and (local.get $h) (local.get $m)))
+          (block $placed (loop $next
+            (br_if $placed (i32.eqz (i32.load (i32.add (local.get $ix) (i32.shl (local.get $b) (i32.const 2))))))
+            (local.set $b (i32.and (i32.add (local.get $b) (i32.const 1)) (local.get $m)))
+            (br $next)))
+          (i32.store (i32.add (local.get $ix) (i32.shl (local.get $b) (i32.const 2)))
+            (i32.or (i32.and (local.get $h) (i32.const ${0xFC000000 | 0})) (i32.add (local.get $i) (i32.const 1))))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $entry)))
+    )`
 
   // The table of named properties kept by address (module/collection.js
   // `__dyn_props`: a closure's, a shifted array's) keyed by the number of its
@@ -953,7 +1015,7 @@ export const registerCompact = () => {
     if (has('__jstack')) resets.push(`(global.set $__jstack (i32.const 0))`)
     if (has('__closure_spill')) resets.push(`(global.set $__closure_spill (i32.const 0))`)
     if (has('__jz_last_err_bits') && ctx.scope.globals.get('__jz_last_err_bits').mut) resets.push(`(global.set $__jz_last_err_bits (i64.const 0))`)
-    const rehashAt = (es) => rekeyOn() ? `(drop (call $__gc_rehash (i32.load (local.get $at)) (i32.const ${es}) (i32.const 0)))` : `(call $__gc_rehash (i32.load (local.get $at)) (i32.const ${es}))`
+    const rehashAt = (es) => `(call $__gc_rehash_ord (i32.load (local.get $at)) (i32.const ${es}))`
     const rehash = rebuildOn() ? `(local.set $i (i32.const 0))
     (block $done (loop $next
       (br_if $done (i32.ge_u (local.get $i) (global.get $__g_ln)))
@@ -1030,11 +1092,6 @@ export const registerCompact = () => {
       (if (i32.and (i32.eq (local.get $cnt) (i32.const ${PTR.ARRAY}))
             (i32.and (i32.eq (i32.load (i32.sub (local.get $p) (i32.const 12))) (i32.const -1)) (i32.ne (i32.load (i32.sub (local.get $p) (i32.const 16))) (i32.const -1))))
         (then (local.set $need (i64.add (local.get $need) (i64.const 16)))))
-      ${rebuildOn() ? `(if (i32.or (i32.eq (local.get $cnt) (i32.const ${PTR.SET})) (i32.eq (local.get $cnt) (i32.const ${PTR.MAP})))
-        (then
-          (local.set $bits (i64.mul (i64.extend_i32_u (i32.load (i32.sub (local.get $p) (i32.const 4))))
-            (select (i64.const ${SET_ENTRY}) (i64.const ${MAP_ENTRY}) (i32.eq (local.get $cnt) (i32.const ${PTR.SET})))))
-          (if (i64.gt_u (local.get $bits) (local.get $rh)) (then (local.set $rh (local.get $bits))))))` : ''}
       (br $entry)))${rekeyOn() ? `
     ;; and the table of named properties kept by address, rebuilt there too (\`__gc_rekey_dyn\`)
     (if (f64.ne (global.get $__dyn_props) (f64.const 0))
@@ -1158,10 +1215,11 @@ export const COMPACT_DEPS = {
   __gc_fwd: ['__gc_box', '__gc_canon', '__gc_fwd_raw'],
   __gc_update: ['__gc_fwd', '__gc_fwd_raw', '__gc_row', '__gc_defer', '__gc_fit', '__gc_canon'],
   __gc_rehash: ['__gc_box', '__gc_room', '__map_hash'],
+  __gc_rehash_ord: ['__gc_box', '__map_hash'],
   __gc_roots: () => ['__gc_mark', '__gc_fwd', '__gc_fwd_raw', '__gc_keep', '__gc_rec', '__gc_push', '__mkptr'],
   __gc_begin: ['__gc_room', '__gc_roots'],
   __gc_walk: ['__gc_mark', '__gc_update', '__gc_fwd_raw', '__gc_roots', '__gc_was', '__gc_canon', '__gc_seen', '__gc_list'],
   __gc_was: [],
-  __gc_move: () => ['__gc_fwd', ...(ctx.linkDemand.set || ctx.linkDemand.map ? ['__gc_rehash'] : [])],
+  __gc_move: () => ['__gc_fwd', ...(ctx.linkDemand.set || ctx.linkDemand.map ? ['__gc_rehash_ord'] : [])],
   __compact: ['__gc_begin', '__gc_walk', '__gc_move'],
 }

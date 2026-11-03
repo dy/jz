@@ -216,7 +216,12 @@ const versionPattern = (list, at, view, guard, pulls, close) => {
 // Its private index is below the snapshot's length, so the pair read cannot
 // be absent. Keep the proof local to that loop and refuse escaped snapshots,
 // writes to their storage, changed bounds, or rebound pair bindings.
-const presentMapPairs = (loop, view, getBindings) => {
+// `collectionLoop` reads the prepared shape (prepare/handlers.js: `for (let a =
+// __iter_arr(src), i = 0; i < (a.length | 0); ++i)`) over a source whose tag
+// is one of `tags`, or over its `keys()`, `values()` or `entries()` (`view`):
+// the snapshot, its counter, the collection and its tag, whether an element is
+// a [key, value] pair, and the bindings declared once from `a[i]`, or null.
+const collectionLoop = (loop, view, getBindings, tags) => {
   const init = loop[1], cond = loop[2], step = loop[3], body = loop[4]
   if (init?.[0] !== 'let' || init.length !== 3 || cond?.[0] !== '<' || step?.[0] !== '++') return null
   const [snapshot, counter] = init.slice(1)
@@ -225,8 +230,19 @@ const presentMapPairs = (loop, view, getBindings) => {
   if (typeof arr !== 'string' || typeof idx !== 'string' ||
       calleeOf(source) !== '__iter_arr' || counter[2]?.[0] != null || counter[2]?.[1] !== 0 ||
       length?.[0] !== '|' || length[1]?.[0] !== '.' || length[1][1] !== arr || length[1][2] !== 'length' || length[2]?.[0] != null || length[2]?.[1] !== 0 ||
-      cond[1] !== idx || step[1] !== idx ||
-      tagOf(view.kindOfExpr(source[2])) !== K.MAP || isReassigned(body, idx)) return null
+      cond[1] !== idx || step[1] !== idx || isReassigned(body, idx)) return null
+  // (a source that may be missing iterates as its kind; it throws as it opens)
+  let coll = source[2], mode = null
+  if (isArr(coll) && coll[0] === '()' && coll[2] == null && isArr(coll[1]) && coll[1][0] === '.' && VIEWS.has(coll[1][2])) {
+    const t = tagOf(core(view.kindOfExpr(coll[1][1])))
+    if ((t === K.MAP || t === K.SET) && !ctx.summary.memberMayBeOwnOn(coll[1][2], t === K.MAP ? VAL.MAP : VAL.SET)) { mode = coll[1][2]; coll = coll[1][1] }
+  }
+  const tag = tagOf(core(view.kindOfExpr(coll)))
+  if (!tags.includes(tag)) return null
+  // a Map's own elements and any `entries()` are pairs; a Set's, `keys()` and `values()` are scalars
+  const pair = mode === 'entries' || mode === null && tag === K.MAP
+  // a scalar element reads the key, but a Map's `values()` the value
+  const column = mode === 'values' && tag === K.MAP ? 1 : 0
   const bindings = getBindings(), use = bindings.get(arr)
   if (use?.[BINDING_USE_DECLS] !== 1 || !use[BINDING_USE_USES].every(u =>
     u[BINDING_USE_KIND] === USE.MEMBER_R && (u[BINDING_USE_OP] === '[]' || u[BINDING_USE_KEY] === 'length'))) return null
@@ -236,7 +252,13 @@ const presentMapPairs = (loop, view, getBindings) => {
     if (binding[BINDING_USE_DECLS] === 1 && value?.[0] === '[]' && value[1] === arr && value[2] === idx &&
         !binding[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.REASSIGN || u[BINDING_USE_KIND] === USE.CAPTURE)) present.add(name)
   }
-  return present.size ? present : null
+  return present.size ? { arr, idx, source: coll, tag, pair, column, present } : null
+}
+const VIEWS = new Set(['keys', 'values', 'entries'])
+// a Map's pairs, or any collection's `entries()` (a dense snapshot of fresh pairs)
+const presentMapPairs = (loop, view, getBindings) => {
+  const found = collectionLoop(loop, view, getBindings, [K.MAP, K.SET])
+  return found?.pair ? found.present : null
 }
 
 /** Every array pattern over a proven array in the program's functions reads by index. */
@@ -269,98 +291,111 @@ export const indexArrayPatterns = () => {
 }
 
 
-// An entry whose identity never escapes is just two columns. Capture both
-// columns before the loop so Map writes in its body keep snapshot semantics.
-const splitMapLoop = (loop, body, view, bindings) => {
-  const pairs = presentMapPairs(loop, view, () => bindings)
-  if (!pairs || ctx.summary.memberMayBeOwnOn('keys', VAL.MAP) ||
-      ctx.summary.memberMayBeOwnOn('values', VAL.MAP) || ctx.summary.memberMayBeOwnOn('size', VAL.MAP)) return false
-  const init = loop[1], source = init[1][2][2], arr = init[1][1], idx = init[2][1]
-  const kind = view.kindOfExpr(source)
-  if (hasTag(kind, K.NULLISH) || hasTag(kind, K.ABSENT)) return false
-  // The snapshot has only its bound read and the pair initializers.
+// A for…of over a Set or a Map whose entries never escape walks the table
+// where it stands (module/collection/ordered.js): a cursor takes each live
+// entry in insertion order as the loop reaches it, so an entry the body
+// deletes before its turn is skipped and one it adds is reached, as JS's live
+// iteration does, and nothing is copied. The key and the value are read into
+// locals as the body starts, where JS makes the entry's pair; a Map's pair is
+// those two (its reads by position, its length 2), a Set's element the key.
+// A source that may be missing throws as it opens, as `__iter_arr` does.
+const cursorLoop = (loop, body, view, bindings) => {
+  const found = collectionLoop(loop, view, () => bindings, [K.MAP, K.SET])
+  if (!found) return false
+  const { arr, idx, source, tag, pair } = found, pairs = found.present
+  // The snapshot has only its bound read and the element initializers.
   if (bindings.get(arr)[BINDING_USE_USES].length !== pairs.size + 1) return false
-  for (let again = true; again;) {
-    again = false
-    for (const [name, b] of bindings) if (!pairs.has(name) && b[BINDING_USE_DECLS] === 1 && pairs.has(b[BINDING_USE_INIT])) {
-      pairs.add(name); again = true
+  const id = freshId(ctx), es = tag === K.SET ? 16 : 24
+  const coll = `${T}coll${id}`, columns = [null, null], edits = []
+  // a Set's pair (its `entries()`) is the key twice
+  const column = i => columns[tag === K.SET ? 0 : i] ||= `${T}${i && tag !== K.SET ? 'cval' : 'ckey'}${id}`
+  if (!pair) {
+    // The element is the key (a Map's `values()`: the value): its initializers read the cursor's.
+    const walk = (n, parent, at) => {
+      if (!isArr(n) || n[0] == null || n[0] === 'str') return
+      if (n[0] === '[]' && n[1] === arr && n[2] === idx) { edits.push([parent, at, column(found.column)]); return }
+      for (let i = 1; i < n.length; i++) walk(n[i], n, i)
     }
-  }
-  for (const name of pairs) if (bindings.get(name)[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] !== USE.MEMBER_R && u[BINDING_USE_KIND] !== USE.BARE)) return false
-  const outside = n => {
-    if (n === loop) return false
-    if (typeof n === 'string') return pairs.has(n)
-    if (!isArr(n) || n[0] == null || n[0] === 'str') return false
-    for (let i = 1; i < n.length; i++) if (outside(n[i])) return true
-    return false
-  }
-  if (outside(body)) return false
-  const columns = [null, null], edits = []
-  const column = i => columns[i] ||= `${T}entry${freshId(ctx)}`
-  // Keep edits private until every occurrence has passed the identity proof.
-  const walk = (n, parent, at, discarded = false) => {
-    if (typeof n === 'string') {
-      if (!pairs.has(n)) return n !== arr
-      if (!discarded) return false
-      edits.push([parent, at, [null, 0]])
-      return true
-    }
-    if (!isArr(n) || n[0] == null || n[0] === 'str') return true
-    const op = n[0]
-    if (op === 'let' || op === 'const') {
-      const kept = []
-      for (let i = 1; i < n.length; i++) {
-        const d = n[i]
-        if (d?.[0] === '=' && pairs.has(d[1])) continue
-        if (d?.[0] === '=' && !walk(d[2], d, 2)) return false
-        kept.push(d)
+    walk(loop[4], loop, 4)
+  } else {
+    for (let again = true; again;) {
+      again = false
+      for (const [name, b] of bindings) if (!pairs.has(name) && b[BINDING_USE_DECLS] === 1 && pairs.has(b[BINDING_USE_INIT])) {
+        pairs.add(name); again = true
       }
-      if (kept.length !== n.length - 1) edits.push([parent, at, kept.length ? [op, ...kept] : [';']])
+    }
+    for (const name of pairs) if (bindings.get(name)[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] !== USE.MEMBER_R && u[BINDING_USE_KIND] !== USE.BARE)) return false
+    const outside = n => {
+      if (n === loop) return false
+      if (typeof n === 'string') return pairs.has(n)
+      if (!isArr(n) || n[0] == null || n[0] === 'str') return false
+      for (let i = 1; i < n.length; i++) if (outside(n[i])) return true
+      return false
+    }
+    if (outside(body)) return false
+    // Keep edits private until every occurrence has passed the identity proof.
+    const walk = (n, parent, at, discarded = false) => {
+      if (typeof n === 'string') {
+        if (!pairs.has(n)) return n !== arr
+        if (!discarded) return false
+        edits.push([parent, at, [null, 0]])
+        return true
+      }
+      if (!isArr(n) || n[0] == null || n[0] === 'str') return true
+      const op = n[0]
+      if (op === 'let' || op === 'const') {
+        const kept = []
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i]
+          if (d?.[0] === '=' && pairs.has(d[1])) continue
+          if (d?.[0] === '=' && !walk(d[2], d, 2)) return false
+          kept.push(d)
+        }
+        if (kept.length !== n.length - 1) edits.push([parent, at, kept.length ? [op, ...kept] : [';']])
+        return true
+      }
+      if ((op === '[]' || op === '.') && pairs.has(n[1])) {
+        const key = op === '.' ? n[2] : isArr(n[2]) && (n[2][0] == null || n[2][0] === 'str') ? n[2][1] : null
+        if (key === 'length') edits.push([parent, at, [null, 2]])
+        else if (key === 0 || key === '0' || key === 1 || key === '1') edits.push([parent, at, column(Number(key))])
+        else return false
+        return true
+      }
+      if (op === '.' || op === '?.') return walk(n[1], n, 1)
+      if (op === ':') return walk(n[2], n, 2)
+      for (let i = 1; i < n.length; i++) {
+        const unused = op === ';' || op === '{}' || op === ',' && (i < n.length - 1 || discarded)
+        if (!walk(n[i], n, i, unused)) return false
+      }
       return true
     }
-    if ((op === '[]' || op === '.') && pairs.has(n[1])) {
-      const key = op === '.' ? n[2] : isArr(n[2]) && (n[2][0] == null || n[2][0] === 'str') ? n[2][1] : null
-      if (key === 'length') edits.push([parent, at, [null, 2]])
-      else if (key === 0 || key === '0' || key === 1 || key === '1') edits.push([parent, at, ['[]', column(Number(key)), idx]])
-      else return false
-      return true
-    }
-    if (op === '.' || op === '?.') return walk(n[1], n, 1)
-    if (op === ':') return walk(n[2], n, 2)
-    for (let i = 1; i < n.length; i++) {
-      const unused = op === ';' || op === '{}' || op === ',' && (i < n.length - 1 || discarded)
-      if (!walk(n[i], n, i, unused)) return false
-    }
-    return true
+    if (!walk(loop[4], loop, 4, true)) return false
   }
-  if (!walk(loop[4], loop, 4, true)) return false
-  const lengthColumn = columns[0] || columns[1]
   for (const [n, at, value] of edits) n[at] = value
-  // Capture the Map once and skip snapshot storage for an empty collection.
-  // The columns are ordinary arrays, initialized only on the nonempty path.
-  const map = `${T}entryMap${freshId(ctx)}`
-  const len = `${T}entryLen${freshId(ctx)}`
-  init.push(['=', len, ['|', ['.', lengthColumn || map, lengthColumn ? 'length' : 'size'], [null, 0]]])
-  loop[2][2] = len
-  const defs = []
-  for (let i = 0; i < 2; i++) if (columns[i]) defs.push(['=', columns[i], ['()', ['.', map, i ? 'values' : 'keys']]])
-  init.splice(1, 1, ...defs)
-  const inner = loop.slice()
-  loop.splice(0, loop.length, '{}', [';', ['let', ['=', map, source]], ['if', ['.', map, 'size'], inner]])
+  const call = (name, recv) => ['()', name, [',', recv, [null, id], [null, es]]]
+  const reads = []
+  if (columns[0]) reads.push(['=', columns[0], call('__coll_key', coll)])
+  if (columns[1]) reads.push(['=', columns[1], call('__coll_val', coll)])
+  loop[1] = ['let', ['=', coll, call('__coll_start', source)]]
+  loop[2] = call('__coll_next', coll)
+  loop[3] = null
+  if (reads.length) loop[4] = [';', ['let', ...reads], loop[4]]
   return true
 }
 
-/** Private destructured Map entries keep their keys and values in columns. */
+/** A for…of over a Set or a Map whose entries never escape walks its table. */
 export const splitMapPairs = () => {
   let changed = false
   for (const f of ctx.funcs.list) if (f.body && !f.raw) {
     const bindings = scanBindingUses(f.body), view = ctx.summary.at(f.sig)
+    let edited = false
     const walk = n => {
       if (!isArr(n) || n[0] === '=>') return
-      if (n[0] === 'for' && splitMapLoop(n, f.body, view, bindings)) changed = true
+      if (n[0] === 'for' && cursorLoop(n, f.body, view, bindings)) edited = true
       for (let i = 1; i < n.length; i++) walk(n[i])
     }
     walk(f.body)
+    if (edited) { invalidateProgramFactsCache(f.body); invalidateBodies([f.body]); changed = true }
   }
   return changed
 }

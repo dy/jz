@@ -985,11 +985,25 @@ numbers. `JZ_NUMERIC_WHY=1` lists each cell's first generic use
 (`ctx.runtime.numericWhy`). test/numeric-arrays.js pins the stores, the
 payloads, the readers that keep the boxed layout, growth through compactions,
 the reset's raw record and the arrays built of lanes.
-Collection growth uses `collectionStride` for the entry and optional hash lane;
-a boolean selecting the lane is not its byte width. A shallow Map copy reuses
-the probe layout when its capacity fits the rebuild budget, copying entries and
-the hash lane into independent storage. Own-property sidecars are excluded;
-sparse tables still rebuild. Dictionary slot updates
+A Set's and a Map's table (module/collection/ordered.js) keeps its entries in
+insertion order in front of its buckets: a bucket holds an entry's index under
+the top six bits of its hash, a delete tombstones the entry in place (its key
+TOMB_NAN, its bucket's gap closed by backward shift), and an append past the
+usable entries (three in four buckets, less one) rebuilds the live ones into a
+new block, twice the buckets or as many when half are tombstones, the old block
+forwarding to it. The block is the table's buckets times its entry stride, the
+count of appended entries in its last word; a walker reads the entries below
+that count, in order, past the tombstones. A growth points the stub its
+holder names at the new block, and a probe hops one stub inline, so a table reached through its first pointer pays
+one hop however often it grew (the size tier calls the chase for that hop). A Map read hands out an array value that grew
+since it was stored as the live block's pointer and stores it back (not in a
+table the reset keeps), so `m.get(k).push(v)` leaves no stub for the next read.
+The speed tier computes a number's, a string's and a reference's hash in the
+probe, `__map_hash`'s value exactly; the size tier calls it. A Set or Map copy
+takes the source's block whole where its capacity fits the copy's size, else
+rebuilds the live entries; own-property sidecars are excluded. A HASH keeps
+the probe layout: `collectionStride` for the entry and optional hash lane; a
+boolean selecting the lane is not its byte width. Dictionary slot updates
 receive keys already normalized to strings. The host decoder follows forwarding
 for arrays and collections and reads collection entries in their stored insertion
 order, excluding tombstones.
@@ -2206,10 +2220,9 @@ and its number-prefix table) keep their own entries, and an insert on an
 ARRAY or CLOSURE receiver (`node.loc = at` on every parsed node) moves
 nothing, since their properties never enumerate. The HASH arm's
 `__hash_keys_ro` keeps the shared entry, epoch-checked.
-`__prop_order` and Map/Set's `__coll_order` specialize one sorting template.
-Only property sorting allocates ranks; Map/Set read insertion sequence numbers
-from their existing slots, using a 4N-byte offset buffer instead of 12N bytes.
-A table places entries by hash, so the slots arrive in no order: up to 64 an
+`__prop_order` and `__own_order` specialize one sorting template; Map/Set's
+`__coll_order` walks their table, already in insertion order, with no sort.
+A HASH places entries by hash, so the slots arrive in no order: up to 64 an
 insertion sort orders them, past it `__order_sort`, an LSD radix sort a byte of
 the rank's range a pass, linear in the entries where the insertion sort grows
 with their square.
@@ -2411,11 +2424,19 @@ present inside its body, so an array pattern can read that pair by index.
 The proof requires the private snapshot to remain unescaped and unwritten,
 its bounds unchanged, and the pair binding neither reassigned nor captured.
 When every use of a pair reads only its key, value or length, `splitMapPairs`
-replaces those private pairs with key/value column snapshots captured before
-iteration. Escaped, mutated or dynamically indexed pairs keep their arrays.
-An empty Map creates no columns; own key/value methods or size properties
-prevent the rewrite. Changed planning passes invalidate identity-keyed binding
-and mutation scans before the next pass reads them.
+turns the loop into a cursor over the Map's table (`__coll_start`,
+`__coll_next`, `__coll_key`, `__coll_val`, module/collection.js), the key and
+the value read into locals as the body starts; a Set's loop reads its element
+the same way, and so does a loop over a collection's `keys()`, `values()` or
+`entries()` (no own member of that name). The cursor takes each live entry as
+the walk reaches it, as JS's
+live iteration does: an entry deleted before its turn is skipped, one added is
+reached, and where a rebuild or a clear moved the entries under it, it seeks
+the first entry inserted after the last it took (the entries' sequences
+ascend). A missing source throws as it opens. `forEach` walks the same way.
+Escaped, mutated or dynamically indexed pairs keep their arrays (a snapshot).
+Changed planning passes invalidate identity-keyed binding and mutation scans
+before the next pass reads them.
 
 The frame census (compile/analyze/frame-effects.js) reads the summary through
 the function's own view (keyed by its signature, as the emitter reads it). It

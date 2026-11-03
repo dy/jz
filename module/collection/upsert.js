@@ -1,6 +1,7 @@
 /**
  * Hash-table probe/upsert/lookup/delete pipeline — the open-addressing
- * codegen shared by every Set/Map/HASH stdlib entry in module/collection.js.
+ * codegen shared by every HASH stdlib entry in module/collection.js (a Set's
+ * and a Map's insertion-ordered table is module/collection/ordered.js's).
  *
  * Pure move out of collection.js (stdlib-generators minimality pass): every
  * export below is called from collection.js's `export default` exactly as
@@ -20,7 +21,7 @@
 import { TOMB_NAN, UNDEF_NAN } from '../../src/ir.js'
 import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
 import { STR_HCACHE_BIT, HIDDEN_PROPERTY_SEQ } from '../../layout.js'
-import { durableFwdLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, durableSlotRelogIR } from './durable.js'
+import { durableFwdLogIR, durableLenLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, durableSlotRelogIR } from './durable.js'
 import { stubLogIR } from '../core/stub-log.js'
 import { arrayKeysOn } from './identity.js'
 
@@ -109,6 +110,33 @@ const nextCapIR = (capLocal = '$cap', newcapLocal = '$newcap') =>
   `(local.set ${newcapLocal} (i32.shl (local.get ${capLocal})
     (select (i32.const 2) (i32.const 1) (i32.ge_u (local.get ${capLocal}) (i32.const ${GROW_QUAD_CAP})))))
     (call $__table_check (local.get ${newcapLocal}))`
+// The cap load is the forward check: a grown table leaves a stub (cap -1) whose
+// len word names the table it moved to. A growth points the stub its holder
+// names at the new table (genUpsert's `retarget`), so one hop, inline, reaches
+// the live table however often it grew; a longer chain (a stub another holder
+// names) takes the cold loop. The size tier calls the loop for any stub: the
+// retarget keeps the chain it walks one hop long.
+export const forwardHop = () => ctx.transform.optimize?.leanRuntime ? `(if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))` : `(if (i32.eq (local.get $cap) (i32.const -1))
+      (then
+        (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
+        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+        (if (i32.eq (local.get $cap) (i32.const -1))
+          (then
+            (local.set $off (call $__ptr_offset_fwd (local.get $off)))
+            (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))))`
+// A growth reached through the holder's stub (`$coll`'s offset is not the table
+// it grew) points that stub at the new table too, so the next operation hops
+// once, not once per growth. The stub's own words are logged for the durable
+// heal first (they name the table it forwarded to before), and the compaction's
+// stub log learns its new target.
+const retargetStub = (expectedType) => `(local.set $o0 (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (if (i32.ne (local.get $o0) (local.get $off))
+          (then${durableLenLogIR('o0')}
+            (i32.store (i32.sub (local.get $o0) (i32.const 8)) (local.get $newptr))
+            ${stubLogIR('o0', 'newptr', expectedType)}))`
 const probeStart = (entrySize, idxExpr = '(i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1)))') => hasProbeLane()
   ? `(local.set $lb (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
     (local.set $end (i32.add (local.get $lb) (i32.shl (local.get $cap) (i32.const 2))))
@@ -264,18 +292,13 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
   return `(func $${name} (param $coll i64) (param $key i64) ${valParam}(result ${slotOnly ? 'i32' : 'i64'})
     (local $off i32) (local $cap i32) (local $h i32) (local $end i32) (local $slot i32)
     (local $size i32) (local $newptr i32) (local $newcap i32)
-    (local $zb i32) (local $ztr i32)
+    (local $zb i32) (local $ztr i32) (local $o0 i32)
     ${laneLocals} (local $zbl i32)
     ${slotOnly ? '(local $kaux i32) (local $koff i32)' : ''}
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
-    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
-    (if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    ${forwardHop()}
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))${prologue}
     ;; Probe before growing: an update needs neither a new slot nor a new table.
     (block $done (loop $retry
@@ -326,6 +349,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         ${stubLogIR('off', 'newptr', expectedType)}
+        ${retargetStub(expectedType)}
         (local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))
     (local.set $zb (i32.const 0))
@@ -367,11 +391,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue = tr
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (local.get $coll)))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ;; Reuse the capacity load as the forwarding check, as upsert does.
-    (if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    ${forwardHop()}
     ${hashFn ? `(local.set $h (call ${hashFn} (local.get $key)))` : ''}
     ${probeStart(entrySize)}
     (block $done (loop $probe
@@ -413,12 +433,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
     (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (i32.const 0))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
-    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
-    (if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    ${forwardHop()}
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $found
@@ -494,12 +509,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     ${typeGuard}
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
-    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
-    (if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    ${forwardHop()}
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     ;; Probe before growing: an update needs neither a new slot nor a new table.
     (block $done (loop $retry
@@ -628,10 +638,7 @@ function genEphemeralSlotUpsert(name, entrySize) {
     (local $newptr i32) (local $newcap i32) (local $newlb i32) (local $newslot i32)
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    (if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    ${forwardHop()}
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (block $done (loop $retry
     ${keyHashIR()}
@@ -740,12 +747,7 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
       (then (return (i64.const ${missing}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
-    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
-    (if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    ${forwardHop()}
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $done (loop $probe
@@ -785,12 +787,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
       (then (return (local.get $obj))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ;; the cap load IS the forward check: -1 sentinel hops via the cold helper,
-    ;; the live path pays zero extra — the per-probe __ptr_offset call drops
-    (if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
+    ${forwardHop()}
     ${probeStart(entrySize)}
     ;; zombie-aware ${hasProbeLane() ? 'LANE ' : ''}probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
     (block $done (loop $probe

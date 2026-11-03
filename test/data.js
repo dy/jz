@@ -5,7 +5,7 @@ import { is, ok, almost, throws } from 'tst/assert.js'
 import { onWasi, onKernel, adaptI64, levels, boxed } from './_matrix.js'
 import { UNDEF_NAN } from '../interop.js'
 import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
-import { cases, oracle, compileInProcess, jz, compile } from './util.js'
+import { cases, oracle, compileInProcess, jz, compile, funcWat } from './util.js'
 import parseWat from 'watr/parse'
 
 // Prepared method readers can own the generic fallback for a source read.
@@ -357,6 +357,176 @@ test('Map/Set: an array key is found after it grows, shifts and takes properties
     }`
   for (const optimize of levels(0, 2, 'size'))
     for (const n of [0, 1, 40]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, ${n} pushes`)
+})
+
+// A grown table leaves a stub at the block its holders name. Growth points
+// the holder's stub at the new block (module/collection/upsert.js
+// retargetStub, collection/ordered.js), and a probe or a cursor hops one
+// stub inline: a Map and a Set reach their table without the cold chase
+// however often they grew, where each access walked one hop per growth.
+// An array a Map keeps, grown since it was stored, is handed out by the Map's
+// read as its live block and stored back (collection/ordered.js healValue):
+// the first read after its growth chases, no later one. Counted by the
+// chase's entries (`helperCounters`); the size tier calls the chase for any
+// stub, so it counts accesses there, not hops, and answers only for results.
+test('Map/Set: a holder of a grown table reaches it in one hop', async () => {
+  if (onKernel()) return  // the counters are the in-process leg's
+  const src = `export let f = (n, reps) => {
+    const m = new Map(), s = new Set(), lists = new Map()
+    for (let i = 0; i < n; i++) { m.set(i * 7, i); s.add(i * 7) }
+    for (let i = 0; i < 512; i++) { let l = lists.get(i & 7); if (l === undefined) { l = []; lists.set(i & 7, l) } l.push(i) }
+    let sum = 0
+    for (let r = 0; r < reps; r++) {
+      for (let i = 0; i < n; i++) sum += m.get(i * 7) + (s.has(i * 7) ? 1 : 0)
+      for (const k of s) sum += k
+      for (let k = 0; k < 8; k++) { const l = lists.get(k); for (let j = 0; j < l.length; j++) sum += l[j] }
+    }
+    return sum
+  }`
+  const want = oracle(src).f
+  for (const optimize of ['speed', 'size']) {
+    const { instance } = await WebAssembly.instantiate(compile(src, { optimize, helperCounters: true, alloc: false }))
+    const e = instance.exports
+    const chases = (reps) => { e.__helper_counts_reset(); is(e.f(1000, reps), want(1000, reps), `${optimize}: f(1000, ${reps})`); return Number(e.__hc_ptr_offset_fwd.value) }
+    const once = chases(1), many = chases(20)
+    if (optimize === 'speed') is(many, once, `${optimize}: ${once} chases for one pass over the grown tables, ${many} for twenty`)
+  }
+})
+
+// A Set's and a Map's table keeps its entries in insertion order
+// (module/collection/ordered.js), and a for…of or a forEach walks it where it
+// stands: an entry deleted before its turn is not visited, one added during
+// the walk is, a delete and re-add visits again, a clear ends the walk, and a
+// rebuild under the walk (growth, tombstones dropped) keeps its place by the
+// entries' insertion sequences.
+test('Map/Set iteration is live: deletes, additions, clears and rebuilds during the walk', () => {
+  const src = `
+    export let delAhead = () => { const m = new Map([[1,'a'],[2,'b'],[3,'c']]); let s = ''; for (const [k, v] of m) { s += v; if (k === 1) m.delete(2) } return s }
+    export let addDuring = () => { const m = new Map([[1,'a']]); let s = ''; for (const [k, v] of m) { s += v; if (k < 4) m.set(k + 1, String.fromCharCode(97 + k)) } return s }
+    export let setDelAhead = () => { const m = new Set([1,2,3]); let s = 0; for (const k of m) { s = s * 10 + k; if (k === 1) m.delete(2) } return s }
+    export let setAdd = () => { const m = new Set([1]); let s = 0; for (const k of m) { s = s * 10 + k; if (k < 4) m.add(k + 1) } return s }
+    export let delReadd = () => { const m = new Map([[1,1],[2,2],[3,3]]); let s = 0; for (const [k] of m) { s = s * 10 + k; if (k === 1) { m.delete(1); m.set(1, 9) } if (s > 1e6) break } return s }
+    export let clearDuring = () => { const m = new Set([1,2,3]); let s = 0; for (const k of m) { s = s * 10 + k; m.clear(); if (k === 1) m.add(7) } return s }
+    export let growDuring = () => { const m = new Map(); for (let i = 0; i < 6; i++) m.set(i, i); let s = 0, n = 0; for (const [k, v] of m) { s += v; n++; if (k < 200) m.set(k + 100, k + 100) } return s * 1000 + n }
+    export let compactDuring = () => { const m = new Map(); for (let i = 0; i < 40; i++) m.set(i, i); let out = 0, n = 0; for (const [k] of m) { n++; out = (out * 31 + k) | 0; if (k < 40) { m.delete(k); if (k % 3 === 0) m.set(k + 1000, 1) } if (n > 500) break } return out + ':' + n + ':' + m.size }
+    export let setChurn = () => { const s = new Set(); for (let i = 0; i < 30; i++) s.add('k' + i); let n = 0, h = 0; for (const x of s) { n++; h = (h * 7 + x.length) | 0; s.delete(x); if (n < 100) s.add(x + 'z') } return n + ':' + h + ':' + s.size }
+    export let nested = () => { const m = new Map([[1,'a'],[2,'b'],[3,'c']]); let o = ''; for (const [a] of m) for (const [b, v] of m) { o += a + v; if (a === 2 && b === 1) m.delete(3) } return o }
+    export let labeled = () => { const m = new Map([[1,1],[2,2],[3,3],[4,4]]); let o = 0; outer: for (const [k, v] of m) { for (const [k2] of m) { if (k2 > k) continue outer; o += k2 * v } } return o }
+    export let objectKeys = () => { const objs = []; for (let i = 0; i < 50; i++) objs.push({ i }); const m = new Map(); for (const o of objs) m.set(o, o.i); let s = 0; for (const [o, v] of m) { if (v % 2) m.delete(objs[(v + 1) % 50]); s += o.i * 3 + v } return s + ':' + m.size }
+    export let forEachLive = () => { const m = new Map([[1, 1], [2, 2]]); let o = 0; m.forEach((v, k) => { o += v; if (k === 1) { m.set(3, 3); m.delete(2) } }); const s = new Set([1]); s.forEach(x => { o += x * 10; if (x < 3) s.add(x + 1) }); return o }
+    export let missing = (i) => { const sets = [new Set([1, 2])]; let t = 0; for (const x of sets[i]) t += x; return t }
+    export let views = () => { const m = new Map(); for (let i = 0; i < 20; i++) m.set('k' + i, i); for (let i = 0; i < 20; i += 3) m.delete('k' + i); m.set('k0', 99); return [...m.keys()].join() + '|' + [...m.values()].join() + '|' + Array.from(m.entries()).length + '|' + [...new Set(m.values())].length }
+    export let viewsLive = () => { const m = new Map(), s = new Set(); for (let i = 1; i <= 3; i++) { m.set(i, i * 10); s.add(i) } let o = ''
+      for (const k of m.keys()) { o += k; if (k === 1) { m.delete(2); m.set(4, 40) } }
+      for (const v of m.values()) { o += v; if (v === 10) m.set(3, 35) }
+      for (const [k, v] of m.entries()) { o += k + v; if (k === 1) m.delete(3) }
+      for (const x of s.values()) { o += x; if (x === 1) s.add(5) }
+      for (const [a, b] of s.entries()) o += a + b
+      return o }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const e = jz(src, { optimize }).exports
+    for (const name of Object.keys(js)) if (name !== 'missing') is(e[name](), js[name](), `${name}, O${optimize}`)
+    is(e.missing(0), 3, `a present source, O${optimize}`)
+    throws(() => e.missing(1), TypeError, `a missing source throws, O${optimize}`)
+  }
+})
+
+// A for…of over a Set or a Map whose entries never escape walks the table with
+// a cursor (compile/plan/index-array-patterns.js cursorLoop): no snapshot of
+// keys, values or pairs, and the values keep the one layout the Map holds, so
+// their fields read and write their slots.
+test('Map/Set for…of walks the table: no snapshot, values keep their layout', () => {
+  const src = `export let f = (n) => {
+    const m = new Map(), s = new Set()
+    for (let i = 0; i < n; i++) { m.set('k' + (i % 50), { hits: i, last: i }); s.add(i % 7) }
+    let t = 0
+    for (const [k, v] of m) { if (v.hits > 10) { t += v.last + k.length; v.hits = 0; m.delete(k) } }
+    for (const x of s) t += x
+    return t + ':' + m.size
+  }`
+  for (const optimize of levels(0, 2, 'speed', 'size')) for (const n of [0, 5, 200])
+    is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  const f = funcWat(compile(src, { optimize: 'speed', wat: true }), 'f')
+  ok(!/call \$__coll_order\b/.test(f), 'no ordered snapshot of the entries')
+  ok(!/call \$__dyn_(?:get|set)\w*/.test(f), 'the values\' fields are slots')
+})
+
+// A Set or Map copy takes its source's table whole (collection/ordered.js
+// __ord_copy): its entries keep their order, the copy is independent, a
+// sparse source is rebuilt to its live entries, own properties stay behind.
+test('Set/Map copies take the source table and stay independent', () => {
+  const src = `
+    export let setCopy = (n, d) => { const a = new Set(); for (let i = 0; i < n; i++) a.add('w' + i); for (let i = 0; i < n; i += d) a.delete('w' + i); a.extra = 5; const b = new Set(a); b.add('x'); a.add('y'); let o = b.size + ':' + a.size + ':' + (b.extra === undefined) + ':'; for (const w of b) o += w; for (const w of a) o += w; return o }
+    export let mapCopy = (n, d) => { const a = new Map(); for (let i = 0; i < n; i++) a.set(i, i * 2); for (let i = 0; i < n; i += d) a.delete(i); const b = new Map(a); b.set(-1, 0); a.set(-2, 0); let o = b.size + ':' + a.size + ':'; for (const [k, v] of b) o += k + '=' + v + ','; return o }
+    export let missing = (k) => { const arr = [new Set([1, 2])]; return new Set(arr[k]).size }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const e = jz(src, { optimize }).exports
+    for (const [n, d] of [[0, 1], [5, 2], [40, 1], [40, 3], [300, 2]]) {
+      is(e.setCopy(n, d), js.setCopy(n, d), `setCopy(${n}, ${d}), O${optimize}`)
+      is(e.mapCopy(n, d), js.mapCopy(n, d), `mapCopy(${n}, ${d}), O${optimize}`)
+    }
+    is(e.missing(0), 2, `copy of a present Set, O${optimize}`)
+    is(e.missing(1), 0, `copy of a missing Set, O${optimize}`)
+  }
+})
+
+// The speed tier hashes a number, a string and a reference key in the probe
+// itself (collection/ordered.js keyHash): the value must be `__map_hash`'s,
+// which literal keys (hashed at compile time), the size tier and the
+// compaction's rebuild compute, or a key one path stored another misses.
+test('Map/Set: every hashing path finds a key the others stored', () => {
+  const src = `
+    const keys = [0, -0, 1, -1, 1.5, 1099511627776, NaN, 'a', 'abcdef', 'abcdefg', 'long string key here', 'λ', 'user4095', '', true, null, undefined, 7n]
+    export let f = () => {
+      const m = new Map(), st = new Set(), o = {}, g = () => 1
+      for (let i = 0; i < keys.length; i++) { m.set(keys[i], i); st.add(keys[i]) }
+      m.set(o, 'o'); m.set(g, 'g'); st.add(o)
+      let s = m.size + ':' + st.size + ':'
+      s += m.get(0) + ',' + m.get(-0) + ',' + m.get(1) + ',' + m.get(-1) + ',' + m.get(1.5) + ',' + m.get(1099511627776) + ',' + m.get(NaN) + ','
+      s += m.get('a') + ',' + m.get('abcdef') + ',' + m.get('abcdefg') + ',' + m.get('long string key here') + ',' + m.get('λ') + ',' + m.get('user4095') + ',' + m.get('') + ','
+      s += m.get('user' + (4000 + 95)) + ',' + m.get('ab' + 'cdefg') + ',' + m.get(true) + ',' + m.get(null) + ',' + m.get(undefined) + ',' + m.get(7n) + ','
+      s += m.get(o) + m.get(g) + st.has(o) + st.has({}) + ',' + st.has('abcdefg') + ',' + st.has(NaN) + ',' + st.has(-0) + ',' + st.has('long string key ' + 'here') + ','
+      const n = new Map(); for (let i = 0; i < 2000; i++) n.set('k' + i, i)
+      let t = 0; for (let i = 0; i < 2000; i++) t += n.get('k' + i)
+      return s + t + ',' + n.get('k1999') + ',' + n.has('k2000')
+    }`
+  for (const optimize of levels(0, 2, 'speed', 'size')) is(jz(src, { optimize }).exports.f(), oracle(src).f(), `O${optimize}`)
+})
+
+// A binding written from a Map read and from a literal (`let s = m.get(k);
+// if (s === undefined) s = {...}`) has no layout prepare can bind, but the
+// summary proves the one layout every value it holds has: its stores take the
+// slot its reads take, behind the same nullish test, where they paid a
+// property hash each (`__dyn_set`). Bindings of two layouts keep the dynamic store.
+test('a binding the summary shapes stores into the slot its reads use', () => {
+  const one = `export let f = (n) => {
+    const m = new Map()
+    let t = 0
+    for (let i = 0; i < n; i++) {
+      const k = i & 15
+      let s = m.get(k)
+      if (s === undefined) { s = { a: 0, b: 0 }; m.set(k, s) }
+      s.a++
+      s.b += i
+      t += s.a + s.b
+    }
+    return t
+  }`
+  const mixed = one.replace('s = { a: 0, b: 0 }', 's = i & 1 ? { a: 0, b: 0 } : { b: 0, c: 1, a: 0 }')
+  const missing = `export let f = (k) => { const m = new Map([[1, { a: 1 }]]); let s = m.get(k); if (k > 5) s = { a: 2 }; s.a = 7; return s.a }`
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    for (const n of [0, 1, 40]) is(jz(one, { optimize }).exports.f(n), oracle(one).f(n), `one layout, O${optimize}, n=${n}`)
+    for (const n of [0, 1, 40]) is(jz(mixed, { optimize }).exports.f(n), oracle(mixed).f(n), `two layouts, O${optimize}, n=${n}`)
+    const e = jz(missing, { optimize }).exports
+    is(e.f(1), 7, `a present value, O${optimize}`)
+    is(e.f(9), 7, `a literal, O${optimize}`)
+    throws(() => e.f(2), TypeError, `undefined throws, O${optimize}`)
+  }
+  const stores = (s) => (funcWat(compile(s, { optimize: 'speed', wat: true }), 'f').match(/call \$__dyn_set\b/g) || []).length
+  is(stores(one), 0, 'one layout: slot stores')
+  ok(stores(mixed) > 0, 'two layouts: the dynamic store stays')
 })
 
 function run(code, opts) {
@@ -1766,12 +1936,13 @@ test('self-compile compact collections: entry hash replaces the redundant probe 
   const fast = String(compile(src, { wat: true, optimize: false }))
   const compact = String(compile(src, { wat: true, optimize: false, _compactCollections: true }))
   const fn = (wat, name) => wat.slice(wat.indexOf(`(func $${name}`), wat.indexOf(`(func $${name}`) + 5000)
-  ok(fn(fast, '__map_get').includes('(i32.load (local.get $ls))'), 'normal output probes its cache-dense side lane')
-  ok(fn(compact, '__map_get').includes('(i32.load (local.get $slot))'), 'compact artifact probes the hash already stored in each entry')
-  ok(!fn(compact, '__map_get').includes('(i32.load (local.get $ls))'), 'compact probe has no side-lane load')
+  // a dictionary (HASH) keeps the lane; a Set's and a Map's table has its buckets (module/collection/ordered.js)
+  ok(fn(fast, '__hash_get_local').includes('(i32.load (local.get $ls))'), 'normal output probes its cache-dense side lane')
+  ok(fn(compact, '__hash_get_local').includes('(i32.load (local.get $slot))'), 'compact artifact probes the hash already stored in each entry')
+  ok(!fn(compact, '__hash_get_local').includes('(i32.load (local.get $ls))'), 'compact probe has no side-lane load')
 
   // Two consecutive empty allocations expose the exact block stride: 16-byte
-  // header + 8 initial slots. Compact removes exactly 8*4 lane bytes.
+  // header + 8 initial buckets of the entry's width, in either profile.
   const allocSrc = 'export let map=()=>new Map(); export let set=()=>new Set()'
   const blockDelta = (compactCollections, name) => {
     const raw = jz(allocSrc, { optimize: false, _compactCollections: compactCollections }).instance.exports[name]
@@ -1779,10 +1950,10 @@ test('self-compile compact collections: entry hash replaces the redundant probe 
     const a = off(raw()), b = off(raw())
     return b - a
   }
-  is(blockDelta(false, 'map'), 240) // 16 + 8*(24+4)
-  is(blockDelta(true, 'map'), 208)  // 16 + 8*24
-  is(blockDelta(false, 'set'), 176) // 16 + 8*(16+4)
-  is(blockDelta(true, 'set'), 144)  // 16 + 8*16
+  is(blockDelta(false, 'map'), 208) // 16 + 8*24
+  is(blockDelta(true, 'map'), 208)
+  is(blockDelta(false, 'set'), 144) // 16 + 8*16
+  is(blockDelta(true, 'set'), 144)
   is(run(src, { optimize: false, _compactCollections: true }).f(), 860)
   is(run(src, { optimize: 3, _compactCollections: true }).f(), 860)
 })
