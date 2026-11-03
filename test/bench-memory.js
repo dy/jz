@@ -188,6 +188,8 @@ syncBuiltinESMExports()
     })
     const { v8, jsc } = JSON.parse(readFileSync(json, 'utf8')).cases.webaudio.targets
     is([v8.parity, jsc.parity], ['ok', 'ok'], `the shell renders what V8 renders: ${JSON.stringify(jsc)}`)
+    const flat = readFileSync(join(scratch, 'build/webaudio/webaudio-flat.js'), 'utf8')
+    is(flat.match(/\bprintResult = /g)?.length, 1, 'the bundle carries the benchlib helpers once')
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 })
 

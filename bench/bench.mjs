@@ -771,15 +771,13 @@ if (typeof EventTarget === 'undefined') ({ Event, CustomEvent, EventTarget } = (
 })())
 `
   let body = ''
-  let src = readFileSync(c.js, 'utf8')
-  if (src.includes('../_lib/benchlib.js')) {
-    body += readFileSync(join(LIB, 'benchlib.js'), 'utf8').replace(/\bexport let\b/g, 'const') + '\n'
-    src = src.replace(/import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]\s*\n?/g, '')
-  }
+  const raw = readFileSync(c.js, 'utf8')
+  const src = raw.replace(/import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]\s*\n?/g, '')
   if (/^\s*import\b/m.test(src)) {
     // Real module graph (jessie → subscript, watr → watr, jz → the compiler):
     // shell engines (jsc/SpiderMonkey) have no loader, so bundle to a single
     // IIFE with esbuild — a virtual entry imports the case's main and calls it.
+    // The bundle carries the benchlib helpers the case imports, once.
     const { buildSync } = esbuildSync()
     const r = buildSync({
       stdin: {
@@ -791,8 +789,12 @@ if (typeof EventTarget === 'undefined') ({ Event, CustomEvent, EventTarget } = (
       alias: Object.fromEntries((HOST_ADAPTERS[c.id] ?? []).map(name => [name, HOST_STUB])),
       logLevel: 'silent',
     })
-    body += r.outputFiles[0].text
+    // The IIFE opens with `(`: without the `;`, a shim ending in an expression
+    // (`… = (mark, out) => out`) would call that expression with the IIFE.
+    body += ';' + r.outputFiles[0].text
   } else {
+    // A single file: the benchlib helpers it imports go ahead of it.
+    if (src !== raw) body += readFileSync(join(LIB, 'benchlib.js'), 'utf8').replace(/\bexport let\b/g, 'const') + '\n'
     // `export let main = …`, or `export { run as main }` as the bundled stdlib cases end
     // (whose library may declare a `main` of its own): the entry called by its own name.
     const entry = /\bexport\s*\{\s*(\w+)\s+as\s+main\s*\}/.exec(src)?.[1]
