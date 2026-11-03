@@ -528,7 +528,7 @@ and adds no flags. Goose's emitted C turns floating-point contraction off
 itself (`#pragma clang fp contract(off)` and the GCC equivalent), so its float
 cases give the strict checksums, with no FMA variants.
 
-The 75 ports share `_lib/bench.goose` and were written for this benchmark from
+The 80 ports share `_lib/bench.goose` and were written for this benchmark from
 each case's JavaScript, and from its C and Rust ports where it has them: the
 same algorithm, input generation, iteration counts and checksum, in the layouts
 Goose code reaches for. Buffers are grow-only arrays (`T[>..]`), lookup tables
@@ -538,7 +538,18 @@ of its own variant) and measures it through case functions, `wordcount` counts
 in the standard library's `dictionary` keyed by views of inline `u8[..8]`
 words, `strbuild` formats each row as a fresh `str(…)`, `json` parses with the
 standard library's JSON parser, and `callback` and `poly` call its `map` and
-generic `sum`. The library cases (the color-space kernels, pmndrs/math's,
+generic `sum`. The `Map` and `Set` cases are `dictionary` too: `mapstr` keys
+its three maps by views of each event's own inline strings, `mapint` keeps each
+adjacency list in a run of a slice pool (`reusable[]`) that `realloc_slice`
+doubles when it fills, and `setops` holds its 256 document sets in one
+dictionary keyed by (document, word), each document's members listed beside
+it, since a Goose array cannot hold a resizable value. `stringify` and
+`jsontransform` write through the json module's writer member by member, as
+it has its callers do, and `jsontransform` parses into its document tree.
+That writer finds Number::toString's shortest digits but lays them out as
+serde_json does (`1.0`, `1.05e-6`, `1e21`), so `_lib/ecmajson.goose` lays
+them out as JSON.stringify does (`1`, `0.00000105`, `1e+21`). The library
+cases (the color-space kernels, pmndrs/math's,
 three.js's, @stdlib's ddot) port the library code they call as written, a JS
 object becoming an inline struct and a method a function; libm functions
 Goose's `math` module does not bind (`cbrt`, `hypot`) come through `extern fn`.
@@ -547,15 +558,26 @@ Like the Rust ports they add no bounds-check hints (no `assert` of lengths, no
 and Rust ports but `dispatch`, the C-only library idioms (sosfilter, movavg,
 upfirdn, pcmconvert), and, among the cases with no C or Rust port, the nine
 color-space kernels, the four three.js and four pmndrs/math cases, fftplan,
-provenance, gainclass and stdlib-ddot.
+provenance, gainclass, stdlib-ddot and the JSON pair; and mapstr, mapint and
+setops, which have Rust ports but no C.
 
-Sixteen cases have no port:
+Eighteen cases have no port:
 
 - `dispatch` calls through a table of first-class functions, and Goose has no
   function values at run time, only an enum's tag to dispatch on.
+- `mapobj` keys its side tables by object identity. A `dictionary` compares
+  keys with `==`, which on a reference compares the targets, and Goose has no
+  operator overloading; a module's identity is its slot in a pool, so the
+  tables would be integer-keyed maps (mapint's workload) or arrays beside the
+  pool, as Rust holds a graph by index.
+- `async` awaits promises, and Goose has no async functions, promises or event
+  loop: its concurrency is threads that share nothing.
 - @stdlib's exp, erf, pow, gamma, special functions and distributions build
   float64 values from their 32-bit words (`fromWords`, `setHighWord`) on their
-  hot paths, which Goose cannot express without C of its own; the last two are
+  hot paths. Goose has no bit cast from integer to float: `as` converts the
+  value, `bytes_of` is a read-only view, and the one way back from bytes,
+  `from_bytes`, verifies a serialized image into an array, per value; the
+  other way is C of its own through `extern fn`. The last two are
   20,000-line namespace bundles besides.
 - The lab probes colorconv, colorlch, colorlog, colorpq and deltae check the
   exact bits of transcendental results, which follow one engine family's math
@@ -581,9 +603,9 @@ GPU call (`f!(x)`). The ports make neither, and each binary still runs with
 `--threads 1`, which also puts the runtime's work loop on its sequential path,
 and `--gpu off`: the comparison is single-threaded, like every other lane's.
 
-The 19 ports share `_lib/bench.bend` and were written for this benchmark from
-each case's JavaScript and its C port: the same algorithm, input generation,
-iteration counts and checksum, in the shapes of Bend's own benchmarks
+The 27 ports share `_lib/bench.bend` and were written for this benchmark from
+each case's JavaScript and its C port where it has one: the same algorithm,
+input generation, iteration counts and checksum, in the shapes of Bend's own benchmarks
 (`bench/runtime` in its repository). A loop is a recursive def counting down a
 `Nat`, its index a `U32` beside it. Bend checks that recursion ends, so a loop
 whose bound is a test (`j < LIMIT`, a probe that stops at an empty slot, an
@@ -597,17 +619,36 @@ array as a flat block). `immutable` rebuilds a list of `P` records every step,
 `shapes` matches a datatype of 8 constructors kept in an `Array<Shape>`,
 `wordcount` counts in Base's string-keyed `Map`, a bitwise trie over each key
 whose operations take nearly all of the case's time, and `strbuild` formats
-each row as a fresh `String` with `++` and `U32.show`. Bend has no signed
+each row as a fresh `String` with `++` and `U32.show`. `qoi` keeps a pixel as
+a `Px` record and its colour index as four arrays in one record; `hashjoin`
+probes as `dict` does, one read of `keys[h]` answering whether the slot is
+empty and whether it holds the key; `trace` and `glyfparse` turn each `&&` of a
+test into a chain of defs, so a read happens only where the JS's `&&` reaches
+it. `json` parses the text, a `String` read char by char, into a value tree
+whose objects are Base's `Map` and arrays `List`s; Bend allows no mutual
+recursion, so the parser is one def taking the mode it is in (a value, the
+next element or member, a closed array or object). With no f64 its numbers
+are int32 digit runs, which every number in that text is. `mapstr` keeps its
+route counts, sessions and bans in Base's `Map`, its sweep walking
+`Map.to_list`; a Bend value has no identity, so a session is a record set back
+whole after each event, and the fresh session a miss opens is the default
+`Map.get` answers, built on every event. `setops` keeps each document's words
+in a Base `Set`: a set is a persistent value, so `new Set(a)` shares it and
+each delete rebuilds the path it changes, and `Set.size` walks the set, read
+once for each of the two sets a comparison takes. Bend has no signed
 integer: an int32 is a `U32` in two's complement whose sign tests read bit 31.
 `immutable` bounces with the one unsigned test `nx > LIM`, `blur` clamps by
-comparing `x + k` with the radius, `conv2d` and `strbuild` shift arithmetically
-by filling the sign, and `conv2d` wraps its perturbed byte as Int8Array does.
-The clock is the helper module's own effect, `now_us` (`_lib/bend-clock.c`, with
-a `.js` twin so `bend <case>.bend` runs a port without a build), since Base's
-`IO.now` counts whole milliseconds. The ports cover integer (bitwise, crc32,
-sieve, nqueens, radixsort, hash, vm, dict, levenshtein), image (alpha, blur,
-conv2d), audio (bytebeat), text and codecs (base64, tokenizer, strbuild,
-wordcount) and records (immutable, shapes).
+comparing `x + k` with the radius, `qoi` tests `-2 <= vr <= 1` as the one
+unsigned `vr + 2 <= 3`, `conv2d`, `strbuild`, `qoi` and `glyfparse` shift
+arithmetically by filling the sign, and `conv2d` wraps its perturbed byte as
+Int8Array does. The clock is the helper module's own effect, `now_us`
+(`_lib/bend-clock.c`, with a `.js` twin so `bend <case>.bend` runs a port
+without a build), since Base's `IO.now` counts whole milliseconds. The ports
+cover integer (bitwise, crc32, sieve, nqueens, radixsort, hash, vm, dict,
+levenshtein, hashjoin), image (alpha, blur, conv2d, qoi, trace), audio
+(bytebeat), text, codecs and parsers (base64, tokenizer, strbuild, wordcount,
+lz, json, glyfparse), maps and sets (mapstr, setops) and records (immutable,
+shapes).
 
 Bend has no 64-bit float (its numbers are `Nat`, `U32` and `F32`), so no f64
 case has a port: in `F32` a kernel computes a narrower result than the case's,
@@ -617,8 +658,22 @@ most once, and a template argument is fixed at compile time, so neither
 `a.map(x => x * scale + i)` over every element nor a table of operators called
 through one site has a Bend form; a def taking `scale` and `i`, or a match on
 the opcode, would be the hand-fused loop or the switch, not the call the case
-measures. Of the integer cases with C ports, lz, qoi, json, glyfparse, hashjoin
-and trace have no Bend port yet. Bend is a native contender like Goose: it
+measures. Base's only map is keyed by `String`, so `mapint`, whose maps are
+keyed by 30-bit ids and hold growing adjacency lists, has no port: a key
+formatted by `U32.show` would measure string building, and a table of the
+port's own would not be Base's. `mapobj` keys its maps by object identity,
+which a Bend value does not have (equality is structural), and its deep copy
+through a memo map would copy nothing. The JSON pair (`stringify`,
+`jsontransform`) formats and parses f64 numbers. `async` has no port either,
+though Bend's IO runs computations on one event loop (`IO.fork`, `IO.join`,
+channels) and a port of it reproduces the checksum: IO is
+continuation-passing, so an await on a stage that answers at once is a
+closure call that never reaches the loop, a batch's forked handlers run whole
+one after another instead of interleaving at each await, and a throw is a
+`Result`. Its read-only tables need a container of the port's own besides,
+since an `Array` has one owner and forked computations cannot share it. Such a
+port measures closures and a tree walk, not suspension and a job queue. Bend
+is a native contender like Goose: it
 enters no claim, and the chart leaves it out as it leaves out the other native
 ports, while the bench page shows it per case and in the corpus.
 
@@ -1220,7 +1275,10 @@ ECMAScript does and escapes the same characters, the data holding none of the `<
 `map[*Module]T`, `map[string]struct{}`), which the go, go-wasm and tinygo lanes
 take; Rust for `mapstr`, `mapint` and `setops` (`HashMap`, `HashSet`; Rust holds a
 graph by index, not by an object-keyed map, so `mapobj` has none); AssemblyScript for
-the four `Map` and `Set` cases. C has no standard map or JSON and Rust no standard
+the four `Map` and `Set` cases; Goose for the JSON pair (its `json` module) and
+`mapstr`, `mapint` and `setops` (its `dictionary`); Bend for `mapstr` and `setops`
+(Base's `Map` and `Set`), the two native lanes described under Targets with the
+cases they leave out. C has no standard map or JSON and Rust no standard
 JSON, so those ports are absent rather than hand-rolled; Zig has both (`std.json`,
 `std.HashMap`) and no port yet.
 
