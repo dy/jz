@@ -186,3 +186,23 @@ test('array scan: a constant start under the length is in bounds', () => {
     ok(/f64\.store/.test(body) && !/\$__arr_set_idx_ptr/.test(body), `fromN at ${level}: stores in place, nothing grows`)
   }
 })
+
+// A store a canonical loop holds inside the length writes a cell the array
+// has: the frame census counts no growth (analyze/frame-effects.js), so no
+// mark of the heap's top stands around it.
+const bounded = `const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }
+  const bump = (a) => { for (let i = 0; i < a.length; i++) a[i] = a[i] + 1; return a[0] }
+  export const go = (n) => bump(build(n)) + bump(build(n + 1))`
+
+test('array scan: a store inside the length grows nothing', () => {
+  const host = oracle(bounded)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const jz = run(bounded, { optimize })
+    for (const n of [0, 1, 7]) is(jz.go(n), host.go(n), `go(${n}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  for (const level of [2, 'speed']) {
+    const body = funcWat(wat(bounded, { optimize: { level, ...shape } }), 'bump')
+    ok(!/global\.get \$__heap(?![\w.])/.test(body), `at ${level}: no mark of the heap's top around the store`)
+  }
+})

@@ -129,6 +129,7 @@ import { viewsOn } from '../../../module/schema.js'
 import { TO_JSON } from '../emit/to-json.js'
 import { reachOn } from '../../../module/core/reach.js'
 import { typeTests } from '../flow-types.js'
+import { scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 
 const isArr = Array.isArray
 const isName = (x) => typeof x === 'string'
@@ -457,7 +458,7 @@ const argList = (args) => args == null ? [] : isArr(args) && args[0] === ',' ? a
  * Nested function bodies are entered only for the callbacks CALLBACK_METHODS
  * and callbackArg run synchronously and for local arrows called from this scope.
  */
-function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false, tested = null, loopTests = null, carried = NO_NAMES) {
+function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditional = false, scratch = false, tested = null, loopTests = null, carried = NO_NAMES, inBounds = NO_NODES) {
   // These tables belong only to this walk; published facts own their storage.
   const decl = takeScratchMap(), arrows = takeScratchMap(), reads = takeScratchMap()
   const assigned = takeScratchSet(), scanned = takeScratchSet(), writtenNested = takeScratchSet(), nestedDecl = takeScratchSet()
@@ -946,8 +947,10 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         const fns = lit ? accessorFunctions(target[2][1], recv, target[2][1] + ACCESSOR_SET) : NO_FUNCTIONS
         if (fns === null) unknownCall('accessor ' + target[2][1]); else reaches(fns)
         // An integer literal inside the length the receiver holds for good writes a cell
-        // the array has (the emitter's raw store, emit-assign.js storeFixedElement).
-        store(recv, stored && !(plain && heldBy(recv, val, n)), !typedRecv(recv) && !(lit && fixedSlot(view, recv, target[2][1])) && !withinFixedLen(view, recv, target[2]), !lit, false, asked)
+        // the array has (the emitter's raw store, emit-assign.js storeFixedElement), and
+        // so does an index a canonical loop holds below the length (`inBounds`: the
+        // emitter's in-place store, emit-assign.js storeArrayPayload).
+        store(recv, stored && !(plain && heldBy(recv, val, n)), !typedRecv(recv) && !(lit && fixedSlot(view, recv, target[2][1])) && !withinFixedLen(view, recv, target[2]) && !inBounds.has(target), !lit, false, asked)
         if (op === '=' && mayBeTyped(view, recv)) convert(val)   // a typed element store converts its value
       } else if (isArr(target) && target[0] === '{}') {
         escape('destructuring assignment')   // targets may be member paths
@@ -1107,6 +1110,16 @@ function carriedBindings(view, body, test, own) {
   return carried ?? NO_NAMES
 }
 
+const NO_NODES = new Set()
+/** The `recv[i]` nodes of `body` a canonical loop holds inside the receiver's
+ *  length (type/canonical-bounds.js scanBoundedArrIdx): a store there writes a
+ *  cell the array has, whatever it stores. */
+const boundedElements = (body, view) => {
+  const nodes = new Set()
+  scanBoundedArrIdx(body, null, null, nodes, view)
+  return nodes.size ? nodes : NO_NODES
+}
+
 /** The function's own facts and, per loop, the iteration's. */
 function frameEffectsOf(func, loops) {
   const body = func.body
@@ -1118,8 +1131,8 @@ function frameEffectsOf(func, loops) {
   if (func.rest) params.add(func.rest)
   // a parameter default runs in the frame, before the body
   // (the type tests standing around each loop, which the loop's own census does not walk)
-  const loopTests = new Map()
-  const out = census(view, frameRoots(func), [body], params, typedParams, true, SCRATCH.has(func.name), null, loopTests)
+  const loopTests = new Map(), inBounds = boundedElements(body, view)
+  const out = census(view, frameRoots(func), [body], params, typedParams, true, SCRATCH.has(func.name), null, loopTests, NO_NAMES, inBounds)
   // A frame that lends a value it made to a record older than itself keeps
   // it, though the census counts no site there: the frame restores nothing.
   if (SCRATCH.has(func.name) && !out.keeps) { out.keeps = true; out.keepsWhy = 'lends what it made to a record' }
@@ -1130,8 +1143,8 @@ function frameEffectsOf(func, loops) {
   out.loops = loops ? loopsOf(body).map(({ body: loopBody, roots, test, tried }) => {
     const tested = loopTests.get(loopBody) ?? null
     const carried = tried ? NO_NAMES : carriedBindings(view, loopBody, test, own ??= ownBindings(func))
-    return { body: loopBody, carried, own: census(view, roots, [loopBody], NO_NAMES, typedParams, false, false, tested),
-      iteration: () => census(view, roots, [loopBody], NO_NAMES, typedParams, true, false, tested, null, carried) }
+    return { body: loopBody, carried, own: census(view, roots, [loopBody], NO_NAMES, typedParams, false, false, tested, null, NO_NAMES, inBounds),
+      iteration: () => census(view, roots, [loopBody], NO_NAMES, typedParams, true, false, tested, null, carried, inBounds) }
   }) : []
   return out
 }
@@ -1154,11 +1167,11 @@ function closureEffectsOf(id) {
     else for (const nm of patternNames(p)) params.add(nm)
   }
   const view = ctx.summary.at(body)
-  const loopTests = new Map()
-  const out = census(view, frameRoots({ body, defaults }), [body], params, NO_NAMES, true, false, null, loopTests)
+  const loopTests = new Map(), inBounds = boundedElements(body, view)
+  const out = census(view, frameRoots({ body, defaults }), [body], params, NO_NAMES, true, false, null, loopTests, NO_NAMES, inBounds)
   // its loops as a function's (frameEffectsOf): a compaction site in one
   // roots the closure's live locals as it would a function's
-  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, NO_NAMES, false, false, loopTests.get(loopBody) ?? null) }))
+  out.loops = loopsOf(body).map(({ body: loopBody, roots }) => ({ body: loopBody, own: census(view, roots, [loopBody], NO_NAMES, NO_NAMES, false, false, loopTests.get(loopBody) ?? null, null, NO_NAMES, inBounds) }))
   return out
 }
 
