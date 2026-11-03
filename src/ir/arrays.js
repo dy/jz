@@ -115,7 +115,7 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, ca
 }
 
 /** Build a NaN-boxed pointer from a header allocation.
- *  type/aux/stride may be JS numbers; len/cap may be JS numbers or IR.
+ *  type/aux may be JS numbers; len/cap/stride may be JS numbers or IR.
  *  Returns { local, init, ptr } where:
  *    local — i32 name pointing to data start (post-header)
  *    init  — IR statement that allocates and sets `local`
@@ -151,7 +151,7 @@ export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap', fill
   } else {
     let helper
     if (stride === 8) helper = '__alloc_hdr'
-    else { helper = '__alloc_hdr_n'; args.push(['i32.const', stride]) }
+    else { helper = '__alloc_hdr_n'; args.push(typeof stride === 'number' ? ['i32.const', stride] : stride) }
     inc(helper)
     allocate = ['local.set', `$${local}`, ['call', '$' + helper, ...args]]
   }

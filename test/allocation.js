@@ -54,11 +54,12 @@ test('allocation: collection replacement at the growth threshold preserves its t
       for (const key of s) setValues.push(m.get(key))
       return JSON.stringify([m.size, s.size, values, setValues])
     }`
-  // A table of `cap` buckets holds cap/2 - 1 entries (module/collection/ordered.js):
-  // the key after the ones that fill it grows the table.
-  const usable = cap => (cap >> 1) - 1
-  const full = (n, floor) => { let cap = floor; while (usable(cap) < n) cap <<= 1; return usable(cap) === n }
+  // A table of `cap` buckets holds three in four less one below 16 buckets, and
+  // from there half less one, or three in four in compact collections (layout.js
+  // ordEntries): the key after the ones that fill it grows the table.
+  const usable = (cap, compact) => cap < 16 ? cap - (cap >> 2) - 1 : (cap >> 3) * (compact ? 6 : 4) - 1
   for (const level of levels(0, 1, 2, 3, 'size')) for (const floor of [2, 8]) for (const compact of [false, true]) {
+    const full = (n) => { let cap = floor; while (usable(cap, compact) < n) cap <<= 1; return usable(cap, compact) === n }
     const e = jz(source, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
     const ref = oracle(source.replaceAll('__heap_mark()', '0'))
     for (const [n, mixed] of [[0, 0], [2, 0], [3, 0], [5, 0], [6, 0], [11, 0], [12, 0], [23, 0], [24, 0], [6, 1], [6, 1], [0, 0], [6, 0]]) {
@@ -69,7 +70,7 @@ test('allocation: collection replacement at the growth threshold preserves its t
         is(e.state(), ref.state(), 'replacement keeps size, key identity and insertion order')
       }
       const growth = e.append(); ref.append()
-      if (full(n, floor)) ok(growth > 0, 'a new key at the threshold still grows')
+      if (full(n)) ok(growth > 0, 'a new key at the threshold still grows')
       else is(growth, 0, 'a new key below the threshold takes a free entry')
       is(e.state(), ref.state(), 'new-key insertion retains every collision-chain entry')
       e.remove(); ref.remove(); e.replace(2); ref.replace(2)
@@ -392,12 +393,16 @@ test('allocation: seeded collections apply their capacity floor without adding a
   for (const level of levels(0, 1, 2, 3)) for (const floor of [2, 8]) for (const compact of [false, true]) {
     const ex = jz(src, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
     for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 16, 0, 4, 4]) {
-      // n entries fit half the buckets less one: twice n and two, rounded up
-      const cap = Math.max(floor, 2 ** Math.ceil(Math.log2(n * 2 + 2)))
-      // a Set's and a Map's block is half its entry stride and a bucket word a bucket, in either profile (module/collection/ordered.js)
-      const mapBytes = 16 + cap * 16
+      // the smallest table that holds n (module/collection/ordered.js genOrdCap): a small
+      // one fills three in four buckets less one, a large one half less one (compact: three in four)
+      const load = compact ? 6 : 4
+      const cap = Math.max(floor, n <= 1 ? 2 : n <= 2 ? 4 : n <= 5 ? 8 : 2 ** Math.ceil(Math.log2(Math.ceil(8 * (n + 1) / load))))
+      // a block's bucket is that share of the entry's stride and its word (layout.js ordStride)
+      const stride = (es) => es * (cap < 16 ? 6 : load) / 8 + 4
+      // (the allocator rounds a block to 8 bytes)
+      const bytes = (es) => (16 + cap * stride(es) + 7) & ~7, mapBytes = bytes(24)
       is(ex.map(n), mapBytes, `Map(${n}), floor ${floor}, compact ${compact}, O${level}`)
-      is(ex.set(n), 16 + cap * 12, `Set(${n}), floor ${floor}, compact ${compact}, O${level}`)
+      is(ex.set(n), bytes(16), `Set(${n}), floor ${floor}, compact ${compact}, O${level}`)
       is(ex.copy(), mapBytes, 'a dense copy allocates only its table')
       is(ex.read(), JSON.stringify([Array.from({ length: n }, (_, i) => [i, i + 1]), Array.from({ length: n }, (_, i) => i)]), 'contents and insertion order survive copying and repeated construction')
     }

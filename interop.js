@@ -613,14 +613,13 @@ const codec = (mem, src) => {
 
   // The live entries of a HASH (7), SET (8) or MAP (9) at `off` in insertion
   // order, as __coll_order walks them: a tombstone is no key. A Set's or a
-  // Map's table holds its entries in order, up to the count in its last word
-  // (module/collection/ordered.js); a HASH's holds them by hash, cap slots.
-  // A pair: its key and value read.
+  // Map's table holds its entries in order from its first (module/collection/
+  // ordered.js), so the walk stops once it has the table's size, whatever its
+  // geometry; a HASH's holds them by hash, cap slots. A pair: its key and value read.
   const liveSlots = (off, t) => {
     const m = dv(), cap = m.getInt32(off - 4, true), stride = t === 8 ? 16 : 24, slots = []
-    // a table's block is cap times half its entry stride and a word (ordered.js ordStride)
-    const n = t === 7 ? cap : m.getInt32(off + cap * (stride / 2 + 4) - 4, true)
-    for (let i = 0; i < n; i++) {
+    const live = t === 7 ? cap : m.getInt32(off - 8, true)
+    for (let i = 0; i < cap && (t === 7 || slots.length < live); i++) {
       const slot = off + i * stride, hash = m.getBigUint64(slot, true)
       if (hash && (t !== 7 || Number(hash >> 32n) !== HIDDEN_PROPERTY_SEQ) && m.getBigUint64(slot + 8, true) !== 0x7FF87FFFFFFFFFFFn)
         slots.push([Number(hash >> 32n), slot])

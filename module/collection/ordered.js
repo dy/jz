@@ -16,21 +16,28 @@
  * array's does; a block at the heap top grows where it stands instead.
  *
  *   cap buckets (a power of two), E bytes an entry (16 a Set's, 24 a Map's):
- *   block = cap × (E/2 + 4) bytes = [entries: ecap × E][buckets: cap × 4][zero…][used: 4]
- *   ecap = cap/2 − 1
+ *   block = [entries: ecap × E][buckets: cap × 4][zero…][used: 4]
+ *   block = cap × (E·k/8 + 4) bytes, ecap = cap·k/8 − 1
+ *   k = 6 below ORD_HALF buckets; from there 4 (a program's), 6 (compact collections)
  *
  * At most ecap entries, and so at most ecap buckets, are ever filled: an
- * empty bucket ends every probe, fewer than half of them full, so a probe
- * that misses ends after a bucket or two. Every allocator and walker computes
- * the block's bytes from cap (`ordStride`); past the buckets, E bytes are
- * free, the last 4 the count.
+ * empty bucket ends every probe. A small table keeps three in four buckets
+ * full, so its few entries take little memory; a large one in a program
+ * keeps fewer than half full, so a probe that misses ends after a bucket or
+ * two. The compiler's own artifact (`compactCollections`, the build that
+ * also drops a dictionary's probe lane) keeps its large tables three in four
+ * full too: its memory is the hosted compiler's, held to a bound. Every
+ * allocator and walker computes the block's bytes from cap (layout.js
+ * `ordStride`); past the buckets E bytes are free, the last 4 the count. The
+ * host's decoder reads entries until it has the table's size, so it needs
+ * no geometry.
  *
  * @module collection/ordered
  */
 
 import { TOMB_NAN, UNDEF_NAN } from '../../src/ir.js'
 import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
-import { STR_HCACHE_BIT } from '../../layout.js'
+import { STR_HCACHE_BIT, ORD_HALF, ordStride as ordStrideAt, ordEntries as ordEntriesAt } from '../../layout.js'
 import { durableFwdLogIR, durableLenLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, hasDurableReset, heapResetWat } from './durable.js'
 import { stubLogIR } from '../core/stub-log.js'
 import { arrayKeysOn } from './identity.js'
@@ -40,25 +47,54 @@ const TAG = 0xFC000000 | 0      // a bucket's hash bits
 const IDX = 0x03FFFFFF          // a bucket's entry index plus one (TABLE_MAX buckets hold fewer entries)
 const GROW_QUAD_CAP = 8192      // past it a table quadruples (module/collection/upsert.js nextCapIR)
 
-// A table of `cap` buckets holds half as many entries of `es` bytes, less one,
-// then a bucket word per bucket, the count of appended entries in its last word:
-// its block is `cap` times half the entry stride and a word. At most half its
-// buckets are taken, so a probe that misses ends after a bucket or two.
-/** A table block's bytes per bucket, for entries of `es` bytes (12 a Set's, 16 a Map's). */
-export const ordStride = (es) => es / 2 + 4
-/** The same as an i32 WAT expression, of a constant or a runtime entry stride. */
-export const ordStrideWat = (es) => {
-  const c = /^\(i32\.const (\d+)\)$/.exec(es)
-  return c ? `(i32.const ${ordStride(+c[1])})` : `(i32.add (i32.shr_u ${es} (i32.const 1)) (i32.const 4))`
+// The geometry (layout.js): from ORD_HALF buckets a program's table fills half
+// its buckets less one, the compact collections of the compiler's own artifact
+// three in four (upsert.js collectionLaneBytes reads the same flag).
+const load = () => ctx.transform.compactCollections ? 6 : 4
+export { ORD_HALF }
+const constOf = (w) => { const c = /^\(i32\.const (-?\d+)\)$/.exec(w); return c ? +c[1] : null }
+/** A table block's bytes per bucket, for `cap` buckets and entries of `es` bytes
+ *  (a Set's 16 and a Map's 22 below ORD_HALF buckets; 12 and 16 from there in a
+ *  program, 16 and 22 in compact collections). */
+export const ordStride = (es, cap) => ordStrideAt(es, cap, load())
+/** The usable entries of a table of `cap` buckets. */
+export const ordEntries = (cap) => ordEntriesAt(cap, load())
+/** The stride as jz IR, of a constant entry stride and an IR bucket count. */
+export const ordStrideIR = (es, capIR) => {
+  const small = ordStride(es, 0), large = ordStride(es, ORD_HALF)
+  return small === large ? ['i32.const', small] : ['select', ['i32.const', small], ['i32.const', large], ['i32.lt_u', capIR, ['i32.const', ORD_HALF]]]
 }
-/** The usable entries of a table of `cap` buckets, an i32 WAT expression. */
-export const ordEntriesWat = (cap) => `(i32.sub (i32.shr_u ${cap} (i32.const 1)) (i32.const 1))`
+/** The same as i32 WAT expressions, of constants or runtime values. */
+export const ordStrideWat = (es, cap) => {
+  const e = constOf(es), c = constOf(cap), L = load()
+  if (e != null && c != null) return `(i32.const ${ordStride(e, c)})`
+  const share = (k) => e != null ? `(i32.const ${e * k / 8 + 4})` : `(i32.add (i32.shr_u (i32.mul ${es} (i32.const ${k})) (i32.const 3)) (i32.const 4))`
+  return L === 6 ? share(6) : `(select ${share(6)} ${share(L)} (i32.lt_u ${cap} (i32.const ${ORD_HALF})))`
+}
+export const ordEntriesWat = (cap) => {
+  const c = constOf(cap), L = load()
+  if (c != null) return `(i32.const ${ordEntries(c)})`
+  const dense = `(i32.sub (i32.sub ${cap} (i32.shr_u ${cap} (i32.const 2))) (i32.const 1))`
+  return L === 6 ? dense : `(select ${dense}
+      (i32.sub (i32.mul (i32.shr_u ${cap} (i32.const 3)) (i32.const ${L})) (i32.const 1))
+      (i32.lt_u ${cap} (i32.const ${ORD_HALF})))`
+}
 /** The bytes of the block of a table of `cap` buckets. */
-export const ordBytesWat = (cap, es) => `(i32.mul ${cap} ${ordStrideWat(es)})`
+export const ordBytesWat = (cap, es) => `(i32.mul ${cap} ${ordStrideWat(es, cap)})`
 /** The address of the appended-entry count of the table at `off`. */
 export const ordUsedAddrWat = (off, cap, es) => `(i32.sub (i32.add ${off} ${ordBytesWat(cap, es)}) (i32.const 4))`
-/** The same geometry in JS, for the host's decoder (interop.js). */
-export const ordUsed = (view, off, cap, es) => view.getInt32(off + cap * ordStride(es) - 4, true)
+/** The buckets of the smallest table that holds `n` entries, at least `floor` (a
+ *  power of two): `$__ord_cap`, which every seeded and copied table sizes by. A
+ *  large one takes the power of two at least 8(n + 1)/load. */
+export const genOrdCap = (floor) => `(func $__ord_cap (param $n i32) (result i32)
+    (local $c i32)
+    (local.set $c (select
+      (select (i32.const 2) (select (i32.const 4) (i32.const 8) (i32.le_u (local.get $n) (i32.const 2))) (i32.le_u (local.get $n) (i32.const 1)))
+      (i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz (i32.sub
+        (i32.div_u (i32.add (i32.shl (i32.add (local.get $n) (i32.const 1)) (i32.const 3)) (i32.const ${load() - 1})) (i32.const ${load()}))
+        (i32.const 1)))))
+      (i32.le_u (local.get $n) (i32.const ${ordEntries(ORD_HALF / 2)}))))
+    (select (i32.const ${floor}) (local.get $c) (i32.gt_u (i32.const ${floor}) (local.get $c))))`
 
 const resolve = (recv) => `(local.set $off (i32.wrap_i64 (i64.and (local.get ${recv}) (i64.const ${LAYOUT.OFFSET_MASK}))))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -397,7 +433,7 @@ export const genOrdCopy = () => `(func $__ord_copy (param $off i32) (param $es i
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.le_u (local.get $cap) (local.get $want))
       (then
-        (local.set $dst (call $__alloc_hdr_n (i32.load (i32.sub (local.get $off) (i32.const 8))) (local.get $cap) ${ordStrideWat('(local.get $es)')}))
+        (local.set $dst (call $__alloc_hdr_n (i32.load (i32.sub (local.get $off) (i32.const 8))) (local.get $cap) ${ordStrideWat('(local.get $es)', '(local.get $cap)')}))
         (memory.copy (local.get $dst) (local.get $off) ${ordBytesWat('(local.get $cap)', '(local.get $es)')})
         (return (local.get $dst))))
     (local.set $dst (call $__ord_rebuild (local.get $off) (local.get $cap) (local.get $es) (local.get $want)))
@@ -412,7 +448,7 @@ export const genOrdRebuild = () => `(func $__ord_rebuild (param $off i32) (param
     (local $i i32) (local $j i32) (local $slot i32) (local $dst i32) (local $h i32) (local $b i32)
     (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))
     (local.set $live (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) ${ordStrideWat('(local.get $es)')}))
+    (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) ${ordStrideWat('(local.get $es)', '(local.get $newcap)')}))
     ;; the table's own properties stay its own
     (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))
     (local.set $nix (i32.add (local.get $newptr) (i32.mul ${ordEntriesWat('(local.get $newcap)')} (local.get $es))))

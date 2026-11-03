@@ -286,7 +286,7 @@ test('identity-arm-divergence: $__same_value_zero survives a forced STRING-tag-a
   const sBits = ex.mk()
   const off = Number(sBits & 0xFFFFFFFFn)
   const cap = dv.getInt32(off - 4, true)
-  const buckets = off + ((cap >> 1) - 1) * SET_ENTRY
+  const buckets = off + (cap < 16 ? cap - (cap >> 2) - 1 : (cap >> 3) * 4 - 1) * SET_ENTRY
   let b0 = -1
   for (let b = 0; b < cap; b++) if (dv.getInt32(buckets + b * 4, true) !== 0) { b0 = b; break }
   ok(b0 >= 0, 'the string entry is indexed by a bucket')

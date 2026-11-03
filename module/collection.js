@@ -81,8 +81,6 @@ const builtinPropDeps = () => [
 // Shared physical layout constants for collection helpers and diagnostics.
 const SET_ENTRY = 16  // hash + key
 export const MAP_ENTRY = 24  // hash + key + value
-// a Set's and a Map's table block: bytes per bucket (collection/ordered.js ordStride)
-const SET_BLOCK = ordStride(SET_ENTRY), MAP_BLOCK = ordStride(MAP_ENTRY)
 const INIT_CAP = 8    // user-program default (must be power of 2)
 const collectionInitCap = () => {
   const cap = ctx.transform.optimize?.collectionInitCap | 0
@@ -222,7 +220,7 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
-import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdFind, genOrdPutAt, genSlotHeal, ordStride, ordStrideWat } from './collection/ordered.js'
+import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideIR, ordStrideWat, ordBytesWat } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
 import registerIdentity, { arrayKeysOn, noteKeys, pinKeyWat } from './collection/identity.js'
@@ -236,6 +234,8 @@ export default (ctx) => {
   // self-compile artifact sets 0; ordinary compilations retain the 4-byte lane.
   const lane = collectionLaneBytes()
   const initCap = collectionInitCap()
+  // an empty Set's and Map's table block: bytes per bucket (collection/ordered.js ordStride)
+  const SET_BLOCK = ordStride(SET_ENTRY, initCap), MAP_BLOCK = ordStride(MAP_ENTRY, initCap)
   // Size tier: `__str_hash` links its plain walk and the probes call it
   // instead of inlining its fast arms (module/collection/upsert.js).
   const lean = !!ctx.transform.optimize?.leanRuntime
@@ -324,7 +324,7 @@ export default (ctx) => {
     __map_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __map_delete: () => ordDeleteDeps(),
-    __map_from: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx', '__map_set', '__map_add_entry', '__mkptr', '__alloc_hdr_n', '__ord_copy', '__table_check'],
+    __map_from: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__len', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx', '__map_set', '__map_add_entry', '__mkptr', '__alloc_hdr_n', '__ord_copy', '__table_check', '__ord_cap'],
     __map_add_entry: () => ['__ptr_type', '__ptr_aux', '__map_set', '__dyn_get_expr', '__throw_map_entry', representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'],
     __throw_map_entry: ['__alloc_hdr', '__mkptr'],
     // own edge: __map_new's body calls $__alloc_hdr_n — auto-scan-only
@@ -358,7 +358,7 @@ export default (ctx) => {
     __set_put_at: () => ['__set_add', '__ptr_offset_fwd', ...slotLogDeps()],
     __ord_rebuild: ['__alloc_hdr_n'],
     __ord_copy: ['__ord_rebuild', '__alloc_hdr_n'],
-    __set_from: ['__is_nullish', '__ptr_offset', '__ord_copy', '__alloc_hdr_n', '__mkptr', '__table_check'],
+    __set_from: ['__is_nullish', '__ptr_offset', '__ord_copy', '__alloc_hdr_n', '__mkptr', '__table_check', '__ord_cap'],
     __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_lookup_slot: ['__str_hash', '__key_eq', '__ptr_offset_fwd'],
     __hash_hide: ['__hash_lookup_slot'],
@@ -556,11 +556,12 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_BLOCK}))))`
 
+  // The table every seeded or copied Set and Map takes: the smallest that holds
+  // its entries, at least an empty one's (collection/ordered.js genOrdCap).
+  ctx.core.stdlib['__ord_cap'] = () => genOrdCap(initCap)
   // new Set(set): the source's table copied (collection/ordered.js __ord_copy),
   // sized as a seeding of its live entries would be; a missing source, empty.
-  const capFor = (n) => `(select (i32.const ${initCap})
-      (i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz (i32.add (i32.shl ${n} (i32.const 1)) (i32.const 1)))))
-      (i32.lt_u ${n} (i32.const ${initCap / 2})))`
+  const capFor = (n) => `(call $__ord_cap ${n})`
   ctx.core.stdlib['__set_from'] = () => `(func $__set_from (param $src i64) (result f64)
     (local $off i32) (local $want i32)
     (if (call $__is_nullish (local.get $src))
@@ -593,17 +594,14 @@ export default (ctx) => {
     // A Set copies a Set's table (a missing one makes an empty Set).
     if (valTypeOf(iterExpr) === VAL.SET) { inc('__set_from'); return typed(['call', '$__set_from', asI64(storedValue(iterExpr))], 'f64') }
     const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
-    inc('__set_add', '__ptr_type', '__len', read, '__table_check')
+    inc('__set_add', '__ptr_type', '__len', read, '__table_check', '__ord_cap')
     noteKeys()
     const setL = temp('nss'), arrL = temp('nsa')
     const iL = tempI32('nsi'), lenL = tempI32('nsl'), capL = tempI32('nsc')
     // the table a source of this length takes, held to TABLE_MAX (a typed
     // array's length reaches 2^31)
-    const capExpr = ['select', ['i32.const', initCap],
-      ['i32.shl', ['i32.const', 1], ['i32.sub', ['i32.const', 32], ['i32.clz',
-        ['i32.add', ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', 1]], ['i32.const', 1]]]]],
-      ['i32.lt_u', ['local.get', `$${lenL}`], ['i32.const', initCap / 2]]]
-    const out = allocPtr({ type: PTR.SET, len: 0, cap: ['local.get', `$${capL}`], stride: SET_BLOCK, tag: 'set' })
+    const capExpr = ['call', '$__ord_cap', ['local.get', `$${lenL}`]]
+    const out = allocPtr({ type: PTR.SET, len: 0, cap: ['local.get', `$${capL}`], tag: 'set', stride: ordStrideIR(SET_ENTRY, ['local.get', `$${capL}`]) })
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr_ctor', [',', iterExpr]]))],
       ['local.set', `$${lenL}`, ['i32.const', 0]],
@@ -710,9 +708,7 @@ export default (ctx) => {
         (local.set $off (call $__ptr_offset (local.get $coll)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
         (memory.fill (local.get $off) (i32.const 0)
-          (i32.mul (local.get $cap)
-            (i32.add (i32.const ${SET_BLOCK})
-              (i32.shl (i32.eq (local.get $t) (i32.const ${PTR.MAP})) (i32.const 2)))))
+          ${ordBytesWat('(local.get $cap)', `(select (i32.const ${MAP_ENTRY}) (i32.const ${SET_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))`)})
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))))
     (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
 
@@ -861,7 +857,7 @@ export default (ctx) => {
     return typed(['block', label, ['result', 'i32'],
       ...tableOf(recv, c.off),
       ['local.set', `$${c.used}`, ['i32.load', ['i32.sub', ['i32.add', g(c.off),
-        ['i32.mul', ['i32.load', ['i32.sub', g(c.off), ['i32.const', 4]]], ['i32.const', ordStride(E)]]], ['i32.const', 4]]]],
+        ['i32.mul', ['local.tee', `$${c.cap}`, ['i32.load', ['i32.sub', g(c.off), ['i32.const', 4]]]], ordStrideIR(E, g(c.cap))]], ['i32.const', 4]]]],
       ['if', ['i32.and', ['i32.ne', g(c.i), ['i32.const', 0]],
           ['i32.or', ['i32.gt_u', g(c.i), g(c.used)],
             ['i32.ne', ['i32.load', 'offset=4', entry(['i32.sub', g(c.i), ['i32.const', 1]])], g(c.s)]]],
@@ -880,7 +876,7 @@ export default (ctx) => {
   }
   // The key (8) or the value (16) of the entry cursor `c` took last, read by its step.
   const cursorField = (c, field) => typed(['f64.reinterpret_i64', ['local.get', `$${field === 8 ? c.k : c.v}`]], 'f64')
-  const newCursor = () => ({ i: tempI32('cci'), s: tempI32('ccs'), at: tempI32('cca'), off: tempI32('cco'), used: tempI32('ccu'), k: tempI64('cck'), v: tempI64('ccv'), h: tempI32('cch') })
+  const newCursor = () => ({ i: tempI32('cci'), s: tempI32('ccs'), at: tempI32('cca'), off: tempI32('cco'), used: tempI32('ccu'), k: tempI64('cck'), v: tempI64('ccv'), h: tempI32('cch'), cap: tempI32('ccc') })
   cursorKeyHash = (key) => {
     const id = typeof key === 'string' ? ctx.func.cursorKeys?.get(key) : undefined
     if (id == null || isReassigned(ctx.func.body, key)) return null
@@ -1242,7 +1238,7 @@ export default (ctx) => {
         (local.set $src (call $__ptr_offset (local.get $bits)))
         (local.set $cap (i32.load (i32.sub (local.get $src) (i32.const 4))))
         (local.set $out (call $__mkptr (local.get $t) (i32.const 0)
-          (call $__alloc_hdr_n (i32.const 0) (local.get $cap) ${ordStrideWat('(local.get $stride)')})))
+          (call $__alloc_hdr_n (i32.const 0) (local.get $cap) ${ordStrideWat('(local.get $stride)', '(local.get $cap)')})))
         (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
         ;; walk the source in insertion order; ≤len inserts into cap slots never grow,
         ;; so $out's bits stay canonical (the memo entry above remains the pointer).
@@ -1373,10 +1369,7 @@ export default (ctx) => {
         (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8)))))
       (else (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
         (then (local.set $n (call $__len (local.get $src)))))))
-    (local.set $newcap (select (i32.const ${initCap})
-      (i32.shl (i32.const 1) (i32.sub (i32.const 32) (i32.clz
-        (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const 1)))))
-      (i32.lt_u (local.get $n) (i32.const ${initCap / 2}))))
+    (local.set $newcap (call $__ord_cap (local.get $n)))
     (call $__table_check (local.get $newcap))
     ;; A shallow Map copy takes the source's table (collection/ordered.js
     ;; __ord_copy): whole where it fits the copy's size, its live entries in
@@ -1385,7 +1378,7 @@ export default (ctx) => {
       (then (return (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
         (call $__ord_copy (local.get $off) (i32.const ${MAP_ENTRY}) (local.get $newcap))))))
     (local.set $map (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${MAP_BLOCK})))))
+      (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) ${ordStrideWat(`(i32.const ${MAP_ENTRY})`, '(local.get $newcap)')}))))
     (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})) (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
       (then
         (block $da (loop $la

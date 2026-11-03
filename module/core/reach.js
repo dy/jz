@@ -32,7 +32,7 @@ import { numericArraysOn } from '../../src/compile/numeric-arrays.js'
 import { ctx, PTR, LAYOUT, HEAP, FORWARDING_MASK } from '../../src/ctx.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, ARRAY_RAW } from '../../layout.js'
 import { collectionLaneBytes } from '../collection/upsert.js'
-import { ordUsedAddrWat, ordStrideWat } from '../collection/ordered.js'
+import { ordStrideWat } from '../collection/ordered.js'
 import { recordsOn } from '../../src/compile/array-records.js'
 
 // JZ_DEBUG_POISON=1: what the walk frees is overwritten, as a frame's restore does.
@@ -291,15 +291,15 @@ export const registerReach = () => {
           (then (call $__reach_props (i64.load (i32.sub (local.get $off) (i32.const 16))) (local.get $old))))
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
         ;; a HASH's slots carry the hash lane after them; a Set's or a Map's
-        ;; block is half its entry stride and a bucket word per bucket (module/collection/ordered.js)
-        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideWat('(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
+        ;; block's stride follows its buckets (module/collection/ordered.js ordStride)
+        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideWat('(local.get $e)', '(i32.load (i32.sub (local.get $p) (i32.const 4)))')} (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
         (local.set $cap (call $__reach_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (local.get $stride)))
         (call $__reach_end (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $stride))))
         (local.set $c (local.get $p))
         ;; a Set's or a Map's entries end at its appended count (none of a block cut short)
         (if (i32.ne (local.get $t) (i32.const ${PTR.HASH}))
           (then (local.set $cap (select
-            (i32.load ${ordUsedAddrWat('(local.get $p)', '(local.get $cap)', '(local.get $e)')})
+            (i32.load (i32.sub (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $stride))) (i32.const 4)))
             (i32.const 0)
             (i32.eq (local.get $cap) (i32.load (i32.sub (local.get $p) (i32.const 4))))))))
         (local.set $n (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $e))))

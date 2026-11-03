@@ -993,14 +993,18 @@ A Set's and a Map's table (module/collection/ordered.js) keeps its entries in
 insertion order in front of its buckets: a bucket holds an entry's index under
 the top six bits of its hash, a delete tombstones the entry in place (its key
 TOMB_NAN, its bucket's gap closed by backward shift), and an append past the
-usable entries (half the buckets, less one) rebuilds the live ones into a
+usable entries rebuilds the live ones into a
 new block, twice the buckets or as many when half are tombstones, the old block
 forwarding to it. A table that ends at the heap top above the reset mark grows
 where it stands instead, as an array's storage does: its live entries close up,
 the rest of the block clears and its buckets re-index, and no stub is left for a
-holder to hop. The block is the table's buckets times half its entry stride and
-a bucket word, the count of appended entries in its last word; fewer than half
-the buckets are taken, so a probe that misses ends after a bucket or two. A
+holder to hop. A table below 16 buckets fills three in four of them less one,
+a larger one half less one, so a probe that misses ends after a bucket or two;
+in the compiler's own artifact (`compactCollections`) a larger one fills three
+in four too, which keeps the hosted compiler's memory under its bound (the
+summary of 512 guards: 621,912 B half full, 524,408 B so). The block is the
+table's buckets times that share of its entry stride and a bucket word
+(layout.js `ordStride`), the count of appended entries in its last word. A
 walker reads the entries below
 that count, in order, past the tombstones. A growth points the stub its
 holder names at the new block, and a probe hops one stub inline, so a table reached through its first pointer pays
