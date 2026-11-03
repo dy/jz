@@ -24,6 +24,7 @@ import { withControlFrame, withFinallyStack, withPendingLabel, withSchemaSpecula
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from '../flow-types.js'
 import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit, emitVoid, markDropped, provedPresent, toBool } from './dispatch.js'
+import { fuseProbeIf } from './fuse-probes.js'
 import { loopGuardHi } from './i32-bounds.js'
 import { emitFinalizers } from './statements.js'
 import { isNullable } from '../../summary/kind.js'
@@ -665,6 +666,12 @@ export const controlFlowOps = {
   // === Control flow ===
 
   'if': (cond, then, els) => {
+    // A statement that asks a Set or a Map about a key and then stores it probes once (fuse-probes.js).
+    const fused = fuseProbeIf(cond, then, els)
+    if (fused) {
+      const open = emitVoid(fused.open), rest = ctx.core.emit['if'](fused.test, fused.arm, els)
+      return [...open, ...(rest == null ? [] : typeof rest[0] === 'string' ? [rest] : rest)]
+    }
     // Dead branch elimination: constant condition → emit only the live branch
     const ce = toBool(cond)
     if (isLit(ce)) {

@@ -199,6 +199,12 @@ const healValue = () => `(local.set $v (i64.load offset=16 (local.get $slot)))
                   ${hasDurableReset() ? `(if (i32.ge_u (local.get $slot) ${heapResetWat()}) (then (i64.store offset=16 (local.get $slot) (local.get $v))))` : '(i64.store offset=16 (local.get $slot) (local.get $v))'}))))
           (return (local.get $v))`
 
+/** The value of the entry at `slot`, healed as a Map read heals it (a statement's
+ *  fused read, compile/emit/fuse-probes.js). */
+export const genSlotHeal = () => `(func $__slot_heal (param $slot i32) (result i64)
+    (local $v i64) (local $vo i32)
+    ${healValue()})`
+
 /** get/has: the value (or `missing`), or 1/0. hashFn null takes the hash as a parameter. */
 export function genOrdLookup(name, es, hashFn, eqExpr, expectedType, wantValue = true, hasExt = false, missing = UNDEF_NAN) {
   const rt = wantValue ? 'i64' : 'i32'
@@ -220,6 +226,45 @@ export function genOrdLookup(name, es, hashFn, eqExpr, expectedType, wantValue =
     ${geometry(es)}
     ${probe(es, eqExpr, onHit)}
     ${absent})`
+}
+
+/** A statement's probe that may store (compile/emit/fuse-probes.js): the key's
+ *  entry address, or 0 with the empty bucket the probe ended at and the key's
+ *  hash left in `$__find_b`/`$__find_h` for `__ord_put_at`, which inserts there
+ *  with no second probe. The receiver is a present table of `expectedType`. */
+export function genOrdFind(name, es, hashFn, eqExpr, prologue = '') {
+  return `(func $${name} (param $coll i64) (param $key i64) (result i32)
+    ${probeLocals}
+    ${resolve('$coll')}${prologue}
+    ${keyHash(hashFn)}
+    ${geometry(es)}
+    ${probe(es, eqExpr, '(return (local.get $slot))')}
+    (global.set $__find_b (local.get $b))
+    (global.set $__find_h (local.get $h))
+    (i32.const 0))`
+}
+
+/** The insertion a find that missed leaves for its statement: the entry
+ *  appended, bucket `b` (empty since: nothing ran between) pointing at it; a
+ *  full table takes the ordinary insertion, which grows it. */
+export function genOrdPutAt(name, es, hasVal, fallback) {
+  return `(func $${name} (param $coll i64) (param $key i64) ${hasVal ? '(param $val i64) ' : ''}(param $b i32) (param $h i32)
+    (local $off i32) (local $cap i32) (local $ecap i32) (local $ix i32) (local $used i32) (local $slot i32)
+    ${resolve('$coll')}
+    (local.set $ecap ${ordEntriesWat('(local.get $cap)')})
+    (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', `(i32.const ${es})`)}))
+    (if (i32.ge_u (local.get $used) (local.get $ecap))
+      (then (drop (call $${fallback} (local.get $coll) (local.get $key)${hasVal ? ' (local.get $val)' : ''})) (return)))
+    (local.set $ix (i32.add (local.get $off) (i32.mul (local.get $ecap) (i32.const ${es}))))
+    (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $used) (i32.const ${es}))))
+    ${seqStore()}
+    (i64.store offset=8 (local.get $slot) (local.get $key))${durableEntryLogIR('slot', 'off')}${hasVal ? `
+    (i64.store offset=16 (local.get $slot) (local.get $val))${durableSlotLogIR('slot', 16, 'val')}` : ''}
+    (i32.store (i32.add (local.get $ix) (i32.shl (local.get $b) (i32.const 2)))
+      (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (i32.add (local.get $used) (i32.const 1))))
+    (i32.store ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', `(i32.const ${es})`)} (i32.add (local.get $used) (i32.const 1)))
+    (i32.store (i32.sub (local.get $off) (i32.const 8))
+      (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1))))`
 }
 
 /** delete: the entry tombstoned in place, its bucket's gap closed by backward

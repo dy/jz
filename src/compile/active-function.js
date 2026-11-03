@@ -95,6 +95,7 @@ export function createActiveFunction({
     probeHoist: null,
     lenHoist: null,
     collCursors: null,   // a Set's or a Map's for…of cursors by id → their locals (module/collection.js `__coll_next`)
+    collSlots: null,     // a statement's Set or Map slot by id → its locals (module/collection.js `__slot_open`)
     hoistTempDefs: null,
 
     // Expression-dispatch scopes. They are fields rather than module globals so

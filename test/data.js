@@ -529,6 +529,42 @@ test('a binding the summary shapes stores into the slot its reads use', () => {
   ok(stores(mixed) > 0, 'two layouts: the dynamic store stays')
 })
 
+// A statement, or two adjacent ones, that ask a Set or a Map about a key and
+// then store it probe once (compile/emit/fuse-probes.js): the find leaves the
+// key's entry or the empty bucket it ended at, and the store writes the entry
+// or inserts at that bucket. Nothing between them may observe the table: a
+// value or test that calls code, or another use of the receiver, keeps the
+// separate probes.
+test('Map/Set: a statement that probes a key and stores it probes once', () => {
+  const src = `
+    export let hasSet = (n) => { const m = new Map(); let t = 0; for (let i = 0; i < n; i++) { const k = i % 7; if (!m.has(k)) m.set(k, i); t += m.get(k) } return t + ':' + m.size }
+    export let hasSetBlock = (n) => { const m = new Map(); let t = 0; for (let i = 0; i < n; i++) { const k = (i * 13) % 11; if (!m.has(k)) { m.set(k, i * 2); t += 1 } else t += 100 } return t + ':' + m.size + ':' + [...m.values()].join() }
+    export let hasOrGet = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = i % 5, d = (i * 7) % 13; if (!m.has(k) || m.get(k) < d) m.set(k, d) } return [...m].join('|') }
+    export let setAdd = (n) => { const s = new Set(); let t = 0; for (let i = 0; i < n; i++) { const k = 'k' + (i % 9); if (!s.has(k)) { s.add(k); t += k.length } else t-- } return t + ':' + s.size + ':' + [...s].join() }
+    export let zeroKey = () => { const m = new Map(); const k = -0; if (!m.has(k)) m.set(k, 1); const z = 0; if (!m.has(z)) m.set(z, 2); return m.get(0) + ':' + m.size }
+    export let growth = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { if (!m.has(i)) m.set(i, i * 3) } let t = 0; for (const [k, v] of m) t += v; return t + ':' + m.size }
+    export let getOrInsert = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = i % 6; let l = m.get(k); if (l === undefined) { l = []; m.set(k, l) } l.push(i) } let t = ''; for (const [k, v] of m) t += k + ':' + v.length + ','; return t }
+    export let presentUndefined = () => { const m = new Map([[1, undefined]]); let x = m.get(1); if (x === undefined) { x = 7; m.set(1, x) } let y = m.get(2); if (y === undefined) { y = 8; m.set(2, y) } return x + ':' + y + ':' + m.get(1) + ':' + m.size }
+    export let records = (n) => { const m = new Map(); let t = 0; for (let i = 0; i < n; i++) { const u = 'u' + (i % 7); let s = m.get(u); if (s === undefined) { s = { hits: 0, first: i, tags: [i, 'x'] }; m.set(u, s) } s.hits++; t += s.first + s.tags.length } return t + ':' + m.size }
+    export let readThenSet = (n) => { const m = new Map(); for (let i = 0; i < 5; i++) m.set(i, 10); for (let i = 0; i < n; i++) { const k = i % 5; const left = m.get(k) - 1; m.set(k, left) } const k = 9; const v = m.get(k) + 1; m.set(k, v); return [...m.values()].join() }
+    export let firstSight = (n) => { const s = new Set(); let t = 0; for (let i = 0; i < n; i++) { const k = (i * 7) % 10; if (s.has(k)) continue; s.add(k); t += k } return t + ':' + s.size }
+    export let observed = () => { const m = new Map(); const log = []; const f = () => { log.push(m.has(3)); return 9 }; const k = 3; if (!m.has(k)) m.set(k, f()); let l = m.get(4); if (l === undefined) { l = m.size; m.set(4, l) } return log.join() + m.get(3) + ':' + m.get(4) }
+    export let grownLists = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { const k = i & 3; let l = m.get(k); if (l === undefined) { l = []; m.set(k, l) } l.push(i) } let t = 0; for (let r = 0; r < 3; r++) for (let k = 0; k < 4; k++) { const l = m.get(k); for (let j = 0; j < l.length; j++) t += l[j] } return t }
+    export let arrayKeys = (n) => { const m = new Map(); const keys = []; for (let i = 0; i < 4; i++) keys.push([i]); for (let i = 0; i < n; i++) { const k = keys[i & 3]; if (!m.has(k)) m.set(k, i); k.push(i) } let t = 0; for (const k of keys) t += m.get(k); return t + ':' + m.size }`
+  const js = oracle(src)
+  const calls = [['hasSet', [50]], ['hasSetBlock', [40]], ['hasOrGet', [60]], ['setAdd', [40]], ['zeroKey', []], ['growth', [500]], ['getOrInsert', [40]],
+    ['presentUndefined', []], ['records', [30]], ['readThenSet', [23]], ['firstSight', [30]], ['observed', []], ['grownLists', [300]], ['arrayKeys', [200]]]
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const e = jz(src, { optimize }).exports
+    for (const [name, args] of calls) is(e[name](...args), js[name](...args), `${name}, O${optimize}`)
+  }
+  const fused = (body) => /global\.(?:set|get) \$__find_b\b/.test(compile(`export let f = (n) => { ${body} }`, { optimize: 'speed', wat: true }))
+  ok(fused(`const m = new Map(); for (let i = 0; i < n; i++) { const k = i & 7; if (!m.has(k)) m.set(k, i) } return m.size`), 'has, then set: one find')
+  ok(fused(`const m = new Map(); for (let i = 0; i < n; i++) { const k = i & 7; let l = m.get(k); if (l === undefined) { l = []; m.set(k, l) } l.push(i) } return m.size`), 'get-or-insert: one find')
+  ok(fused(`const s = new Set(); let t = 0; for (let i = 0; i < n; i++) { const k = i & 7; if (s.has(k)) continue; s.add(k); t++ } return t`), 'a Set\'s first sight: one find')
+  ok(!fused(`const m = new Map(); const f = () => m.size; for (let i = 0; i < n; i++) { const k = i & 7; if (!m.has(k)) m.set(k, f()) } return m.size`), 'a value that calls code keeps both probes')
+})
+
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
   return adaptI64(module, instance.exports)

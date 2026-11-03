@@ -5,6 +5,7 @@
  */
 
 import { numericConstruction, numericLanes } from '../numeric-arrays.js'
+import { fuseProbePairs } from './fuse-probes.js'
 import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
@@ -1365,6 +1366,8 @@ const blockSaves = (stmts) => {
 export function emitBlockBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
+  // Adjacent statements that probe one Set or Map key and store it probe once (fuse-probes.js).
+  fuseProbePairs(stmts)
   const out = []
   const accumulated = []
   const frame = ctx.func

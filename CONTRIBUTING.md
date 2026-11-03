@@ -2438,6 +2438,20 @@ Escaped, mutated or dynamically indexed pairs keep their arrays (a snapshot).
 Changed planning passes invalidate identity-keyed binding and mutation scans
 before the next pass reads them.
 
+A statement, or two adjacent ones, that ask a Set or a Map about a key and
+then store it probe once (compile/emit/fuse-probes.js, at emission, so every
+analysis sees the source as written): `if (!m.has(k)) { m.set(k, v); … }`,
+`if (!m.has(k) || m.get(k) < d) m.set(k, d)`, get-or-insert (`let x =
+m.get(k); if (x === undefined) { x = []; m.set(k, x) }`, its test kept), a
+read then a store (`const l = m.get(k) - 1; m.set(k, l)`) and a Set's first
+sight (`if (s.has(k)) continue; s.add(k)`). The find (`__map_find`,
+`__set_find`) leaves the key's entry, or the empty bucket a miss ended at and
+the key's hash; the store writes the entry or inserts at that bucket
+(`__map_put_at`). The bucket holds because nothing between the two may run
+code or change the table: values and tests are literals, names, operators
+over plain kinds and literals of such, the store comes first in its arm, and
+the receiver is a present Set or Map with no own probe members.
+
 The frame census (compile/analyze/frame-effects.js) reads the summary through
 the function's own view (keyed by its signature, as the emitter reads it). It
 takes a store into a parameter the export boundary types (`boundaryTyped`,

@@ -213,7 +213,9 @@ const ENUMERATING = /^(__object_rest|Object\.(values|entries)|JSON\.stringify|st
 const runsGetters = (name) => viewsOn() && ENUMERATING.test(name) || name === 'JSON.stringify' && !!ctx.funcs.runtimeRoots?.has(TO_JSON)
 
 // A Set's or a Map's for…of cursor (module/collection.js `__coll_next`): reads of its table.
-const COLL_CURSOR = /^__coll_(start|next|key|val)$/
+// So are a statement's fused find and reads (compile/emit/fuse-probes.js `__slot_*`,
+// named at emission, after this census); its put is a store into the table (WRITES_FIRST).
+const COLL_CURSOR = /^__(coll_(start|next|key|val)|slot_(open|get|new|val))$/
 
 // Callees whose result is a scalar: no allocation. A predicate's is a boolean.
 const SCALAR_CALLEES = /^((f32x4|f64x2|i32x4|v128)\.\w+|crypto\.getRandomValues|fs\.readSync|[Mm]ath\.\w+|Number(\.\w+)?|Boolean|isNaN|isFinite|parseInt|parseFloat|Date\.now|performance\.now|Array\.isArray|ArrayBuffer\.isView|Object\.(is|hasOwn|isFrozen|isSealed|isExtensible))$/
@@ -293,7 +295,7 @@ const PARK_LANE = /^__park_(begin|finish|write_(u8|u32|f64|i64|str|ref|bytes)|re
 // A builtin's namespace: a call under it the census lists nowhere may do anything with its arguments.
 const STATICS = /^(Object|Reflect|Atomics|Array\.prototype|Function|Promise)\./
 // Builtins that write into their first argument.
-const WRITES_FIRST = /^(Object\.(assign|defineProperty|defineProperties|setPrototypeOf)|Reflect\.(set|defineProperty|setPrototypeOf))$/
+const WRITES_FIRST = /^(Object\.(assign|defineProperty|defineProperties|setPrototypeOf)|Reflect\.(set|defineProperty|setPrototypeOf)|__slot_put)$/
 
 // Functions of the runtime whose member stores into their own locals lend a
 // value for a time they end themselves: the binding records of std/iter.js,
@@ -802,7 +804,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         return unknownCall('call __iter_arr')
       }
       if (callee === '__keys_ro' || callee === '__keys_dyn') { allocates(); return }
-      // a Set's or a Map's for…of cursor reads its table in place: no allocation, no store
+      // a Set's or a Map's for…of cursor reads its table in place: no allocation, no store (a fused find too)
       if (COLL_CURSOR.test(callee)) return
       if (PURE_CALLEES.test(callee)) return pure(callee, args)
       if (FRESH_CTORS.test(callee)) { allocates(); if (callee === 'Map') mapEntries(args); return }   // constructors lowered to plain calls still read Map entries

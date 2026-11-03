@@ -16,10 +16,10 @@
 
 import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
+import { isNumericIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
 import { emit, deps, call, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
-import { NUMBER } from '../src/summary/kind.js'
+import { NUMBER, K as KIND, hasTag } from '../src/summary/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { isLiteralStr, ACCESSOR_GET, ACCESSOR_SET, STATIC_BASE } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, FORWARDING_MASK, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
@@ -213,7 +213,7 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
-import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy } from './collection/ordered.js'
+import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdFind, genOrdPutAt, genSlotHeal } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
 import registerIdentity, { arrayKeysOn, noteKeys, pinKeyWat } from './collection/identity.js'
@@ -342,6 +342,11 @@ export default (ctx) => {
     __hash_set_value: ['__hash_set_local', '__to_key', '__is_nullish'],
     __map_slot: () => ordUpsertDeps(),
     __ord_grow: ['__ord_rebuild', '__table_check'],
+    __map_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd'],
+    __set_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd'],
+    __map_put_at: () => ['__map_set', '__ptr_offset_fwd', ...slotLogDeps()],
+    __slot_heal: ['__ptr_offset_fwd'],
+    __set_put_at: () => ['__set_add', '__ptr_offset_fwd', ...slotLogDeps()],
     __ord_rebuild: ['__alloc_hdr_n'],
     __ord_copy: ['__ord_rebuild', '__alloc_hdr_n'],
     __set_from: ['__is_nullish', '__ptr_offset', '__ord_copy', '__alloc_hdr_n', '__mkptr', '__table_check'],
@@ -741,6 +746,13 @@ export default (ctx) => {
   ctx.core.stdlib.__coll_rehash = genRehash
   ctx.core.stdlib['__set_add'] = () => genOrdUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external, { prologue: pinKey() })
   ctx.core.stdlib.__ord_grow = genOrdGrow
+  // a statement's probe that may store, and the insertion a miss leaves (compile/emit/fuse-probes.js)
+  if (!ctx.scope.globals.has('__find_b')) { declGlobal('__find_b', 'i32'); declGlobal('__find_h', 'i32') }
+  ctx.core.stdlib['__map_find'] = () => genOrdFind('__map_find', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, pinKey())
+  ctx.core.stdlib['__set_find'] = () => genOrdFind('__set_find', SET_ENTRY, '$__map_hash', sameValueZeroEqG, pinKey())
+  ctx.core.stdlib['__map_put_at'] = () => genOrdPutAt('__map_put_at', MAP_ENTRY, true, '__map_set')
+  ctx.core.stdlib['__set_put_at'] = () => genOrdPutAt('__set_put_at', SET_ENTRY, false, '__set_add')
+  ctx.core.stdlib.__slot_heal = genSlotHeal
   ctx.core.stdlib.__ord_rebuild = genOrdRebuild
   ctx.core.stdlib.__ord_copy = genOrdCopy
   ctx.core.stdlib['__set_has'] = () => genOrdLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
@@ -864,6 +876,71 @@ export default (ctx) => {
   const cursorRead = (field) => (coll, id) => cursorField(cursorOf(id), field)
   ctx.core.emit['__coll_key'] = cursorRead(8)
   ctx.core.emit['__coll_val'] = cursorRead(16)
+  // A statement's slot (compile/emit/fuse-probes.js): `__slot_open(m, k, id, E)`
+  // finds the key once (its entry, or the empty bucket a miss ended at);
+  // `__slot_new` is whether it missed, `__slot_val` the value it holds,
+  // `__slot_put` a store: into the entry, or an insertion at that bucket.
+  const slotOf = (id) => {
+    const at = cursorId(id), slots = (ctx.func.collSlots ??= new Map())
+    let s = slots.get(at)
+    if (!s) slots.set(at, s = { recv: temp('cpm'), key: tempI64('cpk'), entry: tempI32('cpe'), b: tempI32('cpb'), h: tempI32('cph'), map: true })
+    return s
+  }
+  ctx.core.emit['__slot_open'] = (m, k, id, es) => {
+    const s = slotOf(id), find = entryBytes(es) === MAP_ENTRY ? '__map_find' : '__set_find'
+    s.map = find === '__map_find'
+    s.key0 = k
+    // its store may insert the key, as `.set`/`.add` would: an array key keeps an identity (collection/identity.js)
+    noteKeys(k)
+    inc(find)
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${s.recv}`, asF64(emit(m))],
+      ['local.set', `$${s.key}`, asI64(storedValue(k))],
+      ['local.set', `$${s.entry}`, ['call', `$${find}`, ['i64.reinterpret_f64', ['local.get', `$${s.recv}`]], ['local.get', `$${s.key}`]]],
+      ['local.set', `$${s.b}`, ['global.get', '$__find_b']],
+      ['local.set', `$${s.h}`, ['global.get', '$__find_h']],
+      ['f64.const', 0]], 'f64')
+  }
+  // A slot's value, healed as a Map read heals a grown array (collection/ordered.js
+  // healValue) where the Map's values may be arrays.
+  const slotValue = (m, k, s) => {
+    let arrays = true
+    try { arrays = hasTag(ctx.summary.at(ctx.func.current).kindOfExpr(['()', ['.', m, 'get'], k]), KIND.ARRAY) } catch {}
+    if (!arrays) return ['f64.load', 'offset=16', ['local.get', `$${s.entry}`]]
+    inc('__slot_heal')
+    return ['f64.reinterpret_i64', ['call', '$__slot_heal', ['local.get', `$${s.entry}`]]]
+  }
+  // a read that opens the slot: the value, or undefined where the key misses
+  ctx.core.emit['__slot_get'] = (m, k, id, es) => {
+    const open = ctx.core.emit['__slot_open'](m, k, id, es), s = slotOf(id)
+    s.key0 = k
+    return typed(['block', ['result', 'f64'], ['drop', open],
+      ['if', ['result', 'f64'], ['local.get', `$${s.entry}`],
+        ['then', slotValue(m, k, s)],
+        ['else', ['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]]]]], 'f64')
+  }
+  ctx.core.emit['__slot_new'] = (m, id) => typed(['i32.eqz', ['local.get', `$${slotOf(id).entry}`]], 'i32')
+  ctx.core.emit['__slot_val'] = (m, id) => { const s = slotOf(id); return typed(slotValue(m, s.key0, s), 'f64') }
+  ctx.core.emit['__slot_put'] = (m, v, id) => {
+    const s = slotOf(id), g = (n) => ['local.get', `$${n}`]
+    const put = s.map ? '__map_put_at' : '__set_put_at'
+    inc(put)
+    if (!s.map) return typed(['block', ['result', 'f64'],
+      ['if', ['i32.eqz', g(s.entry)], ['then', ['call', `$${put}`, ['i64.reinterpret_f64', g(s.recv)], g(s.key), g(s.b), g(s.h)]]],
+      ['f64.const', 0]], 'f64')
+    const t = temp('cpv'), value = asF64(storedValue(v))
+    // a number needs no durable write barrier (compile/slot-update.js)
+    const bare = isNumericIR(value)
+    if (!bare) inc('__slot_write')
+    const at = ['i32.add', g(s.entry), ['i32.const', 16]], bits = ['i64.reinterpret_f64', g(t)]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, value],
+      ['if', ['i32.eqz', g(s.entry)],
+        ['then', ['call', `$${put}`, ['i64.reinterpret_f64', g(s.recv)], g(s.key), bits, g(s.b), g(s.h)]],
+        ['else', bare ? ['i64.store', at, bits] : ['call', '$__slot_write', at, bits]]],
+      g(t)], 'f64')
+  }
+
   // The first of a table's `n` appended entries inserted after sequence `s`:
   // the entries hold ascending sequences, tombstones too.
   ctx.core.stdlib['__coll_seek'] = `(func $__coll_seek (param $off i32) (param $n i32) (param $es i32) (param $s i32) (result i32)
