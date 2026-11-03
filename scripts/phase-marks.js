@@ -42,7 +42,7 @@ export const PHASE_NAMES = [
   'plan:speculateTypedParams', 'plan:refineDynKeys', 'plan:refineSlotIntCensus',
   'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:reachableWrites', 'optMod:hoistGlobalPtr',
   'optMod:hoistLoopGlobalPtr', 'optMod:inlinePureFns', 'optMod:optimizeFuncs', 'optMod:hoistGlobalConstLoads', 'optMod:appendLateStdlib',
-  'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:dropStaticRoots', 'optMod:staticScratch', 'analyzeClosures', 'shareSplitSlots', 'guardToInt32', 'forwardChecked', 'unrollTrips', 'unsignedDivision', 'poolFloatConstants', 'truncChoice', 'selectArms', 'selectBits', 'ringLaps', 'pointerExits', 'jumpPointers', 'leadChains', 'issueOrder', 'maskOperands', 'searchLoops', 'leadGathers', 'inlineTiny', 'loopPasses', 'splitFuncs', 'hoistVectorConsts', 'optMod:forwardHops', 
+  'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:dropStaticRoots', 'optMod:staticScratch', 'analyzeClosures', 'shareSplitSlots', 'guardToInt32', 'forwardChecked', 'unrollTrips', 'unsignedDivision', 'poolFloatConstants', 'truncChoice', 'selectArms', 'selectBits', 'ringLaps', 'pointerExits', 'jumpPointers', 'leadChains', 'issueOrder', 'maskOperands', 'searchLoops', 'leadGathers', 'inlineTiny', 'constBases', 'loopPasses', 'splitFuncs', 'hoistVectorConsts', 'optMod:forwardHops', 
   // a phase checkpoint's verdict (scripts/self.js checkpointPhase), recorded before the phase's own record
   'checkpoint:taken', 'checkpoint:unsafe', 'checkpoint:unparkable', 'checkpoint:unworthy',
   // what a declined phase kept once compacted (module/core.js `__gc_phase`), recorded after its verdict
