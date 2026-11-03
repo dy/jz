@@ -45,7 +45,7 @@ export function hoistVectorConsts(module) {
       let name = locals.get(key)
       if (name) return name
       let k = locals.size
-      do name = `$__vc${k++}`; while (names.has(name))
+      do { name = `$__vc${k++}` } while (names.has(name))
       names.add(name)
       locals.set(key, name)
       return name
