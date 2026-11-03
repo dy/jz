@@ -26,6 +26,19 @@ static uint32_t checksum_f64(const double* xs, int n) {
   return h;
 }
 
+// checksumF64Near (benchlib.js): every value hashed at single precision, for
+// the cases whose pow, cbrt or trig bits differ per libm.
+static uint32_t checksum_f64_near(const double* xs, int n) {
+  uint32_t h = 0x811c9dc5u;
+  for (int i = 0; i < n; i++) {
+    float f = (float)xs[i];
+    uint32_t x;
+    memcpy(&x, &f, 4);
+    h = mix_u32(h, x);
+  }
+  return h;
+}
+
 static uint32_t checksum_u32(const uint32_t* xs, int n) {
   uint32_t h = 0x811c9dc5u;
   for (int i = 0; i < n; i += 128) h = mix_u32(h, xs[i]);
