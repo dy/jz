@@ -64,7 +64,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
-const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, unrollTrips: true, hoistVectorConsts: true, leadGathers: true, pointerExits: true, jumpPointers: true, ringLaps: true, earlyStores: true, leadChains: true, issueOrder: true, jamItems: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, inlineTiny: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, carryKeys: true, selectArmUpdates: true, wordTruncation: 'add' })
+const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, carryStores: true, unrollTrips: true, hoistVectorConsts: true, leadGathers: true, pointerExits: true, jumpPointers: true, ringLaps: true, earlyStores: true, leadChains: true, issueOrder: true, jamItems: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, inlineTiny: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, carryKeys: true, selectArmUpdates: true, wordTruncation: 'add' })
 const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, inlinePush: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false, loopPasses: false, pairIterations: false })
 
 const LEVEL_PRESETS = Object.freeze({
@@ -116,7 +116,9 @@ const LEVEL_PRESETS = Object.freeze({
   // taken branches. leadGathers reads the next item's gather (a hash slot at a
   // key read from memory) while a loop over items searches from this one's
   // (optimize/lead-gathers.js): the mispredicted end of each search no longer
-  // waits for the next slot's read.
+  // waits for the next slot's read. carryStores passes a round's last store to an
+  // address its next round reads first through a local (optimize/carry-stores.js):
+  // V8 forwards nothing across a back edge.
   3: L3_PRESET,
   // 'size' tightens scalar/unroll caps; 'speed' = level 3. There is no 'balanced'
   // preset — it was a pure synonym for the default level 2 (omit `optimize` or pass 2).

@@ -75,6 +75,13 @@ flight before the search, no longer waits for it. The next round's inductions ar
 selected against the loop's own test, so the last round reads its own slot again
 and nothing past what the loop reads; a loop that stores, calls or leaves but by
 its test keeps its shape.
+A round's last store to an address its next round reads first, before it writes
+memory or calls (the lower envelope's boundary `z[k] = s`, read back by the next
+round's pop test; a filter state kept at a fixed channel), passes the value
+through a local under `carryStores` (src/optimize/carry-stores.js, speed tier,
+after watr): the first round loads the address where it would, under the tests of
+the conditionals around the read, and each store also sets the local. V8 forwards
+nothing across a back edge, so the next round read the store queue.
 Late, from level 2 up, `constBases` (src/optimize/const-bases.js) moves a
 base the function's control flow holds to one address (a static parameter's entry
 write, its inlined copy) into the memarg of each access adding it to an index:
@@ -3242,6 +3249,7 @@ src/
                 forward-hops.js (after the loop compaction, before watr: a receiver a loop never rebinds asks whether its block moved once before the loop and again after each of the runtime's cold calls that may move a block, a push's growth among them, not at every read; a block moves only inside a call, and a loop that calls other code keeps its hops; a compaction site's forward of a root the loop never writes hands back what the root held before the loop, below the floor, and is no write of it, so the hop is set again as the site re-enters the loop; an escape's lowering writes the flag and the log, no block);
                 search-loops.js (after watr: a loop whose body is a guarded loop scans for the guard in an innermost loop);
                 lead-gathers.js (after watr: a loop whose rounds search from a slot read at an address read from memory reads the next round's slot a round ahead);
+                carry-stores.js (after watr: a round's last store to an address its next round reads first passes the value through a local);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 jump-pointers.js (after watr: a loop variable that steps and jumps carries the address of the record it indexes, advanced where it steps, formed again where it jumps);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);
