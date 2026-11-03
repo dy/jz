@@ -778,6 +778,21 @@ emits no FMA and the row compares: alpha 13 took 1.05× JZ's time in the
 2026-11-03 CI run (`results-ci.json`), and with FMA off alpha 19 runs lorenz at
 alpha 13's speed (14.8 ms each, run alternately).
 
+TypeScriptCompiler pre-alpha113 builds none of the 91 cases on CI's Ubuntu 24.04
+x64 runner (probe run 41666196044, 2026-11-03). Its default library gives
+`TypedArray<T>` one constructor, from an array: `new Float64Array([3, 1, 2])` and
+`new Array<number>(21)` compile, `new Float64Array(21)` does not (`cast from array
+type 'si32' to array type '!ts.array<f64>' is not supported`), and every case
+allocates its timing samples that way. That is the first error in 20 cases, the
+same 20 that pre-alpha87, whose `TypedArray<T>` had the same one constructor,
+compiled and that then crashed with SIGSEGV. The first error elsewhere: no
+`buffer` or `byteOffset` on a typed array, which the shared `checksumF64` reads
+(26 cases); `set` with an array (9); an error inside the library's own `fill` (5);
+properties of untyped parameters, typed `any` (8); a class member three.js
+declares (4); `JSON`, `atob` and a compiler crash on the self-compile case (3);
+and other unsupported forms (16). The lane stays wired, so each CI run records the
+current errors.
+
 TypeScriptCompiler pre-alpha87 also produced no usable results on the 74 discovered
 cases. Its compiler and monotonic-clock installation smoke passed; corpus failures
 include unsupported array conversions, unresolved types, and runtime crashes.
