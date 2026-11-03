@@ -27,7 +27,6 @@ const WEB_DIR = process.env.JZ_BENCH_WEB_DIR || join(BENCH_DIR, 'web')
 // WABT_W2C_DIR, WABT_INCLUDE_DIR, SIMDE_DIR, else PATH and install prefixes.
 let nativeTools
 const w2cTools = () => nativeTools ??= nativeToolchain()
-const W2C_POSTPROCESS = join(ROOT, 'scripts', 'native', 'postprocess-watr.awk')
 // A/B baseline: the compiler of another checkout, measured beside this tree's
 // on one machine. Paired rounds alternate `jz` and `jz-base`, so their ratio is
 // the change's own effect whatever CPU the runner drew.
@@ -1187,12 +1186,12 @@ const targets = {
     // wasm2c translates EH (see NEEDS_EH): only jz, which the CLI cannot build, stays out.
     available: c => c.id !== 'jz' && !w2cTools().error && has('clang'),
     bin: w2cBinPath,
-    // The user-facing native path (scripts/native/compile.mjs) with the speed
-    // flags above, the memory-base postprocess, and the case's `main` as entry.
+    // The user-facing native path (scripts/native/compile.mjs, its memory-base
+    // postprocess included) with the speed flags above and the case's `main` as entry.
     run: c => tryRun('jz-w2c', c, () => {
       compileJzW2c(c)
       wasm2native(w2cWasmPath(c), w2cBinPath(c), { dir: join(caseBuild(c), 'w2c'), cflags: W2C_CFLAGS,
-        postprocess: W2C_POSTPROCESS, main: true, tools: { ...w2cTools(), cc: 'clang' } })
+        main: true, tools: { ...w2cTools(), cc: 'clang' } })
     }, [w2cBinPath(c)]),
   },
   // w2c2 twin of jz-w2c (audit-#12 step 2): same --no-tail-call wasm input

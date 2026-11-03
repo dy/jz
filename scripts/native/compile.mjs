@@ -21,6 +21,8 @@ import { fileURLToPath } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = resolve(HERE, '../../cli.js')
 const SHIM = join(HERE, 'wasi.c')
+/** Hoists the memory base and drops WABT's load barriers where guard pages allow (see the file). */
+export const POSTPROCESS = join(HERE, 'postprocess-watr.awk')
 /** The wasi_snapshot_preview1 imports wasi.c implements: every one jz emits. */
 export const PROVIDED = ['fd_read', 'fd_write', 'fd_close', 'fd_filestat_get', 'path_open', 'clock_time_get', 'random_get']
 /** wasm2c output keeps IEEE semantics only without contraction (no fused multiply-add). */
@@ -142,11 +144,12 @@ const features = wasm2c => {
  * @param {object} o
  * @param {string} o.dir  scratch directory for the generated jz.c/jz.h
  * @param {string[]} [o.cflags]  compiler flags, replacing the default -O3 -ffp-contract=off
- * @param {string} [o.postprocess]  awk program applied to the generated C
+ * @param {string|null} [o.postprocess]  awk program applied to the generated C of a module that
+ *   defines its memory (POSTPROCESS by default; null for none)
  * @param {boolean} [o.main]  call the exported `main` after `_initialize`/`_start`
  * @param {object} [o.tools]  toolchain() result
  */
-export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess, main = false, tools = toolchain() }) {
+export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess = POSTPROCESS, main = false, tools = toolchain() }) {
   if (tools.error) throw Error(tools.error)
   const mod = new WebAssembly.Module(readFileSync(wasm))
   const imports = WebAssembly.Module.imports(mod)
@@ -161,7 +164,8 @@ export function wasm2native(wasm, out, { dir, cflags = CFLAGS, postprocess, main
   run(tools.wasm2c, [...features(tools.wasm2c), '-n', 'jz', wasm, '-o', c])
   const h = join(dir, 'jz.h'), header = readFileSync(h, 'utf8'), declared = declareV128(header)
   if (declared !== header) writeFileSync(h, declared)
-  if (postprocess) writeFileSync(c, execFileSync('awk', ['-f', postprocess, c], { maxBuffer: 1 << 30 }))
+  const ownMemory = exports.has('memory') && !imports.some(i => i.kind === 'memory')
+  if (postprocess && ownMemory) writeFileSync(c, execFileSync('awk', ['-f', postprocess, c], { maxBuffer: 1 << 30 }))
   // CC may carry its own arguments: CC="zig cc".
   const [cc, ...ccArgs] = tools.cc.trim().split(/\s+/)
   try {

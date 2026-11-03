@@ -321,8 +321,8 @@ test('native executable: a tag dispatch stays branches, not an x86 jump table', 
   ok(jumps([]) < jumps(jumpTables(NATIVE.cc, lto, 4)), 'under LTO too: fewer indirect jumps than the 4-case control')
 }))
 
-// The bench lane's postprocess on real wasm2c output: once preprocessed, no load or store
-// reads the memory base from the instance; each goes through the hoisted `_md`.
+// The postprocess every native build gets on real wasm2c output: once preprocessed, no load or
+// store reads the memory base from the instance; each goes through the hoisted `_md`.
 const ACCESS = `(module
   (memory (export "memory") 1)
   (func (export "_start")
@@ -331,15 +331,25 @@ const ACCESS = `(module
     (f64.store offset=16 (i32.const 0) (f64.load offset=8 (i32.const 0)))
     (i32.store8 offset=24 (i32.const 0) (i32.load16_u offset=16 (i32.const 0)))
     (if (i32.ne (i32.load8_u offset=24 (i32.const 0)) (i32.const 7)) (then unreachable))))`
+// A load past the one page, its value used: it traps, through guard pages or a bounds check.
+const OOB = `(module
+  (memory (export "memory") 1)
+  (func (export "_start") (if (i32.eq (i32.load (i32.const 65536)) (i32.const 7)) (then unreachable))))`
 test('native wasm2c postprocess: every load and store goes through the hoisted memory base', { skip: !!NATIVE.error }, () => scratchDir('md', dir => {
   const wasm = join(dir, 'access.wasm'), bin = join(dir, 'access')
-  const lane = ['-DWASM_RT_MEMCHECK_GUARD_PAGES', '-DWASM_RT_USE_MMAP=1']
   writeFileSync(wasm, compileWat(ACCESS))
-  wasm2native(wasm, bin, { dir, cflags: [...CFLAGS, ...lane], postprocess: POST, tools: NATIVE })
+  wasm2native(wasm, bin, { dir, tools: NATIVE })
   is(spawnSync(bin).status, 0, 'loads and stores of each width agree')
   const [cc, ...ccArgs] = NATIVE.cc.trim().split(/\s+/)
-  const c = execFileSync(cc, [...ccArgs, '-E', ...lane, ...sysroot(), ...[dir, ...NATIVE.include].map(p => `-I${p}`), join(dir, 'jz.c')],
+  const c = execFileSync(cc, [...ccArgs, '-E', ...sysroot(), ...[dir, ...NATIVE.include].map(p => `-I${p}`), join(dir, 'jz.c')],
     { encoding: 'utf8', maxBuffer: 64 << 20 })
   is(c.match(/\b\w*(?:load|store)\w*\(&instance->w2c_memory\b/g), null, 'no helper takes the instance memory')
   ok(/__builtin_memcpy\(_md \+/.test(c), 'the accesses use _md')
+  // The shadows hold under guard pages only: a bounds-checked build keeps WABT's checks.
+  writeFileSync(wasm, compileWat(OOB))
+  for (const [mode, flags] of [['guard pages', []], ['bounds checks', ['-DWASM_RT_MEMCHECK_BOUNDS_CHECK']]]) {
+    wasm2native(wasm, bin, { dir, cflags: [...CFLAGS, ...flags], tools: NATIVE })
+    const r = spawnSync(bin, { encoding: 'utf8' })
+    ok(r.status === 134 && /wasm trap: .*bounds/i.test(r.stderr), `${mode}: an out-of-bounds load traps (${r.status} ${r.signal ?? ''} ${r.stderr.trim()})`)
+  }
 }))

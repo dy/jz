@@ -1,12 +1,19 @@
 # Post-process any jz wasm2c output for native-speed lowering:
 #   A2a. Remove WABT's FORCE_READ asm barriers.
-#   A2b. Hoist linear-memory data into a function-local __restrict__ alias and
+#   A2b. Hoist linear-memory data into a function-local const alias and
 #        shadow scalar load/store helpers with macros that use it.
 #
 # Why: clang's PGO+LTO fails to CSE `instance->w2c_memory.data` across basic blocks
 # even when no `memory.grow` could intervene. With `_md` as a function-local
-# `const __restrict__` pointer, the compiler hoists the field load above the
-# entire function and keeps `_md` in a register — even across joins.
+# const pointer, the compiler hoists the field load above the entire function and
+# keeps `_md` in a register — even across joins. No `restrict`: memory.copy and
+# memory.fill write the same bytes through instance->w2c_memory.data.
+#
+# The shadows hold only under guard pages (wasm-rt.h's default on a 64-bit host with
+# mmap): they skip the bounds check, and the base stays put across memory.grow. So
+# they sit under `#if WASM_RT_MEMCHECK_GUARD_PAGES`; a bounds-checked build keeps
+# WABT's checked helpers. Without the FORCE_READ barriers, a load whose value goes
+# unused may be dropped, and with it an out-of-bounds trap it would have raised.
 #
 # Three transforms:
 #   1. Nullify FORCE_READ_INT/FLOAT definitions containing inline asm.
@@ -25,7 +32,7 @@ function default32(names, params,    n, i, list) {
 }
 
 function inject_memory_base() {
-  print "  __attribute__((unused)) u8* const __restrict__ _md = instance->w2c_memory.data;"
+  print "  __attribute__((unused)) u8* const _md = instance->w2c_memory.data;"
   functions++
 }
 
@@ -43,8 +50,9 @@ BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_fu
   print
   print ""
   print "/* A2b: shadow wasm2c load/store inlines with macros that use the function-local"
-  print " * `_md` (== instance->w2c_memory.data, __restrict__). Lets clang hoist the data"
-  print " * base above each function and keep it live in a register across CFG joins. */"
+  print " * `_md` (== instance->w2c_memory.data). Lets clang hoist the data base above each"
+  print " * function and keep it live in a register across CFG joins. Guard pages only. */"
+  print "#if WASM_RT_MEMCHECK_GUARD_PAGES"
   print "#define i32_load(mem, addr)        ({ u32 _r; __builtin_memcpy(&_r, _md + (addr), 4); _r; })"
   print "#define i64_load(mem, addr)        ({ u64 _r; __builtin_memcpy(&_r, _md + (addr), 8); _r; })"
   print "#define f32_load(mem, addr)        ({ f32 _r; __builtin_memcpy(&_r, _md + (addr), 4); _r; })"
@@ -70,6 +78,7 @@ BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_fu
   print "#define i64_store32(mem, addr, val) do { u32 _v = (u32)(val); __builtin_memcpy(_md + (addr), &_v, 4); } while (0)"
   default32("i32_load i64_load f32_load f64_load i32_load8_s i32_load8_u i64_load8_s i64_load8_u i32_load16_s i32_load16_u i64_load16_s i64_load16_u i64_load32_s i64_load32_u", "mem, addr")
   default32("i32_store i64_store f32_store f64_store i32_store8 i64_store8 i32_store16 i64_store16 i64_store32", "mem, addr, val")
+  print "#endif"
   injected = 1
   next
 }
@@ -82,6 +91,7 @@ BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_fu
   print
   print ""
   print "/* Native SIMD memory access through the same hoisted, stable base. */"
+  print "#if WASM_RT_MEMCHECK_GUARD_PAGES"
   print "#define v128_load(mem, addr)          simde_wasm_v128_load(_md + (addr))"
   print "#define v128_load8_splat(mem, addr)   simde_wasm_v128_load8_splat(_md + (addr))"
   print "#define v128_load16_splat(mem, addr)  simde_wasm_v128_load16_splat(_md + (addr))"
@@ -98,6 +108,7 @@ BEGIN { injected = 0; saw_simd = 0; simd_injected = 0; functions = 0; pending_fu
   print "#define v128_store(mem, addr, value)  simde_wasm_v128_store(_md + (addr), (value))"
   default32("v128_load v128_load8_splat v128_load16_splat v128_load32_splat v128_load64_splat i16x8_load8x8 u16x8_load8x8 i32x4_load16x4 u32x4_load16x4 i64x2_load32x2 u64x2_load32x2 v128_load32_zero v128_load64_zero", "mem, addr")
   default32("v128_store", "mem, addr, value")
+  print "#endif"
   simd_injected = 1
   next
 }

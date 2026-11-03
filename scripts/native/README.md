@@ -30,6 +30,15 @@ build is `CFLAGS=-fprofile-instr-generate`, a run, `llvm-profdata merge`, then
 headers (`brew install simde`, `apt install libsimde-dev`, or `SIMDE_DIR`), or
 `--no-simd`.
 
+Linear memory: on a 64-bit host with mmap, WABT's runtime reserves each memory
+with guard pages, its default there, so a stray access faults and a signal handler
+turns the fault into a trap. On top of that, every build hoists the memory base out
+of each function and drops WABT's load barriers (`postprocess-watr.awk`): bench/blur
+runs in 0.31× the time on an M4, bench/entity in 0.42×. Without the barriers, a load
+whose value goes unused may be dropped, and with it an out-of-bounds trap it would
+have raised. A 32-bit host, or `CFLAGS=-DWASM_RT_MEMCHECK_BOUNDS_CHECK`, gets
+explicit bounds checks and WABT's own memory helpers.
+
 With clang, a switch becomes a jump table only from 13 cases on every target,
 as LLVM already does for AArch64; x86 would from 4. clang folds jz's dispatch
 chains into switches, and a table makes one indirect jump of what V8 runs as
@@ -57,7 +66,7 @@ What the executable does:
 `test/native-lowering.js` builds a Native Messaging echo host and compares its
 output byte for byte with `node` and `wasmtime`, a 1 MiB message included. The
 bench's `jz-w2c` lane builds through the same `wasm2native()` with its speed
-flags and the postprocess below.
+flags.
 
 ## watr PGO pipeline
 
