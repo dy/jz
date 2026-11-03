@@ -5285,6 +5285,13 @@ way, init then its body as the one `_initialize` (`$_initialize$wasi`), under WA
 `memory` and `__jz_*` are reserved export names. Where the module exports `__jz_init`, the command's
 `_start` stays off the host's `exports` (`instance.exports._start()` runs the rest). `run` is an
 ordinary export.
+A WASI build that queues promise jobs runs them where the JS host does, at the end of each turn
+(`wasiTurns`): init ends by running the jobs it queued, the entry runs the program's `_start` or
+`_initialize` and then its jobs, a timer callback is followed by its jobs (`__timer_dispatch`), and
+every program export is exported as `$name$turn`, the call and then its jobs, the function itself
+left to the module's own calls. A command's `_start` is top-level code, jobs, the program's `_start`,
+jobs, then each timer and its jobs; `wasmtime --invoke main` runs init and its jobs, then `main` and
+its jobs, so an async `main` settles before the call returns (test/wasi.js holds the order to Node's).
 
 A module name that holds one regular expression for good is that expression where a method
 of it is called (`holdModuleRegexes`, plan/scope.js). jz compiles a regular expression where

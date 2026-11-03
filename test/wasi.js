@@ -651,6 +651,58 @@ test('WASI: _start runs the top-level code, the program\'s _start, then its time
   ok(typeof hosted.instance.exports._start === 'function', 'there it is')
 })
 
+// A WASI build runs its promise jobs where a JS host does, at the end of each
+// turn (optimize/watr-tail.js wasiTurns): the top-level code, the program's
+// `_start` or `_initialize`, an export the host calls bare (`wasmtime --invoke`,
+// init its own turn before it), each timer callback. Node is the reference: it
+// evaluates the module, then calls the entry in a task of its own, and prints a
+// result a task later, where the WASI host prints it once the call returns.
+test('WASI: promise jobs run at the end of each turn, in the order Node runs them', async () => {
+  const { mkdtempSync, writeFileSync: wf, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const turns = (src, entry) => {
+    const captured = [], imports = wasi({ write: (fd, text) => captured.push(text) })
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(compile(src, { host: 'wasi' })), imports)
+    imports._setMemory(inst.exports.memory)
+    const r = inst.exports[entry ?? '_start']()
+    return captured.join('') + (typeof r === 'number' ? `=${r}\n` : '')
+  }
+  const node = (src, entry) => {
+    const dir = mkdtempSync(join(tmpdir(), 'jz-turns-'))
+    try {
+      wf(join(dir, 'm.mjs'), src)
+      wf(join(dir, 'd.mjs'), `const m = await import('./m.mjs')\n${entry ? `setTimeout(() => { const r = m.${entry}(); setTimeout(() => { if (typeof r === 'number') console.log('=' + r) }) })` : ''}`)
+      return execSync(`node ${JSON.stringify(join(dir, 'd.mjs'))}`, { encoding: 'utf8' })
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+  const cases = [
+    [`const log = (s) => console.log(s)
+const step = async (n) => { await null; log('step ' + n); return n * 2 }
+const chain = async () => { const a = await step(1); log('a ' + a); try { await Promise.reject(3) } catch (e) { log('caught ' + e) } return a + 1 }
+chain().then(v => log('chain ' + v))
+Promise.resolve().then(() => log('job 1')).then(() => log('job 2'))
+log('top')`],
+    [`setTimeout(() => { Promise.resolve().then(() => console.log('job of t1')); console.log('t1') }, 1)
+setTimeout(() => console.log('t2'), 1)
+Promise.resolve().then(() => console.log('top job'))
+console.log('top')`],
+    [`Promise.resolve().then(() => console.log('init job'))
+const work = async (n) => { let s = 0; for (let i = 0; i < n; i++) s += await i; return s }
+export let main = () => { work(4).then(s => console.log('sum ' + s)); console.log('main'); return 7 }`, 'main'],
+    [`Promise.resolve().then(() => console.log('init job'))
+export function _start() { Promise.resolve().then(() => console.log('start job')); console.log('start') }`, '_start'],
+    [`let n = 1
+Promise.resolve().then(() => { n = 2 })
+export function _initialize() { Promise.resolve().then(() => console.log('body job ' + n)); console.log('body ' + n) }`, '_initialize'],
+  ]
+  for (const [src, entry] of cases) {
+    const want = node(src, entry)
+    ok(want.trim().split('\n').length >= 2, `node ran ${entry ?? 'the top level'}: ${want}`)
+    is(turns(src, entry), want, `${entry ?? 'top level'}: ${JSON.stringify(want)}`)
+  }
+})
+
 test('WASI: wasmtime native', () => {
   if (!hasCmd('wasmtime')) return
   const wasm = compile(`export let _start = () => { console.log("jz-wasmtime"); return 0 }`, { host: 'wasi' })

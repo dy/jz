@@ -7,7 +7,8 @@
  * microtask array `__mt`, drained at host boundaries (export return, timer
  * tick): interop calls the exported `__mt_drain` and settles host Promises
  * through `__p_state` / `__p_value`; `__p_make` / `__p_finish` adopt host
- * promises. One copy per program: every module that awaits imports it, so
+ * promises. A WASI build drains it itself at the same boundaries
+ * (optimize/watr-tail.js wasiTurns). One copy per program: every module that awaits imports it, so
  * a promise settled in one module resolves an await in another.
  *
  * Divergences (documented): unhandled rejections don't report; job ordering

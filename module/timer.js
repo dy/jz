@@ -183,7 +183,9 @@ const setupWasi = (ctx) => {
     (f64.const 0))`
 
   // __timer_dispatch(now_ns: i64) → i32 (number of callbacks dispatched)
-  // Finds all due timers (deadline <= now), invokes them, reschedules intervals
+  // Finds all due timers (deadline <= now), invokes them, reschedules intervals.
+  // Each callback is a task: a program with promise jobs runs them after its
+  // `(drop (call $__invoke_closure …))` (optimize/watr-tail.js wasiTurns).
   ctx.core.stdlib['__timer_dispatch'] = `(func $__timer_dispatch (param $now i64) (result i32)
     (local $slot i32)
     (local $base i32)

@@ -231,6 +231,85 @@ function programEntry(module, name) {
 }
 
 /**
+ * The statement that runs the program's jobs (std/async.js `__mt_drain`, the
+ * export `__jz_mt_drain`) as a thunk, or null where it queues none.
+ */
+function drainCall(module) {
+  let target = null
+  for (const n of module) {
+    if (!Array.isArray(n)) continue
+    if (n[0] === 'export' && n[1] === '"__jz_mt_drain"' && Array.isArray(n[2]) && n[2][0] === 'func') { target = n[2][1]; break }
+    if (n[0] === 'func' && n.some(x => isExport(x, '"__jz_mt_drain"'))) { target = n[1]; break }
+  }
+  const fn = target && findFuncByName(module, target)
+  if (!fn) return null
+  return fn.some(x => Array.isArray(x) && x[0] === 'result') ? () => ['drop', ['call', target]] : () => ['call', target]
+}
+
+/** A function calling `fn` with its own parameters, then `tail()`, its results kept across the tail. */
+function callThen(fn, name, tail) {
+  const f = ['func', name], args = [], results = []
+  for (const x of fn) {
+    if (!Array.isArray(x)) continue
+    if (x[0] === 'param') for (const t of typeof x[1] === 'string' && x[1][0] === '$' ? [x[2]] : x.slice(1)) {
+      const p = `$p${args.length}`
+      f.push(['param', p, t])
+      args.push(['local.get', p])
+    }
+    else if (x[0] === 'result') results.push(...x.slice(1))
+  }
+  if (results.length) f.push(['result', ...results], ...results.map((t, k) => ['local', `$r${k}`, t]))
+  let call = ['call', fn[1], ...args]
+  for (let k = results.length - 1; k >= 0; k--) call = ['local.set', `$r${k}`, call]
+  f.push(call, tail(), ...results.map((_, k) => ['local.get', `$r${k}`]))
+  return f
+}
+
+/** Each `(drop (call $name …))` statement under `node`, followed by `tail()`. */
+function afterCalls(node, name, tail) {
+  for (let i = 0; i < node.length; i++) {
+    const x = node[i]
+    if (!Array.isArray(x)) continue
+    if (x[0] === 'drop' && Array.isArray(x[1]) && x[1][0] === 'call' && x[1][1] === name) node.splice(++i, 0, tail())
+    else afterCalls(x, name, tail)
+  }
+}
+
+/**
+ * A WASI build runs its jobs as a JS host does, at the end of each turn: the
+ * call a host makes into the module (init, `_start`, `_initialize`, any program
+ * export) and each timer callback (module/timer.js `__timer_dispatch`). A
+ * program export keeps its function, which the module's own calls reach, and
+ * is exported as `$name$turn`, that call and then the drain; the host's
+ * entries drain after the program's body (`entries`), and init drains where it
+ * ends, so a command's `_start` runs the top-level code and its jobs, then the
+ * program's own `_start` and its jobs, then each timer and its jobs.
+ */
+function wasiTurns(module, sFn, entries, turnEnd) {
+  if (sFn) sFn.push(turnEnd())
+  const dispatch = findFuncByName(module, '$__timer_dispatch')
+  if (dispatch) afterCalls(dispatch, '$__invoke_closure', turnEnd)
+  const programExport = (x) => isExport(x) && !x[1].startsWith('"__jz_') && x[1] !== '"memory"'
+  const turns = new Map()
+  const turnOf = (fn) => {
+    let f = turns.get(fn)
+    if (!f) { f = callThen(fn, `${fn[1]}$turn`, turnEnd); turns.set(fn, f); module.splice(module.indexOf(fn) + 1, 0, f) }
+    return f
+  }
+  for (const n of [...module]) {
+    if (!Array.isArray(n) || n === sFn || entries.includes(n) || turns.has(n)) continue
+    if (n[0] === 'func' && n.some(programExport)) {
+      const f = turnOf(n)
+      for (let i = n.length - 1; i >= 2; i--) if (programExport(n[i])) f.splice(2, 0, ...n.splice(i, 1))
+    }
+    else if (programExport(n) && Array.isArray(n[2]) && n[2][0] === 'func') {
+      const fn = findFuncByName(module, n[2][1])
+      if (fn) n[2] = ['func', turnOf(fn)[1]]
+    }
+  }
+}
+
+/**
  * Module init as an export, not the wasm `start` section, which runs before
  * any host can wire the memory (the WASI p1 ABI forbids WASI calls there; a JS
  * host reads values through the memory). The program's own WASI entry is
@@ -247,13 +326,15 @@ function programEntry(module, name) {
  * once the memory is wired. Every other exported function runs init first
  * where nothing has (`$__init_done`): an embedder that calls an export without
  * the entry (`wasmtime --invoke`, a bare `new WebAssembly.Instance`) still
- * sees seeded state.
+ * sees seeded state. Under WASI each of these calls, and each timer callback,
+ * ends by running the promise jobs it queued (`wasiTurns`).
  */
 function legalizeInit(module, wasi) {
   const sFn = findFuncByName(module, '$__start')
   const ownInit = programEntry(module, '"_initialize"'), ownStart = wasi ? programEntry(module, '"_start"') : null
+  const turnEnd = wasi ? drainCall(module) : null
   const entries = []
-  // An entry: init, the program's body of that name (its results dropped), then `tail`
+  // An entry: init, the program's body of that name (its results dropped) and its jobs, then `tail`
   const entry = (name, own, tail) => {
     const f = ['func', `$${name}$wasi`, ['export', `"${name}"`]]
     if (sFn) f.push(['call', '$__start'])
@@ -265,6 +346,7 @@ function legalizeInit(module, wasi) {
       for (let k = results.length - 1; k >= 0; k--) call = ['local.set', `$r${k}`, call]
       f.splice(3, 0, ...results.map((t, k) => ['local', `$r${k}`, t]))
       f.push(call)
+      if (turnEnd) f.push(turnEnd())
     }
     f.push(...tail)
     module.splice(module.indexOf(sFn ?? own.func) + 1, 0, f)
@@ -278,6 +360,7 @@ function legalizeInit(module, wasi) {
     if (loop) { const e = loop.findIndex(x => isExport(x)); if (e !== -1) loop.splice(e, 1) }
     entry('_start', ownStart, loop ? [['call', '$__timer_loop']] : [])
   }
+  if (turnEnd) wasiTurns(module, sFn, entries, turnEnd)
   if (!sFn) return
 
   let at = 2
