@@ -624,10 +624,16 @@ export function toStrI64(node, v) {
       ['if', ['result', 'i64'],
         guard,
         ['then', errToStringIR(off)],
-        ['else', coerceRest(node, get(), vt, summaryNullable || missing)]]], 'i64')
+        ['else', coerceRest(node, get(), vt, objectNullable(node, v, summaryKind))]]], 'i64')
   }
-  return coerceRest(node, v, vt, summaryNullable || missing)
+  return coerceRest(node, v, vt, objectNullable(node, v, summaryKind))
 }
+
+// An object operand that may be null or undefined: the summary's presence, or,
+// where the summary names no kind, the value's shape (a helper's result may be
+// a miss). A literal or a construction the summary kinds is present.
+const objectNullable = (node, v, kind) => (kind & NULL_BITS) !== 0 || censusMaybeUndefined(node) ||
+  kind === K.NONE && mayMissValue(node, v)
 
 /** Everything toStrI64 did before the Error-schema special case existed — split
  *  out so that arm's runtime-guard "else" branch (a non-Error OBJECT, or any

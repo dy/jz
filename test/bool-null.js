@@ -11,9 +11,9 @@
 // "null", an object "[object Object]"), 25.5.2.2 SerializeJSONProperty. The
 // expected values are Node's (util.js oracle).
 import test from 'tst'
-import { is } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { run, oracle } from './util.js'
+import { run, oracle, wat } from './util.js'
 
 // `f(n)` for n = 0, 1, 2, 3: false, false, true, then the missing value.
 const F = {
@@ -105,3 +105,11 @@ for (const optimize of levels(0, 1, 2, 3, 'size'))
     for (const name of Object.keys(want)) for (const n of [0, 1, 2, 3])
       is(got[name](n), want[name](n), `${name}(${n}) at ${optimize}`)
   })
+
+// An object the summary holds present prints through ToPrimitive alone, with
+// no test for null or undefined (ir/coerce.js objectNullable); one that may be
+// null keeps the test.
+test('bool or null: an object literal prints without a nullish test', () => {
+  ok(!/\Wots\d/.test(wat('export let s = (n) => String({ v: n })', { optimize: false })), 'a literal: no test')
+  ok(/\Wots\d/.test(wat('const o = (n) => { if (n > 2) return null; return { v: n } }\nexport let s = (n) => String(o(n))', { optimize: false })), 'an object or null: the test')
+})
