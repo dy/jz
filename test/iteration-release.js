@@ -317,3 +317,18 @@ test('iteration release: a loop that allocates nothing as emitted carries no com
   for (let k = 0; k < 20; k++) exports.f()
   is(memory.used, used, 'twenty calls keep what one does')
 })
+
+// The kernel bounded by the array's own length: every store of the loop is in
+// bounds, so the loop saves the array for the reset once ahead of itself
+// (emit/control-flow.js), a record the reset log keeps until the round's clear
+// (core/durable-log.js). It allocates nothing else, and carries no compaction
+// and no release (optimize/quiet-loops.js).
+test('iteration release: a loop whose one allocation is the reset log\'s save carries no compaction and no release', () => {
+  const src = IMMUTABLE.replace(/i < N; i\+\+\) \{(\s+)const p = ps\[i\]/, 'i < ps.length; i++) {$1const p = ps[i]')
+  ok(src !== IMMUTABLE, 'the kernel bounded by its own length')
+  is(run(src, { optimize: 'speed' }).f(), oracle(src).f(), 'f() as the host answers')
+  if (onKernel()) return  // the kernel leg's WAT differs; the in-process leg owns the shape
+  const text = compile(src, { optimize: { level: 'speed', watr: false }, wat: true })
+  const steps = parseWat(text).filter(n => Array.isArray(n) && n[0] === 'func' && /^\$step(\$|$)/.test(n[1]))
+  ok(steps.length > 0 && !/"call","\$__(gc_begin|iter_release|iter_take)"|"\$__ibase"|"\$__gc_epoch"/.test(JSON.stringify(steps)), 'its loops test neither the compaction\'s threshold nor the release\'s')
+})

@@ -50,6 +50,12 @@ import { ctx } from '../ctx.js'
 
 const isArr = Array.isArray
 const ALLOCATORS = new Set(['$__alloc', '$__alloc_hdr', '$__alloc_hdr_n'])
+// The reset log's saves (core/durable-log.js): a container's first store of a
+// round copies it into a record the log keeps until the round's clear, once
+// per container. No compaction or release could give that back: a loop that
+// allocates nothing else carries neither (a loop whose stores are in bounds
+// saves its arrays once ahead of itself, emit/control-flow.js).
+const LOGS = new Set(['$__durable_arr_snap', '$__durable_obj_snap'])
 const HANDLERS = new Set(['try', 'try_table', 'catch', 'catch_all', 'catch_ref', 'catch_all_ref', 'delegate'])
 const INDIRECT = new Set(['call_indirect', 'call_ref', 'return_call_indirect', 'return_call_ref'])
 const DIRECT = new Set(['call', 'return_call'])
@@ -80,7 +86,7 @@ function scan(n, out = { raises: false, thrown: false, calls: new Set(), throws:
     if (!isArr(c) || c.iterRelease) continue
     const op = c[0]
     let leaves = leaving
-    if (DIRECT.has(op) && typeof c[1] === 'string') {
+    if (DIRECT.has(op) && typeof c[1] === 'string' && !LOGS.has(c[1])) {
       leaves = leaves || neverReturns(c[1], n[i + 1])
       if (ALLOCATORS.has(c[1])) { if (leaves) out.thrown = true; else out.raises = true }
       else (leaves ? out.throws : out.calls).add(c[1])
