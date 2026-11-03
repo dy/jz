@@ -86,8 +86,9 @@ test('forward hops: a loop that compacts asks for its receiver\'s hop as the com
   const want = oracle(src).main()
   for (const optimize of levels(0, 2, 3, 'speed', 'size')) is(jz(src, { optimize }).exports.main(), want, `main() at ${optimize}`)
   if (onKernel()) return  // kernel WAT shape differs; the in-process leg owns shape checks
-  // before watr, which inlines the step into the export
-  const body = funcWat(wat(src, { optimize: { level: 'speed', watr: false } }), 'step')
+  // before watr, which inlines the step into the export; the compaction is the JS host's
+  // (module/core/stub-log.js compactOn), so the shape is read there
+  const body = funcWat(wat(src, { optimize: { level: 'speed', watr: false }, host: 'js' }), 'step')
   ok(/call \$__gc_begin/.test(body), 'the loop compacts what its rare arm keeps')
   ok(/\$__fh\d+/.test(body), 'the hop is a local of the loop')
   const isHop = n => n[0] === 'if' && Array.isArray(n[2]) && n[2][0] === 'i32.eq' && Array.isArray(n[2][1]) && n[2][1][0] === 'i32.load' &&

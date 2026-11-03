@@ -609,11 +609,12 @@ test('arena rewind: a frame that reaches a for-in cache fill restores its heap a
   for (const optimize of levels(1, 2, 3)) {
     is(jz(src, { optimize }).exports.main(), oracle(src).main(), `O${optimize}: the count alternates with the layout`)
     const wat = compile(src, { wat: true, optimize })
-    // every function: whether it fills a cache, moves the epoch, restores its heap, and whom it calls
+    // every function: whether it fills a cache, moves the epoch, restores its heap to the mark it
+    // saved (arena-rewind.js `heap_save`; an inlined allocation also writes $__heap), and whom it calls
     const funcs = new Map()
     for (const m of wat.matchAll(/\(func (\$[^ )]+)/g)) {
       const j = wat.indexOf('\n  (func', m.index + 1), body = wat.slice(m.index, j < 0 ? undefined : j)
-      funcs.set(m[1], { fill: /global\.set \$__enumc_(off|arr)/.test(body), bump: /global\.set \$__enumc_epoch/.test(body), restore: /global\.set \$__heap /.test(body), calls: [...body.matchAll(/\(call (\$[^ )]+)/g)].map(c => c[1]) })
+      funcs.set(m[1], { fill: /global\.set \$__enumc_(off|arr)/.test(body), bump: /global\.set \$__enumc_epoch/.test(body), restore: /global\.set \$__heap \(local\.get \$\S*heap_save\d+\)/.test(body), calls: [...body.matchAll(/\(call (\$[^ )]+)/g)].map(c => c[1]) })
     }
     // a frame reaches a fill through its calls (the fixpoint the pass runs)
     const reaches = new Set([...funcs].filter(([, f]) => f.fill).map(([n]) => n))

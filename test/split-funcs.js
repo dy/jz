@@ -547,7 +547,8 @@ test('loop passes: rounds that keep what they allocate move out of the compactio
   const native = oracle(KEPT_SRC).main, main = jz(KEPT_SRC, { optimize: { level: 'speed' } }).exports.main
   for (const n of [0, 1, 9]) is(main(n), native(n), `main(${n})`)
   if (onKernel()) return
-  const wat = compile(KEPT_SRC, { optimize: { level: 'speed' }, wat: true })
+  // the compaction is the JS host's (module/core/stub-log.js compactOn), so the shape is read there
+  const wat = compile(KEPT_SRC, { optimize: { level: 'speed' }, wat: true, host: 'js' })
   ok(/\(loop \$\S*lrc\d+again/.test(wat), 'the rounds compact what they keep')
   ok(/\(func \$main\$s\d+/.test(wat), 'the rounds\' pass is a function')
 })
