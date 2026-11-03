@@ -12,15 +12,25 @@
  * operations decides the queues; an Intel Xeon binds each to one of its two
  * floating-point ports as it allocates it, alike. The Lorenz attractor's step (57
  * cycles of dependent 3-cycle operations) ran 59.6 cycles as written on an EPYC 7763,
- * 57.4 in the order deno's V8 gives its JavaScript, and 57.3 in the order this pass
- * picks: 3.7% less time there, 4.1% on a Zen 4 EPYC 9V74, 3.9% on a Zen 5 EPYC 9V45,
- * 1.0-1.4% on Xeons.
+ * 57.4 in the order deno's V8 gives its JavaScript, and 57.3 in decreasing height (the
+ * latency from an operation to the end of the run): 3.7% less time there, 4.1% on a Zen
+ * 4 EPYC 9V74, 3.9% on a Zen 5 EPYC 9V45, 1.0-1.4% on Xeons.
+ *
+ * An Apple M4 core runs such a body faster written depth first, each operation right
+ * after an operand it reads. Its adds take about two cycles and its multiplies three;
+ * of 76 orders of the Lorenz step timed there (cycles a step, a dependent add counted as
+ * two), each with under 30% of its operations right after an operand took 52.4 to 53.4,
+ * each with over 60% 49.3 to 51.7: decreasing height took 52.7, the source's order 50.1. So every candidate is depth first: decreasing height chooses only
+ * which operand's operations come first, at each operation and among the values no
+ * operation of the run reads. The step the models pick that way takes 50.1 cycles on the
+ * M4, 5% less than in decreasing height, and models within 0.3% of decreasing height on
+ * Zen and on a Xeon (not yet timed on either).
  *
  * Every operation becomes a statement of its own, the reads of a local written in the
  * run read the value of its latest write, and each local the run writes takes its last
- * value at the end. A few orders are candidates: the source's and decreasing height
- * (the latency from an operation to the end of the run), ties by earliest start or by
- * adds first, then source order either way. A model of each machine (dispatch six a
+ * value at the end. A few orders are candidates: the source's and four depth-first
+ * orders, each taking operands in decreasing height, ties by earliest start or by adds
+ * first, then source order either way. A model of each machine (dispatch six a
  * cycle into a 64-entry window, the emptier queue; issue the oldest ready operation:
  * on Zen, of each class from each queue, three cycles to an add, subtract or multiply;
  * on a Xeon, of either class from each port, four cycles) runs each over many
@@ -113,6 +123,24 @@ const model = (ops, deps, carried, order, xeon) => {
   return (end(b) - end(a)) / (b - a)
 }
 
+/**
+ * The operations in an order that writes each one right after the operands it computes,
+ * each operand's own operands before it: the values no operation of the run reads first,
+ * then every operation's operands, each set in the order `seq` gives them.
+ */
+const depthFirst = (deps, succ, seq) => {
+  const rank = [], seen = seq.map(() => false), out = []
+  for (let p = 0; p < seq.length; p++) rank[seq[p]] = p
+  const visit = (k) => {
+    if (seen[k]) return
+    seen[k] = true
+    for (const d of deps[k].slice().sort((a, b) => rank[a] - rank[b])) visit(d)
+    out.push(k)
+  }
+  for (const k of seq) if (!succ[k].length) visit(k)
+  return out
+}
+
 /** The order the model prefers for a run's operations, or null to keep the source's. */
 const pick = (ops, cur) => {
   const N = ops.length
@@ -138,7 +166,7 @@ const pick = (ops, cur) => {
     idx.slice().sort((a, b) => h[b] - h[a] || st[a] - st[b] || b - a),
     idx.slice().sort((a, b) => h[b] - h[a] || b - a),
     idx.slice().sort((a, b) => h[b] - h[a] || add(a) - add(b) || b - a),
-  ]
+  ].map(seq => depthFirst(deps, succ, seq))
   const zen0 = model(ops, deps, carried, src, false), xeon0 = model(ops, deps, carried, src, true)
   let best = null, cost = 2 * GAIN
   for (const o of orders) {

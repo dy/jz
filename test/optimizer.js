@@ -6030,6 +6030,38 @@ test('issueOrder: an integrator step is written in the order that issues its cha
   is(JSON.stringify(issueOrder(['module', JSON.parse(JSON.stringify(loaded))])[1]), JSON.stringify(loaded), 'a load keeps the run as written')
 })
 
+test('issueOrder: the step is written depth first, most operations right after an operand they read', () => {
+  if (onKernel()) return
+  // the share of the step's arithmetic, in the order it evaluates, that reads the operation evaluated
+  // just before it (nested in it, or from the local the statement before set): an Apple M4 ran the
+  // Lorenz step 5% slower in a breadth-first order (decreasing height, a share near 0) than depth first
+  const ARITH = /^f64\.(?:add|sub|mul)$/
+  const share = (optimize) => {
+    let run = null
+    walk(parse(rk4, optimize), (L) => {
+      if (L[0] !== 'loop') return
+      const ops = [], from = new Map()
+      const value = (e) => {
+        if (!Array.isArray(e)) return null
+        if (e[0] === 'local.get') return from.get(e[1]) ?? null
+        if (e[0] === 'local.tee') { const v = value(e[2]); from.set(e[1], v); return v }
+        const args = []
+        for (let i = 1; i < e.length; i++) { const v = value(e[i]); if (v != null) args.push(v) }
+        if (!ARITH.test(e[0])) return null
+        ops.push(args)
+        return ops.length - 1
+      }
+      for (const s of L.slice(1)) if (Array.isArray(s) && s[0] === 'local.set') from.set(s[1], value(s[2]))
+      if (ops.length >= 16 && (!run || ops.length > run.length)) run = ops
+    })
+    let after = 0
+    run.forEach((args, k) => { if (args.includes(k - 1)) after++ })
+    return after / run.length
+  }
+  const depth = share('speed')
+  ok(depth >= 0.5, `${(depth * 100).toFixed(0)}% of the step's operations follow an operand they read`)
+})
+
 // Blocks of a mix bus, each an inner loop carrying its own smoothing chain (slices' kernel)
 const jamSrc = (call) => `
 const pass = (input, bus, inOff, busOff, len, nb, gain) => {

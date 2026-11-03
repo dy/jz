@@ -65,7 +65,9 @@ longest chain of a loop body three links ahead of the weighty work hanging off
 it, a filter cascade's state updates.
 Then `issueOrder` (src/optimize/issue-order.js, speed tier) writes a loop body of
 floating-point arithmetic in the order that issues its chain soonest on cores that
-bind an operation to a queue or a port as they dispatch it (Zen 3 and 4, Xeons).
+bind an operation to a queue or a port as they dispatch it (Zen 3 and 4, Xeons),
+among depth-first orders only, each operation right after an operand: an Apple M4
+runs a breadth-first order of such a body 5% slower.
 A loop over items each of which searches from a slot it gathers (a hash join's
 probe side, a dictionary's lookups: `keys[hash(items[i])]`, then a probe chain)
 reads the next item's gather a round ahead under `leadGathers`
