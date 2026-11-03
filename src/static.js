@@ -124,6 +124,55 @@ export function constIntExpr(node) {
 }
 
 
+/** The integer a sum is where its names cancel (`2 * q - 2 * (q - 1)` is 2), or
+ *  null: literals and literal multiples of names that hold integers (a range
+ *  rep or a known value), added, subtracted and negated. Each partial sum's
+ *  hull stays within 2^53, so every float64 step is exact and the source
+ *  computes the same integer: a +0 where the names cancel to zero (a term of
+ *  each sign is +0 at x = ±0). `isInt(name)` admits a name: one that holds an
+ *  integer Number, never missing, in a word (signed or unsigned) where no
+ *  range rep bounds it more tightly. */
+export function cancelledIntExpr(n, isInt) {
+  const LIM = 2 ** 53
+  const fits = (t) => t && t.lo >= -LIM && t.hi <= LIM ? t : null
+  const scale = (t, c) => {
+    const terms = new Map()
+    for (const [x, v] of t.terms) terms.set(x, v * c)
+    return fits({ k: t.k * c, terms, lo: Math.min(t.lo * c, t.hi * c), hi: Math.max(t.lo * c, t.hi * c) })
+  }
+  const add = (a, b) => {
+    const terms = new Map(a.terms)
+    for (const [x, v] of b.terms) terms.set(x, (terms.get(x) ?? 0) + v)
+    return fits({ k: a.k + b.k, terms, lo: a.lo + b.lo, hi: a.hi + b.hi })
+  }
+  const walk = (e) => {
+    const c = constIntExpr(e)
+    if (c != null) return { k: c, terms: new Map(), lo: c, hi: c }
+    if (typeof e === 'string') {
+      const r = isInt(e) ? intExprRange(e) ?? [-(2 ** 31), 2 ** 32 - 1] : null
+      return r ? fits({ k: 0, terms: new Map([[e, 1]]), lo: r[0], hi: r[1] }) : null
+    }
+    if (!Array.isArray(e)) return null
+    const op = e[0]
+    if ((op === '()' || op === 'u+') && e.length === 2) return walk(e[1])
+    if ((op === '-' || op === 'u-') && e.length === 2) { const a = walk(e[1]); return a && scale(a, -1) }
+    if ((op === '+' || op === '-') && e.length === 3) {
+      const a = walk(e[1]), b = a && walk(e[2])
+      return b && add(a, op === '-' ? scale(b, -1) : b)
+    }
+    if (op === '*' && e.length === 3) {
+      const ka = constIntExpr(e[1]), kb = ka == null ? constIntExpr(e[2]) : null
+      const t = ka != null ? walk(e[2]) : kb != null ? walk(e[1]) : null
+      return t && scale(t, ka ?? kb)
+    }
+    return null
+  }
+  const t = walk(n)
+  if (!t || !t.terms.size) return null
+  for (const v of t.terms.values()) if (v !== 0) return null
+  return t.k
+}
+
 /** Closed integer hull [lo, hi] of an int expression, or null. Resolves names
  *  through constIntExpr (module const-ints + per-function intConst reps) and
  *  models the range-bearing operators: masks (`x & m` ⇒ [0, m]), unsigned

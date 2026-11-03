@@ -95,3 +95,21 @@ test('carried elements: an unproven store, a skipped store, a moved index and a 
     }
   }
 })
+
+// A difference whose integer names cancel is its literal; a Number that is not an integer keeps
+// its arithmetic (`(x + 1) - x` is 2 at 1e16).
+test('a difference whose integer names cancel folds to its literal', () => {
+  const src = `export let f = (n) => { let s = 0
+      for (let i = 1, m = n | 0; i < m; i++) s += 3 / (2 * i - 2 * (i - 1)) + ((i + 7) - (i - 2))
+      return s }
+    export let g = (x) => (x + 1) - x
+    export let h = (a) => { const b = new Float64Array(1); b[0] = a; return (b[0] * 2 + 1) - b[0] * 2 }`
+  const native = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { f, g, h } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 2, 9]) is(f(n), native.f(n), `f(${n}) O${optimize}`)
+    for (const x of [0, -0, 0.5, 1e16, -1e16, 2 ** 53, Infinity, NaN]) { is(g(x), native.g(x), `g(${x})`); is(h(x), native.h(x), `h(${x})`) }
+  }
+  if (onKernel()) return
+  ok(!/\(f64\.div\b/.test(funcWat(compile(src, { optimize: 'speed', wat: true }), 'f')), 'the cancelled divisor leaves no division')
+})

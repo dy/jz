@@ -9,7 +9,7 @@ import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emi
 import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
-import { intExprRange, negRangeFitsI32, forCounterRange } from '../../static.js'
+import { intExprRange, negRangeFitsI32, forCounterRange, cancelledIntExpr } from '../../static.js'
 import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, typedAux, bitOf, TAGS, NULL_BITS } from '../../summary/kind.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { exprType, inBoundsArrIdx, wholeKey } from '../../type.js'
@@ -676,6 +676,9 @@ export const arithmeticOps = {
         : bigintResult(['i64.sub', bigIntOperand(a), bigIntOperand(b)], self)
     }
     if (b === undefined) return emitNeg(a, self)
+    // (a difference whose names cancel: `2 * q - 2 * (q - 1)`, a lagging copy of a counter's)
+    const cancelled = cancelledIntExpr(['-', a, b], x => ctx.func.locals?.get(x) === 'i32' && valTypeOf(x) === VAL.NUMBER && !mayBeUndefined(x))
+    if (cancelled != null) return emitNum(cancelled)
     const va = emit(a), vb = emit(b), _f = foldConst(va, vb, (a, b) => a - b)
     if (_f) return _f
     if (isLit(vb) && litVal(vb) === 0) return toNumF64(a, va)
