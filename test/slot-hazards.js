@@ -259,9 +259,11 @@ const init = () => {
   return ps
 }
 export let main = () => step(init())`
-  // `main` releases what it made as it returns, so its call of `step` is one watr inlines: the kernel is read before watr
+  // `main` releases what it made as it returns, so its call of `step` is one watr inlines: the kernel is read before watr.
+  // `step` runs once and its loops allocate nothing as emitted (optimize/quiet-loops.js): each pass of the outer
+  // loop is a function of its own (optimize/split-funcs.js loopPasses), read with it
   const wat = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
-  const stepBody = wat.split('(func ').find(c => /^\$step\b/.test(c)) || ''
+  const stepBody = wat.split('(func ').filter(c => /^\$step(?:\$s\d+)*\s/.test(c)).join('(func ')
   // A checked cursor may retain the undefined box before projection. It is
   // the numeric slots and their consumers that must stay on the word path.
   ok(stepBody && !/\(local \$(?:sum|it|i|nx|hitX|x|vx) f64\)/.test(stepBody),
