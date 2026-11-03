@@ -644,6 +644,27 @@ test('JSON.parse: growing schema tables preserve earlier objects and stop before
 })
 
 
+test('JSON.parse: a layout registered past the reserve reads no row of the key index or the views', () => {
+  // The key index (a layout of 8 or more keys) and the views (an error object's
+  // accessors, a getter's) are tables with a row per compile-time layout: a parsed
+  // layout's id past the 256-slot reserve indexed them past their end (1.0.0, 1.0.1).
+  // A computed key and an enumeration read the views too.
+  const views = instantiate(compile(`export let f = (t) => { try { return JSON.stringify(JSON.parse(t)) } catch (e) { return 'ERR' } }`))
+  ok(views.instance.exports.__jz_view_data, 'the views are linked, else this pins nothing')
+  const index = instantiate(compile(`const big = { a1: 1, a2: 2, a3: 3, a4: 4, a5: 5, a6: 6, a7: 7, a8: 8, a9: 9 }
+    export let g = (t, k) => JSON.parse(t)[k] + big[k.length > 9 ? 'a1' : 'a2']`))
+  const read = instantiate(compile(`const g = { n: 1, get two() { return this.n * 2 } }
+    export let h = (t, k) => { const o = JSON.parse(t); return o[k] + Object.values(o)[0] + Object.entries(o).length + (k === 'q' ? g[k] : 0) }`))
+  let wrong = 0
+  for (let i = 0; i < 400; i++) {
+    const t = '[{"a' + i + '":1},{"c":3}]'
+    if (views.exports.f(t) !== t) wrong++
+    if (index.exports.g('{"k' + i + '":' + i + ',"z":1}', 'k' + i) !== i + 2) wrong++
+    if (read.exports.h('{"k' + i + '":' + i + ',"z":1}', 'k' + i) !== 2 * i + 2) wrong++
+  }
+  is(wrong, 0, 'every layout past the reserve reads as itself')
+})
+
 test('JSON.parse: schema cache is empty after arena reuse', () => {
   const shapes = Array.from({ length: 30 }, (_, i) => `{k${i}:42,level:${i + 100}}`).join(',')
   const source = `const shapes = [${shapes}]

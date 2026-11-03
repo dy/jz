@@ -165,6 +165,10 @@ function buildSchemaInit() {
     hasJpObj
   if (needsSchemaTbl) {
     const nSchemas = ctx.schema.list.length
+    // The side tables (the key index, the views) hold a row per layout laid out
+    // here and none for one JSON.parse registers past them: their readers ask
+    // `sid < __schema_rows` (module/schema.js schemaRows) before indexing.
+    declGlobal('__schema_rows', 'i32', nSchemas, { mut: false })
     const runtimeReserve = hasJpObj ? 256 : 0
     if (runtimeReserve) {
       declGlobal('__schema_cap', 'i32')
@@ -206,7 +210,7 @@ function buildSchemaInit() {
       // word, the same hash the runtime computes for the key string. The
       // per-schema table stores each index's offset relative to itself, so a
       // stripped data prefix moves both together; a runtime-registered schema
-      // (the reserve) has no index and keeps the scan.
+      // has no row (`__schema_rows`) and keeps the scan.
       let idxRel = null
       if (!ctx.transform.optimize?.leanRuntime && ctx.schema.list.some(keys => keys.length >= 8)) {
         const idxOffs = ctx.schema.list.map(keys => {
@@ -228,7 +232,7 @@ function buildSchemaInit() {
           return off
         })
         const idxBase = dataLen()
-        const bytes = new Uint8Array((idxOffs.length + runtimeReserve) * 8), offsets = new DataView(bytes.buffer)
+        const bytes = new Uint8Array(idxOffs.length * 8), offsets = new DataView(bytes.buffer)
         for (let i = 0; i < idxOffs.length; i++) if (idxOffs[i]) {
           offsets.setInt32(i * 8, idxOffs[i] - idxBase, true)
           offsets.setInt32(i * 8 + 4, -1, true) // every index precedes this table
@@ -269,12 +273,12 @@ function buildSchemaInit() {
           if (keyBits.every(k => !k || k.every(b => b != null))) {
             const slots = views.flatMap((v, s) => v ? [extractF64Bits(staticArrayPtr(keyBits[s])),
               extractF64Bits(staticArrayPtr(v.map(e => extractF64Bits(['f64.const', viewEntry(e)]))))] : [zero, zero])
-            viewTable(pushStaticSlots([...slots, ...Array(runtimeReserve * 2).fill(zero)]), table)
+            viewTable(pushStaticSlots(slots), table)
             if (!runtimeReserve && dataLen() > viewDataStart) {
               ctx.runtime.reclaimSpans.push({ global: table, start: viewDataStart, end: dataLen() })
               dataRecord(viewDataStart, dataLen(), false)
             }
-          } else schemaInit.push(...viewInitIR(views, nSchemas + runtimeReserve, table))
+          } else schemaInit.push(...viewInitIR(views, nSchemas, table))
         }
       }
       if (runtimeReserve) {
@@ -309,7 +313,7 @@ function buildSchemaInit() {
       }
       for (const table of viewTables()) {
         const views = viewsOf(table)
-        if (views) schemaInit.push(...viewInitIR(views, nSchemas + runtimeReserve, table))
+        if (views) schemaInit.push(...viewInitIR(views, nSchemas, table))
       }
     }
   }

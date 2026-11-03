@@ -30,7 +30,7 @@ import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '
 import { trySlotUpdate } from '../src/compile/slot-update.js'
 import { captureCallback } from './array/callback.js'
 import { demandHostReceiver, mayHoldHostValue } from '../src/compile/func-exports.js'
-import { ENUM_DATA, ENUM_GET, ownKeys, presentKeys, inheritingSids, viewsOn, accessorTable } from './schema.js'
+import { ENUM_DATA, ENUM_GET, ownKeys, presentKeys, inheritingSids, viewsOn, accessorTable, hasSchemaRow } from './schema.js'
 import { ACCESSOR_CALL } from '../src/compile/emit/accessor-call.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
@@ -1530,7 +1530,7 @@ export default (ctx) => {
     ${!indexed ? '' : `
     ;; The schema's key index (start-fn.js): hash the key once, probe by hash,
     ;; confirm the slot's key. A schema without an index keeps the scan below.
-    (if (global.get $__schema_idx) (then
+    (if (i32.and (i32.ne (global.get $__schema_idx) (i32.const 0)) ${hasSchemaRow('(local.get $sid)')}) (then
       (local.set $ix (i32.wrap_i64 (i64.load (i32.add (global.get $__schema_idx) (i32.shl (local.get $sid) (i32.const 3))))))
       (if (local.get $ix) (then
         (local.set $ix (i32.add (global.get $__schema_idx) (local.get $ix)))
@@ -1622,6 +1622,7 @@ export default (ctx) => {
     (if (i32.ne (call $__ptr_type (local.get $obj)) (i32.const ${PTR.OBJECT})) (then (return (i32.const 0))))
     (if (i32.eqz (global.get $__schema_own_view)) (then (return (i32.const 0))))
     (local.set $sid (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (if (i32.eqz ${hasSchemaRow('(local.get $sid)')}) (then (return (i32.const 0))))
     (local.set $row (i32.add (global.get $__schema_own_view) (i32.shl (local.get $sid) (i32.const 4))))
     (if (i64.eqz (i64.load (local.get $row))) (then (return (i32.const 0))))
     (if (i32.eqz (call $__is_str_key (local.get $key))) (then (local.set $key (call $__to_key (local.get $key)))))
@@ -1658,6 +1659,7 @@ export default (ctx) => {
     (local $row i32) (local $keys i32) (local $n i32) (local $i i32) (local $e i64)
     ${ctx.types.anyDelete ? '(local $off i32) (local $slot i32) (local $dmask i32) (local $val i64)' : ''}
     (if (i32.eqz (global.get $${table})) (then (return (i64.const -1))))
+    (if (i32.eqz ${hasSchemaRow(`(i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))`)}) (then (return (i64.const -1))))
     (local.set $row (i32.add (global.get $${table}) (i32.shl
       (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))
       (i32.const 4))))
@@ -1728,7 +1730,7 @@ export default (ctx) => {
   ctx.core.stdlib['__view_has'] = () => {
     if (!ctx.scope.globals.has('__schema_view')) declGlobal('__schema_view', 'i32')
     return `(func $__view_has (param $obj i64) (result i32)
-    (if (result i32) (i32.eqz (global.get $__schema_view)) (then (i32.const 0))
+    (if (result i32) (i32.or (i32.eqz (global.get $__schema_view)) (i32.eqz ${hasSchemaRow(`(i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))`)})) (then (i32.const 0))
       (else (i64.ne (i64.load (i32.add (global.get $__schema_view) (i32.shl
         (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))
         (i32.const 4)))) (i64.const 0)))))`
