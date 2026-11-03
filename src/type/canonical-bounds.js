@@ -81,19 +81,21 @@ function collectBoundedCC(node, recv, idxVar, set) {
 
 /** Receiver of a `.length` expression, possibly wrapped in `(… | 0)` — the
  *  shape `prepare` produces when it hoists a for-cond bound. */
-export function lengthRecv(expr) {
+export const lengthRecv = (expr) => lengthRecvs(expr)[0] ?? null
+
+/** Every receiver whose `.length` a bound stays below: `recv.length` (or
+ *  `(recv.length | 0)`), or each such length among a `Math.min`'s arguments,
+ *  nested mins alike. A min is at most each of its arguments, so the bound
+ *  proof carries to every one: the shape plan/loops.js plants for the in-bounds
+ *  main loop of a split scan, `Math.min(B, a.length, b.length)`. */
+export function lengthRecvs(expr, out = []) {
   if (Array.isArray(expr) && expr[0] === '|' && intLiteralValue(expr[2]) === 0) expr = expr[1]
-  if (Array.isArray(expr) && expr[0] === '.' && expr[2] === 'length'
-      && typeof expr[1] === 'string') return expr[1]
-  // `Math.min(X, recv.length)` (either arg order): min ≤ recv.length regardless
-  // of X, so the bound proof carries through. This is the shape
-  // splitCharScanLoops plants for the in-bounds main loop of a split scan.
-  if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.min') {
+  if (Array.isArray(expr) && expr[0] === '.' && expr[2] === 'length' && typeof expr[1] === 'string') out.push(expr[1])
+  else if (Array.isArray(expr) && expr[0] === '()' && expr[1] === 'math.min') {
     const argsNode = expr[2]
-    const args = Array.isArray(argsNode) && argsNode[0] === ',' ? argsNode.slice(1) : [argsNode]
-    for (const a of args) { const r = lengthRecv(a); if (r) return r }
+    for (const a of Array.isArray(argsNode) && argsNode[0] === ',' ? argsNode.slice(1) : [argsNode]) lengthRecvs(a, out)
   }
-  return null
+  return out
 }
 
 /** Flatten `let`/`const` declarations (incl. `;`-joined groups) into `out`,
@@ -245,11 +247,11 @@ function preservesLoopHead(root, view, bindings, callees, idx, bound, mutable = 
  *  `[0, recv.length)` by an enclosing canonical loop `for (let i = C; i < recv.length;
  *  i++)`. Same loop contract as `scanBoundedLoops` (charCodeAt) — sibling proof for
  *  the ARRAY indexed-read fast path in `module/array.js`. */
-export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.at(ctx.func.current)) {
+export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.at(ctx.func.current), known = NO_KNOWN) {
   if (!Array.isArray(node)) return
   if (node[0] === 'for' && node.length === 5) {
     const [, init, cond, step, body] = node
-    let idx = null, recv = null, boundVar = null
+    let idx = null, recvs = [], boundVar = null
     if (Array.isArray(cond) && cond[0] === '<' && typeof cond[1] === 'string') {
       const decls = new Map()
       collectDecls(init, decls)
@@ -258,16 +260,18 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
       if (start == null || start < 0) idx = null
       let bound = cond[2]
       if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
-      recv = lengthRecv(bound)
+      recvs = bound === undefined && boundVar != null ? [...(known.get(boundVar) ?? [])] : lengthRecvs(bound)
     }
-    if (idx && recv && idx !== recv && isUnitIncrement(step, idx)
-        && !isReassigned(body, idx) && !isReassigned(body, recv)
+    const recv = recvs.length > 0
+    recvs = recvs.filter(r => r !== idx && !isReassigned(body, r))
+    if (idx && recvs.length && isUnitIncrement(step, idx)
+        && !isReassigned(body, idx)
         && (boundVar == null || !isReassigned(body, boundVar))
         && !redeclaresName(body, idx)) {
-      const bindings = [recv, idx, boundVar], callees = new Map()
+      const bindings = [...recvs, idx, boundVar], callees = new Map()
       if (preservesLoopBounds(body, view, bindings, callees) && preservesLoopBounds(cond, view, bindings, callees) &&
           (boundVar == null || preservesLoopHead(init, view, bindings, callees, idx, boundVar)))
-        collectBoundedArrIdx(body, recv, idx, set, nodes)
+        for (const r of recvs) collectBoundedArrIdx(body, r, idx, set, nodes)
     }
     // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in
     // [C, B) — provable against a receiver whose STATIC length ≥ B (typedIdxProven
@@ -303,8 +307,33 @@ export function scanBoundedArrIdx(node, set, litSet, nodes, view = ctx.summary?.
       }
     }
   }
-  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set, litSet, nodes, view)
+  const op = node[0]
+  // A statement list carries the bounds its constants declare to the statements
+  // after them, while each statement keeps them; a loop's body, while the whole
+  // loop keeps them; an arm, while its test does. Any other node (a closure that
+  // may run later among them) starts with none.
+  if (op === ';') {
+    let at = known
+    for (let k = 1; k < node.length; k++) {
+      const s = node[k]
+      scanBoundedArrIdx(s, set, litSet, nodes, view, at)
+      if (at.size && !preservesLoopBounds(s, view, knownNames(at))) at = NO_KNOWN
+      if (Array.isArray(s) && s[0] === 'const') for (let j = 1; j < s.length; j++) {
+        const d = s[j], recvs = Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' ? lengthRecvs(d[2]) : []
+        if (recvs.length) { if (at === known || at === NO_KNOWN) at = new Map(at); at.set(d[1], recvs) }
+      }
+    }
+    return
+  }
+  const keeps = (root) => known.size > 0 && preservesLoopBounds(root, view, knownNames(known))
+  const inner = op === '{}' ? known : op === 'for' || op === 'while' ? (keeps(node) ? known : NO_KNOWN) : op === 'if' ? (keeps(node[1]) ? known : NO_KNOWN) : NO_KNOWN
+  for (let k = 1; k < node.length; k++) scanBoundedArrIdx(node[k], set, litSet, nodes, view, op === 'if' && k === 1 ? NO_KNOWN : inner)
 }
+// A bound a `const` declared before a loop holds below its receivers' lengths
+// (`const n = Math.min(a.length, b.length)`, a split scan's bound, plan/loops.js):
+// name → receivers, while nothing since shrank a receiver or rebound a name.
+const NO_KNOWN = new Map()
+const knownNames = (known) => { const out = []; for (const [name, recvs] of known) out.push(name, ...recvs); return out }
 
 /** Set of `"recv\x00idx"` keys for `recv[idx]` reads in the current function proven
  *  in-bounds. Memoised per body (separate slot from the charCodeAt proof; AdHocMemo

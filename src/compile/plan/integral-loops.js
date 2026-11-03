@@ -191,6 +191,13 @@ const integral = (e, out, intArray = NO_ARRAY) => {
   if (op === '[]' && e.length === 3 && intArray(e[1])) return true
   if (op === '()' && e.length === 2) return integral(e[1], out, intArray)
   if (op === '?:') { const a = integral(e[2], out, intArray), b = integral(e[3], out, intArray); return a && b }
+  // a least or greatest of integers is one of them (`Math.min(a.length, b.length)`)
+  if (op === '()' && e.length === 3 && (e[1] === 'math.min' || e[1] === 'math.max')) {
+    const args = Array.isArray(e[2]) && e[2][0] === ',' ? e[2].slice(1) : e[2] == null ? [] : [e[2]]
+    let all = args.length > 0
+    for (const a of args) if (!integral(a, out, intArray)) all = false
+    return all
+  }
   // a quotient under a test of its remainder (`if (srcIdx % up === 0) xi = srcIdx / up`) is exact: an integer of integers
   if (op === '/' && e.length === 3 && isExactDivision(e)) { const a = integral(e[1], out, intArray), b = integral(e[2], out, intArray); return a && b }
   if (!CLOSED.has(op)) return false
