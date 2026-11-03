@@ -449,7 +449,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `natgcc` | gcc `-O3`, when real gcc is installed |
 | `rust` | Rust `rustc -C opt-level=3 -C target-cpu=native` — native baseline; the headline rival is `rust-wasm` |
 | `go` | Go native compiler — native baseline; the headline rival is `go-wasm` |
-| `zig` | Zig `build-exe -O ReleaseFast` — native baseline |
+| `zig` | Zig `build-exe -O ReleaseFast -lc` — native baseline |
 | `numpy` | vectorized NumPy, when a matching `.npy.py` exists |
 | `v8` | raw JavaScript on Node/V8 |
 | `deno` | raw JavaScript on Deno/V8 |

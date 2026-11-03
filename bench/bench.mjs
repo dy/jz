@@ -970,7 +970,9 @@ const targets = {
       const zigGlobalCache = build('zig-global-cache')
       mkdirSync(zigCache, { recursive: true })
       mkdirSync(zigGlobalCache, { recursive: true })
-      execFileSync('zig', ['build-exe', '-O', 'ReleaseFast', '-femit-bin=' + zigPath(c), '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, ...zigModuleArgs(c.zig)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      // -lc: _lib/bench.zig times and prints through libc natively. Zig 0.16 links
+      // it only on request, except on macOS, where libSystem is always linked.
+      execFileSync('zig', ['build-exe', '-O', 'ReleaseFast', '-lc', '-femit-bin=' + zigPath(c), '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, ...zigModuleArgs(c.zig)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [zigPath(c)]),
   },
   numpy: {
@@ -1363,7 +1365,7 @@ const TARGET_CMDS = {
   natgcc: 'gcc -O3 -ffp-contract=off <case>.c',
   rust: 'rustc -C opt-level=3 -C target-cpu=native <case>.rs',
   go: 'go build -ldflags="-s -w" <case>.go',
-  zig: 'zig build-exe <case>.zig -O ReleaseFast (shared _lib/bench.zig)',
+  zig: 'zig build-exe <case>.zig -O ReleaseFast -lc (shared _lib/bench.zig)',
   numpy: 'python3 <case>.npy.py',
   wat: 'wat2wasm <case>.wat → node run-wat.mjs (V8 wasm)',
   v8: 'node run-v8.mjs <case>.js',

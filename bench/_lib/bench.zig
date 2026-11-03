@@ -15,8 +15,8 @@
 // Fix: no libc on wasm. Time via the WASI `clock_time_get` import and print via
 // the WASI `fd_write` import directly (both verified under node:wasi AND
 // wasmtime). On native (the `zig` baseline target) keep libc — `clock_gettime`
-// for timing, `write` for output. One import per case, like the C cases share
-// bench.h.
+// for timing, `write` for output — linked by `-lc`, which zig 0.16 requires
+// everywhere but macOS. One import per case, like the C cases share bench.h.
 const std = @import("std");
 const builtin = @import("builtin");
 
