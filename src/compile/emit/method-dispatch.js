@@ -1110,10 +1110,14 @@ export function emitMethodCall(callee, parsed, callArgs, optional = false) {
   // that carrier and the original charCodeAt bounds proof.
   const nativeString = typeof obj === 'string' && repOf(obj)?.carrier === 'jsstring'
   if (!nativeString && view?.mayBeNullishExpr(obj) === true && !isPresentArrayElement(obj)) {
+    // (the receiver's emission overwrites the statement's expectation: a dropped
+    // call keeps it, so a builtin skips the result it would compute, `.push`'s length)
+    const expect = ctx.func._expect
     const recv = temp('methodRecv'), value = storedValue(obj)
     copyReceiverFacts(obj, recv)
     view.alias(recv, obj)
     try {
+      ctx.func._expect = expect
       const result = emitMethodCall(['.', recv, method], parsed, callArgs, optional)
       return guardMethodReceiver(recv, value, result)
     } finally { view.unalias(recv) }

@@ -8,7 +8,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import parseWat from 'watr/parse'
 import { onWasi, onKernel, levels, adaptI64 } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
-import { oracle, compile, jz } from './util.js'
+import { oracle, compile, jz, funcWat } from './util.js'
 import { ctx } from '../src/ctx.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
@@ -1140,4 +1140,16 @@ test('minimal: the size tier links the key arms its keys reach', () => {
   ok(!/\$__str_(eq|hash)\b/.test(w(nums)), 'Number and atom keys: no string arms')
   ok(/\$__str_hash\b/.test(w(strs)), 'string keys: the string hash')
   ok(!/\$__str_eq\b/.test(w(objs)), 'object keys: no string equality')
+})
+
+// A call in statement position whose receiver may be missing keeps the
+// statement's expectation past the receiver's guard (emit/method-dispatch.js):
+// `l.push(i)` of a Map's read drops the length it would return, where it
+// read the array's header again to compute it.
+test('minimal: a dropped call past a receiver guard computes no result', () => {
+  if (skip) return
+  const src = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { let l = m.get(i & 3); if (l === undefined) { l = []; m.set(i & 3, l) } l.push(i) } let t = 0; for (const [k, v] of m) t += k * v.length; return t }`
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 9]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  const lists = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { let l = m.get(i & 3); if (l === undefined) { l = []; m.set(i & 3, l) } l.push(i) } return m.size }`
+  is((funcWat(compile(lists, { optimize: { level: 'size', watr: false }, wat: true }), 'f').match(/call \$__ptr_offset\b/g) || []).length, 0, 'no header read for the dropped length')
 })
