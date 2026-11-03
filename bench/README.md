@@ -68,6 +68,85 @@ JZ agree on each, where munsell's exact bits gave three checksums), and so are
 the three.js cases, whose rotations go through `Math.sin`, `cos` and `acos`
 (V8, Deno, bun, jsc and JZ agree on each).
 
+The library cases have C and Rust ports, which the `nat`, `natgcc`, `c-wasm`, `rust`
+and `rust-wasm` lanes take: the nine color-space kernels, the four three.js and four
+pmndrs/math cases, @stdlib's exp, erf, pow, gamma and ddot, fftplan, provenance and
+gainclass. Each ports the library code its case calls as written: a JS function
+becomes a C function or a Rust `fn` of its name, an object a struct, a method a
+function taking the receiver by pointer (C) or an `impl` method (Rust), an array of
+objects an array of structs, a growing array a growable buffer (`realloc` with a
+capacity, `Vec`), a Float32Array a `float` array read into double and stored back
+rounded. They add no hint the JavaScript lacks: no `restrict`, intrinsics or
+attributes in C, no `unsafe`, unchecked indexing or `#[inline]` in Rust.
+
+- color-space: an edge returns its three results as a struct by value (C) or a
+  `[f64; 3]` (Rust), one in-place pass per edge as the JS's `convert` makes; munsell
+  decodes its renotation table from the JS's own strings before the timed region.
+- three.js 0.186.1: a class is a struct (`Matrix4`'s `elements` a `double[16]`,
+  column-major), and its module scratch objects (`_v1`, `_m1`, ...) are file-scope
+  statics in C and locals or struct fields in Rust.
+- pmndrs/math: plain-array vectors and quaternions are fixed arrays (`double[4]`,
+  `[f64; 4]`); polytri grows its index arrays, polygons and out-buffers element by
+  element as the JS does, and C frees per call what the JS drops.
+- @stdlib: each function the case reaches, under stdlib's own C names in C, its
+  float64 word accessors `memcpy` (C) and `to_bits`/`from_bits` (Rust), every branch
+  kept, the ones the sweep never takes too (gamma's reflection brings in sin and its
+  argument reduction). The results are hashed exactly, and the ports agree with the
+  JavaScript bit for bit, every word of every result, beyond the sweep's inputs as
+  well. ddot is the strided ndarray kernel with stdlib's five-way unroll.
+- fftplan's plan cache is a list searched by size in C and a `HashMap<usize,
+  Rc<Plan>>` in Rust, each behind the JS's last-plan memo; provenance keeps its four
+  provenances of one table four distinct paths.
+
+The C ports of the `checksumF64Near` cases use `checksum_f64_near` (`_lib/bench.h`).
+The native C lanes link `-lm`: on Linux libm is a library of its own, and without it
+raytrace's `sqrt` and upfirdn's `fmod` failed to link there.
+
+A local measurement of the ports (2026-11-03, Apple M4 Max, load average 13 to 27
+from other work; `node bench/bench.mjs --cases=… --targets=jz,nat,c-wasm,rust,rust-wasm
+--paired=2`) is not reference evidence. `JZ ÷ fastest wasm` is the median of the paired
+rounds' ratios of JZ's time to the faster wasm port's (above 1, a port leads).
+
+| case | JZ | C → wasm | Rust → wasm | JZ ÷ fastest wasm | native C | native Rust |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `hsl` | 6.15 ms | 25.1 ms | 40.9 ms | 0.24 | 6.53 ms | 4.76 ms |
+| `hwb` | 6.60 ms | 23.2 ms | 25.6 ms | 0.29 | 6.06 ms | 5.77 ms |
+| `a98rgb` | 12.4 ms | 22.9 ms | 22.8 ms | 0.63 | 14.8 ms | 13.8 ms |
+| `ipt` | 13.5 ms | 18.5 ms | 18.5 ms | 0.76 | 12.3 ms | 11.3 ms |
+| `jzazbz` | 11.0 ms | 22.8 ms | 20.5 ms | 0.55 | 13.0 ms | 13.2 ms |
+| `jzczhz` | 9.85 ms | 20.8 ms | 19.5 ms | 0.51 | 13.7 ms | 13.6 ms |
+| `cam16` | 7.85 ms | 15.4 ms | 13.9 ms | 0.59 | 11.8 ms | 11.8 ms |
+| `hct` | 12.8 ms | 17.5 ms | 14.8 ms | 0.89 | 12.1 ms | 12.2 ms |
+| `munsell` | 16.3 ms | 11.5 ms | 11.6 ms | 1.48 | 2.28 ms | 9.65 ms |
+| `threeanim` | 14.3 ms | 16.7 ms | 12.9 ms | 1.11 | 10.4 ms | 10.0 ms |
+| `threescene` | 3.77 ms | 2.29 ms | 2.40 ms | 1.65 | 1.75 ms | 1.87 ms |
+| `threecull` | 5.41 ms | 4.95 ms | 5.38 ms | 1.13 | 4.79 ms | 5.30 ms |
+| `threegeom` | 4.20 ms | 3.02 ms | 3.17 ms | 1.42 | 2.77 ms | 2.79 ms |
+| `quatmul` | 44 µs | 27 µs | 33 µs | 1.63 | 26 µs | 15 µs |
+| `worley` | 731 µs | 615 µs | 491 µs | 1.51 | 420 µs | 405 µs |
+| `polytri` | 1.11 ms | 509 µs | 562 µs | 2.23 | 483 µs | 467 µs |
+| `fabrik` | 108 µs | 32 µs | 30 µs | 3.72 | 24 µs | 23 µs |
+| `stdlib-exp` | 7.20 ms | 7.20 ms | 7.73 ms | 1.03 | 6.57 ms | 5.13 ms |
+| `stdlib-erf` | 4.89 ms | 4.21 ms | 4.30 ms | 1.18 | 2.53 ms | 2.91 ms |
+| `stdlib-pow` | 33.9 ms | 25.4 ms | 25.2 ms | 1.41 | 23.3 ms | 22.8 ms |
+| `stdlib-gamma` | 52.6 ms | 40.0 ms | 40.7 ms | 1.32 | 37.2 ms | 36.6 ms |
+| `stdlib-ddot` | 519 µs | 3.35 ms | 1.45 ms | 0.36 | 752 µs | 620 µs |
+| `fftplan` | 1.41 ms | 1.91 ms | 2.30 ms | 0.74 | 1.31 ms | 1.34 ms |
+| `provenance` | 1.29 ms | 1.54 ms | 2.06 ms | 0.85 | 1.12 ms | 1.36 ms |
+| `gainclass` | 88 µs | 116 µs | 676 µs | 0.76 | 81 µs | 85 µs |
+
+JZ leads both wasm ports on eight of the nine color-space kernels, stdlib-ddot,
+fftplan, provenance and gainclass, ties stdlib-exp, and trails on munsell, the three.js
+and pmndrs/math cases and @stdlib's erf, pow and gamma. These are gaps to close, not
+claims: the wasm class's gates (`test/bench.js`, `test/bench-claims.js`) report each one
+red until JZ leads (`test/bench-claims.js` holds polytri, fabrik and stdlib-exp as
+`PENDING_CASES`). Two port rows run V8's baseline code for their timed loop, since V8
+replaces a wasm function's code only between calls: in direct runs, Rust → wasm on hsl
+takes 25.3 ms under `--no-liftoff` against 42.0 ms by default, and C → wasm on
+stdlib-ddot 0.89 ms against 3.12 ms. The lanes run V8's defaults for every producer,
+JZ included. C → wasm on hsl is as slow under `--no-liftoff` (26.6 ms against 25.1 ms),
+so its gap to native C has another cause.
+
 ## Run
 
 ### CI
@@ -556,10 +635,8 @@ Goose's `math` module does not bind (`cbrt`, `hypot`) come through `extern fn`.
 Like the Rust ports they add no bounds-check hints (no `assert` of lengths, no
 `checkfree`): the compiler removes what it proves. They cover every case with C
 and Rust ports but `dispatch`, the C-only library idioms (sosfilter, movavg,
-upfirdn, pcmconvert), and, among the cases with no C or Rust port, the nine
-color-space kernels, the four three.js and four pmndrs/math cases, fftplan,
-provenance, gainclass, stdlib-ddot and the JSON pair; and mapstr, mapint and
-setops, which have Rust ports but no C.
+upfirdn, pcmconvert); among the cases with C and Rust ports they leave out only
+`dispatch`, `mapobj` and @stdlib's exp, erf, pow and gamma (below).
 
 Eighteen cases have no port:
 
@@ -1273,14 +1350,36 @@ synchronous cases (`encoding/json` over tagged structs, which formats floats as
 ECMAScript does and escapes the same characters, the data holding none of the `<`,
 `>`, `&`, U+2028 and U+2029 that only Go escapes; `map[string]T`, `map[int32]T`,
 `map[*Module]T`, `map[string]struct{}`), which the go, go-wasm and tinygo lanes
-take; Rust for `mapstr`, `mapint` and `setops` (`HashMap`, `HashSet`; Rust holds a
-graph by index, not by an object-keyed map, so `mapobj` has none); AssemblyScript for
-the four `Map` and `Set` cases; Goose for the JSON pair (its `json` module) and
-`mapstr`, `mapint` and `setops` (its `dictionary`); Bend for `mapstr` and `setops`
-(Base's `Map` and `Set`), the two native lanes described under Targets with the
-cases they leave out. C has no standard map or JSON and Rust no standard
-JSON, so those ports are absent rather than hand-rolled; Zig has both (`std.json`,
-`std.HashMap`) and no port yet.
+take; AssemblyScript for the four `Map` and `Set` cases; Goose for the JSON pair (its
+`json` module) and `mapstr`, `mapint` and `setops` (its `dictionary`); Bend for `mapstr`
+and `setops` (Base's `Map` and `Set`), the two native lanes described under Targets
+with the cases they leave out; Rust and C for all six,
+which the rust, rust-wasm, nat and c-wasm lanes take. Rust's maps are `HashMap` and
+`HashSet`. It holds `mapobj`'s graph as an arena, a `Vec<Module>` whose dependencies
+are `ModuleId` indices, the way Rust holds a graph without shared ownership; the side
+tables stay `HashMap<ModuleId, T>` keyed by that index, not `Vec`s indexed by it,
+which would turn the maps into arrays. C has no standard map, so its ports write the
+tables a C programmer would: open addressing with linear probing over a power-of-two
+array kept at most half full, FNV-1a over a string key's bytes with the hash kept in
+its slot, a Fibonacci hash of an integer key or of a module's address, and tombstones
+where `mapstr` deletes sessions while it sweeps them.
+
+Neither C nor Rust has JSON in its standard library, and the ports take no crates, so
+both write it by hand: a streaming writer with ECMAScript's escapes and
+Number::toString's shortest, closest digits, and for `jsontransform` a
+recursive-descent parser into a generic tree (C: a tagged union in a per-run arena,
+objects as members in insertion order; Rust: serde_json's `Value` shape,
+`Obj(Vec<(String, Value)>)`). C finds the digits with `snprintf` and `strtod`, the
+first of 15, 16 and 17 that reads back, from one digit below `DBL_MIN` and trying the
+next decimal up at a power of two; Rust takes `{:e}`'s digits and breaks a tie between
+two shortest candidates to even, as V8 does. Both match Node's `JSON.stringify` on
+654,093 doubles and write each case's text byte for byte as Node does. The digit
+search is about 80% of native C's time on `stringify` (3.2 of 4.0 ms), so the C rows
+there measure libc's float formatting as much as the writer; a formatter of the Ryu
+or Grisu kind would take several hundred lines more. Zig has both (`std.json`,
+`std.HashMap`) and no port yet. `async` has no C or Rust port: neither standard
+library has a promise runtime (Rust's `async` needs an executor from a crate), and an
+event loop written for the port would be a different program.
 
 `async` times itself inside an async function. Every stage settles at once, so each
 sample spans awaits that settle as microtasks: the engine drains its job queue inside
@@ -1327,6 +1426,21 @@ compiler reports the promise record's layout lost (joined with an unknown value)
 the runtime reads its fields by name, and nothing an await allocates is reclaimed
 within the call (420 MB peak RSS against Node's 58.5 MB). `mapstr` reads its session
 records' fields by name where they come out of `Map.get` and a `Map`'s entries.
+
+The C and Rust ports, measured later the same day on the same machine (load average 18
+to 27; `--targets=jz,nat,c-wasm,rust,rust-wasm --paired=2`), the existing Rust ports of
+`mapstr`, `mapint` and `setops` among them. JZ leads both wasm ports on `jsontransform`
+and trails them on every `Map` and `Set` case; its `stringify` row is wrong (above), so
+it has no ratio:
+
+| case | JZ | C → wasm | Rust → wasm | JZ ÷ fastest wasm | native C | native Rust |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mapstr` | 7.18 ms | 3.88 ms | 2.80 ms | 2.63 | 2.75 ms | 2.24 ms |
+| `mapint` | 5.21 ms | 2.11 ms | 3.21 ms | 2.64 | 1.88 ms | 2.73 ms |
+| `setops` | 4.97 ms | 4.31 ms | 4.22 ms | 1.33 | 3.58 ms | 3.40 ms |
+| `mapobj` | 2.13 ms | 687 µs | 1.05 ms | 3.42 | 516 µs | 905 µs |
+| `stringify` | 5.47 ms (wrong) | 14.2 ms | 2.72 ms | – | 4.35 ms | 1.62 ms |
+| `jsontransform` | 1.98 ms | 5.12 ms | 2.12 ms | 0.94 | 1.11 ms | 2.22 ms |
 
 ### watr — WAT-to-wasm compiler on small corpus
 
