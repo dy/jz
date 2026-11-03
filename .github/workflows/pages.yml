@@ -85,8 +85,9 @@ jobs:
           find examples -name '*.wasm' -not -path '*/build/*' | while read -r f; do
             mkdir -p "_site/$(dirname "$f")" && cp "$f" "_site/$f"
           done
-          # bench/web/*.wasm — built above (gitignored), feeds bench/index.html's live runner.
-          mkdir -p _site/bench/web && cp bench/web/*.wasm _site/bench/web/
+          # bench/web/ — built above (gitignored), feeds bench/index.html's live runner: each case's
+          # wasm, and one bundled module for the JS of a case with a module graph.
+          mkdir -p _site/bench/web && cp bench/web/*.wasm bench/web/*.js _site/bench/web/
           # sitemap.xml — the site pages + every example page, listed from what _site actually holds.
           node scripts/sitemap.mjs _site > _site/sitemap.xml
       - uses: actions/upload-pages-artifact@v3

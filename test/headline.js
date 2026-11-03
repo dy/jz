@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import test from 'tst'
 import { is, almost, ok } from 'tst/assert.js'
-import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, newerDataset, timedBenchmarkRow, CLS_ICO } from '../assets/headline.js'
+import { benchmarkRatio, classifyBenchmarkChecksum, correctBenchmarkRow, figure, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset } from '../assets/headline.js'
 
 const C = (jz, rest) => ({ targets: { jz, ...rest } })
 
@@ -169,7 +169,7 @@ test('bench page: reference and CI snapshots render Perry independently, with ma
       addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v },
     } }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, newerDataset,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset,
       document, URLSearchParams, location: { search }, navigator: { userAgent: 'test' },
       fetch: async path => {
         fetched.push(path)
@@ -272,6 +272,21 @@ test('bench page: every case has a family, tags and a description', () => {
   }
 })
 
+test('bench page: a case runs from its own source unless it imports more than the benchmark library', () => {
+  // the site serves the cases and bench/_lib, never node_modules: a module graph runs from its bundle
+  // (WEB_BUNDLED, written by bench.mjs --emit-web), the self-compile nowhere (NO_WEB)
+  const bench = new URL('../bench/', import.meta.url)
+  const ids = readdirSync(bench, { withFileTypes: true })
+    .filter(d => d.isDirectory() && !d.name.startsWith('_') && existsSync(new URL(`${d.name}/${d.name}.js`, bench)))
+    .map(d => d.name)
+  for (const id of ids) {
+    const src = readFileSync(new URL(`${id}/${id}.js`, bench), 'utf8')
+      .replace(/import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]/g, '')
+    is(/^\s*import\b/m.test(src), WEB_BUNDLED.has(id) || NO_WEB.has(id), `${id}: ${WEB_BUNDLED.has(id) ? 'bundled' : NO_WEB.has(id) ? 'not played' : 'played from source'}`)
+  }
+  for (const id of [...WEB_BUNDLED, ...NO_WEB]) ok(ids.includes(id), `${id} is a case`)
+})
+
 test('bench page: an unchecked contender leaves the corpus and the cards; JZ stays', async () => {
   const html = readFileSync(new URL('../bench/index.html', import.meta.url), 'utf8')
   const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1].replace(/^import .*$/m, '')
@@ -284,7 +299,7 @@ test('bench page: an unchecked contender leaves the corpus and the cards; JZ sta
       innerHTML: '', textContent: '', attrs: {}, addEventListener() {}, setAttribute(k, v) { this.attrs[k] = v } } }
     const localStorage = { getItem: () => JSON.stringify(off), setItem() {} }
     await runInNewContext(`(async () => {${script}\n})()`, {
-      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, newerDataset, document, localStorage,
+      benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset, document, localStorage,
       URLSearchParams, location: { search: '' }, navigator: { userAgent: 'test' },
       fetch: async () => ({ ok: true, json: async () => data }),
     })

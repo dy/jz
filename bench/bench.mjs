@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { NATIVE_ARENA_SHIM, NATIVE_ARENA_RE } from '../scripts/native-arena.js'
 import { sysroot, toolchain as nativeToolchain, wasm2native } from '../scripts/native/compile.mjs'
-import { compileJzAt, compileJzSelf, compileJzWasi, watrModuleSources } from './_lib/compile.js'
+import { compileJzAt, compileJzSelf, compileJzWasi, stubAdapters, watrModuleSources } from './_lib/compile.js'
 import { GRAPH_CASES, HOST_ADAPTERS, OWN_GRAPH, graphSources } from './_lib/graph.js'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -13,7 +13,7 @@ import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import EVENTS from '../src/std/events.js'
 import { completeBenchSvgRun, renderBenchSvg, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
-import { classifyBenchmarkChecksum, timedBenchmarkRow } from '../assets/headline.js'
+import { classifyBenchmarkChecksum, NO_WEB, timedBenchmarkRow, WEB_BUNDLED } from '../assets/headline.js'
 import { contenders } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
 import { releaseBytes } from './_lib/release-bytes.js'
@@ -197,12 +197,9 @@ const CASE_NAMES = {
 }
 
 const HOST_STUB = join(BENCH_DIR, '_lib', 'host-stub.js')
-// Only the self-compile graph bundles stay out of bench/web/ — their wasm is multi-MB
-// (jz.wasm embeds the whole compiler). The color* kernels stay playable in-page.
-// webaudio stays out too: its host-adapter imports need the stubs
-// run-jz-host.mjs wires, which the page's instantiate does not. The pmndrs/math
-// cases import a vendored module graph, the three.js cases node_modules: the page serves neither.
-const NO_WEB = new Set(['watr', 'jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul', 'threescene', 'threeanim', 'threecull', 'threegeom'])
+// The bench page plays every case but the self-compile (NO_WEB, assets/headline.js):
+// bench/web/ holds each one's wasm and, for a case with a module graph (WEB_BUNDLED),
+// its JavaScript bundled to one module (emitWebWasm).
 // Non-jz cases get the 1-page wasm default — plenty for a bench kernel's own
 // data. The `jz` CASE (self-compile: jz compiling itself) is its own path
 // entirely — see compileJzSelfIsolated / bench/_lib/compile-jz-self.mjs below,
@@ -1587,11 +1584,10 @@ if (MERGE && !PREV && !MERGE_ALLOW_SHRINK) {
   process.exit(1)
 }
 
-// --emit-web: compile just the page's playable cases to bench/web/*.wasm and
-// stop — no measurement, no native/JS-engine toolchains. The cheap step
-// pages.yml runs to (re)build the live in-page runner's artifacts at deploy.
-// Self-compile graph rows (jz/watr/jessie, NO_WEB) are never emitted — that's the
-// multi-MB jz.wasm we keep out of the deploy entirely.
+// --emit-web: compile just the page's playable cases to bench/web/ and stop — no
+// measurement, no native/JS-engine toolchains. The cheap step pages.yml runs to
+// (re)build the live in-page runner's artifacts at deploy. The self-compile (NO_WEB)
+// is never emitted: its jz.wasm is the multi-MB compiler, a build of most of an hour.
 if (EMIT_WEB) {
   const { built } = emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))
   console.log(`wrote bench/web/{${built.join(',')}}.wasm`)
@@ -1962,22 +1958,38 @@ if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases)) 
 
 // Compile the page's playable cases to bench/web/<case>.wasm for the live
 // in-browser runner. Default js-host lowering, so jz/interop's instantiate()
-// wires console/perf with zero custom imports. The compile is timed (median of
-// 3) — the same number the page measures live in the visitor's tab. Returns
-// { built:[ids], compileMs:{id} }; callers pass the playable set, so the hidden
-// self-compile rows' multi-MB wasm is never written.
+// wires console/perf with zero custom imports; a graph case's host adapters
+// become throwing modules (stubAdapters), as in its standalone build. The compile
+// is timed (median of 3) — the same number the page measures live in the
+// visitor's tab. A case with a module graph (WEB_BUNDLED) also gets
+// bench/web/<case>.js, its JavaScript bundled to one module for the page's JS row:
+// the site serves no node_modules. Returns { built:[ids], compileMs:{id} };
+// callers pass the playable set, so the self-compile's wasm is never written.
 function emitWebWasm(caseIds) {
   mkdirSync(WEB_DIR, { recursive: true })
   const built = []
   const compileMs = {}
   for (const cid of caseIds) {
     const c = caseById[cid]
+    // the JS row plays whether or not jz compiles the case
+    if (WEB_BUNDLED.has(cid)) try {
+      writeFileSync(join(WEB_DIR, `${c.id}.js`), esbuildSync().buildSync({
+        entryPoints: [c.js], bundle: true, format: 'esm', write: false, platform: 'neutral',
+        mainFields: ['module', 'main'], conditions: ['import'],
+        alias: Object.fromEntries((HOST_ADAPTERS[c.id] ?? []).map(name => [name, HOST_STUB])),
+        logLevel: 'silent',
+      }).outputFiles[0].text)
+    } catch (e) {
+      console.error(`[web] ${cid}.js: ${String(e.message || e).split('\n')[0]}`)
+    }
     try {
       const isWatr = c.id === 'watr'
       const isGraph = GRAPH_CASES.has(c.id)
       let code, modules
       if (isGraph) {
-        ;({ code, modules } = graphSources(c, resolveModuleGraph))
+        let imports
+        ;({ code, modules, imports } = graphSources(c, resolveModuleGraph))
+        stubAdapters(modules, imports)
         modules[resolve(LIB, 'benchlib.js')] = readFileSync(join(LIB, 'benchlib.js'), 'utf8')
       } else {
         code = readFileSync(c.js, 'utf8')
@@ -2065,7 +2077,7 @@ if (JSON_PATH) {
   }
 
   // Per-case wasm for the in-page runner (playable cases only — the self-compile
-  // graph rows (NO_WEB) never ship their multi-MB artifacts).
+  // (NO_WEB) never ships its multi-MB artifact).
   // compileMs lands back on each case as the page's live compile-time reference.
   const { built, compileMs } = NO_WEB_EMIT ? { built: [], compileMs: {} }
     : emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))

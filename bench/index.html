@@ -300,7 +300,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript – the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
-import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, newerDataset } from '../assets/headline.js'
+import { benchmarkRatio, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, NO_WEB, WEB_BUNDLED, newerDataset } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 // The view the URL names, else the newer of the reference and CI datasets by the date each
 // was measured (headline.js `newerDataset`, the rule the landing's figures read by): until a
@@ -495,9 +495,11 @@ const rowTip = (tid, parity, note) => {
   ].filter(Boolean).join('\n\n')
 }
 const BREAK = 12      // linear bars; rows past this are cut, number printed
-// Self-host graph rows: no bench/web wasm (multi-MB) and no browser-resolvable
-// module graph — their cards carry no repl/run actions.
-const NO_RUN = new Set(['watr', 'jessie', 'jz'])
+// Every case runs in the page but the self-compile (NO_WEB, assets/headline.js), whose
+// wasm is the multi-megabyte compiler. A case with a module graph (WEB_BUNDLED) runs its
+// JS row from bench/web/<case>.js, one bundled module, and opens in no repl: the repl
+// compiles one file and resolves no imports.
+const NO_REPL = new Set([...NO_WEB, ...WEB_BUNDLED])
 // idiomatic glyphs: play triangle for the repl, code chevrons for source
 const ICO = {
   play: `<svg class="ico" viewBox="0 0 12 12" width="9" height="9" aria-hidden="true"><path fill="currentColor" d="M2.5 1.3v9.4l7-4.7z"/></svg>`,
@@ -1017,7 +1019,7 @@ const renderCards = () => {
     const rows = cardRows(c)
     if (!rows) continue
     const srcLink = `<a class="play" href="https://github.com/dy/jz/tree/main/bench/${c.id}" target="_blank" rel="noopener" aria-label="source on GitHub">${ICO.code}src</a>`
-    const play = `<span class="actions">${NO_RUN.has(c.id) ? '' : `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>`}${srcLink}</span>`
+    const play = `<span class="actions">${NO_REPL.has(c.id) ? '' : `<button class="play" data-play="${c.id}" aria-label="open this kernel in the repl">${ICO.play}repl</button>`}${srcLink}</span>`
     const sz = c.targets.jz?.bytes
     const host = !DATA.meta.host && c.host ? `<span class="host" title="measured on ${esc(c.host.cpu)}">${esc(shortCpu(c.host.cpu))}</span>` : ''
     html += `<div class="card" data-cid="${c.id}">
@@ -1089,7 +1091,7 @@ let runSeq = 0
 const RUNNERS = {
   // awaited: an async case prints its result line when main's promise settles
   js: async cid => captureLine(async () => {
-    const m = await import(`./${cid}/${cid}.js?r=${++runSeq}`)   // fresh module record per run
+    const m = await import(`${WEB_BUNDLED.has(cid) ? `./web/${cid}.js` : `./${cid}/${cid}.js`}?r=${++runSeq}`)   // fresh module record per run
     await m.main()
   }),
   jzwasm: async cid => {
@@ -1126,7 +1128,7 @@ const runCase = async cid => {
 
 $('runAll').addEventListener('click', async () => {
   $('runAll').disabled = true
-  const playable = BENCHMARKS.filter(c => !NO_RUN.has(c.id))
+  const playable = BENCHMARKS.filter(c => !NO_WEB.has(c.id))
   for (let i = 0; i < playable.length; i++) {
     $('globalstat').textContent = `${i + 1}/${playable.length}: ${playable[i].id}`
     await runCase(playable[i].id)

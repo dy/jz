@@ -310,6 +310,14 @@ they are checked at single precision as the color-space cases are (`checksumF64N
 and their references re-pinned. The claims gate still passes over all eight when it
 requires a correct JZ timing per case (`PARITY_EXEMPT` in `claims.mjs`).
 
+The bench page plays every case in the visitor's browser but the self-compile, whose
+wasm is the compiler itself (`NO_WEB` in `assets/headline.js`). A case with a module
+graph (`WEB_BUNDLED`: watr, jessie, webaudio, the pmndrs/math and three.js cases)
+plays its JS row from `bench/web/<case>.js`, its source bundled to one module by
+`--emit-web` (the site serves no `node_modules`, and one rule covers every graph); its
+wasm is built from the same graph, webaudio's host adapters stubbed as in its
+standalone build.
+
 Native rows for `json` are fixed-source references, not semantic equivalents
 of JavaScript `JSON.parse`: C/Rust/Zig hand-parse the known schema from a
 compile-time string, and Zig may constant-fold the whole parse+walk under

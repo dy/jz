@@ -5,6 +5,14 @@
 // Every case enters every aggregate: the chart, the page's geomeans and stats, the README
 // table and the landing's figures below. A case's row counts where its checksum is accepted.
 
+// The bench page's live runner, shared with bench/bench.mjs's web emit. A case that imports
+// more than the benchmark library runs from bench/web/<case>.js, the one-module bundle the
+// emit writes beside its wasm: the site serves no node_modules. jz runs nowhere in the page:
+// its wasm is the compiler compiled by itself, a multi-megabyte build of most of an hour.
+export const WEB_BUNDLED = new Set(['watr', 'jessie', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul',
+  'threescene', 'threeanim', 'threecull', 'threegeom'])
+export const NO_WEB = new Set(['jz'])
+
 export const classifyBenchmarkChecksum = (checksum, reference, fma) =>
   (Array.isArray(fma) ? fma.some(value => value != null && checksum === value) : fma != null && checksum === fma) ? 'fma'
     : reference == null ? 'unclassified'
