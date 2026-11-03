@@ -2,9 +2,11 @@
  * async/await lowering – the generator machinery driving the plain-jz promise
  * runtime `jz:async` (src/std/async.js). No engine event loop, no stdlib/WAT
  * additions: an async function body lowers to the SAME state machine as
- * function* (an await suspends as a yield does), and the runtime's driver
- * (__async_run) steps it, parking on awaited promises; the runtime is
- * imported implicitly by every module that awaits, one copy per program.
+ * function* (an await suspends as a yield does), which drives itself, its
+ * frame holding the promise it settles (generators.js `self`), and an await
+ * of a module async function's call hands that call the awaiting machine
+ * (splitDirectAsync); the runtime is imported implicitly by every module
+ * that awaits, one copy per program.
  *
  * v1 surface (precise rejects elsewhere): try/catch/finally across an await
  * (or an async generator's yield) routes the rejection to the catch and every
@@ -488,7 +490,8 @@ export function createAsyncLowering({ genTemp, err, censusOf }) {
   //   (a, b) => MACHINE_FACTORY(a, b), the machine driving itself to its promise
   // The factory is the standard generator lowering of the body.
   function lowerAsync(params, body) {
-    // Source-level desugar: (a, b) => __async_run((function* (a, b) { mappedBody })(a, b))
+    // Source-level desugar: (a, b) => (function* (a, b) { mappedBody })(a, b), the machine
+    // driving itself to its promise (generators.js `self`)
     // The function* expression rides the standard generator lowering; the body
     // runs synchronously to the first await (spec), then parks on the promise.
     // The wrapper passes each argument on as it took it, a pattern's or a

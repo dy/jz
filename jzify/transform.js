@@ -384,7 +384,7 @@ export function createTransform(opts) {
   }
 
   const handlers = {
-    // async function/arrow → (a, b) => __async_run((function* (a, b) …)(a, b))
+    // async function/arrow → (a, b) => (function* (a, b) …)(a, b), a machine driving itself
     'async'(inner) {
       if (!_gen?.lowerAsync || !Array.isArray(inner)) return
       if (inner[0] === 'function*' || inner[0] === 'function') {

@@ -4004,7 +4004,7 @@ promise made another way.
 An async function whose body never awaits (no `await`, `for await` or `await
 using`) runs no machine (jzify/async.js `settledAsync`): its body stands under
 a try in the function itself, each `return E` returns `__p_done(E)`, a new
-promise resolved with E as the driver resolves one, and a throw returns
+promise resolved with E as `__async_ret` resolves one, and a throw returns
 `__p_reject(e)`, as ECMA-262's AsyncFunctionStart runs a body that never
 suspends; the summary names that promise at its `__p_done` call node as it
 names `__p_async`'s. Parameters bind by name (a default or a pattern keeps

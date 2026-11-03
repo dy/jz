@@ -105,7 +105,7 @@ const hasFreeJump = (n, loops = 0, switches = 0, labels = null) => {
 // Needed alongside hasYield: a compound statement with no yield but a plain
 // `return` is NOT inert — splicing it atomically (below) would let the return
 // execute as a bare host return out of the __next closure instead of the
-// {value,done} record next()'s caller (__async_run, or a manual .next()) reads,
+// {value,done} record next()'s caller (a for-of, a driver, a manual .next()) reads,
 // corrupting every settlement (numbers included, worst on heap/NaN-boxed values
 // read back as a wrong-shaped result).
 const hasReturn = (n) => {

@@ -2,7 +2,10 @@
  * `jz:async` – the promise runtime as readable jz source.
  *
  * An async function body lowers to the generator state machine (await ≡
- * yield) and `__async_run` drives it, parking on awaited promises. Promises
+ * yield), which drives itself: it subscribes itself to what it awaits
+ * (`__await`) and settles the promise its frame holds (`__async_ret`), or,
+ * called by an await of its call, resumes the awaiting machine with no
+ * promise between them (`__k_ret`, jzify/async.js splitDirectAsync). Promises
  * are fixed-shape objects whose `then`, `catch` and `finally` are methods of
  * their literal; a reaction queues as a job, its handler, state and value
  * three entries of the array `__mt` (no closure per job), drained at host
@@ -118,24 +121,9 @@ export let __await = (v, h) => {
   else __job(h, 1, v)
 }
 // The value an await of \`a\` resumes its machine with (jzify/generators.js):
-// \`v\`, what the driver below sends, is the settled value of \`a\`, which the
+// \`v\`, what its settlement sends, is the settled value of \`a\`, which the
 // program summary reads off \`a\` (src/summary/index.js awaited).
 export let __awaited = (a, v) => v
-// The driver: one handler per call resumes the machine at each settlement.
-export let __async_run = (it) => {
-  let p = __p_new()
-  let step = (st, x) => {
-    let r
-    try { r = st === 1 ? it.next(x) : it.throw(x) } catch (e) { __p_settle(p, 2, e); return }
-    if (r.done) __p_settle(p, 1, r.value)
-    else __await(r.value, step)
-  }
-  let r0
-  try { r0 = it.next() } catch (e) { __p_settle(p, 2, e); return p }
-  if (r0.done) __p_settle(p, 1, r0.value)
-  else __await(r0.value, step)
-  return p
-}
 export let __p_exec = (fn) => {
   if (fn == null || typeof fn !== 'function') throw new TypeError('Promise executor is not callable')
   let p = __p_new()
