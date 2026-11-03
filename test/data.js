@@ -617,6 +617,20 @@ test('Map: a fused read-modify-write of Number values adds as numbers', () => {
   ok(!/call \$__(str_concat|add_slow)/.test(compile(src, { optimize: 'size', wat: true })), 'Number values: no concatenation linked')
 })
 
+// A `.size` read of a value the summary holds to objects where it is present
+// (`stack.pop()` of an array of literals) reads its slot, as an object's own
+// property: the Set and Map getter's dynamic fallback is not linked. A missing
+// one throws, and a Set's or a Map's size still counts its entries.
+test('a .size read of an object or a missing value reads its slot', () => {
+  const src = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) m.set(i, { id: i, size: i * 2 }); let t = 0; const s = new Set([1, 2, 2]); for (let i = 0; i < n; i++) { const c = m.get(i); t += c.size } return t + s.size * 1000 }`
+  const missing = `export let f = () => { const stack = [{ size: 1 }]; stack.pop(); const c = stack.pop(); return c.size }`
+  for (const optimize of levels(0, 2, 'size')) {
+    for (const n of [0, 5]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+    throws(() => jz(missing, { optimize }).exports.f(), TypeError, `O${optimize}: a missing receiver throws`)
+  }
+  ok(!compile(src, { optimize: { level: 'size', watr: false }, wat: true }).includes('__dyn_get_expr_t_h'), 'the slot, no dynamic read')
+})
+
 // A statement, or two adjacent ones, that ask a Set or a Map about a key and
 // then store it probe once (compile/emit/fuse-probes.js): the find leaves the
 // key's entry or the empty bucket it ended at, and the store writes the entry

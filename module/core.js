@@ -3128,11 +3128,13 @@ export default (ctx) => {
     // fall through to a real property read — `m.values` reads the "values" field.
     // A PROVEN OBJECT/HASH receiver never has builtin accessors in JS — its
     // `.size`/`.byteLength` are ordinary own properties, so skip the getter and
-    // fall through to the real property read below.
+    // fall through to the real property read below. So does one the summary
+    // holds to objects alone where it is present (a missing one threw above).
     const propKey = `.${prop}`
     const propEmitter = ctx.core.emit[propKey]
+    const presentTag = receiverKind == null ? K.ANY : summaryTagOf(summaryCore(receiverKind))
     if (propEmitter && ctx.core.getters.has(propKey) &&
-        ptVt !== VAL.OBJECT && ptVt !== VAL.HASH) return propEmitter(obj)
+        ptVt !== VAL.OBJECT && ptVt !== VAL.HASH && presentTag !== K.OBJECT && presentTag !== K.HASH) return propEmitter(obj)
 
     // A present receiver the summary names as one shape (a parameter, a loop
     // cursor a guard proved) reads its slot directly, the layout the guarded
@@ -3229,9 +3231,11 @@ export default (ctx) => {
       const tg = ctx.core.emit[tgKey]
       if (tg && ctx.core.getters.has(tgKey)) return tg(t)
     }
+    // (the plain `.` emitter's rule: an object's `.size` is its own property)
     const gKey = `.${prop}`
     const g = ctx.core.emit[gKey]
-    if (g && ctx.core.getters.has(gKey)) return g(t)
+    const presentTag = receiverKind == null ? K.ANY : summaryTagOf(summaryCore(receiverKind))
+    if (g && ctx.core.getters.has(gKey) && vt !== VAL.OBJECT && vt !== VAL.HASH && presentTag !== K.OBJECT && presentTag !== K.HASH) return g(t)
     // an accessor name reads through the hoisted temp's own `.` dispatch
     // (the runtime probe; the receiver is evaluated once either way)
     const sid = ctx.summary?.at(ctx.func.current).objectSidOfExpr(obj)
