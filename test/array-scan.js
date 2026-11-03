@@ -151,7 +151,9 @@ test('array scan: the tail counter is an index', () => {
 // A bound a constant declared before the loop holds below the lengths
 // (`const n = a.length`, a `Math.min` of several) proves the loop in bounds as
 // a bound of `a.length` itself does, while nothing between shrinks an array:
-// a `pop` between keeps the loop as written.
+// a `pop` between keeps the loop as written. (A `Math.min` the program writes
+// is a bound integral-loops versions the loop on: the copy reads a word its
+// guard assigns, which no constant names, and keeps its checks.)
 const declared = `const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }
   const digest = (a) => { let h = a.length; for (let i = 0; i < a.length; i++) h = (h * 31 + (a[i] === undefined ? 7 : a[i] !== a[i] ? 13 : a[i])) | 0; return h }
   const bumpN = (a) => { const n = a.length; for (let i = 0; i < n; i++) a[i] = a[i] + 1; return a }
@@ -174,7 +176,7 @@ test('array scan: a bound declared before the loop', () => {
   if (belowOpt(2)) return
   for (const level of [2, 'speed']) {
     const text = wat(declared, { optimize: { level, ...shape } })
-    for (const name of ['bumpN', 'sum2']) ok(!/\$__arr_set_idx_ptr/.test(funcWat(text, name)), `${name} at ${level}: in bounds, nothing grows`)
+    ok(!/\$__arr_set_idx_ptr/.test(funcWat(text, 'bumpN')), `bumpN at ${level}: in bounds, nothing grows`)
     ok(/\$__arr_set_idx_ptr/.test(funcWat(text, 'shrunk')), `shrunk at ${level}: a pop between keeps the growth call`)
   }
 })
