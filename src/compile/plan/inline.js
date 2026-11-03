@@ -1220,7 +1220,12 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
       // table lookup, called per sample from two sums): the calls are what the
       // loops pay for.
       // At speed a body of a loop's size takes the calls it keeps along (`lcm`
-      // over `gcd`, whose loops stay a function), outside a cycle of calls.
+      // over `gcd`, whose loops stay a function), outside a cycle of calls; so
+      // does a body of any size whose one site a loop runs: the splice copies
+      // nothing and takes the call out of the loop (a library's `erf`, its loop
+      // the sweep over its arguments; its `exp`, called twice in its far tail,
+      // then has sites a loop runs too). The engine inlines no body of its size:
+      // V8 takes at most 500 bytes.
       const pureLeaf = (callee, seen = new Set()) => {
         if (!leaves.has(callee) || seen.has(callee)) return false
         const body = candidates.get(callee).body
@@ -1233,7 +1238,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
         (sites.length === 1 && leaves.has(callee) && !hotOnly.has(callee)) ||
         (coldSites === 0 && leaves.has(callee) && !hotOnly.has(callee) && sites.length * nodeSize(candidates.get(callee).body) <= 200))
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1])) &&
-          !(speedTier && size <= WARM_BODY && !cyclic(func.name))) continue
+          !(speedTier && (size <= WARM_BODY || sites.length === 1 && hotSites === 1) && !cyclic(func.name))) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner

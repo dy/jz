@@ -35,6 +35,17 @@ const PAIR = 'function assign(x, out, stride, offset) { if (x !== x) { out[offse
 // functions of loops that stay functions, each with a site of the leaf outside its loops
 const nests = (n) => Array.from({ length: n }, (_, k) => `function w${k}(x) { if (isnan(x)) return ${k}; let s = 0; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) s += x * (i + j + ${k}); return s }`).join('\n') + '\n'
 const EVEN = 'function even(n) { if (n === 0) return 1; return odd(n - 1) }\nfunction odd(n) { if (n === 0) return 0; return even(n - 1) }\n'
+// a library's `erf`: past a loop's size, one site, its far tail a call of a function that stays (one that throws)
+const ERF = 'function tail(x, d) { if (d > 8) throw new RangeError(\'deep\'); return x * 0.5 + d }\n' +
+  'function pa(s) { return 0.41485611868374833 + s * (-0.3722078760357013 + s * (0.31834661990116175 + s * (-0.11089469428239668 + s * (0.035478304325618236 + s * -0.002166375594868791)))) }\n' +
+  'function qa(s) { return 0.10642088040084423 + s * (0.540397917702171 + s * (0.07182865441419627 + s * (0.12617121980876164 + s * (0.01363708391202905 + s * 0.011984499846799107)))) }\n' +
+  'function pp(z) { return -0.3250421072470015 + z * (-0.02848174957559851 + z * (-0.005770270296489442 + z * -23763016656650163e-21)) }\n' +
+  'function qq(z) { return 0.39791722395915535 + z * (0.0650222499887673 + z * (0.005081306281875766 + z * (13249473800432164e-20 + z * -3960228278775368e-21))) }\n' +
+  'function erf(x) { var sign, ax, z, r, s, y, p, q; if (x !== x) return NaN; if (x === Infinity) return 1; if (x === -Infinity) return -1; if (x === 0) return x; ' +
+  'if (x < 0) { sign = true; ax = -x } else { sign = false; ax = x } ' +
+  'if (ax < 0.84375) { if (ax < 3725290298461914e-24) return x + 0.1283791670955126 * x; z = x * x; r = 0.12837916709551256 + z * pp(z); s = 1 + z * qq(z); y = r / s; return x + x * y } ' +
+  'if (ax < 1.25) { s = ax - 1; p = -0.0023621185607526594 + s * pa(s); q = 1 + s * qa(s); if (sign) return -0.8450629115104675 - p / q; return 0.8450629115104675 + p / q } ' +
+  'if (ax >= 6) return sign ? 1e-300 - 1 : 1 - 1e-300; s = 1 / (ax * ax); r = tail(s, 3) + tail(ax, 2); if (sign) return r / ax - 1; return 1 - r / ax }\n'
 
 const kernels = {
   'a tiny leaf at more sites than a budget counts': DRIVER + LEAF + users(90) + each('all(X[i])'),
@@ -110,6 +121,20 @@ test('splice: a body takes the calls it keeps along', () => {
   const body = funcWat(text('a body that keeps the calls of a function of loops'), 'each')
   ok(body.length > 0 && calls(body).every(n => n === 'gcd'), 'the loop calls the function of loops alone')
   ok(!/local\.(set|tee) \$\S+\s*\((i32|f64)\.const 6\)/.test(body), 'the literal the site passed is no local of the loop')
+})
+
+test('splice: a body past the loop budget is spliced at its one site in a loop', () => {
+  // the sweep a library's benchmark makes of its arguments
+  const src = ERF + 'export let f = (n, k) => { const out = new Float64Array(n); for (let i = 0; i < n; i++) out[i] = erf((i - n / 2) * k); let h = 0; for (let i = 0; i < n; i++) h += out[i] * (i + 1); return h }\n'
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(src, { jzify: true, optimize })
+    for (const [n, k] of [[0, 1], [10, 0.3], [400, 0.02], [64, 1e-9], [33, 0.5]]) is(m.f(n, k), host.f(n, k), `at ${optimize}: f(${n}, ${k})`)
+  }
+  if (belowOpt(3)) return
+  // the engine inlines no body of its size, and the splice copies nothing: the loop calls the recursion alone
+  const t = wat(src, { jzify: true, optimize: 3 })
+  ok(calls(funcWat(t, 'f')).every(n => n === 'tail') && !/\(func \$erf[\s)]/.test(t), 'the loop holds the body, calling what it kept')
 })
 
 test('splice: a function a value names is spliced where it is called', () => {
