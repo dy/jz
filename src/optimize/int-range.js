@@ -794,8 +794,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
   }
 
   // A sum or a product of numbers is a number; of reals within bounds, a real.
-  const arith = (lo, hi, a, b, nz) => Number.isNaN(lo) || Number.isNaN(hi) ? NUMBER
-    : { lo, hi, int: a.int && b.int, nz, nan: a.nan || b.nan || ((unbounded(a) || unbounded(b)) && !(a.int && b.int)) }
+  const arith = (lo, hi, a, b, nz, infinite = unbounded(a) || unbounded(b)) => Number.isNaN(lo) || Number.isNaN(hi) ? NUMBER
+    : { lo, hi, int: a.int && b.int, nz, nan: a.nan || b.nan || (infinite && !(a.int && b.int)) }
 
   // The interval of an operator over the intervals of its operands.
   const value = (n, op, a, b, x, y) => {
@@ -836,8 +836,11 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
         if (op[0] === 'i' && !(lo >= -LIMIT && hi <= LIMIT)) return null
         if (op === 'f64.sub' && fitsI32(a) && !a.nz && clearsBits(x, y, stack))
           return val(Math.max(a.lo >= 0 ? 0 : I32.lo, lo), Math.min(a.lo >= 0 ? a.hi : I32.hi, hi))
-        // -0 + -0, and -0 - 0, are the sums that give -0.
-        return arith(lo, hi, a, b, sub ? a.nz && b.lo <= 0 && b.hi >= 0 : a.nz && b.nz)
+        // -0 + -0, and -0 - 0, are the sums that give -0; two infinities of opposite
+        // signs the only sum that gives NaN (of one sign, the only difference).
+        const opposed = sub ? (a.hi === Infinity && b.hi === Infinity) || (a.lo === -Infinity && b.lo === -Infinity)
+          : (a.hi === Infinity && b.lo === -Infinity) || (a.lo === -Infinity && b.hi === Infinity)
+        return arith(lo, hi, a, b, sub ? a.nz && b.lo <= 0 && b.hi >= 0 : a.nz && b.nz, opposed)
       }
       case 'f64.mul': case 'i64.mul': {
         if (!a || !b) return null

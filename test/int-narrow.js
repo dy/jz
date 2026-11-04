@@ -118,6 +118,22 @@ test('int-range: bounds survive nested passes, a forward and a saved NaN test', 
         (else (f64.trunc (local.get $x))))))))`, 'f64.trunc'), [-700, 700, false, false], 'a NaN test saved for the arm of an `||` leaves a number')
 })
 
+test('int-range: a sum is NaN only of two opposite infinities, a difference of two alike', () => {
+  // (x == x holds: x is a Number that is no NaN, of any magnitude)
+  const read = (expr) => {
+    const ir = parseWat(`(module (func $f (param $x f64) (param $y f64) (result f64)
+      (if (result f64) (i32.and (f64.eq (local.get $x) (local.get $x)) (f64.eq (local.get $y) (local.get $y)))
+        (then (f64.trunc ${expr})) (else (f64.const 0)))))`)
+    const fn = ir[1], find = n => !Array.isArray(n) ? null : n[0] === 'f64.trunc' ? n : n.reduce((r, c) => r ?? find(c), null)
+    return intRanges(fn, 4)?.av.get(find(fn)[1])?.nan
+  }
+  is(read('(f64.add (local.get $x) (f64.const 1))'), false, 'an infinity and a finite number: no NaN')
+  is(read('(f64.sub (f64.const 1) (local.get $x))'), false, 'a finite number less an infinity: no NaN')
+  is(read('(f64.add (local.get $x) (local.get $y))'), true, 'two infinities of opposite signs make a NaN')
+  is(read('(f64.sub (local.get $x) (local.get $y))'), true, 'two infinities of one sign make a NaN')
+  is(read('(f64.mul (local.get $x) (f64.const 0.5))'), true, 'an infinity times zero, the product left as it was')
+})
+
 test('int-narrow: nested fast loops reuse the established Number bound', () => {
   const source = `export function f(n) { let s=0
     for(let i=0;i<n;i++) for(let j=0;j<n;j++) s=(s+i)|0
