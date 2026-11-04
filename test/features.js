@@ -309,7 +309,7 @@ test('collection: number keys probe by the hash their store took', () => {
   }
   if (belowOpt(2)) return
   const wat = compile(`export let f = (n) => { const s = new Set(); for (let i = 0; i < n; i += 3) s.add(i); let c = 0; for (let i = 0; i < n; i++) if (s.has(i)) c++; return c }`, { wat: true, optimize: { level: 2, watr: false } })
-  ok(/call \$__set_has_h\b/.test(wat) && !/call \$__set_has\s/.test(wat), 'a counter probes prehashed')
+  ok(/call \$__set_has_ob\b/.test(wat) && !/call \$__set_has\s/.test(wat), 'a counter probes by the bits form')
 })
 
 test('Map: get missing returns nullish', () => {
