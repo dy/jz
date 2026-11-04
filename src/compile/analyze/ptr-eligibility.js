@@ -53,7 +53,21 @@ import { scanBindingUses, USE, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_K
  *
  * Returns Map<name, VAL> of locals to unbox.
  */
+// The size tier keeps an object boxed where it leaves as a value (a key, an
+// argument, an element) more than half as often as a member reads through it:
+// each value use reboxes the offset (four bytes more than the box's own read),
+// each member use spares the box's unwrap (two). A table stays an offset: its
+// probes take one (module/collection/forms.js).
+const BOXED_USES = new Set([USE.CALL_ARG, USE.RETURN, USE.BARE, USE.CONCAT, USE.CAPTURE])
+const MEMBER_USES = new Set([USE.MEMBER_R, USE.MEMBER_W, USE.MEMBER_CALL])
+const reboxCostsMore = (uses) => {
+  let member = 0, value = 0
+  for (const u of uses) { const k = u[BINDING_USE_KIND]; if (MEMBER_USES.has(k)) member++; else if (BOXED_USES.has(k)) value++ }
+  return member < 2 * value
+}
+
 export function unboxablePtrs(body, locals, boxed) {
+  const lean = !!ctx.transform.optimize?.leanRuntime
   // The body's own tracker, else the program summary: a binding whose every
   // assignment the whole program agrees is one pointer kind (a typed field
   // read through a parameter, `const b = o.buf`) is that kind here too.
@@ -143,7 +157,7 @@ export function unboxablePtrs(body, locals, boxed) {
     const ok = s[BINDING_USE_USES].every(u =>
       u[BINDING_USE_KIND] !== USE.REASSIGN &&
       !(u[BINDING_USE_KIND] === USE.COMPARE && u[BINDING_USE_NULL_CMP]))
-    if (ok) result.set(name, vt)
+    if (ok && !(lean && vt === VAL.OBJECT && reboxCostsMore(s[BINDING_USE_USES]))) result.set(name, vt)
   }
   return result
 }

@@ -1342,6 +1342,17 @@ test('minimal: a bounded index reads in place', () => {
   ok(!/\$__arr_value\b/.test(w(srcs.loop)) && !/\$__arr_value\b/.test(w(srcs.bfs)), 'a bounded read of a hole-free array takes the cell')
 })
 
+// The size tier keeps an object boxed where it leaves as a value (a key, an
+// argument) more than half as often as a member reads through it
+// (compile/analyze/ptr-eligibility.js): each value use would rebox its offset.
+test('minimal: an object used as a value stays boxed', () => {
+  if (skip) return
+  const src = `export let f = (n) => { const os = []; for (let i = 0; i < 4; i++) os.push({ id: i }); const m = new Map(), s = new Set(); let t = 0; for (let i = 0; i < os.length; i++) { const o = os[i]; m.set(o, i); s.add(o); if (m.has(o) && s.has(o)) t += m.get(o) + o.id } return t }`
+  for (const optimize of levels(0, 2, 'size')) is(jz(src, { optimize }).exports.f(3), oracle(src).f(3), `O${optimize}`)
+  const body = funcWat(compile(src, { optimize: { level: 'size', watr: false }, wat: true }), 'f')
+  ok(!/i64\.extend_i32_u \(local\.get \$o/.test(body), 'no rebox of the key')
+})
+
 // The size tier prints an integer through the scratch render alone, which packs
 // a short result into the pointer as the speed tier's digit loop does: the same
 // bits for the same text (a Map key, `===` to a literal), with no second path.
