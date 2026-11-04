@@ -1109,6 +1109,36 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (Array.isArray(v) && v[0] === '|' && Array.isArray(v[2]) && v[2][0] == null && v[2][1] === 0) v = v[1]
     if (Array.isArray(v) && v[0] === '.' && v[2] === 'length' && typeof v[1] === 'string') lengthAliases.set(key, v[1]); else lengthAliases.delete(key)
   }
+  // A length a binding took stands for its array's while nothing after shrinks
+  // or rebinds the array: a statement that may (a call that may run the
+  // program's code or a shrinking method, a store to a length, a delete, an
+  // assignment of the array's name) ends every alias of an array whose length
+  // may change; a fixed one's holds (`const n = a.length; a.pop(); for (i < n)`).
+  const shrinksArrays = (n) => {
+    let may = false
+    const walk = (m) => {
+      if (may || !Array.isArray(m)) return
+      const op = m[0]
+      if (op === '=>') return
+      if ((op === '()' || op === '?.()' || op === 'new') && !mathCall(m) && !builtinCall(m) && !freshStorage(m)) { may = true; return }
+      if (op === 'delete') { may = true; return }
+      if (MUTATE_OPS.has(op)) {
+        const t = m[1]
+        if (typeof t === 'string' && [...lengthAliases.values()].includes(t)) { may = true; return }
+        if (Array.isArray(t) && (t[0] === '.' || t[0] === '?.') && t[2] === 'length') { may = true; return }
+        if (Array.isArray(t) && t[0] === '[]' && literalKeyOf(t[2]) === null && !numberKey(t[2]) && !(Array.isArray(t[2]) && t[2][0] == null && typeof t[2][1] === 'number')) { may = true; return }
+      }
+      for (let i = 1; i < m.length; i++) walk(m[i])
+    }
+    walk(n)
+    return may
+  }
+  // a built-in construction (`new Array(n)`, a typed array of a count) makes storage and runs nothing
+  const FRESH = /^(new\.)?(Array|(Int|Uint|Float|BigInt|BigUint)(8|16|32|64)(Clamped)?Array|ArrayBuffer)$/
+  const freshStorage = (m) => m[0] === '()' && typeof m[1] === 'string' && FRESH.test(m[1]) && argList(m[2]).every(pureOperand)
+  const ownParts = (n) => n[0] === 'for' ? [n[1], n[2], n[3]] : n[0] === 'if' || n[0] === 'while' ? [n[1]]
+    : n[0] === ';' || n[0] === '{}' || n[0] === 'catch' || n[0] === 'finally' || n[0] === 'label' || n[0] === 'export' ? [] : [n]
+  const endAliases = () => { for (const [key, arr] of lengthAliases) { const k = nameKind(arr); if (k === null || fixedLen(k) < 0) lengthAliases.delete(key) } }
   const lengthBoundedLoop = (n) => {
     // a test of several pure terms bounds the body by each of them
     const terms = conjuncts(n[2])
@@ -4657,6 +4687,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (typeof n === 'string') { expr(n); return }
     if (!Array.isArray(n)) return
     const op = n[0]
+    // (a compound statement's own expressions: its statements are walked here in turn,
+    // and a loop's body is the loop's own question, lengthMayChange)
+    if (lengthAliases.size && ownParts(n).some(shrinksArrays)) endAliases()
     if (op === 'let' || op === 'const') return decl(n)
     if (op === 'return') { if (current != null) raiseResult(current, n.length > 1 ? expr(n[1]) : NULLISH); return }
     if (op === ';' || op === '{}') {
