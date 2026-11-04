@@ -1196,3 +1196,13 @@ test('a name after `using` on its line is a binding, `.` takes a name and `[]` a
     ]) ok(Array.isArray(parse(src)), `valid counterpart: ${src}`)
     is(jz('export let f = () => { using r = null, s = null; return 1 }').exports.f(), 1)
 })
+
+test('from, as and of are names outside their clauses: a line starting with one starts a statement', () => {
+    for (const word of ['from', 'as', 'of']) {
+        const src = `export let f = (${word}) => {\n  let a = 1\n  ${word}[0] = a\n  return ${word}[0]\n}`
+        is(jz(src).exports.f([5]), 1, word)
+        const cls = `class E {\n  constructor() { this.v = 2 }\n  ${word}(q) { return q + this.v }\n}\nexport let g = (q) => new E().${word}(q)`
+        is(jz(cls).exports.g(3), 5, `a class method named ${word} after another member`)
+    }
+    is(parse('a\nfrom\nb'), [';', 'a', 'from', 'b'])
+})

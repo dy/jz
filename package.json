@@ -1,6 +1,6 @@
 {
   "name": "jz",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Compile the numeric JavaScript you already test to lean GC-free WASM \u2014 same source, no rewrite, type annotations, or runtime.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -100,7 +100,7 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "10.8.1",
+    "subscript": "10.8.2",
     "watr": "5.13.3"
   },
   "keywords": [
