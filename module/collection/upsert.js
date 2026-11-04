@@ -114,12 +114,14 @@ const nextCapIR = (capLocal = '$cap', newcapLocal = '$newcap') =>
 // len word names the table it moved to. A growth points the stub its holder
 // names at the new table (genUpsert's `retarget`), so one hop, inline, reaches
 // the live table however often it grew; a longer chain (a stub another holder
-// names) takes the cold loop. The size tier calls the loop for any stub: the
-// retarget keeps the chain it walks one hop long.
-export const forwardHop = () => ctx.transform.optimize?.leanRuntime ? `(if (i32.eq (local.get $cap) (i32.const -1))
-      (then
-        (local.set $off (call $__ptr_offset_fwd (local.get $off)))
-        (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))` : `(if (i32.eq (local.get $cap) (i32.const -1))
+// names) takes the cold loop. The size tier calls the loop for every table: it
+// tests the cap itself, so the test inline is bytes at each probe.
+export const liveTable = (off) => ctx.transform.optimize?.leanRuntime
+  ? `(local.set $off (call $__ptr_offset_fwd ${off}))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))`
+  : `(local.set $off ${off})
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    (if (i32.eq (local.get $cap) (i32.const -1))
       (then
         (local.set $off (i32.load (i32.sub (local.get $off) (i32.const 8))))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -296,9 +298,7 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
     ${laneLocals} (local $zbl i32)
     ${slotOnly ? '(local $kaux i32) (local $koff i32)' : ''}
     ${typeGuard}
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}
+    ${liveTable(`(i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK})))`)}
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))${prologue}
     ;; Probe before growing: an update needs neither a new slot nor a new table.
     (block $done (loop $retry
@@ -389,9 +389,7 @@ function genLookup(name, entrySize, hashFn, eqExpr, expectedType, wantValue = tr
     (local $off i32) (local $cap i32) ${hashFn ? '(local $h i32)' : ''} (local $end i32) (local $slot i32) (local $tries i32)
     ${laneLocals}
     ${typeGuard}
-    (local.set $off (i32.wrap_i64 (local.get $coll)))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}
+    ${liveTable(`(i32.wrap_i64 (local.get $coll))`)}
     ${hashFn ? `(local.set $h (call ${hashFn} (local.get $key)))` : ''}
     ${probeStart(entrySize)}
     (block $done (loop $probe
@@ -431,9 +429,7 @@ function genDelete(name, entrySize, hashFn, eqExpr, expectedType) {
     (local $i i32) (local $j i32) (local $k i32) (local $n i32)
     ${laneLocals} (local $li i32) (local $lj i32)
     (if (i32.ne (call $__ptr_type (local.get $coll)) (i32.const ${expectedType})) (then (return (i32.const 0))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}
+    ${liveTable(`(i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK})))`)}
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $found
@@ -507,9 +503,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     (local $zb i32) (local $ztr i32)
     ${laneLocals} (local $zbl i32)
     ${typeGuard}
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}
+    ${liveTable(`(i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK})))`)}
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     ;; Probe before growing: an update needs neither a new slot nor a new table.
     (block $done (loop $retry
@@ -636,9 +630,7 @@ function genEphemeralSlotUpsert(name, entrySize) {
     (local $lb i32) (local $ls i32) (local $end i32)
     (local $oldlb i32) (local $oldslot i32)
     (local $newptr i32) (local $newcap i32) (local $newlb i32) (local $newslot i32)
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}
+    ${liveTable(`(i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK})))`)}
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (block $done (loop $retry
     ${keyHashIR()}
@@ -745,9 +737,7 @@ function genLookupStrict(name, entrySize, hashFn, eqExpr, expectedType, missing 
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $coll) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${expectedType}))
       (then (return (i64.const ${missing}))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}
+    ${liveTable(`(i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK})))`)}
     (local.set $h (call ${hashFn} (local.get $key)))
     ${probeStart(entrySize)}
     (block $done (loop $probe
@@ -785,9 +775,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
           (i32.wrap_i64 (i64.and (i64.shr_u (local.get $obj) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))
           (i32.const ${expectedType}))
       (then (return (local.get $obj))))
-    (local.set $off (i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}
+    ${liveTable(`(i32.wrap_i64 (i64.and (local.get $obj) (i64.const ${LAYOUT.OFFSET_MASK})))`)}
     ${probeStart(entrySize)}
     ;; zombie-aware ${hasProbeLane() ? 'LANE ' : ''}probe (durable-slot heal, TOMB_NAN keys) — see genUpsert.
     (block $done (loop $probe

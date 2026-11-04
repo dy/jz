@@ -994,7 +994,7 @@ the reset's raw record and the arrays built of lanes.
 A Set's and a Map's table (module/collection/ordered.js) keeps its entries in
 insertion order in front of its buckets: a bucket holds an entry's index under
 the top six bits of its hash, a delete tombstones the entry in place (its key
-TOMB_NAN, its bucket's gap closed by backward shift), and an append past the
+TOMB_NAN, its bucket left pointing at it), and an append past the
 usable entries rebuilds the live ones into a
 new block, twice the buckets or as many when half are tombstones, the old block
 forwarding to it. A table that ends at the heap top above the reset mark grows
@@ -1012,9 +1012,21 @@ table's buckets times that share of its entry stride and a bucket word
 walker reads the entries below
 that count, in order, past the tombstones. A growth points the stub its
 holder names at the new block, and a probe hops one stub inline, so a table reached through its first pointer pays
-one hop however often it grew (the size tier calls the chase for that hop). A Map read hands out an array value that grew
+one hop however often it grew. The size tier calls the chase for every table
+and every array, keeps no retarget and no test of its own (`__ptr_offset_fwd`
+makes them), and heals no value. A speed-tier Map read hands out an array value that grew
 since it was stored as the live block's pointer and stores it back (not in a
 table the reset keeps), so `m.get(k).push(v)` leaves no stub for the next read.
+A site whose receiver the summary proves a present Set or Map
+(module/collection/forms.js `provenTable`) passes the table's offset: no tag test,
+no rebox. Its key's kind picks a form with no dispatch: `_ob` for keys that are
+Numbers, atoms or references, compared and hashed by their bits, `_os` for strings
+and atoms, `_o` for a key of any kind on a proven table. Every form reads and
+writes the one block layout, so a generic reader and a form of another site meet
+on one table, and a key stays in its 8-byte word (an entry is 8-byte aligned, a
+narrower key saves no byte). At the size tier the probe, the insert and the growth
+are functions each form calls (`__ord_probe*`, `__ord_insert`, `__ord_full`), and
+two forms of one operation link as the general one (stdlib-pull.js `collapseTwins`).
 The speed tier computes a number's, a string's and a reference's hash in the
 probe, `__map_hash`'s value exactly; the size tier calls it, and links the arms
 of the hash and of `__same_value_zero` the program's keys reach (module/

@@ -602,7 +602,11 @@ export default (ctx) => {
 
   ctx.core.stdlib['__ptr_offset_fwd'] = ptrOffsetFwdWat()
 
-  ctx.core.stdlib['__ptr_offset'] = `(func $__ptr_offset (param $ptr i64) (result i32)
+  // (the size tier leaves the walk its tests: it makes them all)
+  ctx.core.stdlib['__ptr_offset'] = () => leanRuntime() ? `(func $__ptr_offset (param $ptr i64) (result i32)
+    (if (result i32) (i32.and (i32.shl (i32.const 1) (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))) (i32.const ${FORWARDING_MASK}))
+      (then (call $__ptr_offset_fwd (i32.wrap_i64 (local.get $ptr))))
+      (else (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))))` : `(func $__ptr_offset (param $ptr i64) (result i32)
     (local $bits i64) (local $off i32) (local $t i32)
     (local.set $bits (local.get $ptr))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))

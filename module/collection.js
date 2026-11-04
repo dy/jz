@@ -959,16 +959,16 @@ export default (ctx) => {
   const cursorId = (n) => Array.isArray(n) && n[0] == null ? n[1] : n
   const entryBytes = (n) => cursorId(n) === 16 ? SET_ENTRY : MAP_ENTRY
   // The table the collection in `recv` (f64 IR) stands in, into `off`: a grown
-  // table's stub hops once inline (collection/upsert.js forwardHop), a longer
-  // chain through the cold loop, which the size tier calls for any stub.
+  // table's stub hops once inline (collection/upsert.js liveTable), a longer
+  // chain through the cold loop.
   const tableOf = (recv, off) => {
     const at = ['local.get', `$${off}`], stub = () => ['i32.eq', ['i32.load', ['i32.sub', at, ['i32.const', 4]]], ['i32.const', -1]]
     const chase = ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', at]]
     return [
       ['local.set', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', recv]]],
-      ['if', stub(), ['then', ...(lean ? [chase] : [
+      ['if', stub(), ['then',
         ['local.set', `$${off}`, ['i32.load', ['i32.sub', at, ['i32.const', 8]]]],
-        ['if', stub(), ['then', chase]]])]]]
+        ['if', stub(), ['then', chase]]]]]
   }
   ctx.core.emit['__coll_start'] = (src, id) => {
     const c = cursorOf(id), t = temp('ccv')

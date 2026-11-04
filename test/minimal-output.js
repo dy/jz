@@ -1458,6 +1458,27 @@ test('minimal: a short concat stays canonical', () => {
   ok(/call \$__sso_fresh/.test(w(`'ab' + c + 'cd'`)), 'six or fewer: the check')
 })
 
+// A table a holder names past a growth, and an array a table holds past its own,
+// reach their live blocks by the walk alone at the size tier.
+test('minimal: the size tier walks every stub', () => {
+  if (skip) return
+  const src = `export let f = (n) => {
+    const a = new Map(), b = a, h = { t: a }, s = new Set(), s2 = s, arr = [1]
+    a.set('arr', arr)
+    let t = 0
+    for (let i = 0; i < n; i++) {
+      (i & 1 ? a : b).set(i, i); h.t.set(-i - 1, i); s.add(i); s2.add(i * 2); arr.push(i)
+      t += a.size + h.t.size * 2 + s2.size * 3
+    }
+    for (const [k, v] of b) t += v === arr ? 7 : v
+    for (const x of s2) t += x
+    b.delete(0); s2.delete(0)
+    return t + h.t.size + s.size + a.get('arr').length + a.get('arr')[n] * 1000 + (s.has(n - 1) ? 1 : 0)
+  }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 7, 40, 300]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
+})
+
 // A count kept in a Map reads Number or missing: a fused update carries that kind
 // (compile/slot-update.js), so \`|| 0\` and a truth test need no ToNumber or tag test.
 test('minimal: a fused update reads the kind of its read', () => {

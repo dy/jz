@@ -42,7 +42,7 @@ import { STR_HCACHE_BIT, ordStride as ordStrideAt, ordEntries as ordEntriesAt } 
 import { durableFwdLogIR, durableLenLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, hasDurableReset, heapResetWat } from './durable.js'
 import { stubLogIR, sitesOn } from '../core/stub-log.js'
 import { arrayKeysOn, keyArmsOn } from './identity.js'
-import { forwardHop } from './upsert.js'
+import { liveTable } from './upsert.js'
 
 const TAG = 0xFC000000 | 0      // a bucket's hash bits
 const IDX = 0x03FFFFFF          // a bucket's entry index plus one (TABLE_MAX buckets hold fewer entries)
@@ -90,9 +90,7 @@ export const genOrdCap = (floor) => {
     (select (i32.const ${floor}) (local.get $c) (i32.gt_u (i32.const ${floor}) (local.get $c))))`
 }
 
-const resolve = (recv) => `(local.set $off (i32.wrap_i64 (i64.and (local.get ${recv}) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}`
+const resolve = (recv) => liveTable(`(i32.wrap_i64 (i64.and (local.get ${recv}) (i64.const ${LAYOUT.OFFSET_MASK})))`)
 
 const geometry = (es) => `(local.set $ecap ${ordEntriesWat('(local.get $cap)')})
     (local.set $ix (i32.add (local.get $off) (i32.mul (local.get $ecap) (i32.const ${es}))))
@@ -181,9 +179,7 @@ const TAG_HI = (LAYOUT.TAG_MASK << (LAYOUT.TAG_SHIFT - 32)) | 0
 const isStrHi = (hi) => `(i32.eq (i32.and ${hi} (i32.const ${BOX_TAG_HI_FORM})) (i32.const ${STR_BOX_HI}))`
 const formParams = (form) => `${form.recv === 'off' ? '(param $o i32)' : '(param $coll i64)'} (param $key i64)`
 const formLocals = (form) => lean() && form.key === 'bits' ? '' : form.key === 'bits' ? ' (local $kw i64) (local $kn i32)' : form.key === 'str' ? ' (local $kw i64) (local $ks i32)' : ''
-const formResolve = (form) => form.recv === 'off' ? `(local.set $off (local.get $o))
-    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-    ${forwardHop()}` : resolve('$coll')
+const formResolve = (form) => form.recv === 'off' ? liveTable('(local.get $o)') : resolve('$coll')
 // The size tier calls each form's pair once (`$__hash_bits`, `$__eq_bits`,
 // `$__eq_str` below), where the speed tier writes it out in each probe.
 const lean = () => !!ctx.transform.optimize?.leanRuntime
@@ -475,21 +471,18 @@ export const genOrdInsert = () => `(func $__ord_insert (param $off i32) (param $
     (local.get $slot))`
 
 /** A full table grown (`$__ord_grow`): its block, the old one forwarding there
- *  where it moved, the holder's stub `$o0` too; `$tag` the table's kind. */
-export const genOrdFull = () => `(func $__ord_full (param $off i32) (param $cap i32) (param $es i32) (param $o0 i32) (param $tag i32) (result i32)
+ *  where it moved (a stub a holder names keeps its hop, `$__ptr_offset_fwd`
+ *  walks the chain); `$tag` the table's kind. */
+export const genOrdFull = () => `(func $__ord_full (param $off i32) (param $cap i32) (param $es i32) (param $tag i32) (result i32)
     (local $size i32) (local $newptr i32)
-    (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    ${hasDurableReset() ? '(local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))' : ''}
     (local.set $newptr (call $__ord_grow (local.get $off) (local.get $cap) (local.get $es)))
     (if (i32.ne (local.get $newptr) (local.get $off))
       (then
         ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
-        ${stubLogAt('off', 'newptr')}
-        (if (i32.ne (local.get $o0) (local.get $off))
-          (then${durableLenLogIR('o0')}
-            (i32.store (i32.sub (local.get $o0) (i32.const 8)) (local.get $newptr))
-            ${stubLogAt('o0', 'newptr')}))))
+        ${stubLogAt('off', 'newptr')}))
     (local.get $newptr))`
 const stubLogAt = (off, newOff) => sitesOn()
   ? `(call $__gc_stub (local.get $${off}) (i64.reinterpret_f64 (call $__mkptr (local.get $tag) (i32.const 0) (local.get $${newOff}))))` : ''
@@ -522,24 +515,26 @@ function leanUpsert(name, es, hashFn, expectedType, hasVal, hasExt, slotOnly, pr
           ${keyStore}${durableEntryLogIR('slot', 'off')}
           ${storeVal}
           (br $done)))
-      (local.set $off (call $__ord_full (local.get $off) (local.get $cap) (i32.const ${es}) ${formHolder(form)} (i32.const ${expectedType})))
+      (local.set $off (call $__ord_full (local.get $off) (local.get $cap) (i32.const ${es}) (i32.const ${expectedType})))
       (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
       (br $retry)))
     ${slotOnly ? '(i32.add (local.get $slot) (i32.const 16))' : off ? '' : '(local.get $coll)'})`
 }
 
+// (a value that is an array grown since it was stored keeps the stub it names:
+// the speed tier's read heals it, a hop the size tier spends for the bytes)
 function leanLookup(name, es, hashFn, expectedType, wantValue, hasExt, missing, form) {
   const absent = wantValue ? `(i64.const ${missing})` : '(i32.const 0)'
   const guard = form.recv === 'off' ? '' : leanTypeGuard(expectedType, absent, !hasExt ? null : `(then (return ${wantValue
     ? '(call $__ext_get (local.get $coll) (local.get $key))'
     : '(call $__ext_has (local.get $coll) (local.get $key))'}))`)
   return `(func $${name} ${formParams(form)} (result ${wantValue ? 'i64' : 'i32'})
-    ${leanLocals}${formLocals(form)}${wantValue ? ' (local $v i64) (local $vo i32)' : ''}
+    ${leanLocals}${formLocals(form)}
     ${guard}
     ${formResolve(form)}
     ${formHash(form, hashFn)}
     ${wantValue ? `(if (i32.eqz (local.tee $slot ${probeCall(form, es)})) (then (return ${absent})))
-    ${healValue()}` : `(i32.ne ${probeCall(form, es)} (i32.const 0))`})`
+    (i64.load offset=16 (local.get $slot))` : `(i32.ne ${probeCall(form, es)} (i32.const 0))`})`
 }
 
 function leanDelete(name, es, hashFn, expectedType, form) {

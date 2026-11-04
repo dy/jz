@@ -17,7 +17,8 @@ import { createActiveFunction } from './compile/active-function.js'
 import { DBG_INVARIANTS, resetInvariants, assertFeatureWrite, assertLinkDemandWrite } from './debug.js'
 import { HOT_PASSES } from './passes.js'
 import { INTRINSIC_ARITY } from './builtin-signatures.js'
-export { HEAP, LAYOUT, PTR, FORWARDING_MASK, ssoBitI64Hex, followForwardingWat } from '../layout.js'
+import { followForwardingWat as hopWat } from '../layout.js'
+export { HEAP, LAYOUT, PTR, FORWARDING_MASK, ssoBitI64Hex } from '../layout.js'
 
 // === Carrier layout ===
 // Canonical bit layout lives in layout.js (compiler-free). Re-exported above for
@@ -89,6 +90,11 @@ export { HEAP, LAYOUT, PTR, FORWARDING_MASK, ssoBitI64Hex, followForwardingWat }
 // index.js setupCtx) — a genuinely reachable pre-reset() read, not a
 // hypothetical one — so every field here must stay a real (if empty) value,
 // never null-shaped where a dependent read could dereference it.
+/** The hop of an offset that may name a grown block: inline where speed pays
+ *  for it, the walk's call (it makes the same tests) at the size tier. */
+export const followForwardingWat = (off, opts) => ctx.transform.optimize?.leanRuntime
+  ? `(local.set ${off} (call $__ptr_offset_fwd (local.get ${off})))` : hopWat(off, opts)
+
 export const ctx = {
   bridge: {}, core: {}, module: {}, scope: {}, funcs: createFunctions(), names: {}, func: createActiveFunction(),
   types: {}, schema: {}, closure: {}, runtime: {}, memory: {}, error: {},
