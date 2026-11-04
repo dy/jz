@@ -202,7 +202,8 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
   // `%` fits i32 only when its divisor cannot be zero and its dividend cannot
   // produce -0. Mirror emission's constant and positive-interval proofs.
   if (op === '%') {
-    const ta = exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent), tb = exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent)
+    // (a uint32 word wider than its storage is still a word to the remainder, below)
+    const ta = isUnsignedI32Expr(expr[1], locals) ? 'i32' : exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent), tb = exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
     // the divisor as a folded module-const expression (`MAXPTS - 20 + 1`) is a literal too
     const dv = staticValue(expr[2]) !== NO_VALUE ? staticValue(expr[2]) : (constIntExpr(expr[2]) ?? NO_VALUE)

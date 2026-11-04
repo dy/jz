@@ -194,7 +194,7 @@ export default (ctx) => {
       ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
     __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
     // the long division is its own function, the common case answered inline
-    __rem: ['__rem_div'],
+    __rem: () => leanRuntime() ? [] : ['__rem_div'],
     __rem_v: ['__rem'],
     __throw_not_callable: ['__alloc_hdr', '__mkptr'],
     __alloc: ['__memgrow'],
@@ -631,7 +631,29 @@ export default (ctx) => {
   // subtraction, exact since |b| <= |a| <= 2|b|. A NaN, an infinity or a zero
   // divisor fails both tests. Small enough for the engine to inline, it leaves
   // the division to `__rem_div`.
-  ctx.core.stdlib['__rem'] = `(func $__rem (param $a f64) (param $b f64) (result f64)
+  // (the size tier keeps the long division alone, which answers every operand)
+  const remDivide = `(block $up (loop $ul
+      (br_if $up (f64.gt (f64.mul (local.get $y) (f64.const 2)) (local.get $x)))
+      (local.set $y (f64.mul (local.get $y) (f64.const 2)))
+      (br $ul)))
+    (block $dn (loop $dl
+      (br_if $dn (f64.lt (local.get $y) (f64.abs (local.get $b))))
+      (if (f64.ge (local.get $x) (local.get $y)) (then (local.set $x (f64.sub (local.get $x) (local.get $y)))))
+      (local.set $y (f64.mul (local.get $y) (f64.const 0.5)))
+      (br $dl)))
+    (f64.copysign (local.get $x) (local.get $a))`
+  const remEdges = `(if (f64.ne (local.get $a) (local.get $a)) (then (return (local.get $a))))
+    (if (f64.ne (local.get $b) (local.get $b)) (then (return (local.get $b))))
+    (local.set $x (f64.abs (local.get $a)))
+    (local.set $y (f64.abs (local.get $b)))
+    (if (i32.or (f64.eq (local.get $x) (f64.const inf)) (f64.eq (local.get $y) (f64.const 0)))
+      (then (return (f64.div (f64.const 0) (f64.const 0)))))
+    (if (i32.or (f64.eq (local.get $y) (f64.const inf)) (f64.lt (local.get $x) (local.get $y)))
+      (then (return (local.get $a))))`
+  ctx.core.stdlib['__rem'] = () => leanRuntime() ? `(func $__rem (param $a f64) (param $b f64) (result f64)
+    (local $x f64) (local $y f64)
+    ${remEdges}
+    ${remDivide})` : `(func $__rem (param $a f64) (param $b f64) (result f64)
     (local $x f64) (local $y f64)
     (if (f64.lt (local.tee $x (f64.abs (local.get $a))) (local.tee $y (f64.abs (local.get $b))))
       (then (return (local.get $a))))
@@ -654,14 +676,7 @@ export default (ctx) => {
         (call $__rem (f64x2.extract_lane 1 (local.get $a)) (f64x2.extract_lane 1 (local.get $b)))))))`
   ctx.core.stdlib['__rem_div'] = `(func $__rem_div (param $a f64) (param $b f64) (result f64)
     (local $x f64) (local $y f64)
-    (if (f64.ne (local.get $a) (local.get $a)) (then (return (local.get $a))))
-    (if (f64.ne (local.get $b) (local.get $b)) (then (return (local.get $b))))
-    (local.set $x (f64.abs (local.get $a)))
-    (local.set $y (f64.abs (local.get $b)))
-    (if (i32.or (f64.eq (local.get $x) (f64.const inf)) (f64.eq (local.get $y) (f64.const 0)))
-      (then (return (f64.div (f64.const 0) (f64.const 0)))))
-    (if (i32.or (f64.eq (local.get $y) (f64.const inf)) (f64.lt (local.get $x) (local.get $y)))
-      (then (return (local.get $a))))
+    ${remEdges}
     ;; integers, the dividend below 2^53 (a ring buffer's index, a counter by a runtime
     ;; length): x − trunc(x/y)·y is exact. The quotient's rounding error is below
     ;; x·2^-53/y < 1/y, the least distance from x/y to an integer it is not, so
@@ -672,16 +687,7 @@ export default (ctx) => {
       (then (return (f64.copysign
         (f64.sub (local.get $x) (f64.mul (f64.trunc (f64.div (local.get $x) (local.get $y))) (local.get $y)))
         (local.get $a)))))
-    (block $up (loop $ul
-      (br_if $up (f64.gt (f64.mul (local.get $y) (f64.const 2)) (local.get $x)))
-      (local.set $y (f64.mul (local.get $y) (f64.const 2)))
-      (br $ul)))
-    (block $dn (loop $dl
-      (br_if $dn (f64.lt (local.get $y) (f64.abs (local.get $b))))
-      (if (f64.ge (local.get $x) (local.get $y)) (then (local.set $x (f64.sub (local.get $x) (local.get $y)))))
-      (local.set $y (f64.mul (local.get $y) (f64.const 0.5)))
-      (br $dl)))
-    (f64.copysign (local.get $x) (local.get $a)))`
+    ${remDivide})`
 
 
   // A raw BigInt payload boxed: an 8-byte PTR.BIGINT cell (the emitters'

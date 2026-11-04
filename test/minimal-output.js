@@ -1408,6 +1408,23 @@ test('minimal: the size tier prints an integer by one walk', () => {
   ok(!funcWat(w, '__i32_to_str').includes('$packed'), 'no digit-packing loop')
 })
 
+// The size tier's remainder is one call, its long division alone (module/core.js
+// `__rem`). The expected values are ECMA-262 Number::remainder, by Node's `%`.
+test('minimal: the size tier remainder is exact at every operand', () => {
+  if (skip) return
+  const src = `export let f = (x, y) => x % y; export let g = (x) => x % 8; export let h = (x) => x % 3`
+  const want = oracle(src), pairs = [[5.5, 3], [-7, 2], [-4, 2], [0, 5], [-0, 5], [NaN, 3], [3, NaN], [Infinity, 3], [-Infinity, 3], [3, Infinity], [-3, -Infinity], [3, 0], [3, -0], [0, 0],
+    [1e23, 7], [9007199254740994, 3.7], [5e-324, 3], [3, 5e-324], [1e308, 3e-300], [-1e308, 7], [1.5, 0.25], [2 ** 53 + 2, 3], [2 ** 60, 10], [7, -3], [-7, -3], [1, 1], [0.1, 0.01]]
+  for (const optimize of levels(0, 2, 'size')) {
+    const { f, g, h } = jz(src, { optimize }).exports
+    for (const [x, y] of pairs) {
+      ok(Object.is(f(x, y), want.f(x, y)), `${x} % ${y} at ${optimize}: ${f(x, y)}`)
+      ok(Object.is(g(x), want.g(x)) && Object.is(h(x), want.h(x)), `${x} % 8, % 3 at ${optimize}`)
+    }
+  }
+  ok(!/f64\.trunc/.test(funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'g')), 'a literal divisor takes the one path')
+})
+
 // One walk counts a word's digits at the size tier (module/number.js `__udigits`).
 test('minimal: the size tier counts digits at every magnitude', () => {
   if (skip) return
@@ -1446,4 +1463,22 @@ test('minimal: a fused update reads the kind of its read', () => {
   ok(!/__to_num\b|i64\.eq/.test(body.slice(body.indexOf('__map_slot'))), 'the old value is a Number past the test')
   const tested = funcWat(compile(`export let f = (k) => { const t = new Map(); t.set(k, 1); t.set(k, t.get(k) ? 1 : 2); return t.get(k) }`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
   ok(!/__is_truthy|__to_bool/.test(tested), 'a truth test of the old value tests a Number')
+})
+
+// A word's remainder is a word (`next() % n` of a function narrowed to an unsigned
+// word): the storage it lands in and a result of it stay integers, seen by a
+// caller analyzed before its callee narrowed (narrow/results.js).
+test('minimal: a remainder of an unsigned word is a word', () => {
+  if (skip) return
+  const src = `let seed = 5
+    const next = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0 }
+    const pick = () => { const a = next() % 1024, b = next() % 1024; return a < b ? a : b }
+    export let f = (n) => { const w = [1, 2, 3, 4]; let t = 0; for (let i = 0; i < n; i++) { const p = pick(); t += p + w[p & 3] } return t }
+    export let g = (x) => { const a = (x >>> 0) % 7; return a }`
+  for (const optimize of levels(0, 2, 'size')) {
+    const want = oracle(src), { f, g } = jz(src, { optimize }).exports
+    is(f(50), want.f(50), `a draw at ${optimize}`)
+    for (const x of [0, 7, -1, -7, 2 ** 31, 2 ** 32 - 1]) is(g(x), want.g(x), `${x} at ${optimize}`)
+  }
+  ok(/\(func \$pick\s+\(result i32\)/.test(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true })), 'an integer result')
 })

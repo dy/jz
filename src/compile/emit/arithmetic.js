@@ -903,11 +903,12 @@ export const arithmeticOps = {
     // two integers below a is exact. Past it, or a divisor with a fraction (its
     // product rounds: `9007199254740994 % 3.7`, `1e23 % 7`), the exact __rem
     // answers, as it does NaN and ±Inf; a dividend of known magnitude below 2^53
-    // needs no test.
+    // needs no test. The size tier calls __rem alone: one path, not two.
     if (isLit(vb) && litVal(vb) > 0 && Number.isInteger(litVal(vb)) && litVal(vb) < 2 ** 53) {
       const fa = toNumF64(a, va), fb = toNumF64(b, vb)
       const rem = ta => typed(['f64.copysign', ['f64.sub', ta, ['f64.mul', ['f64.trunc', ['f64.div', ta, fb]], fb]], ta], 'f64')
       if (magnitude != null && magnitude < 2 ** 53) return isPureIR(fa) ? rem(fa) : withTemp(fa, t => rem(['local.get', `$${t}`]), 'rem')
+      if (ctx.transform.optimize?.leanRuntime) return f64rem(fa, fb)
       return withTemp(fa, t => typed(['if', ['result', 'f64'], ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2 ** 53]],
         ['then', rem(['local.get', `$${t}`])], ['else', f64rem(['local.get', `$${t}`], fb)]], 'f64'), 'rem')
     }

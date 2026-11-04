@@ -210,9 +210,21 @@ export function narrowI32Results(funcs, paramReps) {
     const vs = valsOf(ctx.summary.resultOf(func.name))
     return vs.length >= KIND_UNIVERSE.length || vs.length <= 1 && vs.every(v => v === VAL.NUMBER || v === VAL.BOOL)
   }
-  let changed = true
+  // A body's locals take their types from what it calls: a callee narrowed since
+  // they were read stales them (`const a = next() % n; return a`).
+  const callees = new Map()
+  const calls = (func, names) => {
+    if (!names.size) return false
+    let own = callees.get(func)
+    if (!own) { own = new Set(); walkAst(func.body, { enter: n => { if (n[0] === '()' && typeof n[1] === 'string') own.add(n[1]) } }); callees.set(func, own) }
+    for (const name of names) if (own.has(name)) return true
+    return false
+  }
+  let changed = true, narrowed = new Set()
   while (changed) {
     changed = false
+    const last = narrowed
+    narrowed = new Set()
     for (const func of funcs) {
       if (func.sig.results[0] === 'i32' || func.sig.results[0] === 'v128') continue
       if (!numericResult(func)) continue
@@ -220,7 +232,7 @@ export function narrowI32Results(funcs, paramReps) {
       if (isBlockBody(body) && (!alwaysReturns(body) || hasBareReturn(body))) continue
       const exprs = returnExprs(body)
       if (!exprs.length) continue
-      let r = evalTails(func, body, exprs)
+      let r = calls(func, last) || calls(func, narrowed) ? reanalyzeBody(body, () => evalTails(func, body, exprs)) : evalTails(func, body, exprs)
       // Recursive result cycle: a self-call in a return tail — or feeding a returned local
       // (nqueens' `cnt = cnt + solve(…); return cnt`) — reads solve's own not-yet-narrowed
       // f64 result, so `cnt` widens to f64 and the i32 narrowing never fires. Break the cycle
@@ -233,6 +245,7 @@ export function narrowI32Results(funcs, paramReps) {
         if (opt.allI32 && !opt.anyUnclassifiable && (!opt.anyUnsigned || opt.allUnsigned)) {
           if (opt.allUnsigned) func.sig.unsignedResult = true
           changed = true
+          narrowed.add(func.name)
           continue
         }
         func.sig.results = saved
@@ -244,6 +257,7 @@ export function narrowI32Results(funcs, paramReps) {
         changed = true
       } else if (r.allI32 && !r.anyUnclassifiable && (!r.anyUnsigned || r.allUnsigned)) {   // sign-consistent i32 tails
         func.sig.results = ['i32']
+        narrowed.add(func.name)
         if (r.allUnsigned) func.sig.unsignedResult = true
         // A committed i32 result is a genuine NUMBER, so stamp valResult for the call-site
         // VAL dispatch — E2 (narrowValResults) ran ABOVE the param lattice and so couldn't
