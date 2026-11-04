@@ -1216,6 +1216,20 @@ test('minimal: a proven source reads in place', () => {
   ok(!/\$__jz_last_err_bits/.test(funcWat(w(srcs.walk), 'f')) && /\$__jz_last_err_bits/.test(funcWat(w(srcs.walkMissing), 'f')), 'a walk guards only a source that may be missing')
 })
 
+// The size tier reads an element of a known array it cannot prove in bounds
+// through the one bounded read (module/array.js), not a bounds test per site;
+// an array of Numbers keeps its inline read, whose miss its consumer folds.
+test('minimal: the size tier calls the bounded element read', () => {
+  if (skip) return
+  const src = `export let f = (n) => { const a = ['a', , 'c']; a.push('d'); let s = ''; for (const i of [0, 1, 2, 3, 4, -1, n]) s += a[i] + ',' + a[n - i] + ','; return s }`
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 2, 7]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  const w = (s) => funcWat(compile(s, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
+  ok(/\$__arr_idx_known\b/.test(w(src)), 'the bounded read')
+  const nums = `export let f = (n) => { const k = n | 0, a = []; for (let i = 0; i < 9; i++) a.push(i * 0.5); return a[k] + a[k + 1] }`
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 8, 20]) is(jz(nums, { optimize }).exports.f(n), oracle(nums).f(n), `Numbers, O${optimize}, n=${n}`)
+  ok(!/\$__arr_idx_known\b/.test(w(nums)), 'Numbers read inline')
+})
+
 // The size tier prints an integer through the scratch render alone, which packs
 // a short result into the pointer as the speed tier's digit loop does: the same
 // bits for the same text (a Map key, `===` to a literal), with no second path.

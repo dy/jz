@@ -1550,6 +1550,13 @@ export default (ctx) => {
         // The read is a receiver whose consumer throws on a missing value
         // (the nullable paths above): the miss arm throws here instead.
         const throwing = node != null && node === ctx.func.throwAbsent
+        // The size tier calls the read: the inline one spells the bounds test out
+        // at each site. (A Number element keeps it: its consumers fold the miss.)
+        const number = holeNumber || dense && typeof arr === 'string' && ctx.func.localReps?.get(arr)?.arrayElemValType === VAL.NUMBER
+        if (ctx.transform.optimize?.leanRuntime && !throwing && fixedLen == null && !number) {
+          inc('__arr_idx_known')
+          return typed(['call', '$__arr_idx_known', ['i64.reinterpret_f64', ptrExpr], vi], 'f64')
+        }
         // The receiver is a variable read here (an expression was captured
         // above), so its base is spelled out at both the length and the cell:
         // a loop that writes no header hoists each as an invariant of its own
