@@ -249,13 +249,15 @@ test('collection: literal keys prehash; probes bit-eq before the equality call',
   // #3 bit-eq: on a hash hit, an inline `storedKey == queryKey` (i64.eq on the slot's key word)
   // short-circuits the __same_value_zero / __str_eq call for the identity (interned/SSO) case:
   // the `bitEq || sameValueZero(…)` test either keeps its diamond, `… (then (i32.const 1))
-  // (else (call $__same_value_zero …`, or is chained by watr's `conditions`, a bit-equal key
-  // branching past the call and the call exiting on its own.
-  const flat = g.replace(/\s+/g, ' ')
+  // (else (call $__same_value_zero …`, is chained by watr's `conditions`, a bit-equal key
+  // branching past the call and the call exiting on its own, or exits the probe on each
+  // (collection/ordered.js genOrdLookup: `(br_if $hit bitEq) (br_if $hit sameValueZero)`).
+  const flat = g.replace(/\s+/g, ' ').replace(/ \)/g, ')')
   // Local reuse may rename the slot address; its key word is still compared before the call.
   ok(/\(i64\.eq \(i64\.load offset=8 \(local\.(get|tee) \$[^\s()]+\b/.test(flat))
   ok(flat.includes('(then (i32.const 1)) (else (call $__same_value_zero') ||
-    /\(br_if \$\S+ \(i32\.eqz \(call \$__same_value_zero\b/.test(flat))
+    /\(br_if \$\S+ \(i32\.eqz \(call \$__same_value_zero\b/.test(flat) ||
+    /\(br_if (\$\S+) \(i64\.eq \(i64\.load offset=8 \(local\.get \$[^\s()]+\)\) \(local\.get \$[^\s()]+\)\)\) \(br_if \1 \(call \$__same_value_zero\b/.test(flat))
 })
 
 test('collection: proven runtime string keys bypass generic hash dispatch', () => {
