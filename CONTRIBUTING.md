@@ -1045,7 +1045,8 @@ receive keys already normalized to strings. The host decoder follows forwarding
 for arrays and collections and reads collection entries in their stored insertion
 order, excluding tombstones.
 Seeded Maps and Sets round twice the source length up to a power of two,
-then apply the configured minimum as a floor. Copies use the same reserve.
+then apply the configured minimum as a floor. Copies use the same reserve. A
+size-tier Set of a proven array grows from the initial table instead.
 Derived closure-class members reserve a hidden enumeration rank in the existing
 hash entry. Growth preserves it; an ordinary assignment gives the entry a new
 own rank and invalidates enumeration caches. No collection entry grows.

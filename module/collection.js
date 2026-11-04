@@ -707,17 +707,19 @@ export default (ctx) => {
       view.alias(arrL, iterExpr)
       view.alias(iL, [null, 0])
       // (the fresh table takes each element by the probe its kind picks, tableProbe)
+      // (the size tier grows from the initial table, with no sizing of its own)
       const add = `__set_add_o${keyForm(['[]', arrL, iL])}`
-      inc(add, '__table_check', '__ord_cap')
-      if (ctx.transform.optimize?.leanRuntime) inc('__set_add_o')
+      inc(add)
+      if (lean) inc('__set_add_o')
+      else inc('__table_check', '__ord_cap')
+      const table = lean ? allocPtr({ type: PTR.SET, len: 0, cap: initCap, stride: SET_BLOCK, tag: 'set' }) : out
       try {
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${arrL}`, asF64(storedValue(iterExpr))],
           ['local.set', `$${lenL}`, asI32(emit(['.', arrL, 'length']))],
-          ['local.set', `$${capL}`, capExpr],
-          ['call', '$__table_check', ['local.get', `$${capL}`]],
-          out.init,
-          ['local.set', `$${setL}`, out.ptr],
+          ...(lean ? [] : [['local.set', `$${capL}`, capExpr], ['call', '$__table_check', ['local.get', `$${capL}`]]]),
+          table.init,
+          ['local.set', `$${setL}`, table.ptr],
           ['local.set', `$${iL}`, ['i32.const', 0]],
           ['block', `$d_${iL}`, ['loop', `$l_${iL}`,
             ['br_if', `$d_${iL}`, ['i32.ge_s', ['local.get', `$${iL}`], ['local.get', `$${lenL}`]]],
