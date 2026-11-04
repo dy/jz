@@ -1028,8 +1028,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
    *  counter and the integers it takes in the body; null for any other loop. */
   // whether an expression assigns, updates or deletes anything
   const writesIn = (e) => Array.isArray(e) && (MUTATE_OPS.has(e[0]) || e[0] === 'delete' || e.some((c, i) => i > 0 && writesIn(c)))
-  const loopCounter = (n) => {
-    const init = n[1], test = n[2], step = n[3]
+  const loopCounter = (n, test = n[2]) => {
+    const init = n[1], step = n[3]
     if (!Array.isArray(init) || init[0] !== 'let' || !Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || typeof test[1] !== 'string') return null
     // the counter is the declaration the test bounds; any other is a binding made once before the
     // loop (`let i = 0, l = data.length`) that writes nothing and runs no code of the program's:
@@ -1110,7 +1110,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (Array.isArray(v) && v[0] === '.' && v[2] === 'length' && typeof v[1] === 'string') lengthAliases.set(key, v[1]); else lengthAliases.delete(key)
   }
   const lengthBoundedLoop = (n) => {
-    const c = loopCounter(n)
+    // a test of several pure terms bounds the body by each of them
+    const terms = conjuncts(n[2])
+    if (terms.length > 1 && terms.some(t => writesIn(t) || bodyRunsCode(t))) return null
+    for (const t of terms) { const by = boundedBy(n, t); if (by) return by }
+    return null
+  }
+  const conjuncts = (t) => Array.isArray(t) && (t[0] === '&&' || t[0] === '__eager&&') ? [...conjuncts(t[1]), ...conjuncts(t[2])] : [t]
+  const boundedBy = (n, test) => {
+    const c = loopCounter(n, test)
     let b = c?.test[2]
     if (Array.isArray(b) && b[0] === '|' && Array.isArray(b[2]) && b[2][0] == null && b[2][1] === 0) b = b[1]   // prepare's `x.length | 0`
     if (typeof b === 'string' && c && lengthAliasOf(b) !== null && !assignedIn(n[4]).includes(b)) b = ['.', lengthAliasOf(b), 'length']
@@ -4563,11 +4571,21 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // A method of a Set's or a Map's table, or an array's push, called on a name
   // of that kind: it runs none of the program's code and shrinks no array.
   const TABLE_METHODS = { [K.MAP]: new Set(['get', 'has', 'set', 'delete']), [K.SET]: new Set(['has', 'add', 'delete']), [K.ARRAY]: new Set(['push']) }
+  // So does walking a built-in sequence: a table built from one, or a `for...of`
+  // over one, runs no iterator of the program's. (A Map's entries are read by
+  // index, which a getter on an element may answer: only a Map copies as a table.)
+  // (a name no value has reached yet holds the question open: the read this
+  // proves gives that name its value, and the round that sees it answers.)
+  const WALKED = new Set([K.ARRAY, K.SET, K.MAP, K.TYPED, K.STRING])
+  const walksBuiltin = (name, of = WALKED) => { const k = typeof name === 'string' ? nameKind(name) : null; return k !== null && (k === K.NONE || of.has(tagOf(core(k)))) }
   const builtinCall = (m) => {
-    const f = m[1]
+    const f = m[1], args = argList(m[2])
+    if (f === '__coll_start' || f === '__coll_next' || f === '__coll_key' || f === '__coll_val') return true
+    if (f === 'new.Set' || f === '__iter_arr') return args.length === 0 || (args.length === 1 && walksBuiltin(args[0]))
+    if (f === 'new.Map') return args.length === 0 || (args.length === 1 && walksBuiltin(args[0], new Set([K.MAP])))
     if (!Array.isArray(f) || f[0] !== '.' || typeof f[1] !== 'string' || typeof f[2] !== 'string' || memberMayBeOwn(f[2])) return false
     const k = nameKind(f[1])
-    return k !== null && TABLE_METHODS[tagOf(core(k))]?.has(f[2]) === true
+    return k !== null && (k === K.NONE || TABLE_METHODS[tagOf(core(k))]?.has(f[2]) === true)
   }
   const bodyRunsCode = (body) => {
     let runs = false
@@ -4587,23 +4605,36 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     walk(body)
     return runs
   }
-  const lengthStores = new WeakMap()   // body → arr → whether a statement stores to its length (a syntactic fact)
-  const storesLength = (body, arr, counter) => {
-    let byArr = lengthStores.get(body)
-    if (!byArr) lengthStores.set(body, byArr = new Map())
-    const known = byArr.get(arr)
-    if (known !== undefined) return known
-    let may = false
+  const lengthStores = new WeakMap()   // body → the stores that may write a length: receiver, computed key (a syntactic fact)
+  const lengthStoresOf = (body) => {
+    let found = lengthStores.get(body)
+    if (found) return found
+    found = []
     const walk = (m) => {
-      if (may || !Array.isArray(m)) return
-      // a store to `.length`, or under a computed key that may be `'length'` (the loop's own counter, a Number, is none)
-      if (MUTATE_OPS.has(m[0]) && Array.isArray(m[1]) && ((m[1][0] === '.' || m[1][0] === '?.') && m[1][1] === arr && m[1][2] === 'length' || m[1][0] === '[]' && m[1][1] === arr && m[1][2] !== counter && literalKeyOf(m[1][2]) === null && !(Array.isArray(m[1][2]) && m[1][2][0] == null && typeof m[1][2][1] === 'number'))) { may = true; return }
+      if (!Array.isArray(m)) return
+      // a store to `.length`, or under a computed key that may be `'length'`
+      if (MUTATE_OPS.has(m[0]) && Array.isArray(m[1])) {
+        const t = m[1]
+        if ((t[0] === '.' || t[0] === '?.') && t[2] === 'length') found.push([t[1], null])
+        else if (t[0] === '[]' && literalKeyOf(t[2]) === null && !(Array.isArray(t[2]) && t[2][0] == null && typeof t[2][1] === 'number')) found.push([t[1], t[2]])
+      }
       for (let i = 1; i < m.length; i++) walk(m[i])
     }
     walk(body)
-    byArr.set(arr, may)
-    return may
+    lengthStores.set(body, found)
+    return found
   }
+  // A store through another holder of the array moves its length too: a name of
+  // the same cell, of no known cell, or no name at all (`o.list.length = 0`).
+  const mayHold = (recv, arr) => {
+    const k = typeof recv === 'string' ? nameKind(recv) : null, a = nameKind(arr)
+    if (k === null || a === null || !celled(k) || !celled(a) || paramOf(k) === UNKNOWN || paramOf(a) === UNKNOWN) return true
+    return cell(paramOf(k)) === cell(paramOf(a))
+  }
+  const numberKey = (key) => { const k = typeof key === 'string' ? nameKind(key) : null; return k !== null && tagOf(core(k)) === K.NUMBER }
+  // (a store keyed by the loop's own counter, a Number its length bounds, extends none)
+  const storesLength = (body, arr, counter) => lengthStoresOf(body).some(([recv, key]) =>
+    key !== null && key === counter ? false : recv === arr || (!numberKey(key) && mayHold(recv, arr)))
   const lengthMayChange = (counter, body, arr) => !Array.isArray(body) || loopPure.get(counter) !== true || storesLength(body, arr, counter)
   // A typed element read inside the count: the index's span within the length
   // the walk knows, or a counter the loop bounds by that array's length.

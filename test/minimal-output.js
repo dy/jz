@@ -1503,6 +1503,53 @@ test('minimal: a fused update reads the kind of its read', () => {
   ok(!/__is_truthy|__to_bool/.test(tested), 'a truth test of the old value tests a Number')
 })
 
+// A counter a conjunct bounds by the array's length, where the loop runs only
+// table operations and walks of built-in sequences (summary/index.js). The
+// element stays what the loop read: no guard, whatever the other terms are;
+// a term or a body that may shrink the array keeps it.
+test('minimal: a loop of table operations keeps its bound', () => {
+  if (skip) return
+  const kernel = (head, body) => `export let f = (n) => {
+    const sets = []
+    for (let d = 0; d < n; d++) { const s = new Set(); s.add(d); s.add(d + 1); sets.push(s) }
+    let t = 0
+    ${head} {
+      const a = sets[i]
+      ${body}
+    }
+    return t
+  }`
+  const pure = [
+    kernel('for (let i = 0; i < 9 && i < sets.length; i++)', `if (a.has(i)) t += a.size`),
+    kernel('for (let i = 0; i < sets.length && i * i < 900; i++)', `const c = new Set(a); for (const w of a) { c.delete(w); t += w } t += c.size`),
+    kernel('for (let i = 0; i < sets.length; i++)', `const b = sets[sets.length - 1 - i], s = a.size < b.size ? a : b; if (s.has(i)) t++`)]
+  for (const src of pure) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 40]) is(jz(src, { optimize }).exports.f(n), want(n), `${src.slice(100, 170)} n=${n} at ${optimize}`)
+  }
+  const body = (src) => funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
+  for (const src of pure.slice(0, 2)) ok(!/__throw_property_nullish|__is_nullish|\(unreachable\)/.test(body(src)), `no guard: ${src.slice(100, 170)}`)
+  const shrinks = [
+    // a method that may shrink the array, a name of no table
+    `const hold = []; const o = { has(x) { hold.length = 0; return x }, size: 1 }
+     export let f = (n) => { for (let i = 0; i < n; i++) hold.push(o); let t = 0
+       for (let i = 0; i < hold.length; i++) { const a = hold[i]; a.has(i); const c = hold[i]; t += c === undefined ? 1 : 2 }
+       return t }`,
+    // a conjunct that writes
+    `export let f = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i + 1); let t = 0
+       for (let i = 0; i < a.length && (a.length = 0, true); i++) t += a[i] === undefined ? 1000 : a[i]
+       return t }`,
+    // a walk that runs the program's iterator
+    `export let f = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i + 1)
+       const it = function* () { a.length = 1; yield 1 }; let t = 0
+       for (let i = 0; i < a.length; i++) { const x = a[i]; const c = new Set(it()); t += a[i] === undefined ? 1000 : x + c.size }
+       return t }`]
+  for (const src of shrinks) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2, 'size')) for (const n of [1, 5]) is(jz(src, { optimize }).exports.f(n), want(n), `${src.slice(0, 60)} n=${n} at ${optimize}`)
+  }
+})
+
 // One walk reads and packs short strings at the size tier (module/string.js
 // `__sso_pack`, `__char_at` by `__str_length`): an SSO, a heap string and a view on
 // either side, the empty result, a unit past ASCII that stays on the heap.
