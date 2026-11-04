@@ -10,6 +10,7 @@ import { onWasi, onKernel, levels, adaptI64 } from './_matrix.js'
 import { scalarCase } from './_scalar-core-cases.js'
 import { oracle, compile, jz, funcWat } from './util.js'
 import { ctx } from '../src/ctx.js'
+import { dropSettledTests } from '../src/optimize/settled-tests.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
 // boilerplate (a `_start` export, fd imports) and the self-compile kernel owns its own
@@ -1228,6 +1229,43 @@ test('minimal: the size tier calls the bounded element read', () => {
   const nums = `export let f = (n) => { const k = n | 0, a = []; for (let i = 0; i < 9; i++) a.push(i * 0.5); return a[k] + a[k + 1] }`
   for (const optimize of levels(0, 2, 'size')) for (const n of [0, 8, 20]) is(jz(nums, { optimize }).exports.f(n), oracle(nums).f(n), `Numbers, O${optimize}, n=${n}`)
   ok(!/\$__arr_idx_known\b/.test(w(nums)), 'Numbers read inline')
+})
+
+// A test that failed stays failed while its locals hold (optimize/settled-tests.js).
+test('minimal: a settled test goes', () => {
+  if (skip) return
+  const src = `const g = (docs, n) => { const stop = new Set(), s = new Set(); stop.add('a1'); for (let i = 0; i <= n; i++) { const doc = docs[i]; for (let k = 0; k < doc.length; k++) if (!stop.has(doc[k])) s.add(doc[k]) } return s.size }
+    export let f = (n) => { const a = [], b = []; for (let i = 0; i < 3; i++) b.push('a' + i); a.push(b); a.push(b.slice(1)); return g(a, n) + g(a, n) }`
+  const out = (fn, n) => { try { return fn(n) } catch { return 'threw' } }
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2]) is(out(jz(src, { optimize }).exports.f, n), out(oracle(src).f, n), `O${optimize}, n=${n}`)
+  const guards = (settledTests) => (funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false, settledTests }, wat: true }), 'g').match(/\$__throw_property_nullish\b/g) || []).length
+  is([guards(false), guards(true)], [3, 1], 'one guard for the three reads of a binding')
+  const drop = (body) => { const fn = ['func', '$f', ['local', '$x', 'f64'], ['local', '$y', 'f64'], ['local', '$c', 'i32'], ...body]; dropSettledTests(fn); return JSON.stringify(fn) }
+  const test = (name = '$x') => ['i64.eq', ['i64.reinterpret_f64', ['local.get', name]], ['i64.const', '0x7ff']]
+  const guard = (name) => ['if', test(name), ['then', ['call', '$t'], ['unreachable']]]
+  const count = (body) => (drop(body).match(/"\$t"/g) || []).length
+  is(count([guard(), guard()]), 1, 'the second goes')
+  is(count([['local.set', '$y', ['local.get', '$x']], guard(), guard('$y')]), 1, 'through a capture')
+  is(count([guard(), ['call', '$g'], guard()]), 1, 'a call leaves a local alone')
+  is(count([guard(), ['if', ['local.get', '$c'], ['then', guard()]]]), 1, 'down into an arm')
+  is(count([guard(), ['block', '$b', ['loop', '$l', guard(), ['br', '$l']]]]), 1, 'down into a loop that leaves it alone')
+  is(count([['if', ['i32.or', test(), test('$y')], ['then', ['unreachable']]], guard('$y')]), 0, 'a part of a test that failed')
+  is(count([guard(), ['local.set', '$x', ['local.get', '$y']], guard()]), 2, 'a write ends it')
+  is(count([guard(), ['local.set', '$x', ['call', '$g']], guard()]), 2, 'a write of a call ends it')
+  is(count([guard(), ['if', ['local.get', '$c'], ['then', ['local.set', '$x', ['call', '$g']]]], guard()]), 2, 'an arm that writes it ends it')
+  is(count([guard(), ['loop', '$l', guard(), ['local.set', '$x', ['local.get', '$y']], ['br_if', '$l', ['local.get', '$c']]]]), 2, 'a loop that writes it')
+  is(count([['if', ['local.get', '$c'], ['then', guard()]], guard()]), 2, 'an arm does not dominate')
+  is(count([['if', ['local.get', '$c'], ['then', guard()], ['else', guard()]], guard()]), 2, 'both arms do')
+  is(count([['block', '$b', ['br_if', '$b', ['local.get', '$c']], guard()], guard()]), 2, 'a branch past it')
+  is(count([['if', test(), ['then', ['call', '$u']]], guard()]), 1, 'an arm that falls through settles nothing')
+  is(count([['if', test(), ['then', ['block', '$b', ['br_if', '$b', ['local.get', '$c']], ['unreachable']]]], guard()]), 1, 'an arm a branch leaves falls through')
+  is(count([['if', test(), ['then', ['unreachable']], ['else', ['local.set', '$x', ['local.get', '$y']]]], guard()]), 1, 'an else that writes it')
+  const reTee = ['i64.eq', ['i64.reinterpret_f64', ['local.tee', '$x', ['local.get', '$y']]], ['i64.const', '0x1']]
+  is(count([['if', ['i32.or', test(), reTee], ['then', ['unreachable']]], ['local.set', '$y', ['call', '$g']], guard()]), 1, 'a part the test itself rewrites')
+  is(count([guard(), ['if', ['i32.or', test(), test()], ['then', ['call', '$t']]]]), 1, 'every part settled')
+  ok(drop([guard(), ['if', ['i64.eq', ['i64.reinterpret_f64', ['local.tee', '$y', ['local.get', '$x']]], ['i64.const', '0x7ff']], ['then', ['call', '$t']]], ['call', '$u', ['local.get', '$y']]]).includes('["local.set","$y",["local.get","$x"]]'), 'a dropped test keeps its tees')
+  const shared = guard(), mine = ['if', ['local.get', '$c'], ['then', shared], ['else', ['nop']]]
+  is(count([mine, shared, shared]), 3, 'a node two parents share stays')
 })
 
 // The size tier prints an integer through the scratch render alone, which packs

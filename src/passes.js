@@ -67,6 +67,7 @@ export const PASS_NAMES = [
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)
   'cseScalarLoad',
   'reuseLoads',               // a load an earlier one read with no store between: its local (optimize/reuse-loads.js)
+  'settledTests',             // an `if` a dominating `if` of the same test settled (optimize/settled-tests.js)
   'forwardStores',            // straight-line store-to-load forwarding + dead-store elimination
   'staticScratch',            // a static typed array only constant indices reach: stores forward to loads of any width, unread stores go (optimize/static-scratch.js)
   'moduleScratch',            // a module array of numbers only constant indices reach is locals of each function that uses it (plan/scratch.js)

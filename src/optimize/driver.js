@@ -13,6 +13,7 @@ import { DBG_INVARIANTS } from '../debug.js'
 import { ctx } from '../ctx.js'
 import { verifyFn } from '../ir.js'
 import { recursionUnroll } from './recurse.js'
+import { dropSettledTests } from './settled-tests.js'
 import { stripDeadCanons } from './nan-canon.js'
 import { forwardStores } from './forward-store.js'
 import { earlyStores } from './early-stores.js'
@@ -194,6 +195,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // After every pass that places loads: a load an earlier one read, nothing stored between;
   // then a part of a word read alone, the narrow load of it.
   if (cfg && cfg.reuseLoads === true) { reuseLoads(fn); narrowByteLoads(fn) }
+  // Over the guards every pass above left: one a dominating test settled goes.
+  if (!cfg || cfg.settledTests !== false) dropSettledTests(fn)
   // After the lane vectorizer, whose recognizers read float arithmetic in its double form.
   if (cfg && cfg.inlinePtrOffsetFast === true) inlinePtrOffsetFastPass(fn)
   // The fold, loop rotation, the condition chains and the boolean

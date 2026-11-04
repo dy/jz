@@ -3711,6 +3711,17 @@ one that equates two locals, or tests an element it reads, bounds nothing:
 what it reads through a select, a block or a conditional is what they compute,
 not the tests and the sets on the way to it.
 
+A test that failed stays failed while its locals hold (`optimize/settled-tests.js`,
+the `settledTests` pass, from level 2 up, after the integer pass): an `if` with no else
+whose arm leaves (a throw, a return, a branch out) lets control past only where its
+test is false, and a later `if` of the same test, or of a part of an `or` that
+failed, never takes its arm and goes, its test's tees kept. Three reads of one
+binding a guard may find missing (`doc.length`, then `doc[k]` twice) test it once.
+The walk follows evaluation order with what each local holds, so the guard on a
+capture (`$ai = $doc`) is the guard on the binding; a fact reaches down into the arms
+and loops that leave its locals alone and past an `if` or a block only by every way
+out, and a node two parents share stays (`test/minimal-output.js`).
+
 LICM reads a view's descriptor words as it reads a header's: `fn.viewNames`
 (stamped in `compile/emit-func.js`, carried to a promoted global's local by
 `optimize/globals.js`) names the locals that hold a typed view, whose length
