@@ -654,6 +654,13 @@ function emitLooseEq(a, b, negate, strict) {
       return typed([`i64.${eqOp}`, ['i64.reinterpret_f64', asF64(va)], ['i64.reinterpret_f64', asF64(vb)]], 'i32')
     // An array, set or map moves as it grows: a reference taken before holds
     // the old offset, forwarding to the new (__same_ref, asked where the bits differ).
+    // (the size tier asks two present values of one kind for their live offsets alone)
+    const view = ctx.summary?.at(ctx.func.current)
+    if (ctx.transform.optimize?.leanRuntime && view?.mayBeNullishExpr(a) === false && view.mayBeNullishExpr(b) === false) {
+      inc('__ptr_offset_fwd')
+      const live = (v) => ['call', '$__ptr_offset_fwd', ['i32.wrap_i64', asI64(v)]]
+      return typed([`i32.${eqOp}`, live(va), live(vb)], 'i32')
+    }
     inc('__same_ref')
     const ia = tempI64('req'), ib = tempI64('req'), aG = ['local.get', `$${ia}`], bG = ['local.get', `$${ib}`]
     const same = typed(['block', ['result', 'i32'],

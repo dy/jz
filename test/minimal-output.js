@@ -1528,6 +1528,28 @@ test('minimal: a short string reads and packs at the size tier', () => {
   ok(/__char_unit/.test(funcWat(compile(`export let f = (n) => String.fromCharCode((n & 127) + 1)`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')), 'one past ASCII is not')
 })
 
+// Two present values of one growable kind are one object where their live offsets
+// are, past any growth of either; a table or an array reached by two holders.
+test('minimal: identity holds past a growth at the size tier', () => {
+  if (skip) return
+  const src = `export let f = (n) => {
+    const a = new Set(), b = new Set(), sets = [a, b], arrs = [[1], [2]]
+    let t = 0
+    for (let i = 0; i < n; i++) { a.add(i); arrs[0].push(i) }
+    for (let i = 0; i < sets.length; i++) for (let j = 0; j < sets.length; j++) {
+      const p = sets[i], q = sets[j]
+      if (p === q) t += 10 ** i
+      if (p !== q) t += 100 * 10 ** j
+      const u = arrs[i], w = arrs[j]
+      if (u === w) t += 10000 * 10 ** i
+    }
+    return t + (sets[0] === a ? 1000000 : 0)
+  }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 3, 200]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
+  ok(!/__same_ref/.test(funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')), 'no tag test of two of one kind')
+})
+
 // A word's remainder is a word (`next() % n` of a function narrowed to an unsigned
 // word): the storage it lands in and a result of it stay integers, seen by a
 // caller analyzed before its callee narrowed (narrow/results.js).
