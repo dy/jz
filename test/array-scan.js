@@ -215,3 +215,16 @@ test('array scan: the size tier stores in place inside the length', () => {
   const body = funcWat(wat(bounded, { optimize: { level: 'size', ...shape } }), 'bump')
   ok(/f64\.store/.test(body) && !/\$__arr_set_idx_ptr/.test(body), 'the size tier stores in place, no growth call')
 })
+
+test('array scan: a loop the split would leave a bounds test in keeps one copy of its body', () => {
+  // (`v[a[k]]` stays tested in either copy: the proof frees no iteration, and the copy costs at each entry)
+  const left = `const f = (a, v, n) => { let s = 0; for (let k = 0; k < n; k++) s += v[a[k]] + a[k]; return s }
+    export let go = (n) => { const a = [], v = []; for (let i = 0; i < n; i++) { a.push(n - 1 - i); v.push(i * 2) } return f(a, v, n) + f(a, v, n >> 1) }`
+  const free = left.replace('s += v[a[k]] + a[k]', 's += v[k] + a[k]')
+  const split = (src) => /\$\S*asm\d+/.test(funcWat(wat(src, { optimize: { level: 'speed', ...shape } }), 'f') ?? '')   // (the bound it plants)
+  for (const src of [left, free]) { const want = oracle(src).go, got = run(src, { optimize: 'speed' }).go; for (const n of [0, 1, 7, 40]) is(got(n), want(n), `n=${n}`) }
+  if (belowOpt(2)) return
+  ok(split(free), 'a body the proof frees of its tests is split')
+  ok(!split(left), 'a body it leaves a test in is not')
+})
+

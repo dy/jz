@@ -581,12 +581,17 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   // the arrays the counter indexes, those the bound does not already hold it
   // below, nor a length the program fixes (a literal never resized) at or past it
   const recvs = [], fixedPast = (r) => intBound && (view.fixedLenOfExpr?.(r) ?? -1) >= constIntExpr(B)
+  // (an array index the counter is not leaves its test in the loop: two copies of a body, entered
+  // as often as the loop is, for a test of the many it runs)
+  let tested = false
   walkAst(body, { enter: n => {
     if (n[0] === '=>') return false
-    if (n[0] === '[]' && n.length === 3 && n[2] === i && typeof n[1] === 'string' && !recvs.includes(n[1]) && !boundRecvs.includes(n[1]) &&
+    if (n[0] !== '[]' || n.length !== 3) return
+    if (n[2] !== i) tested ||= !(Array.isArray(n[2]) && n[2][0] == null) && isArrayKind(view.kindOfExpr(n[1]))
+    else if (typeof n[1] === 'string' && !recvs.includes(n[1]) && !boundRecvs.includes(n[1]) &&
         n[1] !== B && steady(n[1]) && isArrayKind(view.kindOfExpr(n[1])) && !fixedPast(n[1])) recvs.push(n[1])
   } })
-  if (!recvs.length || !preservesLoopBounds(body, view, [...recvs, ...boundRecvs, i])) return false
+  if (tested || !recvs.length || !preservesLoopBounds(body, view, [...recvs, ...boundRecvs, i])) return false
 
   const declNames = new Set()
   collectBindings(body, declNames)
