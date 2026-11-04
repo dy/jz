@@ -1,10 +1,17 @@
 /** Pure integer-span transfer shared by the solver and settled readers. */
-export const SPAN_BINARY = new Set(['&', '+', '-', '*', '%', '|', '<<'])
+export const SPAN_BINARY = new Set(['&', '+', '-', '*', '%', '|', '<<', '>>>', '>>'])
 const maskSpan = m => m && m[0] === m[1] && m[0] >= 0 && m[0] <= 0x7fffffff ? [0, m[0]] : null
 
 export function spanBinary(op, a, b) {
   // ToInt32 of the other operand keeps a mask inside its nonnegative bits.
   if (op === '&') return maskSpan(b) ?? maskSpan(a)
+  // A shift by a constant count spans the word it leaves, whatever it shifts:
+  // ToUint32 of anything for `>>>`, ToInt32 of anything for `>>`.
+  if ((op === '>>>' || op === '>>') && b && b[0] === b[1] && b[0] >= 0 && b[0] <= 31) {
+    const k = b[0]
+    if (op === '>>') return [-0x80000000 >> k, 0x7fffffff >> k]
+    return [0, a && a[0] >= 0 && a[1] <= 0xffffffff ? Math.floor(a[1] / 2 ** k) : 0xffffffff >>> k]
+  }
   if (!a || !b) return null
   let lo, hi
   if (op === '+') { lo = a[0] + b[0]; hi = a[1] + b[1] }

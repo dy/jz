@@ -726,6 +726,10 @@ export function summaryQueries(facts, internal = false) {
       // A typed element read the summary holds inside the array's count: its
       // index needs no bounds test and its value is never the undefined of a miss.
       presentTypedRead: n => Array.isArray(n) && n[0] === '[]' && tagOf(kindOfExpr(n[1])) === K.TYPED && typedElementKey(n[2], kindOfExpr(n[2]) === NUMBER) && (typedReadPresent(scope, n, keyOf) || presentReads.has(n)),
+      // An array element read the summary holds inside the array's length (a
+      // counter its loop bounds by that length, the length left alone or grown):
+      // no bounds test, no miss.
+      presentArrayRead: n => presentReads.has(n),
       // The element cell's own kind: presence included, no absent member for a read past the end.
       elemKindOf: name => { const k = readKind(name); return celled(k) ? pub(elemOf(k)) : null },
       arrayDenseOfExpr: node => {

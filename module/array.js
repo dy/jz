@@ -1261,7 +1261,9 @@ export default (ctx) => {
     // reads as a proven array.
     const presentArray = vt == null && rep?.presentVal === VAL.ARRAY && numericKey && !ctx.func.boxed?.has(arr) && !ctx.transform.optimize?.leanRuntime
     // an index proven inside the length (type/canonical-bounds.js inBoundsArrIdx) reads the cell alone
-    const inBounds = typeof arr === 'string' && typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
+    // (or one the summary holds inside the length, summary/query.js presentArrayRead)
+    const summaryPresent = node != null && ctx.summary?.at(ctx.func.current)?.presentArrayRead?.(node) === true
+    const inBounds = summaryPresent || typeof arr === 'string' && typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)
     // a cell the summary holds free of holes (no construction of a count left unfilled, no store past the count) reads without the tomb test
     const elemKind = typeof arr === 'string' ? ctx.summary?.at(ctx.func.current)?.elemKindOf(arr) : null
     const holeFree = elemKind != null && elemKind !== 0 && !hasTag(elemKind, K.ABSENT)
@@ -1438,7 +1440,7 @@ export default (ctx) => {
         && (range => range != null && range[0] >= 0 && range[1] < stLen)(intExprRange(idx))
       const fixedProven = keyIsNum && fixedLen != null
         && (range => range != null && range[0] >= 0 && range[1] < fixedLen)(intExprRange(idx))
-      const idxProvenInBounds = fixedProven || keyIsNum && typeof arr === 'string' && (staticProven ||
+      const idxProvenInBounds = fixedProven || keyIsNum && typeof arr === 'string' && (staticProven || summaryPresent ||
         (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx)) ||
         (rep?.arrayLen != null && typedIdxProven(arr, idx)))
       // structInline Array<S>: element i is K consecutive inline f64 schema

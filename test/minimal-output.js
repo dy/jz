@@ -1324,6 +1324,24 @@ test('minimal: a proven table probes by its key\'s form', () => {
   ok(!/\$__ptr_type\b/.test(funcWat(ints, '__map_get_ob')), 'no tag test of a proven table')
 })
 
+// An index the summary bounds reads in place (summary/span.js, summary/index.js):
+// a remainder of a shifted word by a fixed array's length, through a constant
+// too; a counter its loop bounds by the length, where the body calls a table's
+// method or pushes (none shrinks an array). No miss arm, no undefined rendered.
+test('minimal: a bounded index reads in place', () => {
+  if (skip) return
+  const srcs = {
+    rem: `const R = ['a', 'b', 'c']; export let f = (s) => { const r = (s >>> 13) % 96; return 'x' + R[r % R.length] + R[(s >>> 1) % 3] }`,
+    loop: `export let f = (n) => { const a = [], m = new Map(), q = []; for (let i = 0; i < n; i++) a.push(i * 3); let t = 0; for (let j = 0; j < a.length; j++) { const w = a[j]; if (!m.has(w)) { m.set(w, j); q.push(w) } } for (let h = 0; h < q.length; h++) { t += q[h]; if (h < 3) q.push(h) } return t + ':' + q.length }`,
+    bfs: `export let f = (n) => { const adj = new Map(); for (let i = 0; i < n; i++) { let l = adj.get(i & 3); if (l === undefined) { l = []; adj.set(i & 3, l) } l.push(i) } const d = new Map(), q = [0]; let t = 0; for (let h = 0; h < q.length; h++) { const v = q[h]; const list = adj.get(v); if (list === undefined) continue; for (let j = 0; j < list.length; j++) { const w = list[j]; if (!d.has(w)) { d.set(w, h); t += w; q.push(w) } } } return t + ':' + q.length }`,
+    shrink: `export let f = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); let t = 0; for (let j = 0; j < a.length; j++) { t += a[j] + 1; if (j === 2) a.pop() } return t }`,
+  }
+  for (const [name, src] of Object.entries(srcs)) for (const optimize of levels(0, 2, 'size')) for (const n of [0, 5, 9]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `${name}, O${optimize}, n=${n}`)
+  const w = (src, fn = 'f') => funcWat(compile(src, { optimize: { level: 'size', watr: false }, wat: true }), fn)
+  ok(!/__static_str/.test(compile(srcs.rem, { optimize: { level: 'size', watr: false }, wat: true })), 'no undefined to render')
+  ok(!/\$__arr_value\b/.test(w(srcs.loop)) && !/\$__arr_value\b/.test(w(srcs.bfs)), 'a bounded read of a hole-free array takes the cell')
+})
+
 // The size tier prints an integer through the scratch render alone, which packs
 // a short result into the pointer as the speed tier's digit loop does: the same
 // bits for the same text (a Map key, `===` to a literal), with no second path.

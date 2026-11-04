@@ -838,6 +838,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const ints = new Map()         // a name declared once as an integer literal → its value
   const spans = new Map()        // the counters of the loops being walked → [lo, hi]
   const constRanges = new Map()  // binding id → the interval captured by this frame's const initializer
+  const constSpans = new Map()   // binding id → the integer span of a const initializer (spanOf)
   // Bounds are immutable. Repeated literal/constant reads share their point
   // interval, within this summary alone; mutable expression facts stay live.
   const points = new Map(), negativeZero = [-0, -0]
@@ -859,6 +860,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (span) return span
       const noted = hulls.get(e)
       if (noted) return noted
+      const constant = constSpans.size ? constSpans.get(keyOf(e)) : undefined
+      if (constant) return constant
       // A parameter's hull, the round before's (`out[offset + stride]` in an
       // out-buffer callee every call passes literals to): integral bounds only.
       // An integer-ended hull can contain fractional arguments; an element-key
@@ -872,7 +875,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if ((op === '(' || op === '()' && e.length === 2)) return spanOf(e[1], scope, integral)
     if (e.length !== 3) return null
     // A typed array's length is its count for good.
-    if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') { const len = typedLenOf(scope ?? MODULE, e[1]); return len === null ? null : pointRange(len) }
+    if (op === '.' && e[2] === 'length' && typeof e[1] === 'string') {
+      const len = typedLenOf(scope ?? MODULE, e[1])
+      if (len !== null) return pointRange(len)
+      // so is an array's never resized, of a binding never reassigned
+      const key = scope === current ? keyOf(e[1]) : null, k = key === null ? null : readKey(key)
+      const n = k != null && tagOf(k) === K.ARRAY && !hasTag(k, K.NULLISH) && !hasTag(k, K.ABSENT) && stable(e[1], scope ?? MODULE) ? fixedLen(k) : -1
+      return n >= 0 ? pointRange(n) : null
+    }
     if (!SPAN_BINARY.has(op)) return null
     const a = spanOf(e[1], scope, integral), b = spanOf(e[2], scope, integral)
     return spanBinary(op, a, b)
@@ -915,6 +925,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         default: return null
       }
     }
+    if (e.length === 3 && !RANGE_BINARY.has(op) && SPAN_BINARY.has(op)) return spanOf(e)
     if (e.length !== 3 || !RANGE_BINARY.has(op)) return null
     const a = rangeOf(e[1]), b = rangeOf(e[2])
     if (!a || !b) return null
@@ -4099,6 +4110,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
           const r = rangeOf(d[2]), key = keyOf(d[1])
           if (r) constRanges.set(key, r)
           else constRanges.delete(key)
+          // (an integer one keys an element as its initializer does: spanOf)
+          const sp = key === null ? null : spanOf(d[2])
+          if (sp) constSpans.set(key, sp)
+          else if (key !== null) constSpans.delete(key)
         }
         if (d.lo != null) noteHull(d)
         else if (n[0] === 'let' && !hullLost.has(d[1])) { const r = rangeOf(d[2]); if (r) widenHull(d[1], r[0], r[1]); else if (hulls.has(d[1])) { hulls.delete(d[1]); hullLost.add(d[1]) } }
@@ -4545,12 +4560,25 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return mathCall(e)
   }
   const loopPure = new Map()   // counter → whether its loop's body runs no code of the program's, this round
+  // A method of a Set's or a Map's table, or an array's push, called on a name
+  // of that kind: it runs none of the program's code and shrinks no array.
+  const TABLE_METHODS = { [K.MAP]: new Set(['get', 'has', 'set', 'delete']), [K.SET]: new Set(['has', 'add', 'delete']), [K.ARRAY]: new Set(['push']) }
+  const builtinCall = (m) => {
+    const f = m[1]
+    if (!Array.isArray(f) || f[0] !== '.' || typeof f[1] !== 'string' || typeof f[2] !== 'string' || memberMayBeOwn(f[2])) return false
+    const k = nameKind(f[1])
+    return k !== null && TABLE_METHODS[tagOf(core(k))]?.has(f[2]) === true
+  }
   const bodyRunsCode = (body) => {
     let runs = false
     const walk = (m) => {
       if (runs || !Array.isArray(m)) return
       if (m[0] === '=>' || m[0] === 'new' || m[0] === '?.()') { runs = true; return }
-      if (m[0] === '()') { if (!mathCall(m)) runs = true; return }
+      if (m[0] === '()') {
+        if (builtinCall(m)) { for (const a of argList(m[2])) walk(a); return }
+        if (!mathCall(m)) runs = true
+        return
+      }
       if (CONVERTING_RESULTS.has(m[0]) && conversions) { for (let i = 1; i < m.length; i++) if (!pureOperand(m[i])) { runs = true; return } }
       if ((m[0] === '.' || m[0] === '?.') && m.length === 3 && (typeof m[2] !== 'string' || hasGetter(m[2]))) { runs = true; return }
       if (m[0] === '[]' && m.length === 3 && getterAnywhere()) { const r = nameKind(m[1]); if (r === null || !sequenceTag(tagOf(core(r)))) { runs = true; return } }
@@ -5111,7 +5139,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const defaultNames = new Map()   // a defaults record → its parameter names, listed once
   const defaultNamesOf = (defaults) => { let l = defaultNames.get(defaults); if (!l) defaultNames.set(defaults, l = Object.keys(defaults)); return l }
-  const reset = () => { pre.clear(); refined.clear(); post.clear(); closureAssigned.clear(); constRanges.clear(); lengthAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
+  const reset = () => { pre.clear(); refined.clear(); post.clear(); closureAssigned.clear(); constRanges.clear(); constSpans.clear(); lengthAliases.clear(); branch = 0; flowPath = 0; rtop = 0; pathDepth = 0; loopNotes.length = 0; loopBases.length = 0; flowStack.length = 0; exitStack.length = 0 }
   const walkFunction = (key, body, params, defaults) => {
     current = key
     reset()
