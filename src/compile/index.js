@@ -73,7 +73,7 @@ import { synthesizeAccessorCall } from './emit/accessor-call.js'
 import { synthesizeToJSON } from './emit/to-json.js'
 import { settleViews, rowView } from '../../module/schema.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
-import { isExported, exportNamesOf } from './func-exports.js'
+import { isExported, exportNamesOf, hostReadsObjects } from './func-exports.js'
 import { paramValueOnly } from './param-numeric.js'
 import { ensureThrowRuntime } from './throw-runtime.js'
 import { buildInternTable } from './intern-table.js'
@@ -1189,6 +1189,7 @@ export function assemble(ast, profiler) {
     compact: compactOn(), compactLoops: !!ctx.plans.hasCompactLoops,
     schemas: ctx.schema.list, fieldContracts, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries, brandSids: ctx.schema.brandEntries(), regexSids: [...ctx.schema.regexSids],
     viewSids: ctx.schema.list.flatMap((names, sid) => rowView(names) ? [sid] : []),
+    hostObjects: hostReadsObjects(),
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false, throwHelpers: ctx.runtime.throwHelpers,
   } }

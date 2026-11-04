@@ -103,6 +103,17 @@ export const hostValueIngress = () => {
   return ctx.facts.hostValueIngress
 }
 
+/** Whether an object of the program can reach the host, whose decoder then needs
+ *  its layout: the host hands values in or takes them (hostValueIngress), an
+ *  export answers one, a module binding is exported, the program throws values
+ *  of its own, or modules share the memory. Without one the host decodes the
+ *  runtime's own Errors alone. */
+export const hostReadsObjects = () => {
+  if (ctx.memory.shared || ctx.runtime.thrown || hostValueIngress()) return true
+  for (const key in ctx.funcs.exports) { const v = ctx.funcs.exports[key]; if (!ctx.funcs.map?.has(typeof v === 'string' ? v : key)) return true }
+  return ctx.funcs.list.some(f => isExported(f) && (r => r == null || (r & PRIMITIVE_ARG_TAGS) !== 0)(ctx.summary?.resultOf(f.name)))
+}
+
 /** Whether a value of summary kind `k` may be a host object or function: one
  *  the summary cannot bound, where the host can hand the module values. A
  *  query: no link demand. */

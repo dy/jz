@@ -1353,6 +1353,27 @@ test('minimal: an object used as a value stays boxed', () => {
   ok(!/i64\.extend_i32_u \(local\.get \$o/.test(body), 'no rebox of the key')
 })
 
+// The layouts the host's decoder reads: an object of the program that reaches
+// the host keeps its row (compile/func-exports.js hostReadsObjects, link/sections.js);
+// one no export, import or throw can hand over leaves its names out of the module.
+test('minimal: a layout the host never reads is not written', () => {
+  if (skip) return
+  const names = (src) => { const b = WebAssembly.Module.customSections(new WebAssembly.Module(compile(src, { optimize: 'size' })), 'jz:schema'); return b.length ? new TextDecoder().decode(b[0]) : '' }
+  ok(!names(`export let f = () => { const m = new Map(); m.set(1, { alpha: 2 }); return m.get(1).alpha }`).includes('alpha'), 'held inside')
+  const returned = `export let f = (n) => { const m = new Map(); m.set(1, { alpha: n * 2 }); return m.get(1) }`
+  ok(names(returned).includes('alpha'), 'returned')
+  is(jz(returned, { optimize: 'size' }).exports.f(3).alpha, 6, 'returned object decodes')
+  const taken = `export let f = (o) => { const m = new Map(); m.set(1, { alpha: 1 }); return o.alpha + m.get(1).alpha }`
+  ok(names(taken).includes('alpha'), 'an export that takes a value')
+  is(jz(taken, { optimize: 'size' }).exports.f({ alpha: 2 }), 3, 'a host object reads')
+  const thrown = `export let f = (n) => { const m = new Map(); m.set(1, { alpha: n }); throw m.get(1) }`
+  ok(names(thrown).includes('alpha'), 'thrown')
+  try { jz(thrown, { optimize: 'size' }).exports.f(4); ok(false, 'throws') } catch (e) { is(e.alpha, 4, 'thrown object decodes') }
+  let err = null
+  try { jz(`export let f = (n) => { const m = new Map(); return m.get(n).x }`, { optimize: 'size' }).exports.f(1) } catch (e) { err = e }
+  ok(err instanceof TypeError, 'a runtime Error keeps its class')
+})
+
 // The size tier prints an integer through the scratch render alone, which packs
 // a short result into the pointer as the speed tier's digit loop does: the same
 // bits for the same text (a Map key, `===` to a literal), with no second path.

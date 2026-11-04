@@ -214,7 +214,7 @@ export const statementOps = {
   },
 
   'throw': expr => {
-    ctx.runtime.throws = ctx.runtime.userThrows = true
+    ctx.runtime.throws = ctx.runtime.userThrows = ctx.runtime.thrown = true
     const thrown = temp()
     // The exception payload is an untyped ANY slot — exactly the boxed-value
     // contract storedValue exists for (container stores, collection keys/

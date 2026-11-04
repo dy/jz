@@ -23,7 +23,7 @@ const encProp = (out, p) => {
   else { out.push(3); encStr(out, JSON.stringify(p).slice(1, -1)) }
 }
 
-export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids, brandSids, regexSids, viewSids }) {
+export function schemaSections(root, { schemas, fieldContracts, namedUses, errorSids, brandSids, regexSids, viewSids, hostObjects = true }) {
   const FUNC = intern('func')
   const used = new Set()
   walk(root, (id) => { if (T.sid[id] !== NONE) used.add(T.sid[id]) })
@@ -32,6 +32,8 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
     for (let c = T.a[root]; c !== NONE; c = T.next[c]) if (T.op[c] === FUNC) { const name = text(T.a[c]); if (name !== null) names.add(name) }
     for (const { sid, funcName } of namedUses) if (names.has('$' + funcName)) used.add(sid)
   }
+  // (no object of the program reaches the host: its decoder reads an Error's layout alone, compile/func-exports.js hostReadsObjects)
+  if (!hostObjects) { const errors = new Set(errorSids.map(([sid]) => sid)); for (const sid of [...used]) if (!errors.has(sid)) used.delete(sid) }
   const custom = (name, payload) => { const c = push(root, node(intern('@custom'))); push(c, str(`"${name}"`)); push(c, bytes(payload)) }
   if (used.size) {
     const out = []

@@ -725,6 +725,7 @@ export function reset(proto, globals, bridge) {
     strPoolDedup: new Map(),  // str → offset in strPool
     throws: false,
     userThrows: false,  // user wrote `throw`/`try`/`catch`/`finally` — keep runtime declared
+    thrown: false,      // a reachable `throw` of the program was emitted: its value may reach the host
                         // even when all throws are dead-code-eliminated (JS-side ABI contract).
     hostThrows: false,  // reachable host imports can enter the source exception transport
     staticPtrSlots: null,  // [byteOffset] data-segment slots holding NaN-boxed ptrs (host relocates); lazy-init in ir.js
