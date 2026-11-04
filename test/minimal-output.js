@@ -1656,3 +1656,11 @@ test('minimal: a remainder of an unsigned word is a word', () => {
   }
   ok(/\(func \$pick\s+\(result i32\)/.test(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true })), 'an integer result')
 })
+
+// A loop's test that only says which arm ran is that arm's condition.
+test('minimal: a walk of a table has one test a step', () => {
+  if (skip) return
+  const src = `export let f = (n) => { const s = new Set(); for (let i = 0; i < n; i++) s.add(i); let t = 0; for (const x of s) t += x; return t }`
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 9]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `n=${n} at ${optimize}`)
+  ok(!/\(if\s+\(result i32\)\s+\(local\.tee \S+\s+\(call \$__coll_step/.test(compile(src, { optimize: 'size', wat: true })), 'no arm answers one')
+})

@@ -997,6 +997,13 @@ function walkRewrite(node, doInline, freshI64, freshF64, get, bigint, inlineTrut
   // ternary with three f64.div arms measured ~8% slower selected than branched). hasExpensiveOp
   // vetoes both arms recursively so a cascaded ternary (each level itself a nested select/if from
   // this same fold) can't hide the div/sqrt a few levels down.
+  // `if (if (c) { s; 1 } else 0) b`, a test that says which arm ran: `if (c) { s; b }`.
+  if (op === 'if' && node.length === 3 && Array.isArray(node[1]) && node[1][0] === 'if' && node[1].length === 5 && node[2]?.[0] === 'then') {
+    const [, result, cond, on, off] = node[1], last = on?.[on.length - 1]
+    if (result?.[0] === 'result' && result[1] === 'i32' && on?.[0] === 'then' && on.length > 1 && isConst(last) && last[1] !== 0 &&
+        off?.[0] === 'else' && off.length === 2 && isConst(off[1]) && off[1][1] === 0)
+      return ['if', cond, ['then', ...on.slice(1, -1), ...node[2].slice(1)]]
+  }
   if (op === 'if' && node.length === 5 && Array.isArray(node[1]) && node[1][0] === 'result' && node[1][1] === 'f64'
       && Array.isArray(node[3]) && node[3][0] === 'then' && node[3].length === 2
       && Array.isArray(node[4]) && node[4][0] === 'else' && node[4].length === 2) {
