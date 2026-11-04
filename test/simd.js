@@ -308,6 +308,96 @@ export let run = (n, e) => {
   }
 })
 
+// === Strip-invariant splats ===
+// An int8 convolution layer (conv2d's): each output sums input bytes the strip moves over
+// times weights it never moves. A weight's broadcast is computed where the strip opens, not
+// on every pass of eight outputs; the index each pass recomputes in an unrolled scratch local
+// (`wrow = wCh + ky * K`) is the invariant sum it holds.
+const CONV_LAYER = `
+const CIN = 2
+const COUT = 3
+const H = 12
+const W = 12
+const K = 3
+const OH = H - K + 1
+const OW = W - K + 1
+const conv = (inp, wt, bias, out) => {
+  for (let oc = 0; oc < COUT; oc++) {
+    const b = bias[oc]
+    const ocBase = oc * OH * OW
+    for (let oy = 0; oy < OH; oy++) {
+      for (let ox = 0; ox < OW; ox++) {
+        let acc = b
+        for (let ic = 0; ic < CIN; ic++) {
+          const inCh = ic * H * W
+          const wCh = ((oc * CIN) + ic) * K * K
+          for (let ky = 0; ky < K; ky++) {
+            const irow = inCh + (oy + ky) * W + ox
+            const wrow = wCh + ky * K
+            for (let kx = 0; kx < K; kx++) acc += inp[irow + kx] * wt[wrow + kx]
+          }
+        }
+        let q = acc >> 6
+        if (q < 0) q = 0
+        if (q > 127) q = 127
+        out[ocBase + oy * OW + ox] = q
+      }
+    }
+  }
+}
+export let run = (seed) => {
+  const inp = new Int8Array(CIN * H * W)
+  const wt = new Int8Array(COUT * CIN * K * K)
+  const bias = new Int32Array(COUT)
+  const out = new Uint8Array(COUT * OH * OW)
+  const sum = new Uint8Array(COUT * OH * OW)
+  let x = seed | 0
+  for (let i = 0; i < inp.length; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; inp[i] = x >> 24 }
+  for (let r = 0; r < 3; r++) {
+    for (let i = 0; i < wt.length; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; wt[i] = x >> 24 }
+    for (let i = 0; i < COUT; i++) { x = (Math.imul(x, 1103515245) + 12345) | 0; bias[i] = (x >> 20) & 1023 }
+    conv(inp, wt, bias, out)
+    for (let i = 0; i < sum.length; i++) sum[i] = sum[i] * 3 + out[i]
+  }
+  return sum
+}`
+
+// the loops of a module's text that hold no loop, each as its own text
+const innermostLoops = (w) => {
+  const out = []
+  for (let k = w.indexOf('(loop'); k >= 0; k = w.indexOf('(loop', k + 1)) {
+    let d = 0, e = k
+    for (; e < w.length; e++) { if (w[e] === '(') d++; else if (w[e] === ')' && --d === 0) break }
+    const loop = w.slice(k, e + 1)
+    if (loop.indexOf('(loop', 1) < 0) out.push(loop)
+  }
+  return out
+}
+
+test('SIMD strip: a weight the strip never moves is broadcast where the strip opens', () => {
+  // the output buffer holding the weights apart, or over them (each store rewrites a weight
+  // the scalar loop reads next): the second runs the scalar loop past the strip's test
+  const sources = [CONV_LAYER,
+    CONV_LAYER.replace(/const wt = .*\n  const bias = (.*)\n  const out = .*\n/,
+      'const buf = new ArrayBuffer(COUT * OH * OW + 64)\n  const out = new Uint8Array(buf, 0, COUT * OH * OW)\n  const wt = new Int8Array(buf, COUT * OH * OW, COUT * CIN * K * K)\n  const bias = $1\n'),
+    CONV_LAYER.replace(/const wt = .*\n  const bias = (.*)\n  const out = .*\n/,
+      'const buf = new ArrayBuffer(COUT * OH * OW + 64)\n  const out = new Uint8Array(buf, 0, COUT * OH * OW)\n  const wt = new Int8Array(buf, 40, COUT * CIN * K * K)\n  const bias = $1\n')]
+  for (const [index, src] of sources.entries()) {
+    ok(index === 0 || src !== CONV_LAYER, `variant ${index} rewrites the buffers`)
+    const host = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const seed of [1, 7, 123456, -5]) is([...got.run(seed)], [...host.run(seed)], `buffers ${index}, O${optimize}: seed ${seed}`)
+    }
+  }
+  if (onKernel()) return
+  const w = compile(CONV_LAYER, { optimize: GATHER_OPT, wat: true })
+  const strips = innermostLoops(w).filter(l => l.includes('i16x8.mul'))
+  ok(strips.length > 0, 'the layer lifts to an i16x8 strip')
+  is(strips.map(l => (l.match(/i16x8\.splat/g) || []).length), strips.map(() => 0), 'no weight broadcast inside a strip')
+  ok(/i16x8\.splat/.test(w), 'the weights are broadcast before it')
+})
+
 // === Array.from ===
 
 test('Array.from - shallow copy', () => {

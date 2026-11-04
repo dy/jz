@@ -57,6 +57,7 @@ import { hoistReductionInvariantsIn, slpPairsIn } from './dot-slp.js'
 import { vecState } from './lift.js'
 import { tryGeneralMap, tryVectorize } from './map.js'
 import { tryGatherMap } from './gather-map.js'
+import { hoistStripSplats } from './hoist-splats.js'
 import { tryMemCopyFill } from './memcpy.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
 import { matchOuterPixelLoop } from './outer-scaffold.js'
@@ -318,6 +319,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // A guard whose first test the lanes can answer, over work too heavy to be common.
       // Bases nothing proves apart may be one array: the strip opens past a test of it.
       if (r && !gateStrips(r, scalar, fnLocals, distinctParams, pointerOf ??= arrayPointers(fn))) r = null
+      // Past that test, a splat no pass of a strip changes is computed where the strip opens.
+      if (r) r.newLocalDecls = [...r.newLocalDecls, ...hoistStripSplats(r.wrapper, freshIdRef, outsideReads)]
       if (!r) r = tryPrefilter(bl, fnLocals, freshIdRef)
       // Not a lane lift: two items' inner loops run side by side (pair-iterations.js).
       let paired = r ? null : tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations)
