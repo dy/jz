@@ -283,7 +283,7 @@ export default (ctx) => {
       ? ['__typed_idx_tail', '__ptr_offset_fwd', arrCellHelper()]
       : ['__len', '__ptr_offset', '__ptr_offset_fwd', arrCellHelper()]), ...viewDeps()],
     __typed_idx_tail: () => ['__typed_shift', '__ptr_offset_fwd', arrCellHelper(), ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : []), ...viewDeps()],
-    __arr_idx_known: () => ['__ptr_offset_fwd', arrCellHelper()],
+    __arr_idx_known: () => [leanRuntime() ? '__ptr_offset' : '__ptr_offset_fwd', arrCellHelper()],
   })
 
   // Iteration methods invoke callbacks with an implicit trailing index: .map/
@@ -395,7 +395,14 @@ export default (ctx) => {
           (then ${arrCellWat('(f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))')})
           (else (f64.const nan:${UNDEF_NAN})))))) `
 
-  ctx.core.stdlib['__arr_idx_known'] = () => `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
+  // (the size tier reaches the cells through the offset helper every program
+  // links, and an index past the length, a negative one among them, reads undefined)
+  ctx.core.stdlib['__arr_idx_known'] = () => leanRuntime() ? `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
+    (local $off i32)
+    (if (result f64)
+      (i32.lt_u (local.get $i) (i32.load (i32.sub (local.tee $off (call $__ptr_offset (local.get $ptr))) (i32.const 8))))
+      (then ${arrCellWat('(f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))')})
+      (else (f64.const nan:${UNDEF_NAN}))))` : `(func $__arr_idx_known (param $ptr i64) (param $i i32) (result f64)
     (local $off i32)
     (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ${followForwardingWat('$off', { lowGuard: true })}
