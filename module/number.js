@@ -548,8 +548,12 @@ export default (ctx) => {
   // just __itoa_s over a scratch buffer. Lets `"id " + (n|0)` and integer
   // templates skip the ~2 KB float formatter the generic ToString hard-pulls.
   // Six characters or fewer pack into the pointer itself, digits placed from the
-  // last (__mkstr's short-string layout), with no buffer.
-  ctx.core.stdlib['__i32_to_str'] = `(func $__i32_to_str (param $val i32) (result f64)
+  // last (__mkstr's short-string layout), with no buffer; the size tier keeps the
+  // scratch render alone, which __mkstr_scratch packs the same.
+  ctx.core.stdlib['__i32_to_str'] = lean ? `(func $__i32_to_str (param $val i32) (result f64)
+    (local $buf i32)
+    (local.set $buf (call $__alloc (i32.const 24)))
+    (call $__mkstr_scratch (local.get $buf) (call $__itoa_s (local.get $val) (local.get $buf))))` : `(func $__i32_to_str (param $val i32) (result f64)
     (local $buf i32) (local $m i32) (local $d i32) (local $i i32) (local $packed i64)
     (if (i32.and (i32.gt_s (local.get $val) (i32.const -100000)) (i32.lt_s (local.get $val) (i32.const 1000000)))
       (then

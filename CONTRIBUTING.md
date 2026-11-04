@@ -1003,7 +1003,7 @@ holder to hop; the growth in place and the move share their walks (`__ord_live`,
 that misses ends after a bucket or two; the compiler's own artifact
 (`compactCollections`) fills three in four less one, which keeps the hosted
 compiler's memory under its bound (the summary of 512 guards: 621,912 B half
-full, 524,408 B so), and so does the size tier. One module has one geometry,
+full, 526,504 B so), and so does the size tier. One module has one geometry,
 so no walker selects between two. The block is the
 table's buckets times that share of its entry stride and a bucket word
 (layout.js `ordStride`), the count of appended entries in its last word. A

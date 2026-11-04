@@ -1153,3 +1153,14 @@ test('minimal: a dropped call past a receiver guard computes no result', () => {
   const lists = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { let l = m.get(i & 3); if (l === undefined) { l = []; m.set(i & 3, l) } l.push(i) } return m.size }`
   is((funcWat(compile(lists, { optimize: { level: 'size', watr: false }, wat: true }), 'f').match(/call \$__ptr_offset\b/g) || []).length, 0, 'no header read for the dropped length')
 })
+
+// The size tier prints an integer through the scratch render alone, which packs
+// a short result into the pointer as the speed tier's digit loop does: the same
+// bits for the same text (a Map key, `===` to a literal), with no second path.
+test('minimal: the size tier prints an integer by one walk', () => {
+  if (skip) return
+  const src = `export let f = (n) => { const m = new Map(); for (let i = -2; i < n; i++) m.set('k' + i, i); const s = String(n | 0); return (m.get('k-1') | 0) + (m.get('k' + 12) | 0) * 100 + (s === '40' ? 10000 : 0) + m.size * 100000 + ('' + (1234567 + n)).length * 1000000000 }`
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 13, 40]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
+  const w = compile(src, { optimize: { level: 'size', watr: false }, wat: true })
+  ok(!funcWat(w, '__i32_to_str').includes('$packed'), 'no digit-packing loop')
+})
