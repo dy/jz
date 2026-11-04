@@ -96,6 +96,15 @@ const innerLoops = (text) => {
 }
 const shape = { sourceInline: false, watr: false }   // (each kernel a function of its own)
 
+test('array scan: the tail counter and the store temporaries keep names of their own at every level', () => {
+  // (inlined into its caller at level 3, the tail's counter met the array store's f64 temporary of one name)
+  const host = oracle(src)
+  for (const level of [3, 'speed']) {
+    const exports = run(src, { optimize: level })
+    for (const [name, ...args] of calls.filter(([n]) => n === 'pair' || n === 'skip' || n === 'mixed')) is(exports[name](...args), host[name](...args), `${name}(${args}) at ${level}`)
+  }
+})
+
 test('array scan: under a bound other than the length, the main loop stores in place', () => {
   if (belowOpt(2)) return
   for (const level of [2, 'speed']) {

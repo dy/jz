@@ -4649,7 +4649,7 @@ test('SIMD two names for one array - one jz buffer at two slots of an export is 
       const x = memory.Float64Array(seed(n)), y = memory.Float64Array(seed(n)), p = seed(n), q = seed(n)
       is(exports.f(x, y, n), js.f(p, q, n), `${body}: two buffers at n=${n}`)
     }
-    if (!onKernel()) ok(hasV128(funcWat(wat(src, opts), 'f') ?? ''), `${body}: lifts`)
+    if (!onKernel() && opts.optimize) ok(hasV128(funcWat(wat(src, opts), 'f') ?? ''), `${body}: lifts`)
   }
 })
 

@@ -597,7 +597,8 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   collectBindings(body, declNames)
   const rename = new Map()
   for (const d of declNames) rename.set(d, `${T}as${freshId(ctx)}_${d}`)
-  const i2 = `${T}asi${freshId(ctx)}`
+  // (`ast`: the array store's own temporaries are `asi`/`asj`/`asv`, emit-assign.js, from a count of their own)
+  const i2 = `${T}ast${freshId(ctx)}`
   const subst = new Map([[i, i2]])
   const tailBody = cloneWithSubst(body, subst, rename)
   const tailStep = cloneWithSubst(step, subst, new Map())
