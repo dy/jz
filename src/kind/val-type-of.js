@@ -170,12 +170,20 @@ VT['?:'] = (args) => {
 // type is their common type (else unknown). Giving `??` a type — not just ||/&& —
 // lets `numA ?? numB` read NaN-safe (value-typed NUMBER → f64.eq) instead of routing
 // through the bit-comparing __is_truthy, which mis-reads a non-canonical NaN.
-VT['&&'] = VT['||'] = VT['??'] = (args) => {
+// An unknown side: the summary's kind of the whole, which drops what the test
+// discards (`m.get(k) || 0` is a Number where the read is a Number or missing).
+// Only a Number: its one carrier is the f64 either operand yields as it is.
+const logicalVT = op => (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta && ta === tb) return ta
   if (ta === VAL.BOOL && tb === VAL.NUMBER || tb === VAL.BOOL && ta === VAL.NUMBER) return VAL.NUMBER
+  if (ctx.summary && (ta == null || tb == null) && ta !== VAL.BOOL && tb !== VAL.BOOL &&
+      ctx.summary.at(ctx.func.current).valOfExpr([op, args[0], args[1]]) === VAL.NUMBER) return VAL.NUMBER
   return null
 }
+VT['&&'] = logicalVT('&&')
+VT['||'] = logicalVT('||')
+VT['??'] = logicalVT('??')
 
 // .work/archive/todo.md §deletion-sweep — pure structural predicate: true exactly
 // where a `?:`/`&&`/`||`/`??` node's own VT rule above takes the BOOL-vs-NUMBER
