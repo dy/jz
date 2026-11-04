@@ -446,6 +446,9 @@ export function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
   return { wrapper, newLocalDecls }
 }
 
+// The integer operators of an index computed from the counter (counterGather).
+const INDEX_OPS = new Set(['i32.add', 'i32.sub', 'i32.mul', 'i32.shl', 'i32.shr_s', 'i32.shr_u', 'i32.and', 'i32.or', 'i32.xor'])
+
 export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   if (!bl) return null
   const { aliasVersion = true } = opts
@@ -473,6 +476,34 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
     for (const [iv, coeff] of ivCoeffs) {
       const m = matchStrideAddr(addr, stride, writes, new Map(), new Map(), coeff)
       if (m) return { iv, ...m }
+    }
+    return counterGather(addr)
+  }
+  // Any other index the exit counter computes with the loop's invariants (a field of a strided
+  // record `pts[2 * (o + i) + 1]`, a column `m[i * w + c]`) gathers too, lane L reading what
+  // iteration i + L reads. Lane L reads before lane 0 stores: its base is stored nowhere in the
+  // loop (below), and another base that may be the same array is the strip's entry test
+  // (alias.js gateStrips). The index temporaries on the way stay scalar.
+  const indexNames = new Set()
+  // whether `x` is integer arithmetic over the counter (`moves`), constants, globals, unwritten
+  // locals and index temporaries (collected into `via`); false for anything else
+  const counterIndex = (x, via, moves) => {
+    if (isI32Const(x) || (isArr(x) && x[0] === 'global.get')) return true
+    if (isLocalGet(x)) {
+      if (x[1] === incVar) return moves.at = true
+      if (defs.has(x[1])) return via.add(x[1]), counterIndex(defs.get(x[1]), via, moves)
+      return !writes.has(x[1]) && fnLocals.get(x[1]) === 'i32'
+    }
+    return isArr(x) && x.length === 3 && INDEX_OPS.has(x[0]) && counterIndex(x[1], via, moves) && counterIndex(x[2], via, moves)
+  }
+  const counterGather = (addr) => {
+    if (!isArr(addr) || addr[0] !== 'i32.add' || addr.length !== 3) return null
+    for (const [bi, oi] of [[1, 2], [2, 1]]) {
+      const base = addr[bi], via = new Set(), moves = { at: false }
+      const invariant = (isLocalGet(base) && !writes.has(base[1])) || (isArr(base) && base[0] === 'global.get')
+      if (!invariant || !counterIndex(addr[oi], via, moves) || !moves.at) continue
+      for (const name of via) indexNames.add(name)
+      return { iv: { name: incVar, step: ['i32.const', 1] }, base, idx: addr[oi] }
     }
     return null
   }
@@ -565,7 +596,7 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   for (const name of blReferenced) {
     if (name === incVar) continue
     const ty = fnLocals.get(name)
-    if (ivs.some(iv => iv.name === name) || movesWithCounter(name)) { localKind.set(name, 'addr'); continue }
+    if (ivs.some(iv => iv.name === name) || movesWithCounter(name) || indexNames.has(name)) { localKind.set(name, 'addr'); continue }
     if (ty === 'i32' && (addrTees.has(name) || offTees.has(name) || _isAddrLocalGM(name))) { localKind.set(name, 'addr'); continue }
     if (writes.has(name)) {
       const access = laneAccess(body, name, bl.outsideReads)

@@ -354,10 +354,14 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   }
   const deferredSR = [], srConsumed = new Set()
   vecState.whyNotActive = whyNot
+  vecState.fn = fn
+  vecState.onceRead = null
   vecState.relaxF32 = relaxedFma
   vecState.crPow = crPow
   for (let i = bodyStart; i < fn.length; i++) walk(fn, i)
   vecState.whyNotActive = false
+  vecState.fn = null
+  vecState.onceRead = null
   vecState.relaxF32 = false
   vecState.crPow = false
   // Apply the deferred scalar fallback innermost-first (push order), skipping candidates

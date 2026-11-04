@@ -1,7 +1,7 @@
 import { registerResetHook } from '../../ctx.js'
 import { cloneNode, isLeaf, nodeEqual, walkAst } from '../../ast.js'
 import { guardedInt32Operand } from '../../ir/numeric.js'
-import { hasBranchOrReturn, hasSideEffect, isI32Const, matchMirrorAddr } from './addr-model.js'
+import { hasBranchOrReturn, hasSideEffect, isI32Const, isLocalGet, matchMirrorAddr } from './addr-model.js'
 import { aosAddrPair, aosGather, aosStore, getOrAllocLanedLocal } from './aos.js'
 import { matchCanonBlock, matchCanonSelect } from './idioms.js'
 import { inlinePureCallExpr } from './inline-pure.js'
@@ -35,7 +35,9 @@ function liftCanon(coreV, C, ctx, info) {
 // vectorizeLaneLocal call made with the flag on (cleared on exit — never leaks into
 // codegen, which never reads it). `vecState.whyNotReason` captures the FIRST (deepest) lift
 // bail for the block currently under the recognizer chain; the walk reads it after.
-export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: false, crPow: false }
+// `fn`: the function a vectorizeLaneLocal call lifts; `onceRead`: its once-read locals, taken
+// on the first question (onceReadOf)
+export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: false, crPow: false, fn: null, onceRead: null }
 // Float32 storage still computes JavaScript expressions in f64 lanes. The
 // promote/demote strip for a pure f32 copy round-trips losslessly and stays
 // on unconditionally. Armed for the duration of a vectorizeLaneLocal call.
@@ -50,7 +52,7 @@ export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: fal
 // boundary reset means that leak can never survive past the NEXT compile's
 // reset()/beginSession(), even though within-compile correctness still relies on
 // the call-site arm/disarm (unchanged here).
-const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.relaxF32 = false; vecState.crPow = false }
+const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.relaxF32 = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null }
 registerResetHook(resetVectorizeState)
 
 // The one lift context shape: the self-compile kernel infers one struct layout per shared
@@ -242,7 +244,70 @@ function condMask(cond, ctx) {
     const v = liftExprV(cond, ctx); if (ctx.fail) return null
     return ['i32x4.ne', v, ['i32x4.splat', ['i32.const', 0]]]
   }
+  // Tests joined bitwise (`d > e || d < -e`, `!(a < b)`): each is 0 or 1 in every lane, so
+  // the join of their masks is the mask of the join, both sides evaluated as the scalar does.
+  const join = isArr(cond) && cond.length === 3 && MASK_JOIN[cond[0]]
+  if (join && isTest(cond[1]) && isTest(cond[2])) {
+    const a = condMask(cond[1], ctx); if (ctx.fail) return null
+    const b = condMask(cond[2], ctx); if (ctx.fail) return null
+    return [join, a, b]
+  }
+  if (isArr(cond) && cond[0] === 'i32.eqz' && cond.length === 2 && isTest(cond[1])) {
+    const a = condMask(cond[1], ctx); if (ctx.fail) return null
+    return ['v128.not', a]
+  }
+  // The short-circuit forms, `A ? 1 : B` (`||`) and `A ? B : 0` (`&&`): the same join where
+  // B may run on every lane, a test reading no memory (a read B guards by A stays scalar).
+  const sc = shortCircuit(cond)
+  if (sc) {
+    const a = condMask(sc.a, ctx); if (ctx.fail) return null
+    const b = condMask(sc.b, ctx); if (ctx.fail) return null
+    return [sc.join, a, b]
+  }
   return liftFail(ctx, `predicated if: ${isArr(cond) ? cond[0] : 'condition'} is not a lane mask`)
+}
+// A condition whose value is 0 or 1: a comparison, a test for zero, or such tests joined.
+const MASK_JOIN = { 'i32.and': 'v128.and', 'i32.or': 'v128.or', 'i32.xor': 'v128.xor' }
+const isTest = (n) => isArr(n) && (/^[if](?:32|64)\.(?:eqz?|ne|[lg][te](?:_[su])?)$/.test(n[0])
+  || (n.length === 3 && !!MASK_JOIN[n[0]] && isTest(n[1]) && isTest(n[2])) || !!shortCircuit(n))
+const isConstI32 = (n, v) => isI32Const(n) && Number(n[1]) === v
+function shortCircuit(n) {
+  if (!isArr(n) || n[0] !== 'if' || n.length !== 5 || !isArr(n[1]) || n[1][0] !== 'result' || n[1][1] !== 'i32') return null
+  let [, , a, th, el] = n
+  if (!isArr(th) || th[0] !== 'then' || th.length !== 2 || !isArr(el) || el[0] !== 'else' || el.length !== 2) return null
+  // As lowered, `A || B` keeps A in a local its then arm reads (`A && B`: its else arm); read
+  // nowhere else, that arm is the constant A was there.
+  let held = null
+  if (isArr(a) && a[0] === 'local.tee' && a.length === 3 && onceReadOf().has(a[1])) { held = a[1]; a = a[2] }
+  if (!isTest(a)) return null
+  const isA = (v, k) => isConstI32(v, k) || (held != null && isLocalGet(v, held))
+  const safe = (b) => isTest(b) && !writesState(b) && !hasLoad(b)
+  if (isA(th[1], 1) && safe(el[1])) return { join: 'v128.or', a, b: el[1] }
+  if (isA(el[1], 0) && safe(th[1])) return { join: 'v128.and', a, b: th[1] }
+  return null
+}
+// The locals the function being lifted reads once and writes once: a lowered `A || B` keeps A
+// in one of them for its then arm alone. Taken once per function, where a condition asks.
+const NO_NAMES = new Set()
+function onceReadOf() {
+  if (vecState.onceRead) return vecState.onceRead
+  const fn = vecState.fn
+  if (!fn) return NO_NAMES
+  const reads = new Map(), writes = new Map()
+  const bump = (m, k) => m.set(k, (m.get(k) || 0) + 1)
+  walkAst(fn, { enter: c => {
+    if (typeof c[1] !== 'string') return
+    if (c[0] === 'local.get') bump(reads, c[1])
+    else if (c[0] === 'local.set' || c[0] === 'local.tee') bump(writes, c[1])
+  } })
+  const once = new Set()
+  for (const [name, n] of reads) if (n === 1 && writes.get(name) === 1) once.add(name)
+  return vecState.onceRead = once
+}
+const hasLoad = (n) => {
+  let found = false
+  walkAst(n, { enter: x => { if (found) return false; if (LOAD_OPS[x[0]] || x[0] === 'call' || x[0] === 'call_indirect') { found = true; return false } } })
+  return found
 }
 
 function liftPredicated(stmt, ctx, outer = null) {
@@ -431,14 +496,8 @@ export function liftStmt(stmt, ctx) {
     // (decline the whole if-store lift, not just the offending statement) rather than risk it.
     if (thenA.inter.some(s => hasSideEffect(s)) || (elseA && elseA.inter.some(s => hasSideEffect(s))))
       return liftFail(ctx, 'if-store: arm has a side-effecting intermediate statement (would run unconditionally)')
-    // mask from COND: a lane comparison, or (i32) a truthy test `lift(cond) != 0`.
-    let cond = stmt[1]
-    if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
-    const cmp = isArr(cond) && cond.length === 3 ? LANE_COMPARE[ctx.laneType]?.[cond[0]] : null
-    let mask
-    if (cmp) { const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null; const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null; mask = [cmp, ca, cb] }
-    else if (ctx.laneType === 'i32') { const lc = liftExprV(cond, ctx); if (ctx.fail) return null; mask = ['i32x4.ne', lc, ['i32x4.splat', ['i32.const', 0]]] }
-    else return liftFail(ctx, 'if-store: non-comparison condition')
+    const mask = condMask(stmt[1], ctx)
+    if (ctx.fail) return null
     // Mask FIRST (matches liftExprV's own `if`-ternary convention above): `mask` may embed a
     // `local.tee` (COND reads a shared address CSE'd with an arm's own load — e.g. a stencil's
     // condition-on-loaded-value `if (a[i] > 0) out[i] = a[i-1] ^ a[i+1]`, where `a[i]`'s address

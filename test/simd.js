@@ -211,6 +211,103 @@ test('SIMD gather map: shared addresses require an unconditional definition and 
   }
 })
 
+// === General map: counter gathers and joined tests ===
+// A Newton step per point of a stroke stored as (x, y) pairs (Schneider's curve fit): the
+// fields read at 2(o+i) and 2(o+i)+1 gather lane by lane, and the update lands only where
+// the derivative is away from zero, a test of two comparisons joined by `||`.
+const STRIDED_STEP = `
+const step = (pts, u, o, n, a, b) => {
+  for (let i = 1; i < n - 1; i++) {
+    const t = u[i]
+    const d = a * t * t + b * t - pts[(o + i) * 2]
+    const den = 2 * a * t + b + pts[(o + i) * 2 + 1]
+    if (den > 1e-12 || den < -1e-12) {
+      let nu = t - d / den
+      if (nu < 0.0) nu = 0.0
+      if (nu > 1.0) nu = 1.0
+      u[i] = nu
+    }
+  }
+}
+export let run = (n, o, a, b) => {
+  const pts = new Float64Array(160)
+  const u = new Float64Array(64)
+  for (let i = 0; i < 64; i++) u[i] = i / 63
+  for (let i = 0; i < 80; i++) { pts[2 * i] = (i % 7 - 3) * 0.1; pts[2 * i + 1] = i % 3 - 1 }
+  pts[2 * o + 7] = NaN; pts[2 * o + 9] = -1e-13 - b; pts[2 * o + 13] = 1e-12 - b
+  for (let r = 0; r < 3; r++) step(pts, u, o, n, a - r, b + r * 0.25)
+  step(pts, u, o + 1, n, -a, b * 3)
+  return u
+}`
+
+test('SIMD general map: strided record fields gather lane by lane beside a conditional store', () => {
+  const host = oracle(STRIDED_STEP)
+  const cases = [[0, 0, 0.7, 0.3], [2, 0, 0.7, 0.3], [3, 0, 0.7, 0.3], [4, 1, 0.7, 0.3], [5, 3, -0.4, 2],
+    [10, 0, 0.7, 0.3], [47, 5, 0.7, 0.3], [64, 15, 1.5, -0.5], [64, 0, 0, 0], [63, 2, NaN, 1]]
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = jz(STRIDED_STEP, { optimize }).exports
+    for (const args of cases) is([...got.run(...args)], [...host.run(...args)], `O${optimize}: ${args}`)
+  }
+  if (onKernel()) return
+  const f = funcWat(compile(STRIDED_STEP, { optimize: GATHER_OPT, wat: true }), 'step')
+  ok(f && f.includes('f64x2.replace_lane'), 'the x and y fields gather into lanes')
+  ok(f.includes('v128.or') && f.includes('v128.bitselect'), 'the joined test masks the store')
+})
+
+test('SIMD general map: a gather over an array the loop may store runs only past the entry test', () => {
+  // one array passed twice, a view of the other's buffer, a view inside it: the lanes would
+  // read elements the scalar loop writes first, so the strip opens only where the test parts them
+  const sources = [
+    STRIDED_STEP.replace(/step\(pts, u, /g, 'step(pts, pts, '),
+    STRIDED_STEP.replace('const u = new Float64Array(64)', 'const u = new Float64Array(pts.buffer)'),
+    STRIDED_STEP.replace('const u = new Float64Array(64)', 'const u = pts.subarray(64)'),
+  ]
+  for (const [index, src] of sources.entries()) {
+    const host = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const args of [[0, 0, 0.7, 0.3], [3, 0, 0.7, 0.3], [10, 1, 0.7, 0.3], [47, 5, 0.7, 0.3], [64, 4, 1.5, -0.5], [64, 15, 1.5, -0.5]])
+        is([...got.run(...args)], [...host.run(...args)], `shared ${index}, O${optimize}: ${args}`)
+    }
+  }
+})
+
+test('SIMD conditional store: tests joined by ||, && and ! form one lane mask', () => {
+  const kernel = (cond) => `
+const f = (a, b, out, n, e) => {
+  for (let i = 0; i < n; i++) {
+    const d = a[i] - b[i]
+    if (${cond}) out[i] = d * 0.5
+  }
+}
+export let run = (n, e) => {
+  const a = new Float64Array(64)
+  const b = new Float64Array(64)
+  const out = new Float64Array(64)
+  for (let i = 0; i < 64; i++) { a[i] = (i * 37 % 23 - 11) * 0.25; b[i] = (i * 11 % 17 - 8) * 0.125; out[i] = -i }
+  a[5] = NaN; b[9] = NaN; a[12] = -0; b[12] = 0
+  f(a, b, out, n, e); f(b, a, out, n >> 1, e)
+  return out
+}`
+  // [condition, the join its mask needs, lifted]: a short-circuit operand that reads memory
+  // may be in bounds only where the first test holds, so that loop stays scalar.
+  for (const [cond, join, lifted] of [
+    ['d > e || d < -e', 'v128.or', true], ['d > e && d < e * 4', 'v128.and', true],
+    ['!(a[i] < b[i])', 'v128.not', true], ['!(d > e) || d < 0.5', 'v128.or', true],
+    ['a[i] > e | b[i] < e', 'v128.or', true], ['a[i] > 0 && b[i] < 1', 'v128.and', false],
+  ]) {
+    const src = kernel(cond), host = oracle(src)
+    for (const optimize of levels(0, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports
+      for (const n of [0, 1, 2, 3, 63, 64]) for (const e of [0.3, -1, 0, -0, NaN, Infinity])
+        is([...got.run(n, e)], [...host.run(n, e)], `${cond}, O${optimize}: n ${n}, e ${e}`)
+    }
+    if (onKernel()) continue
+    const f = funcWat(compile(src, { optimize: GATHER_OPT, wat: true }), 'f')
+    is(!!f && f.includes(join) && f.includes('v128.bitselect'), lifted, `${cond}: ${lifted ? 'one lane mask' : 'scalar'}`)
+  }
+})
+
 // === Array.from ===
 
 test('Array.from - shallow copy', () => {
