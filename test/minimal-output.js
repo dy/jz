@@ -1384,6 +1384,14 @@ test('minimal: a repeated ToInt32 is one call at the size tier', () => {
   ok(/call \$__to_i32\b/.test(compile(src, { optimize: { level: 'size', watr: false }, wat: true })), 'one call')
 })
 
+// A program whose keys hold no reference hashes by the number arm alone.
+test('minimal: the bits hash links the arms its keys reach', () => {
+  if (skip) return
+  const hash = (src) => funcWat(compile(src, { optimize: { level: 'size', watr: false }, wat: true }), '__hash_bits')
+  ok(!/local\.set \$hi\b/.test(hash(`export let f = (n) => { const m = new Map(); m.set(n | 0, 1); m.set(undefined, 2); return m.get(n | 0) + m.get(undefined) }`)), 'numbers and atoms')
+  ok(/local\.set \$hi\b/.test(hash(`export let f = (n) => { const m = new Map(), o = { a: n }; m.set(o, 1); return m.get(o) }`)), 'a reference')
+})
+
 // The size tier prints an integer through the scratch render alone, which packs
 // a short result into the pointer as the speed tier's digit loop does: the same
 // bits for the same text (a Map key, `===` to a literal), with no second path.

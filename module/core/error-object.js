@@ -14,7 +14,7 @@ import { VAL } from '../../src/reps.js'
 import { ctx, err, inc, PTR } from '../../src/ctx.js'
 import { dataLen } from '../../src/static-data.js'
 import { errorCodeLiteral, ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
-import { nanPrefixHex, nanPrefixMaskHex } from '../../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, i64Hex, encodePtrHi } from '../../layout.js'
 
 // Runtime receiver checks use the private error-code transport. They must not
 // register a schema merely because a dynamic access might throw.
@@ -60,7 +60,7 @@ export function throwErrorWat(ctx, name, className, message) {
     (local.set $p (call $__alloc_hdr (i32.const 0) (i32.const ${slots})))
     (f64.store (local.get $p) ${msgWat})
     (f64.store (i32.add (local.get $p) (i32.const 8)) ${nameWat})
-    (local.set $e (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $p)))
+    (local.set $e (f64.reinterpret_i64 (i64.or (i64.const ${i64Hex(BigInt(encodePtrHi(PTR.OBJECT, sid) >>> 0) << 32n)}) (i64.extend_i32_u (local.get $p)))))
     (global.set $__jz_last_err_bits (i64.reinterpret_f64 (local.get $e)))
     (throw $__jz_err (local.get $e)))`
 }

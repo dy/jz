@@ -41,7 +41,7 @@ import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
 import { STR_HCACHE_BIT, ordStride as ordStrideAt, ordEntries as ordEntriesAt } from '../../layout.js'
 import { durableFwdLogIR, durableLenLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, hasDurableReset, heapResetWat } from './durable.js'
 import { stubLogIR, sitesOn } from '../core/stub-log.js'
-import { arrayKeysOn } from './identity.js'
+import { arrayKeysOn, keyArmsOn } from './identity.js'
 import { forwardHop } from './upsert.js'
 
 const TAG = 0xFC000000 | 0      // a bucket's hash bits
@@ -213,15 +213,16 @@ const formEq = (form, eqExpr) => form.key === 'bits' && lean() ? '(call $__eq_bi
                 (then (call $__str_eq (local.get $kw) (local.get $key)))
                 (else (i32.const 0)))))`
   : eqExpr
-/** The bits form's hash: `$__map_hash`'s number and reference arms. */
+/** The bits form's hash: `$__map_hash`'s number and reference arms (a program
+ *  whose keys hold no reference, keyArmsOn, its number arm: any NaN pattern 3). */
 export const genHashBits = () => `(func $__hash_bits (param $key i64) (result i32)
     (local $h i32) (local $hi i32)
     (if (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))
       (then (if (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.const 0)) (then (return (i32.const 2)))))
-      (else
+      (else ${keyArmsOn()?.refs === false ? '(return (i32.const 3))' : `
         (local.set $hi (i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32))))
         (if (i32.eqz (i32.and (i32.eq (i32.and (local.get $hi) (i32.const ${PREFIX_HI})) (i32.const ${BOX_HI})) (i32.ne (i32.and (local.get $hi) (i32.const ${TAG_HI})) (i32.const 0))))
-          (then (return (i32.const 3))))))
+          (then (return (i32.const 3))))`}))
     ${mixInto}
     (local.get $h))`
 /** The bits form's equality of a stored key and a probe: equal bits, equal numbers (either zero), or two numeric NaNs. */
