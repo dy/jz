@@ -65,6 +65,7 @@ import { tryOuterStripRest } from './outer-strip.js'
 import { tryRampMap } from './ramp.js'
 import { tryPrefilter } from './prefilter.js'
 import { tryGeneralReduce, tryReduce } from './reduce.js'
+import { arrayPointers, gateStrips } from './alias.js'
 import { canonicalizeIfBr, foldVecIdentities, matchBlockLoop, normalizeTransparentBlocks } from './scaffold.js'
 import { tryGeneralStencil, tryStencil } from './stencil.js'
 import { tryStrengthReduceIV } from './strength-reduce.js'
@@ -126,6 +127,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // (a static one's entry write is the address every call passes, compile/emit-func.js).
   const distinctParams = fn.distinctParams ? new Set(fn.distinctParams) : null
   if (distinctParams) for (const n of writtenLocals(fn)) distinctParams.delete(n)
+  let pointerOf = null
 
   // Build local-name → wasm-type map.
   const fnLocals = new Map()
@@ -281,6 +283,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         if (run) run.outsideReads = outsideReads
         return run ?? bl
       }
+      let scalar = node
       let r = tryDivergentEscapeVectorize(node, fnLocals, freshIdRef, op)
         ?? tryMemCopyFill(bl, fnLocals, freshIdRef)
         ?? tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals)
@@ -309,10 +312,12 @@ export function vectorizeLaneLocal(fn, opts = {}) {
             // a cursor beside a reduction (`s += x[ix]; ix += 1`, dasum's shape)
             ?? tryReduce(cbl, fnLocals, freshIdRef, multiAcc)
             ?? tryGeneralReduce(cbl, fnLocals, freshIdRef, multiAcc)
-          if (lifted) r = { wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls] }
+          if (lifted) { r = { wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls] }; scalar = canon.node }
         }
       }
       // A guard whose first test the lanes can answer, over work too heavy to be common.
+      // Bases nothing proves apart may be one array: the strip opens past a test of it.
+      if (r && !gateStrips(r.wrapper, scalar, fnLocals, distinctParams, pointerOf ??= arrayPointers(fn))) r = null
       if (!r) r = tryPrefilter(bl, fnLocals, freshIdRef)
       // Not a lane lift: two items' inner loops run side by side (pair-iterations.js).
       const paired = r ? null : tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations)

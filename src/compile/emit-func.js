@@ -184,6 +184,8 @@ export function emitFunc(func, functionPlan, programFacts, arrayGlobals) {
   // detached install snapshot above. Watr ignores these non-index expandos.
   if (plannedCseLoadBases) fn.cseLoadBases = plannedCseLoadBases
   if (plannedDistinctParams) fn.distinctParams = plannedDistinctParams
+  // (a parameter that holds a typed array's pointer: the vectorizer's reading of its bases)
+  fn.arrayParams = new Set(sig.params.filter(p => p.ptrKind === VAL.TYPED).map(p => dollar(p.name)))
   // (the entry write of a static parameter keeps its allocation: the vectorizer's distinctness)
   const fixedParams = ctx.memory.staticParams.get(ctx.func.current)
   if (fixedParams) fn.staticParams = new Set([...fixedParams.keys()].map(dollar))

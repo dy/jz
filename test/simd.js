@@ -9,6 +9,7 @@ import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
 import { simdBound, matchBlockLoop } from '../src/optimize/vectorize/scaffold.js'
+import { gateStrips } from '../src/optimize/vectorize/alias.js'
 import { matchOuterPixelLoop } from '../src/optimize/vectorize/outer-scaffold.js'
 import { tryGatherMap } from '../src/optimize/vectorize/gather-map.js'
 import { tryVectorize } from '../src/optimize/vectorize/map.js'
@@ -4502,6 +4503,119 @@ ${pad}    }
   const w = wat(src, SIMD_OPT)
   ok(hasV128(w), 'the large body vectorizes behind its guard')
   is((w.match(/\(loop/g) || []).length, 4, 'the fill, the strip and its scalar tail, the hash: the loop is not copied')
+})
+
+// ---- Two names for one array (vectorize/alias.js gateStrips) ----
+//
+// A recognizer reads two base expressions as two arrays, and they need not be: two parameters
+// a call gives one array (`up(x, x)`), a binding chosen at run time, a view inside another. The
+// strip runs past a test of each store against each access on another base (their distance, or
+// their windows, or, between two pointers of a kind no view has, the pointers), and the scalar
+// loop runs where it fails. Each body lifts, and answers what the host answers with the arrays
+// apart, the same, and swapped.
+const twoNames = (ctor, start, bound, body) => `
+  const up = (a, b, c) => { const n = ${bound}; for (let i = ${start}; i < n; i++) { ${body} } return a[a.length - 1] }
+  const fill = (a) => { for (let i = 0; i < a.length; i++) a[i] = (i * i + 3 * i + 1) % 251 }
+  export let go = (n, flag) => {
+    const x = new ${ctor}(n), y = new ${ctor}(n)
+    fill(x); fill(y)
+    let s = 0
+    for (let k = 0; k < 3; k++) { s += up(x, flag > 0 ? x : y, k); s += up(y, flag > 1 ? y : x, k) }
+    let h = 0
+    for (let i = 0; i < n; i++) h = (h * 31 + x[i] + 7 * y[i]) % 1000003
+    return h + s
+  }`
+test('SIMD two names for one array - a lift over bases that may be one array tests them first, bit-exact', () => {
+  const cases = [
+    ['Float64Array', 1, 'a.length', 'a[i] = b[i - 1] + 1'],
+    ['Float64Array', 2, 'a.length', 'a[i] = b[i - 2] * 2 - b[i - 1]'],
+    ['Float64Array', 1, 'a.length', 'a[i] = b[i - 1]'],
+    ['Float64Array', 1, 'a.length - 1', 'a[i] = (b[i - 1] + b[i + 1]) * 0.5'],
+    ['Float64Array', 0, 'a.length - 1', 'a[i] = b[i + 1] + 1'],
+    ['Float64Array', 1, 'a.length', 'a[i] = Math.sqrt(b[i - 1]) + c'],
+    ['Float64Array', 1, 'a.length', 'a[i] = b[i - 1] > 50 ? b[i - 1] : 50'],
+    ['Float64Array', 1, 'a.length', 'a[i] = b[i - 1] + 1; b[i - 1] = a[i] * 2'],
+    ['Float32Array', 1, 'a.length', 'a[i] = b[i - 1] + 1'],
+    ['Int32Array', 1, 'a.length', 'a[i] = b[i - 1] + 1'],
+    ['Int32Array', 3, 'a.length', 'a[i] = b[i - 3] ^ 5'],
+    ['Uint8Array', 1, 'a.length', 'a[i] = b[i - 1] + 1'],
+    ['Uint8Array', 1, 'a.length', 'a[i] = b[i - 1]'],
+  ]
+  for (const [ctor, start, bound, body] of cases) {
+    const src = twoNames(ctor, start, bound, body), native = oracle(src).go, compiled = runVec(src, SIMD_OPT).go
+    for (const n of [64, 13, 2]) for (const flag of [0, 1, 2])
+      is(compiled(n, flag), native(n, flag), `${ctor} ${body}: n=${n}, flag=${flag}`)
+    if (!onKernel()) ok(hasV128(wat(src, SIMD_OPT)), `${ctor} ${body}: lifts`)
+  }
+})
+
+test('SIMD two names for one array - a view is one array with its parent: the strip tests the bytes', () => {
+  const sources = [
+    // a parameter that is a view of the other
+    `const up = (a, b) => { const n = a.length - 1; for (let i = 0; i < n; i++) a[i] = b[i] + 1; return a[0] }
+    export let go = (n, flag) => {
+      const x = new Float64Array(n), y = new Float64Array(n + 1)
+      for (let i = 0; i < n; i++) { x[i] = i * i; y[i] = i * i }
+      let s = 0
+      for (let k = 0; k < 3; k++) s += up(flag > 1 ? y : flag > 0 ? x.subarray(1) : x, x)
+      let h = 0
+      for (let i = 0; i < n; i++) h = (h * 31 + x[i]) % 1000003
+      return h + s
+    }`,
+    // two views of one buffer, at a distance chosen at run time
+    `export let go = (n, flag) => {
+      const b = new ArrayBuffer(n * 16)
+      const x = new Float64Array(b), y = new Float64Array(b, flag * 8, n)
+      for (let i = 0; i < n; i++) x[i] = i * i
+      for (let i = 0; i < n - 1; i++) y[i] = x[i] + 1
+      let h = 0
+      for (let i = 0; i < n * 2; i++) h = (h * 31 + x[i]) % 1000003
+      return h
+    }`,
+  ]
+  for (const [index, src] of sources.entries()) {
+    const native = oracle(src).go, compiled = runVec(src, SIMD_OPT).go
+    for (const n of [40, 9, 3]) for (const flag of [0, 1, 2]) is(compiled(n, flag), native(n, flag), `view ${index}: n=${n}, flag=${flag}`)
+    if (!onKernel()) ok(hasV128(wat(src, SIMD_OPT)), `view ${index}: lifts`)
+  }
+})
+
+test('SIMD two names for one array - two pointers are tested as pointers, views elsewhere or not', () => {
+  // (a pointer is where an allocation starts: the views beside them are reached through descriptors)
+  const src = `
+    const up = (a, b) => { const n = a.length; for (let i = 1; i < n; i++) a[i] = b[i - 1] + 1; return a[n - 1] }
+    export let go = (n, flag) => {
+      const x = new Float64Array(n), y = new Float64Array(n), z = new Float64Array(8), u = new Float64Array(z.buffer, 16, 4)
+      u[1] = flag
+      for (let i = 0; i < n; i++) { x[i] = i * i; y[i] = i * i }
+      let s = 0
+      for (let k = 0; k < 3; k++) s += up(x, flag > 0 ? x : y)
+      let h = 0
+      for (let i = 0; i < n; i++) h = (h * 31 + x[i]) % 1000003
+      return h + s + z[3]
+    }`
+  const native = oracle(src).go, compiled = runVec(src, SIMD_OPT).go
+  for (const n of [40, 9, 3]) for (const flag of [0, 1]) is(compiled(n, flag), native(n, flag), `n=${n}, flag=${flag}`)
+  if (onKernel()) return
+  const f = funcWat(wat(src, SIMD_OPT), 'up')
+  ok(f && hasV128(f), 'lifts')
+  ok(/i32\.ne \(local\.get \$[^\s)]+\) \(local\.get \$[^\s)]+\)\)/.test(f), 'the strip opens where the two pointers differ')
+  ok(!/i32\.le_u/.test(f), 'no window of bytes is tested')
+})
+
+test('SIMD two names for one array - two copies of one hop are one array, at the distance between them', () => {
+  // (a recognizer reads $p and $q as two bases; they compute one value before the loop)
+  const hop = () => ['call', '$__ptr_offset', ['local.get', '$a']]
+  const at = (base, k) => ['i32.add', ['local.get', base], ['i32.shl', k ? ['i32.sub', ['local.get', '$i'], ['i32.const', k]] : ['local.get', '$i'], ['i32.const', 3]]]
+  const scalar = (k) => ['block', '$brk',
+    ['local.set', '$p', hop()], ['local.set', '$q', hop()],
+    ['loop', '$l', ['br_if', '$brk', ['i32.eqz', ['i32.lt_s', ['local.get', '$i'], ['local.get', '$n']]]],
+      ['f64.store', at('$q', 0), ['f64.add', ['f64.load', at('$p', k)], ['f64.const', 1]]],
+      ['local.set', '$i', ['i32.add', ['local.get', '$i'], ['i32.const', 1]]], ['br', '$l']]]
+  const lifted = () => ['block', ['local.set', '$end', simdBound('$i', ['local.get', '$n'], 2)]]
+  const locals = new Map([['$p', 'i32'], ['$q', 'i32'], ['$i', 'i32'], ['$n', 'i32'], ['$end', 'i32']])
+  for (const [k, lifts] of [[0, true], [1, false], [2, true], [-1, false], [-3, true]])
+    is(!!gateStrips(lifted(), scalar(k), locals, null, () => true), lifts, `a[i] = a[i - ${k}] + 1 through two hops: ${lifts ? 'lifts' : 'stays scalar'}`)
 })
 
 // ---- General REDUCTION base layer (tryGeneralReduce) — .work/archive/vectorizer-generality-design.md ----
