@@ -374,7 +374,7 @@ export const registerReach = () => {
     ;; the durable log's blocks, where the frame made them
     ${block('__durable_fwd_buf', '(i32.mul (global.get $__durable_fwd_cap) (i32.const 12))')}
     ${block('__durable_slot_buf', '(i32.shl (global.get $__durable_slot_cap) (i32.const 3))')}
-    ${block('__durable_arr_seen', '(i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1))')}
+    ${has('__heap_reset') ? block('__durable_arr_seen', '(i32.add (i32.shr_u (i32.sub (global.get $__heap_reset) (global.get $__durable_skip)) (i32.const 6)) (i32.const 1))') : ''}
     ${records}
     (local.set $p (global.get $__roots))
     (local.set $e (i32.add (local.get $p) (i32.const ${ROOT_LOG_BYTES})))

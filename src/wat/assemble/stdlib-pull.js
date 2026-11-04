@@ -237,6 +237,10 @@ export function pullStdlib(sec) {
     for (const name of ['__iter_release', '__iter_take', '__iter_leave']) ctx.core.includes.delete(name)
     reachable = reachableStdlib(sec)
   }
+  // No allocator, no heap and no mark to rewind to: gone before a helper
+  // realized below reads either (reach.js `__survive`). Shared memory keeps its
+  // heap pointer in memory and declares neither.
+  if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
   // loads without calling a stdlib helper), so scan the emitted bodies too.
   const hasMemOp = (node) => some(node, n => typeof n[0] === 'string' && MEM_OPS.test(n[0]), { skipArrow: false })
@@ -374,7 +378,6 @@ export function pullStdlib(sec) {
   // a table injected above is static data the shared-memory start copies into __alloc'd
   // space too, where the program had none of its own (Math.exp alone)
   if (ctx.memory.shared && dataLen() > 0) needsAlloc = true
-  if (!needsAlloc) { ctx.scope.globals.delete('__heap'); ctx.scope.globals.delete('__heap_reset') }
   if (needsMemory && ctx.module.modules.core) {
     if (needsAlloc) {
       for (const fn of ['__alloc', '__alloc_hdr', '__clear']) ctx.core.includes.add(fn)

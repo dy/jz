@@ -381,6 +381,19 @@ test('frame effects: the host keeps the mark of a frame that runs around its cal
   is(m.f([1, 2, 3], 5), 2); is(m.read(), '3,5', 'a call between reads what it stored')
 })
 
+test('frame effects: a module that allocates nothing walks no durable log', () => {
+  // A module typed array an export rebinds keeps the walk; nothing allocates, so no heap mark is declared and the walk reads none.
+  const src = `let W = 64, H = 48
+    let out = new Float64Array(64 * 48)
+    let seed = new Float64Array(2), other = seed
+    export let render = (k, pick) => { seed = pick > 0 ? out : other; for (let py = 0; py < H; py++) for (let px = 0; px < W; px++) { let a = (px - W * 0.5) / W, b = (py - H * 0.5) / H; if (a * a + b * b < 0.2 + k) { let n = 0; while (n < 40) n++; out[py * W + px] = n + seed[0] } } }
+    export let cs = () => { let h = 0x811c9dc5 | 0; for (let i = 0; i < W * H; i++) h = ((h ^ out[i]) * 0x01000193) | 0; return h >>> 0 }`
+  for (const optimize of levels(0, 2, 'speed')) {
+    const want = oracle(src), { exports: m } = jz(src, { optimize })
+    for (const pick of [0, 1]) { m.render(0.3, pick); want.render(0.3, pick); is(m.cs(), want.cs(), `O${optimize}: pick ${pick}`) }
+  }
+})
+
 test('frame effects: what a walked call kept of a receiver made at start goes at a reset', () => {
   // The durable log a store into such a receiver writes lies in the call's memory: the walk counts it live.
   const src = `const log = [0], st = { n: 0 }
