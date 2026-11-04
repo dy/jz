@@ -522,17 +522,18 @@ export function emitCallArgs(argNodes, params, func) {
  *  accumulator is read back by ITS OWN next `+`, so it still needs to be a
  *  real String. */
 export function tryConcatChain(a, b, selfAccum, bufTarget) {
-  // A `+` NODE is a string concat iff a side is statically STRING — the exact
-  // gate the pairwise lowering uses. (BOOL/OBJECT must NOT qualify a node:
-  // `(x===y) + (u===v)` is NUMERIC bool addition; they only stringify as
-  // LEAVES once the node qualifies through a genuine STRING side.)
-  const isStr = (n) => valTypeOf(n) === VAL.STRING
-  if (!(isStr(a) || isStr(b))) return null
+  // A `+` NODE is a string concat iff its own kind is STRING (VT['+']): a
+  // side statically STRING and there, the gate the pairwise lowering uses.
+  // (BOOL/OBJECT must NOT qualify a node: `(x===y) + (u===v)` is NUMERIC bool
+  // addition; they only stringify as LEAVES once the node qualifies. A string
+  // that may be missing qualifies none alone: `a[1] + a[1] + 'z'` over a hole
+  // adds its undefineds to NaN before the concatenation.)
+  const isCat = (n) => Array.isArray(n) && n[0] === '+' && n.length === 3 && valTypeOf(n) === VAL.STRING
+  if (!isCat(['+', a, b])) return null
   const leaves = []
   const walk = (n) => {
-    if (Array.isArray(n) && n[0] === '+' && n.length === 3 && (isStr(n[1]) || isStr(n[2]))) {
-      walk(n[1]); walk(n[2])
-    } else leaves.push(n)
+    if (isCat(n)) { walk(n[1]); walk(n[2]) }
+    else leaves.push(n)
   }
   walk(a); walk(b)
   // Self-accumulating head: fuse only the tail, join with bump-extend after.

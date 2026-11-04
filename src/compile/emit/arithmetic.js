@@ -7,12 +7,12 @@
 import { ctx, inc, LAYOUT } from '../../ctx.js'
 import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, storedElement, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
-import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf } from '../../kind.js'
+import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf, stringMayMiss } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
 import { intExprRange, negRangeFitsI32, forCounterRange, cancelledIntExpr } from '../../static.js'
 import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, typedAux, bitOf, TAGS, NULL_BITS } from '../../summary/kind.js'
 import { ctorFromElemAux } from '../../../layout.js'
-import { exprType, inBoundsArrIdx, wholeKey } from '../../type.js'
+import { exprType, wholeKey } from '../../type.js'
 import { scanBindingUses, BINDING_USE_INIT } from '../analyze-scans.js'
 import { intLevelMap } from '../../type/int-certain.js'
 const strictInts = new WeakMap()   // a body → its names' integer levels (int-certain.js), read by the remainder's magnitude bound
@@ -412,16 +412,6 @@ const numericPrimitive = (node) => {
   return k != null && (k & TAGS & ~NULL_BITS) !== 0 && (k & TAGS & ~NUMERIC_PRIMITIVE) === 0
 }
 
-// Whether a string operand may be missing: an index read the loop around it
-// does not bound, a binding the summary lets be absent, any other expression
-// whose kind carries a missing value.
-const stringMayMiss = (node) => {
-  if (Array.isArray(node) && node[0] === 'str') return false
-  if (typeof node === 'string') return mayBeMissing(node)
-  if (!mayBeMissing(node)) return false
-  return !(Array.isArray(node) && node[0] === '[]' && node.length === 3 && typeof node[1] === 'string' && typeof node[2] === 'string' &&
-    inBoundsArrIdx(ctx).has(node[1] + '\x00' + node[2]))
-}
 
 // Unknown addition shares one coercion path. The numeric guard keeps ordinary
 // numbers inline; the helper owns ToPrimitive, string precedence and BigInts.

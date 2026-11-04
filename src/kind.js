@@ -23,6 +23,6 @@ export {
 } from './kind/dict-census.js'
 export { shapeOf } from './kind/shape.js'
 export {
-  hasAmbiguousBoolMerge, valTypeOf, isPresentNumber, shapeOfObjectLiteralAst, numericDenied, mixedBoolKind, holdsBoolBeside, boolTagged,
+  hasAmbiguousBoolMerge, valTypeOf, isPresentNumber, shapeOfObjectLiteralAst, numericDenied, mixedBoolKind, holdsBoolBeside, boolTagged, stringMayMiss,
 } from './kind/val-type-of.js'
 export { payloadFree } from './kind/payload.js'

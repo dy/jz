@@ -20,7 +20,7 @@
 
 import { typedElementKey } from '../typed-provenance.js'
 import { ctx, registerResetHook } from '../ctx.js'
-import { VAL, lookupValType, repOf } from '../reps.js'
+import { VAL, lookupValType, repOf, mayBeUndefined } from '../reps.js'
 import { intLiteralValue, staticIndexKey, typedCtorRawOf } from '../static.js'
 import {
   BOOL_OPS, NUMERIC_BINARY_OPS, NUMERIC_UNARY_OPS, COMPOUND_NUMERIC_OPS,
@@ -28,9 +28,9 @@ import {
 } from '../kind-traits.js'
 import { summaryTypedCtor, typedStorageCtorFromContext } from '../typed-context.js'
 import { literalTruthiness, nullishArm } from './lattice.js'
-import { censusMaybeUndefinedKind } from './dict-census.js'
+import { censusMaybeUndefinedKind, censusMaybeUndefined } from './dict-census.js'
 import { valOf as summaryVal, contractVal } from '../summary/index.js'
-import { typedIndexKnown } from '../type/canonical-bounds.js'
+import { typedIndexKnown, inBoundsArrIdx } from '../type/canonical-bounds.js'
 import { K, NUMBER, TAGS, NULL_BITS, UNKNOWN, bitOf, tagsOf } from '../summary/kind.js'
 import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
 import { spreadExclusions } from '../ast.js'
@@ -512,9 +512,30 @@ VT['~'] = censusBigintUnaryVT(numericUnaryVT)
 VT['>>>'] = VT['u+'] = () => VAL.NUMBER
 VT.nan = () => VAL.NUMBER   // parse.js's self-describing `NaN` marker
 
+/** Whether an operand of string kind may be missing instead: a hole of a string
+ *  array, an index past its end or past a string's, a Map's miss, a field one
+ *  shape lacks, a binding that holds one of these. The element or slot kind
+ *  names what was stored; undefined is no string. An index the loop around it
+ *  bounds reads a present element. */
+export const stringMayMiss = (node) => {
+  if (Array.isArray(node) && node[0] === 'str') return false
+  if (censusMaybeUndefined(node)) return true
+  if (typeof node === 'string') {
+    if (ctx.func.refinements?.get(node)?.notNullish) return false
+    if (ctx.func.maybeNullish?.has(node) || mayBeUndefined(node)) return true
+  }
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
+  if (k == null || (k & NULL_BITS) === 0) return false
+  return !(Array.isArray(node) && node[0] === '[]' && node.length === 3 && typeof node[1] === 'string' && typeof node[2] === 'string' &&
+    inBoundsArrIdx(ctx).has(node[1] + '\x00' + node[2]))
+}
+
 VT['+'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
-  if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
+  // A string side that may be missing makes the sum a string only beside a
+  // string that is there: undefined adds to anything else as a number (NaN).
+  if (ta === VAL.STRING || tb === VAL.STRING)
+    return ta === VAL.STRING && !stringMayMiss(args[0]) || tb === VAL.STRING && !stringMayMiss(args[1]) ? VAL.STRING : null
   // Object coercion can produce a string, number or BigInt. Consumers such
   // as String() must inspect the result rather than assume a numeric carrier.
   if (ta === VAL.OBJECT || tb === VAL.OBJECT) return null

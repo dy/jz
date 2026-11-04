@@ -37,6 +37,7 @@ const TESTS = [
   'features',
   'feature-gating',
   'strings',
+  'missing-plus',
   'symbols',
   'rest-params',
   'spread',
