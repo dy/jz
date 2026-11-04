@@ -565,7 +565,7 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
     return n[1]
   }
   const lits = leaves.map(litOf)
-  const bT = [], nT = [], lT = leaves.map((_, k) => lits[k] != null ? null : tempI32('cl'))
+  const bT = [], nT = [], unsignedLeaf = [], lT = leaves.map((_, k) => lits[k] != null ? null : tempI32('cl'))
   const offT = tempI32('co'), curT = tempI32('cu')
   const seq = []
   let litTotal = 0
@@ -579,10 +579,15 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
     // directly at the cursor in that width. Drops the per-number __i32_to_str
     // (alloc+itoa+mkstr), __str_length and __str_copy — the whole temp-string round trip.
     if ((vt === VAL.NUMBER || vt == null) && v.type === 'i32' && v.ptrKind == null) {
-      inc('__ilen', '__itoa_sn')
+      // (an unsigned word prints unsigned; so does, at the size tier, a word a range
+      // holds to zero and up, with no sign to test)
+      const low = ctx.transform.optimize?.leanRuntime ? intExprRange(n)?.[0] : null
+      unsignedLeaf[k] = v.unsigned === true || (low != null && low >= 0)
+      if (unsignedLeaf[k]) inc('__udigits', '__itoa')
+      else inc('__ilen', '__itoa_sn')
       nT[k] = tempI32('cn')
       seq.push(['local.set', `$${nT[k]}`, v])
-      seq.push(['local.set', `$${lT[k]}`, ['call', '$__ilen', ['local.get', `$${nT[k]}`]]])
+      seq.push(['local.set', `$${lT[k]}`, ['call', unsignedLeaf[k] ? '$__udigits' : '$__ilen', ['local.get', `$${nT[k]}`]]])
       return
     }
     inc('__str_length', '__str_copy')
@@ -634,7 +639,8 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
     }
     if (nT[k] != null) {
       // digits render at the cursor in the width $lT took; that width advances it
-      seq.push(['call', '$__itoa_sn', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])
+      seq.push(unsignedLeaf[k] ? ['drop', ['call', '$__itoa', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`]]]
+        : ['call', '$__itoa_sn', ['local.get', `$${nT[k]}`], ['local.get', `$${curT}`], ['local.get', `$${lT[k]}`]])
       if (k < leaves.length - 1)
         seq.push(['local.set', `$${curT}`, ['i32.add', ['local.get', `$${curT}`], ['i32.shl', ['local.get', `$${lT[k]}`], ['i32.const', 1]]]])
       return

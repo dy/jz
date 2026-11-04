@@ -678,7 +678,8 @@ function coerceRest(node, v, vt, nullable = false) {
   // float machinery (__ftoa/__ftoa_shortest, ~2 KB). A raw i32 value (`n|0`, a bitwise
   // result, a loop counter) carries no NaN-box, so its ToString is just digits + sign.
   // ptrKind != null means it's an unboxed pointer (i32 offset), NOT a number — exclude.
-  if (v.type === 'i32' && v.ptrKind == null) {
+  // (an unsigned word is past the signed formatter from 2^31: the Number path prints it)
+  if (v.type === 'i32' && v.ptrKind == null && !v.unsigned) {
     const range = intExprRange(node)
     // A proven decimal digit uses the existing inline-string encoding and
     // needs neither a formatter nor an allocation. Evaluate the value once.

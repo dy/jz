@@ -407,9 +407,9 @@ export default (ctx) => {
     __ryu_pow5div: [],
     __i32_to_str: ['__itoa_s', '__mkstr_scratch'],
     __itoa_s: ['__itoa'],
-    __itoa: lean ? [] : ['__utoa_n'],
+    __itoa: lean ? ['__udigits'] : ['__utoa_n'],
     __itoa_sn: lean ? ['__itoa'] : ['__utoa_n'],
-    __ilen: [],
+    __ilen: lean ? ['__udigits'] : [],
     __radix_str: ['__mkstr_scratch'],
     __num_radix: ['__ftoa', '__mkstr_scratch'],
     __to_num: ['__char_at', '__str_length', '__pow10', '__dec_to_f64', '__to_str', '__skipws', '__ptr_aux', '__is_object', '__to_prim_num'],
@@ -484,7 +484,7 @@ export default (ctx) => {
   ctx.core.stdlib['__itoa'] = lean
     ? `(func $__itoa (param $val i32) (param $buf i32) (result i32)
     (local $len i32) (local $end i32)
-    (local.set $len ${uintDigitsWat('(local.get $val)')})
+    (local.set $len (call $__udigits (local.get $val)))
     (local.set $end (i32.add (local.get $buf) (i32.shl (local.get $len) (i32.const 1))))
     (loop $l
       (local.set $end (i32.sub (local.get $end) (i32.const 2)))
@@ -526,7 +526,14 @@ export default (ctx) => {
       (then
         (local.set $val (i32.sub (i32.const 0) (local.get $val)))
         (local.set $n (i32.const 1))))
-    (i32.add (local.get $n) ${uintDigitsWat('(local.get $val)')}))`
+    (i32.add (local.get $n) ${lean ? '(call $__udigits (local.get $val))' : uintDigitsWat('(local.get $val)')}))`
+  // The size tier counts a word's digits by dividing, once, where the speed tier compares in place.
+  ctx.core.stdlib['__udigits'] = `(func $__udigits (param $v i32) (result i32)
+    (local $n i32)
+    (loop $l
+      (local.set $n (i32.add (local.get $n) (i32.const 1)))
+      (br_if $l (local.tee $v (i32.div_u (local.get $v) (i32.const 10)))))
+    (local.get $n))`
 
   // __itoa_s(val: i32, buf: i32) → i32 (code units written) — signed decimal render at
   // buf: '-' + digits over the unsigned magnitude. The render core shared by

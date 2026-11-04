@@ -1408,6 +1408,22 @@ test('minimal: the size tier prints an integer by one walk', () => {
   ok(!funcWat(w, '__i32_to_str').includes('$packed'), 'no digit-packing loop')
 })
 
+// One walk counts a word's digits at the size tier (module/number.js `__udigits`).
+test('minimal: the size tier counts digits at every magnitude', () => {
+  if (skip) return
+  const src = `export let f = (n) => String(n | 0); export let g = (n) => ('' + (n | 0) + 'x').length; export let h = (n) => [n | 0].join()
+    export let u = (n) => String(n >>> 0) + 'x' + (n >>> 0)
+    export let c = (x, n) => { const w = String(x); let t = ''; for (let i = 0; i < n; i++) t = w + i; return t }
+    export let d = (w, n) => String(w) + (n | 0)`
+  const want = oracle(src), values = [0, 1, -1, 9, 10, -10, 99, 100, 999, 1000, 99999, 100000, 999999, 1000000, -1000000, 9999999, 2147483647, -2147483648, 1000000000]
+  for (const optimize of levels(0, 2, 'size')) {
+    const { f, g, h, u, c, d } = jz(src, { optimize }).exports
+    for (const v of values) { is(f(v), want.f(v), `String(${v}) at ${optimize}`); is(g(v), want.g(v), `length at ${v}`); is(h(v), want.h(v), `join at ${v}`); is(u(v), want.u(v), `unsigned at ${v}`); is(d('w', v), want.d('w', v), `word leaf at ${v}`) }
+    for (const n of [1, 2, 11, 1001]) is(c('wxyz', n), want.c('wxyz', n), `a counter leaf at ${n}, ${optimize}`)
+    is(c('', 2), '1', 'an empty head packs')
+  }
+})
+
 // A count kept in a Map reads Number or missing: a fused update carries that kind
 // (compile/slot-update.js), so \`|| 0\` and a truth test need no ToNumber or tag test.
 test('minimal: a fused update reads the kind of its read', () => {

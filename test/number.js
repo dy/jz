@@ -124,7 +124,7 @@ test('integer formatting: exact UTF-16 writes at decimal and memory boundaries',
       export let g = (v) => 'y' + (v|0)`, { optimize: { level, watr: false } })
     // Isolate the actual helpers so a wrong width cannot hide in spare heap space.
     // (__utoa_n, the two-digit writer, is not linked at the size tier)
-    const names = ['__itoa', '__itoa_s', '__itoa_sn', '__ilen', '__utoa_n'].filter(name => new RegExp(`\\(func \\$${name}\\b`).test(text))
+    const names = ['__itoa', '__itoa_s', '__itoa_sn', '__ilen', '__utoa_n', '__udigits'].filter(name => new RegExp(`\\(func \\$${name}\\b`).test(text))
     // (the size tier pools repeated constants into globals the helpers read)
     const pooled = text.match(/\(global \$__f[cf]\d+[\s\S]*?\n  \)/g) || []
     const { memory, __itoa, __itoa_s, __itoa_sn, __ilen } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(`(module
@@ -136,7 +136,8 @@ test('integer formatting: exact UTF-16 writes at decimal and memory boundaries',
     const edges = [0, 0, 1, 2147483647, 2147483648, 4294967295]
     for (let n = 10; n <= 1e9; n *= 10) edges.push(n - 1, n, n + 1)
     edges.push(42, 42, 4294967295, 42)
-    const writers = [[false, __itoa], [true, __itoa_s], [true, (v, at) => (__itoa_sn(v, at, __ilen(v)), __ilen(v))]]
+    // (at the size tier these sources take the fused concat alone: no __itoa_s)
+    const writers = [[false, __itoa], ...(__itoa_s ? [[true, __itoa_s]] : []), [true, (v, at) => (__itoa_sn(v, at, __ilen(v)), __ilen(v))]]
     for (const [signed, write] of writers) for (const edge of edges) {
       const value = signed ? edge | 0 : edge
       const expected = String(value)
