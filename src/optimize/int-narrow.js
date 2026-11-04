@@ -23,7 +23,7 @@
 // by loop depth. A value that may be -0 narrows only when nothing can see the
 // sign of its zero: every read is an integer consumer's.
 
-import { intRanges, isInt, fitsI32, remainderOf, quotientOf, pure, plainNaN, conditional, KIND, LIMIT } from './int-range.js'
+import { intRanges, isInt, fitsI32, remainderOf, quotientOf, pure, plainNaN, conditional, KIND, MADE, LIMIT } from './int-range.js'
 import { int32 } from '../static.js'
 
 const isArr = Array.isArray
@@ -697,9 +697,9 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide', kno
         return out
       }
     }
-    // What the runtime answers about a number: it is no key, no missing value
-    // and no object, and two numbers are equal as numbers are.
-    if (op === 'call' && n.length === 3 && typeof n[1] === 'string' && KIND.test(n[1]) && at(n)?.hi === 0) {
+    // What the runtime answers about a number: it is no key, no missing value,
+    // no object and no memory made, and two numbers are equal as numbers are.
+    if (op === 'call' && n.length === 3 && typeof n[1] === 'string' && (KIND.test(n[1]) || n[1] === MADE) && at(n)?.hi === 0) {
       did = true
       return pure(n[2]) ? ['i32.const', 0] : ['block', ['result', 'i32'], ['drop', F(n[2])], ['i32.const', 0]]
     }

@@ -134,6 +134,22 @@ test('int-range: a sum is NaN only of two opposite infinities, a difference of t
   is(read('(f64.mul (local.get $x) (f64.const 0.5))'), true, 'an infinity times zero, the product left as it was')
 })
 
+test('int-narrow: a Number names no memory a call made, where the store asks', () => {
+  // (the speculated copy of a loop knows the element a Number: its sum is one, and the store asks nothing)
+  const src = `(module
+    (func $__esc_new (param $v f64) (result i32) (i32.eqz (f64.eq (local.get $v) (local.get $v))))
+    (func $f (export "f") (param $x f64) (result i32)
+      (if (result i32) (f64.eq (local.get $x) (local.get $x))
+        (then (call $__esc_new (f64.add (local.get $x) (f64.const 1))))
+        (else (i32.const 2)))))`
+  const ir = parseWat(src), fn = ir.find(n => n[0] === 'func' && n[1] === '$f')
+  const before = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  narrowInts(fn)
+  ok(!JSON.stringify(fn).includes('$__esc_new'), 'the question is answered: no call')
+  const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
+  for (const x of [0, -0, 1, -1.5, 2 ** 60, Infinity, -Infinity, NaN]) is(after(x), before(x), `x=${x}`)
+})
+
 test('int-narrow: nested fast loops reuse the established Number bound', () => {
   const source = `export function f(n) { let s=0
     for(let i=0;i<n;i++) for(let j=0;j<n;j++) s=(s+i)|0

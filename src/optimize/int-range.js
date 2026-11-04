@@ -286,6 +286,9 @@ const forwarded = (v, x) => isArr(v) && v[0] === 'call' && v[1] === '$__gc_fwd' 
 const selfForward = m => m.length === 3 && (forwarded(m[2], m[1]) || (m[2]?.[0] === 'f64.reinterpret_i64' && forwarded(m[2][1], m[1])))
 
 export const KIND = /^\$__is_(str_key|nullish|null|object)$/
+// The runtime's question whether a value names memory a call may have made
+// (module/core.js `__esc_new`): a Number names none.
+export const MADE = '$__esc_new'
 
 /** The remainder the emitter lowers `x % K` to for a constant K:
  *  `copysign(x - trunc(x / K) * K, x)` with `x` written out three times, or
@@ -960,6 +963,7 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     // A number is no string key, no missing value and no object; two values
     // are equal or they are not.
     if (op === 'call' && typeof n[1] === 'string' && KIND.test(n[1])) return a?.of && a.mask == null ? answer(0) : BOOL
+    if (op === 'call' && n[1] === MADE && n.length === 3) return real(a) ? answer(0) : BOOL
     if (op === 'call' && n[1] === '$__eq_strict') return BOOL
     // A collection moves boxes: a number's bits, which are no box, it forwards as they are
     // (a loop's compaction arm forwards every float local it may hold a pointer in).
