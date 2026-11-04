@@ -817,6 +817,8 @@ length can omit constants that the linked helpers read.
 Shortest decimal, integer and radix formatting release their private scratch
 region for inline short strings, or replace it with the final heap string.
 Shared-memory formatters leave cursor ownership with the shared allocator.
+At the size tier one walk packs a short result (`__sso_pack`, by `__char_at`), for
+a concat and for `__sso_norm` alike, and it answers the empty result too.
 Closure deduplication hashes finite number bits and shares declaration ordinals
 between hashing and exact comparison, without formatting numbers or copying IR.
 The linker orders functions by descending call count, then runtime before user

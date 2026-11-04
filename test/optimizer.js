@@ -3167,7 +3167,7 @@ test('single-char index equality: the unit read answers alone, inline, for every
   is((body.match(/call \$__str_length\b/g) || []).length, 1, 'only the NUL literal tests the length')
   const lean = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
   is((lean.match(/call \$__char_at\b/g) || []).length, 4, 'the size tier reads each unit by one call')
-  is((lean.match(/call \$__str_length\b/g) || []).length, 1, 'the size tier tests a length for NUL alone')
+  is((lean.match(/call \$__str_length\b/g) || []).length, 2, 'the size tier tests a length for NUL, and `__char_at` reads one')
   is(run(src, { optimize: 'size' }).main(), oracle(src).main(), 'the size tier agrees')
 })
 

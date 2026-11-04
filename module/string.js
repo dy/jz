@@ -26,6 +26,7 @@ import { T } from '../src/ast.js'
 import { typed, boxedPtrTypeEq, asF64, asI32Sat, asI64, asPtrOffset, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY, numberNanIR } from '../src/ir.js'
 import { emit, argIR, storedValue, positionArgs, withIgnoredArgs, bool, method, deps, general, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, isPresentNumber } from '../src/kind.js'
+import { intExprRange } from '../src/static.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal } from '../src/ctx.js'
 import { dataAlign, dataPush, dataLen, dataRecord, strPoolPush } from '../src/static-data.js'
@@ -172,13 +173,17 @@ export const internProbeWat = () => ctx.scope.globals.has('__internBase') ? `
 export default (ctx) => {
   // Size tier: the runtime walks link their plain bodies (see `__str_eq`).
   const lean = !!ctx.transform.optimize?.leanRuntime
+  const ssoPack = lean ? ['__sso_pack'] : []
   // memory for an in-place extension's end: the helper runs only past the memory's end (the size tier asks always)
   const growTo = (v) => lean ? `(call $__memgrow (local.get ${v}))` : `(if (i32.gt_u (local.get ${v}) (global.get $__heap_end)) (then (call $__memgrow (local.get ${v}))))`
   deps({
-    __str_concat: ['__to_str', '__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
-    __str_concat_raw: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
-    __str_concat_fresh: ['__to_str', '__str_length', '__alloc', '__mkptr', '__str_copy'],
-    __str_concat_raw_fresh: ['__str_length', '__alloc', '__mkptr', '__str_copy'],
+    __str_concat: ['__to_str', '__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy', ...ssoPack],
+    __str_concat_raw: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy', ...ssoPack],
+    __str_concat_fresh: ['__to_str', '__str_length', '__alloc', '__mkptr', '__str_copy', ...ssoPack],
+    __str_concat_raw_fresh: ['__str_length', '__alloc', '__mkptr', '__str_copy', ...ssoPack],
+    __sso_pack: ['__char_at'],
+    __char_at: lean ? ['__str_length'] : [],
+    __sso_fresh: ['__sso_pack'],
     __str_concat_raw_long: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_concat_raw_fresh_long: ['__str_length', '__alloc', '__mkptr', '__str_copy'],
     __str_append_unit: ['__str_length', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
@@ -209,7 +214,7 @@ export default (ctx) => {
     __str_replaceall_subst: ['__str_indexof', '__str_slice', '__str_concat', '__str_length', '__str_subst'],
     __str_split: ['__str_slice', '__str_length', '__char_at', '__alloc_hdr', '__dense_check'],
     __str_idx: ['__char_unit'],
-    __sso_norm: [],
+    __sso_norm: lean ? ['__sso_fresh'] : [],
     __bytes_decode: ['__typed_data', '__byte_length', '__ptr_type', '__utf8_decode'],
     __str_eq: lean || !ctx.features.sso ? ['__char_at', '__str_length'] : ['__str_eq_tail'],
     __str_eq_tail: lean || !ctx.features.sso ? ['__char_at', '__str_length'] : ['__str_eq_cold'],
@@ -353,7 +358,14 @@ export default (ctx) => {
   // load+bounds-check, beating call-site overhead. Repeated `i32.wrap_i64 +
   // i64.and OFFSET_MASK` subexpressions rely on CSE in the consumer; both
   // V8/TurboFan and watr's own propagate pass handle this.
-  wat('__char_at', `(func $__char_at (param $ptr i64) (param $i i32) (result i32)
+  // (the size tier takes the length's one reading of a string)
+  if (lean) wat('__char_at', `(func $__char_at (param $ptr i64) (param $i i32) (result i32)
+    (if (result i32) (i32.ge_u (local.get $i) (call $__str_length (local.get $ptr)))
+      (then (i32.const 0))
+      (else (if (result i32) (i64.ne (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+        (then ${ssoCharWat('(local.get $ptr)', '(local.get $i)')})
+        (else (i32.load16_u (i32.add (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))) (i32.shl (local.get $i) (i32.const 1)))))))))`)
+  else wat('__char_at', `(func $__char_at (param $ptr i64) (param $i i32) (result i32)
     (if (result i32)
       (i64.ne (i64.and (local.get $ptr) (i64.const ${SSO_BIT_I64})) (i64.const 0))
       (then
@@ -1234,7 +1246,10 @@ export default (ctx) => {
   // compile time (one or both operands runtime values). Critical for the
   // identifier-style `'$' + x` / `prefix + s` patterns hot in parsers.
   // Both-SSO short result: splice the two 42-bit char payloads — no walk, no alloc.
-  const ssoResultFast = `
+  // (the size tier's pack answers the empty result too)
+  const emptyResult = lean ? '' : `(if (i32.eqz (local.get $total))
+      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))`
+  const ssoResultFast = lean ? '' : `
     (if (i32.and
           (i32.and
             (i64.ne (i64.and (local.get $a) (i64.const ${SSO_BIT_I64})) (i64.const 0))
@@ -1254,7 +1269,10 @@ export default (ctx) => {
   // Mixed/heap-source short result: walk the ≤6 source bytes (SSO lane or heap
   // load per side), bail to the caller's heap path on a non-ASCII byte. Upholds
   // the module invariant for concat regardless of operand representation.
-  const concatSsoPack = `
+  const concatSsoPack = lean ? `
+    (if (i32.le_u (local.get $total) (i32.const ${MAX_SSO}))
+      (then (if (i64.ne (local.tee $ksp (call $__sso_pack (local.get $a) (local.get $b) (local.get $alen) (local.get $total))) (i64.const 0))
+        (then (return (f64.reinterpret_i64 (local.get $ksp)))))))` : `
     (if (i32.le_u (local.get $total) (i32.const ${MAX_SSO}))
       (then (block $kspill
         (local.set $ksp (i64.const 0))
@@ -1406,9 +1424,7 @@ export default (ctx) => {
     (local.set $alen (call $__str_length (local.get $a)))
     (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
-    (if (i32.eqz (local.get $total))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-    ${ssoResultFast}
+    ${emptyResult}${ssoResultFast}
     ${concatSsoPack}
     ${concatFast}${allocCopyTail}`)
 
@@ -1419,9 +1435,7 @@ export default (ctx) => {
     (local.set $alen (call $__str_length (local.get $a)))
     (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
-    (if (i32.eqz (local.get $total))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-    ${ssoResultFast}
+    ${emptyResult}${ssoResultFast}
     ${concatSsoPack}
     ${concatFast}${allocCopyTail}`)
 
@@ -1436,9 +1450,7 @@ export default (ctx) => {
     (local.set $alen (call $__str_length (local.get $a)))
     (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
-    (if (i32.eqz (local.get $total))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-    ${ssoResultFast}
+    ${emptyResult}${ssoResultFast}
     ${concatSsoPack}${allocCopyTail}`)
 
   wat('__str_concat_raw_fresh', `(func $__str_concat_raw_fresh (param $a i64) (param $b i64) (result f64)
@@ -1447,9 +1459,7 @@ export default (ctx) => {
     (local.set $alen (call $__str_length (local.get $a)))
     (local.set $blen (call $__str_length (local.get $b)))
     (local.set $total (i32.add (local.get $alen) (local.get $blen)))
-    (if (i32.eqz (local.get $total))
-      (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
-    ${ssoResultFast}
+    ${emptyResult}${ssoResultFast}
     ${concatSsoPack}${allocCopyTail}`)
 
   // Long twins: a side statically longer than the SSO capacity (a literal, a
@@ -2359,7 +2369,7 @@ export default (ctx) => {
     (if (i32.lt_u (local.get $off) (i32.const 4)) (then (return (local.get $s))))
     (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (if (i32.gt_u (local.get $len) (i32.const ${MAX_SSO})) (then (return (local.get $s))))
-    (local.set $sp (i64.const 0))
+    ${lean ? `(return (call $__sso_fresh (local.get $b) (local.get $len)))` : `(local.set $sp (i64.const 0))
     (block $spill
       (block $d (loop $l
         (br_if $d (i32.ge_u (local.get $i) (local.get $len)))
@@ -2373,8 +2383,37 @@ export default (ctx) => {
         (i64.or
           (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
           (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 42)))
-        (local.get $sp)))))
+        (local.get $sp)))))`}
     (local.get $s))`)
+  // A plain heap string of `$n` units, made here, in its canonical form (size tier).
+  wat('__sso_fresh', `(func $__sso_fresh (param $s i64) (param $n i32) (result f64)
+    (local $p i64)
+    (if (i32.le_u (local.get $n) (i32.const ${MAX_SSO}))
+      (then (if (i64.ne (local.tee $p (call $__sso_pack (local.get $s) (local.get $s) (local.get $n) (local.get $n))) (i64.const 0))
+        (then (return (f64.reinterpret_i64 (local.get $p)))))))
+    (f64.reinterpret_i64 (local.get $s)))`)
+  // The size tier's one pack of up to ${MAX_SSO} units, `$a`'s first `$alen` then
+  // `$b`'s: the inline string, or 0 at a unit past ASCII.
+  wat('__sso_pack', `(func $__sso_pack (param $a i64) (param $b i64) (param $alen i32) (param $total i32) (result i64)
+    (local $i i32) (local $c i32) (local $sp i64)
+    (block $spill
+      (loop $l
+        (if (i32.lt_u (local.get $i) (local.get $total))
+          (then
+            (local.set $c (if (result i32) (i32.lt_u (local.get $i) (local.get $alen))
+              (then (call $__char_at (local.get $a) (local.get $i)))
+              (else (call $__char_at (local.get $b) (i32.sub (local.get $i) (local.get $alen))))))
+            (br_if $spill (i32.ge_u (local.get $c) (i32.const 0x80)))
+            (local.set $sp (i64.or (local.get $sp)
+              (i64.shl (i64.extend_i32_u (local.get $c)) (i64.mul (i64.extend_i32_u (local.get $i)) (i64.const 7)))))
+            (local.set $i (i32.add (local.get $i) (i32.const 1)))
+            (br $l))))
+      (return (i64.or
+        (i64.or
+          (i64.const ${ptrNanHex(PTR.STRING, LAYOUT.SSO_BIT)})
+          (i64.shl (i64.extend_i32_u (local.get $total)) (i64.const 42)))
+        (local.get $sp))))
+    (i64.const 0))`)
 
   // Evaluate arguments first, then coerce from left to right. UTF-16 units
   // are retained exactly (ToUint16 is ToInt32's low half); code points above
@@ -2407,6 +2446,9 @@ export default (ctx) => {
         ['local.get', `$${out}`]], 'f64')
     }
     const one = (node, ir) => ['call', `$${make}`, unit(toNumF64(node, ir))]
+    // (a code the range holds to ASCII is the one inline unit: no test, no heap arm)
+    const r = charCodes && codes.length === 1 ? intExprRange(codes[0]) : null
+    if (r && r[0] >= 0 && r[1] < 0x80) return mkPtrIR(PTR.STRING, ssoAux(1), toInt32(toNumF64(codes[0], emit(codes[0]))))
     if (codes.length === 1) return typed(one(codes[0], emit(codes[0])), 'f64')
     inc('__str_concat_raw')
     const raw = codes.map(() => temp('cu'))

@@ -539,7 +539,11 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
   walk(a); walk(b)
   // Self-accumulating head: fuse only the tail, join with bump-extend after.
   const headAccum = selfAccum && leaves[0] === a && typeof a === 'string' ? leaves.shift() : null
-  if (leaves.length < 3) return null
+  // (a word beside a string only where that string is one: a read that misses adds as a Number)
+  const literal = (l) => Array.isArray(l) && l[0] === 'str'
+  const word = (l) => typeof l === 'string' && ctx.func.locals?.get(l) === 'i32' && valTypeOf(l) === VAL.NUMBER
+  const present = (l) => ctx.summary?.at(ctx.func.current).mayBeNullishExpr(l) === false
+  if (leaves.length < 3 && !(ctx.transform.optimize?.leanRuntime && leaves.length === 2 && (leaves.some(literal) || leaves.some(word) && leaves.every(present)))) return null
   // Every leaf must stringify deterministically at this site: known kinds
   // (STRING/OBJECT/BOOL/NUMBER) or unknown-through-__to_str. BIGINT joins
   // numerically elsewhere — bail so the existing lowering keeps its path.
@@ -553,7 +557,7 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
   })) return null
   const asBuf = bufTarget != null && headAccum == null
   if (asBuf) inc('__alloc')
-  else inc('__alloc', '__mkptr', '__sso_norm')
+  else inc('__alloc', '__mkptr')
   // LITERAL ASCII leaves (the serializer separators — ',', '\n', 'k=' …) carry
   // their bytes and length at compile time: no box/len temps, no __str_length,
   // no __str_copy — the length const-folds into the total and the bytes store
@@ -656,9 +660,13 @@ export function tryConcatChain(a, b, selfAccum, bufTarget) {
   // re-canonicalize — a ≤6-ASCII result MUST be SSO or its hash diverges
   // from a literal/SSO-built equal string (representation-keyed fast paths:
   // the SSO arithmetic mix vs the byte-FNV walk) and keyed lookups miss.
-  const fresh = typed(['block', ['result', 'f64'],
-    ...seq,
-    ['call', '$__sso_norm', mkPtrIR(PTR.STRING, STR_HCACHE_BIT, ['local.get', `$${offT}`])]], 'f64')
+  // (a chain whose literals and digits alone pass the six units an SSO holds has nothing to pack)
+  const made = mkPtrIR(PTR.STRING, STR_HCACHE_BIT, ['local.get', `$${offT}`])
+  const short = litTotal + nT.filter(t => t != null).length <= 6
+  const lean = ctx.transform.optimize?.leanRuntime
+  if (short) inc(lean ? '__sso_fresh' : '__sso_norm')
+  const fresh = typed(['block', ['result', 'f64'], ...seq,
+    !short ? made : lean ? ['call', '$__sso_fresh', ['i64.reinterpret_f64', made], totalIR()] : ['call', '$__sso_norm', made]], 'f64')
   if (headAccum != null)
     return typed(ctx.abi.string.ops.concatRaw(asF64(emit(headAccum)), fresh, ctx, true), 'f64')
   return fresh

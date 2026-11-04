@@ -1441,6 +1441,23 @@ test('minimal: the size tier counts digits at every magnitude', () => {
   }
 })
 
+// A concat of literals and digits whose count alone passes six units skips the
+// SSO check; six or fewer still pack it, or a Map or \`===\` would miss the literal.
+test('minimal: a short concat stays canonical', () => {
+  if (skip) return
+  const src = `export let f = (n) => {
+    const m = new Map(), c = String.fromCharCode(97 + (n | 0)), d = n | 0
+    m.set('abcdef', 1); m.set('abcde', 2); m.set('abcdefg', 3); m.set('a0', 4); m.set('a0bcd', 5); m.set('a0bcde', 6)
+    return (m.get(c + 'bcdef') | 0) + (m.get(c + 'bcde') | 0) * 10 + (m.get(c + 'bcdefg') | 0) * 100 + (m.get('a' + d) | 0) * 1000 +
+      (m.get('a' + d + 'bcd') | 0) * 10000 + (m.get('a' + d + 'bcde') | 0) * 100000 + ((c + 'bcdef' === 'abcdef') ? 1000000 : 0) + (('' + c + c).length) * 10000000
+  }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
+  const w = (t) => funcWat(compile(`export let f = (n) => { const c = String(n); return ${t} }`, { optimize: { level: 'size', watr: false }, wat: true }), 'f')
+  ok(!/call \$__sso_norm/.test(w(`'abcd' + c + 'efgh'`)), 'seven literal units: no check')
+  ok(/call \$__sso_fresh/.test(w(`'ab' + c + 'cd'`)), 'six or fewer: the check')
+})
+
 // A count kept in a Map reads Number or missing: a fused update carries that kind
 // (compile/slot-update.js), so \`|| 0\` and a truth test need no ToNumber or tag test.
 test('minimal: a fused update reads the kind of its read', () => {
@@ -1463,6 +1480,31 @@ test('minimal: a fused update reads the kind of its read', () => {
   ok(!/__to_num\b|i64\.eq/.test(body.slice(body.indexOf('__map_slot'))), 'the old value is a Number past the test')
   const tested = funcWat(compile(`export let f = (k) => { const t = new Map(); t.set(k, 1); t.set(k, t.get(k) ? 1 : 2); return t.get(k) }`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
   ok(!/__is_truthy|__to_bool/.test(tested), 'a truth test of the old value tests a Number')
+})
+
+// One walk reads and packs short strings at the size tier (module/string.js
+// `__sso_pack`, `__char_at` by `__str_length`): an SSO, a heap string and a view on
+// either side, the empty result, a unit past ASCII that stays on the heap.
+test('minimal: a short string reads and packs at the size tier', () => {
+  if (skip) return
+  const src = `
+    export let cat = (a, b) => { const s = a + b; const m = new Map(); m.set('abcdef', 1); m.set('', 2); m.set('ab', 3); return s + '|' + s.length + '|' + (m.get(s) | 0) + '|' + (s === 'abcdef') }
+    export let view = (a) => { const v = a.slice(2, 5); return (v + 'xyz') + '|' + v.charCodeAt(1) + '|' + v.charCodeAt(5) + '|' + v.charCodeAt(-1) }
+    export let at = (a, i) => a.charCodeAt(i)
+    export let of = (n) => { const a = String.fromCharCode(97 + (n & 7)), b = String.fromCharCode((n & 127) + 1), c = String.fromCharCode(n & 127); return a + '|' + b.charCodeAt(0) + '|' + b.length + '|' + c.charCodeAt(0) + '|' + (a === 'c') }`
+  const want = oracle(src), words = ['', 'a', 'ab', 'abc', 'abcdef', 'abcdefg', 'caf\u00e9', '\u00e9', 'long string on the heap', 'def']
+  for (const optimize of levels(0, 2, 'size')) {
+    const { cat, view, at, of } = jz(src, { optimize }).exports
+    for (const a of words) {
+      for (const b of words) is(cat(a, b), want.cat(a, b), `${JSON.stringify(a)} + ${JSON.stringify(b)} at ${optimize}`)
+      is(view(a), want.view(a), `view of ${JSON.stringify(a)} at ${optimize}`)
+      for (const i of [0, 1, 5, 6, 7, 100, -1]) ok(Object.is(at(a, i), want.at(a, i)), `${JSON.stringify(a)}[${i}] at ${optimize}`)
+    }
+    for (const n of [0, 2, 7, 96, 126, 127, 255, 1000]) is(of(n), want.of(n), `char code ${n} at ${optimize}`)
+  }
+  const ascii = funcWat(compile(`export let f = (n) => String.fromCharCode(97 + (n & 7))`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
+  ok(!/__char_unit/.test(ascii), 'a code the range holds to ASCII is one inline unit')
+  ok(/__char_unit/.test(funcWat(compile(`export let f = (n) => String.fromCharCode((n & 127) + 1)`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')), 'one past ASCII is not')
 })
 
 // A word's remainder is a word (`next() % n` of a function narrowed to an unsigned
