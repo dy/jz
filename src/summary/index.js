@@ -1116,6 +1116,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (recvName !== null && typeof idx === 'string' && indexBounds.get(idx) === recvName) return
     // (a counter the loop bounds by the length the cell's count aliases: `new Array(n)` under `i < n`, `n = coefs.length`)
     if (typeof idx === 'string' && countBounds(c, idx)) return
+    // (a counter the loop bounds by this array's own length, which it leaves alone: a cell the array has, as a read there is present)
+    if (recvName !== null && typeof idx === 'string' && lenStable.has(idx) && lenBounds.get(idx) === keyOf(recvName)) return
     const span = typeof idx === 'string' && isArrayIndexKey(idx) ? [+idx, +idx] : spanOf(idx)
     // A store can skip positions beyond the constructed count. Those cells
     // are absent even when every value explicitly stored is a Number/object.
@@ -4558,7 +4560,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return runs
   }
   const lengthStores = new WeakMap()   // body → arr → whether a statement stores to its length (a syntactic fact)
-  const storesLength = (body, arr) => {
+  const storesLength = (body, arr, counter) => {
     let byArr = lengthStores.get(body)
     if (!byArr) lengthStores.set(body, byArr = new Map())
     const known = byArr.get(arr)
@@ -4566,15 +4568,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     let may = false
     const walk = (m) => {
       if (may || !Array.isArray(m)) return
-      // a store to `.length`, or under a computed key that may be `'length'`
-      if (MUTATE_OPS.has(m[0]) && Array.isArray(m[1]) && ((m[1][0] === '.' || m[1][0] === '?.') && m[1][1] === arr && m[1][2] === 'length' || m[1][0] === '[]' && m[1][1] === arr && literalKeyOf(m[1][2]) === null && !(Array.isArray(m[1][2]) && m[1][2][0] == null && typeof m[1][2][1] === 'number'))) { may = true; return }
+      // a store to `.length`, or under a computed key that may be `'length'` (the loop's own counter, a Number, is none)
+      if (MUTATE_OPS.has(m[0]) && Array.isArray(m[1]) && ((m[1][0] === '.' || m[1][0] === '?.') && m[1][1] === arr && m[1][2] === 'length' || m[1][0] === '[]' && m[1][1] === arr && m[1][2] !== counter && literalKeyOf(m[1][2]) === null && !(Array.isArray(m[1][2]) && m[1][2][0] == null && typeof m[1][2][1] === 'number'))) { may = true; return }
       for (let i = 1; i < m.length; i++) walk(m[i])
     }
     walk(body)
     byArr.set(arr, may)
     return may
   }
-  const lengthMayChange = (counter, body, arr) => !Array.isArray(body) || loopPure.get(counter) !== true || storesLength(body, arr)
+  const lengthMayChange = (counter, body, arr) => !Array.isArray(body) || loopPure.get(counter) !== true || storesLength(body, arr, counter)
   // A typed element read inside the count: the index's span within the length
   // the walk knows, or a counter the loop bounds by that array's length.
   // The walk's verdict for a read is kept by node (`presentReads`): a counter's

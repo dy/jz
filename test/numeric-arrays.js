@@ -278,3 +278,37 @@ test('numeric arrays: a call no value reaches the receiver of reads nothing', ()
   const selfTests = (t) => (t.match(/\(f64\.ne \(local\.get (\$\S+)\) \(local\.get \1\)\)/g) || []).length
   for (const optimize of levels(2, 3)) is(selfTests(funcWat(wat(src, { optimize }), 'f')), 0, `f reads and stores the scratch's elements raw O${optimize}`)
 })
+
+test('numeric arrays: a store under the length of its own array keeps a pushed array raw', () => {
+  // (a counter the loop bounds by the length it leaves alone stores into a cell the array
+  // has: no hole, so the read there is a Number, and the elements stay Numbers)
+  const build = `const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }`
+  const src = `${build}
+    const bump = (a) => { for (let i = 0; i < a.length; i++) a[i] = a[i] + 1; return a[0] }
+    export let f = (n) => {
+      const a = build(n)
+      let s = 0
+      for (let k = 0; k < 3; k++) s += bump(a)
+      for (let i = 0; i < n; i++) s = (s * 31 + a[i]) % 1000003
+      return s + a.length
+    }`
+  // (the length moves under these: each answers as the host does)
+  const moved = `${build}
+    const grow = (a) => { for (let i = 0; i < a.length; i++) { a[i] = a[i] * 2; if (i === 2) a.push(-1) } return a[a.length - 1] }
+    const cut = (a) => { for (let i = 0; i < a.length; i++) { a[i] = a[i] + 3; if (i === 1) a.length = 3 } return a.length }
+    const hole = (a) => { a.length += 2; for (let i = 0; i < a.length; i++) a[i] = a[i] + 1; return a[a.length - 1] }
+    export let f = (n) => { const b = build(n), c = build(n), d = build(n); return grow(b) + b.length + cut(c) + c[c.length - 1] + hole(d) + d.length }`
+  // (pops below the counter before its store: the store leaves a hole under it)
+  const dropped = `${build}
+    const drop = (a) => { for (let i = 0; i < a.length; i++) { if (i === 2) { a.pop(); a.pop(); a.pop(); a.pop() } a[i] = 7 } return a[1] }
+    export let f = (n) => { const e = build(n), r = drop(e); return (r === undefined ? -1 : r) + e.length }`
+  for (const program of [src, moved, dropped]) {
+    const want = oracle(program)
+    for (const optimize of tiers()) {
+      const got = jz(program, { optimize }).exports
+      for (const n of [0, 1, 3, 5, 40]) is(got.f(n), want.f(n), `f(${n}) O${optimize}`)
+    }
+  }
+  if (belowOpt(2)) return
+  is(canons(funcWat(wat(src, { optimize: UNOPT }), 'bump')), 0, 'the store keeps its bits: no canonicalization')
+})
