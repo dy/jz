@@ -256,6 +256,10 @@ const coerceNullishToStr = (valIR, nullable = false) => {
  *  which takes every NaN to 0 as it takes undefined and null to 0: a Number
  *  that may be missing or nullish converts as it lies (a hole, a miss's or a
  *  stored box being a NaN), with no test mapping it to the canonical NaN. */
+// `x || c`, `x ?? c` of a literal `c` that is no nullish: a value whatever `x` is.
+const fallsBackPresent = (n) => Array.isArray(n) && (n[0] === '||' || n[0] === '??') && n.length === 3 &&
+  (Array.isArray(n[2]) && (n[2][0] == null && n[2].length === 2 && n[2][1] != null || n[2][0] === 'str') || fallsBackPresent(n[2]))
+
 export function toNumF64(node, v, word = false) {
   // Source literals stay constant even when emit interns their sentinel in
   // a global. Recognize them before asking whether a runtime helper is loaded.
@@ -304,7 +308,9 @@ export function toNumF64(node, v, word = false) {
   // Number|absent needs only undefined→NaN, including values carried through
   // aliases and callback parameters. The settled kind excludes null, booleans,
   // strings and objects, whose numeric conversion has other behavior.
-  const readKind = ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? K.NONE
+  // (a fused update's old value is its read's, compile/slot-update.js)
+  const read = typeof node === 'string' ? ctx.func.slotReads?.get(node) ?? node : node
+  const readKind = ctx.summary?.at(ctx.func.current).kindOfExpr(read) ?? K.NONE
   if ((readKind & TAGS) === (bitOf(K.NUMBER) | bitOf(K.ABSENT)) ||
       Array.isArray(node) && node[0] === '[]' && typeof node[1] === 'string' && repOf(node[1])?.arrayHoles) {
     if (v.presentNumRead || !mayMissValue(node, v)) return asF64(v)
@@ -379,8 +385,9 @@ export function toNumF64(node, v, word = false) {
       return coerceNullishToNum(asF64(v))
     }
     // The kind names what a read finds; a read that finds nothing answers undefined.
-    // (an element read as it lies in memory takes its miss to NaN in place, as above)
-    if (typeof node !== 'string' && (mayYieldUndef(v) || mayMissValue(node, v)))
+    // (an element read as it lies in memory takes its miss to NaN in place, as above;
+    // `x || 0`, `x ?? 1` answer their literal where `x` is missing)
+    if (typeof node !== 'string' && !fallsBackPresent(node) && (mayYieldUndef(v) || mayMissValue(node, v)))
       return word ? asF64(asStored(v)) : cellAsNumber(node, v) || missToNaN(v)
     return asF64(v)
   }

@@ -5,7 +5,7 @@
  */
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
-import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, readI64, storedElement, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
+import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, missToNaN, readI64, storedElement, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
 import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf, stringMayMiss } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
@@ -554,8 +554,11 @@ export const arithmeticOps = {
     if ((vtA == null || vtB == null) && (vtA === VAL.NUMBER || vtA == null && numberOrMissing(a)) &&
         (vtB === VAL.NUMBER || vtB == null && numberOrMissing(b))) {
       // (a number, or an element no null spells whose cell holds a Number or a hole, storedElement, converts as ToNumber reads it: toNumF64)
+      // (a side no null reaches is a Number or undefined: the miss alone converts)
       const side = (vt, n) => {
-        if (vt === VAL.NUMBER || (ctx.summary?.at(ctx.func.current)?.kindOfExpr(n) & TAGS) === NUMBER_OR_ABSENT && storedElement(n)) return toNumF64(n, emit(n))
+        const absentOnly = (ctx.summary?.at(ctx.func.current)?.kindOfExpr(readOf(n)) & TAGS) === NUMBER_OR_ABSENT
+        if (vt === VAL.NUMBER || absentOnly && storedElement(n)) return toNumF64(n, emit(n))
+        if (absentOnly) return missToNaN(asF64(emit(n)))
         const t = temp('add'), get = () => typed(['local.get', `$${t}`], 'f64')
         return typed(['if', ['result', 'f64'], ['f64.eq', ['local.tee', `$${t}`, asF64(emit(n))], get()],
           ['then', get()], ['else', coerceNullishToNum(get())]], 'f64')

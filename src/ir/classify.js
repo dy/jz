@@ -125,18 +125,30 @@ export const PURE_F64_OPS = new Set([
  *  is correctly NOT numeric, while `cond ? n*2 : n*3` is. Conservative: any shape
  *  not provably numeric (property gets, user calls, local.get, f64.const nan:…)
  *  returns false, so the caller keeps the __to_num coercion. */
-export const isNumericIR = (r) => {
+export const isNumericIR = (r, nums = null) => {
   if (!Array.isArray(r)) return false
   const op = r[0]
   if (PURE_F64_OPS.has(op)) return true
   if (op === 'call' && typeof r[1] === 'string' && (r[1].startsWith('$math.') || r[1] === '$__time_ms')) return true
-  if (op === 'f64.const') return typeof r[1] === 'number'   // 'nan:…' carrier ⇒ pointer/sentinel
-  if (op === 'block') return isNumericIR(r[r.length - 1])   // block value = its tail expr
+  if (op === 'f64.const') return typeof r[1] === 'number' || r[1] === 'nan'   // 'nan:…' carrier ⇒ pointer/sentinel
+  // (a local the block set to a number before its value reads, as that number)
+  if (op === 'local.get') return nums?.has(r[1]) === true
+  if (op === 'local.tee') return isNumericIR(r[2], nums)       // a tee yields what it stores
+  if (op === 'select') return isNumericIR(r[1], nums) && isNumericIR(r[2], nums)   // a NaN's canonical form among them
+  if (op === 'block') {                                         // block value = its tail expr
+    let set = nums
+    for (let i = 1; i < r.length - 1; i++) {
+      const x = r[i]
+      if (set) for (const name of set) if (writesLocal(x, name)) (set = new Set(set)).delete(name)
+      if (Array.isArray(x) && x[0] === 'local.set' && typeof x[1] === 'string' && isNumericIR(x[2], set)) (set = new Set(set ?? [])).add(x[1])
+    }
+    return isNumericIR(r[r.length - 1], set)
+  }
   if (op === 'if') {                                        // both arms must be numeric
     const thenArm = r.find(x => Array.isArray(x) && x[0] === 'then')
     const elseArm = r.find(x => Array.isArray(x) && x[0] === 'else')
     return !!thenArm && !!elseArm &&
-      isNumericIR(thenArm[thenArm.length - 1]) && isNumericIR(elseArm[elseArm.length - 1])
+      isNumericIR(thenArm[thenArm.length - 1], nums) && isNumericIR(elseArm[elseArm.length - 1], nums)
   }
   return false
 }

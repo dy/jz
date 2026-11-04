@@ -1270,14 +1270,15 @@ test('minimal: a settled test goes', () => {
 
 // `m.get(k) || 0` of a Map of Numbers is a Number though the read may miss (the
 // summary drops what the test discards, kind/val-type-of.js): the sum it enters
-// converts nothing. Its tests are the truthiness' two and the canon's one.
+// converts nothing, nor does `|| 0` let a miss through (ir/coerce.js
+// fallsBackPresent). Its tests are the walked list's guard and the truthiness'.
 test('minimal: a logical op of a missing Number is a Number', () => {
   if (skip) return
   const src = `const tally = (lists) => { const m = new Map(); for (const [, l] of lists) m.set(l.length, (m.get(l.length) || 0) + 1); return m }
     export let f = (n) => { const lists = new Map(); for (let i = 0; i < n; i++) { let l = lists.get(i % 3); if (l === undefined) { l = []; lists.set(i % 3, l) } l.push(i) } let t = 0; for (const [k, v] of tally(lists)) t += k * 10 + v; return t }`
   for (const optimize of levels(0, 2, 'size')) for (const n of [0, 2, 7]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
   const w = funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'tally')
-  is((w.match(/\((i64|f64)\.eq\b/g) || []).length, 3, 'no conversion of the operand')
+  is((w.match(/\((i64|f64)\.eq\b/g) || []).length, 2, 'no conversion of the operand')
   const mixed = `export let f = (n) => { const m = new Map(); m.set(1, 'a'); m.set(2, n); return (m.get(n) || 0) + 1 }`
   for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2, 3]) is(jz(mixed, { optimize }).exports.f(n), oracle(mixed).f(n), `mixed, O${optimize}, n=${n}`)
   const bools = `export let f = (n) => { const m = new Map(); m.set(1, true); m.set(2, n > 1); return (m.get(n) || 0) + 1 }`
