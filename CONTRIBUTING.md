@@ -4111,10 +4111,11 @@ an await's operand held for the summary, and, where the machine resumes
 itself, the throw it raises where it stands (`__thr`, `__thrset`; a
 generator's `throw()` hands its own over through the frame). A jump to a
 state one jump reaches runs that state in place, the state set first, so an
-exception raised there routes as the state's own; the dispatch holds the
-states something enters by number: the first, each a suspension resumes, each
-a catch or a finally continues at, and each a jump leaves to it (a back jump,
-a state several jumps reach). A field holds no value before its binding's step
+exception raised there routes as the state's own; at the speed tier so does a
+small state several jumps reach, a loop's test, a copy per jump
+(`copySmallStates`). The dispatch holds the states something enters by number:
+the first, each a suspension resumes, each a catch or a finally continues at,
+and each a jump leaves to it (a back jump, a state several jumps reach). A field holds no value before its binding's step
 (`__tdz()`, src/ast.js TDZ_VALUE: the summary gives it no kind, the slot
 censuses count no write), so its kind is what the steps store, as a TDZ
 declaration's was. A pattern declaration binding fields destructures into

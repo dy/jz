@@ -103,6 +103,7 @@ export const PASS_NAMES = [
   'versionArrayPatterns',     // an array pattern over a value that may be an array reads by position behind Array.isArray, the protocol beside it (plan/index-array-patterns.js)
   'treeshake',
   'refreshGrown',             // after a call that may grow an array, the caller's binding of it takes the new block (compile/emit/call.js), off at the size tier
+  'copySmallStates',          // a small state of a generator's or an async function's machine several jumps reach runs where each stands, a copy per jump (jzify/generators.js), speed-only
   'hoistForwardHops',         // a receiver a loop never rebinds asks whether its block moved before the loop and after each call that may move one (optimize/forward-hops.js), off at the size tier
   'truncChoice',              // a choice of a float's ceiling below zero and its floor above is its truncation (optimize/trunc-choice.js)
   'constBases',               // a local written once with an address ahead of its reads: its accesses take the address as their memarg offset (optimize/const-bases.js)

@@ -1286,10 +1286,12 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
     // A jump to a state one jump reaches runs that state where the jump
     // stands, the state set first (an exception raised there routes as the
     // state's own), in place of a pass through the dispatch; a jump back into
-    // the states it runs in goes through the dispatch. The dispatch then holds
-    // the states something enters by number: the first, each a suspension
-    // resumes, each a catch or a finally continues at, and each a jump leaves
-    // to it.
+    // the states it runs in goes through the dispatch. At the speed tier a
+    // small state several jumps reach (a loop's test) runs where each stands,
+    // a copy per jump, the copies together no larger than the states. The
+    // dispatch then holds the states something enters by number: the first,
+    // each a suspension resumes, each a catch or a finally continues at, and
+    // each a jump leaves to it.
     const isJump = (list, j) => Array.isArray(list[j]) && list[j][0] === ';;set' && Array.isArray(list[j + 1]) && list[j + 1][0] === ';;continue'
     const jumps = states.map(() => 0), roots = new Set([0])
     const census = (n) => {
@@ -1304,6 +1306,16 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
       }
     }
     states.forEach(census)
+    const sizeOf = (n) => Array.isArray(n) ? n.reduce((c, m) => c + sizeOf(m), 1) : 1
+    const SMALL = 48, DEPTH = 8
+    let budget = ctx.transform.optimize?.copySmallStates ? sizeOf(states) : 0
+    const copied = (k, chain) => {
+      if (chain.length >= DEPTH) return false
+      const size = sizeOf(states[k])
+      if (size > SMALL || size > budget) return false
+      budget -= size
+      return true
+    }
     stateHandler.forEach(h => { if (h >= 0) roots.add(h) })
     for (const { s } of entries.values()) roots.add(s)
     const resolve = (n, chain) => {
@@ -1319,7 +1331,7 @@ export function createGeneratorLowering({ transform, transformParams, err, isGen
         if (!isJump(list, j)) { out.push(resolve(list[j], chain)); continue }
         const k = list[j][1]
         out.push(['=', S.NEXT, [null, k]])
-        if (k >= 0 && jumps[k] === 1 && !chain.includes(k)) {
+        if (k >= 0 && !chain.includes(k) && (jumps[k] === 1 || copied(k, chain))) {
           out.push(...thread(states[k], [...chain, k]))
         } else {
           if (k >= 0) roots.add(k)
