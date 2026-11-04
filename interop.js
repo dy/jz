@@ -1173,8 +1173,12 @@ export const wrap = (src, state) => {
   // where missing), an f64 slot as the engine converts it, an i64 slot as its
   // box's bits (`coerce` without memory, `mem.wrapVal` with), typed slots
   // converted to their kind and, where the body writes them, copied back.
+  // The kind of a typed slot other than `i` (not `Array+`) that `x` also sits at.
+  const aliasKind = (t, args, x, i) => {
+    for (const j in t) if (+j !== i && t[j] !== 'Array+' && args?.[j] === x) return t[j].replace('+', '')
+  }
   const noEvidence = (i, name) => { throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`) }
-  const i64Arg = (ie, ext, box, hostAbi, name, writeBack, shared = writeBack && new Map()) => (x, i) => {
+  const i64Arg = (ie, ext, box, hostAbi, name, writeBack, shared = writeBack && new Map()) => (x, i, args) => {
     // An unused slot still distinguishes missing/undefined for its default.
     // No read means no ToNumber, boxing, getter or backing-store copy is due.
     if (hostAbi?.skip.has(i)) return ie?.p.has(i) ? x === undefined ? UNDEF_NAN : 0n : x === undefined ? undefined : 0
@@ -1192,19 +1196,29 @@ export const wrap = (src, state) => {
     // A typed slot (`t`) takes its kind, converted element by element; a `+`
     // marks one the body writes, copied back after the call; `Array+` a plain
     // array the body may store into, which crosses as itself.
-    const typedSlot = ie?.t?.[i]
+    let typedSlot = ie?.t?.[i]
     // Where the call's copy of an array argument goes back after the call
     // (copyBack below), or null: nothing comes back.
     let back = null
-    // One host array at two slots of one kind is one copy, as it is one object in JS.
-    const orig = x, key = typedSlot ? typedSlot.replace('+', '') : ''
-    const prior = shared && orig != null && typeof orig === 'object' ? shared.get(orig) : undefined
+    // One array at two slots is one copy, as it is one object in JS: a slot
+    // that takes any kind (untyped, `Array+`) takes the kind of a typed slot
+    // the same array sits at.
+    const orig = x, jzBuffer = typeof x === 'bigint' && isBox(x)
+    const shareable = shared && (jzBuffer && !plainBigint || x != null && typeof x === 'object')
+    if (shareable && (!typedSlot || typedSlot === 'Array+')) {
+      const kind = aliasKind(ie.t, args, orig, i)
+      if (kind) typedSlot = typedSlot ? kind + '+' : kind
+    }
+    const key = typedSlot && typedSlot !== 'Array+' ? typedSlot.replace('+', '') : ''
+    const prior = shareable ? shared.get(orig) : undefined
     if (prior?.key === key) {
-      // A slot that writes where the first one only read: the copy comes back.
-      if (typedSlot?.endsWith('+') && !prior.back) { writeBack.push([hostBack(orig), prior.b]); prior.back = true }
+      // A slot that writes where the first one only read: the copy comes back
+      // (a jz buffer only where the first slot converted it).
+      if (typedSlot?.endsWith('+') && !prior.back && !(jzBuffer && prior.b === orig)) {
+        writeBack.push([jzBuffer ? { box: orig } : hostBack(orig), prior.b]); prior.back = true
+      }
       return prior.b
     }
-    const jzBuffer = typeof x === 'bigint' && isBox(x)
     if (typedSlot === 'Array+') {
       // A plain array the body may store into crosses as itself: an array or a
       // typed array takes its elements back; a DataView has none.
@@ -1235,7 +1249,7 @@ export const wrap = (src, state) => {
     // too: which element copies it made, to copy back those still in place.
     if (back?.to && Array.isArray(orig) && type(b) === PTR.ARRAY) back.cells = cellsOf(b, 0)
     if (back && writeBack) writeBack.push([back, b])
-    if (shared && orig != null && typeof orig === 'object') shared.set(orig, { key, b, back: !!back })
+    if (shareable) shared.set(orig, { key, b, back: !!back })
     return b
   }
   // The copy-back target of a host array: the array itself, or, for a view of
@@ -1396,7 +1410,7 @@ export const wrap = (src, state) => {
       const result = (ret) => typeof ret === 'bigint' && !(ie && ie.r) ? ret : typeof ret === 'number' ? numberRet(ret) : mem.read(ret, fnOf)
       const general = (...args) => {
         const a = new Array(len)
-        for (let i = 0; i < len; i++) a[i] = arg(args[i], i)
+        for (let i = 0; i < len; i++) a[i] = arg(args[i], i, args)
         if (lastErrBitsWritable) lastErrBits.value = 0n   // a fresh call starts with no stale mark
         try { return result(fn(...a)) } catch (e) { decodeThrown(e) }
       }
@@ -1421,7 +1435,7 @@ export const wrap = (src, state) => {
     // The arguments by their lanes: a missing fixed one undefined, the rest an array
     const lanesOf = (args, writeBack) => {
       const arg = i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack)
-      if (!rest) { const a = new Array(fixed); for (let i = 0; i < fixed; i++) a[i] = arg(args[i], i); return a }
+      if (!rest) { const a = new Array(fixed); for (let i = 0; i < fixed; i++) a[i] = arg(args[i], i, args); return a }
       const a = args.slice(0, fixed).map(arg)
       while (a.length < fixed) a.push(ie && ie.p.has(a.length) ? UNDEF_NAN : undefined)
       const restArr = hostAbi?.skip.has(fixed) ? 0n : mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))
@@ -1456,7 +1470,7 @@ export const wrap = (src, state) => {
   for (const [name, ie] of i64Exp) {
     if (!ie.v || !all[name]) continue
     const cands = [name, ...ie.v].filter(n => all[n])
-    all[name] = kindDispatch(name, cands.map(n => [all[n], slotsOf(i64Exp.get(n))]))
+    all[name] = kindDispatch(name, cands.map(n => [all[n], slotsOf(i64Exp.get(n)), writesOf(i64Exp.get(n))]))
     for (const n of ie.v) delete all[n]
   }
   if (classes) hostClasses(classes, all, fnOf, mem)
@@ -1538,6 +1552,11 @@ const hostClasses = (table, exports, fnOf, mem) => {
 // The slots a variant is chosen by: the typed ones. `Array+` marks a slot that may
 // be a plain array the body stores into; it takes whatever arrives, as itself.
 const slotsOf = (ie) => Object.entries(ie?.t ?? {}).filter(([, t]) => t !== 'Array+').map(([i, t]) => [+i, t.replace('+', ''), ie.k.has(+i)])
+// The slots the body stores into.
+const writesOf = (ie) => new Set(Object.entries(ie?.t ?? {}).filter(([, t]) => t.endsWith('+')).map(([i]) => +i))
+// Whether the body reads back what it stores into argument `i`: at its own
+// slot (`k`), or through another slot the same array sits at, one of the two stored.
+const readBack = (args, i, k, writes) => k || args.some((y, m) => m !== i && y === args[i] && (writes.has(i) || writes.has(m)))
 // The element kind an argument brings: a typed array's own (a host one, or a
 // jz buffer by its box), 'Array' for any other object (Array.from reads it as
 // an array-like), null for anything else.
@@ -1561,10 +1580,10 @@ const fitOf = (kind, ctor, inPlace) => kind === ctor ? 0
   : inPlace && kind !== 'Array' ? -1 : 1
 const kindDispatch = (name, cands) => (...args) => {
   let best = null, cost = Infinity
-  for (const [fn, slots] of cands) {
+  for (const [fn, slots, writes] of cands) {
     let c = 0
     for (const [i, ctor, inPlace] of slots) {
-      const f = fitOf(argKind(args[i]), ctor, inPlace)
+      const f = fitOf(argKind(args[i]), ctor, readBack(args, i, inPlace, writes))
       if (f < 0) { c = Infinity; break }
       c += f
     }
@@ -1572,8 +1591,8 @@ const kindDispatch = (name, cands) => (...args) => {
   }
   if (best) return best(...args)
   // Name the argument no variant takes, by the origin's slots.
-  for (const [i, , inPlace] of cands[0][1]) {
-    const kind = argKind(args[i])
+  for (const [i, , k] of cands[0][1]) {
+    const kind = argKind(args[i]), inPlace = readBack(args, i, k, cands[0][2])
     if (kind == null || !(EXACT_IN_F64.has(kind) || kind === 'Float64Array'))
       throw new TypeError(`jz: argument ${i} of ${name}() must be an array of numbers (got ${kind ?? (args[i] === null ? 'null' : typeof args[i])})`)
     if (inPlace && kind !== 'Float64Array' && kind !== 'Float32Array' && kind !== 'Array')

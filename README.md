@@ -166,7 +166,7 @@ BigInt, typed arrays, Map/Set, RegExp, Date, JSON, timers and the Web codecs.
 Where behaviour differs from JS:
 
 - **Memory is freed by scope.** A call releases on return what it allocated and did not store into something older than itself; what it keeps stays, replaced state is reclaimed each time kept memory doubles, and what the host holds pins the heap below it ([Memory](#memory)). `WeakMap`, `WeakSet` and `WeakRef` hold strongly.
-- **In-place array arguments.** An exported function that stores into an array argument and reads it back takes a Float64Array, a Float32Array or an Array there, which round as JS rounds them; another kind throws a TypeError.
+- **In-place array arguments.** An exported function that stores into an array argument and reads it back, at its own parameter or through another the same array is passed to, takes a Float64Array, a Float32Array or an Array there, which round as JS rounds them; another kind throws a TypeError.
 - **Float sums in lanes.** At the default level and `'speed'`, a loop that sums floats may add in two lanes: the last digits of the sum can differ.
 - **Constant arithmetic.** Compile-time `+ - * /` chains use exact rationals and round once: `0.1 + 0.2 - 0.3` becomes `2.7755575615628914e-17`. Set `optimize: { rationalConst: false }` for JavaScript's per-operation rounding.
 - **Bitwise operands under 2^63.** `|`, `&`, `^`, `~`, the shifts and `Math.imul` convert an operand of magnitude under 2^63 as JS does. A larger one reads as -1, or as 0 when negative, where JS takes it modulo 2^32: `1e300 | 0` is -1. A store to an integer typed array converts exactly at any magnitude.
@@ -203,8 +203,8 @@ slower dynamic path, and `why` shows where.
 <details>
 <summary><strong>How do values cross the boundary?</strong></summary>
 
-Numbers pass directly. Strings, arrays and typed arrays are copied in and
-decoded on the way out; numeric writes to an array argument are copied back
+Numbers pass directly. Strings, arrays and typed arrays are copied in (one
+array passed to two parameters is one copy) and decoded on the way out; numeric writes to an array argument are copied back
 after the call at the length the function left it, its non-numeric elements are
 not. A typed array keeps its element kind: a Float32Array block runs as one. The copies
 are released after the call unless the function keeps them. A plain object

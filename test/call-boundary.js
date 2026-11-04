@@ -18,7 +18,9 @@ export let gain = (buf, g) => { for (let i = 0; i < buf.length; i++) buf[i] = bu
 export let iir = (x, c) => { let y1 = 0; for (let i = 0; i < x.length; i++) { const y = c[0] * x[i] + c[1] * y1; x[i] = y; y1 = x[i] } return x[x.length - 1] }
 export let sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]; return s }
 export let half = (a, b) => { for (let i = 0; i < a.length; i++) b[i] = a[i] * 0.5; return b.length }
-export let open = (x) => { for (let i = 1; i < x.length; i++) x[i] = x[i] * 0.3 + x[i - 1] * 0.7; return x[x.length - 1] }`
+export let open = (x) => { for (let i = 1; i < x.length; i++) x[i] = x[i] * 0.3 + x[i - 1] * 0.7; return x[x.length - 1] }
+export let lag = (a, b, n) => { for (let i = 1; i < n; i++) a[i] = b[i - 1] + 1; return a[n - 1] }
+export let lead = (a, b, n) => { for (let i = 1; i < n; i++) b[i] = a[i - 1] + 1; return b[n - 1] }`
 
 const fill = (K, n, f) => { const a = K === Array ? new Array(n) : new K(n); for (let i = 0; i < n; i++) a[i] = f(i); return a }
 const wave = i => Math.sin(i * 0.7) * 3.3
@@ -34,6 +36,8 @@ const CALLS = [
   ['half(Float64Array, Int16Array)', 'half', () => [fill(Float64Array, 5, i => i * 91.7), new Int16Array(5)]],
   ['half(Float32Array, Float32Array)', 'half', () => [fill(Float32Array, 5, wave), new Float32Array(5)]],
   ['half(x, x): one array at two slots', 'half', () => { const x = fill(Float64Array, 5, wave); return [x, x] }],
+  // one array at a slot that takes any kind and at a typed one: each store is read a step later
+  ...[Float64Array, Float32Array, Array].flatMap(K => ['lag', 'lead'].map(name => [`${name}(x, x) of ${K.name}`, name, () => { const x = fill(K, 6, () => 0); return [x, x, 6] }])),
   ...[Float64Array, Float32Array, Int16Array].map(K => [`open(${K.name}), a slot the compiler left open`, 'open', () => [fill(K, 9, i => i * 10)]]),
 ]
 
@@ -55,6 +59,27 @@ test('call boundary: an in-place slot refuses a kind that would round otherwise'
   // The mixed variant: the in-place slot takes Float32Array, the read one Float64Array.
   const want = oracle(src).iir(fill(Float32Array, 9, wave), Float64Array.of(0.3, 0.71))
   is(exports.iir(fill(Float32Array, 9, wave), Float64Array.of(0.3, 0.71)), want, 'iir(Float32Array, Float64Array)')
+})
+
+test('call boundary: one array at two slots, one of them stored, refuses a kind that would round', () => {
+  const { exports } = jz(src)
+  for (const name of ['lag', 'lead', 'half'])
+    throws(() => exports[name](...(x => [x, x, 4])(new Int32Array(4))), e => e instanceof TypeError && /reads it back/.test(e.message), `${name}(x, x) of Int32Array`)
+  // apart, the stored slot reads nothing back and converts exactly
+  const want = oracle(src), a = [new Int32Array(4), new Int32Array([1, 2, 3, 4]), 4], b = [new Int32Array(4), new Int32Array([1, 2, 3, 4]), 4]
+  is(exports.lag(...a), want.lag(...b), 'lag(Int32Array, Int32Array)')
+  ok(same(a[0], b[0]), 'lag(Int32Array, Int32Array): the stored array')
+})
+
+test('call boundary: one jz buffer at two slots is one storage', () => {
+  for (const optimize of levels(0, 2)) {
+    const { exports, memory } = jz(src, { optimize })
+    for (const K of ['Float64Array', 'Float32Array', 'Array']) for (const name of ['lag', 'lead']) {
+      const box = memory[K](K === 'Array' ? [0, 0, 0, 0, 0] : new globalThis[K](5))
+      is(exports[name](box, box, 5), 4, `${name}(x, x) of a ${K} buffer at ${optimize}`)
+      ok(same(memory.read(box), [0, 1, 2, 3, 4]), `${name}(x, x): the ${K} buffer took every store at ${optimize}`)
+    }
+  }
 })
 
 test('call boundary: a jz buffer of the slot kind is the storage, another kind converts and comes back', () => {
