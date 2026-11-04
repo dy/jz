@@ -122,12 +122,17 @@ const local = n => isArr(n) && (n[0] === 'local.get' || n[0] === 'local.tee') ? 
 const sameLocal = (a, b) => local(a) != null && local(a) === local(b)
 // (the word of a number is the word of its truncation)
 const word = x => ['word', op(x, 'f64.trunc') ? x[1] : x]
+// What a sum of 1.5·2^52 adds it to: `r + 1.5·2^52`, or `1.5·2^52 - r'(-x)` with r' the
+// rounding r mirrors under negation (optimize/to-int32.js `rounded`), as r of x. Else null.
+const MIRROR = { 'f64.trunc': 'f64.trunc', 'f64.nearest': 'f64.nearest', 'f64.floor': 'f64.ceil', 'f64.ceil': 'f64.floor' }
+const summand = n => op(n, 'f64.add') && MAGIC(n[2]) ? n[1]
+  : op(n, 'f64.sub') && MAGIC(n[1]) && isArr(n[2]) && MIRROR[n[2][0]] && op(n[2][1], 'f64.neg') ? [MIRROR[n[2][0]], n[2][1][1]] : null
 const foldWord = n => {
   if (!isArr(n)) return n
   n = n.map(foldWord)
   // the add: the truncation plus 1.5·2^52 read as bits, its low word or its 64 bits less the bias
   const bits = op(n, 'i32.wrap_i64') ? n[1] : op(n, 'i64.sub') && BIAS(n[2]) ? n[1] : null
-  if (op(bits, 'i64.reinterpret_f64') && op(bits[1], 'f64.add') && MAGIC(bits[1][2])) return word(bits[1][1])
+  if (op(bits, 'i64.reinterpret_f64') && summand(bits[1])) return word(summand(bits[1]))
   // the saturating truncations (the low word of a word is the word)
   if (op(n, 'i32.trunc_sat_f64_s') || op(n, 'i64.trunc_sat_f64_s')) return word(n[1])
   if (op(n, 'i32.wrap_i64') && op(n[1], 'word')) return n[1]
@@ -141,8 +146,8 @@ const foldWord = n => {
   // the add tested by its own exponent (52 within the range), its bits the word, the other form past it
   const sum = op(n, 'if') && op(n[1], 'result') && op(n[2], 'i64.eq') && op(n[2][1], 'i64.shr_u') && konst(n[2][1][2], 'i64', 52) &&
     konst(n[2][2], 'i64', 1075, '0x433') && op(n[2][1][1], 'local.tee') && op(n[2][1][1][2], 'i64.reinterpret_f64') ? n[2][1][1][2][1] : null
-  if (op(sum, 'f64.add') && MAGIC(sum[2]) && op(n[3], 'then') && op(n[4], 'else') && op(n[4][1], 'word')) {
-    const x = op(sum[1], 'f64.trunc') ? sum[1][1] : sum[1]
+  if (summand(sum) && op(n[3], 'then') && op(n[4], 'else') && op(n[4][1], 'word')) {
+    const r = summand(sum), x = op(r, 'f64.trunc') ? r[1] : r
     const bits = n[2][1][1][1], held = op(n[3][1], 'i32.wrap_i64') ? n[3][1][1] : op(n[3][1], 'i64.sub') && BIAS(n[3][1][2]) ? n[3][1][1] : null
     if (op(held, 'local.get') && held[1] === bits && sameLocal(x, n[4][1][1])) return word(x)
   }
@@ -151,7 +156,8 @@ const foldWord = n => {
 /** The WAT with every integer word taken from a number folded to `(word x)`,
  *  whatever lowering the tier chose (optimize/int-narrow.js `words`,
  *  optimize/to-int32.js): the saturating truncations, the add of 1.5·2^52 read
- *  as bits, ToInt32's exact form and the magnitude guard around either. A pin
+ *  as bits (or its negation's rounding subtracted), ToInt32's exact form and the
+ *  magnitude or exponent test around either. A pin
  *  then counts crossings from the number to its word, not the instructions of
  *  one lowering. Takes WAT text or its parsed tree and answers in kind. */
 export const foldWords = wat => {

@@ -2,7 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { instantiate, codecOf } from '../interop.js'
 import { belowOpt, onKernel, levels } from './_matrix.js'
-import { funcWat, oracle, agree, jz, compile } from './util.js'
+import { foldWords, funcWat, oracle, agree, jz, compile } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dictCapacity } from '../src/static.js'
 import { stringHash } from '../src/string-data.js'
@@ -156,7 +156,8 @@ test('audit: truncated quotient bounds preserve fixed-point remainders and wrapp
     }
   }
   if (!onKernel()) {
-    const wat = funcWat(compile(src, { optimize: 'speed', wat: true }), 'f')
+    // (a word the ToInt32 of `x` takes folded: its add subtracts a rounding of x's negation, optimize/to-int32.js)
+    const wat = funcWat(foldWords(compile(src, { optimize: 'speed', wat: true })), 'f')
     ok(!/f64\.(mul|sub)/.test(wat), 'fixed-point remainder stays in integer arithmetic')
   }
 })

@@ -17,6 +17,17 @@
 // floating-point instructions instead of five (bench/lowering.mjs). The same
 // test guards every other 64-bit truncation, and an element key's exactness
 // test takes the sum's bits as its word.
+// The rounding in that sum is what x64 charges for: `roundsd` writes the low half
+// of its destination and keeps the upper one, so it waits on whatever last wrote that
+// register, and V8 picks the destination without regard to that. Where the number
+// dies at the rounding, V8 rounds it in its own register; where it lives on, in a
+// loop the register is often the iteration's last result, and the next index waits
+// for it: resample ran 2.4× slower on every x64 model, none of it on arm64. (The
+// magnitude test escaped this by accident: the register the rounding took held the
+// test's own operand, the absolute value or the bound, written just before.) So a
+// number read after its rounding is rounded through its negation, a value made to
+// die there, and a number made for its conversion takes the truncation into its own
+// local, the test's other arm reading that in its place.
 // It runs after watr: every pass before reads the exact form. The functions are
 // then whole, with the bodies watr inlined, and their intervals
 // (optimize/int-range.js) bound what a helper's parameter could not: a number
@@ -41,17 +52,31 @@ const exactForm = n => {
 }
 
 const MAGIC = () => ['f64.const', 6755399441055744], NEAR = 2 ** 51
+const isMagic = n => isArr(n) && n[0] === 'f64.const' && Number(n[1]) === 6755399441055744
+const isRead = n => isArr(n) && (n[0] === 'local.get' || n[0] === 'local.tee')
+// each rounding's image under negation: -floor(x) is ceil(-x), and the sum subtracts it
+const MIRROR = { 'f64.trunc': 'f64.trunc', 'f64.nearest': 'f64.nearest', 'f64.floor': 'f64.ceil', 'f64.ceil': 'f64.floor' }
+// Whether x stays in its register past a rounding of it: a read of a local, or a
+// write of one something else reads. (`s.read`: the locals so read, guardToInt32.)
+const outlives = (x, s) => isRead(x) && (x[0] === 'local.get' || s.read.has(x[1]) || isRead(x[2]))
+// `op` of x plus 1.5·2^52: that of x's negation subtracted where x outlives the rounding
+const rounded = (op, x, s, add = MAGIC()) => outlives(x, s) ? ['f64.sub', add, [MIRROR[op], ['f64.neg', x]]] : ['f64.add', [op, x], add]
+// the sum for x (`whole`: x is an integer already, its own truncation)
+const sum = (x, s, whole) => whole ? ['f64.add', x, MAGIC()] : rounded('f64.trunc', x, s)
 // the integer of x (|x| < 2^51, no NaN) in its word or its 64 bits, by the add
-// (`whole`: x is an integer already, its own truncation)
-const added = (x, w, whole = false) => {
-  const bits = ['i64.reinterpret_f64', ['f64.add', whole ? x : ['f64.trunc', x], MAGIC()]]
+const added = (x, w, s, whole = false) => {
+  const bits = ['i64.reinterpret_f64', sum(x, s, whole)]
   return w === 'i32' ? ['i32.wrap_i64', bits] : ['i64.sub', bits, ['i64.const', '0x4338000000000000']]
 }
 // Whether x truncates into [-2^51, 2^51), the bits of its truncation plus 1.5·2^52 teed
 // into the i64 local `b`: the sum then lies in [2^52, 2^53), exact, and its exponent field
-// reads 0x433 (52 biased); a sum anywhere else, NaN or ±Infinity reads another.
-const inNear = (b, x, whole = false) =>
-  ['i64.eq', ['i64.shr_u', ['local.tee', b, ['i64.reinterpret_f64', ['f64.add', whole ? x : ['f64.trunc', x], MAGIC()]]], ['i64.const', 52]], ['i64.const', 0x433]]
+// reads 0x433 (52 biased); a sum anywhere else, NaN or ±Infinity reads another. A local
+// nothing else reads takes the truncation, so the number dies at the rounding: the arm
+// the test fails to reads that local, and its forms answer alike for x and x's truncation.
+const inNear = (b, x, s, whole = false) => {
+  if (!whole && x[0] === 'local.tee' && !outlives(x, s)) x = ['local.tee', x[1], ['f64.trunc', x[2]]], whole = true
+  return ['i64.eq', ['i64.shr_u', ['local.tee', b, ['i64.reinterpret_f64', sum(x, s, whole)]], ['i64.const', 52]], ['i64.const', 0x433]]
+}
 // what `inNear` holds in `b`, as the word or the 64 bits
 const nearWord = (b, w) => w === 'i32' ? ['i32.wrap_i64', ['local.get', b]] : ['i64.sub', ['local.get', b], ['i64.const', '0x4338000000000000']]
 // the word or 64 bits a truncation keeps, where `n` is one: [operand slot, width]
@@ -62,18 +87,20 @@ const SAT = new Map([['i32.trunc_sat_f64_s', [-(2 ** 31) - 1, 2 ** 31]], ['i32.t
 // a number never NaN strictly inside (lo, hi)
 const inside = (v, lo, hi) => !!v && !v.nan && v.lo > lo && v.hi < hi
 
-/** Lower `n`'s conversions; `s` is { add, temp, at } (`at`: the operand's interval or null). */
+const isSum = n => n[0] === 'f64.add' && n.length === 3 && isMagic(n[2]) && isArr(n[1]) && n[1][0] in MIRROR && n[1].length === 2
+
+/** Lower `n`'s conversions; `s` is { add, temp, at, read } (`at`: the operand's interval or null). */
 const lower = (n, s) => {
   if (!isArr(n)) return n
   const f = exactForm(n)
   if (f) {
     const v = s.at(f.x)
     if (f.x[0] === 'local.tee') f.x[2] = lower(f.x[2], s)
-    if (inside(v, -NEAR, NEAR)) return s.add ? added(f.x, 'i32', v.int) : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', f.x]]
+    if (inside(v, -NEAR, NEAR)) return s.add ? added(f.x, 'i32', s, v.int) : ['i32.wrap_i64', ['i64.trunc_sat_f64_s', f.x]]
     const get = () => ['local.get', f.name]
     const exact = ['select', ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]], ['i32.const', 0], ['f64.ne', get(), ['f64.const', Infinity]]]
     // (new nodes throughout: the form may be shared, and its other reader keeps its tee)
-    if (s.add) { const b = s.temp('i64'); return ['if', ['result', 'i32'], inNear(b, f.x, v?.int), ['then', nearWord(b, 'i32')], ['else', exact]] }
+    if (s.add) { const b = s.temp('i64'); return ['if', ['result', 'i32'], inNear(b, f.x, s, v?.int), ['then', nearWord(b, 'i32')], ['else', exact]] }
     return ['if', ['result', 'i32'], ['f64.lt', ['f64.abs', f.x], ['f64.const', 2147483648]], ['then', ['i32.trunc_sat_f64_s', get()]], ['else', exact]]
   }
   // A 64-bit truncation, or the word of one, with `add`: the add where its
@@ -83,11 +110,11 @@ const lower = (n, s) => {
   if (wide) {
     const v = s.at(wide.of[1])
     const x = wide.of[1] = lower(wide.of[1], s)
-    if (inside(v, -NEAR, NEAR)) return added(x, wide.w, v.int)
+    if (inside(v, -NEAR, NEAR)) return added(x, wide.w, s, v.int)
     const t = isArr(x) && (x[0] === 'local.get' || x[0] === 'local.tee') ? x[1] : s.temp()
     const get = () => ['local.get', t], first = isArr(x) && x[0] === 'local.get' ? x : ['local.tee', t, x[0] === 'local.tee' ? x[2] : x]
     const b = s.temp('i64')
-    return ['if', ['result', wide.w], inNear(b, first, v?.int), ['then', nearWord(b, wide.w)],
+    return ['if', ['result', wide.w], inNear(b, first, s, v?.int), ['then', nearWord(b, wide.w)],
       ['else', wide.w === 'i32' ? ['i32.wrap_i64', ['i64.trunc_sat_f64_s', get()]] : ['i64.trunc_sat_f64_s', get()]]]
   }
   // A saturating truncation whose interval stays inside the word saturates nowhere: the add.
@@ -95,7 +122,13 @@ const lower = (n, s) => {
   if (sat && n.length === 2) {
     const v = s.at(n[1])
     n[1] = lower(n[1], s)
-    return inside(v, sat[0], sat[1]) ? added(n[1], 'i32', v.int) : n
+    return inside(v, sat[0], sat[1]) ? added(n[1], 'i32', s, v.int) : n
+  }
+  // A sum narrowing wrote before watr, on a rounding its interval bounded.
+  if (s.add && isSum(n)) {
+    const [, r, add] = n
+    r[1] = lower(r[1], s)
+    return rounded(r[0], r[1], s, add)
   }
   for (let i = 0; i < n.length; i++) n[i] = lower(n[i], s)
   return n
@@ -172,7 +205,16 @@ const exactKeys = fn => {
 }
 
 // Whether `n` holds a conversion the lowering rewrites.
-const converts = (n, add) => isArr(n) && (exactForm(n) != null || (add && (wideOf(n) != null || (SAT.has(n[0]) && n.length === 2))) || n.some(c => converts(c, add)))
+const converts = (n, add) => isArr(n) && (exactForm(n) != null || (add && (wideOf(n) != null || (SAT.has(n[0]) && n.length === 2) || isSum(n))) || n.some(c => converts(c, add)))
+
+// The locals read outside a conversion of a tee of their own, into `read`.
+const readsOf = (n, read) => {
+  if (!isArr(n)) return
+  const tee = exactForm(n)?.x ?? wideOf(n)?.of[1]
+  if (tee?.[0] === 'local.tee') return readsOf(tee[2], read)
+  if (n[0] === 'local.get') read.add(n[1])
+  for (const c of n) readsOf(c, read)
+}
 
 /** Guard each exact ToInt32 of `module`'s functions with the 32-bit path (`add`:
  *  the conversion-free one, which also answers each element key's test), and
@@ -190,7 +232,9 @@ export function guardToInt32(module, add = false) {
     if (add) exactKeys(node)
     const decls = []
     const temp = (type = 'f64') => { const name = `$__w64_${k++}`; decls.push(['local', name, type]); return name }
-    const s = { add, temp, at: x => av?.get(x) ?? null }
+    const read = new Set()
+    for (let i = at; i < node.length; i++) readsOf(node[i], read)
+    const s = { add, temp, read, at: x => av?.get(x) ?? null }
     for (let i = at; i < node.length; i++) node[i] = lower(node[i], s)
     node.splice(at, 0, ...decls)
   }

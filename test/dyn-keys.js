@@ -1214,7 +1214,9 @@ test('cursor guards take the exact extent of a read before the round\'s advance'
         if (t?.[0] === 'i64.sub' || t?.[0] === 'i32.sub') return offset(t[1]) - offset(t[2])
         if (t?.[0] === 'i64.extend_i32_s' || t?.[0] === 'i32.wrap_i64') return offset(t[1])
         if (t?.[0] === 'i32.shr_s' && Number(t[2]?.[1]) === 0) return offset(t[1])
-        return JSON.stringify(t).includes('f64.ceil') || /i32\.(load|shr_u)/.test(t?.[0]) ? 0 : NaN
+        // (`ceil(n)`, or the mirror the add takes where n outlives its rounding, `1.5·2^52 - floor(-n)`:
+        // optimize/to-int32.js `rounded`)
+        return /"f64\.ceil"|"f64\.floor",\["f64\.neg"/.test(JSON.stringify(t)) || /i32\.(load|shr_u)/.test(t?.[0]) ? 0 : NaN
       }
       for (const extent of extents) {
         const cursorFirst = isCursor(extent[1])

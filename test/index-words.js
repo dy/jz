@@ -79,6 +79,39 @@ test('index words: ToInt32 answers at every edge with its 32-bit test first', ()
   }
 })
 
+// x64's `roundsd` keeps the upper half of its destination, so it waits on whatever
+// last wrote that register, and V8 picks it with no regard to that: in a resampler's
+// loop, the sample the iteration before stored. The phase outlives its word (its
+// fraction reads it), so the add rounded it into another register and each index
+// waited a whole sample's evaluation; resample ran 2.4× slower on every x64 model
+// measured, none of it on arm64. A number read after its conversion is rounded
+// through its negation, a value made only to die there, and a number made for its
+// conversion takes the truncation into its own local (optimize/to-int32.js `rounded`).
+// (A local of the name read anywhere else counts as a later read: the negation then.)
+test('index words: ToInt32 rounds a number it does not consume through a value that dies there', () => {
+  const src = `export let run = (x, n) => {
+      let s = 0, p = x
+      for (let k = 0; k < n; k++) { const i = p | 0; s += i + (p - i); p += 0.7317314443021356 }
+      return s
+    }
+    let a = new Float64Array(1)
+    export let seed = (x) => { a[0] = x }
+    export let next = () => { a[0] = (a[0] + 1831565813) | 0; return a[0] }`
+  const speed = { optimize: { level: 'speed', poolFloats: false } }
+  const run = funcWat(wat(src, speed), 'run'), next = funcWat(wat(src, speed), 'next')
+  ok(/\(f64\.sub\s*\(f64\.const 6755399441055744\)\s*\(f64\.trunc\s*\(f64\.neg/.test(run), 'the phase is rounded through its negation')
+  ok(!/\(f64\.trunc\s*\(local\.(get|tee)/.test(run), 'no rounding of a register the phase still holds')
+  ok(/\(f64\.add\s*\(local\.tee \S+\s*\(f64\.trunc/.test(next) && !/f64\.neg/.test(next), 'a sum made for its word is truncated where it dies, its local the truncation')
+  for (const optimize of levels(0, 2, 'speed', 'size')) {
+    const got = jz(src, { optimize }).exports, host = oracle(src)
+    for (const x of EDGES.filter(x => !(Math.abs(x) >= 2 ** 63) || !Number.isFinite(x))) {
+      is(got.run(x, 3), host.run(x, 3), `O${optimize} run(${x}, 3)`)
+      got.seed(x), host.seed(x)
+      is(got.next(), host.next(), `O${optimize} (${x} + 1831565813) | 0`)
+    }
+  }
+})
+
 // The speed tier takes an integer's word without a conversion: within ±2^51 its
 // truncation plus 1.5·2^52 holds it in the low bits (wordTruncation: 'add').
 // Each place a word is taken answers as JS past that range too: an element

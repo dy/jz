@@ -4819,7 +4819,39 @@ value and comparison a test of the magnitude spent on the floating-point pipes
 the loop's own arithmetic queues for. V8's arm64 code for a pixel's ToInt32
 then runs three floating-point instructions instead of five; on an Apple M4 a
 composite of three per pixel (1280×720) took 1.32 ms against 1.72 guarded by
-the magnitude. An element key's exactness test (`convert(word) == key`) takes
+the magnitude. The sum's rounding is what x64 charges for: `roundsd` writes the
+low half of its destination and keeps the upper half, so it waits on whatever
+last wrote that register, and V8 13.6 picks the destination without regard to
+that (`vroundsd dst, dst, src`). The magnitude test had written it just before,
+by accident: the absolute value or the bound it compared. Without the test, in
+resample's loop the register held the sample the iteration before stored, and
+each index waited on a whole sample's evaluation: resample ran 2.4× slower on
+every x64 model measured (EPYC 7763, 9V74, 9V45, Xeon 8370C), none of it on
+arm64. V8's code for that loop, lifted from `--print-wasm-code` and run as V8
+emitted it and again with a `vxorps` clearing each rounding's destination
+first, took 16.1 against 6.4 ns an iteration on an EPYC 7763, 17.6 against 6.9
+on an EPYC 9V74 and 20.2 against 8.0 on a Xeon 8370C. So a number read again
+after its rounding is rounded through its negation, `1.5·2^52 - trunc(-x)` (a
+floor as `1.5·2^52 - ceil(-x)`, the sums narrowing wrote included), a value
+written just before that dies into the rounding, which V8 then takes in place;
+a number made for its conversion takes the truncation into its own local, which
+the test's other arm reads in its place (`optimize/to-int32.js` `rounded`). A
+local of the name read anywhere else counts as read again, so most take the
+negation: over the corpus's speed builds 1007 sums are mirrored and 107
+truncate in place. Paired on one machine, resample by the exponent test alone,
+so, and by the magnitude test: 5565, 2400 and 2353 µs on an EPYC 7763; 2970,
+3170 and 3096 on a Linux arm64 runner; 1441, 1512 and 1537 on an Apple M1,
+arm64 paying the negation's instruction. The M4 composite (fewest ms of 400):
+1.01–1.04, 1.06–1.08 and 1.26–1.28. Over the bench corpus the geomean moved
+under 0.2% on each; the gallery's frame times grew 1.5% on Linux x64 and arm64
+(65 pages, two rounds). Four rounds of the pages that moved most, by the
+negation and by the magnitude test against the exponent alone: lorenz 7.8% and
+1.8% on x64, 3.4% and 2.1% on arm64 (its build negates 64 roundings, the
+exponent form's 16 sign masks becoming 76 in its frame function on x64); maze
+3.9% and 1.9% on x64, 8.3% and 12.7% on arm64; erosion 6.2% and 8.3% on arm64.
+`bench/lowering.mjs`'s `outliving` loop shows the stall on a Xeon 8370C (14.9
+ns against 3.3 by the negation) and not on an EPYC, where V8 allocates that
+loop otherwise. An element key's exactness test (`convert(word) == key`) takes
 the sum's low bits as its word. `bench/lowering.mjs`, printed by examples-perf on each target: x64 4.1
 ns wide against 1.0 added, arm64 0.82 against 0.93, Apple M1 0.73 against
 0.81; the gallery on x64 went from 39 to 44 of 65 pages ahead of JS, arm64
