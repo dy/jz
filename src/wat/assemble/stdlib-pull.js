@@ -463,7 +463,8 @@ export function pullStdlib(sec) {
         const SNAP_TYPES = { i32: 8, i64: 8, f32: 8, f64: 8, v128: 16 }
         const snapSlots = []   // [name, type, slabOffset]
         let slabBytes = 0
-        for (const name of runtimeWritten) {
+        // (the raw ABI has no `_clear`: only a phase checkpoint's reset reads a snapshot)
+        if (ctx.transform.alloc !== false || reachable.has('__clear')) for (const name of runtimeWritten) {
           const g = ctx.scope.globals.get(name)
           if (!g || !g.mut || !SNAP_TYPES[g.type]) continue
           // `__enumc_*`: the for-in enum caches (module/object.js) – state the

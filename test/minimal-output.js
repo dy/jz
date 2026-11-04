@@ -1597,6 +1597,48 @@ test('minimal: identity holds past a growth at the size tier', () => {
   ok(!/__same_ref/.test(funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')), 'no tag test of two of one kind')
 })
 
+// A function whose every return is storage it made gives nothing back at any
+// return: no frame, no question of the result (compile/analyze/frame-effects.js
+// returnsMade). A result it may not have made keeps both.
+test('minimal: a result made in the frame takes no frame', () => {
+  if (skip) return
+  const reasons = (src) => { const r = new Map(); compile(src, { optimize: 'size', whyNotRewind: (n, why) => r.set(n, why) }); return r }
+  const made = (body) => reasons(`const g = (n, o) => { ${body} }\nexport let f = (n) => g(n, [1]).length`).get('$g') === 'result: made in the frame on every return'
+  ok(made(`const a = []; for (let i = 0; i < n; i++) a.push(i); return a`), 'a local bound once')
+  ok(made(`return new Array(n)`), 'a fresh expression')
+  ok(made(`const a = [n]; if (n > 2) return new Array(n); return a`), 'every return')
+  ok(!made(`let a = [n]; if (n > 2) a = o; return a`), 'a local written again')
+  ok(!made(`const a = [n]; if (n > 2) return o; return a`), 'an older value on one path')
+  ok(!made(`const a = [n]; if (n > 2) return a`), 'a path that returns nothing')
+  ok(!made(`const a = o; return a`), 'a local of an older value')
+  const src = `const g = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i * 2); return a }
+    const h = (n, o) => { const t = [n, n]; return n > 1 ? o : t }
+    export let f = (n) => { const o = [7]; return g(n)[n - 1] + h(n, o)[0] + h(0, o)[0] }`
+  for (const optimize of levels(0, 2, 'size')) is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `results at ${optimize}`)
+})
+
+// A throw or a trap never reaches the return that reads the frame's verdict: an
+// escape past a nullish guard still runs on every call that returns.
+test('minimal: an escape past a guard keeps no protocol', () => {
+  if (skip) return
+  const src = `let r = null
+    const log = (x) => { sink(x) }
+    export let main = (n) => { const o = { a: n }; r = n > 0 ? o : null; const a = [1, 2]; a.push(r.a); sink(a.length); return 0 }`
+  const w = compile(`import { sink } from 'host'\n` + src, { alloc: false, optimize: 'size', wat: true, imports: { host: { sink: { params: 1, returns: 'void' } } } })
+  ok(!/__jz_esc|__jz_base/.test(w), 'no flag crosses the boundary')
+})
+
+// The raw ABI has no reset: nothing reads a snapshot of the module's globals.
+test('minimal: no clear, no snapshot', () => {
+  if (skip) return
+  const src = `let seed = 7\nconst next = () => { seed = seed * 3 % 101; return seed }\nexport let f = () => { const a = []; a.push(next()); return a[0] + next() }`
+  ok(!/__gsnap_base/.test(compile(src, { alloc: false, optimize: 'size', wat: true })), 'raw ABI')
+  ok(/__gsnap_base/.test(compile(src, { optimize: 'size', wat: true })), 'a host that clears')
+  const m = jz(src, { optimize: 'size' }), first = m.exports.f()
+  m.exports.f(); m._clear?.()
+  if (m._clear) is(m.exports.f(), first, 'a clear restores the global')
+})
+
 // A word's remainder is a word (`next() % n` of a function narrowed to an unsigned
 // word): the storage it lands in and a result of it stay integers, seen by a
 // caller analyzed before its callee narrowed (narrow/results.js).

@@ -119,7 +119,7 @@
  *
  * @module compile/analyze/frame-effects
  */
-import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode, extractParams, isReassigned, takeScratchMap, releaseScratchMap, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { ASSIGN_OPS, ACCESSOR_GET, ACCESSOR_SET, RELATIONAL_OPS, isFunctionNode, isBlockBody, returnExprs, walkAst, extractParams, isReassigned, takeScratchMap, releaseScratchMap, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { K, tagOf, hasTag, tagsOf, valOf, core, kindOfVal, bitOf, NULL_BITS, NUMBER_OPS } from '../../summary/kind.js'
 import { TO_PRIMITIVE, runsAccessor, runsConversion, primitiveKind, primitiveElements, mayBeTyped } from '../../evaluation-effects.js'
 export { runsAccessor, runsConversion } from '../../evaluation-effects.js'
@@ -1121,6 +1121,29 @@ const boundedElements = (body, view) => {
 }
 
 /** The function's own facts and, per loop, the iteration's. */
+// Whether every return hands back storage the function made: a fresh expression,
+// or a local bound to one and never written again. Its frame then gives nothing
+// back at any return, so it takes none (compile/index.js). A wrong yes keeps
+// memory until the caller's frame goes; it answers no result differently.
+function returnsMade(body) {
+  if (!isBlockBody(body)) return freshInit(body)
+  const stmts = isArr(body[1]) && body[1][0] === ';' ? body[1] : body
+  if (stmts[stmts.length - 1]?.[0] !== 'return') return false
+  const once = new Set(), written = new Set(), decls = new Set()
+  const write = (t) => { if (isName(t)) written.add(t); else for (const nm of patternNames(t)) written.add(nm) }
+  walkAst(body, { enter: n => {
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      decls.add(d)
+      if (isArr(d) && d[0] === '=' && isName(d[1]) && freshInit(d[2]) && !once.has(d[1])) once.add(d[1])
+      else if (isArr(d) && d[0] === '=') write(d[1])
+      else write(d)
+    }
+    else if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && !decls.has(n)) write(n[1])
+  } })
+  return returnExprs(body).every(e => freshInit(e) || (isName(e) && once.has(e) && !written.has(e)))
+}
+
 function frameEffectsOf(func, loops) {
   const body = func.body
   // the function's own view (keyed by its signature, as the emitter's), not the module's
@@ -1136,6 +1159,7 @@ function frameEffectsOf(func, loops) {
   // A frame that lends a value it made to a record older than itself keeps
   // it, though the census counts no site there: the frame restores nothing.
   if (SCRATCH.has(func.name) && !out.keeps) { out.keeps = true; out.keepsWhy = 'lends what it made to a record' }
+  out.madeResult = returnsMade(body)
   // a loop's scope declares nothing of the function's: its parameters are
   // outer storage there (a block kept in one outlives the iteration);
   // `iteration` the same census judged by the escape flag, as a frame's is
@@ -1255,7 +1279,7 @@ export function transitiveFrameEffects(funcs, roots = null, loops = true) {
   const nodes = [...own, ...closureOwn]
   const facts = new Map()
   for (const [name, o] of nodes) facts.set(name, { writesOuter: o.writesOuter, arenaUnsafe: o.arenaUnsafe, keeps: o.keeps, flagged: o.flagged, unsited: o.unsited, callsUnknown: o.callsUnknown, runsAccessor: o.runsAccessor, allocates: o.allocates,
-    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), allocLoops: new Set(), releaseLoops: new Set(), releaseAfterTest: new Set(), freshObjects: o.freshObjects ?? null })
+    why: o.why, keepsWhy: o.keepsWhy, siteWhy: o.siteWhy, callees: o.callees, loops: new Set(), allocLoops: new Set(), releaseLoops: new Set(), releaseAfterTest: new Set(), freshObjects: o.freshObjects ?? null, madeResult: o.madeResult === true })
   const spell = (c) => typeof c === 'number' ? 'closure' + c : c
   // The arena facts of a callee (a function by name, a closure by its key),
   // `every`: reached on every call of the caller. A host's function is

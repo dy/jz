@@ -453,9 +453,11 @@ export function arenaRewind(root, { rewindable, numberResult = NO_NAMES, asked =
   const info = new Map()
   const vetoRec = (rec, why) => { rec.tapeUnsafe = true; rec.tapeWhy ??= why; if (!rec.unsafe) { rec.unsafe = true; rec.why = why } }
   // An instruction that may leave the sequence it stands in: what follows may
-  // not run. One that leaves the function does; a branch does where its label
-  // stands outside the instruction (a loop branching to its own head stays).
-  const EXITS = new Set(['return', 'return_call', 'return_call_indirect', 'throw', 'throw_ref', 'rethrow', 'unreachable'].map(intern))
+  // not run. A return does; a branch does where its label stands outside the
+  // instruction (a loop branching to its own head stays). A throw or a trap
+  // never reaches the frame's return, where the verdict is read: a throw a
+  // handler takes costs at most the memory of the frame it left.
+  const EXITS = new Set(['return', 'return_call', 'return_call_indirect'].map(intern))
   const BRANCHES = new Set(['br', 'br_if', 'br_table', 'br_on_null', 'br_on_non_null', 'br_on_cast', 'br_on_cast_fail', 'catch', 'catch_ref', 'catch_all', 'catch_all_ref'].map(intern))
   const TAGGED = new Set(['catch', 'catch_ref'].map(intern))
   const LABELED = new Set(['block', 'loop', 'if', 'try_table', 'try'].map(intern))

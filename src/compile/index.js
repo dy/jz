@@ -1107,6 +1107,8 @@ export function assemble(ast, profiler) {
     // This address test needs no reachability walk: flagged stores still decide
     // whether anything besides the result keeps the frame.
     const results = f.sig.results, ty = results[0], name = `$${f.name}`
+    // (an export keeps its frame: the host, which copies the result, releases by it)
+    if (frame.madeResult && results.length === 1 && !isExported(f)) { ctx.transform.whyNotRewind?.(name, 'result: made in the frame on every return'); continue }
     if (results.length === 1 && f.sig.ptrKind == null && (ty === 'i32' || (ty === 'f64' && (f.valResult === VAL.NUMBER || holdsNoHeap(ctx.summary?.resultOf(f.name)))))) rewindable.set(name, ty)
     else if (ctx.transform.optimize?.arenaRewind !== false && results.length && (results.length === 1 ? ty === 'i32' || ty === 'f64' : results.every(t => t === 'f64'))) {
       rewindable.set(name, results.length === 1 ? ty : results)

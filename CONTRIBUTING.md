@@ -2536,7 +2536,11 @@ heap at return when the flag stands at or above the frame's own mark: it
 saves and clears the flag at entry and leaves the lower of the two at exit
 (optimize/arena-rewind.js). A temporary built of closures, cells and objects
 within a call goes with the call; a state made on the first call keeps that
-call's memory and releases every later one's. A call that left nothing above
+call's memory and releases every later one's. A function whose every return is
+storage it made takes no frame (frame-effects.js `returnsMade`): no return of it
+would give anything back. An escape that every returning call runs vetoes the
+frame though a throw may leave before it: a throw or a trap never reaches the
+return that reads the verdict. A call that left nothing above
 its mark asks nothing at exit: one comparison of the heap with the mark comes
 before the result's question, the flag's test and the enumeration epoch,
 which moves wherever the call left memory above its mark, kept or given back
