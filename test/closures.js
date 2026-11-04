@@ -2824,6 +2824,7 @@ test('closures: a closure names itself', () => {
     fib: `export let f = (n) => { const fib = (i) => i < 2 ? i : fib(i - 1) + fib(i - 2); return fib(n + 7) }`,
     string: `export let f = (n) => { const g = (x) => x === 0 ? 'z' : g(0) + x; return g(n) }`,
     kinds: `export let f = (n) => { const g = (x) => typeof x === 'string' ? x.length : g('abc') + x; return g(n) }`,
+    selfKinds: `export let f = (n) => { const g = (x, d) => d > 0 ? g('ab', d - 1) : x + 1; return g(5, 1) + n }`,
     argc: `export let f = (n) => { const g = (x, y) => y === undefined ? g(x, 1) + 1 : x + y; return g(n, 2) + g(n) }`,
     value: `export let f = (n) => { const g = () => g; return g()()() === g ? n : -1 }`,
     held: `export let f = (n) => { const g = (d) => d > 0 ? [g, d] : g; const a = g(1)[0]; return a === g ? n + 1 : -1 }`,

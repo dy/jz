@@ -11,6 +11,7 @@ import { scalarCase } from './_scalar-core-cases.js'
 import { oracle, compile, jz, funcWat } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dropSettledTests } from '../src/optimize/settled-tests.js'
+import { fusedRewrite } from '../src/optimize/peephole.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
 // boilerplate (a `_start` export, fd imports) and the self-compile kernel owns its own
@@ -1602,7 +1603,8 @@ test('minimal: identity holds past a growth at the size tier', () => {
 // returnsMade). A result it may not have made keeps both.
 test('minimal: a result made in the frame takes no frame', () => {
   if (skip) return
-  const reasons = (src) => { const r = new Map(); compile(src, { optimize: 'size', whyNotRewind: (n, why) => r.set(n, why) }); return r }
+  // (no splice of `g` into its caller: the verdict is the function's own)
+  const reasons = (src) => { const r = new Map(); compile(src, { optimize: { level: 'size', sourceInline: false }, whyNotRewind: (n, why) => r.set(n, why) }); return r }
   const made = (body) => reasons(`const g = (n, o) => { ${body} }\nexport let f = (n) => g(n, [1]).length`).get('$g') === 'result: made in the frame on every return'
   ok(made(`const a = []; for (let i = 0; i < n; i++) a.push(i); return a`), 'a local bound once')
   ok(made(`return new Array(n)`), 'a fresh expression')
@@ -1663,4 +1665,8 @@ test('minimal: a walk of a table has one test a step', () => {
   const src = `export let f = (n) => { const s = new Set(); for (let i = 0; i < n; i++) s.add(i); let t = 0; for (const x of s) t += x; return t }`
   for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 9]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `n=${n} at ${optimize}`)
   ok(!/\(if\s+\(result i32\)\s+\(local\.tee \S+\s+\(call \$__coll_step/.test(compile(src, { optimize: 'size', wat: true })), 'no arm answers one')
+  // the rule itself (optimize/peephole.js): a nonzero arm is the condition's, a zero one is not
+  const shaped = (k) => { const fn = ['func', '$t', ['param', '$c', 'i32'], ['if', ['if', ['result', 'i32'], ['local.get', '$c'], ['then', ['call', '$s'], ['i32.const', k]], ['else', ['i32.const', 0]]], ['then', ['call', '$b']]]]; fusedRewrite(fn); return JSON.stringify(fn[3]) }
+  is(shaped(7), JSON.stringify(['if', ['local.get', '$c'], ['then', ['call', '$s'], ['call', '$b']]]), 'a nonzero arm runs the body')
+  ok(shaped(0).includes('"result","i32"'), 'two zero arms keep the test')
 })
