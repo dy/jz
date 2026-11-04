@@ -16,7 +16,7 @@
 
 import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { isNumericIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
+import { isNumericIR, ptrOffsetIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
 import { emit, deps, call, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { NUMBER, K as KIND, hasTag, tagOf, core } from '../src/summary/kind.js'
@@ -606,6 +606,12 @@ export default (ctx) => {
     try { t = tagOf(core(ctx.summary.at(ctx.func.current).kindOfExpr(iter))) } catch { return undefined }
     return t === KIND.ARRAY || t === KIND.TYPED || t === KIND.STRING ? ['[]', iter, [null, 0]] : undefined
   }
+  // The summary proves the source an array that is present.
+  const provenArray = (iter) => {
+    let k
+    try { k = ctx.summary.at(ctx.func.current).kindOfExpr(iter) } catch { return false }
+    return tagOf(k) === KIND.ARRAY && !hasTag(k, KIND.NULLISH) && !hasTag(k, KIND.ABSENT)
+  }
   // The table every seeded or copied Set and Map takes: the smallest that holds
   // its entries, at least an empty one's (collection/ordered.js genOrdCap).
   ctx.core.stdlib['__ord_cap'] = () => genOrdCap(initCap)
@@ -643,8 +649,6 @@ export default (ctx) => {
     // so it never grows while seeding. Floors at initCap for the empty/short case.
     // A Set copies a Set's table (a missing one makes an empty Set).
     if (valTypeOf(iterExpr) === VAL.SET) { inc('__set_from'); return typed(['call', '$__set_from', asI64(storedValue(iterExpr))], 'f64') }
-    const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
-    inc('__set_add', '__ptr_type', '__len', read, '__table_check', '__ord_cap')
     noteKeys(elementOf(iterExpr))
     const setL = temp('nss'), arrL = temp('nsa')
     const iL = tempI32('nsi'), lenL = tempI32('nsl'), capL = tempI32('nsc')
@@ -652,6 +656,33 @@ export default (ctx) => {
     // array's length reaches 2^31)
     const capExpr = ['call', '$__ord_cap', ['local.get', `$${lenL}`]]
     const out = allocPtr({ type: PTR.SET, len: 0, cap: ['local.get', `$${capL}`], tag: 'set', stride: SET_BLOCK })
+    // A source the summary proves a present array is read as the program's own
+    // `a[i]` is, with none of the reader that takes every kind of iterable.
+    const view = ctx.summary?.at(ctx.func.current)
+    if (provenArray(iterExpr)) {
+      inc('__set_add', '__table_check', '__ord_cap')
+      view.alias(arrL, iterExpr)
+      view.alias(iL, [null, 0])
+      try {
+        return typed(['block', ['result', 'f64'],
+          ['local.set', `$${arrL}`, asF64(storedValue(iterExpr))],
+          ['local.set', `$${lenL}`, asI32(emit(['.', arrL, 'length']))],
+          ['local.set', `$${capL}`, capExpr],
+          ['call', '$__table_check', ['local.get', `$${capL}`]],
+          out.init,
+          ['local.set', `$${setL}`, out.ptr],
+          ['local.set', `$${iL}`, ['i32.const', 0]],
+          ['block', `$d_${iL}`, ['loop', `$l_${iL}`,
+            ['br_if', `$d_${iL}`, ['i32.ge_s', ['local.get', `$${iL}`], ['local.get', `$${lenL}`]]],
+            ['local.set', `$${setL}`, ['f64.reinterpret_i64',
+              ['call', '$__set_add', ['i64.reinterpret_f64', ['local.get', `$${setL}`]], asI64(storedValue(['[]', arrL, iL]))]]],
+            ['local.set', `$${iL}`, ['i32.add', ['local.get', `$${iL}`], ['i32.const', 1]]],
+            ['br', `$l_${iL}`]]],
+          ['local.get', `$${setL}`]], 'f64')
+      } finally { view.unalias(arrL); view.unalias(iL) }
+    }
+    const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
+    inc('__set_add', '__ptr_type', '__len', read, '__table_check', '__ord_cap')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${arrL}`, asF64(emit(['()', '__iter_arr_ctor', [',', iterExpr]]))],
       ['local.set', `$${lenL}`, ['i32.const', 0]],
@@ -764,13 +795,11 @@ export default (ctx) => {
         (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))))
     (f64.reinterpret_i64 (i64.const ${UNDEF_NAN})))`
 
-  // `.size` on a PROVEN Set/Map: entry count at off-8, direct __len.
-  const sizeLen = (expr) => {
-    inc('__len')
-    return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(expr))]]], 'f64')
-  }
-  registerGetter(`.${VAL.SET}:size`, sizeLen)
-  registerGetter(`.${VAL.MAP}:size`, sizeLen)
+  // `.size` on a PROVEN Set/Map: entry count at off-8.
+  const sizeLen = (vt) => (expr) => typed(['f64.convert_i32_s',
+    ['i32.load', ['i32.sub', ptrOffsetIR(asF64(emit(expr)), vt), ['i32.const', 8]]]], 'f64')
+  registerGetter(`.${VAL.SET}:size`, sizeLen(VAL.SET))
+  registerGetter(`.${VAL.MAP}:size`, sizeLen(VAL.MAP))
   // `.size` on an unproven receiver: in JS only Set/Map expose an entry count —
   // on everything else `size` is an ordinary own property (or undefined). The
   // old bare-__len form read the length HEADER of whatever arrived, silently
@@ -894,14 +923,18 @@ export default (ctx) => {
         ['if', stub(), ['then', chase]]])]]]
   }
   ctx.core.emit['__coll_start'] = (src, id) => {
-    inc('__is_nullish')
-    ctx.runtime.throws = true
     const c = cursorOf(id), t = temp('ccv')
+    // a missing source throws, as __iter_arr's (below)
+    const guard = () => {
+      if (ctx.summary?.at(ctx.func.current).mayBeNullishExpr(src) === false) return []
+      inc('__is_nullish')
+      ctx.runtime.throws = true
+      return [['if', ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]]]]
+    }
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, asF64(emit(src))],
-      // a missing source throws, as __iter_arr's (below)
-      ['if', ['call', '$__is_nullish', ['i64.reinterpret_f64', ['local.get', `$${t}`]]],
-        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.ITERATE_NULLISH)]]]],
+      ...guard(),
       ['local.set', `$${c.i}`, ['i32.const', 0]],
       ['local.set', `$${c.s}`, ['i32.const', 0]],
       ['local.get', `$${t}`]], 'f64')

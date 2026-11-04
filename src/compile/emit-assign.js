@@ -1083,6 +1083,11 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       const persist = typeof obj === 'string' ? persistBindingPtr(obj, ['local.get', `$${arrTmp}`]) : null
       const arr = ['local.get', `$${arrTmp}`], recvIR = asF64(emit(obj)), v = storedValue(val), word = lengthWord(v, val)
       let body, value
+      // `a.length = 0` stores the word: nothing to fill, room for it, no move.
+      if (word?.n[0] === 'i32.const' && Number(word.n[1]) === 0) {
+        inc('__arr_clear')
+        return block64(['call', '$__arr_clear', asI64(recvIR)], word.value)
+      }
       if (word) {
         inc('__arr_set_len')
         body = [['local.set', `$${arrTmp}`, recvIR], ...word.setup, ...word.check,

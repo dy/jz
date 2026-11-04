@@ -1150,7 +1150,7 @@ test('minimal: a dropped call past a receiver guard computes no result', () => {
   if (skip) return
   const src = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { let l = m.get(i & 3); if (l === undefined) { l = []; m.set(i & 3, l) } l.push(i) } let t = 0; for (const [k, v] of m) t += k * v.length; return t }`
   for (const optimize of levels(0, 2, 'size')) for (const n of [0, 9]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `O${optimize}, n=${n}`)
-  const lists = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { let l = m.get(i & 3); if (l === undefined) { l = []; m.set(i & 3, l) } l.push(i) } return m.size }`
+  const lists = `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) { let l = m.get(i & 3); if (l === undefined) { l = []; m.set(i & 3, l) } l.push(i) } return n }`
   is((funcWat(compile(lists, { optimize: { level: 'size', watr: false }, wat: true }), 'f').match(/call \$__ptr_offset\b/g) || []).length, 0, 'no header read for the dropped length')
 })
 
@@ -1182,6 +1182,38 @@ test('minimal: a binding an if fills holds a value past it', () => {
     for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2]) is(out(jz(src, { optimize }).exports.f, n), out(want, n), `${fill}, O${optimize}, n=${n}`)
     ok(guards(src) > 0, `${fill}: keeps the guard`)
   }
+})
+
+// A collection or an array the summary proves is read in place: `new Set(array)`
+// by the program's own element read, `.size` from the table's header, `.length = 0`
+// by the word (module/collection.js, emit-assign.js). The kinds a proof leaves out
+// (a hole, a raw Number array, a table a growth moved, a missing source) answer as JS.
+test('minimal: a proven source reads in place', () => {
+  if (skip) return
+  const srcs = {
+    seed: `export let f = (n) => { const a = [1, 2, 2, n, n]; a.push('x'); a.push('x'); const s = new Set(a); return s.size + (s.has(n) ? 10 : 0) + (s.has('x') ? 100 : 0) }`,
+    hole: `export let f = (n) => { const a = [1, , 1, , n]; const s = new Set(a); return s.size + (s.has(undefined) ? 10 : 0) }`,
+    raw: `export let f = (n) => { const a = new Array(4).fill(0.5); a[1] = n; a[2] = n + 0.25; const s = new Set(a); return s.size + (s.has(0.5) ? 10 : 0) }`,
+    missing: `export let f = (n) => { const a = n > 2 ? [1, 2] : undefined; return new Set(a).size }`,
+    other: `export let f = (n) => { const a = n > 2 ? 'abca' : new Uint8Array(n); return new Set(a).size }`,
+    size: `const ms = []; export let f = (n) => { const m = new Map(), s = new Set(); ms.push(m); for (let i = 0; i < n * 40; i++) { ms[0].set(i, i); s.add(i & 15) } const t = ms.pop(); return m.size + t.size * 1000 + s.size * 1000000 }`,
+    clear: `export let f = (n) => { const a = [], b = a; for (let i = 0; i < n * 30; i++) a.push(i); const v = (b.length = 0); a.push(7); return a.length * 10 + b[0] + v + (a[1] === undefined ? 100 : 0) }`,
+    clearStatic: `const S = [1, 2, 3]; export let f = (n) => { S.length = 0; S.push(n); return S.length * 10 + S[0] }`,
+    sizeMissing: `export let f = (n) => { const s = n > 2 ? new Map([[1, 2]]) : null; return s.size }`,
+    clearMissing: `export let f = (n) => { const a = n > 2 ? [1, 2] : undefined; a.length = 0; return 1 }`,
+    walk: `export let f = (n) => { const s = new Set([1, n]); let t = 0; for (const x of s) t += x; return t }`,
+    walkMissing: `export let f = (n) => { const s = n > 2 ? new Set([1, n]) : undefined; let t = 0; for (const x of s) t += x; return t }`,
+  }
+  const out = (fn, n) => { try { return fn(n) } catch { return 'threw' } }
+  for (const [name, src] of Object.entries(srcs)) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2, 'size')) for (const n of [1, 3]) is(out(jz(src, { optimize }).exports.f, n), out(want, n), `${name}, O${optimize}, n=${n}`)
+  }
+  const w = (src) => compile(src, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
+  ok(!/\$__typed_idx/.test(w(srcs.seed)) && !/\$__ptr_type\b/.test(funcWat(w(srcs.seed), 'f')), 'a proven array: no reader of every kind')
+  ok(!/\$__len\b/.test(w(srcs.size)), '.size: no length of every kind')
+  ok(!/\$__arr_set_len\b/.test(w(srcs.clear)), '.length = 0: no resize')
+  ok(!/\$__jz_last_err_bits/.test(funcWat(w(srcs.walk), 'f')) && /\$__jz_last_err_bits/.test(funcWat(w(srcs.walkMissing), 'f')), 'a walk guards only a source that may be missing')
 })
 
 // The size tier prints an integer through the scratch render alone, which packs

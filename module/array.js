@@ -273,6 +273,7 @@ export default (ctx) => {
     __arr_room: ['__arr_grow_known', '__ptr_offset_fwd'],
     __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_len: () => ['__arr_grow_known', '__dense_check', '__ptr_offset', '__ptr_type', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_clear: () => ['__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_length: ['__arr_set_len', '__ptr_type', '__to_num', '__to_int32'],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -818,6 +819,12 @@ export default (ctx) => {
     ${resizeLocals}
     ${arrayOnly}
     ${resizeTo})`
+  ctx.core.stdlib['__arr_clear'] = () => `(func $__arr_clear (param $ptr i64)
+    (local $base i32)
+    (local.set $base (call $__ptr_offset (local.get $ptr)))
+    (if (i32.lt_u (local.get $base) (i32.const 8)) (then (return)))
+    ${durableArrSnapIR('base', 'ptr')}
+    (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.const 0)))`
   ctx.core.stdlib['__arr_set_length'] = () => `(func $__arr_set_length (param $ptr i64) (param $value i64) (result f64)
     (local $p f64) (local $n i32)
     ${arrayOnly}
