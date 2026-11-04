@@ -1509,7 +1509,7 @@ export default (ctx) => {
   ctx.core.stdlib['__eq_bits'] = genEqBits
   ctx.core.stdlib['__eq_str'] = genEqStr
   deps({ __eq_str: ['__str_eq'] })
-  for (const [k, key] of [['', undefined], ['b', 'bits'], ['s', 'str']]) {
+  const probeForms = (k, key) => {
     const form = { recv: 'off', key }, sfx = '_o' + k
     // (an array key's pin is known once every key is noted: read as the body is written)
     const pin = () => k ? '' : pinKey()
@@ -1528,12 +1528,14 @@ export default (ctx) => {
     reg('__set_delete', n => genOrdDelete(n, SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, form), deleteDeps)
     reg('__map_slot', n => genOrdUpsert(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, { slotOnly: true, prologue: pin(), form }), upsertDeps)
   }
+  probeForms('', undefined)
+  probeForms('b', 'bits')
+  probeForms('s', 'str')
   // The size tier links one probe a table operation: two key forms reached
   // become the general key's, and a program that reaches the general probe of a
   // boxed receiver anyway passes the proven ones' tables boxed (stdlib-pull.js
   // collapseTwins). An insertion of a boxed receiver yields it, dropped there.
-  for (const [base, tag, insert] of [['__map_get', PTR.MAP], ['__map_has', PTR.MAP], ['__set_has', PTR.SET], ['__map_slot', PTR.MAP],
-    ['__map_set', PTR.MAP, true], ['__set_add', PTR.SET, true], ['__map_delete', PTR.MAP], ['__set_delete', PTR.SET]]) {
+  const probeFamily = (base, tag, insert = false) => {
     const box = i64Hex(BigInt(encodePtrHi(tag, 0) >>> 0) << 32n)
     const boxed = { name: base, adapt: (c) => {
       c[2] = ['i64.or', ['i64.const', box], ['i64.extend_i32_u', c[2]]]
@@ -1544,6 +1546,14 @@ export default (ctx) => {
     } }
     general({ [base + '_ob']: [{ name: base + '_o', family: base + '_o' }, boxed], [base + '_os']: [{ name: base + '_o', family: base + '_o' }, boxed], [base + '_o']: [boxed] })
   }
+  probeFamily('__map_get', PTR.MAP)
+  probeFamily('__map_has', PTR.MAP)
+  probeFamily('__set_has', PTR.SET)
+  probeFamily('__map_slot', PTR.MAP)
+  probeFamily('__map_set', PTR.MAP, true)
+  probeFamily('__set_add', PTR.SET, true)
+  probeFamily('__map_delete', PTR.MAP)
+  probeFamily('__set_delete', PTR.SET)
 
   ctx.core.stdlib['__throw_map_entry'] = () => throwErrorWat(ctx, '__throw_map_entry', 'TypeError', 'Iterator value is not an entry object')
   // Entries are objects, not necessarily arrays. Keep indexed pairs direct;

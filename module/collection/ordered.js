@@ -669,10 +669,41 @@ export const genOrdCopy = () => `(func $__ord_copy (param $off i32) (param $es i
     (i64.store (i32.sub (local.get $dst) (i32.const 16)) (i64.const 0))
     (local.get $dst))`
 
+// The size tier's rebuild walks the old entries once: each live one copied to
+// the new block's next entry and given its bucket by its stored hash there.
+const leanRebuild = () => `(func $__ord_rebuild (param $off i32) (param $cap i32) (param $es i32) (param $newcap i32) (result i32)
+    (local $newptr i32) (local $used i32) (local $i i32) (local $j i32) (local $slot i32) (local $nix i32) (local $m i32) (local $h i32) (local $b i32)
+    (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) ${ordStrideWat('(local.get $es)')}))
+    ;; the table's own properties stay its own
+    (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))
+    (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))
+    (local.set $nix (i32.add (local.get $newptr) (i32.mul ${ordEntriesWat('(local.get $newcap)')} (local.get $es))))
+    (local.set $m (i32.sub (local.get $newcap) (i32.const 1)))
+    (block $done (loop $each
+      (br_if $done (i32.ge_u (local.get $i) (local.get $used)))
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $es))))
+      (if (i64.ne (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
+        (then
+          (memory.copy (i32.add (local.get $newptr) (i32.mul (local.get $j) (local.get $es))) (local.get $slot) (local.get $es))
+          (local.set $h (i32.load (local.get $slot)))
+          (local.set $b (i32.and (local.get $h) (local.get $m)))
+          (block $placed (loop $probe
+            (br_if $placed (i32.eqz (i32.load (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2))))))
+            (local.set $b (i32.and (i32.add (local.get $b) (i32.const 1)) (local.get $m)))
+            (br $probe)))
+          (local.set $j (i32.add (local.get $j) (i32.const 1)))
+          (i32.store (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2)))
+            (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (local.get $j)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $each)))
+    (i32.store ${ordUsedAddrWat('(local.get $newptr)', '(local.get $newcap)', '(local.get $es)')} (local.get $j))
+    (i32.store (i32.sub (local.get $newptr) (i32.const 8)) (local.get $j))
+    (local.get $newptr))`
+
 /** The live entries of the table at `off`, in their order, in a new block of
  *  `newcap` buckets (it holds them: the callers size it), re-indexed by their
  *  stored hashes; the table's own properties carried. */
-export const genOrdRebuild = () => `(func $__ord_rebuild (param $off i32) (param $cap i32) (param $es i32) (param $newcap i32) (result i32)
+export const genOrdRebuild = () => lean() ? leanRebuild() : `(func $__ord_rebuild (param $off i32) (param $cap i32) (param $es i32) (param $newcap i32) (result i32)
     (local $newptr i32) (local $j i32)
     (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) ${ordStrideWat('(local.get $es)')}))
     ;; the table's own properties stay its own
