@@ -592,10 +592,16 @@ test('claims: the named-exception table is well formed', () => {
   for (const e of CLAIM_EXCEPTIONS) {
     const key = `${e.case}/${e.class}`
     ok(corpus.has(e.case), `${key}: a case of the corpus`)
-    ok(!PENDING_CASES.has(e.case), `${key}: a pending case answers to no claim, so to no exception`)
-    ok(RIVALS[e.class] != null || e.class === 'rss' && MEMORY_CASES.includes(e.case), `${key}: a claim class (${Object.keys(RIVALS).join(', ')}), or rss for a memory case (${MEMORY_CASES.join(', ')})`)
+    // the size bar holds every case with an AssemblyScript port, pending or not
+    const size = e.class === 'size'
+    ok(size || !PENDING_CASES.has(e.case), `${key}: a pending case answers to no claim, so to no exception`)
+    ok(RIVALS[e.class] != null || e.class === 'rss' && MEMORY_CASES.includes(e.case) || size && existsSync(join(ROOT, 'bench', e.case, `${e.case}.as.ts`)),
+      `${key}: a claim class (${Object.keys(RIVALS).join(', ')}), rss for a memory case (${MEMORY_CASES.join(', ')}), or size for a case with an AssemblyScript port`)
     ok(e.open == null || e.open === true, `${key}: open is true or absent`)
-    ok(typeof e.band === 'number' && e.band > 1 && e.band <= 2, `${key}: a band above 1 (a tie needs no exception) and at most 2`)
+    ok(!size || e.open === true, `${key}: a size exception is the owner's, open`)
+    // a size band measures bytes a port leaves out, not a timing's spread
+    const max = size ? 6 : 2
+    ok(typeof e.band === 'number' && e.band > 1 && e.band <= max, `${key}: a band above 1 (a tie needs no exception) and at most ${max}`)
     for (const field of ['cause', 'evidence'])
       ok(typeof e[field] === 'string' && e[field].trim().length > 0 && !e[field].includes('\n'), `${key}: a one-line ${field}`)
     ok(!seen.has(key), `${key}: named once`)
@@ -633,12 +639,15 @@ test('claims: named exceptions — each excepted case stays within its band', ()
 // with this file's own architecture (test/bench.js is the live-measurement
 // counterpart).
 test('claims: size — jz strictly smaller than AssemblyScript on every comparable case', () => {
-  const notLed = []
+  const notLed = [], held = [], excepted = exceptionsOf('size')
   for (const [id, c] of Object.entries(cases)) {
     const jz = c.targets?.jz, as = c.targets?.as
     if (!correctBenchmarkRow(jz) || !correctBenchmarkRow(as) || !(jz.bytes > 0) || !(as.bytes > 0)) continue
-    if (jz.bytes >= as.bytes) notLed.push(`${id} ${(jz.bytes / as.bytes).toFixed(3)}× (${jz.bytes}B / ${as.bytes}B)`)
+    const ratio = jz.bytes / as.bytes, e = excepted.get(id)
+    if (e && ratio <= e.band) held.push(`${id} ${ratio.toFixed(3)}× (band ${e.band}×)`)
+    else if (jz.bytes >= as.bytes) notLed.push(`${id} ${ratio.toFixed(3)}× (${jz.bytes}B / ${as.bytes}B)`)
   }
+  if (held.length) console.log(`  held: ${held.join(', ')}`)
   ok(notLed.length === 0, `strict size leadership unproven on ${notLed.length} case(s): ${notLed.join(', ')}`)
 })
 

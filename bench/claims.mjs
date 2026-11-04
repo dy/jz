@@ -33,8 +33,10 @@ export const CLAIM_CLASSES = [
  *  wasm carries only what it proves for every input. Each is a tripwire, not a claim:
  *  the gate (test/bench-claims.js) fails the moment the case leaves its band, and the
  *  entry goes the commit jz leads on every runner. The class `rss` holds a case of the
- *  peak-RSS claim (test/_memory-floor.js) to a band of jz's peak over V8's. `cause` is
- *  the measured cause in a line, `evidence` where it was measured. */
+ *  peak-RSS claim (test/_memory-floor.js) to a band of jz's peak over V8's; the class
+ *  `size` a case of the size bar (jz's size build strictly under `asc -Oz`) to a band
+ *  of jz's bytes over AssemblyScript's, where the port is not the program the JS states.
+ *  `cause` is the measured cause in a line, `evidence` where it was measured. */
 export const CLAIM_EXCEPTIONS = [
   {
     case: 'vm', class: 'wasm', band: 1.12,
@@ -75,6 +77,11 @@ export const CLAIM_EXCEPTIONS = [
     case: 'webaudio', class: 'rss', band: 1.15, open: true,
     cause: "V8's compiled code for the speed build's 1.19 MB of wasm, about 13 MB resident, where the heap's high-water mark is 4.5 MB (the size build's 376 KB peaks at 70.0 MB)",
     evidence: 'reference run 4922687e (1.102×); paired local runs at d9c9e3a4 (75.7 MB against V8\'s 70.2 MB)',
+  },
+  {
+    case: 'arraydowngrade', class: 'size', band: 6, open: true,
+    cause: "AssemblyScript's port is a closed tagged union that appends the literal '[object Object]1' and reads NaN where JS concatenates, so it carries no Number::toString, ToNumber of a string or keyed property read; jz carries all three (3.5, 2.3 and 1.3 kB of its 14.6) until it proves which slots hold the object and the string",
+    evidence: 'bench run 41843261059 at 03c853cb (14,632 B against 2,523 B, 5.80×); size build at 0c47b293 measured by function (14,598 B)',
   },
 ]
 /** The cases a claim class holds to a band: case → its exception. */

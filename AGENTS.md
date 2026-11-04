@@ -33,8 +33,9 @@ measurement only: the same code shown optimal against that class, or the same ma
 code leading on some CPUs and trailing on others (`vm` against the wasm class: 0.75× on
 Zen 4, 0.76× on the M4, 1.07× on Zen 3, 1.10× on Zen 5). Any other gap stays red until
 fixed, unless the owner accepts it for a release: such an entry is marked `open`, names
-its cause and stays a target (today the dynamic programs against bun/JSC, and `webaudio`'s peak RSS
-against V8 under the class `rss`). The gate (`test/bench-claims.js`) holds an
+its cause and stays a target (today the dynamic programs against bun/JSC, `webaudio`'s peak RSS
+against V8 under the class `rss`, and `arraydowngrade`'s bytes against AssemblyScript's
+closed-world port under the class `size`). The gate (`test/bench-claims.js`) holds an
 excepted case to its band instead of leadership and fails past it: every exception is a
 tripwire, not a claim, removed the commit jz leads on every runner.
 

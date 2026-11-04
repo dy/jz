@@ -27,6 +27,7 @@ import { instantiate } from '../interop.js'
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js'
 import { timedBenchmarkRow } from '../assets/headline.js'
 import { PORFFOR_RELEASE, PORFFOR_REV, porfforEvidenceMatches, porfforFloor } from './_porffor-floor.js'
+import { exceptionsOf } from '../bench/claims.mjs'
 import { WASM_BAND_TOL } from '../bench/claims.mjs'
 import { compile } from './util.js'
 
@@ -842,11 +843,17 @@ test('bench: JZ does not lose to Porffor native by case or geomean (committed ev
 // gap) but no longer gate anything themselves. A case that used to be `todo`
 // (printed, unasserted) now fails the build until the compiler genuinely
 // emits fewer bytes than `asc -Oz`.
+// An owner-accepted `size` exception (bench/claims.mjs CLAIM_EXCEPTIONS) holds
+// its case to its band instead, and fails past it.
 if (ascAvailable) {
+  const excepted = exceptionsOf('size')
   for (const id of Object.keys(sizes).sort()) {
-    const s = sizes[id]
+    const s = sizes[id], e = excepted.get(id)
     if (!(s.jz > 0) || !(s.as > 0)) continue   // no comparable AS artifact for this case
-    test(`bench: size ${id} jz < as (strict, per case)`, () => {
+    if (e) test(`bench: size ${id} jz within its ${e.band}× band over as (open exception)`, () => {
+      ok(s.jz / s.as <= e.band, `${id}: jz ${s.jz} B over AS ${s.as} B is ${(s.jz / s.as).toFixed(3)}×, past the ${e.band}× band of its exception — ${e.cause}`)
+    })
+    else test(`bench: size ${id} jz < as (strict, per case)`, () => {
       ok(s.jz < s.as, `${id}: jz ${s.jz} B ≥ AS ${s.as} B (${(s.jz / s.as).toFixed(3)}×) — jz must be strictly smaller than AssemblyScript`)
     })
   }
