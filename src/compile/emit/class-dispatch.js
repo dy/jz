@@ -405,19 +405,20 @@ export function synthesizeClassDispatchers() {
   // arguments than it carries inline go as the array a spread builds
   const closureArgs = (n) => n > MAX_CLOSURE_ARITY ? ['...', ['[', ...Array.from({ length: n }, (_, i) => A(i))]] : argList(n)
   defineOwnProbe()
+  // `arm(e)`: the access through class e's member, null where e has none
   const define = (name, arity, arm, fallback, prop) => {
     if (byName.has(name)) return
     // each class's own property of the name first, by its layout, an instance owning one taking the
     // access as it is, as a receiver of no class does: one copy of it, after the tests (the size tier
     // asks the generic lookup once, before the tests: one probe, not one a class)
-    const arms = entries.filter(e => e.methods.get(arm.key))
+    const arms = entries.filter(e => arm(e) != null)
     let stmts
     if (ctx.transform.optimize?.leanRuntime) stmts = [['if', ['__own', R, ['str', prop]], ['return', fallback]],
-      ...arms.map(e => ['if', ['instanceof', R, e.brand], ['return', arm.call(e.methods.get(arm.key))]]), ['return', fallback]]
+      ...arms.map(e => ['if', ['instanceof', R, e.brand], ['return', arm(e)]]), ['return', fallback]]
     else {
       let chain = null
       for (let i = arms.length - 1; i >= 0; i--) {
-        const e = arms[i], own = ['if', ['!', ['__own', R, ['str', prop], e.brand]], ['return', arm.call(e.methods.get(arm.key))]]
+        const e = arms[i], own = ['if', ['!', ['__own', R, ['str', prop], e.brand]], ['return', arm(e)]]
         chain = chain ? ['if', ['instanceof', R, e.brand], own, chain] : ['if', ['instanceof', R, e.brand], own]
       }
       stmts = [...(chain ? [chain] : []), ['return', fallback]]
@@ -428,17 +429,28 @@ export function synthesizeClassDispatchers() {
     ctx.funcs.list.push(func); byName.set(name, func)
   }
   const withR = (n) => n === 0 ? R : [',', R, ...Array.from({ length: n }, (_, i) => A(i))]
+  // A read of a name is a class's getter or its method bound, whichever the
+  // class has (its own descriptor replaces an inherited one, jzify/classes.js):
+  // one dispatcher of a read answers both, so a receiver of a class with the
+  // method reads it where a class elsewhere has a getter of the name, and one
+  // of a class with the getter where another has the method.
+  const readOf = (prop) => (e) => e.methods.has(prop + ACCESSOR_GET) ? ['()', e.methods.get(prop + ACCESSOR_GET), R]
+    : e.methods.has(prop) ? ['()', e.methods.get(prop) + BIND, R] : null
+  const of = (key, call) => (e) => e.methods.has(key) ? call(e.methods.get(key)) : null
   for (const key of keys) {
     const isGet = key.endsWith(ACCESSOR_GET), isSet = key.endsWith(ACCESSOR_SET)
     const prop = isGet ? key.slice(0, -ACCESSOR_GET.length) : isSet ? key.slice(0, -ACCESSOR_SET.length) : key
-    if (isGet) { if (read.has(prop)) define(dispatcherName(key, 'call'), 0, { key, call: fn => ['()', fn, R] }, ['.', R, prop], prop); continue }
-    if (isSet) { if (written.has(prop)) define(dispatcherName(key, 'call'), 1, { key, call: fn => ['()', fn, withR(1)] }, ['=', ['.', R, prop], A(0)], prop); continue }
+    if (isGet) { if (read.has(prop)) define(dispatcherName(key, 'call'), 0, readOf(prop), ['.', R, prop], prop); continue }
+    if (isSet) { if (written.has(prop)) define(dispatcherName(key, 'call'), 1, of(key, fn => ['()', fn, withR(1)]), ['=', ['.', R, prop], A(0)], prop); continue }
     if (called.has(key)) {
       // every argument a call writes out: a receiver of no class takes them all
       const arity = Math.max(0, passed.get(key) ?? 0, ...entries.map(e => { const f = byName.get(e.methods.get(key)); return f ? f.sig.params.length - 1 : 0 }))
-      define(dispatcherName(key, 'call'), arity, { key, call: fn => ['()', fn, withR(arity)] }, ['()', ['.', R, key], closureArgs(arity)], key)
+      // a class whose `key` is a getter calls what the getter answers, on the receiver
+      define(dispatcherName(key, 'call'), arity, (e) => e.methods.has(key) ? ['()', e.methods.get(key), withR(arity)]
+        : e.methods.has(key + ACCESSOR_GET) ? ['()', ['.', ['()', e.methods.get(key + ACCESSOR_GET), R], 'call'], withR(arity)] : null,
+        ['()', ['.', R, key], closureArgs(arity)], key)
     }
-    if (read.has(key)) define(dispatcherName(key, 'read'), 0, { key, call: fn => ['()', fn + BIND, R] }, ['.', R, key], key)
+    if (read.has(key)) define(dispatcherName(key, 'read'), 0, readOf(key), ['.', R, key], key)
   }
 }
 

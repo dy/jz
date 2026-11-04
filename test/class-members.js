@@ -8,6 +8,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { agree, funcWat, jz, compile } from './util.js'
+import { levels } from './_matrix.js'
 
 // Each row is [label, program]; the program's export `f` takes no argument.
 const agrees = (rows) => { for (const [label, src] of rows) agree(src, 'f', [], undefined, label) }
@@ -211,4 +212,36 @@ test('class members: an own closure over a method shadows it only on the shapes 
   const wat = compile(src, { wat: true, optimize: { sourceInline: false, inlineFns: false, watr: false } })
   const body = funcWat(wat, 'f')
   ok(!/__dyn_call|__to_num/.test(body), 'the calls resolve statically and the typed results stay numeric')
+})
+
+// A read of a name a class has as a method, and another class or an object
+// literal as a getter, takes whichever the receiver has: through a receiver the
+// summary cannot name, the getter's probe falls back to the class's method
+// (module/core.js `__raw_prop`), and one dispatcher of the read, or of the
+// call, answers a getter class and a method class alike (class-dispatch.js
+// synthesizeClassDispatchers). The method read undefined and its call threw.
+test('class members: a method reads and calls beside a getter of its name elsewhere', () => {
+  const rows = [
+    ['beside a literal\'s getter', `const o = { get foo() { return 1 } }
+      class Th { foo() { return 5 } }
+      const probe = (v) => v.foo
+      const vals = [o, new Th(), { a: 1 }, [1], 'x', 3]
+      export const f = () => vals.map(v => typeof probe(v))`],
+    ['beside a class\'s getter', `class A { get foo() { return 'getter' } }
+      class B { foo() { return 'method' } }
+      const lit = { get foo() { return 'lit' } }
+      const vals = [new A(), new B(), lit, { foo: 'data' }, { a: 1 }, [1], 'x', 3]
+      export const f = () => vals.map(v => typeof v.foo === 'function' ? v.foo() : v.foo)`],
+    ['called, an override of either kind', `class A { get foo() { return () => 'A' } }
+      class B { foo() { return 'B' } }
+      class C extends B { get foo() { return () => 'C' } }
+      class D extends A { foo() { return 'D' } }
+      const lit = { get foo() { return () => 'lit' } }
+      const vals = [new A(), new B(), new C(), new D(), lit, { foo: () => 'data' }]
+      export const f = () => [vals.map(v => v.foo()), vals.map(v => typeof v.foo)]`],
+    ['a thenable class awaited', `class Th { then(r) { r('c') } }
+      const bad = { get then() { return undefined } }
+      export const f = () => [typeof bad.then, typeof new Th().then]`],
+  ]
+  for (const optimize of levels(false, 2, 3, 'size')) for (const [label, src] of rows) agree(src, 'f', [], { optimize }, `O${optimize} ${label}`)
 })

@@ -2850,7 +2850,13 @@ export default (ctx) => {
   registerGetter('.closure:prototype', obj => typed(['block', ['result', 'f64'],
     ['drop', asF64(emit(obj))], asF64(emit(['{}']))], 'f64'))
 
-  ctx.core.emit['__raw_prop'] = (obj, prop) => dotRead(obj, prop, true)
+  // The read an accessor's probe falls back to: no accessor dispatch, a class's
+  // method still read as one (a receiver of no class with the getter may be
+  // an instance of a class with a method of that name).
+  ctx.core.emit['__raw_prop'] = (obj, prop) => {
+    const bound = classMethodValue(obj, prop, (recv) => dotRead(recv, prop, true))
+    return bound !== undefined ? bound : dotRead(obj, prop, true)
+  }
   // a generator frame's field before its binding's step (src/ast.js TDZ_VALUE)
   ctx.core.emit.__tdz = () => undefExpr()
   // The async runtime's proof that a value is one of its promises: its box
