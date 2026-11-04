@@ -1374,6 +1374,16 @@ test('minimal: a layout the host never reads is not written', () => {
   ok(err instanceof TypeError, 'a runtime Error keeps its class')
 })
 
+// The size tier's ToInt32 of a Number of unknown range is one call past three
+// sites (optimize/to-int32.js outlineToInt32), exact at every value.
+test('minimal: a repeated ToInt32 is one call at the size tier', () => {
+  if (skip) return
+  const src = `export let f = (a, b, c, d) => { const x = a * 1, y = b * 1, z = c * 1, w = d * 1; return ((x | 0) + (y | 0) * 3 + (z | 0) * 5 + (w | 0) * 7) | 0 }`
+  for (const args of [[1.5, -2.5, 3, 4], [Infinity, -Infinity, NaN, 0], [2 ** 31, 2 ** 32 + 1, -(2 ** 31) - 1, 2 ** 53]])
+    for (const optimize of levels(2, 'size')) is(jz(src, { optimize }).exports.f(...args), oracle(src).f(...args), `O${optimize}, ${args}`)
+  ok(/call \$__to_i32\b/.test(compile(src, { optimize: { level: 'size', watr: false }, wat: true })), 'one call')
+})
+
 // The size tier prints an integer through the scratch render alone, which packs
 // a short result into the pointer as the speed tier's digit loop does: the same
 // bits for the same text (a Map key, `===` to a literal), with no second path.

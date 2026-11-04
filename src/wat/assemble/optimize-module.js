@@ -24,6 +24,7 @@ import { appendLateStdlib } from './stdlib-pull.js'
 import { insertLoopRewinds } from '../../optimize/loop-rewind.js'
 import { insertLoopCompacts } from '../../optimize/loop-compact.js'
 import { quietOptimizedLoops } from '../../optimize/quiet-loops.js'
+import { outlineToInt32 } from '../../optimize/to-int32.js'
 import { collectHeaderSafeFuncs } from '../../optimize/licm.js'
 import { hoistForwardHops, collectStillFuncs, collectResults } from '../../optimize/forward-hops.js'
 const COMPACT_KERNELS = ['$__gc_begin', '$__gc_walk', '$__gc_move', '$__gc_thresh']
@@ -152,6 +153,7 @@ export function optimizeModule(sec, profiler) {
       if (masked.has(s)) guardMaskedVectorSuffix(s, memoryWrites)
     }
   })
+  if (cfg?.leanRuntime) t('outlineToInt32', () => outlineToInt32([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat, { loc: false }))))
   // The lane vectorizer can inject f64x2 stdlib mirrors ($math.log_v, $math.cos2, …)
   // absent from the already-pulled+treeshaken module. Append any now-referenced mirror
   // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.

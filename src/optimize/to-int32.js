@@ -240,3 +240,24 @@ export function guardToInt32(module, add = false) {
   }
   return module
 }
+
+// The size tier's ToInt32 of a Number of unknown range: the exact form is eleven
+// bytes of a site, a call two. Three sites pay for the helper's body; fewer stay
+// as they are. After every pass that reads the exact form.
+const OUTLINE_SITES = 3
+export function outlineToInt32(funcs, addFunc) {
+  const sites = []
+  const visit = (n) => {
+    if (!isArr(n)) return
+    for (let i = 1; i < n.length; i++) {
+      const c = n[i]
+      if (exactForm(c)) sites.push([n, i])
+      visit(c)
+    }
+  }
+  for (const fn of funcs) visit(fn)
+  if (sites.length < OUTLINE_SITES) return
+  for (const [p, i] of sites) { const e = p[i]; if (exactForm(e)) p[i] = ['call', '$__to_i32', exactForm(e).x] }
+  addFunc(`(func $__to_i32 (param $x f64) (result i32)
+    (select (i32.wrap_i64 (i64.trunc_sat_f64_s (local.get $x))) (i32.const 0) (f64.ne (local.get $x) (f64.const inf))))`)
+}
