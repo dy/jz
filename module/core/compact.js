@@ -140,8 +140,8 @@ export const registerCompact = () => {
             (i32.load (i32.sub (i32.add ${p} (i32.mul ${fit} ${stride})) (i32.const 4)))
             (i32.const 0)
             (i32.eq ${fit} (i32.load (i32.sub ${p} (i32.const 4)))))`
-  // a Set's or a Map's block stride, by its header's buckets (module/collection/ordered.js)
-  const ordStrideOf = (p, e) => ordStrideWat(e, `(i32.load (i32.sub ${p} (i32.const 4)))`)
+  // a Set's or a Map's block stride (module/collection/ordered.js)
+  const ordStrideOf = (e) => ordStrideWat(e)
 
   // Whether the word names memory of the module's: a box with a heap tag, not
   // a string held in its pointer.
@@ -526,7 +526,7 @@ export const registerCompact = () => {
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
         ;; a HASH's slots carry the hash lane after them; a Set's or a Map's
         ;; block's stride follows its buckets (module/collection/ordered.js ordStride)
-        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideOf('(local.get $p)', '(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
+        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideOf('(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (local.get $stride)))
         (call $__gc_keep (i32.sub (local.get $p) (i32.const 16)) (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $stride))))
         (call $__gc_list (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))) (local.get $p))
@@ -702,9 +702,9 @@ export const registerCompact = () => {
         (if (i32.ne (local.get $t) (i32.const ${PTR.HASH})) (then ${fwdProps('(local.get $p)')}))
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4)))
-          (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideOf('(local.get $p)', '(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH})))))
+          (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideOf('(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH})))))
         (if (i32.ne (local.get $t) (i32.const ${PTR.HASH}))
-          (then (local.set $cap ${ordFit('(local.get $p)', '(local.get $cap)', ordStrideOf('(local.get $p)', '(local.get $e)'))})))
+          (then (local.set $cap ${ordFit('(local.get $p)', '(local.get $cap)', ordStrideOf('(local.get $e)'))})))
         (local.set $n (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $e))))
         (block $done (loop $entry
           (br_if $done (i32.ge_u (local.get $p) (local.get $n)))

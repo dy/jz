@@ -54,10 +54,10 @@ test('allocation: collection replacement at the growth threshold preserves its t
       for (const key of s) setValues.push(m.get(key))
       return JSON.stringify([m.size, s.size, values, setValues])
     }`
-  // A table of `cap` buckets holds three in four less one below 16 buckets, and
-  // from there half less one, or three in four in compact collections and at the
-  // size tier (layout.js ordEntries): the key after the ones that fill it grows the table.
-  const usable = (cap, dense) => cap < 16 ? cap - (cap >> 2) - 1 : (cap >> 3) * (dense ? 6 : 4) - 1
+  // A table of `cap` buckets holds half of them less one, or three in four in
+  // compact collections and at the size tier (layout.js ordEntries): the key
+  // after the ones that fill it grows the table.
+  const usable = (cap, dense) => dense ? cap - (cap >> 2) - 1 : (cap >> 1) - 1
   for (const level of levels(0, 1, 2, 3, 'size')) for (const floor of [2, 8]) for (const compact of [false, true]) {
     const dense = compact || level === 'size'
     const full = (n) => { let cap = floor; while (usable(cap, dense) < n) cap <<= 1; return usable(cap, dense) === n }
@@ -394,12 +394,12 @@ test('allocation: seeded collections apply their capacity floor without adding a
   for (const level of levels(0, 1, 2, 3)) for (const floor of [2, 8]) for (const compact of [false, true]) {
     const ex = jz(src, { optimize: { level, collectionInitCap: floor }, _compactCollections: compact }).exports
     for (const n of [0, 1, 2, 3, 4, 5, 7, 8, 9, 16, 0, 4, 4]) {
-      // the smallest table that holds n (module/collection/ordered.js genOrdCap): a small
-      // one fills three in four buckets less one, a large one half less one (compact: three in four)
+      // the smallest table that holds n (module/collection/ordered.js genOrdCap): half
+      // its buckets less one, or three in four less one in compact collections
       const load = compact ? 6 : 4
-      const cap = Math.max(floor, n <= 1 ? 2 : n <= 2 ? 4 : n <= 5 ? 8 : 2 ** Math.ceil(Math.log2(Math.ceil(8 * (n + 1) / load))))
+      const cap = Math.max(floor, load === 4 ? 2 ** Math.ceil(Math.log2(2 * (n + 1))) : n <= 1 ? 2 : 2 ** Math.ceil(Math.log2(Math.ceil(4 * (n + 1) / 3))))
       // a block's bucket is that share of the entry's stride and its word (layout.js ordStride)
-      const stride = (es) => es * (cap < 16 ? 6 : load) / 8 + 4
+      const stride = (es) => es * load / 8 + 4
       // (the allocator rounds a block to 8 bytes)
       const bytes = (es) => (16 + cap * stride(es) + 7) & ~7, mapBytes = bytes(24)
       is(ex.map(n), mapBytes, `Map(${n}), floor ${floor}, compact ${compact}, O${level}`)

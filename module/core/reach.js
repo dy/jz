@@ -292,7 +292,7 @@ export const registerReach = () => {
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
         ;; a HASH's slots carry the hash lane after them; a Set's or a Map's
         ;; block's stride follows its buckets (module/collection/ordered.js ordStride)
-        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideWat('(local.get $e)', '(i32.load (i32.sub (local.get $p) (i32.const 4)))')} (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
+        (local.set $stride (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideWat('(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH}))))
         (local.set $cap (call $__reach_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4))) (local.get $stride)))
         (call $__reach_end (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $stride))))
         (local.set $c (local.get $p))

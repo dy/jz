@@ -78,16 +78,14 @@ export const FORWARDING_MASK = (1 << PTR.ARRAY) | (1 << PTR.HASH) | (1 << PTR.SE
 export const HIDDEN_PROPERTY_SEQ = 0xffffffff
 
 // A Set's and a Map's table of `cap` buckets (module/collection/ordered.js),
-// entries of `es` bytes: from ORD_HALF buckets on, `load` eighths of the buckets
-// less one hold entries (4 in a program, so a missed key's probe ends soon; 6 in
-// the compact collections of the compiler's own artifact, which keep its memory
-// small, and at the size tier, whose code then has one geometry); below
-// ORD_HALF, six eighths less one. A bucket's bytes are that share
-// of the entry's stride and its index word; the block is `cap ×
-// ordStride(es, cap, load)` bytes, its last word the count of appended entries.
-export const ORD_HALF = 16
-export const ordStride = (es, cap, load) => es * (cap < ORD_HALF ? 6 : load) / 8 + 4
-export const ordEntries = (cap, load) => cap < ORD_HALF ? cap - (cap >> 2) - 1 : (cap >> 3) * load - 1
+// entries of `es` bytes: `load` eighths of the buckets less one hold entries
+// (4 in a program, so a missed key's probe ends soon; 6 in the compact
+// collections of the compiler's own artifact, which keep its memory small, and
+// at the size tier). A bucket's bytes are that share of the entry's stride and
+// its index word; the block is `cap × ordStride(es, load)` bytes, its last word
+// the count of appended entries.
+export const ordStride = (es, load) => es * load / 8 + 4
+export const ordEntries = (cap, load) => cap - (cap * (8 - load) >> 3) - 1
 
 /** A resizable ArrayBuffer (`new ArrayBuffer(n, { maxByteLength })`) reserves its
  *  maximum: its header holds the current byte length at -8, the maximum at -4

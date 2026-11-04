@@ -998,12 +998,12 @@ new block, twice the buckets or as many when half are tombstones, the old block
 forwarding to it. A table that ends at the heap top above the reset mark grows
 where it stands instead, as an array's storage does: its live entries close up,
 the rest of the block clears and its buckets re-index, and no stub is left for a
-holder to hop. A table below 16 buckets fills three in four of them less one,
-a larger one half less one, so a probe that misses ends after a bucket or two;
-in the compiler's own artifact (`compactCollections`) a larger one fills three
-in four too, which keeps the hosted compiler's memory under its bound (the
-summary of 512 guards: 621,912 B half full, 524,408 B so), and so does the size
-tier, whose code then computes one geometry for every table. The block is the
+holder to hop. A program's table fills half its buckets less one, so a probe
+that misses ends after a bucket or two; the compiler's own artifact
+(`compactCollections`) fills three in four less one, which keeps the hosted
+compiler's memory under its bound (the summary of 512 guards: 621,912 B half
+full, 524,408 B so), and so does the size tier. One module has one geometry,
+so no walker selects between two. The block is the
 table's buckets times that share of its entry stride and a bucket word
 (layout.js `ordStride`), the count of appended entries in its last word. A
 walker reads the entries below
