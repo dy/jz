@@ -12,6 +12,8 @@ import { oracle, compile, jz, funcWat } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { dropSettledTests } from '../src/optimize/settled-tests.js'
 import { fusedRewrite } from '../src/optimize/peephole.js'
+import encodeWat from 'watr/compile'
+import { ptrBits, PTR } from '../layout.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
 // boilerplate (a `_start` export, fd imports) and the self-compile kernel owns its own
@@ -1295,6 +1297,7 @@ test('minimal: a logical op of a missing Number is a Number', () => {
 // SameValueZero (-0 is +0, NaN is NaN), insertion order and a deleted key's
 // absence, in a table any other site may fill with keys of other kinds.
 const TABLE_KERNELS = {
+  zero: `export let f = (n) => { const m = new Map(), s = new Set(); const z = -(n & 0); m.set(z, 1); s.add(z); let t = 0; for (const [k] of m) t += 1 / k; for (const k of s) t += 2 / k; return t }`,
   ints: `export let f = (n) => { const m = new Map(), s = new Set(); for (let i = -3; i < n; i++) { m.set(i, i * 2); s.add(i & 3) } m.delete(1); m.set(-0, 'z'); s.add(-0); s.delete(2); let o = ''; for (const [k, v] of m) o += k + ':' + v + ','; for (const k of s) o += k + ';'; return o + m.get(0) + m.has(1) + s.has(0) + m.size }`,
   nums: `export let f = (n) => { const s = new Set(), m = new Map(); const xs = [0, -0, NaN, 0 / 0, 1.5, -1.5, n, n / 3, Infinity]; for (const x of xs) { s.add(x); m.set(x, (m.get(x) || 0) + 1) } let o = ''; for (const x of s) o += x + ','; for (const [k, v] of m) o += k + '=' + v + ';'; return o + s.has(NaN) + s.has(-0) + m.get(0) + s.size }`,
   mixed: `export let f = (n) => { const m = new Map(); m.set(1, 'a'); m.set('1', 'b'); m.set(n, 'c'); m.set('' + n, 'd'); m.set(true, 'e'); m.set(null, 'f'); m.set(undefined, 'g'); return [m.get(1), m.get('1'), m.get(n), m.get('' + n), m.get(true), m.get(null), m.get(undefined), m.get(1 === n), m.size].join('|') }`,
@@ -1432,11 +1435,17 @@ test('minimal: the size tier counts digits at every magnitude', () => {
   const src = `export let f = (n) => String(n | 0); export let g = (n) => ('' + (n | 0) + 'x').length; export let h = (n) => [n | 0].join()
     export let u = (n) => String(n >>> 0) + 'x' + (n >>> 0)
     export let c = (x, n) => { const w = String(x); let t = ''; for (let i = 0; i < n; i++) t = w + i; return t }
-    export let d = (w, n) => String(w) + (n | 0)`
+    export let d = (w, n) => String(w) + (n | 0)
+    export let lo = (n) => { const k = (n & 7) - 4; return 'v' + k }
+    export let w = (n) => 'x' + (n >>> 0)
+    export let v = (n) => (n >>> 0) + ''`
   const want = oracle(src), values = [0, 1, -1, 9, 10, -10, 99, 100, 999, 1000, 99999, 100000, 999999, 1000000, -1000000, 9999999, 2147483647, -2147483648, 1000000000]
   for (const optimize of levels(0, 2, 'size')) {
-    const { f, g, h, u, c, d } = jz(src, { optimize }).exports
-    for (const v of values) { is(f(v), want.f(v), `String(${v}) at ${optimize}`); is(g(v), want.g(v), `length at ${v}`); is(h(v), want.h(v), `join at ${v}`); is(u(v), want.u(v), `unsigned at ${v}`); is(d('w', v), want.d('w', v), `word leaf at ${v}`) }
+    const { f, g, h, u, c, d, lo, w, v: vv } = jz(src, { optimize }).exports
+    for (const v of values) {
+      is(f(v), want.f(v), `String(${v}) at ${optimize}`); is(g(v), want.g(v), `length at ${v}`); is(h(v), want.h(v), `join at ${v}`); is(u(v), want.u(v), `unsigned at ${v}`); is(d('w', v), want.d('w', v), `word leaf at ${v}`)
+      is(lo(v), want.lo(v), `a leaf of a range below zero at ${v}`); is(w(v), want.w(v), `two leaves, unsigned, at ${v}`); is(vv(v), want.v(v), `an unsigned leaf first at ${v}`)
+    }
     for (const n of [1, 2, 11, 1001]) is(c('wxyz', n), want.c('wxyz', n), `a counter leaf at ${n}, ${optimize}`)
     is(c('', 2), '1', 'an empty head packs')
   }
@@ -1560,7 +1569,7 @@ test('minimal: a short string reads and packs at the size tier', () => {
     export let cat = (a, b) => { const s = a + b; const m = new Map(); m.set('abcdef', 1); m.set('', 2); m.set('ab', 3); return s + '|' + s.length + '|' + (m.get(s) | 0) + '|' + (s === 'abcdef') }
     export let view = (a) => { const v = a.slice(2, 5); return (v + 'xyz') + '|' + v.charCodeAt(1) + '|' + v.charCodeAt(5) + '|' + v.charCodeAt(-1) }
     export let at = (a, i) => a.charCodeAt(i)
-    export let of = (n) => { const a = String.fromCharCode(97 + (n & 7)), b = String.fromCharCode((n & 127) + 1), c = String.fromCharCode(n & 127); return a + '|' + b.charCodeAt(0) + '|' + b.length + '|' + c.charCodeAt(0) + '|' + (a === 'c') }`
+    export let of = (n) => { const a = String.fromCharCode(97 + (n & 7)), b = String.fromCharCode((n & 127) + 1), c = String.fromCharCode(n & 127), d = String.fromCharCode((n & 63) - 1); return a + '|' + b.charCodeAt(0) + '|' + b.length + '|' + c.charCodeAt(0) + '|' + (a === 'c') + '|' + d.charCodeAt(0) }`
   const want = oracle(src), words = ['', 'a', 'ab', 'abc', 'abcdef', 'abcdefg', 'caf\u00e9', '\u00e9', 'long string on the heap', 'def']
   for (const optimize of levels(0, 2, 'size')) {
     const { cat, view, at, of } = jz(src, { optimize }).exports
@@ -1574,6 +1583,15 @@ test('minimal: a short string reads and packs at the size tier', () => {
   const ascii = funcWat(compile(`export let f = (n) => String.fromCharCode(97 + (n & 7))`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
   ok(!/__char_unit/.test(ascii), 'a code the range holds to ASCII is one inline unit')
   ok(/__char_unit/.test(funcWat(compile(`export let f = (n) => String.fromCharCode((n & 127) + 1)`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')), 'one past ASCII is not')
+  // the unit read itself, on a heap string whose next unit is not 0: past the end it answers 0
+  const text = compile(`export let f = (a, b) => String(a) + String(b)`, { optimize: { level: 'size', watr: false }, wat: true })
+  const pooled = text.match(/\(global \$__f[cf]\d+[\s\S]*?\n  \)/g) || []
+  const { memory, __char_at } = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(`(module (memory (export "memory") 1) ${pooled.join('\n')}
+    ${['__char_at', '__str_length'].map(n => funcWat(text, n)).join('\n')} (export "__char_at" (func $__char_at)))`))).exports
+  const units = new Uint16Array(memory.buffer)
+  new Uint32Array(memory.buffer)[15] = 3
+  units.set([97, 98, 99, 65], 32)
+  is([0, 1, 2, 3, 4].map(i => __char_at(ptrBits(PTR.STRING, 0, 64), i)).join(), '97,98,99,0,0', 'units, then 0 past the end')
 })
 
 // Two present values of one growable kind are one object where their live offsets
@@ -1596,6 +1614,9 @@ test('minimal: identity holds past a growth at the size tier', () => {
   const want = oracle(src).f
   for (const optimize of levels(0, 2, 'size')) for (const n of [0, 3, 200]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
   ok(!/__same_ref/.test(funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')), 'no tag test of two of one kind')
+  // a holder left on the old block: the binding takes the grown array, the element keeps the stub
+  const held = `export let f = (n) => { const x = [1], arrs = [x, [2]]; for (let i = 0; i < n; i++) x.push(i); let t = 0; for (let j = 0; j < arrs.length; j++) { const q = arrs[j]; if (x === q) t += 1 + j * 10 } return t }`
+  for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 300]) is(jz(held, { optimize }).exports.f(n), oracle(held).f(n), `held, n=${n} at ${optimize}`)
 })
 
 // A function whose every return is storage it made gives nothing back at any
