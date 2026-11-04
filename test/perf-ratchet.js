@@ -396,6 +396,21 @@ const ARRAY_CALLS = {
 //            and its exit, about 13 ops beside the cold block the count leaves out, which
 //            run once per walk or loop end: slice f$exp +208, entered +104 (the gate sits
 //            in the loop the site's re-entry makes, which the calls enter).
+//   the insertion-ordered Set and Map tables (module/collection/ordered.js, 2026-11-03): by
+//            function, over the 40 seeds, against the same tree without them. A compaction
+//            walks a table's appended entries, so the walk reads the count and the block's
+//            stride: 10 ops in `__compact` a program that links it, buf +50 (5 seeds), condref
+//            +400, and in slice +320 there and +80 in `__gc_walk`; they run per Set or Map a
+//            compaction meets. Slice's 8 programs that read `a[o + i]` may read a builtin
+//            method as a value and link the Map's and the Set's method closures, whose loops
+//            this count includes, none of which they call: `__coll_order` -2136 (no sort),
+//            the methods' closures -792, the dictionary stores -32, `__coll_step` +408 (a
+//            forEach's live step), `__ord_index` +376 and `__ord_live` +264 (the one growth,
+//            in place or moved), the forEach closures +176; slice 231828 -> 230492, with the
+//            count and stride above. No entered loop grew (slice
+//            30800 -> 30784), no program loop among them. What they buy, jz against the tree
+//            before them (a9fd0e1a0, speed tier, 7 interleaved rounds, M4 Max at load ~13):
+//            mapstr 0.39x, setops 0.39x, mapobj 0.49x, mapint 0.52x.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}

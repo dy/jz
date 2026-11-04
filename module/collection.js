@@ -223,7 +223,7 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
-import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideWat, ordBytesWat } from './collection/ordered.js'
+import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdLive, genOrdIndex, genCollStep, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideWat, ordBytesWat } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
 import registerIdentity, { arrayKeysOn, noteKeys, noteProbeKeyOf, keyArmsOn, pinKeyWat } from './collection/identity.js'
@@ -354,13 +354,14 @@ export default (ctx) => {
     __hash_set_local: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__mkptr', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     __hash_set_value: ['__hash_set_local', '__to_key', '__is_nullish'],
     __map_slot: () => ordUpsertDeps(),
-    __ord_grow: ['__ord_rebuild', '__table_check', '__memgrow'],
+    __coll_step: ['__ptr_offset_fwd', '__coll_seek'],
+    __ord_grow: ['__ord_rebuild', '__ord_live', '__ord_index', '__table_check', '__memgrow'],
     __map_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd'],
     __set_find: () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd'],
     __map_put_at: () => ['__map_set', '__ptr_offset_fwd', ...slotLogDeps()],
     __slot_heal: ['__ptr_offset_fwd'],
     __set_put_at: () => ['__set_add', '__ptr_offset_fwd', ...slotLogDeps()],
-    __ord_rebuild: ['__alloc_hdr_n'],
+    __ord_rebuild: ['__alloc_hdr_n', '__ord_live', '__ord_index'],
     __ord_copy: ['__ord_rebuild', '__alloc_hdr_n'],
     __set_from: ['__is_nullish', '__ptr_offset', '__ord_copy', '__alloc_hdr_n', '__mkptr', '__table_check', '__ord_cap'],
     __hash_slot: () => ['__str_hash', '__key_eq', '__alloc_hdr_n', '__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__zomb_scan', '__coll_rehash', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
@@ -810,6 +811,8 @@ export default (ctx) => {
   ctx.core.stdlib['__set_put_at'] = () => genOrdPutAt('__set_put_at', SET_ENTRY, false, '__set_add')
   ctx.core.stdlib.__slot_heal = genSlotHeal
   ctx.core.stdlib.__ord_rebuild = genOrdRebuild
+  ctx.core.stdlib.__ord_live = genOrdLive
+  ctx.core.stdlib.__ord_index = genOrdIndex
   ctx.core.stdlib.__ord_copy = genOrdCopy
   ctx.core.stdlib['__set_has'] = () => genOrdLookup('__set_has', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
   ctx.core.stdlib['__set_has_h'] = () => genOrdLookup('__set_has_h', SET_ENTRY, null, sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
@@ -906,6 +909,7 @@ export default (ctx) => {
   // The step: the next live entry of the collection `recv` (f64 IR) taken into
   // cursor `c` (1), or none past the last (0).
   const cursorStep = (c, recv, E) => {
+    if (lean) return cursorCall(c, recv, E)
     inc('__ptr_offset_fwd', '__coll_seek')
     const g = n => ['local.get', `$${n}`], label = `$ccn${freshId(ctx)}`
     const entry = (i) => ['i32.add', g(c.off), ['i32.mul', i, ['i32.const', E]]]
@@ -929,6 +933,23 @@ export default (ctx) => {
       ...(E === MAP_ENTRY ? [['local.set', `$${c.v}`, ['i64.load', 'offset=16', entry(g(c.at))]]] : []),
       ['i32.const', 1]], 'i32')
   }
+  // The step as a call (`__coll_step`, the same walk): a forEach's, whose
+  // callback outweighs it, and every cursor's at the size tier.
+  const cursorCall = (c, recv, E) => {
+    inc('__coll_step')
+    const g = n => ['local.get', `$${n}`]
+    return typed(['if', ['result', 'i32'],
+      ['local.tee', `$${c.at}`, ['call', '$__coll_step', ['i64.reinterpret_f64', recv], g(c.i), g(c.s), ['i32.const', E]]],
+      ['then',
+        ['local.set', `$${c.i}`, ['global.get', '$__coll_i']],
+        ['local.set', `$${c.s}`, ['i32.load', 'offset=4', g(c.at)]],
+        ['local.set', `$${c.k}`, ['i64.load', 'offset=8', g(c.at)]],
+        ...(E === MAP_ENTRY ? [['local.set', `$${c.v}`, ['i64.load', 'offset=16', g(c.at)]]] : []),
+        ['i32.const', 1]],
+      ['else', ['i32.const', 0]]], 'i32')
+  }
+  if (!ctx.scope.globals.has('__coll_i')) declGlobal('__coll_i', 'i32')
+  ctx.core.stdlib['__coll_step'] = () => genCollStep()
   // The key (8) or the value (16) of the entry cursor `c` took last, read by its step.
   const cursorField = (c, field) => typed(['f64.reinterpret_i64', ['local.get', `$${field === 8 ? c.k : c.v}`]], 'f64')
   const newCursor = () => ({ i: tempI32('cci'), s: tempI32('ccs'), at: tempI32('cca'), off: tempI32('cco'), used: tempI32('ccu'), k: tempI64('cck'), v: tempI64('ccv'), h: tempI32('cch') })
@@ -1085,7 +1106,7 @@ export default (ctx) => {
       ['local.set', `$${c.i}`, ['i32.const', 0]],
       ['local.set', `$${c.s}`, ['i32.const', 0]],
       ['block', `$febrk${id}`, ['loop', `$feloop${id}`,
-        ['br_if', `$febrk${id}`, ['i32.eqz', cursorStep(c, recv(), stride)]],
+        ['br_if', `$febrk${id}`, ['i32.eqz', cursorCall(c, recv(), stride)]],
         ['drop', asF64(callback.call([cursorField(c, valOff), cursorField(c, keyOff), recv()]))],
         ['br', `$feloop${id}`]]],
       ['f64.const', 0]], 'f64')

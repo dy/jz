@@ -259,7 +259,7 @@ export const genSlotHeal = () => `(func $__slot_heal (param $slot i32) (result i
 export function genOrdLookup(name, es, hashFn, eqExpr, expectedType, wantValue = true, hasExt = false, missing = UNDEF_NAN) {
   const rt = wantValue ? 'i64' : 'i32'
   const absent = wantValue ? `(i64.const ${missing})` : '(i32.const 0)'
-  const onHit = wantValue ? healValue() : '(return (i32.const 1))'
+  const onHit = wantValue ? '(br $hit)' : '(return (i32.const 1))'
   const t = typeExpr('$coll')
   const typeGuard = hasExt
     ? `(if (i32.ne ${t} (i32.const ${expectedType})) (then (if (i32.eq ${t} (i32.const ${PTR.EXTERNAL}))
@@ -274,8 +274,11 @@ export function genOrdLookup(name, es, hashFn, eqExpr, expectedType, wantValue =
     ${resolve('$coll')}
     ${hashFn ? keyHash(hashFn) : '(local.set $h (local.get $hk))'}
     ${geometry(es)}
-    ${probe(es, eqExpr, onHit)}
-    ${absent})`
+    ${wantValue ? `(block $hit
+      ${probe(es, eqExpr, onHit)}
+      (return ${absent}))
+    ${healValue()}` : `${probe(es, eqExpr, onHit)}
+    ${absent}`})`
 }
 
 /** A statement's probe that may store (compile/emit/fuse-probes.js): the key's
@@ -362,7 +365,7 @@ export function genOrdDelete(name, es, hashFn, eqExpr, expectedType) {
 export const genOrdGrow = () => {
   const inPlace = !ctx.memory.shared && (ctx.transform.alloc !== false || !ctx.transform.optimize?.leanRuntime)
   return `(func $__ord_grow (param $off i32) (param $cap i32) (param $es i32) (result i32)
-    (local $newcap i32)${inPlace ? ' (local $used i32) (local $next i32) (local $i i32) (local $j i32) (local $slot i32) (local $nix i32) (local $m i32) (local $h i32) (local $b i32)' : ''}
+    (local $newcap i32)${inPlace ? ' (local $next i32) (local $j i32)' : ''}
     (local.set $newcap (select (local.get $cap)
       (i32.shl (local.get $cap) (select (i32.const 2) (i32.const 1) (i32.ge_u (local.get $cap) (i32.const ${GROW_QUAD_CAP}))))
       (i32.lt_u (i32.shl (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1))
@@ -378,43 +381,79 @@ export const genOrdGrow = () => {
           (then
             (if (i32.gt_u (local.get $next) (global.get $__heap_end)) (then (call $__memgrow (local.get $next))))
             (global.set $__heap (local.get $next))))
-        ;; the live entries close up, in their order (none move without a tombstone)
-        (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))
-        (block $closed (loop $close
-          (br_if $closed (i32.ge_u (local.get $i) (local.get $used)))
-          (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $es))))
-          (if (i64.ne (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
-            (then
-              (if (i32.ne (local.get $i) (local.get $j))
-                (then (memory.copy (i32.add (local.get $off) (i32.mul (local.get $j) (local.get $es))) (local.get $slot) (local.get $es))))
-              (local.set $j (i32.add (local.get $j) (i32.const 1)))))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (br $close)))
-        ;; past them the block clears: the old buckets, the old count, the new room
-        (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $j) (local.get $es))))
-        (memory.fill (local.get $slot) (i32.const 0) (i32.sub (local.get $next) (local.get $slot)))
-        (local.set $nix (i32.add (local.get $off) (i32.mul ${ordEntriesWat('(local.get $newcap)')} (local.get $es))))
-        (local.set $m (i32.sub (local.get $newcap) (i32.const 1)))
-        (local.set $i (i32.const 0))
-        (local.set $slot (local.get $off))
-        (block $indexed (loop $index
-          (br_if $indexed (i32.ge_u (local.get $i) (local.get $j)))
-          (local.set $h (i32.load (local.get $slot)))
-          (local.set $b (i32.and (local.get $h) (local.get $m)))
-          (block $placed (loop $probe
-            (br_if $placed (i32.eqz (i32.load (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2))))))
-            (local.set $b (i32.and (i32.add (local.get $b) (i32.const 1)) (local.get $m)))
-            (br $probe)))
-          (local.set $i (i32.add (local.get $i) (i32.const 1)))
-          (i32.store (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2)))
-            (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (local.get $i)))
-          (local.set $slot (i32.add (local.get $slot) (local.get $es)))
-          (br $index)))
-        (i32.store ${ordUsedAddrWat('(local.get $off)', '(local.get $newcap)', '(local.get $es)')} (local.get $j))
+        ;; the live entries close up in place; past them the block clears
+        (local.set $j (call $__ord_live (local.get $off) (local.get $off) (local.get $cap) (local.get $es)))
+        (memory.fill (i32.add (local.get $off) (i32.mul (local.get $j) (local.get $es))) (i32.const 0)
+          (i32.sub (local.get $next) (i32.add (local.get $off) (i32.mul (local.get $j) (local.get $es)))))
+        (call $__ord_index (local.get $off) (local.get $newcap) (local.get $es) (local.get $j))
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (local.get $newcap))
         (return (local.get $off))))` : ''}
     (call $__ord_rebuild (local.get $off) (local.get $cap) (local.get $es) (local.get $newcap)))`
 }
+
+/** A cursor's step (module/collection.js cursorStep, written out): the next
+ *  live entry of the table `$coll` names, walking from index `$i` past the entry
+ *  of sequence `$s`, in `$es`-byte entries: its address, the index after it in
+ *  `$__coll_i`; 0 past the last. A rebuild or a clear the walk met seeks. */
+export const genCollStep = () => `(func $__coll_step (param $coll i64) (param $i i32) (param $s i32) (param $es i32) (result i32)
+    (local $off i32) (local $cap i32) (local $used i32) (local $slot i32)
+    ${resolve('$coll')}
+    (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))
+    (if (i32.and (i32.ne (local.get $i) (i32.const 0))
+          (i32.or (i32.gt_u (local.get $i) (local.get $used))
+            (i32.ne (i32.load offset=4 (i32.add (local.get $off) (i32.mul (i32.sub (local.get $i) (i32.const 1)) (local.get $es)))) (local.get $s))))
+      (then (local.set $i (call $__coll_seek (local.get $off) (local.get $used) (local.get $es) (local.get $s)))))
+    (loop $skip
+      (if (i32.ge_u (local.get $i) (local.get $used)) (then (return (i32.const 0))))
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $es))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $skip (i64.eq (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))))
+    (global.set $__coll_i (local.get $i))
+    (local.get $slot))`
+
+/** The live entries of the table at `off`, in their order, at `dst` (the block
+ *  itself closes them up): their count. */
+export const genOrdLive = () => `(func $__ord_live (param $off i32) (param $dst i32) (param $cap i32) (param $es i32) (result i32)
+    (local $used i32) (local $i i32) (local $j i32) (local $slot i32)
+    (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))
+    ;; no tombstone among them: they move in one copy, or stand where they are
+    (if (i32.eq (i32.load (i32.sub (local.get $off) (i32.const 8))) (local.get $used))
+      (then
+        (if (i32.ne (local.get $dst) (local.get $off))
+          (then (memory.copy (local.get $dst) (local.get $off) (i32.mul (local.get $used) (local.get $es)))))
+        (return (local.get $used))))
+    (block $done (loop $each
+      (br_if $done (i32.ge_u (local.get $i) (local.get $used)))
+      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $es))))
+      (if (i64.ne (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
+        (then
+          (memory.copy (i32.add (local.get $dst) (i32.mul (local.get $j) (local.get $es))) (local.get $slot) (local.get $es))
+          (local.set $j (i32.add (local.get $j) (i32.const 1)))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $each)))
+    (local.get $j))`
+
+/** The first `n` entries of the block at `off`, of `cap` empty buckets, take a
+ *  bucket each by their stored hashes, and the block's count is `n`. */
+export const genOrdIndex = () => `(func $__ord_index (param $off i32) (param $cap i32) (param $es i32) (param $n i32)
+    (local $nix i32) (local $m i32) (local $i i32) (local $slot i32) (local $h i32) (local $b i32)
+    (local.set $nix (i32.add (local.get $off) (i32.mul ${ordEntriesWat('(local.get $cap)')} (local.get $es))))
+    (local.set $m (i32.sub (local.get $cap) (i32.const 1)))
+    (local.set $slot (local.get $off))
+    (block $indexed (loop $index
+      (br_if $indexed (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $h (i32.load (local.get $slot)))
+      (local.set $b (i32.and (local.get $h) (local.get $m)))
+      (block $placed (loop $probe
+        (br_if $placed (i32.eqz (i32.load (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2))))))
+        (local.set $b (i32.and (i32.add (local.get $b) (i32.const 1)) (local.get $m)))
+        (br $probe)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (i32.store (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2)))
+        (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (local.get $i)))
+      (local.set $slot (i32.add (local.get $slot) (local.get $es)))
+      (br $index)))
+    (i32.store ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')} (local.get $n)))`
 
 /** A copy of the table at `off` (`new Set(set)`, `new Map(map)`), sized for
  *  `want` buckets: the block whole where it holds no more (its entries keep
@@ -436,52 +475,11 @@ export const genOrdCopy = () => `(func $__ord_copy (param $off i32) (param $es i
  *  `newcap` buckets (it holds them: the callers size it), re-indexed by their
  *  stored hashes; the table's own properties carried. */
 export const genOrdRebuild = () => `(func $__ord_rebuild (param $off i32) (param $cap i32) (param $es i32) (param $newcap i32) (result i32)
-    (local $used i32) (local $live i32) (local $newptr i32) (local $nix i32) (local $m i32)
-    (local $i i32) (local $j i32) (local $slot i32) (local $dst i32) (local $h i32) (local $b i32)
-    (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')}))
-    (local.set $live (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (local $newptr i32) (local $j i32)
     (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) ${ordStrideWat('(local.get $es)')}))
     ;; the table's own properties stay its own
     (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))
-    (local.set $nix (i32.add (local.get $newptr) (i32.mul ${ordEntriesWat('(local.get $newcap)')} (local.get $es))))
-    (local.set $m (i32.sub (local.get $newcap) (i32.const 1)))
-    ;; no tombstone among them: the entries move in one copy, then each takes a bucket
-    (if (i32.eq (local.get $live) (local.get $used))
-      (then
-        (memory.copy (local.get $newptr) (local.get $off) (i32.mul (local.get $used) (local.get $es)))
-        (local.set $slot (local.get $newptr))
-        (block $indexed (loop $index
-          (br_if $indexed (i32.ge_u (local.get $j) (local.get $used)))
-          (local.set $h (i32.load (local.get $slot)))
-          (local.set $b (i32.and (local.get $h) (local.get $m)))
-          (block $placed (loop $next
-            (br_if $placed (i32.eqz (i32.load (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2))))))
-            (local.set $b (i32.and (i32.add (local.get $b) (i32.const 1)) (local.get $m)))
-            (br $next)))
-          (local.set $j (i32.add (local.get $j) (i32.const 1)))
-          (i32.store (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2)))
-            (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (local.get $j)))
-          (local.set $slot (i32.add (local.get $slot) (local.get $es)))
-          (br $index)))
-        (local.set $i (local.get $used))))
-    (block $done (loop $each
-      (br_if $done (i32.ge_u (local.get $i) (local.get $used)))
-      (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $es))))
-      (if (i64.ne (i64.load offset=8 (local.get $slot)) (i64.const ${TOMB_NAN}))
-        (then
-          (local.set $dst (i32.add (local.get $newptr) (i32.mul (local.get $j) (local.get $es))))
-          (memory.copy (local.get $dst) (local.get $slot) (local.get $es))
-          (local.set $h (i32.load (local.get $slot)))
-          (local.set $b (i32.and (local.get $h) (local.get $m)))
-          (block $placed (loop $next
-            (br_if $placed (i32.eqz (i32.load (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2))))))
-            (local.set $b (i32.and (i32.add (local.get $b) (i32.const 1)) (local.get $m)))
-            (br $next)))
-          (local.set $j (i32.add (local.get $j) (i32.const 1)))
-          (i32.store (i32.add (local.get $nix) (i32.shl (local.get $b) (i32.const 2)))
-            (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (local.get $j)))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $each)))
-    (i32.store ${ordUsedAddrWat('(local.get $newptr)', '(local.get $newcap)', '(local.get $es)')} (local.get $j))
+    (local.set $j (call $__ord_live (local.get $off) (local.get $newptr) (local.get $cap) (local.get $es)))
+    (call $__ord_index (local.get $newptr) (local.get $newcap) (local.get $es) (local.get $j))
     (i32.store (i32.sub (local.get $newptr) (i32.const 8)) (local.get $j))
     (local.get $newptr))`

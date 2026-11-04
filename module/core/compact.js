@@ -135,11 +135,15 @@ export const registerCompact = () => {
   // A Set's or a Map's entries to walk: its appended count, where the block fits
   // whole (`__gc_fit` returned all its buckets); none of a block cut short,
   // whose count lies past what fits (the load, `fit` buckets of the block's own
-  // stride in, stays inside what does).
-  const ordFit = (p, fit, stride) => `(select
-            (i32.load (i32.sub (i32.add ${p} (i32.mul ${fit} ${stride})) (i32.const 4)))
-            (i32.const 0)
-            (i32.eq ${fit} (i32.load (i32.sub ${p} (i32.const 4)))))`
+  // stride in, stays inside what does); a dictionary's slots, as fit.
+  const ordFit = (t, p, fit, stride) => `(call $__gc_ord_n ${t} ${p} ${fit} ${stride})`
+  ctx.core.stdlib['__gc_ord_n'] = `(func $__gc_ord_n (param $t i32) (param $p i32) (param $fit i32) (param $stride i32) (result i32)
+    (if (result i32) (i32.eq (local.get $t) (i32.const ${PTR.HASH}))
+      (then (local.get $fit))
+      (else (select
+        (i32.load (i32.sub (i32.add (local.get $p) (i32.mul (local.get $fit) (local.get $stride))) (i32.const 4)))
+        (i32.const 0)
+        (i32.eq (local.get $fit) (i32.load (i32.sub (local.get $p) (i32.const 4))))))))`
   // a Set's or a Map's block stride (module/collection/ordered.js)
   const ordStrideOf = (e) => ordStrideWat(e)
 
@@ -532,8 +536,7 @@ export const registerCompact = () => {
         (call $__gc_list (i32.wrap_i64 (i64.shr_u (local.get $w) (i64.const 32))) (local.get $p))
         (if (i32.ne (local.get $t) (i32.const ${PTR.HASH})) (then ${props('(local.get $p)')}))
         ;; a Set's or a Map's entries end at its appended count
-        (if (i32.ne (local.get $t) (i32.const ${PTR.HASH}))
-          (then (local.set $cap ${ordFit('(local.get $p)', '(local.get $cap)', '(local.get $stride)')})))
+        (local.set $cap ${ordFit('(local.get $t)', '(local.get $p)', '(local.get $cap)', '(local.get $stride)')})
         (local.set $n (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $e))))
         (block $done (loop $entry
           (br_if $done (i32.ge_u (local.get $p) (local.get $n)))
@@ -703,8 +706,7 @@ export const registerCompact = () => {
         (local.set $e (select (i32.const ${SET_ENTRY}) (i32.const ${MAP_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.SET}))))
         (local.set $cap (call $__gc_fit (local.get $p) (i32.load (i32.sub (local.get $p) (i32.const 4)))
           (select (i32.const ${MAP_ENTRY + lane}) ${ordStrideOf('(local.get $e)')} (i32.eq (local.get $t) (i32.const ${PTR.HASH})))))
-        (if (i32.ne (local.get $t) (i32.const ${PTR.HASH}))
-          (then (local.set $cap ${ordFit('(local.get $p)', '(local.get $cap)', ordStrideOf('(local.get $e)'))})))
+        (local.set $cap ${ordFit('(local.get $t)', '(local.get $p)', '(local.get $cap)', ordStrideOf('(local.get $e)'))})
         (local.set $n (i32.add (local.get $p) (i32.mul (local.get $cap) (local.get $e))))
         (block $done (loop $entry
           (br_if $done (i32.ge_u (local.get $p) (local.get $n)))

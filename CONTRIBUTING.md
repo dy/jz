@@ -998,7 +998,8 @@ new block, twice the buckets or as many when half are tombstones, the old block
 forwarding to it. A table that ends at the heap top above the reset mark grows
 where it stands instead, as an array's storage does: its live entries close up,
 the rest of the block clears and its buckets re-index, and no stub is left for a
-holder to hop. A program's table fills half its buckets less one, so a probe
+holder to hop; the growth in place and the move share their walks (`__ord_live`,
+`__ord_index`). A program's table fills half its buckets less one, so a probe
 that misses ends after a bucket or two; the compiler's own artifact
 (`compactCollections`) fills three in four less one, which keeps the hosted
 compiler's memory under its bound (the summary of 512 guards: 621,912 B half
