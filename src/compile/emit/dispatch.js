@@ -999,6 +999,8 @@ export function emitDecl(...inits) {
       else {
         // a read buffer (plan/read-buffers.js): its constructor, entered first, takes no zero fill
         ctx.func.noFill = Array.isArray(init) && init.noFill === true
+        // (an arrow that names its own binding reads the closure it runs as, compile/analyze-scans.js)
+        ctx.func.arrowBinding = Array.isArray(init) && init[0] === '=>' ? name : null
         val = tagged && hasAmbiguousBoolMerge(init) ? emitIdentitySafe(init) : emit(init)
         ctx.func.noFill = false
       }

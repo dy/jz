@@ -692,7 +692,9 @@ export function assemble(ast, profiler) {
   // Only emitted closures can reach the host. Prepared but inactive readers
   // may have escaped summary IDs without materializing any callable value.
   // Module initialization can mint the first closure, so decide after it emits.
-  if (ctx.closure.table?.length && ctx.summary?.escaped?.size && ctx.core.stdlib.__call_closure) inc('__call_closure')
+  // (a table entry the summary never saw counts as escaped)
+  const escapes = (name) => { const id = ctx.closure.summaryId?.get(name); return id === undefined || ctx.summary.escaped.has(id) }
+  if (ctx.summary?.escaped?.size && ctx.core.stdlib.__call_closure && ctx.closure.table?.some(escapes)) inc('__call_closure')
 
   // dyn-closure-tables.js: every function AND module init has now emitted, so
   // callSites/paramClosureDefaults/directReturnClosures are complete — resolve

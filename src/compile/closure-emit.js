@@ -129,6 +129,7 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
 
   for (const name of cb.captures)
     ctx.func.locals.set(name, ctx.func.boxed.has(name) ? 'i32' : 'f64')
+  if (cb.self != null) ctx.func.locals.set(cb.self, 'f64')
   return parentBoxedCaptures
 }
 
@@ -156,13 +157,13 @@ export function analyzeClosureBodyForEmit(cb) {
       ctx.func.sliceViews = facts.sliceViews
       ctx.func.arrayViews = ctx.transform.optimize?.arrayViews !== false ? arraySliceViews(cb.body) : null
       inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))
-      boxedCaptures(frameNode(cb), cb.params, cb.captures)
+      boxedCaptures(frameNode(cb), cb.params, cb.self != null ? [...cb.captures, cb.self] : cb.captures)
       for (const name of ctx.func.boxed.keys())
         if (parentBoxedCaptures.has(name) && ctx.func.locals.get(name) === 'f64')
           ctx.func.locals.set(name, 'i32')
       const unbox = unboxablePtrs(cb.body, ctx.func.locals, ctx.func.boxed)
       for (const [name, kind] of unbox) {
-        if (cb.params.includes(name) || cb.captures.includes(name)) continue
+        if (cb.params.includes(name) || cb.captures.includes(name) || name === cb.self) continue
         const fields = { ptrKind: kind }
         if (kind === VAL.DATE) fields.ptrAux = ctx.schema.ensureDateSid()
         if (kind === VAL.TYPED) {
@@ -346,6 +347,8 @@ export function emitClosureBody(cb, functionPlan) {
       }
     }
   }
+
+  if (cb.self != null) fn.push(['local.set', `$${cb.self}`, ['local.get', '$__env']])
 
   // Unpack fixed params directly from inline slots (caller padded missing with UNDEF_NAN).
   for (let i = 0; i < fixedParamN && i < W; i++) {

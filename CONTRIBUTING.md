@@ -821,6 +821,15 @@ At the size tier one walk packs a short result (`__sso_pack`, by `__char_at`), f
 a concat and for `__sso_norm` alike, and it answers the empty result too.
 Closure deduplication hashes finite number bits and shares declaration ordinals
 between hashing and exact comparison, without formatting numbers or copying IR.
+An arrow that is its binding's whole initializer reads that binding as the
+closure it runs as (`__env`, compile/analyze-scans.js `own`, closure.make `self`):
+no cell, no slot, a direct call of its body, unless a write or an earlier capture
+boxes the binding. A body's calls emit after every closure's plan, so the call-site
+rows (`paramTypes`, `paramTypedCtors`, `minArgc`) of a closure a body may call
+open (module/function.js `openCallRows`) and its parameters hold the summary's
+kinds alone. The host's `__jz_call_closure` links for an emitted closure that
+escapes; with no indirect call left the table and the unread slots of the closure
+ABI go (wat/assemble/closure-table.js).
 The linker orders functions by descending call count, then runtime before user
 functions at equal counts. Runtime ties use name order; user ties preserve source
 order. Comparing a user function equal to differently ordered runtime functions

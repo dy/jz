@@ -64,6 +64,7 @@ export function createActiveFunction({
     releaseDepth: 0,     // released loops around the code being emitted (emit/control-flow.js iterationRelease)
     releases: null,      // each release of its loops by the local its floor is kept in (emit/control-flow.js iterationRelease)
     noFill: false,       // the declarator being emitted is a read buffer (plan/read-buffers.js): its constructor skips the zero fill
+    arrowBinding: null,  // the binding whose initializer, an arrow, is emitted next: closure.make's `self`
     finallyStack: null,
     pendingLabel: null,
     refinements: null,

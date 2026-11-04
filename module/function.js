@@ -17,7 +17,7 @@ import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
 import { BIGINT_REP_CLOSED, BIGINT_REP_BOXED, BIGINT_REP_RAW, REP_EDGE_REJECT, representationActiveMaterializedRep, representationClosureArgAction } from '../src/compile/representation-plan.js'
 import { T } from '../src/ast.js'
-import { lookupValType, repOf } from '../src/reps.js'
+import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, registerGetter } from '../src/ctx.js'
 import { reachOn } from './core/reach.js'
 import { compactOn } from './core/compact.js'
@@ -95,12 +95,23 @@ export default (ctx) => {
     return typed(['call', '$__closure_length', asI64(emit(fn))], 'i32')
   })
 
+  // A call in a closure's body emits past every closure's plan, unseen by the
+  // call-site rows (emit/call.js tryDirectClosureCall): a closure a body may
+  // call holds what the summary proves of its parameters, not what the rows saw.
+  const openCallRows = (bodyName) => {
+    const width = ctx.closure.width ?? MAX_CLOSURE_ARITY, no = [], none = []
+    for (let i = 0; i < width; i++) { no.push(false); none.push(null) }
+    ;(ctx.closure.paramTypes ||= new Map()).set(bodyName, no)
+    ;(ctx.closure.paramTypedCtors ||= new Map()).set(bodyName, none)
+    ;(ctx.closure.minArgc ||= new Map()).set(bodyName, 0)
+  }
+
   /**
    * Create a closure: compile inner function as closure body, capture outer vars.
    * @param {{ params: string[], body, captures: string[], restParam: string|null }} info
    * @returns {WasmNode} NaN-boxed closure pointer
    */
-  ctx.closure.make = ({ params, body, captures, restParam, defaults, scope, noProto }) => {
+  ctx.closure.make = ({ params, body, captures, restParam, defaults, scope, noProto, self }) => {
     const fixedN = params.length - (restParam ? 1 : 0)
     if (fixedN > MAX_CLOSURE_ARITY) err(`Closure with ${fixedN} fixed params exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     if (restParam && fixedN >= MAX_CLOSURE_ARITY) err(`Closure with rest param needs at least one free slot — ${fixedN} fixed params leaves none (MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY})`)
@@ -125,7 +136,7 @@ export default (ctx) => {
       const v = ctx.scope.constInts?.get(name) ?? localIntConsts?.get(name) ?? repOf(name)?.intConst
       if (v != null && !ctx.func.boxed?.has(name)) captureIntConsts.set(name, v)
     }
-    const envCaptures = captureIntConsts.size ? captures.filter(name => !captureIntConsts.has(name)) : captures
+    const envCaptures = captures.filter(name => !captureIntConsts.has(name) && name !== self)
     const boxedCaptures = envCaptures.filter(c => ctx.func.boxed?.has(c))
 
     const captureValTypes = new Map()
@@ -167,11 +178,13 @@ export default (ctx) => {
       const elemType = ctx.func.typedElem?.get(name)
       if (elemType != null) captureTypedElems.set(name, elemType)
       const bodyName = ctx.func.directClosures?.get(name)
-      if (bodyName && !isReassigned(body, name)) captureDirectClosures.set(name, bodyName)
+      if (bodyName && !isReassigned(body, name)) { captureDirectClosures.set(name, bodyName); openCallRows(bodyName) }
       if (repOf(name)?.intCertain === true) captureIntCertain.add(name)
       if (repOf(name)?.nullable) captureNullables.add(name)
       if (repOf(name)?.mayBeUndefined) captureMayBeUndefineds.add(name)
     }
+
+    if (self != null) { captureValTypes.set(self, VAL.CLOSURE); captureDirectClosures.set(self, fnName); openCallRows(fnName) }
 
     // findFreeVars's `scope` param needs BOTH `.has(name)` (membership test)
     // AND `.add(name)` (analyze-scans.js's own `let`/`const`/`for(let…)`
@@ -229,6 +242,7 @@ export default (ctx) => {
       schemaVars: captureSchemaVars.size ? captureSchemaVars : null,
       typedElems: captureTypedElems.size ? captureTypedElems : null,
       directClosures: captureDirectClosures.size ? captureDirectClosures : null,
+      self: self ?? null,
     }
     ctx.closure.bodies.push(bodyFn)
 

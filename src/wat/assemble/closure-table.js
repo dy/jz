@@ -217,7 +217,7 @@ export function finalizeClosureTable(sec) {
   for (const cb of (ctx.closure.bodies || [])) {
     const fixedN = cb.params.length - (cb.rest ? 1 : 0)
     abiOf.set(cb.name, {
-      needEnv: cb.captures.length > 0,
+      needEnv: cb.captures.length > 0 || cb.self != null,
       needArgc: !!cb.rest,
       usedSlots: cb.rest ? W : fixedN,
       rest: !!cb.rest,

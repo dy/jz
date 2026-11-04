@@ -2816,3 +2816,68 @@ test('closures: a binding a closure assigns keeps no straight-line value or proo
     }
   }
 })
+
+// A closure's own binding reads the closure it runs as: no cell, no capture, and a
+// self-call is a call of its body. Whatever the closure does with the name.
+test('closures: a closure names itself', () => {
+  const srcs = {
+    fib: `export let f = (n) => { const fib = (i) => i < 2 ? i : fib(i - 1) + fib(i - 2); return fib(n + 7) }`,
+    string: `export let f = (n) => { const g = (x) => x === 0 ? 'z' : g(0) + x; return g(n) }`,
+    kinds: `export let f = (n) => { const g = (x) => typeof x === 'string' ? x.length : g('abc') + x; return g(n) }`,
+    argc: `export let f = (n) => { const g = (x, y) => y === undefined ? g(x, 1) + 1 : x + y; return g(n, 2) + g(n) }`,
+    value: `export let f = (n) => { const g = () => g; return g()()() === g ? n : -1 }`,
+    held: `export let f = (n) => { const g = (d) => d > 0 ? [g, d] : g; const a = g(1)[0]; return a === g ? n + 1 : -1 }`,
+    instances: `export let f = (n) => { const out = []; for (let i = 0; i < n; i++) { const g = (d) => d > 0 ? g(d - 1) + i : i * 2; out.push(g) } let t = 0; for (const h of out) t += h(2); return t }`,
+    nested: `export let f = (n) => { const g = (d) => { const k = () => d > 0 ? g(d - 1) : 7; return k() + 1 }; return g(n) }`,
+    rebound: `export let f = (n) => { let g = (d) => d > 0 ? g(d - 1) : 1; const h = g; g = (d) => 100; return h(n) }`,
+    mutual: `export let f = (n) => { const a = (d) => d > 0 ? b(d - 1) : 1; const b = (d) => d > 0 ? a(d - 1) + 1 : 2; return a(n) }`,
+    property: `export let f = (n) => { const o = { g: null }; const g = (d) => d > 0 ? o.g(d - 1) : 5; o.g = g; return o.g(n) }`,
+    fn: `export let f = (n) => { const g = function (d) { return d > 0 ? g(d - 1) * 2 : 3 }; return g(n) }`,
+    rest: `export let f = (n) => { const g = (d, ...r) => d > 0 ? g(d - 1, ...r, d) : r.length; return g(n, 1) }`,
+    fallback: `export let f = (n) => { const g = (d = 2) => d > 0 ? g(d - 1) + 1 : 0; return g() + g(n) }`,
+    length: `export let f = (n) => { const g = (d) => d > 0 ? g.length + g(d - 1) : g.length; return g(n) }`,
+    returned: `export let f = (n) => { const g = (d) => d > 0 ? g(d - 1) + 1 : n; return g }`,
+    generator: `export let f = (n) => { const g = function* (d) { if (d > 0) { yield d; yield* g(d - 1) } }; let t = 0; for (const x of g(n)) t += x; return t }`,
+    receiver: `export let f = (n) => { const o = { m() { const g = (d) => d > 0 ? this.k + g(d - 1) : 0; return g(n) }, k: 2 }; return o.m() }`,
+    method: `export let f = (n) => { class A { m(d) { const g = (x) => x > 0 ? g(x - 1) + d : 0; return g(3) } } return new A().m(n) }`,
+    caught: `export let f = (n) => { const g = (d) => { try { if (d > 2) throw d; return g(d + 1) } catch (e) { return e + 1 } }; return g(n) }`,
+    callback: `export let f = (n) => { const g = (d) => d > 0 ? [d].map(x => g(x - 1) + 1)[0] : 0; return g(n) }`,
+    declared: `export let f = (n) => { function g(d) { return d > 0 ? g(d - 1) + 1 : h() } function h() { return 9 } return g(n) }`,
+    redeclared: `export let f = (n) => { var g = (d) => 1; var g = (d) => d > 0 ? g(d - 1) + 2 : 0; return g(n) }`,
+    identity: `export let f = (n) => { const r = []; for (let i = 0; i < 3; i++) { const g = () => g === r[i] ? 1 : 0; r.push(g) } return r[0]() + r[1]() * 10 + r[2]() * 100 }`,
+    called: `export let f = (n) => { const g = (d) => d > 0 ? g.call(null, d - 1) + 1 : 0; return g(n) }`,
+  }
+  for (const [name, src] of Object.entries(srcs)) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const got = jz(src, { optimize }).exports.f, out = (fn) => { const r = fn(3); return typeof r === 'function' ? r(2) : r }
+      is(out(got), out(want), `${name} at ${optimize}`)
+    }
+  }
+  if (onKernel()) return
+  const w = compile(srcs.fib, { optimize: 'size', alloc: false, wat: true })
+  ok(!/call_indirect/.test(w) && !/\(table/.test(w), 'a self-call needs no table')
+})
+
+// A call from another closure's body emits after this closure is planned: what
+// the direct calls saw of a parameter says nothing of it.
+test('closures: a call from a sibling reaches the parameter', () => {
+  const srcs = [
+    `export let f = (n) => { const g = (x) => x + 1; const h = () => g('a'); const a = g(n); const b = h(); return [a, b].join() }`,
+    `export let f = (n) => { const g = (x) => x + 1; const h = (y) => g(y); const a = g(n); const b = h('s'); return [a, b].join() }`,
+    `export let f = (n) => { const g = (x, y) => y === undefined ? 1 : y + x; const h = (y) => g(y); return g(n, 2) + h(3) }`,
+    `export let f = (n) => { const g = (x) => x[0]; const h = () => g([9]); return g(new Float64Array([n])) + h() }`,
+    `export let f = (n) => { const g = (x) => x + 1; const h = () => { const k = () => g('deep'); return k() }; return g(n) + h() }`,
+  ]
+  for (const src of srcs) { const want = oracle(src).f; for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(3), want(3), `${src.slice(23, 80)} at ${optimize}`) }
+})
+
+// The host's call of a closure links for a closure of the module that escapes,
+// not for an id the summary marked on a closure that was inlined away.
+test('closures: no host call of a closure that stays inside', () => {
+  if (onKernel()) return
+  const src = `export let f = (n) => { const a = [3, 1, 2]; a.sort((p, q) => p - q); const g = (d) => d > 0 ? g(d - 1) + n : 0; return g(a[0]) }`
+  const w = compile(src, { optimize: 'size', alloc: false, wat: true })
+  ok(!/__jz_call_closure/.test(w) && !/call_indirect/.test(w), 'no trampoline')
+  for (const optimize of levels(0, 2, 'size')) is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `at ${optimize}`)
+})

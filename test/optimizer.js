@@ -933,9 +933,8 @@ test('devirtSchemaReads: a receiver local the function writes keeps its reads to
 test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct calls', () => {
   // The dispatch-bench shape: a module-const array of capture-free operators,
   // one data-indexed call site. The generic call_indirect (bounds + sig check
-  // per call) becomes a br_table over direct uniform-ABI calls, keeping the
-  // original call_indirect as the always-sound default arm (alias writes,
-  // out-of-range index → UNDEF box both land there).
+  // per call) becomes a br_table over direct uniform-ABI calls, its default arm
+  // an index past the table (with nothing left to call it, the table goes).
   const src = `const ops = [
     (x, k) => (x + k) | 0,
     (x, k) => x ^ k,
@@ -944,7 +943,7 @@ test('devirtConstFnArrayCalls: const-arrow-table indexed call switches to direct
   export let f = (sel, x, k) => ops[sel & 3](x, k)`
   const w = compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
   ok(/br_table/.test(w), 'indexed const-fn-array call dispatches via br_table')
-  ok(/call_indirect/.test(w), 'the generic call_indirect stays as the default arm')
+  ok(/__throw_not_callable/.test(w), 'the default arm answers an index the table does not hold')
   const { f } = run(src, { optimize: 'speed' })
   is(f(0, 5, 3), 8); is(f(1, 5, 3), 6); is(f(2, 5, 3), -2)
 })

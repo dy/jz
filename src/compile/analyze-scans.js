@@ -128,26 +128,28 @@ export function boxedCaptures(body, params = NO_NAMES, captures = NO_NAMES) {
   const undo = []
   const declare = { add: (name) => { if (!seen.has(name)) { seen.add(name); undo.push(name) } } }
 
-  const markArrowCaptures = (node, assignTarget) => {
+  // `own`: the arrow is its binding's whole initializer. It names that binding
+  // only once it runs, and a closure runs holding itself (`__env`): no cell.
+  const markArrowCaptures = (node, assignTarget, own) => {
     const captures = []
     findFreeVars(node, new Set(), captures, outerScope)
     if (captures.length === 0) return
     const captureSet = new Set(captures)
     const boxed = new Set()
     findMutations(body, captureSet, boxed)
-    for (const v of captures) if (!seen.has(v)) boxed.add(v)
-    if (assignTarget && captureSet.has(assignTarget)) boxed.add(assignTarget)
+    for (const v of captures) if (!seen.has(v) && !(own && v === assignTarget)) boxed.add(v)
+    if (assignTarget && !own && captureSet.has(assignTarget)) boxed.add(assignTarget)
     for (const v of boxed) if (!ctx.func.boxed.has(v)) ctx.func.boxed.set(v, `${T}cell_${v}`)
   }
 
   // `seen` starts at what is in hand at entry (passed in: an IIFE's default
   // parameter cannot read the enclosing function's locals under the
   // self-compile).
-  ;(function walk(node, assignTarget) {
+  ;(function walk(node, assignTarget, own = false) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') {
-      markArrowCaptures(node, assignTarget)
+      markArrowCaptures(node, assignTarget, own)
       return
     }
 
@@ -161,7 +163,7 @@ export function boxedCaptures(body, params = NO_NAMES, captures = NO_NAMES) {
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
-        if (Array.isArray(decl) && decl[0] === '=') walk(decl[2], typeof decl[1] === 'string' ? decl[1] : null)
+        if (Array.isArray(decl) && decl[0] === '=') walk(decl[2], typeof decl[1] === 'string' ? decl[1] : null, true)
         else walk(decl, null)
         collectParamName(decl, declare)
       }
