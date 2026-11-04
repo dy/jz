@@ -205,7 +205,7 @@ export let __p_all = (arr) => {
   let p = __p_new()
   let a = __p_list(arr)
   if (a == null) { __p_settle(p, 2, 'TypeError: Promise.all argument is not iterable'); return p }
-  let n = a.length, out = [], left = n
+  let n = a.length, out = new Array(n), left = n
   if (n === 0) { __p_settle(p, 1, out); return p }
   for (let i = 0; i < n; i++) {
     let k = i
@@ -224,7 +224,7 @@ export let __p_allSettled = (arr) => {
   let p = __p_new()
   let a = __p_list(arr)
   if (a == null) { __p_settle(p, 2, 'TypeError: Promise.allSettled argument is not iterable'); return p }
-  let n = a.length, out = [], left = n
+  let n = a.length, out = new Array(n), left = n
   if (n === 0) { __p_settle(p, 1, out); return p }
   for (let i = 0; i < n; i++) {
     let k = i
