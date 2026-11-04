@@ -17,7 +17,7 @@
 import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { isNumericIR, ptrOffsetIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
-import { emit, deps, call, storedValue, withIgnoredArgs } from '../src/bridge.js'
+import { emit, deps, call, general, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { NUMBER, K as KIND, hasTag, tagOf, core } from '../src/summary/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
@@ -30,6 +30,8 @@ import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { requireReceiverWat, requireObjectWat, throwErrorWat } from './core/error-object.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 import { trySlotUpdate } from '../src/compile/slot-update.js'
+import { sitesOn } from './core/stub-log.js'
+import { provenTable, keyForm } from './collection/forms.js'
 import { captureCallback } from './array/callback.js'
 import { demandHostReceiver, mayHoldHostValue } from '../src/compile/func-exports.js'
 import { ENUM_DATA, ENUM_GET, ownKeys, presentKeys, inheritingSids, viewsOn, accessorTable, hasSchemaRow } from './schema.js'
@@ -209,6 +211,25 @@ const collectionProbe = (name, fmt) => (recv, key, ...ignored) => {
   return typed([fmt === 'i64' ? 'f64.reinterpret_i64' : 'f64.convert_i32_s', c], 'f64')
 }
 
+const tableProbe = (base, vt, ret, insert = false) => (recv, key, ...rest) => {
+  if (key == null || rest.length !== (base === '__map_set' ? 1 : 0) || !provenTable(recv, vt)) return null
+  if (!ctx.transform.optimize?.leanRuntime && (litKeyHash(key) != null || cursorKeyHash(key) != null)) return null
+  // an insertion's value is its receiver: a name reads again, any other expression keeps the general call
+  const void_ = ctx.func._expect === 'void'
+  if (insert && !void_ && typeof recv !== 'string') return null
+  if (insert) noteKeys(key); else noteProbeKeyOf(key)
+  const r = emit(recv)
+  const off = r.type === 'i32' ? r : typed(['i32.wrap_i64', ['i64.reinterpret_f64', asF64(r)]], 'i32')
+  const name = `${base}_o${keyForm(key)}`
+  // (the size tier may collapse it into the general key's form, stdlib-pull.js collapseTwins)
+  inc(name)
+  if (ctx.transform.optimize?.leanRuntime) inc(base + '_o')
+  const c = ['call', `$${name}`, off, asI64(storedValue(key)), ...rest.map(v => asI64(storedValue(v)))]
+  if (ret === 'i64') return typed(['f64.reinterpret_i64', c], 'f64')
+  if (ret === 'i32') return typed(['f64.convert_i32_s', c], 'f64')
+  return typed(['block', ['result', 'f64'], c, void_ ? ['f64.const', 0] : asF64(emit(recv))], 'f64')
+}
+
 // Key-equality expressions for probe templates — run only after a hash hit
 // (the probe skeleton compares hashes; these decide the hit). The inline
 // `storedKey == queryKey` bit-eq decides the overwhelmingly-common identity case
@@ -223,7 +244,7 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
-import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdLive, genOrdIndex, genCollStep, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideWat, ordBytesWat } from './collection/ordered.js'
+import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdLive, genOrdIndex, genCollStep, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideWat, ordBytesWat, genHashBits, genEqBits, genEqStr, genOrdProbe, genOrdProbeForm, genOrdInsert, genOrdFull } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
 import registerIdentity, { arrayKeysOn, noteKeys, noteProbeKeyOf, keyArmsOn, pinKeyWat } from './collection/identity.js'
@@ -277,11 +298,14 @@ export default (ctx) => {
   // A Set's or Map's insertion: the key's hash and equality, the one-hop
   // forward, the cold rebuild, the host's store for an external receiver, and
   // the durable logs of a growth (its stub, the holder's stub) and of an entry.
-  const ordUpsertDeps = () => ['__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd', '__ord_grow',
+  // The size tier's probes, insertion and growth, written once (collection/ordered.js genOrdProbe).
+  const probeDeps = (k = '') => lean ? [k === 'b' ? '__ord_probe_b' : k === 's' ? '__ord_probe_s' : '__ord_probe'] : []
+  const insertDeps = () => lean ? ['__ord_insert', '__ord_full'] : []
+  const ordUpsertDeps = () => [...probeDeps(), ...insertDeps(), '__map_hash', ...pinDeps(), '__same_value_zero', '__ptr_offset_fwd', '__ord_grow',
     ...(ctx.linkDemand.external ? ['__ext_set'] : []), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()]
   // A delete tombstones its entry where it stands: no entry moves, so only a
   // pending log of the entry itself is cancelled.
-  const ordDeleteDeps = () => ['__map_hash', '__same_value_zero', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_slot_cancel'] : [])]
+  const ordDeleteDeps = () => [...probeDeps(), '__map_hash', '__same_value_zero', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_slot_cancel'] : [])]
   // A program that builds an object literal with an accessor resolves a
   // computed key through a layout's view as well (__view_find below).
   const viewDeps = (...names) => viewsOn() ? ['__view_find', ...names] : []
@@ -315,15 +339,15 @@ export default (ctx) => {
     // explicit edge the kernel leg drops the helper (auto-scan divergence, the
     // self-compile-includes class) and every `new Set(...)` fails to compile there.
     __set_add: () => ordUpsertDeps(),
-    __set_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __set_has: () => [...probeDeps(), ...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'])],
     __set_delete: () => ordDeleteDeps(),
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
     __sclone_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_fill', '__obj_clone', '__hash_new', '__is_symbol', '__sclone_properties'],
     __sclone_properties: ['__copy_keys', '__sclone_rec', '__ptr_offset', '__ptr_type', '__len', '__dyn_has', '__dyn_get_any', '__str_arr_idx', '__hash_new_small', '__hash_set_local'],
     __map_set: () => ordUpsertDeps(),
-    __map_get: () => ctx.linkDemand.external ? ['__ext_get', '__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_get: () => [...probeDeps(), ...(ctx.linkDemand.external ? ['__ext_get', '__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'])],
     __map_get_h: () => ctx.linkDemand.external ? ['__ext_get', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
-    __map_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
+    __map_has: () => [...probeDeps(), ...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'])],
     // Prehashed has-probes: caller folds the hash, so no __map_hash dependency.
     __map_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_has_h: () => ctx.linkDemand.external ? ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
@@ -648,6 +672,26 @@ export default (ctx) => {
     // distinct entries ≤ len fit its usable entries (half its buckets, less one),
     // so it never grows while seeding. Floors at initCap for the empty/short case.
     // A Set copies a Set's table (a missing one makes an empty Set).
+    // The size tier copies a present Set by its own walk and insertion
+    // (`__coll_step`, the add its elements' form picks), not a copy of its own.
+    if (lean && provenTable(iterExpr, VAL.SET)) {
+      const add = `__set_add_o${keyForm(['()', '__coll_key', [',', iterExpr, [null, 0]]])}`
+      inc(add, '__set_add_o', '__coll_step')
+      const id = freshId(ctx), src = tempI64('nsf'), i = tempI32('nsi'), sq = tempI32('nsq'), e = tempI32('nse'), outL = temp('nso')
+      const out = allocPtr({ type: PTR.SET, len: 0, cap: initCap, stride: SET_BLOCK, tag: 'set' })
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${src}`, asI64(storedValue(iterExpr))],
+        out.init,
+        ['local.set', `$${outL}`, out.ptr],
+        ['block', `$nsd${id}`, ['loop', `$nsl${id}`,
+          ['br_if', `$nsd${id}`, ['i32.eqz', ['local.tee', `$${e}`,
+            ['call', '$__coll_step', ['local.get', `$${src}`], ['local.get', `$${i}`], ['local.get', `$${sq}`], ['i32.const', SET_ENTRY]]]]],
+          ['local.set', `$${i}`, ['global.get', '$__coll_i']],
+          ['local.set', `$${sq}`, ['i32.load', 'offset=4', ['local.get', `$${e}`]]],
+          ['call', `$${add}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${outL}`]]], ['i64.load', 'offset=8', ['local.get', `$${e}`]]],
+          ['br', `$nsl${id}`]]],
+        ['local.get', `$${outL}`]], 'f64')
+    }
     if (valTypeOf(iterExpr) === VAL.SET) { inc('__set_from'); return typed(['call', '$__set_from', asI64(storedValue(iterExpr))], 'f64') }
     noteKeys(elementOf(iterExpr))
     const setL = temp('nss'), arrL = temp('nsa')
@@ -660,9 +704,12 @@ export default (ctx) => {
     // `a[i]` is, with none of the reader that takes every kind of iterable.
     const view = ctx.summary?.at(ctx.func.current)
     if (provenArray(iterExpr)) {
-      inc('__set_add', '__table_check', '__ord_cap')
       view.alias(arrL, iterExpr)
       view.alias(iL, [null, 0])
+      // (the fresh table takes each element by the probe its kind picks, tableProbe)
+      const add = `__set_add_o${keyForm(['[]', arrL, iL])}`
+      inc(add, '__table_check', '__ord_cap')
+      if (ctx.transform.optimize?.leanRuntime) inc('__set_add_o')
       try {
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${arrL}`, asF64(storedValue(iterExpr))],
@@ -674,8 +721,7 @@ export default (ctx) => {
           ['local.set', `$${iL}`, ['i32.const', 0]],
           ['block', `$d_${iL}`, ['loop', `$l_${iL}`,
             ['br_if', `$d_${iL}`, ['i32.ge_s', ['local.get', `$${iL}`], ['local.get', `$${lenL}`]]],
-            ['local.set', `$${setL}`, ['f64.reinterpret_i64',
-              ['call', '$__set_add', ['i64.reinterpret_f64', ['local.get', `$${setL}`]], asI64(storedValue(['[]', arrL, iL]))]]],
+            ['call', `$${add}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${setL}`]]], asI64(storedValue(['[]', arrL, iL]))],
             ['local.set', `$${iL}`, ['i32.add', ['local.get', `$${iL}`], ['i32.const', 1]]],
             ['br', `$l_${iL}`]]],
           ['local.get', `$${setL}`]], 'f64')
@@ -707,8 +753,8 @@ export default (ctx) => {
       ['local.get', `$${setL}`]], 'f64')
   })
 
-  const setAdd = call('__set_add', 'II', 'i64')
-  ctx.core.emit['.add'] = Object.assign((set, key, ...rest) => (noteKeys(key), setAdd(set, key, ...rest)), { argc: setAdd.argc })
+  const setAdd = call('__set_add', 'II', 'i64'), setAddO = tableProbe('__set_add', VAL.SET, null, true)
+  ctx.core.emit['.add'] = Object.assign((set, key, ...rest) => setAddO(set, key, ...rest) ?? (noteKeys(key), setAdd(set, key, ...rest)), { argc: setAdd.argc })
 
   // `.has` / `.delete` exist on BOTH Set and Map, which differ only in entry
   // stride (16 vs 24). A receiver of unproven kind (e.g. a Map read off a nested
@@ -770,9 +816,10 @@ export default (ctx) => {
   ctx.core.emit['.delete'] = collProbeDyn('__map_delete', '__set_delete')
   // Known-key probes retain the precomputed hash; calls share argument effects
   // and boxed-value conversion with every other intrinsic.
-  ctx.core.emit[`.${VAL.SET}:has`] = collectionProbe('__set_has', 'i32')
-  const setDelete = call('__set_delete', 'II', 'i32')
-  ctx.core.emit[`.${VAL.SET}:delete`] = Object.assign((set, key, ...rest) => (noteProbeKeyOf(key), setDelete(set, key, ...rest)), { argc: setDelete.argc })
+  const setHas = collectionProbe('__set_has', 'i32'), setHasO = tableProbe('__set_has', VAL.SET, 'i32')
+  ctx.core.emit[`.${VAL.SET}:has`] = (set, key, ...rest) => setHasO(set, key, ...rest) ?? setHas(set, key, ...rest)
+  const setDelete = call('__set_delete', 'II', 'i32'), setDeleteO = tableProbe('__set_delete', VAL.SET, 'i32')
+  ctx.core.emit[`.${VAL.SET}:delete`] = Object.assign((set, key, ...rest) => setDeleteO(set, key, ...rest) ?? (noteProbeKeyOf(key), setDelete(set, key, ...rest)), { argc: setDelete.argc })
 
   // Map.prototype.clear / Set.prototype.clear — drop every entry. `.clear` only
   // exists on Map/Set in JS, so a single generic emitter is unambiguous; the
@@ -874,21 +921,22 @@ export default (ctx) => {
           ['then', value], ['else', asF64(normalized)]]]]], 'f64')
   })
 
-  const mapSet = call('__map_set', 'III', 'i64')
-  ctx.core.emit['.set'] = Object.assign((map, key, ...rest) => (noteKeys(key), mapSet(map, key, ...rest)), { argc: mapSet.argc })
+  const mapSet = call('__map_set', 'III', 'i64'), mapSetO = tableProbe('__map_set', VAL.MAP, null, true)
+  ctx.core.emit['.set'] = Object.assign((map, key, ...rest) => mapSetO(map, key, ...rest) ?? (noteKeys(key), mapSet(map, key, ...rest)), { argc: mapSet.argc })
   // (the fused read-modify-write inserts the key too: its kind is noted first)
   ctx.core.emit[`.${VAL.MAP}:set`] = (map, key, value, ...ignored) =>
     (noteKeys(key), !ignored.length && value != null && trySlotUpdate(map, key, value, true)) ||
     ctx.core.emit['.set'](map, key, value, ...ignored)
 
-  const emitMapGet = collectionProbe('__map_get', 'i64')
+  const emitMapGet = collectionProbe('__map_get', 'i64'), mapGetO = tableProbe('__map_get', VAL.MAP, 'i64')
 
   ctx.core.emit['.get'] = emitMapGet
-  ctx.core.emit[`.${VAL.MAP}:get`] = emitMapGet
+  ctx.core.emit[`.${VAL.MAP}:get`] = (map, key, ...rest) => mapGetO(map, key, ...rest) ?? emitMapGet(map, key, ...rest)
 
-  ctx.core.emit[`.${VAL.MAP}:has`] = collectionProbe('__map_has', 'i32')
-  const mapDelete = call('__map_delete', 'II', 'i32')
-  ctx.core.emit[`.${VAL.MAP}:delete`] = Object.assign((map, key, ...rest) => (noteProbeKeyOf(key), mapDelete(map, key, ...rest)), { argc: mapDelete.argc })
+  const mapHas = collectionProbe('__map_has', 'i32'), mapHasO = tableProbe('__map_has', VAL.MAP, 'i32')
+  ctx.core.emit[`.${VAL.MAP}:has`] = (map, key, ...rest) => mapHasO(map, key, ...rest) ?? mapHas(map, key, ...rest)
+  const mapDelete = call('__map_delete', 'II', 'i32'), mapDeleteO = tableProbe('__map_delete', VAL.MAP, 'i32')
+  ctx.core.emit[`.${VAL.MAP}:delete`] = Object.assign((map, key, ...rest) => mapDeleteO(map, key, ...rest) ?? (noteProbeKeyOf(key), mapDelete(map, key, ...rest)), { argc: mapDelete.argc })
 
   // A for…of over a Set or a Map walks its table where it stands
   // (compile/plan/index-array-patterns.js cursorLoop, collection/ordered.js):
@@ -1443,6 +1491,59 @@ export default (ctx) => {
   ctx.core.stdlib['__map_has_h'] = () => genOrdLookup('__map_has_h', MAP_ENTRY, null, sameValueZeroEqG, PTR.MAP, false, ctx.linkDemand.external)
   ctx.core.stdlib['__map_has'] = () => genOrdLookup('__map_has', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, ctx.linkDemand.external)
   ctx.core.stdlib['__map_delete'] = () => genOrdDelete('__map_delete', MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP)
+
+  // The probes of a table the summary proves present (tableProbe below), by its
+  // key's form (collection/ordered.js formParams): `_o` any key, `_oi` an
+  // integer word, `_or` a reference, `_os` a string. Each links the hash and the
+  // equality of its own form alone, and none tests the receiver's tag.
+  ctx.core.stdlib['__ord_probe'] = () => genOrdProbe('__ord_probe', sameValueZeroEqG)
+  ctx.core.stdlib['__ord_probe_b'] = () => genOrdProbeForm('bits')
+  ctx.core.stdlib['__ord_probe_s'] = () => genOrdProbeForm('str')
+  ctx.core.stdlib['__ord_insert'] = genOrdInsert
+  ctx.core.stdlib['__ord_full'] = genOrdFull
+  deps({
+    __ord_probe: ['__same_value_zero'], __ord_probe_b: ['__eq_bits'], __ord_probe_s: ['__eq_str'],
+    __ord_full: () => ['__ord_grow', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...(sitesOn() ? ['__gc_stub', '__mkptr'] : [])],
+  })
+  ctx.core.stdlib['__hash_bits'] = genHashBits
+  ctx.core.stdlib['__eq_bits'] = genEqBits
+  ctx.core.stdlib['__eq_str'] = genEqStr
+  deps({ __eq_str: ['__str_eq'] })
+  for (const [k, key] of [['', undefined], ['b', 'bits'], ['s', 'str']]) {
+    const form = { recv: 'off', key }, sfx = '_o' + k
+    // (an array key's pin is known once every key is noted: read as the body is written)
+    const pin = () => k ? '' : pinKey()
+    const keyDeps = (...generic) => k === '' ? generic : k === 's' ? ['__str_hash', '__str_eq', ...(lean ? ['__eq_str'] : [])] : lean ? ['__hash_bits', '__eq_bits'] : []
+    const reg = (name, gen, d) => { ctx.core.stdlib[name + sfx] = () => gen(name + sfx); deps({ [name + sfx]: d }) }
+    const lookupDeps = () => [...probeDeps(k), ...keyDeps('__map_hash', '__same_value_zero'), '__ptr_offset', '__ptr_offset_fwd']
+    const upsertDeps = () => [...probeDeps(k), ...insertDeps(), ...keyDeps('__map_hash', ...pinDeps(), '__same_value_zero'), '__ptr_offset_fwd', '__ord_grow',
+      ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()]
+    const deleteDeps = () => [...probeDeps(k), ...keyDeps('__map_hash', '__same_value_zero'), '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_slot_cancel'] : [])]
+    reg('__map_get', n => genOrdLookup(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, UNDEF_NAN, form), lookupDeps)
+    reg('__map_has', n => genOrdLookup(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, false, false, UNDEF_NAN, form), lookupDeps)
+    reg('__set_has', n => genOrdLookup(n, SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, false, UNDEF_NAN, form), lookupDeps)
+    reg('__map_set', n => genOrdUpsert(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, { prologue: pin(), form }), upsertDeps)
+    reg('__set_add', n => genOrdUpsert(n, SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, false, { prologue: pin(), form }), upsertDeps)
+    reg('__map_delete', n => genOrdDelete(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, form), deleteDeps)
+    reg('__set_delete', n => genOrdDelete(n, SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, form), deleteDeps)
+    reg('__map_slot', n => genOrdUpsert(n, MAP_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.MAP, true, false, { slotOnly: true, prologue: pin(), form }), upsertDeps)
+  }
+  // The size tier links one probe a table operation: two key forms reached
+  // become the general key's, and a program that reaches the general probe of a
+  // boxed receiver anyway passes the proven ones' tables boxed (stdlib-pull.js
+  // collapseTwins). An insertion of a boxed receiver yields it, dropped there.
+  for (const [base, tag, insert] of [['__map_get', PTR.MAP], ['__map_has', PTR.MAP], ['__set_has', PTR.SET], ['__map_slot', PTR.MAP],
+    ['__map_set', PTR.MAP, true], ['__set_add', PTR.SET, true], ['__map_delete', PTR.MAP], ['__set_delete', PTR.SET]]) {
+    const box = i64Hex(BigInt(encodePtrHi(tag, 0) >>> 0) << 32n)
+    const boxed = { name: base, adapt: (c) => {
+      c[2] = ['i64.or', ['i64.const', box], ['i64.extend_i32_u', c[2]]]
+      if (!insert) return c
+      const inner = c.slice()
+      c.splice(0, c.length, 'drop', inner)
+      return inner
+    } }
+    general({ [base + '_ob']: [{ name: base + '_o', family: base + '_o' }, boxed], [base + '_os']: [{ name: base + '_o', family: base + '_o' }, boxed], [base + '_o']: [boxed] })
+  }
 
   ctx.core.stdlib['__throw_map_entry'] = () => throwErrorWat(ctx, '__throw_map_entry', 'TypeError', 'Iterator value is not an entry object')
   // Entries are objects, not necessarily arrays. Keep indexed pairs direct;

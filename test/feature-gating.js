@@ -265,8 +265,11 @@ test('collection: proven runtime string keys bypass generic hash dispatch', () =
     export function f(k){return probe(new Map(),new Set(),k)}`,{optimize:{sourceInline:false}})
   const at=w.indexOf('(func $probe'),body=w.slice(at,w.indexOf('(func',at+1))
   ok(at>=0,'inspect the separate probe body')
-  for(const name of ['__map_get_h','__map_has_h','__set_has_h','__str_hash'])ok(hasCall(body,name),name)
+  // (a present table's probe of a string takes the string form, which hashes the content itself: module/collection/forms.js)
+  for(const name of ['__map_get','__map_has','__set_has'])ok(hasCall(body,name+'_h')||hasCall(body,name+'_os'),name)
+  ok(hasCall(body,'__str_hash')||hasDef(w,'__ord_probe_s')||/\(func \$__map_get_os\b[^]*?call \$__str_hash\b/.test(w),'__str_hash')
   is(hasCall(body,'__map_hash'),false,'string proof removes the generic hash dispatcher')
+  is(hasCall(w,'__map_hash'),false,'and so does every probe it calls')
 })
 
 test('features.map OFF: scalar-only — no map stdlibs', () => {

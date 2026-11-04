@@ -232,8 +232,9 @@ test('Map updates use one probe and preserve growth, aliases and insertion order
     return m.size
   }`
   const w = compile(simple, { wat: true, optimize: 1 })
-  is((w.match(/call \$__map_slot\b/g) || []).length, 1, 'one probe for the update')
-  ok(!/call \$__map_(?:get|set)\b/.test(w), 'no separate lookup and insertion')
+  // (a proven table's probe takes its key's form, module/collection/forms.js)
+  is((w.match(/call \$__map_slot(?:_o\w*)?\b/g) || []).length, 1, 'one probe for the update')
+  ok(!/call \$__map_(?:get|set)(?:_o\w*)?\b/.test(w), 'no separate lookup and insertion')
 })
 
 test('Map fused updates preserve key identity and primitive value representations', () => {

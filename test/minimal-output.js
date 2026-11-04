@@ -1284,6 +1284,45 @@ test('minimal: a logical op of a missing Number is a Number', () => {
   for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2, 3]) is(jz(bools, { optimize }).exports.f(n), oracle(bools).f(n), `bools, O${optimize}, n=${n}`)
 })
 
+// A probe of a table the summary proves present passes the table's offset and
+// takes the hash and equality its key's kinds pick (module/collection/forms.js,
+// collection/ordered.js formParams): a key of no string, BigInt or array by its
+// bits, strings and atoms by a string's content, any other the general pair.
+// The size tier writes the probe, the insertion and the growth once and links
+// one probe an operation (stdlib-pull.js collapseTwins). Every form keeps
+// SameValueZero (-0 is +0, NaN is NaN), insertion order and a deleted key's
+// absence, in a table any other site may fill with keys of other kinds.
+const TABLE_KERNELS = {
+  ints: `export let f = (n) => { const m = new Map(), s = new Set(); for (let i = -3; i < n; i++) { m.set(i, i * 2); s.add(i & 3) } m.delete(1); m.set(-0, 'z'); s.add(-0); s.delete(2); let o = ''; for (const [k, v] of m) o += k + ':' + v + ','; for (const k of s) o += k + ';'; return o + m.get(0) + m.has(1) + s.has(0) + m.size }`,
+  nums: `export let f = (n) => { const s = new Set(), m = new Map(); const xs = [0, -0, NaN, 0 / 0, 1.5, -1.5, n, n / 3, Infinity]; for (const x of xs) { s.add(x); m.set(x, (m.get(x) || 0) + 1) } let o = ''; for (const x of s) o += x + ','; for (const [k, v] of m) o += k + '=' + v + ';'; return o + s.has(NaN) + s.has(-0) + m.get(0) + s.size }`,
+  mixed: `export let f = (n) => { const m = new Map(); m.set(1, 'a'); m.set('1', 'b'); m.set(n, 'c'); m.set('' + n, 'd'); m.set(true, 'e'); m.set(null, 'f'); m.set(undefined, 'g'); return [m.get(1), m.get('1'), m.get(n), m.get('' + n), m.get(true), m.get(null), m.get(undefined), m.get(1 === n), m.size].join('|') }`,
+  strs: `export let f = (n) => { const m = new Map(), s = new Set(); for (let i = 0; i < n; i++) { const k = 'key' + (i % 5); m.set(k, (m.get(k) || 0) + i); s.add('ab' + (i % 3)) } s.delete('ab1'); let o = ''; for (const [k, v] of m) o += k + v; for (const k of s) o += k; return o + m.get('key' + 2) + s.has('a' + 'b0') + s.has('ab1') + m.has('nope') }`,
+  strOrMissing: `export let f = (n) => { const a = ['x', 'y']; const m = new Map(); m.set(undefined, 7); for (let i = 0; i < 4; i++) { const k = a[i]; m.set(k, (m.get(k) || 0) + 1) } return [m.get('x'), m.get(undefined), m.get(a[5]), m.size].join() }`,
+  refs: `export let f = (n) => { const a = { id: 1 }, b = { id: 2 }, g = () => n, mm = new Map(); const m = new Map(), s = new Set(); m.set(a, 1); m.set(b, 2); m.set(g, 3); m.set(mm, 4); s.add(a); s.add(a); s.add(b); m.delete(b); for (let i = 0; i < n; i++) mm.set(i, i); return [m.get(a), m.get(b), m.get(g), m.get(mm), m.get({ id: 1 }), s.size, s.has(b), m.size].join() }`,
+  objOrMissing: `export let f = (n) => { const os = [{ v: 1 }, { v: 2 }]; const m = new Map(); for (let i = 0; i < 3; i++) { const o = os[i]; m.set(o, i) } return [m.get(os[0]), m.get(undefined), m.get(os[1]), m.size].join() }`,
+  grow: `export let f = (n) => { const m = new Map(); for (let i = 0; i < n; i++) m.set(i * 7 % 1000, i); for (let i = 0; i < n; i += 3) m.delete(i * 7 % 1000); let t = 0; for (const [k, v] of m) t = (t * 31 + k + v) | 0; return t + ':' + m.size + ':' + m.get(7) }`,
+  churn: `export let f = (n) => { const m = new Map(), s = new Set(), t = new Map(); for (let i = 0; i < n * 25; i++) { m.set(i % 37, i); if (i % 3) m.delete((i * 7) % 37); s.add('k' + (i % 29)); if (i % 4 === 1) s.delete('k' + ((i * 5) % 29)); t.set(i % 11, i); t.delete((i + 3) % 11) } let o = ''; for (const [k, v] of m) o += k + ':' + v + ','; for (const k of s) o += k + ';'; for (let i = 0; i < 40; i++) o += (m.has(i) ? 1 : 0) + (s.has('k' + i) ? 2 : 0); return o + m.size + ':' + s.size + ':' + t.size }`,
+  setCopy: `export let f = (n) => { const a = new Set(); for (let i = 0; i < n + 3; i++) a.add('w' + (i % 7)); a.delete('w1'); const b = new Set(a); b.add('x'); a.add('y'); const c = new Set(new Set([3, -0, 3, NaN, n])); let o = ''; for (const k of b) o += k; for (const k of c) o += k + ','; return o + b.size + a.size + b.has('w1') + c.has(0) + c.has(NaN) }`,
+  arrayKeys: `export let f = (n) => { const s = new Set(), m = new Map(), held = []; for (let i = 0; i < n + 2; i++) { const o = [i]; held.push(o); s.add(o); m.set(o, i); for (const a of held) a.push(i) } let c = 0; for (const a of held) if (s.has(a)) c += m.get(a) + a.length; return c + ':' + s.has([0]) + ':' + s.size }`,
+  setret: `export let f = (n) => { const m = new Map(); const r = m.set(1, 2); const s = new Set(); const q = s.add(n); return (r === m) + ':' + (q === s) + ':' + r.get(1) + ':' + q.has(n) }`,
+}
+
+test('minimal: a proven table probes by its key\'s form', () => {
+  if (skip) return
+  const out = (fn, n) => { try { return fn(n) } catch (e) { return 'threw ' + e.message } }
+  for (const [name, src] of Object.entries(TABLE_KERNELS)) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2, 'size')) for (const n of [0, 3, 40]) is(out(jz(src, { optimize }).exports.f, n), out(want, n), `${name}, O${optimize}, n=${n}`)
+  }
+  const size = (src) => compile(src, { wat: true, optimize: { level: 'size', watr: false } })
+  const ints = size(TABLE_KERNELS.ints), strs = size(TABLE_KERNELS.strs), mixed = size(TABLE_KERNELS.mixed)
+  ok(!/\(func \$__(map_hash|same_value_zero)\b/.test(ints) && /\(func \$__ord_probe_b\b/.test(ints), 'integer keys: the bits pair alone')
+  ok(!/\(func \$__(map_hash|same_value_zero)\b/.test(strs) && /\(func \$__ord_probe_s\b/.test(strs), 'string keys: the string pair alone')
+  ok(!/\$__map_get_o[bs]\b/.test(mixed) && /\(func \$__map_get_o\b/.test(mixed), 'two forms of one operation: the general one')
+  ok(!/\(loop \$probe/.test(funcWat(ints, '__map_get_ob')) && !/\(loop \$probe/.test(funcWat(ints, '__map_set_ob')) && /\(loop \$probe/.test(funcWat(ints, '__ord_probe_b')), 'the probe written once')
+  ok(!/\$__ptr_type\b/.test(funcWat(ints, '__map_get_ob')), 'no tag test of a proven table')
+})
+
 // The size tier prints an integer through the scratch render alone, which packs
 // a short result into the pointer as the speed tier's digit loop does: the same
 // bits for the same text (a Map key, `===` to a literal), with no second path.

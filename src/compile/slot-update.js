@@ -8,6 +8,7 @@ import { K, tagOf } from '../summary/kind.js'
 import { dictCapacity } from '../static.js'
 import { typed, asF64, asI32, temp, tempI32, isLiteralStr, isNumericIR } from '../ir.js'
 import { emit, storedValue } from '../bridge.js'
+import { provenTable, keyForm } from '../../module/collection/forms.js'
 
 const same = (a, b) => a === b ||
   (Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => same(x, b[i])))
@@ -75,10 +76,15 @@ export function trySlotUpdate(arr, idx, val, map = false) {
   // finite-domain proof: the source array may grow while keys are inserted.
   const capHint = dictCapacity(domainLen)
   const fixed = capHint != null
-  const slotFn = map ? '$__map_slot' : fixed ? '$__hash_slot_eph_fixed' : lean ? '$__hash_slot_eph' : '$__hash_slot'
-  const slotCall = (obj, key) => ['call', slotFn, obj, key,
+  // A Map the summary proves present takes its table's offset and the key's
+  // form (module/collection/forms.js), as its methods' probes do.
+  const form = map && provenTable(arr, VAL.MAP) ? keyForm(idx) : null
+  const mapSlot = form == null ? '__map_slot' : `__map_slot_o${form}`
+  const slotFn = map ? '$' + mapSlot : fixed ? '$__hash_slot_eph_fixed' : lean ? '$__hash_slot_eph' : '$__hash_slot'
+  const slotCall = (obj, key) => ['call', slotFn, form == null ? obj : ['i32.wrap_i64', obj], key,
     ...(fixed ? [['i32.const', capHint]] : [])]
-  inc(map ? '__map_slot' : fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot')
+  inc(map ? mapSlot : fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot')
+  if (form != null && ctx.transform.optimize?.leanRuntime) inc('__map_slot_o')
   const resIR = i32Values ? asI32(emit(subst(val))) : asF64(map ? storedValue(subst(val)) : emit(subst(val)))
   // Numeric results need no durable-pointer write barrier.
   const bare = i32Values || isNumericIR(resIR)

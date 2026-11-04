@@ -8,8 +8,9 @@
  * plus one under the top six bits of the entry's hash (0 is an empty bucket),
  * so a probe reads an entry only where those bits agree. A delete leaves the
  * entry where it stands, its key the tombstone (TOMB_NAN, which a reset's heal
- * also writes), and closes its bucket's gap by backward shift; enumeration
- * walks the appended entries in order past the tombstones, with no sort.
+ * also writes), and its bucket pointing at it: a tombstone matches no key, and
+ * the buckets filled never outnumber the entries appended. Enumeration walks
+ * the appended entries in order past the tombstones, with no sort.
  * An append past the last usable entry rebuilds the live entries, still in
  * order, into a new block of twice the buckets (or as many, when half the
  * entries are tombstones), and the old block forwards to it as a grown
@@ -34,11 +35,12 @@
  * @module collection/ordered
  */
 
-import { TOMB_NAN, UNDEF_NAN } from '../../src/ir.js'
+import { TOMB_NAN, UNDEF_NAN, numberNanIR } from '../../src/ir.js'
+import print from 'watr/print'
 import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
 import { STR_HCACHE_BIT, ordStride as ordStrideAt, ordEntries as ordEntriesAt } from '../../layout.js'
 import { durableFwdLogIR, durableLenLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, hasDurableReset, heapResetWat } from './durable.js'
-import { stubLogIR } from '../core/stub-log.js'
+import { stubLogIR, sitesOn } from '../core/stub-log.js'
 import { arrayKeysOn } from './identity.js'
 import { forwardHop } from './upsert.js'
 
@@ -163,6 +165,79 @@ const keyHash = (hashFn) => hashFn !== '$__map_hash' || ctx.transform.optimize?.
     (if (i32.eqz (local.get $h)) (then (local.set $h (call $__map_hash (local.get $key)))))`
 const typeExpr = (recv) => `(i32.wrap_i64 (i64.and (i64.shr_u (local.get ${recv}) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
 
+// A probe's operand forms (collection.js tableProbe). `recv: 'off'` takes a
+// proven table's offset: no tag to test, nothing to unbox. `key` names what the
+// key is proven to be. 'bits': no string, BigInt or array, so SameValueZero is
+// equal bits but for two numeric NaNs (a zero probes as +0, the zero a store
+// keeps), and the hash is `$__map_hash`'s number and reference arms: a
+// reference or a number its bits' mix, a zero 2, a NaN or an atom 3. 'str': a
+// string or an atom: a string's content hash and, against a stored string,
+// equal bits or equal content; an atom hashes 3 and is equal by its bits. A
+// table is the one every probe reads, so a probe's form is its own site's
+// proof, whatever keys the other sites store.
+const BOX_TAG_HI_FORM = (0xFFF80000 | (LAYOUT.TAG_MASK << (LAYOUT.TAG_SHIFT - 32))) | 0
+const STR_BOX_HI = ((LAYOUT.NAN_PREFIX << 16) | (PTR.STRING << (LAYOUT.TAG_SHIFT - 32))) | 0
+const TAG_HI = (LAYOUT.TAG_MASK << (LAYOUT.TAG_SHIFT - 32)) | 0
+const isStrHi = (hi) => `(i32.eq (i32.and ${hi} (i32.const ${BOX_TAG_HI_FORM})) (i32.const ${STR_BOX_HI}))`
+const formParams = (form) => `${form.recv === 'off' ? '(param $o i32)' : '(param $coll i64)'} (param $key i64)`
+const formLocals = (form) => lean() && form.key === 'bits' ? '' : form.key === 'bits' ? ' (local $kw i64) (local $kn i32)' : form.key === 'str' ? ' (local $kw i64) (local $ks i32)' : ''
+const formResolve = (form) => form.recv === 'off' ? `(local.set $off (local.get $o))
+    (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+    ${forwardHop()}` : resolve('$coll')
+// The size tier calls each form's pair once (`$__hash_bits`, `$__eq_bits`,
+// `$__eq_str` below), where the speed tier writes it out in each probe.
+const lean = () => !!ctx.transform.optimize?.leanRuntime
+const formHash = (form, hashFn) => form.key === 'bits' && lean() ? '(local.set $h (call $__hash_bits (local.get $key)))'
+  : form.key === 'bits' ? `(local.set $h (i32.const 3))
+    (if (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))
+      (then (if (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.const 0))
+        (then (local.set $key (i64.const 0)) (local.set $h (i32.const 2)))
+        (else ${mixInto})))
+      (else
+        (local.set $hi (i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32))))
+        (if (i32.and (i32.eq (i32.and (local.get $hi) (i32.const ${PREFIX_HI})) (i32.const ${BOX_HI})) (i32.ne (i32.and (local.get $hi) (i32.const ${TAG_HI})) (i32.const 0)))
+          (then ${mixInto})
+          (else (local.set $kn ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$key']]))})))))`
+  : form.key === 'str' ? `(local.set $h (i32.const 3))
+    (if (local.tee $ks ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32)))')})
+      (then (local.set $h (call $__str_hash (local.get $key)))))`
+  : keyHash(hashFn)
+const formEq = (form, eqExpr) => form.key === 'bits' && lean() ? '(call $__eq_bits (i64.load offset=8 (local.get $slot)) (local.get $key))'
+  : form.key === 'str' && lean() ? '(call $__eq_str (i64.load offset=8 (local.get $slot)) (local.get $key))'
+  : form.key === 'bits'
+  ? `(i32.or (i64.eq (local.tee $kw (i64.load offset=8 (local.get $slot))) (local.get $key))
+              (i32.and (local.get $kn) ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$kw']]))}))`
+  : form.key === 'str' ? `(if (result i32) (i64.eq (local.tee $kw (i64.load offset=8 (local.get $slot))) (local.get $key))
+              (then (i32.const 1))
+              (else (if (result i32) (i32.and (local.get $ks) ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $kw) (i64.const 32)))')})
+                (then (call $__str_eq (local.get $kw) (local.get $key)))
+                (else (i32.const 0)))))`
+  : eqExpr
+/** The bits form's hash: `$__map_hash`'s number and reference arms. */
+export const genHashBits = () => `(func $__hash_bits (param $key i64) (result i32)
+    (local $h i32) (local $hi i32)
+    (if (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))
+      (then (if (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.const 0)) (then (return (i32.const 2)))))
+      (else
+        (local.set $hi (i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32))))
+        (if (i32.eqz (i32.and (i32.eq (i32.and (local.get $hi) (i32.const ${PREFIX_HI})) (i32.const ${BOX_HI})) (i32.ne (i32.and (local.get $hi) (i32.const ${TAG_HI})) (i32.const 0))))
+          (then (return (i32.const 3))))))
+    ${mixInto}
+    (local.get $h))`
+/** The bits form's equality of a stored key and a probe: equal bits, equal numbers (either zero), or two numeric NaNs. */
+export const genEqBits = () => `(func $__eq_bits (param $a i64) (param $key i64) (result i32)
+    (i32.or (i32.or (i64.eq (local.get $a) (local.get $key)) (f64.eq (f64.reinterpret_i64 (local.get $a)) (f64.reinterpret_i64 (local.get $key))))
+      (i32.and ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$a']]))} ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$key']]))})))`
+/** The string form's equality of a stored key and a probe: equal bits, or two strings of equal content. */
+export const genEqStr = () => `(func $__eq_str (param $a i64) (param $key i64) (result i32)
+    (if (result i32) (i64.eq (local.get $a) (local.get $key)) (then (i32.const 1))
+      (else (if (result i32) (i32.and ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const 32)))')} ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32)))')})
+        (then (call $__str_eq (local.get $a) (local.get $key)))
+        (else (i32.const 0))))))`
+
+/** The holder's own offset (a growth reached through a stub retargets it). */
+const formHolder = (form) => form.recv === 'off' ? '(local.get $o)' : `(i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK})))`
+
 // A fresh entry's hash word packs the insertion sequence above the hash: the
 // walkers order nothing by it any more, but a cursor finds its place by it
 // and a rebuild keeps it.
@@ -174,7 +249,9 @@ const seqStore = () => `(i64.store (local.get $slot)
  *  bucket the empty one the probe ended at; a full table is rebuilt first.
  *  `slotOnly` returns the value's address, a miss inserting undefined (the
  *  fused read-modify-write, src/compile/slot-update.js). */
-export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, hasExt, { slotOnly = false, prologue = '' } = {}) {
+export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, hasExt, { slotOnly = false, prologue = '', form = {} } = {}) {
+  if (lean()) return leanUpsert(name, es, hashFn, expectedType, hasVal, hasExt, slotOnly, prologue, form)
+  const off = form.recv === 'off'
   const valParam = hasVal && !slotOnly ? '(param $val i64) ' : ''
   const slotLog = hasVal && !slotOnly ? durableSlotLogIR('slot', 16, 'val') : ''
   const storeVal = slotOnly ? `\n        (i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))`
@@ -190,14 +267,14 @@ export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, has
   const typeGuard = hasExt
     ? `(if (i32.ne ${t} (i32.const ${expectedType})) (then (if (i32.eq ${t} (i32.const ${PTR.EXTERNAL})) ${extBranch}) (return ${miss})))`
     : `(if (i32.ne ${t} (i32.const ${expectedType})) (then (return ${miss})))`
-  return `(func $${name} (param $coll i64) (param $key i64) ${valParam}(result ${slotOnly ? 'i32' : 'i64'})
-    ${probeLocals} (local $used i32) (local $size i32) (local $newptr i32) (local $o0 i32)
-    ${typeGuard}
-    ${resolve('$coll')}${prologue}
-    ${keyHash(hashFn)}
+  return `(func $${name} ${formParams(form)} ${valParam}${slotOnly ? '(result i32)' : off ? '' : '(result i64)'}
+    ${probeLocals}${formLocals(form)} (local $used i32) (local $size i32) (local $newptr i32) (local $o0 i32)
+    ${off ? '' : typeGuard}
+    ${formResolve(form)}${prologue}
+    ${formHash(form, hashFn)}
     (block $done (loop $retry
     ${geometry(es)}
-    ${probe(es, eqExpr, onHit)}
+    ${probe(es, formEq(form, eqExpr), onHit)}
     (local.set $used (i32.load ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', `(i32.const ${es})`)}))
     (if (i32.lt_u (local.get $used) (local.get $ecap))
       (then
@@ -221,7 +298,7 @@ export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, has
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         ${stubLogIR('off', 'newptr', expectedType)}
         ;; the stub the holder names forwards straight to the new block (upsert.js retargetStub)
-        (local.set $o0 (i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK}))))
+        (local.set $o0 ${formHolder(form)})
         (if (i32.ne (local.get $o0) (local.get $off))
           (then${durableLenLogIR('o0')}
             (i32.store (i32.sub (local.get $o0) (i32.const 8)) (local.get $newptr))
@@ -229,7 +306,7 @@ export function genOrdUpsert(name, es, hashFn, eqExpr, expectedType, hasVal, has
     (local.set $off (local.get $newptr))
     (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
     (br $retry)))
-    ${slotOnly ? '(i32.add (local.get $slot) (i32.const 16))' : '(local.get $coll)'})`
+    ${slotOnly ? '(i32.add (local.get $slot) (i32.const 16))' : off ? '' : '(local.get $coll)'})`
 }
 
 // A Map's value that is an array grown since it was stored names the stub its
@@ -256,7 +333,8 @@ export const genSlotHeal = () => `(func $__slot_heal (param $slot i32) (result i
     ${healValue()})`
 
 /** get/has: the value (or `missing`), or 1/0. hashFn null takes the hash as a parameter. */
-export function genOrdLookup(name, es, hashFn, eqExpr, expectedType, wantValue = true, hasExt = false, missing = UNDEF_NAN) {
+export function genOrdLookup(name, es, hashFn, eqExpr, expectedType, wantValue = true, hasExt = false, missing = UNDEF_NAN, form = {}) {
+  if (lean() && hashFn) return leanLookup(name, es, hashFn, expectedType, wantValue, hasExt, missing, form)
   const rt = wantValue ? 'i64' : 'i32'
   const absent = wantValue ? `(i64.const ${missing})` : '(i32.const 0)'
   const onHit = wantValue ? '(br $hit)' : '(return (i32.const 1))'
@@ -268,16 +346,16 @@ export function genOrdLookup(name, es, hashFn, eqExpr, expectedType, wantValue =
           : '(call $__ext_has (local.get $coll) (local.get $key))'}))
         (else (return ${absent})))))`
     : `(if (i32.ne ${t} (i32.const ${expectedType})) (then (return ${absent})))`
-  return `(func $${name} (param $coll i64) (param $key i64) ${hashFn ? '' : '(param $hk i32)'} (result ${rt})
-    ${probeLocals}${wantValue ? ' (local $v i64) (local $vo i32)' : ''}
-    ${typeGuard}
-    ${resolve('$coll')}
-    ${hashFn ? keyHash(hashFn) : '(local.set $h (local.get $hk))'}
+  return `(func $${name} ${formParams(form)} ${hashFn || form.key ? '' : '(param $hk i32)'} (result ${rt})
+    ${probeLocals}${formLocals(form)}${wantValue ? ' (local $v i64) (local $vo i32)' : ''}
+    ${form.recv === 'off' ? '' : typeGuard}
+    ${formResolve(form)}
+    ${hashFn || form.key ? formHash(form, hashFn) : '(local.set $h (local.get $hk))'}
     ${geometry(es)}
     ${wantValue ? `(block $hit
-      ${probe(es, eqExpr, onHit)}
+      ${probe(es, formEq(form, eqExpr), onHit)}
       (return ${absent}))
-    ${healValue()}` : `${probe(es, eqExpr, onHit)}
+    ${healValue()}` : `${probe(es, formEq(form, eqExpr), onHit)}
     ${absent}`})`
 }
 
@@ -320,37 +398,157 @@ export function genOrdPutAt(name, es, hasVal, fallback) {
       (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1))))`
 }
 
+// A found entry's removal: its key the tombstone, its bucket left pointing at
+// it (a tombstone matches no key, and a probe passes it as it passes any
+// other key's entry; the buckets filled never outnumber the entries appended,
+// which a rebuild clears of tombstones), the table's size one less.
+const deleteTail = (es) => `${durableSlotCancelIR('slot', es)}
+    (i64.store offset=8 (local.get $slot) (i64.const ${TOMB_NAN}))
+    (i32.store (i32.sub (local.get $off) (i32.const 8))
+      (i32.sub (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
+    (i32.const 1)`
 /** delete: the entry tombstoned in place, its bucket's gap closed by backward
  *  shift (a bucket stays where its home lies cyclically in the gap's (b, j]);
  *  1 when the key was there. */
-export function genOrdDelete(name, es, hashFn, eqExpr, expectedType) {
-  return `(func $${name} (param $coll i64) (param $key i64) (result i32)
-    ${probeLocals} (local $j i32) (local $k i32)
-    (if (i32.ne ${typeExpr('$coll')} (i32.const ${expectedType})) (then (return (i32.const 0))))
-    ${resolve('$coll')}
-    ${keyHash(hashFn)}
+export function genOrdDelete(name, es, hashFn, eqExpr, expectedType, form = {}) {
+  if (lean()) return leanDelete(name, es, hashFn, expectedType, form)
+  return `(func $${name} ${formParams(form)} (result i32)
+    ${probeLocals}${formLocals(form)}
+    ${form.recv === 'off' ? '' : `(if (i32.ne ${typeExpr('$coll')} (i32.const ${expectedType})) (then (return (i32.const 0))))`}
+    ${formResolve(form)}
+    ${formHash(form, hashFn)}
     ${geometry(es)}
     (block $found
-      ${probe(es, eqExpr, '(br $found)')}
+      ${probe(es, formEq(form, eqExpr), '(br $found)')}
       (return (i32.const 0)))
-    ${durableSlotCancelIR('slot', es)}
-    (i64.store offset=8 (local.get $slot) (i64.const ${TOMB_NAN}))
-    (local.set $j (local.get $b))
-    (block $stop (loop $shift
-      (local.set $j (i32.and (i32.add (local.get $j) (i32.const 1)) (local.get $m)))
-      (local.set $w (i32.load ${bucketAt('(local.get $j)')}))
-      (br_if $stop (i32.eqz (local.get $w)))
-      (local.set $k (i32.and (i32.load ${entryOf('(local.get $w)', es)}) (local.get $m)))
-      (if (i32.le_u (local.get $b) (local.get $j))
-        (then (br_if $shift (i32.and (i32.lt_u (local.get $b) (local.get $k)) (i32.le_u (local.get $k) (local.get $j)))))
-        (else (br_if $shift (i32.or (i32.lt_u (local.get $b) (local.get $k)) (i32.le_u (local.get $k) (local.get $j))))))
-      (i32.store ${bucketAt('(local.get $b)')} (local.get $w))
-      (local.set $b (local.get $j))
-      (br $shift)))
-    (i32.store ${bucketAt('(local.get $b)')} (i32.const 0))
+    ${deleteTail(es)})`
+}
+
+// The size tier writes a table's probe once (`$__ord_probe`, a form's own
+// beside it: `_b`, `_s`), its insertion once (`$__ord_insert`) and its growth
+// once (`$__ord_full`); every operation calls them, where the speed tier writes
+// each out in place. The probe leaves the bucket it ended at in `$__find_b`,
+// the key's own or the empty one an insertion fills.
+const probeOf = (form) => form.key === 'bits' ? '$__ord_probe_b' : form.key === 'str' ? '$__ord_probe_s' : '$__ord_probe'
+const probeCall = (form, es) => `(call ${probeOf(form)} (local.get $off) (local.get $cap) (local.get $key) (local.get $h) (i32.const ${es}))`
+const leanLocals = '(local $off i32) (local $cap i32) (local $h i32) (local $slot i32) (local $hi i32) (local $t i32)'
+
+/** The probe of the size tier: the entry of `$key` (hash `$h`) in the table at
+ *  `$off` of `$cap` buckets and `$es`-byte entries, or 0. `eqExpr` decides a
+ *  stored key (at `$slot`) against `$key`. */
+export const genOrdProbe = (name, eqExpr) => `(func $${name} (param $off i32) (param $cap i32) (param $key i64) (param $h i32) (param $es i32) (result i32)
+    (local $ix i32) (local $m i32) (local $b i32) (local $w i32) (local $slot i32)
+    (local.set $ix (i32.add (local.get $off) (i32.mul ${ordEntriesWat('(local.get $cap)')} (local.get $es))))
+    (local.set $m (i32.sub (local.get $cap) (i32.const 1)))
+    (local.set $b (i32.and (local.get $h) (local.get $m)))
+    (block $miss (loop $probe
+      (local.set $w (i32.load ${bucketAt('(local.get $b)')}))
+      (br_if $miss (i32.eqz (local.get $w)))
+      (if (i32.eqz (i32.and (i32.xor (local.get $w) (local.get $h)) (i32.const ${TAG})))
+        (then
+          (local.set $slot (i32.add (local.get $off) (i32.mul (i32.sub (i32.and (local.get $w) (i32.const ${IDX})) (i32.const 1)) (local.get $es))))
+          (if (i32.eq (i32.load (local.get $slot)) (local.get $h))
+            (then (if ${eqExpr} (then (global.set $__find_b (local.get $b)) (return (local.get $slot))))))))
+      (local.set $b (i32.and (i32.add (local.get $b) (i32.const 1)) (local.get $m)))
+      (br $probe)))
+    (global.set $__find_b (local.get $b))
+    (i32.const 0))`
+/** The forms' probes: equality by bits, by a string's content. */
+export const genOrdProbeForm = (key) => genOrdProbe(key === 'bits' ? '__ord_probe_b' : '__ord_probe_s', formEq({ key }))
+
+/** An entry appended for hash `$h` at the bucket the probe left in `$__find_b`:
+ *  its address, the key and the value for the caller to store; 0 when the
+ *  table is full. */
+export const genOrdInsert = () => `(func $__ord_insert (param $off i32) (param $cap i32) (param $h i32) (param $es i32) (result i32)
+    (local $ecap i32) (local $used i32) (local $slot i32) (local $ua i32)
+    (local.set $ecap ${ordEntriesWat('(local.get $cap)')})
+    (local.set $used (i32.load (local.tee $ua ${ordUsedAddrWat('(local.get $off)', '(local.get $cap)', '(local.get $es)')})))
+    (if (i32.ge_u (local.get $used) (local.get $ecap)) (then (return (i32.const 0))))
+    (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $used) (local.get $es))))
+    ${seqStore()}
+    (i32.store (i32.add (i32.add (local.get $off) (i32.mul (local.get $ecap) (local.get $es))) (i32.shl (global.get $__find_b) (i32.const 2)))
+      (i32.or (i32.and (local.get $h) (i32.const ${TAG})) (i32.add (local.get $used) (i32.const 1))))
+    (i32.store (local.get $ua) (i32.add (local.get $used) (i32.const 1)))
     (i32.store (i32.sub (local.get $off) (i32.const 8))
-      (i32.sub (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
-    (i32.const 1))`
+      (i32.add (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
+    (local.get $slot))`
+
+/** A full table grown (`$__ord_grow`): its block, the old one forwarding there
+ *  where it moved, the holder's stub `$o0` too; `$tag` the table's kind. */
+export const genOrdFull = () => `(func $__ord_full (param $off i32) (param $cap i32) (param $es i32) (param $o0 i32) (param $tag i32) (result i32)
+    (local $size i32) (local $newptr i32)
+    (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
+    (local.set $newptr (call $__ord_grow (local.get $off) (local.get $cap) (local.get $es)))
+    (if (i32.ne (local.get $newptr) (local.get $off))
+      (then
+        ${durableFwdLogIR('off', 'newptr', 'size', 'cap')}
+        (i32.store (i32.sub (local.get $off) (i32.const 8)) (local.get $newptr))
+        (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
+        ${stubLogAt('off', 'newptr')}
+        (if (i32.ne (local.get $o0) (local.get $off))
+          (then${durableLenLogIR('o0')}
+            (i32.store (i32.sub (local.get $o0) (i32.const 8)) (local.get $newptr))
+            ${stubLogAt('o0', 'newptr')}))))
+    (local.get $newptr))`
+const stubLogAt = (off, newOff) => sitesOn()
+  ? `(call $__gc_stub (local.get $${off}) (i64.reinterpret_f64 (call $__mkptr (local.get $tag) (i32.const 0) (local.get $${newOff}))))` : ''
+
+const leanTypeGuard = (expectedType, miss, extThen) => {
+  const t = typeExpr('$coll')
+  return extThen
+    ? `(if (i32.ne ${t} (i32.const ${expectedType})) (then (if (i32.eq ${t} (i32.const ${PTR.EXTERNAL})) ${extThen}) (return ${miss})))`
+    : `(if (i32.ne ${t} (i32.const ${expectedType})) (then (return ${miss})))`
+}
+
+function leanUpsert(name, es, hashFn, expectedType, hasVal, hasExt, slotOnly, prologue, form) {
+  const off = form.recv === 'off'
+  const valParam = hasVal && !slotOnly ? '(param $val i64) ' : ''
+  const slotLog = hasVal && !slotOnly ? durableSlotLogIR('slot', 16, 'val') : ''
+  const storeVal = slotOnly ? `(i64.store offset=16 (local.get $slot) (i64.const ${UNDEF_NAN}))`
+    : hasVal ? `(i64.store offset=16 (local.get $slot) (local.get $val))${slotLog}` : ''
+  const onHit = hasVal && !slotOnly ? `(i64.store offset=16 (local.get $slot) (local.get $val))${slotLog} (br $done)` : '(br $done)'
+  const guard = off ? '' : leanTypeGuard(expectedType, slotOnly ? '(i32.const 0)' : '(local.get $coll)',
+    !hasExt ? null : hasVal ? '(then (call $__ext_set (local.get $coll) (local.get $key) (local.get $val)) drop)' : '(then (nop))')
+  return `(func $${name} ${formParams(form)} ${valParam}${slotOnly ? '(result i32)' : off ? '' : '(result i64)'}
+    ${leanLocals}${formLocals(form)}
+    ${guard}
+    ${formResolve(form)}${prologue}
+    ${formHash(form, hashFn)}
+    (block $done (loop $retry
+      (if (local.tee $slot ${probeCall(form, es)}) (then ${onHit}))
+      (if (local.tee $slot (call $__ord_insert (local.get $off) (local.get $cap) (local.get $h) (i32.const ${es})))
+        (then
+          ${keyStore}${durableEntryLogIR('slot', 'off')}
+          ${storeVal}
+          (br $done)))
+      (local.set $off (call $__ord_full (local.get $off) (local.get $cap) (i32.const ${es}) ${formHolder(form)} (i32.const ${expectedType})))
+      (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+      (br $retry)))
+    ${slotOnly ? '(i32.add (local.get $slot) (i32.const 16))' : off ? '' : '(local.get $coll)'})`
+}
+
+function leanLookup(name, es, hashFn, expectedType, wantValue, hasExt, missing, form) {
+  const absent = wantValue ? `(i64.const ${missing})` : '(i32.const 0)'
+  const guard = form.recv === 'off' ? '' : leanTypeGuard(expectedType, absent, !hasExt ? null : `(then (return ${wantValue
+    ? '(call $__ext_get (local.get $coll) (local.get $key))'
+    : '(call $__ext_has (local.get $coll) (local.get $key))'}))`)
+  return `(func $${name} ${formParams(form)} (result ${wantValue ? 'i64' : 'i32'})
+    ${leanLocals}${formLocals(form)}${wantValue ? ' (local $v i64) (local $vo i32)' : ''}
+    ${guard}
+    ${formResolve(form)}
+    ${formHash(form, hashFn)}
+    ${wantValue ? `(if (i32.eqz (local.tee $slot ${probeCall(form, es)})) (then (return ${absent})))
+    ${healValue()}` : `(i32.ne ${probeCall(form, es)} (i32.const 0))`})`
+}
+
+function leanDelete(name, es, hashFn, expectedType, form) {
+  return `(func $${name} ${formParams(form)} (result i32)
+    ${leanLocals}${formLocals(form)}
+    ${form.recv === 'off' ? '' : `(if (i32.ne ${typeExpr('$coll')} (i32.const ${expectedType})) (then (return (i32.const 0))))`}
+    ${formResolve(form)}
+    ${formHash(form, hashFn)}
+    (if (i32.eqz (local.tee $slot ${probeCall(form, es)})) (then (return (i32.const 0))))
+    ${deleteTail(es)})`
 }
 
 /** The cold rebuild of a full table: twice the buckets (four times past

@@ -14,7 +14,9 @@ const TIERS = levels(0, 2, 'speed', 'size')
 test('audit: collection fields lower to explicit layout offsets', () => {
   if (onKernel()) return
   const wat = compile('export function f(k){const m=new Map();m.set(k,42);return m.get(k)}', { optimize: 0, wat: true })
-  for (const name of ['__map_get', '__map_set']) {
+  // (a present table's probe of a key of any kind: the `_o` form, module/collection/forms.js)
+  for (const base of ['__map_get', '__map_set']) {
+    const name = (wat.match(new RegExp(`\\(func \\$(${base}(?:_o\\w*)?)\\b`)) || [])[1] ?? base
     const body = funcWat(wat, name)
     ok(body.includes('offset=8'), `${name}: key field uses its slot offset`)
     ok(body.includes('offset=16'), `${name}: value field uses its slot offset`)
