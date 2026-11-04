@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Settle with an array without reading its `then`, where it has no property of its own and no class has the member (module/core.js `__p_plain`, the block's own-properties word, as a class's method dispatch reads it): a plain array an async function resolves with went through a hashed lookup of the name. bench/async about 0.95× the time (paired, by the runs' minimum: the load rose to 24 during the run).
 - Size Promise.all's and Promise.allSettled's result to their inputs (std/async.js): each array grew from empty, its elements written in settlement order. bench/async 0.98× the time (paired, M4 under load 9), its speed build 111 bytes larger.
 - Take a value that may adopt out of the async runtime's way (std/async.js `__p_adopt`, `__k_adopt`): settling a promise or resuming an awaiting machine with anything else runs a test and a store, where each call carried the frame of the path that allocates a promise, a closure and a handler. bench/async 0.96× the time (paired, 24 rounds, M4 under load 9), its builds 591 and 202 bytes larger.
 - Run a small state of a generator's or an async function's machine where each jump to it stands, at the speed tier (jzify/generators.js, pass `copySmallStates`): an await in a loop's body went back through the dispatch to the loop's test before its next suspension, and now runs the test in place. bench/async 0.97× the time (paired, M4 under load 8), its speed build 1,557 bytes larger, its size build unchanged.

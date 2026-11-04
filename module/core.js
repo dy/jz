@@ -17,7 +17,7 @@ import { emit, emitReference, emitIdentitySafe, storedValue, deps, wat } from '.
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
 import { PROMISE_KEYS } from '../src/std/async.js'
-import { classAccessor, classMethodValue } from '../src/compile/emit/class-dispatch.js'
+import { classAccessor, classMethodValue, classHasMember, noOwnProps } from '../src/compile/emit/class-dispatch.js'
 import { copyReceiverFacts } from '../src/compile/emit/shared.js'
 import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
@@ -2871,20 +2871,22 @@ export default (ctx) => {
   // Whether a value the runtime resolves with is an object no thenable can
   // be (std/async.js \`__k_ret\`, \`__p_settle\`): one of a layout no object of
   // which ever holds \`then\` (src/summary/query.js layoutLacks), its \`then\`
-  // undefined without a lookup. The layouts below 64 answer from one mask.
+  // undefined without a lookup, the layouts below 64 answering from one mask;
+  // or, where no class has the member, an array with no property of its own.
   ctx.core.emit.__p_plain = (v) => {
     const q = ctx.summary?.at?.(ctx.func.current), n = Math.min(ctx.schema.list.length, 64)
     let mask = 0n
     for (let sid = 0; sid < n; sid++) if (q?.layoutLacks?.(sid, 'then')) mask |= 1n << BigInt(sid)
-    if (mask === 0n) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(v))], ['i32.const', 0]], 'i32')
+    const arrays = !classHasMember('then')
+    if (mask === 0n && !arrays) return typed(['block', ['result', 'i32'], ['drop', asF64(emit(v))], ['i32.const', 0]], 'i32')
     const t = temp('pp'), aux = tempI32('pa')
+    const object = ['i32.and',
+      ['i32.lt_u', ['local.tee', `$${aux}`, ['i32.and', ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]]], ['i32.const', LAYOUT.AUX_MASK]]], ['i32.const', n]],
+      ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['i64.const', '0x' + mask.toString(16)], ['i64.extend_i32_u', ['local.get', `$${aux}`]]], ['i64.const', 1]]]]
+    const array = arrays ? ['if', ['result', 'i32'], ptrTypeEq(['local.get', `$${t}`], PTR.ARRAY), ['then', noOwnProps(t, VAL.ARRAY)], ['else', ['i32.const', 0]]] : ['i32.const', 0]
     return typed(['block', ['result', 'i32'],
       ['local.set', `$${t}`, asF64(emit(v))],
-      ['if', ['result', 'i32'], ptrTypeEq(['local.get', `$${t}`], PTR.OBJECT),
-        ['then', ['i32.and',
-          ['i32.lt_u', ['local.tee', `$${aux}`, ['i32.and', ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.AUX_SHIFT]]], ['i32.const', LAYOUT.AUX_MASK]]], ['i32.const', n]],
-          ['i32.wrap_i64', ['i64.and', ['i64.shr_u', ['i64.const', '0x' + mask.toString(16)], ['i64.extend_i32_u', ['local.get', `$${aux}`]]], ['i64.const', 1]]]]],
-        ['else', ['i32.const', 0]]]], 'i32')
+      ['if', ['result', 'i32'], ptrTypeEq(['local.get', `$${t}`], PTR.OBJECT), ['then', object], ['else', array]]], 'i32')
   }
   ctx.core.emit.__escaping = (v) => asF64(emit(v))
   // A generator function's mark on an object it makes (jzify/generators.js

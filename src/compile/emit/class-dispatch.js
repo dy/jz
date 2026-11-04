@@ -91,10 +91,10 @@ const local = (name) => typed(['local.get', `$${name}`], 'f64')
 // Whether the object in local `t` holds no property outside its layout: an
 // object of this round keeps those in its properties word (module/collection.js
 // dynGetBody), zero where it has none.
-const noOwnProps = (t) => {
+export const noOwnProps = (t, val = VAL.OBJECT) => {
   const off = tempI32('own'), at = ['local.get', `$${off}`]
   return ['if', ['result', 'i32'],
-    ['i32.and', ['i32.ge_u', ['local.tee', `$${off}`, ptrOffsetIR(local(t), VAL.OBJECT)], ['i32.const', 16]],
+    ['i32.and', ['i32.ge_u', ['local.tee', `$${off}`, ptrOffsetIR(local(t), val)], ['i32.const', 16]],
       ['i32.ge_u', at, hasDurableReset() ? ['global.get', '$__heap_reset'] : ['i32.const', 0]]],
     ['then', ['i64.eqz', ['i64.and', ['i64.load', ['i32.sub', at, ['i32.const', 16]]], ['i64.const', -2]]]],
     ['else', ['i32.const', 0]]]

@@ -1062,10 +1062,13 @@ test('async: an awaited call resumes its caller in microtask order, no promise b
     const gained = async () => { const o = { x: 1 }; o.then = (r) => r('g'); return o }
     const keyed = async () => { const o = { x: 1 }, k = 'th' + 'en'; o[k] = (r) => r('k'); return o }
     const plainRec = async (x) => ({ x, y: x + 1 })
+    const plainArr = async (x) => [x, x + 1]
+    const ownArr = async () => { const a = [1, 2]; a.then = (r) => r('a'); return a }
+    const keyArr = async () => { const a = [1, 2], k = 'th' + 'en'; a[k] = (r) => r('b'); return a }
     export const thenables = async () => {
       log = ''
       const t = ticker(20)
-      log += await gained() + await keyed() + (await plainRec(1)).y + (await later2({ then: (r) => r('L') }))
+      log += await gained() + await keyed() + (await plainRec(1)).y + (await later2({ then: (r) => r('L') })) + (await plainArr(5))[1] + await ownArr() + await keyArr()
       await t
       return log
     }
@@ -1102,9 +1105,11 @@ test('async: an awaited call resumes its caller in microtask order, no promise b
   // before direct awaits)
   await agreeAsync(`let log = ''
     class Th { then(r) { log += 'T'; r('c') } }
+    class Tl extends Array { then(r) { log += 'L'; r('d') } }
     const inst = async () => new Th()
+    const list = async () => new Tl()
     const tick = async () => { log += 1; await null; log += 2; await null; log += 3 }
-    export const instance = async () => { log = ''; const t = tick(); log += await inst(); await t; return log }`)
+    export const instance = async () => { log = ''; const t = tick(); log += await inst() + await list(); await t; return log }`)
   const { num } = jz(`const num = async (x) => x + 1
     const use = async () => await num(1)
     export { num, use }`).exports
