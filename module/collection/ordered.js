@@ -101,6 +101,8 @@ const geometry = (es) => `(local.set $ecap ${ordEntriesWat('(local.get $cap)')})
 // probe finds either zero (SameValueZero), a walk hands out +0.
 const keyStore = `(i64.store offset=8 (local.get $slot)
           (select (i64.const 0) (local.get $key) (i64.eq (local.get $key) (i64.const 0x8000000000000000))))`
+// (no string or atom reads as -0)
+const keyStoreOf = (form) => form?.key === 'str' ? '(i64.store offset=8 (local.get $slot) (local.get $key))' : keyStore
 const bucketAt = (b) => `(i32.add (local.get $ix) (i32.shl ${b} (i32.const 2)))`
 const entryOf = (w, es) => `(i32.add (local.get $off) (i32.mul (i32.sub (i32.and ${w} (i32.const ${IDX})) (i32.const 1)) (i32.const ${es})))`
 
@@ -181,9 +183,10 @@ const formParams = (form) => `${form.recv === 'off' ? '(param $o i32)' : '(param
 const formLocals = (form) => lean() && form.key === 'bits' ? '' : form.key === 'bits' ? ' (local $kw i64) (local $kn i32)' : form.key === 'str' ? ' (local $kw i64) (local $ks i32)' : ''
 const formResolve = (form) => form.recv === 'off' ? liveTable('(local.get $o)') : resolve('$coll')
 // The size tier calls each form's pair once (`$__hash_bits`, `$__eq_bits`,
-// `$__eq_str` below), where the speed tier writes it out in each probe.
+// `$__hash_str`, `$__eq_str` below), where the speed tier writes it out in each probe.
 const lean = () => !!ctx.transform.optimize?.leanRuntime
 const formHash = (form, hashFn) => form.key === 'bits' && lean() ? '(local.set $h (call $__hash_bits (local.get $key)))'
+  : form.key === 'str' && lean() ? '(local.set $h (call $__hash_str (local.get $key)))'
   : form.key === 'bits' ? `(local.set $h (i32.const 3))
     (if (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.reinterpret_i64 (local.get $key)))
       (then (if (f64.eq (f64.reinterpret_i64 (local.get $key)) (f64.const 0))
@@ -221,16 +224,20 @@ export const genHashBits = () => `(func $__hash_bits (param $key i64) (result i3
           (then (return (i32.const 3))))`}))
     ${mixInto}
     (local.get $h))`
+/** The string form's hash: a string's, any atom 3. */
+export const genHashStr = () => `(func $__hash_str (param $key i64) (result i32)
+    (if (result i32) ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32)))')}
+      (then (call $__str_hash (local.get $key)))
+      (else (i32.const 3))))`
 /** The bits form's equality of a stored key and a probe: equal bits, equal numbers (either zero), or two numeric NaNs. */
 export const genEqBits = () => `(func $__eq_bits (param $a i64) (param $key i64) (result i32)
     (i32.or (i32.or (i64.eq (local.get $a) (local.get $key)) (f64.eq (f64.reinterpret_i64 (local.get $a)) (f64.reinterpret_i64 (local.get $key))))
       (i32.and ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$a']]))} ${print(numberNanIR(['f64.reinterpret_i64', ['local.get', '$key']]))})))`
 /** The string form's equality of a stored key and a probe: equal bits, or two strings of equal content. */
 export const genEqStr = () => `(func $__eq_str (param $a i64) (param $key i64) (result i32)
-    (if (result i32) (i64.eq (local.get $a) (local.get $key)) (then (i32.const 1))
-      (else (if (result i32) (i32.and ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const 32)))')} ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32)))')})
-        (then (call $__str_eq (local.get $a) (local.get $key)))
-        (else (i32.const 0))))))`
+    (if (result i32) (i32.and ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $a) (i64.const 32)))')} ${isStrHi('(i32.wrap_i64 (i64.shr_u (local.get $key) (i64.const 32)))')})
+      (then (call $__str_eq (local.get $a) (local.get $key)))
+      (else (i64.eq (local.get $a) (local.get $key)))))`
 
 /** The holder's own offset (a growth reached through a stub retargets it). */
 const formHolder = (form) => form.recv === 'off' ? '(local.get $o)' : `(i32.wrap_i64 (i64.and (local.get $coll) (i64.const ${LAYOUT.OFFSET_MASK})))`
@@ -512,7 +519,7 @@ function leanUpsert(name, es, hashFn, expectedType, hasVal, hasExt, slotOnly, pr
       (if (local.tee $slot ${probeCall(form, es)}) (then ${onHit}))
       (if (local.tee $slot (call $__ord_insert (local.get $off) (local.get $cap) (local.get $h) (i32.const ${es})))
         (then
-          ${keyStore}${durableEntryLogIR('slot', 'off')}
+          ${keyStoreOf(form)}${durableEntryLogIR('slot', 'off')}
           ${storeVal}
           (br $done)))
       (local.set $off (call $__ord_full (local.get $off) (local.get $cap) (i32.const ${es}) (i32.const ${expectedType})))

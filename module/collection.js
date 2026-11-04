@@ -244,7 +244,7 @@ const keyEq = (fullEq) =>
         (else ${fullEq}))`
 
 import { collectionLaneBytes, genRehash, genUpsert, genLookup, genDelete, genUpsertGrow, genEphemeralSlotUpsert, genEphemeralFixedSlot, genLookupStrict, genUpsertStrictPrehashed } from './collection/upsert.js'
-import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdLive, genOrdIndex, genCollStep, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideWat, ordBytesWat, genHashBits, genEqBits, genEqStr, genOrdProbe, genOrdProbeForm, genOrdInsert, genOrdFull } from './collection/ordered.js'
+import { genOrdUpsert, genOrdLookup, genOrdDelete, genOrdGrow, genOrdRebuild, genOrdCopy, genOrdLive, genOrdIndex, genCollStep, genOrdFind, genOrdPutAt, genSlotHeal, genOrdCap, ordStride, ordStrideWat, ordBytesWat, genHashBits, genHashStr, genEqBits, genEqStr, genOrdProbe, genOrdProbeForm, genOrdInsert, genOrdFull } from './collection/ordered.js'
 import { includeCopyKeys } from './object.js'
 import registerRecords, { isRecordWat, orRecordWat } from './collection/record.js'
 import registerIdentity, { arrayKeysOn, noteKeys, noteProbeKeyOf, keyArmsOn, pinKeyWat } from './collection/identity.js'
@@ -1506,14 +1506,15 @@ export default (ctx) => {
     __ord_full: () => ['__ord_grow', ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...(sitesOn() ? ['__gc_stub', '__mkptr'] : [])],
   })
   ctx.core.stdlib['__hash_bits'] = genHashBits
+  ctx.core.stdlib['__hash_str'] = genHashStr
   ctx.core.stdlib['__eq_bits'] = genEqBits
   ctx.core.stdlib['__eq_str'] = genEqStr
-  deps({ __eq_str: ['__str_eq'] })
+  deps({ __eq_str: ['__str_eq'], __hash_str: ['__str_hash'] })
   const probeForms = (k, key) => {
     const form = { recv: 'off', key }, sfx = '_o' + k
     // (an array key's pin is known once every key is noted: read as the body is written)
     const pin = () => k ? '' : pinKey()
-    const keyDeps = (...generic) => k === '' ? generic : k === 's' ? ['__str_hash', '__str_eq', ...(lean ? ['__eq_str'] : [])] : lean ? ['__hash_bits', '__eq_bits'] : []
+    const keyDeps = (...generic) => k === '' ? generic : k === 's' ? ['__str_hash', '__str_eq', ...(lean ? ['__hash_str', '__eq_str'] : [])] : lean ? ['__hash_bits', '__eq_bits'] : []
     const reg = (name, gen, d) => { ctx.core.stdlib[name + sfx] = () => gen(name + sfx); deps({ [name + sfx]: d }) }
     const lookupDeps = () => [...probeDeps(k), ...keyDeps('__map_hash', '__same_value_zero'), '__ptr_offset', '__ptr_offset_fwd']
     const upsertDeps = () => [...probeDeps(k), ...insertDeps(), ...keyDeps('__map_hash', ...pinDeps(), '__same_value_zero'), '__ptr_offset_fwd', '__ord_grow',
