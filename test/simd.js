@@ -2659,6 +2659,15 @@ test('vectorize: conditional-STORE min/max (if(a[i]>m)m=a[i]) lifts like the ter
   ok(/f64x2\.pmax/.test(wat(flo, SPEED)), 'f64 if-store max → f64x2.pmax')
 })
 
+test('vectorize: an if-store arm whose intermediate statement calls stays scalar and agrees', () => {
+  // The arm's `t = Math.sin(...)` runs before its store: the lift declines (it would run on every lane).
+  const src = `let out = new Float64Array(64), src = new Float64Array(64)
+    for (let i = 0; i < 64; i++) src[i] = (i * 37 % 64) / 64
+    export let f = (c) => { for (let i = 0; i < 64; i++) { if (src[i] > c) { const t = Math.sin(src[i]); out[i] = t * 2 } } let h = 0; for (let i = 0; i < 64; i++) h += out[i]; return h }`
+  const want = oracle(src).f(0.5)
+  for (const optimize of levels(2, 'speed')) almost(jz(src, { optimize }).exports.f(0.5), want, 1e-12, `at ${optimize}`)
+})
+
 test('vectorize: min/max reduction with m=a[0] start-at-1 idiom + non-LANES-multiple N', () => {
   // Seeds the accumulator from the first element and starts at i=1 — the overshoot-safe
   // SIMD bound must not run a lane past the end; the scalar tail cleans up N % 4 != 0.

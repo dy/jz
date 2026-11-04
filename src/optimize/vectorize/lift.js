@@ -429,7 +429,7 @@ export function liftStmt(stmt, ctx) {
     // global.set) is the same predicate `matchBlockLoop`'s own preamble-clone gate already uses
     // for the identical "would this run unconditionally when it shouldn't" question; fail closed
     // (decline the whole if-store lift, not just the offending statement) rather than risk it.
-    if (thenA.inter.some(hasSideEffect) || (elseA && elseA.inter.some(hasSideEffect)))
+    if (thenA.inter.some(s => hasSideEffect(s)) || (elseA && elseA.inter.some(s => hasSideEffect(s))))
       return liftFail(ctx, 'if-store: arm has a side-effecting intermediate statement (would run unconditionally)')
     // mask from COND: a lane comparison, or (i32) a truthy test `lift(cond) != 0`.
     let cond = stmt[1]
