@@ -3,6 +3,7 @@ import { walkAst } from '../../ast.js'
 import { isI32Const } from './addr-model.js'
 import { LANE_PURE, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
+import { stripBlock } from './scaffold.js'
 import { CMP_LANE, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
 
 // Per-pixel-color vectorizer. The dual of tryDivergentEscapeVectorize for kernels with NO inner
@@ -266,6 +267,7 @@ export function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, o
     ...laneCompute, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
+  stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 2)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
   return { wrapper, newLocalDecls }
 }

@@ -105,7 +105,8 @@ export function aliasGuards(sites, stride, lanes, { defs = null, varying, versio
 // inside another. So every store answers for every other access of the scalar loop, where the
 // strip's bound is set, past the preamble it reads. A failed test leaves the strip empty, and
 // the scalar loop every lift keeps runs every iteration; a pair no test can decide keeps the
-// loop scalar. A lift with no strip (`memory.copy`, memcpy.js) guards its own window.
+// loop scalar. A lift with no strip keeps the loop's order (`ordered`: `memory.copy`, which
+// guards its own window, a pixel's channels as lanes) or stays scalar.
 //
 // `distinctParams` proves two bases apart: nothing to test. Two pointers need only one test,
 // P ≠ Q: a base the pointer proof takes is where an allocation starts (an allocator's result, a
@@ -175,6 +176,7 @@ export function arrayPointers(fn) {
     if (!isArr(n)) return false
     if (isLocalGet(n)) return local(n[1])
     if (n[0] === 'local.tee') return value(n[2])
+    if (n[0] === 'select') return value(n[1]) && value(n[2])
     if (n[0] === 'call') return POINTER_CALLS.has(n[1])
     if (n[0] === 'if') return n.slice(1).filter(c => isArr(c) && (c[0] === 'then' || c[0] === 'else')).every(arm => arm.length === 2 && value(arm[1]))
     if (n[0] !== 'i32.wrap_i64') return false
@@ -202,13 +204,14 @@ const apart = (d, span) => {
     ['i32.ge_u', ['i32.add', cloneNode(D), ['i32.const', span - 1]], ['i32.const', 2 * span - 1]]]
 }
 
-/** Close the strips of a lift of `node` behind the test its stores need: the wrapper, or null
- *  when some pair cannot be tested and the loop stays scalar. `distinct`: the parameters
+/** Close the strips of the lift `r` of `node` behind the test its stores need: the lift, or
+ *  null when some pair cannot be tested and the loop stays scalar. `distinct`: the parameters
  *  proven separate allocations. */
-export function gateStrips(wrapper, node, fnLocals, distinct, pointerOf) {
+export function gateStrips(r, node, fnLocals, distinct, pointerOf) {
+  const { wrapper } = r
   const loop = node.find(c => isArr(c) && c[0] === 'loop')
   const sites = loop ? memorySites(loop) : []
-  if (!sites.some(s => s.store)) return wrapper
+  if (!sites.some(s => s.store)) return r
   const { defs, copies, steps, written } = addressFacts(node, loop, fnLocals)
   const expand = n => !isArr(n) ? n : isLocalGet(n) && defs.has(n[1]) ? expand(defs.get(n[1])) : n[0] === 'local.tee' ? expand(n[2]) : n.map(expand)
   const invariant = n => {
@@ -292,7 +295,7 @@ export function gateStrips(wrapper, node, fnLocals, distinct, pointerOf) {
       if (!pairs.has(key)) pairs.set(key, { d, s, st })
     }
   }
-  if (!pairs.size && !unequal.size) return wrapper
+  if (!pairs.size && !unequal.size) return r
   // A site's address with each counter stepped `tail` times: the iterations left, so the far
   // end holds whether the counters step before the access or after it.
   const last = (n, tail) => !isArr(n) ? n : isLocalGet(n) && steps.has(n[1])
@@ -324,6 +327,7 @@ export function gateStrips(wrapper, node, fnLocals, distinct, pointerOf) {
         if (r ? r < s.width || S - r < s.width : Math.abs(d.k) < S * lanes) return null
         continue
       }
+      if (!bound) return null
       const tail = ['i32.sub', cloneNode(bound), ['local.get', iv]]
       and(['i32.or', below(s, st, tail), below(st, s, tail)])
     }
@@ -337,9 +341,11 @@ export function gateStrips(wrapper, node, fnLocals, distinct, pointerOf) {
       if (!at) { if (!gate(c)) return false; continue }
       const test = open(at)
       if (!test) return false
-      if (test !== true) parent[i] = ['select', c, ['local.get', at.iv], test]
+      found = true
+      if (test !== true) parent[i] = at.block ? ['if', test, ['then', c]] : ['select', c, ['local.get', at.iv], test]
     }
     return true
   }
-  return gate(wrapper) ? wrapper : null
+  let found = false
+  return gate(wrapper) && (found || r.ordered) ? r : null
 }

@@ -4,7 +4,7 @@ import { LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 import { CMP_LANE, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
 import { tryPerPixelColor } from './per-pixel-color.js'
-import { matchBlockLoop } from './scaffold.js'
+import { matchBlockLoop, stripBlock } from './scaffold.js'
 
 // ---- Outer-loop strip-mine over an inner reduction (tryOuterStrip, experimental) ----
 //
@@ -19,7 +19,7 @@ import { matchBlockLoop } from './scaffold.js'
 // BIT-EXACT: each lane accumulates in the SAME scalar order as the original (f64x2.add is
 // per-lane IEEE-754-identical) — a per-lane reduction reorders nothing, unlike a horizontal
 // fold. The inner loop's trip count (b < count) is invariant, so its scaffold stays scalar;
-// only the f64 body lifts. Distinct base subtrees assumed non-aliasing (the standing model).
+// only the f64 body lifts. Bases that may be one array are tested at the strip (alias.js gateStrips).
 // Gated behind cfg.outerStrip until proven across the corpus.
 function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
@@ -197,6 +197,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
     ...laneCompute, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
+  stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 2)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
   return { wrapper, newLocalDecls }
 }
@@ -387,6 +388,7 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
     ...laneCompute, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
+  stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 2)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
   return { wrapper, newLocalDecls }
 }
@@ -523,6 +525,7 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
     ...laneCompute, ...epiLane(0), ...epiLane(1), ...epiLane(2), ...epiLane(3), ...epiLane(4), ...epiLane(5), ...epiLane(6), ...epiLane(7),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 8]]]),
     ['br', sOl]]]
+  stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 8)
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
   return { wrapper, newLocalDecls }
 }

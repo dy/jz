@@ -2,6 +2,7 @@ import { walkAst } from '../../ast.js'
 import { hasSideEffect, isLocalGet } from './addr-model.js'
 import { LANE_PURE } from './lane-tables.js'
 import { isArr } from './node-utils.js'
+import { stripBlock } from './scaffold.js'
 import { CMP_LANE, bumpPixelIV, matchNumericInc1, readsVar, writesName } from './outer-scaffold.js'
 
 export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
@@ -577,6 +578,7 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
     ...pre, simdInner, ...postLoop, ...epiLane(0), ...epiLane(1),
     ...pixelIVs.map(p => ['local.set', p.name, [p.type + '.add', ['local.get', p.name], [p.type + '.const', 2]]]),
     ['br', sOl]]]
+  stripBlock(simdOuter, pxVar, pivType.get(pxVar) === 'f64' ? null : widthBound, 2)
 
   // wrapper: hoisted preambles once (outer + inner-block invariants like BAILOUT), then the
   // SIMD even-pixel loop, then the original scalar block handles the odd-pixel tail.

@@ -63,6 +63,9 @@ export const simdLoop = (id, iv, bound, body) => ['block', `$__simd_brk${id}`,
 // over-reading load also requires its complete span before subtracting it.
 // (each bound remembers its strip: where a lift's entry closes, alias.js gateStrips)
 export const strips = new WeakMap()
+/** A lift's strip built as a statement beside its kept scalar loop, of `lanes` iterations of
+ *  `iv` under `bound` (null past an integer counter): `gateStrips` wraps it whole. */
+export const stripBlock = (node, iv, bound, lanes) => (strips.set(node, { iv, bound, lanes, block: true }), node)
 export function simdBound(iv, bound, lanes, overread = 0) {
   const start = () => ['local.get', iv]
   const span = () => ['i32.sub', cloneNode(bound), start()]

@@ -2,6 +2,7 @@ import { walkAst } from '../../ast.js'
 import { constNum, isI32Const, isLocalGet } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { readsVar } from './outer-scaffold.js'
+import { strips } from './scaffold.js'
 
 // ---- Channel-reduction recognizer (RGBA box-filter accumulation) -----------
 //
@@ -328,9 +329,11 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   // the entry x. The r<128 guard is the i16-overflow check (win·255 < 2^16 ⇔ r<128);
   // when r≥128 the 4-pixel loop runs zero iterations and the scalar remainder covers
   // the whole interior — sound for any runtime r, no duplicated loop body.
-  const b4set = ['local.set', b4, ['i32.add', ['local.get', pivot],
+  const b4end = ['i32.add', ['local.get', pivot],
     ['select', ['i32.and', ['i32.sub', dc(bound), ['local.get', pivot]], ['i32.const', -4]], ['i32.const', 0],
-      ['i32.lt_s', dc(rBound), ['i32.const', 128]]]]]
+      ['i32.lt_s', dc(rBound), ['i32.const', 128]]]]
+  strips.set(b4end, { iv: pivot, bound: dc(bound), lanes: 4 })
+  const b4set = ['local.set', b4, b4end]
   // The interior block may carry a LICM-hoisted invariant preamble (e.g. `k=-r`'s
   // value) that the lifted body reads but which the original sets only on block
   // entry — run a clone of it first so the 4-pixel loop sees it. Then b4 setup, the
@@ -389,7 +392,8 @@ function tryChannelReduce1px(blockNode, fnLocals, freshIdRef, bl, scan) {
   newLoop.splice(innerIdx, 1, newInnerBlock, ...extracts)   // inner block → lifted + extracts
   newLoop.splice(initIdx, 4, zeroInit)                       // 4 inits → 1 splat (do last; lower index)
   const wrapper = blockNode.map(c => c === loopNode ? newLoop : c)
-  return { wrapper, newLocalDecls }
+  // (lanes of one pixel: its reads still run ahead of its stores, pixel after pixel)
+  return { wrapper, newLocalDecls, ordered: true }
 }
 
 // ---- Unified CHANNEL-REDUCE recognizer (dispatch entry) ---------------------

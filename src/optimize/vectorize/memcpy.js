@@ -195,5 +195,5 @@ export function tryMemCopyFill(bl, fnLocals, freshIdRef) {
   const wrapper = ['block',
     ['if', ['i32.lt_s', ['local.get', incVar], boundC()],
       ['then', ...setup, ...action]]]
-  return { wrapper, newLocalDecls }
+  return { wrapper, newLocalDecls, ordered: true }
 }

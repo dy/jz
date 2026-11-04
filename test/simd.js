@@ -8,7 +8,7 @@ import { run, wat, oracle, funcWat, unguardedSaturations, jz, compile } from './
 import parseWat from 'watr/parse'
 import encodeWat from 'watr/compile'
 import { vectorizeLaneLocal } from '../src/optimize/vectorize/index.js'
-import { simdBound, matchBlockLoop } from '../src/optimize/vectorize/scaffold.js'
+import { simdBound, stripBlock, matchBlockLoop } from '../src/optimize/vectorize/scaffold.js'
 import { gateStrips } from '../src/optimize/vectorize/alias.js'
 import { matchOuterPixelLoop } from '../src/optimize/vectorize/outer-scaffold.js'
 import { tryGatherMap } from '../src/optimize/vectorize/gather-map.js'
@@ -3267,6 +3267,20 @@ test('paired items - a float recurrence under a condition runs two pixels side b
   }
 })
 
+test('paired items - two names for one array run one pixel after the other', () => {
+  // (lane B reads ahead of lane A's store: the pair opens past a test of the two bases)
+  const src = pairKern().replace('let out = new Uint32Array(64 * 48)', 'let out = new Float64Array(64 * 48)')
+    .replace('W = w; H = h', 'W = w; H = h; const sd = pick > 0 ? out : seed; sd[0] = 0.25; sd[1] = 1.5')
+    .replace('seed[0] * a', 'sd[0] * a').replace('seed[1] * b', 'sd[1] * b')
+    .replace('render = (k, w, h)', 'render = (k, w, h, pick)')
+  ok(paired(src), 'the pixel loop is paired')
+  const want = oracle(src), on = runVec(src, PAIR_ON)
+  for (const [w, h, k] of [[63, 9, 0.3], [64, 48, 0], [5, 7, -1]]) for (const pick of [0, 1]) {
+    want.render(k, w, h, pick); on.render(k, w, h, pick)
+    is(on.cs(), want.cs(), `${w}×${h} k=${k} pick=${pick}`)
+  }
+})
+
 test('paired items - declines where one item could see another', () => {
   // state carried from pixel to pixel through a module global
   ok(!paired(pairKern().replace('let v = 0.0', 'let v = 0.0; acc = acc * 0.5 + 1.0').replace('let out =', 'let acc = 0.0\n  let out =')), 'module-global write')
@@ -4615,7 +4629,70 @@ test('SIMD two names for one array - two copies of one hop are one array, at the
   const lifted = () => ['block', ['local.set', '$end', simdBound('$i', ['local.get', '$n'], 2)]]
   const locals = new Map([['$p', 'i32'], ['$q', 'i32'], ['$i', 'i32'], ['$n', 'i32'], ['$end', 'i32']])
   for (const [k, lifts] of [[0, true], [1, false], [2, true], [-1, false], [-3, true]])
-    is(!!gateStrips(lifted(), scalar(k), locals, null, () => true), lifts, `a[i] = a[i - ${k}] + 1 through two hops: ${lifts ? 'lifts' : 'stays scalar'}`)
+    is(!!gateStrips({ wrapper: lifted() }, scalar(k), locals, null, () => true), lifts, `a[i] = a[i - ${k}] + 1 through two hops: ${lifts ? 'lifts' : 'stays scalar'}`)
+})
+
+test('SIMD two names for one array - one jz buffer at two slots of an export is one array', () => {
+  // (a buffer of the slot's kind is the storage itself: the same pointer reaches both parameters)
+  const sum = `export let sum = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s = (s * 31 + a[i]) % 1000003; return s }`
+  const seed = n => Float64Array.from({ length: n }, (_, i) => (i * i + 3 * i + 1) % 251)
+  const bodies = ['for (let i = 1; i < n; i++) a[i] = b[i - 1] + 1',
+    'for (let i = 2; i < n; i++) a[i] = b[i - 2] * 2 - b[i - 1]',
+    'for (let i = 1; i < n; i++) { const j = i - 1; a[i] = b[j] * 3 + 1 }']
+  for (const body of bodies) for (const opts of [{ optimize: { level: 'speed' } }, {}]) {
+    const src = `${sum}\n export let f = (a, b, n) => { ${body}; return a[n - 1] }`, js = oracle(src)
+    const { exports, memory } = jz(src, opts)
+    for (const n of [64, 17]) {
+      const h = memory.Float64Array(seed(n)), g = seed(n)
+      is(exports.f(h, h, n), js.f(g, g, n), `${body}: result at n=${n}`)
+      ok(memory.read(h).every((v, i) => Object.is(v, g[i])), `${body}: the buffer after the call at n=${n}`)
+      const x = memory.Float64Array(seed(n)), y = memory.Float64Array(seed(n)), p = seed(n), q = seed(n)
+      is(exports.f(x, y, n), js.f(p, q, n), `${body}: two buffers at n=${n}`)
+    }
+    if (!onKernel()) ok(hasV128(funcWat(wat(src, opts), 'f') ?? ''), `${body}: lifts`)
+  }
+})
+
+test('SIMD two names for one array - a strip a recognizer builds itself opens past the same test', () => {
+  // 4 pixels of a box blur read their windows ahead of any pixel's store: in place, the next pixel reads the stored one
+  const blur = `export let go = (flag) => {
+    const w = 64, h = 8, r = 4, N = w * h * 4
+    const src = new Uint8Array(N), other = new Uint8Array(N)
+    const dst = flag > 0 ? src : other
+    let s = 0x1234abcd|0
+    for (let i = 0; i < N; i++) { s ^= s<<13; s ^= s>>>17; s ^= s<<5; src[i] = (s>>>0)&255 }
+    const ww = w|0, hh = h|0, rr = r|0, win = 2*rr+1
+    for (let y = 0; y < hh; y++) { const row = y*ww
+      for (let x = 0; x < ww; x++) {
+        let sr=0,sg=0,sb=0,sa=0
+        for (let k=-rr; k<=rr; k++) { let xi=x+k; if(xi<0)xi=0; else if(xi>=ww)xi=ww-1; const p=(row+xi)<<2; sr+=src[p];sg+=src[p+1];sb+=src[p+2];sa+=src[p+3] }
+        const o=(row+x)<<2; dst[o]=(sr/win)|0; dst[o+1]=(sg/win)|0; dst[o+2]=(sb/win)|0; dst[o+3]=(sa/win)|0
+      } }
+    let acc = 0; for (let i = 0; i < N; i++) acc = (acc + dst[i])|0
+    return acc
+  }`
+  const speed = { optimize: 'speed' }
+  for (const flag of [0, 1]) is(runVec(blur, speed).go(flag), oracle(blur).go(flag), `blur, in place ${flag}`)
+  if (!onKernel()) ok(/i16x8\.extend_high/.test(wat(blur, speed)), 'the 4-pixel lift stands behind its test')
+  // an output column strip-mined over an input the output may be
+  const conv = CONV_PARAM_SRC.replace('out = new Uint8Array(COUT * OH * OW)', 'out = pick > 0 ? inp : new Int8Array(COUT * OH * OW)')
+    .replace('export let run = (n) =>', 'export let run = (n, pick) =>')
+  for (const pick of [0, 1]) is(runVec(conv, CV_ON).run(3, pick), oracle(conv).run(3, pick), `conv, in place ${pick}`)
+  if (!onKernel()) ok(/i16x8\.mul/.test(wat(conv, CV_ON)), 'the column strip stands behind its test')
+})
+
+test('SIMD two names for one array - a lift with no strip to close stays scalar unless it keeps the order', () => {
+  const scalar = ['block', '$brk',
+    ['loop', '$l', ['br_if', '$brk', ['i32.eqz', ['i32.lt_s', ['local.get', '$i'], ['local.get', '$n']]]],
+      ['f64.store', ['i32.add', ['local.get', '$p'], ['i32.shl', ['local.get', '$i'], ['i32.const', 3]]],
+        ['f64.load', ['i32.add', ['local.get', '$q'], ['i32.shl', ['i32.sub', ['local.get', '$i'], ['i32.const', 1]], ['i32.const', 3]]]]],
+      ['local.set', '$i', ['i32.add', ['local.get', '$i'], ['i32.const', 1]]], ['br', '$l']]]
+  const locals = new Map([['$p', 'i32'], ['$q', 'i32'], ['$i', 'i32'], ['$n', 'i32']])
+  is(gateStrips({ wrapper: ['block', ['nop']] }, scalar, locals, null, () => true), null, 'nothing to close')
+  ok(gateStrips({ wrapper: ['block', ['nop']], ordered: true }, scalar, locals, null, () => true), 'in order, nothing to close')
+  const strip = stripBlock(['block', '$s'], '$i', ['local.get', '$n'], 2), r = { wrapper: ['block', strip] }
+  ok(gateStrips(r, scalar, locals, null, () => true), 'a statement strip is closed')
+  is(r.wrapper[1][0], 'if', 'behind its test')
 })
 
 test('SIMD map over a plain array of Numbers - the hop hoisted ahead of the loop runs ahead of the strip too, bit-exact', () => {

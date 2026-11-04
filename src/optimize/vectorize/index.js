@@ -312,15 +312,16 @@ export function vectorizeLaneLocal(fn, opts = {}) {
             // a cursor beside a reduction (`s += x[ix]; ix += 1`, dasum's shape)
             ?? tryReduce(cbl, fnLocals, freshIdRef, multiAcc)
             ?? tryGeneralReduce(cbl, fnLocals, freshIdRef, multiAcc)
-          if (lifted) { r = { wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls] }; scalar = canon.node }
+          if (lifted) { r = { wrapper: ['block', ...canon.setup, lifted.wrapper, ...canon.landing], newLocalDecls: [...canon.decls, ...lifted.newLocalDecls], ordered: lifted.ordered }; scalar = canon.node }
         }
       }
       // A guard whose first test the lanes can answer, over work too heavy to be common.
       // Bases nothing proves apart may be one array: the strip opens past a test of it.
-      if (r && !gateStrips(r.wrapper, scalar, fnLocals, distinctParams, pointerOf ??= arrayPointers(fn))) r = null
+      if (r && !gateStrips(r, scalar, fnLocals, distinctParams, pointerOf ??= arrayPointers(fn))) r = null
       if (!r) r = tryPrefilter(bl, fnLocals, freshIdRef)
       // Not a lane lift: two items' inner loops run side by side (pair-iterations.js).
-      const paired = r ? null : tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations)
+      let paired = r ? null : tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, pairIterations)
+      if (paired && !gateStrips(paired, node, fnLocals, distinctParams, pointerOf ??= arrayPointers(fn))) paired = null
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.

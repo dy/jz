@@ -2,6 +2,7 @@ import { cloneNode, walkAst } from '../../ast.js'
 import { readsBeforeWrite } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { bumpPixelIV } from './outer-scaffold.js'
+import { stripBlock } from './scaffold.js'
 
 /**
  * Two pixels' inner loops, run side by side.
@@ -26,8 +27,8 @@ import { bumpPixelIV } from './outer-scaffold.js'
  *   • no local the body writes carries a value from one item to the next (each
  *     read follows a write in the same item) or is read after the loop;
  *   • the body calls only pure helpers, writes no global, and stores only after
- *     its inner loop, through a base no load of the body reads (distinct bases
- *     are distinct arrays: the vectorizer's standing model);
+ *     its inner loop, through a base no load of the body reads (two names for one
+ *     array answer at the strip, alias.js gateStrips);
  *   • nothing in it traps but what the loop as written would trap on alike (no
  *     division by a variable, no trapping truncation), and it branches only to
  *     labels of its own.
@@ -365,5 +366,6 @@ export function tryPairIterations(node, fnLocals, freshIdRef, op, outsideReads, 
     ...A.pre, ...Bl.pre, jam, ...A.post, ...Bl.post,
     ...bumps,
     ['br', pl]]]
+  stripBlock(paired, iv.name, iv.type === 'f64' ? null : widthBound, 2)
   return { wrapper: ['block', ...preamble.map(cloneNode), paired, node], newLocalDecls: decls }
 }
