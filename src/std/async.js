@@ -82,19 +82,21 @@ export let __p_fin = (p, st, v) => {
 }
 export let __p_settle = (p, st, v) => {
   if (p.st > 0 || p.rs === 1) return
-  if (st === 1 && v != null && typeof v === 'object' && !__p_plain(v)) {
-    // a promise resolved with itself rejects (27.2.1.3.2 step 7)
-    if (v === p) { __p_fin(p, 2, new TypeError('Chaining cycle detected for promise')); return }
-    // a promise adopted as a thenable is (NewPromiseResolveThenableJob): its
-    // then() runs in a job of its own, the settlement a reaction after it
-    if (__p_is(v)) { let q = __p_cast(v); p.rs = 1; __job(() => __p_sub(q, (st2, v2) => __p_fin(p, st2, v2)), 0, undefined); return }
-    // plain-object thenable (spec: any object with callable then): \`then\` is
-    // read once, a throw of its getter rejecting
-    let then = undefined
-    try { then = __p_thenOf(v) } catch (e) { __p_fin(p, 2, e); return }
-    if (typeof then === 'function') { __p_then(p, v, then); return }
-  }
-  __p_fin(p, st, v)
+  if (st === 1 && v != null && typeof v === 'object' && !__p_plain(v)) __p_adopt(p, v)
+  else __p_fin(p, st, v)
+}
+export let __p_adopt = (p, v) => {
+  // a promise resolved with itself rejects (27.2.1.3.2 step 7)
+  if (v === p) { __p_fin(p, 2, new TypeError('Chaining cycle detected for promise')); return }
+  // a promise adopted as a thenable is (NewPromiseResolveThenableJob): its
+  // then() runs in a job of its own, the settlement a reaction after it
+  if (__p_is(v)) { let q = __p_cast(v); p.rs = 1; __job(() => __p_sub(q, (st2, v2) => __p_fin(p, st2, v2)), 0, undefined); return }
+  // plain-object thenable (spec: any object with callable then): \`then\` is
+  // read once, a throw of its getter rejecting
+  let then = undefined
+  try { then = __p_thenOf(v) } catch (e) { __p_fin(p, 2, e); return }
+  if (typeof then === 'function') { __p_then(p, v, then); return }
+  __p_fin(p, 1, v)
 }
 // A resolution's \`then\`, read once: one read for both resolutions (a
 // promise's here, an awaiting machine's, \`__k_ret\`), its receiver every
@@ -168,12 +170,14 @@ export let __p_done = (v, k) => {
 // or, for a value that adopts (a promise, a thenable, its \`then\` read here
 // once), from a promise resolved with it, which k then awaits.
 export let __k_ret = (k, v) => {
-  if (v != null && typeof v === 'object' && !__p_plain(v)) {
-    if (__p_is(v)) { let p = __p_new(); __p_settle(p, 1, v); __p_sub(p, k); return }
-    let then = undefined
-    try { then = __p_thenOf(v) } catch (e) { __job(k, 2, e); return }
-    if (typeof then === 'function') { let p = __p_new(); __p_then(p, v, then); __p_sub(p, k); return }
-  }
+  if (v != null && typeof v === 'object' && !__p_plain(v)) __k_adopt(k, v)
+  else __job(k, 1, v)
+}
+export let __k_adopt = (k, v) => {
+  if (__p_is(v)) { let p = __p_new(); __p_settle(p, 1, v); __p_sub(p, k); return }
+  let then = undefined
+  try { then = __p_thenOf(v) } catch (e) { __job(k, 2, e); return }
+  if (typeof then === 'function') { let p = __p_new(); __p_then(p, v, then); __p_sub(p, k); return }
   __job(k, 1, v)
 }
 // GetIterator for the combinators: arrays pass through, iterator-protocol
