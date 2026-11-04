@@ -1154,6 +1154,36 @@ test('minimal: a dropped call past a receiver guard computes no result', () => {
   is((funcWat(compile(lists, { optimize: { level: 'size', watr: false }, wat: true }), 'f').match(/call \$__ptr_offset\b/g) || []).length, 0, 'no header read for the dropped length')
 })
 
+// `if (l === undefined) { l = []; m.set(k, l) }` fills the binding whichever way
+// control came, so a read past it needs no guard (emit/dispatch.js filledName).
+// A test that lets a null through, an arm that may not fill, an arm or a later
+// statement that assigns again, and a closure that assigns all keep the guard.
+test('minimal: a binding an if fills holds a value past it', () => {
+  if (skip) return
+  const of = (seed, fill) => `export let f = (n) => { const m = new Map(); m.set(1, ${seed}); let l = m.get(n); ${fill} l.push(n); return l.length }`
+  const out = (fn, n) => { try { return fn(n) } catch { return 'threw' } }
+  const guards = (src) => (funcWat(compile(src, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f').match(/\$__throw_property_nullish\b/g) || []).length
+  for (const fill of ['if (l === undefined) { l = []; m.set(n, l) }', 'if (l == null) l = [];', 'if (!l) { l = [n] }']) {
+    const src = of('[1]', fill)
+    for (const optimize of levels(0, 2, 'size')) for (const n of [1, 2]) is(jz(src, { optimize }).exports.f(n), oracle(src).f(n), `${fill}, O${optimize}, n=${n}`)
+    is(guards(src), 0, `${fill}: no guard`)
+  }
+  for (const [seed, fill] of [
+    ['null', 'if (l === undefined) l = [];'],
+    ['[1]', 'if (l == null) { if (n) l = [] }'],
+    ['[1]', 'if (l == null) { l = []; l = m.get(9) }'],
+    ['[1]', 'if (l == null) { l = []; l &&= m.get(9) }'],
+    ['[1]', 'if (l == null) l = []; l = m.get(9);'],
+    ['[1]', 'if (l == null) l = []; if (n) l = m.get(9);'],
+    ['[1]', 'for (let i = 0; i < 3; i++) { if (l == null) l = []; if (i == n) l = m.get(9); l.push(i) }'],
+    ['[1]', 'const g = () => { l = m.get(9) }; if (l == null) l = []; g();'],
+  ]) {
+    const src = of(seed, fill), want = oracle(src).f
+    for (const optimize of levels(0, 2, 'size')) for (const n of [0, 1, 2]) is(out(jz(src, { optimize }).exports.f, n), out(want, n), `${fill}, O${optimize}, n=${n}`)
+    ok(guards(src) > 0, `${fill}: keeps the guard`)
+  }
+})
+
 // The size tier prints an integer through the scratch render alone, which packs
 // a short result into the pointer as the speed tier's digit loop does: the same
 // bits for the same text (a Map key, `===` to a literal), with no second path.

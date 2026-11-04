@@ -1362,6 +1362,31 @@ const blockSaves = (stmts) => {
   return at
 }
 
+// `if (x === undefined) { …; x = <present>; … }`, the get-or-insert of a Map
+// (`let l = m.get(k); if (l === undefined) { l = []; m.set(k, l) } l.push(v)`):
+// the name an `if` with no else fills. Its test leaves a value (`== null`,
+// `!x`, or `=== undefined` of a binding no null reaches), and its arm gives the
+// name a value the summary proves present, nothing after in the arm assigning it.
+const filledName = (s, view) => {
+  if (!view || !Array.isArray(s) || s[0] !== 'if' || s.length !== 3) return null
+  const c = s[1]
+  const missing = (n) => isNullishLit(n) || n === 'undefined' || n === 'null'
+  let name = null
+  if (Array.isArray(c) && c[0] === '!' && typeof c[1] === 'string') name = c[1]
+  else if (Array.isArray(c) && (c[0] === '==' || c[0] === '===') && typeof c[1] === 'string' && missing(c[2])) {
+    name = c[1]
+    if (c[0] === '===' && (c[2] === 'null' || hasTag(view.kindOfExpr(name), K.NULLISH))) return null
+  }
+  if (name == null) return null
+  const arm = s[2], inner = Array.isArray(arm) && arm[0] === '{}' && arm.length === 2 ? arm[1] : arm
+  const body = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
+  let at = -1
+  for (let i = 0; i < body.length; i++) if (Array.isArray(body[i]) && body[i][0] === '=' && body[i][1] === name) at = i
+  if (at < 0 || view.mayBeNullishExpr(body[at][2]) !== false) return null
+  for (let i = at + 1; i < body.length; i++) if (isReassigned(body[i], name)) return null
+  return name
+}
+
 export function emitBlockBody(node) {
   const inner = node[1]
   const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
@@ -1493,6 +1518,20 @@ export function emitBlockBody(node) {
           // (e.g. `if (typeof x === 'string') return; if (Array.isArray(x)) return;`
           // leaves both `notString: true` and would-be array exclusion stacked).
           refinements.set(name, cur ? { ...cur, ...fact } : fact)
+        }
+      }
+      // An `if` that fills a missing binding: past it the binding holds a value
+      // whichever way control came (filledName).
+      const filled = filledName(s, view)
+      if (filled != null && !frame.boxed?.has(filled) && !isGlobal(filled)) {
+        let reassigned = false
+        for (let j = i + 1; j < stmts.length; j++) if (isReassigned(stmts[j], filled)) { reassigned = true; break }
+        if (!reassigned) {
+          const refinements = ctx.func.refinements ??= new Map()
+          const cur = refinements.get(filled)
+          accumulated.push([filled, cur])
+          refinements.set(filled, cur ? { ...cur, notNullish: true } : { notNullish: true })
+          markPresent(filled)
         }
       }
     }
