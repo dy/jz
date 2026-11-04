@@ -3,6 +3,7 @@ import { DBG_INVARIANTS } from '../../debug.js'
 import { cloneNode, walkAst } from '../../ast.js'
 import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, matchExitBrIf, matchInc1, matchIncN } from './addr-model.js'
 import { isArr } from './node-utils.js'
+import { SAFE_OFFSET_CALLS } from '../licm.js'
 
 // ---- Recognize a (block (loop)) pair --------------------------------------
 
@@ -228,7 +229,7 @@ export function matchBlockLoop(blockNode, opts = {}) {
       // safe to clone ahead of the SIMD — covers $__inl*__li* (schrodinger) AND $_pg0-style
       // peephole-hoisted bounds (slime). The hasSideEffect guard rejects impure setups.
       const liOk = typeof c[1] === 'string' && (opts.allowInlinedLi ? true : c[1].startsWith('$__li'))
-      if (!allowPreamble || loopNode || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2])) return null
+      if (!allowPreamble || loopNode || c[0] !== 'local.set' || !liOk || hasSideEffect(c[2], SAFE_OFFSET_CALLS)) return null
       preamble.push(c)
     }
   }

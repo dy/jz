@@ -34,7 +34,7 @@ import { TYPED_ELEM_VIEW_FLAG } from '../../layout.js'
 // the same argument as the __ptr_* helpers (charCodeAt won't itself hoist —
 // its index varies — but whitelisting it keeps hasUnsafeCall false so the
 // loop-invariant __jss_length in the same loop condition CAN hoist).
-const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_offset_fwd', '$__ptr_type', '$__ptr_aux', '$__len', '$__jss_length', '$__jss_charCodeAt'])
+export const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_offset_fwd', '$__ptr_type', '$__ptr_aux', '$__len', '$__jss_length', '$__jss_charCodeAt'])
 // The offset readers among them read a header (the forwarding word, a length):
 // their answer holds while no header is written, whatever the loop stores into
 // element cells (HEADER_STORE_FREE below).

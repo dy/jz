@@ -4618,6 +4618,24 @@ test('SIMD two names for one array - two copies of one hop are one array, at the
     is(!!gateStrips(lifted(), scalar(k), locals, null, () => true), lifts, `a[i] = a[i - ${k}] + 1 through two hops: ${lifts ? 'lifts' : 'stays scalar'}`)
 })
 
+test('SIMD map over a plain array of Numbers - the hop hoisted ahead of the loop runs ahead of the strip too, bit-exact', () => {
+  // (a pushed array of Numbers is raw: the hop to its elements, a read-only call, is the loop's
+  // preamble, and the in-bounds store addresses its element from the hop)
+  const src = `
+    const build = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i * 0.5); return a }
+    const bump = (a) => { for (let i = 0; i < a.length; i++) a[i] = a[i] + 1; return a[0] }
+    export let go = (n) => {
+      const a = build(n)
+      let s = bump(a) + bump(a)
+      for (let i = 0; i < n; i++) s = (s * 31 + a[i]) % 1000003
+      return s
+    }`
+  const native = oracle(src).go, compiled = runVec(src, SIMD_OPT).go
+  for (const n of [0, 1, 2, 3, 16, 33]) is(compiled(n), native(n), `n=${n}`)
+  if (onKernel()) return
+  ok(/f64x2\.add/.test(funcWat(wat(src, SIMD_OPT), 'bump') ?? ''), 'the map lifts to f64x2.add')
+})
+
 // ---- General REDUCTION base layer (tryGeneralReduce) — .work/archive/vectorizer-generality-design.md ----
 //
 // Runs LAST in the dispatch chain (after tryGeneralMap), only when the shape-specific `tryReduce`

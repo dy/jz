@@ -636,12 +636,14 @@ export const hasGlobalSet = (node) => {
 
 // True if EXPR carries any side effect — a call, a memory store/op, or a global
 // write. Used to reject an impure preamble we would otherwise clone (run twice).
-export const hasSideEffect = (node) => {
+// `reads`: callees that only read, where the expression runs anyway (a preamble's
+// second copy reads what its first did).
+export const hasSideEffect = (node, reads = null) => {
   let found = false
   walkAst(node, { enter: n => {
     if (found) return false
     const op = n[0]
-    if (op === 'call' || op === 'call_indirect' || op === 'global.set'
+    if ((op === 'call' && !reads?.has(n[1])) || op === 'call_indirect' || op === 'global.set'
       || (typeof op === 'string' && (op.includes('.store') || op.startsWith('memory.')))) { found = true; return false }
   } })
   return found

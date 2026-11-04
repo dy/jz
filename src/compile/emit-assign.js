@@ -134,11 +134,14 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = fals
     if (saved.length) inc('__durable_arr_snap')
     // (the size tier asks the offset of its helper, the speed tiers hop inline)
     const recv = typed(direct ? arrExpr : arrG, 'f64')
-    body.push(['local.set', `$${base}`, lean ? ptrOffsetIR(recv, VAL.ARRAY) : fwdOffsetIR(recv)])
+    const at = lean ? ptrOffsetIR(recv, VAL.ARRAY) : fwdOffsetIR(recv)
     // An index proven inside the length (type/canonical-bounds.js
-    // inBoundsArrIdx) stores in place alone: the header stays, nothing grows.
-    if (inBounds) body.push(...saved, ctx.abi.array.ops.store(baseG, idxG, valG))
-    else body.push(['if', ['i32.lt_u', idxG, ['i32.load', ['i32.sub', baseG, ['i32.const', 8]]]],
+    // inBoundsArrIdx) stores in place alone: the header stays, nothing grows,
+    // and the element's address reads the hop (a hoist lifts it out of a loop whole).
+    if (inBounds && !saved.length) body.push(ctx.abi.array.ops.store(at, idxG, valG))
+    else body.push(['local.set', `$${base}`, at])
+    if (inBounds && saved.length) body.push(...saved, ctx.abi.array.ops.store(baseG, idxG, valG))
+    else if (!inBounds) body.push(['if', ['i32.lt_u', idxG, ['i32.load', ['i32.sub', baseG, ['i32.const', 8]]]],
         ['then', ...saved, ctx.abi.array.ops.store(baseG, idxG, valG)],
         ['else', helper()]])
   }
