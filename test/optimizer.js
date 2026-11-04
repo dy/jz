@@ -5094,6 +5094,65 @@ test('selectBits: a choice between its test\'s operands is their pseudo-minimum 
   ok(!/v128|f64x2/.test(scalar), 'simd: false stays scalar')
 })
 
+// A running minimum of values of no sign (squared distances, worley's nine feature points) chooses
+// by their words: for +0, the positives and +Infinity the unsigned order of the bits is the floats'
+// order, and every NaN's bits, either sign, lie above +Infinity's, where `d < m` never picks one.
+// The minimum lives in an integer local: a compare and a select between integer registers carry it
+// from one step to the next on x64 and arm64 alike. A minimum a parameter starts, one of a value
+// that may be negative, or a maximum keeps the pseudo-operator.
+test('selectBits: a running minimum of values of no sign chooses by their words', () => {
+  // a nearest feature point over a cell's neighbours (worley's sampler), and beside it the
+  // extremes that keep their pseudo-operators
+  const src = `const pts = new Float64Array(512)
+  let s = 0x2545f491 | 0
+  for (let i = 0; i < 512; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; pts[i] = (s & 4095) / 4096 }
+  pts[7] = NaN; pts[40] = -0; pts[41] = Infinity
+  const nearest = (x, y) => {
+    const ix = Math.floor(x), iy = Math.floor(y)
+    let f1 = Infinity
+    for (let gy = -1; gy <= 1; gy++) {
+      for (let gx = -1; gx <= 1; gx++) {
+        const cx = ix + gx, cy = iy + gy, k = ((cx & 15) * 16 + (cy & 15)) * 2
+        const dx = cx + pts[k] - x, dy = cy + pts[k + 1] - y
+        const d2 = dx * dx + dy * dy
+        if (d2 < f1) f1 = d2
+      }
+    }
+    return Math.sqrt(f1)
+  }
+  const farthest = (x, y, from) => {
+    let hi = 0, lo = from, sum = Infinity
+    for (let g = 0; g < 9; g++) {
+      const dx = pts[g * 2] - x, dy = pts[g * 2 + 1] - y, d2 = dx * dx + dy * dy
+      if (d2 > hi) hi = d2
+      if (d2 < lo) lo = d2
+      if (dx + dy < sum) sum = dx + dy
+    }
+    return hi + lo + sum
+  }
+  export let f = (x, y) => [nearest(x, y), 1 / nearest(x, y)]
+  export let g = (x, y, from) => farthest(x, y, from)`
+  const host = oracle(src)
+  const same = (got, want, msg) => is([got].flat().map(x => Object.is(x, -0) ? '-0' : String(x)), [want].flat().map(x => Object.is(x, -0) ? '-0' : String(x)), msg)
+  for (const optimize of [{ level: 'speed' }, 2, { level: 'speed', simd: false }]) {
+    const m = run(src, { optimize })
+    for (const [x, y] of [[0, 0], [0.5, 3.25], [7.9, 1.1], [NaN, 0], [Infinity, 1], [-0, 0], [-3.5, -12.25], [1e15, 2]]) {
+      same(m.f(x, y), host.f(x, y), `${JSON.stringify(optimize)} nearest ${x},${y}`)
+      for (const from of [Infinity, 1, -1, NaN, 0]) same(m.g(x, y, from), host.g(x, y, from), `${JSON.stringify(optimize)} farthest ${x},${y} from=${from}`)
+    }
+  }
+  if (onKernel()) return
+  const fast = compile(src, { wat: true, optimize: 'speed' })
+  // (the second export calls the function it wraps; the first takes its body)
+  const f = funcWat(fast, 'f'), g = funcWat(fast, 'farthest') + funcWat(fast, 'g')
+  const count = (t, re) => (t.match(re) ?? []).length
+  ok(count(f, /i64\.lt_u/g) >= 3, `the nearest point's minimum compares words at each of the row's steps (${count(f, /i64\.lt_u/g)})`)
+  ok(count(f, /f64x2\.pmin/g) === 0, 'and takes no pseudo-minimum')
+  ok(count(g, /f64x2\.pmax/g) >= 1, 'the maximum keeps its pseudo-maximum')
+  ok(count(g, /f64x2\.pmin/g) >= 1, 'the minimum a parameter starts keeps its pseudo-minimum')
+  ok(count(g, /i64\.lt_u/g) === 0, 'and no minimum there compares words: one starts at a parameter, one is of a signed sum')
+})
+
 // A signed division or remainder of a value the intervals prove non-negative by a positive one is
 // the unsigned one: an engine divides an unsigned word by a constant with a multiply-high and a
 // shift, the signed one adds a negative quotient's correction. A window's sum of bytes and a byte's
