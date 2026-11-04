@@ -455,7 +455,7 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `natgcc` | gcc `-O3`, when real gcc is installed |
 | `rust` | Rust `rustc -C opt-level=3 -C target-cpu=native` — native baseline; the headline rival is `rust-wasm` |
 | `go` | Go native compiler — native baseline; the headline rival is `go-wasm` |
-| `zig` | Zig `build-exe -O ReleaseFast -lc` — native baseline. Zig 0.16, like 0.17, turns off LLVM's loop vectorizer (zig `032319c942`, for [llvm/llvm-project#186922](https://github.com/llvm/llvm-project/issues/186922); on again in zig's master), so its loops stay scalar where clang's vectorize: alpha takes 763 µs on CI's EPYC 9V74 against C's 130, and the same port's IR optimized by clang `-O3` 59. `zig-wasm` is built the same way |
+| `zig` | Zig `build-exe -O ReleaseFast -lc` — native baseline. Zig 0.16, like 0.17, turns off LLVM's loop vectorizer (zig `032319c942`, for [llvm/llvm-project#186922](https://github.com/llvm/llvm-project/issues/186922); on again in zig's master), so its loops stay scalar where clang's vectorize: alpha takes 763 µs on CI's EPYC 9V74 against C's 130, and the same port's IR optimized by clang `-O3` 59. `zig-wasm` is built the same way, with wasm SIMD on (`-mcpu=generic+simd128`), as jz's own output has it; with the loop vectorizer off, Zig's SIMD comes from its library code and its explicit vectors |
 | `numpy` | vectorized NumPy, when a matching `.npy.py` exists |
 | `v8` | raw JavaScript on Node/V8 |
 | `deno` | raw JavaScript on Deno/V8 |
@@ -466,9 +466,9 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `graaljs` | raw JavaScript on GraalJS |
 | `jz` | JZ output with host imports for timing/logging (measures wasm size without WASI console/perf bloat) |
 | `as` | AssemblyScript `asc -O3 --runtime stub`, when a matching `.as.ts` exists |
-| `rust-wasm` | Rust → `wasm32-wasip1` (`rustc --target wasm32-wasip1 -C opt-level=3`), run in node's V8 — the apples-to-apples Rust rival |
+| `rust-wasm` | Rust → `wasm32-wasip1` with wasm SIMD on, as jz's own output has it (`rustc --target wasm32-wasip1 -C opt-level=3 -C target-feature=+simd128`), run in node's V8 — the apples-to-apples Rust rival |
 | `go-wasm` | Go → `wasm32-wasip1` (`GOOS=wasip1 GOARCH=wasm go build`), run in node's V8 |
-| `c-wasm` | C → `wasm32-wasi` via clang/LLVM (`zig cc -target wasm32-wasi -O3` — zig supplies the wasi-libc that plain clang lacks; no emcc/wasi-sdk install), run in node's V8 |
+| `c-wasm` | C → `wasm32-wasi` via clang/LLVM with wasm SIMD on, as jz's own output has it (`zig cc -target wasm32-wasi -msimd128 -O3` — zig supplies the wasi-libc that plain clang lacks; no emcc/wasi-sdk install), run in node's V8 |
 | `jz-wasmtime` | JZ output on wasmtime |
 | `jz-w2c` | JZ Wasm translated by wabt `wasm2c`, then clang `-O3`; built with `--no-tail-call` as described above |
 | `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only; unsupported SIMD and multi-value cases record build failures. Set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
@@ -488,6 +488,8 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `tov` | [Tov](https://github.com/richiemcilroy/Tov): a TypeScript-shaped language compiled through C to a native binary. `tov build <case>.tov -o <bin>` at its default (`-O3`, checked integer overflow), when a matching `.tov` port exists. A ported language like `rust` or `as`, not a JS host: it rejects the unchanged corpus (untyped parameters, no typed arrays, no `Math.imul`). Set `TOV_BIN` to override. |
 | `goose` | [Goose](https://github.com/aardappel/goose), Wouter van Oortmerssen's memory-safe systems language with no heap, compiled to one C file and built natively. `goose build <case>.goose -o <bin>` at its release defaults (`-O2` inlining; the emitted C compiled at `-O2` by the first C compiler it finds, which the run records), when a matching `.goose` port exists. A ported language like `tov` or `rust`. Set `GOOSE_BIN` to override. |
 | `bend` | [Bend](https://github.com/bendlang/bend) 2, Victor Taelin and the Higher Order Company's typed, pure, affine language with proofs, compiled to one C file and built natively. `bend <case>.bend -o <bin>` at its release default (the emitted C compiled by `clang -std=c11 -O3`, with the first clang 14 or newer it finds, which the run records), run as `<bin> +RTS --threads 1 --gpu off -RTS`: one core and no GPU, the flags of Bend's own SEQ-CPU measurements. When a matching `.bend` port exists. A ported language like `goose`. Set `BEND_BIN` to override. |
+
+The wasm rivals run with wasm SIMD wherever their toolchain can use it, as jz's own output does: C, Rust and Zig build with `simd128` on (2026-11-03; before, they built for the default target, which has none, so their loops ran scalar beside jz's vectors). Go's `GOARCH=wasm` has no SIMD support, and AssemblyScript emits SIMD only for explicit `v128` code, which the ports do not write, so their rows are unchanged; TinyGo keeps its default target.
 
 Install Tov with `curl -fsSL https://tov.sh/install.sh | sh` (needs Rust and a C
 compiler). It builds from a git checkout at `~/.tov/src` (`TOV_DIR`), whose

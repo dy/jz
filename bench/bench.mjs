@@ -1202,7 +1202,7 @@ const targets = {
     available: c => !!c.rs && has('rustc'),
     bin: rustWasmPath,
     run: c => tryRun('rust-wasm', c, () => {
-      execFileSync('rustc', ['--target', 'wasm32-wasip1', '-C', 'opt-level=3', '-o', rustWasmPath(c), c.rs], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('rustc', ['--target', 'wasm32-wasip1', '-C', 'opt-level=3', '-C', 'target-feature=+simd128', '-o', rustWasmPath(c), c.rs], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), rustWasmPath(c)]),
   },
   'go-wasm': {
@@ -1228,7 +1228,7 @@ const targets = {
       const zigGlobalCache = build('zig-global-cache')
       mkdirSync(zigCache, { recursive: true })
       mkdirSync(zigGlobalCache, { recursive: true })
-      execFileSync('zig', ['build-exe', '-target', 'wasm32-wasi', '-O', 'ReleaseFast', '-femit-bin=' + zigWasmPath(c), '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, ...zigModuleArgs(c.zig)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('zig', ['build-exe', '-target', 'wasm32-wasi', '-mcpu=generic+simd128', '-O', 'ReleaseFast', '-femit-bin=' + zigWasmPath(c), '--cache-dir', zigCache, '--global-cache-dir', zigGlobalCache, ...zigModuleArgs(c.zig)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), zigWasmPath(c)]),
   },
   'c-wasm': {
@@ -1236,7 +1236,7 @@ const targets = {
     available: c => !!c.c && has('zig'),   // zig cc bundles clang + wasi-libc (no emcc/wasi-sdk needed)
     bin: cWasmPath,
     run: c => tryRun('c-wasm', c, () => {
-      execFileSync('zig', ['cc', '-target', 'wasm32-wasi', '-O3', '-ffp-contract=off', '-o', cWasmPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('zig', ['cc', '-target', 'wasm32-wasi', '-msimd128', '-O3', '-ffp-contract=off', '-o', cWasmPath(c), c.c], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, ['node', '--no-warnings', join(LIB, 'run-wasi.mjs'), cWasmPath(c)]),
   },
   'jz-wasmtime': {
@@ -1411,10 +1411,10 @@ const TARGET_CMDS = {
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   'jz-base': 'the same builds by the checkout at JZ_BASE_ROOT, of its copy of the case (meta.base) → node (V8 wasm)',
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
-  'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
+  'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 -C target-feature=+simd128 <case>.rs → node (V8 wasm)',
   'go-wasm': 'GOOS=wasip1 GOARCH=wasm go build <case>.go → node (V8 wasm)',
-  'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
-  'c-wasm': 'zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
+  'zig-wasm': 'zig build-exe -target wasm32-wasi -mcpu=generic+simd128 -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
+  'c-wasm': 'zig cc -target wasm32-wasi -msimd128 -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
   'jz-wasmtime': 'jz --host wasi -O3 <case>.js → wasmtime --invoke main',
   'jz-w2c': 'jz --host wasi -O3 --no-tail-call → wasm2c → native postprocess → clang -O3 -mcpu/-march=native -flto -mllvm -min-jump-table-entries=13 (x86: -mllvm -x86-cmov-converter=false)',
   'jz-w2c2': 'jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off',
