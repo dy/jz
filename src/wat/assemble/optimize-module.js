@@ -130,8 +130,8 @@ export function optimizeModule(sec, profiler) {
   // compaction goes in: a compacted loop is re-entered past the set before it.
   if (cfg && cfg.hoistForwardHops !== false) t('forwardHops', () => {
     const funcs = [...sec.funcs, ...sec.stdlib, ...sec.start]
-    const still = collectStillFuncs(funcs), results = collectResults(funcs, ctx.module.imports)
-    for (const fn of funcs) hoistForwardHops(fn, still, results)
+    const still = collectStillFuncs(funcs), results = collectResults(funcs, ctx.module.imports), writes = globalWrites()
+    for (const fn of funcs) hoistForwardHops(fn, still, results, writes)
   })
   if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size

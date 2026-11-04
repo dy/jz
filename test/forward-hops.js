@@ -98,3 +98,39 @@ test('forward hops: a loop that compacts asks for its receiver\'s hop as the com
   ok(loops.length > 0, 'the step keeps its loop')
   for (const l of loops) is(find(l, isHop).length, 0, `no hop inside ${l[1]}`)
 })
+
+// A hop is asked once between calls that may move a block: the first tees its
+// answer, a later one of the receiver on every path after it reads the local.
+// A loop with an indirect call, which keeps its hops from hoisting, asks once a
+// pass however many slots it reads, of a module global as of a local; a call
+// between two reads, an arm that asks alone and a store of the global ask again.
+test('forward hops: a receiver asks once between calls that may move its block', () => {
+  agrees(`let q = [1, 2, 3, 4]
+    const fs = [(n) => { for (let j = 0; j < n; j++) q.push(j) }, (n) => { q = [9, 8, 7, 6, 5] }, (n) => n]
+    export let f = () => { let s = 0
+      for (let i = 0; i < 9; i++) { const a = q[i % 4], b = q[(i + 1) % 4]; fs[i % 3](5); s += a * 10 + b + q[i % 3] }
+      return s + ':' + q.length }`, 'an indirect call moving and rebinding the global between reads')
+  agrees(`let q = [1, 2, 3, 4]
+    const grow = () => { for (let j = 0; j < 9; j++) q.push(j) }
+    export let f = (n) => { let s = q[0]; if (n > 0) { s += q[1]; grow() } else s += q[2]; s += q[3] * 2; grow(); return s + q[4] + ':' + q.length }`, 'an arm that moves it', [1])
+  agrees(`let q = [1, 2, 3, 4]
+    const swap = () => { q = [5, 6, 7, 8] }
+    export let f = (n) => { const a = q[0]; if (n) swap(); return a + q[1] }`, 'a call that rebinds the global and moves nothing', [1])
+  agrees(`export let f = () => { const xs = [1, 2, 3, 4]; let s = 0
+    const g = () => { for (let j = 0; j < 9; j++) xs.push(j); throw new Error('x') }
+    s += xs[0]; try { s += xs[1]; g() } catch (e) { s += xs[2] } return s + xs[3] + ':' + xs.length }`, 'a handler reached from past a move')
+  if (onKernel()) return  // kernel WAT shape differs; the in-process leg owns shape checks
+  const src = `let q = []
+    const run = () => { let i = 0, s = 0; while (i < q.length) { const h = q[i], a = q[i + 1], b = q[i + 2]; i += 3; s += h(a, b) } return s }
+    export let f = (n) => { for (let k = 0; k < n; k++) q.push((a, b) => a + b, k, 1); return run() }`
+  const body = funcWat(wat(src, { optimize: { level: 'speed', watr: false }, host: 'js' }), 'run')
+  const isHop = n => n[0] === 'if' && Array.isArray(n[2]) && n[2][0] === 'i32.eq' && Array.isArray(n[2][1]) && n[2][1][0] === 'i32.load' &&
+    Array.isArray(n[2][2]) && n[2][2][0] === 'i32.const' && Number(n[2][2][1]) === -1
+  const find = (n, pred, out = []) => { if (Array.isArray(n)) { if (pred(n)) out.push(n); for (let i = 1; i < n.length; i++) find(n[i], pred, out) } return out }
+  const loops = find(parseWat(body), n => n[0] === 'loop')
+  is(loops.length, 1, 'the function keeps its loop')
+  is(find(loops[0], isHop).length, 1, 'one hop a pass, four reads')
+  ok(/call_indirect/.test(body), 'the job is called through the table')
+  const want = oracle(src).f(40)
+  for (const optimize of levels(2, 'speed', 'size')) is(jz(src, { optimize }).exports.f(40), want, `f(40) at ${optimize}`)
+})

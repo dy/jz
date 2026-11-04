@@ -36,12 +36,21 @@
  * each call of the program's own, or of a dynamic read's helper, cost more
  * bytes than it saved time (webaudio's tick loops grew 11 KB).
  *
+ * A hop no loop takes is asked once between such calls all the same: the first
+ * tees its answer into a local, and a later hop of the receiver, on every path
+ * after it with no call that may move a block between, reads the local. Any
+ * read of a record then asks once however many fields it reads, in a loop with
+ * calls and handlers as well: a job queue's drain reads three slots and a length
+ * and hands them to a closure. A receiver a module global holds counts here,
+ * `@$name` beside a local's `$name`, until the global is written (`writes`,
+ * optimize/globals.js).
+ *
  * @module optimize/forward-hops
  */
 import { walkAst } from '../ast.js'
 import { findBodyStart, nextLocalId } from '../ir.js'
 import { isMemWrite } from 'watr/optimize'
-import { LAYOUT } from '../ctx.js'
+import { LAYOUT, ctx } from '../ctx.js'
 import { HEADER_STORE_FREE } from './licm.js'
 
 const isArr = Array.isArray
@@ -142,7 +151,7 @@ export function collectResults(funcs, imports) {
 }
 
 /** Hoist the forward hops of each loop's unrebound receivers in `fn`. */
-export function hoistForwardHops(fn, still, results) {
+export function hoistForwardHops(fn, still, results, writes) {
   if (!isArr(fn) || fn[0] !== 'func') return
   const start = findBodyStart(fn)
   if (start < 0) return
@@ -175,6 +184,7 @@ export function hoistForwardHops(fn, still, results) {
   const boxRoot = (e, env, d) => {
     if (d > 16 || !isArr(e)) return null
     if (e.length === 2 && (e[0] === 'i64.reinterpret_f64' || e[0] === 'f64.reinterpret_i64')) return boxRoot(e[1], env, d + 1)
+    if (e.length === 2 && e[0] === 'global.get' && typeof e[1] === 'string') return ctx.scope.globalTypes?.get(e[1].slice(1)) === 'f64' ? '@' + e[1] : null
     if (!isGet(e)) return null
     const v = env.get(e[1])
     return v ? boxRoot(v, env, d + 1) : BOX.has(types.get(e[1])) ? e[1] : null
@@ -277,15 +287,24 @@ export function hoistForwardHops(fn, still, results) {
     const hop = hopAt(n, env)
     if (hop) {
       if (found) { found.add(hop.root); return 0 }
-      const g = active.find(g => g.root === hop.root)
-      if (g) {
-        if (hop.into) { parent[i] = ['local.set', hop.into, ['local.get', g.r]]; kill(env, hop.into) }
-        else parent[i] = ['local.get', g.r]
+      const r = active.find(g => g.root === hop.root)?.r ?? asked.get(hop.root)
+      if (r) {
+        if (hop.into) { parent[i] = ['local.set', hop.into, ['local.get', r]]; kill(env, hop.into) }
+        else parent[i] = ['local.get', r]
         return 0
       }
+      // the first of the receiver's hops on this path: the later ones read its answer
+      const t = held(hop.root)
+      parent[i] = hop.into ? ['block', n, ['local.set', t, ['local.get', hop.into]]] : ['local.tee', t, n]
+      if (hop.into) kill(env, hop.into)
+      asked.set(hop.root, t)
+      return 0
     }
     const op = n[0]
     if (op === 'loop') {
+      // (what it asks does not hold through its back edge, and what is asked here not past a call in it)
+      const after = found ? null : stillAsked(n)
+      if (!found) asked = new Map()
       const inner = new Map(env)
       killAll(inner, written(n))
       const groups = []
@@ -293,24 +312,44 @@ export function hoistForwardHops(fn, still, results) {
         const roots = new Set()
         visitList(n, 1, new Map(inner), [], roots)
         const w = written(n)
-        for (const root of roots) if (!w.has(root) && !active.some(g => g.root === root)) groups.push({ root, r: fresh('i32') })
+        for (const root of roots) if (root[0] !== '@' && !w.has(root) && !active.some(g => g.root === root)) groups.push({ root, r: fresh('i32') })
       }
       visitList(n, 1, inner, groups.length ? [...active, ...groups] : active, found)
       killAll(env, written(n))
+      if (!found) asked = after
       if (!groups.length) return 0
       parent.splice(i, 0, ...groups.map(g => ['local.set', g.r, enter(g.root)]))
       return groups.length
     }
-    if (op === 'block') { visitList(n, 1, env, active, found); killAll(env, written(n)); return 0 }
+    // A label's arrival may come from any point inside: past its block stands
+    // what was asked before it, where nothing inside undoes it.
+    if (op === 'block' || HANDLERS.has(op)) {
+      const after = found ? null : stillAsked(n)
+      visitList(n, 1, env, active, found)
+      killAll(env, written(n))
+      if (!found) asked = after
+      return 0
+    }
     if (op === 'if') {
       let j = 1
       for (; j < n.length && !(isArr(n[j]) && (n[j][0] === 'then' || n[j][0] === 'else')); j++) visit(n, j, env, active, found)
-      for (; j < n.length; j++) if (isArr(n[j])) visitList(n[j], 1, new Map(env), active, found)
+      const after = found ? null : stillAsked(n), here = asked
+      for (; j < n.length; j++) if (isArr(n[j])) { if (!found) asked = new Map(here); visitList(n[j], 1, new Map(env), active, found) }
       killAll(env, written(n))
+      if (!found) asked = after
       return 0
     }
     for (let j = 1; j < n.length; j++) visit(n, j, env, active, found)
-    if (isSet(n)) { kill(env, n[1]); if (copyOf(n[2]) && !reads(n[2], n[1])) env.set(n[1], n[2]) }
+    if (isSet(n)) {
+      kill(env, n[1])
+      if (!found) dropAsked(n[1])
+      if (copyOf(n[2]) && !reads(n[2], n[1])) env.set(n[1], n[2])
+    }
+    if (!found) {
+      if (op === 'global.set') asked.delete('@' + n[1])
+      else if (op === 'call_indirect' || op === 'call_ref' || LEAVES.has(op) || op === 'call' && moves(n[1])) asked.clear()
+      else if (op === 'call' && asked.size) for (const root of [...asked.keys()]) if (root[0] === '@' && writes?.has(n[1], root.slice(1))) asked.delete(root)
+    }
     if (!found && active.length && op === 'call' && moves(n[1])) {
       const t = results.get(n[1]) ?? []
       const sets = active.map(g => ['local.set', g.r, resolve(g.root)])
@@ -324,6 +363,25 @@ export function hoistForwardHops(fn, still, results) {
   }
   const visitList = (n, from, env, active, found) => {
     for (let j = from; j < n.length; j++) j += visit(n, j, env, active, found)
+  }
+  // The hops answered on every path to here: receiver → the local holding the answer.
+  let asked = new Map()
+  const answers = new Map()
+  const held = (root) => answers.get(root) ?? answers.set(root, fresh('i32')).get(root)
+  const dropAsked = (name) => { for (const [root, r] of [...asked]) if (root === name || r === name) asked.delete(root) }
+  // What a node leaves asked: nothing past a call in it that may move a block,
+  // the rest but for the receivers it writes.
+  const stillAsked = (node) => {
+    let moved = false
+    const w = new Set(written(node)), out = new Map()
+    walkAst(node, { enter: c => {
+      if (moved) return false
+      if (c[0] === 'call_indirect' || c[0] === 'call_ref' || LEAVES.has(c[0]) || c[0] === 'call' && moves(c[1])) moved = true
+      else if (c[0] === 'global.set') w.add('@' + c[1])
+      else if (c[0] === 'call' && [...asked.keys()].some(root => root[0] === '@' && writes?.has(c[1], root.slice(1)))) moved = true
+    } })
+    if (!moved) for (const [root, r] of asked) if (!w.has(root) && !w.has(r)) out.set(root, r)
+    return out
   }
   const resets = new Set(), wrappers = []
   visitList(fn, start, new Map(), [], null)
