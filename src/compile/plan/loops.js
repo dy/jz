@@ -612,9 +612,8 @@ const trySplitArrayFor = (node, parent, idx, view, stable, consts) => {
   const M = `${T}asm${freshId(ctx)}`, min = ['()', 'math.min', [',', clonePlain(B), ...recvs.map(r => ['.', r, 'length'])]]
   const bound = ['=', M, intBound || boundRecvs.length ? ['|', min, [null, 0]] : min]
   const top = 0x1fffffff   // an array holds fewer than 2^29 elements
-  bound.lo = intBound ? Math.min(constIntExpr(B), 0) : boundRecvs.length ? 0 : null
-  bound.hi = intBound ? Math.max(Math.min(constIntExpr(B), top), bound.lo) : top
-  if (bound.lo == null) { delete bound.lo; delete bound.hi }
+  const lo = intBound ? Math.min(constIntExpr(B), 0) : boundRecvs.length ? 0 : null
+  if (lo != null) { bound.lo = lo; bound.hi = intBound ? Math.max(Math.min(constIntExpr(B), top), lo) : top }
   node[2] = ['<', i, M]
   // The main loop's exit value: an integral min itself, a fraction the first
   // integer above it, C where it ran no step; masked to a word, so the tail
