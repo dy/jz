@@ -1407,3 +1407,27 @@ test('minimal: the size tier prints an integer by one walk', () => {
   const w = compile(src, { optimize: { level: 'size', watr: false }, wat: true })
   ok(!funcWat(w, '__i32_to_str').includes('$packed'), 'no digit-packing loop')
 })
+
+// A count kept in a Map reads Number or missing: a fused update carries that kind
+// (compile/slot-update.js), so \`|| 0\` and a truth test need no ToNumber or tag test.
+test('minimal: a fused update reads the kind of its read', () => {
+  if (skip) return
+  const src = `export let f = (n) => {
+    const m = new Map()
+    m.set('z', NaN); m.set('y', 0); m.set('x', 5)
+    for (let i = 0; i < n; i++) {
+      const k = 'k' + (i & 3)
+      m.set(k, (m.get(k) || 0) + 1)
+      m.set('z', (m.get('z') || 0) + 1)
+      m.set('y', m.get('y') ? 1 : 2)
+      m.set('x', (m.get('x') ?? 3) * 2)
+    }
+    return m.get('k0') + m.get('z') * 100 + m.get('y') * 10000 + m.get('x') * 100000
+  }`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 'size')) for (const n of [1, 2, 9]) is(jz(src, { optimize }).exports.f(n), want(n), `n=${n} at ${optimize}`)
+  const body = funcWat(compile(`export let f = (m, k) => { const t = new Map(); t.set(k, 1); t.set(k, (t.get(k) || 0) + 1); return t.get(k) }`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
+  ok(!/__to_num\b|i64\.eq/.test(body.slice(body.indexOf('__map_slot'))), 'the old value is a Number past the test')
+  const tested = funcWat(compile(`export let f = (k) => { const t = new Map(); t.set(k, 1); t.set(k, t.get(k) ? 1 : 2); return t.get(k) }`, { optimize: { level: 'size', watr: false, sourceInline: false }, wat: true }), 'f')
+  ok(!/__is_truthy|__to_bool/.test(tested), 'a truth test of the old value tests a Number')
+})

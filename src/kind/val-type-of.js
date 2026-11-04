@@ -173,12 +173,14 @@ VT['?:'] = (args) => {
 // An unknown side: the summary's kind of the whole, which drops what the test
 // discards (`m.get(k) || 0` is a Number where the read is a Number or missing).
 // Only a Number: its one carrier is the f64 either operand yields as it is.
+// A fused read's value is a temp the summary never saw (compile/slot-update.js).
+const slotRead = (n) => ctx.func.slotReads?.get(n) ?? n
 const logicalVT = op => (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta && ta === tb) return ta
   if (ta === VAL.BOOL && tb === VAL.NUMBER || tb === VAL.BOOL && ta === VAL.NUMBER) return VAL.NUMBER
   if (ctx.summary && (ta == null || tb == null) && ta !== VAL.BOOL && tb !== VAL.BOOL &&
-      ctx.summary.at(ctx.func.current).valOfExpr([op, args[0], args[1]]) === VAL.NUMBER) return VAL.NUMBER
+      ctx.summary.at(ctx.func.current).valOfExpr([op, slotRead(args[0]), slotRead(args[1])]) === VAL.NUMBER) return VAL.NUMBER
   return null
 }
 VT['&&'] = logicalVT('&&')

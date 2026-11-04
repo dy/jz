@@ -276,8 +276,9 @@ export function kindTruthyIR(node, ir) {
   const view = ctx.summary?.at(ctx.func.current)
   if (!view) return null
   const NEVER_BY_VALUE = summaryBitOf(K.NUMBER) | summaryBitOf(K.STRING) | summaryBitOf(K.BIGINT) | summaryBitOf(K.BOOL)
-  // (a union of tags reads as ANY to `tagOf`: the tests below read the tags themselves)
-  const k = view.kindOfExpr(node)
+  // (a union of tags reads as ANY to `tagOf`: the tests below read the tags themselves;
+  // a fused update's old value is its read's, compile/slot-update.js)
+  const k = view.kindOfExpr(typeof node === 'string' ? ctx.func.slotReads?.get(node) ?? node : node)
   if (k == null || k === 0) return null
   const tags = summaryTagsOf(k) & ~SUMMARY_NULL_BITS
   if (tags === 0) return null
