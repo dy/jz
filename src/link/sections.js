@@ -44,7 +44,8 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
       for (const p of live) encProp(out, p)
     })
     custom('jz:schema', out)
-    if (fieldContracts) {
+    // (the host hands in no object to lay out by a field's contract)
+    if (fieldContracts && hostObjects) {
       const fields = []
       varint(fields, schemas.length)
       for (let sid = 0; sid < schemas.length; sid++) {
@@ -89,7 +90,7 @@ export function schemaSections(root, { schemas, fieldContracts, namedUses, error
   // A layout with an object literal's accessor (src/ast.js layoutView): the
   // host decodes such an object through the data copy the module exports.
   const views = (viewSids ?? []).filter(sid => used.has(sid))
-  if (views.length) {
+  if (views.length && hostObjects) {
     const out = []
     varint(out, views.length)
     for (const sid of views) varint(out, sid)

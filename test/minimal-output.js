@@ -1371,7 +1371,12 @@ test('minimal: a layout the host never reads is not written', () => {
   try { jz(thrown, { optimize: 'size' }).exports.f(4); ok(false, 'throws') } catch (e) { is(e.alpha, 4, 'thrown object decodes') }
   let err = null
   try { jz(`export let f = (n) => { const m = new Map(); return m.get(n).x }`, { optimize: 'size' }).exports.f(1) } catch (e) { err = e }
-  ok(err instanceof TypeError, 'a runtime Error keeps its class')
+  ok(err instanceof TypeError && /undefined/.test(err.message), 'a runtime Error keeps its class and message')
+  const sections = (src) => WebAssembly.Module.customSections(new WebAssembly.Module(compile(src, { optimize: 'size' })), 'jz:fields').length + WebAssembly.Module.customSections(new WebAssembly.Module(compile(src, { optimize: 'size' })), 'jz:views').length
+  // (a program whose runtime may throw keeps the Error's row: the tables stay written for it alone)
+  const held = `const o = { a: new Float64Array(2), b: [1], c: 'x' }; o.a[0] = 1; const m = new Map(); m.set(1, o); const r = m.get(2)`
+  ok(sections(`export let f = () => { ${held}; return r.a.length + o.b.length + o.c.length }`) === 0, 'no field contract or view past the boundary nothing crosses')
+  ok(sections(`export let f = () => { ${held}; return r.a.length ? r : o }`) > 0, 'a value that crosses keeps them')
 })
 
 // The size tier's ToInt32 of a Number of unknown range is one call past three
