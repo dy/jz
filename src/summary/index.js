@@ -1572,8 +1572,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const builtinOwnProps = new Map()
   // A call the summary cannot see through may store anything into the object, under
   // its slots' names or any other: every slot and every name beside them holds anything.
-  const escapeObjectValue = (k) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) { poisonSchema(sid); raiseSideWild(sid, ANY) } if (hasTag(k, K.TYPED)) escapeTypedProps(k); escape(k) }
+  const escapeObjectValue = (k, typedProps = escapeTypedProps) => { if (tagOf(k) === K.OBJECT && paramOf(k) !== UNKNOWN) for (const sid of shapesOf(paramOf(k))) { poisonSchema(sid); raiseSideWild(sid, ANY) } if (hasTag(k, K.TYPED)) typedProps(k); escape(k) }
   const escapeObject = (k) => losingAs('passed to a call the summary cannot see through', escapeObjectValue, k)
+  // The receiver of a method the summary cannot see through. A typed array's
+  // named properties stay as the walk saw them, as an argument's do: no typed
+  // array method stores one, a host holds its elements alone, and a closure it
+  // holds under a name runs escaped, raising the cell by its own stores
+  // through `this`. What the properties hold escapes.
+  const escapeReceiver = (k) => losingAs('passed to a call the summary cannot see through', escapeObjectValue, k, (k) => escape(typedPropsOf(k)))
   const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
   /** A value the host holds (an export's result, an exported global, an import's argument): every closure it reaches may be called with anything. */
   const escapeToHost = (k, seen) => {
@@ -3132,7 +3138,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // An argument the summary hands to code it cannot see loses its schema
     // (`escape`); a store through that code reaches it as a lost schema.
     escapeArgs(base, n)
-    if (t === K.OBJECT || t === K.HASH || t === K.ANY || t === K.ARRAY) escapeObject(recv)
+    if (t === K.OBJECT || t === K.HASH || t === K.ANY || t === K.ARRAY) escapeReceiver(recv)
     const r = builtinMethodResult(recv, name)
     if (node && t === K.ANY) joinedCalls.set(node, r)
     return r

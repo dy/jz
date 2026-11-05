@@ -1915,3 +1915,28 @@ test('summary: a logical assignment reads as its target or its value', () => {
   const want = oracle(src).f(7)
   for (const optimize of levels(0, 2, 3)) is(jz(src, { optimize }).exports.f(7), want, `O${optimize}`)
 })
+
+// A method the summary cannot see through, called on a host value, stores no
+// named property into a typed array (summary/index.js escapeReceiver): no
+// typed array method stores one and a host holds its elements alone. A read
+// keyed by a possibly missing number (`t[b[i]]`: `b[i]` past its end is
+// undefined, the property "undefined") stays the element or what the program
+// stored under a name, where the call made it anything, and the sum over it
+// a string concatenation (decode-dsd's stage 1, `__dyn_get_t` and `__add_slow`
+// per tap).
+test('summary: a method on a host value leaves typed arrays\' named properties as the program stores them', () => {
+  const body = `const t = new Float32Array(4), b = new Uint8Array(4)
+    export function f() { for (let i = 0; i < 4; i++) { t[i] = i + 0.5; b[i] = 3 - i } let s = 0; for (let i = 0; i < 8; i++) s += t[b[i]] ?? 1; return s }`
+  for (const src of [body, `${body}\n    export function g(h) { return h.foo() }`]) {
+    summarize(src)
+    is(tagOf(ctx.summary.resultOf('f')), K.NUMBER, 'the sum over the reads is a number')
+  }
+  const named = `const t = new Float32Array(4), b = new Uint8Array(4)
+    t.undefined = 'u'
+    export function f() { let s = ''; for (let i = 6; i < 8; i++) s += t[b[i]]; return s }
+    export function g(h) { return h.foo() }`
+  summarize(named)
+  ok(hasTag(ctx.summary.resultOf('f'), K.STRING), 'a name the program stores is read')
+  const want = oracle(named).f()
+  for (const optimize of levels(0, 2, 3)) is(jz(named, { optimize }).exports.f(), want, `named, O${optimize}`)
+})
