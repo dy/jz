@@ -74,7 +74,7 @@ import { foldKindTests } from './fold-kind-tests.js'
 import { viewGuardedTyped } from './guard-views.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
-import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops, splitArrayScanLoops } from './loops.js'
+import { splitCharScanLoops, splitArrayScanLoops } from './loops.js'
 import { guardConstants, canonicalizeCountedLoops, adoptLoopCounters, unitWalks } from './counted-loops.js'
 import { scalarizeModuleScratch } from './scratch.js'
 import { resolveAliases, splitSplicedBindings } from './alias.js'
@@ -174,8 +174,6 @@ export default function plan(ast, profiler, summarize) {
   // Storage reads of a guarded typed array use a view of its constructor;
   // calls and identity uses retain the original receiver.
   if (ctx.transform.optimize?.guardViews) sweep('viewGuardedTyped', viewGuardedTyped)
-  sweep('bindNestedRowLengths', bindNestedRowLengths)
-  sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   // Reject invalid strict call boundaries before inlining removes their sites.
   // The later check still validates the settled and specialized signatures.
   if (ctx.transform.strict) strictBoundaryTypeCheck(facts())
@@ -207,8 +205,6 @@ export default function plan(ast, profiler, summarize) {
   // read where it still holds it, the body's tests of it are decided.
   if (optimizing() && ctx.transform.optimize.constants === true) sweep('propagateConstants', propagateConstants)
   if (aliases) { sweep('splitSplicedBindings', splitSplicedBindings); sweep('resolveAliases', resolveAliases) }
-  sweep('bindNestedRowLengths', bindNestedRowLengths)
-  sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   // A spliced lambda carries the seams of the calls spliced into its body while
   // it was a closure, whose arguments could not read through the names it
   // captured: in its caller those are names for one value too.
