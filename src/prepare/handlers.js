@@ -2443,6 +2443,13 @@ function prepDecl(op, ...inits) {
     if (primitive && !bindingWritten(name) && registerBuiltinAlias(name, primitive)) continue
     const staticStr = op === 'const' ? staticStringExpr(init) : null
     const staticArr = op === 'const' ? staticStringArrayValues(init) : null
+    // A binding of a function literal holds a function in the literal's own
+    // body as it does after it: `g.bind(…)`, `g.call(…)` there fold as they do
+    // outside (the binding's spelling where its scope has already settled it).
+    if (typeof name === 'string' && Array.isArray(init) && init[0] === '=>') {
+      const top = scopes[scopes.length - 1], key = !top ? name : top.has(name) ? top.get(name) : null
+      if (key != null) funcValueNames[funcValueNames.length - 1]?.add(key)
+    }
     const normed = prep(init)
 
     // `let/const name = NS.member` (`let sin = Math.sin`) — prep's `.` handler

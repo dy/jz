@@ -1951,6 +1951,25 @@ test('closures: call/apply/bind static lowering', () => {
   is(run(`let o = { call: (x) => x * 2 }; export let f = () => o.call(21)`).f(), 42)
 })
 
+// A binding of a function literal holds a function in the literal's own body
+// as it does after it (prepare/handlers.js prepDecl): `g.bind(…)` there folds
+// to a closure over g. The body was prepared before the binding was known to
+// hold a function, so the bind took the runtime method dispatch, which binds
+// nothing, and threw "is not a function".
+test('closures: bind of a function inside its own body', () => {
+  const src = `const top = (d) => d > 0 ? top.bind(null, 0)() : 7
+    export let arrow = (n) => { const g = (d) => d > 0 ? g.bind(null, 0)() : 7; return g(n) }
+    export let decl = (n) => { function g(d) { return d > 0 ? g.bind(null, 0)() : 7 } return g(n) }
+    export let held = (n) => { const g = (d) => { if (d > 0) { const h = g.bind(null, 0); return h() } return 7 }; return g(n) }
+    export let pre = (n) => { const g = (a, b) => a > 0 ? g.bind(null, 0, b + 1)() : b; return g(n, 4) }
+    export let atTop = (n) => top(n)`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const name of Object.keys(host)) for (const n of [0, 1]) is(m[name](n), host[name](n), `${name}(${n}) at ${optimize}`)
+  }
+})
+
 // ES §14.7.4.7 per-iteration bindings (2026-07-10): a for-head `let` captured
 // by a body closure gets a FRESH binding per iteration (copy-in/copy-out
 // lowering in prepare; the body-let rides emitLoopFreshBoxed). Uncaptured
