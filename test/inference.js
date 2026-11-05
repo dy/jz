@@ -3033,7 +3033,8 @@ test('dictionary summary: numeric addition retains missing-key semantics without
   const watEsc = compile(escapingSrc, { wat: true })
   ok(ctx.types.nameEscapes.has('OPCODE'), 'OPCODE is passed to leak() — escapes')
   const bodyEsc = watEsc.slice(watEsc.indexOf('$bigOp'))
-  ok(bodyEsc.includes('__str_concat'), 'escaping contents retain generic addition')
+  // (the generic `+`: its concatenation, or the run-time `+` where a literal's digits join inline)
+  ok(/__str_concat|__add_slow/.test(bodyEsc), 'escaping contents retain generic addition')
   const escaped = run(escapingSrc).bigOp
   is(escaped('add'), 1)
   is(escaped('missing'), NaN)
@@ -3282,7 +3283,8 @@ test('Map summary: numeric addition retains missing-key semantics and escaping f
   const watEsc = compile(escaping, { wat: true })
   ok(ctx.types.nameEscapes.has('OPCODE'), 'OPCODE is passed to leak() — a value-position read — so it escapes')
   const bodyEsc = watEsc.slice(watEsc.indexOf('$bigOp'))
-  ok(bodyEsc.includes('__str_concat'), 'escaping contents retain generic addition')
+  // (the generic `+`: its concatenation, or the run-time `+` where a literal's digits join inline)
+  ok(/__str_concat|__add_slow/.test(bodyEsc), 'escaping contents retain generic addition')
   const escaped = run(escaping).bigOp
   is(escaped('add'), 1)
   is(escaped('missing'), NaN)
