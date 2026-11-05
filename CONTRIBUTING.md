@@ -2426,6 +2426,25 @@ and the body (`Vector3.applyMatrix4` from a dozen sites, `intersectsSphere`
 with a loop of its own); those copies are bounded together (400 nodes). A
 dispatcher's arm and a binder's closure are no sites: they call the member
 for a receiver the summary cannot name, and the function stays for them.
+At the speed tier a straight-line method of a receiver that may also be
+missing is a site too: an element of an array of instances
+(`world[i].multiplyMatrices(parent, local[i])`) is undefined past the array's
+end, and the plan calls the class's function with the receiver past a test
+(plan/scope.js `devirtClassCalls`, `__present`), which throws the TypeError the
+member read would before the arguments run (module/core.js), the summary, the
+value types and the binding's own facts reading it as the receiver without the
+missing values; an element the interval prover puts in bounds needs no test, and
+a loop's bounds proof reads the test as its operand (type/canonical-bounds.js).
+Its splice is a sole site's like any other, and puts the stores of one call
+beside the loads of the next (forward-store.js). The method stays for
+its class's dispatcher, a body no typed call binds, compiled with unknown
+parameters: a method of a loop, which that compile pulls generic helpers into
+(gainclass's `process`), and the size tier keep the call. So does a method a loop
+already calls directly: a second direct site costs the first its sole splice, and
+the method left binds its parameters with the kinds of both (three's frustum cull
+beside a scene update, test/three/kernels.js: the elements of a matrix that
+`setPosition` may leave undefined became every matrix's, and each read of a
+plane a test).
 Unreachable callers also cost no copies; the summary's reachability proof
 keeps unused library methods from consuming a live callee's duplication budget.
 An eligible callee's returns lower to one trailing `return r`: `return X`
@@ -5292,7 +5311,9 @@ sixteen reads are the values the compose stored (`test/mem-alias.js`). A local L
 once from a local written once (`$__li1 = $__li10`, `$__li8 = $__li10`, one per access of
 one base) is that local where its write has run (forward-store.js `copyRoots`), so the two
 reads of `local[i]` are one address; a call of the math runtime, which touches no memory of
-the program (optimize/pure-funcs.js `pureKernel`), forgets nothing.
+the program (optimize/pure-funcs.js `pureKernel`), forgets nothing. A tree of i32
+constants stays out of LICM's hoists (licm.js `constTree`): in a local of its own it is an
+operand the memarg fold no longer sees.
 
 A static typed array the program only indexes by constants is registers
 (`src/optimize/static-scratch.js`, first in the module optimizer). The shape is the scratch a

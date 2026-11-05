@@ -18,7 +18,7 @@ import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
 import { PROMISE_KEYS } from '../src/std/async.js'
 import { classAccessor, classMethodValue, classHasMember, noOwnProps } from '../src/compile/emit/class-dispatch.js'
-import { copyReceiverFacts } from '../src/compile/emit/shared.js'
+import { copyReceiverFacts, isPresentArrayElement } from '../src/compile/emit/shared.js'
 import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
@@ -2909,6 +2909,16 @@ export default (ctx) => {
   }
   // a generator frame's field before its binding's step (src/ast.js TDZ_VALUE)
   ctx.core.emit.__tdz = () => undefExpr()
+  // A receiver past the test its member read makes of it (src/compile/plan/scope.js
+  // devirtClassCalls): a missing one throws the read's TypeError before the call
+  // evaluates its arguments, a present one is the value. An element the interval
+  // prover puts in bounds, of an array whose elements are present, is the value.
+  ctx.core.emit.__present = (v) => {
+    if (isPresentArrayElement(v)) return emit(v)
+    const t = temp('pr'), held = typed(['local.get', `$${t}`], 'f64')
+    return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(emit(v))],
+      ['if', isNullish(held), ['then', ['drop', throwTypeErrorIR('read')]]], held], 'f64')
+  }
   // The async runtime's proof that a value is one of its promises: its box
   // names the promise literal's schema (std/async.js PROMISE_KEYS), so no
   // other object passes; the value itself, as the promise the summary then

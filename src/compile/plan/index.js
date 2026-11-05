@@ -168,7 +168,7 @@ export default function plan(ast, profiler, summarize) {
   // devirtualization) — must follow the SROA above, which creates the globals.
   sweep('devirtGlobalCalls', () => devirtGlobalCalls(ast))
   // A method call on a receiver the summary names calls the class's function directly.
-  sweep('devirtClassCalls', devirtClassCalls)
+  sweep('devirtClassCalls', () => devirtClassCalls(ast, facts))
   // An array pattern over a proven array reads it by index, no cursor.
   sweep('indexArrayPatterns', indexArrayPatterns)
   // Storage reads of a guarded typed array use a view of its constructor;

@@ -811,9 +811,10 @@ export function summaryQueries(facts, internal = false) {
       layoutSide: (sid, name) => (sitesByLayout.get(sid) ?? [sid]).some(site => tagOf(sideOf(site, name)) !== K.NONE),
       // One non-nullish class receiver, with no possible own-member shadow: a
       // getter's is a property of its name, stored where the class has no setter to take the store.
-      classCallee: (recv, name) => {
+      // `missing`: a receiver that may also be null or undefined, whose present value is one.
+      classCallee: (recv, name, missing = false) => {
         const r = kindOfExpr(recv)
-        if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r)) return null
+        if (tagOf(r) !== K.OBJECT || paramOf(r) === UNKNOWN || isNullable(r) && !missing) return null
         const fn = classMember(r, name)
         if (!fn || memberMayBeOwn(name)) return null
         const prop = name.endsWith(ACCESSOR_GET) ? name.slice(0, -ACCESSOR_GET.length) : null

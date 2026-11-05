@@ -2262,6 +2262,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // the async runtime's proof that a value is one of its promises, and the promise it then is (std/async.js)
       if (callee === '__p_is' || callee === '__p_plain') return BOOL
       if (callee === '__p_cast') return promiseKind()
+      // a receiver past the test a member read makes of it (plan/scope.js devirtClassCalls): its kind without the missing values
+      if (callee === '__present') return n ? core(ks[base]) : K.NONE
       // a value the runtime awaits for a consumer the summary does not type (an async generator's)
       if (callee === '__escaping') { const k = n ? ks[base] : K.NONE; escape(awaited(k)); return k }
       if (callee === '__object_toString') return STRING // the class of a value, `[object X]` (module/object.js)
