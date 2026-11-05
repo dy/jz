@@ -79,9 +79,9 @@ export const CLAIM_EXCEPTIONS = [
     evidence: 'reference run 4922687e (1.102×); paired local runs at d9c9e3a4 (75.7 MB against V8\'s 70.2 MB)',
   },
   {
-    case: 'arraydowngrade', class: 'size', band: 5.2, open: true,
-    cause: "AssemblyScript's port is a closed tagged union that appends the literal '[object Object]1' and reads NaN where JS concatenates, so it carries no Number::toString or ToNumber of a string; jz carries both (3.9 and 2.3 kB of its 12.7) until it proves which slots hold the object and the string: `checksum + arr[0]` concatenates where slot 0 may be the string, and benchlib's mix converts that checksum",
-    evidence: "size build at 898f7f11 measured by function (12,670 B; 5.13× asc -Oz's 2,470 B on an M4, 5.02× the 2,523 B of bench run 41843261059, which measured 14,632 B at 03c853cb), the record's keyed read a guard since 592ea7da",
+    case: 'arraydowngrade', class: 'size', band: 5, open: true,
+    cause: "AssemblyScript's port is a closed tagged union that appends the literal '[object Object]1' and reads NaN where JS concatenates, so it carries no Number::toString or ToNumber of a string; jz carries both (3.9 and 2.3 kB of its 12.2) until it proves which slots hold the object and the string: `checksum + arr[0]` concatenates where slot 0 may be the string, and benchlib's mix converts that checksum",
+    evidence: "size build at e61b0ba3 (12,184 B; 4.93× asc -Oz's 2,470 B on an M4, 4.83× the 2,523 B of bench run 41843261059, which measured 14,632 B at 03c853cb), the record's keyed read a guard since b9cf12ac",
   },
 ]
 /** The cases a claim class holds to a band: case → its exception. */
