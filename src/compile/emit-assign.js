@@ -22,6 +22,7 @@ import { recordDynFnTableWrite, recordImperativeClosureTableWrite } from './dyn-
 import { isPresentNumber, valTypeOf, shapeOf } from '../kind.js'
 import { K, NUMBER, kindOfVal, bitOf as summaryBitOf, tagOf as summaryTagOf, tagsOf as summaryTagsOf, NULL_BITS as SUMMARY_NULL_BITS } from '../summary/kind.js'
 import { errorCodeLiteral, ERR } from '../../err-codes.js'
+import { unbounded } from '../summary/contract.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, keyIndex, temp, tempI32, tempI64, withTemp, block64,
@@ -64,18 +65,23 @@ function storeObjectField(base, slot, value, source, sid = null, receiver = null
  *  null or undefined throws a TypeError once its value is evaluated, before
  *  anything is written (ES PutValue), so a receiver the summary does not prove
  *  present is tested there, by the read's rule (module/core.js dotRead): for
- *  undefined alone where absence is its one missing value. Returns the test of
- *  the receiver's value, `(v) => stmt`, or null where the receiver is present:
- *  its kind has no missing part, a test on this path proved it (refinements),
- *  or it is an unboxed pointer (`recv`, its emitted value, or the name's rep). */
+ *  undefined alone where absence is its one missing value, and none for an
+ *  element the interval prover puts in bounds. Returns the test of the
+ *  receiver's value, `(v) => stmt`, or null where the receiver is present: its
+ *  kind has no missing part, a test on this path proved it (refinements), or
+ *  it is an unboxed pointer (`recv`, its emitted value, or the name's rep). A
+ *  receiver of no kind the summary bounds (a temp a compound assignment stages
+ *  its receiver in) is its stage's to test, as for a read. */
 function missingTest(obj, recv = null) {
   if (recv?.ptrKind != null) return null
   if (typeof obj === 'string') {
     const held = ctx.func.refinements?.get(obj)
     if (held?.notNullish || held?.val != null || repOf(obj)?.ptrKind != null) return null
   }
-  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
-  if (k != null && (k & SUMMARY_NULL_BITS) === 0) return null
+  let k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+  if (k != null && Array.isArray(obj) && obj[0] === '[]' && typeof obj[1] === 'string' && typeof obj[2] === 'string' &&
+      inBoundsArrIdx(ctx).has(obj[1] + '\x00' + obj[2])) k &= ~summaryBitOf(K.ABSENT)
+  if (k != null && ((k & SUMMARY_NULL_BITS) === 0 || unbounded(k))) return null
   // The block emitter holds a name tested here present past this statement (dispatch.js emitBlockBody).
   if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)
   const missing = k != null && (k & summaryBitOf(K.NULLISH)) === 0 ? isUndef : isNullish
@@ -1262,10 +1268,11 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
         const get = () => typed(['local.get', `$${receiver}`], 'f64')
         // a binding's carrier stays wide where a dynamic reader may meet it, as the layout's own path above keeps it
         const wide = typeof obj === 'string' && (needsDynShadow(obj, sid) || ctx.core.includes.has('__dyn_set')) ? true : undefined
-        const va = emit(obj), test = missingTest(obj, va)
+        // (the receiver is asked after the value is emitted, as this store always asked it)
+        const va = emit(obj), vv = sid != null ? storedFieldValue(val, sid, prop, wide) : storedValue(val), test = missingTest(obj, va)
         return block64(
           ['local.set', `$${receiver}`, asF64(va)],
-          ['local.set', `$${value}`, sid != null ? storedFieldValue(val, sid, prop, wide) : storedValue(val)],
+          ['local.set', `$${value}`, vv],
           ...(test ? [test(get())] : []),
           storeObjectField(ptrOffsetIR(get(), VAL.OBJECT), i, ['local.get', `$${value}`], val, sid, obj),
           ['local.get', `$${value}`])
