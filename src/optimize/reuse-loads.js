@@ -6,18 +6,21 @@
 //
 // Two loads read the same value when they are the same instruction (width, sign and
 // offset) at an address in the same local, and between them the walk, in the order the
-// code runs, passes no store, no bulk or atomic memory operation and no call, and no write
-// of that local. A path that joins another (a loop's head, the end of an arm, a block a
+// code runs, passes no store that may reach the bytes the load read (src/ir/mem-alias.js: a
+// store into an array of another cell, or into another field, leaves it), no bulk or
+// atomic memory operation and no call, and no write of that local. A path that joins another (a loop's head, the end of an arm, a block a
 // branch leaves) keeps only what holds on both. The later load's address is the local
 // itself: dropping it drops nothing that runs. A load inside a conditional arm the first
 // load is outside of stays: it runs only on that path, and its arm, a local read, would
 // become a select (a predictable branch is cheaper than the select's dependence).
 import { nextLocalId, findBodyStart } from '../ir.js'
+import { mayAlias } from '../ir/mem-alias.js'
 
 const isArr = Array.isArray
 const LOAD = /^(i32|i64|f32|f64)\.load(8_[su]|16_[su]|32_[su])?$/
 // what may change memory, or run code that does
 const CLOBBER = /^(call|call_indirect|call_ref|return_call|return_call_indirect|return_call_ref|memory\.(copy|fill|init|grow)|.*\.atomic\..*|.*\.store(8|16|32)?|v128\.store.*)$/
+const STORE = /^[fi](32|64)\.store$/
 
 /** The key of a load at `local + offset`, its address local, or null. */
 const keyOf = (n) => {
@@ -75,6 +78,8 @@ export function reuseLoads(fn) {
     }
     for (let i = 1; i < n.length; i++) state = walk(n[i], n, i, state, depth)
     if (op === 'local.set' || op === 'local.tee') { kill(state, n[1]); return state }
+    // a marked store forgets the loads it may overwrite, an unmarked one every load
+    if (typeof op === 'string' && STORE.test(op) && n.mem != null) { for (const [k, v] of state) if (mayAlias(n.mem, v.node.mem)) state.delete(k); return state }
     if (typeof op === 'string' && CLOBBER.test(op)) return new Map()
     if (typeof op === 'string' && LOAD.test(op)) {
       const k = keyOf(n)

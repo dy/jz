@@ -5269,8 +5269,30 @@ name (two parameters can be one array); a store's base resolves through jz's sta
 never through a load. `test/slp.js` pins the shapes and the bails. The same address model
 drives `src/optimize/forward-store.js`, which runs before the packer: in straight-line code a
 load of a slot the list just stored (or loaded into a local) reads that local instead, and a
-store the list overwrites unread goes; a store through another name, a call, a branch or a
-nested block forgets everything (`test/forward-store.js`).
+store the list overwrites unread goes; a call, a branch or a nested block forgets everything
+(`test/forward-store.js`), and a store through another name forgets what it may overwrite.
+
+What an access may overwrite is the emitter's to say (`src/ir/mem-alias.js`): it marks the
+load or store node (`node.mem`) where the program summary names what the access touches.
+An element access of an array the summary gives a cell (its allocation class) is `e<cell>`,
+a field access of an object the summary gives layouts is `f<slot>:<layouts>`. Arrays of two
+cells are two allocations, an array and an object are two, and an object keeps its layout
+and its fields their slots for its life: two marked accesses share bytes only within one
+cell, or at one slot of a layout both may have. Everything else stays unmarked and may touch
+anything: a header, a typed array's buffer (its views may share it), a dictionary's table, a
+struct-inlined array's cells (a layout an `Array<S>` carrier or a union packs is never
+marked as a field), the runtime's memory. The marks are set on the nodes the abi carriers
+return (module/array.js element reads, emit-assign.js `storeFixedElement` and
+`storeObjectField`, module/core.js `emitSchemaSlotRead`); a pass that rebuilds a node drops
+its mark, which is the unmarked answer. forwardStores and reuseLoads ask `mayAlias` where a
+store would forget what a load read: three's `local.compose(...)` stores the matrix's
+elements and `world.multiplyMatrices(parent, local)` reads them back through `local[i]` and
+its `elements`, both reads of memory no store of the elements reaches, so the multiply's
+sixteen reads are the values the compose stored (`test/mem-alias.js`). A local LICM snaps
+once from a local written once (`$__li1 = $__li10`, `$__li8 = $__li10`, one per access of
+one base) is that local where its write has run (forward-store.js `copyRoots`), so the two
+reads of `local[i]` are one address; a call of the math runtime, which touches no memory of
+the program (optimize/pure-funcs.js `pureKernel`), forgets nothing.
 
 A static typed array the program only indexes by constants is registers
 (`src/optimize/static-scratch.js`, first in the module optimizer). The shape is the scratch a

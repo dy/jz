@@ -38,6 +38,7 @@ import { durableArrSnapNode, durableObjSnapNode, hasDurableReset } from '../../m
 import { demandHostReceiver } from './func-exports.js'
 import { arrayRecordSlot } from './array-records.js'
 import { numericArrayExpr, numericArraysOn } from './numeric-arrays.js'
+import { markElem, markField } from '../ir/mem-alias.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -51,12 +52,12 @@ function storeObjectField(base, slot, value, source, sid = null, receiver = null
   const kind = valTypeOf(source)
   if (!hasDurableReset() || typeof receiver === 'string' && ctx.func.freshObjects?.has(receiver) || kind === VAL.NUMBER || kind === VAL.BOOL ||
       sid != null && ctx.schema.slotRawBigint.get(sid)?.has(slot))
-    return ctx.abi.object.ops.store(base, slot, value)
+    return markField(ctx.abi.object.ops.store(base, slot, value), receiver, slot)
   const off = tempI32('ob')
   inc('__durable_obj_snap', '__is_eph_bits')
   return ['block', ['local.set', `$${off}`, base],
     durableObjSnapNode(off, value, slot),
-    ctx.abi.object.ops.store(['local.get', `$${off}`], slot, value)]
+    markField(ctx.abi.object.ops.store(['local.get', `$${off}`], slot, value), receiver, slot)]
 }
 
 // Integer array-index key: '3' → 3; rejects non-canonical and 2³²−1.
@@ -170,7 +171,7 @@ function storeFixedElement(arr, index, valueExpr, nullable) {
     ...(recv ? [['local.set', `$${recv}`, asF64(emit(arr))], ['if', isNullish(ptr), ['then', ['drop', throwTypeErrorIR()]]]] : pin ? [['local.set', `$${pin}`, asF64(emit(arr))]] : []),
     ['local.set', `$${base}`, ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptr], ['i64.const', LAYOUT.OFFSET_MASK]]]],
     ...saved,
-    ctx.abi.array.ops.store(['local.get', `$${base}`], index, ['local.get', `$${t}`]),
+    markElem(ctx.abi.array.ops.store(['local.get', `$${base}`], index, ['local.get', `$${t}`]), arr),
     ['local.get', `$${t}`]])
 }
 

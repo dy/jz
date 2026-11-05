@@ -184,6 +184,7 @@ const TESTS = [
   'typed-present',
   'fn-alias',
   'forward-store',
+  'mem-alias',
   'static-scratch',
   'static-locals',
   'iteration-release',

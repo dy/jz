@@ -46,6 +46,7 @@ import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as su
 import { unbounded } from '../src/summary/contract.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 import { sidecarOverride } from '../src/compile/emit/own-method.js'
+import { markField } from '../src/ir/mem-alias.js'
 
 const NAN_BITS = nanPrefixHex()
 // The RangeError of an allocation linear memory cannot hold: the code goes to
@@ -2007,7 +2008,9 @@ export default (ctx) => {
   // for ad-hoc props on pointer-backed values, so schema reads should bypass it.
   // Slot val-types reach the emit-time consumer via valTypeOf → ctx.schema.slotVT
   // (read on the AST `.prop` node), not via tagging this IR node.
-  function emitSchemaSlotRead(baseExpr, idx, i32Certain, bigintProven) {
+  // `obj`: the receiver expression, whose layouts mark the load for the optimizer's alias
+  // test (src/ir/mem-alias.js); a packed union cell's read stays unmarked.
+  function emitSchemaSlotRead(baseExpr, idx, i32Certain, bigintProven, obj = null) {
     // An unboxed proven-non-ARRAY pointer (a structInline element cell, a narrowed local)
     // reaches ptrOffsetIR raw so it returns the offset directly — no `__ptr_offset` call.
     // Pre-boxing via asF64 strips ptrKind and forces every field read onto the call path
@@ -2023,7 +2026,7 @@ export default (ctx) => {
     // i32-certain — bigintProven and cellI32 are mutually exclusive by
     // construction, so this arm never needs to consult bigintProven at all.
     if (baseExpr?.cellI32) return typed(packedI32.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), 'i32')
-    const load = ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx)
+    const load = markField(ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), obj, idx)
     // Strict-int32 slot (ctx.schema.slotI32CertainAt — every censused write is
     // exactly-int32, never -0): land the value directly in i32. trunc_sat of
     // such an f64 is a value-exact round-trip, and every int consumer skips
@@ -2500,7 +2503,7 @@ export default (ctx) => {
     // `({a:{b:1}}).a.b` where the receiver is anonymous. Spread sources
     // (`{...x}`) shift slot ordering and would need their own resolution.
     const slot = literalSlot(obj, prop)
-    if (slot >= 0) return emitSchemaSlotRead(va, slot, false, ctx.schema.slotBigintProvenBySid?.(literalSid(obj), prop))
+    if (slot >= 0) return emitSchemaSlotRead(va, slot, false, ctx.schema.slotBigintProvenBySid?.(literalSid(obj), prop), obj)
     // Receiver IR is an unboxed OBJECT pointer carrying its own schema (a
     // structInline element cell, a narrowed local): resolve the field's fixed
     // slot directly from `ptrAux` — more precise than the structural
@@ -2515,7 +2518,7 @@ export default (ctx) => {
       const fk = ctx.summary?.fieldKind?.(va.ptrAux, prop)
       const numberOnly = fk != null && summaryTagOf(fk) === K.NUMBER && !isNullable(fk)
       if (si >= 0) return emitSchemaSlotRead(va, si, numberOnly && ctx.schema.slotI32CertainBySid?.(va.ptrAux, prop),
-        ctx.schema.slotBigintProvenBySid?.(va.ptrAux, prop))
+        ctx.schema.slotBigintProvenBySid?.(va.ptrAux, prop), obj)
     }
     let schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
     // Chain receiver (e.g. `o.meta.bias`): when the chain resolves to a known
@@ -2566,7 +2569,7 @@ export default (ctx) => {
       if (common) {
         const base = typed(['i32.wrap_i64', ['i64.reinterpret_f64', va]], 'i32')
         base.ptrKind = VAL.OBJECT
-        const load = emitSchemaSlotRead(base, common.slot, common.i32Certain, false)
+        const load = emitSchemaSlotRead(base, common.slot, common.i32Certain, false, obj)
         // The union's storage is boxed even when its common slot can unbox.
         // Keep that producer available to return/storage edges, as checked
         // typed reads do; numeric consumers can take the raw payload.
@@ -2603,7 +2606,7 @@ export default (ctx) => {
       }
       return emitSchemaSlotRead(base, schemaIdx,
         typeof obj === 'string' && ctx.schema.slotI32CertainAt?.(obj, prop),
-        typeof obj === 'string' && ctx.schema.slotBigintProvenAt?.(obj, prop))
+        typeof obj === 'string' && ctx.schema.slotBigintProvenAt?.(obj, prop), va?.cellI32 ? null : obj)
     }
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
