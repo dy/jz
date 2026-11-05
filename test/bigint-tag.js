@@ -551,6 +551,31 @@ test('bigint tag: a closure result crosses its ABI tagged; a caller chosen at ru
   }
 })
 
+// A closure reads a BigInt parameter tagged: the closure ABI's slots carry a
+// BigInt boxed (representation-plan body-data.js closureBoxParams). A call of
+// a name no function or builtin answers passes each argument on that edge,
+// whether it reaches the body directly (emit/call.js tryDirectClosureCall) or
+// through the table; the direct call passed the raw i64 and the plan recorded
+// no edge, so the body's tag test read `i` as a Number and `i - 1n` threw
+// "Cannot mix BigInt and other types". A closure that calls itself, one called
+// once, one called from another closure, from a table or through a parameter.
+test('bigint tag: a closure receives its BigInt arguments tagged, called directly or through the table', () => {
+  const src = `
+    export let self = (n) => { const g = (i) => i < 1n ? 0n : g(i - 1n); return String(g(BigInt(n))) }
+    export let decl = (n) => { function g(i) { return i < 1n ? 0n : g(i - 1n) } return String(g(BigInt(n))) }
+    export let sum = (n) => { const g = (i) => i < 1n ? 0n : 1n + g(i - 1n); return String(g(BigInt(n))) }
+    export let pair = (n) => { const g = (i, j) => i < 1n ? j : g(i - 1n, j * 2n); return String(g(BigInt(n), 1n)) }
+    export let once = (n) => { const g = (i) => i - 1n; return String(g(BigInt(n))) }
+    export let chain = (n) => { const g = (i) => i * 2n; const h = (k) => g(k + 1n); return String(h(BigInt(n))) }
+    export let table = (n) => { const fs = [(i) => i - 1n]; const h = fs[0]; return String(h(BigInt(n) + 1n)) }
+    export let param = (n) => { const ap = (cb, x) => cb(x * 2n); return String(ap((i) => i - 1n, BigInt(n))) }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const m = jz(src, { optimize }).exports
+    for (const name of Object.keys(host)) for (const n of [0, 2, 5]) is(m[name](n), host[name](n), `${name}(${n}) at ${optimize}`)
+  }
+})
+
 test('bigint tag: a parameter of every kind materializes; the joins it feeds keep every arm\'s identity', () => {
   // The join `typeof v === 'bigint' ? v : BigInt(v)` has no kind of its
   // own, so the edge into its RAW binding was dropped and the reads took

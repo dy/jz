@@ -13,9 +13,9 @@ import {
 } from '../../ast.js'
 import { LAYOUT, OPTF, PTR, ctx, err, inc, emitArity } from '../../ctx.js'
 import {
-  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, isNumericIR, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
+  MAX_CLOSURE_ARITY, allocPtr, asF64, freshId, isBoundName, isNumericIR, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
 } from '../../ir.js'
-import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { K, core, tagOf, hasTag, isNullable } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
@@ -23,7 +23,7 @@ import { recordClosureCallRepresentations, representationCallArgAction } from '.
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, builtinArity, callMaybeHost, emitNonCallable, materializeMulti, materializeMultiIR, mayBeHostFn, parseCallArgs, withSurplusArgs } from './call-args.js'
 import { INTRINSIC_VARIADIC } from '../../builtin-signatures.js'
-import { TYPED_HI_MASK, argIR, coerceArg, emit, emitReference, emitGroupedCall, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
+import { TYPED_HI_MASK, argIR, coerceArg, emit, emitReference, emitGroupedCall, emitCallArgs, emitVoid } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
 
 
@@ -350,11 +350,11 @@ function tryDirectClosureCall(callee, parsed) {
   // We pass the closure NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
   // Slots are untyped boxed-value positions: a BOOL arg crosses as its atom box
   // (the paramTypes numeric lattice above already poisons on non-NUMBER args, so
-  // the body never assumes raw numerics for these slots). An ambiguous BOOL-merge
-  // arg (.work/archive/todo.md §deletion-sweep) needs emitIdentitySafe in place of
-  // carrierF64 — same post-hoc-powerless reasoning as the return tail/store sites.
+  // the body never assumes raw numerics for these slots). Each argument takes the
+  // closure ABI's edge as call_indirect's does (ctx.closure.argIR): an ambiguous
+  // BOOL merge its identity, a BigInt the body reads tagged its box.
   recordClosureCallRepresentations(ctx, bodyName, parsed.normal)
-  const slots = parsed.normal.map(a => hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : carrierF64(a, emit(a)))
+  const slots = parsed.normal.map(a => ctx.closure.argIR(a))
   while (slots.length < W) slots.push(undefExpr())
   return typed(['call', `$${bodyName}`,
     asF64(emit(callee)),
