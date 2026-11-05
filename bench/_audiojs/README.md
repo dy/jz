@@ -10,6 +10,7 @@ directory.
 ```sh
 node bench/_audiojs/kernels.mjs    # hot kernels of audio's cross-tool bench, from the real packages
 node bench/_audiojs/atoms.mjs      # every atom through the entry @audio/compile-vst generates
+node bench/_audiojs/decoders.mjs   # every @audio/decode codec written in JavaScript, whole-file decode
 node bench/_audiojs/shapes.mjs     # each finding as its smallest kernel: wrong, rejected, slow, math
 SPEED=0 node bench/_audiojs/ffmpeg.mjs 1 # whole-task WAV decode parity against FFmpeg
 ```
