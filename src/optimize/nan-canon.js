@@ -30,11 +30,20 @@
 // distance a culling or an intersection test compares (`n·c + d < -r` over fields
 // a reader may leave undefined). Arithmetic is no end here: it hands the box's
 // bits on to its result, and the test stays wherever a result may leave.
+//
+// A canon in a loop whose value lands in locals only arithmetic reads there, read
+// past the loop by what needs the one NaN, runs once, at those reads. A local that
+// holds a field through the loop (plan/loop-fields.js) may hold a box from ahead of
+// it, which such a read must keep, and every pass writes it first: a flag says that
+// a pass ran, and the read normalizes only then: three's Box3.setFromArray and the
+// normalize of computeVertexNormals over Vector3 scratch (bench/threegeom 0.88x the
+// time). A conversion to single precision is no arithmetic here: it keeps the top of a
+// NaN's payload, and a box's bits come back out of a Float32Array as the box.
 import { walkAst } from '../ast.js'
 import { ATOM, atomNanHex } from '../../layout.js'
 
 const isArr = Array.isArray
-const UNDEF_BITS = atomNanHex(ATOM.UNDEF)
+const UNDEF_BITS = atomNanHex(ATOM.UNDEF), NULL_BITS = atomNanHex(ATOM.NULL)
 // NaN-propagating consumers whose result is canonical where it escapes, or no Number
 const PROPAGATES = new Set(['f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.min', 'f64.max',
   'f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge', 'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u'])
@@ -49,9 +58,10 @@ const BLIND = new Set(['f64.eq', 'f64.ne', 'f64.lt', 'f64.gt', 'f64.le', 'f64.ge
 // Operators that carry a NaN operand into a NaN result: the result's consumer decides
 const CARRIES = new Set(['f64.add', 'f64.sub', 'f64.mul', 'f64.div', 'f64.min', 'f64.max', 'f64.neg', 'f64.abs', 'f64.sqrt', 'f64.floor', 'f64.ceil', 'f64.trunc', 'f64.nearest'])
 
-// The undefined test of `t`'s bits, `(i64.eq (i64.reinterpret_f64 (local.get $t)) (i64.const UNDEF))`
-const isUndefTest = (c, t) => isArr(c) && c[0] === 'i64.eq' && c.length === 3 && isArr(c[1]) && c[1][0] === 'i64.reinterpret_f64' &&
-  isGet(c[1][1], t) && isArr(c[2]) && c[2][0] === 'i64.const' && c[2][1] === UNDEF_BITS
+// A test of `t`'s bits against an atom's, `(i64.eq (i64.reinterpret_f64 (local.get $t)) (i64.const UNDEF))`
+const isBitsTest = (c, t, bits) => isArr(c) && c[0] === 'i64.eq' && c.length === 3 && isArr(c[1]) && c[1][0] === 'i64.reinterpret_f64' &&
+  isGet(c[1][1], t) && isArr(c[2]) && c[2][0] === 'i64.const' && c[2][1] === bits
+const isUndefTest = (c, t) => isBitsTest(c, t, UNDEF_BITS)
 /** A miss test's parts, or null: `test` its compare, `set` the write of its temp
  *  (a value in that write goes where the test's own value goes), and `value` what
  *  stands in for the test where it is dead. The block form, the tee form, the
@@ -68,9 +78,15 @@ const missOf = (n) => {
     if (v[0] === 'local.get' && typeof v[1] === 'string' && isUndefTest(n[3], v[1])) return { test: n[3], set: null, value: v }
     return null
   }
-  if (n[0] === 'if' && n.length === 5 && n[1]?.[0] === 'result' && n[1][1] === 'f64' && n[3]?.[0] === 'then' && n[3].length === 2 && isNaN_(n[3][1]) &&
-      n[4]?.[0] === 'else' && n[4].length === 2 && isArr(n[4][1]) && n[4][1][0] === 'local.get' && isUndefTest(n[2], n[4][1][1]))
-    return { test: n[2], set: null, value: n[4][1] }
+  if (n[0] === 'if' && n.length === 5 && n[1]?.[0] === 'result' && n[1][1] === 'f64' && n[3]?.[0] === 'then' && n[3].length === 2 && n[4]?.[0] === 'else' && n[4].length === 2) {
+    const e = n[4][1]
+    if (isNaN_(n[3][1]) && isArr(e) && e[0] === 'local.get' && isUndefTest(n[2], e[1])) return { test: n[2], set: null, value: e }
+    // (ToNumber of a value of no kind but these: null is 0, undefined the miss in its else arm, or what that arm left)
+    if (isArr(n[3][1]) && n[3][1][0] === 'f64.const' && n[3][1][1] === 0 && isArr(e)) {
+      const v = e[0] === 'local.get' ? e : missOf(e)?.value
+      if (isArr(v) && v[0] === 'local.get' && isBitsTest(n[2], v[1], NULL_BITS)) return { test: n[2], set: null, value: v }
+    }
+  }
   return null
 }
 
@@ -118,6 +134,32 @@ const sinkOf = (chain, i, miss, blind = false) => {
   return 'escape'
 }
 
+const SEQUENCE = new Set(['func', 'block', 'loop', 'then', 'else'])
+// Whether a branch in `n` leaves it: to a label no node of `n` declares.
+const leaves = (n, inner) => {
+  if (!isArr(n)) return false
+  const op = n[0]
+  if (op === 'br' || op === 'br_if' || op === 'br_table') {
+    for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string' && n[i][0] === '$' && !inner.has(n[i]) || typeof n[i] === 'number') return true
+    return n.slice(1).some(c => leaves(c, inner))
+  }
+  const own = (op === 'block' || op === 'loop') && typeof n[1] === 'string' ? n[1] : null
+  if (own) inner.add(own)
+  const out = n.slice(1).some(c => leaves(c, inner))
+  if (own) inner.delete(own)
+  return out
+}
+// The first statement's index of a block or a loop, past its label and its type.
+const bodyAt = (n) => {
+  let i = typeof n[1] === 'string' ? 2 : 1
+  while (isArr(n[i]) && (n[i][0] === 'result' || n[i][0] === 'param' || n[i][0] === 'type')) i++
+  return i
+}
+const firstLocalAt = (fn) => {
+  for (let i = 1; i < fn.length; i++) if (isArr(fn[i]) && !(fn[i][0] === 'param' || fn[i][0] === 'result' || fn[i][0] === 'export' || fn[i][0] === 'type')) return i
+  return fn.length
+}
+
 export function stripDeadCanons(fn) {
   if (!isArr(fn) || fn[0] !== 'func') return false
   const reads = new Map()     // local → the sinks of its reads
@@ -126,23 +168,33 @@ export function stripDeadCanons(fn) {
   const canonLoops = new Map()  // canon node → the loops around each position
   const blindReads = new Map()  // local → the sinks of its reads where only a NaN's bits would matter
   const misses = new Map()      // miss test → those sinks of its positions
+  const missLoops = new Map()   // miss test → the innermost loop around it
   const miss = { tests: new Set(), sets: new Set(), inner: new Set() }
   const chain = [], loops = []
+  // the walk's order, each sequence's end in it, each local's writes, each loop's place, and
+  // the first thing a pass does to each local: its write's index in the loop, or null
+  let order = 0
+  const ends = new Map(), writeSites = new Map(), homes = new Map(), firsts = new Map()
+  const starts = new Map()
+  const firstAccess = (name, at) => { for (const l of loops) { const f = firsts.get(l); if (!f.has(name)) f.set(name, at === -1 || loops[loops.length - 1] !== l ? null : at) } }
   const visit = (node, parent, idx) => {
     if (!isArr(node)) return
     chain.push({ node, idx })
-    const op = node[0]
+    const op = node[0], at = ++order
+    if (SEQUENCE.has(op)) starts.set(node, at)
     const m = miss.inner.has(node) ? null : missOf(node)
     if (m) {
       miss.tests.add(m.test)
       if (m.set) miss.sets.add(m.set)
       if (op === 'block') miss.inner.add(node[3])
       if (parent) { const s = sinkOf(chain, chain.length - 1, miss, true); const l = misses.get(node); if (l) l.push(s); else misses.set(node, [s]) }
+      if (loops.length) missLoops.set(node, loops[loops.length - 1])
     }
     if ((op === 'local.get' || op === 'local.tee') && typeof node[1] === 'string') {
       const s = sinkOf(chain, chain.length - 1, miss)
       const l = reads.get(node[1]); if (l) l.push(s); else reads.set(node[1], [s])
-      const site = { sink: s, parent, idx, loops: loops.slice() }
+      if (op === 'local.get') firstAccess(node[1], -1)
+      const site = { sink: s, parent, idx, loops: loops.slice(), at }
       const r = readSites.get(node[1]); if (r) r.push(site); else readSites.set(node[1], [site])
       const b = sinkOf(chain, chain.length - 1, miss, true)
       const lb = blindReads.get(node[1]); if (lb) lb.push(b); else blindReads.set(node[1], [b])
@@ -151,12 +203,37 @@ export function stripDeadCanons(fn) {
       const s = sinkOf(chain, chain.length - 1, miss); const l = canons.get(node); if (l) l.push(s); else canons.set(node, [s])
       const p = canonLoops.get(node); if (p) p.push(loops.slice()); else canonLoops.set(node, [loops.slice()])
     }
-    if (op === 'loop') loops.push(node)
+    if (op === 'loop') {
+      // the statements the loop may stand for: its block, and an `if` of two versions of it
+      const places = [], others = []
+      for (let k = chain.length - 1; ;) {
+        while (k > 0 && chain[k - 1].node[0] === 'block' && chain[k - 1].node.filter(isArr).length === 1) k--
+        const list = k > 0 ? chain[k - 1].node : fn
+        places.push({ list, stmt: chain[k].node, others: others.slice() })
+        if (k < 2 || (list[0] !== 'then' && list[0] !== 'else') || chain[k - 2].node[0] !== 'if') break
+        const arm = list, cond = chain[k - 2].node
+        for (const c of cond) if (isArr(c) && (c[0] === 'then' || c[0] === 'else') && c !== arm) others.push(c)
+        k -= 2
+      }
+      homes.set(node, places)
+      firsts.set(node, new Map())
+      loops.push(node)
+    }
     for (let i = 1; i < node.length; i++) visit(node[i], node, i)
     if (op === 'loop') loops.pop()
+    if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
+      // (the statement of the loop the write stands in: plain blocks lie between them, nothing else)
+      let k = chain.length - 1
+      while (k > 0 && chain[k - 1].node[0] === 'block' && typeof chain[k - 1].node[1] !== 'string') k--
+      firstAccess(node[1], k > 0 && chain[k - 1].node === loops[loops.length - 1] ? chain[k].idx : -1)
+      const w = writeSites.get(node[1]), site = { value: node[2], parent, idx, loops: loops.slice(), at }
+      if (w) w.push(site); else writeSites.set(node[1], [site])
+    }
+    if (SEQUENCE.has(op) || op === 'if') ends.set(node, ++order)
     chain.pop()
   }
   for (let i = 1; i < fn.length; i++) visit(fn[i], fn, i)
+  ends.set(fn, ++order)
   if (!canons.size && !misses.size) return false
   // (a local every read of which flows to a propagating consumer, or to such a local)
   const badOf = (sinksOf) => {
@@ -186,39 +263,114 @@ export function stripDeadCanons(fn) {
   const numbers = new Set(), writes = new Map()
   for (const d of fn) if (isArr(d) && d[0] === 'local' && typeof d[1] === 'string' && d[2] === 'f64') numbers.add(d[1])
   walkAst(fn, { enter: (n) => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { const w = writes.get(n[1]); if (w) w.push(n[2]); else writes.set(n[1], [n[2]]) } } })
-  const numeric = (v) => {
+  const numeric = (v, known = numbers) => {
     if (!isArr(v)) return false
     const op = v[0]
     if (canonValue(v) != null || isCanonSelect(v, isArr(v[2]) && v[2][0] === 'local.get' ? v[2][1] : null)) return true
     if (op === 'f64.const') return typeof v[1] === 'number' || typeof v[1] === 'string' && !/nan:/.test(v[1])
     if (NUMERIC.has(op)) return true
-    if (op === 'local.get') return numbers.has(v[1])
-    if (op === 'local.tee') return numbers.has(v[1]) && numeric(v[2])
-    if (op === 'select') return numeric(v[1]) && numeric(v[2])
-    if (op === 'block') return isArr(v[1]) && v[1][0] === 'result' && numeric(v[v.length - 1])
-    if (op === 'if') { const t = v.find(c => isArr(c) && c[0] === 'then'), e = v.find(c => isArr(c) && c[0] === 'else'); return !!(t && e && numeric(t[t.length - 1]) && numeric(e[e.length - 1])) }
+    // (a miss test of a Number is the Number)
+    const m = missOf(v)
+    if (m) return numeric(m.set ? m.set[2] : m.value, known)
+    if (op === 'local.get') return known.has(v[1])
+    if (op === 'local.tee') return known.has(v[1]) && numeric(v[2], known)
+    if (op === 'select') return numeric(v[1], known) && numeric(v[2], known)
+    if (op === 'block') return isArr(v[1]) && v[1][0] === 'result' && numeric(v[v.length - 1], known)
+    if (op === 'if') { const t = v.find(c => isArr(c) && c[0] === 'then'), e = v.find(c => isArr(c) && c[0] === 'else'); return !!(t && e && numeric(t[t.length - 1], known) && numeric(e[e.length - 1], known)) }
     return false
   }
   for (let grew = true; grew;) { grew = false; for (const name of numbers) if ((writes.get(name) ?? []).some(v => !numeric(v))) { numbers.delete(name); grew = true } }
   const sunk = new Set(), wraps = new Map()
+  // The flag of a loop whose locals may hold a box from ahead of it (`gated`), FREE where none
+  // may, or null where it cannot say. A box from ahead stands in the list that holds the loop
+  // (or comes from the other arm of the `if` of its two versions, which leaves the flag down),
+  // and what reads it follows the loop there, so a read past the loop has passed the flag's
+  // reset. Each local holding such a box ahead of the loop is the first thing a pass writes,
+  // with no way out of the pass between the first and the last, so that a raised flag answers
+  // for all of them; a copy past the loop is gated as its source is.
+  const flags = new Map(), FREE = {}
+  const fits = (loop, place, reach, sites) => {
+    const { list, stmt, others } = place
+    if (!SEQUENCE.has(list[0])) return null
+    const before = list.indexOf(stmt), end = ends.get(stmt), past = ends.get(list)
+    if (end == null || past == null || sites.some(s => s.at < end || s.at > past)) return null
+    const known = new Set([...numbers, ...reach]), held = new Set(), gated = new Set(), copies = []
+    const inArm = (w, arm) => w.at > starts.get(arm) && w.at < ends.get(arm)
+    for (const name of reach) for (const w of writeSites.get(name) ?? []) {
+      if (w.loops.includes(loop)) { if (!numeric(w.value, known)) return null; continue }
+      if (numeric(w.value)) continue
+      if (others.some(a => inArm(w, a))) { gated.add(name); continue }
+      if (isArr(w.value) && w.value[0] === 'local.get' && reach.has(w.value[1]) && w.at > end) { copies.push([name, w.value[1]]); continue }
+      if (w.parent !== list || w.idx >= before) return null
+      held.add(name); gated.add(name)
+    }
+    for (const name of held) gated.add(name)
+    for (let grew = true; grew;) { grew = false; for (const [to, from] of copies) if (gated.has(from) && !gated.has(to)) { gated.add(to); grew = true } }
+    return { held, gated }
+  }
+  const flagOf = (loop, reach, sites) => {
+    const f = flags.get(loop) ?? { name: null, lo: Infinity, hi: 0, numbers: new Set(), gated: new Set(), place: null }, first = firsts.get(loop)
+    let place = f.place, got = place && fits(loop, place, reach, sites)
+    if (!place) for (const p of homes.get(loop) ?? []) if (got = fits(loop, p, reach, sites)) { place = p; break }
+    if (!got) return null
+    if (!got.gated.size) return FREE
+    let lo = f.lo, hi = f.hi
+    for (const name of got.held) {
+      const i = first.get(name)
+      if (i == null) return null
+      lo = Math.min(lo, i); hi = Math.max(hi, i)
+    }
+    for (let i = lo; i <= hi; i++) if (leaves(loop[i], new Set())) return null
+    f.lo = lo; f.hi = hi; f.place = place
+    for (const name of reach) f.numbers.add(name)
+    for (const name of got.gated) f.gated.add(name)
+    flags.set(loop, f)
+    return f
+  }
   for (const [node, sinks] of canons) {
     if (sinks.every(dead) || sinks.includes('escape')) continue
     const around = canonLoops.get(node)
     if (around.some(l => !l.length)) continue
     const reach = new Set(sinks.filter(s => s !== 'ok')), stack = [...reach]
     while (stack.length) for (const s of reads.get(stack.pop()) ?? []) if (s !== 'ok' && s !== 'escape' && !reach.has(s)) { reach.add(s); stack.push(s) }
-    if ([...reach].some(name => !numbers.has(name))) continue
     const sites = []
     for (const name of reach) for (const site of readSites.get(name) ?? []) if (site.sink === 'escape') sites.push(site)
     // (outside the canon's innermost loop: once per pass of a loop around it, or on another path)
     if (sites.some(site => around.some(l => site.loops.includes(l[l.length - 1])))) continue
+    let flag = null
+    if ([...reach].some(name => !numbers.has(name))) {
+      if (around.length !== 1) continue
+      flag = flagOf(around[0][around[0].length - 1], reach, sites)
+      if (!flag) continue
+      if (flag === FREE) flag = null
+    }
     sunk.add(node)
-    for (const site of sites) { let at = wraps.get(site.parent); if (!at) wraps.set(site.parent, at = new Set()); at.add(site.idx) }
+    for (const site of sites) {
+      let at = wraps.get(site.parent); if (!at) wraps.set(site.parent, at = new Map())
+      const f = at.get(site.idx), gate = flag?.gated.has(site.parent[site.idx][1]) ? flag : null
+      if (!gate) at.set(site.idx, null); else if (f !== null) at.set(site.idx, (f ?? new Set()).add(gate))
+    }
   }
-  for (const [parent, at] of wraps) for (const i of at) {
-    const get = parent[i]
-    if (isArr(get) && get[0] === 'local.get') parent[i] = ['select', ['f64.const', 'nan'], get, ['f64.ne', ['local.get', get[1]], ['local.get', get[1]]]]
-    else parent[i] = ['block', ['result', 'f64'], ['local.set', get[1], get[2]], ['select', ['f64.const', 'nan'], ['local.get', get[1]], ['f64.ne', ['local.get', get[1]], ['local.get', get[1]]]]]
+  let ran = 0
+  const ranName = (f) => f.name ??= `$__ran${ran++}`
+  for (const [parent, at] of wraps) for (const [i, only] of at) {
+    const get = parent[i], name = get[1]
+    const test = () => {
+      const ne = ['f64.ne', ['local.get', name], ['local.get', name]]
+      if (!only) return ne
+      const any = [...only].map(f => ['local.get', ranName(f)]).reduce((a, b) => ['i32.or', a, b])
+      return ['i32.and', ne, any]
+    }
+    if (isArr(get) && get[0] === 'local.get') parent[i] = ['select', ['f64.const', 'nan'], get, test()]
+    else parent[i] = ['block', ['result', 'f64'], ['local.set', name, get[2]], ['select', ['f64.const', 'nan'], ['local.get', name], test()]]
+  }
+  // (each flag a pass raises past the writes it speaks for, and the loop's place lowers ahead of it)
+  for (const [loop, f] of flags) {
+    if (!f.name) continue
+    loop.splice(f.lo === Infinity ? bodyAt(loop) : f.hi + 1, 0, ['local.set', f.name, ['i32.const', 1]])
+    const { list, stmt } = f.place
+    list.splice(list.indexOf(stmt), 0, ['local.set', f.name, ['i32.const', 0]])
+    fn.splice(firstLocalAt(fn), 0, ['local', f.name, 'i32'])
   }
   // (bottom up, in the tree as it stands: a canon in the value of another is
   // replaced there first, and one two parents share is replaced under each)
@@ -228,10 +380,15 @@ export function stripDeadCanons(fn) {
     const m = missOf(n)
     return n[0] !== 'block' || readSites.get(m.set[1])?.length === 2 ? m.value : ['local.tee', m.set[1], m.value]
   }
+  // (in the loop a flag speaks for, its locals hold Numbers: a pass writes them first)
+  const heldThere = (n) => {
+    const f = flags.get(missLoops.get(n)), m = missOf(n), v = m.set ? m.set[2] : m.value
+    return !!f?.name && isArr(v) && v[0] === 'local.get' && f.numbers.has(v[1])
+  }
   const replace = (n) => {
     if (!isArr(n)) return n
     for (let i = 1; i < n.length; i++) n[i] = replace(n[i])
-    if (misses.get(n)?.every(unseen)) { changed = true; return missValue(n) }
+    if (misses.get(n)?.every(unseen) || misses.has(n) && heldThere(n)) { changed = true; return missValue(n) }
     const sinks = canons.get(n)
     if (sinks == null || !(sunk.has(n) || sinks.every(dead))) return n
     changed = true

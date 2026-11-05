@@ -4820,7 +4820,16 @@ arms of a conditional, a block's result, a unary operator and a
 reinterpretation to its consumer, or into a local every read of which flows so
 too: an f64 arithmetic operator propagates every NaN alike and is canonical
 where it escapes, a comparison answers alike, a saturating truncation yields
-zero. A value that reaches a store, a call or a return keeps its canon.
+zero (a conversion to single precision keeps the top of a NaN's payload, and
+a box stored into a Float32Array reads back as the box: it is no such
+consumer). A value that reaches a store, a call or a return keeps its canon,
+but a canon in a loop
+whose value such a read takes only past the loop runs at that read instead. A
+local that holds a field through the loop (`plan/loop-fields.js`) may hold a box
+from ahead of it, which that read must keep where no pass ran: where each pass
+writes such locals first, a flag the pass raises tells the two apart, and a
+miss test of one in the loop is its value (three's Box3.setFromArray and the
+normalize pass of computeVertexNormals, bench/threegeom 0.88x the time).
 
 Before emission, whether an operator over a value of unknown kind may run user
 code is the source's census (`src/member-uses.js`): a program that defines or

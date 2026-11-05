@@ -4362,6 +4362,158 @@ test('nanCanon: a loop\'s canon stays where its local may hold a box or a read i
   for (const optimize of levels(1, 2, 'speed')) { const f = run(bag, { optimize }).f; for (const n of [0, 1, 7]) is(f(n), js(n), `O${optimize} n=${n}`) }
 })
 
+// A local that holds a field through a loop (plan/loop-fields.js): a box from ahead of the loop,
+// which each pass writes over first, the read past the loop normalizing only what a pass left.
+const heldLoop = (pass = '', after = '', entry = '(local.set $x (f64.load offset=16 (local.get $p)))') => `(module (memory (export "memory") 1)
+  (func $f (export "f") (param $p i32) (param $n i32) (result f64)
+    (local $x f64) (local $y f64) (local $t f64) (local $i i32)
+    ${entry}
+    (block $brk (loop $l
+      (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+      ${pass || '(local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'}
+      (f64.store offset=32 (local.get $p) (f64.mul (local.get $x) (f64.const 3)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    ${after}
+    (f64.store offset=24 (local.get $p) (local.get $x))
+    (f64.load offset=24 (local.get $p))))`
+const stripped = (src) => { const tree = parseWat(src), fn = findFunc(tree, '$f'); stripDeadCanons(fn); return { fn, tree } }
+const held = (i, a, b, n) => { const w = new BigUint64Array(i.memory.buffer); w[0] = a; w[2] = b; i.f(0, n); return w[3] }
+const UNDEF = 0x7FF8000200000000n, CANON = 0x7FF8000000000000n
+
+test('nanCanon: a held field\'s canon waits past its loop, a box from ahead of it kept where no pass ran', () => {
+  const src = heldLoop(), { fn, tree } = stripped(src)
+  is(loopCanons(fn), 0, 'the loop normalizes nothing')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  const before = inst(parseWat(src)), after = inst(tree)
+  for (const [a, b, n] of [[UNDEF, UNDEF, 0], [UNDEF, 0n, 0], [0x7FF8000100000000n, 0x7FF8000100000000n, 0],
+    [0x7FF8000200000123n, UNDEF, 1], [0xFFF8000000000000n, UNDEF, 3], [0x4000000000000000n, UNDEF, 2], [CANON, 0n, 1]])
+    is(held(after, a, b, n), held(before, a, b, n), `${a.toString(16)} / ${b.toString(16)} over ${n} passes: the same bits`)
+  is(held(after, 0x7FF8000200000123n, UNDEF, 1), CANON, 'a payload a pass left is the one NaN')
+  is(held(after, 0n, UNDEF, 0), UNDEF, 'and undefined where none ran')
+})
+
+test('nanCanon: a held field\'s flag falls for each entry to the loop', () => {
+  // the loop around reads a new box each pass and the inner loop runs in the first alone
+  const src = `(module (memory (export "memory") 1)
+    (func $f (export "f") (param $p i32) (param $n i32) (result f64)
+      (local $x f64) (local $t f64) (local $i i32) (local $k i32)
+      (loop $o
+        (local.set $x (f64.load offset=16 (local.get $p)))
+        (local.set $i (i32.const 0))
+        (block $brk (loop $l
+          (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+          (local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))
+          (f64.store offset=32 (local.get $p) (f64.mul (local.get $x) (f64.const 3)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l)))
+        (f64.store offset=24 (local.get $p) (local.get $x))
+        (local.set $n (i32.const 0))
+        (br_if $o (i32.lt_s (local.tee $k (i32.add (local.get $k) (i32.const 1))) (i32.const 2))))
+      (f64.load offset=24 (local.get $p))))`
+  const { fn, tree } = stripped(src)
+  is(loopCanons(fn) <= 1, true, 'the inner loop normalizes nothing')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  is(held(inst(tree), 0x7FF8000200000123n, UNDEF, 1), UNDEF, 'the second pass, of no inner pass, keeps its box')
+})
+
+test('nanCanon: a box from the other version of the loop passes its read, the flag raised by any pass of this one', () => {
+  const canon = '(local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'
+  const src = `(module (memory (export "memory") 1)
+    (func $f (export "f") (param $p i32) (param $n i32) (param $c i32) (result f64)
+      (local $x f64) (local $t f64) (local $i i32)
+      (if (local.get $c)
+        (then (block $brk (loop $l
+          (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+          ${canon}
+          (f64.store offset=32 (local.get $p) (f64.mul (local.get $x) (f64.const 3)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l))))
+        (else (local.set $x (f64.load offset=16 (local.get $p)))))
+      (f64.store offset=24 (local.get $p) (local.get $x))
+      (f64.load offset=24 (local.get $p))))`
+  const tree = parseWat(src), fn = findFunc(tree, '$f')
+  ok(stripDeadCanons(fn), 'the pass rewrites')
+  is(loopCanons(fn), 0, 'the loop normalizes nothing')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  const before = inst(parseWat(src)), after = inst(tree)
+  const bits = (i, a, b, n, c) => { const w = new BigUint64Array(i.memory.buffer); w[0] = a; w[2] = b; w[3] = 0n; i.f(0, n, c); return w[3] }
+  for (const [a, b, n, c] of [[0x7FF8000200000123n, UNDEF, 2, 1], [0x7FF8000200000123n, UNDEF, 0, 1], [0x7FF8000200000123n, UNDEF, 2, 0],
+    [0x4000000000000000n, 0x7FF8000100000000n, 1, 1], [0x4000000000000000n, 0x7FF8000100000000n, 1, 0]])
+    is(bits(after, a, b, n, c), bits(before, a, b, n, c), `${a.toString(16)} ${b.toString(16)} ${n} passes, version ${c}: the same bits`)
+})
+
+test('nanCanon: a held field\'s canon stays where a pass may leave it unwritten or a box may follow the loop', () => {
+  const canon = '(local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'
+  for (const src of [
+    // a write in an arm: a pass may keep the box and raise no flag it could trust
+    heldLoop(`(if (i32.gt_s (local.get $i) (i32.const 1)) (then ${canon}))`),
+    // a read ahead of the write: the pass reads the box
+    heldLoop(`(f64.store offset=40 (local.get $p) (f64.add (local.get $x) (f64.const 1))) ${canon}`),
+    // a box written past the loop
+    heldLoop('', '(local.set $x (f64.load offset=16 (local.get $p)))')]) {
+    const { fn } = stripped(src)
+    is(loopCanons(fn), 1, 'the canon stays in the loop')
+  }
+  // a way out of the pass between the writes of two held locals: the first is written, the flag down
+  const two = `(module (memory (export "memory") 1)
+    (func $f (export "f") (param $p i32) (param $n i32) (result f64)
+      (local $x f64) (local $y f64) (local $t f64) (local $i i32)
+      (local.set $x (f64.load offset=16 (local.get $p)))
+      (local.set $y (f64.load offset=16 (local.get $p)))
+      (block $brk (loop $l
+        ${'(local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'}
+        (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+        ${'(local.set $y (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 3))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'}
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (f64.store offset=32 (local.get $p) (f64.mul (f64.add (local.get $x) (local.get $y)) (f64.const 3)))
+        (br $l)))
+      (f64.store offset=24 (local.get $p) (local.get $x))
+      (f64.store offset=32 (local.get $p) (local.get $y))
+      (f64.load offset=24 (local.get $p))))`
+  const tree = parseWat(two), fn = findFunc(tree, '$f')
+  stripDeadCanons(fn)
+  is(loopCanons(fn) >= 1, true, 'a canon stays')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  is(held(inst(tree), 0x7FF8000200000123n, UNDEF, 0), held(inst(parseWat(two)), 0x7FF8000200000123n, UNDEF, 0), 'and the bits stand')
+})
+
+test('nanCanon: a store to single precision keeps its canon, a box\'s bits surviving the conversion', () => {
+  // the undefined of a missing element demotes to a NaN whose payload promotes back to the undefined box
+  const src = `export function f(which, n) {
+    const a = which ? new Float32Array(4) : new Float64Array(4)
+    const b = [1]
+    let result = 0
+    for (let i = 0; i < n; i++) result = (a[i] = b[i])
+    return [result, a[0], a[1], Number.isNaN(a[1]), a[1] === undefined]
+  }
+  class V {
+    constructor(x, y) { this.x = x; this.y = y }
+    fromArray(a, k) { this.x = a[k]; this.y = a[k + 1]; return this }
+    scale(s) { this.x *= s; this.y *= s; return this }
+    toArray(a, k) { a[k] = this.x; a[k + 1] = this.y; return this }
+  }
+  const F = new Float32Array(32), W = new Uint32Array(F.buffer), v = new V(0, 0)
+  export let floats = () => F
+  export let words = () => W
+  export let sweep = (s) => { for (let i = 0; i < 16; i++) v.fromArray(F, i * 2).scale(s).toArray(F, i * 2); return v.x }
+  export let same = () => v.x === v.x
+  export let missing = () => v.y === undefined`
+  const host = oracle(src)
+  const fill = (m, word) => { const f = m.floats(); for (let i = 0; i < 32; i++) f[i] = i - 7.5; m.words()[30] = word; m.words()[31] = word }
+  for (const optimize of levels(2, 3, 'speed')) {
+    const m = run(src, { optimize })
+    for (const which of [false, true]) for (const n of [0, 1, 4, 5]) is(JSON.stringify(m.f(which, n)), JSON.stringify(host.f(which, n)), `f(${which}, ${n}) at ${optimize}`)
+    for (const word of [0x3F800000, 0x7FC00000, 0xFFC00000, 0x7FC00010, 0x7FC12345]) {
+      fill(m, word); fill(host, word)
+      ok(Object.is(m.sweep(1.5), host.sweep(1.5)), `${word.toString(16)} at ${optimize}: the answer`)
+      is(m.same(), host.same(), 'itself or a NaN')
+      is(m.missing(), host.missing(), 'and no undefined')
+      for (let i = 0; i < 30; i++) ok(Object.is(m.floats()[i], host.floats()[i]), `element ${i}`)
+    }
+  }
+})
+
 // An undefined test (ir/coerce.js missToNaN) whose value a comparison reads,
 // through a sum and a local: stripped; a sum that leaves keeps it, the bits exact.
 const missDist = (tail) => `(module (memory (export "memory") 1)
