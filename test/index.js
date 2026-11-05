@@ -197,6 +197,7 @@ const TESTS = [
   'float32',
   'constants',
   'splice',
+  'loop-invariants',
   'held-method',
   'held-regex',
   'unroll-cost',

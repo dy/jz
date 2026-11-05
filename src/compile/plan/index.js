@@ -77,6 +77,7 @@ import { laneRecordParams } from './lanes.js'
 import { splitCharScanLoops, splitArrayScanLoops } from './loops.js'
 import { guardConstants, canonicalizeCountedLoops, adoptLoopCounters, unitWalks } from './counted-loops.js'
 import { scalarizeModuleScratch } from './scratch.js'
+import { hoistLoopInvariants } from './loop-invariants.js'
 import { resolveAliases, splitSplicedBindings } from './alias.js'
 import { propagateConstants } from './constants.js'
 import {
@@ -234,6 +235,9 @@ export default function plan(ast, profiler, summarize) {
     // no kind for them, and a cursor the canonical form needs proved a Number is
     // one it cannot read.
     if (spliced || lambdas) ctx.summary = summarize()
+    // A declaration in a loop of a Number the loop never changes: before the loop
+    // (a spliced body's work on the arguments the loop holds fixed).
+    sweep('hoistLoopInvariants', hoistLoopInvariants)
     // A walk to an end tested by equality, its cursor stepped by units one way: the
     // loop under `<` (`>` stepping down), a copy for each way the step can point.
     sweep('unitWalks', unitWalks)
