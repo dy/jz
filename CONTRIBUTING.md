@@ -1003,7 +1003,9 @@ the reset's raw record and the arrays built of lanes.
 A Set's and a Map's table (module/collection/ordered.js) keeps its entries in
 insertion order in front of its buckets: a bucket holds an entry's index under
 the top six bits of its hash, a delete tombstones the entry in place (its key
-TOMB_NAN, its bucket left pointing at it), and an append past the
+TOMB_NAN; the speed tier closes the bucket's gap by backward shift, so a churned
+table's probe ends where its live keys do, the size tier leaves the bucket
+pointing at the tombstone), and an append past the
 usable entries rebuilds the live ones into a
 new block, twice the buckets or as many when half are tombstones, the old block
 forwarding to it. A table that ends at the heap top above the reset mark grows

@@ -1326,6 +1326,11 @@ test('minimal: a proven table probes by its key\'s form', () => {
   ok(!/\$__map_get_o[bs]\b/.test(mixed) && /\(func \$__map_get_o\b/.test(mixed), 'two forms of one operation: the general one')
   ok(!/\(loop \$probe/.test(funcWat(ints, '__map_get_ob')) && !/\(loop \$probe/.test(funcWat(ints, '__map_set_ob')) && /\(loop \$probe/.test(funcWat(ints, '__ord_probe_b')), 'the probe written once')
   ok(!/\$__ptr_type\b/.test(funcWat(ints, '__map_get_ob')), 'no tag test of a proven table')
+  // a delete: the speed tier closes the bucket's gap (a churned table's probe ends where its keys do), the size tier leaves it
+  const churn = (level) => compile(TABLE_KERNELS.churn, { optimize: { level, watr: false }, wat: true })
+  const deletes = (w) => [...w.matchAll(/\(func \$(__(?:map|set)_delete\w*)/g)].map(m => funcWat(w, m[1]))
+  ok(deletes(churn('speed')).length && deletes(churn('speed')).every(d => /\(loop \$shift/.test(d)), 'speed: backward shift')
+  ok(deletes(churn('size')).every(d => !/\(loop \$shift/.test(d)), 'size: the bucket stays')
 })
 
 // An index the summary bounds reads in place (summary/span.js, summary/index.js):

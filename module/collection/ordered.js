@@ -8,8 +8,10 @@
  * plus one under the top six bits of the entry's hash (0 is an empty bucket),
  * so a probe reads an entry only where those bits agree. A delete leaves the
  * entry where it stands, its key the tombstone (TOMB_NAN, which a reset's heal
- * also writes), and its bucket pointing at it: a tombstone matches no key, and
- * the buckets filled never outnumber the entries appended. Enumeration walks
+ * also writes). The speed tier closes the bucket's gap by backward shift, so
+ * a probe of a churned table ends where its live keys do; the size tier
+ * leaves the bucket pointing at the tombstone, which matches no key (the
+ * buckets filled never outnumber the entries appended). Enumeration walks
  * the appended entries in order past the tombstones, with no sort.
  * An append past the last usable entry rebuilds the live entries, still in
  * order, into a new block of twice the buckets (or as many, when half the
@@ -416,8 +418,10 @@ const deleteTail = (es) => `${durableSlotCancelIR('slot', es)}
  *  1 when the key was there. */
 export function genOrdDelete(name, es, hashFn, eqExpr, expectedType, form = {}) {
   if (lean()) return leanDelete(name, es, hashFn, expectedType, form)
+  // (the speed tier closes the bucket's gap by backward shift: a probe past a
+  // churned table's deletes ends where its live keys do)
   return `(func $${name} ${formParams(form)} (result i32)
-    ${probeLocals}${formLocals(form)}
+    ${probeLocals}${formLocals(form)} (local $j i32) (local $k i32)
     ${form.recv === 'off' ? '' : `(if (i32.ne ${typeExpr('$coll')} (i32.const ${expectedType})) (then (return (i32.const 0))))`}
     ${formResolve(form)}
     ${formHash(form, hashFn)}
@@ -425,7 +429,24 @@ export function genOrdDelete(name, es, hashFn, eqExpr, expectedType, form = {}) 
     (block $found
       ${probe(es, formEq(form, eqExpr), '(br $found)')}
       (return (i32.const 0)))
-    ${deleteTail(es)})`
+    ${durableSlotCancelIR('slot', es)}
+    (i64.store offset=8 (local.get $slot) (i64.const ${TOMB_NAN}))
+    (local.set $j (local.get $b))
+    (block $stop (loop $shift
+      (local.set $j (i32.and (i32.add (local.get $j) (i32.const 1)) (local.get $m)))
+      (local.set $w (i32.load ${bucketAt('(local.get $j)')}))
+      (br_if $stop (i32.eqz (local.get $w)))
+      (local.set $k (i32.and (i32.load ${entryOf('(local.get $w)', es)}) (local.get $m)))
+      (if (i32.le_u (local.get $b) (local.get $j))
+        (then (br_if $shift (i32.and (i32.lt_u (local.get $b) (local.get $k)) (i32.le_u (local.get $k) (local.get $j)))))
+        (else (br_if $shift (i32.or (i32.lt_u (local.get $b) (local.get $k)) (i32.le_u (local.get $k) (local.get $j))))))
+      (i32.store ${bucketAt('(local.get $b)')} (local.get $w))
+      (local.set $b (local.get $j))
+      (br $shift)))
+    (i32.store ${bucketAt('(local.get $b)')} (i32.const 0))
+    (i32.store (i32.sub (local.get $off) (i32.const 8))
+      (i32.sub (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 1)))
+    (i32.const 1))`
 }
 
 // The size tier writes a table's probe once (`$__ord_probe`, a form's own
