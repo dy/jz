@@ -27,7 +27,7 @@ import {
   typed, asF64, asI32, asI64, keyIndex, temp, tempI32, tempI64, withTemp, block64,
   ptrOffsetIR, fwdOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, mkPtrIR, undefExpr,
-  freshId, boxBigInt, isNullish, throwTypeErrorIR, throwErrorIR, capturedCellSave, cellSnap, cloneIR,
+  freshId, boxBigInt, isNullish, isUndef, throwTypeErrorIR, throwErrorIR, capturedCellSave, cellSnap, cloneIR,
 } from '../ir.js'
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue, flatStoredValue } from '../bridge.js'
 import { REP_EDGE_BOX, representationStorageWriteAction } from './representation-plan.js'
@@ -58,6 +58,28 @@ function storeObjectField(base, slot, value, source, sid = null, receiver = null
   return ['block', ['local.set', `$${off}`, base],
     durableObjSnapNode(off, value, slot),
     markField(ctx.abi.object.ops.store(['local.get', `$${off}`], slot, value), receiver, slot)]
+}
+
+/** The test a store makes of a receiver whose memory it writes. A store into
+ *  null or undefined throws a TypeError once its value is evaluated, before
+ *  anything is written (ES PutValue), so a receiver the summary does not prove
+ *  present is tested there, by the read's rule (module/core.js dotRead): for
+ *  undefined alone where absence is its one missing value. Returns the test of
+ *  the receiver's value, `(v) => stmt`, or null where the receiver is present:
+ *  its kind has no missing part, a test on this path proved it (refinements),
+ *  or it is an unboxed pointer (`recv`, its emitted value, or the name's rep). */
+function missingTest(obj, recv = null) {
+  if (recv?.ptrKind != null) return null
+  if (typeof obj === 'string') {
+    const held = ctx.func.refinements?.get(obj)
+    if (held?.notNullish || held?.val != null || repOf(obj)?.ptrKind != null) return null
+  }
+  const k = ctx.summary?.at(ctx.func.current).kindOfExpr(obj)
+  if (k != null && (k & SUMMARY_NULL_BITS) === 0) return null
+  // The block emitter holds a name tested here present past this statement (dispatch.js emitBlockBody).
+  if (typeof obj === 'string') (ctx.func.checkedRecv ??= []).push(obj)
+  const missing = k != null && (k & summaryBitOf(K.NULLISH)) === 0 ? isUndef : isNullish
+  return (v) => ['if', missing(typed(v, 'f64')), ['then', ['drop', throwTypeErrorIR()]]]
 }
 
 // Integer array-index key: '3' → 3; rejects non-canonical and 2³²−1.
@@ -107,8 +129,9 @@ const persistBinding = name => ptr => persistBindingPtr(name, ptr)
  *  is left alone and the pointer stays. Any other index, in the speed tiers,
  *  stores in place where it is inside the length, so the call is only for an
  *  index at or past the end (`out[dst++] = v` filling an array it grew last
- *  round); the size tier calls the helper for it. */
-function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = false, arrName = null) {
+ *  round); the size tier calls the helper for it. `test` (missingTest) tests
+ *  a receiver that may be missing once the value is evaluated. */
+function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = false, arrName = null, test = null) {
   const arrTmp = `${T}asi${freshId(ctx)}`
   const idxTmp = `${T}asj${freshId(ctx)}`
   const valTmp = `${T}asv${freshId(ctx)}`
@@ -126,6 +149,7 @@ function storeArrayPayload(arrExpr, idxNode, valueExpr, persist, inBounds = fals
     ['local.set', `$${idxTmp}`, keyIndex(typed(idxNode, 'f64'))],
     ['local.set', `$${valTmp}`, valueExpr],
   ]
+  if (test) body.push(test(direct ? cloneIR(arrExpr) : arrG))
   if (lean && !inBounds) body.push(helper())
   else {
     const base = tempI32('asb'), baseG = ['local.get', `$${base}`]
@@ -695,10 +719,13 @@ function emitElementStore(arr, idx, val, node) {
   // dynamic read finds it through the schema arm.
   if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {
     const slot = ctx.schema.slotOf(arr, litKey)
-    if (slot >= 0 && !(ctx.types.anyDelete && mayBeDeleted(arr)))
+    if (slot >= 0 && !(ctx.types.anyDelete && mayBeDeleted(arr))) {
+      const va = emit(arr), test = missingTest(arr, va)
       return withTemp(valueExpr, t => [
-        storeObjectField(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`], val, null, arr),
+        ...(test ? [test(cloneIR(asF64(va)))] : []),
+        storeObjectField(ptrOffsetIR(asF64(va), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`], val, null, arr),
         ['local.get', `$${t}`]])
+    }
   }
   // 2b. A receiver of a few possible shapes (the summary's shape set, module/
   // core.js emitSchemaSlotGuardedMulti): the slot of the shape a masked compare
@@ -739,8 +766,10 @@ function emitElementStore(arr, idx, val, node) {
     if (len > 0) { const r = intExprRange(idx); if (r && r[0] >= 0 && r[1] < len) return storeFixedElement(arr, asI32(emit(idx)), valueExpr, view.mayBeNullishExpr(arr)) }
   }
   // 3b. Known-ARRAY receiver + literal numeric key → __arr_set_idx_ptr.
-  if (arrIndex != null && typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY)
-    return storeArrayPayload(asF64(emit(arr)), typed(['f64.const', arrIndex], 'f64'), valueExpr, persistBinding(arr))
+  if (arrIndex != null && typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY) {
+    const va = emit(arr)
+    return storeArrayPayload(asF64(va), typed(['f64.const', arrIndex], 'f64'), valueExpr, persistBinding(arr), false, null, missingTest(arr, va))
+  }
 
   // 4. Known non-number keys require ToPropertyKey, after RHS evaluation.
   // A receiver union must not send an object/boolean key through index truncation.
@@ -813,8 +842,9 @@ function emitElementStore(arr, idx, val, node) {
     if (useRuntimeKeyDispatch)
       return dispatchByKeyKind(arr, keyExpr, valueExpr, (keyNode, receiver) =>
         storeArrayPayload(receiver, keyNode, valueExpr, ptr =>
-          ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(receiver)], ['then', persist(ptr)]]))
-    return storeArrayPayload(asF64(emit(arr)), keyExpr, valueExpr, persist, boundedArray, arr)
+          ['if', ['i64.eq', asI64(asF64(emit(arr))), asI64(receiver)], ['then', persist(ptr)]], false, null, missingTest(arr)))
+    const va = emit(arr)
+    return storeArrayPayload(asF64(va), keyExpr, valueExpr, persist, boundedArray, arr, missingTest(arr, va))
   }
 
   // A local the dictionary census classified (lean or i32-lean) is a HASH whatever
@@ -1089,23 +1119,26 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       // Write the relocated pointer back to a simple var receiver so later
       // reads skip the forwarding hop; complex receivers stay correct via it.
       const persist = typeof obj === 'string' ? persistBindingPtr(obj, ['local.get', `$${arrTmp}`]) : null
-      const arr = ['local.get', `$${arrTmp}`], recvIR = asF64(emit(obj)), v = storedValue(val), word = lengthWord(v, val)
+      const arr = ['local.get', `$${arrTmp}`], va = emit(obj), recvIR = asF64(va), v = storedValue(val), word = lengthWord(v, val)
+      // (the resize leaves a value that is no array as it is: a missing one throws first)
+      const test = missingTest(obj, va), tested = test ? [test(arr)] : []
       let body, value
       // `a.length = 0` stores the word: nothing to fill, room for it, no move.
       if (word?.n[0] === 'i32.const' && Number(word.n[1]) === 0) {
         inc('__arr_clear')
+        if (test) return block64(['local.set', `$${arrTmp}`, recvIR], ...tested, ['call', '$__arr_clear', asI64(arr)], word.value)
         return block64(['call', '$__arr_clear', asI64(recvIR)], word.value)
       }
       if (word) {
         inc('__arr_set_len')
-        body = [['local.set', `$${arrTmp}`, recvIR], ...word.setup, ...word.check,
+        body = [['local.set', `$${arrTmp}`, recvIR], ...word.setup, ...tested, ...word.check,
           ['local.set', `$${arrTmp}`, ['call', '$__arr_set_len', ['i64.reinterpret_f64', arr], word.n]]]
         value = word.value
       } else {
         inc('__arr_set_length')
         const nTmp = `${T}alv${freshId(ctx)}`
         ctx.func.locals.set(nTmp, 'f64')
-        body = [['local.set', `$${arrTmp}`, recvIR], ['local.set', `$${nTmp}`, v],
+        body = [['local.set', `$${arrTmp}`, recvIR], ['local.set', `$${nTmp}`, v], ...tested,
           ['local.set', `$${arrTmp}`, ['call', '$__arr_set_length', ['i64.reinterpret_f64', arr], ['i64.reinterpret_f64', ['local.get', `$${nTmp}`]]]]]
         value = ['local.get', `$${nTmp}`]
       }
@@ -1194,9 +1227,10 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
       const sid = ctx.schema.idOf(obj)
       const wide = needsDynShadow(obj, sid) || (ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__dyn_set_own'))
       const boxed = wide || (sid != null && ctx.schema.slotBigintBoxedBySid?.(sid, prop))
-      const va = emit(obj), vv = storedFieldValue(val, sid, prop, boxed), t = temp()
+      const va = emit(obj), vv = storedFieldValue(val, sid, prop, boxed), t = temp(), test = missingTest(obj, va)
       return block64(
         ['local.set', `$${t}`, vv],
+        ...(test ? [test(cloneIR(asF64(va)))] : []),
         storeObjectField(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`], val, sid, obj),
         ['local.get', `$${t}`])
     }
@@ -1228,11 +1262,11 @@ export function emitPropertyAssign(obj, prop, val, raw = false) {
         const get = () => typed(['local.get', `$${receiver}`], 'f64')
         // a binding's carrier stays wide where a dynamic reader may meet it, as the layout's own path above keeps it
         const wide = typeof obj === 'string' && (needsDynShadow(obj, sid) || ctx.core.includes.has('__dyn_set')) ? true : undefined
+        const va = emit(obj), test = missingTest(obj, va)
         return block64(
-          ['local.set', `$${receiver}`, asF64(emit(obj))],
+          ['local.set', `$${receiver}`, asF64(va)],
           ['local.set', `$${value}`, sid != null ? storedFieldValue(val, sid, prop, wide) : storedValue(val)],
-          ...(ctx.summary?.at(ctx.func.current).mayBeNullishExpr(obj) !== false
-            ? [['if', isNullish(get()), ['then', ['drop', throwTypeErrorIR()]]]] : []),
+          ...(test ? [test(get())] : []),
           storeObjectField(ptrOffsetIR(get(), VAL.OBJECT), i, ['local.get', `$${value}`], val, sid, obj),
           ['local.get', `$${value}`])
       }

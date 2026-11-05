@@ -166,6 +166,59 @@ test('nullable property receivers throw before reading or writing memory', () =>
   }
 })
 
+// A store into a receiver the summary does not prove present tests it once its
+// value is evaluated (PutValue): one bound to a layout by its one object
+// assignment (`let o; if (…) o = {…}`) took the slot store at its address, so
+// undefined (offset 0) wrote the module's static data, a string literal the
+// program then returned empty. Every store path tests: a slot by name or by
+// literal key, a module binding's, an element of an array, a resize, a loop
+// target, a setter's, one after a guarded read.
+test('a store into a receiver that may be missing throws and writes no memory', () => {
+  // [the store, a read of what it stored where the receiver is present]
+  const stores = [
+    [`let o; if (c) o = { x: 1 }; o.x = 7`, `o.x`],
+    [`let o = null; if (c) o = { x: 1, y: 2 }; o.y = 7`, `o.y`],
+    [`let o; if (c) o = { x: 1 }; o.z = 7`, `o.z`],
+    [`let o; if (c) o = { x: 1 }; o['x'] = 7`, `o.x`],
+    [`let o; if (c) o = { x: 1 }; const r = c ? o.x : 0; o.x = r + 7`, `o.x`],
+    [`let o; if (c) o = { x: 1 }; for (o.x of [7]) {}`, `o.x`],
+    [`let a; if (c) a = [1, 2]; a[n] = 7`, `a[n]`],
+    [`let a; if (c) a = [1, 2]; a[1] = 7`, `a[1]`],
+    [`let a; if (c) a = [1, 2]; a.length = 0`, `a.length`],
+    [`let a; if (c) a = [1, 2]; a.length = n`, `a.length`],
+    [`let a; if (c) a = new Float64Array(4); a[n] = 7`, `a[n]`],
+    [`if (c) g = { x: 1 }; g.x = 7`, `g.x`],
+    [`h = undefined; if (c) h = { x: 1 }; h.x = 7`, `h.x`],
+    [`let o; if (c) o = new P(); o.v = 7`, `o.w`],
+  ]
+  for (const [store, read] of stores) {
+    const src = `class P { set v(x) { this.w = x } }
+    let g, h
+    export function f(c, n) {
+      let log = 'start:'
+      try { ${store}; log += c ? ${read} : 'no throw' }
+      catch (e) { log += e.name }
+      return log + ':end'
+    }`
+    // (a module binding keeps what a call stored: each module starts afresh, missing first)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) {
+      const js = oracle(src).f, { f } = jz(src, { optimize }).exports
+      for (const c of [false, true, false, true]) is(f(c, 1), js(c, 1), `O${optimize}, present=${c}: ${store}`)
+    }
+  }
+  // A plain store: the TypeError leaves the call, nothing was written
+  const plain = 'export let f = (n) => { let o; if (n > 9) o = { x: 1 }; o.x = 2; return "kept" }'
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { f } = jz(plain, { optimize }).exports
+    throws(() => f(1), e => e?.name === 'TypeError', `O${optimize}: the store throws a TypeError`)
+    is(f(10), 'kept', `O${optimize}: a present receiver stores`)
+  }
+  // A store the summary proves present carries no test
+  for (const optimize of levels(0, 2, 3, 'size'))
+    ok(!compile('export let f = (n) => { const o = { x: 1 }; o.x = n; return o.x }', { optimize, wat: true }).includes('__throw_property_nullish'),
+      `O${optimize}: a present receiver's store is not tested`)
+})
+
 test('computed property reads evaluate keys once and reject nullish bases before coercion', () => {
   const src = `export function f(c) {
     let log = '', value = ''
