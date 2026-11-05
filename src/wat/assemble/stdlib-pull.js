@@ -124,30 +124,33 @@ export function appendLateStdlib(moduleArr, pushTarget = moduleArr) {
 }
 
 /** Size tier: a stdlib twin (a body specialized by a call-site fact) whose general
- *  form the program reaches anyway is one body too many. Redirect its user-code
- *  calls to the nearest reachable general form (bridge.js general()); the
- *  reachability pass below then drops the twin. Template-internal references
- *  stay as written. A general form may take its operands in another form: its
- *  entry `{ name, adapt }` rewrites the call (`adapt(call)` returns the call the
- *  next redirect reads). Twins whose entries name one `family` stand for it
- *  together: two of them reached reach their family's form, one body for both. */
+ *  form the program reaches anyway, from its own code or through a helper it
+ *  calls (`__add_slow`'s concatenation), is one body too many. Redirect its
+ *  user-code calls to the nearest reachable general form (bridge.js general());
+ *  the reachability pass below then drops the twin. Template-internal
+ *  references stay as written. A general form may take its operands in another
+ *  form: its entry `{ name, adapt }` rewrites the call (`adapt(call)` returns the
+ *  call the next redirect reads). Twins whose entries name one `family` stand
+ *  for it together: two of them reached reach their family's form, one body for
+ *  both. */
 function collapseTwins(sec) {
   const generalOf = ctx.core.stdlibGeneral
   const refs = new Set()
   const scan = (n) => { if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string' && n[1][0] === '$') refs.add(n[1].slice(1)) }
   for (const fn of sec.funcs) walkAst(fn, { enter: scan })
   for (const fn of sec.start) walkAst(fn, { enter: scan })
+  const reached = reachableStdlib(sec)
   const entry = (g) => typeof g === 'string' ? { name: g } : g
   const families = new Map()
   for (const twin in generalOf) if (refs.has(twin)) for (const g of generalOf[twin]) {
     const e = entry(g)
     if (e.family) families.set(e.family, (families.get(e.family) ?? 0) + 1)
   }
-  for (const [family, n] of families) if (n > 1 && ctx.core.stdlib[family] != null) refs.add(family)
+  for (const [family, n] of families) if (n > 1 && ctx.core.stdlib[family] != null) reached.add(family)
   const to = new Map()
   for (const twin in generalOf) {
     if (!refs.has(twin)) continue
-    const g = generalOf[twin].map(entry).find(e => refs.has(e.name))
+    const g = generalOf[twin].map(entry).find(e => reached.has(e.name))
     if (g) to.set('$' + twin, g)
   }
   if (!to.size) return

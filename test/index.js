@@ -131,6 +131,7 @@ const TESTS = [
   'loop-fields',
   'absent-member',
   'mixed-read',
+  'literal-digits',
   'called-args',
   'object-reads',
   'kind-split',

@@ -13,7 +13,7 @@ import print from 'watr/print'
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR, numberCarrierIR } from '../src/ir.js'
-import { emit, emitReference, emitIdentitySafe, storedValue, deps, wat } from '../src/bridge.js'
+import { emit, emitReference, emitIdentitySafe, storedValue, deps, general, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
 import { PROMISE_KEYS } from '../src/std/async.js'
@@ -885,6 +885,14 @@ export default (ctx) => {
       (i64.add (i64.load (call $__ptr_offset (local.get $a)))
         (i64.load (call $__ptr_offset (local.get $b)))))))))` : ''}
     (f64.add ${atomNumWat('(local.get $a)')} ${atomNumWat('(local.get $b)')}))`
+
+  // `+` of two carriers no string, object or BigInt reaches (a Number, a
+  // Boolean, null, undefined): their numbers added, __add_slow's last step.
+  // __add_slow answers the same for them: the size tier calls it instead
+  // where the program reaches it anyway.
+  ctx.core.stdlib['__add_atoms'] = () => `(func $__add_atoms (param $a i64) (param $b i64) (result f64)
+    (f64.add ${atomNumWat('(local.get $a)')} ${atomNumWat('(local.get $b)')}))`
+  general({ __add_atoms: ['__add_slow'] })
 
   ctx.core.stdlib['__is_object'] = `(func $__is_object (param $p i64) (result i32)
     (local $t i32)
