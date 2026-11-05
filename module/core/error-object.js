@@ -17,14 +17,16 @@ import { errorCodeLiteral, ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { nanPrefixHex, nanPrefixMaskHex, i64Hex, encodePtrHi } from '../../layout.js'
 
 // Runtime receiver checks use the private error-code transport. They must not
-// register a schema merely because a dynamic access might throw.
-export function requireReceiverWat(value) {
-  const code = errorCodeLiteral(ERR.OBJECT_NULLISH)
+// register a schema merely because a dynamic access might throw. A read or a
+// store throws what an inline access of a nullish receiver throws
+// (src/ir/sentinels.js throwTypeErrorIR); a delete passes Object.keys's code.
+export function requireReceiverWat(value, code = ERR.PROPERTY_NULLISH) {
+  const bits = errorCodeLiteral(code)
   // Two bit compares in place of a helper call: this guard opens every
   // generic read (`value` is a local read, evaluated twice for free).
   return `(if (i32.or (i64.eq ${value} (i64.const ${NULL_NAN})) (i64.eq ${value} (i64.const ${UNDEF_NAN})))
-    (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${code})))
-      (throw $__jz_err (f64.const ${code}))))`
+    (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${bits})))
+      (throw $__jz_err (f64.const ${bits}))))`
 }
 
 // A primitive holds no property of its own and strict code cannot give it one:

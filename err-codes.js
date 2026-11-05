@@ -40,7 +40,7 @@ export const ERR = {
   CRYPTO_FLOAT_TYPE: 106,      // crypto.getRandomValues — Float32Array/Float64Array rejected
   JSON_CIRCULAR: 107,          // JSON.stringify — circular reference
   JSON_BIGINT: 108,            // JSON.stringify — BigInt has no JSON representation
-  OBJECT_NULLISH: 109,         // Object.keys/values/entries(null/undefined)
+  OBJECT_NULLISH: 109,         // Object.keys/values/entries(null/undefined), a delete of a member of one
   SYMBOL_TO_NUMBER: 110,       // ToNumber(Symbol)
   STRING_SEARCH_REGEX: 111,    // String#{includes,startsWith,endsWith}(regex)
   ENCODE_INTO_RECEIVER: 112,   // String#encodeInto — destination not a Uint8Array
@@ -63,6 +63,7 @@ export const ERR = {
   FS_BUFFER: 126,              // fs.readSync/writeSync: buffer is not a TypedArray (or, for writeSync, a string)
   FS_OFFSET: 127,              // fs.readSync/writeSync: offset is not a Number
   FS_EMPTY: 128,               // fs.readSync: a nonzero length into an empty buffer
+  PROPERTY_NULLISH: 129,       // a property or element read or store of null/undefined (the runtime's generic accessors)
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -127,6 +128,7 @@ export const ERR_INFO = {
   [ERR.JSON_CIRCULAR]: { name: 'TypeError', message: 'Converting circular structure to JSON' },
   [ERR.JSON_BIGINT]: { name: 'TypeError', message: 'Do not know how to serialize a BigInt' },
   [ERR.OBJECT_NULLISH]: { name: 'TypeError', message: 'Cannot convert undefined or null to object' },
+  [ERR.PROPERTY_NULLISH]: { name: 'TypeError', message: 'Cannot read properties of undefined' },
   [ERR.ACCESSOR_DESCRIPTOR]: { name: 'TypeError', message: 'Accessor descriptors are declared on classes; Object.defineProperty defines data properties' },
   [ERR.SYMBOL_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a Symbol value to a number' },
   [ERR.BIGINT_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a BigInt value to a number' },

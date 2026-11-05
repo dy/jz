@@ -3090,7 +3090,7 @@ export default (ctx) => {
   ctx.core.stdlib['__dyn_del'] = () => `(func $__dyn_del (param $obj i64) (param $key i64) (result i32)
     (local $root i64) (local $props i64) (local $oldProps i64)
     (local $off i32) (local $type i32) (local $hit i32) (local $delidx i32) ${buildObjectSchemaSetLocals()}
-    ${requireReceiverWat('(local.get $obj)')}
+    ${requireReceiverWat('(local.get $obj)', ERR.OBJECT_NULLISH)}
     ;; ToPropertyKey — see __dyn_get_t. Stored keys are strings or Symbol identities.
     (if (i32.eqz (call $__is_str_key (local.get $key)))
       (then (local.set $key (call $__to_key (local.get $key)))))
