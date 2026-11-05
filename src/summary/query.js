@@ -11,7 +11,7 @@ import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import {
   K, kind, tagOf, paramOf, isNullable, hasTag, join, valOf, valBesidePresence, kindOfVal, core, UNKNOWN,
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, orAbsent, plus, arith, typedStore, typedAux, typedCtorsOf, typedElemKind, typedMethodKind, logicalMask, selectKind,
-  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind, emptySpreadKind, continuesOptional, primArray } from './kind.js'
+  TYPED_CTOR, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS, bitOf, TAGS, NULL_BITS, outsideKind, emptySpreadKind, continuesOptional, primArray, primitiveLacks, ABSENT } from './kind.js'
 // Names every object has from its prototype: a read of one is never undefined.
 const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf',
   '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '__proto__', 'length'])
@@ -20,10 +20,11 @@ export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
     scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
   const cell = id => { while (cellUp[id] !== id) id = cellUp[id]; return id }
   const MIXABLE_TAGS = bitOf(K.HASH) | bitOf(K.OBJECT) | bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT) | bitOf(K.TYPED)
+  const PRIM_BITS = bitOf(K.NUMBER) | bitOf(K.STRING) | bitOf(K.BOOL) | bitOf(K.BIGINT)
   const dictOrObject = k => paramOf(k) !== UNKNOWN && hasTag(k, K.HASH) && tagOf(k) === K.ANY && (k & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0
   const FUNCTION_PROTO = new Set(['call', 'apply', 'bind', 'toString', 'length', 'name', 'prototype', 'constructor'])
   const celled = k => (tagOf(k) === K.ARRAY || tagOf(k) === K.MAP || tagOf(k) === K.HASH || tagOf(k) === K.SET || dictOrObject(k)) && paramOf(k) !== UNKNOWN
@@ -85,12 +86,17 @@ export function summaryQueries(facts, internal = false) {
   // Two closures (or two shapes) joined are the set the solver interned for
   // the pair (index.js unionClosures/unionShapes): a query joins the same pair
   // through that record, never minting one. A pair the solver never joined is unknown.
+  // A dictionary or a shape beside primitives keeps its cell beside a kind that
+  // holds no object (the solver's merge, whose objects the cell names): bottom,
+  // a primitive, a nullish value.
   const merge = (a, b) => {
     a = canon(a); b = canon(b)
     if ((tagOf(a) === K.CLOSURE || tagOf(a) === K.OBJECT) && tagOf(a) === tagOf(b) && paramOf(a) !== UNKNOWN && paramOf(b) !== UNKNOWN && paramOf(a) !== paramOf(b)) {
       const id = (tagOf(a) === K.CLOSURE ? unions : shapeUnions).get(paramOf(a) * 65536 + paramOf(b))
       if (id !== undefined && id !== UNKNOWN) { a = (a & ~UNKNOWN) | id; b = (b & ~UNKNOWN) | id }
     }
+    if (dictOrObject(a) && ((b & TAGS & ~PRIM_BITS & ~NULL_BITS) === 0 || dictOrObject(b) && paramOf(a) === paramOf(b))) return a | (b & TAGS)
+    if (dictOrObject(b) && (a & TAGS & ~PRIM_BITS & ~NULL_BITS) === 0) return b | (a & TAGS)
     return join(a, b)
   }
   // A closure's own property, joined, for a derived class, with what its base
@@ -495,7 +501,8 @@ export function summaryQueries(facts, internal = false) {
         if (cellLostObject.has(c)) return ANY
         let k = orAbsent(hashPropOf(r, prop))
         for (const sid of cellShapes.get(c) ?? []) k = merge(k, memberOf(kind(K.OBJECT, sid), prop))
-        for (const tag of [K.NUMBER, K.STRING, K.BOOL, K.BIGINT, K.TYPED]) if (hasTag(r, tag)) k = merge(k, ANY)
+        // a primitive whose prototypes lack the name reads it undefined
+        for (const tag of [K.NUMBER, K.STRING, K.BOOL, K.BIGINT, K.TYPED]) if (hasTag(r, tag)) k = merge(k, primitiveLacks(tag, prop) ? ABSENT : ANY)
         return k
       }
       if (isCount(prop, r)) return NUMBER
@@ -635,6 +642,23 @@ export function summaryQueries(facts, internal = false) {
           out.set(layout, prev === undefined ? lits && new Set(lits) : prev && lits ? (lits.forEach(l => prev.add(l)), prev) : null)
         }
         return out
+      },
+      // The values of an expression that may be a primitive or an object of a
+      // few shapes (a record stored into an array of numbers, merge's cell of a
+      // shape beside primitives): the layouts of its objects, the primitive tags
+      // and whether it may be missing (1 undefined, 2 null too), every value
+      // named. Null where it may be anything else: a dictionary, a typed array,
+      // an object of a shape the summary lost.
+      mixedLayoutsOfExpr: e => {
+        const k = kindOfExpr(e)
+        if (!dictOrObject(k) || hasTag(k, K.TYPED)) return null
+        const c = cell(paramOf(k)), sites = cellShapes.get(c)
+        if (!shapeCells?.has(c) || cellLostObject.has(c) || !sites?.size) return null
+        const out = []
+        for (const site of sites) if (!out.includes(layouts[site])) out.push(layouts[site])
+        const prims = []
+        for (const tag of [K.NUMBER, K.STRING, K.BOOL, K.BIGINT]) if (hasTag(k, tag)) prims.push(tag)
+        return { layouts: out, prims, missing: hasTag(k, K.NULLISH) ? 2 : hasTag(k, K.ABSENT) ? 1 : 0 }
       },
       // The construction sites an object expression's value comes from; null when unknown. Two values of disjoint sites are two objects.
       sitesOfExpr: e => { const k = kindOfExpr(e); return tagOf(core(k)) === K.OBJECT && paramOf(k) !== UNKNOWN ? shapesOf(paramOf(k)) : null },

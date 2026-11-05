@@ -42,7 +42,7 @@ import { arrayRecordSlot } from '../src/compile/array-records.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { liftedPropOf } from '../src/compile/analyze/func-namespaces.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
+import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore, primitiveLacks } from '../src/summary/kind.js'
 import { unbounded } from '../src/summary/contract.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 import { sidecarOverride } from '../src/compile/emit/own-method.js'
@@ -2451,6 +2451,34 @@ export default (ctx) => {
       ['i32.const', strHashLiteral(prop)], ['i32.const', r.rid], ['i32.const', r.slot]]], 'f64')
   }
 
+  // A receiver whose every value the summary names (mixedLayoutsOfExpr): an
+  // object of a few layouts beside primitives, perhaps missing. A layout holding
+  // `prop` reads its slot behind its guard; a missing receiver throws the
+  // TypeError reading it throws; any other value, a primitive none of whose
+  // prototypes holds the name or an object of a layout that never holds it,
+  // reads undefined. No dynamic lookup remains. Null where a value may hold the
+  // name some other way (a string's length, a method, a property stored beside
+  // a layout), for the reads below.
+  function mixedRead(va, obj, prop) {
+    if (typeof prop !== 'string' || va?.type !== 'f64' || va.ptrKind != null || va.cellI32) return null
+    const view = ctx.summary?.at(ctx.func.current), m = view?.mixedLayoutsOfExpr?.(obj)
+    if (!m || m.layouts.length > 8 || m.prims.some(tag => !primitiveLacks(tag, prop))) return null
+    const guards = []
+    for (const sid of m.layouts) {
+      const slot = ctx.schema.list[sid]?.indexOf(prop) ?? -1
+      if (slot >= 0) guards.push({ sid, slot })
+      else if (!view.layoutLacks(sid, prop)) return null
+    }
+    // A receiver that does not repeat (an element read, a call) is read once into a local.
+    const t = isRepeatableRead(va) ? null : temp('mr')
+    const recv = t ? typed(['local.get', `$${t}`], 'f64') : va
+    const rest = () => !m.missing ? undefExpr() : typed(['block', ['result', 'f64'],
+      ['if', (m.missing === 2 ? isNullish : isUndef)(typed(cloneIR(recv), 'f64')), ['then', ['drop', throwTypeErrorIR()]]], undefExpr()], 'f64')
+    const read = guards.length ? emitSchemaSlotGuardedMulti(recv, guards, rest, prop) : rest()
+    return t ? typed(['block', ['result', 'f64'], ['local.set', `$${t}`, va], read], 'f64')
+      : guards.length || m.missing ? read : typed(['block', ['result', 'f64'], ['drop', va], read], 'f64')
+  }
+
   function emitPropAccess(va, obj, prop) {
     va = numberCarrierIR(obj, va)
     if (typeof prop === 'string') { const record = recordRead(va, obj, prop); if (record) return record }
@@ -2541,6 +2569,7 @@ export default (ctx) => {
     // receiver still evaluated for what it does.
     if (schemaIdx < 0 && ctx.summary?.at(ctx.func.current)?.absentMember?.(obj, prop))
       return typeof obj === 'string' ? undefExpr() : typed(['block', ['result', 'f64'], ['drop', va], undefExpr()], 'f64')
+    if (schemaIdx < 0) { const mixed = mixedRead(va, obj, prop); if (mixed) return mixed }
     if (schemaIdx >= 0) {
       // A precise schema id proves this is a fixed-size OBJECT allocation, not
       // an ARRAY value that may have relocated. Extract the payload offset from

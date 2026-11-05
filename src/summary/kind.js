@@ -104,6 +104,31 @@ export const isCount = (prop, k) => COUNT_PROPS.get(prop)?.includes(tagOf(k)) ==
   (prop !== 'length' || tagOf(k) !== K.TYPED || paramOf(k) !== UNKNOWN)
 // The inherited result is used only after ruling out an own method or getter.
 export const OBJECT_PROTO_METHODS = new Set(['hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toString', 'toLocaleString', 'valueOf'])
+// A property name a Number answers to (`String(+p) === p`): a canonical number
+// starts with a digit, a minus, `I`nfinity or `N`aN, and only those convert.
+export const canonicalNumeric = (p) => { const c = p.charCodeAt(0); return (c >= 48 && c <= 57 || c === 45 || c === 73 || c === 78) && String(+p) === p }
+// The names a primitive's prototypes hold, Object.prototype's among them: a
+// union of builtin kinds asks a primitive member only for one of these.
+const OBJECT_PROTO_NAMES = ['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', 'toString', 'valueOf']
+export const PROTO_NAMES = {
+  [K.STRING]: new Set([...OBJECT_PROTO_NAMES, '@@iterator', 'at', 'charAt', 'charCodeAt', 'codePointAt', 'concat', 'endsWith', 'includes', 'indexOf', 'isWellFormed',
+    'lastIndexOf', 'localeCompare', 'match', 'matchAll', 'normalize', 'padEnd', 'padStart', 'repeat', 'replace', 'replaceAll', 'search', 'slice', 'split',
+    'startsWith', 'substr', 'substring', 'toLocaleLowerCase', 'toLocaleUpperCase', 'toLowerCase', 'toUpperCase', 'toWellFormed', 'trim', 'trimEnd',
+    'trimStart', 'trimLeft', 'trimRight', 'anchor', 'big', 'blink', 'bold', 'fixed', 'fontcolor', 'fontsize', 'italics', 'link', 'small', 'strike', 'sub', 'sup']),
+  [K.NUMBER]: new Set([...OBJECT_PROTO_NAMES, 'toExponential', 'toFixed', 'toPrecision']),
+  [K.BOOL]: new Set(OBJECT_PROTO_NAMES),
+  [K.BIGINT]: new Set(OBJECT_PROTO_NAMES),
+}
+// Object.prototype's accessors and legacy methods, which every primitive inherits too.
+const LEGACY_PROTO_NAMES = new Set(['__proto__', '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'])
+/** Whether a primitive of `tag` has no property `prop`, own or inherited, so
+ *  that reading it gives undefined: a name none of its prototypes holds
+ *  (String.prototype, Number.prototype, Boolean.prototype or BigInt.prototype,
+ *  then Object.prototype), and for a string neither its length nor an index.
+ *  A symbol's name (`@@iterator`, `@@toStringTag`) never qualifies. */
+export const primitiveLacks = (tag, prop) => typeof prop === 'string' && PROTO_NAMES[tag] !== undefined &&
+  !PROTO_NAMES[tag].has(prop) && !LEGACY_PROTO_NAMES.has(prop) && !prop.startsWith('@@') &&
+  !(tag === K.STRING && (prop === 'length' || canonicalNumeric(prop)))
 export const objectProtoResult = (recv, name) => name === 'valueOf' ? recv : name === 'toString' || name === 'toLocaleString' ? STRING : BOOL
 
 // Other literal names on an array are dictionary entries, not prototype members.

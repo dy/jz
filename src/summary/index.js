@@ -66,7 +66,7 @@ import {
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind, outsideKind, emptySpreadKind,
-  continuesOptional, primArray } from './kind.js'
+  continuesOptional, primArray, canonicalNumeric, PROTO_NAMES } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
 /** The depth `flat(depth)` flattens to (ToIntegerOrInfinity, at least 0): 1 when
@@ -121,22 +121,7 @@ const TYPED_VIEW_BITS = TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG
 // The operators that convert their operands to primitives (and answer one):
 // arithmetic, comparison, concatenation and their compound assignments.
 const CONVERTING_RESULTS = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '<', '>', '<=', '>=', '==', '!=', 'strcat', '`'])
-// A property name a Number answers to (`String(+p) === p`): a canonical number
-// starts with a digit, a minus, `I`nfinity or `N`aN, and only those convert.
-const canonicalNumeric = (p) => { const c = p.charCodeAt(0); return (c >= 48 && c <= 57 || c === 45 || c === 73 || c === 78) && String(+p) === p }
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
-// The names a primitive's prototypes hold, Object.prototype's among them: a
-// union of builtin kinds asks a primitive member only for one of these.
-const OBJECT_PROTO_NAMES = ['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', 'toString', 'valueOf']
-const PROTO_NAMES = {
-  [K.STRING]: new Set([...OBJECT_PROTO_NAMES, '@@iterator', 'at', 'charAt', 'charCodeAt', 'codePointAt', 'concat', 'endsWith', 'includes', 'indexOf', 'isWellFormed',
-    'lastIndexOf', 'localeCompare', 'match', 'matchAll', 'normalize', 'padEnd', 'padStart', 'repeat', 'replace', 'replaceAll', 'search', 'slice', 'split',
-    'startsWith', 'substr', 'substring', 'toLocaleLowerCase', 'toLocaleUpperCase', 'toLowerCase', 'toUpperCase', 'toWellFormed', 'trim', 'trimEnd',
-    'trimStart', 'trimLeft', 'trimRight', 'anchor', 'big', 'blink', 'bold', 'fixed', 'fontcolor', 'fontsize', 'italics', 'link', 'small', 'strike', 'sub', 'sup']),
-  [K.NUMBER]: new Set([...OBJECT_PROTO_NAMES, 'toExponential', 'toFixed', 'toPrecision']),
-  [K.BOOL]: new Set(OBJECT_PROTO_NAMES),
-  [K.BIGINT]: new Set(OBJECT_PROTO_NAMES),
-}
 // The names a typed array (or a DataView, whose kind it shares) answers through
 // its prototypes: %TypedArray%.prototype's, DataView.prototype's and
 // Object.prototype's. Any other name is an own property of it, or undefined.
@@ -432,7 +417,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const da = isDict(a), db = isDict(b)
       if ((da || db) && (j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0) {
         const c = da && db ? unify(paramOf(a), paramOf(b)) : cell(paramOf(da ? a : b))
-        if (!(da && db)) addCellObject(c, da ? b : a)
+        if (!(da && db)) { addCellObject(c, da ? b : a); if (hasTag(da ? b : a, K.HASH)) shapeCells.delete(c) }
         return (j & ~UNKNOWN) | c
       }
       // A shape beside primitives (`typeof x === 'string' && fn`, `found || false`)
@@ -440,7 +425,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // keeps its identity in a cell of its own: a read or store through the
       // join reaches the shape, as through a dictionary that may hold it.
       if ((j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0 && (sidOf(a) !== UNKNOWN || sidOf(b) !== UNKNOWN || tagOf(a) === K.OBJECT && paramOf(a) !== UNKNOWN || tagOf(b) === K.OBJECT && paramOf(b) !== UNKNOWN)) {
-        const c = mixedCell(a, b)
+        const c = mixedCell(a, b, !hasTag(a, K.HASH) && !hasTag(b, K.HASH))
         addCellObject(c, a); addCellObject(c, b)
         return (j & ~UNKNOWN) | bitOf(K.HASH) | c
       }
@@ -449,14 +434,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return j
   }
   const mixedCells = new Map()   // smaller kind → Map(larger kind → its cell)
-  const mixedCell = (a, b) => {
+  // (`shapes`: no operand is a dictionary, so the cell is one of `shapeCells`)
+  const mixedCell = (a, b, shapes) => {
     // Joins replay every round. Keep numeric keys instead of formatting the
     // same pair each time; ordering gives both operand orders one entry.
     if (a > b) { const prior = a; a = b; b = prior }
     let pairs = mixedCells.get(a)
     if (!pairs) mixedCells.set(a, pairs = new Map())
     let id = pairs.get(b)
-    if (id === undefined) { id = elems.length; elems.push(K.NONE); cellUp.push(id); pairs.set(b, id) }
+    if (id === undefined) { id = elems.length; elems.push(K.NONE); cellUp.push(id); pairs.set(b, id); if (shapes) shapeCells.add(id) }
     return cell(id)
   }
   // Why a shape is being lost, for the advisory (`onLose`): the outermost
@@ -738,6 +724,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // with each shape's field; a store reaches the entry and every shape.
   const cellShapes = new Map()        // cell root → Set<sid>
   const cellLostObject = new Set()    // cell roots holding objects of unknown shape
+  // The cells of shapes joined with primitives and typed arrays alone (merge's
+  // mixed cell of operands no dictionary is among): the HASH tag of their kinds
+  // names the cell, never a dictionary the value may be. A dictionary joined
+  // in, or a cell unified with one of another kind, takes the cell out.
+  const shapeCells = new Set()        // cell roots
   const NO_SHAPES = new Set()
   const shapesInCell = (c) => cellShapes.get(c) ?? NO_SHAPES
   const seeKeys = (k) => {
@@ -1349,6 +1340,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (keyedCells.has(a) && !keyedCells.has(b)) keyedCells.delete(a)
     if (cellShapes.has(b)) addCellShapes(a, cellShapes.get(b))
     if (cellLostObject.has(b)) addCellLost(a)
+    if (!shapeCells.has(b)) shapeCells.delete(a)
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
     if (propArrays.has(b)) propArrays.add(a)
     if (cellWild.has(b)) raiseWild(kind(K.ARRAY, a), cellWild.get(b))
@@ -5266,7 +5258,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, closureWild, iterSites, reached, defaultRuns, decisions,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, iterSites, reached, defaultRuns, decisions,
     mapKeys, heldKeys, absentStored,
     held,
     boolKeys, storeBits, paramKeys,

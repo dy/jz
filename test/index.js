@@ -130,6 +130,7 @@ const TESTS = [
   'chosen-calls',
   'loop-fields',
   'absent-member',
+  'mixed-read',
   'called-args',
   'object-reads',
   'kind-split',
