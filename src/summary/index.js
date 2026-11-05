@@ -2840,6 +2840,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       sp = b
       return r
     }
+    // `f.bind(t, …)` makes a function calling f with t and these arguments
+    // ahead of its own (module/function.js `__bound`): where it goes and who
+    // calls it the summary does not follow, so f's callers are unknown.
+    if (t === K.CLOSURE && name === 'bind') {
+      if (paramOf(recv) !== UNKNOWN) for (const id of membersOf(paramOf(recv))) escapeId(id)
+      escapeArgs(base, n)
+      return kind(K.CLOSURE)
+    }
     // `f.m(…)` on a function's own property (a class's statics, a parser's
     // table: closureProps): the closure it holds is called; a property of
     // another kind, or none, is a call of a non-function.
@@ -3484,6 +3492,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A primitive holds no own property: a name outside its prototype reads undefined.
     if ((t === K.STRING || t === K.NUMBER || t === K.BOOL || t === K.BIGINT) && !PRIMITIVE_METHODS.has(prop)) return optionalResult(op, recv, NULLISH)
     if (t === K.CLOSURE && closureOwn(recv) && !FUNCTION_PROTO.has(prop)) return optionalResult(op, recv, orAbsent(closurePropOf(recv, prop)))
+    // A function's `call`, `apply` and `bind` are Function.prototype's
+    // (module/function.js protoMember): functions, a call of which with this
+    // function as its receiver calls it with arguments the summary does not follow.
+    if (t === K.CLOSURE && (prop === 'call' || prop === 'apply' || prop === 'bind') && !memberMayBeOwn(prop)) {
+      if (paramOf(recv) !== UNKNOWN) for (const id of membersOf(paramOf(recv))) escapeId(id)
+      return optionalResult(op, recv, kind(K.CLOSURE))
+    }
     return optionalResult(op, recv, ANY)
   }
   // The joined kind of a mixed binding, read where its value is retained:

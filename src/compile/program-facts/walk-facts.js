@@ -437,6 +437,8 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // slot in every case, so it is always a root.
         if (!calleeMembers.has(node) && typeof node[2] === 'string')
           acc.memberValueReads.push({ objName: node[1], prop: node[2], test: testMembers.has(node) })
+        // `fn.bind(…)` hands fn on, the bound function's target (module/function.js `__bound`): a value use.
+        if (node[2] === 'bind') acc.addressTakenNames.add(node[1])
         return
       }
       if (op === 'let' || op === 'const') {

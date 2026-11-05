@@ -1970,6 +1970,58 @@ test('closures: bind of a function inside its own body', () => {
   }
 })
 
+// Function.prototype.bind of any function value (module/function.js `__bound`):
+// the bound function calls the target with the receiver and the arguments
+// bound, then its own, its length the target's less the bound count. The
+// method dispatch had arms for `.call` and `.apply` and none for `.bind`, so a
+// bind of a function the compiler could not name (a parameter, a member, an
+// element) threw "is not a function"; prepare's fold of a named one made an
+// arrow whose length was its own. A function's call, apply and bind read as
+// values are functions too: `typeof a[0].bind` read undefined.
+test('closures: bind of any function value', () => {
+  const src = `const top = (a, b, c) => a * 100 + b * 10 + c
+    function decl(a, b) { return a - b }
+    export let param = (n) => { const h = (cb) => cb.bind(null, 1); const g = (a, b) => a * 10 + b; return h(g)(n) }
+    export let method = (n) => { const o = { k: n, m() { return this.k } }; const b = o.m.bind(o); return b() }
+    export let other = (n) => { const o = { k: n, m(a) { return this.k + a } }; return [o.m.bind({ k: 100 })(1), o.m.bind(o, 2)()].join() }
+    export let element = (n) => { const fs = [(a) => a + 1, (a) => a * 2]; return fs[n % 2].bind(null, n)() }
+    export let twice = (n) => { const h = (cb, x) => cb.bind(null, x); return h(h(top, 1), 2)(n) }
+    export let lengths = (n) => { const h = (cb, ...x) => cb.bind(null, ...x); const g = (a, b) => a
+      return [h(top).length, h(top, 1).length, h(top, 1, 2, 3, 4).length, h(h(top, 1), 1).length, g.bind(null, n).length, top.bind(null).length, decl.bind(null, n).length, decl.bind(null, n)(1)].join() }
+    export let rest = (n) => { const g = (...r) => r.join(); const h = (cb) => cb.bind(null, 1, 2); return h(g)(3, n) }
+    export let many = (n) => { const g = (a, ...r) => a + ':' + r.join(); const h = (cb) => cb.bind(null, 1, 2, 3, 4, 5, 6); return h(g)(7, 8, 9, n) }
+    export let spreadCall = (n) => { const g = (...r) => r.length; const h = (cb) => cb.bind(null, 1, 2); const xs = [1, 2, 3, 4, 5, 6, 7, 8, n]; return h(g)(...xs) }
+    export let spreadArgs = (n) => { const g = (a, b, c) => a + b + c; const h = (cb, xs) => cb.bind(...xs); return h(g, [null, 1, 2])(n) }
+    export let defaults = (n) => { const g = (a, b = 7) => a + b; const h = (cb) => cb.bind(null, n); return h(g)() }
+    export let kind = (n) => { const h = (cb) => cb.bind(null); return typeof h((a) => a) }
+    export let own = (n) => { const o = { bind(x) { return () => x * 3 } }; const g = (a) => a + 1; const h = (r) => r.bind(null, n); return h(o)() + h(g)() }
+    export let loop = (n) => { const g = (a, b) => a + b; const h = (cb) => cb.bind(null, 1); const b = h(g); let s = 0; for (let i = 0; i < 100000; i++) s += b(i); return s }
+    export let made = (n) => { const g = (a, b) => a + b; const h = (cb, x) => cb.bind(null, x); let s = 0; for (let i = 0; i < 1000; i++) s += h(g, i)(n); return s }
+    export let out = (n) => { const g = (a, b) => a * 10 + b; const h = (cb) => cb.bind(null, n); return h(g) }
+    export let host = (g) => { const h = (cb) => cb.bind(null, 1); return h(g)(2) }
+    export let members = (n) => { const k = (x) => x; const a = [k]; const j = (x) => x * 2
+      return [typeof a[0].bind, typeof a[0].call, typeof k.apply, k.bind === j.bind, k.call === k.apply, k.call.length, k.apply.length, k.bind.length, a[0].bind ? 1 : 0].join() }
+    export let detached = (n) => { const g = (a, b) => a * 10 + b; const c = g.call, p = g.apply, b = g.bind
+      return [c.call(g, null, 1, n), p.call(g, null, [2, n]), b.call(g, null, 3)(n), b.call(g, null, 1).length].join() }
+    export let plain = (n) => { const g = (a) => a; const c = g.call; try { return c(1) } catch (e) { return e.name } }
+    export let ownMember = (n) => { const g = (a) => a; g.call = n; return g.call }
+    export let mixedMember = (n) => { const xs = [(a) => a, { call: 5 }]; return [typeof xs[n % 2].call, xs[1].call].join() }
+    export let missing = (n) => { const xs = [(a) => a]; try { return typeof xs[n].bind } catch (e) { return e.name } }`
+  const host = oracle(src)
+  const hostFn = (a, b) => a * 10 + b
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const name of Object.keys(host)) {
+      // (a WASI host passes no function it can call)
+      if (name === 'host' && onWasi()) continue
+      const arg = name === 'host' ? hostFn : 3
+      const want = host[name](arg), got = m[name](arg)
+      if (name === 'out') is(got(5), want(5), `${name} at ${optimize}`)
+      else is(got, want, `${name} at ${optimize}`)
+    }
+  }
+})
+
 // ES §14.7.4.7 per-iteration bindings (2026-07-10): a for-head `let` captured
 // by a body closure gets a FRESH binding per iteration (copy-in/copy-out
 // lowering in prepare; the body-let rides emitLoopFreshBoxed). Uncaptured

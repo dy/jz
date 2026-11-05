@@ -161,6 +161,10 @@ const wrapBuiltinValues = (ast) => {
       (op === '[]' || op === '?.[]') && n.length === 3 && n[2]?.[0] === 'str'
     if (!read || reference) return n
     const prop = op === '.' || op === '?.' ? n[2] : n[2][1]
+    // A function's call, apply or bind read as a value reaches its target
+    // through the receiver slot (module/function.js protoMember): the slot
+    // opens where the receiver may be a closure, once its kind settles.
+    if (prop === 'call' || prop === 'apply' || prop === 'bind') (ctx.funcs.protoMemberSites ||= []).push([scope, n[1]])
     const ctor = typeof n[1] === 'string' && n[1].endsWith('.prototype') ? n[1].slice(0, -10) : null
     if (ctor && COLLECTION_METHODS.get(prop)?.includes(ctor)) {
       receiver = true

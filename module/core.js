@@ -43,7 +43,7 @@ import { representationProgramHasBigint } from '../src/compile/representation-pl
 import { liftedPropOf } from '../src/compile/analyze/func-namespaces.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
 import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore, primitiveLacks } from '../src/summary/kind.js'
-import { unbounded } from '../src/summary/contract.js'
+import { unbounded, unboundedPresent } from '../src/summary/contract.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 import { sidecarOverride } from '../src/compile/emit/own-method.js'
 import { markField } from '../src/ir/mem-alias.js'
@@ -2987,6 +2987,31 @@ export default (ctx) => {
     if (!raw) {
       const bound = classMethodValue(obj, prop, (recv) => dotRead(recv, prop, true))
       if (bound !== undefined) return bound
+    }
+    // A function's `call`, `apply` and `bind` are Function.prototype's
+    // (module/function.js protoMember): off a closure owning none, the member;
+    // off a receiver the summary names a closure among others, the member
+    // where it is one and its own read finds nothing. A receiver of no kind
+    // the summary bounds reads as it did.
+    if (!raw && !symbolRead && ctx.closure.protoMember && (prop === 'call' || prop === 'apply' || prop === 'bind')) {
+      const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(obj)
+      if (k != null && hasTag(k, K.CLOSURE) && !unboundedPresent(k)) {
+        const t = temp('fpm'), held = asF64(emit(obj)), member = ctx.closure.protoMember(prop)
+        const recv = () => typed(['local.get', `$${t}`], 'f64')
+        if (summaryTagOf(k) === K.CLOSURE && !ctx.summary.memberMayBeOwnOn(prop, VAL.CLOSURE)) {
+          const missing = isNullable(k) ? hasTag(k, K.NULLISH) ? isNullish : isUndef : null
+          return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, held],
+            ...(missing ? [['if', missing(recv()), ['then', ['drop', throwTypeErrorIR()]]]] : []), member], 'f64')
+        }
+        const own = temp('fpo')
+        copyReceiverFacts(obj, t)
+        view?.alias(t, obj, false)
+        let read
+        try { read = asF64(dotRead(t, prop, false, true)) } finally { view?.unalias(t) }
+        return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, held], ['local.set', `$${own}`, read],
+          ['if', ['result', 'f64'], ['i32.and', ptrTypeEq(recv(), PTR.CLOSURE), isUndef(typed(['local.get', `$${own}`], 'f64'))],
+            ['then', member], ['else', ['local.get', `$${own}`]]]], 'f64')
+      }
     }
     // An element read the interval prover puts in bounds is present: absence
     // is the one nullishness an in-range read of an array of objects carries.

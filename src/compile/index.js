@@ -65,6 +65,7 @@ import {
 import { link } from '../link/index.js'
 import { summarize, K, hasTag, tagOf, tagsOf, paramOf, UNKNOWN } from '../summary/index.js'
 import { bitOf, NULL_BITS, ANY } from '../summary/kind.js'
+import { unboundedPresent } from '../summary/contract.js'
 import { programPins } from '../optimize/watr-tail.js'
 import { stablePtrGlobalNames } from '../optimize/globals.js'
 import { synthesizeClassDispatchers, synthesizeClassExports, hostClassTable } from './emit/class-dispatch.js'
@@ -260,6 +261,12 @@ export function assemble(ast, profiler) {
     }
     reader.sites = null
   }
+  // A function's call, apply or bind read as a value calls its target as the
+  // receiver it is given (module/function.js protoMember), where the summary
+  // names a closure the receiver may be (module/core.js dotRead).
+  const protoMemberOf = (k) => hasTag(k, K.CLOSURE) && !unboundedPresent(k)
+  if (ctx.funcs.protoMemberSites?.some(([scope, recv]) => protoMemberOf(ctx.summary.at(scope).kindOfExpr(recv)))) ctx.closure.receiver = true
+  ctx.funcs.protoMemberSites = null
   // Include imported functions for call resolution (e.g. template interpolations).
   // Also register a synthesized sig in func.map so emit's arity-aware branches see
   // the import's declared param count — needed for arg pad/truncate to match it.

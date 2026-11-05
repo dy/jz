@@ -11,7 +11,7 @@
  */
 
 import { typed, asF64, asI64, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN, ptrTypeEq, throwTypeErrorIR } from '../src/ir.js'
-import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
+import { emit, storedValue, storedValuePlanned, deps } from '../src/bridge.js'
 import { constNumExpr } from '../src/static.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
@@ -67,11 +67,172 @@ export default (ctx) => {
   // A slot's source arity, one byte per table slot: a lazy table
   // (wat/assemble/stdlib-pull.js injectTable) laid out once the table is
   // whole, its base global re-pointed wherever a later strip moves data.
+  // A bound function's is its target's less the arguments it binds, at least
+  // zero (ES 20.2.3.2 step 5), through every bind between them.
+  const slotOf = fn => `(i32.wrap_i64 (i64.and (i64.shr_u ${fn} (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK})))`
   ctx.core.stdlib.__closure_length = () => {
     if (!ctx.scope.globals.has('__closure_len_tbl')) declGlobal('__closure_len_tbl', 'i32')
-    return `(func $__closure_length (param $fn i64) (result i32)
-      (i32.load8_u (i32.add (global.get $__closure_len_tbl)
-        (i32.wrap_i64 (i64.and (i64.shr_u (local.get $fn) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))))`
+    const bound = ctx.closure.table.indexOf(BOUND)
+    const len = `(i32.load8_u (i32.add (global.get $__closure_len_tbl) ${slotOf('(local.get $fn)')}))`
+    if (bound < 0) return `(func $__closure_length (param $fn i64) (result i32) ${len})`
+    return `(func $__closure_length (param $fn i64) (result i32) (local $k i32) (local $n i32)
+      (block $target (loop $unbind
+        (br_if $target (i32.ne ${slotOf('(local.get $fn)')} (i32.const ${bound})))
+        (local.set $k (i32.add (local.get $k) (i32.trunc_f64_u (f64.load offset=16 (i32.wrap_i64 (local.get $fn))))))
+        (local.set $fn (i64.load (i32.wrap_i64 (local.get $fn))))
+        (br $unbind)))
+      (local.set $n ${len})
+      (select (i32.sub (local.get $n) (local.get $k)) (i32.const 0) (i32.gt_u (local.get $n) (local.get $k))))`
+  }
+
+  // Function.prototype.bind (ES 20.2.3.2): a bound function is a closure of
+  // the one trampoline `__bound`, over an environment of its target, its
+  // receiver, the count of arguments it binds and those arguments:
+  // [target, this, k, arg0 … arg{k-1}]. A call places the bound arguments in
+  // the leading slots and its own after them, the count the sum; past the
+  // slots they go in a fresh array published as the spill, as a spread
+  // call's (closure-emit.js reads a rest parameter's tail there). No call
+  // allocates while they fit. The target was a closure when it was bound.
+  const BOUND = '__bound'
+  const boundEnvOf = '(i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $env)) (i64.const 4294967295)))'
+  ctx.core.stdlib[BOUND] = () => {
+    const W = ctx.closure.width ?? MAX_CLOSURE_ARITY, lanes = Array.from({ length: W }, (_, i) => i)
+    const self = ctx.closure.receiver ? '(f64.load offset=8 (local.get $e))' : ''
+    const call = (slots) => `(call_indirect (type $ftN) (local.get $fn) (local.get $n) ${slots.join(' ')} ${self}
+      ${slotOf('(i64.reinterpret_f64 (local.get $fn))')})`
+    // k bound ahead: slot j holds bound argument j below k, the call's argument j - k from there
+    const ahead = k => call(lanes.map(j => j < k ? `(f64.load offset=${24 + 8 * j} (local.get $e))` : `(local.get $a${j - k})`))
+    let cases = `(br_table ${[...lanes, W].map(k => `$k${k}`).join(' ')} (local.get $k))`
+    for (let k = 0; k < W; k++) cases = `(block $k${k} ${cases}) (br $done ${ahead(k)})`
+    return `(func $${BOUND} (param $env f64) (param $argc i32)${lanes.map(i => ` (param $a${i} f64)`).join('')}${ctx.closure.receiver ? ' (param $this f64)' : ''} (result f64)
+      (local $e i32) (local $k i32) (local $n i32) (local $fn f64) (local $s i32) (local $p i32)
+      (local.set $e ${boundEnvOf})
+      (local.set $fn (f64.load (local.get $e)))
+      (local.set $k (i32.trunc_f64_u (f64.load offset=16 (local.get $e))))
+      (local.set $n (i32.add (local.get $k) (local.get $argc)))
+      (if (result f64) (i32.le_u (local.get $n) (i32.const ${W}))
+        (then (block $done (result f64) (block $k${W} ${cases}) ${ahead(W)}))
+        (else
+          (local.set $s (call $__alloc_hdr (local.get $n) (local.get $n)))
+          (memory.copy (local.get $s) (i32.add (local.get $e) (i32.const 24)) (i32.shl (local.get $k) (i32.const 3)))
+          (local.set $p (i32.add (local.get $s) (i32.shl (local.get $k) (i32.const 3))))
+          ${lanes.map(i => `(if (i32.gt_u (local.get $argc) (i32.const ${i})) (then (f64.store offset=${8 * i} (local.get $p) (local.get $a${i}))))`).join('\n          ')}
+          (if (i32.gt_u (local.get $argc) (i32.const ${W}))
+            (then (memory.copy (i32.add (local.get $p) (i32.const ${8 * W})) (i32.add (global.get $__closure_spill) (i32.const ${8 * W}))
+              (i32.shl (i32.sub (local.get $argc) (i32.const ${W})) (i32.const 3)))))
+          (global.set $__closure_spill (local.get $s))
+          ${call(lanes.map(j => `(f64.load offset=${8 * j} (local.get $s))`))})))`
+  }
+  // A bound function's environment: k + 3 slots, counted in a header where a
+  // walk reads what a closure holds (as closure.make allocates one).
+  const walkedEnv = () => (!!ctx.plans.hasSites && reachOn()) || compactOn()
+  const boundEnv = (n) => walkedEnv()
+    ? (inc('__alloc_hdr'), ['call', '$__alloc_hdr', n, n])
+    : ['call', '$__alloc', ['i32.shl', n, ['i32.const', 3]]]
+  // `fn.bind(...args)`, its arguments one array (a spread among them): this its first, the bound the rest.
+  ctx.core.stdlib.__bind_array = () => `(func $__bind_array (param $fn f64) (param $args f64) (result f64)
+    (local $a i32) (local $n i32) (local $k i32) (local $e i32)
+    (local.set $a (call $__ptr_offset (i64.reinterpret_f64 (local.get $args))))
+    (local.set $n (call $__len (i64.reinterpret_f64 (local.get $args))))
+    (local.set $k (select (i32.sub (local.get $n) (i32.const 1)) (i32.const 0) (i32.gt_s (local.get $n) (i32.const 0))))
+    (local.set $e ${walkedEnv() ? '(call $__alloc_hdr (i32.add (local.get $k) (i32.const 3)) (i32.add (local.get $k) (i32.const 3)))'
+      : '(call $__alloc (i32.shl (i32.add (local.get $k) (i32.const 3)) (i32.const 3)))'})
+    (f64.store (local.get $e) (local.get $fn))
+    (f64.store offset=8 (local.get $e) (if (result f64) (local.get $n) (then (f64.load (local.get $a))) (else (f64.const nan:${UNDEF_NAN}))))
+    (f64.store offset=16 (local.get $e) (f64.convert_i32_u (local.get $k)))
+    (memory.copy (i32.add (local.get $e) (i32.const 24)) (i32.add (local.get $a) (i32.const 8)) (i32.shl (local.get $k) (i32.const 3)))
+    (call $__mkptr (i32.const ${PTR.CLOSURE}) (i32.const ${ctx.closure.table.indexOf(BOUND)}) (local.get $e)))`
+  /** `fn.bind(thisArg, ...args)` of the closure `target` (emitted IR): the
+   *  bound function. `args` are the call's, AST nodes or emitted IR; with
+   *  `spread`, one array holding them all. JS order: the target, then the
+   *  arguments, then the allocation. */
+  // Function.prototype's call, apply and bind read as values (`typeof f.bind`,
+  // `const c = f.call`): a closure each, its target the receiver of a call of
+  // it, which the closure ABI passes where the program reads `this`
+  // (ctx.closure.receiver). Where it does not, no call can name the target,
+  // and a call throws, as one with no function receiver does.
+  const PROTO = { call: '__fn_call', apply: '__fn_apply', bind: '__fn_bind' }
+  const PROTO_LENGTH = { call: 1, apply: 2, bind: 1 }
+  // argument i of a stub's call: a slot, past the slots the spill
+  const argAt = (W, i) => i < W ? `(local.get $a${i})`
+    : `(if (result f64) (i32.gt_u (local.get $argc) (i32.const ${i})) (then (f64.load offset=${8 * i} (global.get $__closure_spill))) (else (f64.const nan:${UNDEF_NAN})))`
+  const protoStub = (name, body) => () => {
+    const W = ctx.closure.width ?? MAX_CLOSURE_ARITY, lanes = Array.from({ length: W }, (_, i) => i)
+    const head = `(func $${PROTO[name]} (param $env f64) (param $argc i32)${lanes.map(i => ` (param $a${i} f64)`).join('')}${ctx.closure.receiver ? ' (param $this f64)' : ''} (result f64)`
+    if (!ctx.closure.receiver) return `${head} (call $__throw_not_callable) (unreachable))`
+    // (the receiver it gives the target, its first argument, is read before the spill moves)
+    return `${head} (local $n i32) (local $p i32) (local $e i32) (local $last f64) (local $t f64)
+      (if (i32.ne ${ptrTypeOf('(local.get $this)')} (i32.const ${PTR.CLOSURE})) (then (call $__throw_not_callable) (unreachable)))
+      (local.set $t ${argAt(W, 0)})
+      ${body(W, lanes)})`
+  }
+  const ptrTypeOf = v => `(i32.wrap_i64 (i64.and (i64.shr_u (i64.reinterpret_f64 ${v}) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
+  const targetCall = (W, argc, slots, self) => `(call_indirect (type $ftN) (local.get $this) ${argc} ${slots.join(' ')} ${self}
+    ${slotOf('(i64.reinterpret_f64 (local.get $this))')})`
+  // f.call(t, ...args): the arguments one place down, the spill with them
+  ctx.core.stdlib.__fn_call = protoStub('call', (W, lanes) => `
+    (local.set $n (select (i32.sub (local.get $argc) (i32.const 1)) (i32.const 0) (i32.gt_s (local.get $argc) (i32.const 0))))
+    (local.set $last ${argAt(W, W)})
+    (if (i32.gt_u (local.get $argc) (i32.const ${W + 1})) (then (global.set $__closure_spill (i32.add (global.get $__closure_spill) (i32.const 8)))))
+    ${targetCall(W, '(local.get $n)', lanes.map(j => j + 1 < W ? `(local.get $a${j + 1})` : '(local.get $last)'), '(local.get $t)')}`)
+  // f.apply(t, args): the arguments of the array, published as a spread call's are
+  ctx.core.stdlib.__fn_apply = protoStub('apply', (W, lanes) => `
+    (local.set $last ${argAt(W, 1)})
+    (if (i32.eqz (call $__is_nullish (i64.reinterpret_f64 (local.get $last))))
+      (then
+        (local.set $p (call $__ptr_offset (i64.reinterpret_f64 (local.get $last))))
+        (local.set $n (call $__len (i64.reinterpret_f64 (local.get $last))))
+        (global.set $__closure_spill (local.get $p))))
+    ${targetCall(W, '(local.get $n)', lanes.map(j => `(if (result f64) (i32.gt_u (local.get $n) (i32.const ${j})) (then (f64.load offset=${8 * j} (local.get $p))) (else (f64.const nan:${UNDEF_NAN})))`), '(local.get $t)')}`)
+  // f.bind(t, ...args): the bound function, its arguments after the first bound
+  ctx.core.stdlib.__fn_bind = protoStub('bind', (W, lanes) => `
+    (local.set $n (select (i32.sub (local.get $argc) (i32.const 1)) (i32.const 0) (i32.gt_s (local.get $argc) (i32.const 0))))
+    (local.set $e ${walkedEnv() ? '(call $__alloc_hdr (i32.add (local.get $n) (i32.const 3)) (i32.add (local.get $n) (i32.const 3)))'
+      : '(call $__alloc (i32.shl (i32.add (local.get $n) (i32.const 3)) (i32.const 3)))'})
+    (f64.store (local.get $e) (local.get $this))
+    (f64.store offset=8 (local.get $e) (local.get $t))
+    (f64.store offset=16 (local.get $e) (f64.convert_i32_u (local.get $n)))
+    ${lanes.slice(1).map(i => `(if (i32.gt_u (local.get $argc) (i32.const ${i})) (then (f64.store offset=${16 + 8 * i} (local.get $e) (local.get $a${i}))))`).join('\n    ')}
+    (if (i32.gt_u (local.get $argc) (i32.const ${Math.max(W, 1)}))
+      (then (memory.copy (i32.add (local.get $e) (i32.const ${16 + 8 * Math.max(W, 1)})) (i32.add (global.get $__closure_spill) (i32.const ${8 * Math.max(W, 1)}))
+        (i32.shl (i32.sub (local.get $argc) (i32.const ${Math.max(W, 1)})) (i32.const 3)))))
+    (call $__mkptr (i32.const ${PTR.CLOSURE}) (i32.const ${ctx.closure.table.indexOf(BOUND)}) (local.get $e))`)
+  /** The value of Function.prototype's `name` member (call, apply or bind): a closure of its stub. */
+  ctx.closure.protoMember = (name) => {
+    const slot = ctx.closure.mint(PROTO[name], PROTO_LENGTH[name])
+    ;(ctx.closure.noProto ??= new Set()).add(slot)
+    if (name === 'bind') { ctx.closure.mint(BOUND, 0); inc(BOUND) }
+    inc(PROTO[name])
+    setLinkDemand('closure')
+    declGlobal('__closure_spill', 'i32')
+    return mkPtrIR(PTR.CLOSURE, slot, 0)
+  }
+  deps({
+    __fn_call: ['__throw_not_callable'],
+    __fn_apply: ['__throw_not_callable', '__is_nullish', '__ptr_offset', '__len'],
+    __fn_bind: () => ['__throw_not_callable', '__mkptr', BOUND, walkedEnv() ? '__alloc_hdr' : '__alloc'],
+    [BOUND]: ['__alloc_hdr'],
+    __bind_array: () => ['__ptr_offset', '__len', '__mkptr', walkedEnv() ? '__alloc_hdr' : '__alloc'],
+  })
+  ctx.closure.bound = (target, args, spread = false) => {
+    const slot = ctx.closure.mint(BOUND, 0)
+    inc(BOUND)
+    setLinkDemand('closure')
+    // (the trampoline publishes a long call's arguments there; a host call of it sets it first)
+    declGlobal('__closure_spill', 'i32')
+    const fn = temp('bfn'), setup = [['local.set', `$${fn}`, asF64(target)]]
+    if (spread) {
+      inc('__bind_array')
+      return typed(['block', ['result', 'f64'], ...setup, ['call', '$__bind_array', ['local.get', `$${fn}`], asF64(args[0])]], 'f64')
+    }
+    const vals = args.map(a => { const t = temp('barg'); setup.push(['local.set', `$${t}`, ctx.closure.argIR(a)]); return t })
+    const k = Math.max(0, vals.length - 1), e = tempI32('benv'), at = i => ['i32.add', ['local.get', `$${e}`], ['i32.const', i * 8]]
+    setup.push(['local.set', `$${e}`, boundEnv(['i32.const', k + 3])],
+      ['f64.store', at(0), ['local.get', `$${fn}`]],
+      ['f64.store', at(1), vals.length ? ['local.get', `$${vals[0]}`] : UNDEF_LIT()],
+      ['f64.store', at(2), ['f64.const', k]])
+    for (let i = 1; i < vals.length; i++) setup.push(['f64.store', at(2 + i), ['local.get', `$${vals[i]}`]])
+    return typed(['block', ['result', 'f64'], ...setup, mkPtrIR(PTR.CLOSURE, slot, ['local.get', `$${e}`])], 'f64')
   }
   // The host's call of a closure it holds (interop.js reads one as a JS
   // function). Values cross as i64 bits, as every boxed boundary value does.
