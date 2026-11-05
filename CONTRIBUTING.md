@@ -3370,6 +3370,7 @@ src/
                 plan/counted-loops.js: a counted loop over its trip number (computed start, secondary cursors, unrolled body rolled back, unit stride versioned); guards preserve full cursor entries and updates, including signed zero. Bounds must be stable and free of coercion calls; captures and mutable array lengths retain their original loops.
                 plan/counted-loops.js unitWalks: a `while (x !== e)` whose every write of x steps it by one unit the same way (`x += dx`, dx ±1 or a name the loop never writes; `x++`) runs under `x < e` (`x > e` stepping down) where x and e are integers and x starts at or before e the way it steps, a copy per way with the step a literal: no step crosses an integer, so the copy stops where the loop does; the loop as written runs for the rest (a fraction, NaN, another kind, a cursor past its end, which may never stop). A falling-sand scan alternating direction by row keeps its cursor and every cell index in words
                 plan/counted-loops.js adoptLoopCounters: a `for` whose counter is declared outside it and assigned by its init (`let i; for (i = 0; …)`), read nowhere else and never captured, declares a counter of its own; the loop then reads as `for (let i …)` (the lane recognizers, the extent proofs)
+                plan/loop-invariants.js: a declaration in a loop of a Number the loop never changes moves before it, the value of literals, module constants and locals declared ahead of the loop (a remainder, whose fast path branches to the runtime, is what watr's LICM cannot take), the loops innermost first, so a value of the outer loop's alone moves on out; a declaration in a body the splice brought is the common case
                 plan/forward-conditions.js: a boolean declared once from a condition for the `if` right after it (`const inside = x >= 0 && … ; if (inside)`), the `if` testing the condition itself, so its arms refine by the conjuncts
                 plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
                 plan/reciprocal-loops.js: a kernel loop dividing by a name it never writes (`sum / m`, `/ span`), a copy multiplying by the reciprocal where the divisor is a positive int32 power of two (exact: `a * 2^-k` is `a / 2^k` for every `a`), the loop as written the other arm; a quotient made an integer (`| 0`, `Math.floor`) is loop-divmod.js's
@@ -5457,8 +5458,14 @@ over `gcd`, whose loops stay a function), outside a cycle of calls, whose copy w
 cycle's call again, and so does a body of any size at its one site where that site is in a
 loop: the splice copies nothing and takes a call out of the loop that V8 would not inline (it
 takes at most 500 bytes; stdlib's `erf` swept over its arguments, 0.72x the time spliced);
-and a function a value names is still the body of its direct calls
-(`modf( x )` beside `modf.assign = assign`). A call in an arm of a conditional runs only
+a straight-line body of up to 400 nodes splices at a site where the innermost loop holds some
+of its arguments fixed and the body's declarations compute at least 16 operators from those
+alone (`LIFT_WORK`): the call repeats that work each pass, and spliced, `plan/loop-invariants.js`
+moves it out of the loop (munsell's `muXyY( H, V, c )` over the chromas of one hue and value,
+0.32x the time, 14% more bytes); and a function a value names is still the body of its direct
+calls (`modf( x )` beside `modf.assign = assign`). `lowerReturns` makes one exit of a body of
+early returns; a tuple's returns, each a literal of its lanes, assign a binding per lane and
+the one return is the literal of the bindings. A call in an arm of a conditional runs only
 where the arm does, so the conditional itself moves ahead of its statement, as a statement:
 `c ? a : f( x )` is `let t; if ( c ) t = a; else t = f( x )` and then `t`, `a && f( x )` is
 `let t = a; if ( t ) t = f( x )`, past what it commutes with only, as a lifted call moves. A

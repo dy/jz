@@ -49,6 +49,7 @@ import { isExported } from '../func-exports.js'
 import { frameNode } from '../../function.js'
 import { liveFunctions } from './scratch.js'
 import { SOURCE_FULL } from '../../growth.js'
+import { pureNames, ops } from './loop-invariants.js'
 
 // Returns { prefix, value } where prefix is the substituted body statements
 // (excluding any trailing `return X`), and value is the substituted return
@@ -112,6 +113,12 @@ let hotOnly = new Set()
 /** Candidates the speed tier splices in a loop at any depth, while the caller has
  *  room (`SOURCE_FULL`): a body of its size at a site the loop runs. */
 let warm = new Set()
+/** Candidates past the warm size that splice at a site in a loop only where the loop holds
+ *  arguments fixed that the body's own declarations compute from (`liftWork`): name → the
+ *  body's parameter names. */
+let lifted = new Map()
+/** The loops around the statement being spliced, innermost last. */
+let loopStack = []
 /** The loops around the statement being spliced. */
 let loopsDeep = 0
 
@@ -313,13 +320,22 @@ const isLiteral = (e) => typeof e === 'number' || (Array.isArray(e) && (e[0] == 
 // A return in a switch, try or another statement is left alone (false).
 const lowerReturns = (func) => {
   const stmts = funcStmts(func.body)
+  if (!stmts) return false
   // A tuple result (prepare's multi-value signature) is one value per lane at
-  // every return: a single result binding would return one lane.
-  if (!stmts || func.sig?.results?.length > 1) return false
+  // every return, each a literal of its lanes: a binding per lane, returned as
+  // the literal of the bindings (munsell's `muXyY`, white or the interpolation).
+  const width = func.sig?.results?.length > 1 ? func.sig.results.length : 0
   const valued = some(func.body, n => n[0] === 'return' && n.length === 2)
   const r = `${T}inret${freshId(ctx)}`, done = `${T}indone${freshId(ctx)}`
+  const lanes = width ? Array.from({ length: width }, (_, k) => `${r}_${k}`) : null
   let usesDone = false, emitDone = true, init = null, bail = false
-  const exit = (s, depth) => [...(valued ? [['=', r, s.length === 2 ? s[1] : [null, undefined]]] : []),
+  const value = (s) => {
+    if (!lanes) return [['=', r, s.length === 2 ? s[1] : [null, undefined]]]
+    const lit = s[1]
+    if (!Array.isArray(lit) || lit[0] !== '[' || lit.length !== width + 1 || lit.some(e => Array.isArray(e) && e[0] === '...')) { bail = true; return [] }
+    return lanes.map((l, k) => ['=', l, lit[k + 1]])
+  }
+  const exit = (s, depth) => [...(valued ? value(s) : []),
     ...(emitDone ? [['=', done, ['bool', 1]]] : []), ...(depth ? [['break']] : [])]
   // An `if` → { node, always, sunk }: `sunk` when `rest`, the statements after
   // it, went into the else arm of the first `if` without one down its ladder.
@@ -363,7 +379,7 @@ const lowerReturns = (func) => {
       } else { bail = true; return { out, always: false } }
       if (always) return { out, always: true }
       if (depth || !rest.length) continue
-      if (top && rest.length === 1 && Array.isArray(rest[0]) && rest[0][0] === 'return' && (!valued || isLiteral(rest[0][1]))) {
+      if (top && !lanes && rest.length === 1 && Array.isArray(rest[0]) && rest[0][0] === 'return' && (!valued || isLiteral(rest[0][1]))) {
         if (valued) init = rest[0][1]
         return { out, always: true }
       }
@@ -377,11 +393,12 @@ const lowerReturns = (func) => {
   let { out } = list(stmts, 0, true)
   if (bail) return false
   if (!usesDone) { emitDone = false; init = null; ({ out } = list(stmts, 0, true)) }
+  if (bail) return false
   func.body = block([
-    ...(valued ? [['let', init != null ? ['=', r, init] : r]] : []),
+    ...(valued ? [lanes ? ['let', ...lanes] : ['let', init != null ? ['=', r, init] : r]] : []),
     ...(usesDone ? [['let', ['=', done, ['bool', 0]]]] : []),
     ...out,
-    ...(valued ? [['return', r]] : [])])
+    ...(valued ? [['return', lanes ? ['[', ...lanes] : r]] : [])])
   return true
 }
 
@@ -462,6 +479,58 @@ const spliceInlinedShape = (prefix, valueStmt) => {
 // keeps: that copy is one more (webaudio's `main` took 5680 nodes of them).
 // The largest straight-line body the speed tier splices at a site in a loop past the site budgets.
 const WARM_BODY = 200
+// The largest straight-line body spliced where a loop holds some of its arguments fixed, and the
+// operators its declarations must compute from those alone (plan/loop-invariants.js then moves
+// them out of the loop): munsell's `muXyY( 2.5 * ( hi + 1 ), V, c )` over chromas `c` computes the
+// value polynomial and cells of `V` and the hue cell of `H` each pass.
+const LIFT_BODY = 400, LIFT_WORK = 16
+/** The operators the declarations of `func`'s body (in its arms and blocks, not its loops' or
+ *  closures') compute from the parameters `fixed` alone, and from the declarations before them
+ *  that do. */
+const liftWork = (func, fixed) => {
+  if (!isBlockBody(func.body)) return 0
+  const held = new Set(fixed)
+  let work = 0
+  walkAst(func.body, { enter: st => {
+    if (st[0] === '=>' || LOOP_OPS.has(st[0])) return false
+    if (st[0] !== 'const' && st[0] !== 'let') return
+    for (let i = 1; i < st.length; i++) {
+      const d = st[i]
+      if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+      const names = pureNames(d[2])
+      if (names && [...names].every(y => held.has(y) || ctx.scope.consts?.has(y))) { held.add(d[1]); work += ops(d[2]) }
+    }
+    return false
+  } })
+  return work
+}
+// the names a loop writes, its header's own declarations among them (per pass, or moved by the step)
+const loopWrites = new WeakMap()
+const writtenIn = (loop) => {
+  let w = loopWrites.get(loop)
+  if (!w) {
+    w = new Set()
+    walkAst(loop, { enter: n => {
+      if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') w.add(n[1])
+      if (n[0] === 'let' || n[0] === 'const') collectBindings(n, w)
+    } })
+    loopWrites.set(loop, w)
+  }
+  return w
+}
+/** Whether the call `node` of a `lifted` candidate, at its site in the innermost loop around it,
+ *  passes fixed arguments the body computes enough from (`LIFT_WORK`). */
+const liftsAt = (node) => {
+  const params = lifted.get(node[1]), loop = loopStack[loopStack.length - 1], args = callArgs(node)
+  if (!params || !loop || !args) return false
+  const w = writtenIn(loop), fixed = new Set()
+  params.forEach((p, k) => {
+    const names = k < args.length ? pureNames(args[k]) : null
+    if (names && [...names].every(y => !w.has(y))) fixed.add(p)
+  })
+  return fixed.size > 0 && fixed.size < params.length && liftWork(candidatesView.get(node[1]), fixed) >= LIFT_WORK
+}
+let candidatesView = new Map()
 let callerSize = 0, callerBound = true, kernels = new Set(), inClosure = false
 // The candidates a second site or an export keeps: a splice of one copies its body.
 let sharedBodies = new Set()
@@ -515,7 +584,8 @@ const isCandidateCall = (node, candidates, hot = false) => {
   if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string' || !candidates.has(node[1])) return false
   if (callerSize > SOURCE_FULL && sharedBodies.has(node[1])) return false
   if (keepsDispatch(node)) return false
-  if (warm.has(node[1])) { if (loopsDeep === 0 && !hot || callerSize > SOURCE_FULL) return false }
+  if (lifted.has(node[1])) { if (!hot || callerSize > SOURCE_FULL || !liftsAt(node)) return false }
+  else if (warm.has(node[1])) { if (loopsDeep === 0 && !hot || callerSize > SOURCE_FULL) return false }
   else if (!hot && hotOnly.has(node[1])) return false
   if (!hot && callerBound && callerSize > SOURCE_FULL && kernels.has(node[1])) { ctx.plans.keptKernels.add(node[1]); return false }
   // in a callback a factory returns, a kernel splices at a site in the callback's own loop only
@@ -733,16 +803,16 @@ const inlineInStmt = (stmt, candidates, hot = false) => {
   }
   if (op === 'for') {
     const idx = forLoopBodyIndex(stmt)
-    loopsDeep++
+    loopsDeep++; loopStack.push(stmt)
     const r = inlineInStmt(stmt[idx], candidates, innermost(stmt[idx]))
-    loopsDeep--
+    loopsDeep--; loopStack.pop()
     if (!r) return null
     return { node: withForLoopBody(stmt, r.node), changed: true }
   }
   if (op === 'while') {
-    loopsDeep++
+    loopsDeep++; loopStack.push(stmt)
     const r = inlineInStmt(stmt[2], candidates, innermost(stmt[2]))
-    loopsDeep--
+    loopsDeep--; loopStack.pop()
     if (!r) return null
     return { node: ['while', stmt[1], r.node], changed: true }
   }
@@ -985,6 +1055,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   const speedTier = !!(cfg && cfg.inlineFns)
   hotOnly = new Set()
   warm = new Set()
+  lifted = new Map()
+  loopStack = []
   loopsDeep = 0
   kernels = new Set()
   sharedBodies = new Set()
@@ -1194,7 +1266,13 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // copy is what removes a call through a table from a loop.
     const called = speedTier && hasLoop && size <= 200 ? calledParams(func) : null
     const fnOnly = !everywhere && !loopOnly && !warmBody && called != null && called.length > 0
-    if (!everywhere && !loopOnly && !warmBody && !fnOnly) continue
+    // Past the warm size a straight-line body still splices at a site in a loop where the loop
+    // holds some of its arguments fixed and the body's declarations compute enough from those
+    // alone: the work the loop repeated moves out of it (plan/loop-invariants.js).
+    const params = (func.sig?.params || []).map(p => p.name)
+    const liftBody = speedTier && !everywhere && !loopOnly && !warmBody && !fnOnly && !hasLoop && hotSites >= 1 &&
+      size <= LIFT_BODY && params.length > 1 && params.some(p => liftWork(func, new Set([p])) > 0)
+    if (!everywhere && !loopOnly && !warmBody && !fnOnly && !liftBody) continue
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
     // a closure's own `return` is no return of the body
@@ -1238,7 +1316,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
         (sites.length === 1 && leaves.has(callee) && !hotOnly.has(callee)) ||
         (coldSites === 0 && leaves.has(callee) && !hotOnly.has(callee) && sites.length * nodeSize(candidates.get(callee).body) <= 200))
       if (some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && ctx.funcs.names.has(n[1]) && !inlinesAway(n[1])) &&
-          !(speedTier && (size <= WARM_BODY || sites.length === 1 && hotSites === 1) && !cyclic(func.name))) continue
+          !(speedTier && (size <= WARM_BODY || liftBody || sites.length === 1 && hotSites === 1) && !cyclic(func.name))) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner
@@ -1270,8 +1348,9 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     if (paramNames.size && some(func.body, n => n[0] === '()' && typeof n[1] === 'string' && paramNames.has(n[1])))
       forwarders.add(func.name)
     if (!hasLoop) leaves.add(func.name); else kernels.add(func.name)
-    if (loopOnly || warmBody) hotOnly.add(func.name)
+    if (loopOnly || warmBody || liftBody) hotOnly.add(func.name)
     if (warmBody) warm.add(func.name)
+    if (liftBody) lifted.set(func.name, params)
     if (fnOnly) fnSites.set(func.name, called)
     if (isExported(func) || sites.length !== 1) {
       sharedBodies.add(func.name)
@@ -1284,6 +1363,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   }
   }
   if (!candidates.size) return changed
+  candidatesView = candidates
 
   // Trivial expr-bodied candidates can be substituted at any expression position
   // (if-condition, ternary, etc.). Stmt-bodied ones go through inlineInStmt's

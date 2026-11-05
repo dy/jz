@@ -222,3 +222,60 @@ test('splice: a store into an element takes a straight-line body whose prefix cl
   host.xs().set(INPUTS); m.xs().set(INPUTS); host.fill(16); m.fill(16)
   for (let i = 0; i < 64; i++) is(m.outs()[i], host.outs()[i], `element ${i}`)
 })
+
+// A body past the warm size still splices where the loop holds some of its arguments fixed and
+// the body computes enough from those alone: plan/loop-invariants.js then moves that work out of
+// the loop, which the call could never have. munsell's `muXyY( H, V, c )` over the chromas `c` of
+// one hue and value computes the value polynomial and the cells of `H` and `V` each pass.
+const CELL = `function cell(h, v, c) {
+  const hf = ((h - 1e-9) % 100 + 100) % 100 / 2.5 - 1
+  const hi = Math.floor(hf), ht = hf - hi
+  const vp = v * (0.3 + v * (0.2 + v * (0.1 + v * 0.05)))
+  const vi = Math.floor(vp), vt = vp - vi
+  let a = hi * 3 + vi, b = ht * vt, d = ht + vt
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  a = a * c + b; b = b * c - d; d = d * c + a
+  return a + b * 0.5 + d * 0.25
+}\n`
+const SWEEPS = CELL + `export let chroma = (h, v, n) => { let s = 0; for (let c = 0; c < n; c++) s += cell(h, v, c * 0.125); return s }
+export let hue = (v, n) => { let s = 0; for (let k = 0; k < n; k++) s += cell(k * 2.5, v, k * 0.125); return s }\n`
+
+test('splice: a body past the warm size splices where the loop holds the arguments it computes from', () => {
+  const host = oracle(SWEEPS)
+  for (const optimize of levels(false, 2, 3)) {
+    const m = run(SWEEPS, { optimize })
+    for (const h of [0, -0, 2.5, 37.5, 99.99, -7, NaN, Infinity]) for (const v of [0, 1, 5.5, NaN]) {
+      is(m.chroma(h, v, 4), host.chroma(h, v, 4), `chroma(${h}, ${v}) at ${optimize}`)
+      is(m.chroma(h, v, 0), host.chroma(h, v, 0), `no pass of chroma(${h}, ${v}) at ${optimize}`)
+    }
+    is(m.hue(5.5, 4), host.hue(5.5, 4), `hue at ${optimize}`)
+  }
+  if (belowOpt(3)) return
+  const text = wat(SWEEPS, { optimize: 'speed' })
+  ok(!/call \$cell/.test(funcWat(text, 'chroma')), 'the loop that holds two arguments takes the body')
+  ok(/call \$cell/.test(funcWat(text, 'hue')), 'the loop that moves them keeps the call')
+})
+
+// A tuple's elements take the lanes of each early return, as a Number's value takes its one local:
+// the splice needs a body of one exit, and a guard is the commonest early return there is.
+const LANES = `function split(x, y) { if (x !== x) return [0, 0]; if (y === 0) return [x, 1]; const a = x * y + 1; return [a * a, a - y] }\n`
+test('splice: a body of early tuple returns splices, each return filling the lanes', () => {
+  const src = LANES + `export let f = (a, n) => { let s = 0, t = 0; for (let i = 0; i < n; i++) { const [p, q] = split(a + i, i); s += p; t += q } return s * 2 + t }\n`
+  const host = oracle(src)
+  for (const optimize of levels(false, 2, 3, 'speed')) {
+    const m = run(src, { optimize })
+    for (const a of [0, -0, 1, 2.5, -3, NaN, Infinity]) for (const n of [0, 1, 4]) is(m.f(a, n), host.f(a, n), `f(${a}, ${n}) at ${optimize}`)
+  }
+  if (belowOpt(3)) return
+  ok(!/call \$split/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), 'the loop takes the body')
+})
