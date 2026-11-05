@@ -503,11 +503,11 @@ about 3 ms on CI, so V8 runs most of it as baseline code before its optimizing
 compile lands; optimized, jz runs 0.59× V8's time.
 The class `rss` holds `webaudio`'s peak RSS to 1.15× V8's: V8's compiled code
 for the speed build's 1.19 MB of wasm outweighs jz's 4.5 MB heap. The class
-`size` holds `arraydowngrade`'s size build to 6× AssemblyScript's (5.80× measured):
-the AS port is a closed tagged union that appends the literal `'[object Object]1'`
-and reads NaN where JS concatenates, so it carries none of the number formatting,
-string-to-number conversion and keyed property read jz keeps until it proves which
-slots hold the object and the string.
+`size` holds `arraydowngrade`'s size build to 5.2× AssemblyScript's (5.13× measured
+against `asc -Oz` here, 5.02× against CI's): the AS port is a closed tagged union
+that appends the literal `'[object Object]1'` and reads NaN where JS concatenates,
+so it carries none of the number formatting and string-to-number conversion jz keeps
+until it proves which slots hold the object and the string.
 
 Performance evidence describes the machines recorded in its metadata: `meta.host`
 for a one-machine run, each case's `host` for a sharded CI run. The weekly CI run
