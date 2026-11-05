@@ -1556,6 +1556,32 @@ test('IIFE lift: a mutated capture bails to the closure path, stays correct', ()
   is(runHost('export let f = (a) => { let x = a; let y = (() => { x = x + 10.0; return x * 2.0 })(); return x + y }').f(5), 45, 'mutated-capture IIFE: x=15, y=30 → 45')
 })
 
+// A free-variable scan reads a name only where it reads a binding
+// (analyze-scans.js findFreeVars): a property name, a literal's or a pattern's
+// key, an accessor's name, a label, a string or regex literal and a nested
+// function's own parameters read none. The IIFE lift took `{ tag: n }`'s key
+// for a capture of a later block's `tag`, and passed that binding where it was
+// not yet in scope ("'tag' is not in scope"); module/collection.js's
+// `allocPtr({ …, tag: 'gbm' })` in an IIFE beside a later `for (const [base,
+// tag, insert] of …)` once broke the self-compile the same way.
+test('IIFE lift: a name that reads no binding is no capture', () => {
+  const src = `const get = (o) => o.tag
+    const alloc = ({ tag }) => tag
+    export let key = (n) => { const v = (() => ({ tag: n }))().tag; { const tag = 1; n += tag } return v + n }
+    export let arg = (n) => { const v = (() => get({ tag: n }))(); { const tag = 1; n += tag } return v + n }
+    export let pattern = (n) => { const v = (() => alloc({ tag: n }))(); for (const tag of [1]) n += tag; return v + n }
+    export let text = (n) => { const v = (() => 'tag' + n)(); { const tag = 1; n += tag } return v + n }
+    export let regex = (n) => { const v = (() => /tag/.test('a' + n) ? 1 : 2)(); { const tag = 1; n += tag } return v + n }
+    export let getter = (n) => { const v = (() => ({ get tag() { return n } }))().tag; { const tag = 1; n += tag } return v + n }
+    export let param = (n) => { const v = (() => { function h(tag) { return tag + 1 } return h(n) })(); { const tag = 1; n += tag } return v + n }
+    export let label = (n) => { const v = (() => { let s = 0; tag: for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { if (j > i) continue tag; s += n } return s })(); { const tag = 1; n += tag } return v + n }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const name of Object.keys(host)) is(m[name](3), host[name](3), `${name}(3) at ${optimize}`)
+  }
+})
+
 // A module binding made by a factory run once (gl-matrix's `export const rotationTo =
 // (() => { const tmp = create(); …; return (out, a, b) => { … } })()`) held a closure:
 // every call rode the closure ABI with boxed arguments, and the arrow's parameters,
