@@ -820,6 +820,55 @@ const noteCursorKey = (name, init) => {
   else ctx.func.cursorKeys?.delete(name)
 }
 
+// A local binding that holds one closure for the frame's whole run: not boxed
+// (no mutable cross-fn capture), not global, never reassigned in this body.
+const stableClosureLocal = (name) => !ctx.func.boxed.has(name) && !isGlobal(name) && ctx.func.body != null && !isReassigned(ctx.func.body, name)
+
+// A call the call-site rows record (emit/call.js tryDirectClosureCall): of the
+// name itself, no argument spread, no more arguments than the closure ABI's width.
+const recordedCall = (node, name) => {
+  if (node.length !== 3 || node[1] !== name) return false
+  const args = node[2]
+  if (args == null) return true
+  const list = Array.isArray(args) && args[0] === ','
+  if ((list ? args.length - 1 : 1) > (ctx.closure.width ?? MAX_CLOSURE_ARITY)) return false
+  if (!list) return !(Array.isArray(args) && args[0] === '...')
+  for (let i = 1; i < args.length; i++) if (Array.isArray(args[i]) && args[i][0] === '...') return false
+  return true
+}
+
+/** Whether the call-site rows see every call of the closure `name` holds: each
+ *  mention of it in `node` is the callee of a call they record, in this frame
+ *  or a closure inside it (whose capture opens them, module/function.js
+ *  openRows), or the initializer of a stable copy each mention of which is
+ *  (`body` the frame's, where the copy's mentions are). A value use (an
+ *  argument, a store, a return, a member read such as `bind`, `call` or
+ *  `apply`), an optional or tagged call and a spread hand it to callers the
+ *  rows never see. */
+function rowsSeeEveryCall(node, name, body) {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (typeof op !== 'string' || op === 'str') return true
+  if (op === '.' || op === '?.') return rowsSeeEveryCall(node[1], name, body)
+  if (op === ':' && typeof node[1] === 'string') return rowsSeeEveryCall(node[2], name, body)
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (typeof d === 'string') continue
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        if (d[2] !== name ? !rowsSeeEveryCall(d[2], name, body)
+          : !stableClosureLocal(d[1]) || !rowsSeeEveryCall(body, d[1], body)) return false
+      } else if (!rowsSeeEveryCall(d, name, body)) return false
+    }
+    return true
+  }
+  let i = 1
+  if (op === '()' && node[1] === name) { if (!recordedCall(node, name)) return false; i = 2 }
+  for (; i < node.length; i++) if (!rowsSeeEveryCall(node[i], name, body)) return false
+  return true
+}
+
 export function emitDecl(...inits) {
   const result = []
   // A `let`/`const` declared inside a loop creates a *fresh* binding each
@@ -1020,24 +1069,24 @@ export function emitDecl(...inits) {
     // downstream `arrVar[i]`/`.length` in the loop then takes the ARRAY-known fast path
     // instead of falling to the generic __typed_idx/__length dispatch.
     setFlowVal(name, valTypeOf(init), init, val)
-    // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
-    // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
-    // isReassigned is conservative across nested arrow shadows — we miss the optimization
-    // rather than emit a wrong direct call.
-    if (Array.isArray(init) && init[0] === '=>' && val?.closureBodyName && !ctx.func.boxed.has(name) && !isGlobal(name)
-        && ctx.func.body && !isReassigned(ctx.func.body, name)) {
+    // Direct-call dispatch for a const-bound local closure: skip call_indirect.
+    // Gate: a stable binding (stableClosureLocal). isReassigned is conservative across
+    // nested arrow shadows — we miss the optimization rather than emit a wrong direct call.
+    // A binding the closure leaves by any way but a call the call-site rows record keeps
+    // its direct calls, its rows open (rowsSeeEveryCall).
+    if (Array.isArray(init) && init[0] === '=>' && val?.closureBodyName && stableClosureLocal(name)) {
       if (!ctx.func.directClosures) ctx.func.directClosures = new Map()
       ctx.func.directClosures.set(name, val.closureBodyName)
+      if (!rowsSeeEveryCall(ctx.func.body, name, ctx.func.body)) ctx.closure.openRows(val.closureBodyName)
     }
-    // Copy propagation of a direct closure: `let g = add`, where `add` is a non-escaping
+    // Copy propagation of a direct closure: `let g = add`, where `add` is a
     // directly-callable closure, makes `g` directly callable too — `g` holds the same
     // closure value, so `g(…)` calls add's body with g's value as env. This is what
     // devirtualizes `let arr = [add]; arr[0](…)`: array scalarization rewrites it to
     // `let g = add; g(…)` before emit (D3), and also covers the explicit `let g = arr[0]`.
-    // Same soundness gate as the direct-closure case: stable binding (not reassigned),
-    // not boxed, not global.
-    if (typeof init === 'string' && ctx.func.directClosures?.has(init) && !ctx.func.boxed.has(name)
-        && !isGlobal(name) && ctx.func.body && !isReassigned(ctx.func.body, name)) {
+    // Same soundness gate as the direct-closure case; add's rows answer for g's uses
+    // already: the walk at add followed the copy, or the capture that brought add opened them.
+    if (typeof init === 'string' && ctx.func.directClosures?.has(init) && stableClosureLocal(name)) {
       ctx.func.directClosures.set(name, ctx.func.directClosures.get(init))
     }
     if (ctx.func.boxed.has(name)) {

@@ -827,7 +827,11 @@ no cell, no slot, a direct call of its body, unless a write or an earlier captur
 boxes the binding. A body's calls emit after every closure's plan, so the call-site
 rows (`paramTypes`, `paramTypedCtors`, `minArgc`) of a closure a body may call
 open (module/function.js `openCallRows`) and its parameters hold the summary's
-kinds alone. The host's `__jz_call_closure` links for an emitted closure that
+kinds alone. So do the rows of a closure its binding hands on or calls in a form
+the rows do not record: an argument, a store, a return, `bind`, `call` or
+`apply`, an optional call, a spread (compile/emit/dispatch.js `rowsSeeEveryCall`,
+which follows a copy); a closure table's rows read a spread call as passing
+anything (compile/emit/call.js `recordClosureTableCallSite`). The host's `__jz_call_closure` links for an emitted closure that
 escapes; with no indirect call left the table and the unread slots of the closure
 ABI go (wat/assemble/closure-table.js).
 The linker orders functions by descending call count, then runtime before user

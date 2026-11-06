@@ -256,10 +256,12 @@ export default (ctx) => {
     return typed(['call', '$__closure_length', asI64(emit(fn))], 'i32')
   })
 
-  // A call in a closure's body emits past every closure's plan, unseen by the
-  // call-site rows (emit/call.js tryDirectClosureCall): a closure a body may
-  // call holds what the summary proves of its parameters, not what the rows saw.
-  const openCallRows = (bodyName) => {
+  // A call the call-site rows never see (emit/call.js tryDirectClosureCall)
+  // opens them: one in a closure's body emits past every closure's plan, and a
+  // closure its binding hands on as a value is called where no row looks
+  // (emit/dispatch.js rowsSeeEveryCall). Such a closure holds what the summary
+  // proves of its parameters, not what the rows saw.
+  const openCallRows = ctx.closure.openRows = (bodyName) => {
     const width = ctx.closure.width ?? MAX_CLOSURE_ARITY, no = [], none = []
     for (let i = 0; i < width; i++) { no.push(false); none.push(null) }
     ;(ctx.closure.paramTypes ||= new Map()).set(bodyName, no)

@@ -2970,6 +2970,42 @@ test('closures: a call from a sibling reaches the parameter', () => {
   for (const src of srcs) { const want = oracle(src).f; for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(3), want(3), `${src.slice(23, 80)} at ${optimize}`) }
 })
 
+// A closure its binding hands on (an argument, a builtin's callback, a store,
+// a return, a copy, `bind`, `call`, `apply`), or calls in a form the call-site
+// rows do not record (a spread, an optional call), runs for callers the rows
+// never see: its direct calls say nothing of its parameters. A closure only
+// called by name keeps what they proved.
+test('closures: a closure its binding hands on takes its parameters from every caller', () => {
+  const srcs = {
+    argument: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb('x', n); return g(1, 2) + h(g) }`,
+    callback: `export let f = (n) => { const g = (a) => a + 1; return g(n) + ['x', 'y'].map(g).join() }`,
+    call: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb.call(null, 'x', n); return g(1, 2) + h(g) }`,
+    apply: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb.apply(null, ['x', n]); return g(1, 2) + h(g) }`,
+    object: `export let f = (n) => { const g = (a, b) => a + b; const o = { g }; return g(1, 2) + o.g('x', n) }`,
+    array: `export let f = (n) => { const g = (a, b) => a + b; const a = [g]; return g(1, 2) + a[0]('x', n) }`,
+    bound: `export let f = (n) => { const g = (a, b) => a + b; const k = g.bind(null, 'x'); return g(1, 2) + k(n) }`,
+    captures: `export let f = (n) => { const m = n * 2; const g = (a, b) => a + b + m; const h = (cb) => cb('x', n); return g(1, 2) + h(g) }`,
+    returned: `export let f = (n) => { const g = (a, b) => a + b + n; return g(1, 2) > 3 ? g : 'none' }`,
+    copy: `export let f = (n) => { const g = (a, b) => a + b; const k = g; const h = (cb) => cb('x', n); return g(1, 2) + h(k) }`,
+    choice: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb('x', n); return g(1, 2) + h(n > 0 ? g : (a, b) => 0) }`,
+    spread: `export let f = (n) => { const g = (a, b) => a + b; const xs = ['x', n]; return g(1, 2) + g(...xs) }`,
+    optional: `export let f = (n) => { const g = (a, b) => a + b; return g(1, 2) + g?.('x', n) }`,
+    typed: `export let f = (n) => { const g = (a) => a[0]; const h = (cb) => cb([7, 8]); return g(new Float64Array([n])) + h(g) }`,
+    table: `const ops = [(a, b) => a + b, (a, b) => a - b]
+      export let f = (n) => { const xs = ['x', n]; return ops[0](1, 2) + ops[n & 1 ? 0 : 1](...xs) }`,
+  }
+  const out = (fn) => { const r = fn(3); return typeof r === 'function' ? r('x', 2) : r }
+  for (const [name, src] of Object.entries(srcs)) {
+    const want = out(oracle(src).f)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) is(out(jz(src, { optimize }).exports.f), want, `${name} at ${optimize}`)
+  }
+  const direct = `export let f = (n) => { const g = (a, b) => a + b; return g(1, 2) + g(n, 4) }`
+  for (const optimize of levels(0, 2, 'size')) {
+    is(jz(direct, { optimize }).exports.f(3), 10, `only called at ${optimize}`)
+    if (!onKernel()) ok(!wat(direct, { optimize }).includes('__str_concat'), `only called: numeric parameters at ${optimize}`)
+  }
+})
+
 // The host's call of a closure links for a closure of the module that escapes,
 // not for an id the summary marked on a closure that was inlined away.
 test('closures: no host call of a closure that stays inside', () => {
