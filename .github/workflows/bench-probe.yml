@@ -95,6 +95,22 @@ jobs:
           }
           JS
           node "$RUNNER_TEMP/flags.mjs" | tee "$RUNNER_TEMP/flags.log"
+      - name: custom rounds
+        run: |
+          if [ -x probe/run.sh ]; then bash probe/run.sh 2>&1 | tee "$RUNNER_TEMP/custom.log"; fi
+      - name: asm dumps
+        env:
+          CASES: ${{ inputs.cases }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asm"
+          for id in ${CASES//,/ }; do
+            d="$JZ_BENCH_BUILD_DIR/$id"
+            node --print-wasm-code bench/_lib/run-jz-host.mjs "$d/$id-host.wasm" > "$RUNNER_TEMP/asm/$id-jz.txt" 2>&1 || true
+            [ -f "$d/$id.c.wasm" ] && node --print-wasm-code bench/_lib/run-wasi.mjs "$d/$id.c.wasm" > "$RUNNER_TEMP/asm/$id-c.txt" 2>&1 || true
+            [ -f "$d/$id.rust.wasm" ] && node --print-wasm-code bench/_lib/run-wasi.mjs "$d/$id.rust.wasm" > "$RUNNER_TEMP/asm/$id-rust.txt" 2>&1 || true
+            cp "$d/$id-host.wasm" "$RUNNER_TEMP/asm/" || true
+          done
+          ls -la "$RUNNER_TEMP/asm"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -102,4 +118,6 @@ jobs:
           path: |
             ${{ runner.temp }}/probe.json
             ${{ runner.temp }}/flags.log
+            ${{ runner.temp }}/asm
+            ${{ runner.temp }}/custom.log
           if-no-files-found: error

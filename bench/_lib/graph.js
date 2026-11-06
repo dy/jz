@@ -1,7 +1,7 @@
 // Library workloads share one graph/host contract across timing and audit tools.
 // The pmndrs/math cases import the vendored library (`_lib/pmath`), the three.js
 // cases three's own math modules out of node_modules: module graphs too.
-export const GRAPH_CASES = new Set(['jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul', 'threescene', 'threeanim', 'threecull', 'threegeom'])
+export const GRAPH_CASES = new Set(['jessie', 'jz', 'webaudio', 'polytri', 'worley', 'fabrik', 'quatmul', 'threescene', 'threeanim', 'threecull', 'threegeom', 'tcull', 'tray', 'tgtr', 'tgbd', 'tgnm'])
 export const HOST_ADAPTERS = { webaudio: ['@audio/decode', '@audio/decode-ape', '@audio/speaker', '@audio/mic', 'pcm-convert'] }
 const EXTERNALS = { webaudio: HOST_ADAPTERS.webaudio }
 // The worklet host loads processor code through `new Function` and a
