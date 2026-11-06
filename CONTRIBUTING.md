@@ -1795,6 +1795,8 @@ to 32 elements. Longer arrays share main's stable byte-wise radix kernel;
 the generic and size paths use the same radix kernel after their short-array
 helper. This keeps long sorts linear while removing per-element dispatch from
 short sorts. Both paths preserve NaN payload order and put -0 before +0.
+`X.from(array)` and `new X(array)` have the array's count where it is one for
+good, a literal's or a cell's fixed length (summary `typedShapeOf`).
 A typed receiver of settled element kind reads
 its element count from its header in `.length`, `subarray` and `sort` (a
 reassigned binding included, when every constructor agrees); a DataView, of no

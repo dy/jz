@@ -4655,11 +4655,18 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // a field of objects whose every store of that name was an array of one size
     if (Array.isArray(e) && e[0] === '.' && typeof e[1] === 'string' && typeof e[2] === 'string') return slotShapeOf(scope, e[1], e[2])
     if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string') return null
+    // `X.from(array)`, `new X(array)`: an element for each of the array's
+    const from = TYPED_STATIC.exec(e[1])
+    if (from) {
+      const args = argList(e[2]), size = TYPED_BYTES[TYPED_ELEM_CODE[from[1]]], n = args.length && size ? arrayCount(scope, args[0]) : null
+      return n === null ? null : { len: n, bytes: n * size }
+    }
     const m = e[1].startsWith('new.') ? TYPED_CTOR.exec(e[1]) : null
     if (m) {
       const args = argList(e[2]), size = TYPED_BYTES[TYPED_ELEM_CODE[m[1]]]
       if (args.length !== 1 || !size) return null
-      const a = args[0]
+      const a = args[0], count = m[2] ? null : arrayCount(scope, a)
+      if (count !== null) return { len: count, bytes: count * size }
       if (Array.isArray(a) && a[0] === '.' && a[2] === 'buffer' && typeof a[1] === 'string') {
         const under = typedShapeOf(scope, a[1], seen)
         return under && under.bytes % size === 0 ? { len: under.bytes / size, bytes: under.bytes } : null
@@ -4675,6 +4682,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return shape
   }
   const typedLenOf = (scope, e) => typedShapeOf(scope, e)?.len ?? null
+  /** The count of the array `a` is, where it is one for good: a literal's, a cell's fixed length; else null. */
+  const arrayCount = (scope, a) => {
+    if (Array.isArray(a) && a[0] === '[') { const n = literalCount(a); return n >= 0 ? n : null }
+    const key = typeof a === 'string' ? keyOf(a, scope) : null, k = key === null ? null : kinds[key]
+    const n = k == null || tagOf(k) !== K.ARRAY ? -1 : fixedLen(k)
+    return n >= 0 ? n : null
+  }
   // The shape of `obj.prop` where obj holds objects of known shapes whose slot of that name the
   // walk saw every store into (no host, lost or folded layout, no accessor): one size for all.
   const slotShapeOf = (scope, obj, prop) => {

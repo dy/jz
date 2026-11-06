@@ -92,3 +92,17 @@ test('typed length: a field a store, a size or a holder may change keeps its tes
     if (!belowOpt(2)) ok(sampleChecks(src) > 0, `${label}: the reads keep their tests`)
   }
 })
+
+// `X.from(array)` and `new X(array)` make an element for each of the array's: a
+// literal's count, or a cell's fixed length (summary typedShapeOf).
+test('typed length: a typed array built from an array of one count has that count', async () => {
+  const { ctx } = await import('../src/ctx.js')
+  const { compileInProcess } = await import('./util.js')
+  const len = (src) => { compileInProcess(src, { host: 'js', optimize: 0 }); return ctx.summary.at(null).typedLenOf('T') }
+  is(len(`const T = Int32Array.from([1, 2, 3])\nexport const f = (i) => T[i & 3]`), 3, 'from a literal')
+  is(len(`const A = [1, 2, 3, 4].map(x => x * 2), T = Float64Array.from(A)\nexport const f = (i) => T[i & 3]`), 4, 'from a mapped array')
+  is(len(`const T = new Uint8Array([1, 2])\nexport const f = (i) => T[i & 1]`), 2, 'constructed from a literal')
+  is(len(`const A = [1, 2]\nexport const g = (v) => A.push(v)\nconst T = Int16Array.from(A)\nexport const f = (i) => T[i & 1]`), null, 'from an array a push may resize')
+  const src = `const T = Int32Array.from([5, 6, 7])\nexport const f = (i) => T.length * 10 + T[i % 3]`
+  for (const optimize of levels(0, 2)) is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `the count and an element at ${optimize}`)
+})
