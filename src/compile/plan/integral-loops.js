@@ -709,18 +709,26 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const direction = up !== inclusive ? 'ceil' : 'floor'
       const rounded = ['()', `math.${direction}`, n]
       const bound = ['>>', adjust ? ['+', rounded, [null, adjust]] : rounded, [null, 0]]
-      const range = forCounterRange(loop[1], [comparison, counter, bound], loop[3], counter)
+      // A counter entering from names (`for (let j = lim; j < num; j++)`) starts at
+      // an int32 where each is one: a name an int32 by construction as it is, any
+      // other the loop only reads under the copy's test of its word (`lim === (lim$ =
+      // lim | 0)`). Its start then ranges over the words', the rounded bound the rest.
+      const entryNames = init?.[0] == null ? [] : boundTerms(init)
+      const entryWords = entryNames?.filter(x => !int32Held(x)) ?? []
+      const entryOk = entryNames != null && entryWords.every(x => outerOk(x) && !loopWrites.has(x) && mayBeNumber(x))
+      const entryRange = e => intExprRange(e, x => entryNames.includes(x) ? [I32_MIN, I32_MAX] : null)
+      const range = entryOk ? forCounterRange(loop[1], [comparison, counter, bound], loop[3], counter, entryRange) : null
       const values = bodyWrites.get(n)
       const knownBound = intExprRange(n) ?? (!params.has(n) && values?.length === 1 && !isReassigned(body, n) ? intExprRange(values[0]) : null)
       const alreadyBounded = knownBound && forCounterRange(loop[1], loop[2], loop[3], counter, e => e === n ? knownBound : intExprRange(e))
       const terms = stableTerms(n)
       if (loop[2][1] === counter && terms &&
-          !captured.has(counter) && !writesIn(loop[4]).has(counter) && init?.[0] == null &&
+          !captured.has(counter) && !writesIn(loop[4]).has(counter) &&
           range && range.test[0] >= -2147483648 && range.test[1] <= 2147483647 &&
           !alreadyBounded && !intExprRange(n) && !(typeof n === 'string' && int32Held(n)))
-        counterBound = { name: n, terms, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust),
+        counterBound = { name: n, terms, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust), entryWords,
           // (the trips: a literal start, a unit step up)
-          trip: up && Number.isInteger(init[1]) && (COUNTS.has(loop[3]?.[0]) || loop[3]?.[0] === 'postfix' && COUNTS.has(loop[3][1]?.[0]) || loop[3]?.[0] === '+=' && loop[3][2]?.[0] == null && loop[3][2][1] === 1) && !/^-/.test(loop[3][0] ?? loop[3][1]?.[0]) ? { n, adj: inclusive ? 1 : 0, entry: init[1] } : null }
+          trip: up && init?.[0] == null && Number.isInteger(init[1]) && (COUNTS.has(loop[3]?.[0]) || loop[3]?.[0] === 'postfix' && COUNTS.has(loop[3][1]?.[0]) || loop[3]?.[0] === '+=' && loop[3][2]?.[0] == null && loop[3][2][1] === 1) && !/^-/.test(loop[3][0] ?? loop[3][1]?.[0]) ? { n, adj: inclusive ? 1 : 0, entry: init[1] } : null }
     }
     // A while counter has an observable entry outside the loop. Capture its
     // word only behind the same exact-entry guard, then reserve room for every
@@ -838,6 +846,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     if (linkWalk && !names.includes(linkWalk.c)) names.push(linkWalk.c)
     const counters = counterBound?.counter && counterBound.entry != null ? [counterBound.counter] : []
     if (counterBound?.counter && !counters.length && !names.includes(counterBound.counter)) names.push(counterBound.counter)
+    for (const x of counterBound?.entryWords ?? []) if (!names.includes(x)) names.push(x)
     let numbers = [...numberNames(loop, loopWrites, inner, kindOf, kindOfExpr, outerOk)].filter(n => !indexed.includes(n))
     // a Number the loop carries (`z1 = x - a1 * y`): what it only reads converts once per use, as it would
     if (!numbers.some(n => loopWrites.has(n))) numbers = []

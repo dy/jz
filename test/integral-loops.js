@@ -2027,3 +2027,42 @@ test('integral loops: a closure bounded by a capture nothing writes', () => {
   // (a closure is named `$` + T + `closure<n>`, the copy's counter `i` + T + `int<n>`: prepare's binding mark)
   ok(w.split(/\n(?=  \(func )/).some(f => f.startsWith(`  (func $${T}closure`) && f.includes(`(local $i${T}int`)), 'the closure counts an int32 copy')
 })
+
+// A counter entering from a name (`for (let j = lim; j < num; j++)`, a
+// predictor's history past its order) under a bound of unknown integrality
+// (`num`, a count `>>> 0` made) gets the copy a literal start gets: its start
+// is the name's word, tested as an int32, the bound rounded once. A loop
+// nested around another that reads those names took no copy without it.
+// The values are the same for every start and bound, integral or not.
+test('integral loops: a counter entering from a name counts in a word', () => {
+  const src = `function pred(out, num, order) {
+      let lim = order + 1, s = 0
+      for (let j = lim; j < num; j++) {
+        let top = out[j - lim], acc = 0
+        for (let q = 1; q < lim; q++) { acc = (acc + Math.imul(out[j - q] - top, q)) | 0; if (acc > 100000) break }
+        out[j] = (out[j] + (acc >> 4)) | 0
+        s = (s + out[j]) | 0
+      }
+      return s
+    }
+    export const run = (n, k) => {
+      const num = n >>> 0, order = k & 7, out = new Int32Array(64)
+      for (let i = 0; i < 64; i++) out[i] = Math.imul(i, 40503) >> 7
+      return pred(out, num, order) + pred(out, num, 3)
+    }
+    export const runAt = (n, k, a) => pred(new Int32Array(64).fill(a), n, k)`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const got = jz(src, { optimize }).exports
+    for (const [n, k] of [[0, 0], [3, 0], [3.5, 1], [10, 2], [12.25, 7], [64, 7], [70, 5], [900, 3], [7, -2], [5, 2147483647], [NaN, 1]])
+      is(got.run(n, k), host.run(n, k), `O${optimize}: run(${n}, ${k})`)
+    for (const [n, k] of [[20, 2.5], [20, -1], [9.5, 3], [-4, 1], [30, 2147483646], [NaN, 0], [20, NaN]])
+      is(got.runAt(n, k, 5), host.runAt(n, k, 5), `O${optimize}: runAt(${n}, ${k})`)
+  }
+  if (belowOpt(2)) return
+  compileInProcess(src)
+  const body = ctx.funcs.list.find(f => f.name === 'pred')?.body
+  let copy = false
+  walkAst(body, { enter: n => { if (n[0] === 'for' && n[1]?.[1]?.[1]?.startsWith?.(`j${T}`) && String(n[1][1][1]).includes(`${T}int`) && String(n[2]?.[2]).includes(`${T}bound`)) copy = true } })
+  ok(copy, 'the counter counts in a word of the copy, under the rounded bound')
+})
