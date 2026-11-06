@@ -52,7 +52,7 @@ one file per process.
 | G1 | A typed array built by a helper from a constructor parameter (`samples(raw, T, n)` → `new T(buf, off, n)`) returns boxed, kind unknown: `__typed_idx_tagged` per element | `pcm.js k1r` → `k1` | 824 µs / 3.16 ms 0.26× | 0.96× | WAV pcm16, pcm32, float32/64 | L1 used to reject this shape; it compiles now, untyped |
 | G2 | A secondary induction (`k += nCh`, `off += 4` stepped beside the loop counter) stays f64: f64 add, `trunc_sat` and an index check per access; on a DataView an out-of-line `__dv_index(f64)` per get | `pcm.js c1f` → `c1fi` | 261 / 375 µs 0.69× | 1.24× | WAV all PCM, CAF all LPCM | new |
 | D2 | A trip count read from a destructured record (`const { C, tables } = st`) leaves the induction f64; `C \| 0` does not help, a literal does | `ring.js` → `ring-literal.js` | 9.44 / 13.35 ms 0.71× | 0.89× | DSD stage 1 | new |
-| A1 | Scalar parameters lose their range across a call: `unpcBlock(…, numactive, …, denshift)` gets f64 params; `coefs[k] -= sgn` goes through `__dyn_set` | `param-range.js` → `param-range-control.js` (masked to the bit fields) | 11.86 / 15.07 ms 0.79× | 1.28× | ALAC `unpcBlock`, half of its time: about the whole ALAC gap | S2's form; it loses range, not kind |
+| A1 | Three losses, fixed on branch alac-gap. (a) A call inside a closure typed its arguments by the enclosing function's locals and walked no hull for them: `unpcBlock`, called only from `decodeElements`, took `numactive`, `denshift` as f64 (5face223f). (b) A `for` counter entering from a name (`j = lim`) under a bound of unknown integrality (`num`, the frame length) took no integral copy where the names it guards are read by inner loops: the main loop counted in f64 (15415df9c). (c) A descending counter (`kk = numactive - 1; kk >= 0; kk--`) was not versionable: its accesses took the walk's static hull, `kk < 4095` in the kernel against a 32-entry table, which never passed (49c2dcb7f) | `param-range.js` (c), `param-bound.js` (b) → `param-range-control.js` | 0.90–0.93× → 1.14–1.16× (c) | 1.14× (same run) | ALAC `unpcBlock` | S2's form |
 | K1 | A row of an array of arrays (`tab[i][q]`): length unknown, a miss reads `undefined`, so what it feeds runs in f64; plain integer Arrays are f64 too, typed rows do not help | `table-rows.js plain`, `typed` → `flat` | 3.74 / 10.11 ms 0.37× | 0.87× | QOA `qoa_dequant_tab[sf][q]`: about 87% of the QOA gap | partly S3/S4 |
 | K2 | An integer recurrence bounded by a clamp stays f64: the clamp's bound is not fed back into the sum's range | `clamp-acc.js clamp` → `control` | 883 µs / 2.11 ms 0.42× | 0.91× | QOA, while K1 holds | new |
 | K3 | Methods of a factory-made object closing over mutable integer `let`s (`makeBits → { unary, read }`): `call_indirect` with the boxed ABI, captured state in f64 cells loaded and stored per call | `closure-state.js closures` → `globals`, `locals` | 19.75 / 50.76 ms 0.39× | 0.84×, 0.88× | TTA bit reader (32% of its time) | S8's residual, unnamed there |
@@ -73,7 +73,7 @@ compiler fixes; the copies are not kept):
 | qoa | K1 (+ K2) | 0.87× | ~13%: DataView offset in f64 (`__dv_index` ×2 per slice), an `__iter_release` check per slice |
 | tta | K3 + K4 | 0.84× (about 43% of the gap) | `>>> 0` uint32 arithmetic in f64, the unbounded `unary` counter f64, `gbit` not inlined, a frame prologue per `decodeValue` call |
 | dsd | D1, then D2 | about level, then about 1.2× (scaled from stage 1) | |
-| alac | A1 | about 1.14× (scaled from `unpcBlock`) | 24-bit not profiled |
+| alac | A1 (fixed: 16-bit 1.01× → 1.06×, 24-bit 0.51× → 0.88× against main in one alternating run; in-process A/B of the wasm alone has A1(c) level with (a)+(b)) | | 24-bit: `read` 16.8% of jz's time, about 2% of V8's (A2) |
 
 Shared shape: integer-ness and typed kind are proven inside a function but do not survive a
 record field, a parameter, a secondary induction or a helper's return. Four of the eleven
@@ -102,7 +102,28 @@ classes (G2, D2, A1, K4) are that one loss on four carriers.
   runner's own off-terminal test.
 
 Not diagnosed: wav pcm24/pcm32, the ADPCM and law cases, aiff alaw (0.50×, a 2000-sample
-fixture: likely per-call setup), 24-bit ALAC.
+fixture: likely per-call setup).
+
+- A2, open: ALAC's cookie is the host's, so its bytes are any value: `cfg.bitDepth = c[5]`
+  reaches `read(bb, chanBits)` raw in the CPE escape branch, `read`'s `n` is ANY, and
+  `bb.pos = p + n` may become a string. Every `read` then tests both operands with
+  `__is_str_key` calls, takes an escape frame and runs two write barriers on the field
+  store; `readShift` calls it per sample at 24-bit. `frameLength = … + c[o + 3]` may
+  concatenate too, which is why `numSamples` (`unpcBlock`'s `num`) is NUMBER|STRING and
+  stays f64. A host typed array's elements typed as numbers (a guarded variant at the
+  boundary, as array arguments already have) would remove both. Testing the dynamic
+  `+` for two Numbers before the string test was measured and not kept: under load it
+  read 0.89–1.26×.
+- A1(b)'s copy is dead weight where the bound narrows to a word anyway (`param-bound.js`,
+  `num = cfg[0] >>> 0` over a constant table: main 1.22–1.27×, branch 1.10–1.15×): the
+  copy, its resumption and the loop as written exhaust `optimize/specialize.js`'s growth
+  budget before the second adapting loop's split. The gate needs the parameter's word,
+  which `narrowSignatures` settles after this plan pass.
+- A1(c) guarding every access by the entry (`out[pb - kk]` too) cost ALAC 16-bit 10–15%:
+  the adapting loops often run one or two rounds, so a per-entry i64 guard outweighs
+  them; the kept form guards only the hull's keys. Lifting a nested descending level
+  whose entry is a top-invariant expression (`numactive - 1`) to the nest's one guard is
+  not done; nested levels need a literal entry to lift.
 
 The speed tier covers none of the classes but K4 (`record-fields.js` 0.18× → 0.83×, the
 record scalar-replaced) and is slower than the default on ALAC's `unpcBlock` (0.53×),
