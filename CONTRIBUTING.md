@@ -92,6 +92,34 @@ the scan jumped past it, and past the arms its slow path keeps after it, to the
 latch. The copy folds the tests the way to the branch decides (a flag the round
 cleared, a cursor an earlier test bounded); a copy that would keep a loop, and a
 test of words alone (a counted loop's entry test), keep their shape.
+After it, `guardExtremes` (src/optimize/extreme-guards.js, speed tier) takes a
+loop's running minimum or maximum (`m = Math.min(m, v)`, the loop's one write of m)
+after the loop where the round's test says it changes: `v > m` decides
+f64.min(m, v) = m exactly (`v < m` the maximum), so the round tests and falls
+through to its latch, and code after the loop takes the extreme, tests and takes
+the ones after it, runs the latch and enters the loop again. V8 lowers f64.min on
+x64 to a compare and three branches, one taken every round, and keeps a loop's
+blocks together, so the code taking an extreme is off the round's way. A
+canonicalization of the extreme goes with it where its temp is dead past the loop
+(src/optimize/liveness.js, the backward liveness loop-compact.js shares).
+Then `pairTests` (src/optimize/pair-tests.js, speed tier) runs tests of one shape
+joined by `|` or `&` two to a vector: four or more float comparisons over float
+arithmetic, each pair the same operators at the same places, become an `any_true`
+of `v128.or`ed masks (`all_true` of `v128.and`ed ones), the leaves a pair shares a
+splat (its tee goes with it), the leaves that differ its lanes, packed once before
+the loop where the loop writes neither; the lanes compute what the scalars did,
+operator by operator. A frustum's six plane tests of a sphere
+(`plan/exit-tests.js` writes them out) are three. And `testedChoices`
+(src/optimize/tested-choices.js, before `selectBits`) folds a test of a choice
+between literals against a literal into the choice between its answers: a flag kept
+as a Number that the optimizer folds into one value (`(f64.ne (select 0 1 c) 0)`)
+is `(i32.eqz c)`, no float select for x64 to branch around.
+Before watr, `stillLoads` (src/optimize/still-loads.js, speed tier) reads ahead of
+a loop that writes no memory, calls nothing and sets no global the loads every
+round runs before anything can branch, at addresses the loop holds still, with the
+work over them alone; a local the loop writes once there, with such a value,
+before any read of it, is written ahead too. The first round runs the same work,
+so nothing runs that the loop would not have.
 Late, from level 2 up, `constBases` (src/optimize/const-bases.js) moves a
 base the function's control flow holds to one address (a static parameter's entry
 write, its inlined copy) into the memarg of each access adding it to an index:
@@ -3394,6 +3422,7 @@ src/
                 loop-jam.js (`jamLoopItems`, speed tier): two items of a loop over independent items whose inner loops carry chains of their own, the inner loops side by side where a test finds the elements one writes apart from those the other touches; the arrays distinct buffers (fresh allocations, or parameters every call passes fresh ones)
                 loop-recurrence.js (`unrollRecurrences`, after the versioning: the pairs are of the copies): a unit-stride loop storing `arr[j]` and reading `arr[j-1]` (a row recurrence), the read a scalar carried from the store, two cells a pass of a counted loop stepped by 2 (the second under the loop's test one cell on), under a guard that the range is not empty; a `break` leaves the pair loop as it leaves the loop
                 plan/integral-loops.js: a loop moving a cursor of unknown integrality, a copy over its int32s where a test says it is one (a cursor declared from the counters of the loops around it, an inlined call's argument, needs no test: the copy stands alone); a while's counter counting up (`while (i < n)`) or down (`while (x > n)`, every write a decrement) under a bound of stable names, as a word where the guard holds the bound inside the word by the loop's advance or descent; a cursor stepped by literals (a ring with its resets, a module binding in a loop that runs no user code, a stream position stepped inside an index) as a word under its advance budget, and one stepped by expressions of a literal hull, up or down, under the budget of both ends; a derived integer of the counter and of proven int32s (a row base, a derived index, a guarded scatter cell, an index with a product, an element at a proven index, a clamped float truncated) as a word where its hull, kept by a walk of the body through its tests and early exits, fits i32 (an end at the type's extreme opens under a name, a visible fraction is held to a Number); a walk over links (`j = next[j]` under `j >= 0`) as a word reading a missed link as -1; an inner version whose names are such words absorbed into the copy, its tests over the counter lifted to the counter's ends; a cursor stepped inside nested loops (LZ's output cursor) under a count a nested loop entered on the round's own test gives, its trips read off the round's declarations by the advance budget where no name of the loop's names them; a sum or difference of int32s no hull holds within int32 (`up + 1` over an int32 element, a DP cell) as a word of the copy under a test of its wide side before the statement (`if (up > 2147483646) { j$ = j; bail = 1; break }`), the copy leaving for the loop as written, resumed at its counter, where the result would leave the word (the round runs nothing before the test it could not run again)
+                plan/exit-tests.js: a loop of at most eight passes, counting from 0, leaving at the first whose test holds (the inliner's `return X` from a loop: an `if` whose arm assigns names outside the loop values no pass changes and ends in `break`), inside a loop, every pass's work free of effects and unable to throw in every pass (Number and boolean arithmetic and comparison, Math's pure functions, a member read of a present object no accessor takes, an element at a literal index below the length the summary knows for good), written out with its tests joined by `|`: a frustum's planes over each sphere it culls, whose exit was the data's
                 plan/loop-fields.js: a field or a Float64Array element a loop reads and writes through one receiver, in a local for the loop, stored back after it; a receiver may be an alias of a field or of a constant-index element (`const s = state[k]`), and such an alias's array, dense, numeric and never resized, holds its constant-index elements in locals where one pass leaves their value for the next (read before written in a pass), the copy finding the arrays of one construction cell distinct (a name's own array keeps its memory for the store forwarding and lane pairing that address it); a field no store of the loop names is held through any receiver; the loop as written beside the copy is cold. A loop whose only inner loops count from 0 by one below a count of at most eight known on every run (a literal, a const of one, or an array length the summary knows: a cascade's stages over the sections its design function built) is read with them written out, a copy per pass, and takes that form where it then holds state. Several receivers of one layout storing a field name, which no construction site tells apart (three's vectors, one constructor's literal), hold it where the copy finds them distinct objects (`!==`); a name another class makes an accessor is a field of the layouts holding none (member-uses.js `plainMember`); a Number field that may be missing, which the loop's stores leave a Number, is held as a Number where the copy finds it present
                 plan/chosen-calls.js: a local holding one of several named functions and only called, the choice of direct calls
                 plan/called-args.js: a function whose parameter is only called, passed on to a call of a declared function, or tested against strings, a copy for each named function or string literal a call passes there; a copy passing the function on names it to its callee, whose copy a later round makes (at most eight rounds)
@@ -3407,6 +3436,11 @@ src/
                 lead-gathers.js (after watr: a loop whose rounds search from a slot read at an address read from memory reads the next round's slot a round ahead);
                 carry-stores.js (after watr: a round's last store to an address its next round reads first passes the value through a local);
                 skip-latches.js (after watr: a test that skips a loop's inner scan, testing the scan's data, runs the rest of the round in a copy of its own ending in the latch);
+                extreme-guards.js (after watr: a loop's running minimum or maximum is taken after the loop where the round's test says it changes, the round that keeps it falling through to the latch);
+                pair-tests.js (after watr: tests of one shape joined by `|` or `&` run two to a vector);
+                tested-choices.js (after watr: a test of a choice between literals is the choice between its answers);
+                still-loads.js (before watr: a loop that writes no memory and calls nothing reads its invariant loads once ahead of it);
+                liveness.js (backward liveness over structured code, into expressions: loop-compact.js, extreme-guards.js, pair-tests.js and tested-choices.js read it);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 jump-pointers.js (after watr: a loop variable that steps and jumps carries the address of the record it indexes, advanced where it steps, formed again where it jumps);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);

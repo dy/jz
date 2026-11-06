@@ -70,6 +70,7 @@ import { markReadBuffers } from './read-buffers.js'
 import { hoistObjectReads } from './object-reads.js'
 import { hoistSiteReceivers } from './site-receivers.js'
 import { promoteLoopFields, loopFieldCandidates } from './loop-fields.js'
+import { joinExitTests, exitTestCandidates } from './exit-tests.js'
 import { foldKindTests } from './fold-kind-tests.js'
 import { viewGuardedTyped } from './guard-views.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
@@ -224,6 +225,9 @@ export default function plan(ast, profiler, summarize) {
   // A store's receiver the census cannot read again is read once into a local before the statement: the site then names it.
   sweep('hoistSiteReceivers', hoistSiteReceivers)
   if (optimizing()) {
+    // A loop of a few passes leaving at its first hit, every pass's work free of effects and
+    // throws: written out, its tests joined (a frustum's planes over each sphere a scene culls).
+    if (exitTestCandidates()) { if (spliced || lambdas) ctx.summary = summarize(); sweep('joinExitTests', joinExitTests) }
     // A field a loop reads and writes through one receiver, in a local for the
     // loop; the loops inlining left name what it spliced, so the summary looks again.
     if (loopFieldCandidates()) { ctx.summary = summarize(); sweep('promoteLoopFields', () => promoteLoopFields(ast)) }
