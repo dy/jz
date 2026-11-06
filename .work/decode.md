@@ -168,8 +168,8 @@ Measured under load 20–40; the decoder rows are single runs.
 
 | | Change | Kernel before → after | Decoder before → after |
 |---|---|---|---|
-| G6 | A store target's parts a spliced call could change, or that run something, are read into temps ahead of the call's statements, receiver then key, as JS reads them before the value (plan/inline.js `spliceTarget`); the lambda pass reads its caller's stable names, which it had kept from the last function of the pass before. A call hoisted out of a stored value moves past the target's reads only where it cannot change them | `pcm.js k6` 0.26× → 0.75× (jz 101 → 45 ms; `c6e` 0.64×) | wav ms-adpcm 0.64× → 0.88× (jz 224 → 161 µs), speed tier 0.51× → 1.10× |
-| G7, part | An integral copy is bounded by a local closures only read; no guard reads a word a copy inside it declared (plan/integral-loops.js) | `pcm.js c7hs` 1.40× → 1.71×, `k7` 0.65× → 0.71× | wav pcm24 as before: its sample loops compile to the same code, their heads keep the bound away |
+| G6 | A store target's parts a spliced call could change, or that run something, are read into temps ahead of the call's statements, receiver then key, as JS reads them before the value (plan/inline.js `spliceTarget`); the lambda pass reads its caller's stable names, which it had kept from the last function of the pass before. A call hoisted out of a stored value moves past the target's reads only where it cannot change them | `pcm.js k6` 0.26–0.27× → 0.61–0.75× over two runs (jz 85–101 → 39–45 ms), level with its spliced control `c6e` | wav ms-adpcm 0.64× → 0.88× (jz 224 → 161 µs), speed tier 0.51× → 1.10× |
+| G7, part | An integral copy is bounded by a local closures only read; no guard reads a word a copy inside it declared (plan/integral-loops.js) | `pcm.js c7hs` 1.40–1.51× → 1.71–1.92× over two runs; `k7` 0.65–0.70× → 0.71×, as before | wav pcm24 as before: its sample loops compile to the same code, their heads keep the bound away |
 
 Measured on load 25–36 against main 87ce1d375. The decoder rows are the full table's single runs,
 held by paired rounds (ms-adpcm 0.57–0.64× → 0.84–0.88× over four). aiff, qoa, tta, dsd and ALAC
