@@ -866,10 +866,32 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
       if (args) for (const a of args) if (refsName(a, x, REFS_IN_EXPR)) return false
     }
     for (const x of eff.reads) {
+      // (a name of the caller no closure mentions: no callee stores to it, an argument's own write may)
+      if (callee && callerStable?.(x)) { if (args?.some(a => some(a, n => MUTATE_OPS.has(n[0]) && n[1] === x))) return false; continue }
       if (assigns(body, x, view)) return false
       if (args) for (const a of args) if (assigns(a, x, callerView)) return false
     }
     return true
+  }
+  // What an assignment's target reads before its value runs: the names of its receiver and
+  // key, memory where either reads through a member (`out[0][i] = 1 + f(x)`), and under a
+  // compound operator the target itself (`x += f()` reads x first, `a[i] += f()` reads a[i]).
+  const targetEffects = (lhs, compound) => {
+    const eff = effState(lhsWrites(lhs))
+    const read = (n) => {
+      if (typeof n === 'string') { eff.reads.add(n); return }
+      if (!Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === 'bool' || n[0] === '=>') return
+      if (MEMBER_READS.has(n[0])) eff.mem = true
+      read(n[1])
+      if (n[0] !== '.' && n[0] !== '?.') for (let i = 2; i < n.length; i++) read(n[i])
+    }
+    if (typeof lhs === 'string') { if (compound) eff.reads.add(lhs) }
+    else if (Array.isArray(lhs) && MEMBER_READS.has(lhs[0])) {
+      read(lhs[1])
+      if (lhs[0] !== '.' && lhs[0] !== '?.') for (let i = 2; i < lhs.length; i++) read(lhs[i])
+      if (compound) eff.mem = true
+    }
+    return eff
   }
   // A hoisted call relocates with its arguments: a candidate among them (itself
   // hoisted ahead of the call) must commute with what ran before as the callee
@@ -978,10 +1000,10 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
       }
       // A computed assign target (`a[i]=…`) evaluates its index BEFORE the RHS, so an effect
       // there (`a[j++]=…`) must block hoisting too — seed eff.seen from the LHS.
-      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false, effState(lhsWrites(s[1]))); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
+      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false, targetEffects(s[1], false)); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
       // Compound assignment reads its target before the RHS (a read, not an effect).
       case '+=': case '-=': case '*=': case '|=': case '&=': case '^=': case '<<=': case '>>=': case '>>>=':
-        { const pre = []; const rhs = hExpr(s[2], pre, false, effState(lhsWrites(s[1]))); return pre.length ? [...pre, [s[0], s[1], rhs]] : [s] }
+        { const pre = []; const rhs = hExpr(s[2], pre, false, targetEffects(s[1], true)); return pre.length ? [...pre, [s[0], s[1], rhs]] : [s] }
       case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false, effState()); return pre.length ? [...pre, ['return', v]] : [s] }
       default: return [s]  // unrecognized shape (break/continue/throw/try/switch): leave alone
     }

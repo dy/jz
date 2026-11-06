@@ -252,3 +252,20 @@ test('splice: a store target the spliced body could change is read ahead of it',
   const t = wat(TARGETS, { optimize: 2 })
   ok(!/\(func \$\S*closure/.test(t) && !/call_indirect/.test(funcWat(t, 'rows')), 'the lambda splices at both element stores: no closure is left of it')
 })
+
+// A call hoisted out of a store's value to splice as a statement of its own moves ahead
+// of the target's reads the same way, and of the target itself under a compound
+// operator (`x += 1 + g()` reads x first): it moves only past what it cannot change.
+const HOISTS = `let k = 0
+export let row = () => { let A = [0, 0], B = [0, 0], out = [A, B]; let g = (v) => { out[0] = v; return 7 }; for (let i = 0; i < 2; i++) out[0][i] = 1 + g(B); return A[0] * 1000 + A[1] * 100 + B[0] * 10 + B[1] }
+export let key = () => { k = 0; let A = [0, 0, 0], out = [A, A]; let g = () => { k++; return 7 }; for (let i = 0; i < 2; i++) out[0][k] = 1 + g(); return A[0] * 100 + A[1] * 10 + A[2] }
+export let name = () => { let x = 0; let g = () => { x = 10; return 1 }; for (let i = 0; i < 3; i++) x += 1 + g(); return x }
+export let cell = () => { let A = [1, 2], out = [A, A]; let g = () => { A[0] = 50; return 1 }; for (let i = 0; i < 2; i++) out[0][0] += 1 + g(); return A[0] * 100 + A[1] }
+`
+test('splice: a call hoisted out of a stored value runs after what the target reads', () => {
+  const host = oracle(HOISTS)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(HOISTS, { optimize })
+    for (const f of ['row', 'key', 'name', 'cell']) is(m[f](), host[f](), `at ${optimize}: ${f}`)
+  }
+})
