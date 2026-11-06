@@ -142,6 +142,9 @@ export const asF64 = n => {
   if (n.type === 'v128') err(`SIMD (v128) values can't cross a closure/IIFE boundary — closures use the uniform f64 ABI. Move the SIMD into a named top-level function called directly, or extract a lane (f64x2.lane / f32x4.lane) to an f64 first.`)
   if (n.ptrKind != null) return boxPtrIR(n, valKindToPtr(n.ptrKind), n.ptrAux || 0)
   if (n.type === 'f64') return n
+  // A word truncated from a number that is one exactly (module/array.js, an
+  // element of a dense array of words): the number is the load it truncated.
+  if (n.wordOf) return n.wordOf
   if (n.type === 'i64') {
     // Cancel the reinterpret round-trip at construction: reinterpret is bit-preserving
     // both ways, so f64.reinterpret_i64(i64.reinterpret_f64(X)) === X. Folding here keeps
