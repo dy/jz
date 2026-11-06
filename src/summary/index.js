@@ -4388,7 +4388,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const parent = new Map()           // closure id → scope
   const scopeOfSig = new Map(funcs.map(f => [f.sig, f.name]))   // a function's signature record → its scope, for readers
   const scopeOfBody = new Map(funcs.filter(f => f.body !== null && typeof f.body === 'object').map(f => [f.body, f.name]))   // a function's block body → its scope; a closure's is in closuresByBody
-  const scopeOfParams = new Map()    // a closure's parameter node (its stable identity through emission) → its id
+  const scopeOfParams = new Map()    // a closure's parameter node, or its body where it has none (its stable identity through emission) → its id
   const MODULE = ''
   const nameKeys = new Map()         // name → one binding id, or the ids of its specialized variants
   const writes = []                 // flat scope, name, initializer, bare, store-bits records
@@ -4445,7 +4445,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     else if (op === '=>') {
       const id = closureId(n)
-      parent.set(id, scope); scopeOfParams.set(n[1], id)
+      // keyed by the parameter node, or by the body of an arrow with none: a null key would name every such arrow
+      parent.set(id, scope); scopeOfParams.set(n[1] ?? n[2], id)
       const pn = paramNames(n[1])
       for (const p of pn) if (p != null) paramKeys.add(declareIn(id, p))
       if (pn.restName != null) paramKeys.add(declareIn(id, pn.restName))

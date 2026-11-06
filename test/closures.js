@@ -3,9 +3,10 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi, onKernel, levels } from './_matrix.js'
 import { ctx } from '../src/ctx.js'
-import { funcWat, oracle, run, wat, jz, compile } from './util.js'
+import { funcWat, oracle, run, wat, jz, compile, compileInProcess } from './util.js'
 import { MAX_CLOSURE_ARITY } from '../src/ir.js'
-import { T } from '../src/ast.js'
+import { T, walkAst } from '../src/ast.js'
+import { K, tagOf } from '../src/summary/kind.js'
 
 // Raw instantiation — proves the test path needs no host imports.
 
@@ -2909,3 +2910,35 @@ test('closures: a helper called from a closure takes its integer arguments as wo
   if (belowOpt(2)) return
   ok(/\(param \$n[^\s)]* i32\)/.test(funcWat(wat(src, { optimize: 2 }), 'g')), 'the field arrives as a word')
 })
+
+// A function declared in a function is a closure whose parameter node is null
+// (jzify's `function bit() {}`): it names its scope by its body, since null named
+// every such closure and its frame read the summary at module scope, where a call
+// of a binding it captures (`while (bit())`) was any value.
+test('closures: a closure with no parameter reads its maker\'s bindings in the summary', () => {
+  const src = `function make(bits) {
+  let i = 0
+  function bit() { return bits[i++] & 1 }
+  function ones() { let c = 0; while (bit()) c++; return c }
+  return ones
+}
+export let f = (n) => {
+  const b = new Uint8Array(n)
+  for (let k = 0; k < n; k++) b[k] = k % 5 !== 4 ? 1 : 0
+  const ones = make(b)
+  let s = 0
+  for (let k = 0; k < n; k += 5) s += ones() * (k + 1)
+  return s
+}`
+  const want = oracle(src).f
+  for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(42), want(42), `at ${optimize}`)
+  if (onKernel()) return
+  // (the closures kept apart: the call of one from the other's frame is the query)
+  compileInProcess(src, { optimize: { level: 2, sourceInline: false } })
+  const calls = []
+  for (const cb of ctx.closure.bodies) if (cb.params.length === 0)
+    walkAst(cb.body, { enter: n => { if (n[0] === '()' && cb.captures.includes(n[1])) calls.push([cb, n]) } })
+  ok(calls.length > 0, 'a closure with no parameter calls one it captures')
+  for (const [cb, n] of calls) is(tagOf(ctx.summary.at({ scope: cb.scope }).kindOfExpr(n)), K.NUMBER, `${cb.name.replaceAll(T, '')}: ${n[1].replaceAll(T, '')}() is a Number in its frame`)
+})
+

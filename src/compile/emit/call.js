@@ -481,6 +481,8 @@ export const callOps = {
   // Arrow as value → closure
   '=>': (rawParams, body) => {
     if (!ctx.closure.make) err('Closures require fn module (auto-included)')
+    // the summary's key for this closure (src/summary at): its parameter node, its body where it has none
+    const scope = rawParams ?? body
     const noProto = rawParams?.noProto === true || body?.noProto === true
     const binding = ctx.func.arrowBinding
     ctx.func.arrowBinding = null
@@ -519,7 +521,7 @@ export const callOps = {
     // Pass closure info including rest param and defaults.
     // self: the capture that is the closure itself, a binding no cell holds
     const self = binding != null && captures.includes(binding) && !ctx.func.boxed?.has(binding) ? binding : null
-    const closureInfo = { params, body, captures, restParam, scope: rawParams, noProto, self }   // scope: the summary's key for this closure (src/summary at)
+    const closureInfo = { params, body, captures, restParam, scope, noProto, self }
     if (Object.keys(defaults).length) closureInfo.defaults = defaults
     return ctx.closure.make(closureInfo)
   },
