@@ -698,6 +698,24 @@ test('ToPrimitive: a boxed BigInt returned by a conversion method is primitive',
   }`, [0, 1, 0])
 })
 
+// A conversion method runs where no call names it: the summary takes its callers
+// for unknown (an escaped closure's), its BigInt result boxed for the conversion
+// that reads it. A method with a parameter, or an arrow, was walked by no call,
+// its result no value, so it returned the BigInt's raw bits, a Number to `+`.
+test('ToPrimitive: a conversion method of any shape returns its BigInt boxed', () => {
+  for (const [va, vb] of [['valueOf(z) {', 'valueOf(z) {'], ['valueOf: () => {', 'valueOf: (z) => {']]) check(`export function f(k) {
+    let order = ''
+    const a = { ${va} order += 'a'; return 7n } }
+    const b = { ${vb} order += 'b'; return k ? 3 : 5n } }
+    try { return String(a + b) + ':' + order }
+    catch (e) { return (e instanceof TypeError ? 'TypeError:' : 'other:') + order }
+  }`, [0, 1, 1, 0])
+  check(`export function f(k) {
+    const o = { toString: () => 8n, valueOf: (h) => 7n }
+    return k ? String(o) : String(o + 0n)
+  }`, [0, 1, 0])
+})
+
 test('ToPrimitive: loose BigInt equality converts known and dynamic objects', () => {
   check(`export function f(k) {
     let calls = 0

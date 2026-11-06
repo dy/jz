@@ -125,6 +125,11 @@ const CONVERTING_RESULTS = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '+=', '-=', 
 // A property name a Number answers to (`String(+p) === p`): a canonical number
 // starts with a digit, a minus, `I`nfinity or `N`aN, and only those convert.
 const canonicalNumeric = (p) => { const c = p.charCodeAt(0); return (c >= 48 && c <= 57 || c === 45 || c === 73 || c === 78) && String(+p) === p }
+// A program function the language calls on its own (a conversion, an
+// iteration, a thenable's `then`): no call names it, so no walk follows it.
+// (an iterator's `next` runs only from the `@@iterator` method that returns it)
+const IMPLICIT_CALLS = ['valueOf', 'toString', 'toLocaleString', 'toJSON', 'then', '@@iterator', '@@asyncIterator', '@@toPrimitive', '@@hasInstance']
+const IMPLICIT_CALL_NAMES = new Set(IMPLICIT_CALLS)
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
 // The names a primitive's prototypes hold, Object.prototype's among them: a
 // union of builtin kinds asks a primitive member only for one of these.
@@ -559,7 +564,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const old = results.get(key) ?? K.NONE, nk = merge(old, k)
     if (nk !== old) { results.set(key, nk); changed = true }
   }
-  const raiseSlot = (sid, i, k, shape = null, lit) => { noteLits(sid, i, k, lit); raiseSlotShape(sid, i, k, shape); if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinAt(mixedSlots, sid, i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k, null, lit)) } }
+  // A closure stored under a name the language calls on its own (`{ valueOf() { return 7n } }`,
+  // ToPrimitive's) runs where no call names it: its callers are unknown, as an escaped one's.
+  const raiseSlot = (sid, i, k, shape = null, lit) => { if (tagOf(k) === K.CLOSURE && IMPLICIT_CALL_NAMES.has(schemas[sid][i])) escape(k); noteLits(sid, i, k, lit); raiseSlotShape(sid, i, k, shape); if (hostSchemas.has(sid)) { if (retainedSchemas.has(sid)) retain(k); escapeToHost(k) } if ((opaqueSchemas.has(sid) || hostSchemas.has(sid)) && !lostReadPrecise(schemas[sid][i])) losingAs('stored into an object whose shape is lost', escape, k); const a = slots(sid), old = a[i]; let nk = mixedJoinAt(mixedSlots, sid, i, old, k) ? join(old, k) : merge(old, k); if (a[i] !== old) nk = merge(a[i], nk, true); if (nk !== a[i]) { a[i] = nk; changed = true; forFolded(sid, s => raiseSlot(s, i, k, null, lit)) } }
   // A store of nothing (a definite initializer's placeholder) leaves the set;
   // a string literal joins it; any other value ends it. A folded layout's
   // sites hold one set, whether or not the store changed the slot's kind.
@@ -4281,10 +4288,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     for (const f of funcs) { scan(f.body); if (f.defaults) for (const d of Object.values(f.defaults)) scan(d) }
     return open ? null : { names, accessors: found }
   }
-  // A program function the language calls on its own (a conversion, an
-  // iteration, a thenable's `then`): no call names it, so no walk follows it.
-  // (an iterator's `next` runs only from the `@@iterator` method that returns it)
-  const IMPLICIT_CALLS = ['valueOf', 'toString', 'toLocaleString', 'toJSON', 'then', '@@iterator', '@@asyncIterator', '@@toPrimitive', '@@hasInstance']
   const byCallsProven = new Set(), byCallsMembers = []   // the declarations proved so, and the receivers [node, scope] of the member calls the proof took for builtins'
   const bare = (name) => {
     if (current === null) return moduleAssigned().has(name) ? K.NONE : ABSENT
