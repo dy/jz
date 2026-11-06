@@ -1593,3 +1593,16 @@ test('interval proof: every conjunct of a test bounds its arm, a ternary\'s as a
     ok(!/i32\.shr_u/.test(text), `${label}: the read tests no length past the guard`)
   }
 })
+
+// Each loop's fixpoint walks its body several times and every walk reruns the
+// loops inside it, so a deep nest cost 5^depth walks: eight counted loops took
+// over half a minute to compile. Past the proof's budget a loop a discovery
+// pass reaches takes the plain fixpoint (the WAT ranges likewise), so the nest
+// compiles in seconds; its index still reads the array only where it lies.
+test('interval proof: an eight-deep nest compiles, its reads in bounds', () => {
+  const v = Array.from({ length: 8 }, (_, i) => 'i' + i)
+  let body = `s += a[${v.join(' + ')}]`
+  for (let i = v.length - 1; i >= 0; i--) body = `for (let ${v[i]} = 0; ${v[i]} < n; ${v[i]}++) { ${body} }`
+  const src = `export let f = (n) => { const a = new Float64Array(16); for (let k = 0; k < 16; k++) a[k] = k * 0.5; let s = 0; ${body}; return s }`
+  for (const optimize of levels(2)) is(jz(src, { optimize }).exports.f(2), oracle(src).f(2), `f(2) at ${optimize}`)
+})

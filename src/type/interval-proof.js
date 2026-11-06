@@ -59,6 +59,17 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // Missing map entries are unknown. Keep lexical/write ownership separately:
   // discarding an unknown interval must not reveal a same-named module constant.
   let env = new Map()   // name → known [lo, hi]
+  // Each loop's fixpoint walks its body several times, and every walk reruns
+  // the fixpoints of the loops inside it: a nest costs about 5^depth walks of
+  // its innermost body. Past a budget of 512 visits per node of the body
+  // (watr's compile peaks at 65, a five-deep nest of counted loops at 254), a
+  // loop a discovery pass reaches takes the plain fixpoint: discovery, the
+  // widening join and its verify, with a name that escapes it unknown. The
+  // tightening trials only narrow a sound invariant, so leaving them out
+  // loses no soundness, and a final pass keeps them: a nest then costs about
+  // 3^depth.
+  let steps = 0, budget = 50000
+  walkAst(body, { enter: () => { budget += 512 } })
   const declared = new Set()
   if (entry) for (const [name, value] of entry) {
     declared.add(name)
@@ -592,6 +603,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     const entryEnv = new Map(env)
     const prevRec = recording
+    const plain = !recording && steps > budget
     recording = false
     const writes = { values: new Map(), steps: new Set() }
     assigned.push(writes)
@@ -633,7 +645,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // moves, follows a name the join widened (`best = j` under `j < n`): its
     // invariant takes in what the verify pass left, and the pass verifies once
     // more; a name that still escapes widens the way the join widens.
-    for (let round = 0; round < 2 && failed.size; round++) {
+    for (let round = 0; round < 2 && failed.size && !plain; round++) {
       let moved = false
       for (const k2 of failed) {
         const j = joined.get(k2), b = env.get(k2)
@@ -646,7 +658,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       failed.clear()
       for (const [k2, j] of joined) if (j && !holds(k2, j)) failed.add(k2)
     }
-    if (fields.size) {
+    if (fields.size && !plain) {
       // The trial state is the sentinel join with the fields substituted, so a
       // name that failed above only because a field name sat at its sentinel
       // (`j ^= bit` with bit widened negative) verifies here against its own
@@ -675,7 +687,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       const c = [Math.max(j[0], Math.min(a[0], v[0])), Math.min(j[1], Math.max(a[1], v[1]))]
       if (c[0] > j[0] || c[1] < j[1]) { trial.set(k2, c); candidates = true }
     }
-    if (candidates) {
+    if (candidates && !plain) {
       restore(trial); seedFn(); walkPass()
       if ([...trial].every(([k2, t]) => !t || holds(k2, t))) for (const [k2, t] of trial) joined.set(k2, t)
     }
@@ -701,7 +713,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       for (const [, j] of joined) if (j && (j[0] === I32_MIN || j[1] === I32_MAX)) return true
       return false
     }
-    for (let np = 0; np < 2 && widened(); np++) {
+    for (let np = 0; np < 2 && !plain && widened(); np++) {
       restore(joined); seedFn(); walkPass()
       let changed = false
       for (const [k2, j] of joined) {
@@ -1212,6 +1224,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       !some(c, x => x[0] === '()' && x.length > 2) && !some(wbody, x => x[0] === '()' && x.length > 2) ? symWraps : null
   }
   const visit = (n, wrapEntry = null) => {
+    steps++
     if (typeof n === 'string') { recordBinding(n, closureWrites.has(n) ? null : env.get(n)); return }
     if (!Array.isArray(n) || n[0] === '=>') return
     if (n[0] == null || n[0] === 'str') return

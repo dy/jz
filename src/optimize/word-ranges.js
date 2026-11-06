@@ -73,6 +73,14 @@ export function wordRanges(fn) {
   // the bounds the comparisons name, each and one on either side: where a widened bound comes to rest
   const steps = new Set([0])
   let abort = false
+  // A loop walks its body until its head holds, and each walk walks the loops
+  // inside it as often: a nest costs its passes to the power of its depth.
+  // Past a budget of 4096 visits per node of the function (watr's compile
+  // peaks at 778), a loop widens a bound still moving straight to none and
+  // does not narrow, two or three walks: sound, an interval only looser.
+  let visits = 0, budget = 50000
+  const weigh = (n) => { budget += 4096; for (let i = 1; i < n.length; i++) if (isArr(n[i])) weigh(n[i]) }
+  weigh(fn)
   const frameOf = (label) => {
     if (typeof label === 'number' || /^\d+$/.test(label)) { const f = labels[labels.length - 1 - Number(label)]; if (!f) abort = true; return f }
     for (let i = labels.length - 1; i >= 0; i--) if (labels[i].name === label) return labels[i]
@@ -150,6 +158,7 @@ export function wordRanges(fn) {
   const value = (n, r, env) => { if (r) out.set(n, r); else out.delete(n); return env }
   const walk = (n, env) => {
     if (!env || abort || !isArr(n)) return env
+    visits++
     const op = n[0]
     if (OPAQUE.has(op)) { abort = true; return null }
     // (a local named by its index may be one the walk tracks by name)
@@ -190,7 +199,8 @@ export function wordRanges(fn) {
       // a loop: its head joins the entry and every branch back, walked until it holds; then,
       // from a head that holds, the entry and the branches back alone narrow it while they lie within
       thresholds(n, steps)
-      let head = env, narrowing = 0, mayNarrow = true
+      const plain = visits > budget
+      let head = env, narrowing = 0, mayNarrow = !plain
       for (let pass = 0; ; pass++) {
         const frame = { name, loop: true, backs: [] }
         labels.push(frame)
@@ -213,7 +223,7 @@ export function wordRanges(fn) {
           head = back; narrowing = 1; continue
         }
         // a bound still moving widens to the next bound a comparison names, then to none
-        head = pass < WIDEN_AFTER ? next : widen(head, next, pass < WIDEN_AFTER + PASSES ? [...steps] : [])
+        head = plain ? widen(head, next, []) : pass < WIDEN_AFTER ? next : widen(head, next, pass < WIDEN_AFTER + PASSES ? [...steps] : [])
       }
     }
     if (op === 'br') { walkOperands(n, env); leave(n[1], env); return null }
