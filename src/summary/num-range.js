@@ -112,13 +112,13 @@ export function nrMath(name, args) {
     case 'round': return args.length === 1 ? make(Math.round(a.lo), Math.round(a.hi), true,
       a.lo >= 0 && a.nz || a.hi < -0.5 || a.gap > 0.5, a.gap > 0.5 ? Math.ceil(a.gap - 0.5) : 0) : null
     case 'floor': return args.length === 1 ? make(Math.floor(a.lo), Math.floor(a.hi), true, a.nz, Math.floor(a.gap)) : null
-    case 'ceil': case 'trunc': return args.length === 1 ? make(Math[name](a.lo), Math[name](a.hi), true,
+    case 'ceil': case 'trunc': return args.length === 1 ? make(name === 'ceil' ? Math.ceil(a.lo) : Math.trunc(a.lo), name === 'ceil' ? Math.ceil(a.hi) : Math.trunc(a.hi), true,
       a.lo >= 0 && a.nz || a.hi <= -1 || a.gap >= 1, Math.floor(a.gap)) : null
     case 'sqrt': return args.length === 1 && a.lo >= 0 ? make(Math.sqrt(a.lo), Math.sqrt(a.hi), false, a.nz, Math.sqrt(a.gap)) : null
     case 'min': case 'max': {
       if (args.length !== 2 || !args[1]) return null
-      const b = args[1], f = Math[name]
-      return make(f(a.lo, b.lo), f(a.hi, b.hi), a.int && b.int, a.nz && b.nz, Math.min(a.gap, b.gap))
+      const b = args[1], min = name === 'min'
+      return make(min ? Math.min(a.lo, b.lo) : Math.max(a.lo, b.lo), min ? Math.min(a.hi, b.hi) : Math.max(a.hi, b.hi), a.int && b.int, a.nz && b.nz, Math.min(a.gap, b.gap))
     }
     // a positive base to a constant power: monotone in the base
     case 'pow': {
