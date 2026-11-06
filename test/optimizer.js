@@ -9065,6 +9065,25 @@ test('a call carried into a spliced closure reads its arguments as the caller bi
   is(jz(src, { optimize: { level: 'speed' } }).exports.main(100), oracle(src).main(100))
 })
 
+test('an argument a spliced loop tests is bound once before it, so the loop it bounds versions', () => {
+  // `n - (i & 7)` is Number arithmetic over bindings nothing writes while `dot` runs,
+  // but `dot` reads it in its loop's test: substituted there it is no bound of names,
+  // and the versioning that takes the counter integral (and the lane vectorizer after
+  // it) passed the loop by. Bound to a local once, the counter counts in words.
+  if (onKernel()) return
+  const src = `function dot(N, x, y) { let s = 0; for (let i = 0; i < N; i++) s += x[i] * y[i]; return s }
+    const fn = dot
+    export let main = (n) => {
+      const x = new Float64Array(n), y = new Float64Array(n)
+      for (let i = 0; i < n; i++) { x[i] = i; y[i] = n - i }
+      const out = new Float64Array(64)
+      for (let r = 0; r < 3; r++) for (let i = 0; i < 64; i++) out[i] = fn(n - (i & 7), x, y)
+      return out[5]
+    }`
+  ok(/f64x2/.test(compile(src, { wat: true, optimize: { level: 'speed' } })), 'the spliced dot product vectorizes')
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(100), oracle(src).main(100))
+})
+
 test('an unrolled strided kernel spliced through a closure takes its canonical counted form', () => {
   // stdlib's ddot shape (an offset helper, a remainder loop, a main loop
   // unrolled by a module constant) spliced into a closure that is itself

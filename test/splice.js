@@ -279,3 +279,40 @@ test('splice: a body of early tuple returns splices, each return filling the lan
   if (belowOpt(3)) return
   ok(!/call \$split/.test(funcWat(wat(src, { optimize: 'speed' }), 'f')), 'the loop takes the body')
 })
+
+// A store a closure makes into a binding of the function around it that nothing writes past its
+// declaration (`const out`) names the same element before the splice and after it, whatever the
+// spliced body calls: a sweep's loop takes the body of the function it stores (stdlib's `gamma`,
+// its far tail a call of a function that calls itself).
+const SWEEP = `function g(x, d) { if (d > 0) return g(x * 0.5 + 1, d - 1); return x }
+function f(x) { if (x < 0) return g(x, 3); const a = x * x + 1; const b = a * 0.5 - x; return a / b }
+export let run = (n) => {
+  const out = new Float64Array(n)
+  const sweep = () => { for (let i = 0; i < n; i++) out[i] = f(i - n / 2) }
+  sweep()
+  let s = 0
+  for (let i = 0; i < n; i++) s += out[i]
+  return s
+}
+export let rebind = (n) => {
+  let out = new Float64Array(n)
+  const keep = out
+  const sweep = () => { for (let i = 0; i < n; i++) out[i] = f(i - n / 2) }
+  const swap = () => { out = new Float64Array(n) }
+  sweep(); swap(); sweep()
+  let s = 0
+  for (let i = 0; i < n; i++) s += out[i] - keep[i]
+  return s
+}\n`
+test('splice: a closure stores into a binding nothing rebinds the body of the function it calls', () => {
+  const host = oracle(SWEEP)
+  for (const optimize of levels(false, 2, 3, 'speed')) {
+    const m = run(SWEEP, { optimize })
+    for (const n of [0, 1, 7, 64]) {
+      is(m.run(n), host.run(n), `run(${n}) at ${optimize}`)
+      is(m.rebind(n), host.rebind(n), `rebind(${n}) at ${optimize}`)
+    }
+  }
+  if (belowOpt(3)) return
+  ok(!/call \$f\b/.test(funcWat(wat(SWEEP, { optimize: 'speed' }), 'run')), 'the sweep takes the body')
+})

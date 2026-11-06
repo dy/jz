@@ -181,6 +181,10 @@ const firstRead = (node, name) => {
   }
   return false
 }
+// A loop's test reads its bound by name: the versioning that takes the loop's counter
+// integral holds a bound of names, and an argument computed in the test is none.
+const readInTest = (node, name) => Array.isArray(node) && node[0] !== 'str' && node[0] != null &&
+  (LOOP_OPS.has(node[0]) && readCount(node[0] === 'for' ? node[2] : node[1], name) > 0 || node.slice(1).some(n => readInTest(n, name)))
 const readCount = (node, name) => {
   if (node === name) return 1
   if (!Array.isArray(node) || node[0] === 'str' || node[0] == null) return 0
@@ -195,7 +199,8 @@ const noCoercion = node => !Array.isArray(node) || isLiteral(node) ||
 
 // A caller-owned binding stays put while a callee runs unless an argument or
 // the body writes it. Number arithmetic over such bindings is equally stable:
-// it neither invokes user code nor throws, and is only substituted once.
+// it neither invokes user code nor throws, and is substituted at its one read
+// unless a loop tests it.
 const stableArgument = (arg, roots, args) => {
   const names = new Set()
   const value = n => {
@@ -255,7 +260,7 @@ const inlinedBody = (func, args) => {
     const arg = i < args.length ? args[i] : dflt != null ? cloneWithSubst(dflt, subst, new Map()) : [null, undefined]
     const name = params[i].name
     const direct = !closures && !func.defaults &&
-      (typeof arg === 'string' || readCount(func.body, name) === 1) && stableArgument(arg, roots, args) ||
+      (typeof arg === 'string' || readCount(func.body, name) === 1 && !readInTest(func.body, name)) && stableArgument(arg, roots, args) ||
       leaf && args.every((a, j) => j === i || isLiteral(a)) &&
       ((readCount(leaf, name) === 1 && firstRead(leaf, name)) ||
         (typeof arg === 'string' && noCoercion(leaf)))
@@ -432,6 +437,21 @@ const stableNames = (func) => {
   collectBindings(func.body, own)
   walkAst(frameNode(func), { enter: n => { if (n[0] === '=>') { walkAst(n, { enter: x => { for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string') captured.add(x[i]) } }); return false } } })
   return (name) => own.has(name) ? !captured.has(name) : !!ctx.scope.consts?.has(name)
+}
+// The same for a closure of `func`: its own bindings no closure inside it mentions, and a binding
+// of `func` nothing writes past its declaration, the closure's statements or any other's (`const
+// out`, the array a sweep's loop stores into: `out[i] = f( x[i] )` takes the body of `f`).
+const closureStable = (arrow, func) => {
+  const own = new Set(), captured = new Set(), outer = new Set((func.sig?.params || []).map(p => p.name))
+  collectBindings(arrow[2], own)
+  walkAst(arrow[2], { enter: n => { if (n[0] === '=>') { walkAst(n, { enter: x => { for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string') captured.add(x[i]) } }); return false } } })
+  collectBindings(func.body, outer)
+  const inits = new Set(), written = new Set()
+  walkAst(frameNode(func), { enter: x => {
+    if (x[0] === 'let' || x[0] === 'const') for (let i = 1; i < x.length; i++) if (Array.isArray(x[i]) && x[i][0] === '=') inits.add(x[i])
+    if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string' && !inits.has(x)) written.add(x[1])
+  } })
+  return (name) => own.has(name) ? !captured.has(name) : outer.has(name) ? !written.has(name) : !!ctx.scope.consts?.has(name)
 }
 // `callee` and `args`, where given, name the splice before its renaming: its
 // body under its own view knows its parameters' kinds (a comparison of a Number
@@ -1462,13 +1482,13 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   // wrapping a filter ran its loop at half speed spliced there).
   const closureLeaves = new Map([...candidates].filter(([name]) => leaves.has(name) || kernels.has(name)))
   const closureExprLeaves = new Map([...exprOnlyCandidates].filter(([name]) => leaves.has(name)))
-  const spliceClosures = (node) => {
+  const spliceClosures = (node, func) => {
     let changed = false
     walkAst(node, { exit: (n) => {
       if (n[0] !== '=>' || n[2] == null) return
       const view = callerView, stable = callerStable
       callerView = ctx.summary?.at(n[1]) ?? null
-      callerStable = null
+      callerStable = closureStable(n, func)
       inClosure = true
       const next = splice(n[2], !isBlockBody(n[2]), closureLeaves, closureExprLeaves)
       inClosure = false
@@ -1515,7 +1535,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // A closure is a caller of its own: the callback a factory returns
     // (`makeProcess(t)` → `(mag, phase, state) => …`) runs the per-frame loops
     // a leaf it calls sits in. Its body takes the splices a function's does.
-    const inner = spliceClosures(spliced ?? func.body)
+    const inner = spliceClosures(spliced ?? func.body, func)
     const body = inner ?? spliced
     const bodyChanged = body != null
     if (bodyChanged) { func.body = body; changed = true }

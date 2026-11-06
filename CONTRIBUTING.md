@@ -312,9 +312,13 @@ storage. Unwritten literals substitute directly. A leaf can also substitute a
 single first operand, or reread a binding when its whole expression cannot
 invoke user code. Caller-local bindings no closure captures also substitute
 when neither the remaining arguments nor the callee writes them. Single-use
-Number arithmetic over those bindings follows the same proof. Other arguments
+Number arithmetic over those bindings follows the same proof unless a loop of
+the callee tests it: the versioning that takes a counter integral holds a bound of
+names (a sweep's `fn( n - (i & 7), x, y )` and its vectorized dot product). Other arguments
 retain captures; alias/local passes can remove copies after proving their
-sources stay unchanged. Closure splices do not inherit the parent's binding proof.
+sources stay unchanged. A closure splice takes a proof of its own: the closure's
+bindings no closure inside it mentions, and the bindings around it that nothing
+writes past their declaration.
 Expression calls keep captures in a sequence at their evaluation point. Inlining
 never moves initializers out of branches or loops; the IR optimizer owns motion.
 Numeric demand follows ordinary array cells through binding aliases, indexed
@@ -5451,7 +5455,11 @@ series summed from a generator, a continued fraction from its terms) splices at 
 tier wherever the argument is a function the caller names or makes, whatever the count of
 sites, and lifts out of an expression there; a returned call splices as an assigned one does.
 An assignment's target that runs nothing, over names the splice cannot store to (a local no
-closure mentions, a constant of the module), commutes with any splice: `OUT[ i ] = f( x )`.
+closure mentions, a constant of the module), commutes with any splice: `OUT[ i ] = f( x )`. In
+a closure those are its own locals no closure inside it mentions and the bindings of the
+function around it that nothing writes past their declaration: a sweep the bench driver makes,
+`out[ i ] = fn( x[ i ] )` over its `const out`, takes the body of `fn` (stdlib's `gamma`, 0.97x
+the time).
 A caller past 3000 nodes takes no more loops at sites outside its own loops, and the loops it
 left are pinned for watr's single-caller inliner, which has no bound: a driver of three
 hundred kernels was one function that never left the baseline tier. The size tier has no
