@@ -222,3 +222,33 @@ test('splice: a store into an element takes a straight-line body whose prefix cl
   host.xs().set(INPUTS); m.xs().set(INPUTS); host.fill(16); m.fill(16)
   for (let i = 0; i < 64; i++) is(m.outs()[i], host.outs()[i], `element ${i}`)
 })
+
+// JS reads a store's target before its value (`R[K] = f(x)`: R, then K, then f's
+// statements, then the store), and a splice puts f's statements after the target's
+// parts: a part they could change, or one that runs something itself, is read into
+// a temp ahead of them. A receiver read through memory is one (`out[0]`, which the
+// callee's store through an alias changes), a key that counts is another
+// (`out[1][cnt++]`). A local lambda at such a target took no splice, so it stayed
+// a closure (decode-wav's MS ADPCM `expand`, at `ch[0][outBase + cnt++]`).
+const TARGETS = `function swap(o, v) { o[0] = v; return 7 }
+export let swapped = () => { let A = [0, 0], B = [0, 0], out = [A, B]; for (let i = 0; i < 2; i++) out[0][i] = swap(out, B); return A[0] * 1000 + A[1] * 100 + B[0] * 10 + B[1] }
+export let rows = (n) => {
+  let L = new Float64Array(n), R = new Float64Array(n), out = [L, R], s = new Int32Array(2), cnt = 0
+  let step = (v, c) => { s[c] = (s[c] * 3 + v) & 1023; if (s[c] > 900) s[c] -= 900; return s[c] / 4 }
+  for (let p = 0; p < n; p++) { out[0][cnt] = step(p & 15, 0); out[1][cnt++] = step(p >> 2, 1) }
+  let h = 0
+  for (let i = 0; i < n; i++) h = (h * 31 + L[i] * 4 + R[i]) % 1000003
+  return h
+}
+`
+test('splice: a store target the spliced body could change is read ahead of it', () => {
+  const host = oracle(TARGETS)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(TARGETS, { optimize })
+    is(m.swapped(), host.swapped(), `at ${optimize}: the receiver read before the callee swapped the row`)
+    for (const n of [0, 1, 7, 300]) is(m.rows(n), host.rows(n), `at ${optimize}: rows(${n})`)
+  }
+  if (belowOpt(2)) return
+  const t = wat(TARGETS, { optimize: 2 })
+  ok(!/\(func \$\S*closure/.test(t) && !/call_indirect/.test(funcWat(t, 'rows')), 'the lambda splices at both element stores: no closure is left of it')
+})

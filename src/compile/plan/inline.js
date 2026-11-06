@@ -399,8 +399,6 @@ const stmtDeclName = (stmt) => {
 
 // Names an lvalue's evaluation writes (`out[w++]` → {w}), `true` for an opaque
 // effect (a call, a member write), `false` for none.
-const plainTarget = (lhs) => Array.isArray(lhs) && typeof lhs[1] === 'string' &&
-  (lhs[0] === '.' ? typeof lhs[2] === 'string' : lhs[0] === '[]' && lhs.length === 3 && (typeof lhs[2] === 'string' || isLiteral(lhs[2])))
 const lhsWrites = (n) => {
   if (some(n, x => x[0] === '()' || x[0] === '?.()' || x[0] === 'new' || implicitEffect(x) || (MUTATE_OPS.has(x[0]) && typeof x[1] !== 'string'))) return true
   const w = new Set()
@@ -416,37 +414,70 @@ const stableNames = (func) => {
   walkAst(frameNode(func), { enter: n => { if (n[0] === '=>') { walkAst(n, { enter: x => { for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string') captured.add(x[i]) } }); return false } } })
   return (name) => own.has(name) ? !captured.has(name) : !!ctx.scope.consts?.has(name)
 }
-// `callee` and `args`, where given, name the splice before its renaming: its
-// body under its own view knows its parameters' kinds (a comparison of a Number
+// What a splice's statements do to a target read after them: the names they store,
+// whether they store memory, whether they run code the splice cannot see (a call, a
+// getter, a conversion), which may store a name a closure or the module shares.
+// `callee` and `args`, where given, name the splice before its renaming: its body
+// under its own view knows its parameters' kinds (a comparison of a Number
 // parameter runs no conversion), where the renamed prefix under the caller's does not.
-const prefixCommutesWithLhs = (prefix, lhs, callee = null, args = null) => {
-  if (typeof lhs === 'string' || !prefix.length) return true
-  const body = [';', ...prefix]
-  // A target that runs nothing, over names the splice cannot store to, names the same
-  // element before the splice and after it, whatever the splice calls (`OUT[i] = f(x)`).
-  if (callerStable && lhsWrites(lhs) === false) {
-    const stored = new Set()
-    walkAst(body, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') stored.add(x[1]) } })
-    let stable = true
-    walkAst(['()', lhs], { enter: x => { for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string' && !((x[0] === '.' || x[0] === '?.') && i === 2) && (!callerStable(x[i]) || stored.has(x[i]))) stable = false } })
-    if (stable) return true
+const spliceEffects = (prefix, callee, args) => {
+  const names = new Set()
+  let mem = false
+  walkAst([';', ...prefix], { enter: x => {
+    if (MUTATE_OPS.has(x[0])) { if (typeof x[1] === 'string') names.add(x[1]); else mem = true }
+    else if (x[0] === 'delete') mem = true
+  } })
+  const runs = (n, view) => some(n, x => (x[0] === '()' && !isPureCallee(x[1])) || x[0] === '?.()' || x[0] === 'new' || implicitEffect(x, view))
+  const calls = callee ? runs(callee.body, ctx.summary?.at(callee.sig) ?? callerView) || args.some(a => runs(a, callerView)) : runs([';', ...prefix], callerView)
+  return { names, mem, calls }
+}
+// A part of a target that runs nothing: names, literals, scalar arithmetic and member
+// reads, none of which reaches a getter or a conversion.
+const inertPart = (p) => typeof p === 'string' || isLiteral(p) || (Array.isArray(p) && (p[0] === 'this' ||
+  !implicitEffect(p) && (
+    (p[0] === '.' && p.length === 3 && typeof p[2] === 'string' && inertPart(p[1])) ||
+    (p[0] === '[]' && p.length === 3 && inertPart(p[1]) && inertPart(p[2])) ||
+    ((PURE_SCALAR_OPS.has(p[0]) || BOOL_LEAF_OPS.has(p[0])) && p.slice(1).every(inertPart)))))
+// Whether an inert part reads the same after code of effects `eff` as before it: no
+// name it reads is one the code stores, or one unseen code may store; no memory it
+// reads is stored.
+const steadyPart = (p, eff) => {
+  let ok = true
+  const visit = (n) => {
+    if (!ok) return
+    if (typeof n === 'string') { if (eff.names.has(n) || (eff.calls && !callerStable?.(n))) ok = false; return }
+    if (!Array.isArray(n) || isLiteral(n) || n[0] === 'this') return
+    if ((n[0] === '.' || n[0] === '[]') && (eff.calls || eff.mem)) { ok = false; return }
+    visit(n[1])
+    if (n[0] !== '.') for (let i = 2; i < n.length; i++) visit(n[i])
   }
-  // A target that names its receiver and its key (`out[i] = f(x)`, `o.k = f(x)`)
-  // reads no memory: a store in the prefix changes neither, a name it writes does.
-  if (plainTarget(lhs)) {
-    const effect = (n, view) => some(n, x => (x[0] === '()' && !isPureCallee(x[1])) || x[0] === '?.()' || x[0] === 'new' || implicitEffect(x, view))
-    if (callee ? effect(callee.body, ctx.summary?.at(callee.sig) ?? callerView) || (args ?? []).some(a => effect(a, callerView)) : effect(body, callerView)) return false
-    const w = new Set()
-    walkAst(body, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') w.add(x[1]) } })
-    return !refsAny(lhs, w, REFS_IN_EXPR)
+  visit(p)
+  return ok
+}
+// JS evaluates a member target before the value it stores (`R[K] = V`: R, then K,
+// then V, then the store), so a call's splice puts its statements after the target's
+// parts were read. A part those statements cannot change, and that runs nothing
+// itself, is read in place at the store; any other is read into a temp ahead of
+// them, receiver then key (`ch[0][base + n++] = f(x)`: `ch[0]`, then `base + n++`,
+// then f's statements, then the store). The receiver read at the store moves past
+// a key read ahead too: it must not read what the key's evaluation stores.
+// → { pre, lhs }: the temps' declarations and the target over them.
+const spliceTarget = (prefix, lhs, callee = null, args = []) => {
+  if (typeof lhs === 'string' || !prefix.length) return { pre: [], lhs }
+  if (!Array.isArray(lhs) || lhs.length !== 3 || !(lhs[0] === '[]' || (lhs[0] === '.' && typeof lhs[2] === 'string'))) return null
+  const eff = spliceEffects(prefix, callee, args)
+  const op = lhs[0], R = lhs[1], K = lhs[2]
+  const pre = []
+  const temp = (part) => {
+    const t = `${T}tgt${freshId(ctx)}`
+    pre.push(['const', ['=', t, part]])
+    return t
   }
-  const written = lhsWrites(body)
-  if (written === true || written && refsAny(lhs, written, REFS_IN_EXPR)) return false
-  const seen = lhsWrites(lhs)
-  if (seen === false) return true
-  if (seen === true) return false
-  for (const x of seen) if (refsName(body, x, REFS_IN_EXPR)) return false
-  return true
+  const keyStays = op === '.' || (inertPart(K) && steadyPart(K, eff))
+  const ahead = keyStays ? eff : spliceEffects([K], null, [])
+  if (!keyStays) { for (const n of eff.names) ahead.names.add(n); ahead.mem ||= eff.mem; ahead.calls ||= eff.calls }
+  const r = inertPart(R) && steadyPart(R, ahead) ? R : temp(R)
+  return { pre, lhs: [op, r, keyStays ? K : temp(K)] }
 }
 
 const spliceInlinedShape = (prefix, valueStmt) => {
@@ -690,15 +721,14 @@ const inlineInStmt = (stmt, candidates, hot = false) => {
   }
   // `X = call(...)` at statement position: inline as prefix + assign(value).
   // LHS may be a name or an indexed lvalue (`out[i] = beat(...)` in fill loops).
-  // The LHS reference is evaluated before the call, so an effect in it
-  // (`out[w++] = draw()`) admits the splice only when the callee's prefix
-  // commutes with it: no calls, no memory writes, no name the LHS wrote.
+  // The LHS reference is evaluated before the call: a part of it the prefix
+  // could change, or that runs something (`out[w++] = draw()`, `ch[0][i] = f(x)`),
+  // is read into a temp ahead of the prefix (`spliceTarget`).
   if (stmt[0] === '=' && isCandidateCall(stmt[2], candidates, hot)) {
     const args = callArgs(stmt[2])
     const shape = args && inlinedBody(candidates.get(stmt[2][1]), args)
-    if (shape && shape.value !== null && prefixCommutesWithLhs(shape.prefix, stmt[1], candidates.get(stmt[2][1]), args)) {
-      return spliceInlinedShape(shape.prefix, ['=', stmt[1], shape.value])
-    }
+    const target = shape && shape.value !== null && spliceTarget(shape.prefix, stmt[1], candidates.get(stmt[2][1]), args)
+    if (target) return spliceInlinedShape([...target.pre, ...shape.prefix], ['=', target.lhs, shape.value])
   }
   const op = stmt[0]
   if (op === ';') {
@@ -1440,6 +1470,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const bodyChanged = body != null
     if (bodyChanged) { func.body = body; changed = true }
   }
+  // the module's own statements: a body no closure census was taken of
+  callerStable = null
   if (ast) {
     const r = inlineInStmt(ast, candidates)
     if (r) changed = true
@@ -1627,9 +1659,11 @@ export const inlineLocalLambdas = () => {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     callerView = ctx.summary?.at(func.sig) ?? null
+    callerStable = stableNames(func)
     if (inlineLocalLambdasInBody(() => func.body, b => { func.body = b })) changed = true
     if (Array.isArray(func.body) && func.body[0] === '{}' && Array.isArray(func.body[1]) && inlineLambdasInLists(func.body[1], func.body)) changed = true
   }
+  callerStable = null
   return changed
 }
 
