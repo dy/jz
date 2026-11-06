@@ -189,14 +189,29 @@ test('called args: a copy per set of closures a parameter is given', () => {
   }
 })
 
-// A function that calls itself keeps one body (watr's template `walk(node, fn)`):
-// its copy would call the original for its recursion, the parameter the join
-// again there, and the program around it compiled for minutes.
+// A function that calls itself (watr's template `walk(node, fn)`) recurses in
+// each copy into the copy, its parameter passed on: had the copy called the
+// original, the two would call each other, the parameter the join again, and
+// the program around it compiled for minutes.
 const walker = `const walk = (n, fn) => { fn(n); if (Array.isArray(n)) for (const c of n) walk(c, fn) }
 export let count = (t) => { let k = 0; walk(t, () => k++); return k }
 export let sum = (t) => { let s = 0; walk(t, (x) => { if (typeof x === 'number') s += x }); return s }`
 
-test('called args: a function that calls itself keeps one body', () => {
+test('called args: a function that calls itself recurses into its copy', () => {
   agrees(walker, [['count', [1, [2, [3]], 4]], ['sum', [1, [2, [3]], 4]]])
-  if (!belowOpt(2)) ok(!wat(walker, { optimize: 2 }).includes(`walk${T}k`), 'no copy of the walker')
+  if (belowOpt(2)) return
+  const fns = wat(walker, { optimize: 2 }).split(/\n(?=  \(func )/).filter(f => f.startsWith(`  (func $walk`))
+  ok(fns.length && fns.every(f => f.startsWith(`  (func $walk${T}k`)), 'the calls run copies')
+  ok(fns.every(f => [...f.matchAll(/\(call \$(walk\S*)/g)].every(m => f.startsWith(`  (func $${m[1]}\n`))), 'each copy calls only itself')
+})
+
+// A function that passes itself another closure at a split parameter reaches
+// another set from its copy: it keeps its one body.
+const relay = `const walk = (n, fn) => { fn(n); if (Array.isArray(n)) for (const c of n) walk(c, (x) => fn(x)) }
+export let count = (t) => { let k = 0; walk(t, () => k++); return k }
+export let sum = (t) => { let s = 0; walk(t, (x) => { if (typeof x === 'number') s += x }); return s }`
+
+test('called args: a function passing itself another closure keeps one body', () => {
+  agrees(relay, [['count', [1, [2, [3]], 4]], ['sum', [1, [2, [3]], 4]]])
+  if (!belowOpt(2)) ok(!wat(relay, { optimize: 2 }).includes(`walk${T}k`), 'no copy of the walker')
 })

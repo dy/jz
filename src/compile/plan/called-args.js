@@ -27,7 +27,7 @@
  * @module compile/plan/called-args
  */
 import { ctx } from '../../ctx.js'
-import { T, ASSIGN_OPS, callArgs, setCallArgs, walkAst, some, refsName, REFS_IN_EXPR } from '../../ast.js'
+import { T, ASSIGN_OPS, callArgs, setCallArgs, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { materializeVariant } from '../variant.js'
 import { invalidateBodies } from '../analyze.js'
@@ -261,11 +261,14 @@ export const splitByClosureArgs = (programFacts) => {
   }
   const addressTaken = programFacts.addressTakenNames
   const touched = new Set()
-  for (const [callee, sites] of sitesOf) {
+  for (const [callee, all] of sitesOf) {
     const func = ctx.funcs.map.get(callee)
-    if (!func?.body || func.raw || func.rest || sites.length < 2 || isExported(func) || addressTaken.has(func.name) || nodeSize(func.body) > MAX_BODY) continue
-    // a copy of a function that calls itself calls the original again, where the parameter is the join
-    if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
+    if (!func?.body) continue
+    // the calls a function makes of itself (`walk(child, fn)`) are no set's: each copy makes them of itself
+    const selfCalls = new Set()
+    walkAst(func.body, { enter: n => { if (n[0] === '()' && n[1] === func.name) selfCalls.add(n) } })
+    const sites = all.filter(site => !selfCalls.has(site.node))
+    if (func.raw || func.rest || sites.length < 2 || isExported(func) || addressTaken.has(func.name) || nodeSize(func.body) > MAX_BODY) continue
     const ks = [], sets = []
     func.sig.params.forEach((p, k) => {
       if (func.defaults?.[p.name] != null) return
@@ -279,13 +282,16 @@ export const splitByClosureArgs = (programFacts) => {
       if (read && !written) { ks.push(k); sets.push(keys) }
     })
     if (!ks.length) continue
+    // one that passes itself anything but the parameter there reaches another set: it keeps its one body
+    if ([...selfCalls].some(n => ks.some(k => callArgs(n)[k] !== func.sig.params[k].name))) continue
     const combos = sites.map((_, i) => sets.every(keys => keys[i]) ? sets.map(keys => keys[i]).join('|') : null)
     const kinds = [...new Set(combos.filter(Boolean))]
     if (kinds.length < 2 || kinds.length > MAX_CLOSURE_SETS) continue
     kinds.forEach((key, n) => {
       const name = `${func.name}${T}k${n}`
       const eligible = sites.filter((_, i) => combos[i] === key)
-      materializeVariant({ origin: func, key: name, name, kind: 'closure-arg', eligibleSites: eligible, fallback: func })
+      const copy = materializeVariant({ origin: func, key: name, name, kind: 'closure-arg', eligibleSites: eligible, fallback: func })
+      if (selfCalls.size) walkAst(copy.body, { enter: n => { if (n[0] === '()' && n[1] === func.name) n[1] = copy.name } })
       for (const site of eligible) touched.add(site.callerFunc?.body ?? null)
     })
   }
