@@ -8,6 +8,7 @@
  * member it carries (a class instance's is its class, jzify/classes.js).
  * BigInt64Array and BigUint64Array share one representation (layout.js), so
  * neither is recovered from a value: their `constructor` reads undefined.
+ * Each function carries its constructor's static `BYTES_PER_ELEMENT`.
  *
  * @module std/typed
  */
@@ -23,6 +24,7 @@ export const TYPED_BYTES = { Float64Array: 8, Float32Array: 4, Float16Array: 2, 
 
 export default `
 ${NAMES.map(n => `export let __${n} = (a, b, c) => b === undefined ? new ${n}(a) : c === undefined ? new ${n}(a, b) : new ${n}(a, b, c)`).join('\n')}
+${NAMES.map(n => `__${n}.BYTES_PER_ELEMENT = ${TYPED_BYTES[n]}`).join('\n')}
 export let __ctor = (x) => ${NAMES.filter(n => !n.startsWith('Big')).map(n => `x instanceof ${n} ? __${n}`).join('\n  : ')}
   : x.constructor
 `

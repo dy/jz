@@ -730,10 +730,13 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
     }
     return withLoc(out, node)
   }
-  const newAst = rewrite(ast)
-  ast.length = 0
-  for (let i = 0; i < newAst.length; i++) ast.push(newAst[i])
-  invalidateProgramFactsCache(ast)
+  // (an entry of re-exports alone has no statements of its own)
+  if (ast) {
+    const newAst = rewrite(ast)
+    ast.length = 0
+    for (let i = 0; i < newAst.length; i++) ast.push(newAst[i])
+    invalidateProgramFactsCache(ast)
+  }
   for (const fn of ctx.funcs.list) {
     if (fn.body && !fn.raw) fn.body = rewrite(fn.body)
     // Default-param values are AST stored OUTSIDE fn.body (fn.defaults) — a

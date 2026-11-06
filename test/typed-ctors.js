@@ -20,6 +20,7 @@ test('typed constructors: named as a value', () => agrees([
   ['constructed from an array', `const make = (C, a) => new C(a); export const f = () => { const v = make(Int16Array, [1, 70000, 3]); return v.length * 100000 + v[1] }`],
   ['constructed over a buffer', `const make = (C, b, o, n) => new C(b, o, n); export const f = () => { const b = new ArrayBuffer(16); const v = make(Float32Array, b, 4, 2); v[0] = 1.5; return v.length * 10 + new Float32Array(b)[1] }`],
   ['typeof', `export const f = () => typeof Float32Array`],
+  ['its element size, through a parameter', `const w = (T) => T.BYTES_PER_ELEMENT; export const f = (k) => [w(k ? Float64Array : Uint16Array), w(Int8Array), Float32Array.BYTES_PER_ELEMENT, typeof w(Int32Array)].join()`],
   ['a binding of the name shadows it', `export const f = () => { const Float32Array = 5; return Float32Array + 1 }`],
   ['a parameter of the name shadows it', `const g = (Int8Array) => Int8Array * 2; export const f = () => g(4)`],
   // three.js utils.getTypedArray
@@ -77,4 +78,15 @@ test('typed constructors: O0 links only the constructors the program names', () 
   if (onKernel()) return
   const made = [...compile(src, { optimize: 0, wat: true }).matchAll(/\(func \$jz_typed\$(\w+)/g)].map(m => m[1])
   is(made.join(), '__Float32Array', 'the one constructor named')
+})
+
+// An entry of re-exports alone has no statements of its own: the lowering of
+// function properties (plan/scope.js flattenFuncNamespaces), which jz:typed's
+// constructors carry, leaves it so (@audio/decode-wav through such an entry).
+test('typed constructors: an entry of re-exports alone', () => {
+  const m = `export const f = (k) => new (k ? Float64Array : Uint16Array)(4).BYTES_PER_ELEMENT`
+  for (const optimize of levels(0, 2, 3)) {
+    const { exports } = jz(`export { f } from './m.js'`, { optimize, modules: { './m.js': m } })
+    is(exports.f(1), 8, `O${optimize}`); is(exports.f(0), 2, `O${optimize}`)
+  }
 })
