@@ -10,7 +10,7 @@ import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP, ARRAY_RAW } from '../../../layout.js'
-import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, some, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand, here } from '../../ctx.js'
 import {
   keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -1253,12 +1253,21 @@ export function emitDecl(...inits) {
   return result.length === 0 ? null : result.length === 1 ? result[0] : result
 }
 
+/** A value dropped folded, `(drop v)`: a flat `drop` among a function's statements is stack code,
+ *  which the optimizer's structural passes leave alone in the whole function. A value holding a
+ *  loop stays a statement of its own with the drop flat after it: watr's propagate carries a copy
+ *  into a loop nested in an expression past the loop's later write of the copy's source. */
+export const foldsDrop = (v) => Array.isArray(v) && typeof v[0] === 'string' && !some(v, n => n[0] === 'loop')
+
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBlockBody. */
 export function emitVoid(node) {
   if (isBlockBody(node)) return emitBlockBody(node)
   const ir = emit(node, 'void')
   const items = flat(ir)
-  if (ir?.type && ir.type !== 'void') items.push('drop')
+  if (!(ir?.type && ir.type !== 'void')) return items
+  const last = items[items.length - 1]
+  if (items.every(Array.isArray) && foldsDrop(last)) items[items.length - 1] = ['drop', last]
+  else items.push('drop')
   return items
 }
 

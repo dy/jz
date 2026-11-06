@@ -8620,6 +8620,39 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
 })
 
+// A call made as a statement, or under `void`, drops its value folded, `(drop (call …))`: a `drop` written flat
+// among a function's statements is stack code, and the optimizer leaves the whole function's
+// structure alone, its condition chains among them (a sweep's `isnan(x) || x === Infinity`
+// stayed a value diamond, tested again: stdlib's exp, 0.88x the time with chains on x64).
+test('condition chains: a statement call drops its value folded, so its function takes the chains', () => {
+  const src = `const isnan = (x) => x !== x
+  let seen = 0
+  function note(v, d) { if (d > 0) return note(v + 1, d - 1); seen = (seen + v) | 0; return seen }
+  export let f = (xs) => {
+    let s = 0, t = 0
+    for (let i = 0; i < xs.length; i++) {
+      const x = xs[i]
+      if (isnan(x) || x === Infinity || x === -Infinity) t++
+      else s += x
+    }
+    note(t, 2)
+    return s + t
+  }
+  export let g = (x) => { const u = void note(x, 1); return u === undefined ? x : -x }
+  export let total = () => seen`
+  const xs = new Float64Array([1.5, NaN, Infinity, -Infinity, -0, 3, NaN, 1e300])
+  for (const optimize of levels(false, 1, 2, 3, 'speed', 'size')) {
+    const m = run(src, { optimize }), host = oracle(src)
+    is(m.f(xs), host.f(xs), `the sum at ${optimize}`)
+    is(m.g(3), host.g(3), `void at ${optimize}`)
+    is(m.total(), host.total(), `and the note at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = compile(src, { wat: true, optimize: 'speed' }), body = funcWat(text, 'f')
+  ok(!/\)\s+drop\b/.test(body) && !/\)\s+drop\b/.test(funcWat(text, 'g')), 'no drop written flat, of a call or of a void')
+  ok(!/\(if\s*\(result i32\)\s*\(local\.tee/.test(body), 'no value diamond in the loop test')
+})
+
 test('devirtSchemaReads: an empty inline cache cannot match zero or subnormal numbers', () => {
   const shapes = Array.from({ length: 30 }, (_, i) => `{k${i}:0,x:${i}}`)
   const src = `function mk(i) { switch(i%30) { ${shapes.map((s,i) => `case ${i}: return ${s};`).join('')} } return {x:-1,z:0} }
