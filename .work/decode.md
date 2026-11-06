@@ -57,7 +57,8 @@ one file per process.
 | K2 | An integer recurrence bounded by a clamp stays f64: the clamp's bound is not fed back into the sum's range | `clamp-acc.js clamp` → `control` | 883 µs / 2.11 ms 0.42× | 0.91× | QOA, while K1 holds | new |
 | K3 | Methods of a factory-made object closing over mutable integer `let`s (`makeBits → { unary, read }`): `call_indirect` with the boxed ABI, captured state in f64 cells loaded and stored per call | `closure-state.js closures` → `globals`, `locals` | 19.75 / 50.76 ms 0.39× | 0.84×, 0.88× | TTA bit reader (32% of its time) | S8's residual, unnamed there |
 | K4 | Mutated integer fields of a non-escaping record passed per sample (`ch.k0`, `ch.sum0`): f64 slots, truncate and convert per update, heap-allocated, not scalar-replaced | `record-fields.js fields` → `typed` | 2.54 / 13.75 ms 0.18× | 1.05× | TTA `decodeValue` | new; S3 covers reads only |
-| G6 | A local lambda is not spliced at `a[c][i] = f(…)`: `src/compile/plan/inline.js` splices `X = call()` only under `prefixCommutesWithLhs`, and a nested receiver is not a plain target | `pcm.js k6` → `c6e` (`L[p] = expand()`) | jz 91.8 → 35.9 ms in one module | | WAV ms-adpcm | new |
+| G6 | A local lambda is not spliced at `a[c][i] = f(…)`: `src/compile/plan/inline.js` splices `X = call()` only under `prefixCommutesWithLhs`, and a nested receiver is not a plain target | `pcm.js k6` → `c6e` (`L[p] = expand()`) | jz 91.8 → 35.9 ms in one module | | WAV ms-adpcm | fixed, below |
+| G7 | A second name declared in a `for` head and stepped in its update by a stride of the record (`for (let x = ch[c], i = 0, k = c * 3; i < frames; i++, k += nCh * 3)`): the integral copy takes no counter bound or trips from a head of more than one declaration or an update of more than one step, and `k` steps by no literal, so it is no cursor; it stays f64, three `trunc_sat` and index checks per sample | `pcm.js k7` → `c7hs` (the head holding the counter alone, a literal stride) | 901 µs / 1.27 ms 0.71× | 1.71×; the head alone (`c7h`) 0.82×, the literal stride alone (`c7s`) 0.85× | WAV pcm24; the pcm16/32/float loops share the head | G2's carrier in the head |
 | G5 | Call-site specialization matches the exact pointer aux: an owned Uint8Array gets `$spec`, a subarray view the generic variant | not reduced (a kernel did not reproduce it) | | | AIFF all PCM (`decodeAiffRaw(chunk.subarray(…))`), 5–10% | S2 family |
 
 How much each case's gap they explain, from edited copies of the packages (not from
@@ -100,9 +101,27 @@ classes (G2, D2, A1, K4) are that one loss on four carriers.
 - Pre-existing failures on main 045d0c89f, unrelated: `min recurrence (watr)` in
   optimizer.js, `from, as and of are names outside their clauses` in parser-bugs.js, and the
   runner's own off-terminal test.
+- A function holding a declaration of an array pattern beside another declarator, the
+  other captured by a closure (`const pre = [], [op, R, K] = lhs; const temp = (p) => {
+  pre.push(p) }`), does not compile where it is spliced: "'pre' is not in scope" under its
+  spliced name. Open, on main too; two declarations compile.
+- Code moved ahead of a store's target read the target after it: a call's splice at
+  `out[0][i] = f(out)` stored into the row f put there, a nested call hoisted out of `out[0][k]
+  = 1 + g()` read the key g stepped, and out of `x += 1 + g()` read x after g wrote it. On main
+  at the default level and at speed; fixed on adpcm-gap.
+- A loop nest whose inner copy holds a cursor's word (decode-wav's IMA ADPCM nest, its channels
+  made by a loop) put that word into the guard of the loop around it, outside the block that
+  declares it: the module did not compile. Fixed on adpcm-gap.
+- G7 by a canonical head (the second declarations before the loop, the second steps at the
+  body's end) took wav pcm24 from 1.82 to 1.62 ms, and fft to 1.26×, provenance to 1.79× the
+  time of main: their butterfly `for (let j = 0, k = 0; j < half; j++, k += step)` relies on
+  the head as written (type/loop-versioning-nest.js, test/loop-step.js). Not kept: the integral
+  copy should read such a head as it stands.
 
-Not diagnosed: wav pcm24/pcm32, the ADPCM and law cases, aiff alaw (0.50×, a 2000-sample
-fixture: likely per-call setup).
+Not diagnosed: wav pcm32, the law cases, aiff alaw (0.50×, a 2000-sample fixture: likely
+per-call setup). MS ADPCM's rest, past G6, is read off its WAT, not measured: the
+spliced `expand` reads `coefs[predIdx[c]]` as a row of an array of arrays (K1's carrier), and
+`cnt`, `p`, `spb` count in f64 from the header record (D2's).
 
 - A2, open: ALAC's cookie is the host's, so its bytes are any value: `cfg.bitDepth = c[5]`
   reaches `read(bb, chanBits)` raw in the CPE escape branch, `read`'s `n` is ANY, and
@@ -138,3 +157,18 @@ AIFF (0.72×) and TTA (0.53×): the fixes belong in the shared passes.
 | D2 | A closure's loop versions a binding it captures that nothing writes as one of its own (plan/integral-loops.js) | `ring.js` 0.71× → 0.84× (`ring-literal.js` 0.91×) | dsd, with D1 |
 
 Measured under load 20–40; the decoder rows are single runs.
+
+## Fixed (branch adpcm-gap)
+
+| | Change | Kernel before → after | Decoder before → after |
+|---|---|---|---|
+| G6 | A store target's parts a spliced call could change, or that run something, are read into temps ahead of the call's statements, receiver then key, as JS reads them before the value (plan/inline.js `spliceTarget`); the lambda pass reads its caller's stable names, which it had kept from the last function of the pass before. A call hoisted out of a stored value moves past the target's reads only where it cannot change them | `pcm.js k6` 0.26× → 0.75× (jz 101 → 45 ms; `c6e` 0.64×) | wav ms-adpcm 0.64× → 0.88× (jz 224 → 161 µs), speed tier 0.51× → 1.10× |
+| G7, part | An integral copy is bounded by a local closures only read; no guard reads a word a copy inside it declared (plan/integral-loops.js) | `pcm.js c7hs` 1.40× → 1.71×, `k7` 0.65× → 0.71× | wav pcm24 as before: its sample loops compile to the same code, their heads keep the bound away |
+
+Measured on load 25–36 against main 87ce1d375. The decoder rows are the full table's single runs,
+held by paired rounds (ms-adpcm 0.57–0.64× → 0.84–0.88× over four). aiff, qoa, tta, dsd and ALAC
+compile to the same wasm as on main, and their rows moved by up to 25% between runs of it; caf
+compiles to less, its three cases level in paired rounds. Of the bench corpus's 101 cases, 93
+compile to the same wasm at both levels; the paired rounds of the rest (jz over jz at main):
+stdlib-gamma 0.83×, stdlib-dists 0.95×, stdlib-special 0.99×, async 1.07× (0.91–1.28 over ten),
+watr 1.06× (0.65–1.32 over six), stdlib-exp changed at the default level only.

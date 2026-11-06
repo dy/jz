@@ -367,3 +367,42 @@ export function c3k(src) { let raw = src instanceof Uint8Array ? src : new Uint8
       channelData[c][i] = dv.getFloat32(off, !!isLE)
   return channelData
 }
+
+// ── G7: decode-wav's 24-bit loop: a second name declared in the head and stepped in the update by a stride of the record ──
+export function k7(src) { let raw = src instanceof Uint8Array ? src : new Uint8Array(src), hdr = parse(raw)
+  let { channels: nCh } = hdr, frames = Math.floor(raw.length / (nCh * 3))
+  let ch = Array.from({ length: nCh }, () => new Float32Array(frames))
+  for (let c = 0; c < nCh; c++) for (let x = ch[c], i = 0, k = c * 3; i < frames; i++, k += nCh * 3) {
+    x[i] = ((raw[k] | raw[k + 1] << 8 | raw[k + 2] << 16) << 8 >> 8) / 8388608
+  }
+  return ch
+}
+// control h: the head holding its counter alone (x and k declared before it, k stepped at the body's end)
+export function c7h(src) { let raw = src instanceof Uint8Array ? src : new Uint8Array(src), hdr = parse(raw)
+  let { channels: nCh } = hdr, frames = Math.floor(raw.length / (nCh * 3))
+  let ch = Array.from({ length: nCh }, () => new Float32Array(frames))
+  for (let c = 0; c < nCh; c++) { let x = ch[c], k = c * 3; for (let i = 0; i < frames; i++) {
+    x[i] = ((raw[k] | raw[k + 1] << 8 | raw[k + 2] << 16) << 8 >> 8) / 8388608
+    k += nCh * 3
+  } }
+  return ch
+}
+// control s: a literal stride, the head as written
+export function c7s(src) { let raw = src instanceof Uint8Array ? src : new Uint8Array(src), hdr = parse(raw)
+  let { channels: nCh } = hdr, frames = Math.floor(raw.length / (nCh * 3))
+  let ch = Array.from({ length: nCh }, () => new Float32Array(frames))
+  for (let c = 0; c < nCh; c++) for (let x = ch[c], i = 0, k = c * 3; i < frames; i++, k += 6) {
+    x[i] = ((raw[k] | raw[k + 1] << 8 | raw[k + 2] << 16) << 8 >> 8) / 8388608
+  }
+  return ch
+}
+// control hs: both
+export function c7hs(src) { let raw = src instanceof Uint8Array ? src : new Uint8Array(src), hdr = parse(raw)
+  let { channels: nCh } = hdr, frames = Math.floor(raw.length / (nCh * 3))
+  let ch = Array.from({ length: nCh }, () => new Float32Array(frames))
+  for (let c = 0; c < nCh; c++) { let x = ch[c], k = c * 3; for (let i = 0; i < frames; i++) {
+    x[i] = ((raw[k] | raw[k + 1] << 8 | raw[k + 2] << 16) << 8 >> 8) / 8388608
+    k += 6
+  } }
+  return ch
+}
