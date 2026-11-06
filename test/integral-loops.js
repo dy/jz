@@ -2086,7 +2086,8 @@ test('integral loops: a closure bounded by a capture nothing writes', () => {
     }
   }
   if (belowOpt(2)) return
-  const w = wat(src, { optimize: 2 })
+  // (watr off: the closure, called directly now, would join its one caller, the copy's names shared with its locals)
+  const w = wat(src, { optimize: { level: 2, watr: false } })
   // (a closure is named `$` + T + `closure<n>`, the copy's counter `i` + T + `int<n>`: prepare's binding mark)
   ok(w.split(/\n(?=  \(func )/).some(f => f.startsWith(`  (func $${T}closure`) && f.includes(`(local $i${T}int`)), 'the closure counts an int32 copy')
 })

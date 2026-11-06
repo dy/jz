@@ -75,7 +75,8 @@ test('runtime inspection: a closed closure table resolves indirect calls to its 
 
 test('runtime inspection: the native host keeps its closure table closed', () => {
   if (onKernel()) return
-  const src = 'export const make = (k) => (x) => x * k\nlet f = make(2)\nexport function apply(x){ return f(x) }\nexport function swap(k){ f = make(k) }'
+  // (two closures `f` may hold: a call of one the summary names is a direct call, through no table)
+  const src = 'export const make = (k) => (x) => x * k\nexport const shift = (k) => (x) => x + k\nlet f = make(2)\nexport function apply(x){ return f(x) }\nexport function swap(k){ f = k > 0 ? make(k) : shift(k) }'
   const native = inspect(src, { host: 'native' }), js = inspect(src)
   is(native.apply.noHostCalls, true, 'native: the closure call resolves through the closed table')
   is(native.apply.noAllocation, null, 'the polymorphic closure still reaches numeric coercion and arena writes')
