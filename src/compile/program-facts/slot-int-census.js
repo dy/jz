@@ -4,7 +4,7 @@ import { MUTATE_OPS, walkAst, isTdzValue } from '../../ast.js'
 
 const isStringKeyIndex = (t) => t[0] === '[]' && Array.isArray(t[2]) && (t[2][0] == null || t[2][0] === 'str') && typeof t[2][1] === 'string'
 import { ctx, err, getFactStore } from '../../ctx.js'
-import { ANY, K, hasTag } from '../../summary/kind.js'
+import { ANY, K, hasTag, tagOf, isNullable, typedAux, UNKNOWN } from '../../summary/kind.js'
 import { repOf } from '../../reps.js'
 import { staticObjectProps } from '../../static.js'
 import { intLevelChecker } from '../../type.js'
@@ -104,13 +104,23 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // A body's levels take its own function's parameters as entry values: a
   // parameter the body reassigns (to a Boolean, say) still holds the caller's
   // value on the other path.
+  // The typed reads of a body the summary proves hit (an index a fixed length
+  // holds: `sum0: SHIFT16[10]`, a view of 37 elements), their element code its kind's.
+  const readsOf = (body) => {
+    const view = ctx.summary?.at(body)
+    if (!view) return undefined
+    return {
+      has: (n) => { const k = view.kindOfExpr(n); return tagOf(k) === K.NUMBER && !hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) },
+      auxOf: (name) => { const k = view.kindOfExpr(name); return tagOf(k) === K.TYPED && !isNullable(k) && typedAux(k) !== UNKNOWN ? typedAux(k) : null },
+    }
+  }
   const bodyIntCertainOf = (body, fresh, params) => {
-    if (fresh) return intLevelChecker(body, slotLevelOf, params)
+    if (fresh) return intLevelChecker(body, slotLevelOf, params, readsOf(body))
     if (body != null && typeof body === 'object') {
       const hit = pf.bodyIntCertain.get(body)
       if (hit?.gen === pf.gen) return hit.isInt
     }
-    const isInt = intLevelChecker(body, slotLevelOf, params)
+    const isInt = intLevelChecker(body, slotLevelOf, params, readsOf(body))
     if (body != null && typeof body === 'object')
       pf.bodyIntCertain.set(body, { gen: pf.gen, isInt })
     return isInt

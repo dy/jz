@@ -4655,6 +4655,16 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     // a field of objects whose every store of that name was an array of one size
     if (Array.isArray(e) && e[0] === '.' && typeof e[1] === 'string' && typeof e[2] === 'string') return slotShapeOf(scope, e[1], e[2])
+    // a view of an array of one size between literal ends (`SHIFT1.subarray(4)`): the
+    // elements it spans, over the buffer of the array it views
+    if (Array.isArray(e) && e[0] === '()' && Array.isArray(e[1]) && e[1][0] === '.' && e[1][2] === 'subarray' && typeof e[1][1] === 'string') {
+      const under = typedShapeOf(scope, e[1][1], seen)
+      if (!under) return null
+      const args = argList(e[2]), n = under.len
+      const end = (a, dflt) => a === undefined ? dflt : Array.isArray(a) && a[0] == null && Number.isInteger(a[1]) ? (a[1] < 0 ? Math.max(n + a[1], 0) : Math.min(a[1], n)) : null
+      const from = end(args[0], 0), to = end(args[1], n)
+      return from === null || to === null || args.length > 2 ? null : { len: Math.max(to - from, 0), bytes: under.bytes }
+    }
     if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string') return null
     // `X.from(array)`, `new X(array)`: an element for each of the array's. (Not a
     // BigInt array's: one of a known count that a function stores BigInts into

@@ -20,7 +20,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { ctx } from '../src/ctx.js'
-import { run, oracle, compileInProcess, jz, compile } from './util.js'
+import { run, oracle, compileInProcess, jz, compile, funcWat } from './util.js'
 import { initSchema } from '../module/schema.js'
 import { levels } from './_matrix.js'
 
@@ -170,13 +170,15 @@ test('slot-hazards: §21 counter-example — computed-key write through an untyp
   // downstream of `corrupt(f, 'count', 'oops')` would still answer NUMBER —
   // wrong, since the call really did overwrite that slot with a string — and
   // this test would decode the box's raw pointer bits as a number instead of
-  // taking the string concat path.
+  // taking the string concat path. (The second call, of another layout, keeps
+  // `obj` unresolved: a parameter every call passes one layout resolves to it.)
   const src = `
 class Foo { constructor() { this.count = 0 } }
 const corrupt = (obj, key, val) => { obj[key] = val }
 export let main = () => {
   const f = new Foo()
   corrupt(f, 'count', 'oops')
+  corrupt({ other: 1 }, 'other', 2)
   return f.count + '!'
 }`
   for (const optimize of LEVELS)
@@ -530,4 +532,79 @@ test('slot-hazards: a closure store poisons the integer census of its maker lite
     const { f } = run(src, { optimize })
     for (const [n, g] of [[1, 0.5], [3, -2]]) is(f(n, g), js.f(n, g), `f(${n}, ${g}) at ${optimize}`)
   }
+})
+
+const slotLevels = (src, keys, optimize = 2) => {
+  compileInProcess(src, { optimize })
+  const sid = ctx.schema.list.findIndex(l => l.join() === keys)
+  return ctx.schema.slotIntLevels.get(sid) ?? []
+}
+
+// A parameter narrowing pins to one layout (`step(ch, v)`, every call passing
+// the record `make` builds) writes that layout's slots: the census reads its
+// stores as it reads a local's, where it once took them for stores through an
+// unknown receiver and poisoned the names everywhere.
+test('slot-hazards: stores through a parameter of one layout are the census\'s own', () => {
+  const src = `const make = () => ({ k: 10, s: 0 })
+function step(ch, v) { if (ch.k > 0 && v < 3) ch.k--; else if (v > 7) ch.k++; ch.s = (ch.s + v) | 0; return ch.k }
+export let f = (n) => { const ch = make(); let t = 0; for (let i = 0; i < n; i++) t += step(ch, i % 11); return t + ch.s }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const n of [0, 30, 500]) is(run(src, { optimize }).f(n), js.f(n), `O${optimize} f(${n})`)
+  const [k, s] = slotLevels(src, 'k,s')
+  ok(k >= 1, 'the stepped slot is integral')
+  is(s, 2, 'the `| 0` slot is an int32')
+  // the same parameter storing a fraction: observed, not lost
+  const frac = `const make = () => ({ x: 1 })
+function set(o, v) { o.x = v * 0.5 }
+export let f = (v) => { const o = make(); set(o, v); return Math.floor(o.x) }`
+  for (const optimize of LEVELS) is(run(frac, { optimize }).f(3), 1, `O${optimize}: floor NOT elided`)
+  is(slotLevels(frac, 'x', { level: 2, sourceInline: false })[0], 0, 'the fraction poisons the slot')
+  // and a computed key through it poisons the layout it resolves to
+  const keyed = `class Foo { constructor() { this.count = 0 } }
+const corrupt = (obj, key, val) => { obj[key] = val }
+export let main = () => { const f = new Foo(); corrupt(f, 'count', 'oops'); return f.count + '!' }`
+  for (const optimize of LEVELS) is(run(keyed, { optimize }).main(), 'oops!', `O${optimize}: the keyed store reaches the slot`)
+})
+
+// A literal's field initialized from a typed read the summary proves hits (an
+// index a fixed length holds, a view of literal ends sized off its array)
+// holds that element: integral, as every later store keeps it.
+test('slot-hazards: a field initialized by a read that hits is integral', () => {
+  const src = `const A = new Uint32Array(41)
+for (let i = 0; i < 32; i++) A[i] = (1 << i) >>> 0
+const B = A.subarray(4)
+const mk = () => ({ a: A[10], b: B[10], c: B[40] })
+function step(o, v) { o.a = (o.a + v - (o.a >>> 4)) >>> 0; o.b = (o.b + v - (o.b >>> 4)) >>> 0; return o.a + o.b }
+export let f = (n) => { const o = mk(); let s = 0; for (let i = 0; i < n; i++) s = (s + step(o, i & 1023)) | 0; return s + (o.c === undefined ? 1 : 0) }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const n of [1, 300]) is(run(src, { optimize }).f(n), js.f(n), `O${optimize} f(${n})`)
+  const [a, b, c] = slotLevels(src, 'a,b,c')
+  ok(a >= 1, 'a read inside the fixed length')
+  ok(b >= 1, 'a read inside the view of 37')
+  is(c, 0, 'a read past the view misses')
+  is(ctx.summary.typedLenOf('B'), 37, 'the view spans 41 - 4 elements')
+})
+
+// A record an array's element passes may be missing (`step(cs[i & 1], v)`):
+// its read throws there, so a field it reads is its layout's slot, an integer
+// key where every store keeps one, the index's integrality test gone.
+test('slot-hazards: a field of a receiver that may be missing is its layout\'s slot', () => {
+  const src = `const T = new Int32Array(40)
+for (let i = 0; i < 40; i++) T[i] = i * 3
+function step(ch, v) {
+  if (ch.k > 0 && v < T[ch.k]) ch.k--
+  else if (v > T[ch.k + 1]) ch.k++
+  return ch.k
+}
+export let f = (n) => {
+  const cs = new Array(2)
+  for (let c = 0; c < 2; c++) cs[c] = { k: 10 }
+  let s = 0
+  for (let i = 0; i < n; i++) s += step(cs[i & 1], (i * 37) % 120)
+  return s
+}`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) for (const n of [0, 7, 400]) is(run(src, { optimize }).f(n), js.f(n), `O${optimize} f(${n})`)
+  const text = compile(src, { optimize: { level: 2, watr: false }, wat: true })
+  ok(!/f64\.convert_i64_s/.test(funcWat(text, 'step')), 'the key needs no integrality test')
 })

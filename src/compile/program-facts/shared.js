@@ -11,16 +11,21 @@
  *     or the hazard scan poisons slots the census just proved).
  * @module program-facts/shared
  */
-import { walkAst } from '../../ast.js'
+import { walkAst, isReassigned } from '../../ast.js'
 import { analyzeValueFacts } from '../analyze.js'
+import { VAL } from '../../reps.js'
+import { isExported } from '../func-exports.js'
 
 // Array methods that can change length or relocate the payload (grow copies to a
 // new arena block and forwards the header). sort/reverse/fill/copyWithin mutate
 // elements IN PLACE — base and len stay put — so they are deliberately absent.
 export const ARR_RESIZE_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'splice'])
-/** Body-local element-alias sids: single-`=` bindings whose init is a whole
+/** Body-local receiver sids: single-`=` bindings whose init is a whole
  *  element read of an array with a known element schema (local decl facts or a
- *  narrowed param's arrayElemSchema — the latter exists only post-narrowing).
+ *  narrowed param's arrayElemSchema — the latter exists only post-narrowing),
+ *  and the parameters narrowing pinned to one schema that the body never
+ *  rebinds (`decodeValue(br, ch, …)` storing `ch.k0`: the store writes the
+ *  slot of the schema every caller passes, as the emitter lowers it).
  *  Shared by the late slot-int census and the hazard scan so both resolve
  *  receivers equally (a hazard scan weaker than the census would poison the
  *  very slots the census just proved). */
@@ -28,7 +33,8 @@ export function collectBodyElemSids(func, paramReps) {
   if (!paramReps || !func?.body || func.raw) return null
   const facts = analyzeValueFacts(func.body)
   const reps = paramReps.get(func.name)
-  const paramIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
+  const params = func.sig?.params || []
+  const paramIdx = new Map(params.map((p, k) => [p.name, k]))
   const elemSidOf = (arr) => facts.arrElemSchemas?.get(arr)
     ?? (paramIdx.has(arr) ? reps?.get(paramIdx.get(arr))?.arrayElemSchema : null)
   const sids = new Map(), writes = new Map()
@@ -44,5 +50,10 @@ export function collectBodyElemSids(func, paramReps) {
   } })
   scan(func.body)
   for (const [name, c] of writes) if (c > 1) sids.delete(name)
+  // (an exported function's parameters hold what the host passes)
+  if (!isExported(func)) for (let k = 0; k < params.length; k++) {
+    const r = reps?.get(k), name = params[k].name
+    if (r?.val === VAL.OBJECT && r.schemaId != null && !r.schemaIdSet && !isReassigned(func.body, name)) sids.set(name, r.schemaId)
+  }
   return sids.size ? sids : null
 }

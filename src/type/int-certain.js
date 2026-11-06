@@ -125,7 +125,7 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
     if (op === '>>>') return unsignedShiftFitsI32(expr[2]) ? 2 : 1
     if (INT_BIT_OPS.has(op) || CMP_OPS.has(op)) return 2
     if (op === '[]' && readPresent?.has(expr) && typeof expr[1] === 'string') {
-      const aux = typedElemAux(typedStorageNameCtor(ctx, expr[1]))
+      const aux = readPresent.auxOf?.(expr[1]) ?? typedElemAux(typedStorageNameCtor(ctx, expr[1]))
       if (aux != null && (aux & 7) <= 5 && !(aux & 32)) return (aux & 7) === 5 ? 1 : 2
     }
     // a dense array of words read inside its length (summary wordReadRange)
@@ -275,7 +275,8 @@ export function intCertainMaps(body, capturedNames, slotIntOf) {
   } finally { releaseScratchMap(defs) }
 }
 
-/** Returns `expr => 0|1|2` over `body`'s level fixpoint (slot census / raw-i32 consumers). */
-export function intLevelChecker(body, slotLevelOf, params) {
-  return makeIntLevelExpr(intLevelMap(body, undefined, slotLevelOf, undefined, params), slotLevelOf)
+/** Returns `expr => 0|1|2` over `body`'s level fixpoint (slot census / raw-i32 consumers).
+ *  `readPresent` (optional): the typed reads that hit, `auxOf(name)` their receiver's element code. */
+export function intLevelChecker(body, slotLevelOf, params, readPresent) {
+  return makeIntLevelExpr(intLevelMap(body, undefined, slotLevelOf, readPresent, params), slotLevelOf, readPresent)
 }

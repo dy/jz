@@ -353,7 +353,11 @@ export function analyzeFuncForEmit(func, programFacts) {
     const name = freshCseName()
     summary?.alias(name, read, false)
     if (read[0] === '[]') cseReads.push([name, read])
-    else fieldCaches.set(name, read)
+    else {
+      fieldCaches.set(name, read)
+      // the temp holds the field's value: a field every store of which is integral is an integer here too
+      if (typeof read[1] === 'string' && ctx.schema.slotIntCertainAt?.(read[1], read[2]) === true) updateRep(name, { intCertain: true })
+    }
     return name
   }
   const readonlyCall = n => n[0] === '()' && typeof n[1] === 'string' && (ctx.funcs.map.get(n[1])?.frame?.writesOuter === false ||

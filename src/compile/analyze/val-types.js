@@ -453,7 +453,7 @@ export function analyzeIntCertain(body) {
   findMutations(body, ctx.func.locals, captured)
   const slotIntOf = ctx.schema?.slotIntCertainAt
     ? (obj, prop) => {
-      const id = ctx.schema.idOf?.(obj)
+      const id = ctx.schema.readSidOf?.(obj) ?? ctx.schema.idOf?.(obj)
       if (id == null) return null
       const idx = ctx.schema.list[id]?.indexOf(prop)
       if (idx == null || idx < 0) return null

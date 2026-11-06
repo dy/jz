@@ -539,6 +539,13 @@ export function initSchema(ctx) {
     return ctor
   }
 
+  /** The layout a `.prop` read of `name` reads a slot of: its bound schema,
+   *  else the one the summary names past its nullish part (a parameter an
+   *  array's element passes may be missing: the read throws there, so what it
+   *  reads is that layout's slot). For the slot censuses' readers alone, never
+   *  for a load's address. */
+  ctx.schema.readSidOf = (name) => ctx.schema.idOf(name) ?? (typeof name === 'string' ? ctx.summary?.at(ctx.func.current)?.objectSidOfExpr(name) : null) ?? null
+
   /** Resolve per-slot intCertain: returns true iff every observed write to
    *  `varName.prop` is integer-shaped. Precise path only — requires `varName`
    *  to have a bound `schemaId`. Consumers (Math.floor elision, toNumF64 skip,
@@ -550,7 +557,7 @@ export function initSchema(ctx) {
       const idx = ctx.schema.list[id]?.indexOf(prop)
       return idx >= 0 && ctx.schema.slotIntCertain.get(id)?.[idx] === true
     })
-    const id = ctx.schema.idOf(varName)
+    const id = ctx.schema.readSidOf(varName)
     if (id != null) {
       if (slotHazarded(id, prop)) return false
       const idx = ctx.schema.list[id]?.indexOf(prop)
@@ -580,7 +587,7 @@ export function initSchema(ctx) {
       const idx = ctx.schema.list[id]?.indexOf(prop)
       return idx >= 0 && ctx.schema.slotI32Certain.get(id)?.[idx] === true
     })
-    const id = ctx.schema.idOf(varName)
+    const id = ctx.schema.readSidOf(varName)
     if (id != null) {
       if (slotHazarded(id, prop)) return false
       const idx = ctx.schema.list[id]?.indexOf(prop)

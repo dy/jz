@@ -309,6 +309,8 @@ export const wholeKey = (e) => {
   if (typeof e === 'string') return exprType(e, ctx.func.locals) === 'i32' || repOf(e)?.intCertain === true
   if (!Array.isArray(e)) return false
   if (e[0] == null) return Number.isInteger(e[1])
+  // a field every store of which is integral (the slot census: `ch.k0` stepped by one from a literal)
+  if (e[0] === '.' && e.length === 3 && typeof e[1] === 'string') return ctx.schema?.slotIntCertainAt?.(e[1], e[2]) === true
   if ((BIT_OPS.has(e[0]) && e.length === 3) || (e[0] === '~' && e.length === 2))
     return core(ctx.summary?.at(ctx.func.current)?.kindOfExpr(e) ?? K.NONE) === NUMBER
   // A cursor stepped in place (`buf[r++]`, `buf[++r]`): its old and new
