@@ -124,7 +124,7 @@ export default function narrowSignatures(programFacts, ast) {
 
   // Per-caller analysis is stable across fixpoint iterations — precompute once.
   // callerCtx[null] (top-level) uses module globals for locals.
-  const phase = createPhaseState()
+  const phase = createPhaseState(callSites)
   const { callerCtx } = phase
   const internalArrayLengths = inferInternalArrayLengths()
   // Interval fixpoints are optional positive certificates. Compile-budget

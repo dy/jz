@@ -56,12 +56,24 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
     for (const r of paramReps.get(f.name)?.values() ?? []) if (r.val === kind || r.presentVal === kind) return true
     return false
   }
+  // A call inside a closure runs in the closure's body, and its arguments are
+  // that body's values (`numU = pu & 0x1f` in a decoder's method): the closure
+  // is the caller the walk scans, from entry values it does not know (its
+  // parameters and captures hold whatever its own callers and scope gave it).
+  const closures = new Map()
+  const callerOf = cs => {
+    if (!cs.arrow) return cs.callerFunc
+    let c = closures.get(cs.arrow)
+    if (!c) closures.set(cs.arrow, c = { closure: cs.arrow, owner: cs.callerFunc })
+    return c
+  }
   for (const cs of callSites) {
     const f = ctx.funcs.map.get(cs.callee)
     if (!f?.body || f.raw || isExported(f) || addressTaken.has(f.name)) continue
     if (!hasKind(f, VAL.NUMBER)) continue
-    if (!outgoing.has(cs.callerFunc)) outgoing.set(cs.callerFunc, [])
-    outgoing.get(cs.callerFunc).push(cs)
+    const from = callerOf(cs)
+    if (!outgoing.has(from)) outgoing.set(from, [])
+    outgoing.get(from).push(cs)
     if (!incoming.has(f)) incoming.set(f, [])
     incoming.get(f).push(cs)
   }
@@ -70,9 +82,11 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
   const queue = ctx.funcs.list.filter(f => f.body && !f.raw &&
     (outgoing.has(f) || hasKind(f, VAL.TYPED) || analyzeValueFacts(f.body).typedElems.size))
   if (outgoing.has(null)) queue.push(null)
+  for (const c of closures.values()) if (outgoing.has(c)) queue.push(c)
   // A private recursive proof uses this same interpreter/context, but never
   // publishes its exploratory stores or changes the parameter rows it reads.
   const scanCaller = (caller, hypotheses = null, collectStores = true) => {
+    if (caller?.closure) return scanClosure(caller)
     const body = caller?.body ?? ast
     const entry = new Map(), reps = paramReps.get(caller?.name)
     for (let k = 0; k < (caller?.sig.params.length ?? 0); k++)
@@ -108,6 +122,23 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
     } finally { restoreActiveFunction(ctx, prev) }
     return { calls, writes }
   }
+  // A closure's walk: its calls' hulls alone, with no entry facts and no
+  // stores (those belong to a function's own parameters and receivers). Its
+  // owner's view types its locals (caller-ctx.js joins the closure's in).
+  // (The walk takes the arrow's body: rooted at the arrow, every write in it
+  // would count as a nested closure's and hold no interval.)
+  const scanClosure = (caller) => {
+    const calls = new Map((outgoing.get(caller) ?? []).filter(cs => !cs.synthetic).map(cs => [cs.node, undefined]))
+    const writes = new Map(), body = caller.closure[2]
+    if (!calls.size || !Array.isArray(body)) return { calls, writes }
+    const prev = enterActiveFunction(ctx, { sig: caller.owner?.sig, body })
+    try {
+      ctx.func.locals = callerCtx.get(caller.owner)?.callerLocals ?? new Map()
+      ctx.func.localReps = new Map()
+      scanIntervalIdx(body, null, () => null, null, calls, new Map(), null)
+    } finally { restoreActiveFunction(ctx, prev) }
+    return { calls, writes }
+  }
   const queued = new Set(queue), visits = new Map()
   let head = 0
   const propagate = () => {
@@ -119,7 +150,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       visits.set(caller, count + 1)
       const { calls, writes } = scanCaller(caller)
       if (!calls.size && !writes.size) continue
-      stores.set(caller, writes)
+      if (!caller?.closure) stores.set(caller, writes)
       const targets = new Set()
       for (const cs of outgoing.get(caller) ?? []) {
         observed.set(cs, cs.synthetic ? null : calls.get(cs.node))
@@ -170,16 +201,18 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       members.add(f)
     }
     if (!closed) continue
+    // (a closure's call is evidence of its own walk, which reads no hypothesis)
+    const internal = cs => !cs.arrow && members.has(cs.callerFunc)
     for (const f of members) {
       const sites = incoming.get(f)
       if (!sites) continue
       const candidates = new Map()
-      for (const cs of sites) if (!members.has(cs.callerFunc)) seeded = true
+      for (const cs of sites) if (!internal(cs)) seeded = true
       for (let k = 0; k < f.sig.params.length; k++) {
         const p = f.sig.params[k], r = paramReps.get(f.name)?.get(k)
         if (!r || r.range || r.val !== VAL.NUMBER && r.presentVal !== VAL.NUMBER ||
             f.defaults?.[p.name] != null || f.rest && k === f.sig.params.length - 1 || isReassigned(frameNode(f), p.name)) continue
-        if (sites.some(cs => !members.has(cs.callerFunc) && !word(observed.get(cs)?.[k]))) continue
+        if (sites.some(cs => !internal(cs) && !word(observed.get(cs)?.[k]))) continue
         candidates.set(k, [-2147483648, 2147483647])
       }
       if (candidates.size) { hypotheses.set(f, candidates); remaining += candidates.size }
@@ -191,7 +224,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
       for (const f of members) evidence.set(f, scanCaller(f, hypotheses, false).calls)
       let removed = false
       for (const [f, candidates] of hypotheses) for (const k of candidates.keys()) {
-        if (incoming.get(f).some(cs => !word(cs.synthetic ? null : members.has(cs.callerFunc)
+        if (incoming.get(f).some(cs => !word(cs.synthetic ? null : internal(cs)
           ? evidence.get(cs.callerFunc)?.get(cs.node)?.[k] : observed.get(cs)?.[k]))) {
           candidates.delete(k)
           remaining--

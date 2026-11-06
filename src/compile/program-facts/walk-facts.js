@@ -319,7 +319,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
     if (full && isFuncRef(root, ctx.funcs.names)) acc.addressTakenNames.add(root)
   }
   let linked = null
-  const walkFacts = (node, fullWalk, inArrow, caller) => {
+  const walkFacts = (node, fullWalk, arrow, caller) => {
     if (!Array.isArray(node)) return
     const op = node[0]
     // A store into a class linked to its base (jzify/classes.js STATIC_BASE)
@@ -338,7 +338,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
     if (op === '=>') {
       // a concise body naming a function returns it as a value
       if (fullWalk && isFuncRef(node[2], ctx.funcs.names)) acc.addressTakenNames.add(node[2])
-      for (let i = 1; i < node.length; i++) walkFacts(node[i], fullWalk, true, caller)
+      for (let i = 1; i < node.length; i++) walkFacts(node[i], fullWalk, node, caller)
       return
     }
     // A member read consumed only as a truthiness test (`parse.asi && …`,
@@ -370,18 +370,18 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // lattice (narrow.js) must see EVERY arg a callee receives — including
         // calls made from a closure (`mfb(() => ci(2))`) — or it over-specializes:
         // seeing only the direct `ci(0)` site, intConst folds the param to 0 and
-        // the closure's `ci(2)` silently loses its argument. Args evaluated in the
-        // arrow's scope that the enclosing caller can't type infer as untyped →
-        // poison → conservative (no specialization), which is sound.
+        // the closure's `ci(2)` silently loses its argument. The site names the
+        // innermost arrow it runs in (`arrow`): its arguments are that body's
+        // values, which the lattices read from that body, not the caller's.
         {
           const a = node[2]
           const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-          acc.callSites.push({ callee: node[1], argList, callerFunc: caller, node })
+          acc.callSites.push({ callee: node[1], argList, callerFunc: caller, node, arrow })
         }
         for (let i = 2; i < node.length; i++) {
           const a = node[i]
           if (isFuncRef(a, ctx.funcs.names)) acc.addressTakenNames.add(a)
-          else walkFacts(a, true, inArrow, caller)
+          else walkFacts(a, true, arrow, caller)
         }
         return
       }
@@ -473,8 +473,8 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
             // referenced function's full arity, or its boundary trampoline forwards
             // $__a{k} slots it never declared. Mirrors the '=' handler below.
             if (isFuncRef(decl[2], ctx.funcs.names)) acc.addressTakenNames.add(decl[2])
-            else walkFacts(decl[2], true, inArrow, caller)
-          } else walkFacts(decl, true, inArrow, caller)
+            else walkFacts(decl[2], true, arrow, caller)
+          } else walkFacts(decl, true, arrow, caller)
         }
         return
       }
@@ -483,7 +483,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // value use so resolveClosureWidth sizes the closure ABI to its arity. Matches
         // the func-ref handling in the call/let/general cases below.
         if (isFuncRef(node[2], ctx.funcs.names)) acc.addressTakenNames.add(node[2])
-        else walkFacts(node[2], true, inArrow, caller)
+        else walkFacts(node[2], true, arrow, caller)
         // The target's own slot is written, not read (a bare name is a
         // reassignment, `ns.p` a namespace slot: propMap above), but what the
         // target is built from is read: a member target's receiver and key.
@@ -494,10 +494,10 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         if (Array.isArray(target) && (target[0] === '[]' || target[0] === '.' || target[0] === '?.')) {
           const [, obj, key] = target
           if (target[0] === '[]' && isFuncRef(obj, ctx.funcs.names)) acc.addressTakenNames.add(obj)
-          else walkFacts(obj, true, inArrow, caller)
+          else walkFacts(obj, true, arrow, caller)
           if (target[0] === '[]') {
             if (isFuncRef(key, ctx.funcs.names)) acc.addressTakenNames.add(key)
-            else walkFacts(key, true, inArrow, caller)
+            else walkFacts(key, true, arrow, caller)
           }
         }
         return
@@ -507,13 +507,13 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       for (let i = 1; i < node.length; i++) {
         const child = node[i]
         if (isFuncRef(child, ctx.funcs.names)) { if (!NAME_SLOTS[op]?.includes(i)) acc.addressTakenNames.add(child) }
-        else walkFacts(child, true, inArrow, caller)
+        else walkFacts(child, true, arrow, caller)
       }
     } else {
-      for (let i = 1; i < node.length; i++) walkFacts(node[i], false, inArrow, caller)
+      for (let i = 1; i < node.length; i++) walkFacts(node[i], false, arrow, caller)
     }
   }
-  walkFacts(root, full, false, callerFunc)
+  walkFacts(root, full, null, callerFunc)
   if (cache && full && root != null && typeof root === 'object')
     pf.walkCache.set(root, { gen: pf.gen, facts: acc })
   return acc

@@ -17,8 +17,8 @@ export const MUTANTS = {
   'edge-closure-call': {
     outcome: 'fail',
     edits: { 'src/compile/program-facts/walk-facts.js': [[
-      'acc.callSites.push({ callee: node[1], argList, callerFunc: caller, node })',
-      'if (!inArrow) acc.callSites.push({ callee: node[1], argList, callerFunc: caller, node })',
+      'acc.callSites.push({ callee: node[1], argList, callerFunc: caller, node, arrow })',
+      'if (!arrow) acc.callSites.push({ callee: node[1], argList, callerFunc: caller, node, arrow })',
     ]] },
   },
 }

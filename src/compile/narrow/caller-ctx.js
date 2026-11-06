@@ -9,6 +9,7 @@
  */
 
 import { ctx } from '../../ctx.js'
+import { collectParamNames, extractParams } from '../../ast.js'
 import { withTypedElems } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { analyzeBody, analyzeValueFacts, reanalyzeBody, clearBodyFacts } from '../analyze.js'
@@ -34,7 +35,43 @@ export function assertValKindConsistent(paramReps) {
         throw new Error(`possibleKinds/val consistency: ${fname} param ${k} val=${r.val} missing from possibleKinds=${r.possibleKinds ? [...r.possibleKinds].join(',') : 'undefined'}`)
 }
 
-function buildCallerCtx() {
+/** The closures of each caller that call sites run in (a site's `arrow`). */
+export function siteClosures(callSites) {
+  const out = new Map()
+  for (const cs of callSites) {
+    if (!cs.arrow) continue
+    const set = out.get(cs.callerFunc)
+    if (set) set.add(cs.arrow); else out.set(cs.callerFunc, new Set([cs.arrow]))
+  }
+  return out
+}
+
+// A call inside a closure passes that closure's values: its declarations, which
+// the caller's body facts stop short of (analyzeBody does not cross into an
+// arrow), and its parameters, values of any kind. The closures between the
+// caller and the site count too, since the site reads their bindings. Prepared
+// names are unique per scope, so they join the caller's view without shadowing.
+function addClosureLocals(view, body, sites, analyze) {
+  const arrows = []
+  const walk = n => {
+    if (!Array.isArray(n)) return false
+    let holds = sites.has(n)
+    for (let i = 1; i < n.length; i++) if (walk(n[i])) holds = true
+    if (holds && n[0] === '=>') arrows.push(n)
+    return holds
+  }
+  walk(body)
+  for (const arrow of arrows) {
+    for (const name of collectParamNames(extractParams(arrow[1]))) if (!view.has(name)) view.set(name, 'f64')
+    const inner = arrow[2]
+    if (inner === null || typeof inner !== 'object') continue
+    const facts = analyze(inner)
+    for (const [name, type] of facts.locals) if (!view.has(name)) view.set(name, type)
+    if (facts.unsignedLocals) for (const name of facts.unsignedLocals) view.set(name, 'f64')
+  }
+}
+
+function buildCallerCtx(closures) {
   const callerCtx = new Map()
   callerCtx.set(null, { callerLocals: ctx.scope.globalTypes })
   for (const func of ctx.funcs.list) {
@@ -46,6 +83,8 @@ function buildCallerCtx() {
     for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
     // This view describes argument values, not the unsigned word carrier.
     if (facts.unsignedLocals) for (const name of facts.unsignedLocals) callerLocals.set(name, 'f64')
+    const sites = closures.get(func)
+    if (sites) addClosureLocals(callerLocals, func.body, sites, analyzeBody)
     callerCtx.set(func, { callerLocals, readPresent: facts.readPresent })
   }
   return callerCtx
@@ -82,7 +121,7 @@ export function buildCallerTypedLenCtx() {
   return out
 }
 
-function refreshCallerLocals(callerCtx) {
+function refreshCallerLocals(callerCtx, closures) {
   withTypedElems(ctx.func.typedElem, () => {
   ctx.func.localReps = null
   try {
@@ -109,6 +148,8 @@ function refreshCallerLocals(callerCtx) {
     const facts = reanalyzeBody(func.body), fresh = makeMapOverlay(facts.locals)
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
     if (facts.unsignedLocals) for (const name of facts.unsignedLocals) fresh.set(name, 'f64')
+    const sites = closures.get(func)
+    if (sites) addClosureLocals(fresh, func.body, sites, reanalyzeBody)
     const entry = callerCtx.get(func)
     entry.callerLocals = fresh
     entry.readPresent = facts.readPresent
@@ -125,8 +166,9 @@ export function resetParamWasmFacts(paramReps) {
   for (const m of paramReps.values()) for (const r of m.values()) r.wasm = undefined
 }
 
-export function createPhaseState() {
-  const callerCtx = buildCallerCtx()
+export function createPhaseState(callSites) {
+  const closures = siteClosures(callSites)
+  const callerCtx = buildCallerCtx(closures)
   const elemCtx = new Map()
 
   return {
@@ -144,7 +186,7 @@ export function createPhaseState() {
     },
 
     refreshLocals() {
-      refreshCallerLocals(callerCtx)
+      refreshCallerLocals(callerCtx, closures)
       elemCtx.clear()
     },
   }

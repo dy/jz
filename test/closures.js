@@ -2882,3 +2882,30 @@ test('closures: no host call of a closure that stays inside', () => {
   ok(!/__jz_call_closure/.test(w) && !/call_indirect/.test(w), 'no trampoline')
   for (const optimize of levels(0, 2, 'size')) is(jz(src, { optimize }).exports.f(4), oracle(src).f(4), `at ${optimize}`)
 })
+
+// A call inside a closure passes the closure's own values (a decoder's method
+// reads a field, `n = hu & 0x1f`, and calls a module helper with it): the
+// lattices that choose the helper's parameter words read them from that
+// closure's body, so the helper takes the field as an i32, as it would from
+// a function's body.
+test('closures: a helper called from a closure takes its integer arguments as words', () => {
+  const src = `function g(out, n, sh) {
+      let s = 0
+      for (let i = 0; i < n; i++) { s = (s + (out[i] >> sh)) | 0; if (s > 1000) s -= out[n - i] }
+      for (let i = n - 1; i >= 0; i--) { s = (s ^ (out[i] << sh)) | 0; if (s < -1000) s += out[i >> 1] }
+      return s
+    }
+    export function make(len) {
+      const buf = new Int32Array(len)
+      for (let i = 0; i < len; i++) buf[i] = Math.imul(i, 40503) >> 3
+      const step = (bb) => { const hu = bb[0], n = hu & 0x1f, sh = (hu >> 5) & 0xf; return g(buf, n, sh) + g(buf, 31, 0) }
+      return { step }
+    }
+    export const run = (x) => make(64).step([x])`
+  const want = oracle(src).run
+  for (const optimize of levels(0, 2, 3, 'size'))
+    for (const x of [0, 1, 31, 100, 511, 4095, -1, 2.5, NaN])
+      is(jz(src, { optimize }).exports.run(x), want(x), `run(${x}) at ${optimize}`)
+  if (belowOpt(2)) return
+  ok(/\(param \$n[^\s)]* i32\)/.test(funcWat(wat(src, { optimize: 2 }), 'g')), 'the field arrives as a word')
+})
