@@ -109,6 +109,12 @@ classes (G2, D2, A1, K4) are that one loss on four carriers.
   `out[0][i] = f(out)` stored into the row f put there, a nested call hoisted out of `out[0][k]
   = 1 + g()` read the key g stepped, and out of `x += 1 + g()` read x after g wrote it. On main
   at the default level and at speed; fixed on adpcm-gap.
+- An export parameter the body writes a string to, the write split into a binding of its own
+  and dropped unread (`const t = key; key = 'label'; a[t] = 13`), was converted to a number at
+  the boundary at the default level, where level 0 kept the host's value: `a.label` read
+  undefined. On main; G6's splice made test/dyn-keys.js's `a[key] = rhs()` this shape. Fixed on
+  adpcm-gap: the split records the parameter's writes and the boundary reads them; no bench case
+  compiles differently.
 - A loop nest whose inner copy holds a cursor's word (decode-wav's IMA ADPCM nest, its channels
   made by a loop) put that word into the guard of the loop around it, outside the block that
   declares it: the module did not compile. Fixed on adpcm-gap.
