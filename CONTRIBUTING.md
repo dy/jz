@@ -3851,7 +3851,11 @@ start afresh each round): a binding the first rounds see empty, its value a
 field holding what a function met later returns, decides nothing until then,
 and an arm walked in those rounds no longer keeps the test open. A bare `let`
 assigned before every read declares empty, not absent
-(`summary/definite.js`); a condition carries what each outcome assigned, a
+(`summary/definite.js`), and its local stores nothing where it is declared
+(compile/emit/dispatch.js): its writes alone type it, so a word a library
+returns through a scratch array, `W[ 0 ] = U[ 1 ]`, holds in an integer register
+(int-narrow.js), where the `undefined` it was declared with kept it a Number
+truncated back at each read (stdlib's `pow`, 0.90x the time); a condition carries what each outcome assigned, a
 true `&&` and a false `||` having run every operand (`if (a && (r = a[0]) !=
 null && r !== b)` reads `r` assigned). The module's own bare declarations take the same
 proof over its statements: a function runs where a statement names it or,

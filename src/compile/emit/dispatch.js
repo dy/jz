@@ -898,8 +898,9 @@ export function emitDecl(...inits) {
       // else r = b`, the result of a spliced body that returns from an arm),
       // whose kind then holds no absence. i32-narrowed locals are exempt either
       // way: the narrowing proof is assigned-before-read, and they zero-init.
-      const assigned = firstRefKind(ctx.func.body, i) === 'write' || repOf(i)?.presence === 'present'
-      if (ctx.func.locals.get(i) !== 'i32' && !assigned)
+      // (the summary's presence is definite assignment: summary/definite.js, which follows a break to a label)
+      const assigned = repOf(i)?.presence === 'present'
+      if (ctx.func.locals.get(i) !== 'i32' && firstRefKind(ctx.func.body, i) !== 'write' && !assigned)
         (ctx.func.maybeNullish ??= new Set()).add(i)
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
@@ -915,11 +916,11 @@ export function emitDecl(...inits) {
         if ((ctx.scope.globalTypes.get(i) ?? 'f64') === 'f64') result.push(['global.set', `$${i}`, undef])
         continue
       }
-      // A local no read finds unassigned stores nothing: what it is declared with is
-      // never seen, and a store of it is one more write for the passes that type the
-      // local by its writes to see (a word a library returns through a scratch array,
-      // `let ms; ms = UINT32_VIEW[ HIGH ]`, held in an integer register only without
-      // the `undefined` it is declared with). An i32-typed local (a narrowed integer
+      // A local no read finds unassigned (the summary's presence) stores nothing: what
+      // it is declared with is never seen, and a store of it is one more write for the
+      // passes that type the local by its writes to see (a word a library returns
+      // through a scratch array, `let ms; ms = UINT32_VIEW[ HIGH ]`, held in an integer
+      // register only without the `undefined` it is declared with). An i32-typed local (a narrowed integer
       // index feeder) can't hold the f64 NaN-box undef sentinel — and wasm zero-inits
       // locals anyway, so a 0 init is equivalent for the assigned-before-read pattern
       // that earns i32.

@@ -156,3 +156,39 @@ test('module scratch: the array left in memory answers the same', () => {
     }
   }
 })
+
+// The words of a number a library returns through the array (`toWords( x, WORDS )`, twice in one
+// call): every read of an element follows its store, so the element's local is declared with no
+// `undefined` (compile/emit/dispatch.js), and its writes, words, are what types it. The words then
+// stay in integer registers: no word goes through a Number to be truncated back.
+const WORDS = `const F = new Float64Array(1), U = new Uint32Array(F.buffer)
+const W = [0, 0]
+const toWords = (x) => { F[0] = x; W[0] = U[1]; W[1] = U[0] }
+export let f = (xs, ys) => {
+  let s = 0
+  for (let i = 0; i < xs.length; i++) {
+    toWords(xs[i])
+    const hx = W[0], lx = W[1]
+    toWords(ys[i])
+    const hy = W[0], ly = W[1]
+    s = (s + ((hx ^ hy) >>> 20) + (lx === ly ? 1 : 0) + (hx >>> 31)) | 0
+  }
+  return s
+}
+export let g = (x) => { toWords(x); return W[0] * 4294967296 + W[1] }
+`
+test('module scratch: the words a helper returns through the array stay words', () => {
+  const xs = new Float64Array([0, -0, 1, -1.5, 3e-310, -3e-310, 1e300, -1e300, Infinity, -Infinity, NaN, 4503599627370497, 0.1])
+  const ys = xs.slice().reverse()
+  const host = oracle(WORDS)
+  for (const optimize of levels(false, 2, 3, 'speed', 'size')) {
+    const m = run(WORDS, { optimize })
+    is(m.f(xs, ys), host.f(xs, ys), `the words at ${optimize}`)
+    for (const x of xs) is(m.g(x), host.g(x), `g(${x}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  for (const optimize of [2, 'speed']) {
+    const text = funcWat(wat(WORDS, { optimize }), 'f')
+    ok(!/f64\.convert_i32_u|0x4338000000000000|6755399441055744/.test(text), `at ${optimize}: no word goes through a Number`)
+  }
+})
