@@ -13,6 +13,7 @@ import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 import EVENTS from '../src/std/events.js'
 import { completeBenchSvgRun, renderBenchSvg, SVG_TARGETS, svgRows } from '../scripts/bench-svg.mjs'
+import { writeWasm } from '../scripts/portable.mjs'
 import { classifyBenchmarkChecksum, NO_WEB, timedBenchmarkRow, WEB_BUNDLED } from '../assets/headline.js'
 import { contenders } from './claims.mjs'
 import { machineState } from './machine-state.mjs'
@@ -1973,7 +1974,9 @@ if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases)) 
 // is timed (median of 3) — the same number the page measures live in the
 // visitor's tab. A case with a module graph (WEB_BUNDLED) also gets
 // bench/web/<case>.js, its JavaScript bundled to one module for the page's JS row:
-// the site serves no node_modules. Returns { built:[ids], compileMs:{id} };
+// the site serves no node_modules. A build that uses relaxed SIMD also gets
+// bench/web/<case>.portable.wasm, for an engine without it (scripts/portable.mjs).
+// Returns { built:[ids], compileMs:{id} };
 // callers pass the playable set, so the self-compile's wasm is never written.
 function emitWebWasm(caseIds) {
   mkdirSync(WEB_DIR, { recursive: true })
@@ -2016,7 +2019,7 @@ function emitWebWasm(caseIds) {
         wasm = compile(code, opts)
         times.push(performance.now() - t0)
       }
-      writeFileSync(join(WEB_DIR, `${c.id}.wasm`), wasm)
+      writeWasm(join(WEB_DIR, `${c.id}.wasm`), compile, code, opts, wasm)
       compileMs[cid] = +times.sort((a, b) => a - b)[1].toFixed(1)
       built.push(cid)
     } catch (e) {

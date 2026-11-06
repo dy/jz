@@ -34,6 +34,25 @@ test('example build: resolves fresh transitive imports for examples and sibling 
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+// The site serves a speed build that uses relaxed SIMD with its portable twin beside it, for an
+// engine without relaxed SIMD (assets/wasm.js); a build that uses none has no twin.
+test('example build: a build with relaxed SIMD gets its portable twin, one without loses it', () => {
+    const dir = fs.mkdtempSync(fileURLToPath(new URL('../examples/.build-test-', import.meta.url)));
+    const name = basename(dir), entry = join(dir, `${name}.js`), output = join(dir, `${name}.wasm`), twin = join(dir, `${name}.portable.wasm`);
+    try {
+        fs.writeFileSync(entry, 'export let f = (n) => { const a = new Float64Array(n), o = new Int16Array(n); for (let i = 0; i < n; i++) a[i] = i * 0.75 - 9; for (let i = 0; i < n; i++) o[i] = a[i] * 3; let h = 0; for (let i = 0; i < n; i++) h = (h * 31 + o[i]) | 0; return h }');
+        buildExample(name);
+        ok(fs.existsSync(twin), 'the twin beside the build');
+        const wat = compile(fs.readFileSync(entry, 'utf8'), { ...OPT, wat: true });
+        ok(/relaxed_trunc/.test(wat), 'the build truncates its lanes relaxed (sanity)');
+        is(Buffer.compare(fs.readFileSync(twin), compile(fs.readFileSync(entry, 'utf8'), { optimize: { level: 'speed', relaxedSimd: false } })), 0, 'the twin is the relaxedSimd:false build');
+        for (const n of [0, 5, 64]) is(instantiate(fs.readFileSync(twin)).exports.f(n), instantiate(fs.readFileSync(output)).exports.f(n), `f(${n}) alike`);
+        fs.writeFileSync(entry, 'export let f = () => 0');
+        buildExample(name);
+        is(fs.existsSync(twin), false, 'a rebuild without relaxed SIMD removes the stale twin');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('example build: runs custom asset builders on every invocation and propagates failures', () => {
     const dir = fs.mkdtempSync(fileURLToPath(new URL('../examples/.build-test-', import.meta.url)));
     const name = basename(dir), output = join(dir, `${name}.wasm`);

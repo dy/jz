@@ -9,6 +9,7 @@
 // hud({ kind, onSwitch, note })           FPS + ms readout + JS/jz toggle
 
 import { instantiate } from '../../interop.js'
+import { fetchWasm } from '../../assets/wasm.js'
 import { EXAMPLES, byName, WIKI, ORIGIN } from '../examples.js'
 
 // Gallery order + nicer labels come from the shared descriptor (examples/examples.js).
@@ -272,7 +273,7 @@ export const loadEngine = async (kind, { js, wasm }) => {
   const url = (u) => new URL(u, document.baseURI).href
   return kind === 'js'
     ? await import(url(js))
-    : instantiate(new Uint8Array(await (await fetch(url(wasm))).arrayBuffer())).exports
+    : instantiate(await fetchWasm(url(wasm))).exports
 }
 
 // ── palette: any grayscale example can be colorized by mapping luminance through a

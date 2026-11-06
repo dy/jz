@@ -9,6 +9,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveModuleGraph } from '../../src/resolve.js'
 import { compile } from '../../index.js'
+import { writeWasm } from '../../scripts/portable.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const THREE_SRC = join(HERE, '../../node_modules/three/src')
@@ -38,5 +39,5 @@ console.log(`Vendored ${vendored} three.js math files`)
 
 const entry = join(HERE, 'threejs-math.js')
 const g = resolveModuleGraph(entry)
-writeFileSync(join(HERE, 'threejs-math.wasm'), compile(g.code, { modules: g.modules, optimize: 'speed' }))
+writeWasm(join(HERE, 'threejs-math.wasm'), compile, g.code, { modules: g.modules, optimize: 'speed' })
 console.log('Compiled threejs-math')

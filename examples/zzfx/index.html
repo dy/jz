@@ -39,6 +39,7 @@
 <script type="module">
 import { hud } from '../lib/jzdemo.js'
 import { instantiate } from '../../interop.js'
+import { fetchWasm } from '../../assets/wasm.js'
 
 // ── ZzFX presets ─────────────────────────────────────────────────────────────
 // Sparse parameter arrays (holes ⇒ default). Index → param: see zzfx.js.
@@ -87,7 +88,7 @@ const makeEngine = async (kind) => {
       return { buf, ms: performance.now() - t0 }
     }
   }
-  const bytes = new Uint8Array(await (await fetch('./zzfx.wasm')).arrayBuffer())
+  const bytes = await fetchWasm('./zzfx.wasm')
   const { exports, memory } = instantiate(bytes)
   return (p) => {
     const t0 = performance.now()

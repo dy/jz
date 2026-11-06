@@ -1105,9 +1105,8 @@ const RUNNERS = {
     await m.main()
   }),
   jzwasm: async cid => {
-    const res = await fetch(`./web/${cid}.wasm`)
-    if (!res.ok) throw new Error('no artifact')
-    const bytes = new Uint8Array(await res.arrayBuffer())
+    const { fetchWasm } = await import('../assets/wasm.js')   // the build, or its portable twin where relaxed SIMD is missing
+    const bytes = await fetchWasm(`./web/${cid}.wasm`)
     const { instantiate } = await loadInterop()
     return captureLine(async () => {
       const { exports } = await instantiate(bytes)

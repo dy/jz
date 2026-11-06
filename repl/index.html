@@ -395,6 +395,7 @@ import { CLS_ICO } from '../assets/headline.js'
 // WASM emit, instantiate. No server, no build step. It compiles in a worker
 // (assets/compile.js over dist/jz.js), so typing and the embedding page never wait on it.
 import { compile } from '../assets/compile.js'
+import { relaxedSimd } from '../assets/wasm.js'
 import { instantiate } from '../dist/interop.js'
 
 const $ = id => document.getElementById(id)
@@ -554,7 +555,9 @@ console.log('compiled + instantiated, top-level ran')`
 // ── compile pipeline ────────────────────────────────────────────────────────
 const state = { src: '', exports: null, memory: null, bytes: null, wat: '', ok: false }
 const optVal = () => (document.querySelector('input[name=opt]:checked') || { value: '3' }).value
-const opts = () => { const o = optVal(); return { optimize: o === 'size' ? 'size' : o === '0' ? false : 'speed', names: $('names').checked } }
+// (an engine without relaxed SIMD runs the speed tier's standard forms)
+const SPEED = relaxedSimd ? 'speed' : { level: 'speed', relaxedSimd: false }
+const opts = () => { const o = optVal(); return { optimize: o === 'size' ? 'size' : o === '0' ? false : SPEED, names: $('names').checked } }
 
 // pretty size: B under 1k, then kB / MB (SI), trailing zeros trimmed
 const fmtB = n =>

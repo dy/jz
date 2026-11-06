@@ -37,6 +37,7 @@
 
 <script type="module">
 import { instantiate } from "../../interop.js"
+import { fetchWasm } from "../../assets/wasm.js"
 import { hud } from "../lib/jzdemo.js"
 import { FLOATBEATS } from "./floatbeats.js"
 
@@ -53,7 +54,7 @@ const clamp = (s) => s < -1 ? -1 : s > 1 ? 1 : s
 const wasmCache = new Map()
 const loadWasm = async (idx) => {
   if (!wasmCache.has(idx)) {
-    const bytes = new Uint8Array(await (await fetch(new URL(`./beat-${idx}.wasm`, import.meta.url))).arrayBuffer())
+    const bytes = await fetchWasm(new URL(`./beat-${idx}.wasm`, import.meta.url))
     wasmCache.set(idx, instantiate(bytes))
   }
   return wasmCache.get(idx)

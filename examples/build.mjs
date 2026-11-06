@@ -1,5 +1,6 @@
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
+import { writeWasm } from '../scripts/portable.mjs'
 import fs from 'fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
@@ -26,8 +27,7 @@ export function buildExample(name) {
 export function buildKernel(exampleDir, kernel) {
   const dir = join(fileURLToPath(new URL('.', import.meta.url)), exampleDir)
   const { code, modules } = resolveModuleGraph(join(dir, `${kernel}.js`))
-  const wasm = compile(code, { ...OPT, modules })
-  fs.writeFileSync(join(dir, `${kernel}.wasm`), wasm)
+  writeWasm(join(dir, `${kernel}.wasm`), compile, code, { ...OPT, modules })
   console.log(`Compiled ${exampleDir}/${kernel}`)
 }
 
