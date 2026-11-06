@@ -170,6 +170,7 @@ const TESTS = [
   'shift-remainder',
   'scalar-unroll',
   'fixed-length',
+  'element-numbers',
   'definite-assign',
   'number-eq',
   'index-store',

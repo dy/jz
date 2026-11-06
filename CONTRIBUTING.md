@@ -1000,6 +1000,25 @@ numbers. `JZ_NUMERIC_WHY=1` lists each cell's first generic use
 (`ctx.runtime.numericWhy`). test/numeric-arrays.js pins the stores, the
 payloads, the readers that keep the boxed layout, growth through compactions,
 the reset's raw record and the arrays built of lanes.
+The summary also bounds the numbers an array's elements can be, per cell
+(`elemNums`, src/summary/num-range.js: an interval, whether every value is an
+integer, whether none is -0, the least magnitude): a literal states its
+elements, a `map` its callback's results, a `fill` its value; any other store of
+a number (an index store, a push, a host's or an unknown callee's) opens the
+cell, and a range still widening after four rounds opens. A callback's
+parameters an array method binds hold the receiver's numbers and the index
+(`paramNums`, opened by any other binding, a default or an assignment); a call
+of a function whose body is one numeric expression of its parameters is
+evaluated at the call over its arguments' numbers, so `round(d * sf)` over
+`Math.sign(n) * Math.round(Math.abs(n))` is an integer clear of -0. A `map`
+makes as many elements as its receiver has (`lens`), and `Array(n).fill()`
+fills its count with undefined. A read the summary holds inside the length of a
+dense array whose numbers are words (`wordReadRange`) is a word: the emitter
+truncates the load (module/array.js), local typing, the integer levels and
+intExprRange read it as one, so a table of tables built by `.map` over
+`Math.round` (decode-qoa's `qoa_dequant_tab[sf][q]`) adds and clamps in i32.
+test/element-numbers.js pins the facts, what opens them, the codegen and the
+transfer rules against the host's arithmetic.
 A Set's and a Map's table (module/collection/ordered.js) keeps its entries in
 insertion order in front of its buckets: a bucket holds an entry's index under
 the top six bits of its hash, a delete tombstones the entry in place (its key

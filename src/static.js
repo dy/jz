@@ -202,6 +202,9 @@ export function intExprRange(n, nameRange = null) {
   // A present typed element retains the all-writers hull proved for its
   // receiver. A possible miss is undefined, not an integer in that hull.
   if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
+    // (an element of a dense array of words, read inside its length: summary wordReadRange)
+    const words = ctx.summary?.at(ctx.func.current)?.wordReadRange?.(n)
+    if (words) return words
     const rep = repOf(n[1]), range = rep?.arrayElemRange
     if (!range) return null
     const len = ctx.func?.typedLen?.get(n[1]) ?? rep.arrayLen

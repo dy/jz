@@ -18,7 +18,7 @@ const INHERITED = new Set(['constructor', 'hasOwnProperty', 'isPrototypeOf', 'pr
 
 export function summaryQueries(facts, internal = false) {
   const { kinds, incoming, fields, slotLits, results, receivers, closures, closuresByBody, declared, parent, nameKeys, forwards, siteResults, joinedCalls,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, unions, shapeUnions,
     schemas, layouts, sitesByLayout, foldedLayouts, objectKinds, methods, sidByKey, funcNames, imports, numeric, strung, dynamicProps, builtinOwnProps, typedReadPresent: solverTypedReadPresent, typedLengths, scalarValues, scalarFields, typedProps, typedPropsByAux, openSchemas, indexedSchemas,
     sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, closureWild, escaped, iterSites, reached, defaultRuns, boolKeys, storeBits, paramKeys, mixed, exitJoins, hulls, indexBounds, strayProps, propArrays, mapKeys, heldKeys, absentStored } = facts
   // The solver owns union-find compression; querying a root never writes it.
@@ -320,6 +320,13 @@ export function summaryQueries(facts, internal = false) {
     const aliasKind = a => a.present ? core(kindOfExpr(a.e)) : kindOfExpr(a.e)
     const readKind = name => aliases.has(name) ? aliasKind(aliases.get(name)) : present.has(name) ? core(readKey(keyOfAnywhere(name))) : readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
+    // The numbers of a dense numeric array's elements (index.js `elemNums`).
+    const elemNumsOf = (node) => {
+      const k = kindOfExpr(node)
+      if (tagOf(core(k)) !== K.ARRAY || paramOf(k) === UNKNOWN) return null
+      const c = cell(paramOf(k)), r = elemNums?.[c]
+      return elems[c] === NUMBER && r && Number.isFinite(r.lo) ? r : null
+    }
     const spreadSourceKind = (e, site) => canon(spreadSources.get(site) ?? kindOfExpr(e))
     // Only an unseen object literal needs a captured name builder. Keeping it
     // here avoids a closure environment on every ordinary expression query.
@@ -735,6 +742,19 @@ export function summaryQueries(facts, internal = false) {
       arrayDenseOfExpr: node => {
         const k = kindOfExpr(node), e = elemOf(k)
         return tagOf(k) === K.ARRAY && e !== K.NONE && !hasTag(e, K.ABSENT)
+      },
+      // The numbers a dense array of Numbers holds (index.js `elemNums`,
+      // num-range.js): `{ lo, hi, int, nz, gap }` for every element a read
+      // inside its length finds, null where a store the summary cannot bound,
+      // a hole or another value may be there.
+      elemNumsOfExpr: node => elemNumsOf(node),
+      // A read the summary holds inside the length of a dense array of words
+      // (presentArrayRead, elemNumsOfExpr): an integer of one signed word,
+      // never -0, `[lo, hi]` of every element; null for any other read.
+      wordReadRange: n => {
+        if (!Array.isArray(n) || n[0] !== '[]' || n.length !== 3 || !presentReads.has(n)) return null
+        const r = elemNumsOf(n[1])
+        return r && r.int && r.nz && r.lo >= -0x80000000 && r.hi <= 0x7fffffff ? [r.lo, r.hi] : null
       },
       // The array's elements are Numbers where they are present: a hole, a
       // miss and a stored undefined or null aside, every element is a Number.

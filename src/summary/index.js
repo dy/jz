@@ -49,8 +49,9 @@
  * @module summary
  */
 import { SPAN_BINARY, spanBinary } from './span.js'
-import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP } from '../ast.js'
-import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
+import { NR_NONE, nrPoint, nrInts, nrJoin, nrEqual, nrBinary, nrUnary, nrMath } from './num-range.js'
+import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP } from '../ast.js'
+import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 import { PROMISE_KEYS } from '../std/async.js'
 import { VAL } from '../reps.js'
@@ -770,6 +771,26 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const LEN_OPEN = -1
   const lens = []                // dense cell root → count | LEN_OPEN
   const stores = new Map()       // cell root → greatest literal index stored at
+  // The numbers an array's elements can be (num-range.js), by the same dense
+  // cell ids: unset before a number is stored in the cell, null once a store
+  // of a number the walk cannot bound reaches it. A store states its numbers
+  // (`raiseElem`'s last argument) or opens the cell: a literal's elements, a
+  // `map`'s callback results, a `fill`'s value. A range still widening after
+  // four raises opens, so the fixpoint ends.
+  const elemNums = []            // dense cell root → range | null
+  const elemNumRaises = new Map() // cell root → [rounds it widened in, the last such round]
+  // A range widens once a round at most by this count: past four rounds it opens.
+  let numRound = 0
+  const widened = (counts, key) => {
+    const c = counts.get(key)
+    if (c === undefined) { counts.set(key, [1, numRound]); return false }
+    if (c[1] !== numRound) { c[0]++; c[1] = numRound }
+    return c[0] > 4
+  }
+  // The numbers a closure's parameter is bound to: what an array method hands
+  // its callback (the receiver's elements, the index), by binding key; any
+  // other binding of a number opens it (null), as does a default.
+  const paramNums = new Map()    // binding key → range | null
   // An array frozen after module init: built at a count (`built`, the literals'
   // count as `lens` had it before any push), grown only by pushes at the top
   // level of a module through one binding's name, each inside counted loops
@@ -884,8 +905,25 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return n >= 0 ? pointRange(n) : null
     }
     if (!SPAN_BINARY.has(op)) return null
-    const a = spanOf(e[1], scope, integral), b = spanOf(e[2], scope, integral)
+    const word = WORD_OPS.has(op)
+    const a = word ? wordSpanOf(e[1], scope, integral) : spanOf(e[1], scope, integral), b = word ? wordSpanOf(e[2], scope, integral) : spanOf(e[2], scope, integral)
     return spanBinary(op, a, b)
+  }
+  // The integers a word operator (`&`, `|`, a shift) reads its operand as,
+  // where they are the operand's own: an assignment's value, a unary plus of
+  // one, a typed array's element by its width (a miss reads undefined, which
+  // ToInt32 and ToUint32 take for 0, inside every width's span).
+  const WORD_OPS = new Set(['&', '|', '>>>', '>>', '<<'])
+  const TYPED_SPANS = [[-128, 127], [0, 255], [-32768, 32767], [0, 65535], [-0x80000000, 0x7fffffff], [0, 0xffffffff]]
+  const wordSpanOf = (e, scope, integral) => {
+    if (Array.isArray(e) && e[0] === '=' && e.length === 3 && typeof e[1] === 'string') return wordSpanOf(e[2], scope, integral)
+    if (Array.isArray(e) && e[0] === 'u+' && e.length === 2) return wordSpanOf(e[1], scope, integral)
+    if (Array.isArray(e) && e[0] === '[]' && e.length === 3 && typeof e[1] === 'string') {
+      const key = keyOf(e[1], scope ?? MODULE), k = key === null ? K.NONE : kinds[key] ?? K.NONE
+      const aux = tagOf(core(k)) === K.TYPED ? typedAux(k) : UNKNOWN
+      if (aux !== UNKNOWN && !(aux & (TYPED_ELEM_BIGINT_FLAG | TYPED_ELEM_F16_FLAG | DATA_VIEW_FLAG)) && (aux & 7) < 6) return TYPED_SPANS[aux & 7]
+    }
+    return spanOf(e, scope, integral)
   }
   // The finite interval a numeric expression stays in: a literal, an integer
   // name or a counter (spanOf), arithmetic on those, a rounding or `Math`
@@ -939,6 +977,114 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     else return null
     return Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null
   }
+  // The numbers an expression's value can be (num-range.js), with whether they
+  // are integers, never -0 and how far from zero: a literal, a counter, a
+  // closure parameter an array method binds (`paramNums`), a dense numeric
+  // array's element inside its fixed length (`elemNums`), arithmetic and
+  // `Math` on those, and a call of a function whose body is one numeric
+  // expression of its parameters, evaluated at the call over the arguments'
+  // numbers (`env`, its parameters: the only names it reads). NR_NONE where a
+  // binding no number has reached yet decides it (a later round raises it);
+  // null where the walk cannot bound it.
+  const NUM_BINARY = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>', '>>>'])
+  const NUM_UNARY = new Set(['u-', 'u+', '~'])
+  let numDepth = 0
+  /** The expression a function returns, its body being that one expression; else null. */
+  const soleReturn = (body) => {
+    if (!isBlockBody(body)) return body
+    let b = body.length === 2 ? body[1] : null
+    if (Array.isArray(b) && b[0] === ';' && b.length === 2) b = b[1]
+    return Array.isArray(b) && b[0] === 'return' && b.length === 2 && b[1] != null ? b[1] : null
+  }
+  const numArgs = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
+  const numRangeOf = (e, scope = current, env = null) => {
+    if (typeof e === 'number') return nrPoint(e)
+    if (typeof e === 'string') {
+      if (env !== null) return env.has(e) ? env.get(e) : null
+      const v = ints.get(e)
+      if (v !== undefined) return nrPoint(v)
+      const span = scope === current ? spans.get(e) : undefined
+      if (span) return nrInts(span[0], span[1])
+      const key = keyOf(e, scope ?? MODULE)
+      if (key === null) return null
+      const s = bindingScope[key]
+      return typeof s === 'number' && closureParams[s]?.includes(e) ? paramNumsOf(key) : null
+    }
+    if (!Array.isArray(e)) return null
+    const op = e[0]
+    if (op == null) return nrPoint(e[1])
+    if (op === '(' && e.length === 2 || op === '()' && e.length === 2) return numRangeOf(e[1], scope, env)
+    if (NUM_UNARY.has(op) && e.length === 2) return nrUnary(op, numRangeOf(e[1], scope, env))
+    if (NUM_BINARY.has(op) && e.length === 3) return nrBinary(op, numRangeOf(e[1], scope, env), numRangeOf(e[2], scope, env))
+    if (op === '?:' && e.length === 4) return nrJoin(numRangeOf(e[2], scope, env), numRangeOf(e[3], scope, env))
+    if (op === '()' && e.length === 3 && typeof e[1] === 'string') {
+      const callee = e[1], args = numArgs(e[2])
+      if (args.some(a => Array.isArray(a) && a[0] === '...')) return null
+      if (callee.startsWith('math.')) return nrMath(callee.slice(5), args.map(a => numRangeOf(a, scope, env)))
+      if (funcByName.has(callee) && keyOf(callee, scope ?? MODULE) === null) return inlineNums(callee, args, scope, env)
+      return null
+    }
+    // an element of a dense array of numbers, at an index inside its fixed length
+    if (op === '[]' && e.length === 3 && typeof e[1] === 'string' && env === null) {
+      const key = keyOf(e[1], scope ?? MODULE), k = key === null ? K.NONE : kinds[key] ?? K.NONE
+      if (tagOf(core(k)) !== K.ARRAY || paramOf(k) === UNKNOWN) return null
+      const c = cell(paramOf(k)), len = fixedLen(k), at = spanOf(e[2], scope, true)
+      if (elems[c] !== NUMBER || !(len > 0) || !at || at[0] < 0 || at[1] >= len) return null
+      return elemNums[c] === undefined ? NR_NONE : elemNums[c]
+    }
+    return null
+  }
+  /** A call's numbers: the callee's one expression over the arguments' numbers. */
+  const inlineNums = (name, args, scope, env) => {
+    const f = funcByName.get(name)
+    if (!f || f.defaults || f.rest || numDepth >= 4) return null
+    const ret = soleReturn(f.body), params = f.sig.params
+    // (a missing argument is undefined, and a parameter the body assigns no longer its argument)
+    if (ret === null || args.length < params.length) return null
+    const inner = new Map()
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i].name
+      if (params[i].rest || typeof p !== 'string' || definitions[keyIn(name, p)] !== undefined) return null
+      inner.set(p, numRangeOf(args[i], scope, env))
+    }
+    numDepth++
+    const r = numRangeOf(ret, name, inner)
+    numDepth--
+    return r
+  }
+  /** The numbers a closure's parameter holds: what the array methods bind it to. */
+  const paramNumsOf = (key) => {
+    // (assigned in the body, it holds more than its calls bind)
+    if (definitions[key] !== undefined) return null
+    const k = kinds[key] ?? K.NONE
+    if (tagOf(k) === K.NONE) return NR_NONE
+    if (k !== NUMBER) return null
+    const r = paramNums.get(key)
+    return r === undefined ? null : r
+  }
+  const paramNumRaises = new Map()
+  /** Join `r` into the parameter's numbers; null (unbounded, the default) opens them. */
+  const raiseParamNums = (key, r = null) => {
+    const has = paramNums.has(key), old = paramNums.get(key)
+    if (has && old === null || r === NR_NONE) return
+    let next = has ? nrJoin(old, r) : r
+    if (has && next !== null && !nrEqual(old, next) && widened(paramNumRaises, key)) next = null
+    if (!has || !nrEqual(old, next)) { paramNums.set(key, next); changed = true }
+  }
+  /** The numbers a callback returns: its one expression, in its own scope. */
+  const callbackNums = (param) => {
+    let r = NR_NONE
+    for (const id of membersOf(param)) {
+      const ret = typeof id === 'number' ? soleReturn(closureBodies[id]) : null
+      r = nrJoin(r, ret === null ? null : numRangeOf(ret, id))
+      if (r === null) return null
+    }
+    return r
+  }
+  /** The numbers an array's elements are, for a callback it hands them to. */
+  const cellNums = (arr) => { const c = arrayCell(arr); return c === UNKNOWN ? null : elemNums[c] === undefined ? NR_NONE : elemNums[c] }
+  /** The indices a callback over the array sees. */
+  const indexNums = (arr) => { const n = fixedLen(arr); return n === 0 ? NR_NONE : nrInts(0, n > 0 ? n - 1 : 0xfffffffe) }
   // The hull of the arguments each parameter of a function receives, over
   // every direct call the walk meets: null for a position no call bounds. Each
   // round records afresh (the loop bounds and constants a round learns bound
@@ -1219,17 +1365,18 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return elem
   }
   // A cell, closure or schema past the parameter's range is one the kind cannot name: it escapes.
-  const cellOf = (node, tag, elem) => {
+  const cellOf = (node, tag, elem, nums = null) => {
     let id = cells.get(node)
     if (id === undefined) { id = elems.length; elems.push(elem); cellUp.push(id); cells.set(node, id) }
     if (id >= UNKNOWN) { escape(elem); return kind(tag) }
     const k = kind(tag, id)
     // Cell identities survive numeric reseeding; constructor facts must be
     // restored each round along with the stores that feed the cell.
-    raiseElem(k, elem, true)
+    raiseElem(k, elem, true, false, false, nums)
     return k
   }
-  const arrayOf = (node, elem) => { const arr = cellOf(node, K.ARRAY, elem); if (paramOf(arr) !== UNKNOWN) fixLen(cell(paramOf(arr)), literalCount(node)); return arr }
+  // `count`: how many elements the construction makes, LEN_OPEN where it is not one count
+  const arrayOf = (node, elem, nums = null, count = literalCount(node)) => { const arr = cellOf(node, K.ARRAY, elem, nums); if (paramOf(arr) !== UNKNOWN) fixLen(cell(paramOf(arr)), count); return arr }
   /** The elements `flat` copies from elements of kind `e`: an array among them gives
    *  its own, one level down per unit of `depth` (null for a depth no literal names:
    *  any level's, arrays included); a value of several kinds an array among them,
@@ -1299,12 +1446,23 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       if (row && paramOf(elems[id]) === UNKNOWN) for (const k of row) lose(k)
     }
   }
-  const raiseElem = (arr, k, literal = false, keyed = false, hole = false) => {
+  /** Join the numbers `r` into the cell's (`elemNums`): null (unbounded) opens it. */
+  const raiseNums = (id, r) => {
+    const old = elemNums[id]
+    if (old === null || r === NR_NONE) return
+    let next = old === undefined ? r : nrJoin(old, r)
+    if (old !== undefined && next !== null && !nrEqual(old, next) && widened(elemNumRaises, id)) next = null
+    if (old === undefined || !nrEqual(old, next)) { elemNums[id] = next; changed = true }
+  }
+  // `nums`: the numbers the store puts in the cell (num-range.js), NR_NONE for
+  // none; left out, a store of a number opens the cell's range.
+  const raiseElem = (arr, k, literal = false, keyed = false, hole = false, nums = null) => {
     if (!celled(arr)) return
     const id = cell(paramOf(arr))
     // a stored value that may be missing: the cell may hold the undefined box itself, not only holes
     if (!hole && hasTag(k, K.ABSENT)) absentStored.add(id)
-    if (hostArrays.has(id) && retainedArrays.has(id)) { retain(k); escapeToHost(k); k = ANY; literal = false }
+    if (hostArrays.has(id) && retainedArrays.has(id)) { retain(k); escapeToHost(k); k = ANY; literal = false; nums = null }
+    if (!hole && hasTag(k, K.NUMBER)) raiseNums(id, nums)
     if (!literal) invalidateTuple(arr)
     const held = setCells.has(id) && !enumerated.has(id)
     const old = elems[id]
@@ -1345,7 +1503,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (rows) { tuples.set(b, null); for (let i = 0; i < ra.length; i++) { const nk = merge(ra[i], rb[i]); if (nk !== ra[i]) ra[i] = nk } }
     if (hostArrays.has(b)) hostArrays.add(a)
     if (retainedArrays.has(b)) retainedArrays.add(a)
-    raiseElem(kind(K.ARRAY, a), elems[b], rows)
+    raiseElem(kind(K.ARRAY, a), elems[b], rows, false, false, elemNums[b] === undefined ? NR_NONE : elemNums[b])
     if (keyedCells.has(a) && !keyedCells.has(b)) keyedCells.delete(a)
     if (cellShapes.has(b)) addCellShapes(a, cellShapes.get(b))
     if (cellLostObject.has(b)) addCellLost(a)
@@ -1539,7 +1697,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // The cell goes to ANY before its elements escape: an array of itself ends there.
     if (celled(k)) {
       openLen(k, losing ?? 'held where the summary cannot see')
-      invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (setCells.has(id)) enumerateKeys(id); if (e !== ANY) { elems[id] = ANY; changed = true; escape(e) }
+      invalidateTuple(k); const id = cell(paramOf(k)), e = elems[id]; if (setCells.has(id)) enumerateKeys(id); if (e !== ANY) { elems[id] = ANY; raiseNums(id, null); changed = true; escape(e) }
       if (tagOf(k) === K.ARRAY || primArray(k) || hasTag(k, K.HASH)) {
         const w = cellWild.get(id) ?? K.NONE
         if (w !== ANY) {
@@ -1770,6 +1928,10 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // factory hands its own to the initializer). To `x !== undefined` in the
   // callee such an argument is no argument (`decided`).
   const kundef = []
+  // The numbers a slot holds (num-range.js), where the site that pushed it
+  // bounds them: an array method's element and index for its callback. Unset
+  // is unbounded: a closure parameter a number reaches through it has no range.
+  const knums = []
   const argBound = new Set()   // the parameters some call passes an argument for
   const bindArg = (key) => { if (!argBound.has(key)) { argBound.add(key); changed = true } }
   const certainlyUndefined = (a) => {
@@ -1779,7 +1941,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return key !== null && paramKeys.has(ctxBase[key] ?? key) && !argBound.has(key) && tagOf(kinds[key] ?? K.NONE) === K.NULLISH
   }
   let sp = 0
-  const pushK = (k, spread = false) => { ks[sp] = k; kspread[sp] = spread; kundef[sp] = false; sp++ }
+  const pushK = (k, spread = false) => { ks[sp] = k; kspread[sp] = spread; kundef[sp] = false; knums[sp] = undefined; sp++ }
   const isSpread = (a) => Array.isArray(a) && a[0] === '...'
   /** The kinds of a call's arguments (`a`: the argument node, a `,` list or none): the frame's base. */
   const pushArgs = (a) => {
@@ -1894,16 +2056,19 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     let tail = NULLISH
     for (let i = s; i < n; i++) tail = merge(tail, ks[base + i])
     const passive = passiveParamsOf(scope, names, defaults)
+    // a closure's parameters take the numbers their slots state (`paramNums`)
+    const closure = typeof scope === 'number' && ctx === null
     for (let i = 0; i < names.length; i++) {
       if (names[i] == null) continue
       const quiet = passive.has(names[i]), base_ = keyIn(scope, names[i]), key = ctx === null ? base_ : ctxKey(ctx, base_)
       const dflt = defaults?.[names[i]]
       // an argument of no kind yet (a dispatcher no call reaches forwards its own) is none
       if ((i < s && !kundef[base + i] && tagOf(ks[base + i]) !== K.NONE) || s < n) { bindArg(key); bindArg(base_) }
-      if (i < s) { bindParam(key, ks[base + i], quiet); if (!dflt || !mayBeMissing(ks[base + i])) continue }
-      else if (s < n) { bindParam(key, dflt ? core(tail) : tail, quiet); if (!dflt) continue }
+      if (i < s) { bindParam(key, ks[base + i], quiet); if (closure && hasTag(ks[base + i], K.NUMBER)) raiseParamNums(key, knums[base + i]); if (!dflt || !mayBeMissing(ks[base + i])) continue }
+      else if (s < n) { bindParam(key, dflt ? core(tail) : tail, quiet); if (closure) raiseParamNums(key); if (!dflt) continue }
       else if (!dflt) { bindParam(key, NULLISH, quiet); continue }
       runDefault(key); runDefault(base_)
+      if (closure) raiseParamNums(key)
     }
     if (names.rest != null) {
       if (names.restName != null) restBind(scope, names.restName, base, names.rest, n)
@@ -2724,9 +2889,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     const elem = mayMiss && finds ? orAbsent(elemOf(recv)) : elemOf(recv)
     const b = sp
     pushK(elem); pushK(NUMBER); pushK(recv)
+    knums[b] = cellNums(recv); knums[b + 1] = indexNums(recv)
     const r = callClosure(paramOf(cb), b, 3, null, n > 1 ? ks[base + 1] : NULLISH)
     sp = b
-    if (name === 'map') { const item = mayMiss ? orAbsent(r) : r; const out = arrayOf(node, item); raiseElem(out, item); return out }
+    // `map` makes as many elements as the receiver has, its callback's results
+    if (name === 'map') {
+      const item = mayMiss ? orAbsent(r) : r, nums = hasTag(item, K.NUMBER) ? callbackNums(paramOf(cb)) : NR_NONE
+      const out = arrayOf(node, item, nums, fixedLen(recv)); raiseElem(out, item, false, false, false, nums); return out
+    }
     if (name === 'flatMap') { const out = arrayOf(node, K.NONE); raiseElem(out, tagOf(r) === K.ARRAY ? elemOf(r) : r); return out }
     if (name === 'filter') return recv
     if (name === 'find' || name === 'findLast') return orAbsent(elem)
@@ -3019,12 +3189,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         return arrayOf(node, k)
       }
       if (name === 'fill') {
-        for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i])
+        for (let i = 0; i < n; i++) raiseElem(recv, ks[base + i], false, false, false, i > 0 || !hasTag(ks[base], K.NUMBER) ? NR_NONE : kspread[base] || !node ? null : numRangeOf(argAt(node[2], 0)))
+        // (`fill()` stores undefined in every cell)
+        if (n === 0) raiseElem(recv, NULLISH)
         // (a construction of a count filled whole: no hole; the cell loses the hole the construction raised this round)
         const made = node && Array.isArray(node[1]) && node[1][0] === '.' ? node[1][1] : null
         const construction = Array.isArray(made) && made.length === 3 && (made[0] === 'new' && made[1] === 'Array' || made[0] === '()' && (made[1] === 'new.Array' || made[1] === 'Array'))
         const sited = typeof made === 'string' && made.startsWith(SEP + 'site')
-        if (n === 1 && (construction || sited) && celled(recv)) {
+        if (n <= 1 && (construction || sited) && celled(recv)) {
           const c = cell(paramOf(recv))
           if (!filledCells.has(c)) { filledCells.add(c); elems[c] = elems[c] & ~bitOf(K.ABSENT) }
         }
@@ -3595,7 +3767,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
         const k = n[i] == null ? ABSENT : expr(n[i]), row = id === UNKNOWN ? null : tuples.get(cell(id))
         if (Array.isArray(n[i]) && n[i][0] === '...') invalidateTuple(arr)
         else if (row) { const next = merge(row[i - 1] ?? K.NONE, k); if (next !== row[i - 1]) { row[i - 1] = next; changed = true } }
-        raiseElem(arr, k, true)
+        raiseElem(arr, k, true, false, false, !hasTag(k, K.NUMBER) ? NR_NONE : Array.isArray(n[i]) && n[i][0] === '...' ? null : numRangeOf(n[i]))
       }
       return arr
     }
@@ -5268,7 +5440,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   }
   const queryFacts = {
     kinds, incoming, fields, slotLits, results, closures, declared, parent, nameKeys, forwards, siteResults, joinedCalls, receivers,
-    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
+    scopeOfSig, scopeOfBody, scopeOfParams, cellUp, elems, elemNums, tuples, lens, stores, built, grown, unknown, resizedElsewhere, builds, multiSite, presentReads, spreadSources, paramRanges: argRanges, cellProps, cellWild, cellNumeric, hostArrays, retainedArrays, closureSets, closureSetIds, cells, jsonKinds, closuresByBody, unions, shapeUnions,
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
@@ -5631,6 +5803,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   const rounds = (step) => { for (let round = 0; ; round++) { if (round === 10000) throw new Error('summary: no fixpoint'); if (!step()) return } }
   const fixpoint = () => rounds(() => {
     changed = false
+    numRound++
     grown.clear()   // the init pushes are counted afresh by every round's walk
     decisions.clear()   // as are the tests: the round without a change, its kinds settled, decides
     ownBuilds.clear(); builds.clear()   // and the arrays functions build
@@ -5921,7 +6094,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   if (seeded.length) {
     if (losses) losses.length = 0
     kinds.length = 0; incoming.length = 0; fields.length = 0; slotLits.length = 0; objectKinds.clear(); decisions.clear(); opaqueSchemas.clear(); hostSchemas.clear(); retainedSchemas.clear(); hostArrays.clear(); absentStored.clear(); retainedArrays.clear(); hostClosures.clear(); results.clear(); escaped.clear(); certainKeys.clear(); boolKeys.clear(); for (let i = 0; i < elems.length; i++) { elems[i] = K.NONE; cellUp[i] = i }
-    tuples.clear(); lens.length = 0; stores.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
+    tuples.clear(); lens.length = 0; stores.clear(); elemNums.length = 0; elemNumRaises.clear(); paramNums.clear(); paramNumRaises.clear(); built.length = 0; grown.clear(); unknown.clear(); resizedElsewhere.clear(); multiSite.clear(); presentReads.clear(); spreadSources.clear(); argRanges.clear(); roundArgs.clear(); argumentEntries.length = 0; moved.clear()
     pendingAll = false; pendingIndexed = false; wildValues = K.NONE; wildProps.clear(); sideProps.clear(); sideWild.clear(); closureProps.clear(); closureWild.clear(); sideByProp.clear(); foreignObjects = false; foreignProps.clear(); lostFieldsRead = 0; deletable.clear(); deleteReach.unknown = false; keysSeen.clear(); deepRead.clear(); copiedSchemas.clear()
     seed(seeded)
     fixpoint()

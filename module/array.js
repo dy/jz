@@ -1547,6 +1547,11 @@ export default (ctx) => {
         // The local holding the key, for a call through the element: a table
         // whose elements never change dispatches on it (optimize/devirt.js).
         if (Array.isArray(vi) && vi[0] === 'local.get') rd.elemKey = vi[1]
+        // Every element of a dense array of words is one (summary elemNumsOfExpr):
+        // an integer of one signed word, never -0, which the truncation keeps exactly.
+        const nums = dense ? ctx.summary?.at(ctx.func.current)?.elemNumsOfExpr(arr) : null
+        if (nums && nums.int && nums.nz && nums.lo >= -0x80000000 && nums.hi <= 0x7fffffff)
+          return typed(['i32.trunc_sat_f64_s', rd], 'i32')
         return holeNumberRead(rd, holeNumber)
       }
       // Known plain array, numeric key, NOT proven in-bounds → inline bounds-checked

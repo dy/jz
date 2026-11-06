@@ -135,6 +135,9 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
         if (aux != null && (aux & 7) <= 5 && !(aux & 32))
           return !readPresent || ((aux & 7) !== 5 && present) ? 'i32' : 'f64'
       }
+      // A dense array of words read inside its length: the element is a word
+      // (summary wordReadRange), as the emitter reads it (module/array.js).
+      if (ctx.summary?.at(bodyRoot ?? ctx.func.current).wordReadRange?.(expr)) return 'i32'
     }
     return 'f64'
   }

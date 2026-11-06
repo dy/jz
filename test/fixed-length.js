@@ -73,8 +73,10 @@ test('fixed length: arrays that meet share one count or none', () => {
   is(fixedLen(mixed, null, 'a'), null, 'two counts in one parameter')
   is(fixedLen(mixed, 'first', 'v'), null)
   is(fixedLen(`const a = [1, 2, 3]\nconst b = [...a, 4], c = a.map(x => x * 2), d = Array.from(a)\nexport const f = () => b[0] + c[0] + d[0]`, null, 'a'), 3, 'a copy is an array of its own')
-  for (const name of ['b', 'c', 'd'])
+  for (const name of ['b', 'd'])
     is(fixedLen(`const a = [1, 2, 3]\nconst b = [...a, 4], c = a.map(x => x * 2), d = Array.from(a)\nexport const f = () => b[0] + c[0] + d[0]`, null, name), null, `${name}: built by something other than a plain literal`)
+  // (a map makes an element for each of its receiver's, test/element-numbers.js)
+  is(fixedLen(`const a = [1, 2, 3]\nconst b = [...a, 4], c = a.map(x => x * 2), d = Array.from(a)\nexport const f = () => b[0] + c[0] + d[0]`, null, 'c'), 3, 'c: a map of an array of one count')
 })
 
 test('fixed length: a counted loop bounds the index it stores at', () => {
