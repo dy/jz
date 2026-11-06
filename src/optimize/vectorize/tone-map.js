@@ -1,7 +1,7 @@
 import { cloneNode, walkAst } from '../../ast.js'
 import { constNum, laneAccess, isI32Const, isLocalGet } from './addr-model.js'
 import { LANE_COMPARE, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
-import { liftCtx, liftFail } from './lift.js'
+import { liftCtx, liftFail, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
 import { simdBound } from './scaffold.js'
 
@@ -233,7 +233,12 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
     : ['v128.and', ['f64x2.ge', get, ['f64x2.splat', ['f64.const', 0]]], ['f64x2.lt', get, ['f64x2.splat', ['f64.const', 4294967296]]]]
   const laneWord = (k, get, x, signed, scalar) => ['block', ['result', 'i32'], ['local.set', x, ['f64x2.extract_lane', k, get]],
     scalar(['local.get', x]) ?? ['i32.wrap_i64', [signed ? 'i64.trunc_sat_f64_s' : 'i64.trunc_sat_f64_u', ['local.get', x]]]]
-  const truncZero = (signed, get) => [signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', get]
+  // (under the test no lane is NaN or past the word, where the relaxed truncation is
+  // the saturating one's answer: V8 runs it at 0.78× the cost on x64, alike on arm64,
+  // `fcvtzs` and a narrowing either way)
+  const truncZero = (signed, get) => [vecState.relaxF32
+    ? signed ? 'i32x4.relaxed_trunc_f64x2_s_zero' : 'i32x4.relaxed_trunc_f64x2_u_zero'
+    : signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', get]
   function truncLanes(v, signed, scalar) {
     const t = freshMask(), x = `$__tl${freshIdRef.next++}`, get = ['local.get', t]
     ctx.extraLocals.push(['local', x, 'f64'])

@@ -69,6 +69,8 @@ test('quantize: a byte cursor beside the counter vectorizes as PCM-16', () => {
 }`
   const text = body(src)
   ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(text), 'the clamped lane truncates as a vector')
+  // (a saturation the program states keeps the saturating form: the relaxed one answers alike only inside the word)
+  ok(!/relaxed_trunc/.test(text), 'no relaxed truncation where no test holds the lanes in the word')
   ok(/v128\.load/.test(text), 'the samples load two at a time')
   for (const n of [0, 1, 2, 3, 17, 18, 19, 64, 199, 200]) check(src, [n], `pcm16(${n})`)
 })

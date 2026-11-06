@@ -1049,7 +1049,8 @@ function narrowStore(addr, val, laneType, sty, ctx, conversion) {
       // infinities fail the test and take the lane-by-lane conversion.
       const shape = `${laneType}x${lanes}`
       const inWord = ['i32x4.all_true', [`${shape}.lt`, [`${shape}.abs`, ['local.get', vt]], [`${shape}.splat`, [`${laneType}.const`, 2147483648]]]]
-      const trunc = [`i32x4.trunc_sat_${shape}_s${laneType === 'f64' ? '_zero' : ''}`, ['local.get', vt]]
+      // (where the test holds, the relaxed truncation is the same word, cheaper on x64)
+      const trunc = [`i32x4.${vecState.relaxF32 ? 'relaxed_trunc' : 'trunc_sat'}_${shape}_s${laneType === 'f64' ? '_zero' : ''}`, ['local.get', vt]]
       pre = ['if', ['result', 'v128'], inWord, ['then', trunc], ['else', exact]]
     }
     lane8 = sty === 'i32' ? g : sh(sty === 'i16' ? PACK_I32_TO_I16 : PACK_I32_TO_I8)

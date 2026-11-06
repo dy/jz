@@ -283,8 +283,8 @@ test('example: regressed kernels keep their vectorization (byte-fade / pmax / na
     }
     // buddhabrot: the density peak-find `if (d > m) m = d` lifts to f64x2.pmax (NaN-exact, relaxedSimd).
     ok(/f64x2\.pmax/.test(watOf('buddhabrot')), 'buddhabrot: density peak-find must lift to f64x2.pmax');
-    // fern: the f64→i32 ToInt32 map (`(…)|0`) lifts via the saturating narrow (relaxedSimd).
-    ok(/i32x4\.trunc_sat_f64x2_s_zero/.test(watOf('fern')), 'fern: ToInt32 map must lift to i32x4.trunc_sat narrow');
+    // fern: the f64→i32 ToInt32 map (`(…)|0`) lifts to the lane narrow, relaxed behind its word test (relaxedSimd).
+    ok(/i32x4\.relaxed_trunc_f64x2_s_zero/.test(watOf('fern')), 'fern: ToInt32 map must lift to the i32x4 relaxed narrow');
 });
 
 // Outer-strip LEGALITY (regression): a per-sample loop whose body is an iterated f64 RECURRENCE

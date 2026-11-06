@@ -197,7 +197,8 @@ test('cond-vectorize: an exact integer store truncates in lanes inside a word', 
   for (const T of ['Int16Array', 'Int32Array', 'Uint8Array']) {
     const s = src(T)
     const f = funcWatOf(s, 'go')
-    ok(/i32x4\.all_true/.test(f) && /i32x4\.trunc_sat_f64x2_s_zero/.test(f), `${T}: the store truncates in lanes behind the word test`)
+    // (behind the test no lane is NaN or past the word: the relaxed truncation, cheaper on x64)
+    ok(/i32x4\.all_true/.test(f) && /i32x4\.relaxed_trunc_f64x2_s_zero/.test(f) && !/trunc_sat_f64x2/.test(f), `${T}: the store truncates in lanes behind the word test`)
     const args = []
     for (const [lo, hi] of [[-40000, 40000], [-1e300, 1e300], [-Infinity, Infinity], [-3, 3]])
       for (const [n, seed] of [[0, 0], [1, 3], [2, 17], [44, 0], [45, 5]]) args.push([n, lo, hi, seed])

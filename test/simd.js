@@ -1895,7 +1895,9 @@ const TONE_THEME = (n) => `
   }`
 test('SIMD tonemap - a statement\'s truncations test their lanes with one compare, bit-exact', () => {
   const w = wat(TONE_THEME(64), SPEED)
-  ok(/v128\.or/.test(w) && /i64x2\.lt_s/.test(w) && !/f64x2\.max/.test(w) && /i32x4\.trunc_sat_f64x2_s_zero/.test(w), 'the channels\' bits meet in one compare before the lane truncation')
+  ok(/v128\.or/.test(w) && /i64x2\.lt_s/.test(w) && !/f64x2\.max/.test(w), 'the channels\' bits meet in one compare before the lane truncation')
+  // (where the compare holds no lane is NaN or past the word: the relaxed truncation, cheaper on x64)
+  ok(/i32x4\.relaxed_trunc_f64x2_s_zero/.test(w) && !/trunc_sat_f64x2/.test(w), 'the lanes the compare admits truncate relaxed')
   for (const th of [[0, 0, 0, 235, 235, 235], [12, 18, 27, 1e10, -3e9, 240], [NaN, 0, 0, 5, 5, 5], [2147483647, -2147483648, 0, 1, 1, 1], [33554432, 16777216, 7, 33554432, 16777216, 7]])
     for (const n of [64, 63, 2, 1]) {
       const host = oracle(TONE_THEME(n)), simd = runVec(TONE_THEME(n), SPEED), scal = runVec(TONE_THEME(n), SPEED_SCALAR)
