@@ -3516,6 +3516,13 @@ storage classification preserves that Number result, and a ToInt32 consumer
 can discard only the zero-sign correction. Cyclic remainder bounds may prove
 a nonnegative interval only when every write, including initialization, keeps
 it; fractional increments do not acquire an integer bound.
+A `select` yields its first operand where its condition holds and its second
+where it fails, so an operand that reads a local the condition compares (or the
+condition of a select it is an operand of) lies within the comparison there: the
+clamp `r < lo ? lo : r > hi ? hi : r` lies within [lo, hi], and an accumulator fed
+back through it keeps that interval round the loop (`chosen` in int-range.js). The
+operands run before the condition, so the read is the value compared only where
+nothing else in the outermost select writes the local.
 The interval walk follows the statements in evaluation order and keeps for every
 i32, i64 and f64 local `{ lo, hi, int, nz, nan }`: the closed interval, whether
 the value is an integer, whether it may be -0, whether it may be NaN; no

@@ -677,6 +677,54 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     return t == null ? BOOL : answer(t)
   }
 
+  // The value a select yields: its first operand where its condition holds,
+  // its second where it fails. An operand that reads a local its condition
+  // compares (or the condition of a select it is an operand of, `conds`, with
+  // the way each went) is that local within the comparison: `r < lo ? lo :
+  // r > hi ? hi : r`, a clamp, lies within [lo, hi]. The operands ran before
+  // the condition, so the read is the value compared where nothing else in the
+  // outermost select writes the local.
+  const chosen = (n, conds, outer = n) => {
+    const arm = (k, truth) => {
+      const e = n[k], v = seenAt.get(e) ?? null, more = [...conds, [n[3], truth]]
+      return e?.[0] === 'select' && e.length === 4 ? chosen(e, more, outer) : compared(e, v, more, outer)
+    }
+    return hull(arm(1, true), arm(2, false))
+  }
+  const writesBesides = (n, x, e) => {
+    if (!isArr(n)) return false
+    if (n !== e && (n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === x) return true
+    for (let i = 1; i < n.length; i++) if (writesBesides(n[i], x, e)) return true
+    return false
+  }
+  const compared = (e, v, conds, outer) => {
+    const x = readName(e)
+    if (!x || !v || v.of || none(v) || writesBesides(outer, x, e)) return v
+    let lo = v.lo, hi = v.hi, nan = v.nan
+    const whole = v.int, up = t => whole ? Math.floor(t) : t, down = t => whole ? Math.ceil(t) : t
+    for (const [c, truth] of conds) {
+      const op = c?.[0], floats = op in F64_CMP
+      let rel = F64_CMP[op] ?? INT_CMP[op]
+      if (rel == null) continue
+      const [p, q] = c.filter(isArr)
+      let o
+      if (readName(p) === x) o = seenAt.get(q)
+      else if (readName(q) === x) { o = seenAt.get(p); rel = FLIP[rel] }
+      else continue
+      if (!o || o.of || none(o)) continue
+      // (a failed float comparison holds of a NaN too: only numbers turn it into the opposite one)
+      if (!truth) { if (floats && !(real(v) && real(o))) continue; rel = NOT[rel] }
+      else if (floats) nan = false
+      if (rel === 'lt') hi = Math.min(hi, whole && Number.isInteger(o.hi) ? o.hi - 1 : up(o.hi))
+      else if (rel === 'le') hi = Math.min(hi, up(o.hi))
+      else if (rel === 'gt') lo = Math.max(lo, whole && Number.isInteger(o.lo) ? o.lo + 1 : down(o.lo))
+      else if (rel === 'ge') lo = Math.max(lo, down(o.lo))
+      else if (rel === 'eq') { lo = Math.max(lo, down(o.lo)); hi = Math.min(hi, up(o.hi)) }
+    }
+    // (an operand no value of which the comparisons let through keeps its own interval)
+    return lo <= hi ? { lo, hi, int: v.int, nz: v.nz && lo <= 0 && hi >= 0, nan } : v
+  }
+
   const seq = (list, st) => {
     let last = null
     for (const s of list) { if (!st.env) return null; last = ev(s, st) }
@@ -776,7 +824,8 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     if (LEAVES.has(op)) { args(n, st); st.env = null; return null }
     if (op === 'select' && n.length === 4) {
       const a = ev(n[1], st), b = ev(n[2], st), c = ev(n[3], st)
-      return c && c.lo === c.hi ? (c.lo ? a : b) : hull(a, b)
+      seenAt.set(n[1], a); seenAt.set(n[2], b); seenAt.set(n[3], c)
+      return c && c.lo === c.hi ? (c.lo ? a : b) : chosen(n, [])
     }
     // The operands are the children that are nodes: a memory argument, or a
     // comment a kernel written as text keeps, is none.

@@ -971,3 +971,23 @@ test('int-narrow: a wide integer read only for its low word is that word', () =>
   const after = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(ir))).exports.f
   for (const a of [0, 1, -1, 7, 123456789, -2147483648, 2147483647]) is(after(a), before(a), `a=${a}`)
 })
+
+// A select picks its first operand where its condition holds, its second where it
+// fails: an operand the condition compares lies within the comparison there. The
+// clamp `r < lo ? lo : r > hi ? hi : r` bounds an accumulator fed back through it,
+// so the sum it takes again is an integer one register holds (decode-qoa's
+// `qoa_clamp(predicted + dequantized, …)`, the clamp-acc kernel).
+test('int-range: a clamp\'s operand is within its bounds, so the recurrence through it is integer', () => {
+  const src = (T) => `const T = ${T}, B = new Uint8Array(256)
+    for (let i = 0; i < 256; i++) B[i] = (i * 37) & 255
+    export const f = () => { let acc = 0
+      for (let p = 0; p < B.length; p++) { let r = acc + T[B[p] & 7]; acc = r < -300 ? -300 : r > 300 ? 300 : r }
+      return acc }`
+  for (const T of ['new Int32Array([30, -30, 100, -100, 180, -180, 280, -280])', 'Int32Array.from([30, -30, 100, -100, 180, -180, 280, -280])', 'new Int32Array([2147483647, -2147483648, 7, 9, 1, 2, 3, 4])']) {
+    agree(src(T), 'f', [], undefined, `the clamped sum over ${T.slice(0, 24)}`)
+    shapes(src(T), text => {
+      const f = text.split(/\n(?=  \(func )/).find(s => /\(export "f"\)/.test(s)) ?? ''
+      ok(!/\(f64\.(add|lt|gt)\b/.test(f), `no float sum or test over ${T.slice(0, 24)}`)
+    })
+  }
+})
