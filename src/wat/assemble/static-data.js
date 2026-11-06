@@ -29,13 +29,14 @@ import { walkAst } from '../../ast.js'
  *
  * This runs LAST (after every lowering has emitted its call/ref.func — doing it earlier is
  * unsound: refs like `util.clone` are emitted *after* pullStdlib), so a mark-sweep from the
- * real roots (inline-exported funcs, __start, the closure table, globals/tags/table) gives
+ * real roots (inline-exported funcs, the functions the module's own export entries name,
+ * __start, the closure table, globals/tags/table) gives
  * EXACT liveness. If `__dec_to_f64` is dead, truncate the table from the data tail (it is
  * the last append — see pullStdlib). DATA only: the dead function + global are left for
  * watr, which already removes them. Keeps correctly-rounded decimal parsing wherever it is
  * genuinely live (parseFloat, the self-compile compiler's `Number()` on source literals).
  */
-export function stripDeadLazyTables(sec) {
+export function stripDeadLazyTables(sec, exports = []) {
   const spans = ctx.runtime.lazySpans
   if (!spans || !spans.length) return
   const byName = new Map()
@@ -49,6 +50,9 @@ export function stripDeadLazyTables(sec) {
   // an exported func is a root, a stdlib one that exports itself too (collection.js __view_data)
   for (const arr of [sec.funcs, sec.stdlib])
     for (const f of arr || []) if (Array.isArray(f) && f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
+  // a function a module-level export entry names (`export { default as decode } from …`,
+  // an export the boundary wraps): a root as an inline export is
+  for (const e of exports) if (Array.isArray(e) && Array.isArray(e[2]) && e[2][0] === 'func') mark(e[2][1])
   for (const f of sec.start) scan(f)
   for (const part of [sec.elem, sec.globals, sec.tags, sec.table]) for (const n of part || []) {
     if (!Array.isArray(n)) continue
@@ -131,7 +135,7 @@ function appendLazy(sec, spans) {
  * after optimizeModule (real reachability is final) and before the data
  * segment is serialized into sec.data.
  */
-export function stripDeadInternedSpans(sec) {
+export function stripDeadInternedSpans(sec, exports = []) {
   const spans = ctx.runtime.reclaimSpans
   if (!spans || !spans.length) return
   const byName = new Map()
@@ -159,6 +163,9 @@ export function stripDeadInternedSpans(sec) {
   for (const n of sec.globals || [])
     if (Array.isArray(n) && n[0] === 'global' && typeof n[1] === 'string' &&
         n.some(c => Array.isArray(c) && c[0] === 'export')) liveGlobals.add(n[1].slice(1))
+  // a function a module-level export entry names (`export { default as decode } from …`,
+  // an export the boundary wraps): a root as an inline export is
+  for (const e of exports) if (Array.isArray(e) && Array.isArray(e[2]) && e[2][0] === 'func') mark(e[2][1])
   for (const f of sec.start) scan(f)
   for (const part of [sec.elem, sec.globals, sec.tags, sec.table]) for (const n of part || []) {
     if (!Array.isArray(n)) continue

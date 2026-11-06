@@ -865,14 +865,14 @@ export function assemble(ast, profiler) {
   // Drop the lazy conversion tables (EL decimal→f64, Ryū float→decimal) whose owner
   // functions no live code calls — must run after sec.globals/funcs are final (exact
   // reachability) and before the data segment below serializes ctx.runtime.data.
-  stripDeadLazyTables(sec)
+  stripDeadLazyTables(sec, lateFacts.namedExports)
 
   // Reclaim the trailing run of any OTHER coarsely-interned data (buildStartFn's
   // whole-schema-list table, a stdlib thunk's own string constants — see
   // stripDeadInternedSpans' own doc) that the same exact, final reachability
   // proves dead. Runs after stripDeadLazyTables so a dead lazy table doesn't
   // masquerade as the "true tail" this pass's contiguity check relies on.
-  stripDeadInternedSpans(sec)
+  stripDeadInternedSpans(sec, lateFacts.namedExports)
 
   // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
   // Active segment at address 0 — skipped for shared memory (would collide across modules)

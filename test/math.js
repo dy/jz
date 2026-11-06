@@ -1164,3 +1164,13 @@ export let e = (x, y) => x < 0 ? Math.ceil(y) : Math.floor(y)`
   }
   ok(/f64\.ceil|f64\.floor/.test(funcWat(text, 'e')), 'a choice over another value keeps its roundings')
 })
+
+// The lazy tables (Math.pow's, the decimal ones) live while a function a module
+// export entry names reaches them: `export { g as f }` names its function by no
+// inline export, and a sweep that saw none of those stripped exp2's table, pow
+// past an integer exponent reading Infinity.
+test('math: a function exported under another name keeps its lazy tables', () => {
+  const src = `function g(a) { return Math.pow(2, a - 0.5) + parseFloat('1.25e-3') }
+export { g as f }`
+  for (const optimize of levels(0, 2, 3, 'size')) for (const a of [3, -7.25]) is(run(src, { optimize }).f(a), Math.pow(2, a - 0.5) + 1.25e-3, `O${optimize}: f(${a})`)
+})
