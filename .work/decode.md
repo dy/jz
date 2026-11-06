@@ -93,18 +93,23 @@ classes (G2, D2, A1, K4) are that one loss on four carriers.
   level (decode-wav's `samples()` survived it: `byteOffset % undefined` is NaN, so the
   realign branch never ran). Fixed with G1.
 - A typed array's named property read under a computed string key (`t[key]`, `key =
-  'tag'`, the property stored by `t.tag = 'str'`) reads `undefined`. Open, on main too.
+  'tag'`, the property stored by `t.tag = 'str'`) reads `undefined`. Open, on main too, and
+  inside the numeric-export-parameters divergence: a typed index counts as a numeric use
+  (compile/param-numeric.js `typedIndex`). Taking the key for a string wherever the summary
+  lets typed arrays hold named properties was tried and not kept: the keyed access itself
+  puts that in the summary, so every export parameter indexing a typed array lost its number
+  (static-storage, fixed-memory, typed-store failed). A fix needs the named stores
+  (`t.tag = v`) apart from the keyed ones.
 - Copying a function that calls itself per closure set (watr's `walk(node, fn)`, three
   copies) made the watr self-compile in test/perf.js run for over four minutes where it
-  takes 20 s. `splitByClosureArgs` now leaves such a function whole; which later pass
-  the copies sent into the long run is not found.
+  takes 20 s. Found and fixed on correctness-2: see below.
 - Pre-existing failures on main 045d0c89f, unrelated: `min recurrence (watr)` in
   optimizer.js, `from, as and of are names outside their clauses` in parser-bugs.js, and the
   runner's own off-terminal test.
 - A function holding a declaration of an array pattern beside another declarator, the
   other captured by a closure (`const pre = [], [op, R, K] = lhs; const temp = (p) => {
   pre.push(p) }`), does not compile where it is spliced: "'pre' is not in scope" under its
-  spliced name. Open, on main too; two declarations compile.
+  spliced name. Fixed on correctness-2 (not the splice: see below).
 - Code moved ahead of a store's target read the target after it: a call's splice at
   `out[0][i] = f(out)` stored into the row f put there, a nested call hoisted out of `out[0][k]
   = 1 + g()` read the key g stepped, and out of `x += 1 + g()` read x after g wrote it. On main
@@ -210,3 +215,29 @@ the destructuring's nullish throw is an arrow with a `throw`, which
 where the default level inlines it in watr. wav ima-adpcm measures 73 → 76 µs (three
 runs): the now direct `dec.decode` call lets watr inline `decodeRaw` and
 `decodeImaWav` into the method.
+
+## Fixed (branches correctness, correctness-2)
+
+Correctness and compile time, found on the way above; each pinned by a test that fails or
+hangs on main 22ef18e30 (the nest's runs 17.9 s there, 2.6 s here).
+
+- A BigInt written into a slot that holds any value was boxed twice where a mixed sum's
+  producer had boxed it already (`storeAt` read the box's address, every level), and a raw
+  `0n` declared into such a slot was not boxed (the write sites now share one rule,
+  ir/bigint.js `applyBindingWriteAction`). test/bigint-tag.js.
+- A chain of thousands of string literals (`'a' + 'b' + …`, a base64 table across lines)
+  overflowed the stack in the early errors; a run of literals is one literal after the parse,
+  the chain's top a `+` (no directive). test/strings.js.
+- `const pre = [], [op, R, K] = lhs`: the lowered pattern is a group of statements, which the
+  array scalarizer took for a scope and dropped `pre`, unread there (plan/literals.js), at O2.
+  test/destruct.js.
+- Two functions with loops calling each other (`a` → `b` → `a`) never finished compiling at
+  O2: the inliner spliced each into the other's copies, the loops nesting a level per round
+  (plan/inline.js: a loop in a cycle of calls stays a function). The same unrolling sent
+  watr's split `walk` copies, which called the original and it them, into the four minutes;
+  a copy now recurses into itself (plan/called-args.js), and watr compiles to the same wasm.
+  test/inline-cycles.js, test/called-args.js.
+- A nest of counted loops cost about 5^depth walks in the interval proof and the WAT ranges
+  (depth 6 1.5 s, 7 6.4 s, 8 35.5 s to compile). Past a budget per node, a loop a discovery
+  pass reaches takes the plain fixpoint (type/interval-proof.js, optimize/word-ranges.js):
+  8 deep 3.7 s; depth ≤ 7 and watr compile to the same wasm. test/interval-proof.js.
