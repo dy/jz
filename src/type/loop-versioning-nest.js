@@ -57,7 +57,7 @@ const lengthCeiling = (recv, locals) => {
 // proposed fast copy is unreachable. No storage or index fact is published.
 const excludedExtent = (L, locals) => {
   const range = typeof L.bound === 'string' && ctx.func.refinements?.get(L.bound)?.excludedNumberRange
-  if (!range || L.bKind !== 'f64' || L.stepBy && L.stepBy.lit !== 1 || range[0] > -2147483648) return false
+  if (!range || L.down || L.bKind !== 'f64' || L.stepBy && L.stepBy.lit !== 1 || range[0] > -2147483648) return false
   for (const c of L.cands) {
     if (c.range || c.ind != null || c.cursor != null || c.presence || !(c.a > 0) || c.slots?.length ||
         !Number.isSafeInteger(c.a) || !Number.isSafeInteger(c.bConst)) continue
@@ -101,7 +101,23 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     return cands.length ? { rangeOnly: true, cands } : null
   }
   const walkLoop = (i2, c2, s2, b2, hint, isTop) => {
-    const spec = versionableTypedFor(i2, c2, s2, b2, locals, hint) ?? rangeOnly(c2, b2)
+    let spec = versionableTypedFor(i2, c2, s2, b2, locals, hint)
+    // A loop counting down from a value of its own entry, where the walk bounds
+    // some of its accesses by a static hull: nested, the hull's level, which may
+    // lift; its own, the entry's extent of exactly those accesses, one test each
+    // as the hull's, and true where the hull is loose (`k < 4095` against a
+    // 32-entry table the entry never passes). The rest stay checked as they
+    // were: testing them too costs a loop that often runs a round or two more
+    // than it saves.
+    if (spec?.down && spec.startC == null) {
+      const hull = rangeOnly(c2, b2)
+      if (hull && !isTop) spec = hull
+      else if (hull) {
+        const own = new Map(spec.cands.filter(c => !c.presence).map(c => [idxKey(c.recv, c.idx), c]))
+        spec.cands = [...spec.cands.filter(c => c.presence), ...hull.cands.map(c => own.get(idxKey(c.recv, c.idx)) ?? c)]
+      }
+    }
+    spec ??= rangeOnly(c2, b2)
     if (spec) { spec.top = isTop; spec.bodyNode = b2; spec.init = i2; levels.push(spec) }
     scanStmts(b2)
   }

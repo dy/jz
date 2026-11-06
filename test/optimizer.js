@@ -7133,6 +7133,116 @@ test('vectorizer const-exponent pow arm: AoS pure-fn ** with module-const expone
   is(dump({ level: 2, crPow: true }), dump({ level: 'speed', crPow: true }), 'pow_fold_v (lift) is bit-identical to pow_fold (emit)')
 })
 
+// A counter running down from its entry (`for (k = n - 1; k >= 0; k--)`, a
+// predictor adapting its taps from the last one) holds values between the bound
+// and that entry: the guard reads the entry at the loop and tests both ends of
+// every index (`coefs[k]`, `out[pb - k]`), where no static hull of `n` exists
+// (an int32 the program cannot bound) or a static one would fail at run time.
+// An entry past the array runs the loop as written.
+test('versioning: a counter running down is guarded by its entry', () => {
+  const src = `
+    const adapt = (coefs, out, n, pb, top, del) => {
+      for (let k = n - 1; k >= 0; k--) {
+        const d = top - out[pb - k], sg = (d > 0) - (d < 0)
+        coefs[k] -= sg
+        del -= Math.imul(n - k, Math.imul(sg, d) >> 3)
+        if (del <= 0) break
+      }
+      return del
+    }
+    const cfg = new Int32Array([8, 4000, 7])
+    export let go = (x) => {
+      const coefs = new Int16Array(32), out = new Int32Array(4096)
+      for (let i = 0; i < 4096; i++) out[i] = Math.imul(i, 40503) >> 9
+      for (let i = 0; i < 32; i++) coefs[i] = 100 - i * 3
+      let h = 0
+      for (let r = 0; r < 64; r++) h = (h + adapt(coefs, out, cfg[0] + (x | 0), cfg[1] - r * (x === 9 ? 70 : 1), r - 7, 1 << 20)) | 0
+      return h + coefs[3] + coefs[7]
+    }`
+  const host = oracle(src).go
+  for (const optimize of levels(0, 2, 3, 'speed')) {
+    const go = jz(src, { optimize }).exports.go
+    for (const x of [0, 3, -8, -9, 9, 24, 40]) is(go(x), host(x), `O${optimize}: go(${x})`)
+  }
+  const wat = compile(src, { optimize: 2, wat: true })
+  const loops = []
+  for (let from = wat.indexOf('(loop'); from >= 0; from = wat.indexOf('(loop', from + 5)) {
+    let depth = 0, i = from
+    for (; i < wat.length; i++) { if (wat[i] === '(') depth++; else if (wat[i] === ')' && --depth === 0) break }
+    const seg = wat.slice(from, i + 1)
+    if (!seg.slice(5).includes('(loop') && /i32\.load16_s/.test(seg) && /i32\.store16/.test(seg)) loops.push(seg)
+  }
+  ok(loops.some(l => !/i32\.lt_u|i32\.ge_u/.test(l)), 'the adapting loop runs with no bounds test')
+})
+
+// The same counter where the walk holds the index to a static hull looser
+// than the array: ALAC's predictor (bench/_audiojs/repro/decode/param-range.js,
+// its order an int32 of no known range over a 4096-sample frame) bounds a tap
+// `k <= 4095` against a 32-entry table. That hull's test never passes; the
+// entry's (`order - 1 < 32`) does, so the adapting loops run their fast arm,
+// testing what the hull would have, nothing more.
+test('versioning: a counter running down past a loose hull is guarded by its entry', () => {
+  const src = `
+    function signOf(i) { return (((-i) >>> 31) | (i >> 31)) }
+
+    function unpcBlock(pc1, out, num, coefs, numactive, chanbits, denshift) {
+      let chanshift = 32 - chanbits, denhalf = 1 << (denshift - 1)
+      out[0] = pc1[0]
+      if (numactive === 0) { for (let i = 1; i < num; i++) out[i] = pc1[i]; return }
+      if (numactive === 31) {
+        let prev = out[0]
+        for (let j = 1; j < num; j++) { let del = pc1[j] + prev; prev = (del << chanshift) >> chanshift; out[j] = prev }
+        return
+      }
+      for (let j = 1; j <= numactive; j++) { let del = pc1[j] + out[j - 1]; out[j] = (del << chanshift) >> chanshift }
+      let lim = numactive + 1
+      for (let j = lim; j < num; j++) {
+        let sum1 = 0, pb = j - 1, top = out[j - lim]
+        for (let kk = 0; kk < numactive; kk++) sum1 = (sum1 + Math.imul(coefs[kk], out[pb - kk] - top)) | 0
+        let del = pc1[j], del0 = del, sg = signOf(del)
+        del = (del + top + ((sum1 + denhalf) >> denshift)) | 0
+        out[j] = (del << chanshift) >> chanshift
+        if (sg > 0) {
+          for (let kk = numactive - 1; kk >= 0; kk--) {
+            let dd = top - out[pb - kk], sgn = signOf(dd)
+            coefs[kk] -= sgn
+            del0 -= Math.imul(numactive - kk, (Math.imul(sgn, dd) >> denshift))
+            if (del0 <= 0) break
+          }
+        } else if (sg < 0) {
+          for (let kk = numactive - 1; kk >= 0; kk--) {
+            let dd = top - out[pb - kk], sgn = signOf(dd)
+            coefs[kk] += sgn
+            del0 -= Math.imul(numactive - kk, (Math.imul(-sgn, dd) >> denshift))
+            if (del0 >= 0) break
+          }
+        }
+      }
+    }
+    const N = 4096, F = 200
+    let pc1 = new Int32Array(N), out = new Int32Array(N), tmp = new Int32Array(N), coefs = new Int16Array(32), cfg = new Int32Array([4096, 8, 9])
+    export let setup = () => { let s = 7; for (let i = 0; i < N; i++) { s = (s * 1103515245 + 12345) >>> 0; pc1[i] = (s >>> 20) - 2048 } }
+    export let go = () => {
+      let num = cfg[0], na = cfg[1], ds = cfg[2], h = 0
+      for (let f = 0; f < F; f++) {
+        for (let k = 0; k < 8; k++) coefs[k] = 100 - k * 9
+        unpcBlock(pc1, tmp, num, null, 31, 16, 0)
+        unpcBlock(pc1, out, num, coefs, na, 16, ds)
+        h = (h + out[N - 1] + out[N >> 1] + tmp[7]) | 0
+      }
+      return h
+    }`
+  const host = oracle(src)
+  host.setup()
+  const want = host.go()
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    m.setup()
+    is(m.go(), want, `O${optimize}: the frames decode as the host's`)
+  }
+  ok(!/i64\.const 4095/.test(compile(src, { optimize: 2, wat: true })), 'no guard tests the loose hull')
+})
+
 // Mirror index in the versioning guard: `inp[N−k]` (symmetric fill — FFT
 // log-magnitude, reverse copies) has iv-coefficient −1; affineIdxOfIV used to
 // reject a<0 outright, so the versioned FAST arm kept a per-iteration bounds

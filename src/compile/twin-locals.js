@@ -87,7 +87,9 @@ function extentTest(spec, locals) {
       const s = av && bv ? ['+', av, bv] : av ?? bv
       return s ? plus(s, c.bConst) : num(c.bConst)
     }
-    const [lo, hi] = c.a >= 0 ? [() => num(C), last] : [last, () => num(C)]
+    // (the counter's ends: from its start up to the bound's side, or down to it)
+    const ends = spec.down ? [() => incl ? B() : plus(B(), 1), () => num(C)] : [() => num(C), last]
+    const [lo, hi] = c.a >= 0 ? ends : [ends[1], ends[0]]
     push(['>=', at(lo()), num(0)])
     push(['<', at(hi()), len])
   }

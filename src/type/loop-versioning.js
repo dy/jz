@@ -19,7 +19,7 @@ import { typedElemCtor } from '../typed-provenance.js'
 import { intLiteralValue, intExprRange, constIntExpr, counterInit } from '../static.js'
 import {
   idxKey, typedIndexKnown, activeBoundsAssumption, redeclaresName, lengthRecv,
-  isUnitIncrement,
+  isUnitIncrement, isUnitDecrement,
 } from './canonical-bounds.js'
 import { intervalProvenIdx, intervalIdxRanges } from './interval-proof.js'
 import { exprType } from './expr-type.js'
@@ -459,13 +459,17 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     condRest = condRest == null ? c[2] : ['&&', c[2], condRest]   // scan-only bag
     c = c[1]
   }
-  if (!Array.isArray(c) || (c[0] !== '<' && c[0] !== '<=') || typeof c[1] !== 'string') return null
+  // A counter stepping down by one while above a bound (`for (k = n - 1; k >= 0;
+  // k--)`, a predictor adapting its taps from the last) holds values between the
+  // bound and its entry, read at the loop's entry: the mirror of counting up.
+  const down = Array.isArray(c) && (c[0] === '>' || c[0] === '>=')
+  if (!Array.isArray(c) || (c[0] !== '<' && c[0] !== '<=' && !down) || typeof c[1] !== 'string') return null
   if (containsNestedClosure(body)) return null
   if (condRest != null && containsNestedClosure(condRest)) return null
   // Where the program resizes buffers a call may resize a view's: an extent
   // read at entry holds only through a loop that calls nothing.
   if (ctx.features.resizable && [cond, step, body].some(r => some(r, n => n[0] === '()' || n[0] === '?.()' || n[0] === 'new'))) return null
-  const iv = c[1], incl = c[0] === '<='
+  const iv = c[1], incl = c[0] === '<=' || c[0] === '>='
   if (redeclaresName(body, iv)) return null
   // iv start: a static init decl (`for (let i = 0; …)`) folds the lo conjunct;
   // otherwise (while-shapes: `let i = 0; while (i < n) …`) the guard reads the
@@ -483,7 +487,9 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   const stable = stableLoopNames(body, cond, step)
   const stableExpr = e => !someDeep(e, n => typeof n === 'string' && !stable(n))
   let bump = 0, inds = null, stepBy = null
-  if (isUnitIncrement(step, iv)) {
+  if (down) {
+    if (!isUnitDecrement(step, iv) || isReassigned(body, iv)) return null
+  } else if (isUnitIncrement(step, iv)) {
     if (isReassigned(body, iv)) return null
   } else if (Array.isArray(step) && (step[0] === '+=' && step[1] === iv
       || (step[0] === '=' && step[1] === iv && Array.isArray(step[2]) && step[2][0] === '+'
@@ -540,6 +546,9 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     bump = L
   } else return null
   const bound = c[2]
+  // the counter's least value, where statically known: the start counting up,
+  // the bound (past it, a strict test) counting down
+  const loC = !down ? startC : intLiteralValue(bound) != null ? intLiteralValue(bound) + (incl ? 0 : 1) : null
   // bKind drives the guard's conversion to a max-iv i64:
   //   'i32' — literal, i32-machine name, or a typed receiver's .length: exact extend;
   //   'f64' — any other stable name (an untyped param, a NaN-boxed unknown): the
@@ -636,7 +645,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
         if (receiverMayBeAbsent(n[1], n[2])) o.absent = true
         if (!typedIdxProven(n[1], n[2], n)) {
           const aff = scanTop >= 0 ? affineIdxOfIV(n[2], iv, body, pos.envs[scanTop] ?? env) : null
-          if (!aff || !aff.slots.every(t => stableExpr(t.e)) || aff.slots.length === 0 && startC != null && aff.a * startC + aff.bConst < 0) o.bad = true
+          if (!aff || !aff.slots.every(t => stableExpr(t.e)) || aff.slots.length === 0 && loC != null && aff.a * loC + aff.bConst < 0) o.bad = true
           else o.forms.set(JSON.stringify([aff.a, aff.bConst, aff.slots.map(t => [t.k, t.e])]), aff)
         }
         return
@@ -659,7 +668,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
           if (aff && aff.slots.every(t => stableExpr(t.e))
               // statically-negative low extent: the checked form IS the semantics, a
               // guard would always fail (runtime-entry loops keep the runtime lo check)
-              && !(aff.slots.length === 0 && startC != null && aff.a * startC + aff.bConst < 0)) {
+              && !(aff.slots.length === 0 && loC != null && aff.a * loC + aff.bConst < 0)) {
             seen.add(key)
             const slots = aff.slots.map(t => ({ ...t, kind: exprType(t.e, locals) === 'i32' ? 'i32' : 'f64' }))
             cands.push({ recv: n[1], idx: n[2], a: aff.a, slots, bConst: aff.bConst, post: isPost() })
@@ -712,7 +721,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // compiles to an env.globalThis import in the self-compile build; typeof folds dead
   if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : c.cursor != null ? `:cursor(${c.cursor},K=${c.K})` : ':aff') + (c.post ? ':POST' : '')).join(' '))
   return cands.length
-    ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands }
+    ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands, down }
     : null
 }
 

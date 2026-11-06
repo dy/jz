@@ -1069,20 +1069,27 @@ export const controlFlowOps = {
           // and their group widens by a·bump in the extent constants below.
           // (The old unconditional widening made `maxIv < len` fail exactly
           // when len == bound — every symmetric half-spectrum loop.)
-          const maxIv = tempI64('tvq')
+          // A level counting down (vs.down) holds its counter between the bound
+          // and its entry the other way round: the entry is its most, read once
+          // here, and the bound (one past it, a strict test) its least, `minIv`.
+          const maxIv = tempI64('tvq'), minIv = vs.down ? tempI64('tvq') : null
+          const boundEnd = vs.down ? minIv : maxIv
           if (vs.bKind === 'f64') {
             const bF = temp('tvf')
             result.push(['local.set', `$${bF}`, asF64(emit(vs.bound))])
             conjs.push(['f64.le', ['f64.abs', ['local.get', `$${bF}`]], ['f64.const', 2147483648]])
-            result.push(['local.set', `$${maxIv}`,
-              ['i64.trunc_sat_f64_s', [vs.incl ? 'f64.floor' : 'f64.ceil', ['local.get', `$${bF}`]]]])
-            if (!vs.incl) result.push(['local.set', `$${maxIv}`,
-              ['i64.add', ['local.get', `$${maxIv}`], i64c(-1)]])
+            // (the integer next to B inside the test: `< B` ceil − 1, `<= B` floor, `> B` floor + 1, `>= B` ceil)
+            const round = vs.incl === !vs.down ? 'f64.floor' : 'f64.ceil'
+            result.push(['local.set', `$${boundEnd}`,
+              ['i64.trunc_sat_f64_s', [round, ['local.get', `$${bF}`]]]])
+            if (!vs.incl) result.push(['local.set', `$${boundEnd}`,
+              ['i64.add', ['local.get', `$${boundEnd}`], i64c(vs.down ? 1 : -1)]])
           } else {
-            const adj = vs.incl ? 0 : -1
-            result.push(['local.set', `$${maxIv}`,
+            const adj = vs.incl ? 0 : vs.down ? 1 : -1
+            result.push(['local.set', `$${boundEnd}`,
               adj ? ['i64.add', ext(asI32(emit(vs.bound))), i64c(adj)] : ext(asI32(emit(vs.bound)))])
           }
+          if (vs.down) result.push(['local.set', `$${maxIv}`, vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)])
           // The fast bound's arithmetic also needs a closed hull for each
           // free name. An affine name±constant gets the exact signed-word
           // preimage; other expressions retain the existing magnitude guard.
@@ -1100,7 +1107,8 @@ export const controlFlowOps = {
             conjs.push(['f64.le', ['local.get', `$${nF}`], ['f64.const', rhi]])
             freeRefs.set(nm, { rlo, rhi })
           }
-          levelInfo.set(vs, { maxIv, entryIR: () => vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind) })
+          // (entryIR: the counter's least value, its entry counting up)
+          levelInfo.set(vs, { maxIv, entryIR: () => vs.down ? ['local.get', `$${minIv}`] : vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind) })
           // non-unit monotone stride: positivity is the soundness condition
           if (vs.stepBy?.name != null)
             conjs.push(['i64.ge_s', slotI64(vs.stepBy.name, vs.stepBy.kind), i64c(1)])
@@ -1175,7 +1183,7 @@ export const controlFlowOps = {
             const postW = g.anyPost ? g.a * vs.bump : 0
             const hiC = g.maxC + (g.a >= 0 ? postW : 0)
             const loC = g.minC + (g.a < 0 ? postW : 0)
-            const entryIR = () => vs.startC != null ? i64c(vs.startC) : slotI64(vs.iv, vs.ivKind)
+            const entryIR = levelInfo.get(vs).entryIR
             let hi = slotSum(['i64.mul', i64c(g.a), g.a >= 0 ? ['local.get', `$${maxIv}`] : entryIR()], g.slots)
             if (hiC) hi = ['i64.add', hi, i64c(hiC)]
             conjs.push(['i64.lt_s', hi, len64Of(g.recv)])
@@ -1183,9 +1191,10 @@ export const controlFlowOps = {
               wordProofs.set(name, { range: [0, 2147483647], tests: [['i64.le_s', hi, i64c(2147483647)]] })
             // a ≥ 0 with a STATIC start: lo = a·startC+minC was validated
             // non-negative at candidate time (slotless), nothing to emit.
-            if (g.a >= 0 && vs.startC != null && !g.slots.length) continue
-            let lo = slotSum(g.a >= 0 && vs.startC != null ? i64c(g.a * vs.startC)
-              : ['i64.mul', i64c(g.a), g.a >= 0 ? slotI64(vs.iv, vs.ivKind) : ['local.get', `$${maxIv}`]], g.slots, true)
+            const staticLo = !vs.down && vs.startC != null
+            if (g.a >= 0 && staticLo && !g.slots.length) continue
+            let lo = slotSum(g.a >= 0 && staticLo ? i64c(g.a * vs.startC)
+              : ['i64.mul', i64c(g.a), g.a >= 0 ? entryIR() : ['local.get', `$${maxIv}`]], g.slots, true)
             if (loC) lo = ['i64.add', lo, i64c(loC)]
             conjs.push(['i64.ge_s', lo, i64c(0)])
           }
