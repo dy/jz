@@ -1587,3 +1587,37 @@ test('frame effects: a union of numbers, booleans and nullish stores no heap val
   ok(!/__esc_root/.test(bodyOf(compile(src, { wat: true, ...TAPE }), 'f')), 'the step logs no root')
   is(jz(src).exports.f('ABC!'), oracle(src).f('ABC!'))
 })
+
+// A method a record holds, the summary typing the field as closures it names
+// (a reader's `next` a factory returned), runs those closures: the census reads
+// their sites, as a call through a binding holding them, not unknown code.
+test('frame effects: a call through a record field names the closures it runs', () => {
+  const src = `const make = (buf) => { let pos = 0; const next = () => buf[pos++] | 0; return { next } }
+    const rs = [make(new Uint8Array([1, 2, 3])), make(new Uint8Array([4, 5]))]
+    export function f(k) { const t = new Float64Array(k + 2); t[0] = rs[k & 1].next(); return t[0] + t[1] }`
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }), host = oracle(src)
+    for (const k of [0, 1, 2, 3, 4]) is(m.exports.f(k), host.f(k), `O${optimize}: f(${k})`)
+  }
+  compileInProcess(src, { optimize: 2 })
+  const frame = ctx.funcs.list.find(f => f.name === 'f').frame
+  ok(!/cannot name/.test(frame.siteWhy ?? ''), `no unknown call: ${frame.siteWhy}`)
+  is(frame.closures.size, 1, 'the field\'s closure runs here')
+})
+
+// A destructuring of a value that may be missing throws by an arrow called in
+// place (`o ?? (() => { throw TypeError(…) })()`): the arrow runs here and
+// nowhere else, its sites the frame's, no computed callee.
+test('frame effects: an arrow called where it stands is walked in the frame', () => {
+  const src = `export function f(k, o) { const t = new Float64Array(k + 2); let { a, b } = o; t[0] = a + b; return t[0] }`
+  for (const optimize of levels(0, 2, 3)) {
+    const f = jz(src, { optimize }).exports.f
+    is(f(1, { a: 2, b: 3 }), 5, `O${optimize}: present`)
+    let threw = null
+    try { f(1, undefined) } catch (e) { threw = e }
+    ok(threw instanceof TypeError, `O${optimize}: a missing value throws TypeError`)
+  }
+  compileInProcess(src, { optimize: 2 })
+  const frame = ctx.funcs.list.find(f => f.name === 'f').frame
+  is(frame.callsUnknown, false, `no unknown call: ${frame.siteWhy}`)
+})

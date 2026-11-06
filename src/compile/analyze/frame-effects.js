@@ -779,6 +779,22 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
     if (TYPED_FROM.test(name)) { if (list[0] !== undefined) convertElements(list[0]) }
     else if (!NON_CONVERTING.test(name)) list.forEach((a, j) => { if (j !== i) convert(a) })
   }
+  // A callee the summary names a set of closures for (`family`, its calleeOf):
+  // they run here. False where it names none, the call left to the caller.
+  const closureFamily = (family, what) => {
+    if (typeof family !== 'number' || !ctx.summary?.closureMembers) return false
+    out.writesOuter = true; out.callsUnknown = true
+    // A member is a closure id, or the name of a function held as a value.
+    const members = [...ctx.summary.closureMembers(family)]
+    if (members.some(id => typeof id !== 'number' && !knownFunc(id))) { unknownCall(what); return true }
+    const ids = members.filter(id => typeof id === 'number')
+    for (const id of ids) out.closures.add(id)
+    // one of them runs: a function among them runs on every call only where it is the one
+    for (const id of members) if (typeof id !== 'number') { if (members.length === 1) reach(id); else out.callees.add(id) }
+    if (ids.length) out.closureCalls.push({ ids, every: guarded === 0 && ids.length === members.length })
+    noise++
+    return true
+  }
   const call = (callee, args, node) => {
     while (isArr(callee) && callee[0] === '(') callee = callee[1]
     if (isName(callee)) {
@@ -816,20 +832,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       // any other builtin the runtime provides by this name: what it does with its arguments is not listed here
       if (ctx.core?.emit?.[callee] != null || STATICS.test(callee)) { unknownCall('call ' + callee); return escape('call ' + callee) }
       // A binding holding closures the summary names: they run here.
-      const family = node && !params.has(callee) ? view?.calleeOf(node) : null
-      if (typeof family === 'number' && ctx.summary?.closureMembers) {
-        out.writesOuter = true; out.callsUnknown = true
-        // A member is a closure id, or the name of a function held as a value.
-        const members = [...ctx.summary.closureMembers(family)]
-        if (members.some(id => typeof id !== 'number' && !knownFunc(id))) return unknownCall('call ' + callee)
-        const ids = members.filter(id => typeof id === 'number')
-        for (const id of ids) out.closures.add(id)
-        // one of them runs: a function among them runs on every call only where it is the one
-        for (const id of members) if (typeof id !== 'number') { if (members.length === 1) reach(id); else out.callees.add(id) }
-        if (ids.length) out.closureCalls.push({ ids, every: guarded === 0 && ids.length === members.length })
-        noise++
-        return
-      }
+      if (node && !params.has(callee) && closureFamily(view?.calleeOf(node), 'call ' + callee)) return
       return unknownCall('call ' + callee)
     }
     if (isArr(callee) && (callee[0] === '.' || callee[0] === '?.') && isName(callee[2])) {
@@ -853,6 +856,9 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       const receiverTag = receiverKind == null ? K.ANY : tagOf(receiverKind)
       if (receiverTag === K.ANY || receiverTag === K.NONE || receiverTag === K.OBJECT || receiverTag === K.HASH ||
           ctx.summary?.memberMayBeOwnOn(method, valOf(core(receiverKind)))) {
+        // A field of a record the summary types holding closures it names (`br.read(k)`,
+        // a reader's method a factory returned): they run here, as through a binding.
+        if (node && closureFamily(view?.calleeOf(node), 'method ' + method)) return
         // The receiver's own closure of that name, a host's method, or the
         // builtin of that name: what that one would store into the receiver.
         unknownCall('method ' + method)
@@ -890,6 +896,15 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
       // a builtin the census does not list: it may store what it is handed into its receiver
       unknownCall('method ' + method)
       return store(recv, anyHeap(argList(args)), true, true)
+    }
+    // An arrow literal called where it stands (`s ?? (() => { throw … })()`, a
+    // lowering's expression of a statement): it runs here and nowhere else, as
+    // a literal a builtin calls in place.
+    if (isArr(callee) && callee[0] === '=>') {
+      scanArrow(callee, true)
+      const id = ctx.summary?.closureIdOfBody?.(callee[2])
+      if (id !== undefined) out.closures.add(id)
+      return
     }
     return unknownCall('computed callee')
   }
