@@ -2043,13 +2043,32 @@ export const versionIntegralLoops = (programFacts) => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    let rewrote = versionBody(func.body, new Set((func.sig?.params ?? []).map(p => p.name)), ctx.summary?.at(func.sig), func, programFacts)
+    const own = new Set((func.sig?.params ?? []).map(p => p.name))
+    let rewrote = versionBody(func.body, own, ctx.summary?.at(func.sig), func, programFacts)
     // A closure's loops are its own (a callback a factory returns runs the
-    // per-frame work): its parameters and declarations are its locals.
+    // per-frame work): its parameters and declarations are its locals, and so
+    // is a binding of the function it captures that nothing writes (a tap
+    // count the factory destructured, `const { C, tables } = st`): what the
+    // copy reads of it once is what every read of it is.
+    let stable = null
     walkAst(func.body, { exit: (n) => {
       if (n[0] !== '=>' || !Array.isArray(n[2]) || n[2][0] !== '{}') return
+      if (!stable) {
+        const bound = new Set(own), written = new Set()
+        collectBindings(func.body, bound)
+        // (a declaration's `=` binds its name, it writes none)
+        const writes = (m) => {
+          if (!Array.isArray(m) || m[0] === 'str') return
+          if (m[0] === 'let' || m[0] === 'const') { for (let i = 1; i < m.length; i++) writes(Array.isArray(m[i]) && m[i][0] === '=' ? m[i][2] : m[i]); return }
+          if (MUTATE_OPS.has(m[0]) && typeof m[1] === 'string') written.add(m[1])
+          for (let i = 1; i < m.length; i++) writes(m[i])
+        }
+        writes(frameNode(func))
+        stable = new Set([...bound].filter(x => !written.has(x)))
+      }
       const params = new Set()
       for (const p of extractParams(n[1])) collectParamName(p, params)
+      walkAst(n[2], { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string' && stable.has(m[i])) params.add(m[i]) } })
       if (versionBody(n[2], params, ctx.summary?.at(n[1]), null, programFacts, [';', n[1], n[2]])) rewrote = true
     } })
     // rewritten in place: the facts cached for the body describe what it was

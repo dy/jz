@@ -2003,3 +2003,27 @@ test('integral loops: a walk to an end tested by equality indexes by words both 
   ok(/\(i32\.add \(local\.get \$x[^\s)]*int\d+\) \(i32\.const 1\)/.test(scan), 'the rightward cursor steps as a word')
   ok(/\(i32\.sub \(local\.get \$x[^\s)]*int\d+\) \(i32\.const 1\)/.test(scan), 'the leftward cursor steps as a word')
 })
+
+// A closure's loop bounded by a binding of the function it captures that
+// nothing writes (decode-dsd's stage 1: `const { C, tables } = st` in the
+// factory, `i < C` in the `push` it returns) gets the copy a bound it binds
+// gets: the copy reads the capture once, which is what every read of it is.
+// Every number agrees, integral or not; a capture some code writes stays out.
+test('integral loops: a closure bounded by a capture nothing writes', () => {
+  const src = `const ring = (st) => { const { C, t } = st; return (k) => { let s = 0; for (let i = 0; i < C; i++) s += t[(i + k) & 7] + i; return s } }
+    const moved = (st) => { let { C, t } = st; const bump = () => { C += 0.5 }; return (k) => { let s = 0; bump(); for (let i = 0; i < C; i++) s += t[(i + k) & 7]; return s } }
+    export const run = (C, k) => ring({ C, t: new Float64Array([1, 2, 3, 4, 5, 6, 7, 8]) })(k)
+    export const runMoved = (C, k) => { const p = moved({ C, t: new Float64Array([1, 2, 3, 4, 5, 6, 7, 8]) }); p(k); return p(k) }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const got = jz(src, { optimize }).exports
+    for (const [C, k] of [[0, 0], [5, 1], [5.5, 2], [-3, 0], [NaN, 0], [12, 3], [2.5, 0]]) {
+      is(got.run(C, k), host.run(C, k), `O${optimize}: run(${C}, ${k})`)
+      is(got.runMoved(C, k), host.runMoved(C, k), `O${optimize}: runMoved(${C}, ${k})`)
+    }
+  }
+  if (belowOpt(2)) return
+  const w = wat(src, { optimize: 2 })
+  // (a closure is named `$` + T + `closure<n>`, the copy's counter `i` + T + `int<n>`: prepare's binding mark)
+  ok(w.split(/\n(?=  \(func )/).some(f => f.startsWith(`  (func $${T}closure`) && f.includes(`(local $i${T}int`)), 'the closure counts an int32 copy')
+})
