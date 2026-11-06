@@ -63,6 +63,15 @@ jobs:
         run: |
           grep -m1 "model name" /proc/cpuinfo || true
           nproc; free -m | head -2
+      - name: diag
+        if: ${{ hashFiles('probe-diag/diag.mjs') != '' }}
+        continue-on-error: true
+        env:
+          DIAG_OUT: ${{ runner.temp }}/diag
+          DIAG_ROUNDS: ${{ inputs.repeats }}
+          DIAG_CASES: ${{ inputs.cases }}
+          DIAG_FLAGS_quatmul: '--no-liftoff'
+        run: node probe-diag/diag.mjs
       - name: probe rounds
         env:
           CASES: ${{ inputs.cases }}
@@ -102,4 +111,5 @@ jobs:
           path: |
             ${{ runner.temp }}/probe.json
             ${{ runner.temp }}/flags.log
+            ${{ runner.temp }}/diag
           if-no-files-found: error
