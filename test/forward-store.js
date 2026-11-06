@@ -36,7 +36,8 @@ const chain = `const out = [0, 0, 0], a = [1, 2, 3], b = [4, 5, 6]
 test('store forwarding: a chain through an out parameter reloads nothing and keeps only the last stores', () => {
   for (const optimize of levels(0, 2, 3)) agree(chain, 'f', [7], { optimize }, `the chain at ${optimize}`)
   if (belowOpt(2)) return
-  const text = wat(chain, { optimize: 3 })
+  // (the round's last stores stay in the loop where sinkStores keeps them: it moves them past it)
+  const text = wat(chain, { optimize: { level: 3, sinkStores: false } })
   const body = funcWat(text, 'f$exp') || funcWat(text, 'f')
   let loops=0
   walk(parseWat(body),n=>{
@@ -75,4 +76,39 @@ const cases = [
 test('store forwarding: what could alias, call or branch keeps the round trip', () => {
   for (const [name, src, args] of cases)
     for (const optimize of levels(0, 2, 3)) agree(src, 'f', args, { optimize }, `${name} at ${optimize}`)
+})
+
+// An `if` whose arms only set locals and store: past it the list knows what both arms
+// leave, a slot both store holds one value through a local each arm sets beside its
+// store, and a pending store both arms overwrite, unread, is dead.
+test('store forwarding: a slot both arms of an if store is read from the local they set, and the store they overwrite goes', () => {
+  const g = (n) => ['local.get', n], st = (v, off) => off ? ['f64.store', `offset=${off}`, g('$o'), v] : ['f64.store', g('$o'), v]
+  const fn = (...body) => ['func', '$f', ['param', '$o', 'i32'], ['param', '$c', 'i32'], ['param', '$x', 'f64'], ['param', '$y', 'f64'], ['local', '$r', 'f64'], ...body]
+  const load = ['local.set', '$r', ['f64.load', g('$o')]]
+  const f = fn(st(g('$x')), ['if', g('$c'), ['then', st(g('$y'))], ['else', st(['f64.const', 2])]], load)
+  forwardStores(f)
+  is(f, fn(['local', '$__fj0', 'f64'],
+    ['if', g('$c'), ['then', st(g('$y')), ['local.set', '$__fj0', g('$y')]], ['else', st(['f64.const', 2]), ['local.set', '$__fj0', ['f64.const', 2]]]],
+    ['local.set', '$r', g('$__fj0')]), 'the first store is dead, the reload reads the joined local')
+  const kept = (body, why) => { const before = JSON.stringify(fn(...body)); const h = fn(...JSON.parse(JSON.stringify(body))); forwardStores(h); is(JSON.stringify(h), before, why) }
+  kept([st(g('$x')), ['if', g('$c'), ['then', st(g('$y'))]], load], 'one arm stores: the slot holds either value')
+  const read = fn(st(g('$x')), ['if', g('$c'), ['then', ['local.set', '$r', ['f64.load', g('$o')]], st(g('$y'))], ['else', st(g('$y'))]], load)
+  forwardStores(read)
+  is(read[8], st(g('$x')), 'an arm reads the first store: it stays')
+  is(read.at(-1), ['local.set', '$r', g('$__fj0')], 'and the reload past the if still reads the joined local')
+  kept([st(g('$x')), ['if', g('$c'), ['then', ['call', '$h'], st(g('$y'))], ['else', st(g('$y'))]], load], 'an arm calls')
+  // another slot of another name the arms store: its pending store stays, the value forgotten
+  const other = fn(st(g('$x'), 8), ['if', g('$c'), ['then', ['f64.store', g('$p'), g('$y')]], ['else', ['f64.store', g('$p'), g('$x')]]], ['local.set', '$r', ['f64.load', 'offset=8', g('$o')]])
+  forwardStores(other)
+  is(other.at(-1), ['local.set', '$r', ['f64.load', 'offset=8', g('$o')]], 'a store through another name may reach the slot: the reload stays')
+})
+
+const quats = `const out = [0, 0, 0, 1], inv = [0, 0, 0, 1]
+  const mul = (o, a, b) => { const ax = a[0], aw = a[3], bx = b[0], bw = b[3]; o[0] = ax * bw + aw * bx; o[3] = aw * bw - ax * bx; return o }
+  const invert = (o, a) => { const d = a[0] * a[0] + a[3] * a[3]; if (d === 0) { o[0] = 0; o[3] = 0; return o } o[0] = -a[0] / d; o[3] = a[3] / d; return o }
+  const qs = [[1, 2, 3, 4], [0, 0, 0, 0], [-2, 1, 0.5, 3]]
+  export const f = (n) => { let s = 0; for (let i = 0; i < n; i++) { const q = qs[i % 3]; mul(out, q, q); s += out[0]; invert(inv, q); mul(out, inv, q); s += out[3] } return s + out[0] + inv[3] }`
+
+test('store forwarding: an out parameter an if stores reads back through the joined local', () => {
+  for (const optimize of levels(0, 2, 3)) for (const n of [0, 1, 2, 5]) agree(quats, 'f', [n], { optimize }, `n = ${n} at ${optimize}`)
 })

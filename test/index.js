@@ -205,6 +205,8 @@ const TESTS = [
   'twin-locals',
   'carry-elements',
   'carry-stores',
+  'sink-stores',
+  'share-quotients',
   'skip-latches',
   'carry-keys',
   'array-view',

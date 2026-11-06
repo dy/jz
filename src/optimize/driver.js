@@ -16,6 +16,7 @@ import { recursionUnroll } from './recurse.js'
 import { dropSettledTests } from './settled-tests.js'
 import { stripDeadCanons } from './nan-canon.js'
 import { forwardStores } from './forward-store.js'
+import { sinkStores } from './sink-stores.js'
 import { earlyStores } from './early-stores.js'
 import { vectorizeLaneLocal } from './vectorize/index.js'
 import { hoistPtrType, hoistPtrOffset, hoistAddrBase } from './cse-address.js'
@@ -100,6 +101,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
   // After the address hoists: a chained kernel's out-parameter results stay in the locals
   // that staged them, and the stores the chain overwrites go.
   if (!cfg || cfg.forwardStores !== false) forwardStores(fn)
+  // (on what forwarding left: a loop's every-round stores to a slot it never reads, stored as it leaves)
+  if (cfg && cfg.sinkStores === true) sinkStores(fn)
   // (on the stores forwarding kept: one ready before a computation it does not read goes first)
   if (cfg && cfg.earlyStores === true) earlyStores(fn)
   if (!cfg || cfg.promoteGlobals !== false) promoteGlobals(fn, globalTypes, reachableWrites)
