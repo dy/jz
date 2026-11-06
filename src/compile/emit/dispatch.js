@@ -10,7 +10,7 @@ import { HOST_GLOBALS } from '../../autoload.js'
 import { DBG_INVARIANTS } from '../../debug.js'
 import print from 'watr/print'
 import { STR_HCACHE_BIT, HEAP, ARRAY_RAW } from '../../../layout.js'
-import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, some, walkAst } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand, here } from '../../ctx.js'
 import {
   keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
@@ -1254,10 +1254,8 @@ export function emitDecl(...inits) {
 }
 
 /** A value dropped folded, `(drop v)`: a flat `drop` among a function's statements is stack code,
- *  which the optimizer's structural passes leave alone in the whole function. A value holding a
- *  loop stays a statement of its own with the drop flat after it: watr's propagate carries a copy
- *  into a loop nested in an expression past the loop's later write of the copy's source. */
-export const foldsDrop = (v) => Array.isArray(v) && typeof v[0] === 'string' && !some(v, n => n[0] === 'loop')
+ *  which the optimizer's structural passes leave alone in the whole function. */
+export const foldsDrop = (v) => Array.isArray(v) && typeof v[0] === 'string'
 
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBlockBody. */
 export function emitVoid(node) {

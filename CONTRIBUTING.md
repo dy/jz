@@ -133,11 +133,7 @@ leaves the structure of a function holding a flat `drop` alone, its condition
 chains among them (`isnan(x) || x === Infinity` stayed a value diamond tested
 again, which x64 makes a value of each float comparison first: stdlib's exp,
 swept from the bench driver that calls the host's logger, 0.88x the time
-chained). A value holding a loop stays a statement with the `drop` flat after it:
-watr's propagate (5.13.3) carries a copy into a loop nested in an expression past
-the loop's later write of the copy's source, where a statement loop takes only
-constants (a Map subclass built from an iterator read the iterator from a slot
-the loop had reused).
+chained).
 
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,
