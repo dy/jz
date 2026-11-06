@@ -88,5 +88,32 @@ classes (G2, D2, A1, K4) are that one loss on four carriers.
   inlining `$__dv_index` (0.59× under `--no-wasm-inlining`). `decoders.mjs` and the repro
   runner run one case per process.
 
+- `T.BYTES_PER_ELEMENT` on a typed constructor held as a value read `undefined` at every
+  level (decode-wav's `samples()` survived it: `byteOffset % undefined` is NaN, so the
+  realign branch never ran). Fixed with G1.
+- A typed array's named property read under a computed string key (`t[key]`, `key =
+  'tag'`, the property stored by `t.tag = 'str'`) reads `undefined`. Open, on main too.
+- Copying a function that calls itself per closure set (watr's `walk(node, fn)`, three
+  copies) made the watr self-compile in test/perf.js run for over four minutes where it
+  takes 20 s. `splitByClosureArgs` now leaves such a function whole; which later pass
+  the copies sent into the long run is not found.
+- Pre-existing failures on main 045d0c89f, unrelated: `min recurrence (watr)` in
+  optimizer.js, `from, as and of are names outside their clauses` in parser-bugs.js, and the
+  runner's own off-terminal test.
+
 Not diagnosed: wav pcm24/pcm32, the ADPCM and law cases, aiff alaw (0.50×, a 2000-sample
-fixture: likely per-call setup), 24-bit ALAC. Everything at the default level only.
+fixture: likely per-call setup), 24-bit ALAC.
+
+The speed tier covers none of the classes but K4 (`record-fields.js` 0.18× → 0.83×, the
+record scalar-replaced) and is slower than the default on ALAC's `unpcBlock` (0.53×),
+AIFF (0.72×) and TTA (0.53×): the fixes belong in the shared passes.
+
+## Fixed (branch decode-opt)
+
+| | Change | Kernel before → after | Decoder before → after |
+|---|---|---|---|
+| D1 | A method on a host value leaves typed arrays' named properties as the program stores them (summary/index.js `escapeReceiver`) | `ring-dyn.js` 0.33× → `ring.js` level | dsd 0.63× → 0.87× |
+| G1 | `jz:typed` constructors carry `BYTES_PER_ELEMENT`; a copy of a function per set of closures its calls pass a parameter it calls or reads through, ahead of the inliner and summarized at once (plan/called-args.js `splitByClosureArgs`) | `pcm.js k1r` 0.26× → 1.08–1.20×, two-site float 0.26× → 0.76× | wav pcm16 0.29× → 0.85×, float32 0.28× → 0.74× |
+| D2 | A closure's loop versions a binding it captures that nothing writes as one of its own (plan/integral-loops.js) | `ring.js` 0.71× → 0.84× (`ring-literal.js` 0.91×) | dsd, with D1 |
+
+Measured under load 20–40; the decoder rows are single runs.
