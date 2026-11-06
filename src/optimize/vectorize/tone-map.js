@@ -236,7 +236,7 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // (under the test no lane is NaN or past the word, where the relaxed truncation is
   // the saturating one's answer: V8 runs it at 0.78× the cost on x64, alike on arm64,
   // `fcvtzs` and a narrowing either way)
-  const truncZero = (signed, get) => [vecState.relaxF32
+  const truncZero = (signed, get) => [vecState.relaxedSimd
     ? signed ? 'i32x4.relaxed_trunc_f64x2_s_zero' : 'i32x4.relaxed_trunc_f64x2_u_zero'
     : signed ? 'i32x4.trunc_sat_f64x2_s_zero' : 'i32x4.trunc_sat_f64x2_u_zero', get]
   function truncLanes(v, signed, scalar) {

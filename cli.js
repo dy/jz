@@ -35,6 +35,7 @@ Options:
   --host <js|wasi>          Runtime services (default js)
   --memory <n[:max]>        Initial and maximum memory, in 64 KiB pages
   --no-simd                 No auto-vectorization, for engines without SIMD
+  --no-relaxed-simd         Standard SIMD only, for engines without relaxed SIMD
   --no-tail-call            No return_call, for engines without tail calls
   --names                   Emit the wasm name section for profilers
   --source-map              Emit a debug build and adjacent .wasm.map
@@ -91,7 +92,7 @@ function main() {
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) return console.log(HELP)
 
   let inputFile = null, outputFile = null, wat = false, why = false, sourceMap = false
-  let optimize, host, memory, define, names = false, noSimd = false, noTailCall = false
+  let optimize, host, memory, define, names = false, noSimd = false, noRelaxedSimd = false, noTailCall = false
   // a flag's value: the next argument, which is no flag (`-` alone is stdout)
   const value = (i, flag) => {
     const v = args[i]
@@ -106,6 +107,7 @@ function main() {
     else if (a === '--names') names = true
     else if (a === '--source-map') sourceMap = true
     else if (a === '--no-simd') noSimd = true
+    else if (a === '--no-relaxed-simd') noRelaxedSimd = true
     else if (a === '--no-tail-call') noTailCall = true
     else if (a === '--host') host = value(++i, a)
     else if (a === '--memory') memory = parseMemory(value(++i, a))
@@ -128,9 +130,9 @@ function main() {
   const { code, modules } = resolveModuleGraph(inputFile, { resolveNode: true })
   if (process.env.JZ_DEBUG_MODULES === '1') console.error('modules:', Object.keys(modules))
 
-  // --no-simd and --no-tail-call are the optimize object's switches; a debug build is unoptimized
+  // --no-simd, --no-relaxed-simd and --no-tail-call are the optimize object's switches; a debug build is unoptimized
   const level = optimize ?? (sourceMap ? false : undefined)
-  const switches = { ...(noSimd && { simd: false }), ...(noTailCall && { tailCall: false }) }
+  const switches = { ...(noSimd && { simd: false }), ...(noRelaxedSimd && { relaxedSimd: false }), ...(noTailCall && { tailCall: false }) }
   const optimizeOpt = !Object.keys(switches).length ? level
     : { ...(typeof level === 'object' ? level : level !== undefined && { level }), ...switches }
   // The options are the public ones; the entry's URL, for import.meta.url, is the CLI's own flag.

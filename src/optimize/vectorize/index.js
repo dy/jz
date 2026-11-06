@@ -99,9 +99,9 @@ function assertLoopPlanAgrees(node, bl) {
  */
 // opts gates the recognizer set + lift variants (all default-safe so a bare
 // `vectorizeLaneLocal(fn)` is the conservative scalar-preserving pass):
-//   multiAcc, relaxedFma, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap.
+//   multiAcc, relaxedFloat, relaxedSimd, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap.
 export function vectorizeLaneLocal(fn, opts = {}) {
-  const { multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false,
+  const { multiAcc = false, relaxedFloat = false, relaxedSimd = false, blurMP = true, whyNot = false,
     stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false,
     aliasVersion = true, pairIterations = false } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
@@ -164,12 +164,13 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   let simdFired = false
 
   // Hoist loop-invariant partial products out of unrolled dot reductions (rust/LLVM's
-  // mat4 prologue trick). Reassociates the float sum, so tied to the relaxedFma tier;
+  // mat4 prologue trick). Reassociates the float sum, so tied to the relaxedFloat tier;
   // runs BEFORE the dot-pair vectorizer so a hoisted dot drops below DOT_UNROLL steps
   // and stays scalar (faster here than the pack/extract SIMD form — see the lab).
-  if (relaxedFma) hoistReductionInvariantsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll)
+  if (relaxedFloat) hoistReductionInvariantsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll)
   // Unified SLP packer (dot-sequence tier, then element-store tier) — see slpPairsIn.
-  slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma, slp)
+  // (a fused dot pair is both: the relaxed opcode and its one rounding)
+  slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFloat && relaxedSimd, slp)
   if (newLocalDeclsAll.length) simdFired = true
 
   // The locals live out of the loop at the end of `chain` ([parent, idx]
@@ -359,13 +360,15 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   vecState.whyNotActive = whyNot
   vecState.fn = fn
   vecState.onceRead = null
-  vecState.relaxF32 = relaxedFma
+  vecState.relaxF32 = relaxedFloat
+  vecState.relaxedSimd = relaxedSimd
   vecState.crPow = crPow
   for (let i = bodyStart; i < fn.length; i++) walk(fn, i)
   vecState.whyNotActive = false
   vecState.fn = null
   vecState.onceRead = null
   vecState.relaxF32 = false
+  vecState.relaxedSimd = false
   vecState.crPow = false
   // Apply the deferred scalar fallback innermost-first (push order), skipping candidates
   // inside any SIMD-consumed subtree (see the mark above), plus a same-slot check for

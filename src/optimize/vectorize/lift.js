@@ -37,10 +37,13 @@ function liftCanon(coreV, C, ctx, info) {
 // bail for the block currently under the recognizer chain; the walk reads it after.
 // `fn`: the function a vectorizeLaneLocal call lifts; `onceRead`: its once-read locals, taken
 // on the first question (onceReadOf)
-export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: false, crPow: false, fn: null, onceRead: null }
+export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: false, relaxedSimd: false, crPow: false, fn: null, onceRead: null }
 // Float32 storage still computes JavaScript expressions in f64 lanes. The
 // promote/demote strip for a pure f32 copy round-trips losslessly and stays
 // on unconditionally. Armed for the duration of a vectorizeLaneLocal call.
+
+// optimize.relaxedSimd, armed the same way: the engine runs relaxed SIMD, so a lane
+// truncation a word test holds takes the relaxed opcode (else trunc_sat).
 
 // optimize.crPow, armed the same way — the const-exponent pow arm picks its lowering
 // from it (lift ctx objects don't carry the optimize config; module flag is the pattern).
@@ -52,7 +55,7 @@ export const vecState = { whyNotActive: false, whyNotReason: null, relaxF32: fal
 // boundary reset means that leak can never survive past the NEXT compile's
 // reset()/beginSession(), even though within-compile correctness still relies on
 // the call-site arm/disarm (unchanged here).
-const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.relaxF32 = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null }
+const resetVectorizeState = () => { vecState.whyNotActive = false; vecState.whyNotReason = null; vecState.relaxF32 = false; vecState.relaxedSimd = false; vecState.crPow = false; vecState.fn = null; vecState.onceRead = null }
 registerResetHook(resetVectorizeState)
 
 // The one lift context shape: the self-compile kernel infers one struct layout per shared
@@ -422,7 +425,7 @@ export function liftStmt(stmt, ctx) {
       // f64 integer narrowing preserves the scalar conversion lane by lane.
       // f32 arithmetic still belongs to the existing precision relaxation.
       if (ctx.laneType === 'f32' && sty !== 'f32' && !vecState.relaxF32)
-        return liftFail(ctx, 'f32 integer narrowing needs relaxedSimd')
+        return liftFail(ctx, 'f32 integer narrowing needs relaxedFloat')
       const inner = peelNarrowConv(stmt[2], sty)
       if (!inner) return liftFail(ctx, `narrowing store ${ctx.laneType}->${sty}: unrecognized conversion`)
       const innerV = liftExprV(inner, ctx)
@@ -621,14 +624,14 @@ export function liftExprV(expr, ctx) {
     // widen to i32x4, f32x4.convert. i8/i16 are exact in f32; i32 rounds (gated).
     if ((op === 'f64.convert_i32_s' || op === 'f64.convert_i32_u') && isArr(expr[1]) && INT_WIDEN_F32[expr[1][0]]) {
       const ld = expr[1], w = INT_WIDEN_F32[ld[0]]
-      if (w.lossy && !vecState.relaxF32) return liftFail(ctx, `${ld[0]}→f32 SIMD rounds (i32 exceeds f32 mantissa) — needs relaxedSimd`)
+      if (w.lossy && !vecState.relaxF32) return liftFail(ctx, `${ld[0]}→f32 SIMD rounds (i32 exceeds f32 mantissa) — needs relaxedFloat`)
       const addr = typeof ld[1] === 'string' && ld[1].startsWith('offset=') ? [w.load, ld[1], ld[2]] : [w.load, ld[1]]
       let v = addr
       for (const step of w.steps) v = [step, v]
       return [w.cvt === 'u' ? 'f32x4.convert_i32x4_u' : 'f32x4.convert_i32x4_s', v]
     }
     if (op === 'f64.const') {
-      if (!vecState.relaxF32) return liftFail(ctx, 'f64 constant in f32 lane needs relaxedSimd (f32 round of the constant)')
+      if (!vecState.relaxF32) return liftFail(ctx, 'f64 constant in f32 lane needs relaxedFloat (f32 round of the constant)')
       return ['f32x4.splat', ['f32.const', expr[1]]]
     }
     if (op === 'f64.neg' || op === 'f64.abs') return ['f32x4.' + op.slice(4), liftExprV(expr[1], ctx)]
@@ -674,9 +677,9 @@ export function liftExprV(expr, ctx) {
       // An invariant whose wasm type ≠ the lane element type needs a scalar
       // convert before the splat. The common case: an f64 multiplier/gain splat
       // into an f32 lane (`out[i] = in[i] * k`). Demoting k to f32 is the same
-      // precision relaxation as the f32 arithmetic itself, so gate it on relaxedSimd.
+      // precision relaxation as the f32 arithmetic itself, so gate it on relaxedFloat.
       if (ctx.laneType === 'f32' && ctx.fnLocals?.get(name) === 'f64') {
-        if (!vecState.relaxF32) return liftFail(ctx, `${name}: f64 invariant in f32 lane needs relaxedSimd`)
+        if (!vecState.relaxF32) return liftFail(ctx, `${name}: f64 invariant in f32 lane needs relaxedFloat`)
         return [info.splat, ['f32.demote_f64', ['local.get', name]]]
       }
       return [info.splat, ['local.get', name]]
@@ -826,7 +829,7 @@ export function liftExprV(expr, ctx) {
     // jz lowers `cond ? X : Y` to (if (result T) COND (then X)(else Y)). In an f32
     // lane it computes in f64 (promote/demote around the store), so the `if` carries
     // `(result f64)` and COND is an `f64.*` compare — accept both, mapping to f32x4.
-    // The branch values are f32-mapped by recursion; gated by relaxedSimd via those.
+    // The branch values are f32-mapped by recursion; gated by relaxedFloat via those.
     const resTy = isArr(expr[1]) && expr[1][0] === 'result' ? expr[1][1] : null
     if (resTy !== ctx.laneType && !(ctx.laneType === 'f32' && resTy === 'f64')) return liftFail(ctx, 'conditional without lane-typed result')
     const thenN = expr[3], elseN = expr[4]
@@ -1050,7 +1053,7 @@ function narrowStore(addr, val, laneType, sty, ctx, conversion) {
       const shape = `${laneType}x${lanes}`
       const inWord = ['i32x4.all_true', [`${shape}.lt`, [`${shape}.abs`, ['local.get', vt]], [`${shape}.splat`, [`${laneType}.const`, 2147483648]]]]
       // (where the test holds, the relaxed truncation is the same word, cheaper on x64)
-      const trunc = [`i32x4.${vecState.relaxF32 ? 'relaxed_trunc' : 'trunc_sat'}_${shape}_s${laneType === 'f64' ? '_zero' : ''}`, ['local.get', vt]]
+      const trunc = [`i32x4.${vecState.relaxedSimd ? 'relaxed_trunc' : 'trunc_sat'}_${shape}_s${laneType === 'f64' ? '_zero' : ''}`, ['local.get', vt]]
       pre = ['if', ['result', 'v128'], inWord, ['then', trunc], ['else', exact]]
     }
     lane8 = sty === 'i32' ? g : sh(sty === 'i16' ? PACK_I32_TO_I16 : PACK_I32_TO_I8)

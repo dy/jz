@@ -47,7 +47,7 @@ These are all the options: any other key throws a `TypeError` naming it.
 | `define` | Compile-time constants injected as bindings, `{ DEBUG: false, N: 1024 }`: each key an identifier, each value a number, boolean, string, null, undefined, or an array or plain object of them. |
 | `host` | `'js'` (default) or `'wasi'` for standalone runtimes. |
 | `memory` | Initial pages, a `WebAssembly.Memory` or `jz.memory()` shared between modules, or `{ initial, maximum, shared, import, fixed }`: `initial` and `maximum` in 64 KiB pages, `shared` for a threads memory, `import` to take `env.memory` from the host, `fixed: ['process']` to require named Wasm exports to use fixed storage. |
-| `optimize` | `true` (default), `'speed'`, `'size'`, `false`, or `{ level, simd, tailCall, exceptions, alloc, compact, rationalConst }`: `level` takes the same four values; `simd: false` and `tailCall: false` for engines without SIMD or tail calls; `exceptions: false` traps on a throw in a module that catches nothing; `alloc: false` is the raw standalone ABI, no allocator exports; `compact: false` keeps what a call replaced until `memory.reset()` ([Memory](#memory)); `rationalConst: false` rounds constant arithmetic per operation, as JavaScript does. |
+| `optimize` | `true` (default), `'speed'`, `'size'`, `false`, or `{ level, simd, relaxedSimd, tailCall, exceptions, alloc, compact, rationalConst }`: `level` takes the same four values; `simd: false`, `relaxedSimd: false` and `tailCall: false` for engines without SIMD, relaxed SIMD or tail calls; `exceptions: false` traps on a throw in a module that catches nothing; `alloc: false` is the raw standalone ABI, no allocator exports; `compact: false` keeps what a call replaced until `memory.reset()` ([Memory](#memory)); `rationalConst: false` rounds constant arithmetic per operation, as JavaScript does. |
 | `randomSeed` | Number for a reproducible `Math.random`. |
 | `names` | Emit the wasm name section for profilers and debuggers. |
 | `sourceMap` | Debug build with statement locations and function names: `true` embeds the map; `{ source, url }` names the entry and an external map URL. The returned bytes also expose `.sourceMap`. Requires `optimize` absent or off (`false`, `{ level: false }`). |
@@ -70,7 +70,7 @@ jz kernel.js --why          # what the optimizer declined, and why
 jz kernel.js --source-map   # debug build + kernel.wasm.map, with source content
 ```
 
-`jz --help` lists the rest: `-D`, `--memory`, `--no-simd`, `--no-tail-call`, `--names`, and `-O '{…}'` for the optimize object.
+`jz --help` lists the rest: `-D`, `--memory`, `--no-simd`, `--no-relaxed-simd`, `--no-tail-call`, `--names`, and `-O '{…}'` for the optimize object.
 
 A `--host wasi` module is a WASI command: its `_start`, which `wasmtime` runs, runs the top-level
 code, then the program's own `export function _start()` where it has one, then the timers they

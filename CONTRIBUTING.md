@@ -6132,6 +6132,7 @@ below. The CLI checks its options with `normalizeOptions` and adds
 |---|---|---|
 | `maxMemory`, `importMemory`, `sharedMemory`, `fixedMemory` | `memory: { maximum, import, shared, fixed }` | a shared `WebAssembly.Memory` object sets `sharedMemory` by itself |
 | `noSimd`, `noTailCall` | `optimize: { simd: false, tailCall: false }` | |
+| `relaxedSimd`, `relaxedFloat` (speed-tier keys of `optimize`) | `optimize: { relaxedSimd: false }` | the relaxed opcodes take their standard forms; the precision trade, `relaxedFloat`, has no public spelling and stays |
 | `noEhAbort` | `optimize: { exceptions: false }` | trap on throw in catch-free modules; the w2c bench lane uses it per case |
 | `alloc: false` | `optimize: { alloc: false }` | raw standalone ABI: no allocator/reset exports, no decoded-error metadata |
 | `whyNotSimd`, `whyNotRewind` | `why: true` | reports go to the `warnings` callback |

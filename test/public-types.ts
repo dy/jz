@@ -15,7 +15,7 @@ const sourceNames: string[] | undefined = mapped.sourceMap?.sources
 const opts: CompileOptions = {
   host: 'wasi',
   memory: { initial: 4, maximum: 64 },
-  optimize: { level: 'speed', simd: false, tailCall: false },
+  optimize: { level: 'speed', simd: false, relaxedSimd: false, tailCall: false },
   warnings: (w) => { void w.code },
   why: true,
   define: { EMPTY: undefined, DATA: { 'a-b': -0, values: [undefined, null] } },

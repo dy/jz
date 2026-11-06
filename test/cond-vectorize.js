@@ -199,9 +199,14 @@ test('cond-vectorize: an exact integer store truncates in lanes inside a word', 
     const f = funcWatOf(s, 'go')
     // (behind the test no lane is NaN or past the word: the relaxed truncation, cheaper on x64)
     ok(/i32x4\.all_true/.test(f) && /i32x4\.relaxed_trunc_f64x2_s_zero/.test(f) && !/trunc_sat_f64x2/.test(f), `${T}: the store truncates in lanes behind the word test`)
+    // (an engine without relaxed SIMD: the saturating truncation behind the same test)
+    const p = funcWatOf(s, 'go', { relaxedSimd: false })
+    ok(/i32x4\.all_true/.test(p) && /i32x4\.trunc_sat_f64x2_s_zero/.test(p) && !/relaxed_/.test(p), `${T}, relaxedSimd:false: trunc_sat in lanes behind the word test`)
     const args = []
     for (const [lo, hi] of [[-40000, 40000], [-1e300, 1e300], [-Infinity, Infinity], [-3, 3]])
       for (const [n, seed] of [[0, 0], [1, 3], [2, 17], [44, 0], [45, 5]]) args.push([n, lo, hi, seed])
     agree(T, s, args)
+    const host = new Function(s.replace('export let go =', 'return'))(), go = jz(s, { optimize: { level: 'speed', relaxedSimd: false } }).exports.go
+    for (const a of args) is(go(...a), host(...a), `${T}, relaxedSimd:false: ${JSON.stringify(a)}`)
   }
 })

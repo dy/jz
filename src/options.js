@@ -43,6 +43,7 @@ const MEMORY = {
 const OPTIMIZE = {
   level: level('optimize.level'),
   simd: bool('optimize.simd'),
+  relaxedSimd: bool('optimize.relaxedSimd'),
   tailCall: bool('optimize.tailCall'),
   exceptions: bool('optimize.exceptions'),
   alloc: bool('optimize.alloc'),
@@ -152,10 +153,12 @@ export const foldOptions = (opts) => {
   // a debug build: optimize absent or off (`false`, `{ level: false }`)
   if (o.sourceMap) o.sourceMap = sourceMapOptions(o.sourceMap, plain(opt) && (opt.level === false || opt.level === 0) ? false : opt)
   if (plain(opt)) {
-    const { simd, tailCall, exceptions, alloc, ...passes } = opt
+    const { simd, relaxedSimd, tailCall, exceptions, alloc, ...passes } = opt
     // `level` takes the values `optimize` takes: false is off, true the default
     if (typeof passes.level === 'boolean') passes.level = passes.level ? 2 : 0
     if (simd === false) o.noSimd = true
+    // the speed tier's relaxed opcodes take their standard forms; its precision trade (relaxedFloat) stays
+    if (relaxedSimd === false) passes.relaxedSimd = false
     if (tailCall === false) o.noTailCall = true
     if (exceptions === false) o.noEhAbort = true
     if (alloc === false) o.alloc = false

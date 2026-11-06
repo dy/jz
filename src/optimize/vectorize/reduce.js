@@ -161,7 +161,7 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
       // so no canon is needed. The ONLY divergence from the sequential scalar is the SIGN of a
       // zero RESULT when the extremum is hit by both +0 and −0 in different lanes (a cross-lane
       // reorder) — strictly less than the ULP reassociation the sum reductions already accept,
-      // so it rides the relaxedSimd tier (on at 'speed'); strict callers opt out (scalar).
+      // so it rides the relaxedFloat tier (on at 'speed'); strict callers opt out (scalar).
       if (!vecState.relaxF32) return null
       reduceEntry = {
         simd: minmax.isMax ? 'f64x2.pmax' : 'f64x2.pmin',
@@ -667,7 +667,7 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
     if (!isArr(rhs)) return null
     const minmax = matchIntMinMaxReduce(rhs, accName)
     if (minmax && minmax.laneType === 'f64') {
-      // Same relaxedSimd gate tryReduceReassoc uses for the f64 pmax/pmin tier — see its own
+      // Same relaxedFloat gate tryReduceReassoc uses for the f64 pmax/pmin tier — see its own
       // doc (cross-lane ±0-sign reorder, strictly inside the ULP-reassociation budget already
       // accepted for sum reductions).
       if (!vecState.relaxF32) return null

@@ -180,7 +180,7 @@ export const TUNING_KEYS = [
   'splitFn', 'splitTo', 'splitArm', // the instruction nodes past which a function splits, it is brought down to, and an arm must reach to move (optimize/split-funcs.js)
   'wordTruncation',           // how a truncation keeps its word: 'wide' | 'narrow' | 'add' (optimize/int-narrow.js)
   'coldTrap',                 // diagnostic: a versioned loop's arm as written throws its version's number (plan/integral-loops.js)
-  'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',
+  'reduceUnroll', 'relaxedFloat', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset', 'poolFloats', 'selectBits',
   'maskOperands',             // a byte or halfword mask over `^`/`|` moves onto the operand it narrows (optimize/mask-operands.js, speed tier)
   'carryKeys',                // a loop whose scalar reads a table at a key of itself and the next input carries the key, the input mixed off the chain (compile/loop-recurrence.js, speed tier)
   'inlineTiny', 'tinyNodes',  // a function of at most tinyNodes instructions joins every caller (optimize/inline-tiny.js, speed tier)

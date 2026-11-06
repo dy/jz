@@ -64,7 +64,7 @@ for (const n of Object.keys(OPTF)) if (!PASS_NAMES.includes(n) && !TUNING_KEYS.i
 const ALL_ON = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, true])))
 const ALL_OFF = Object.freeze(Object.fromEntries(PASS_NAMES.map(n => [n, false])))
 // Default (level 2) preset body — shared with 'fast' below, which derives from it.
-const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, carryStores: true, skipLatches: true, unrollTrips: true, hoistVectorConsts: true, leadGathers: true, pointerExits: true, jumpPointers: true, ringLaps: true, earlyStores: true, leadChains: true, issueOrder: true, jamItems: true, arrayMinCap: 4, reduceUnroll: true, relaxedSimd: true, inlineFns: true, inlineTiny: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, carryKeys: true, selectArmUpdates: true, wordTruncation: 'add' })
+const L3_PRESET = Object.freeze({ ...ALL_ON, hoistConstantPool: false, poolFloats: true, selectBits: true, maskOperands: true, searchLoops: true, carryStores: true, skipLatches: true, unrollTrips: true, hoistVectorConsts: true, leadGathers: true, pointerExits: true, jumpPointers: true, ringLaps: true, earlyStores: true, leadChains: true, issueOrder: true, jamItems: true, arrayMinCap: 4, reduceUnroll: true, relaxedFloat: true, relaxedSimd: true, inlineFns: true, inlineTiny: true, rotateLoops: true, watrLicm: true, watrLsr: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, carryKeys: true, selectArmUpdates: true, wordTruncation: 'add' })
 const L2_PRESET = Object.freeze({ ...ALL_ON, nestedSmallConstForUnroll: 'auto', splitScratch: false, boolConvertToSelect: false, speculateSchemaBranches: false, recursionUnroll: false, unswitchStringRepLoop: false, unrollScalarChain: false, selectArmUpdates: false, guardedUpdate: false, typedDecode: false, inlinePush: false, watrProfile: 'speed', inlinePtrOffsetFast: false, guardedToInt32: false, splitFuncs: false, loopPasses: false, pairIterations: false, copySmallStates: false })
 
 const LEVEL_PRESETS = Object.freeze({
@@ -186,9 +186,14 @@ const LEVEL_PRESETS = Object.freeze({
   // reduceUnroll: vectorize reductions with N independent accumulators (ILP/latency
   // hiding, ~3x on dot/FIR sums) — a size↔speed trade like the pool-off above, so
   // speed-only; level 2 / balanced / size keep the single-accumulator reduce.
-  // relaxedSimd: fold f64x2 dot-pairs to f64x2.relaxed_madd (single fused VFMADD,
-  // one rounding) — faster + more accurate, but the fused result diverges bit-for-bit
-  // from the non-fused JS/native reference (bench `fma` parity class). speed-only.
+  // relaxedFloat: answers that differ from the scalar order in their last bits (f32
+  // lanes for f64 math, a reassociated sum, pmax/pmin's sign of a zero, a fused
+  // multiply-add): the bench `fma` parity class. speed-only.
+  // relaxedSimd: the engine runs relaxed SIMD (Safari only behind a flag). With
+  // relaxedFloat, f64x2 dot-pairs fold to f64x2.relaxed_madd (single fused VFMADD, one
+  // rounding); a lane truncation a word test holds takes i32x4.relaxed_trunc, the
+  // saturating one's answer there. Off (`optimize: { relaxedSimd: false }`), each takes
+  // its standard form: mul then add, trunc_sat. speed-only.
   // (The stencil + outer-strip vectorizers are NOT level-gated here: they're bit-exact pure wins
   // like the base lane vectorizer, so they run whenever it does — default-on at level 2+ via
   // `cfg.stencil !== false` at the call site, not a speed-only size/precision trade.)

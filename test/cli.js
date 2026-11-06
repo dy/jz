@@ -229,6 +229,19 @@ test('cli: --no-simd disables auto-vectorization', () => {
   unlinkSync(dflt); unlinkSync(nosimd)
 })
 
+test('cli: --no-relaxed-simd keeps SIMD without a relaxed opcode', () => {
+  const input = join(tmp, 'narrow.js')
+  const dflt = join(tmp, 'narrow.wat')
+  const strict = join(tmp, 'narrow-strict.wat')
+  writeFileSync(input, 'export let f = (n) => { const a = new Float64Array(n), o = new Int16Array(n); for (let i = 0; i < n; i++) a[i] = i * 0.75 - 9; for (let i = 0; i < n; i++) o[i] = a[i] * 3; return o[n - 1] }')
+  cli(input, '--wat', '-O3', '-o', dflt)
+  cli(input, '--wat', '-O3', '--no-relaxed-simd', '-o', strict)
+  ok(/relaxed_trunc/.test(readFileSync(dflt, 'utf8')), '-O3 truncates its lanes relaxed (sanity)')
+  const w = readFileSync(strict, 'utf8')
+  ok(!/relaxed_/.test(w) && /i32x4\.trunc_sat_f64x2_s_zero/.test(w), '--no-relaxed-simd: the saturating truncation')
+  unlinkSync(dflt); unlinkSync(strict)
+})
+
 test('cli: --no-tail-call uses ordinary call frames', () => {
   const input = join(tmp, 'tc.js')
   const dflt = join(tmp, 'tc.wat')

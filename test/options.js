@@ -14,6 +14,7 @@ const TAIL = 'export let sum = (n, acc) => n === 0 ? acc : sum(n - 1, acc + n)'
 const GROW = 'export let f = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(i); return a }'
 const THROW = 'export let f = (x) => { if (x < 0) throw new RangeError("neg"); return x }'
 const DEP = 'export let f = (n) => { let a = new Float64Array(n); for (let i = 1; i < n; i++) a[i] = a[i - 1] + 1; return a[0] }'
+const NARROW = 'export let f = (n) => { const a = new Float64Array(n), o = new Int16Array(n); for (let i = 0; i < n; i++) a[i] = i * 0.75 - 9; for (let i = 0; i < n; i++) o[i] = a[i] * 3; let h = 0; for (let i = 0; i < n; i++) h = (h * 31 + o[i]) | 0; return h }'
 
 test('options: define preserves scalar values, property names and sparse array length', () => {
   const shared = { 'a-b': 7 }, value = {
@@ -145,6 +146,20 @@ test('options: optimize object — simd:false leaves no v128 in the runtime eith
   if (!belowOpt(2)) ok(simdIn(compile(src, { wat: true })), 'the default build keeps its SIMD scans (sanity)')
 })
 
+// An engine with SIMD but not relaxed SIMD (Safari, which runs it only behind a flag): the
+// speed tier's relaxed opcodes take their standard forms, every other lane stays.
+test('options: optimize object, relaxedSimd:false: SIMD without a relaxed opcode', () => {
+  const w = (optimize) => compile(NARROW, { wat: true, optimize })
+  ok(/relaxed_trunc/.test(w('speed')), "'speed' truncates its lanes relaxed (sanity)")
+  const strict = w({ level: 'speed', relaxedSimd: false })
+  ok(!/relaxed_/.test(strict) && /i32x4\.trunc_sat_f64x2_s_zero/.test(strict), 'relaxedSimd:false: the saturating truncation')
+  const { f } = jz(NARROW, { optimize: { level: 'speed', relaxedSimd: false } }).exports, host = oracle(NARROW)
+  for (const n of [0, 1, 7, 64, 65]) is(f(n), host.f(n), `f(${n})`)
+  // (true is the engine the presets assume: no switch, as simd:true and tailCall:true)
+  is(compile(NARROW, { optimize: { level: 'speed', relaxedSimd: true } }), compile(NARROW, { optimize: 'speed' }), "relaxedSimd:true is 'speed' as is")
+  ok(!/relaxed_/.test(compile(NARROW, { wat: true, optimize: { relaxedSimd: true } })), 'and turns no relaxed opcode on below it')
+})
+
 test('options: optimize object — tailCall:false uses ordinary call frames', () => {
   ok(/return_call/.test(compile(TAIL, { wat: true })), 'default emits return_call (sanity)')
   ok(!/return_call/.test(compile(TAIL, { wat: true, optimize: { tailCall: false } })), 'tailCall:false')
@@ -191,10 +206,12 @@ test('options: optimize object, alloc:false: instantiation and calls write no wo
   is(typed.f(new Float64Array([1, 2, 3])), 4, 'a host allocation claims the cell')
 })
 
-test('options: optimize object — its seven keys; a pass name or a typo refused', () => {
+test('options: optimize object — its eight keys; a pass name or a typo refused', () => {
   ok(compile(LOOP, { optimize: { level: 'size' } }).byteLength > 0, 'level:size')
   ok(compile(LOOP, { optimize: { level: 'speed', compact: false, rationalConst: false } }).byteLength > 0, 'compact and rationalConst')
-  throws(() => compile(LOOP, { optimize: { level: 'speed', stencil: false } }), /^TypeError: Unknown optimize option 'stencil' \(optimize takes level, simd, tailCall, exceptions, alloc, compact, rationalConst\)$/)
+  throws(() => compile(LOOP, { optimize: { level: 'speed', stencil: false } }), /^TypeError: Unknown optimize option 'stencil' \(optimize takes level, simd, relaxedSimd, tailCall, exceptions, alloc, compact, rationalConst\)$/)
+  throws(() => compile(LOOP, { optimize: { relaxedSimd: 'off' } }), /^TypeError: optimize\.relaxedSimd takes true or false; got 'off'$/)
+  throws(() => compile(LOOP, { optimize: { relaxedSIMD: false } }), /^TypeError: Unknown optimize option 'relaxedSIMD'; did you mean 'relaxedSimd'\? /)
   throws(() => compile(LOOP, { optimize: { levle: 'size' } }), /Unknown optimize option 'levle'; did you mean 'level'\?/)
   throws(() => compile(LOOP, { optimize: { noSimd: true } }), /^TypeError: Unknown optimize option 'noSimd'; did you mean 'simd'\? \(optimize takes /)
   ok(compileInternal(LOOP, { optimize: { level: 'speed', stencil: false } }).byteLength > 0, 'a pass toggle is an internal flag')

@@ -162,7 +162,7 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
 // regardless of original position — so results differ by ULPs from the strict
 // left-to-right order. That is the SAME class of reorder jz already ships for
 // horizontal/multi-accumulator reductions (policy at lines ~620 and ~1584), and
-// rust itself does it at -O3 without fast-math. Gated to the relaxedFma/speed
+// rust itself does it at -O3 without fast-math. Gated to the relaxedFloat/speed
 // tier exactly like those, so strict opts keep bit-exact order.
 //
 // Surgical by construction: fires only on a dot that MIXES invariant and variant

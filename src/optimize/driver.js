@@ -121,7 +121,8 @@ export function optimizeFunc(fn, cfg, globalTypes, reachableWrites) {
     if (!cfg || cfg.unswitchTypedParamLoop !== false) unswitchTypedParamLoop(fn, ctx.linkDemand.f16)
     if (vectorizeLaneLocal(fn, {
       multiAcc: cfg.reduceUnroll === true,
-      relaxedFma: cfg.relaxedSimd === true,
+      relaxedFloat: cfg.relaxedFloat === true,
+      relaxedSimd: cfg.relaxedSimd === true,
       blurMP: cfg.blurMultiPixel !== false,
       whyNot: cfg.whyNotSimd === true,
       stencil: cfg.stencil !== false,

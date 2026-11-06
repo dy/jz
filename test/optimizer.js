@@ -1932,7 +1932,7 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   almost(main(1), refMain(1), 1e-9)
   almost(main(5), refMain(5), 1e-9)
 
-  // At the speed/relaxedSimd tier the OUTER-loop-invariant partial products are hoisted
+  // At the speed/relaxedFloat tier the OUTER-loop-invariant partial products are hoisted
   // out of the n-loop (rust/LLVM's mat4-prologue trick — only a[0],a[5],b[0],b[5] mutate,
   // so most of each a[r]·b[c] dot is constant across iterations). Each unrolled dot then
   // has < DOT_UNROLL accumulate steps, so it stays scalar instead of f64x2 — measured ~1.9×
@@ -1941,6 +1941,8 @@ test('fixed Float64Array callsites scalar-replace across exported caller and SIM
   // the bit-exact f64x2 dot pairs.
   const speedWat = compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false } })
   ok(/\$__rinv_/.test(speedWat), 'speed tier hoists loop-invariant dot partials into $__rinv locals')
+  // (a precision trade, not an engine feature: an engine without relaxed SIMD keeps it)
+  ok(/\$__rinv_/.test(compile(src, { wat: true, optimize: { level: 'speed', watr: false, coalesceLocals: false, relaxedSimd: false } })), 'relaxedSimd:false keeps the hoist')
   ok(!/f64x2\./.test(speedWat.match(/\(func \$main[\s\S]*?^  \)/m)?.[0] || speedWat), 'hoisted dots drop the f64x2 pack/extract')
   const speed = run(src, { optimize: 'speed' })
   almost(speed.main(0), refMain(0), 1e-9)

@@ -660,7 +660,7 @@ const compileJz = c => {
   // imports are all satisfiable by wasmtime / wasm-rt without per-target shims.
   // `-O3` (= the `speed` preset compileJzHost uses for the V8 target): without it the CLI
   // defaulted to level 2, silently under-compiling the standalone targets — no reduceUnroll /
-  // rotateLoops / inlineFns / relaxedSimd. That cost up to 3.5× on Cranelift (dotprod 760→215µs,
+  // rotateLoops / inlineFns / relaxedFloat / relaxedSimd. That cost up to 3.5× on Cranelift (dotprod 760→215µs,
   // hashjoin 11.8k→6.5k, lz 27k→15k), so the wasmtime/w2c rows under-represented jz vs every rival.
   //
   // This build KEEPS tail calls on — wasmtime/wasmer/deno all ship the proposal

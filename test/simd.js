@@ -955,7 +955,7 @@ test('self-compile parity: the lane vectorizer runs in the jz.wasm kernel', () =
 // === SIMD breadth matrix — pins generic DSP patterns against regression ===
 // These are GENERIC shapes (not the specific kernels the recognizers were written
 // for); each must keep vectorizing. A regression here means a vectorizer change
-// narrowed coverage. SPEED enables relaxedSimd (f32 arithmetic precision).
+// narrowed coverage. SPEED enables relaxedFloat (f32 arithmetic precision).
 test('SIMD breadth - generic f32/int DSP patterns stay vectorized', () => {
   if (onKernel()) return
   const cases = {
@@ -1077,7 +1077,7 @@ test('SIMD Float32 storage - contiguous scale retains f64 arithmetic at both tie
   }
 })
 
-test('SIMD f32x4 - pure copy vectorizes bit-exactly without relaxedSimd', () => {
+test('SIMD f32x4 - pure copy vectorizes bit-exactly without relaxedFloat', () => {
   const src = `export let c = (n) => { let a = new Float32Array(n); let o = new Float32Array(n); for (let i = 0; i < n; i++) o[i] = a[i]; return o }`
   ok(hasV128(wat(src, SIMD_OPT)), 'f32 copy lifts to v128 (promote/demote round-trip is lossless)')
 })
@@ -1121,9 +1121,9 @@ test('SIMD numeric arms preserve present values and normalize actual missing val
 
 test('SIMD f64x2 - general conditional select vectorizes (bit-exact)', () => {
   // relu `v>0?v:0` — a general value-select, lifts to bitselect with no precision
-  // change (f64 lane needs no relaxedSimd).
+  // change (f64 lane needs no relaxedFloat).
   const src = `export let f = (n) => { let a = new Float64Array(n); let o = new Float64Array(n); for (let i = 0; i < n; i++) { let v = a[i]; o[i] = v > 0 ? v : 0 } return o }`
-  ok(hasV128(wat(src, SIMD_OPT)), 'f64 relu conditional vectorizes (no relaxedSimd needed)')
+  ok(hasV128(wat(src, SIMD_OPT)), 'f64 relu conditional vectorizes (no relaxedFloat needed)')
 })
 
 test('SIMD f32x4 - scaled result correct at speed', () => {
@@ -1907,6 +1907,18 @@ test('SIMD tonemap - a statement\'s truncations test their lanes with one compar
       is(scal.main(), want, `n=${n} theme ${th}: scalar === host`)
     }
 })
+// An engine without relaxed SIMD: the same compare admits the lanes, the saturating truncation takes them
+const SPEED_STRICT = { optimize: { level: 'speed', relaxedSimd: false } }
+test('SIMD tonemap - relaxedSimd:false truncates the admitted lanes saturating, bit-exact', () => {
+  const w = wat(TONE_THEME(64), SPEED_STRICT)
+  ok(/v128\.or/.test(w) && /i64x2\.lt_s/.test(w) && /i32x4\.trunc_sat_f64x2_s_zero/.test(w) && !/relaxed_/.test(w), 'one compare, then trunc_sat: no relaxed opcode')
+  for (const th of [[12, 18, 27, 1e10, -3e9, 240], [NaN, 0, 0, 5, 5, 5], [2147483647, -2147483648, 0, 1, 1, 1]])
+    for (const n of [64, 63, 1]) {
+      const host = oracle(TONE_THEME(n)), strict = runVec(TONE_THEME(n), SPEED_STRICT)
+      host.theme(...th); strict.theme(...th)
+      is(strict.main(), host.main(), `n=${n} theme ${th}: SIMD === host`)
+    }
+})
 
 // Per-pixel-color HAZARD (domain-color): a guarded conditional assignment `let fx=0; if(cond){fx=…}`
 // whose target later feeds a transcendental mirror (hypot/atan2). `fx=0` lifts to an f64x2 lane
@@ -2623,7 +2635,7 @@ test('vectorize: a shared lane temporary needs one dominating assignment', () =>
         ${mode === 'live-out' ? '(f64.add (local.get $m) (local.get $t))' : '(local.get $m)'}))`
     const scalar = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(parseWat(source)))).exports
     const tree = parseWat(source)
-    vectorizeLaneLocal(tree.find(n => n[0] === 'func'), { relaxedFma: true })
+    vectorizeLaneLocal(tree.find(n => n[0] === 'func'), { relaxedFloat: true })
     const lifted = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree))).exports
     for (const values of [Array(8).fill(0), [2, 3, 4, 5, NaN, 7, 8, 9], Array(8).fill(0)]) {
       for (const e of [scalar, lifted]) {
@@ -2634,6 +2646,47 @@ test('vectorize: a shared lane temporary needs one dominating assignment', () =>
     }
     if (mode === 'shared') ok(JSON.stringify(tree).includes('f64x2.pmax'), 'a shared dominating load still vectorizes')
   }
+})
+
+// Two unrolled dots sharing their left operands pack into one f64x2 dot: with the precision
+// trade and relaxed SIMD it accumulates through relaxed_madd (one rounding, where the engine
+// fuses); without relaxed SIMD through mul then add, the scalar order's rounding exactly.
+test('vectorize: a dot pair takes relaxed_madd only where the engine runs relaxed SIMD', () => {
+  compile('export const ready = () => 0')
+  const v = (k) => `(local.get $${k})`
+  const dot = (r, out) => `(local.set $s (f64.const 0))
+    ${[0, 1, 2, 3].map(k => `(local.set $s (f64.add (local.get $s) (f64.mul ${v('a' + k)} ${v(r + k)})))`).join(' ')}
+    (local.set $${out} (local.get $s))`
+  const params = ['a', 'b', 'c'].flatMap(r => [0, 1, 2, 3].map(k => `(param $${r}${k} f64)`)).join(' ')
+  const source = `(module (func (export "f") ${params} (result f64) (local $s f64) (local $x f64) (local $y f64)
+    ${dot('b', 'x')} ${dot('c', 'y')}
+    (f64.sub (local.get $x) (f64.mul (local.get $y) (f64.const 3)))))`
+  const build = (opts) => {
+    const tree = parseWat(source)
+    vectorizeLaneLocal(tree.find(n => n[0] === 'func'), opts)
+    return [JSON.stringify(tree), new WebAssembly.Instance(new WebAssembly.Module(encodeWat(tree))).exports.f]
+  }
+  const scalar = new WebAssembly.Instance(new WebAssembly.Module(encodeWat(parseWat(source)))).exports.f
+  const [fused, fusedF] = build({ relaxedFloat: true, relaxedSimd: true })
+  const [strict, strictF] = build({ relaxedFloat: true, relaxedSimd: false })
+  ok(fused.includes('f64x2.relaxed_madd'), 'relaxed SIMD: the pair accumulates through relaxed_madd')
+  ok(strict.includes('"f64x2.mul"') && strict.includes('"f64x2.add"') && !strict.includes('relaxed_'), 'relaxedSimd:false: mul then add, no relaxed opcode')
+  for (const seed of [1, 7, 31]) {
+    const args = Array.from({ length: 12 }, (_, i) => Math.sin(seed * (i + 1)) * 10 ** ((i % 5) - 2))
+    is(strictF(...args), scalar(...args), `seed ${seed}: the strict pair is the scalar dot bit for bit`)
+    almost(fusedF(...args), scalar(...args), 1e-9, `seed ${seed}: the fused pair rounds once`)
+  }
+})
+
+// relaxedSimd:false takes the opcodes alone: the speed tier's precision trade (relaxedFloat,
+// the lift's relaxF32) stays, a pmax reduction emitted as at 'speed'.
+test('vectorize: relaxedSimd:false keeps the speed tier\'s pmax reduction', () => {
+  if (onKernel()) return
+  const peak = `export const main = () => { const a = new Float64Array(999); for (let i = 0; i < 999; i++) a[i] = Math.sin(i * 1.3) * 1000; let m = a[0]; for (let i = 1; i < 999; i++) m = a[i] > m ? a[i] : m; return m }`
+  ok(!/f64x2\.pmax/.test(wat(peak, { optimize: { level: 'speed', relaxedFloat: false } })), 'pmax is the precision trade (sanity: none without it)')
+  is(wat(peak, SPEED_STRICT), wat(peak, SPEED), 'the max reduction as at speed')
+  ok(/f64x2\.pmax/.test(wat(peak, SPEED_STRICT)), 'f64x2.pmax')
+  is(runVec(peak, SPEED_STRICT).main(), oracle(peak).main(), 'and answers as the host')
 })
 
 test('vectorize: reduction recognition only removes the missing-element sentinel check', () => {
@@ -2677,7 +2730,7 @@ test('vectorize: f64 comparison min/max reduction lifts to f64x2.pmax/pmin (NaN-
   // `m = a[i] > m ? a[i] : m` and `if (a[i] > m) m = a[i]` are the same reduction. f64x2.pmax
   // replicates `(a>m)?a:m` EXACTLY per element — pmax(m,a)=(m<a)?a:m keeps the accumulator on a
   // NaN element (m<NaN is false), never NaN-poisoning the way f64x2.max would. The only theoretical
-  // divergence is the sign of a zero RESULT across lanes → relaxedSimd tier (speed), strict opts out.
+  // divergence is the sign of a zero RESULT across lanes → relaxedFloat tier (speed), strict opts out.
   const maxTern = `export const main = () => {
     const N = 999, a = new Float64Array(N)
     for (let i = 0; i < N; i++) a[i] = Math.sin(i * 1.3) * 1000
@@ -2687,8 +2740,8 @@ test('vectorize: f64 comparison min/max reduction lifts to f64x2.pmax/pmin (NaN-
     return (m * 1000) | 0
   }`
   is(runVec(maxTern, SPEED).main(), runVec(maxTern, SPEED_SCALAR).main(), 'max ternary bit-exact (NaN ignored)')
-  ok(/f64x2\.pmax/.test(wat(maxTern, SPEED)), 'max reduction → f64x2.pmax under relaxedSimd')
-  ok(!/f64x2\.pmax/.test(wat(maxTern, SIMD_OPT)), 'gated: no pmax without relaxedSimd (bit-exact scalar)')
+  ok(/f64x2\.pmax/.test(wat(maxTern, SPEED)), 'max reduction → f64x2.pmax under relaxedFloat')
+  ok(!/f64x2\.pmax/.test(wat(maxTern, SIMD_OPT)), 'gated: no pmax without relaxedFloat (bit-exact scalar)')
 
   const minIf = `export const main = () => {
     const N = 777, a = new Float64Array(N)
@@ -2828,7 +2881,7 @@ test('vectorize: i32 min reduction lifts to i32x4.min_s (all orderings, exact)',
 test('vectorize: conditional-STORE min/max (if(a[i]>m)m=a[i]) lifts like the ternary', () => {
   // `if (a[i] > m) m = a[i]` is the same reduction as the ternary; asSelectAssign rewrites the
   // conditional store so one recognizer handles both. Int → i32x4.max_s (exact); f64 → pmax
-  // (relaxedSimd). This is the form the peak-find idiom (e.g. buddhabrot density max) is written in.
+  // (relaxedFloat). This is the form the peak-find idiom (e.g. buddhabrot density max) is written in.
   const int = `export const main = () => {
     const N = 1024, a = new Int32Array(N)
     for (let i = 0; i < N; i++) a[i] = ((i * 73 + 13) % 4001 - 2000) | 0

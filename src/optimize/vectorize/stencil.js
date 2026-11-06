@@ -271,7 +271,7 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
     if (ty === 'i32') { localKind.set(name, 'addr'); continue }
     // A stencil temp computed in f64 then stored to an f32 array carries `ty === 'f64'`
     // in an f32 lane (jz computes Float32Array math in f64). Treat it as lane/invariant
-    // data the same as a native-typed local — the lift lanes it as f32x4 (relaxedSimd).
+    // data the same as a native-typed local — the lift lanes it as f32x4 (relaxedFloat).
     if (ty === laneType || (laneType === 'f32' && ty === 'f64')) {
       if (writes.has(name)) {
         const access = laneAccess(body, name, bl.outsideReads)

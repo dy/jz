@@ -44,13 +44,16 @@ export type OptimizeLevel = boolean | 'size' | 'speed'
 
 /**
  * A preset `level` and the switches beside it; any other key throws.
- * `simd` and `tailCall` are engine-capability switches. `exceptions: false`
+ * `simd`, `relaxedSimd` and `tailCall` are engine-capability switches; `'speed'`
+ * alone uses relaxed SIMD, which Safari runs only behind a flag, and `relaxedSimd:
+ * false` gives its opcodes their standard forms. `exceptions: false`
  * traps on throw in catch-free modules and drops the exceptions tag.
  * `alloc: false` is the raw standalone ABI (no allocator or reset exports).
  */
 export interface OptimizeOptions {
   level?: OptimizeLevel
   simd?: boolean
+  relaxedSimd?: boolean
   tailCall?: boolean
   exceptions?: boolean
   alloc?: boolean

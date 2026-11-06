@@ -281,7 +281,7 @@ test('example: regressed kernels keep their vectorization (byte-fade / pmax / na
         const w = watOf(name);
         ok(/i16x8\.mul/.test(w) && /i8x16\.shuffle/.test(w), `${name}: trail fade must lift to the 16-wide byte path (i16x8 widen + byte pack)`);
     }
-    // buddhabrot: the density peak-find `if (d > m) m = d` lifts to f64x2.pmax (NaN-exact, relaxedSimd).
+    // buddhabrot: the density peak-find `if (d > m) m = d` lifts to f64x2.pmax (NaN-exact, relaxedFloat).
     ok(/f64x2\.pmax/.test(watOf('buddhabrot')), 'buddhabrot: density peak-find must lift to f64x2.pmax');
     // fern: the f64→i32 ToInt32 map (`(…)|0`) lifts to the lane narrow, relaxed behind its word test (relaxedSimd).
     ok(/i32x4\.relaxed_trunc_f64x2_s_zero/.test(watOf('fern')), 'fern: ToInt32 map must lift to the i32x4 relaxed narrow');

@@ -115,7 +115,7 @@ export const LANE_PURE = {
 // scalar as `f64.convert_i32_{s,u}(<intload>(addr))`; lift to: load `lanes` ints,
 // widen to i32x4, then f32x4.convert. `steps` are applied innermost-first.
 // `lossy`: i32→f32 rounds (the scalar converts via exact f64 then demotes — double
-// rounding differs by ≤1 ulp), so it needs relaxedSimd; i8/i16 are exact in f32.
+// rounding differs by ≤1 ulp), so it needs relaxedFloat; i8/i16 are exact in f32.
 export const INT_WIDEN_F32 = {
   'i32.load':     { load: 'v128.load',        steps: [],                                                  cvt: 's', lossy: true },
   'i32.load16_s': { load: 'v128.load64_zero', steps: ['i32x4.extend_low_i16x8_s'],                        cvt: 's', lossy: false },
