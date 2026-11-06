@@ -1055,6 +1055,44 @@ function narrowUint32In(body, locals, states, isTypedU32) {
 }
 
 /**
+ * The captured bindings of `names` every definition of which, in `body` and in
+ * the closures it makes, is an unsigned word: a literal in [0, 2^32), a `>>>`
+ * result, a call of a function returning one. Such a cell holds the word (an
+ * i32 cell read unsigned, ir/vars.js readVar): a bit reader's `cache = (cache |
+ * b << n) >>> 0` and `cache >>>= k` keep no Number in memory between calls. A
+ * binding declared without a value, stepped (`++`, `+=`) or destructured keeps
+ * its f64 cell.
+ */
+export function uint32Cells(body, names) {
+  const states = new Map()   // name → 1 every definition an unsigned word so far, 0 one is not
+  const word = e => {
+    if (typeof e === 'number') return Number.isInteger(e) && !Object.is(e, -0) && e >= 0 && e < 4294967296
+    if (!Array.isArray(e)) return false
+    if (e[0] == null) return word(e[1])
+    if (e[0] === '(' || e[0] === ',') return word(e[e.length - 1])
+    return e[0] === '>>>' || (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true)
+  }
+  const def = (name, ok) => { if (names.has(name) && states.get(name) !== 0) states.set(name, ok ? 1 : 0) }
+  const ban = n => { if (typeof n === 'string') def(n, false); else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) ban(n[i]) }
+  walkAst(body, { enter: n => {
+    const op = n[0]
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (typeof d === 'string') def(d, false)
+        else if (Array.isArray(d) && d[0] === '=') { if (typeof d[1] === 'string') def(d[1], word(d[2])); else ban(d[1]) }
+      }
+    } else if (MUTATE_OPS.has(op)) {
+      if (typeof n[1] === 'string') def(n[1], op === '=' && word(n[2]))
+      else if (Array.isArray(n[1]) && (n[1][0] === '[' || n[1][0] === '{}')) ban(n[1])   // a pattern's targets
+    }
+  } })
+  let out = null
+  for (const [name, st] of states) if (st === 1) (out ??= new Set()).add(name)
+  return out ?? EMPTY_SCAN_SET
+}
+
+/**
  * Narrow word locals to i32: a number every read of which re-applies ToInt32 or
  * ToUint32. Those conversions are idempotent (ECMA-262 7.1.6, 7.1.7) and agree
  * on the low word, so the word taken at the write is the word each read would

@@ -144,7 +144,12 @@ export function readVar(name) {
   if (ctx.func.boxed?.has(name)) {
     // i32-narrowed cell (closure-capture narrowing — see analyzeFuncForEmit's
     // cellTypes): the cell stores a raw i32, load it directly.
-    if (ctx.func.cellTypes?.has(name)) return typed(['i32.load', boxedAddr(name)], 'i32')
+    if (ctx.func.cellTypes?.has(name)) {
+      const node = typed(['i32.load', boxedAddr(name)], 'i32')
+      // one holding an unsigned word (uint32Cells) widens as the uint32 local does
+      if (repOf(name)?.unsigned) { node.unsigned = true; node.wrapSafe = true }
+      return node
+    }
     return typed(['f64.load', boxedAddr(name)], 'f64')
   }
   if (isGlobal(name)) {

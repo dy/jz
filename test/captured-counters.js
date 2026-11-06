@@ -6,7 +6,8 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { oracle, jz, compile } from './util.js'
+import { oracle, jz, compile, compileInProcess } from './util.js'
+import { ctx } from '../src/ctx.js'
 
 // Runs sweep this leg's levels; the WAT checks, compile-only, read every level.
 const ALL = [0, 2, 3, 'size']
@@ -129,4 +130,29 @@ test('captured counters: an unbounded or outrun counter keeps its magnitude', ()
     ok(cellWidths(src, 0).size, `${name}: the cell is left at O0`)
     for (const o of ALL) ok(!cellWidths(src, o).has('i32'), `${name} O${o}: the cell stays a Number`)
   }
+})
+
+// A captured binding every definition of which is an unsigned word (`>>> 0`, `>>>=`,
+// a literal below 2^32) holds the word in an i32 cell its closures read unsigned
+// (compile/analyze-scans.js uint32Cells): a hash past 2^31 compares and returns
+// as the Number it is. A step that is no word (`h += 1`) keeps the Number cell.
+const WORDS = (step) => `const makeHash = () => {
+  let h = 2166136261
+  const add = (b) => { h = (h ^ b) >>> 0; h = Math.imul(h, 16777619) >>> 0; return h }
+  const shift = (k) => { ${step}; return h }
+  const big = () => h > 2147483648
+  return { add, shift, big, get: () => h }
+}
+export const f = (n) => { const r = makeHash(); let s = 0; for (let i = 0; i < n; i++) { r.add(i & 255); if (r.big()) s++; if ((i & 7) === 7) r.shift(1) } return s * 1e10 + r.get() }`
+const wordCells = (src) => {
+  compileInProcess(src, { optimize: 2 })
+  return ctx.closure.bodies.map(cb => [...cb.boxed ?? []].every(n => cb.cellU32?.has(n) && cb.cellI32?.has(n)))
+}
+
+test('captured counters: an unsigned word a factory\'s closures keep is a word cell', () => {
+  const word = WORDS('h >>>= k'), step = WORDS('h += k')
+  agreeAll(word, [0, 1, 9, 300])
+  agreeAll(step, [0, 1, 9, 300])
+  ok(wordCells(word).length && wordCells(word).every(Boolean), 'every closure reads the word cell unsigned')
+  ok(!wordCells(step).some(Boolean), 'a step that is no word keeps the Number cell')
 })

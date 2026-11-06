@@ -20,6 +20,7 @@ import {
   boxedCaptures, reanalyzeBody,
 } from './analyze.js'
 import { inferLocals } from './infer.js'
+import { uint32Cells } from './analyze-scans.js'
 import { closureMutatedVars } from './loop-model.js'
 import { BIGINT_REP_BOXED, BIGINT_REP_RAW, mintRepresentationPlan, representationParamRep, representationProgramHasBigint } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
@@ -556,9 +557,12 @@ export function analyzeFuncForEmit(func, programFacts) {
     const boxedNames = new Set(ctx.func.boxed.keys())
     // a scanner's position its closures advance under a test of a length: each step a word (type/bounded-counters.js)
     const capturedIntLevels = intLevelMap(body, boxedNames, undefined, undefined, undefined, boundedSteps(body, boxedNames))
+    // and one every definition of which is an unsigned word holds the word, read unsigned
+    const words = uint32Cells(body, boxedNames)
     for (const name of boxedNames) {
       if (sig.params.some(p => p.name === name)) continue
       if (capturedIntLevels.get(name) === 2) (cellTypes ??= new Set()).add(name)
+      else if (words.has(name)) { (cellTypes ??= new Set()).add(name); updateRep(name, { unsigned: true }) }
     }
   }
 

@@ -74,6 +74,7 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   // The closure record's sets are read (`has`) and never written past this
   // point: the frame keeps them as they are.
   ctx.func.cellTypes = cb.cellI32
+  if (cb.cellU32) for (const name of cb.cellU32) updateRep(name, { unsigned: true })
   const parentBoxedCaptures = cb.boxed || EMPTY_NAMES
 
   for (const p of cb.params) ctx.func.locals.set(p, 'f64')

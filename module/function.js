@@ -222,6 +222,8 @@ export default (ctx) => {
     // i32-narrowed cells travel with the capture: the closure body must access
     // the shared cell at the same width the owner does (see funcFacts.cellTypes).
     const cellI32Captures = boxedCaptures.filter(c => ctx.func.cellTypes?.has(c))
+    // of them, the cells holding an unsigned word (analyze-for-emit uint32Cells): read unsigned there too
+    const cellU32Captures = cellI32Captures.filter(c => repOf(c)?.unsigned)
     // Fixed-shape closure-plan record. Conditional spreads used to create a
     // family of HASH-shaped records; region compaction could relocate the
     // outer bodies array while losing one optional-shape member (`params`
@@ -234,6 +236,7 @@ export default (ctx) => {
       defaults: defaults || null,
       boxed: boxedCaptures.length ? new Set(boxedCaptures) : null,
       cellI32: cellI32Captures.length ? new Set(cellI32Captures) : null,
+      cellU32: cellU32Captures.length ? new Set(cellU32Captures) : null,
       intConsts: captureIntConsts.size ? captureIntConsts : null,
       intCertain: captureIntCertain.size ? captureIntCertain : null,
       nullables: captureNullables.size ? captureNullables : null,
