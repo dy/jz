@@ -134,6 +134,8 @@ const CASE_NAMES = {
   movavg: 'moving average, library idiom',
   upfirdn: 'rational resampler, library idiom',
   pcmconvert: 'PCM format conversion',
+  'decode-wav': '@audio/decode-wav, 16-bit stereo', 'decode-qoa': '@audio/decode-qoa', 'decode-tta': '@audio/decode-tta, 16-bit stereo',
+  'decode-alac': 'ALAC decoder of @audio/decode-aac, 16-bit stereo', 'decode-dsd': '@audio/decode-dsd, DSD64 to 88.2 kHz',
   munsell: 'xyY to Munsell, library kernel',
   hsl: 'rgb to HSL, library kernel', hwb: 'rgb to HWB, library kernel', jzazbz: 'rgb to Jzazbz, library kernel',
   jzczhz: 'rgb to JzCzhz, library kernel', cam16: 'rgb to CAM16, library kernel', hct: 'rgb to HCT, library kernel',
@@ -1627,6 +1629,8 @@ const REFERENCE_CHECKSUMS = {
   threescene: 2202287547, threeanim: 1484561098, threecull: 1233517740, threegeom: 2972009138,
   // (native C, V8 and jz agree: clang -O3, node 25, jz e93a9cd3)
   sosfilter: 3613342271, movavg: 4274945053, upfirdn: 2901183035, pcmconvert: 1465809949,
+  // the @audio/decode cases (scripts/decode-cases.mjs): node 25 and jz agree
+  'decode-wav': 3424770831, 'decode-qoa': 1568129605, 'decode-tta': 802205439, 'decode-alac': 1512721827, 'decode-dsd': 3828901074,
   // color-space's kernels (checksumF64Near, single precision): V8, Deno, bun and jz agree
   munsell: 319975139, hsl: 782821123, hwb: 2131370600, jzazbz: 2539556348, jzczhz: 3569912359,
   cam16: 3498772996, hct: 2742489630, a98rgb: 4116453917, ipt: 3620802574,

@@ -89,6 +89,15 @@ const SPEED = {
   movavg:         { v8: 'win',  as: 'na' },
   upfirdn:        { v8: 'win',  as: 'na' },
   pcmconvert:     { v8: 'win',  as: 'na' },
+  // ── the @audio/decode codecs, the packages' own code bundled (scripts/decode-cases.mjs).
+  // Paired six rounds, 2026-11-06, Apple M4 Max (jz/V8 time): dsd 0.87, alac 0.99,
+  // tta 1.07, wav 1.19, qoa 1.23. Graded with room for noise; qoa is a named todo
+  // (bench/claims.mjs CLAIM_UNMET, .work/decode.md). No AS or C port.
+  'decode-dsd':   { v8: 'win',   as: 'na' },
+  'decode-alac':  { v8: 'tie',   as: 'na' },
+  'decode-tta':   { v8: 'near',  as: 'na' },
+  'decode-wav':   { v8: 'trail', as: 'na' },
+  'decode-qoa':   { v8: 'todo',  as: 'na' },
   mandelbrot:     { v8: 'tie',  as: 'tie' },
   bitwise:        { v8: 'win',  as: 'win' },
   tokenizer:      { v8: 'win',  as: 'diff' },
@@ -256,6 +265,7 @@ const NATIVE = {
   // tests, the durable snapshot per store, no SIMD for the conversion): none
   // claims native parity, so they sit out the NATIVE geomean.
   sosfilter: 'na', movavg: 'na', upfirdn: 'na', pcmconvert: 'na',
+  'decode-wav': 'na', 'decode-qoa': 'na', 'decode-tta': 'na', 'decode-alac': 'na', 'decode-dsd': 'na',
   // jz beats `clang -O3 -ffp-contract=off` ~10× here: the multi-accumulator SIMD
   // reassociation extracts ILP the strict-fp serial sum can't. A genuine win (not
   // host-noise) — the margin dwarfs cross-substrate variance.
@@ -282,6 +292,7 @@ const SIZE = {
   movavg:         { as: 'na' },
   upfirdn:        { as: 'na' },
   pcmconvert:     { as: 'na' },
+  'decode-wav':   { as: 'na' }, 'decode-qoa': { as: 'na' }, 'decode-tta': { as: 'na' }, 'decode-alac': { as: 'na' }, 'decode-dsd': { as: 'na' },
   slices:         { as: 'todo' },
   trace:          { as: 'todo' },
   bezfit:         { as: 'todo' },

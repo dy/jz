@@ -18,8 +18,9 @@ These are the product's promises. They are CI-gated (`test/bench.js`), not aspir
    until jz takes the lead — never silently accepted (`vm`, whose same code leads or trails
    by CPU, is the one named exception below).
 2. **Faster than V8-family JITs, everywhere; faster than bun/JSC, almost everywhere.**
-   jz beats V8-family engines (Node, Deno) on every case but two it does not lead yet,
-   `watr` and the `jz` self-compile: no band holds them, they are named as unmet
+   jz beats V8-family engines (Node, Deno) on every case but those it does not lead yet:
+   `watr`, the `jz` self-compile and four of the @audio/decode codecs (`decode-qoa`,
+   `decode-wav`, `decode-tta`, `decode-alac`): no band holds them, they are named as unmet
    (`CLAIM_UNMET` in `bench/claims.mjs`) and tracked as todo in the gate. It beats
    bun/JSC too, except two classes held to named bands: the tight-integer-loop class
    (`vm`, `dict`, `crc32`), where JSC's adaptive JIT out-executes an AOT wasm module on

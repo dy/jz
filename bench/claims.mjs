@@ -102,6 +102,28 @@ export const CLAIM_UNMET = [
     cause: "not established: the self-compile case runs 1.02× V8 on an Apple M4 and 1.158× on EPYC 7763, and peaks at 1451 MB resident against V8's 453 MB",
     evidence: 'reference run 4922687e; local profile at 072827ee (Apple M4 Max)',
   },
+  // the @audio/decode codecs (scripts/decode-cases.mjs), the packages' own code: open work
+  // that .work/decode.md tracks class by class; each leaves the list the commit jz leads it
+  {
+    case: 'decode-qoa', class: 'v8',
+    cause: "after the element-range facts the frame loop is all i32; what remains is the slice loop's 19 int16 loads per sample with the LMS history and weights stored and reloaded every iteration, and the DataView offset kept in f64 (about 5%)",
+    evidence: 'paired six rounds, 2026-11-06, Apple M4 Max: 0.81× (V8 time over jz time)',
+  },
+  {
+    case: 'decode-wav', class: 'v8',
+    cause: "not established for this input: the decode loop runs typed since the closure-set copies, and the lab's controls leave its secondary channel stride and the 16-bit table read as the remaining candidates",
+    evidence: 'paired six rounds, 2026-11-06, Apple M4 Max: 0.84× (V8 time over jz time)',
+  },
+  {
+    case: 'decode-tta', class: 'v8',
+    cause: "the bit reader's position and fill count stay Number cells (unbounded counters), the unary counter a guarded i64, and the channel record's u32 slots read through an i64 truncation and a select",
+    evidence: 'paired six rounds, 2026-11-06, Apple M4 Max: 0.93× (V8 time over jz time)',
+  },
+  {
+    case: 'decode-alac', class: 'v8',
+    cause: 'a tie, not a lead: the adaptive Golomb decoder (dynDecomp), 43% of 16-bit time after the range fixes, is not examined yet',
+    evidence: 'paired six rounds, 2026-11-06, Apple M4 Max: 1.01× (V8 time over jz time), inside the tie band',
+  },
 ]
 /** The cases a claim class claims and does not lead yet. */
 export const unmetOf = label => new Set(CLAIM_UNMET.filter(e => e.class === label).map(e => e.case))

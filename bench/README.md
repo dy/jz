@@ -543,6 +543,7 @@ is a new case, not a smaller claim:
 | interpreter dispatch | — | `bytebeat` | `vm` (hinting VMs) | `dispatch` |
 | matrix / geometry batches | `colorconv` (3×3) | — | `mat4` (transforms) | `matmul` `nbody` `particle` |
 | library idioms: state bags, record arrays, ratio parameters, dtype tables | — | `sosfilter` `movavg` `upfirdn` `pcmconvert` | — | — |
+| codecs: a library's decoders, bundled unchanged (`scripts/decode-cases.mjs`) | — | `decode-wav` `decode-qoa` `decode-tta` `decode-alac` `decode-dsd` | — | — |
 
 Beyond named cases, the **shape-class fuzzers** guard whole families the cases
 sample: `scripts/perf-corpus.mjs` generates seeded programs per class — including
