@@ -455,6 +455,38 @@ test('integral loops: a guard reads no word a copy inside it declared', () => {
   }
 })
 
+// A bound that closures only read holds one value through a loop that does not
+// write it: the frame count each channel's array is made of (`Array.from(…, () =>
+// new Float32Array(frames))`, decode-wav's 24-bit loop) bounds a copy whose counter
+// and cursor are words, as a bound no closure mentions does.
+test('integral loops: a bound a closure only reads bounds a copy of words', () => {
+  const src = `const RAW = new Uint8Array(600)
+    for (let i = 0; i < 600; i++) RAW[i] = (i * 37 + 11) & 255
+    export let f = (nCh, bs) => {
+      let frames = Math.floor(RAW.length / bs)
+      let ch = Array.from({ length: nCh }, () => new Float32Array(frames))
+      for (let c = 0; c < nCh; c++) { let x = ch[c], k = c * 3; for (let i = 0; i < frames; i++) { x[i] = (RAW[k] | RAW[k + 1] << 8 | RAW[k + 2] << 16) << 8 >> 8; k += 6 } }
+      let h = 0
+      for (let c = 0; c < nCh; c++) for (let i = 0; i < frames; i++) h = (h * 31 + ch[c][i]) | 0
+      return h
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const a of [[2, 6], [2, 6.5], [1, 3], [3, 9], [2, 1e9], [2, 7]]) is(m.f(...a), js.f(...a), `f(${a}) at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = wat(src, { optimize: 2 })
+  const loops = []
+  for (let at = text.indexOf('(loop'); at >= 0; at = text.indexOf('(loop', at + 1)) {
+    let depth = 0, end = at
+    do { const c = text[end++]; if (c === '(') depth++; else if (c === ')') depth-- } while (depth && end < text.length)
+    loops.push(text.slice(at, end))
+  }
+  const inner = loops.filter(l => !/\(loop/.test(l.slice(5)) && /f32\.store/.test(l) && /load8_u/.test(l))
+  ok(inner.some(l => !/trunc_sat|i64\.|f64\.add/.test(l)), 'a copy of the sample loop counts and indexes in words')
+})
+
 // A copy writes back what it wrote under names of its own after the loop: a jump
 // to a label outside (`continue out`, `break out`) would leave past that, so a
 // loop with one keeps its own names.

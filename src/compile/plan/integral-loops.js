@@ -499,10 +499,17 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   markExactDivisions(body)
   // A closure created by a default or the body can read or write where the
   // copy cannot see. Both belong to this function's capture census.
-  const captured = new Set()
+  // The names a closure assigns are a census of their own: one closures only
+  // read (`Array.from(…, () => new Float32Array(frames))`) holds one value
+  // through a loop that does not write it, whatever those closures run.
+  const captured = new Set(), closureAssigned = new Set()
+  const assigned = (t) => walkAst(['', t], { enter: (x) => { if (x[0] === '.' || x[0] === '[]') return false; for (let i = 1; i < x.length; i++) if (typeof x[i] === 'string') closureAssigned.add(x[i]) } })
   walkAst(frame, { enter: (n) => {
     if (n[0] !== '=>') return
-    walkAst(n, { enter: (m) => { for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i]) } })
+    walkAst(n, { enter: (m) => {
+      for (let i = 1; i < m.length; i++) if (typeof m[i] === 'string') captured.add(m[i])
+      if (MUTATE_OPS.has(m[0])) assigned(m[1])
+    } })
     return false
   } })
   const locals = new Set(params)
@@ -654,6 +661,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     const mayBeNumber = (n) => { const k = view?.kindOfExpr(unrenamed(n)); return k == null || hasTag(k, K.NUMBER) || tagOf(core(k)) === K.ANY }
     const isNumberKind = (n) => { const k = view?.kindOfExpr(unrenamed(n)); return k != null && k !== 0 && tagOf(core(k)) === K.NUMBER && !hasTag(k, K.ABSENT) && !hasTag(k, K.NULLISH) }
     const outerOk = (n) => locals.has(n) && !inner.has(n) && !captured.has(n) && !ctx.funcs.names.has(n)
+    // (a local the loop only reads, which no closure assigns: one value through the loop, the one a closure reads too)
+    const readOk = (n) => outerOk(n) || locals.has(n) && !inner.has(n) && !loopWrites.has(n) && !closureAssigned.has(n) && !ctx.funcs.names.has(n)
     // The names the copy's guard holds to Numbers (`typeof x === 'number'`):
     // the stable names the loop converts, whose conversion then runs no user
     // code. Null where the loop can run code no such guard rules out (a call,
@@ -687,7 +696,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     }
     // A module binding supplies the same snapshot as a local only when the
     // whole loop cannot run code that changes it between comparisons.
-    const stableBound = n => outerOk(n) || typeof n === 'string' && ctx.scope.globals.has(n) && !locals.has(n) && !loopWrites.has(n) && quietNames() != null
+    const stableBound = n => readOk(n) || typeof n === 'string' && ctx.scope.globals.has(n) && !locals.has(n) && !loopWrites.has(n) && quietNames() != null
     // A counter's integer-valued updates do not prove its magnitude. Where a
     // stable numeric bound fits i32, round that bound once in a private copy;
     // the shared counter-range proof then includes its final increment. The
