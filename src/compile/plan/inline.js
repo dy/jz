@@ -1293,6 +1293,10 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
           !(speedTier && (size <= WARM_BODY || sites.length === 1 && hotSites === 1) && !cyclic(func.name))) continue
     }
     if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
+    // A loop that reaches itself through the functions it calls (`a` → `b` → `a`)
+    // stays a function: each splice of it carries the cycle's call, the next
+    // round splices that, and the loops nest a level per round.
+    if (hasLoop && cyclic(func.name)) continue
     // Kernels with nested loops (depth ≥ 2) are typically large and the inner
     // loop carries most of the cost. Inlining them into a host that V8 can't
     // tier up (e.g. a once-called wrapper) freezes the kernel in baseline.

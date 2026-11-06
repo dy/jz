@@ -222,7 +222,7 @@ const TESTS = [
   'inline-dispatch',
   'lean-dict',
   'int-narrow', 'reuse-loads',
-  'specialize', 'guards', 'inline-args', 'inline-hoist', 'growth', 'push', 'forward-hops',
+  'specialize', 'guards', 'inline-args', 'inline-hoist', 'inline-cycles', 'growth', 'push', 'forward-hops',
   'store-int32',
   'present-number',
   'sequence-values', 'bigint-division', 'bigint-tag',
