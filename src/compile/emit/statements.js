@@ -199,6 +199,8 @@ export const statementOps = {
     // heap offset as a number). Same bug-class as the ternary's tagPtr (below).
     if (last.ptrKind != null) { seq.ptrKind = last.ptrKind; if (last.ptrAux != null) seq.ptrAux = last.ptrAux }
     if (last.unsigned) seq.unsigned = last.unsigned
+    // (a word read off a dense array of words: a float consumer takes the sequence ending in its load, ir/numeric.js asF64)
+    if (last.wordOf) seq.wordOf = typed(['block', ['result', 'f64'], ...seq.slice(2, -1), last.wordOf], 'f64')
     return seq
   },
   'let': emitDecl,
