@@ -178,3 +178,35 @@ compiles to less, its three cases level in paired rounds. Of the bench corpus's 
 compile to the same wasm at both levels; the paired rounds of the rest (jz over jz at main):
 stdlib-gamma 0.83×, stdlib-dists 0.95×, stdlib-special 0.99×, async 1.07× (0.91–1.28 over ten),
 watr 1.06× (0.65–1.32 over six), stdlib-exp changed at the default level only.
+
+## Fixed (branch tta-gap)
+
+TTA, default level: 0.73× / 0.56× / 0.73× → 1.03× / 0.84× / 0.96× (16-bit, 24-bit, 6ch;
+`decoders.mjs`, one run each of base 87ce1d375 and the branch, load 10). Dynamic wasm
+instructions of one decode (a per-region counter, base/branch): 16-bit 417M → 367M,
+24-bit 80M → 71M, 6ch 216M → 192M.
+
+| | Change | Effect |
+|---|---|---|
+| K3 | A closure without parameters keys its summary scope by its body (summary/index.js, emit/call.js): `function bit() {}` inside `makeBits` read its frame at module scope, `while (bit())` any value | the bit test is a Number test |
+| K3 | The frame census names the closures a call through a record's field runs, and walks an arrow called in place (analyze/frame-effects.js) | `decodeValue` and the inlined `hybridFilter` lose the escape protocol per call |
+| K3 | A call of a field or binding the summary types as one closure is a direct call of its body, before the dedup (wat/assemble/closure-table.js `devirtClosureCalls`) | `br.unary()`, `br.read(k)` direct; no indirect call left, the closure ABI shrinks |
+| K3 | A captured binding every definition of which is an unsigned word is an i32 cell read unsigned (analyze-scans.js `uint32Cells`) | `cache` in the bit reader; `closure-state.js closures` 0.40× → 0.63× (paired, same process) |
+| K4 | The slot census resolves a parameter narrowed to one layout, a receiver that may be missing, a cached field read, a typed read the summary proves hits, a literal subarray's length (program-facts/shared.js, slot-int-census.js, schema.js `readSidOf`, summary `typedShapeOf`) | TTA's channel slots: k0, k1, sum0, sum1 integral, round, predictor int32 (were all poisoned) |
+
+Found on the way, fixed: a function exported under another name (`export { g as f }`)
+was no root of the data sweeps, so Math.pow's exp2 table was stripped (Infinity), on
+main too; a closure stored under a conversion's name (`valueOf(z) { return 7n }`, an
+arrow) was reached by no call, its contract claimed no BigInt and it returned raw bits,
+on main too for a method with a parameter.
+
+Open: `record-fields.js fields` stays 0.17× (the non-escaping record is not scalar-
+replaced at the default level; the speed tier's splice does it); the bit reader's `n`
+and `pos` stay Number cells and `unary`'s counter a guarded i64 (unbounded); the
+speed tier runs TTA about 7% slower than the default (11% more instructions):
+`decodeValue` splices into `decodeFrame`, and `hybridFilter` then stays a call, since
+the destructuring's nullish throw is an arrow with a `throw`, which
+`inlineHotInternalCalls` refuses (`some(func.body, throw)` descends into the arrow),
+where the default level inlines it in watr. wav ima-adpcm measures 73 → 76 µs (three
+runs): the now direct `dec.decode` call lets watr inline `decodeRaw` and
+`decodeImaWav` into the method.
