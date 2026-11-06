@@ -845,11 +845,15 @@ const scalarizeArrayLiteralSeq = (seq) => {
   if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
   const stmts = []
-  for (let i = 1; i < seq.length; i++) {
-    const stmt = scalarizeArrayLiterals(seq[i])
-    if (stmt !== seq[i]) changed = true
-    stmts.push(stmt)
+  // a `;` group inside a sequence is no scope (a lowered `const a = [], [b] = c`):
+  // its declarations are the sequence's, read by its later statements
+  const add = (st) => {
+    if (Array.isArray(st) && st[0] === ';') { changed = true; for (let k = 1; k < st.length; k++) add(st[k]); return }
+    const out = scalarizeArrayLiterals(st)
+    if (out !== st) changed = true
+    stmts.push(out)
   }
+  for (let i = 1; i < seq.length; i++) add(seq[i])
 
   const candidates = new Map()
   for (let i = 0; i < stmts.length; i++) {

@@ -1060,3 +1060,16 @@ test('destruct: a pattern over a maybe-missing field keeps what the lists hold',
   compile(src, { optimize: 2, warnings: w => warnings.push(w) })
   ok(!warnings.some(w => w.code === 'shape-lost'), 'no shape is lost')
 })
+
+// A statement declaring a pattern beside a plain name lowers to a group of
+// statements; the names it declares are read by the statements after it.
+test('destruct: a pattern beside another declarator keeps that declarator', () => {
+  const src = `export function g(lhs) { const pre = [], [op, R, K] = lhs; pre.push(op, R + K); return pre.join() }
+    export function h(a) { let s = [], [x, y] = a, t = [x]; s.push(y); t.push(s.length); return t.join() + '|' + s.join() }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const { g, h } = jz(src, { optimize }).exports
+    is(g(['+', 1, 2]), js.g(['+', 1, 2]), `g O${optimize}`)
+    is(h([4, 5]), js.h([4, 5]), `h O${optimize}`)
+  }
+})
