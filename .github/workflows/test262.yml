@@ -1,5 +1,6 @@
 name: test262
 on:
+  workflow_dispatch:
   push:
     paths-ignore:
       - '**/*.md'

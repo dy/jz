@@ -5,6 +5,7 @@ name: self-compile
 # not measured on a shared runner: the self-compile perf gate is a local release
 # step (`npm run test:self:perf`, CONTRIBUTING.md "Performance & size invariant").
 on:
+  workflow_dispatch:
   push:
     paths-ignore:
       - '**/*.md'
