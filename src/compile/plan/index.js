@@ -65,7 +65,7 @@ import { unswitchLoops } from './unswitch-loops.js'
 import { reciprocalLoopDivisors } from './reciprocal-loops.js'
 import { splitLoopKinds } from './kind-split.js'
 import { callChosenFunctions } from './chosen-calls.js'
-import { specializeCalledArgs } from './called-args.js'
+import { specializeCalledArgs, splitByClosureArgs } from './called-args.js'
 import { markReadBuffers } from './read-buffers.js'
 import { hoistObjectReads } from './object-reads.js'
 import { hoistSiteReceivers } from './site-receivers.js'
@@ -114,7 +114,9 @@ export default function plan(ast, profiler, summarize) {
       // old tree even when a later pass never asks for whole-program facts.
       resetBindingUsesCache()
       resetMutationNamesCache()
+      return true
     }
+    return false
   }
 
   // The module globals' kinds are the summary's, whole-program from the start:
@@ -199,6 +201,9 @@ export default function plan(ast, profiler, summarize) {
     for (let round = 0; round < 8 && specializeCalledArgs(facts(), ast); round++) any = _dirty = true
     return any
   })
+  // A parameter called or read through, given different closures by different calls: a copy per set of
+  // them, summarized at once: the passes below read each copy's parameter, result and loops by its kinds.
+  if (sweep('splitByClosureArgs', () => splitByClosureArgs(facts()))) ctx.summary = summarize()
   let spliced = false
   sweep('inlineHotInternalCalls', () => (spliced = inlineHotInternalCalls(facts(), ast)))
   // A spliced call's statements are statements of its caller's lists, and its seams

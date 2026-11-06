@@ -27,12 +27,14 @@
  * @module compile/plan/called-args
  */
 import { ctx } from '../../ctx.js'
-import { T, ASSIGN_OPS, callArgs, setCallArgs, walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
+import { T, ASSIGN_OPS, callArgs, setCallArgs, walkAst, some, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { materializeVariant } from '../variant.js'
 import { invalidateBodies } from '../analyze.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { clonePlain, collectBindings, nodeSize } from './common.js'
+import { K, kind, paramOf, UNKNOWN } from '../../summary/kind.js'
+import { isExported } from '../func-exports.js'
 
 /** Whether every mention of `name` in `node` is a call's callee or an argument a
  *  call of a declared function passes on as it is (`readFill(read, buf)` in a
@@ -223,4 +225,73 @@ export const specializeCalledArgs = (programFacts, ast) => {
   for (const body of touched) invalidateProgramFactsCache(body)
   invalidateBodies([...touched])
   return touched.size > 0
+}
+
+// The closures a call passes at argument `k`, sorted and joined: the members of
+// the one closure set the summary names there, or null (an unknown or nullable
+// callable, a value of another kind, a caller the summary has no scope for).
+const closuresAt = (site, k) => {
+  const q = ctx.summary?.at(site.callerFunc?.sig), arg = site.argList[k]
+  const kd = q && arg !== undefined ? q.kindOfExpr(arg) : null
+  if (kd == null || paramOf(kd) === UNKNOWN || kd !== kind(K.CLOSURE, paramOf(kd))) return null
+  return [...ctx.summary.closureMembers(paramOf(kd))].map(String).sort().join(',')
+}
+const MAX_CLOSURE_SETS = 4
+
+/**
+ * A parameter the body calls or reads a member of, given different closures by
+ * different calls, holds their join in the shared body: `samples(raw,
+ * Uint16Array, n)` beside `samples(raw, bitDepth === 64 ? Float64Array :
+ * Float32Array, n)` makes `new T(…)` an array of any of the three kinds (a
+ * typed constructor is a `jz:typed` function value) and every read of it
+ * decides the element kind at run time. A copy for each set of closures the
+ * calls pass (interprocedural constant propagation by cloning) holds that set
+ * alone: a call through the parameter reaches the set's functions, its result
+ * their kinds, and the copy splices into its caller like any function a call
+ * names. A call the summary names no closures for keeps calling the original;
+ * a parameter the body assigns holds more than its calls pass and stays.
+ */
+export const splitByClosureArgs = (programFacts) => {
+  if (ctx.transform.optimize?.splitByClosureArgs === false || !ctx.summary?.closureMembers) return false
+  const sitesOf = new Map()
+  for (const site of programFacts.callSites) {
+    if (site.synthetic || site.argList.some(a => Array.isArray(a) && a[0] === '...')) continue
+    const list = sitesOf.get(site.callee)
+    if (list) list.push(site); else sitesOf.set(site.callee, [site])
+  }
+  const addressTaken = programFacts.addressTakenNames
+  const touched = new Set()
+  for (const [callee, sites] of sitesOf) {
+    const func = ctx.funcs.map.get(callee)
+    if (!func?.body || func.raw || func.rest || sites.length < 2 || isExported(func) || addressTaken.has(func.name) || nodeSize(func.body) > MAX_BODY) continue
+    // a copy of a function that calls itself calls the original again, where the parameter is the join
+    if (some(func.body, n => n[0] === '()' && n[1] === func.name)) continue
+    const ks = [], sets = []
+    func.sig.params.forEach((p, k) => {
+      if (func.defaults?.[p.name] != null) return
+      const keys = sites.map(site => closuresAt(site, k))
+      if (new Set(keys.filter(Boolean)).size < 2) return
+      let read = false, written = false
+      walkAst(func.body, { enter: (n) => {
+        if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && n[1] === p.name) written = true
+        if ((n[0] === '()' && n[1] === p.name) || ((n[0] === '.' || n[0] === '?.') && n[1] === p.name)) read = true
+      } })
+      if (read && !written) { ks.push(k); sets.push(keys) }
+    })
+    if (!ks.length) continue
+    const combos = sites.map((_, i) => sets.every(keys => keys[i]) ? sets.map(keys => keys[i]).join('|') : null)
+    const kinds = [...new Set(combos.filter(Boolean))]
+    if (kinds.length < 2 || kinds.length > MAX_CLOSURE_SETS) continue
+    kinds.forEach((key, n) => {
+      const name = `${func.name}${T}k${n}`
+      const eligible = sites.filter((_, i) => combos[i] === key)
+      materializeVariant({ origin: func, key: name, name, kind: 'closure-arg', eligibleSites: eligible, fallback: func })
+      for (const site of eligible) touched.add(site.callerFunc?.body ?? null)
+    })
+  }
+  touched.delete(null)
+  if (!touched.size) return false
+  for (const body of touched) invalidateProgramFactsCache(body)
+  invalidateBodies([...touched])
+  return true
 }

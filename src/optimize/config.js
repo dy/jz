@@ -159,6 +159,7 @@ const LEVEL_PRESETS = Object.freeze({
     pairIterations: false,    // a second copy of a pixel loop's body, its inner loop beside the first's: speed-for-size
     splitLoopKinds: false,    // a copy of a loop where a name of several kinds holds a typed array: speed-for-size
     specializeCalledArgs: false, // a copy of a function for each named function a call passes to a parameter it calls: speed-for-size
+    splitByClosureArgs: false, // a copy of a function for each set of closures its calls pass a parameter it calls or reads through: speed-for-size
     leanCheckedIdx: true,     // unproven typed reads emit the if-form (guard → direct load, else undefined) — ~6 ops/site smaller than the select-clamp form, which exists only so SPEED-tier kernel bodies stay branch-free for the SIMD lift (off here)
     guardedToInt32: false,    // a range test and a second truncation beside each ToInt32 — speed-only
     splitFuncs: false,        // a call and its moves per moved arm: the size tier keeps its functions whole

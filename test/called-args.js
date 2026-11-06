@@ -5,6 +5,7 @@ import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { belowOpt, levels } from './_matrix.js'
 import { oracle, wat, jz } from './util.js'
+import { T } from '../src/ast.js'
 
 const res = (f) => { try { return f() } catch (e) { return 'throws ' + e.constructor.name } }
 const agrees = (src, calls) => {
@@ -165,4 +166,37 @@ test('called args: a copy runs the defaults its own calls leave to run', () => {
   agrees(`function sq (x) { return x * x } function cube (x) { return x * x * x }
     const apply = (f, x, k = 5) => f(x) + k
     export let run = (x) => apply(sq, x) + apply(cube, x, 1)`, [['run', 2], ['run', -3]])
+})
+
+// A parameter called or read through, given different closures by different
+// calls, gets a copy per set of them (plan/called-args.js splitByClosureArgs):
+// decode-wav's `samples(raw, T, n)`, given Uint16Array at one call and
+// Float64Array or Float32Array at another, builds a view of one kind per copy
+// where the shared body built any of three, read by kind at run time.
+const views = `const samples = (raw, T, n) => { let w = T.BYTES_PER_ELEMENT; if (raw.byteOffset % w) raw = raw.slice(0, n * w); return new T(raw.buffer, raw.byteOffset, n) }
+export let ints = (src, k) => { let raw = src instanceof Uint8Array ? src : new Uint8Array(src), s = samples(raw, Uint16Array, raw.length >> 1), t = 0
+  for (let i = k; i < s.length; i += 2) t += s[i]; return t }
+export let floats = (src, wide, k) => { let raw = src instanceof Uint8Array ? src : new Uint8Array(src), n = raw.length >> (wide ? 3 : 2)
+  let s = samples(raw, wide ? Float64Array : Float32Array, n), t = 0
+  for (let i = k; i < s.length; i += 2) t += s[i]; return t }`
+
+test('called args: a copy per set of closures a parameter is given', () => {
+  const bytes = new Uint8Array(64); for (let i = 0; i < 64; i++) bytes[i] = (i * 37) & 0x3f
+  agrees(views, [['ints', bytes, 0], ['ints', bytes, 1], ['floats', bytes, 0, 0], ['floats', bytes, 1, 1]])
+  if (!belowOpt(2)) {
+    const ints = wat(views, { optimize: 2 }).split(/\n(?=  \(func )/).find(f => f.startsWith('  (func $ints'))
+    ok(ints && !/__typed_idx_tagged/.test(ints), 'the Uint16Array copy reads its elements by their kind')
+  }
+})
+
+// A function that calls itself keeps one body (watr's template `walk(node, fn)`):
+// its copy would call the original for its recursion, the parameter the join
+// again there, and the program around it compiled for minutes.
+const walker = `const walk = (n, fn) => { fn(n); if (Array.isArray(n)) for (const c of n) walk(c, fn) }
+export let count = (t) => { let k = 0; walk(t, () => k++); return k }
+export let sum = (t) => { let s = 0; walk(t, (x) => { if (typeof x === 'number') s += x }); return s }`
+
+test('called args: a function that calls itself keeps one body', () => {
+  agrees(walker, [['count', [1, [2, [3]], 4]], ['sum', [1, [2, [3]], 4]]])
+  if (!belowOpt(2)) ok(!wat(walker, { optimize: 2 }).includes(`walk${T}k`), 'no copy of the walker')
 })

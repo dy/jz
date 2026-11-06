@@ -29,8 +29,8 @@ const layoutFrom = (props) => ctx.schema.list.findLastIndex(s => props.every((p,
 // The summary read after a compile is of the program the plan rewrote; these tests
 // pin the source's own functions, so the inliner is off (the speed tier splices callees)
 // and so is the record-parameter lane pass (it replaces a field-reading callee).
-// The kinds read here are the summary's own: no source inlining, no clone per argument kind (a parameter is the join of every call site's argument)
-const summarize = (src) => { compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false, aliases: false } }); return ctx.summary }
+// The kinds read here are the summary's own: no source inlining, no clone per argument kind or closure set (a parameter is the join of every call site's argument)
+const summarize = (src) => { compileInProcess(src, { optimize: { level: OPT_LEVEL, sourceInline: false, inlineFns: false, laneRecords: false, valKindClones: false, splitByClosureArgs: false, aliases: false } }); return ctx.summary }
 
 test('summary: closure queries retain settled object unions through result and own-property projections', () => {
   for (const own of [false, true]) {
