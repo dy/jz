@@ -59,7 +59,7 @@ import plan from './plan/index.js'
 import { foldModuleConstants } from './plan/scope.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
 import {
-  buildStartFn, dedupClosureBodies, finalizeClosureTable,
+  buildStartFn, devirtClosureCalls, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables, stripDeadInternedSpans,
 } from '../wat/assemble.js'
 import { link } from '../link/index.js'
@@ -724,6 +724,7 @@ export function assemble(ast, profiler) {
 
   syncImports(sec)
 
+  if (ctx.transform.optimize?.devirtClosureCalls) devirtClosureCalls(sec)
   dedupClosureBodies(closureFuncs, sec)
 
   finalizeClosureTable(sec)

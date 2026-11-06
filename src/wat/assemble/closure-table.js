@@ -39,6 +39,36 @@ const mixNumber = (h, n) => {
   return mix(mix(mix(h, 11), numberBits.getUint32(0, true)), numberBits.getUint32(4, true))
 }
 
+/**
+ * Phase: calls of one known closure body.
+ *
+ * A call the emitter tagged with a summary closure id (`closureId`,
+ * module/function.js ctx.closure.call: a record's field or a binding the
+ * summary types as that one closure, `br.read(k)` on a reader a factory
+ * returned) calls the body emitted for it: every value of the callee carries
+ * that body's table index, so the direct call is the call the table makes.
+ * Left indirect where the id names several bodies (its literal emitted in two
+ * copies of its function), and everywhere when a closure the summary never
+ * saw was emitted (a body cloned after it ran, which such a field may hold).
+ * Runs before the dedup, which renames these calls with the rest.
+ */
+export function devirtClosureCalls(sec) {
+  const ids = ctx.closure.summaryId
+  if (!ids?.size) return
+  const bodyOf = new Map()
+  for (const [name, id] of ids) {
+    if (id === undefined) return
+    bodyOf.set(id, bodyOf.has(id) ? null : name)
+  }
+  const rewrite = { exit: (n, parent, i) => {
+    if (n[0] !== 'call_indirect' || n.closureId == null || !parent) return
+    const name = bodyOf.get(n.closureId)
+    if (name) parent[i] = ['call', `$${name}`, ...n.slice(2, -1)]
+  } }
+  for (const fn of sec.funcs) walkAst(fn, rewrite)
+  for (const fn of sec.start) walkAst(fn, rewrite)
+}
+
 export function dedupClosureBodies(closureFuncs, sec) {
   if (closureFuncs.length <= 1) return
   // Rename-invariant rolling hash + exact compare on hash collision.

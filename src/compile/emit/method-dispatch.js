@@ -94,10 +94,11 @@ function tryFlatObjectMethod(callee, obj, method, parsed) {
   }
 }
 
-/** Call the closure held in `propRead` as the method: a spread call passes its arguments as one array. */
-const ownMethodCall = (propRead, parsed, check = false, receiver = null) => parsed.hasSpread
-  ? ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true, check, receiver)
-  : ctx.closure.call(propRead, parsed.normal, false, check, receiver)
+/** Call the closure held in `propRead` as the method: a spread call passes its arguments as one array.
+ *  `target`: the one closure the summary says the field holds (ctx.closure.targetOf). */
+const ownMethodCall = (propRead, parsed, check = false, receiver = null, target = null) => parsed.hasSpread
+  ? ctx.closure.call(propRead, [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))], true, check, receiver, target)
+  : ctx.closure.call(propRead, parsed.normal, false, check, receiver, target)
 
 // 2. String-buffer SRoA: `line.charCodeAt(j)` where `line` was dissolved into
 // raw (buf, len) locals by tryConcatBufferDecl (emit.js, above) — a bare byte
@@ -652,7 +653,7 @@ function trySchemaClosureCall(c) {
     const kind = view.kindOfExpr(['.', recv, method])
     const prop = ['.', recv, method], propRead = asF64(emit(prop)), self = typed(['local.get', `$${recv}`], 'f64')
     let call = mayBeHostFn(kind) ? callMaybeHost(propRead, parsed, self)
-      : ctx.closure.call ? ownMethodCall(propRead, parsed, tagOf(kind) !== K.CLOSURE || isNullable(kind), self)
+      : ctx.closure.call ? ownMethodCall(propRead, parsed, tagOf(kind) !== K.CLOSURE || isNullable(kind), self, ctx.closure.targetOf(kind))
       : emitNonCallable(prop, parsed, propRead)
     if (own.length !== shapes.length || mayDelete) {
       const tag = ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['i64.const', OBJECT_SCHEMA_HI_MASK]]

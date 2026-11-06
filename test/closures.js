@@ -2942,3 +2942,33 @@ export let f = (n) => {
   for (const [cb, n] of calls) is(tagOf(ctx.summary.at({ scope: cb.scope }).kindOfExpr(n)), K.NUMBER, `${cb.name.replaceAll(T, '')}: ${n[1].replaceAll(T, '')}() is a Number in its frame`)
 })
 
+// A call through a record's field the summary types as one closure (a reader
+// a factory returns: `r.read(3)`) is a direct call of that body; a field that
+// may hold either of two closures keeps the table's dispatch.
+test('closures: a method a factory returns is called directly', () => {
+  // (the records held in an array and passed on: no splice dissolves them)
+  const reader = (pick) => `const makeReader = (buf, n) => {
+  let pos = 0
+  const next = () => buf[pos++] | 0
+  const skip = (k) => { pos += k; return pos }
+  return { next, skip: ${pick} }
+}
+const take = (r, k) => { const v = r.next(); r.skip(k & 1); return v }
+export let f = (n) => {
+  const b = new Uint8Array(n)
+  for (let k = 0; k < n; k++) b[k] = k * 7 & 255
+  const rs = [makeReader(b, n), makeReader(b.subarray(1), n)]
+  let s = 0
+  for (let k = 0; k + 2 < n; k += 3) s += take(rs[k & 1], k)
+  return s
+}`
+  const one = reader('skip'), two = reader('n > 10 ? skip : (k) => k')
+  for (const src of [one, two]) {
+    const want = oracle(src).f
+    for (const optimize of levels(0, 2, 3, 'size')) for (const n of [5, 40]) is(jz(src, { optimize }).exports.f(n), want(n), `f(${n}) at ${optimize}`)
+  }
+  if (onKernel()) return
+  ok(!/call_indirect/.test(compile(one, { optimize: 2, wat: true })), 'one closure per field: direct calls')
+  ok(/call_indirect/.test(compile(one, { optimize: 0, wat: true })), 'the reference tier keeps the table')
+  ok(/call_indirect/.test(compile(two, { optimize: 2, wat: true })), 'two closures in a field: the table dispatches')
+})

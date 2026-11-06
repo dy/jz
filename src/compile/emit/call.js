@@ -446,7 +446,7 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
     const args = parsed.hasSpread
       ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
       : parsed.normal
-    ir = ctx.closure.call(calleeIR, args, parsed.hasSpread, open || nullable, receiver)
+    ir = ctx.closure.call(calleeIR, args, parsed.hasSpread, open || nullable, receiver, open ? null : ctx.closure.targetOf(kind))
   } else ir = callMaybeHost(calleeIR, parsed, receiver)
   return dvName ? tagFnArrayDispatch(ir, dvName, open, fixedTable ? calleeIR.elemKey : null) : ir
 }

@@ -19,6 +19,7 @@ import { BIGINT_REP_CLOSED, BIGINT_REP_BOXED, BIGINT_REP_RAW, REP_EDGE_REJECT, r
 import { T } from '../src/ast.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { PTR, LAYOUT, inc, err, declGlobal, setLinkDemand, registerGetter } from '../src/ctx.js'
+import { K, tagOf, paramOf, UNKNOWN } from '../src/summary/kind.js'
 import { reachOn } from './core/reach.js'
 import { compactOn } from './core/compact.js'
 import { functionLength } from '../src/function.js'
@@ -307,7 +308,16 @@ export default (ctx) => {
     const action = representationClosureArgAction(ctx, a)
     return action === REP_EDGE_REJECT ? storedValue(a) : storedValuePlanned(a, action)
   }
-  ctx.closure.call = (closureExpr, args, prebuiltArray, check = false, thisArg = null) => {
+  // The one closure a callee of kind `k` runs, by its summary id: a record's
+  // field the summary types as one closure (`br.read`, a method a factory
+  // returned), a binding holding one. Its call is a direct call of that body
+  // once every closure is emitted (compile/index.js devirtClosureCalls).
+  ctx.closure.targetOf = (k) => {
+    if (k == null || tagOf(k) !== K.CLOSURE || paramOf(k) === UNKNOWN) return null
+    const members = ctx.summary?.closureMembers?.(paramOf(k))
+    return members?.length === 1 && typeof members[0] === 'number' ? members[0] : null
+  }
+  ctx.closure.call = (closureExpr, args, prebuiltArray, check = false, thisArg = null, target = null) => {
     const t = temp('clos'), recv = typed(['local.get', `$${t}`], 'f64')
     // Every caller captures the callee before evaluating inline or spread args.
     const setup = [['local.set', `$${t}`, asF64(closureExpr)]]
@@ -351,6 +361,7 @@ export default (ctx) => {
       ['i32.wrap_i64', ['i64.and',
         ['i64.shr_u', ['i64.reinterpret_f64', recv], ['i64.const', LAYOUT.AUX_SHIFT]],
         ['i64.const', LAYOUT.AUX_MASK]]]]
+    if (target != null) call.closureId = target
     // Unproven member slots need a check after argument effects. Other callers
     // already established callability through analysis or runtime dispatch.
     return typed(['block', ['result', 'f64'], ...setup, check

@@ -21,6 +21,7 @@ export const PASS_NAMES = [
   'hashRmwFusion',            // lean-dict layout + dictionary/Map single-probe updates
   'inplaceStore',             // in-place replace store on the inline-cell layout
   'devirtClosureTables',      // dyn fn-table candidates: scan + call-site tags + resolve
+  'devirtClosureCalls',       // a call of a field or binding the summary types as one closure: a direct call of its body (wat/assemble/closure-table.js)
   'devirtDynProps',           // megamorphic prop-read devirt markers (dvProp/dvObject)
   'speculateSchemaBranches',  // one schema guard around multi-field tagged-union branch bodies (speed-for-size)
   'hoistPtrType',
