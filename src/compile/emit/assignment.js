@@ -7,7 +7,7 @@
 import { ctx, err, inc } from '../../ctx.js'
 import { isReassigned } from '../../ast.js'
 import {
-  applyBigintRepresentationAction, asF64, asI32, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
+  applyBigintRepresentationAction, applyBindingWriteAction, asF64, asI32, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
 import { hasAmbiguousBoolMerge, valTypeOf, boolTagged, isPresentNumber } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
@@ -304,7 +304,7 @@ export const assignmentOps = {
     try { ev = withInitializerScope(selfAccum ? name : null, () => tagged && hasAmbiguousBoolMerge(val) ? emitIdentitySafe(val) : emit(val)) }
     finally { if (objectLiteral) ctx.schema.targetStack.pop() }
     const repAction = representationBindingWriteAction(ctx, name, val)
-    ev = applyBigintRepresentationAction(ev, val, repAction)
+    ev = applyBindingWriteAction(ev, val, name, repAction)
     ev = boolCarrier(name, val, ev)
     return writeVar(name, ev, void_, val)
   },

@@ -4672,11 +4672,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       return from === null || to === null || args.length > 2 ? null : { len: Math.max(to - from, 0), bytes: under.bytes }
     }
     if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string') return null
-    // `X.from(array)`, `new X(array)`: an element for each of the array's. (Not a
-    // BigInt array's: one of a known count that a function stores BigInts into
-    // reads back wrong at level 0, `new BigInt64Array(2)` included, an open defect.)
+    // `X.from(array)`, `new X(array)`: an element for each of the array's
     const from = TYPED_STATIC.exec(e[1])
-    if (from && !from[1].startsWith('Big')) {
+    if (from) {
       const args = argList(e[2]), size = TYPED_BYTES[TYPED_ELEM_CODE[from[1]]], n = args.length && size ? arrayCount(scope, args[0]) : null
       return n === null ? null : { len: n, bytes: n * size }
     }
@@ -4684,7 +4682,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (m) {
       const args = argList(e[2]), size = TYPED_BYTES[TYPED_ELEM_CODE[m[1]]]
       if (args.length !== 1 || !size) return null
-      const a = args[0], count = m[2] || m[1].startsWith('Big') ? null : arrayCount(scope, a)
+      const a = args[0], count = m[2] ? null : arrayCount(scope, a)
       if (count !== null) return { len: count, bytes: count * size }
       if (Array.isArray(a) && a[0] === '.' && a[2] === 'buffer' && typeof a[1] === 'string') {
         const under = typedShapeOf(scope, a[1], seen)

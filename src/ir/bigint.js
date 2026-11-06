@@ -15,7 +15,7 @@ import { isPresentNumber } from '../kind.js'
 import { ctx, err, inc, PTR } from '../ctx.js'
 import { VAL } from '../reps.js'
 import { valTypeOf } from '../kind.js'
-import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS, callContractOf, representationActiveMaterializedRep, representationGlobalMayBox, representationProvesBigint } from '../compile/representation-plan.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW, REP_EDGE_BOX, REP_EDGE_KEEP, REP_EDGE_REJECT, REP_EDGE_TAG_BOX, REP_EDGE_UNBOX, STORAGE_READ_METHODS, callContractOf, representationActiveMaterializedRep, representationGlobalMayBox, representationProvesBigint } from '../compile/representation-plan.js'
 import { CARRIER } from '../summary/contract.js'
 import { typed } from './tag.js'
 import { temp, tempI32, blockTyped } from './locals.js'
@@ -175,6 +175,16 @@ export function applyBigintRepresentationAction(ir, node, action) {
   if (action === REP_EDGE_TAG_BOX) return tagBoxBigInt(asF64(ir))
   if (action === REP_EDGE_UNBOX) return fromI64(maybeUnboxBigInt(asF64(ir)))
   return ir
+}
+
+/** A value written into the plain binding `name`, in its carrier: the plan's
+ *  write edge, and where the plan leaves the binding alone and it may hold
+ *  another kind (`let s = 0n` before `s = s + b[i]`, a generic sum that may be a
+ *  string), a BigInt boxed, as every generic slot holds one: its raw word would
+ *  read as the Number it spells. */
+export function applyBindingWriteAction(ir, node, name, action) {
+  ir = applyBigintRepresentationAction(ir, node, action)
+  return action === REP_EDGE_REJECT && valTypeOf(node) === VAL.BIGINT && valTypeOf(name) !== VAL.BIGINT ? boxBigInt(readI64(node, ir)) : ir
 }
 
 /** Box a BigInt whose carrier the plan could not settle: a NaN-box (a box

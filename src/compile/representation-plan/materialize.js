@@ -322,6 +322,9 @@ export const activeEmittedRep = (ctx, node) => {
 export const activeStorageSourceRep = (ctx, node) => {
   const rep = activeEmittedRep(ctx, node)
   if (rep !== NO_BIGINT) return rep
+  // A mixed node its producer boxes (bigintResult, bigIntJointDispatch: the plan's
+  // computed action) arrives boxed; taken for a raw origin, the edge boxed the box.
+  if (Array.isArray(node) && ctx.plans.representations?.get(ctx.func?.current) && representationComputedExprAction(ctx, node) === REP_EDGE_BOX) return BOXED_BIGINT
   if (isBigintOrigin(node)) return RAW_BIGINT
   // An emitter-rebuilt node has no retained facts (ctx.plans.compoundOf): a
   // definite BigInt result of one is the raw i64 the arithmetic emitters

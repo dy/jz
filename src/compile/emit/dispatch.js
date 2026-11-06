@@ -13,7 +13,7 @@ import { STR_HCACHE_BIT, HEAP, ARRAY_RAW } from '../../../layout.js'
 import { ASSIGN_OPS, MUTATE_OPS, REFS_THROUGH_ARROWS, T, commaList, firstRefKind, isBlockBody, isReassigned, projectedElementInit, refsName, walkAst } from '../../ast.js'
 import { PTR, ctx, err, inc, emitArity, setLinkDemand, here } from '../../ctx.js'
 import {
-  keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
+  keyIndex, int32Bits, callWithArgs, bindingCarrierIR, FALSE_NAN, MAX_CLOSURE_ARITY, TRUE_NAN, WASM_OPS, applyBigintRepresentationAction, applyBindingWriteAction, asF64, asI32, asI64, asParamType, asPtrOffset, block64, boolBoxIR, boxBigInt, carrierF64, numberCarrierIR, carrierF64Narrow, emitNum, extractF64Bits, flat, fromI64, isBoundName, isGlobal, boxedAddr, boxedPtrTypeEq, isLit, isNullish, isNullishLit, litVal, materializeDeferredBigint, mayYieldUndefOf, maybeUnboxBigInt, mkPtrIR, nullExpr, nullableBoolBoxIR, ptrOffsetIR, readVar, resolveValType, temp, tempI32, tempI64, toI32, toNumF64, toStrI64, truthyIR, typed, unboxBoolIR, undefExpr, valKindToPtr,
 } from '../../ir.js'
 import { BIGINT_JOINT_BINARY_OPS, isPresentNumber, hasAmbiguousBoolMerge, nullishArm, valTypeOf, boolTagged, mixedBoolKind } from '../../kind.js'
 import { VAL, lookupValType, repOf, repOfGlobal, numericStorage, mayBeUndefined } from '../../reps.js'
@@ -759,8 +759,8 @@ export function boolCarrier(name, node, ir) {
 }
 /** `node` emitted as the value a store into the binding `name` lands: in the
  *  binding's BigInt carrier (the plan's write edge) and its Boolean one (boolCarrier). */
-export const bindingStore = (name, node) => boolCarrier(name, node, applyBigintRepresentationAction(
-  boolTagged(name) && hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node), node, representationBindingWriteAction(ctx, name, node)))
+export const bindingStore = (name, node) => boolCarrier(name, node, applyBindingWriteAction(
+  boolTagged(name) && hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node), node, name, representationBindingWriteAction(ctx, name, node)))
 
 /** Emit let/const initializations as typed local.set instructions. */
 // A typed element the emitter loaded bare (its index proven inside the array),
@@ -1005,7 +1005,7 @@ export function emitDecl(...inits) {
         ctx.func.noFill = false
       }
     }
-    val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
+    val = applyBindingWriteAction(val, init, name, representationBindingWriteAction(ctx, name, init))
     if (!viewInit) val = boolCarrier(name, init, val)
     val = bindingCarrierIR(name, val, init)
     if (isObjLit) ctx.schema.targetStack.pop()

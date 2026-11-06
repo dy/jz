@@ -30,7 +30,7 @@ import {
   freshId, boxBigInt, isNullish, throwTypeErrorIR, throwErrorIR, capturedCellSave, cellSnap, cloneIR,
 } from '../ir.js'
 import { emit, idx as emitIndex, storedValue, storedValueNarrow, storedFieldValue, flatStoredValue } from '../bridge.js'
-import { REP_EDGE_BOX, representationStorageWriteAction } from './representation-plan.js'
+import { REP_EDGE_REJECT, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo, plannedTypedPayloadInfo } from './typed-storage-plan.js'
 import { typedIdxProven, inBoundsArrIdx, wholeKey } from '../type.js'
 import { trySlotUpdate } from './slot-update.js'
@@ -657,13 +657,14 @@ function emitElementStore(arr, idx, val, node) {
   // An array whose elements are raw Numbers (compile/numeric-arrays.js) takes the value's bits as they are.
   const valueExpr = arrProvenTyped || numericKey && numericArrayExpr(arr) ? storedValueNarrow(val) : storedValue(val)
   // A runtime-typed destination needs a self-describing value. A definite
-  // BigInt source may lawfully stay raw under its ordinary RepresentationPlan
-  // edge, so materialize the PTR.BIGINT tag specifically for the polymorphic
-  // typed writer. Mixed sources already arrive tagged through storedValue.
+  // BigInt source the plan does not cover may stay raw, so materialize the
+  // PTR.BIGINT tag specifically for the polymorphic typed writer. A source the
+  // plan covers arrives tagged through storedValue: boxed by its edge (BOX) or
+  // by its producer (KEEP, a mixed sum's runtime BigInt arm), never twice.
   const valueVT = valTypeOf(val)
   const valueDomain = valueVT === VAL.NUMBER ? 2 : valueVT === VAL.BIGINT ? 1 : valueVT != null ? 0 : -1
   const taggedValueExpr = () => valueVT === VAL.BIGINT &&
-      representationStorageWriteAction(ctx, val) !== REP_EDGE_BOX
+      representationStorageWriteAction(ctx, val) === REP_EDGE_REJECT
     ? boxBigInt(asI64(valueExpr)) : valueExpr
   const runtimeTypedValueExpr = taggedValueExpr
   // dyn-closure-tables.js: `arr[idx] = val` into a proven-safe candidate closure

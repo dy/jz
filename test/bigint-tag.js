@@ -733,3 +733,25 @@ test('bigint compare: <, >, <=, >= through values of several kinds agree with JS
     for (let i = 0; i < 16; i++) for (let j = 0; j < 16; j++) is(f(i, j), want(i, j), `v[${i}] against v[${j}] at ${optimize}`)
   }
 })
+
+// A BigInt reaches a generic slot boxed once. An exported function's array
+// parameter is any kind to its body, so `b[i] + 1n` may concatenate and its
+// runtime BigInt arm boxes the sum: the store into the polymorphic typed
+// writer took that box for a raw payload and boxed it again, storing the
+// box's own bits (emit-assign.js taggedValueExpr, the plan's storage source).
+// And `let s = 0n` before `s = s + b[i]` wrote the raw word into a slot the
+// generic sum shares, where it read as the Number 0 and the sum threw "Cannot
+// mix BigInt" (ir/bigint.js applyBindingWriteAction).
+test('bigint tag: a BigInt into a generic slot is boxed once', () => {
+  const mk = 'const b = new BigInt64Array(2); b[0] = 2n; b[1] = 7n'
+  const rows = {
+    store: `export function p(b, n) { for (let i = 0; i < n; i++) b[i] = b[i] + 1n; return b[0] + b[1] }\nexport let f = () => { ${mk}; return p(b, 2) }`,
+    storeAt: `export function p(b, i) { b[i] = b[i] + 1n }\nexport let f = () => { ${mk}; p(b, 0); p(b, 1); return b[0] * 10n + b[1] }`,
+    sum: `export function p(b, n) { let s = 0n; for (let i = 0; i < n; i++) s = s + b[i]; return s }\nexport let f = () => { ${mk}; return p(b, 2) }`,
+    counted: `export function p(b) { for (let i = 0; i < 2; i++) b[i] = b[i] * 3n; return b[0] + b[1] }\nexport let f = () => p(new BigInt64Array([2n, 7n]))`,
+  }
+  for (const [name, src] of Object.entries(rows)) {
+    const want = oracle(src).f()
+    for (const optimize of levels(0, 1, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(), want, `${name} at ${optimize}`)
+  }
+})
