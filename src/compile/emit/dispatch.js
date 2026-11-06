@@ -898,7 +898,8 @@ export function emitDecl(...inits) {
       // else r = b`, the result of a spliced body that returns from an arm),
       // whose kind then holds no absence. i32-narrowed locals are exempt either
       // way: the narrowing proof is assigned-before-read, and they zero-init.
-      if (ctx.func.locals.get(i) !== 'i32' && firstRefKind(ctx.func.body, i) !== 'write' && repOf(i)?.presence !== 'present')
+      const assigned = firstRefKind(ctx.func.body, i) === 'write' || repOf(i)?.presence === 'present'
+      if (ctx.func.locals.get(i) !== 'i32' && !assigned)
         (ctx.func.maybeNullish ??= new Set()).add(i)
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
@@ -914,9 +915,15 @@ export function emitDecl(...inits) {
         if ((ctx.scope.globalTypes.get(i) ?? 'f64') === 'f64') result.push(['global.set', `$${i}`, undef])
         continue
       }
-      // An i32-typed local (a narrowed integer index feeder) can't hold the f64
-      // NaN-box undef sentinel — and wasm zero-inits locals anyway, so a 0 init is
-      // equivalent for the assigned-before-read pattern that earns i32.
+      // A local no read finds unassigned stores nothing: what it is declared with is
+      // never seen, and a store of it is one more write for the passes that type the
+      // local by its writes to see (a word a library returns through a scratch array,
+      // `let ms; ms = UINT32_VIEW[ HIGH ]`, held in an integer register only without
+      // the `undefined` it is declared with). An i32-typed local (a narrowed integer
+      // index feeder) can't hold the f64 NaN-box undef sentinel — and wasm zero-inits
+      // locals anyway, so a 0 init is equivalent for the assigned-before-read pattern
+      // that earns i32.
+      if (assigned) continue
       result.push(['local.set', `$${i}`, ctx.func.locals.get(i) === 'i32' ? ['i32.const', 0] : undef])
       const shadow = ctx.func.numShadow?.get(i)
       if (shadow) result.push(['local.set', `$${shadow}`, ['f64.const', 'nan']])
