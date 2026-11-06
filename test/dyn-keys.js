@@ -1447,6 +1447,21 @@ test('typed-array dynamic stores preserve the reference before RHS effects', () 
   }
 })
 
+// A parameter the body writes a string to is a variable a string reaches, whether the
+// write is read or not: the export boundary keeps the host's value there at every level,
+// where the write went to a binding of its own (prepare/split-bindings.js) and, unread,
+// was dropped. A call spliced at `a[key] = rhs()` leaves its caller this shape.
+test('typed-array dynamic stores through a parameter written with a string keep the host key', () => {
+  const src = `export function g(key) { const a = new Int32Array([3, 5]); const t = key; key = 'label'; a[t] = 13; return [a[0], a[1], a.label] }
+  export function h(key) { const a = new Int32Array([3, 5]); a[key] = 13; key = 'label'; return [a[0], a[1], a.label, key] }`
+  const expected = oracle(src)
+  for (const optimize of [...levels(0, 2, 3), 'size']) {
+    const wasm = jz(src, { optimize }).exports
+    for (const key of [0, 1, 'label', '01', undefined])
+      for (const name of ['g', 'h']) is(wasm[name](key), expected[name](key), `O${optimize}: ${name}(${key})`)
+  }
+})
+
 test('schema lookup preserves content equality and slot lifetime for every key form', () => {
   const fields = { '': 1, a: 2, abcdef: 3, abcdefg: 4, é: 5, '😀': 6, 'a\0b': 7, secondLong: 8 }
   const src = `export function f(k, json) {

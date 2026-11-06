@@ -98,8 +98,8 @@ export function splitReassigned(fn, nested = false) {
   }
   has(top)
   if (!any) return body
-  const own = new Set(), captured = new Set()
-  for (const p of fn.sig.params) if (p.name !== fn.rest) own.add(p.name)
+  const own = new Set(), captured = new Set(), params = new Set()
+  for (const p of fn.sig.params) if (p.name !== fn.rest) { own.add(p.name); params.add(p.name) }
   census(body, own, captured, false)
   if (fn.defaults) for (const d of Object.values(fn.defaults)) census(d, new Set(), captured, false)
   // the names an earlier pass over this body made keep theirs
@@ -136,6 +136,9 @@ export function splitReassigned(fn, nested = false) {
         if (!out) out = copyNode(list)
         const value = s[0] === '=' ? s[2] : [COMPOUND.get(s[0]), name, s[2]]
         out[k] = noted(s, ['let', noted(s, ['=', next, value])])
+        // (a write of a parameter is the parameter's as the source wrote it, one variable: the
+        // export boundary reads what such a value may be, the binding it went to read or not)
+        if (params.has(root)) { if (!fn.paramWrites) fn.paramWrites = new Map(); const w = fn.paramWrites.get(root); if (w) w.push(value); else fn.paramWrites.set(root, [value]) }
         if (view) joinKinds.set(next, view.kindOfExpr(value))
         // The RHS above still reads the previous name. Later statements read
         // the new one when reached, so each is renamed once instead of once

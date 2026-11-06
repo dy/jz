@@ -39,6 +39,16 @@ import { frameNode } from '../function.js'
 import { viewsOn } from '../../module/schema.js'
 import { K, bitOf, tagsOf, tagOf, core, hasTag } from '../summary/kind.js'
 
+// A write of a parameter split into a binding of its own (prepare/split-bindings.js
+// `paramWrites`) is the parameter's as the source wrote it, one variable: where one
+// may be a string (`key = 'label'`, read or dead), the parameter is a variable a
+// string reaches, as it is where nothing split it, and the export boundary keeps the
+// host's value there.
+const writtenString = (func, name, summary) => (func.paramWrites?.get(name) ?? []).some(v => {
+  const k = summary?.kindOfExpr(v)
+  return k == null || tagOf(core(k)) === K.ANY || hasTag(k, K.STRING)
+})
+
 // Monotonic across all functions so a CSE temp never collides (even after later
 // inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
 // freshLoopId pattern): a module-level counter made warm-process WAT text
@@ -290,6 +300,7 @@ export function analyzeFuncForEmit(func, programFacts) {
           // string-concat fork (julia, floatbeats). A sum read as a string
           // somewhere it flows is a use as a string (the summary's demand).
           && !summary?.stringDemand(p.name)
+          && !writtenString(func, p.name, summary)
           && (summary?.numericDemand(p.name) || paramAllUsesNumeric(frameNode(func), p.name) || paramNeverString(frameNode(func), p.name)))
         // An f64 slot holds a genuine number (the JS API's ToNumber made
         // `undefined` NaN), and neither proof admits a nullish test, so the
