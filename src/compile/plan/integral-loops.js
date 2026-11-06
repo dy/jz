@@ -1226,7 +1226,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     }
     const env = new Map()   // name → its hull where the walk stands, null for none known
     const words = new Map(), used = new Set(), prods = [], floats = new Set()   // decl name → hull; guard names the hulls read; product hulls; names hulls read as floats
-    const guardable = (n) => !loopWrites.has(n) && !inner.has(n) && mayBeNumber(n) && (outerOk(n) || stableGlobal(n)) && !(func && isExported(func) && params.has(n))
+    // (a name a copy minted is declared in that copy's block: no guard out here reads it)
+    const guardable = (n) => !loopWrites.has(n) && !inner.has(n) && !origin.has(n) && mayBeNumber(n) && (outerOk(n) || stableGlobal(n)) && !(func && isExported(func) && params.has(n))
     // An int32 of the copy: the counter, a cursor, a word, a name the guard holds
     // to one, an i32 module binding, or a local every write of which is an
     // integer of such names (no typed element: one past the end is NaN).

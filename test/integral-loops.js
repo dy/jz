@@ -424,6 +424,37 @@ test('integral loops: a counter bounded by a float of unknown integrality counts
   ok(inner.some(l => !/trunc_sat/.test(l) && !/f64\.convert_i32_s/.test(l)), 'a copy of the correlation indexes by an int32 counter')
 })
 
+// A copy declares the words it names anew inside its own block, so no guard of an
+// enclosing loop reads one. IMA ADPCM's block loop around its word and channel
+// loops (decode-wav's `decodeImaWav`, its channels made by a loop) took the cursor
+// word of the copy inside into its own guard, a name no scope there declares: the
+// module did not compile.
+test('integral loops: a guard reads no word a copy inside it declared', () => {
+  const src = `const RAW = new Uint8Array(2048)
+    for (let i = 0; i < 2048; i++) RAW[i] = (i * 53 + 7) & 255
+    export let f = (nCh, ba, spb) => {
+      let nBlocks = Math.floor(RAW.length / ba), ch = []
+      for (let c = 0; c < nCh; c++) ch.push(new Float32Array(nBlocks * spb))
+      for (let blk = 0; blk < nBlocks; blk++) {
+        let base = blk * ba, outBase = blk * spb, cnt = new Int32Array(nCh).fill(1)
+        let p = base + nCh * 4, nWords = Math.ceil((spb - 1) / 8)
+        for (let w = 0; w < nWords; w++)
+          for (let c = 0; c < nCh; c++, p += 4) {
+            let out = ch[c]
+            for (let n = 0; n < 4; n++) if (cnt[c] < spb) out[outBase + cnt[c]++] = RAW[p + n]
+          }
+      }
+      let h = 0
+      for (let c = 0; c < nCh; c++) for (let i = 0; i < ch[c].length; i++) h = (Math.imul(h, 31) + ch[c][i]) | 0
+      return h
+    }`
+  const js = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const a of [[2, 200, 100], [3, 96, 40], [1, 256, 505], [2, 64.5, 113]]) is(m.f(...a), js.f(...a), `f(${a}) at ${optimize}`)
+  }
+})
+
 // A copy writes back what it wrote under names of its own after the loop: a jump
 // to a label outside (`continue out`, `break out`) would leave past that, so a
 // loop with one keeps its own names.
