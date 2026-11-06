@@ -391,7 +391,7 @@ const parse = (src, sourceType = 'jz', base = 0) => {
   joinedAt = gapFrom = gapEnd = closedOpen = closedAt = -1
   opens.length = 0
   try {
-    ast = jessieParse(parseSource)
+    ast = foldStringRuns(jessieParse(parseSource))
     if (parseSource.includes('using')) awaitUsingHeads(ast)
     validateEarlyErrors(ast, src, sourceType, base)
     if (joinedAt >= 0) err('Expected ; or a line break before this statement', joinedAt)
@@ -524,6 +524,45 @@ for (let c = 0; c < lookup.length; c++) {
   const ordered = []
   for (let l = longest; l > 0; l--) for (let i = 0; i < ops.length; i++) if (ops[i].l === l) ordered.push(ops[i])
   for (let i = 0; i < ordered.length; i++) ops[i] = ordered[i]
+}
+
+// A run of string literals a `+` chain appends, one literal: once a string
+// literal sits on the right the left side is a string, so `(e + 'a') + 'b'` is
+// `e + 'ab'` for any `e`, and `'a' + 'b'` is `'ab'`. Generated sources spell
+// long data so (a base64 table wrapped across lines), a chain thousands deep
+// that every recursive walk after the parse would follow to its stack's end.
+// The walk keeps its own stack; each chain's left spine is rebuilt from its
+// innermost `+` out, reusing the nodes it keeps. The chain itself stays a `+`:
+// `'use' + ' strict';` is no directive, as one literal would be.
+const isStrLit = (n) => Array.isArray(n) && n.length === 2 && n[0] == null && typeof n[1] === 'string'
+const isPlus = (n) => Array.isArray(n) && n[0] === '+' && n.length === 3
+const joinLit = (a, b) => { const l = [null, a[1] + b[1]]; l.loc = a.loc; return l }
+function foldStringRuns(ast) {
+  const done = new Set()
+  const fold = (top) => {
+    const spine = []
+    let n = top
+    while (isPlus(n) && !done.has(n)) { spine.push(n); n = n[1] }
+    let acc = n
+    for (let i = spine.length - 1; i >= 0; i--) {
+      const node = spine[i], right = node[2]
+      if (isStrLit(right) && isStrLit(acc) && i) acc = joinLit(acc, right)
+      else if (isStrLit(right) && isPlus(acc) && isStrLit(acc[2])) acc[2] = joinLit(acc[2], right)
+      else { node[1] = acc; done.add(node); acc = node }
+    }
+    return acc
+  }
+  if (isPlus(ast)) ast = fold(ast)
+  const todo = [ast]
+  while (todo.length) {
+    const n = todo.pop()
+    if (!Array.isArray(n)) continue
+    for (let i = 1; i < n.length; i++) {
+      if (isPlus(n[i]) && !done.has(n[i])) n[i] = fold(n[i])
+      if (Array.isArray(n[i])) todo.push(n[i])
+    }
+  }
+  return ast
 }
 
 export { parse }

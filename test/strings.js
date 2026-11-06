@@ -1773,3 +1773,23 @@ test('string equality: a canonical string against a long literal is answered by 
   const known = funcWat(compile(src, { optimize: 'speed', wat: true }), 'known')
   ok(/i64\.and[\s\S]{0,80}0x0*200100000000/.test(known), 'speed: a canonical-bit test guards the equality call')
 })
+
+// A run of string literals a `+` chain appends is one literal (parse.js
+// foldStringRuns): once a string literal sits on the right the left side is a
+// string, so `(e + 'a') + 'b'` is `e + 'ab'` for any `e`. A generated source
+// spells long data so, a chain thousands of terms deep that ran the compiler's
+// recursive walks out of stack (900 terms failed). The fold never reorders a
+// sum: a number, a variable or an object before the first string literal keeps
+// its own `+`, its conversion run once.
+test('strings: a long chain of string literals concatenates as JS does', () => {
+  const long = `const S = ${Array.from({ length: 5000 }, (_, i) => `'ab${i}'`).join(' + ')}\nexport let f = () => S.length + S.charCodeAt(3000)`
+  const order = `let n = 0
+const o = { valueOf() { n++; return 7 } }
+export let f = (x) => [1 + 2 + 'a' + 'b', 'a' + 1 + 'b' + 'c', x + 'p' + 'q', o + 'p' + 'q', n, 'u' + 'v' + x + 'w' + 'z'].join()`
+  for (const optimize of levels(0, 2)) {
+    is(jz(long, { optimize }).exports.f(), oracle(long).f(), `5000 literals at ${optimize}`)
+    is(jz(order, { optimize }).exports.f(4), oracle(order).f(4), `the order kept at ${optimize}`)
+  }
+  // a chain is no directive, though its literals join: default parameters allow it
+  is(jz(`export function f(a = 1) { 'use' + ' strict'; return a }`).exports.f(), 1, 'a joined chain is no directive')
+})
