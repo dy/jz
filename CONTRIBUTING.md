@@ -846,13 +846,18 @@ retain their fixed UTF-16 length. Serializer or decoder allocation into unread
 data traps. These helpers are reachable only from checkpoint users. The lane
 also carries an `Int32Array` or `Float64Array` whole (`__park_write_bytes`):
 a large compile decodes the assembled module onto the tape before its first
-checkpoint, which keeps the tape (its columns, symbols and atoms:
-src/ir/tape.js tapeState) with link's and the optimizer's inputs instead of
-the tree, dead once decoded; each of link's passes then runs as a phase of
-its own, and each sweep of the arena rewind over the module's functions
-within it (`phase` in its facts), compacted before the next runs and before
-the tape is read back into the tree the optimizer takes (scripts/self.js
-compileModule, src/link/index.js linkPasses, src/optimize/arena-rewind.js).
+checkpoint, which keeps the tape with link's and the optimizer's inputs
+instead of the tree, dead once decoded. The tape's columns (src/ir/tape.js
+tapeColumns), the last and largest thing the decode allocated, move down to
+the arena's floor past the rewind before anything else is allocated; its
+symbols and atoms (tapeState) go through the lane. Copied into the lane, the
+columns (32 bytes a node, near a gigabyte on the compiler's own module) sat
+a second time above a heap of 3.26 GB and ran it past the end of memory.
+Each of link's passes then runs as a phase of its own, and each sweep of
+the arena rewind over the module's functions within it (`phase` in its
+facts), compacted before the next runs and before the tape is read back into
+the tree the optimizer takes (scripts/self.js compileModule,
+src/link/index.js linkPasses, src/optimize/arena-rewind.js).
 The arena rewind pass alone allocates 6.9 GB under V8 on the compiler's
 own module; `guarded` keeps a node's parent in one column over the tape, not
 a Map per function the pass held to its end.
