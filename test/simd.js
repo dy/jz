@@ -3078,8 +3078,36 @@ test('vectorize: Math.min / Math.max map with a scalar bound lift', () => {
   // Σ min(i,500): Σ_{0}^{500} i + 523·500 ; Σ max(i,500): 500·500 + Σ_{500}^{1023} i
   is(runVec(minSrc, SIMD_OPT).main(), (500 * 501 / 2 + 523 * 500) | 0)
   is(runVec(maxSrc, SIMD_OPT).main(), (500 * 500 + (1023 * 1024 / 2 - 499 * 500 / 2)) | 0)
-  ok(/f64x2\.min/.test(wat(minSrc, SIMD_OPT)), 'min map → f64x2.min')
-  ok(/f64x2\.max/.test(wat(maxSrc, SIMD_OPT)), 'max map → f64x2.max')
+  ok(/f64x2\.pmin/.test(wat(minSrc, SIMD_OPT)), 'min map against a literal → f64x2.pmin')
+  ok(/f64x2\.pmax/.test(wat(maxSrc, SIMD_OPT)), 'max map against a literal → f64x2.pmax')
+})
+
+// A minimum against a literal that is no NaN is the pseudo-minimum, the literal second
+// (vectorize/lift.js pseudoOperand): Math.min's NaN and -0 rules hold lane for lane,
+// except against the literal -0 (+0 for the maximum), which keeps the full operator.
+test('vectorize: a lane min/max against a literal is the pseudo-operator, exact at NaN, ±0 and ±Infinity', () => {
+  const xs = [NaN, -0, 0, 1, -1, 0.5, 6, -6, Infinity, -Infinity, 1e-320, -1e-320, 2, 3]
+  const map = (expr) => `export const main = (xs) => {
+      const n = xs.length, a = new Float64Array(n), o = new Float64Array(n)
+      for (let i = 0; i < n; i++) a[i] = xs[i]
+      for (let i = 0; i < n; i++) o[i] = ${expr}
+      return o
+    }`
+  const rows = [
+    ['Math.min(a[i], 1)', 'pmin'], ['Math.min(1, a[i])', 'pmin'], ['Math.min(a[i] / 6, 1)', 'pmin'],
+    ['Math.max(a[i], -1)', 'pmax'], ['Math.max(-Infinity, a[i])', 'pmax'], ['Math.min(a[i], 0)', 'pmin'],
+    ['Math.max(a[i], -0)', 'pmax'], ['Math.min(a[i], -0)', 'min'], ['Math.max(a[i], 0)', 'max'],
+  ]
+  for (const [expr, op] of rows) {
+    const src = map(expr), want = oracle(src).main(xs)
+    for (const opts of [SIMD_OPT, NOVEC, SPEED]) {
+      const got = runVec(src, opts).main(xs)
+      ok(want.every((v, i) => Object.is(v, got[i])), `${expr} ${JSON.stringify(opts)}: ${[...got].join(', ')}`)
+    }
+    if (onKernel()) continue
+    const w = wat(src, SPEED)
+    ok(new RegExp(`f64x2\\.${op}\\b`).test(w) && (op.startsWith('p') ? !/f64x2\.(min|max)\b/.test(w) : !/f64x2\.p(min|max)/.test(w)), `${expr} → f64x2.${op}`)
+  }
 })
 
 test('vectorize: clamp map Math.max(0, Math.min(255, a[i])) lifts both lane ops', () => {
@@ -3096,7 +3124,7 @@ test('vectorize: clamp map Math.max(0, Math.min(255, a[i])) lifts both lane ops'
   `
   // clamp i∈[0,1023] to [0,255]: Σ_{0}^{255} i + 768·255
   is(runVec(src, SIMD_OPT).main(), (255 * 256 / 2 + 768 * 255) | 0)
-  { const w = wat(src, SIMD_OPT); ok(/f64x2\.min/.test(w) && /f64x2\.max/.test(w) && /v128\.bitselect/.test(w), 'clamp → nested f64x2.min/max beneath a NaN-canon bitselect') }
+  { const w = wat(src, SIMD_OPT); ok(/f64x2\.pmin/.test(w) && /f64x2\.max/.test(w) && /v128\.bitselect/.test(w), 'clamp → f64x2.pmin (255 is no NaN) under f64x2.max (the +0 the pseudo-maximum would drop) beneath a NaN-canon bitselect') }
 })
 
 // ---- min / max horizontal reductions (overshoot-safe SIMD bound) ----------

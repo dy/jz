@@ -31,6 +31,27 @@ function liftCanon(coreV, C, ctx, info) {
     ['v128.bitselect', splatC, g, [laneNe, g, g]]]
 }
 
+// A lane minimum against a literal that is no NaN is the pseudo-minimum, `b < a ? b : a`
+// with the literal as b: the literal never wins a NaN's lane, so the other operand's NaN
+// stays, and of the ties only -0 against +0 tells the two apart, where Math.min keeps -0
+// and the pseudo-minimum the other operand: exact but for the literal -0 (the maximum's
+// +0). One `minpd` on x64, where V8 spends seven instructions on f64x2.min's NaN and
+// signed-zero rules (hsl's `Math.min(h / 6, 1)`). Which operand, 1 or 2, is such a
+// literal, or 0.
+const PSEUDO = new Set(['f64x2.min', 'f64x2.max', 'f32x4.min', 'f32x4.max'])
+const literalOf = (e, ctx) => {
+  if (isArr(e) && e[0] === 'local.get' && ctx.constLocals?.has(e[1])) return ctx.constLocals.get(e[1])
+  if (!isArr(e) || (e[0] !== 'f64.const' && e[0] !== 'f32.const')) return NaN
+  const v = e[1]
+  return typeof v === 'number' ? v : typeof v === 'string' && v ? Number(v.replace(/^([-+]?)inf$/i, '$1Infinity')) : NaN
+}
+const pseudoOperand = (simd, expr, ctx) => {
+  if (!PSEUDO.has(simd)) return 0
+  const zero = simd.endsWith('min') ? -0 : 0
+  const keeps = v => v === v && !Object.is(v, zero)
+  return keeps(literalOf(expr[2], ctx)) ? 2 : keeps(literalOf(expr[1], ctx)) ? 1 : 0
+}
+
 // --why-not-simd diagnostics. `vecState.whyNotActive` is armed only for the duration of a
 // vectorizeLaneLocal call made with the flag on (cleared on exit — never leaks into
 // codegen, which never reads it). `vecState.whyNotReason` captures the FIRST (deepest) lift
@@ -893,6 +914,9 @@ export function liftExprV(expr, ctx) {
     }
     const b = liftExprV(expr[2], ctx)
     if (ctx.fail) return null
+    // (a minimum or maximum against a literal: the pseudo-operator, the literal second)
+    const lit = pseudoOperand(entry.simd, expr, ctx)
+    if (lit) return [entry.simd.replace('.m', '.pm'), lit === 2 ? a : b, lit === 2 ? b : a]
     return [entry.simd, a, b]
   }
 
