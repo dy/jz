@@ -30,6 +30,7 @@ import { hoistVectorConsts } from './vectorize/hoist-consts.js'
 import { truncChoice } from './trunc-choice.js'
 import { constBases } from './const-bases.js'
 import { selectArms } from './select-arms.js'
+import { shareQuotients } from './share-quotients.js'
 import { maskOperands } from './mask-operands.js'
 import { searchLoops } from './search-loops.js'
 import { leadGathers } from './lead-gathers.js'
@@ -731,6 +732,8 @@ export function watrTail(module, cfg, {
   if (cfg.truncChoice !== false) time('truncChoice', () => truncChoice(optimized))
   // (on the arms the truncations brought together: a select of their leaves, before the selects become bits)
   if (cfg.selectArms !== false) time('selectArms', () => selectArms(optimized))
+  // (on the lanes the vectorizer converted and the selects the arms became: each arm's quotient one of a choice)
+  if (cfg.shareQuotients !== false) time('shareQuotients', () => shareQuotients(optimized))
   // (after the passes that read a float select as one)
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized, { simd: !ctx.transform.noSimd }))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)

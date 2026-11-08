@@ -110,6 +110,7 @@ export const PASS_NAMES = [
   'truncChoice',              // a choice of a float's ceiling below zero and its floor above is its truncation (optimize/trunc-choice.js)
   'constBases',               // a local written once with an address ahead of its reads: its accesses take the address as their memarg offset (optimize/const-bases.js)
   'selectArms',               // a choice whose arms compute one tree: the tree over a select of the leaves they differ in (optimize/select-arms.js)
+  'shareQuotients',           // a choice between two quotients by one divisor (of one dividend): one quotient of a choice (optimize/share-quotients.js)
   'unsignedDivision',         // a signed division or remainder of a non-negative value by a positive one is the unsigned one (optimize/unsigned-div.js)
   'splitFuncs',               // a large function's conditional arms become functions of their own: V8 compiles what runs (optimize/split-funcs.js), speed-only
   'loopPasses',               // in a function that runs once, each pass of a loop that runs a loop is a call: V8 replaces code between calls only (optimize/split-funcs.js), speed-only
