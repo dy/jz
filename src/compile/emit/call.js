@@ -13,9 +13,9 @@ import {
 } from '../../ast.js'
 import { LAYOUT, OPTF, PTR, ctx, err, inc, emitArity } from '../../ctx.js'
 import {
-  MAX_CLOSURE_ARITY, allocPtr, asF64, carrierF64, freshId, isBoundName, isNumericIR, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
+  MAX_CLOSURE_ARITY, allocPtr, asF64, freshId, isBoundName, isNumericIR, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
 } from '../../ir.js'
-import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
+import { censusMaybeUndefined, valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
 import { K, core, tagOf, hasTag, isNullable } from '../../summary/index.js'
 import { findFreeVars } from '../analyze.js'
@@ -23,7 +23,7 @@ import { recordClosureCallRepresentations, representationCallArgAction } from '.
 import { plannedTypedStorageCtor } from '../typed-storage-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, builtinArity, callMaybeHost, emitNonCallable, materializeMulti, materializeMultiIR, mayBeHostFn, parseCallArgs, withSurplusArgs } from './call-args.js'
 import { INTRINSIC_VARIADIC } from '../../builtin-signatures.js'
-import { TYPED_HI_MASK, argIR, coerceArg, emit, emitReference, emitGroupedCall, emitCallArgs, emitIdentitySafe, emitVoid } from './dispatch.js'
+import { TYPED_HI_MASK, argIR, coerceArg, emit, emitReference, emitGroupedCall, emitCallArgs, emitVoid } from './dispatch.js'
 import { emitMethodCall } from './method-dispatch.js'
 
 
@@ -309,17 +309,18 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   return attachSigMeta(call, func?.sig)
 }
 
-/** Const-bound, non-escaping closure — direct call to its body, skipping
- *  call_indirect. emitDecl registered name→bodyName when it saw the closure.make
- *  IR. Returns null if arity exceeds the closure-table slot width (caller falls
- *  through to the generic closure path). */
+/** Const-bound closure — direct call to its body, skipping call_indirect.
+ *  emitDecl registered name→bodyName when it saw the closure.make IR. Returns
+ *  null if arity exceeds the closure-table slot width (caller falls through to
+ *  the generic closure path). */
 function tryDirectClosureCall(callee, parsed) {
   const bodyName = ctx.func.directClosures.get(callee)
   const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
   const n = parsed.normal.length
   if (n > W) return null
-  // Per-param "every direct call site passed a number" lattice. Every call to a
-  // direct (non-escaping) closure flows through here, so once the body is emitted
+  // Per-param "every direct call site passed a number" lattice. Every call of a
+  // closure only called by name flows through here (emitDecl opens the rows of
+  // any other, emit/dispatch.js rowsSeeEveryCall), so once the body is emitted
   // (module end, after all calls) a param only ever seen with numeric args is marked
   // VAL.NUMBER — its body uses then skip __to_num, the same boxing win the numeric
   // export-param path gives. An arg we can't prove numeric poisons the slot to false.
@@ -350,11 +351,11 @@ function tryDirectClosureCall(callee, parsed) {
   // We pass the closure NaN-box itself as env (body extracts captures via __ptr_offset(__env)).
   // Slots are untyped boxed-value positions: a BOOL arg crosses as its atom box
   // (the paramTypes numeric lattice above already poisons on non-NUMBER args, so
-  // the body never assumes raw numerics for these slots). An ambiguous BOOL-merge
-  // arg (.work/archive/todo.md §deletion-sweep) needs emitIdentitySafe in place of
-  // carrierF64 — same post-hoc-powerless reasoning as the return tail/store sites.
+  // the body never assumes raw numerics for these slots). Each argument takes the
+  // closure ABI's edge as call_indirect's does (ctx.closure.argIR): an ambiguous
+  // BOOL merge its identity, a BigInt the body reads tagged its box.
   recordClosureCallRepresentations(ctx, bodyName, parsed.normal)
-  const slots = parsed.normal.map(a => hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : carrierF64(a, emit(a)))
+  const slots = parsed.normal.map(a => ctx.closure.argIR(a))
   while (slots.length < W) slots.push(undefExpr())
   return typed(['call', `$${bodyName}`,
     asF64(emit(callee)),
@@ -399,21 +400,24 @@ export const tagFnArrayDispatch = (ir, arrName, open = true, key = null) => {
  *  resolves it (isGlobal decl path, below). Also fires for the IMPERATIVE-
  *  construction class (ctx.scope.imperativeClosureTableLatticeCandidates,
  *  dyn-closure-tables.js) — same accumulator, resolved by compile/index.js's
- *  early-merge step instead of the const-literal decl's own emit time. */
+ *  early-merge step instead of the const-literal decl's own emit time.
+ *  `argNodes` null: a call whose arguments the row cannot read one by one (a
+ *  spread), or whose callee the kinds do not prove a closure, every slot open. */
 function recordClosureTableCallSite(arrName, argNodes) {
   const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
-  const n = Math.min(argNodes.length, W)
+  const n = argNodes ? Math.min(argNodes.length, W) : W
   const evid = (ctx.scope.closureTableArgEvidence ||= new Map())
   let e = evid.get(arrName)
   if (!e) evid.set(arrName, e = { numRow: [], tcRow: [], minArgc: undefined })
   for (let i = 0; i < n; i++) {
-    const arg = argNodes[i]
-    const numeric = valTypeOf(arg) === VAL.NUMBER
+    const arg = argNodes ? argNodes[i] : null
+    const numeric = arg != null && valTypeOf(arg) === VAL.NUMBER
     e.numRow[i] = e.numRow[i] === undefined ? numeric : (e.numRow[i] && numeric)
-    const ctor = valTypeOf(arg) === VAL.TYPED ? plannedTypedStorageCtor(ctx, arg) : null
+    const ctor = arg != null && valTypeOf(arg) === VAL.TYPED ? plannedTypedStorageCtor(ctx, arg) : null
     e.tcRow[i] = e.tcRow[i] === undefined ? ctor : (e.tcRow[i] !== ctor ? null : e.tcRow[i])
   }
-  e.minArgc = e.minArgc === undefined ? n : Math.min(e.minArgc, n)
+  const passed = argNodes ? n : 0
+  e.minArgc = e.minArgc === undefined ? passed : Math.min(e.minArgc, passed)
 }
 
 /** Generic closure call: callee is a value holding a NaN-boxed closure pointer.
@@ -427,15 +431,16 @@ function emitGenericClosureCall(callee, parsed, thisArg = null) {
   // call of undefined throws: `ops[k](x)` tests what it read.
   const nullable = (member !== callee && hasOptionalChain(member)) || censusMaybeUndefined(callee) ||
     (tagOf(core(kind)) === K.CLOSURE && isNullable(kind)) || (Array.isArray(member) && member[0] === '[]')
-  const arrName = !parsed.hasSpread && Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string'
-    ? callee[1] : null
+  const table = Array.isArray(callee) && callee[0] === '[]' && typeof callee[1] === 'string' ? callee[1] : null
+  const arrName = parsed.hasSpread ? null : table
   const dvName = (ctx.transform.optFlags & OPTF.devirtClosureTables) && arrName ? arrName : null
   // A table only ever called by index (`const ops = [arrows]`, every use `ops[k](…)`)
   // holds its literal's closures for good: element k is the k-th arrow.
   const fixedTable = dvName && !open && ctx.scope.closureTableLatticeCandidates?.has(arrName)
-  if (!open && arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
-      ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
-    recordClosureTableCallSite(arrName, parsed.normal)
+  // Every call of a lattice table reaches its rows, one they cannot read opening them.
+  if (table && (ctx.scope.closureTableLatticeCandidates?.has(table) ||
+      ctx.scope.imperativeClosureTableLatticeCandidates?.has(table)))
+    recordClosureTableCallSite(table, open || parsed.hasSpread ? null : parsed.normal)
   let ir, calleeIR, receiver = thisArg == null ? null : asF64(emit(thisArg))
   if (thisArg == null && (ctx.closure.receiver || open && ctx.transform.targetProfile.envImports) && Array.isArray(member) && ['.', '[]', '?.', '?.[]'].includes(member[0])) {
     const t = temp('recv')

@@ -41,12 +41,24 @@ export function findFreeVars(node, bound, free, scope) {
   }
   if (!Array.isArray(node)) return
   const op = node[0]
-  if (op === '=>') {
-    const params = extractParams(node[1])
+  // A name is a reference only where it reads a binding. A literal (`[null, v]`,
+  // `['str', v]`, a regex), a label (`k: for …`, `break k`) and a property name
+  // (`o.k`, `o?.k`, `{ k: v }`, a pattern's `{ k: x }`, `get k()`) read none:
+  // only a receiver, a value or a computed key (`[k]: v`) does.
+  if (op == null || op === 'str' || op === '//' || op === 'break' || op === 'continue') return
+  if (op === '.' || op === '?.') { findFreeVars(node[1], bound, free, scope); return }
+  if (op === ':' && typeof node[1] === 'string') { findFreeVars(node[2], bound, free, scope); return }
+  // A function frame: an arrow `[=>, params, body]`; the parser's function and
+  // accessor `[op, name or key, params, body]` (IIFE lifting runs before jzify).
+  const arrow = op === '=>', fn = op === 'function' || op === 'function*', accessor = op === 'get' || op === 'set'
+  if (arrow || fn || accessor) {
+    if (accessor && Array.isArray(node[1])) findFreeVars(node[1], bound, free, scope)
+    const params = extractParams(node[arrow ? 1 : 2])
     const innerBound = collectParamNames(params, new Set(bound))
+    if (fn && typeof node[1] === 'string') innerBound.add(node[1])
     // Defaults execute in the parameter scope, before body declarations bind.
     for (const param of params) findFreeVars(classifyParam(param)[PARAM_DEFAULT], innerBound, free, scope)
-    findFreeVars(node[2], innerBound, free, scope)
+    findFreeVars(node[arrow ? 2 : 3], innerBound, free, scope)
     return
   }
   if (op === 'catch') {

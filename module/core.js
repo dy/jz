@@ -13,12 +13,12 @@ import print from 'watr/print'
  */
 
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, usesDynProps, ptrOffsetIR, ptrTypeEq, boxedPtrTypeEq, isNullish, isUndef, valKindToPtr, undefExpr, cloneIR, boxBigInt, unboxBigInt, deferBigintBox, isPlanTaggedBigint, throwTypeErrorIR, throwErrorIR, valueTruthyIR, numberNanIR, numberCarrierIR } from '../src/ir.js'
-import { emit, emitReference, emitIdentitySafe, storedValue, deps, wat } from '../src/bridge.js'
+import { emit, emitReference, emitIdentitySafe, storedValue, deps, general, wat } from '../src/bridge.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { ACCESSOR_GET, COMPARE_OPS, isBrand } from '../src/ast.js'
 import { PROMISE_KEYS } from '../src/std/async.js'
 import { classAccessor, classMethodValue, classHasMember, noOwnProps } from '../src/compile/emit/class-dispatch.js'
-import { copyReceiverFacts } from '../src/compile/emit/shared.js'
+import { copyReceiverFacts, isPresentArrayElement } from '../src/compile/emit/shared.js'
 import { restViewLength } from '../src/compile/rest-view.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
@@ -42,10 +42,11 @@ import { arrayRecordSlot } from '../src/compile/array-records.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { liftedPropOf } from '../src/compile/analyze/func-namespaces.js'
 import { errorCodeLiteral, ERR } from '../err-codes.js'
-import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore } from '../src/summary/kind.js'
-import { unbounded } from '../src/summary/contract.js'
+import { bitOf, hasTag, isNullable, K, NUMBER, tagOf as summaryTagOf, core as summaryCore, primitiveLacks } from '../src/summary/kind.js'
+import { unbounded, unboundedPresent } from '../src/summary/contract.js'
 import { inBoundsArrIdx } from '../src/type/canonical-bounds.js'
 import { sidecarOverride } from '../src/compile/emit/own-method.js'
+import { markField } from '../src/ir/mem-alias.js'
 
 const NAN_BITS = nanPrefixHex()
 // The RangeError of an allocation linear memory cannot hold: the code goes to
@@ -885,6 +886,14 @@ export default (ctx) => {
       (i64.add (i64.load (call $__ptr_offset (local.get $a)))
         (i64.load (call $__ptr_offset (local.get $b)))))))))` : ''}
     (f64.add ${atomNumWat('(local.get $a)')} ${atomNumWat('(local.get $b)')}))`
+
+  // `+` of two carriers no string, object or BigInt reaches (a Number, a
+  // Boolean, null, undefined): their numbers added, __add_slow's last step.
+  // __add_slow answers the same for them: the size tier calls it instead
+  // where the program reaches it anyway.
+  ctx.core.stdlib['__add_atoms'] = () => `(func $__add_atoms (param $a i64) (param $b i64) (result f64)
+    (f64.add ${atomNumWat('(local.get $a)')} ${atomNumWat('(local.get $b)')}))`
+  general({ __add_atoms: ['__add_slow'] })
 
   ctx.core.stdlib['__is_object'] = `(func $__is_object (param $p i64) (result i32)
     (local $t i32)
@@ -1999,7 +2008,9 @@ export default (ctx) => {
   // for ad-hoc props on pointer-backed values, so schema reads should bypass it.
   // Slot val-types reach the emit-time consumer via valTypeOf → ctx.schema.slotVT
   // (read on the AST `.prop` node), not via tagging this IR node.
-  function emitSchemaSlotRead(baseExpr, idx, i32Certain, bigintProven) {
+  // `obj`: the receiver expression, whose layouts mark the load for the optimizer's alias
+  // test (src/ir/mem-alias.js); a packed union cell's read stays unmarked.
+  function emitSchemaSlotRead(baseExpr, idx, i32Certain, bigintProven, obj = null) {
     // An unboxed proven-non-ARRAY pointer (a structInline element cell, a narrowed local)
     // reaches ptrOffsetIR raw so it returns the offset directly — no `__ptr_offset` call.
     // Pre-boxing via asF64 strips ptrKind and forces every field read onto the call path
@@ -2015,7 +2026,7 @@ export default (ctx) => {
     // i32-certain — bigintProven and cellI32 are mutually exclusive by
     // construction, so this arm never needs to consult bigintProven at all.
     if (baseExpr?.cellI32) return typed(packedI32.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), 'i32')
-    const load = ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx)
+    const load = markField(ctx.abi.object.ops.load(ptrOffsetIR(base, VAL.OBJECT), idx), obj, idx)
     // Strict-int32 slot (ctx.schema.slotI32CertainAt — every censused write is
     // exactly-int32, never -0): land the value directly in i32. trunc_sat of
     // such an f64 is a value-exact round-trip, and every int consumer skips
@@ -2451,6 +2462,34 @@ export default (ctx) => {
       ['i32.const', strHashLiteral(prop)], ['i32.const', r.rid], ['i32.const', r.slot]]], 'f64')
   }
 
+  // A receiver whose every value the summary names (mixedLayoutsOfExpr): an
+  // object of a few layouts beside primitives, perhaps missing. A layout holding
+  // `prop` reads its slot behind its guard; a missing receiver throws the
+  // TypeError reading it throws; any other value, a primitive none of whose
+  // prototypes holds the name or an object of a layout that never holds it,
+  // reads undefined. No dynamic lookup remains. Null where a value may hold the
+  // name some other way (a string's length, a method, a property stored beside
+  // a layout), for the reads below.
+  function mixedRead(va, obj, prop) {
+    if (typeof prop !== 'string' || va?.type !== 'f64' || va.ptrKind != null || va.cellI32) return null
+    const view = ctx.summary?.at(ctx.func.current), m = view?.mixedLayoutsOfExpr?.(obj)
+    if (!m || m.layouts.length > 8 || m.prims.some(tag => !primitiveLacks(tag, prop))) return null
+    const guards = []
+    for (const sid of m.layouts) {
+      const slot = ctx.schema.list[sid]?.indexOf(prop) ?? -1
+      if (slot >= 0) guards.push({ sid, slot })
+      else if (!view.layoutLacks(sid, prop)) return null
+    }
+    // A receiver that does not repeat (an element read, a call) is read once into a local.
+    const t = isRepeatableRead(va) ? null : temp('mr')
+    const recv = t ? typed(['local.get', `$${t}`], 'f64') : va
+    const rest = () => !m.missing ? undefExpr() : typed(['block', ['result', 'f64'],
+      ['if', (m.missing === 2 ? isNullish : isUndef)(typed(cloneIR(recv), 'f64')), ['then', ['drop', throwTypeErrorIR()]]], undefExpr()], 'f64')
+    const read = guards.length ? emitSchemaSlotGuardedMulti(recv, guards, rest, prop) : rest()
+    return t ? typed(['block', ['result', 'f64'], ['local.set', `$${t}`, va], read], 'f64')
+      : guards.length || m.missing ? read : typed(['block', ['result', 'f64'], ['drop', va], read], 'f64')
+  }
+
   function emitPropAccess(va, obj, prop) {
     va = numberCarrierIR(obj, va)
     if (typeof prop === 'string') { const record = recordRead(va, obj, prop); if (record) return record }
@@ -2464,7 +2503,7 @@ export default (ctx) => {
     // `({a:{b:1}}).a.b` where the receiver is anonymous. Spread sources
     // (`{...x}`) shift slot ordering and would need their own resolution.
     const slot = literalSlot(obj, prop)
-    if (slot >= 0) return emitSchemaSlotRead(va, slot, false, ctx.schema.slotBigintProvenBySid?.(literalSid(obj), prop))
+    if (slot >= 0) return emitSchemaSlotRead(va, slot, false, ctx.schema.slotBigintProvenBySid?.(literalSid(obj), prop), obj)
     // Receiver IR is an unboxed OBJECT pointer carrying its own schema (a
     // structInline element cell, a narrowed local): resolve the field's fixed
     // slot directly from `ptrAux` — more precise than the structural
@@ -2479,7 +2518,7 @@ export default (ctx) => {
       const fk = ctx.summary?.fieldKind?.(va.ptrAux, prop)
       const numberOnly = fk != null && summaryTagOf(fk) === K.NUMBER && !isNullable(fk)
       if (si >= 0) return emitSchemaSlotRead(va, si, numberOnly && ctx.schema.slotI32CertainBySid?.(va.ptrAux, prop),
-        ctx.schema.slotBigintProvenBySid?.(va.ptrAux, prop))
+        ctx.schema.slotBigintProvenBySid?.(va.ptrAux, prop), obj)
     }
     let schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
     // Chain receiver (e.g. `o.meta.bias`): when the chain resolves to a known
@@ -2530,7 +2569,7 @@ export default (ctx) => {
       if (common) {
         const base = typed(['i32.wrap_i64', ['i64.reinterpret_f64', va]], 'i32')
         base.ptrKind = VAL.OBJECT
-        const load = emitSchemaSlotRead(base, common.slot, common.i32Certain, false)
+        const load = emitSchemaSlotRead(base, common.slot, common.i32Certain, false, obj)
         // The union's storage is boxed even when its common slot can unbox.
         // Keep that producer available to return/storage edges, as checked
         // typed reads do; numeric consumers can take the raw payload.
@@ -2541,6 +2580,7 @@ export default (ctx) => {
     // receiver still evaluated for what it does.
     if (schemaIdx < 0 && ctx.summary?.at(ctx.func.current)?.absentMember?.(obj, prop))
       return typeof obj === 'string' ? undefExpr() : typed(['block', ['result', 'f64'], ['drop', va], undefExpr()], 'f64')
+    if (schemaIdx < 0) { const mixed = mixedRead(va, obj, prop); if (mixed) return mixed }
     if (schemaIdx >= 0) {
       // A precise schema id proves this is a fixed-size OBJECT allocation, not
       // an ARRAY value that may have relocated. Extract the payload offset from
@@ -2566,7 +2606,7 @@ export default (ctx) => {
       }
       return emitSchemaSlotRead(base, schemaIdx,
         typeof obj === 'string' && ctx.schema.slotI32CertainAt?.(obj, prop),
-        typeof obj === 'string' && ctx.schema.slotBigintProvenAt?.(obj, prop))
+        typeof obj === 'string' && ctx.schema.slotBigintProvenAt?.(obj, prop), va?.cellI32 ? null : obj)
     }
     if (typeof obj === 'string') {
       const vt = lookupValType(obj)
@@ -2869,6 +2909,16 @@ export default (ctx) => {
   }
   // a generator frame's field before its binding's step (src/ast.js TDZ_VALUE)
   ctx.core.emit.__tdz = () => undefExpr()
+  // A receiver past the test its member read makes of it (src/compile/plan/scope.js
+  // devirtClassCalls): a missing one throws the read's TypeError before the call
+  // evaluates its arguments, a present one is the value. An element the interval
+  // prover puts in bounds, of an array whose elements are present, is the value.
+  ctx.core.emit.__present = (v) => {
+    if (isPresentArrayElement(v)) return emit(v)
+    const t = temp('pr'), held = typed(['local.get', `$${t}`], 'f64')
+    return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, asF64(emit(v))],
+      ['if', isNullish(held), ['then', ['drop', throwTypeErrorIR('read')]]], held], 'f64')
+  }
   // The async runtime's proof that a value is one of its promises: its box
   // names the promise literal's schema (std/async.js PROMISE_KEYS), so no
   // other object passes; the value itself, as the promise the summary then
@@ -2937,6 +2987,31 @@ export default (ctx) => {
     if (!raw) {
       const bound = classMethodValue(obj, prop, (recv) => dotRead(recv, prop, true))
       if (bound !== undefined) return bound
+    }
+    // A function's `call`, `apply` and `bind` are Function.prototype's
+    // (module/function.js protoMember): off a closure owning none, the member;
+    // off a receiver the summary names a closure among others, the member
+    // where it is one and its own read finds nothing. A receiver of no kind
+    // the summary bounds reads as it did.
+    if (!raw && !symbolRead && ctx.closure.protoMember && (prop === 'call' || prop === 'apply' || prop === 'bind')) {
+      const view = ctx.summary?.at(ctx.func.current), k = view?.kindOfExpr(obj)
+      if (k != null && hasTag(k, K.CLOSURE) && !unboundedPresent(k)) {
+        const t = temp('fpm'), held = asF64(emit(obj)), member = ctx.closure.protoMember(prop)
+        const recv = () => typed(['local.get', `$${t}`], 'f64')
+        if (summaryTagOf(k) === K.CLOSURE && !ctx.summary.memberMayBeOwnOn(prop, VAL.CLOSURE)) {
+          const missing = isNullable(k) ? hasTag(k, K.NULLISH) ? isNullish : isUndef : null
+          return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, held],
+            ...(missing ? [['if', missing(recv()), ['then', ['drop', throwTypeErrorIR()]]]] : []), member], 'f64')
+        }
+        const own = temp('fpo')
+        copyReceiverFacts(obj, t)
+        view?.alias(t, obj, false)
+        let read
+        try { read = asF64(dotRead(t, prop, false, true)) } finally { view?.unalias(t) }
+        return typed(['block', ['result', 'f64'], ['local.set', `$${t}`, held], ['local.set', `$${own}`, read],
+          ['if', ['result', 'f64'], ['i32.and', ptrTypeEq(recv(), PTR.CLOSURE), isUndef(typed(['local.get', `$${own}`], 'f64'))],
+            ['then', member], ['else', ['local.get', `$${own}`]]]], 'f64')
+      }
     }
     // An element read the interval prover puts in bounds is present: absence
     // is the one nullishness an in-range read of an array of objects carries.

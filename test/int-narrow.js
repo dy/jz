@@ -991,3 +991,27 @@ test('int-range: a clamp\'s operand is within its bounds, so the recurrence thro
     })
   }
 })
+
+// A local whose reads all truncate it holds the truncation (`early`): a NaN written there is the
+// zero it truncates to, an undefined a bare `let` holds in a loop's every pass among them. Its
+// integer form was the constant NaN, which no integer constant spells.
+test('int-narrow: a NaN written to a local every read truncates is its zero', () => {
+  const src = `const A = new Uint32Array(64)
+  export let words = () => A
+  export let f = (n) => {
+    let s = 0
+    for (let i = 0; i < n; i++) {
+      let w
+      if (i & 1) w = A[i]
+      else w = A[i] >>> 1
+      s = (s + (w >>> 24)) | 0
+    }
+    return s
+  }`
+  const host = oracle(src)
+  for (const optimize of [false, 1, 2, 3, { level: 'speed' }, { level: 'size' }]) {
+    const m = run(src, { optimize })
+    for (const o of [m, host]) { const a = o.words(); for (let i = 0; i < 64; i++) a[i] = Math.imul(i + 1, 2654435761) >>> 0 }
+    for (const n of [0, 1, 5, 64, 70]) is(m.f(n), host.f(n), `f(${n}) at ${JSON.stringify(optimize)}`)
+  }
+})

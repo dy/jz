@@ -1187,7 +1187,7 @@ const handlers = {
     const folded = foldImportMetaResolve(callee, args)
       ?? dispatchConstructorCall(callee, args)
       ?? foldNamespaceIntrospection(callee, args)
-      ?? foldFnCallApplyBind(callee, args)
+      ?? foldFnCallApply(callee, args)
       ?? foldPrototypeBorrow(callee, args)
       ?? foldJsonReviver(callee, args)
     if (folded !== undefined) return folded
@@ -2443,6 +2443,13 @@ function prepDecl(op, ...inits) {
     if (primitive && !bindingWritten(name) && registerBuiltinAlias(name, primitive)) continue
     const staticStr = op === 'const' ? staticStringExpr(init) : null
     const staticArr = op === 'const' ? staticStringArrayValues(init) : null
+    // A binding of a function literal holds a function in the literal's own
+    // body as it does after it: `g.bind(…)`, `g.call(…)` there fold as they do
+    // outside (the binding's spelling where its scope has already settled it).
+    if (typeof name === 'string' && Array.isArray(init) && init[0] === '=>') {
+      const top = scopes[scopes.length - 1], key = !top ? name : top.has(name) ? top.get(name) : null
+      if (key != null) funcValueNames[funcValueNames.length - 1]?.add(key)
+    }
     const normed = prep(init)
 
     // `let/const name = NS.member` (`let sin = Math.sin`) — prep's `.` handler
@@ -2765,12 +2772,14 @@ function dispatchConstructorCall(callee, args) {
   return undefined
 }
 
-// `f.call/apply/bind` on a PROVEN function binding lowers statically: jz
+// `f.call/apply` on a PROVEN function binding lowers statically: jz
 // named functions and lexical arrows cannot observe their call receiver, so
 // the thisArg is dead weight — kept only for its side effects via a comma
 // sequence. Anything not provably a function keeps the runtime path (a user
 // object may legitimately carry its own `call` property). Previously these
-// silently returned undefined (.call/.apply) or trapped (table OOB, .bind).
+// silently returned undefined. `f.bind` takes the runtime bound function
+// (module/function.js `__bound`) whatever f is: an arrow forwarding to f has
+// a `length` of its own, and a rest one builds an array per call.
 // `Ctor.prototype.m.call(recv, …)` (the array-like borrow idiom) is a static
 // method call on the receiver: a typed constructor's method on its own kind,
 // or an Array method applied to a copy (`Array.prototype.slice.call(typed)`
@@ -2797,10 +2806,10 @@ function foldPrototypeBorrow(callee, args) {
   const base = ctor === 'Array' ? ['()', ['.', 'Array', 'from'], recv] : recv
   return prep(['()', ['.', base, method[2]], rest.length === 0 ? null : rest.length === 1 ? rest[0] : [',', ...rest]])
 }
-function foldFnCallApplyBind(callee, args) {
+function foldFnCallApply(callee, args) {
   if (!Array.isArray(callee) || callee[0] !== '.') return undefined
   let [, name, meth] = callee
-  if (typeof name !== 'string' || (meth !== 'call' && meth !== 'apply' && meth !== 'bind')) return undefined
+  if (typeof name !== 'string' || (meth !== 'call' && meth !== 'apply')) return undefined
   // funcValueNames holds POST-RENAME keys — resolve the receiver spelling first;
   // an imported function's binding reaches its function through the chain.
   const key = scopes.length && isDeclared(name) ? resolveScope(name) : name
@@ -2812,29 +2821,15 @@ function foldFnCallApplyBind(callee, args) {
   const seq = (node) => trivialThis ? prep(node) : prep([',', thisArg, node])
   const argsSlot = (list) => list.length === 0 ? null : list.length === 1 ? list[0] : [',', ...list]
   if (meth === 'call') return seq(['()', name, argsSlot(rest)])
-  if (meth === 'apply') {
-    if (rest.length > 1) err('`.apply` takes (thisArg, argsArray)')
-    // A literal args array expands statically — fixed-arity callees accept it
-    // where a runtime spread could not.
-    const arr = rest[0]
-    if (Array.isArray(arr) && arr[0] === '[]' && arr.length <= 2) {
-      const elems = arr.length === 1 ? [] : (Array.isArray(arr[1]) && arr[1][0] === ',') ? arr[1].slice(1) : [arr[1]]
-      if (!elems.some(e => Array.isArray(e) && e[0] === '...')) return seq(['()', name, argsSlot(elems)])
-    }
-    return seq(['()', name, rest.length ? ['...', rest[0]] : null])
+  if (rest.length > 1) err('`.apply` takes (thisArg, argsArray)')
+  // A literal args array expands statically — fixed-arity callees accept it
+  // where a runtime spread could not.
+  const arr = rest[0]
+  if (Array.isArray(arr) && arr[0] === '[]' && arr.length <= 2) {
+    const elems = arr.length === 1 ? [] : (Array.isArray(arr[1]) && arr[1][0] === ',') ? arr[1].slice(1) : [arr[1]]
+    if (!elems.some(e => Array.isArray(e) && e[0] === '...')) return seq(['()', name, argsSlot(elems)])
   }
-  // bind(thisArg, ...pre) → an arrow closing over the pre-bound args. When the
-  // callee's arity is known (a lifted top-level fn), mint EXPLICIT remaining
-  // params — a rest+spread arrow would hit the non-variadic spread-call limit.
-  const f = fnName != null ? ctx.funcs.map.get(fnName) : null
-  if (f && !f.rest) {
-    const remaining = Math.max(0, f.sig.params.length - rest.length)
-    const ps = Array.from({ length: remaining }, () => `${T}b${freshPrepareId()}`)
-    return seq(['=>', ps.length ? ['()', argsSlot(ps)] : ['()', null],
-      ['()', name, argsSlot([...rest, ...ps])]])
-  }
-  const r = `${T}b${freshPrepareId()}`
-  return seq(['=>', ['()', ['...', r]], ['()', name, argsSlot([...rest, ['...', r]])]])
+  return seq(['()', name, rest.length ? ['...', rest[0]] : null])
 }
 function foldJsonReviver(callee, args) {
   const isParse = callee === 'JSON.parse' ||

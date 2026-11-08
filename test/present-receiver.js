@@ -66,3 +66,35 @@ test('present receiver: a sole missing-receiver check calls the throw helper, no
   ok(/call \$__throw_property_nullish/.test(g), 'the miss arm calls the helper')
   ok(!/call \$__alloc/.test(g), 'the error is built in the helper, not in g')
 })
+
+// A row a const names is the element read: a missing one has no length and no
+// element, and a row the program grows or replaces has the length it has then.
+// The plan read `row.length` off the literal's row lengths (`rowlen[i]`) and
+// unrolled a loop bounded by a table of lengths as if every bound were one of
+// the literal's (plan/loops.js, removed): `d.length` past the end answered
+// undefined, a pushed row its literal count, a bound past the end ran the
+// shortest row's steps, a row index below zero no step. Node's message names
+// the key; jz's is its prefix.
+const rows = `export const len = (n) => { const a = [[1]]; const d = a[n]; return d.length }
+  export const elem = (n) => { const a = [[1]]; const d = a[n]; return d[0] }
+  export const pushed = (n) => { const rows = [[1, 2], [3]]; const row = rows[0]; row.push(n); return row.length }
+  export const replaced = (n) => { const rows = [[1, 2], [3]]; rows[0] = [n]; const row = rows[0]; return row.length }
+  export const padded = (n) => { const lens = [2, 3]; const out = [0, 0, 0]; for (let i = 0; i < lens[n]; i++) out[i] = 1; return out.join() }
+  export const written = (n) => { const lens = [2, 3]; lens[1] = 1; const out = [0, 0, 0]; for (let i = 0; i < lens[n]; i++) out[i] = 1; return out.join() }
+  export const chord = (t) => { const prog = [[0, 3, 7, 10, 14], [5, 8, 12, 15], [7, 11, 14, 17], [0, 3, 7, 10, 14]]; const ch = prog[(t * .5 | 0) % 4]; let pad = 0; for (let i = 0; i < ch.length; i++) pad += ch[i] * t; return pad }`
+
+const thrown = (f) => { try { f() } catch (e) { return e } }
+
+test('present receiver: a row a const names answers its own length, and a missing one throws as the host does', () => {
+  for (const optimize of levels(0, 2, 3)) {
+    const host = oracle(rows), jz = run(rows, { optimize })
+    for (const [f, n, missing] of [['len', 0, 5], ['elem', 0, 5], ['chord', 3, -2]]) {
+      is(jz[f](n), host[f](n), `${f}(${n}) at ${optimize}`)
+      const got = thrown(() => jz[f](missing)), want = thrown(() => host[f](missing))
+      ok(got instanceof TypeError && want.message.startsWith(got.message), `${f}(${missing}) at ${optimize}: ${got?.message}`)
+    }
+    for (const t of [0, 1.5, 4.25, 7]) is(jz.chord(t), host.chord(t), `chord(${t}) at ${optimize}`)
+    for (const f of ['pushed', 'replaced', 'padded', 'written'])
+      for (const n of [0, 1, 5]) is(jz[f](n), host[f](n), `${f}(${n}) at ${optimize}`)
+  }
+})

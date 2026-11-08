@@ -492,6 +492,11 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
           for (let i = 0; i < args.length && i < callee.params.length; i++)
             addEdge('call-arg', plannedOf(args[i]), callee.params[i].target, node)
         }
+        // A name no function or builtin answers holds a closure (or a host
+        // function): its arguments cross the closure ABI's tagged slots,
+        // whether the call reaches the body directly or through the table.
+        else if (typeof node[1] === 'string' && !ctx.funcs.map.has(node[1]) && !ctx.core.emit[node[1]])
+          for (const arg of args) addEdge('closure-arg', plannedOf(arg), BOXED_BIGINT, node)
       } else {
         // Generic closure/call_indirect slots are tagged-value positions.
         for (const arg of args) addEdge('closure-arg', plannedOf(arg), BOXED_BIGINT, node)

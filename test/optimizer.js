@@ -3371,33 +3371,6 @@ const compileMain = (src, passes = {}) => {
   return wat.match(/\(func \$main[\s\S]*?\n  \)/)?.[0] || ''
 }
 
-// === unrollRowLenPadLoops (floatbeat variable-row pad) ===
-// `for (i < rowlen[ci])` after bindNestedRowLengths — uniform rows fully
-// unroll; mixed row lengths peel a fixed-prefix loop + one guarded tail.
-
-test('unrollRowLenPadLoops: mixed row lengths peel tail iteration', () => {
-  const src = `
-    export let main = (t) => {
-      const prog = [[0,3,7,10,14],[5,8,12,15],[7,11,14,17],[0,3,7,10,14]]
-      const ch = prog[(t * .5 | 0) % 4]
-      let pad = 0
-      for (let i = 0; i < ch.length; i++) pad += Math.sin(t * 6.283185307179586 * 130.8 * 2**(ch[i] / 12))
-      return pad
-    }
-  `
-  const js = (t) => {
-    const prog = [[0,3,7,10,14],[5,8,12,15],[7,11,14,17],[0,3,7,10,14]]
-    const ch = prog[(t * .5 | 0) % 4]
-    let pad = 0
-    for (let i = 0; i < ch.length; i++) pad += Math.sin(t * 6.283185307179586 * 130.8 * 2**(ch[i] / 12))
-    return pad
-  }
-  const { main } = run(src)
-  for (let k = 0; k < 20; k++) almost(main(k / 17), js(k / 17), 5e-3)
-  const body = compileMain(src)
-  ok(/i32\.const 4/.test(body), 'fixed-prefix loop bound should constant-fold to 4')
-})
-
 test('promoteIntArrayLiterals: int-only literal with read-only loop → TYPED + SIMD', () => {
   const src = `
     export const main = () => {
@@ -4389,6 +4362,158 @@ test('nanCanon: a loop\'s canon stays where its local may hold a box or a read i
   for (const optimize of levels(1, 2, 'speed')) { const f = run(bag, { optimize }).f; for (const n of [0, 1, 7]) is(f(n), js(n), `O${optimize} n=${n}`) }
 })
 
+// A local that holds a field through a loop (plan/loop-fields.js): a box from ahead of the loop,
+// which each pass writes over first, the read past the loop normalizing only what a pass left.
+const heldLoop = (pass = '', after = '', entry = '(local.set $x (f64.load offset=16 (local.get $p)))') => `(module (memory (export "memory") 1)
+  (func $f (export "f") (param $p i32) (param $n i32) (result f64)
+    (local $x f64) (local $y f64) (local $t f64) (local $i i32)
+    ${entry}
+    (block $brk (loop $l
+      (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+      ${pass || '(local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'}
+      (f64.store offset=32 (local.get $p) (f64.mul (local.get $x) (f64.const 3)))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    ${after}
+    (f64.store offset=24 (local.get $p) (local.get $x))
+    (f64.load offset=24 (local.get $p))))`
+const stripped = (src) => { const tree = parseWat(src), fn = findFunc(tree, '$f'); stripDeadCanons(fn); return { fn, tree } }
+const held = (i, a, b, n) => { const w = new BigUint64Array(i.memory.buffer); w[0] = a; w[2] = b; i.f(0, n); return w[3] }
+const UNDEF = 0x7FF8000200000000n, CANON = 0x7FF8000000000000n
+
+test('nanCanon: a held field\'s canon waits past its loop, a box from ahead of it kept where no pass ran', () => {
+  const src = heldLoop(), { fn, tree } = stripped(src)
+  is(loopCanons(fn), 0, 'the loop normalizes nothing')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  const before = inst(parseWat(src)), after = inst(tree)
+  for (const [a, b, n] of [[UNDEF, UNDEF, 0], [UNDEF, 0n, 0], [0x7FF8000100000000n, 0x7FF8000100000000n, 0],
+    [0x7FF8000200000123n, UNDEF, 1], [0xFFF8000000000000n, UNDEF, 3], [0x4000000000000000n, UNDEF, 2], [CANON, 0n, 1]])
+    is(held(after, a, b, n), held(before, a, b, n), `${a.toString(16)} / ${b.toString(16)} over ${n} passes: the same bits`)
+  is(held(after, 0x7FF8000200000123n, UNDEF, 1), CANON, 'a payload a pass left is the one NaN')
+  is(held(after, 0n, UNDEF, 0), UNDEF, 'and undefined where none ran')
+})
+
+test('nanCanon: a held field\'s flag falls for each entry to the loop', () => {
+  // the loop around reads a new box each pass and the inner loop runs in the first alone
+  const src = `(module (memory (export "memory") 1)
+    (func $f (export "f") (param $p i32) (param $n i32) (result f64)
+      (local $x f64) (local $t f64) (local $i i32) (local $k i32)
+      (loop $o
+        (local.set $x (f64.load offset=16 (local.get $p)))
+        (local.set $i (i32.const 0))
+        (block $brk (loop $l
+          (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+          (local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))
+          (f64.store offset=32 (local.get $p) (f64.mul (local.get $x) (f64.const 3)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l)))
+        (f64.store offset=24 (local.get $p) (local.get $x))
+        (local.set $n (i32.const 0))
+        (br_if $o (i32.lt_s (local.tee $k (i32.add (local.get $k) (i32.const 1))) (i32.const 2))))
+      (f64.load offset=24 (local.get $p))))`
+  const { fn, tree } = stripped(src)
+  is(loopCanons(fn) <= 1, true, 'the inner loop normalizes nothing')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  is(held(inst(tree), 0x7FF8000200000123n, UNDEF, 1), UNDEF, 'the second pass, of no inner pass, keeps its box')
+})
+
+test('nanCanon: a box from the other version of the loop passes its read, the flag raised by any pass of this one', () => {
+  const canon = '(local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'
+  const src = `(module (memory (export "memory") 1)
+    (func $f (export "f") (param $p i32) (param $n i32) (param $c i32) (result f64)
+      (local $x f64) (local $t f64) (local $i i32)
+      (if (local.get $c)
+        (then (block $brk (loop $l
+          (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+          ${canon}
+          (f64.store offset=32 (local.get $p) (f64.mul (local.get $x) (f64.const 3)))
+          (local.set $i (i32.add (local.get $i) (i32.const 1)))
+          (br $l))))
+        (else (local.set $x (f64.load offset=16 (local.get $p)))))
+      (f64.store offset=24 (local.get $p) (local.get $x))
+      (f64.load offset=24 (local.get $p))))`
+  const tree = parseWat(src), fn = findFunc(tree, '$f')
+  ok(stripDeadCanons(fn), 'the pass rewrites')
+  is(loopCanons(fn), 0, 'the loop normalizes nothing')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  const before = inst(parseWat(src)), after = inst(tree)
+  const bits = (i, a, b, n, c) => { const w = new BigUint64Array(i.memory.buffer); w[0] = a; w[2] = b; w[3] = 0n; i.f(0, n, c); return w[3] }
+  for (const [a, b, n, c] of [[0x7FF8000200000123n, UNDEF, 2, 1], [0x7FF8000200000123n, UNDEF, 0, 1], [0x7FF8000200000123n, UNDEF, 2, 0],
+    [0x4000000000000000n, 0x7FF8000100000000n, 1, 1], [0x4000000000000000n, 0x7FF8000100000000n, 1, 0]])
+    is(bits(after, a, b, n, c), bits(before, a, b, n, c), `${a.toString(16)} ${b.toString(16)} ${n} passes, version ${c}: the same bits`)
+})
+
+test('nanCanon: a held field\'s canon stays where a pass may leave it unwritten or a box may follow the loop', () => {
+  const canon = '(local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'
+  for (const src of [
+    // a write in an arm: a pass may keep the box and raise no flag it could trust
+    heldLoop(`(if (i32.gt_s (local.get $i) (i32.const 1)) (then ${canon}))`),
+    // a read ahead of the write: the pass reads the box
+    heldLoop(`(f64.store offset=40 (local.get $p) (f64.add (local.get $x) (f64.const 1))) ${canon}`),
+    // a box written past the loop
+    heldLoop('', '(local.set $x (f64.load offset=16 (local.get $p)))')]) {
+    const { fn } = stripped(src)
+    is(loopCanons(fn), 1, 'the canon stays in the loop')
+  }
+  // a way out of the pass between the writes of two held locals: the first is written, the flag down
+  const two = `(module (memory (export "memory") 1)
+    (func $f (export "f") (param $p i32) (param $n i32) (result f64)
+      (local $x f64) (local $y f64) (local $t f64) (local $i i32)
+      (local.set $x (f64.load offset=16 (local.get $p)))
+      (local.set $y (f64.load offset=16 (local.get $p)))
+      (block $brk (loop $l
+        ${'(local.set $x (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 2))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'}
+        (br_if $brk (i32.ge_s (local.get $i) (local.get $n)))
+        ${'(local.set $y (block (result f64) (local.set $t (f64.mul (f64.load (local.get $p)) (f64.const 3))) (select (f64.const nan) (local.get $t) (f64.ne (local.get $t) (local.get $t)))))'}
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (f64.store offset=32 (local.get $p) (f64.mul (f64.add (local.get $x) (local.get $y)) (f64.const 3)))
+        (br $l)))
+      (f64.store offset=24 (local.get $p) (local.get $x))
+      (f64.store offset=32 (local.get $p) (local.get $y))
+      (f64.load offset=24 (local.get $p))))`
+  const tree = parseWat(two), fn = findFunc(tree, '$f')
+  stripDeadCanons(fn)
+  is(loopCanons(fn) >= 1, true, 'a canon stays')
+  const inst = (t) => new WebAssembly.Instance(new WebAssembly.Module(encodeWat(t))).exports
+  is(held(inst(tree), 0x7FF8000200000123n, UNDEF, 0), held(inst(parseWat(two)), 0x7FF8000200000123n, UNDEF, 0), 'and the bits stand')
+})
+
+test('nanCanon: a store to single precision keeps its canon, a box\'s bits surviving the conversion', () => {
+  // the undefined of a missing element demotes to a NaN whose payload promotes back to the undefined box
+  const src = `export function f(which, n) {
+    const a = which ? new Float32Array(4) : new Float64Array(4)
+    const b = [1]
+    let result = 0
+    for (let i = 0; i < n; i++) result = (a[i] = b[i])
+    return [result, a[0], a[1], Number.isNaN(a[1]), a[1] === undefined]
+  }
+  class V {
+    constructor(x, y) { this.x = x; this.y = y }
+    fromArray(a, k) { this.x = a[k]; this.y = a[k + 1]; return this }
+    scale(s) { this.x *= s; this.y *= s; return this }
+    toArray(a, k) { a[k] = this.x; a[k + 1] = this.y; return this }
+  }
+  const F = new Float32Array(32), W = new Uint32Array(F.buffer), v = new V(0, 0)
+  export let floats = () => F
+  export let words = () => W
+  export let sweep = (s) => { for (let i = 0; i < 16; i++) v.fromArray(F, i * 2).scale(s).toArray(F, i * 2); return v.x }
+  export let same = () => v.x === v.x
+  export let missing = () => v.y === undefined`
+  const host = oracle(src)
+  const fill = (m, word) => { const f = m.floats(); for (let i = 0; i < 32; i++) f[i] = i - 7.5; m.words()[30] = word; m.words()[31] = word }
+  for (const optimize of levels(2, 3, 'speed')) {
+    const m = run(src, { optimize })
+    for (const which of [false, true]) for (const n of [0, 1, 4, 5]) is(JSON.stringify(m.f(which, n)), JSON.stringify(host.f(which, n)), `f(${which}, ${n}) at ${optimize}`)
+    for (const word of [0x3F800000, 0x7FC00000, 0xFFC00000, 0x7FC00010, 0x7FC12345]) {
+      fill(m, word); fill(host, word)
+      ok(Object.is(m.sweep(1.5), host.sweep(1.5)), `${word.toString(16)} at ${optimize}: the answer`)
+      is(m.same(), host.same(), 'itself or a NaN')
+      is(m.missing(), host.missing(), 'and no undefined')
+      for (let i = 0; i < 30; i++) ok(Object.is(m.floats()[i], host.floats()[i]), `element ${i}`)
+    }
+  }
+})
+
 // An undefined test (ir/coerce.js missToNaN) whose value a comparison reads,
 // through a sum and a local: stripped; a sum that leaves keeps it, the bits exact.
 const missDist = (tail) => `(module (memory (export "memory") 1)
@@ -5119,6 +5244,65 @@ test('selectBits: a choice between its test\'s operands is their pseudo-minimum 
   ok(!/f64\.reinterpret_i64 \(select|reinterpret_i64\s*\(select/.test(body), 'none of them takes the bits')
   const scalar = compile(src, { wat: true, optimize: { level: 'speed', simd: false } })
   ok(!/v128|f64x2/.test(scalar), 'simd: false stays scalar')
+})
+
+// A running minimum of values of no sign (squared distances, worley's nine feature points) chooses
+// by their words: for +0, the positives and +Infinity the unsigned order of the bits is the floats'
+// order, and every NaN's bits, either sign, lie above +Infinity's, where `d < m` never picks one.
+// The minimum lives in an integer local: a compare and a select between integer registers carry it
+// from one step to the next on x64 and arm64 alike. A minimum a parameter starts, one of a value
+// that may be negative, or a maximum keeps the pseudo-operator.
+test('selectBits: a running minimum of values of no sign chooses by their words', () => {
+  // a nearest feature point over a cell's neighbours (worley's sampler), and beside it the
+  // extremes that keep their pseudo-operators
+  const src = `const pts = new Float64Array(512)
+  let s = 0x2545f491 | 0
+  for (let i = 0; i < 512; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; pts[i] = (s & 4095) / 4096 }
+  pts[7] = NaN; pts[40] = -0; pts[41] = Infinity
+  const nearest = (x, y) => {
+    const ix = Math.floor(x), iy = Math.floor(y)
+    let f1 = Infinity
+    for (let gy = -1; gy <= 1; gy++) {
+      for (let gx = -1; gx <= 1; gx++) {
+        const cx = ix + gx, cy = iy + gy, k = ((cx & 15) * 16 + (cy & 15)) * 2
+        const dx = cx + pts[k] - x, dy = cy + pts[k + 1] - y
+        const d2 = dx * dx + dy * dy
+        if (d2 < f1) f1 = d2
+      }
+    }
+    return Math.sqrt(f1)
+  }
+  const farthest = (x, y, from) => {
+    let hi = 0, lo = from, sum = Infinity
+    for (let g = 0; g < 9; g++) {
+      const dx = pts[g * 2] - x, dy = pts[g * 2 + 1] - y, d2 = dx * dx + dy * dy
+      if (d2 > hi) hi = d2
+      if (d2 < lo) lo = d2
+      if (dx + dy < sum) sum = dx + dy
+    }
+    return hi + lo + sum
+  }
+  export let f = (x, y) => [nearest(x, y), 1 / nearest(x, y)]
+  export let g = (x, y, from) => farthest(x, y, from)`
+  const host = oracle(src)
+  const same = (got, want, msg) => is([got].flat().map(x => Object.is(x, -0) ? '-0' : String(x)), [want].flat().map(x => Object.is(x, -0) ? '-0' : String(x)), msg)
+  for (const optimize of [{ level: 'speed' }, 2, { level: 'speed', simd: false }]) {
+    const m = run(src, { optimize })
+    for (const [x, y] of [[0, 0], [0.5, 3.25], [7.9, 1.1], [NaN, 0], [Infinity, 1], [-0, 0], [-3.5, -12.25], [1e15, 2]]) {
+      same(m.f(x, y), host.f(x, y), `${JSON.stringify(optimize)} nearest ${x},${y}`)
+      for (const from of [Infinity, 1, -1, NaN, 0]) same(m.g(x, y, from), host.g(x, y, from), `${JSON.stringify(optimize)} farthest ${x},${y} from=${from}`)
+    }
+  }
+  if (onKernel()) return
+  const fast = compile(src, { wat: true, optimize: 'speed' })
+  // (the second export calls the function it wraps; the first takes its body)
+  const f = funcWat(fast, 'f'), g = funcWat(fast, 'farthest') + funcWat(fast, 'g')
+  const count = (t, re) => (t.match(re) ?? []).length
+  ok(count(f, /i64\.lt_u/g) >= 3, `the nearest point's minimum compares words at each of the row's steps (${count(f, /i64\.lt_u/g)})`)
+  ok(count(f, /f64x2\.pmin/g) === 0, 'and takes no pseudo-minimum')
+  ok(count(g, /f64x2\.pmax/g) >= 1, 'the maximum keeps its pseudo-maximum')
+  ok(count(g, /f64x2\.pmin/g) >= 1, 'the minimum a parameter starts keeps its pseudo-minimum')
+  ok(count(g, /i64\.lt_u/g) === 0, 'and no minimum there compares words: one starts at a parameter, one is of a signed sum')
 })
 
 // A signed division or remainder of a value the intervals prove non-negative by a positive one is
@@ -8546,6 +8730,39 @@ test('condition chains: short-circuit tests branch per operand, evaluating each 
   for (const O of [0, 1, 2, 3, 'fast', 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
 })
 
+// A call made as a statement, or under `void`, drops its value folded, `(drop (call …))`: a `drop` written flat
+// among a function's statements is stack code, and the optimizer leaves the whole function's
+// structure alone, its condition chains among them (a sweep's `isnan(x) || x === Infinity`
+// stayed a value diamond, tested again: stdlib's exp, 0.88x the time with chains on x64).
+test('condition chains: a statement call drops its value folded, so its function takes the chains', () => {
+  const src = `const isnan = (x) => x !== x
+  let seen = 0
+  function note(v, d) { if (d > 0) return note(v + 1, d - 1); seen = (seen + v) | 0; return seen }
+  export let f = (xs) => {
+    let s = 0, t = 0
+    for (let i = 0; i < xs.length; i++) {
+      const x = xs[i]
+      if (isnan(x) || x === Infinity || x === -Infinity) t++
+      else s += x
+    }
+    note(t, 2)
+    return s + t
+  }
+  export let g = (x) => { const u = void note(x, 1); return u === undefined ? x : -x }
+  export let total = () => seen`
+  const xs = new Float64Array([1.5, NaN, Infinity, -Infinity, -0, 3, NaN, 1e300])
+  for (const optimize of levels(false, 1, 2, 3, 'speed', 'size')) {
+    const m = run(src, { optimize }), host = oracle(src)
+    is(m.f(xs), host.f(xs), `the sum at ${optimize}`)
+    is(m.g(3), host.g(3), `void at ${optimize}`)
+    is(m.total(), host.total(), `and the note at ${optimize}`)
+  }
+  if (belowOpt(2)) return
+  const text = compile(src, { wat: true, optimize: 'speed' }), body = funcWat(text, 'f')
+  ok(!/\)\s+drop\b/.test(body) && !/\)\s+drop\b/.test(funcWat(text, 'g')), 'no drop written flat, of a call or of a void')
+  ok(!/\(if\s*\(result i32\)\s*\(local\.tee/.test(body), 'no value diamond in the loop test')
+})
+
 test('devirtSchemaReads: an empty inline cache cannot match zero or subnormal numbers', () => {
   const shapes = Array.from({ length: 30 }, (_, i) => `{k${i}:0,x:${i}}`)
   const src = `function mk(i) { switch(i%30) { ${shapes.map((s,i) => `case ${i}: return ${s};`).join('')} } return {x:-1,z:0} }
@@ -8985,6 +9202,25 @@ test('a call carried into a spliced closure reads its arguments as the caller bi
       const out = new Float64Array(64)
       const sweep = () => { for (let i = 0; i < 64; i++) out[i] = fn(n - (i & 7), x, y) }
       for (let r = 0; r < 3; r++) sweep()
+      return out[5]
+    }`
+  ok(/f64x2/.test(compile(src, { wat: true, optimize: { level: 'speed' } })), 'the spliced dot product vectorizes')
+  is(jz(src, { optimize: { level: 'speed' } }).exports.main(100), oracle(src).main(100))
+})
+
+test('an argument a spliced loop tests is bound once before it, so the loop it bounds versions', () => {
+  // `n - (i & 7)` is Number arithmetic over bindings nothing writes while `dot` runs,
+  // but `dot` reads it in its loop's test: substituted there it is no bound of names,
+  // and the versioning that takes the counter integral (and the lane vectorizer after
+  // it) passed the loop by. Bound to a local once, the counter counts in words.
+  if (onKernel()) return
+  const src = `function dot(N, x, y) { let s = 0; for (let i = 0; i < N; i++) s += x[i] * y[i]; return s }
+    const fn = dot
+    export let main = (n) => {
+      const x = new Float64Array(n), y = new Float64Array(n)
+      for (let i = 0; i < n; i++) { x[i] = i; y[i] = n - i }
+      const out = new Float64Array(64)
+      for (let r = 0; r < 3; r++) for (let i = 0; i < 64; i++) out[i] = fn(n - (i & 7), x, y)
       return out[5]
     }`
   ok(/f64x2/.test(compile(src, { wat: true, optimize: { level: 'speed' } })), 'the spliced dot product vectorizes')

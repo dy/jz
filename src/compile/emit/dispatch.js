@@ -820,6 +820,55 @@ const noteCursorKey = (name, init) => {
   else ctx.func.cursorKeys?.delete(name)
 }
 
+// A local binding that holds one closure for the frame's whole run: not boxed
+// (no mutable cross-fn capture), not global, never reassigned in this body.
+const stableClosureLocal = (name) => !ctx.func.boxed.has(name) && !isGlobal(name) && ctx.func.body != null && !isReassigned(ctx.func.body, name)
+
+// A call the call-site rows record (emit/call.js tryDirectClosureCall): of the
+// name itself, no argument spread, no more arguments than the closure ABI's width.
+const recordedCall = (node, name) => {
+  if (node.length !== 3 || node[1] !== name) return false
+  const args = node[2]
+  if (args == null) return true
+  const list = Array.isArray(args) && args[0] === ','
+  if ((list ? args.length - 1 : 1) > (ctx.closure.width ?? MAX_CLOSURE_ARITY)) return false
+  if (!list) return !(Array.isArray(args) && args[0] === '...')
+  for (let i = 1; i < args.length; i++) if (Array.isArray(args[i]) && args[i][0] === '...') return false
+  return true
+}
+
+/** Whether the call-site rows see every call of the closure `name` holds: each
+ *  mention of it in `node` is the callee of a call they record, in this frame
+ *  or a closure inside it (whose capture opens them, module/function.js
+ *  openRows), or the initializer of a stable copy each mention of which is
+ *  (`body` the frame's, where the copy's mentions are). A value use (an
+ *  argument, a store, a return, a member read such as `bind`, `call` or
+ *  `apply`), an optional or tagged call and a spread hand it to callers the
+ *  rows never see. */
+function rowsSeeEveryCall(node, name, body) {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  if (typeof op !== 'string' || op === 'str') return true
+  if (op === '.' || op === '?.') return rowsSeeEveryCall(node[1], name, body)
+  if (op === ':' && typeof node[1] === 'string') return rowsSeeEveryCall(node[2], name, body)
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (typeof d === 'string') continue
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+        if (d[2] !== name ? !rowsSeeEveryCall(d[2], name, body)
+          : !stableClosureLocal(d[1]) || !rowsSeeEveryCall(body, d[1], body)) return false
+      } else if (!rowsSeeEveryCall(d, name, body)) return false
+    }
+    return true
+  }
+  let i = 1
+  if (op === '()' && node[1] === name) { if (!recordedCall(node, name)) return false; i = 2 }
+  for (; i < node.length; i++) if (!rowsSeeEveryCall(node[i], name, body)) return false
+  return true
+}
+
 export function emitDecl(...inits) {
   const result = []
   // A `let`/`const` declared inside a loop creates a *fresh* binding each
@@ -849,7 +898,9 @@ export function emitDecl(...inits) {
       // else r = b`, the result of a spliced body that returns from an arm),
       // whose kind then holds no absence. i32-narrowed locals are exempt either
       // way: the narrowing proof is assigned-before-read, and they zero-init.
-      if (ctx.func.locals.get(i) !== 'i32' && firstRefKind(ctx.func.body, i) !== 'write' && repOf(i)?.presence !== 'present')
+      // (the summary's presence is definite assignment: summary/definite.js, which follows a break to a label)
+      const assigned = repOf(i)?.presence === 'present'
+      if (ctx.func.locals.get(i) !== 'i32' && firstRefKind(ctx.func.body, i) !== 'write' && !assigned)
         (ctx.func.maybeNullish ??= new Set()).add(i)
       if (ctx.func.boxed.has(i)) {
         const cell = ctx.func.boxed.get(i)
@@ -865,9 +916,15 @@ export function emitDecl(...inits) {
         if ((ctx.scope.globalTypes.get(i) ?? 'f64') === 'f64') result.push(['global.set', `$${i}`, undef])
         continue
       }
-      // An i32-typed local (a narrowed integer index feeder) can't hold the f64
-      // NaN-box undef sentinel — and wasm zero-inits locals anyway, so a 0 init is
-      // equivalent for the assigned-before-read pattern that earns i32.
+      // A local no read finds unassigned (the summary's presence) stores nothing: what
+      // it is declared with is never seen, and a store of it is one more write for the
+      // passes that type the local by its writes to see (a word a library returns
+      // through a scratch array, `let ms; ms = UINT32_VIEW[ HIGH ]`, held in an integer
+      // register only without the `undefined` it is declared with). An i32-typed local (a narrowed integer
+      // index feeder) can't hold the f64 NaN-box undef sentinel — and wasm zero-inits
+      // locals anyway, so a 0 init is equivalent for the assigned-before-read pattern
+      // that earns i32.
+      if (assigned) continue
       result.push(['local.set', `$${i}`, ctx.func.locals.get(i) === 'i32' ? ['i32.const', 0] : undef])
       const shadow = ctx.func.numShadow?.get(i)
       if (shadow) result.push(['local.set', `$${shadow}`, ['f64.const', 'nan']])
@@ -1020,24 +1077,24 @@ export function emitDecl(...inits) {
     // downstream `arrVar[i]`/`.length` in the loop then takes the ARRAY-known fast path
     // instead of falling to the generic __typed_idx/__length dispatch.
     setFlowVal(name, valTypeOf(init), init, val)
-    // Direct-call dispatch for const-bound, non-escaping local closures: skip call_indirect.
-    // Gate: not boxed (no mutable cross-fn capture), not global, not reassigned in this body.
-    // isReassigned is conservative across nested arrow shadows — we miss the optimization
-    // rather than emit a wrong direct call.
-    if (Array.isArray(init) && init[0] === '=>' && val?.closureBodyName && !ctx.func.boxed.has(name) && !isGlobal(name)
-        && ctx.func.body && !isReassigned(ctx.func.body, name)) {
+    // Direct-call dispatch for a const-bound local closure: skip call_indirect.
+    // Gate: a stable binding (stableClosureLocal). isReassigned is conservative across
+    // nested arrow shadows — we miss the optimization rather than emit a wrong direct call.
+    // A binding the closure leaves by any way but a call the call-site rows record keeps
+    // its direct calls, its rows open (rowsSeeEveryCall).
+    if (Array.isArray(init) && init[0] === '=>' && val?.closureBodyName && stableClosureLocal(name)) {
       if (!ctx.func.directClosures) ctx.func.directClosures = new Map()
       ctx.func.directClosures.set(name, val.closureBodyName)
+      if (!rowsSeeEveryCall(ctx.func.body, name, ctx.func.body)) ctx.closure.openRows(val.closureBodyName)
     }
-    // Copy propagation of a direct closure: `let g = add`, where `add` is a non-escaping
+    // Copy propagation of a direct closure: `let g = add`, where `add` is a
     // directly-callable closure, makes `g` directly callable too — `g` holds the same
     // closure value, so `g(…)` calls add's body with g's value as env. This is what
     // devirtualizes `let arr = [add]; arr[0](…)`: array scalarization rewrites it to
     // `let g = add; g(…)` before emit (D3), and also covers the explicit `let g = arr[0]`.
-    // Same soundness gate as the direct-closure case: stable binding (not reassigned),
-    // not boxed, not global.
-    if (typeof init === 'string' && ctx.func.directClosures?.has(init) && !ctx.func.boxed.has(name)
-        && !isGlobal(name) && ctx.func.body && !isReassigned(ctx.func.body, name)) {
+    // Same soundness gate as the direct-closure case; add's rows answer for g's uses
+    // already: the walk at add followed the copy, or the capture that brought add opened them.
+    if (typeof init === 'string' && ctx.func.directClosures?.has(init) && stableClosureLocal(name)) {
       ctx.func.directClosures.set(name, ctx.func.directClosures.get(init))
     }
     if (ctx.func.boxed.has(name)) {
@@ -1196,12 +1253,19 @@ export function emitDecl(...inits) {
   return result.length === 0 ? null : result.length === 1 ? result[0] : result
 }
 
+/** A value dropped folded, `(drop v)`: a flat `drop` among a function's statements is stack code,
+ *  which the optimizer's structural passes leave alone in the whole function. */
+export const foldsDrop = (v) => Array.isArray(v) && typeof v[0] === 'string'
+
 /** Emit node in void context: emit + drop any value. Block bodies route through emitBlockBody. */
 export function emitVoid(node) {
   if (isBlockBody(node)) return emitBlockBody(node)
   const ir = emit(node, 'void')
   const items = flat(ir)
-  if (ir?.type && ir.type !== 'void') items.push('drop')
+  if (!(ir?.type && ir.type !== 'void')) return items
+  const last = items[items.length - 1]
+  if (items.every(Array.isArray) && foldsDrop(last)) items[items.length - 1] = ['drop', last]
+  else items.push('drop')
   return items
 }
 

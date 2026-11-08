@@ -74,9 +74,10 @@ import { foldKindTests } from './fold-kind-tests.js'
 import { viewGuardedTyped } from './guard-views.js'
 import { inlineHotInternalCalls, inlineLocalLambdas, specializeFixedRestCalls } from './inline.js'
 import { laneRecordParams } from './lanes.js'
-import { bindNestedRowLengths, unrollRowLenPadLoops, splitCharScanLoops, splitArrayScanLoops } from './loops.js'
+import { splitCharScanLoops, splitArrayScanLoops } from './loops.js'
 import { guardConstants, canonicalizeCountedLoops, adoptLoopCounters, unitWalks } from './counted-loops.js'
 import { scalarizeModuleScratch } from './scratch.js'
+import { hoistLoopInvariants } from './loop-invariants.js'
 import { resolveAliases, splitSplicedBindings } from './alias.js'
 import { propagateConstants } from './constants.js'
 import {
@@ -170,14 +171,12 @@ export default function plan(ast, profiler, summarize) {
   // devirtualization) — must follow the SROA above, which creates the globals.
   sweep('devirtGlobalCalls', () => devirtGlobalCalls(ast))
   // A method call on a receiver the summary names calls the class's function directly.
-  sweep('devirtClassCalls', devirtClassCalls)
+  sweep('devirtClassCalls', () => devirtClassCalls(ast, facts))
   // An array pattern over a proven array reads it by index, no cursor.
   sweep('indexArrayPatterns', indexArrayPatterns)
   // Storage reads of a guarded typed array use a view of its constructor;
   // calls and identity uses retain the original receiver.
   if (ctx.transform.optimize?.guardViews) sweep('viewGuardedTyped', viewGuardedTyped)
-  sweep('bindNestedRowLengths', bindNestedRowLengths)
-  sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   // Reject invalid strict call boundaries before inlining removes their sites.
   // The later check still validates the settled and specialized signatures.
   if (ctx.transform.strict) strictBoundaryTypeCheck(facts())
@@ -212,8 +211,6 @@ export default function plan(ast, profiler, summarize) {
   // read where it still holds it, the body's tests of it are decided.
   if (optimizing() && ctx.transform.optimize.constants === true) sweep('propagateConstants', propagateConstants)
   if (aliases) { sweep('splitSplicedBindings', splitSplicedBindings); sweep('resolveAliases', resolveAliases) }
-  sweep('bindNestedRowLengths', bindNestedRowLengths)
-  sweep('unrollRowLenPadLoops', unrollRowLenPadLoops)
   // A spliced lambda carries the seams of the calls spliced into its body while
   // it was a closure, whose arguments could not read through the names it
   // captured: in its caller those are names for one value too.
@@ -243,6 +240,9 @@ export default function plan(ast, profiler, summarize) {
     // no kind for them, and a cursor the canonical form needs proved a Number is
     // one it cannot read.
     if (spliced || lambdas) ctx.summary = summarize()
+    // A declaration in a loop of a Number the loop never changes: before the loop
+    // (a spliced body's work on the arguments the loop holds fixed).
+    sweep('hoistLoopInvariants', hoistLoopInvariants)
     // A walk to an end tested by equality, its cursor stepped by units one way: the
     // loop under `<` (`>` stepping down), a copy for each way the step can point.
     sweep('unitWalks', unitWalks)

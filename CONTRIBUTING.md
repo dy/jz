@@ -128,6 +128,13 @@ that interval. The surviving checked loop keeps its existing no-respecialization
 mark; the Number/SIMD fast path stays unchanged. Unknown offsets, non-unit
 strides, incomplete predicates and mutable bindings retain both paths.
 
+A statement's value, and a `void`'s, is dropped folded, `(drop (call …))`: watr
+leaves the structure of a function holding a flat `drop` alone, its condition
+chains among them (`isnan(x) || x === Infinity` stayed a value diamond tested
+again, which x64 makes a value of each float comparison first: stdlib's exp,
+swept from the bench driver that calls the host's logger, 0.88x the time
+chained).
+
 Generic local propagation and merging run in watr after linking, including
 the fast tier. The same local-slot allocator runs in the lightweight tail,
 including level 1: disjoint temporaries share storage instead of inflating
@@ -312,9 +319,13 @@ storage. Unwritten literals substitute directly. A leaf can also substitute a
 single first operand, or reread a binding when its whole expression cannot
 invoke user code. Caller-local bindings no closure captures also substitute
 when neither the remaining arguments nor the callee writes them. Single-use
-Number arithmetic over those bindings follows the same proof. Other arguments
+Number arithmetic over those bindings follows the same proof unless a loop of
+the callee tests it: the versioning that takes a counter integral holds a bound of
+names (a sweep's `fn( n - (i & 7), x, y )` and its vectorized dot product). Other arguments
 retain captures; alias/local passes can remove copies after proving their
-sources stay unchanged. Closure splices do not inherit the parent's binding proof.
+sources stay unchanged. A closure splice takes a proof of its own: the closure's
+bindings no closure inside it mentions, and the bindings around it that nothing
+writes past their declaration.
 Expression calls keep captures in a sequence at their evaluation point. Inlining
 never moves initializers out of branches or loops; the IR optimizer owns motion.
 Numeric demand follows ordinary array cells through binding aliases, indexed
@@ -827,7 +838,11 @@ no cell, no slot, a direct call of its body, unless a write or an earlier captur
 boxes the binding. A body's calls emit after every closure's plan, so the call-site
 rows (`paramTypes`, `paramTypedCtors`, `minArgc`) of a closure a body may call
 open (module/function.js `openCallRows`) and its parameters hold the summary's
-kinds alone. The host's `__jz_call_closure` links for an emitted closure that
+kinds alone. So do the rows of a closure its binding hands on or calls in a form
+the rows do not record: an argument, a store, a return, `bind`, `call` or
+`apply`, an optional call, a spread (compile/emit/dispatch.js `rowsSeeEveryCall`,
+which follows a copy); a closure table's rows read a spread call as passing
+anything (compile/emit/call.js `recordClosureTableCallSite`). The host's `__jz_call_closure` links for an emitted closure that
 escapes; with no indirect call left the table and the unread slots of the closure
 ABI go (wat/assemble/closure-table.js).
 The linker orders functions by descending call count, then runtime before user
@@ -846,13 +861,18 @@ retain their fixed UTF-16 length. Serializer or decoder allocation into unread
 data traps. These helpers are reachable only from checkpoint users. The lane
 also carries an `Int32Array` or `Float64Array` whole (`__park_write_bytes`):
 a large compile decodes the assembled module onto the tape before its first
-checkpoint, which keeps the tape (its columns, symbols and atoms:
-src/ir/tape.js tapeState) with link's and the optimizer's inputs instead of
-the tree, dead once decoded; each of link's passes then runs as a phase of
-its own, and each sweep of the arena rewind over the module's functions
-within it (`phase` in its facts), compacted before the next runs and before
-the tape is read back into the tree the optimizer takes (scripts/self.js
-compileModule, src/link/index.js linkPasses, src/optimize/arena-rewind.js).
+checkpoint, which keeps the tape with link's and the optimizer's inputs
+instead of the tree, dead once decoded. The tape's columns (src/ir/tape.js
+tapeColumns), the last and largest thing the decode allocated, move down to
+the arena's floor past the rewind before anything else is allocated; its
+symbols and atoms (tapeState) go through the lane. Copied into the lane, the
+columns (32 bytes a node, near a gigabyte on the compiler's own module) sat
+a second time above a heap of 3.26 GB and ran it past the end of memory.
+Each of link's passes then runs as a phase of its own, and each sweep of
+the arena rewind over the module's functions within it (`phase` in its
+facts), compacted before the next runs and before the tape is read back into
+the tree the optimizer takes (scripts/self.js compileModule,
+src/link/index.js linkPasses, src/optimize/arena-rewind.js).
 The arena rewind pass alone allocates 6.9 GB under V8 on the compiler's
 own module; `guarded` keeps a node's parent in one column over the tape, not
 a Map per function the pass held to its end.
@@ -2442,6 +2462,25 @@ and the body (`Vector3.applyMatrix4` from a dozen sites, `intersectsSphere`
 with a loop of its own); those copies are bounded together (400 nodes). A
 dispatcher's arm and a binder's closure are no sites: they call the member
 for a receiver the summary cannot name, and the function stays for them.
+At the speed tier a straight-line method of a receiver that may also be
+missing is a site too: an element of an array of instances
+(`world[i].multiplyMatrices(parent, local[i])`) is undefined past the array's
+end, and the plan calls the class's function with the receiver past a test
+(plan/scope.js `devirtClassCalls`, `__present`), which throws the TypeError the
+member read would before the arguments run (module/core.js), the summary, the
+value types and the binding's own facts reading it as the receiver without the
+missing values; an element the interval prover puts in bounds needs no test, and
+a loop's bounds proof reads the test as its operand (type/canonical-bounds.js).
+Its splice is a sole site's like any other, and puts the stores of one call
+beside the loads of the next (forward-store.js). The method stays for
+its class's dispatcher, a body no typed call binds, compiled with unknown
+parameters: a method of a loop, which that compile pulls generic helpers into
+(gainclass's `process`), and the size tier keep the call. So does a method a loop
+already calls directly: a second direct site costs the first its sole splice, and
+the method left binds its parameters with the kinds of both (three's frustum cull
+beside a scene update, test/three/kernels.js: the elements of a matrix that
+`setPosition` may leave undefined became every matrix's, and each read of a
+plane a test).
 Unreachable callers also cost no copies; the summary's reachability proof
 keeps unused library methods from consuming a live callee's duplication budget.
 An eligible callee's returns lower to one trailing `return r`: `return X`
@@ -3367,6 +3406,7 @@ src/
                 plan/counted-loops.js: a counted loop over its trip number (computed start, secondary cursors, unrolled body rolled back, unit stride versioned); guards preserve full cursor entries and updates, including signed zero. Bounds must be stable and free of coercion calls; captures and mutable array lengths retain their original loops.
                 plan/counted-loops.js unitWalks: a `while (x !== e)` whose every write of x steps it by one unit the same way (`x += dx`, dx ±1 or a name the loop never writes; `x++`) runs under `x < e` (`x > e` stepping down) where x and e are integers and x starts at or before e the way it steps, a copy per way with the step a literal: no step crosses an integer, so the copy stops where the loop does; the loop as written runs for the rest (a fraction, NaN, another kind, a cursor past its end, which may never stop). A falling-sand scan alternating direction by row keeps its cursor and every cell index in words
                 plan/counted-loops.js adoptLoopCounters: a `for` whose counter is declared outside it and assigned by its init (`let i; for (i = 0; …)`), read nowhere else and never captured, declares a counter of its own; the loop then reads as `for (let i …)` (the lane recognizers, the extent proofs)
+                plan/loop-invariants.js: a declaration in a loop of a Number the loop never changes moves before it, the value of literals, module constants and locals declared ahead of the loop (a remainder, whose fast path branches to the runtime, is what watr's LICM cannot take), the loops innermost first, so a value of the outer loop's alone moves on out; a declaration in a body the splice brought is the common case
                 plan/forward-conditions.js: a boolean declared once from a condition for the `if` right after it (`const inside = x >= 0 && … ; if (inside)`), the `if` testing the condition itself, so its arms refine by the conjuncts
                 plan/unswitch-loops.js: a loop testing a name it never writes (`if (stereo)`), a copy for each answer, its declarations renamed so each copy's values have its arms' kinds
                 plan/reciprocal-loops.js: a kernel loop dividing by a name it never writes (`sum / m`, `/ span`), a copy multiplying by the reciprocal where the divisor is a positive int32 power of two (exact: `a * 2^-k` is `a / 2^k` for every `a`), the loop as written the other arm; a quotient made an integer (`| 0`, `Math.floor`) is loop-divmod.js's
@@ -3850,7 +3890,11 @@ start afresh each round): a binding the first rounds see empty, its value a
 field holding what a function met later returns, decides nothing until then,
 and an arm walked in those rounds no longer keeps the test open. A bare `let`
 assigned before every read declares empty, not absent
-(`summary/definite.js`); a condition carries what each outcome assigned, a
+(`summary/definite.js`), and its local stores nothing where it is declared
+(compile/emit/dispatch.js): its writes alone type it, so a word a library
+returns through a scratch array, `W[ 0 ] = U[ 1 ]`, holds in an integer register
+(int-narrow.js), where the `undefined` it was declared with kept it a Number
+truncated back at each read (stdlib's `pow`, 0.90x the time); a condition carries what each outcome assigned, a
 true `&&` and a false `||` having run every operand (`if (a && (r = a[0]) !=
 null && r !== b)` reads `r` assigned). The module's own bare declarations take the same
 proof over its statements: a function runs where a statement names it or,
@@ -4823,7 +4867,16 @@ arms of a conditional, a block's result, a unary operator and a
 reinterpretation to its consumer, or into a local every read of which flows so
 too: an f64 arithmetic operator propagates every NaN alike and is canonical
 where it escapes, a comparison answers alike, a saturating truncation yields
-zero. A value that reaches a store, a call or a return keeps its canon.
+zero (a conversion to single precision keeps the top of a NaN's payload, and
+a box stored into a Float32Array reads back as the box: it is no such
+consumer). A value that reaches a store, a call or a return keeps its canon,
+but a canon in a loop
+whose value such a read takes only past the loop runs at that read instead. A
+local that holds a field through the loop (`plan/loop-fields.js`) may hold a box
+from ahead of it, which that read must keep where no pass ran: where each pass
+writes such locals first, a flag the pass raises tells the two apart, and a
+miss test of one in the loop is its value (three's Box3.setFromArray and the
+normalize pass of computeVertexNormals, bench/threegeom 0.88x the time).
 
 Before emission, whether an operator over a value of unknown kind may run user
 code is the source's census (`src/member-uses.js`): a program that defines or
@@ -5292,8 +5345,32 @@ name (two parameters can be one array); a store's base resolves through jz's sta
 never through a load. `test/slp.js` pins the shapes and the bails. The same address model
 drives `src/optimize/forward-store.js`, which runs before the packer: in straight-line code a
 load of a slot the list just stored (or loaded into a local) reads that local instead, and a
-store the list overwrites unread goes; a store through another name, a call, a branch or a
-nested block forgets everything (`test/forward-store.js`).
+store the list overwrites unread goes; a call, a branch or a nested block forgets everything
+(`test/forward-store.js`), and a store through another name forgets what it may overwrite.
+
+What an access may overwrite is the emitter's to say (`src/ir/mem-alias.js`): it marks the
+load or store node (`node.mem`) where the program summary names what the access touches.
+An element access of an array the summary gives a cell (its allocation class) is `e<cell>`,
+a field access of an object the summary gives layouts is `f<slot>:<layouts>`. Arrays of two
+cells are two allocations, an array and an object are two, and an object keeps its layout
+and its fields their slots for its life: two marked accesses share bytes only within one
+cell, or at one slot of a layout both may have. Everything else stays unmarked and may touch
+anything: a header, a typed array's buffer (its views may share it), a dictionary's table, a
+struct-inlined array's cells (a layout an `Array<S>` carrier or a union packs is never
+marked as a field), the runtime's memory. The marks are set on the nodes the abi carriers
+return (module/array.js element reads, emit-assign.js `storeFixedElement` and
+`storeObjectField`, module/core.js `emitSchemaSlotRead`); a pass that rebuilds a node drops
+its mark, which is the unmarked answer. forwardStores and reuseLoads ask `mayAlias` where a
+store would forget what a load read: three's `local.compose(...)` stores the matrix's
+elements and `world.multiplyMatrices(parent, local)` reads them back through `local[i]` and
+its `elements`, both reads of memory no store of the elements reaches, so the multiply's
+sixteen reads are the values the compose stored (`test/mem-alias.js`). A local LICM snaps
+once from a local written once (`$__li1 = $__li10`, `$__li8 = $__li10`, one per access of
+one base) is that local where its write has run (forward-store.js `copyRoots`), so the two
+reads of `local[i]` are one address; a call of the math runtime, which touches no memory of
+the program (optimize/pure-funcs.js `pureKernel`), forgets nothing. A tree of i32
+constants stays out of LICM's hoists (licm.js `constTree`): in a local of its own it is an
+operand the memarg fold no longer sees.
 
 A static typed array the program only indexes by constants is registers
 (`src/optimize/static-scratch.js`, first in the module optimizer). The shape is the scratch a
@@ -5413,7 +5490,11 @@ series summed from a generator, a continued fraction from its terms) splices at 
 tier wherever the argument is a function the caller names or makes, whatever the count of
 sites, and lifts out of an expression there; a returned call splices as an assigned one does.
 An assignment's target that runs nothing, over names the splice cannot store to (a local no
-closure mentions, a constant of the module), commutes with any splice: `OUT[ i ] = f( x )`.
+closure mentions, a constant of the module), commutes with any splice: `OUT[ i ] = f( x )`. In
+a closure those are its own locals no closure inside it mentions and the bindings of the
+function around it that nothing writes past their declaration: a sweep the bench driver makes,
+`out[ i ] = fn( x[ i ] )` over its `const out`, takes the body of `fn` (stdlib's `gamma`, 0.97x
+the time).
 A caller past 3000 nodes takes no more loops at sites outside its own loops, and the loops it
 left are pinned for watr's single-caller inliner, which has no bound: a driver of three
 hundred kernels was one function that never left the baseline tier. The size tier has no
@@ -5437,8 +5518,14 @@ over `gcd`, whose loops stay a function), outside a cycle of calls, whose copy w
 cycle's call again, and so does a body of any size at its one site where that site is in a
 loop: the splice copies nothing and takes a call out of the loop that V8 would not inline (it
 takes at most 500 bytes; stdlib's `erf` swept over its arguments, 0.72x the time spliced);
-and a function a value names is still the body of its direct calls
-(`modf( x )` beside `modf.assign = assign`). A call in an arm of a conditional runs only
+a straight-line body of up to 400 nodes splices at a site where the innermost loop holds some
+of its arguments fixed and the body's declarations compute at least 16 operators from those
+alone (`LIFT_WORK`): the call repeats that work each pass, and spliced, `plan/loop-invariants.js`
+moves it out of the loop (munsell's `muXyY( H, V, c )` over the chromas of one hue and value,
+0.32x the time, 14% more bytes); and a function a value names is still the body of its direct
+calls (`modf( x )` beside `modf.assign = assign`). `lowerReturns` makes one exit of a body of
+early returns; a tuple's returns, each a literal of its lanes, assign a binding per lane and
+the one return is the literal of the bindings. A call in an arm of a conditional runs only
 where the arm does, so the conditional itself moves ahead of its statement, as a statement:
 `c ? a : f( x )` is `let t; if ( c ) t = a; else t = f( x )` and then `t`, `a && f( x )` is
 `let t = a; if ( t ) t = f( x )`, past what it commutes with only, as a lifted call moves. A

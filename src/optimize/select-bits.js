@@ -30,6 +30,18 @@
  * the other order, so one of them must be a read the other's evaluation does not
  * change. Without SIMD (`optimize: { simd: false }`) the choice takes the bits.
  *
+ * A running minimum of values of no sign (`if (d2 < f1) f1 = d2` over squared
+ * distances, worley's nine feature points) chooses by its words instead, on every
+ * target: for +0, the positives and +Infinity the unsigned order of the bits is
+ * the floats' order, and every NaN's bits, of either sign, lie above +Infinity's,
+ * where `d < m` never picks one either. The minimum lives in an integer local, so
+ * the chain from one step to the next is a compare and a select between integer
+ * registers; the pseudo-minimum's chain on arm64 is a splat, `fcmgt`, `bsl` and a
+ * lane move (worley 0.85x the time on an M4, 0.975x on an EPYC 9V45 and 1.017x on
+ * a Xeon 8370C). Every step's value is a square, a sum or a root of such (a local
+ * read through the write its list makes last before the step), every other write
+ * of the minimum a literal of no sign that is no NaN or another such minimum.
+ *
  * @module optimize/select-bits
  */
 
@@ -105,6 +117,145 @@ const pseudoMinMax = (a, b, c, t) => {
   return [lane, '0', [min ? pmin : pmax, [splat, b], [splat, a]]]
 }
 
+// A float that is +0 or more, or NaN, and never -0: a square, a sum, product, quotient, minimum or
+// maximum of such, a root of one, an absolute value, an unsigned conversion, a literal of no sign,
+// a local every write of which is one (a local starts at +0; a parameter is the caller's). Its bits
+// as an unsigned word order as the floats do, and every NaN lies above +Infinity.
+const SQUARES = new Set(['f64.mul', 'f32.mul'])
+const NONNEG_JOIN = new Set(['f64.add', 'f32.add', 'f64.mul', 'f32.mul', 'f64.div', 'f32.div', 'f64.min', 'f32.min', 'f64.max', 'f32.max'])
+const NONNEG_ALWAYS = new Set(['f64.abs', 'f32.abs', 'f64.convert_i32_u', 'f64.convert_i64_u', 'f32.convert_i32_u', 'f32.convert_i64_u'])
+const NONNEG_OF = new Set(['f64.sqrt', 'f32.sqrt', 'f64.promote_f32'])
+// a float literal's value as the text spells it (`inf`, `nan:0x…`, a decimal), NaN where unread (a hex float)
+const literalValue = (v) => {
+  if (typeof v === 'number') return v
+  const t = String(v).toLowerCase()
+  if (t === 'inf' || t === '+inf' || t === 'infinity') return Infinity
+  if (t === '-inf' || t === '-infinity') return -Infinity
+  return t.includes('nan') ? NaN : Number(t)
+}
+const nonneg = (n, writesOf, params, seen = new Set()) => {
+  if (!isArr(n)) return false
+  const op = n[0]
+  if (op === 'f64.const' || op === 'f32.const') { const v = literalValue(n[1]); return v >= 0 && !Object.is(v, -0) }
+  if (op === 'local.tee') return nonneg(n[2], writesOf, params, seen)
+  if (op === 'local.get') {
+    const x = n[1]
+    if (params.has(x)) return false
+    if (seen.has(x)) return true   // (a cycle: the other writes decide)
+    seen.add(x)
+    const ok = (writesOf.get(x) ?? []).every(w => nonneg(w, writesOf, params, seen))
+    seen.delete(x)
+    return ok
+  }
+  // x * x: one value, read twice
+  if (SQUARES.has(op) && n.length === 3 && isArr(n[1]) && isArr(n[2]) && n[2][0] === 'local.get' &&
+      (n[1][0] === 'local.get' || n[1][0] === 'local.tee') && n[1][1] === n[2][1]) return true
+  if (NONNEG_JOIN.has(op)) return n.length === 3 && nonneg(n[1], writesOf, params, seen) && nonneg(n[2], writesOf, params, seen)
+  if (NONNEG_ALWAYS.has(op)) return true
+  if (NONNEG_OF.has(op)) return nonneg(n[1], writesOf, params, seen)
+  return false
+}
+const LISTS = new Set(['func', 'block', 'loop', 'then', 'else'])
+// (a statement a branch may leave or enter mid-list: what follows it may not have seen what precedes it)
+const BRANCHES_IN = (s) => isArr(s) && (s[0] === 'loop' || s[0] === 'block' || s[0] === 'if' || s[0] === 'br' || s[0] === 'br_if' || s[0] === 'br_table')
+const BITS_OF = { f64: ['i64', 'i64.reinterpret_f64', 'f64.reinterpret_i64', 'i64.lt_u', 'i64.const'], f32: ['i32', 'i32.reinterpret_f32', 'f32.reinterpret_i32', 'i32.lt_u', 'i32.const'] }
+/** A running minimum of values none of which is -0 or below (`if (d < m) m = d` over distances,
+ *  squared or not) chooses by its words: an unsigned compare of the bits orders such values as
+ *  the floats do, and puts every NaN above +Infinity, where the float compare never picks it
+ *  either. The minimum then lives in an integer local, its reads converting it back: the chain from
+ *  one step to the next is a compare and a select between integer registers, on every target.
+ *  Every other write of the minimum is a literal of no sign, never NaN. In `fn`, in place. */
+const wordMinimums = (fn, locals) => {
+  const writesOf = new Map(), statements = new Map(), bad = new Set()
+  const where = new Map()   // a statement → [its list, its index]
+  const scan = (n, list) => {
+    if (!isArr(n)) return
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+      let l = writesOf.get(n[1]); if (!l) writesOf.set(n[1], l = []); l.push(n[2])
+      if (n[0] === 'local.tee' || !list) bad.add(n[1]); else { let st = statements.get(n[1]); if (!st) statements.set(n[1], st = []); st.push(n) }
+    }
+    for (let i = 1; i < n.length; i++) { if (LISTS.has(n[0])) where.set(n[i], [n, i]); scan(n[i], LISTS.has(n[0])) }
+  }
+  scan(fn, false)
+  const params = new Set(fn.filter(d => isArr(d) && d[0] === 'param' && typeof d[1] === 'string').map(d => d[1]))
+  // `(local.set $m (select A (local.get $m) (lt (read of A) (local.get $m))))`, or `gt` with the reads swapped
+  const stepOf = (st, m) => {
+    const e = st[2]
+    if (!isArr(e) || e[0] !== 'select' || e.length !== 4) return null
+    const [, a, b, c] = e
+    const x = readOf(a)
+    if (x == null || x === m || !isArr(b) || b[0] !== 'local.get' || b[1] !== m || !isArr(c) || c.length !== 3) return null
+    const t = locals.get(m), get = (y, k) => isArr(c[k]) && c[k][0] === 'local.get' && c[k][1] === y
+    const min = (c[0] === `${t}.lt` && get(x, 1) && get(m, 2)) || (c[0] === `${t}.gt` && get(m, 1) && get(x, 2))
+    return min ? a : null
+  }
+  // A step's value read from a local: the write of it the statements before the step in its own list
+  // make last, where none of them writes it otherwise (a local the optimizer shares between values
+  // holds other ones elsewhere), else every write of it
+  const stepValue = (st, a) => {
+    if (!isArr(a) || a[0] !== 'local.get' || !where.has(st)) return a
+    const [list, k] = where.get(st), x = a[1]
+    for (let i = k - 1; i >= 1; i--) {
+      const s = list[i]
+      if (isArr(s) && s[0] === 'local.set' && s[1] === x) return s[2]
+      if (isArr(s) && (writes(s).has(x) || BRANCHES_IN(s))) return a
+    }
+    return a
+  }
+  const clean = (st, a) => nonneg(stepValue(st, a), writesOf, params)
+  // The minimums: every write a step over a value of no sign, a literal of no sign that is no NaN,
+  // or a copy of another minimum of the type (a loop's version carrying it), at least one a step
+  // among them. A copy's source leaving the set takes the copy with it.
+  const cand = new Set()
+  const literal = (v, t) => isArr(v) && v[0] === `${t}.const` && nonneg(v, writesOf, params) && !Number.isNaN(literalValue(v[1]))
+  const copyOf = (v, t) => isArr(v) && v[0] === 'local.get' && locals.get(v[1]) === t ? v[1] : null
+  for (const [m, sts] of statements) {
+    const t = locals.get(m)
+    if (bad.has(m) || !BITS_OF[t] || params.has(m)) continue
+    if (sts.every(st => { const a = stepOf(st, m); return a ? clean(st, a) : literal(st[2], t) || copyOf(st[2], t) })) cand.add(m)
+  }
+  for (let changed = true; changed;) {
+    changed = false
+    for (const m of [...cand]) {
+      const t = locals.get(m)
+      if (statements.get(m).every(st => stepOf(st, m) || literal(st[2], t) || cand.has(copyOf(st[2], t)))) continue
+      cand.delete(m); changed = true
+    }
+  }
+  // (a set of copies with no step among them chooses nothing)
+  const stepped = new Set([...cand].filter(m => statements.get(m).some(st => stepOf(st, m))))
+  for (let changed = true; changed;) {
+    changed = false
+    for (const m of cand) if (!stepped.has(m) && statements.get(m).some(st => stepped.has(copyOf(st[2], locals.get(m))))) { stepped.add(m); changed = true }
+  }
+  const plan = new Map([...cand].filter(m => stepped.has(m)).map(m => [m, `${m}$w`]))   // $m → its word local
+  if (!plan.size) return
+  // a copy whose source is not in the plan reads it as a float: leave the set whole or not at all
+  for (const m of plan.keys()) for (const st of statements.get(m)) { const y = copyOf(st[2], locals.get(m)); if (y && !plan.has(y)) return }
+  const rewrite = (n) => {
+    if (!isArr(n)) return n
+    if (n[0] === 'local.get' && plan.has(n[1])) return [BITS_OF[locals.get(n[1])][2], ['local.get', plan.get(n[1])]]
+    if (n[0] === 'local.set' && plan.has(n[1])) {
+      const m = n[1], w = plan.get(m), [, toBits, , lt] = BITS_OF[locals.get(m)]
+      const a = stepOf(n, m)
+      if (a) {
+        const tmp = `${w}$d`
+        return ['local.set', w, ['select', ['local.tee', tmp, [toBits, rewrite(a)]], ['local.get', w], [lt, ['local.get', tmp], ['local.get', w]]]]
+      }
+      const y = isArr(n[2]) && n[2][0] === 'local.get' && plan.has(n[2][1]) ? n[2][1] : null
+      return ['local.set', w, y ? ['local.get', plan.get(y)] : [toBits, n[2]]]
+    }
+    for (let i = 1; i < n.length; i++) n[i] = rewrite(n[i])
+    return n
+  }
+  for (let i = 1; i < fn.length; i++) fn[i] = rewrite(fn[i])
+  let at = 2
+  while (at < fn.length && isArr(fn[at]) && (fn[at][0] === 'export' || fn[at][0] === 'type' || fn[at][0] === 'param' || fn[at][0] === 'result' || fn[at][0] === 'local')) at++
+  const decls = []
+  for (const [m, w] of plan) { const word = BITS_OF[locals.get(m)][0]; decls.push(['local', w, word], ['local', `${w}$d`, word]) }
+  fn.splice(at, 0, ...decls)
+}
+
 /** Rewrite the float selects of every function in `ast` (a module) to integer selects of their bits,
  *  those of a choice between two ordered operands to their pseudo-minimum or -maximum where `simd`. */
 export function selectBits(ast, { simd = true } = {}) {
@@ -123,6 +274,7 @@ export function selectBits(ast, { simd = true } = {}) {
     for (const d of fn) if (isArr(d) && (d[0] === 'param' || d[0] === 'local') && typeof d[1] === 'string' && d[1][0] === '$') locals.set(d[1], d[2])
     // Inside a loop, a bound the loop never writes (a clamp's limits read
     // once before it) holds as a literal does.
+    wordMinimums(fn, locals)
     const memo = new Map()
     const visit = (n, loop) => {
       const fixed = loop ? (x) => isConst(x) || isArr(x) && x[0] === 'local.get' && !writtenIn(loop, memo).has(x[1]) : isConst

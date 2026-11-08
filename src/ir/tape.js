@@ -69,13 +69,15 @@ export function resetTape() {
   T.locations = null
 }
 
-/** The tape as data (its columns, symbols, atoms), and back: a large self-hosted
- *  compile carries the decoded module through its checkpoint as this, the
- *  tree it was decoded from left behind (scripts/self.js compileModule). */
-export const tapeState = () => ({ n: T.n, op: T.op, a: T.a, next: T.next, ty: T.ty, imm: T.imm, sym: T.sym, sid: T.sid,
-  syms: T.syms, symId: T.symId, bigs: T.bigs, blobs: T.blobs, locations: T.locations })
-export const restoreTape = (s) => {
-  T.n = s.n; T.op = s.op; T.a = s.a; T.next = s.next; T.ty = s.ty; T.imm = s.imm; T.sym = s.sym; T.sid = s.sid
+/** The tape as data, its columns and the rest (the node count, symbols, atoms), and
+ *  back: a large self-hosted compile carries the decoded module through its
+ *  checkpoint as these, the tree it was decoded from left behind, the columns
+ *  moving down past the rewind (scripts/self.js compileModule). */
+export const tapeColumns = () => [T.op, T.a, T.next, T.ty, T.imm, T.sym, T.sid]
+export const tapeState = () => ({ n: T.n, syms: T.syms, symId: T.symId, bigs: T.bigs, blobs: T.blobs, locations: T.locations })
+export const restoreTape = (s, columns) => {
+  const [op, a, next, ty, imm, sym, sid] = columns
+  T.n = s.n; T.op = op; T.a = a; T.next = next; T.ty = ty; T.imm = imm; T.sym = sym; T.sid = sid
   T.syms = s.syms; T.symId = s.symId; T.bigs = s.bigs; T.blobs = s.blobs; T.locations = s.locations
 }
 

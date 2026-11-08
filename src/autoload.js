@@ -211,6 +211,7 @@ const CALL_MODULES = dict({
   '__sym_key': ['core', 'symbol'],
   '__gen_mark': ['core'],
   '__tdz': ['core'],
+  '__present': ['core'],
   '__p_is': ['core'],
   '__p_cast': ['core'],
   '__p_plain': ['core'],

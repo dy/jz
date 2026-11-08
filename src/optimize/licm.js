@@ -906,6 +906,14 @@ export function splitLoopPrivateScratch(fn) {
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
+// A tree of i32 constants folds where it stands (fusedRewrite, watr): moved into a local of
+// its own, it is an operand the fold no longer sees, and the address it adds to stays an
+// `add` (a body spliced into a nested loop indexes its fixed elements by
+// `(i32.shl (i32.const k) (i32.const 3))`). A wider constant (a NaN box's bits) is a long
+// immediate at each use: its local stays the cheaper spelling.
+const constTree = (n) => Array.isArray(n) && typeof n[0] === 'string' && n[0].startsWith('i32.') && (n[0] === 'i32.const' ||
+  n.length > 1 && !/load|^i32\.(wrap|trunc|reinterpret)/.test(n[0]) && n.slice(1).every(constTree))
+
 // JZ supplies only the language/representation proof and profitability policy.
 // Watr owns traversal, private-local checks, extraction, deduplication and typing.
 export function hoistInvariantLoop(fn) {
@@ -949,7 +957,7 @@ export function hoistInvariantLoop(fn) {
         return false
       } : null
       const { pureGiven, hasV128 } = computeLoopInvariance(loop, { distinctParams, baseParamOf, stableHeaderNames, presentArrays, presentTyped: fn.presentTyped || null, defs, views: fn.viewNames || null, fixedLoad, scopedLoad })
-      return (node, bound) => ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
+      return (node, bound) => !constTree(node) && ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     },
   })
 }
