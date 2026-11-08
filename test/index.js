@@ -209,6 +209,7 @@ const TESTS = [
   'sink-stores',
   'share-quotients',
   'skip-latches',
+  'extreme-guards',
   'carry-keys',
   'array-view',
   'param-defaults',

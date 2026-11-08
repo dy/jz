@@ -92,6 +92,16 @@ the scan jumped past it, and past the arms its slow path keeps after it, to the
 latch. The copy folds the tests the way to the branch decides (a flag the round
 cleared, a cursor an earlier test bounded); a copy that would keep a loop, and a
 test of words alone (a counted loop's entry test), keep their shape.
+After it, `guardExtremes` (src/optimize/extreme-guards.js, speed tier) takes a
+loop's running minimum or maximum (`m = Math.min(m, v)`, the loop's one write of m)
+after the loop where the round's test says it changes: `v > m` decides
+f64.min(m, v) = m exactly (`v < m` the maximum), so the round tests and falls
+through to its latch, and code after the loop takes the extreme, tests and takes
+the ones after it, runs the latch and enters the loop again. V8 lowers f64.min on
+x64 to a compare and three branches, one taken every round, and keeps a loop's
+blocks together, so the code taking an extreme is off the round's way. A
+canonicalization of the extreme goes with it where its temp is dead past the loop
+(src/optimize/liveness.js, the backward liveness loop-compact.js shares).
 Late, from level 2 up, `constBases` (src/optimize/const-bases.js) moves a
 base the function's control flow holds to one address (a static parameter's entry
 write, its inlined copy) into the memarg of each access adding it to an index:
@@ -3428,7 +3438,8 @@ src/
                 lead-gathers.js (after watr: a loop whose rounds search from a slot read at an address read from memory reads the next round's slot a round ahead);
                 carry-stores.js (after watr: a round's last store to an address its next round reads first passes the value through a local);
                 skip-latches.js (after watr: a test that skips a loop's inner scan, testing the scan's data, runs the rest of the round in a copy of its own ending in the latch);
-                liveness.js (backward liveness over structured code, into expressions: loop-compact.js reads it);
+                extreme-guards.js (after watr: a loop's running minimum or maximum is taken after the loop where the round's test says it changes, the round that keeps it falling through to the latch);
+                liveness.js (backward liveness over structured code, into expressions: loop-compact.js and extreme-guards.js read it);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 jump-pointers.js (after watr: a loop variable that steps and jumps carries the address of the record it indexes, advanced where it steps, formed again where it jumps);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);

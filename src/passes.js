@@ -192,6 +192,7 @@ export const TUNING_KEYS = [
   'carryStores',              // a round's last store to an address its next round reads first passes the value through a local (optimize/carry-stores.js, speed tier)
   'sinkStores',               // a loop's every-round store to a slot nothing in it reads is a local, stored as the loop leaves (optimize/sink-stores.js, speed tier)
   'skipLatches',              // a test that skips a loop's inner scan runs the rest of the round in a copy of its own (optimize/skip-latches.js, speed tier)
+  'guardExtremes',            // a loop's running minimum or maximum is taken after the loop where the round's test says it changes (optimize/extreme-guards.js, speed tier)
   'unrollTrips',              // an innermost loop of 4 to 16 iterations known at compile time is its body written out (optimize/unroll-trips.js, speed tier)
   'hoistVectorConsts',        // a vector constant in a loop is read from a local set before it (optimize/vectorize/hoist-consts.js, speed tier)
   'pointerExits',             // a loop keeping a counter only to stop stops by the pointer strength reduction steps beside it (optimize/pointer-exits.js, speed tier)

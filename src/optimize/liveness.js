@@ -11,7 +11,8 @@
  * reads say so.
  *
  * `at` receives the live set before each loop the caller asked about, and
- * past each block it asked about.
+ * past each block it asked about; `past`, where given, the live set past each
+ * node it asks about (a statement, an operand, a loop).
  *
  * @module optimize/liveness
  */
@@ -20,21 +21,21 @@ const HEAD = new Set(['result', 'param', 'type'])
 const NONE = new Set()
 const union = (a, b) => { for (const x of b) a.add(x); return a }
 
-const liveIn = (n, out, env, at) => {
+const liveIn = (n, out, env, at, past = null) => {
   if (!Array.isArray(n)) return out
   const op = n[0]
   if (op === 'local.get') { if (out.has(n[1])) return out; return union(new Set(out), [n[1]]) }
-  if (op === 'local.set' || op === 'local.tee') { const live = new Set(out); live.delete(n[1]); return liveIn(n[2], live, env, at) }
+  if (op === 'local.set' || op === 'local.tee') { const live = new Set(out); live.delete(n[1]); return liveIn(n[2], live, env, at, past) }
   if (BR.has(op)) {
     let live = out
-    for (let i = n.length - 1; i >= 1; i--) live = typeof n[i] === 'string' ? union(new Set(live), env.get(n[i]) ?? NONE) : liveIn(n[i], live, env, at)
+    for (let i = n.length - 1; i >= 1; i--) live = typeof n[i] === 'string' ? union(new Set(live), env.get(n[i]) ?? NONE) : liveIn(n[i], live, env, at, past)
     return live
   }
   if (op === 'block' || op === 'loop') {
     const label = typeof n[1] === 'string' ? n[1] : null
     if (op !== 'loop' || !label) {
       if (at.has(n)) at.set(n, out)
-      return liveSeq(n, out, label ? new Map(env).set(label, out) : env, at)
+      return liveSeq(n, out, label ? new Map(env).set(label, out) : env, at, past)
     }
     // a branch back to the loop brings in its own live-in: the least fixed
     // point, from what is live past the loop
@@ -42,11 +43,12 @@ const liveIn = (n, out, env, at) => {
     let live = out
     for (;;) {
       inner.set(label, live)
-      const next = liveSeq(n, out, inner, at)
+      const next = liveSeq(n, out, inner, at, past)
       if ([...next].every(x => live.has(x))) { live = next; break }
       live = union(new Set(live), next)
     }
     if (at.has(n)) at.set(n, live)
+    if (past?.has(n)) past.set(n, out)
     return live
   }
   if (op === 'try_table') {
@@ -54,7 +56,7 @@ const liveIn = (n, out, env, at) => {
     // is live throughout, so at the entry
     let live = new Set(out)
     for (const c of n) if (Array.isArray(c) && c[0].startsWith('catch')) union(live, env.get(c[c.length - 1]) ?? NONE)
-    return liveSeq(n, live, env, at)
+    return liveSeq(n, live, env, at, past)
   }
   if (op === 'if') {
     let arms = null, hasElse = false, cond = out
@@ -63,21 +65,24 @@ const liveIn = (n, out, env, at) => {
       const c = n[i]
       if (!Array.isArray(c)) continue
       // (an arm's live set may be the one past the `if`, which other paths share: the join is a set of its own)
-      if (c[0] === 'then' || c[0] === 'else') { arms = union(new Set(liveSeq(c, out, env, at)), arms ?? NONE); if (c[0] === 'else') hasElse = true }
+      if (c[0] === 'then' || c[0] === 'else') { arms = union(new Set(liveSeq(c, out, env, at, past)), arms ?? NONE); if (c[0] === 'else') hasElse = true }
     }
     cond = arms ? (hasElse ? arms : union(arms, out)) : out
     for (let i = n.length - 1; i >= 1; i--) {
       const c = n[i]
-      if (Array.isArray(c) && !HEAD.has(c[0]) && c[0] !== 'then' && c[0] !== 'else') cond = liveIn(c, cond, env, at)
+      if (Array.isArray(c) && !HEAD.has(c[0]) && c[0] !== 'then' && c[0] !== 'else') cond = liveIn(c, cond, env, at, past)
     }
     return cond
   }
-  return liveSeq(n, out, env, at)
+  return liveSeq(n, out, env, at, past)
 }
 /** The children of a node in order, each seeing what the next needs. */
-export const liveSeq = (n, out, env, at) => {
+export const liveSeq = (n, out, env, at, past = null) => {
   let live = out
-  for (let i = n.length - 1; i >= 1; i--) if (Array.isArray(n[i]) && !HEAD.has(n[i][0])) live = liveIn(n[i], live, env, at)
+  for (let i = n.length - 1; i >= 1; i--) if (Array.isArray(n[i]) && !HEAD.has(n[i][0])) {
+    if (past?.has(n[i])) past.set(n[i], live)
+    live = liveIn(n[i], live, env, at, past)
+  }
   return live
 }
 

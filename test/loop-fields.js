@@ -220,7 +220,8 @@ test('loop fields: vectors of one layout a loop stores through several receivers
 test('loop fields: a box grown point by point holds its vectors in locals, as Numbers', () => {
   if (belowOpt(2)) return
   for (const optimize of levels(2, 3)) {
-    const loops = loopsOf(wat(box, { optimize })).filter(l => /f64\.min/.test(l) && /f32\.load/.test(l) && l.indexOf('(loop', 1) < 0)
+    // (the loop over the points: its extremes, or at the speed tier their guards, the extremes taken after it)
+    const loops = loopsOf(wat(box, { optimize })).filter(l => /f64\.(min|gt)/.test(l) && /f32\.load/.test(l) && l.indexOf('(loop', 1) < 0)
     // (an undefined test reads the bits: `i64.eq (i64.reinterpret_f64 …) undefined`)
     ok(loops.some(l => !/f64\.(load|store)|i64\.reinterpret_f64/.test(l)), `at ${optimize}: a loop reads the points alone, no field and no undefined test`)
   }
