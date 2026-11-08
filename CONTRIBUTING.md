@@ -3428,6 +3428,7 @@ src/
                 lead-gathers.js (after watr: a loop whose rounds search from a slot read at an address read from memory reads the next round's slot a round ahead);
                 carry-stores.js (after watr: a round's last store to an address its next round reads first passes the value through a local);
                 skip-latches.js (after watr: a test that skips a loop's inner scan, testing the scan's data, runs the rest of the round in a copy of its own ending in the latch);
+                liveness.js (backward liveness over structured code, into expressions: loop-compact.js reads it);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 jump-pointers.js (after watr: a loop variable that steps and jumps carries the address of the record it indexes, advanced where it steps, formed again where it jumps);
                 trunc-choice.js (after watr: a choice of a float's ceiling below zero and its floor above, as a library writes `trunc`, is one `f64.trunc`);
