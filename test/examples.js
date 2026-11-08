@@ -376,8 +376,9 @@ test('example: toroidal-wrap stencils (diffusion, slime) vectorize and stay bit-
         // RECOVERED (2026-10-04): the row bases `rowC = y * w` and the index `c = rowC + x`
         // are words of the source versioning's copy (plan/integral-loops.js: derived
         // integers), so the 5-point stencil lifts in both step functions; pinned by
-        // their neighbour loads, not an operation count.
-        { name: 'diffusion', want: (w) => ['stepAtoB', 'stepBtoA'].every(f => (funcWat(w, f).match(/v128\.load/g) || []).length >= 8), drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
+        // their neighbour loads, not an operation count, wherever the steps land
+        // (their own functions, or inlined into frame).
+        { name: 'diffusion', want: (w) => ((funcWat(w, 'stepAtoB') + funcWat(w, 'stepBtoA') + funcWat(w, 'frame')).match(/v128\.load/g) || []).length >= 16, drive: (e) => { const p = e.resize(64, 48); if (e.seedRect) e.seedRect(20, 15, 40, 30); for (let f = 0; f < 8; f++) e.frame(); return [...p]; } },
         // The 3×3 blur lifts in its present-grid arm (the loop as written is the
         // version's cold arm now: plan/integral-loops.js leaves it scalar); pinned
         // by the lanes' nine neighbour loads wherever the blur lands (its own
