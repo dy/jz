@@ -37,6 +37,8 @@ import { leadGathers } from './lead-gathers.js'
 import { skipLatches } from './skip-latches.js'
 import { guardExtremes } from './extreme-guards.js'
 import { hoistStillLoads } from './still-loads.js'
+import { pairTests } from './pair-tests.js'
+import { foldTestedChoices } from './tested-choices.js'
 import { carryStores } from './carry-stores.js'
 import { pointerExits } from './pointer-exits.js'
 import { jumpPointers } from './jump-pointers.js'
@@ -738,6 +740,8 @@ export function watrTail(module, cfg, {
   if (cfg.selectArms !== false) time('selectArms', () => selectArms(optimized))
   // (on the lanes the vectorizer converted and the selects the arms became: each arm's quotient one of a choice)
   if (cfg.shareQuotients !== false) time('shareQuotients', () => shareQuotients(optimized))
+  // (before a float select of literals becomes a select of their bits: a test of it is a test of its condition)
+  if (cfg.testedChoices === true) time('testedChoices', () => foldTestedChoices(optimized))
   // (after the passes that read a float select as one)
   if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized, { simd: !ctx.transform.noSimd }))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)
@@ -751,6 +755,8 @@ export function watrTail(module, cfg, {
   // (on the loops the passes above leave, before the float literals are pooled: a running extreme's
   // canonicalization reads its NaN as a literal)
   if (cfg.guardExtremes === true) time('guardExtremes', () => guardExtremes(optimized))
+  // (on the tests the optimizer joined, before the float literals are pooled)
+  if (cfg.pairTests === true) time('pairTests', () => pairTests(optimized, { simd: !ctx.transform.noSimd }))
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
   const user = name => ctx.funcs.map.has(name.slice(1)) || name.endsWith('$exp') && ctx.funcs.map.has(name.slice(1, -4))
