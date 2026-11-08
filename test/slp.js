@@ -13,6 +13,9 @@ import { jz, compile } from './util.js'
 const speed = { level: 'speed', moduleScratch: false }
 const speedNoSimd = { level: 'speed', noSimd: true, moduleScratch: false }
 const fires = (src) => (compile(src, { wat: true, optimize: speed }).match(/v128\.store/g) || []).length
+// (a loop's stores the round never reads leave it with sinkStores, and pack past it: the
+// field-pair kernels below store each round to pin the packing in the loop)
+const firesInLoop = (src) => (compile(src, { wat: true, optimize: { ...speed, sinkStores: false } }).match(/v128\.store/g) || []).length
 
 // Run the same source SIMD vs scalar; assert byte-identical numeric result.
 function bitExact(name, src) {
@@ -187,7 +190,7 @@ const groundTruth = (src) => new Function(src.replace(/export let run/, 'return 
 
 test('slp: field pairs pack a kernel that loads its fields into locals first', () => {
   const src = mat4('const step = (i) => { mul(out, a, b); return out[0] + out[15] }')
-  ok(fires(src) >= 8, 'every row packs: (a0k,a1k) and (a2k,a3k) are one v128 each')
+  ok(firesInLoop(src) >= 8, 'every row packs: (a0k,a1k) and (a2k,a3k) are one v128 each')
   bitExact('field pairs', src)
   if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), groundTruth(src), 'jz speed == JS ground truth')
 })
@@ -198,7 +201,7 @@ test('slp: field pairs through a staged receiver (a parameter that may be absent
   const src = mat4(`const as = []
     for (let i = 0; i < 4; i++) as.push([1 + i, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0.25, 0.125, 4 - i])
     const step = (i) => { mul(out, as[i & 3], b); return out[0] + out[15] }`)
-  ok(fires(src) >= 8, 'the staged reads pair')
+  ok(firesInLoop(src) >= 8, 'the staged reads pair')
   bitExact('staged field pairs', src)
   if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), groundTruth(src), 'jz speed == JS ground truth')
 })

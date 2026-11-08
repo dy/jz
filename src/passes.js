@@ -190,6 +190,7 @@ export const TUNING_KEYS = [
   'searchLoops',              // a loop whose body is a guarded loop scans for its guard in an innermost loop (optimize/search-loops.js, speed tier)
   'leadGathers',              // a loop over items that searches from a slot it gathers reads the next item's slot a round ahead (optimize/lead-gathers.js, speed tier)
   'carryStores',              // a round's last store to an address its next round reads first passes the value through a local (optimize/carry-stores.js, speed tier)
+  'sinkStores',               // a loop's every-round store to a slot nothing in it reads is a local, stored as the loop leaves (optimize/sink-stores.js, speed tier)
   'skipLatches',              // a test that skips a loop's inner scan runs the rest of the round in a copy of its own (optimize/skip-latches.js, speed tier)
   'unrollTrips',              // an innermost loop of 4 to 16 iterations known at compile time is its body written out (optimize/unroll-trips.js, speed tier)
   'hoistVectorConsts',        // a vector constant in a loop is read from a local set before it (optimize/vectorize/hoist-consts.js, speed tier)

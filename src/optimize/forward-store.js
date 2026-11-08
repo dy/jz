@@ -68,7 +68,7 @@ const dominates = (a, b, at) => {
 // local set once by a statement that runs before it (or a parameter nothing writes). Read
 // where its write has run, it is that local: LICM snaps one base into a local per access
 // (`$__li1 = $__li10`, `$__li8 = $__li10`), which are then one address.
-const copyRoots = (fn, bodyStart) => {
+export const copyRoots = (fn, bodyStart) => {
   const writes = new Map()
   walkAst(fn, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.set(n[1], (writes.get(n[1]) || 0) + 1) } })
   const params = new Set()
