@@ -36,6 +36,7 @@ import { searchLoops } from './search-loops.js'
 import { leadGathers } from './lead-gathers.js'
 import { skipLatches } from './skip-latches.js'
 import { guardExtremes } from './extreme-guards.js'
+import { hoistStillLoads } from './still-loads.js'
 import { carryStores } from './carry-stores.js'
 import { pointerExits } from './pointer-exits.js'
 import { jumpPointers } from './jump-pointers.js'
@@ -688,6 +689,8 @@ export function watrTail(module, cfg, {
   foldWrappedWords(legalized)
   // (a boxed pointer in a local the function only unboxes: the local holds the pointer)
   for (const n of legalized) narrowBoxedLocals(n)
+  // (a loop that writes no memory and calls nothing: its reads every round runs, ahead of it)
+  if (cfg.stillLoads === true) time('stillLoads', () => hoistStillLoads(legalized))
   // Generic local rewrites run only here, after link consumed JZ annotations.
   // Fast mode uses the same passes without the full module fixpoint.
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts))

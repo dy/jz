@@ -210,6 +210,7 @@ const TESTS = [
   'share-quotients',
   'skip-latches',
   'extreme-guards',
+  'still-loads',
   'carry-keys',
   'array-view',
   'param-defaults',

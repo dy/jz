@@ -102,6 +102,13 @@ x64 to a compare and three branches, one taken every round, and keeps a loop's
 blocks together, so the code taking an extreme is off the round's way. A
 canonicalization of the extreme goes with it where its temp is dead past the loop
 (src/optimize/liveness.js, the backward liveness loop-compact.js shares).
+Before watr, `stillLoads` (src/optimize/still-loads.js, speed tier) reads ahead of
+a loop that writes no memory, calls nothing and sets no global the loads every
+round runs before anything can branch, at addresses the loop holds still, with the
+work over them alone; a local the loop writes once there, before any read of it,
+is written ahead too where its value holds such a load or a load moved reads it
+(the rest is watr's LICM's). The first round runs the same work, so nothing runs
+that the loop would not have.
 Late, from level 2 up, `constBases` (src/optimize/const-bases.js) moves a
 base the function's control flow holds to one address (a static parameter's entry
 write, its inlined copy) into the memarg of each access adding it to an index:
@@ -3439,6 +3446,7 @@ src/
                 carry-stores.js (after watr: a round's last store to an address its next round reads first passes the value through a local);
                 skip-latches.js (after watr: a test that skips a loop's inner scan, testing the scan's data, runs the rest of the round in a copy of its own ending in the latch);
                 extreme-guards.js (after watr: a loop's running minimum or maximum is taken after the loop where the round's test says it changes, the round that keeps it falling through to the latch);
+                still-loads.js (before watr: a loop that writes no memory and calls nothing reads its invariant loads once ahead of it);
                 liveness.js (backward liveness over structured code, into expressions: loop-compact.js and extreme-guards.js read it);
                 ring-laps.js (after watr: a counted loop stepping a cursor around a ring runs a lap at a time, the wrap after each lap);
                 jump-pointers.js (after watr: a loop variable that steps and jumps carries the address of the record it indexes, advanced where it steps, formed again where it jumps);
