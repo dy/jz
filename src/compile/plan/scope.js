@@ -646,6 +646,26 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
     for (const root of roots) walk(root, false)
     return only
   }
+  // A `jz:` module's constant on its own function stands for a builtin's static
+  // (std/typed.js: each constructor's BYTES_PER_ELEMENT), which JS makes
+  // non-enumerable: only a read by its name observes it, `.P` or the string P
+  // as a key, an `in` or a reflective call takes. With the name nowhere in the
+  // program, the writes are dead though the function escapes; kept, each was a
+  // __dyn_set at start, the dynamic-object runtime with it, and under a closure
+  // table the host keeps (host 'wasi') the function itself.
+  let named = null
+  const nameAll = (n) => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'str') { if (typeof n[1] === 'string') named.add(n[1]); return }
+    if (n[0] === '=' && Array.isArray(n[1]) && (n[1][0] === '.' || n[1][0] === '?.')) { nameAll(n[1][1]); nameAll(n[2]); return }
+    if ((n[0] === '.' || n[0] === '?.') && typeof n[2] === 'string') named.add(n[2])
+    for (let i = 1; i < n.length; i++) nameAll(n[i])
+  }
+  const unobservedStatic = (f, prop, writes) => {
+    if (!ctx.funcs.map.get(f)?.sig?.std || !writes?.every(x => x.atInit && constNumExpr(x.rhs) != null)) return false
+    if (!named) { named = new Set(); for (const r of roots) nameAll(r) }
+    return !named.has(prop)
+  }
   for (const [f, info] of ns) {
     if (info.disq && info.rebound) continue
     let decide
@@ -667,7 +687,11 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
       // `$f$prop` (emit/method-dispatch.js tryFnPropCall), here, where the
       // inliner and the parameter census see it: a class's static method called
       // as `C.m(…)`, the class itself a value its `constructor` hands out.
-      if (info.disq) { if (lifted) plan(prop, { direct: `${f}$${prop}`, drop: false }); continue }
+      if (info.disq) {
+        if (lifted) plan(prop, { direct: `${f}$${prop}`, drop: false })
+        else if (unobservedStatic(f, prop, w)) plan(prop, { drop: true })
+        continue
+      }
       if (multi) { plan(prop, { global: `${f}${T}${prop}` }); continue }
       // Read as a value as well (`parse.prop && parse.prop(…)`), the slot is what
       // its one store leaves, undefined before it runs: a global the store

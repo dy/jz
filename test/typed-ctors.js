@@ -78,6 +78,8 @@ test('typed constructors: O0 links only the constructors the program names', () 
   if (onKernel()) return
   const made = [...compile(src, { optimize: 0, wat: true }).matchAll(/\(func \$jz_typed\$(\w+)/g)].map(m => m[1])
   is(made.join(), '__Float32Array', 'the one constructor named')
+  // no read names BYTES_PER_ELEMENT: no constructor's static is written at start (plan/scope.js flattenFuncNamespaces)
+  is(/\$__dyn_set/.test(compile(src, { optimize: 2, wat: true })), false, 'no static written that nothing reads')
 })
 
 // An entry of re-exports alone has no statements of its own: the lowering of
