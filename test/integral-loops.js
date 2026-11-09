@@ -2130,3 +2130,95 @@ test('integral loops: a counter entering from a name counts in a word', () => {
   walkAst(body, { enter: n => { if (n[0] === 'for' && n[1]?.[1]?.[1]?.startsWith?.(`j${T}`) && String(n[1][1][1]).includes(`${T}int`) && String(n[2]?.[2]).includes(`${T}bound`)) copy = true } })
   ok(copy, 'the counter counts in a word of the copy, under the rounded bound')
 })
+
+// A head declaring names beside its counter and stepping them in its update
+// (decode-wav's `for (let x = ch[c], i = 0, k = c * 3; i < frames; i++, k += nCh * 3)`)
+// reads as the loop over its counter alone; a cursor stepped by a stride of the
+// header record, an integer the program cannot prove, is a word of the copy
+// under one test of the stride and the cursor's ends, read once before the loop.
+const deinterleave = `export function f(src, o) {
+  const raw = src instanceof Uint8Array ? src : new Uint8Array(src), nCh = o.channels, frames = Math.floor(raw.length / (nCh * 3))
+  const ch = Array.from({ length: nCh > 0 && nCh < 9 ? nCh : 0 }, () => new Float32Array(frames > 0 ? frames : 0))
+  let s = 0
+  for (let c = 0; c < ch.length; c++) for (let x = ch[c], i = 0, k = c * 3; i < frames; i++, k += nCh * 3) {
+    x[i] = ((raw[k] | raw[k + 1] << 8 | raw[k + 2] << 16) << 8 >> 8) / 8388608
+    s += x[i]
+  }
+  return s
+}`
+
+test('integral loops: a head beside its counter reads as the loop over it, a record stride a cursor word', () => {
+  const host = oracle(deinterleave)
+  const raw = new Uint8Array(601)
+  for (let i = 0, v = 7; i < raw.length; i++) { v = (v * 1103515245 + 12345) >>> 0; raw[i] = v >>> 24 }
+  for (const optimize of levels(0, 2, 3)) {
+    const { f } = jz(deinterleave, { optimize }).exports
+    for (const channels of [1, 2, 3, 2.5, -1, 0, NaN, '2', 7])
+      is(f(raw, { channels }), host.f(raw, { channels }), `O${optimize}: ${typeof channels} ${channels} channels`)
+  }
+  if (belowOpt(2)) return
+  const fn = funcWat(wat(deinterleave, { optimize: 2 }), 'f')
+  const seg = (from) => { let d = 0, i = from; for (; i < fn.length; i++) { if (fn[i] === '(') d++; else if (fn[i] === ')' && --d === 0) break } return fn.slice(from, i + 1) }
+  const loops = []
+  for (let at = fn.indexOf('(loop'); at >= 0; at = fn.indexOf('(loop', at + 5)) loops.push(seg(at))
+  // (the one float add left is the sum of the samples)
+  ok(loops.some(l => (l.match(/i32\.load8_u/g) || []).length === 3 && !/\(loop/.test(l.slice(5)) && !/trunc_sat/.test(l) && (l.match(/f64\.add/g) || []).length <= 1),
+    'a sample loop steps its cursor in a word: no float step or truncation of it')
+})
+
+// The head stays as written where the loop over its counter would change what
+// runs: a `continue` takes the update's steps, a step or a declaration reading the
+// counter sees it where the head put it, and steps before the counter's run first.
+test('integral loops: a head kept as written where reading it over its counter would change it', () => {
+  const src = `export const cont = (a, o) => { let s = 0; for (let i = 0, k = 0; i < a.length; i++, k += o.s) { if (i % 3 === 0) continue; s += a[k] | 0 } return s }
+    export const readsI = (a, o) => { let s = 0; for (let i = 0, k = 0; i < a.length; i++, k += i) s += (a[k] | 0) + o.s; return s }
+    export const declI = (a, o) => { let s = 0; for (let i = 1, k = i * o.s; i < a.length; i++, k += o.s) s += a[k] | 0; return s }
+    export const before = (a, o) => { let s = 0; for (let x = a, i = 0, k = 0; i < a.length; k += o.s, i++) s += (x[k] | 0) * (i + 1); return s }`
+  const host = oracle(src)
+  const a = Array.from({ length: 40 }, (_, i) => (i * 7) % 11)
+  for (const optimize of levels(0, 2, 3))
+    for (const [name, fn] of Object.entries(jz(src, { optimize }).exports))
+      for (const s of [1, 2, 0.5, -1]) is(fn(a, { s }), host[name](a, { s }), `O${optimize}: ${name} by ${s}`)
+})
+
+// A stride visibly a fraction (resample's `phase += step`, `step` a quotient) is no
+// cursor's: its guard would fail on every run, the loop as written running cold.
+// A head whose other names the loop only reads (the bound a string scan's lowering
+// declares, `min(len, s.length)`) keeps its form; the tokenizer bench case holds
+// its speed, which a copy of such a head lost (43 µs → 63 µs).
+test('integral loops: a fractional stride keeps the loop, a scan the head its lowering wrote', () => {
+  const src = `export const phase = (a, o) => { let s = 0; const step = o.up / o.dn; for (let k = 0, p = 1; k < 20; k++, p += step) s += a[p | 0] | 0; return s }
+    const scan = (src, len) => { let h = 0, tokens = 0; for (let i = 0; i < len; i++) { const c = src.charCodeAt(i); if (c > 32) { h = (h * 31 + c) | 0; tokens++ } } return h + tokens }
+    const SRC = 'let alpha_12 = beta + 12345; if (alpha_12 >= 99) total = 1;'
+    export const scanAt = (k) => { let src = ''; for (let r = 0; r < 4; r++) src = src + SRC; const n = src.length; return scan(src, n - (k & 7)) ^ scan(src, n - (k & 3)) }`
+  const host = oracle(src)
+  const a = Array.from({ length: 64 }, (_, i) => i * 3 % 17)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const [up, dn] of [[3, 2], [1, 1], [5, 4]]) is(m.phase(a, { up, dn }), host.phase(a, { up, dn }), `O${optimize}: phase ${up}/${dn}`)
+    for (const k of [0, 5, 13]) is(m.scanAt(k), host.scanAt(k), `O${optimize}: scan at ${k}`)
+  }
+  if (belowOpt(2)) return
+  compileInProcess(src)
+  const names = (f) => { const out = new Set(); walkAst(ctx.funcs.list.find(g => g.name === f)?.body, { enter: n => { for (const x of n) if (typeof x === 'string') out.add(x) } }); return [...out] }
+  ok(!names('phase').some(n => n.includes(`${T}stride`)), 'no word for a fractional stride')
+})
+
+test('integral loops: a stride cursor enters tested, an accumulator by a stride keeps the loop', () => {
+  // `t` enters a run of a whole stride where the loop as written left it after a run of
+  // a fractional one (`o.k * i`, 0.5 at i = 1); `s += step` indexes nothing, a word of it buys nothing
+  const src = `export const pick = (src, o, n, m) => { const a = src instanceof Uint8Array ? src : new Uint8Array(src); let s = 0, t = 0; for (let i = 0; i < n; i++) { const w = o.k * i; for (let j = 0; j < m; j++, t += w) s += a[t] ?? 100 } return s + t }
+    export const sum = (step) => { let s = 0; for (let i = 0; i < 10; i++) s += step; return s }`
+  const host = oracle(src)
+  const a = new Uint8Array(64).map((_, i) => i * 7 % 23)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const k of [0.5, 1, 2, 1.5]) is(m.pick(a, { k }, 5, 3), host.pick(a, { k }, 5, 3), `O${optimize}: pick by ${k}`)
+    for (const step of [1, 2.5, -3]) is(m.sum(step), host.sum(step), `O${optimize}: sum by ${step}`)
+  }
+  if (belowOpt(2)) return
+  compileInProcess(src)
+  const names = (f) => { const out = new Set(); walkAst(ctx.funcs.list.find(g => g.name === f)?.body, { enter: n => { for (const x of n) if (typeof x === 'string') out.add(x) } }); return [...out] }
+  ok(names('pick').some(n => n.includes(`${T}stride`)), 'a word for the index stride')
+  ok(!names('sum').some(n => n.includes(`${T}stride`)), 'no word for an accumulator')
+})

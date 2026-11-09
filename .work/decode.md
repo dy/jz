@@ -241,3 +241,55 @@ hangs on main 22ef18e30 (the nest's runs 17.9 s there, 2.6 s here).
   (depth 6 1.5 s, 7 6.4 s, 8 35.5 s to compile). Past a budget per node, a loop a discovery
   pass reaches takes the plain fixpoint (type/interval-proof.js, optimize/word-ranges.js):
   8 deep 3.7 s; depth ≤ 7 and watr compile to the same wasm. test/interval-proof.js.
+
+## Fixed (branch perf)
+
+| | Change | Kernel before → after | Decoder before → after |
+|---|---|---|---|
+| G7, G2 | A `for` head declaring a name beside its counter reads as the loop over the counter, the other names declared before it and their steps at the body's end, where the head's other names are stepped in its update or written in its body (`k += nCh * 3`, CAF's `off` stepped by an inner loop); a head whose other names are only read keeps its form. A cursor indexing the loop stepped by an integral expression of stable names (`k += nCh * 3`, a record's channel count) is a cursor word: the guard tests the stride a non-negative int32 and the cursor's entry an integer, the copy steps by a word of the stride read once (plan/integral-loops.js `canonicalHead`, `strideOf`) | `pcm.js k7` 0.69× → 1.53×, `c1f` 0.72× → 1.20–1.34×, `c7s` → 1.92–2.05× (level with `c7hs`) | wav pcm24 0.65× → 1.37–1.42×, float32 0.73× → 1.20–1.35×, caf pcm16 1.14× → 1.59–1.62×, caf float32 0.93× → 1.30× |
+
+Against main 4ce86036d, load 10–30; the decoder rows are full-table and single-case runs.
+Of the bench corpus, decode-wav (873 → 815 µs) and decode-dsd (level) compile differently.
+Caught by the corpus on the way and fixed before keeping: the rewrite took the lowering's
+own string-scan head (`min(len, src.length), i = 0`) and copied the loop, tokenizer 44 →
+67 µs; and `phase = 1.0; phase += o.up / o.dn` read as an integer cursor whose guard failed
+every run, resample 1.13 → 1.33 ms. And by the suite: a stride accumulator (`s += step`)
+indexing nothing was copied for no gain, and a stride cursor entered the copy where a run of
+a fractional stride had left it (`0.5 * i`), one sample off. The tokenizer case is held by the
+bench alone: no kernel of its shape reproduced the copy.
+
+Open: k7 runs 465 µs against 330 µs for the same loop by a literal stride: the monotone
+cursor proofs of the bounds checks (type/loop-versioning.js) take a literal step only.
+
+## Measured after branch perf (not fixed)
+
+Diagnostic copies of the packages, both engines, one process each, jz's heap reset after
+every decode as `decoders.mjs` does (without the reset jz's times grow with the heap and
+read up to 0.65 ms worse on QOA).
+
+- QOA, 4.41 against 3.88 ms (0.88×). With the sample loop run zero times (`i < n - 20`):
+  0.67 / 0.36 ms; with it deleted: 0.57 / 0.31 ms; without the final join as well: 0.51 /
+  0.21 ms; without the slices: 0.15 / 0.15 ms. So: the sample loop +0.22 ms (its fast copy
+  is all words: no cold arm runs under `coldTrap`), the slice prologue +0.3 ms over 44,100
+  slice-channels, frame setup and the join level. The prologue's parts, none above ~0.1 ms:
+  the sample loop's entry guard (eight separate length conjuncts for `weights[0..3]`,
+  `history[0..3]`, where one per receiver holds them), two `__dv_index` calls on an f64
+  offset (`channels = b[p]` is a byte or undefined, `p` an f64 frame offset `p += size`
+  under `p + size > buf.length → break`), a region check, `channelData[c]` through
+  `__arr_value`, the destructure's nullish test. K1 (`table-rows.js plain` 1.02×) and K2
+  (`clamp-acc.js`: the sum is an i64 word, no f64 left) no longer carry QOA's gap.
+- MS ADPCM: the sample loop is the gap (148 / 105 µs; 6 / 3 µs without it), and a file of
+  `decodeMsWav` with the package's own header scan reproduces it (147 / 106 µs). `pcm.js
+  k6` does not measure it: alone in a file it runs 1.72× on main; beside the other kernels
+  of pcm.js, one of which hands COEFS's cell to the host (`hostArrays`, `retainedArrays`),
+  every row read in the module goes through the keyed dispatch, 0.64×. Ruled out: the
+  table (`MS_DEFAULT_COEFS` for the record's pushed rows), the block header reads, the
+  record's `samplesPerBlock` (`| 0`), hoisting `ch[0]`, `ch[1]`, the other codecs' paths,
+  the walk budgets of word-ranges and interval-proof. Its `pr` is f64 where k6's is an i64
+  word; masking `nib &= 15` in `expand` makes it a word and the decode slower (182 µs).
+  Not diagnosed.
+- A row read by a key that is a Number or undefined (`coefs[predIdx[c]]`, an Int32Array
+  element at an index that may miss) takes the keyed dispatch, about 1,500 lines of inlined
+  property lookup, where on an array with no numeric property and none named "undefined"
+  the read is undefined or the read by the Number. Tried: a minimal kernel's function went
+  1,662 → 189 lines; decode-wav's MS loop the same speed, its WAT 460 lines larger. Not kept.
