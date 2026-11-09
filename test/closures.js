@@ -3105,3 +3105,15 @@ export let f = (n) => {
   ok(/call_indirect/.test(compile(one, { optimize: 0, wat: true })), 'the reference tier keeps the table')
   ok(/call_indirect/.test(compile(two, { optimize: 2, wat: true })), 'two closures in a field: the table dispatches')
 })
+
+// A direct call of a closure body in the module's initialization, the body one of
+// two alike that the dedup merges: the call follows the merge (wat/assemble/closure-table.js
+// dedupClosureBodies), where it named the body it removed.
+test('closures: a top-level call of a field whose closure the dedup merges', () => {
+  const src = `const r1 = { f: (x) => x * 2 }
+const r2 = { f: (x) => x * 2 }
+export let out = r2.f(3) + r1.f(4)
+export const g = () => out`
+  const want = oracle(src).g()
+  for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.g(), want, `at ${optimize}`)
+})

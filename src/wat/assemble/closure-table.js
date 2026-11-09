@@ -163,7 +163,9 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // (including index 0, matching the original's unconditional loop; index 0
   // is always the opcode string here, never a redirect-map hit) is the same
   // single top-down pass, byte-identical.
-  for (const fn of kept) walkAst(fn, { enter: n => {
+  // The start function too: a direct call of a closure body (devirtClosureCalls)
+  // may sit in the module's initialization.
+  for (const fn of [...kept, ...sec.start]) walkAst(fn, { enter: n => {
     for (let i = 0; i < n.length; i++) {
       const c = n[i]
       if (typeof c === 'string' && c[0] === '$') {
