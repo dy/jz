@@ -37,6 +37,7 @@ import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
 import { scanBindingUses, USE, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_KEY } from '../src/compile/analyze-scans.js'
 import { restViewRead } from '../src/compile/rest-view.js'
 import { core, hasTag, isNullable, K, NUMBER, tagOf, valOf } from '../src/summary/kind.js'
+import { markElem } from '../src/ir/mem-alias.js'
 import { activeBoundsAssumption } from '../src/type/canonical-bounds.js'
 import { hasExternalIngress } from '../src/compile/func-exports.js'
 import { callbackLoop, hoistArrayValue, makeCallback, callbackElem, callbackArgReps, idxArg, arrArg, callbackReadsArray, sortComparator } from './array/callback.js'
@@ -1279,10 +1280,10 @@ export default (ctx) => {
         ['local.set', `$${off}`, ['i32.wrap_i64', ['i64.reinterpret_f64', receiver]]],
         ['if', ['i32.eq', ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 4]]], ['i32.const', -1]],
           ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
-        inBounds ? arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), holeFree)
+        inBounds ? arrayValue(markElem(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), arr), holeFree)
         : ['if', ['result', 'f64'],
           ['i32.lt_u', ['local.get', `$${ix}`], ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
-          ['then', arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), holeFree)],
+          ['then', arrayValue(markElem(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), arr), holeFree)],
           ['else', undefExpr()]]]
       return ['block', ['result', 'f64'],
         ['local.set', `$${ix}`, index],
@@ -1294,7 +1295,7 @@ export default (ctx) => {
               ['then', ['local.set', `$${off}`, ['call', '$__ptr_offset_fwd', ['local.get', `$${off}`]]]]],
             ['if', ['result', 'f64'],
               ['i32.lt_u', ['local.get', `$${ix}`], ['i32.load', ['i32.sub', ['local.get', `$${off}`], ['i32.const', 8]]]],
-              ['then', arrayValue(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), holeFree)],
+              ['then', arrayValue(markElem(ctx.abi.array.ops.load(['local.get', `$${off}`], ['local.get', `$${ix}`]), arr), holeFree)],
               ['else', undefExpr()]]],
           ['else', slow(['local.get', `$${ix}`])]]]
     }
@@ -1541,9 +1542,9 @@ export default (ctx) => {
         // `i32.wrap_i64 (i64.reinterpret_f64 (f64.load …))` → `i32.load …`
         // when this load feeds a ptrUnboxed OBJECT field.
         const baseI32 = tempI32('ab')
-        const rd = typed(saTag(value(ctx.abi.array.ops.load(
+        const rd = typed(saTag(value(markElem(ctx.abi.array.ops.load(
           ['local.tee', `$${baseI32}`, arrBase()],
-          vi))), 'f64')
+          vi), arr))), 'f64')
         // The local holding the key, for a call through the element: a table
         // whose elements never change dispatches on it (optimize/devirt.js).
         if (Array.isArray(vi) && vi[0] === 'local.get') rd.elemKey = vi[1]
@@ -1584,7 +1585,7 @@ export default (ctx) => {
           ['i32.lt_u',
             ['local.tee', `$${idxI32}`, vi],
             fixedLen != null ? ['i32.const', fixedLen] : ['i32.load', ['i32.sub', arrBase(), ['i32.const', 8]]]],
-          ['then', value(ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`]))],
+          ['then', value(markElem(ctx.abi.array.ops.load(arrBase(), ['local.get', `$${idxI32}`]), arr))],
           ['else', throwing ? throwTypeErrorIR() : undefExpr()]]), 'f64')
         if (throwing && dense) rd.presentRead = true
         rd.elemKey = `$${idxI32}`

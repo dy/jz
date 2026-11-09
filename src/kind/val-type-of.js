@@ -659,6 +659,8 @@ VT['()'] = (args) => {
   }
   // for-in's read-only key list (src/prepare) — always an Array of key strings.
   if (callee === '__keys_ro' || callee === '__keys_dyn') return VAL.ARRAY
+  // a receiver past its member read's test (plan/scope.js devirtClassCalls): the receiver's own
+  if (callee === '__present') return valTypeOf(args[1])
   // A Set's or a Map's for…of cursor (module/collection.js `__coll_next`): the
   // opening yields the collection, a step a boolean carrier, the reads the
   // summary's kinds of a key and a value.

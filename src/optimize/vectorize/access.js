@@ -4,6 +4,7 @@
 // evaluated across.
 import { nodeEqual as exprEq, walkAst } from '../../ast.js'
 import { isArr } from './node-utils.js'
+import { pureKernel } from '../pure-funcs.js'
 
 // Decompose a load/store node, normalizing the optional `offset=K` attribute jz
 // folds adjacent accesses into: `(op addr …)` → off 0, `(op offset=K addr …)` → K.
@@ -85,7 +86,8 @@ export const resolveAddr = (n, w, at, depth = 0) => {
   if (op === 'local.tee' || op === 'local.get') {
     if (typeof n[1] !== 'string') return null
     const d = w.defs.get(n[1])
-    if (op === 'local.get' && d === undefined) return w.writes.has(n[1]) ? null : n
+    // (a local the window never writes stands as itself, or as the local its one write copied: `w.root`)
+    if (op === 'local.get' && d === undefined) return w.writes.has(n[1]) ? null : (r => r ? ['local.get', r] : n)(w.root?.(n[1]))
     if (!d || op === 'local.get' && d.at >= at || op === 'local.tee' && d.e !== n[2]) return null
     return (d.e && resolveAddr(d.e, w, d.at, depth + 1)) ?? ['local.get', `${n[1]}@${d.at}`]
   }
@@ -127,7 +129,8 @@ export const inertFor = (stmt, reads, strict = false) => {
     const op = n[0]
     if (typeof op !== 'string') { ok = false; return false }
     if (op === 'local.set' || op === 'local.tee') { if (reads.has(n[1])) ok = false; return }
-    if (op === 'call') { if (strict || !INERT_CALLS.has(n[1]) && !n[1].startsWith('$__throw_')) ok = false; return }
+    // (the math runtime reads and writes nothing of the program's: optimize/pure-funcs.js pureKernel)
+    if (op === 'call') { if (!pureKernel(n[1]) && (strict || !INERT_CALLS.has(n[1]) && !n[1].startsWith('$__throw_'))) ok = false; return }
     if (op === 'unreachable') { if (strict) ok = false; return }
     if (op === 'global.set' || op.includes('.store') || op.startsWith('memory.') || op.includes('.atomic.') || op.startsWith('call') || BRANCH_OPS.has(op)
         || strict && op.includes('.load')) ok = false

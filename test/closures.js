@@ -1557,6 +1557,32 @@ test('IIFE lift: a mutated capture bails to the closure path, stays correct', ()
   is(runHost('export let f = (a) => { let x = a; let y = (() => { x = x + 10.0; return x * 2.0 })(); return x + y }').f(5), 45, 'mutated-capture IIFE: x=15, y=30 → 45')
 })
 
+// A free-variable scan reads a name only where it reads a binding
+// (analyze-scans.js findFreeVars): a property name, a literal's or a pattern's
+// key, an accessor's name, a label, a string or regex literal and a nested
+// function's own parameters read none. The IIFE lift took `{ tag: n }`'s key
+// for a capture of a later block's `tag`, and passed that binding where it was
+// not yet in scope ("'tag' is not in scope"); module/collection.js's
+// `allocPtr({ …, tag: 'gbm' })` in an IIFE beside a later `for (const [base,
+// tag, insert] of …)` once broke the self-compile the same way.
+test('IIFE lift: a name that reads no binding is no capture', () => {
+  const src = `const get = (o) => o.tag
+    const alloc = ({ tag }) => tag
+    export let key = (n) => { const v = (() => ({ tag: n }))().tag; { const tag = 1; n += tag } return v + n }
+    export let arg = (n) => { const v = (() => get({ tag: n }))(); { const tag = 1; n += tag } return v + n }
+    export let pattern = (n) => { const v = (() => alloc({ tag: n }))(); for (const tag of [1]) n += tag; return v + n }
+    export let text = (n) => { const v = (() => 'tag' + n)(); { const tag = 1; n += tag } return v + n }
+    export let regex = (n) => { const v = (() => /tag/.test('a' + n) ? 1 : 2)(); { const tag = 1; n += tag } return v + n }
+    export let getter = (n) => { const v = (() => ({ get tag() { return n } }))().tag; { const tag = 1; n += tag } return v + n }
+    export let param = (n) => { const v = (() => { function h(tag) { return tag + 1 } return h(n) })(); { const tag = 1; n += tag } return v + n }
+    export let label = (n) => { const v = (() => { let s = 0; tag: for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { if (j > i) continue tag; s += n } return s })(); { const tag = 1; n += tag } return v + n }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const name of Object.keys(host)) is(m[name](3), host[name](3), `${name}(3) at ${optimize}`)
+  }
+})
+
 // A module binding made by a factory run once (gl-matrix's `export const rotationTo =
 // (() => { const tmp = create(); …; return (out, a, b) => { … } })()`) held a closure:
 // every call rode the closure ABI with boxed arguments, and the arrow's parameters,
@@ -1924,6 +1950,77 @@ test('closures: call/apply/bind static lowering', () => {
   is(run(`let n = 0; let bump = () => ++n; let g = (a) => a; export let f = () => g.call(bump(), 7) + n * 100`).f(), 107)
   // a user object's own .call property is NOT hijacked
   is(run(`let o = { call: (x) => x * 2 }; export let f = () => o.call(21)`).f(), 42)
+})
+
+// A binding of a function literal holds a function in the literal's own body
+// as it does after it (prepare/handlers.js prepDecl): `g.bind(…)` there folds
+// to a closure over g. The body was prepared before the binding was known to
+// hold a function, so the bind took the runtime method dispatch, which binds
+// nothing, and threw "is not a function".
+test('closures: bind of a function inside its own body', () => {
+  const src = `const top = (d) => d > 0 ? top.bind(null, 0)() : 7
+    export let arrow = (n) => { const g = (d) => d > 0 ? g.bind(null, 0)() : 7; return g(n) }
+    export let decl = (n) => { function g(d) { return d > 0 ? g.bind(null, 0)() : 7 } return g(n) }
+    export let held = (n) => { const g = (d) => { if (d > 0) { const h = g.bind(null, 0); return h() } return 7 }; return g(n) }
+    export let pre = (n) => { const g = (a, b) => a > 0 ? g.bind(null, 0, b + 1)() : b; return g(n, 4) }
+    export let atTop = (n) => top(n)`
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const name of Object.keys(host)) for (const n of [0, 1]) is(m[name](n), host[name](n), `${name}(${n}) at ${optimize}`)
+  }
+})
+
+// Function.prototype.bind of any function value (module/function.js `__bound`):
+// the bound function calls the target with the receiver and the arguments
+// bound, then its own, its length the target's less the bound count. The
+// method dispatch had arms for `.call` and `.apply` and none for `.bind`, so a
+// bind of a function the compiler could not name (a parameter, a member, an
+// element) threw "is not a function"; prepare's fold of a named one made an
+// arrow whose length was its own. A function's call, apply and bind read as
+// values are functions too: `typeof a[0].bind` read undefined.
+test('closures: bind of any function value', () => {
+  const src = `const top = (a, b, c) => a * 100 + b * 10 + c
+    function decl(a, b) { return a - b }
+    export let param = (n) => { const h = (cb) => cb.bind(null, 1); const g = (a, b) => a * 10 + b; return h(g)(n) }
+    export let method = (n) => { const o = { k: n, m() { return this.k } }; const b = o.m.bind(o); return b() }
+    export let other = (n) => { const o = { k: n, m(a) { return this.k + a } }; return [o.m.bind({ k: 100 })(1), o.m.bind(o, 2)()].join() }
+    export let element = (n) => { const fs = [(a) => a + 1, (a) => a * 2]; return fs[n % 2].bind(null, n)() }
+    export let twice = (n) => { const h = (cb, x) => cb.bind(null, x); return h(h(top, 1), 2)(n) }
+    export let lengths = (n) => { const h = (cb, ...x) => cb.bind(null, ...x); const g = (a, b) => a
+      return [h(top).length, h(top, 1).length, h(top, 1, 2, 3, 4).length, h(h(top, 1), 1).length, g.bind(null, n).length, top.bind(null).length, decl.bind(null, n).length, decl.bind(null, n)(1)].join() }
+    export let rest = (n) => { const g = (...r) => r.join(); const h = (cb) => cb.bind(null, 1, 2); return h(g)(3, n) }
+    export let many = (n) => { const g = (a, ...r) => a + ':' + r.join(); const h = (cb) => cb.bind(null, 1, 2, 3, 4, 5, 6); return h(g)(7, 8, 9, n) }
+    export let spreadCall = (n) => { const g = (...r) => r.length; const h = (cb) => cb.bind(null, 1, 2); const xs = [1, 2, 3, 4, 5, 6, 7, 8, n]; return h(g)(...xs) }
+    export let spreadArgs = (n) => { const g = (a, b, c) => a + b + c; const h = (cb, xs) => cb.bind(...xs); return h(g, [null, 1, 2])(n) }
+    export let defaults = (n) => { const g = (a, b = 7) => a + b; const h = (cb) => cb.bind(null, n); return h(g)() }
+    export let kind = (n) => { const h = (cb) => cb.bind(null); return typeof h((a) => a) }
+    export let own = (n) => { const o = { bind(x) { return () => x * 3 } }; const g = (a) => a + 1; const h = (r) => r.bind(null, n); return h(o)() + h(g)() }
+    export let loop = (n) => { const g = (a, b) => a + b; const h = (cb) => cb.bind(null, 1); const b = h(g); let s = 0; for (let i = 0; i < 100000; i++) s += b(i); return s }
+    export let made = (n) => { const g = (a, b) => a + b; const h = (cb, x) => cb.bind(null, x); let s = 0; for (let i = 0; i < 1000; i++) s += h(g, i)(n); return s }
+    export let out = (n) => { const g = (a, b) => a * 10 + b; const h = (cb) => cb.bind(null, n); return h(g) }
+    export let host = (g) => { const h = (cb) => cb.bind(null, 1); return h(g)(2) }
+    export let members = (n) => { const k = (x) => x; const a = [k]; const j = (x) => x * 2
+      return [typeof a[0].bind, typeof a[0].call, typeof k.apply, k.bind === j.bind, k.call === k.apply, k.call.length, k.apply.length, k.bind.length, a[0].bind ? 1 : 0].join() }
+    export let detached = (n) => { const g = (a, b) => a * 10 + b; const c = g.call, p = g.apply, b = g.bind
+      return [c.call(g, null, 1, n), p.call(g, null, [2, n]), b.call(g, null, 3)(n), b.call(g, null, 1).length].join() }
+    export let plain = (n) => { const g = (a) => a; const c = g.call; try { return c(1) } catch (e) { return e.name } }
+    export let ownMember = (n) => { const g = (a) => a; g.call = n; return g.call }
+    export let mixedMember = (n) => { const xs = [(a) => a, { call: 5 }]; return [typeof xs[n % 2].call, xs[1].call].join() }
+    export let missing = (n) => { const xs = [(a) => a]; try { return typeof xs[n].bind } catch (e) { return e.name } }`
+  const host = oracle(src)
+  const hostFn = (a, b) => a * 10 + b
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const name of Object.keys(host)) {
+      // (a WASI host passes no function it can call)
+      if (name === 'host' && onWasi()) continue
+      const arg = name === 'host' ? hostFn : 3
+      const want = host[name](arg), got = m[name](arg)
+      if (name === 'out') is(got(5), want(5), `${name} at ${optimize}`)
+      else is(got, want, `${name} at ${optimize}`)
+    }
+  }
 })
 
 // ES §14.7.4.7 per-iteration bindings (2026-07-10): a for-head `let` captured
@@ -2872,6 +2969,42 @@ test('closures: a call from a sibling reaches the parameter', () => {
     `export let f = (n) => { const g = (x) => x + 1; const h = () => { const k = () => g('deep'); return k() }; return g(n) + h() }`,
   ]
   for (const src of srcs) { const want = oracle(src).f; for (const optimize of levels(0, 2, 3, 'size')) is(jz(src, { optimize }).exports.f(3), want(3), `${src.slice(23, 80)} at ${optimize}`) }
+})
+
+// A closure its binding hands on (an argument, a builtin's callback, a store,
+// a return, a copy, `bind`, `call`, `apply`), or calls in a form the call-site
+// rows do not record (a spread, an optional call), runs for callers the rows
+// never see: its direct calls say nothing of its parameters. A closure only
+// called by name keeps what they proved.
+test('closures: a closure its binding hands on takes its parameters from every caller', () => {
+  const srcs = {
+    argument: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb('x', n); return g(1, 2) + h(g) }`,
+    callback: `export let f = (n) => { const g = (a) => a + 1; return g(n) + ['x', 'y'].map(g).join() }`,
+    call: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb.call(null, 'x', n); return g(1, 2) + h(g) }`,
+    apply: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb.apply(null, ['x', n]); return g(1, 2) + h(g) }`,
+    object: `export let f = (n) => { const g = (a, b) => a + b; const o = { g }; return g(1, 2) + o.g('x', n) }`,
+    array: `export let f = (n) => { const g = (a, b) => a + b; const a = [g]; return g(1, 2) + a[0]('x', n) }`,
+    bound: `export let f = (n) => { const g = (a, b) => a + b; const k = g.bind(null, 'x'); return g(1, 2) + k(n) }`,
+    captures: `export let f = (n) => { const m = n * 2; const g = (a, b) => a + b + m; const h = (cb) => cb('x', n); return g(1, 2) + h(g) }`,
+    returned: `export let f = (n) => { const g = (a, b) => a + b + n; return g(1, 2) > 3 ? g : 'none' }`,
+    copy: `export let f = (n) => { const g = (a, b) => a + b; const k = g; const h = (cb) => cb('x', n); return g(1, 2) + h(k) }`,
+    choice: `export let f = (n) => { const g = (a, b) => a + b; const h = (cb) => cb('x', n); return g(1, 2) + h(n > 0 ? g : (a, b) => 0) }`,
+    spread: `export let f = (n) => { const g = (a, b) => a + b; const xs = ['x', n]; return g(1, 2) + g(...xs) }`,
+    optional: `export let f = (n) => { const g = (a, b) => a + b; return g(1, 2) + g?.('x', n) }`,
+    typed: `export let f = (n) => { const g = (a) => a[0]; const h = (cb) => cb([7, 8]); return g(new Float64Array([n])) + h(g) }`,
+    table: `const ops = [(a, b) => a + b, (a, b) => a - b]
+      export let f = (n) => { const xs = ['x', n]; return ops[0](1, 2) + ops[n & 1 ? 0 : 1](...xs) }`,
+  }
+  const out = (fn) => { const r = fn(3); return typeof r === 'function' ? r('x', 2) : r }
+  for (const [name, src] of Object.entries(srcs)) {
+    const want = out(oracle(src).f)
+    for (const optimize of levels(0, 1, 2, 3, 'size')) is(out(jz(src, { optimize }).exports.f), want, `${name} at ${optimize}`)
+  }
+  const direct = `export let f = (n) => { const g = (a, b) => a + b; return g(1, 2) + g(n, 4) }`
+  for (const optimize of levels(0, 2, 'size')) {
+    is(jz(direct, { optimize }).exports.f(3), 10, `only called at ${optimize}`)
+    if (!onKernel()) ok(!wat(direct, { optimize }).includes('__str_concat'), `only called: numeric parameters at ${optimize}`)
+  }
 })
 
 // The host's call of a closure links for a closure of the module that escapes,

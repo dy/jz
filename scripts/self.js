@@ -23,7 +23,7 @@ import { configureFixedMemory, verifyFixedScratch, verifyFixedMemory } from '../
 
 import { emitter, emissionHooks } from '../src/compile/emit.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
-import { T, resetTape, fromWat, toWat, tapeState, restoreTape } from '../src/ir/tape.js'
+import { T, resetTape, fromWat, toWat, tapeColumns, tapeState, restoreTape } from '../src/ir/tape.js'
 import { linkPasses } from '../src/link/index.js'
 import { resetMarks, recordPhase, recordVerdict, openPhase, closePhase, markStage, markTape, countCheckpoint, countDecline, STAGE_FRONT, STAGE_EMIT, STAGE_OPTIMIZE, STAGE_CHECKPOINT } from './phase-marks.js'
 import jzify from '../jzify/index.js'
@@ -259,12 +259,41 @@ function unpark() {
  * the compile allocated before is gone, the value alone remains. Every
  * reader after a checkpoint takes its inputs from the value: `ctx` is stale.
  */
+const UNPARKABLE = 'Cannot checkpoint a WAT IR value: a function or a typed array the lane cannot carry in it'
 function checkpoint(value) {
-  if (!park(value)) throw new TypeError('Cannot checkpoint a WAT IR value: a function or a typed array the lane cannot carry in it')
+  if (!park(value)) throw new TypeError(UNPARKABLE)
   __park_rewind()
   return unpark()
 }
 const checkpointIR = checkpoint
+
+// The tape's columns, the largest thing a large compile keeps, are the last its
+// decode allocated, each above the one before it. Past the rewind each moves
+// down to the arena's floor before anything else is allocated, rather than
+// through the lane, which would hold them a second time above all the compile
+// made: on the compiler's own module the lane ran out of memory there. A
+// column's new place ends below its old one, so none not yet moved is written over.
+function moveDown(column) {
+  const len = column.length, f64 = column instanceof Float64Array
+  if ((__heap_mark() >>> 0) + len * (f64 ? 8 : 4) + 64 > (__ptr_offset(column) >>> 0))
+    throw new RangeError('Cannot move a tape column down past a checkpoint: its new place reaches its old one')
+  const out = f64 ? new Float64Array(len) : new Int32Array(len)
+  out.set(column)
+  return out
+}
+
+/** A checkpoint of `value` and the tape: the columns move down past the rewind,
+ *  the rest of the tape goes through the lane with `value`, and the tape is
+ *  restored before `value` comes back. */
+function checkpointTape(value) {
+  const columns = tapeColumns()
+  if (!park([tapeState(), value])) throw new TypeError(UNPARKABLE)
+  __park_rewind()
+  const moved = columns.map(moveDown)
+  const kept = unpark()
+  restoreTape(kept[0], moved)
+  return kept[1]
+}
 
 /**
  * A phase checkpoint (ctx.transform.phaseCheckpoint; src/summary/index.js
@@ -348,13 +377,13 @@ function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, b
   if (__heap_large(heapMark)) {
     resetTape()
     const root = fromWat(assembled.module)
-    const kept = checkpoint([tapeState(), root, assembled.link, cfg, facts])
-    restoreTape(kept[0]); cfg = kept[3]; facts = kept[4]
+    const kept = checkpointTape([root, assembled.link, cfg, facts])
+    cfg = kept[2]; facts = kept[3]
     // Each of link's passes is a phase: what it made and left unreached goes
     // before the next one runs and before the tape is read back.
-    const linkFacts = kept[2]
+    const linkFacts = kept[1]
     linkFacts.phase = checkpointPhase
-    module = stageMarks.time('link', () => { linkPasses(kept[1], linkFacts); return toWat(kept[1]) })
+    module = stageMarks.time('link', () => { linkPasses(kept[0], linkFacts); return toWat(kept[0]) })
   }
   else module = linkAssembled(assembled, stageMarks)
   markStage(STAGE_EMIT)

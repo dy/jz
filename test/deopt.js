@@ -124,7 +124,8 @@ test('deopt D1: SOUNDNESS — untyped receiver .length stays conservative', () =
   // null (dynamic dispatch), never wrongly typed NUMBER.
   if (belowOpt(1)) return
   const wat = compile('export let f=(p)=>p.length+1', { wat: true })
-  ok(count(wat, /\$__str_concat/g) >= 1, 'untyped receiver .length stays dynamic (no unsound narrow)')
+  // (the generic `+`: its concatenation, or the run-time `+` where the literal's digits join inline)
+  ok(count(wat, /\$__(str_concat|add_slow)/g) >= 1, 'untyped receiver .length stays dynamic (no unsound narrow)')
 })
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -70,7 +70,8 @@ const CALLBACK_METHODS = new Set(['map', 'filter', 'forEach', 'reduce', 'reduceR
 const ownCallee = (view, f) => f != null && (Array.isArray(f) && f[0] === '=>' || (k => tagOf(k) === K.CLOSURE && paramOf(k) !== UNKNOWN)(view.kindOfExpr(f)))
 // A Map's and a Set's methods that store, find or hand on a value without reading inside it.
 const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'delete', 'add', 'clear'])
-const BUILTINS_SERVED = new Set(['Array.isArray', 'new.Array'])
+// (`__present` hands on the receiver it tests: plan/scope.js devirtClassCalls)
+const BUILTINS_SERVED = new Set(['Array.isArray', 'new.Array', '__present'])
 const args = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
 const member = (n) => Array.isArray(n) && (n[0] === '.' || n[0] === '?.')
 const NUMBER_TAG = bitOf(K.NUMBER)

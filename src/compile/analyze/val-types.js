@@ -287,11 +287,14 @@ export function analyzeValTypes(body) {
       for (let i = 1; i < node.length; i++) {
         const a = node[i]
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
+        // A receiver past its member read's test (plan/scope.js devirtClassCalls) is the
+        // receiver: a method's spliced `self` binds what the element or field read gives.
+        const rhs = Array.isArray(a[2]) && a[2][0] === '()' && a[2][1] === '__present' && a[2].length === 3 ? a[2][2] : a[2]
         // A direct empty-object initializer with property writes but no
         // materialized schema is represented as HASH by object.js. Stamp the
         // same kind before emission so allocation, reads, and writes agree.
         const merged = ctx.schema.resolve?.(a[1])
-        const emptyLit = Array.isArray(a[2]) && a[2][0] === '{}' && a[2].length === 1
+        const emptyLit = Array.isArray(rhs) && rhs[0] === '{}' && rhs.length === 1
         const hasPropertyWrites = ctx.types.dynWriteVars?.has(a[1]) || ctx.types.literalWriteKeys?.get(a[1])?.size
         const dict = emptyLit && hasPropertyWrites && !merged?.length
         // INVARIANT: a truly EMPTY `{}` still binds a real (0-prop) schema
@@ -320,7 +323,7 @@ export function analyzeValTypes(body) {
         // MORE information than a bare `{}` decl carries — never overwrite it.
         if (!dict && emptyLit && merged == null && ctx.schema.register && !ctx.schema.poisoned?.has(a[1]))
           updateRep(a[1], { schemaId: ctx.schema.register([]) })
-        const vt = dict ? VAL.HASH : valTypeOf(a[2])
+        const vt = dict ? VAL.HASH : valTypeOf(rhs)
         setVal(a[1])
         // a lean layout only for a dictionary the plan reads as one (module/object.js allocates it so)
         const leanDict = dict && getVal(a[1]) === VAL.HASH && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(a[1])
@@ -337,20 +340,20 @@ export function analyzeValTypes(body) {
         // `i < 5` holds), the initializer's range reads the durable hulls
         // alone (`i` over its whole life), and installed typed lengths refine
         // the early width-based hull. The proofs meet; none widens another.
-        const declRange = intExprRange(a[2])
+        const declRange = intExprRange(rhs)
         if (declRange && Number.isFinite(declRange[0]) && Number.isFinite(declRange[1]) && hasSingleInitializer(body, a[1]))
           meetRange(a[1], declRange)
-        if (vt === VAL.REGEX) trackRegex(a[1], a[2])
+        if (vt === VAL.REGEX) trackRegex(a[1], rhs)
         // VAL gate covers definite-typed RHS; `?:`/`&&`/`||` slip through valTypeOf
         // returning null but may still need ctor unification (or poisoning when
         // branches disagree, since jz hoists `let` to function scope).
-        if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(a[2])) trackTyped(a[1], a[2])
+        if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(rhs)) trackTyped(a[1], rhs)
         // JSON-shape propagation. When the RHS resolves to a known JSON shape
         // (root: `JSON.parse(literal)`; nested: `o.meta`, `items[j]` from a known
         // root), record it on the binding so subsequent `.prop`/`[i]` accesses
         // skip dynamic dispatch and propagate VAL kinds. Generic for any
         // compile-time JSON literal.
-        const sh = shapeOf(a[2])
+        const sh = shapeOf(rhs)
         if (sh) {
           updateRep(a[1], { jsonShape: sh })
           // Array of fixed-shape OBJECTs: register elem schema so `it = items[j]`
@@ -369,21 +372,21 @@ export function analyzeValTypes(body) {
         // `shapeOf` misses object literals with function-valued props; bind
         // their schemaId here so number-hint ToPrimitive (valueOf/toString slot
         // dispatch) resolves. expectWrites=0: a decl initializer is not a write.
-        if (vt === VAL.OBJECT) bindObjSchema(a[1], a[2], 0)
+        if (vt === VAL.OBJECT) bindObjSchema(a[1], rhs, 0)
         // Propagate schemaId from a narrowed call result so subsequent valTypeOf
         // calls in this function body see the precise schema. emitDecl rebinds
         // this at emission time too — analyze-time binding is what unlocks the
         // slotVT lookup chain in `analyzeValTypes`'s own walk + per-func emit
         // dispatch reading localReps.
-        if (vt === VAL.OBJECT && Array.isArray(a[2]) && a[2][0] === '()' && typeof a[2][1] === 'string') {
-          const f = ctx.funcs.map?.get(a[2][1])
+        if (vt === VAL.OBJECT && Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
+          const f = ctx.funcs.map?.get(rhs[1])
           if (f?.sig?.ptrAux != null) updateRep(a[1], { schemaId: f.sig.ptrAux })
         }
         // `const p = arr[i]` — when arr's element schema is known (from .push observations
         // or from paramReps arrayElemSchema binding), p inherits the schema. Unlocks slotVT-driven
         // numeric typing on `.prop` reads + slot-direct loads.
-        if (vt === VAL.OBJECT && Array.isArray(a[2]) && a[2][0] === '[]' && typeof a[2][1] === 'string') {
-          const elemSid = arrElemSchemaOf(a[2][1])
+        if (vt === VAL.OBJECT && Array.isArray(rhs) && rhs[0] === '[]' && typeof rhs[1] === 'string') {
+          const elemSid = arrElemSchemaOf(rhs[1])
           if (elemSid != null) {
             updateRep(a[1], { schemaId: elemSid })
             // Also set the val so structural call dispatch + valTypeOf see VAL.OBJECT.
@@ -396,7 +399,7 @@ export function analyzeValTypes(body) {
             // like the tag itself.
             // Decl-only binding (no reassignment anywhere, incl. closures) — a
             // second write could carry a foreign schema the set doesn't cover.
-            const elemSet = arrElemSchemaSetOf(a[2][1])
+            const elemSet = arrElemSchemaSetOf(rhs[1])
             if (elemSet != null && writeCount(body, a[1], 0) === 0) {
               updateRep(a[1], { schemaIdSet: elemSet })
               setVal(a[1])

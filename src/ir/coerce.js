@@ -18,7 +18,7 @@ import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, numericDenie
 import { intExprRange } from '../static.js'
 import { K, bitOf, hasTag, tagOf, NULL_BITS, TAGS, NUMBER_OPS } from '../summary/kind.js'
 import { COMPOUND_NUMERIC_OPS } from '../kind-traits.js'
-import { COMPARE_OPS } from '../ast.js'
+import { COMPARE_OPS, literalNumber } from '../ast.js'
 import { typed } from './tag.js'
 import { temp, tempI32, tempI64 } from './locals.js'
 import { asF64, asI64 } from './numeric.js'
@@ -552,6 +552,10 @@ export function numberStorageValue(v) {
  *  `__to_str` so a numeric return is rendered. A throwing method propagates as
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
+  // A number literal's ToString is its digits, taken at compile time (the
+  // host's Number::toString: -0 is "0", 1e21 "1e+21").
+  const lit = literalNumber(node)
+  if (lit != null) { ctx.module.include('string'); return asI64(ctx.core.emit['str'](String(lit))) }
   const vt = valTypeOf(node)
   const summaryKind = ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? K.NONE
   const summaryNullable = (summaryKind & NULL_BITS) !== 0

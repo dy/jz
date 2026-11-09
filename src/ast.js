@@ -851,6 +851,16 @@ export function literalString(node) {
   return Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
 }
 
+/** Number literal node (`1.5`, `-0`, a negated literal) → its value, or null. */
+export function literalNumber(node) {
+  if (typeof node === 'number') return node
+  if (!Array.isArray(node) || node.length !== 2) return null
+  if (node[0] == null) return typeof node[1] === 'number' ? node[1] : null
+  if (node[0] !== 'u-') return null
+  const v = literalNumber(node[1])
+  return v == null ? null : -v
+}
+
 /** Zero numeric literal node. */
 export function isZeroLiteral(node) {
   return Array.isArray(node) && node[0] == null && node[1] === 0

@@ -116,6 +116,7 @@ function createFunctions() {
     globalDevirt: null,
     builtinWrapped: null,   // a builtin's value wrapper (prepare/entry.js) → the builtin key it forwards to
     builtinMethodReaders: null, // property name → prepared native method-value reader and receiver sites
+    protoMemberSites: null, // [scope, receiver] of each `call`/`apply`/`bind` read as a value (module/function.js protoMember)
     runtimeRoots: new Set(), // prepared functions called by runtime kernels
     primitiveArgs: new Set(), // std exports the host calls with primitives only (std/index.js STD_PRIMITIVE_EXPORTS)
     noProto: new Set(),     // functions with no `prototype` (an arrow, a method, an async function: jzify prototypeless)

@@ -202,6 +202,8 @@ export function preservesLoopBounds(root, view, bindings, callees = new Map(), m
     if (op === '()' || op === '?.()' || op === 'new') {
       const callee = n[1]
       if (op === '()') {
+        // a receiver past its member read's test (plan/scope.js devirtClassCalls): the value, its operand walked
+        if (callee === '__present') return false
         const target = typeof callee === 'string' ? callee : view?.calleeOf?.(n)
         const func = typeof target === 'string' && ctx.funcs.map?.get(target)
         if (func?.frame?.writesOuter === false) return false

@@ -665,7 +665,8 @@ export function narrowInts(fn, assume = null, expand = true, words = 'wide', kno
     if (op === 'local.get' && N.has(n[1])) return [N.get(n[1]) === 'i32' ? 'f64.convert_i32_s' : 'f64.convert_i64_s', n]
     if ((op === 'local.set' || op === 'local.tee') && N.has(n[1])) {
       const w = copy(n)
-      w[2] = I(early.has(n[1]) ? held(n[2]) : n[2], N.get(n[1]))
+      // (a local every read truncates holds the truncation: a NaN written there is its zero)
+      w[2] = early.has(n[1]) ? I(held(n[2]), N.get(n[1]), true) : I(n[2], N.get(n[1]))
       did = true
       return op === 'local.tee' ? [N.get(n[1]) === 'i32' ? 'f64.convert_i32_s' : 'f64.convert_i64_s', w] : w
     }

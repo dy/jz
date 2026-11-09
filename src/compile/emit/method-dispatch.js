@@ -840,6 +840,10 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
       invoke.argc = Infinity   // the closure takes every argument
       return callMethod(obj, invoke)
     }
+    // Its `bind` is Function.prototype.bind's: the bound function (module/function.js).
+    if (vt === VAL.CLOSURE && method === 'bind' && !ctx.summary.memberMayBeOwnOn('bind', VAL.CLOSURE))
+      return ctx.closure.bound(emit(obj), parsed.hasSpread
+        ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))] : parsed.normal, parsed.hasSpread)
     includeForRuntimeKeyIteration()
     if (strictCode())
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
@@ -937,6 +941,14 @@ function tryDynamicPropCall({ obj, method, parsed, vt, callMethod, optional = fa
         apply ? [closureArgs[1]] : closureArgs.slice(1), apply, false, closureArgs[0])
       dispatch = ['if', ['result', 'f64'], ptrTypeEq(['local.get', `$${objTmp}`], PTR.CLOSURE),
         ['then', own],
+        ['else', dispatch]]
+    }
+    // A closure's `bind`, where it has no own one, makes the bound function (module/function.js).
+    if (method === 'bind') {
+      const fn = ptrTypeEq(['local.get', `$${objTmp}`], PTR.CLOSURE)
+      dispatch = ['if', ['result', 'f64'], ctx.summary.memberMayBeOwnOn('bind', VAL.CLOSURE)
+        ? ['i32.and', fn, ['i32.eqz', ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE)]] : fn,
+        ['then', ctx.closure.bound(typed(['local.get', `$${objTmp}`], 'f64'), closureArgs, parsed.hasSpread)],
         ['else', dispatch]]
     }
     return block64(

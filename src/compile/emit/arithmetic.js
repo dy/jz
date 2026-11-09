@@ -6,7 +6,7 @@
 
 import { ctx, inc, LAYOUT } from '../../ctx.js'
 import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emitNum, f64rem, isGlobal, isLit, isPureIR, litVal, missToNaN, readI64, storedElement, temp, tempI32, tempI64, toNumF64, toStrI64, typed, withTemp } from '../../ir.js'
-import { MUTATE_OPS, some, isReassigned, walkAst } from '../../ast.js'
+import { MUTATE_OPS, some, isReassigned, walkAst, literalNumber } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf, stringMayMiss } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
 import { intExprRange, negRangeFitsI32, forCounterRange, cancelledIntExpr } from '../../static.js'
@@ -411,6 +411,16 @@ const numericPrimitive = (node) => {
   const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
   return k != null && (k & TAGS & ~NULL_BITS) !== 0 && (k & TAGS & ~NUMERIC_PRIMITIVE) === 0
 }
+// Whether the summary holds `node` to strings, numbers, booleans and missing
+// values: no object whose ToPrimitive runs and no BigInt, so beside a Number
+// what is no string adds as its number (true 1, false and null 0, undefined NaN).
+const STRING_OR_NUMERIC_PRIMITIVE = NUMERIC_PRIMITIVE | bitOf(K.STRING)
+const stringOrNumericPrimitive = (node) => {
+  node = readOf(node)
+  if (opaqueCall(node)) return false
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(node)
+  return k != null && (k & TAGS & ~NULL_BITS) !== 0 && (k & TAGS & ~STRING_OR_NUMERIC_PRIMITIVE) === 0
+}
 
 
 // Unknown addition shares one coercion path. The numeric guard keeps ordinary
@@ -588,10 +598,7 @@ export const arithmeticOps = {
     if ((vtA == null && mayBeString(a)) || (vtB == null && mayBeString(b))) ctx.module.include('string')
     if ((vtA == null || vtB == null) && ctx.core.stdlib['__str_concat']) {
       const tA = temp('add'), tB = temp('add')
-      // Runtime string tests establish the value kind, not ownership. Apply
-      // the same private-builder proof as the statically typed concat path.
-      const concatFn = selfAccum ? '__str_concat' : '__str_concat_fresh'
-      inc(concatFn, '__is_str_key')
+      inc('__is_str_key')
       // A known BOOL side enters as its atom: concat renders "true", the
       // numeric arm converts it, and neither sees a raw 0/1 carrier.
       const dyn = (vt) => vt == null || vt === VAL.BOOL
@@ -599,7 +606,17 @@ export const arithmeticOps = {
       const eB = dyn(vtB) ? storedValue(b) : null
       const checkA = eA ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tA}`, eA]]] : null
       const checkB = eB ? ['call', '$__is_str_key', ['i64.reinterpret_f64', ['local.tee', `$${tB}`, eB]]] : null
-      const concat = ['call', '$' + concatFn, ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
+      // A number literal beside the side tested (`x + 1`, `0.5 + x`) joins the
+      // string that side is as its digits, its ToString taken at compile time:
+      // the concatenation converts nothing at run time.
+      const litA = eA ? null : literalNumber(a), litB = eB ? null : literalNumber(b)
+      const operand = (t, lit) => lit != null ? asF64(emit(['str', String(lit)])) : typed(['local.get', `$${t}`], 'f64')
+      // Runtime string tests establish the value kind, not ownership. Apply
+      // the same private-builder proof as the statically typed concat path.
+      const concatFn = selfAccum ? '__str_concat' : '__str_concat_fresh'
+      if (litA == null && litB == null) inc(concatFn)
+      const concat = litA != null || litB != null ? ctx.abi.string.ops.concatRaw(operand(tA, litA), operand(tB, litB), ctx, selfAccum)
+        : ['call', '$' + concatFn, ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]
       // Numeric arm: an UNKNOWN operand may still be a non-string NaN-box (a
       // boolean atom, null, undefined, an object) whose `+` is not its raw
       // bits. The self-compare guards the hot path (every non-NaN f64 IS its
@@ -618,10 +635,15 @@ export const arithmeticOps = {
       const fastAdd = ['f64.add', numSide(tA, eA, a), numSide(tB, eB, b)]
       let add = fastAdd
       if (cA || cB) {
-        inc('__add_slow')
+        // Beside a Number, a side no object or BigInt reaches is, where it is
+        // no string, a Number or an atom: it adds as its number, with no
+        // ToPrimitive (module/core.js __add_atoms).
+        const atoms = (vtB === VAL.NUMBER && !eB && stringOrNumericPrimitive(a)) || (vtA === VAL.NUMBER && !eA && stringOrNumericPrimitive(b))
+        const slow = atoms ? '__add_atoms' : '__add_slow'
+        inc(slow)
         add = ['if', ['result', 'f64'], cA && cB ? ['i32.and', cA, cB] : cA || cB,
           ['then', fastAdd],
-          ['else', ['call', '$__add_slow', ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]]]
+          ['else', ['call', '$' + slow, ['i64.reinterpret_f64', ['local.get', `$${tA}`]], ['i64.reinterpret_f64', ['local.get', `$${tB}`]]]]]
       }
       if (checkA && checkB) {
         return typed(['if', ['result', 'f64'], ['i32.or', checkA, checkB], ['then', concat], ['else', add]], 'f64')

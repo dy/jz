@@ -16,7 +16,7 @@ import { intLiteralValue } from '../../static.js'
 import { extractRefinements, withRefinements } from '../flow-types.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationJoinArmAction } from '../representation-plan.js'
 import { tagFnArrayDispatch } from './call.js'
-import { emit, markDropped, toBool, kindTruthyIR } from './dispatch.js'
+import { emit, foldsDrop, markDropped, toBool, kindTruthyIR } from './dispatch.js'
 import { emitTagSet } from './comparisons.js'
 // The left operand's truth where its value is the result: by the summary's
 // kind of `node` where the IR alone asks the generic test (a closure or
@@ -642,7 +642,7 @@ export const logicalOps = {
 
   'void': a => {
     const v = emit(a)
-    const dropAndUndef = (instr) => block64(instr, 'drop', undefExpr())
+    const dropAndUndef = (instr) => foldsDrop(instr) ? block64(['drop', instr], undefExpr()) : block64(instr, 'drop', undefExpr())
     if (v == null) return undefExpr()
     const op = Array.isArray(v) ? v[0] : null
     const wasmVoid = op === 'local.set' || (typeof op === 'string' && op.endsWith('.store'))

@@ -20,7 +20,7 @@
 
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { createFunction, frameRoots } from '../../function.js'
-import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, withLoc, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
+import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, STATIC_BASE, T, copyNode, withLoc, I32_MIN, I32_MAX, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst, isBlockBody, returnExprs } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { constNumExpr } from '../../static.js'
 import { typedStaticLen, intLevelMap } from '../../type.js'
@@ -32,6 +32,7 @@ import { liftedPropOf } from '../analyze/func-namespaces.js'
 import { collectGlobalBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
 import { includeForNamedCall, includeForGenericMethod, isNamedCallee } from '../../autoload.js'
+import { liveFunctions } from './scratch.js'
 
 const isConstInt = value => Number.isInteger(value) && !Object.is(value, -0) && value >= I32_MIN && value <= I32_MAX
 
@@ -782,11 +783,18 @@ export const flattenFuncNamespaces = (ast, propMap = null) => {
  *  `p.twice` → `P⟨twice__get⟩(p)`, the statement `p.twice = v` →
  *  `P⟨twice__set⟩(p, v)`. The direct call inlines like any other, and an
  *  instance that then never escapes scalarizes (plan/literals.js) with its
- *  accessors already lowered. A receiver the summary cannot name, or that may
- *  be nullish, keeps the dispatcher (emit/class-dispatch.js). */
-export const devirtClassCalls = () => {
+ *  accessors already lowered. At the speed tier a straight-line method's
+ *  receiver that may be missing is tested where the member read would test
+ *  it, before the arguments run: `ps[i].len()` → `P⟨len⟩(__present(ps[i]))`,
+ *  which throws the read's TypeError for a missing one (module/core.js), so
+ *  the call splices like any other, where no loop calls the method directly.
+ *  A receiver the summary cannot name, or an accessor's that may be nullish,
+ *  keeps the dispatcher (emit/class-dispatch.js). */
+export const devirtClassCalls = (ast = null, facts = null) => {
   if (!ctx.transform.classes?.size) return false
-  let changed = false
+  let changed = false, allow = null
+  const tested = new Set(), mine = new Set()   // the methods of tested calls, and the calls
+  const loops = (name) => { let hit = false; walkAst(ctx.funcs.map?.get(name)?.body, { enter: n => { if (hit || n[0] === '=>') return false; if (n[0] === 'for' || n[0] === 'while' || n[0] === 'do') hit = true } }); return hit }
   const call = (fn, recv, args) => { changed = true; return ['()', fn, args.length ? [',', recv, ...args] : recv] }
   // `stmt`: the node is a statement of a `;` list, its value unused (a setter's result is not the value assigned).
   const rewrite = (n, view, stmt = false) => {
@@ -800,8 +808,15 @@ export const devirtClassCalls = () => {
       if (c !== n[i]) { if (out === n) out = n.slice(); out[i] = c }
     }
     if (out[0] === '()' && Array.isArray(out[1]) && out[1][0] === '.' && typeof out[1][2] === 'string') {
+      const args = out[2] == null ? [] : Array.isArray(out[2]) && out[2][0] === ',' ? out[2].slice(1) : [out[2]]
       const fn = view.classCallee(out[1][1], out[1][2])
-      if (fn) return call(fn, out[1][1], out[2] == null ? [] : Array.isArray(out[2]) && out[2][0] === ',' ? out[2].slice(1) : [out[2]])
+      if (fn) return call(fn, out[1][1], args)
+      // (the speed tier's, of a method of straight-line code: its splice puts the
+      // stores of one call beside the loads of the next (optimize/forward-store.js),
+      // and leaves the method for its class's dispatcher, a body no typed call binds;
+      // a method of a loop is its loop's work, and keeps the call)
+      const fnt = ctx.transform.optimize?.inlineFns && view.classCallee(out[1][1], out[1][2], true)
+      if (fnt && !loops(fnt) && (!allow || allow.has(fnt))) { const c = call(fnt, ['()', '__present', out[1][1]], args); tested.add(fnt); mine.add(c); return c }
     }
     else if (out[0] === '.' && typeof out[2] === 'string') {
       const fn = view.classCallee(out[1], out[2] + ACCESSOR_GET)
@@ -813,7 +828,30 @@ export const devirtClassCalls = () => {
     }
     return out
   }
-  for (const f of ctx.funcs.list) if (f.body && !f.raw) f.body = rewrite(f.body, ctx.summary.at(f.sig))
+  const run = () => ctx.funcs.list.map(f => f.body && !f.raw ? rewrite(f.body, ctx.summary.at(f.sig)) : f.body)
+  let bodies = run()
+  // A method a loop already calls directly keeps its tested calls as member calls: a
+  // second site in a loop costs the first its sole splice, and the method left binds its
+  // parameters with the kinds of both (three's `pv.multiplyMatrices(proj, view)` beside
+  // `world[i].multiplyMatrices(parent, local[i])`: the view's elements, which
+  // `setPosition` may leave undefined, became every matrix's, and the frustum's reads a
+  // test each). The calls that count are the splice's (plan/inline.js): of a function that
+  // runs, or of the module's own code, not of a dispatcher's arm or a binder's closure.
+  if (tested.size) {
+    const hot = new Set(), live = facts ? liveFunctions(facts()).live : null
+    const mark = (n, depth, top) => {
+      if (!Array.isArray(n) || top && n[0] === '=>') return
+      if (n[0] === '()' && depth && tested.has(n[1]) && !mine.has(n)) hot.add(n[1])
+      const loop = n[0] === 'for' || n[0] === 'while' || n[0] === 'do' ? 1 : 0
+      for (let i = 1; i < n.length; i++) mark(n[i], n[0] === '=>' ? 0 : depth + loop, top)
+    }
+    ctx.funcs.list.forEach((f, i) => { if (bodies[i] && !f.raw && f.sig?.dispatcher !== true && !f.name.endsWith(CLASS_T + 'bind') && (!live || live.has(f.name))) mark(bodies[i], 0, false) })
+    if (ast) mark(ast, 0, true)
+    for (const mi of ctx.module.moduleInits || []) mark(mi, 0, true)
+    allow = new Set([...tested].filter(fn => !hot.has(fn)))
+    if (allow.size < tested.size) { changed = false; bodies = run() }
+  }
+  ctx.funcs.list.forEach((f, i) => { f.body = bodies[i] })
   return changed
 }
 

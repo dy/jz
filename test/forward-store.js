@@ -43,10 +43,11 @@ test('store forwarding: a chain through an out parameter reloads nothing and kee
     if(n[0]!=='loop')return
     loops++
     const text=JSON.stringify(n),count=re=>(text.match(re)||[]).length
-    is(count(/f64\.load/g) + 2 * count(/v128\.load/g), 6, 'each loop reads a and b six times; intermediate values come from locals')
-    // The added out[2] is overwritten unread and goes; out[0] and out[1] are
-    // followed by reads that may alias them, so those stores stay.
-    is(count(/f64\.store/g) + 2 * count(/v128\.store/g), 6, 'each loop keeps the three scaled stores, a[0], and the two potentially read stores')
+    // a[0] comes from the store that ends the round before (carryStores)
+    is(count(/f64\.load/g) + 2 * count(/v128\.load/g), 5, 'each loop reads a and b once each, but the a[0] it stored; intermediate values come from locals')
+    // The added out[0..2] are overwritten after scale read their values: a and b
+    // are arrays of other cells (src/ir/mem-alias.js), so no load between reads them.
+    is(count(/f64\.store/g) + 2 * count(/v128\.store/g), 4, 'each loop keeps the three scaled stores and a[0]')
   })
   ok(loops>0,'the guarded loop paths remain present')
 })

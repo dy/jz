@@ -67,7 +67,7 @@ import {
   ANY, NUMBER, STRING, BOOL, BIGINT, NULLISH, ABSENT, core, orAbsent, join,
   valOf, kindOfVal, TYPED_CTOR, TYPED_STATIC, isCount, ARRAY_METHODS, OBJECT_PROTO_METHODS, objectProtoResult, NUMBER_OPS, BOOL_OPS,
   plus, arith, typedStore, typedAux, typedElemKind, typedMethodKind, logicalMask, selectKind, outsideKind, emptySpreadKind,
-  continuesOptional, primArray } from './kind.js'
+  continuesOptional, primArray, canonicalNumeric, PROTO_NAMES } from './kind.js'
 export { K, UNKNOWN, kind, tagOf, paramOf, isNullable, tagsOf, hasTag, orNull, join, valOf, valsOf, core } from './kind.js'
 
 /** The depth `flat(depth)` flattens to (ToIntegerOrInfinity, at least 0): 1 when
@@ -122,9 +122,6 @@ const TYPED_VIEW_BITS = TYPED_ELEM_VIEW_FLAG | TYPED_ELEM_ANY_VIEW_FLAG
 // The operators that convert their operands to primitives (and answer one):
 // arithmetic, comparison, concatenation and their compound assignments.
 const CONVERTING_RESULTS = new Set([...NUMBER_OPS, 'u-', 'u+', '+', '+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '<', '>', '<=', '>=', '==', '!=', 'strcat', '`'])
-// A property name a Number answers to (`String(+p) === p`): a canonical number
-// starts with a digit, a minus, `I`nfinity or `N`aN, and only those convert.
-const canonicalNumeric = (p) => { const c = p.charCodeAt(0); return (c >= 48 && c <= 57 || c === 45 || c === 73 || c === 78) && String(+p) === p }
 // A program function the language calls on its own (a conversion, an
 // iteration, a thenable's `then`): no call names it, so no walk follows it.
 // (an iterator's `next` runs only from the `@@iterator` method that returns it)
@@ -134,18 +131,6 @@ const IMPLICIT_CALLS = ['valueOf', 'toString', 'toLocaleString', 'toJSON', 'then
 // awaits and the protocol's helpers, answered at their calls)
 const CONVERSION_CALLS = new Set(['valueOf', 'toString', 'toLocaleString', 'toJSON', '@@toPrimitive'])
 const PRIMITIVE_METHODS = new Set([...STRING_METHODS, ...STRING_NUMBER_METHODS, ...STRING_BOOL_METHODS, 'split', 'at', 'charAt', 'match', 'matchAll', 'toString', 'valueOf', 'toLocaleString', 'toFixed', 'toPrecision', 'toExponential', 'toLocaleUpperCase', 'toLocaleLowerCase', 'isWellFormed', 'toWellFormed', 'constructor', 'length'])
-// The names a primitive's prototypes hold, Object.prototype's among them: a
-// union of builtin kinds asks a primitive member only for one of these.
-const OBJECT_PROTO_NAMES = ['constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', 'toString', 'valueOf']
-const PROTO_NAMES = {
-  [K.STRING]: new Set([...OBJECT_PROTO_NAMES, '@@iterator', 'at', 'charAt', 'charCodeAt', 'codePointAt', 'concat', 'endsWith', 'includes', 'indexOf', 'isWellFormed',
-    'lastIndexOf', 'localeCompare', 'match', 'matchAll', 'normalize', 'padEnd', 'padStart', 'repeat', 'replace', 'replaceAll', 'search', 'slice', 'split',
-    'startsWith', 'substr', 'substring', 'toLocaleLowerCase', 'toLocaleUpperCase', 'toLowerCase', 'toUpperCase', 'toWellFormed', 'trim', 'trimEnd',
-    'trimStart', 'trimLeft', 'trimRight', 'anchor', 'big', 'blink', 'bold', 'fixed', 'fontcolor', 'fontsize', 'italics', 'link', 'small', 'strike', 'sub', 'sup']),
-  [K.NUMBER]: new Set([...OBJECT_PROTO_NAMES, 'toExponential', 'toFixed', 'toPrecision']),
-  [K.BOOL]: new Set(OBJECT_PROTO_NAMES),
-  [K.BIGINT]: new Set(OBJECT_PROTO_NAMES),
-}
 // The names a typed array (or a DataView, whose kind it shares) answers through
 // its prototypes: %TypedArray%.prototype's, DataView.prototype's and
 // Object.prototype's. Any other name is an own property of it, or undefined.
@@ -441,7 +426,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const da = isDict(a), db = isDict(b)
       if ((da || db) && (j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0) {
         const c = da && db ? unify(paramOf(a), paramOf(b)) : cell(paramOf(da ? a : b))
-        if (!(da && db)) addCellObject(c, da ? b : a)
+        if (!(da && db)) { addCellObject(c, da ? b : a); if (hasTag(da ? b : a, K.HASH)) shapeCells.delete(c) }
         return (j & ~UNKNOWN) | c
       }
       // A shape beside primitives (`typeof x === 'string' && fn`, `found || false`)
@@ -449,7 +434,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // keeps its identity in a cell of its own: a read or store through the
       // join reaches the shape, as through a dictionary that may hold it.
       if ((j & TAGS & ~NULL_BITS & ~MIXABLE_TAGS) === 0 && (sidOf(a) !== UNKNOWN || sidOf(b) !== UNKNOWN || tagOf(a) === K.OBJECT && paramOf(a) !== UNKNOWN || tagOf(b) === K.OBJECT && paramOf(b) !== UNKNOWN)) {
-        const c = mixedCell(a, b)
+        const c = mixedCell(a, b, !hasTag(a, K.HASH) && !hasTag(b, K.HASH))
         addCellObject(c, a); addCellObject(c, b)
         return (j & ~UNKNOWN) | bitOf(K.HASH) | c
       }
@@ -458,14 +443,15 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return j
   }
   const mixedCells = new Map()   // smaller kind → Map(larger kind → its cell)
-  const mixedCell = (a, b) => {
+  // (`shapes`: no operand is a dictionary, so the cell is one of `shapeCells`)
+  const mixedCell = (a, b, shapes) => {
     // Joins replay every round. Keep numeric keys instead of formatting the
     // same pair each time; ordering gives both operand orders one entry.
     if (a > b) { const prior = a; a = b; b = prior }
     let pairs = mixedCells.get(a)
     if (!pairs) mixedCells.set(a, pairs = new Map())
     let id = pairs.get(b)
-    if (id === undefined) { id = elems.length; elems.push(K.NONE); cellUp.push(id); pairs.set(b, id) }
+    if (id === undefined) { id = elems.length; elems.push(K.NONE); cellUp.push(id); pairs.set(b, id); if (shapes) shapeCells.add(id) }
     return cell(id)
   }
   // Why a shape is being lost, for the advisory (`onLose`): the outermost
@@ -749,6 +735,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
   // with each shape's field; a store reaches the entry and every shape.
   const cellShapes = new Map()        // cell root → Set<sid>
   const cellLostObject = new Set()    // cell roots holding objects of unknown shape
+  // The cells of shapes joined with primitives and typed arrays alone (merge's
+  // mixed cell of operands no dictionary is among): the HASH tag of their kinds
+  // names the cell, never a dictionary the value may be. A dictionary joined
+  // in, or a cell unified with one of another kind, takes the cell out.
+  const shapeCells = new Set()        // cell roots
   const NO_SHAPES = new Set()
   const shapesInCell = (c) => cellShapes.get(c) ?? NO_SHAPES
   const seeKeys = (k) => {
@@ -1517,6 +1508,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (keyedCells.has(a) && !keyedCells.has(b)) keyedCells.delete(a)
     if (cellShapes.has(b)) addCellShapes(a, cellShapes.get(b))
     if (cellLostObject.has(b)) addCellLost(a)
+    if (!shapeCells.has(b)) shapeCells.delete(a)
     const pb = cellProps.get(b); if (pb) for (const [prop, k] of pb) raiseProp(kind(K.ARRAY, a), prop, k)
     if (propArrays.has(b)) propArrays.add(a)
     if (cellWild.has(b)) raiseWild(kind(K.ARRAY, a), cellWild.get(b))
@@ -2451,6 +2443,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // the async runtime's proof that a value is one of its promises, and the promise it then is (std/async.js)
       if (callee === '__p_is' || callee === '__p_plain') return BOOL
       if (callee === '__p_cast') return promiseKind()
+      // a receiver past the test a member read makes of it (plan/scope.js devirtClassCalls): its kind without the missing values
+      if (callee === '__present') return n ? core(ks[base]) : K.NONE
       // a value the runtime awaits for a consumer the summary does not type (an async generator's)
       if (callee === '__escaping') { const k = n ? ks[base] : K.NONE; escape(awaited(k)); return k }
       if (callee === '__object_toString') return STRING // the class of a value, `[object X]` (module/object.js)
@@ -3031,6 +3025,14 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const r = callClosure(paramOf(recv), b, sp - b, node, n ? ks[base] : NULLISH, null)
       sp = b
       return r
+    }
+    // `f.bind(t, …)` makes a function calling f with t and these arguments
+    // ahead of its own (module/function.js `__bound`): where it goes and who
+    // calls it the summary does not follow, so f's callers are unknown.
+    if (t === K.CLOSURE && name === 'bind') {
+      if (paramOf(recv) !== UNKNOWN) for (const id of membersOf(paramOf(recv))) escapeId(id)
+      escapeArgs(base, n)
+      return kind(K.CLOSURE)
     }
     // `f.m(…)` on a function's own property (a class's statics, a parser's
     // table: closureProps): the closure it holds is called; a property of
@@ -3678,6 +3680,13 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // A primitive holds no own property: a name outside its prototype reads undefined.
     if ((t === K.STRING || t === K.NUMBER || t === K.BOOL || t === K.BIGINT) && !PRIMITIVE_METHODS.has(prop)) return optionalResult(op, recv, NULLISH)
     if (t === K.CLOSURE && closureOwn(recv) && !FUNCTION_PROTO.has(prop)) return optionalResult(op, recv, orAbsent(closurePropOf(recv, prop)))
+    // A function's `call`, `apply` and `bind` are Function.prototype's
+    // (module/function.js protoMember): functions, a call of which with this
+    // function as its receiver calls it with arguments the summary does not follow.
+    if (t === K.CLOSURE && (prop === 'call' || prop === 'apply' || prop === 'bind') && !memberMayBeOwn(prop)) {
+      if (paramOf(recv) !== UNKNOWN) for (const id of membersOf(paramOf(recv))) escapeId(id)
+      return optionalResult(op, recv, kind(K.CLOSURE))
+    }
     return optionalResult(op, recv, ANY)
   }
   // The joined kind of a mixed binding, read where its value is retained:
@@ -5475,7 +5484,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     schemas, layouts, layoutCount, sitesByLayout, untracked, foldedLayouts, objectKinds, methods, sidByKey,
     funcNames: new Set(funcByName.keys()), imports: new Map(imports), mixed, exitJoins, hulls, indexBounds,
     numeric, strung, dynamicProps, strayProps, propArrays, builtinOwnProps, escaped, typedReadPresent, typedProps, typedPropsByAux, openSchemas, indexedSchemas, hostSchemas, opaqueSchemas, copiedSchemas, deletable, deleteReach, assignedProps, keysSeen, deepRead,
-    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, closureProps, closureWild, iterSites, reached, defaultRuns, decisions,
+    sideProps, sideWild, wildProps, wildValues, pendingAll, keyedCells, cellShapes, cellLostObject, shapeCells, closureProps, closureWild, iterSites, reached, defaultRuns, decisions,
     mapKeys, heldKeys, absentStored,
     held,
     boolKeys, storeBits, paramKeys,
