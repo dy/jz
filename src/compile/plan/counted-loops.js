@@ -466,7 +466,9 @@ function canonicalize(node, parent, idx, live, captured, view) {
     pre.push(['if', ['!', ['>', trips, lit(0)]], ['=', trips, lit(0)]])
   }
   const setup = cursors.map(c => ['const', ['=', entries.get(c.name).entry, ['|', c.name, lit(0)]]])
-  for (const c of cursors) if (live(c.name)) post.push(['=', c.name, ['+', entries.get(c.name).entry, scale(c.K, trips)]])
+  // (the landing runs under the guard, where the trips are a count within a word: written `trips | 0`,
+  // an integer of integers to a pass reading the cursor's writes, as an enclosing loop's copy does)
+  for (const c of cursors) if (live(c.name)) post.push(['=', c.name, ['+', entries.get(c.name).entry, scale(c.K, ['|', trips, lit(0)])]])
 
   let out
   if (own) {

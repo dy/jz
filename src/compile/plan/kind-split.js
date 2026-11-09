@@ -170,7 +170,8 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
     if (size > SOURCE_FULL && !kernelLoop(loop)) continue
     if (done.has(loop) || parent[idx] !== loop || nodeSize(loop) > MAX_SIZE) continue
     if (some(loop, n => n[0] === '=>' || n[0] === 'label' || n[0] === 'yield' || n[0] === 'await')) continue
-    // a `for`'s own declarations (`for (let x = ch[c], i = 0; …)`) go before the test, the copy and the loop sharing them
+    // a `for`'s own declarations (`for (let x = ch[c], i = 0; …)`) go before the test where it reads one
+    // of them (`x instanceof Float32Array`), the copy and the loop sharing them
     const init = loop[0] === 'for' && loop.length === 5 && Array.isArray(loop[1]) && (loop[1][0] === 'let' || loop[1][0] === 'const') ? loop[1] : null
     const bare = init ? ['for', null, loop[2], loop[3], loop[4]] : loop
     const own = new Set(), inner = new Set()
@@ -210,15 +211,19 @@ const splitBody = (func, body, view, params, rest, programFacts) => {
     const arms = several.length && choices.length <= MAX_ARMS ? choices.sort((a, b) => widths(a) - widths(b)).map(a => [...split, ...a])
       : common.length ? common.map(c => [...split, ...several.map(([n]) => [n, c])])
       : multi ? multi[1].map(c => [...split, [multi[0], c]]) : [split]
-    let choice = ['{}', [';', bare]]
+    // (a head declaring none of the names tested stays each copy's own: `for (let i = 0; i < frames; i++)`
+    // keeps the counter and the trips a later pass reads off the head, where `for (; i < frames; …)` has none)
+    const hoist = init != null && arms.some(arm => arm.some(([n]) => own.has(n)))
+    const whole = hoist ? bare : loop, renamed = hoist ? inner : new Set([...inner, ...own])
+    let choice = ['{}', [';', whole]]
     for (const arm of arms.reverse()) {
-      const fresh = new Map([...arm.map(([n]) => n), ...inner].map(n => [n, `${n}${T}k${freshId(ctx)}`]))
-      const copy = cloneWithSubst(bare, new Map(), fresh)
+      const fresh = new Map([...arm.map(([n]) => n), ...renamed].map(n => [n, `${n}${T}k${freshId(ctx)}`]))
+      const copy = cloneWithSubst(whole, new Map(), fresh)
       const test = arm.map(([n, c]) => ['instanceof', n, c]).reduce((a, b) => ['&&', a, b])
       choice = ['if', test, ['{}', [';', ['const', ...arm.map(([n]) => ['=', fresh.get(n), n])], copy]], choice]
     }
-    parent[idx] = init ? ['{}', [';', init, choice]] : choice
-    size += nodeSize(bare) * arms.length
+    parent[idx] = hoist ? ['{}', [';', init, choice]] : choice
+    size += nodeSize(whole) * arms.length
     walkAst(loop, { enter: (n) => { if (LOOPS.has(n[0])) done.add(n) } })
     rewrote = true
   }
