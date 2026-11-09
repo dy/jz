@@ -781,6 +781,7 @@ export function reset(proto, globals, bridge) {
     alloc: true,        // when false, omit raw allocator exports like _alloc/_clear from wasm output.
     whyNotRewind: null, // opts.whyNotRewind: (name, reason) => void, why an arena-rewind candidate was declined (optimize/arena-rewind.js)
     phaseCheckpoint: null, // run => result: the kernel's phase checkpoint (scripts/self.js), a phase's result alone kept past its arena growth
+    phaseEach: null,    // (list, each) => void: the kernel's loop of phases over items whose garbage dies with each (scripts/self.js), a plain loop where none
     optimize: null,     // resolved {watr, hoistPtrType, ...} config — set in index.js via resolveOptimize().
                         // Read by optimizeModule() (compile.js) and the post-watr pass (index.js).
                         // null is treated as level 2 (all on) for back-compat with internal callers.
@@ -1133,6 +1134,14 @@ export const strictCode = () => ctx.transform.strict && !ctx.func.current?.std
  *  checkpointPhase): its result alone is kept where the phase wrote into nothing older than
  *  itself. Natively the phase runs as it is. */
 export const checkpointed = (fn) => ctx.transform.phaseCheckpoint ? ctx.transform.phaseCheckpoint(fn) : fn()
+/** `each` over every item of `list`, in order. Hosted (ctx.transform.phaseEach), the loop
+ *  runs as phases of items whose work leaves nothing of its own but what it stores into
+ *  the program (the module optimizer's passes over each function), so what each phase
+ *  made and nothing reaches goes before the next; natively a plain loop. */
+export const eachChecked = (list, each) => {
+  if (ctx.transform.phaseEach) return ctx.transform.phaseEach(list, each)
+  for (let i = 0; i < list.length; i++) each(list[i])
+}
 
 // A minted name reads as written: a local's (`rf64` + T + `f61_9`,
 // prepare/ident-purity.js), a bundled module's binding (`m0_util$clamp`,

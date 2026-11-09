@@ -21,7 +21,9 @@
 //               and made to compile a probe; wasm32 headroom is a completion condition,
 //               not a memory budget
 //   memory      per case: heap cursor, wasm memory size (address space, the reserved park
-//               lane included after a checkpoint) and completion; per gate process: peak RSS.
+//               lane included after a checkpoint), the bytes the compile wrote by page (its
+//               high-water, `touched`; the recursive case's `margin` is what the address space
+//               had left there) and completion; per gate process: peak RSS.
 //               Judged only against a baseline manifest whose complete row set this run
 //               matches case by case, each compiled to completion on both sides
 //   speed       compile times against --baseline-kernel: both kernels attested and built on
@@ -109,6 +111,21 @@ if (flag('--worker')) {
   }
   const heap = (k) => k.instance.exports.__jz_heap.value >>> 0
   const memBytes = (k) => k.instance.exports.memory.buffer.byteLength
+  // The bytes the compile wrote, by 64 KiB page: the heap a bump allocator never
+  // frees below its high-water mark, the park lane, the compaction's scratch.
+  // A page released by a rewind holds its fill of ones; a page never written
+  // reads zero. The phase records hold the heap as a phase ends, not within
+  // it, and the memory's size reads 4 GiB once a park reserved the lane: this
+  // is the high-water a compile reached, what the address space must hold.
+  const touchedBytes = (k) => {
+    const words = new BigUint64Array(k.instance.exports.memory.buffer), page = 8192
+    let pages = 0
+    for (let p = 0; p < words.length; p += page) {
+      const end = Math.min(p + page, words.length)
+      for (let i = p; i < end; i++) if (words[i] !== 0n) { pages++; break }
+    }
+    return pages * 65536
+  }
   const optJSON = (k, optimize) => k.memory.String(JSON.stringify(typeof optimize === 'number' ? { level: optimize } : optimize))
   // One compile through a kernel: the bytes copied out at once, validated, with the
   // diagnostics after it (after a trap or a thrown error too) and the failure phase.
@@ -131,7 +148,7 @@ if (flag('--worker')) {
     }
     const lastPhase = m.phases.length ? m.phases[m.phases.length - 1].name : null
     return {
-      bytes, error, ms, completed: !error, heap: heap(k), memoryBytes: memBytes(k),
+      bytes, error, ms, completed: !error, heap: heap(k), memoryBytes: memBytes(k), touched: touchedBytes(k),
       phasesDone: m.phasesDone, lastPhase, phases: m.phases,
       stages: { front: m.heapFront, emit: m.heapEmit, optimize: m.heapOptimize, checkpoint: m.heapCheckpoint },
       // the stage the failure fell in: after the last completed stage mark, or after the last phase compileAst timed
@@ -143,7 +160,7 @@ if (flag('--worker')) {
     return calls.map(([fn, a, expected]) => { let got; try { got = ex[fn](...a) } catch (e) { got = 'throws: ' + e.message } return { call: `${fn}(${a.map(x => JSON.stringify(x)).join(', ')})`, expected, got, ok: Object.is(got, expected) } })
   }
   const result = { gate, cases: [] }
-  const record = (r) => ({ ms: r.ms, completed: r.completed, heap: r.heap, memoryBytes: r.memoryBytes, phasesDone: r.phasesDone, lastPhase: r.lastPhase, phases: r.phases, stages: r.stages, error: r.error, failurePhase: r.failurePhase })
+  const record = (r) => ({ ms: r.ms, completed: r.completed, heap: r.heap, memoryBytes: r.memoryBytes, touched: r.touched, phasesDone: r.phasesDone, lastPhase: r.lastPhase, phases: r.phases, stages: r.stages, error: r.error, failurePhase: r.failurePhase })
 
   if (gate === 'functional') {
     const { programs, subgraphs } = corpus(size)
@@ -204,6 +221,8 @@ if (flag('--worker')) {
     if (r.bytes) {
       c.bytes = r.bytes.length; c.sha256 = sha(r.bytes)
       c.headroom = 0x100000000 - r.heap
+      // what the address space had left at the compile's high-water (touchedBytes)
+      c.margin = 0x100000000 - r.touched
       try {
         const rec = instantiate(r.bytes)
         const probe = rec.exports.default(rec.memory.String('export let f = x => x * 3 - 2'), 0, rec.memory.String('2'), 0, 0, 0, 0)
@@ -211,7 +230,7 @@ if (flag('--worker')) {
         c.probe = instantiate(new Uint8Array(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))).exports.f(7)
       } catch (e) { c.error = 'the recursive compiler failed to compile the probe: ' + e.message }
     }
-    c.status = c.error || c.probe !== 19 || c.headroom < 64 * 1024 * 1024 ? 'red' : 'green'
+    c.status = c.error || c.probe !== 19 || c.headroom < 64 * 1024 * 1024 || c.margin < 64 * 1024 * 1024 ? 'red' : 'green'
     result.cases.push(c)
   }
 
@@ -405,7 +424,7 @@ const k = manifest.kernel
 console.log(`kernel ${k.source} ${k.attestation?.kernelBytes ?? k.kernelBytes} B sha256 ${(k.attestation?.kernelSha256 ?? k.kernelSha256).slice(0, 12)} origin ${k.origin}${k.matchesRunner ? ', matches this checkout' : k.why ? `: ${k.why}` : ''} | runner jz ${runner.head?.slice(0, 8)}${dirty.length ? ` +${dirty.length} dirty` : ''} graph ${graphSha256.slice(0, 12)} watr ${runner.watr.version}${runner.watr.commit ? '@' + runner.watr.commit.slice(0, 7) : ''} src ${runner.watr.contentSha256.slice(0, 12)} | load ${manifest.machine.load1}`)
 for (const [g, v] of Object.entries(manifest.gates)) {
   console.log(`${pad(g, 11)} ${pad(v.status.toUpperCase(), 10)} ${v.why || ''}${v.stderr ? ': ' + (v.stderr.split('\n').find(l => /Error|error/.test(l)) || v.stderr.split('\n').pop()) : ''}`)
-  for (const c of v.cases || []) console.log(`  ${pad(c.status?.toUpperCase(), 10)} ${pad(c.name, 28)} ${c.bytes != null ? pad(c.bytes + ' B', 10) : pad('', 10)} ${c.native ? (c.native.identical ? 'native-identical' : 'DIFFERS from native') : ''} ${c.results ? c.results.filter(x => !x.ok).map(x => `${x.call} → ${JSON.stringify(x.got)} (expected ${JSON.stringify(x.expected)})`).join('; ') : ''} ${c.error ? `${c.failurePhase ? `[${c.failurePhase}] ` : ''}${c.error.split('\n')[0].slice(0, 100)}` : ''} ${c.why || ''} ${c.ratio ? `${c.baselineMs} → ${c.candidateMs} ms (${c.ratio}x)` : ''}`)
+  for (const c of v.cases || []) console.log(`  ${pad(c.status?.toUpperCase(), 10)} ${pad(c.name, 28)} ${c.bytes != null ? pad(c.bytes + ' B', 10) : pad('', 10)} ${c.native ? (c.native.identical ? 'native-identical' : 'DIFFERS from native') : ''} ${c.results ? c.results.filter(x => !x.ok).map(x => `${x.call} → ${JSON.stringify(x.got)} (expected ${JSON.stringify(x.expected)})`).join('; ') : ''} ${c.error ? `${c.failurePhase ? `[${c.failurePhase}] ` : ''}${c.error.split('\n')[0].slice(0, 100)}` : ''} ${c.why || ''} ${c.ratio ? `${c.baselineMs} → ${c.candidateMs} ms (${c.ratio}x)` : ''}${c.margin != null ? `touched ${(c.touched / 1048576).toFixed(0)} MiB, ${(c.margin / 1048576).toFixed(0)} MiB of the address space left` : ''}`)
   for (const r of v.over || []) console.log(`  OVER       ${pad(r.case, 28)} ${r.metric} ${r.current} vs baseline ${r.baseline}`)
   // A compile that ran out of its arena names what filled it: the phases by allocation.
   for (const c of v.cases || []) if (c.status === 'red' && c.error && c.phases?.length) {

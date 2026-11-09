@@ -14,7 +14,7 @@ import { DBG_INVARIANTS, assertCtxInvariants } from '../src/debug.js'
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, initWarnings, setLinkDemand } from '../src/ctx.js'
+import { ctx, initWarnings, setLinkDemand, reset } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
 import { beginSession, configureDiagnostics, configureMemory } from '../src/session.js'
@@ -62,6 +62,7 @@ function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   ctx.transform.jzify = jzify
   ctx.transform.parse = parse    // module bundling (prepareModule) parses imported sources — same injection native does
   ctx.transform.phaseCheckpoint = checkpointPhase   // a phase's result alone kept past its arena growth (below)
+  ctx.transform.phaseEach = phaseEach   // a loop of phases, each ending at a budget of growth (below)
   // Bundled-module sources (the native opts.modules channel): one JSON dict
   // over the wasm ABI — prepare's import resolution reads importSources the
   // same way native does.
@@ -347,6 +348,54 @@ function checkpointPhase(run) {
   return kept
 }
 
+/**
+ * A loop over items whose work keeps nothing of its own but what it stores into
+ * the program (ctx.transform.phaseEach, src/ctx.js eachChecked: the module
+ * optimizer's pass over each function, optimize-module.js optimizeFuncs): run
+ * as phases (checkpointPhase), each taking items until the heap grew by a
+ * budget past the phase's mark, so what an item made and nothing reaches goes
+ * before the next phase, where one phase held the garbage of every item to its
+ * end. The budget is a quarter of the address space left above the phase's mark,
+ * so a phase ends with room for the next and for the walk's scratch, and never
+ * under PHASE_MIN, below which a phase keeps its memory in place: a compile far
+ * from the end of memory runs the loop as one phase, as before, and pays no walk
+ * more (a walk is of all the compile holds: watr's compile ran 1.05× its time
+ * where the budget was also half the memory below the mark). The phases'
+ * results are the item counts.
+ */
+const ADDRESS_SPACE = 4294967296
+function phaseEach(list, each) {
+  let i = 0
+  while (i < list.length) {
+    const from = i
+    i = checkpointPhase(() => {
+      const mark = __heap_mark() >>> 0
+      const budget = Math.max(PHASE_MIN, (ADDRESS_SPACE - mark) / 4)
+      let j = from
+      while (j < list.length) {
+        each(list[j])
+        j++
+        if (__heap_since(mark) >= budget) break
+      }
+      return j
+    })
+  }
+}
+
+/**
+ * The compile's memory since `mark` compacted to what `inputs` and the
+ * module's state reach, once the compile state names nothing the compile made
+ * (`reset`): a large compile's analyses, its AST and the tables emission read
+ * are garbage once the module is assembled, and a phase's compaction keeps the
+ * memory only a phase made. The frames around hold nothing above `mark` but
+ * what `inputs` holds, which comes back forwarded: the caller reads the result,
+ * never its own copies.
+ */
+function releaseTo(mark, inputs) {
+  reset(emitter, GLOBALS, emissionHooks())
+  return __gc_phase(mark, inputs, inputs)
+}
+
 // Heap diagnostics: scripts/phase-marks.js records them, scripts/kernel-marks.mjs
 // reads them through these exports, after a trap or a thrown compile error too.
 export { PHASE_NAMES, PHASE_RECORDS, phaseCapacity, setPhaseCapacity, phasesDone, phaseNameAt, phaseHeapAt, stageHeap, tapeNodes, tapeCapacity, phaseCheckpoints, phaseDeclines, verdictAt, phaseOpenAddr } from './phase-marks.js'
@@ -375,9 +424,17 @@ function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, b
   if (DBG_INVARIANTS) assertCtxInvariants(ctx, 'post-compile')
   let module
   if (__heap_large(heapMark)) {
+    // What the assembly read and nothing past it reads (the analyses, the
+    // AST, every table emission consulted) goes before the module is decoded
+    // and parked, where it sat under the tape's columns and the lane: the
+    // compile state starts afresh, nothing reading it again this compile, and
+    // the compile's memory keeps what the module, link's facts and the tail's
+    // inputs reach (`releaseTo`). Every reader past here takes `inputs`.
     resetTape()
-    const root = fromWat(assembled.module)
-    const kept = checkpointTape([root, assembled.link, cfg, facts])
+    const inputs = releaseTo(heapMark, [assembled.module, assembled.link, cfg, facts])
+    const root = fromWat(inputs[0])
+    recordPhase('tape')
+    const kept = checkpointTape([root, inputs[1], inputs[2], inputs[3]])
     cfg = kept[2]; facts = kept[3]
     // Each of link's passes is a phase: what it made and left unreached goes
     // before the next one runs and before the tape is read back.

@@ -676,7 +676,7 @@ function stripDeadLateData(module, lazySpans, staticSpan, records) {
  */
 export function watrTail(module, cfg, {
   funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
-  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null,
+  lazyDataSpans = [], staticDataSpan = null, dataRecords = null, stableGlobals = null, noSimd = false,
 } = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   // A split binding of its predecessor's type takes that slot: the generic optimizer
@@ -743,7 +743,7 @@ export function watrTail(module, cfg, {
   // (before a float select of literals becomes a select of their bits: a test of it is a test of its condition)
   if (cfg.testedChoices === true) time('testedChoices', () => foldTestedChoices(optimized))
   // (after the passes that read a float select as one)
-  if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized, { simd: !ctx.transform.noSimd }))
+  if (cfg.selectBits === true) time('selectBits', () => selectBits(optimized, { simd: !noSimd }))
   // (on the loops the optimizer leaves: its own passes would fold the scan's blocks back)
   if (cfg.searchLoops === true) time('searchLoops', () => searchLoops(optimized))
   // (on the loops the optimizer leaves: its value numbering would read the gather back where the round uses it)

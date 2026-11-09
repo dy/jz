@@ -897,7 +897,14 @@ the arena's floor past the rewind before anything else is allocated; its
 symbols and atoms (tapeState) go through the lane. Copied into the lane, the
 columns (32 bytes a node, near a gigabyte on the compiler's own module) sat
 a second time above a heap of 3.26 GB and ran it past the end of memory.
-Each of link's passes then runs as a phase of its own, and each sweep of
+Before the decode the compile state starts afresh and the compile's memory
+since its start is compacted to what the module, link's facts and the tail's
+inputs reach (scripts/self.js releaseTo, `__gc_phase` from the compile's mark):
+nothing reads the analyses, the AST or the tables emission consulted past
+assembly, and they sat under the columns and the park lane. On the compiler's
+own module the heap goes from 2,724 MiB to about 1,040 MiB before the columns
+(936 MiB) are allocated, where the decode and the park had taken it to the edge
+of the address space. Each of link's passes then runs as a phase of its own, and each sweep of
 the arena rewind over the module's functions within it (`phase` in its
 facts), compacted before the next runs and before the tape is read back into
 the tree the optimizer takes (scripts/self.js compileModule,
@@ -967,7 +974,16 @@ that grew during the phase refuses the rewind. A solve's result is data alone:
 the debug build (`JZ_DEBUG_INVARIANTS=1`) copies every solve's result the way the
 park lane carries it (`src/debug.js` phaseCheckpointEmulation), so a reader that
 kept the solver's objects fails natively. A phase below the threshold (16 MB of
-growth) keeps its result in place.
+growth) keeps its result in place. A loop over items whose work keeps nothing of
+its own but what it stores into the program (the module optimizer's passes over
+each function, optimize-module.js optimizeFuncs, through `eachChecked`, src/ctx.js)
+runs as phases of its own (scripts/self.js phaseEach), each taking items until the
+heap grew by a quarter of the address space left above its mark (a compile far from
+the end of memory runs it as one phase and walks no more): one phase held every
+function's garbage to its end,
+and on the compiler's own module it grew from 2.62 GB past the end of the address
+space. Six phases of 131 to 376 MB now take it, each compacted to what it made
+reachable, the heap at most 3.05 GB at a phase's end.
 
 Captured locals receive their cells independently, before a use that dominates
 all references. Allocation enters a conditional arm only when every reference

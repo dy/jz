@@ -11,7 +11,7 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, checkpointed, declGlobal } from '../../ctx.js'
+import { ctx, checkpointed, eachChecked, declGlobal } from '../../ctx.js'
 import { walkAst } from '../../ast.js'
 import {
   optimizeFunc, collectReachableGlobalWrites, collectReachableMemoryWrites,
@@ -114,7 +114,8 @@ export function optimizeModule(sec, profiler) {
     const writes = cfg?.promoteGlobals !== false ? globalWrites() : null
     // The user functions a loop may call without a header changing (optimize/licm.js).
     ctx.scope.headerSafeFuncs = collectHeaderSafeFuncs(allFuncs)
-    for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, writes)
+    // (each function's passes keep nothing of their own past it: a hosted compile's phases)
+    eachChecked(allFuncs, func => optimizeFunc(func, cfg, globalTypesMap, writes))
     ctx.scope.headerSafeFuncs = null
   })
   // A site's inline cache (optimize/devirt.js) may hold a layout JSON.parse

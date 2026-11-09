@@ -128,6 +128,7 @@ export function tailFacts(cfg) {
     dataRecords: ctx.memory.shared ? null : ctx.runtime.dataRecords,
     stableGlobals: stablePtrGlobalNames(),
     fixedMemory: fixedMemoryFacts(),
+    noSimd: !!ctx.transform.noSimd,
   }
 }
 

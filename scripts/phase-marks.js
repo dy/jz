@@ -43,6 +43,8 @@ export const PHASE_NAMES = [
   'optMod:specializeMkptr', 'optMod:volatileGlobals', 'optMod:reachableWrites', 'optMod:hoistGlobalPtr',
   'optMod:hoistLoopGlobalPtr', 'optMod:inlinePureFns', 'optMod:optimizeFuncs', 'optMod:hoistGlobalConstLoads', 'optMod:appendLateStdlib',
   'frameEffects', 'frameEffectsRefresh', 'optMod:loopRewinds', 'optMod:dropStaticRoots', 'optMod:staticScratch', 'analyzeClosures', 'shareSplitSlots', 'guardToInt32', 'forwardChecked', 'unrollTrips', 'unsignedDivision', 'poolFloatConstants', 'truncChoice', 'selectArms', 'testedChoices', 'shareQuotients', 'selectBits', 'ringLaps', 'pointerExits', 'jumpPointers', 'leadChains', 'issueOrder', 'maskOperands', 'searchLoops', 'leadGathers', 'carryStores', 'skipLatches', 'guardExtremes', 'stillLoads', 'pairTests', 'inlineTiny', 'constBases', 'loopPasses', 'splitFuncs', 'hoistVectorConsts', 'optMod:forwardHops', 'optMod:quietCopies', 
+  // a large compile's decode of the module onto the tape (scripts/self.js compileModule), the columns allocated
+  'tape',
   // a phase checkpoint's verdict (scripts/self.js checkpointPhase), recorded before the phase's own record
   'checkpoint:taken', 'checkpoint:unsafe', 'checkpoint:unparkable', 'checkpoint:unworthy',
   // what a declined phase kept once compacted (module/core.js `__gc_phase`), recorded after its verdict
