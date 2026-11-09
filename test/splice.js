@@ -270,6 +270,33 @@ test('splice: a call hoisted out of a stored value runs after what the target re
   }
 })
 
+// A call that may change what the target read moves all the same, the target read ahead
+// of it as JS reads it: its receiver and key into temps where the call may change them,
+// and under a compound operator its value (`OUT[at] += step(x)`: `at`, then `OUT[at]`,
+// then step's statements, then the store). Each kernel makes an array of its own and
+// writes what its target reads: the element, the key's binding, the receiver, the name.
+const HELD = `const OUT = new Float64Array(4), ROWS = [new Float64Array(2), new Float64Array(2)]
+let at = 0, acc = 0
+function bump(v) { const t = [v, v + 1]; let s = 0; for (let j = 0; j < 2; j++) s += t[j]; OUT[0] = 100; return s }
+function step(v) { const t = [v, v * 2]; let s = 0; for (let j = 0; j < 2; j++) s += t[j]; at++; return s }
+function swap(v) { const t = [v, 1]; let s = 0; for (let j = 0; j < 2; j++) s += t[j]; const r = ROWS[0]; ROWS[0] = ROWS[1]; ROWS[1] = r; return s }
+function add(v) { const t = [v, 3]; let s = 0; for (let j = 0; j < 2; j++) s += t[j]; acc = 50; return s }
+const cells = (x) => { OUT[0] = 1; for (let i = 0; i < 2; i++) OUT[0] += bump(x + i); return OUT[0] }
+const keys = (x) => { at = 0; OUT.fill(0); for (let i = 0; i < 3; i++) OUT[at] += step(x + i); return OUT[0] * 10000 + OUT[1] * 100 + OUT[2] + at }
+const rows = (x) => { ROWS[0].fill(0); ROWS[1].fill(0); const a = ROWS[0]; for (let i = 0; i < 3; i++) ROWS[0][1] += swap(x + i); return a[1] * 1000 + ROWS[0][1] }
+const names = (x) => { acc = 0; for (let i = 0; i < 2; i++) acc += add(x + i); return acc }
+export let f = (x) => [cells(x), keys(x), rows(x), names(x)]
+`
+test('splice: a call that may change what its target read splices with the target read ahead of it', () => {
+  const host = oracle(HELD)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = run(HELD, { optimize })
+    for (const x of [0, 1.5, -2]) is(m.f(x), host.f(x), `at ${optimize}: f(${x})`)
+  }
+  if (belowOpt(3)) return
+  ok(!/call \$(bump|step|swap|add)\b/.test(wat(HELD, { optimize: 3 })), 'every kernel splices into its loop')
+})
+
 // A body past the warm size still splices where the loop holds some of its arguments fixed and
 // the body computes enough from those alone: plan/loop-invariants.js then moves that work out of
 // the loop, which the call could never have. munsell's `muXyY( H, V, c )` over the chromas `c` of

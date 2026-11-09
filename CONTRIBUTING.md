@@ -5597,6 +5597,13 @@ a closure those are its own locals no closure inside it mentions and the binding
 function around it that nothing writes past their declaration: a sweep the bench driver makes,
 `out[ i ] = fn( x[ i ] )` over its `const out`, takes the body of `fn` (stdlib's `gamma`, 0.97x
 the time).
+A call lifted out of an assignment's value moves past what the target read before it (its
+receiver, its key, and under a compound operator its value) where it cannot change them; where
+it may, it moves all the same and the target is read ahead of it as JS reads it: its parts into
+temps where what runs before the store may change them, a compound's value too, and the store
+takes its plain form (`out[ at + i ] += sum( series( x ) )`: `const v = out[ at + i ]`, the
+series' statements, `out[ at + i ] = v + h`). Such a target (a name, an element, a named
+property) holds no call back; what the value read before the call still does.
 A caller past 3000 nodes takes no more loops at sites outside its own loops, and the loops it
 left are pinned for watr's single-caller inliner, which has no bound: a driver of three
 hundred kernels was one function that never left the baseline tier. The size tier has no

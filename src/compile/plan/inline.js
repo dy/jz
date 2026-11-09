@@ -990,13 +990,17 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
   // must, and any other effect there may only move past nothing.
   const clean = (eff) => eff.seen === false && !eff.mem && !eff.reads.size
   const unitCommutes = (n, eff) => commutes(n, eff) && n.slice(2).every(a => argCommutes(a, eff))
+  // A unit moves ahead of what the value ran before it, and of what the target read
+  // (`eff.target`) or, where the target can be held (`eff.hold`), past it all the same:
+  // the target is then read ahead of every unit, as JS reads it (`held`, hAssign).
+  const moves = (eff, test) => test(eff) && (!eff.target || eff.held || test(eff.target) || (eff.hold && (eff.held = true)))
   const argCommutes = (a, eff) => {
     if (!Array.isArray(a) || a[0] === '=>' || a[0] === 'str') return true
     if (a[0] === '()' && typeof a[1] === 'string' && bodies.has(a[1])) return unitCommutes(a, eff)
     if ((a[0] === '()' && !pureSIMDCall(a)) || a[0] === 'new' || MUTATE_OPS.has(a[0]) || implicitEffect(a)) return clean(eff)
     return a.slice(1).every(c => argCommutes(c, eff))
   }
-  const effState = (seen = false) => ({ seen, mem: false, reads: new Set() })
+  const effState = (seen = false) => ({ seen, mem: false, reads: new Set(), target: null, hold: false, held: false })
   const note = (eff, w) => { eff.seen = eff.seen === true || w === true ? true : w === false ? eff.seen : eff.seen === false ? w : new Set([...eff.seen, ...w]) }
   // A member reference prepare shares between a read and its write (`m++` is
   // `m = m + 1` over ONE node) is one evaluation: it rewrites once, and both
@@ -1020,7 +1024,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
     return out
   }
   const hNode = (n, pre, cond, eff) => {
-    if (!cond && n[0] === '()' && typeof n[1] === 'string' && lifts(n[1]) && !keepsDispatch(n) && unitCommutes(n, eff)) {
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && lifts(n[1]) && !keepsDispatch(n) && moves(eff, e => unitCommutes(n, e))) {
       const argEffects = effState()
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, argEffects))]
       const tmp = `${T}inl${freshId(ctx)}_h`
@@ -1040,7 +1044,7 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
       return out
     }
     if (SHORT_CIRCUIT.has(n[0])) {
-      if (!cond && n[0] !== '??' && n.length === (n[0] === '?:' ? 4 : 3) && n.slice(2).some(holdsLift) && commutes(null, eff, n)) {
+      if (!cond && n[0] !== '??' && n.length === (n[0] === '?:' ? 4 : 3) && n.slice(2).some(holdsLift) && moves(eff, e => commutes(null, e, n))) {
         const tmp = `${T}inl${freshId(ctx)}_c`
         const test = hExpr(n[1], pre, false, effState())
         const arm = (e) => seq(hStmt(['=', tmp, e]))
@@ -1090,15 +1094,31 @@ const hoistNestedCalls = (body, bodies, anywhere = bodies) => {
         }
         return [s]
       }
-      // A computed assign target (`a[i]=…`) evaluates its index BEFORE the RHS, so an effect
-      // there (`a[j++]=…`) must block hoisting too — seed eff.seen from the LHS.
-      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false, targetEffects(s[1], false)); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
-      // Compound assignment reads its target before the RHS (a read, not an effect).
-      case '+=': case '-=': case '*=': case '|=': case '&=': case '^=': case '<<=': case '>>=': case '>>>=':
-        { const pre = []; const rhs = hExpr(s[2], pre, false, targetEffects(s[1], true)); return pre.length ? [...pre, [s[0], s[1], rhs]] : [s] }
+      case '=': return directCall(s[2]) ? [s] : hAssign(s, false)
+      case '+=': case '-=': case '*=': case '|=': case '&=': case '^=': case '<<=': case '>>=': case '>>>=': return hAssign(s, true)
       case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false, effState()); return pre.length ? [...pre, ['return', v]] : [s] }
       default: return [s]  // unrecognized shape (break/continue/throw/try/switch): leave alone
     }
+  }
+  // An assignment evaluates its target before its value: the receiver, the key (an
+  // effect there, `a[j++] = …`, runs first) and under a compound operator the target's
+  // value (`x += f()` reads x first). A unit of the value moves past those reads where
+  // it commutes with them; where it does not, it moves all the same and the target is
+  // read ahead of it: its parts into temps where what runs before the store may change
+  // them (spliceTarget), and a compound's value too, the store then its plain form
+  // (`out[k] += f(x)`: `const v = out[k]`, f's statements, `out[k] = v + h`).
+  const holdable = (lhs) => typeof lhs === 'string' || (Array.isArray(lhs) && lhs.length === 3 && (lhs[0] === '[]' || (lhs[0] === '.' && typeof lhs[2] === 'string')))
+  const hAssign = (s, compound) => {
+    const lhs = s[1], pre = [], eff = effState()
+    eff.target = targetEffects(lhs, compound)
+    eff.hold = holdable(lhs)
+    const rhs = hExpr(s[2], pre, false, eff)
+    if (!pre.length) return [s]
+    if (!eff.held) return [...pre, [s[0], lhs, rhs]]
+    const held = spliceTarget([...pre, rhs], lhs)
+    if (!compound) return [...held.pre, ...pre, ['=', held.lhs, rhs]]
+    const v = `${T}tgt${freshId(ctx)}`
+    return [...held.pre, ['const', ['=', v, held.lhs]], ...pre, ['=', held.lhs, [s[0].slice(0, -1), v, rhs]]]
   }
   const out = hStmt(body)
   return { node: changed ? seq(out) : body, changed }
