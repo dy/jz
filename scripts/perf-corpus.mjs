@@ -15,6 +15,31 @@ const mkRng =(s) => {
   return r
 }
 
+// ── loop spellings ───────────────────────────────────────────────────────────
+// Every generator prints its counted loops through one printer: `v` from `from`
+// while below `to`, step 1, a body with no continue, no break and no closure over
+// `v`. Each style is that loop, its work in the same order; `default` is the
+// spelling the baselines were measured on (test/spellings.js holds the others to
+// its cost). `v !== to` is not one: every bound here is a runtime parameter and the
+// ratchet's inputs pass a fractional one (3.5), where `!==` never exits.
+// `v >= to` exits where `v < to` would not run only for a NaN bound, which no
+// input passes.
+const seq = (a, b) => /[;}]$/.test(a) ? `${a} ${b}` : `${a}; ${b}`
+const forLoop = (test, step) => (v, from, to, body) => `for (let ${v} = ${from}; ${test(v, to)}; ${step(v)}) { ${body} }`
+const lt = (v, to) => `${v} < ${to}`
+export const STYLES = {
+  default: forLoop(lt, v => `${v} = ${v} + 1`),
+  post: forLoop(lt, v => `${v}++`),
+  pre: forLoop(lt, v => `++${v}`),
+  addAssign: forLoop(lt, v => `${v} += 1`),
+  onePlus: forLoop(lt, v => `${v} = 1 + ${v}`),
+  subNeg: forLoop(lt, v => `${v} -= -1`),
+  flipped: forLoop((v, to) => `${to} > ${v}`, v => `${v} = ${v} + 1`),
+  while: (v, from, to, body) => `let ${v} = ${from}; while (${v} < ${to}) { ${seq(body, `${v}++`)} }`,
+  doWhile: (v, from, to, body) => `let ${v} = ${from}; if (${v} < ${to}) do { ${seq(body, `${v}++`)} } while (${v} < ${to});`,
+  whileTrue: (v, from, to, body) => `let ${v} = ${from}; while (true) { if (${v} >= ${to}) break; ${seq(body, `${v}++`)} }`,
+}
+
 const VARS = ['i', 'p0', 'p1', 'p2', 'acc']
 const LITS = [1, 2, 3, 5, 7, 0.5, 1.5, 31, 255]
 const pick = (g, a) => a[g.int(a.length)]
@@ -73,7 +98,7 @@ const BUF_LEAF = ['buf[i]', 'i + 0.0', '1.0', '0.5', '2.0', '-1.5', '3.0']
 const genBufExpr = (g, d) => (d <= 0 || g() < 0.4)
   ? pick(g, BUF_LEAF)
   : `(${genBufExpr(g, d - 1)} ${pick(g, ['+', '-', '*'])} ${genBufExpr(g, d - 1)})`
-const progBuf = (g) => `export let f = (buf, n) => { for (let i = 0; i < n; i = i + 1) { buf[i] = ${genBufExpr(g, 3)} } }`
+const progBuf = (g, loop) => `export let f = (buf, n) => { ${loop('i', 0, 'n', `buf[i] = ${genBufExpr(g, 3)}`)} }`
 
 // NEST: nested loop where the inner body mixes an i-invariant read (`a[i]`,
 // hoistable out of the j-loop) with a j-varying read (`a[j]`) — the LICM stressor
@@ -82,7 +107,7 @@ const NEST_LEAF = ['a[i]', 'a[j]', 'i', 'j', '1', '3', '7']
 const genNestExpr = (g, d) => (d <= 0 || g() < 0.4)
   ? pick(g, NEST_LEAF)
   : `((${genNestExpr(g, d - 1)} ${pick(g, ['+', '-', '*', '^', '|', '&'])} ${genNestExpr(g, d - 1)}) | 0)`
-const progNest = (g) => `export let f = (a, n) => { let acc = 0 | 0; for (let i = 0; i < n; i = i + 1) { for (let j = 0; j < n; j = j + 1) { acc = (acc + (${genNestExpr(g, 3)})) | 0 } } return acc | 0 }`
+const progNest = (g, loop) => `export let f = (a, n) => { let acc = 0 | 0; ${loop('i', 0, 'n', loop('j', 0, 'n', `acc = (acc + (${genNestExpr(g, 3)})) | 0`))} return acc | 0 }`
 
 
 // SLICE: block processing over RUNTIME SUB-VIEWS of one buffer — `a[o + i]` with `o`
@@ -94,15 +119,15 @@ const SLICE_LEAF = ['a[o + i]', 'i + 0.0', '0.5', '2.0', '-1.0']
 const genSliceExpr = (g, d) => (d <= 0 || g() < 0.4)
   ? pick(g, SLICE_LEAF)
   : `(${genSliceExpr(g, d - 1)} ${pick(g, ['+', '-', '*'])} ${genSliceExpr(g, d - 1)})`
-const progSlice = (g) => `export let f = (a, offs, m, n) => { for (let b = 0; b < m; b = b + 1) { const o = offs[b]; for (let i = 0; i < n; i = i + 1) { a[o + i] = ${genSliceExpr(g, 3)} } } }`
+const progSlice = (g, loop) => `export let f = (a, offs, m, n) => { ${loop('b', 0, 'm', `const o = offs[b]; ${loop('i', 0, 'n', `a[o + i] = ${genSliceExpr(g, 3)}`)}`)} }`
 
 // RING: wrap-masked delay-line indexing — `buf[(h − K) & MASK]` taps + `buf[h & MASK]`
 // write + head increment, the pattern under every delay/reverb (bench/delayline pins the
 // full case). Guards strength-reduction of the mask chain and the loop-carried head.
-const progRing = (g) => {
+const progRing = (g, loop) => {
   const k1 = 1 + Math.floor(g() * 200), k2 = 1 + Math.floor(g() * 900)
   const fb = (0.3 + g() * 0.5).toFixed(2)
-  return `export let f = (buf, x, n) => { let h = 0 | 0; for (let i = 0; i < n; i = i + 1) { const t = buf[(h - ${k1}) & 8191] + buf[(h - ${k2}) & 8191] * ${fb}; const y = x[i] + t * ${fb}; buf[h & 8191] = y; h = (h + 1) | 0 } }`
+  return `export let f = (buf, x, n) => { let h = 0 | 0; ${loop('i', 0, 'n', `const t = buf[(h - ${k1}) & 8191] + buf[(h - ${k2}) & 8191] * ${fb}; const y = x[i] + t * ${fb}; buf[h & 8191] = y; h = (h + 1) | 0`)} }`
 }
 
 // CONDREF: conditional ARRAY-REF selection before a hot loop — `const t = k ? a : b` —
@@ -112,15 +137,15 @@ const CONDREF_LEAF = ['t[i]', 'u[i]', 'i + 0.0', '1.5']
 const genCondRefExpr = (g, d) => (d <= 0 || g() < 0.4)
   ? pick(g, CONDREF_LEAF)
   : `(${genCondRefExpr(g, d - 1)} ${pick(g, ['+', '-', '*'])} ${genCondRefExpr(g, d - 1)})`
-const progCondRef = (g) => `export let f = (a, b, k, n) => { const t = k === 1 ? a : b; const u = k === 1 ? b : a; for (let i = 0; i < n; i = i + 1) { t[i] = ${genCondRefExpr(g, 3)} } }`
+const progCondRef = (g, loop) => `export let f = (a, b, k, n) => { const t = k === 1 ? a : b; const u = k === 1 ? b : a; ${loop('i', 0, 'n', `t[i] = ${genCondRefExpr(g, 3)}`)} }`
 
 // FGATHER: float-computed gather — a phase accumulator truncated to an index each
 // iteration (`ph | 0`), the resampler pattern (bench/resample pins the case; jz
 // currently trails V8 ~1.05× there). Guards that float→index truncation stays on the
 // typed-load fast path.
-const progFGather = (g) => {
+const progFGather = (g, loop) => {
   const step = (0.5 + g() * 0.9).toFixed(6)
-  return `export let f = (a, out, n) => { let ph = 1.0; for (let k = 0; k < n; k = k + 1) { const idx = ph | 0; const fr = ph - idx; out[k] = a[idx] + (a[idx + 1] - a[idx]) * fr; ph = ph + ${step} } }`
+  return `export let f = (a, out, n) => { let ph = 1.0; ${loop('k', 0, 'n', `const idx = ph | 0; const fr = ph - idx; out[k] = a[idx] + (a[idx + 1] - a[idx]) * fr; ph = ph + ${step}`)} }`
 }
 
 export const CATEGORIES = {
@@ -137,10 +162,11 @@ export const CATEGORIES = {
   fgather: { program: progFGather, callable: false },
 }
 
-export const genProgram = (cat, seed) => {
+export const genProgram = (cat, seed, style = 'default') => {
   const g = mkRng(seed)
-  const c = CATEGORIES[cat]
-  if (c.program) return c.program(g, seed)   // structural categories build their own source
+  const c = CATEGORIES[cat], loop = STYLES[style]
+  if (!loop) throw new Error(`unknown loop style '${style}'`)
+  if (c.program) return c.program(g, loop)   // structural categories build their own source
   const expr = c.gen(g, 4)
-  return `export let f = (n, p0, p1, p2) => { let acc = ${c.init}; for (let i = 0; i < n; i = i + 1) { ${c.step(expr)} } return ${c.ret} }`
+  return `export let f = (n, p0, p1, p2) => { let acc = ${c.init}; ${loop('i', 0, 'n', c.step(expr))} return ${c.ret} }`
 }

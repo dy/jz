@@ -265,6 +265,7 @@ const TESTS = [
   'session-reentrancy',
   'grid-current',
   'perf-ratchet',
+  'spellings',
   'parser-bugs',
   'self-build',
   'kernel-gate',
@@ -326,6 +327,8 @@ if (jobsArg != null && !splittable) throw new Error('--jobs splits a whole core 
 //     loop-body ops vs a committed baseline. The kernel runs optimize:false (ignores
 //     the level), so its op counts don't match the baseline — and it's not a value
 //     test anyway. Excluded; the in-process leg owns it.
+//   - spellings: loop-body op counts and SIMD presence per loop spelling at level 2
+//     and 'speed' against a committed table; excluded for perf-ratchet's reason.
 //   - self-compile-source: a host-side scan of the self-compile kernel's own source for
 //     labeled-statement misparses. Reads src via parse/jzify directly, never the
 //     compiler-under-test, so the kernel leg would only re-run it identically.
@@ -346,7 +349,7 @@ if (jobsArg != null && !splittable) throw new Error('--jobs splits a whole core 
 //   (2026-07-25: no remaining recorded kernel VALUE bugs in this list — the
 //   json shaped-parser asserts cleared with the elemOrigin fix; what's left
 //   above is hang-bisection debt and leg-mismatch classes, not value bugs.)
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'options', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'spellings', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
   'runner', 'bench-build', 'source-map', // JS entry/CLI options and debug metadata are outside the kernel ABI
   'guide', // runs the guide's examples against the browser bundle web-smoke builds, not the kernel
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
@@ -402,7 +405,7 @@ const LEG_INVARIANT = new Set([
 // Files that choose their own optimize levels (an explicit `optimize` on every
 // compile; fuzz and wat-invariants sweep {0,1,2,3} themselves) but compile under the
 // leg's host: the opt0/opt3 legs skip them, the wasi leg keeps them.
-const OPT_INVARIANT = new Set(['fuzz', 'wat-invariants', 'kernel-gate', 'perf-ratchet', 'refactor-oracle', 'self-compile-includes', 'snapshot'])
+const OPT_INVARIANT = new Set(['fuzz', 'wat-invariants', 'kernel-gate', 'perf-ratchet', 'spellings', 'refactor-oracle', 'self-compile-includes', 'snapshot'])
 const onOptLeg = process.env.JZ_TEST_OPTIMIZE != null, onHostLeg = !!process.env.JZ_TEST_HOST
 const legSkips = (name) => (onOptLeg && (LEG_INVARIANT.has(name) || OPT_INVARIANT.has(name))) || (onHostLeg && LEG_INVARIANT.has(name))
 
