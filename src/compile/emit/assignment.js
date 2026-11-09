@@ -7,7 +7,7 @@
 import { ctx, err, inc } from '../../ctx.js'
 import { isReassigned } from '../../ast.js'
 import {
-  applyBigintRepresentationAction, applyBindingWriteAction, asF64, asI32, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
+  applyBindingWriteAction, asF64, asI32, boxBigInt, f64rem, fromI64, isBoundName, isConst, isGlobal, isNullish, isNullishLit, readI64, readVar, temp, throwTypeErrorIR, toNumF64, toStrI64, truthyIR, typed, writeVar,
 } from '../../ir.js'
 import { hasAmbiguousBoolMerge, valTypeOf, boolTagged, isPresentNumber } from '../../kind.js'
 import { VAL, repOf } from '../../reps.js'
