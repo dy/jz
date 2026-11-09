@@ -433,7 +433,6 @@ function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, b
     resetTape()
     const inputs = releaseTo(heapMark, [assembled.module, assembled.link, cfg, facts])
     const root = fromWat(inputs[0])
-    recordPhase('tape')
     const kept = checkpointTape([root, inputs[1], inputs[2], inputs[3]])
     cfg = kept[2]; facts = kept[3]
     // Each of link's passes is a phase: what it made and left unreached goes
