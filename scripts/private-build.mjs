@@ -30,7 +30,10 @@ export function privateBuild(root, script, args = [], { label = 'private build',
   const out = join(dir, 'jz.wasm')
   const t0 = Date.now()
   try {
-    const r = spawnSync(process.execPath, [join(root, script), out, ...args], { cwd: root, encoding: 'utf8', timeout })
+    // The compiler's compile of itself holds about 3.3 GB live at its peak, where Node's
+    // default heap (about 4 GB, by version and machine) leaves it no room: 8 GB, as the
+    // self-compile bench case's build takes (bench/_lib/compile.js).
+    const r = spawnSync(process.execPath, ['--max-old-space-size=8192', join(root, script), out, ...args], { cwd: root, encoding: 'utf8', timeout })
     if (r.error || r.signal || r.status !== 0) {
       throw new Error(`${label} exit ${r.status}${r.signal ? ` (${r.signal})` : ''}\n${r.error?.message || ''}\n${r.stdout || ''}${r.stderr || ''}`)
     }

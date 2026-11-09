@@ -98,7 +98,7 @@ test('kernel gate: failed builds retain the original cause after the source cont
       import cp from 'node:child_process'
       import { syncBuiltinESMExports } from 'node:module'
       const spawn = cp.spawnSync
-      cp.spawnSync = (cmd, args, opts) => args?.[0]?.endsWith('/scripts/self-compile-build.mjs')
+      cp.spawnSync = (cmd, args, opts) => args?.some?.(a => String(a).endsWith('/scripts/self-compile-build.mjs'))
         ? { status: 1, stderr: ${JSON.stringify(diagnostic)} } : spawn(cmd, args, opts)
       syncBuiltinESMExports()
       process.argv = [process.execPath, ${JSON.stringify(RUNNER)}, '--build', '--gate', 'functional', '--json', ${JSON.stringify(output)}]

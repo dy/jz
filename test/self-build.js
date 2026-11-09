@@ -54,7 +54,7 @@ test('self-build: all kernel transactions share the build timeout override', () 
   const timeouts = []
   childProcess.spawnSync = (_exe, args, opts) => {
     timeouts.push(opts.timeout)
-    writeFileSync(args[1], B)
+    writeFileSync(args[args.findIndex(a => a.endsWith('.mjs')) + 1], B)   // the output path follows the builder
     return { status: 0, signal: null }
   }
   syncBuiltinESMExports()

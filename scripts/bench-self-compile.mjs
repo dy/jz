@@ -78,7 +78,7 @@ const ensureWasm = () => {
   const env = PROFILE_HELPERS
     ? { ...process.env, JZ_HELPER_COUNTERS: '1', ...(COUNT_SITES ? { JZ_HELPER_SITES: HELPER_SITE_FILTER } : {}) }
     : process.env
-  const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'self-compile-build.mjs')], { cwd: ROOT, stdio: 'inherit', env, timeout: 600_000 })
+  const r = spawnSync(process.execPath, ['--max-old-space-size=8192', join(ROOT, 'scripts', 'self-compile-build.mjs')], { cwd: ROOT, stdio: 'inherit', env, timeout: 600_000 })   // (heap: scripts/private-build.mjs)
   if (r.error || r.signal || r.status !== 0) throw new Error(`self-compile build failed (exit ${r.status})\n${r.error?.message || r.signal || ''}`)
 }
 

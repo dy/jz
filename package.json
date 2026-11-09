@@ -81,7 +81,7 @@
     "bench:self": "node scripts/bench-self-compile.mjs",
     "bench:readme": "node scripts/bench-readme.mjs",
     "audit:as": "node scripts/audit-assemblyscript.mjs",
-    "build": "npm run build:site && node scripts/build-dist.mjs",
+    "build": "npm run build:site && node --max-old-space-size=8192 scripts/build-dist.mjs",
     "build:web": "npm run build:site && node scripts/build-dist.mjs --js-only",
     "build:site": "node scripts/build-site.mjs",
     "build:examples": "node examples/build.mjs all",
