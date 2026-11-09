@@ -165,7 +165,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // single top-down pass, byte-identical.
   // The start function too: a direct call of a closure body (devirtClosureCalls)
   // may sit in the module's initialization.
-  for (const fn of [...kept, ...sec.start]) walkAst(fn, { enter: n => {
+  for (const fn of [...kept, ...(sec.start ?? [])]) walkAst(fn, { enter: n => {
     for (let i = 0; i < n.length; i++) {
       const c = n[i]
       if (typeof c === 'string' && c[0] === '$') {
