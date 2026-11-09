@@ -1,22 +1,23 @@
-// Loop-spelling gate: a loop costs what it costs however it is spelled.
+// Loop-spelling gate: spelling does not matter, so every spelling of a loop
+// compiles as well as its best spelling.
 //
 // Every corpus program (scripts/perf-corpus.mjs) in every loop style, and the
-// hand kernels below in every spelling, against the default style (a kernel's
-// first spelling), at level 2 and at 'speed':
-//  (a) each call answers what the default's answers, and what Node answers;
-//  (b) each call enters loops of no more ops (test/_loop-ops.js) than the
-//      default's same call;
-//  (c) the entry's functions hold a SIMD op iff the default's do.
-// (a) is correctness: a difference is a miscompile, never listed. A (b) or (c)
-// gap of today is listed in test/spellings.json: `ops`, the ops the calls enter
-// past the default's, summed over the calls that exceed it, and `simd`, 'lost'
-// or 'gained'. A cell fails on a gap not listed, on more ops than listed, and on
-// a listed gap it no longer has, so the list only shrinks. Rewrite it with
-// `node test/spellings.js --update`.
-// (b) holds a spelling to the default's cost, not the default to a spelling's: a
-// cheaper spelling passes (the ring kernel's first, `% M`, costs more than five of
-// its six others). A loop counts once a call enters it, whatever its trips, and a
-// scalar loop counts fewer ops than its vector form, which (c) catches.
+// hand kernels below in every spelling, at level 2 and at 'speed':
+//  (a) each call answers what the default style's (a kernel's first spelling's)
+//      answers, and what Node answers;
+//  (b) the best spelling is vectorized (a SIMD op in the entry's functions) if
+//      any is, and among those of its status enters, call by call, the fewest
+//      loop-body ops (test/_loop-ops.js). A spelling not vectorized where another
+//      is falls short by `simd: 'lost'`; one of the best's status by `ops`, its
+//      ops past each call's fewest, summed over the calls.
+// (a) is correctness: a difference is a miscompile or a spelling of other work,
+// never listed. A shortfall of today is listed in test/spellings.json, the
+// default style and a kernel's first spelling among the others. A cell fails on
+// a gap not listed, on more ops than listed, and on a listed gap it no longer
+// has, so the list only shrinks. Rewrite it with `node test/spellings.js --update`.
+// A loop counts once a call enters it, whatever its trips: a call that runs no
+// iteration still counts the loop whose head test it ran, where a spelling that
+// tests before the loop (the guarded do-while) enters none.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { readFileSync, writeFileSync } from 'fs'
@@ -36,7 +37,7 @@ const KNOWN = join(import.meta.dirname, 'spellings.json')
 const SIMD = /"(v128|[if](8x16|16x8|32x4|64x2))\./
 
 // The review's probe kernels, each spelling of the same work; the first is the
-// reference. `sum` reads the whole output, so (a) sees every store.
+// answers' reference. `sum` reads the whole output, so (a) sees every store.
 const N1 = `const N = 1024
 const a = new Float64Array(N), b = new Float64Array(N)
 export let init = () => { for (let i = 0; i < N; i++) { a[i] = i * 0.5; b[i] = i + 1 } }
@@ -127,63 +128,56 @@ const measure = (src, level, calls, entry) => {
 }
 const node = (src, calls) => { const m = oracle(src); return calls.map(([name, args]) => answer(m[name](...args), args)) }
 
-const gapOf = (m, ref) => {
-  const ops = m.ops.reduce((s, n, i) => s + Math.max(0, n - ref.ops[i]), 0), g = {}
-  if (ops) g.ops = ops
-  if (m.simd !== ref.simd) g.simd = m.simd ? 'gained' : 'lost'
-  return g
-}
-
-// One group of cells at one level: a reference program and its respellings.
-// `calls()` builds fresh arguments: the array programs write into theirs.
-// Returns the differing answers and the gaps by cell.
-const sweep = (prefix, ref, variants, calls, entry, level) => {
-  const bad = [], gaps = {}
-  const check = (name, src, m) => {
-    const want = node(src, calls())
-    if (!same(m.out, want)) bad.push(`${prefix}/${name}/${level}: jz ${show(m.out)}, node ${show(want)}\n  ${src}`)
-  }
-  const r = measure(ref, level, calls(), entry)
-  check('reference', ref, r)
-  for (const [name, src] of variants) {
-    const m = measure(src, level, calls(), entry)
-    check(name, src, m)
-    if (!same(m.out, r.out)) bad.push(`${prefix}/${name}/${level}: jz ${show(m.out)}, its reference ${show(r.out)}\n  ${src}`)
-    const g = gapOf(m, r)
-    if (g.ops || g.simd) gaps[`${prefix}/${name}/${level}`] = g
+// One group of cells at one level: the spellings of one program, the default
+// first. `calls()` builds fresh arguments: the array programs write into theirs.
+// Returns the differing answers and each spelling's shortfall from the best.
+const sweep = (prefix, programs, calls, entry, level) => {
+  const bad = [], key = name => `${prefix}/${name}/${level}`
+  const ms = programs.map(([name, src]) => {
+    const m = measure(src, level, calls(), entry), want = node(src, calls())
+    if (!same(m.out, want)) bad.push(`${key(name)}: jz ${show(m.out)}, node ${show(want)}\n  ${src}`)
+    return { name, src, ...m }
+  })
+  for (const m of ms.slice(1)) if (!same(m.out, ms[0].out)) bad.push(`${key(m.name)}: jz ${show(m.out)}, the default ${show(ms[0].out)}\n  ${m.src}`)
+  const simd = ms.some(m => m.simd), peers = ms.filter(m => m.simd === simd)
+  const least = peers[0].ops.map((_, c) => Math.min(...peers.map(m => m.ops[c])))
+  const gaps = {}
+  for (const m of ms) {
+    const ops = m.ops.reduce((s, n, c) => s + n - least[c], 0)
+    if (m.simd !== simd) gaps[key(m.name)] = { simd: 'lost' }
+    else if (ops) gaps[key(m.name)] = { ops }
   }
   return { bad, gaps }
 }
 
 const callsOf = cat => () => (NUMERIC_CALLS[cat] ?? ARRAY_CALLS[cat]()).map(args => ['f', args])
-const styled = (cat, s) => Object.keys(STYLES).filter(st => st !== 'default').map(st => [st, genProgram(cat, s, st)])
+const styled = (cat, s) => Object.keys(STYLES).map(st => [st, genProgram(cat, s, st)])
 const corpus = (cat, level) => {
   const out = { bad: [], gaps: {} }
   for (let s = 1; s <= SEEDS; s++) {
-    const { bad, gaps } = sweep(`${cat}/${s}`, genProgram(cat, s), styled(cat, s), callsOf(cat), 'f', level)
+    const { bad, gaps } = sweep(`${cat}/${s}`, styled(cat, s), callsOf(cat), 'f', level)
     out.bad.push(...bad); Object.assign(out.gaps, gaps)
   }
   return out
 }
 const kernel = (name, level) => {
-  const k = KERNELS[name], [[, ref], ...rest] = Object.entries(k.spellings)
-  const src = body => k.pre + 'export let run = () => { ' + body + ' }\n'
-  return sweep(`kernel/${name}`, src(ref), rest.map(([n, b]) => [n, src(b)]), () => k.calls.map(c => [c, []]), 'run', level)
+  const k = KERNELS[name], src = body => k.pre + 'export let run = () => { ' + body + ' }\n'
+  return sweep(`kernel/${name}`, Object.entries(k.spellings).map(([n, b]) => [n, src(b)]), () => k.calls.map(c => [c, []]), 'run', level)
 }
 
 // Every cell the gate measures, by key; no compile.
 const cells = () => [
   ...Object.keys(CATEGORIES).flatMap(cat => Array.from({ length: SEEDS }, (_, i) => styled(cat, i + 1).map(([st]) => `${cat}/${i + 1}/${st}`)).flat()),
-  ...Object.entries(KERNELS).flatMap(([name, k]) => Object.keys(k.spellings).slice(1).map(s => `kernel/${name}/${s}`)),
+  ...Object.entries(KERNELS).flatMap(([name, k]) => Object.keys(k.spellings).map(s => `kernel/${name}/${s}`)),
 ].flatMap(c => LEVELS.map(l => `${c}/${l}`))
 
-// A cell's gaps against what the table lists for it.
+// A cell's shortfall against what the table lists for it.
 const verdict = (key, g = {}, k = {}) => {
   const bad = []
-  if (g.ops && !k.ops) bad.push(`${key}: ${g.ops} ops past the default, not listed`)
-  else if (g.ops > k.ops) bad.push(`${key}: ${g.ops} ops past the default, listed ${k.ops}`)
-  else if (!g.ops && k.ops) bad.push(`${key}: no ops past the default now, remove its ops`)
-  if (g.simd !== k.simd) bad.push(`${key}: ${g.simd ? `${g.simd} SIMD` : 'SIMD as the default'}, listed ${k.simd ?? 'none'}`)
+  if (g.ops && !k.ops) bad.push(`${key}: ${g.ops} ops past the best spelling, not listed`)
+  else if (g.ops > k.ops) bad.push(`${key}: ${g.ops} ops past the best spelling, listed ${k.ops}`)
+  else if (!g.ops && k.ops) bad.push(`${key}: no ops past the best spelling now, remove its ops`)
+  if (g.simd !== k.simd) bad.push(`${key}: ${g.simd ? 'not vectorized where another spelling is' : 'vectorized as the best spelling'}, listed ${k.simd ?? 'none'}`)
   return bad
 }
 
@@ -209,7 +203,7 @@ if (process.argv.includes('--update')) {
     ok(!stale.length, stale.length ? `not measured: ${stale.join(', ')}` : 'listed cells')
   })
   for (const [name, prefix, run] of GROUPS) for (const level of LEVELS) {
-    test(`spellings: ${name} at ${level === 2 ? 'level 2' : level} answers and costs what the default spelling does`, () => {
+    test(`spellings: ${name} at ${level === 2 ? 'level 2' : level} answers what the default does and compiles as well as the best spelling`, () => {
       if (onWasi()) return   // the counts are the JS host's, as perf-ratchet's are
       const { bad, gaps } = run(level)
       ok(!bad.length, bad.length ? `answers differ, a miscompile or a spelling of other work:\n${bad.join('\n')}` : 'every spelling answers what the default and Node answer')
