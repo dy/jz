@@ -8,7 +8,7 @@ import { is, ok, throws } from 'tst/assert.js'
 import { f64ToI64 } from '../interop.js'
 import parseWat from 'watr/parse'
 import { walkAst } from '../src/ast.js'
-import { onKernel, withBigintStrict, levels, belowOpt } from './_matrix.js'
+import { onKernel, withBigintStrict, levels, belowOpt, onWasi } from './_matrix.js'
 import { oracle, funcWat, jz, compile } from './util.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
@@ -1241,7 +1241,7 @@ test('cursor guards take a stride the loop holds', () => {
   for (const optimize of levels(0, 2, 3)) {
     const m = jz(src, { optimize }).exports
     for (const w of [0, 1, 3, -1, 0.5, 1e10, 2147483647, 2147483648, -2147483648, NaN, Infinity]) for (const n of [0, 1, 5, 20]) {
-      for (const p of [0, 1, -1, 0.5, 39, 1e10, NaN]) {
+      if (!onWasi()) for (const p of [0, 1, -1, 0.5, 39, 1e10, NaN]) {   // wasi: js-object arg
         is(m.frames(u8, { w, p }, n), host.frames(u8, { w, p }, n), `O${optimize}: frames by ${w} from ${p}, ${n}`)
         is(m.skip(f64, { w, p }, n), host.skip(f64, { w, p }, n), `O${optimize}: skip by ${w} from ${p}, ${n}`)
       }

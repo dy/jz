@@ -5,7 +5,7 @@
 import test from 'tst'
 import parseWat from 'watr/parse'
 import { is, ok, throws } from 'tst/assert.js'
-import { belowOpt, levels } from './_matrix.js'
+import { belowOpt, levels, onWasi } from './_matrix.js'
 import { oracle, wat, funcWat, run, compileInProcess, jz } from './util.js'
 import { ctx } from '../src/ctx.js'
 import { T, TYPEOF, walkAst } from '../src/ast.js'
@@ -2151,7 +2151,8 @@ test('integral loops: a head beside its counter reads as the loop over it, a rec
   const host = oracle(deinterleave)
   const raw = new Uint8Array(601)
   for (let i = 0, v = 7; i < raw.length; i++) { v = (v * 1103515245 + 12345) >>> 0; raw[i] = v >>> 24 }
-  for (const optimize of levels(0, 2, 3)) {
+  // wasi: js-object arg (the loops' words below hold on every host)
+  if (!onWasi()) for (const optimize of levels(0, 2, 3)) {
     const { f } = jz(deinterleave, { optimize }).exports
     for (const channels of [1, 2, 3, 2.5, -1, 0, NaN, '2', 7])
       is(f(raw, { channels }), host.f(raw, { channels }), `O${optimize}: ${typeof channels} ${channels} channels`)
@@ -2179,6 +2180,7 @@ test('integral loops: a head kept as written where reading it over its counter w
     export const before = (a, o) => { let s = 0; for (let x = a, i = 0, k = 0; i < a.length; k += o.s, i++) s += (x[k] | 0) * (i + 1); return s }`
   const host = oracle(src)
   const a = Array.from({ length: 40 }, (_, i) => (i * 7) % 11)
+  if (onWasi()) return  // wasi: js-object arg
   for (const optimize of levels(0, 2, 3))
     for (const [name, fn] of Object.entries(jz(src, { optimize }).exports))
       for (const s of [1, 2, 0.5, -1]) is(fn(a, { s }), host[name](a, { s }), `O${optimize}: ${name} by ${s}`)
@@ -2198,7 +2200,7 @@ test('integral loops: a fractional stride keeps the loop, a scan the head its lo
   const a = Array.from({ length: 64 }, (_, i) => i * 3 % 17)
   for (const optimize of levels(0, 2, 3)) {
     const m = jz(src, { optimize }).exports
-    for (const [up, dn] of [[3, 2], [1, 1], [5, 4]]) is(m.phase(a, { up, dn }), host.phase(a, { up, dn }), `O${optimize}: phase ${up}/${dn}`)
+    if (!onWasi()) for (const [up, dn] of [[3, 2], [1, 1], [5, 4]]) is(m.phase(a, { up, dn }), host.phase(a, { up, dn }), `O${optimize}: phase ${up}/${dn}`)   // wasi: js-object arg
     for (const k of [0, 5, 13]) is(m.scanAt(k), host.scanAt(k), `O${optimize}: scan at ${k}`)
   }
   if (belowOpt(2)) return
@@ -2216,7 +2218,7 @@ test('integral loops: a stride cursor enters tested, an accumulator by a stride 
   const a = new Uint8Array(64).map((_, i) => i * 7 % 23)
   for (const optimize of levels(0, 2, 3)) {
     const m = jz(src, { optimize }).exports
-    for (const k of [0.5, 1, 2, 1.5]) is(m.pick(a, { k }, 5, 3), host.pick(a, { k }, 5, 3), `O${optimize}: pick by ${k}`)
+    if (!onWasi()) for (const k of [0.5, 1, 2, 1.5]) is(m.pick(a, { k }, 5, 3), host.pick(a, { k }, 5, 3), `O${optimize}: pick by ${k}`)   // wasi: js-object arg
     for (const step of [1, 2.5, -3]) is(m.sum(step), host.sum(step), `O${optimize}: sum by ${step}`)
   }
   if (belowOpt(2)) return
