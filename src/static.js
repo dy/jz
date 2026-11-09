@@ -39,14 +39,15 @@ const typedLengthCap = (name) => {
 export const typedCtorRawOf = (name) =>
   ctx.func?.localTypedElemsOverlay?.get(name) ?? ctx.func?.typedElem?.get(name) ?? ctx.scope?.globalTypedElem?.get(name) ?? null
 
-/** Extract integer value from AST literal node. Returns null if not a 32-bit integer. */
+/** Extract integer value from AST literal node. Returns null if not a 32-bit integer
+ *  (-0 is none: an i32 holds no sign of zero, and `[-0, 1]` promoted to words read +0). */
 export function intLiteralValue(expr) {
   let v = null
   if (typeof expr === 'number') v = expr
   else if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'number') v = expr[1]
   else if (Array.isArray(expr) && expr[0] === 'u-' && typeof expr[1] === 'number') v = -expr[1]
   else if (typeof expr === 'string') v = repOf(expr)?.intConst ?? ctx.scope.constInts?.get(expr) ?? null
-  return v != null && Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX ? v : null
+  return v != null && Number.isInteger(v) && v >= I32_MIN && v <= I32_MAX && !Object.is(v, -0) ? v : null
 }
 
 /** Non-negative integer literal — used for string/typed-array index bounds. */

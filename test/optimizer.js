@@ -3411,6 +3411,12 @@ test('promoteIntArrayLiterals: float element disqualifies', () => {
   is(main(0), 36.5)
 })
 
+// -0 is no i32 (static.js intLiteralValue): as words the array read +0 back
+test('promoteIntArrayLiterals: a -0 element keeps its sign', () => {
+  const src = `export let f = (i) => { const V = [-0, 0, 1, 2]; return 1 / V[i & 3] }`
+  for (const optimize of levels(false, true, 'speed')) is(jz(src, { optimize }).exports.f(0), -Infinity, `1 / V[0] at ${optimize}`)
+})
+
 test('promoteIntArrayLiterals: negative literals are i32-valid', () => {
   const src = loopSum('[-1, -2, -3, -4, -5, -6, -7, -8]')
   const body = compileMain(src)
