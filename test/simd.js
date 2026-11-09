@@ -1518,10 +1518,48 @@ test('SIMD ramp-map - u8 bytebeat-shaped store (16-wide pack)', () => {
   }`
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
   // i8 ramp stores take the 16-wide path: 4 offset ramps packed into ONE
-  // i8x16 v128.store (three shuffles), not the 4-wide narrowing i32.store.
+  // i8x16 v128.store, not the 4-wide narrowing i32.store. The value is masked
+  // to a byte, so two saturating narrows pack it exactly.
   const w = wat(src, SIMD_OPT)
   ok(/v128\.store/.test(w), 'expected 16-wide packed v128.store')
-  ok((w.match(/i8x16\.shuffle/g) || []).length >= 3, 'expected 3-shuffle 16-lane pack')
+  ok((w.match(/i16x8\.narrow_i32x4_u/g) || []).length === 2 && /i8x16\.narrow_i16x8_u/.test(w), 'expected narrowing 16-lane pack')
+})
+
+test('SIMD ramp-map - u8 store of lane temps (an inlined sample function) packs 16-wide', () => {
+  // The body sets lane temps before the store, the shape inlining `sample(t)` leaves
+  // (bytebeat): each of the four offset ramps runs the whole body.
+  const src = `const sample = (t) => {
+    const v1 = (t * 5 & t >> 7) | (t * 3 & t >> 10)
+    const v2 = t * (((t >> 12) | (t >> 8)) & (63 & (t >> 4)))
+    return (v1 + v2) & 255
+  }
+  export let main = () => {
+    const out = new Uint8Array(4099)
+    for (let t = 0; t < 4099; t++) out[t] = sample(t)
+    let h = 0
+    for (let i = 0; i < 4099; i++) h = (h * 31 + out[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.store\b/.test(w) && /i8x16\.narrow_i16x8_u/.test(w), 'expected 16-wide narrowing pack')
+  ok(!/i32x4\.extract_lane/.test(w), 'no 4-wide extract-and-store')
+})
+
+test('SIMD ramp-map - u8 store of an unmasked lane temp packs 16-wide by shuffles', () => {
+  // A value not proven a byte (here up to 9·4096) keeps its low bytes by shuffles:
+  // a saturating narrow would clamp it where store8 truncates.
+  const src = `export let main = () => {
+    const out = new Uint8Array(4096)
+    for (let i = 0; i < 4096; i++) { const v = i * 9 + (i >> 3); out[i] = v }
+    let h = 0
+    for (let i = 0; i < 4096; i++) h = (h * 31 + out[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.store\b/.test(w), 'expected 16-wide packed v128.store')
+  ok(!/narrow_i/.test(w) && (w.match(/i8x16\.shuffle/g) || []).length >= 3, 'expected 3-shuffle pack, no saturating narrow')
 })
 
 test('SIMD ramp-map - u8 narrowing is truncation-exact (values > 255)', () => {

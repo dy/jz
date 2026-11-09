@@ -14,7 +14,7 @@ import { matchBlockLoop, simdLoop, simdBound } from './scaffold.js'
 // input load and ties the compute width to it, so a byte LUT-free map whose
 // arithmetic overflows a byte (mul, shifts) — or that has no load at all —
 // falls through to here, where everything lifts to i32x4 and narrow-stores.
-//   • pure ramp (no loads, i8 store) → 16-wide pack (bytebeat)
+//   • pure ramp (no loads, i8 store, any lane temps before it) → 16-wide pack (bytebeat)
 //   • widening u8 loads → 4-wide (alpha blend, brightness/color/threshold)
 //
 // Matches the post-strength-reduction shape (the IV strength-reducer runs
@@ -23,8 +23,9 @@ import { matchBlockLoop, simdLoop, simdBound } from './scaffold.js'
 // scaled by LANES; the store narrows i32x4 back to the element width.
 //
 // Narrowing is truncation-exact for ANY i32 value (matching scalar store8/16):
-// `i8x16.shuffle` selects the low byte of each lane — never saturates — so no
-// value-range assumption is needed.
+// `i8x16.shuffle` selects the low byte of each lane — never saturates. A value
+// proven a byte (`… & 255`) packs by saturating narrows instead, which saturate
+// nothing in its range.
 export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
   // Strict envelope (identical to tryVectorize's) + trailing RUN of increments; the "every
   // increment shares the IV's name" check below is tryRampMap's own residual.
@@ -127,15 +128,8 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
   const freshV128 = (tag) => { const n = `$__${tag}${freshIdRef.next++}`; extraLocals.push(['local', n, 'v128']); return n }
   const ctx = liftCtx('i32', ivName, localKind, freshIdRef, null, newLanedLocals, extraLocals, 1, null, null, ivName, true)
 
-  // A byte store fed by one value expression (inline, or via a single lane-local
-  // temp `tw = EXPR; store(addr, tw)`) carries no loop-carried state, so we can
-  // run the lane group 4× (16 samples) per iteration off four offset ramps and
-  // pack the low bytes into ONE i8x16 v128.store — amortizing store + loop
-  // overhead the way clang/zig's 16-wide NEON does. wideValueExpr is the
-  // expression to lift per offset; null (i32 stores, multi-stmt bodies, or
-  // widening loads — whose addresses would need per-offset advancing) → 4-wide.
   // The single byte-value expression feeding the store — inline, or via one lane-local
-  // temp `tw = EXPR; store(addr, tw)`. Shared by both 16-wide paths below.
+  // temp `tw = EXPR; store(addr, tw)`. The widening u8 path below lifts it in i16x8.
   const byteValueExpr = (() => {
     if (storeOp !== 'i32.store8') return null
     if (body.length === 1 && storeIdx === 0) return storeStmt[2]
@@ -257,10 +251,15 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
     }
     if (consumed.size !== body.length) return null
   } else {
-    const wideValueExpr = (!hasLoads && byteValueExpr) ? byteValueExpr : null   // pure ramp → 16-wide pack
+    // A pure ramp (no loads) storing bytes, its body lane temps feeding the store
+    // (`v1 = …; v2 = …; tw = (v1 + v2) & 255; out[i] = tw`, an inlined sample
+    // function's shape), carries no state between iterations: a trip runs the body
+    // four times off four offset ramps and packs the 16 bytes into one store,
+    // amortizing the store and the loop's overhead the way clang's 16-wide loop does.
+    const WIDE16 = !hasLoads && storeOp === 'i32.store8' && storeIdx === body.length - 1 &&
+      body.every((s, i) => i === storeIdx || (isArr(s) && s[0] === 'local.set' && s.length === 3 && localKind.get(s[1]) === 'lane'))
     const widenRange = (hasLoads && byteValueExpr) ? byteValueRange(byteValueExpr) : null
     const WIDEN16 = widenRange != null && widenRange[1] <= 255   // result fits a byte ⇒ byte-pack exact
-    const WIDE16 = wideValueExpr != null
     LANES = (WIDE16 || WIDEN16) ? 16 : 4
     const ramp = (off) => ['i32x4.add', ['i32x4.splat', ['local.get', ivName]],
       ['v128.const', 'i32x4', String(off), String(off + 1), String(off + 2), String(off + 3)]]
@@ -283,23 +282,34 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
     } else if (WIDE16) {
       lifted = []
       const vv = []
+      const g = (n) => ['local.get', n]
+      // A value every lane of which is a byte packs with two saturating narrows
+      // that change no lane (x64: packusdw, packuswb); any other keeps its low
+      // bytes by shuffles, as the scalar store8 truncates.
+      const byte = storeValueIsByte(storeStmt[2], body)
+      const half = (a, b) => byte ? ['i16x8.narrow_i32x4_u', g(a), g(b)]
+        : ['i8x16.shuffle', ...[0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0].map(String), g(a), g(b)]
+      const halves = []
       for (let j = 0; j < 4; j++) {
         const rt = freshV128('ramp')
         lifted.push(['local.set', rt, ramp(j * 4)])
         ctx.rampTemp = rt
-        const v = liftExprV(wideValueExpr, ctx)
+        for (let i = 0; i < storeIdx; i++) {
+          const r = liftStmt(body[i], ctx)
+          if (ctx.fail) return null
+          if (r != null) lifted.push(r)
+        }
+        const v = liftExprV(storeStmt[2], ctx)
         if (ctx.fail) return null
         const vn = freshV128('rampv')
         lifted.push(['local.set', vn, v])
         vv.push(vn)
+        // pack each pair as it completes: two vectors live, not four
+        if (j & 1) { const h = freshV128(j === 1 ? 'ramplo' : 'ramphi'); lifted.push(['local.set', h, half(vv[j - 1], vv[j])]); halves.push(h) }
       }
-      // Pack the low byte of all 16 i32 lanes (4 vectors) into one i8x16, in order.
-      const g = (n) => ['local.get', n]
-      const sh = (a, b, idx) => ['i8x16.shuffle', ...idx.map(String), a, b]
-      const lo = freshV128('ramplo'), hi = freshV128('ramphi')
-      lifted.push(['local.set', lo, sh(g(vv[0]), g(vv[1]), [0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0])])
-      lifted.push(['local.set', hi, sh(g(vv[2]), g(vv[3]), [0, 4, 8, 12, 16, 20, 24, 28, 0, 0, 0, 0, 0, 0, 0, 0])])
-      lifted.push(['v128.store', storeAddr, sh(g(lo), g(hi), [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23])])
+      lifted.push(['v128.store', storeAddr, byte
+        ? ['i8x16.narrow_i16x8_u', g(halves[0]), g(halves[1])]
+        : ['i8x16.shuffle', ...[0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23].map(String), g(halves[0]), g(halves[1])]])
     } else {
       ctx.rampTemp = freshV128('ramp')
       // ramp = [i, i+1, i+2, i+3], computed once per SIMD iteration.
@@ -336,6 +346,22 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef, outsideReads) {
     ...extraLocals,
   ]
   return { wrapper, newLocalDecls }
+}
+
+// Whether every value `e` takes is a byte, 0 to 255: a mask of at most eight bits,
+// a shift that leaves at most eight, a literal byte, or a lane temp `body` writes
+// once, at its top level, to such a value (a lane temp is written before it is read).
+function storeValueIsByte(e, body) {
+  if (!isArr(e)) return false
+  const byteConst = (x) => isI32Const(x) && constNum(x) >= 0 && constNum(x) <= 255
+  if (e[0] === 'i32.const') return byteConst(e)
+  if (e[0] === 'i32.and') return byteConst(e[1]) || byteConst(e[2])
+  if (e[0] === 'i32.shr_u') return isI32Const(e[2]) && (constNum(e[2]) & 31) >= 24
+  if (e[0] !== 'local.get') return false
+  let writes = 0
+  for (const s of body) walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === e[1]) writes++ } })
+  const def = body.find(s => isArr(s) && s[0] === 'local.set' && s[1] === e[1])
+  return writes === 1 && def != null && storeValueIsByte(def[2], body)
 }
 
 function buildRampStore(storeOp, addr, vval, ctx) {
