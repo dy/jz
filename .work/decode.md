@@ -258,14 +258,36 @@ indexing nothing was copied for no gain, and a stride cursor entered the copy wh
 a fractional stride had left it (`0.5 * i`), one sample off. The tokenizer case is held by the
 bench alone: no kernel of its shape reproduced the copy.
 
-Open: k7 runs 465 µs against 330 µs for the same loop by a literal stride: the monotone
-cursor proofs of the bounds checks (type/loop-versioning.js) take a literal step only.
+The decoder numbers above are of the lab's measure as it stood, which warmed four rounds:
+see "Measuring" below for what that read.
+
+## Fixed (branch perf, stride cursors)
+
+| | Change | Kernel before → after | Decoder before → after (steady state) |
+|---|---|---|---|
+| G7, rest | A monotone cursor stepped by a name the loop holds (`p += w`, the integral copy's `k = k + stride`) advances K + m·w a round: the bounds guard holds w whole and non-negative, the rounds at most 2^31, and the extent entry + (K + m·w)·rounds within the receiver (type/loop-versioning.js `cursorStrideOf`, `maxCursorAdvance`; compile/emit/control-flow.js) | `pcm.js k7` 1.53× → 1.98× (level with the literal stride `c7hs`), `c1f` → 2.13× | wav pcm16 0.88× → 1.20×, pcm24 1.36× → 1.91×, float32 1.21× → 2.09×; bench decode-wav 815–829 → 633–636 µs paired |
+
+Against main 600b39ecb, the three tables in one sitting, each case warmed a second. Of the bench
+corpus only decode-wav compiles differently. A differential run of 5040 calls (strides 0, 1, 3,
+-1, 0.5, 1e10, 2^31 ± 1, NaN, Infinity; entries 0, -1, 0.5, 39, 1e10, NaN) agrees with Node but
+for a string stride `'2'` at a numeric export parameter, the boundary divergence main shares.
+
+## Measuring
+
+`measure` (bench/_audiojs/lib.mjs) warmed `warm` rounds, four for the decoders, and took the
+minimum of at most 30: about 34 calls. V8 runs a function in its baseline tier until its
+optimizing tier has compiled it, about 2 ms a kilobyte (src/growth.js), and decode-wav is a
+160 KB module of one large function: its float32 case read 680 µs on branch perf, 240 µs once
+warm, where main read 433 / 417. A change that grows a decoder's function read slower than it
+runs, and every decoder ratio in this file before this section mixes the two tiers in a
+proportion of its own. The warm-up now runs at least a second (`warmMs`).
 
 ## Measured after branch perf (not fixed)
 
 Diagnostic copies of the packages, both engines, one process each, jz's heap reset after
 every decode as `decoders.mjs` does (without the reset jz's times grow with the heap and
-read up to 0.65 ms worse on QOA).
+read up to 0.65 ms worse on QOA). Warmed 5 decodes (QOA) or 50 (MS ADPCM), short of the
+second the lab now warms; the steady-state table agrees on both (qoa 0.85×, ms-adpcm 0.80× on main).
 
 - QOA, 4.41 against 3.88 ms (0.88×). With the sample loop run zero times (`i < n - 20`):
   0.67 / 0.36 ms; with it deleted: 0.57 / 0.31 ms; without the final join as well: 0.51 /

@@ -2164,6 +2164,9 @@ test('integral loops: a head beside its counter reads as the loop over it, a rec
   // (the one float add left is the sum of the samples)
   ok(loops.some(l => (l.match(/i32\.load8_u/g) || []).length === 3 && !/\(loop/.test(l.slice(5)) && !/trunc_sat/.test(l) && (l.match(/f64\.add/g) || []).length <= 1),
     'a sample loop steps its cursor in a word: no float step or truncation of it')
+  // (the word's stride is no literal: the bounds guard takes the cursor's extent by it, test/dyn-keys.js)
+  ok(loops.some(l => (l.match(/i32\.load8_u/g) || []).length === 3 && !/\(loop/.test(l.slice(5)) && !/i32\.(ge|lt)_u/.test(l)),
+    'a sample loop reads its three bytes unchecked')
 })
 
 // The head stays as written where the loop over its counter would change what

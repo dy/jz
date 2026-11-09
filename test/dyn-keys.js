@@ -1229,6 +1229,27 @@ test('cursor guards take the exact extent of a read before the round\'s advance'
   }
 })
 
+// A cursor stepped by a stride the loop holds (`p += w`, a record's channel count)
+// advances K + m·w a round: the guard holds w whole and non-negative and the
+// extent entry + (K + m·w)·rounds within the receiver (the reads' checks: test/integral-loops.js).
+test('cursor guards take a stride the loop holds', () => {
+  const src = `export const frames = (src, o, n) => { const a = src instanceof Uint8Array ? src : new Uint8Array(src); const w = o.w; let p = o.p, s = 0; for (let i = 0; i < n; i++) { s += a[p] + a[p + 2]; p += w } return s + p }
+    export const skip = (src, o, n) => { const a = src instanceof Float64Array ? src : new Float64Array(src); const w = o.w; let p = o.p, s = 0; for (let i = 0; i < n; i++) { if (a[p] > 9) p += w; else p++; s += a[p] } return s + p }
+    export const wrap = (a, w, n) => { let p = 0, s = 0; for (let i = 0; i < n; i++) { s += a[p]; p = (p + w) | 0 } return s }`
+  const host = oracle(src)
+  const u8 = new Uint8Array(40).map((_, i) => i * 7 % 23), f64 = new Float64Array(40).map((_, i) => i * 1.5)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const w of [0, 1, 3, -1, 0.5, 1e10, 2147483647, 2147483648, -2147483648, NaN, Infinity]) for (const n of [0, 1, 5, 20]) {
+      for (const p of [0, 1, -1, 0.5, 39, 1e10, NaN]) {
+        is(m.frames(u8, { w, p }, n), host.frames(u8, { w, p }, n), `O${optimize}: frames by ${w} from ${p}, ${n}`)
+        is(m.skip(f64, { w, p }, n), host.skip(f64, { w, p }, n), `O${optimize}: skip by ${w} from ${p}, ${n}`)
+      }
+      for (const a of [u8, f64]) is(m.wrap(a, w, n), host.wrap(a, w, n), `O${optimize}: wrap by ${w}, ${n}`)
+    }
+  }
+})
+
 test('cursor guards require an existing local whose writes stay in the body budget', () => {
   const sources = [
     ...['let', 'const'].map(decl => `function scan(a, indices, n) {

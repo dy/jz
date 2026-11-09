@@ -226,7 +226,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       if (c.range != null) { if (c.range.hiName != null) read.push(c.range.hiName) }
       // (an induction of a static entry is bounded from that entry and its slope, not read)
       else if (c.ind != null) { if (c.entryC == null) read.push(c.ind); if (typeof c.slope === 'string') read.push(c.slope) }
-      else if (c.cursor != null) read.push(c.cursor)
+      else if (c.cursor != null) { read.push(c.cursor); if (c.Kw) read.push(c.Kw) }
       else for (const t of c.slots) { if (typeof t.e === 'string') read.push(t.e); else exprNames(t.e, read) }
       return read.every(stableFor(c))
     })

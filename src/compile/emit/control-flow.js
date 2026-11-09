@@ -1148,7 +1148,7 @@ export const controlFlowOps = {
               continue
             }
             if (c.cursor != null) {
-              const key = c.recv + '\x00' + c.cursor + '\x00' + c.K
+              const key = c.recv + '\x00' + c.cursor + '\x00' + c.K + '\x00' + (c.Kw ? c.Km + '*' + c.Kw : '')
               const g = cursorGroups.get(key)
               if (!g) cursorGroups.set(key, { ...c, minC: c.cConst, maxC: c.cConst, anyPost: !!c.post })
               else { g.minC = Math.min(g.minC, c.cConst); g.maxC = Math.max(g.maxC, c.cConst); if (c.post) g.anyPost = true }
@@ -1171,7 +1171,15 @@ export const controlFlowOps = {
             const gone = ['i64.sub', ['local.get', `$${info.maxIv}`], info.entryIR()]
             const rounds = g.anyPost ? ['i64.add', gone, i64c(1)] : gone
             const lo = g.minC < 0 ? ['i64.add', entry, i64c(g.minC)] : entry
-            let hi = ['i64.add', entry, ['i64.mul', i64c(g.K), rounds]]
+            // (a step by a stride: K + m·w a round, w a whole number at most 2^31 the guard holds
+            // non-negative, the rounds at most 2^31, so the extent stays within an i64)
+            let per = i64c(g.K)
+            if (g.Kw) {
+              const w = slotI64(g.Kw, exprType(g.Kw, ctx.func.locals) === 'i32' ? 'i32' : 'f64')
+              conjs.push(['i64.ge_s', w, i64c(0)], ['i64.le_s', rounds, i64c(2147483648)])
+              per = ['i64.add', per, g.Km === 1 ? w : ['i64.mul', i64c(g.Km), w]]
+            }
+            let hi = ['i64.add', entry, ['i64.mul', per, rounds]]
             if (g.maxC) hi = ['i64.add', hi, i64c(g.maxC)]
             conjs.push(['i64.ge_s', lo, i64c(0)], ['i64.lt_s', hi, len64Of(g.recv)])
           }
