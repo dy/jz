@@ -415,6 +415,64 @@ test('compact: a stub log too small for the call declines compaction, never corr
   ok(small.memory.buffer.byteLength >= wide.memory.buffer.byteLength, `the declined loop kept more (${small.memory.buffer.byteLength >> 20} vs ${wide.memory.buffer.byteLength >> 20} MB)`)
 })
 
+// A compaction closes the stub log up over the entries its move left dead (a
+// stub at or above its floor, a chain ending in a block it freed). Kept whole,
+// the log filled with the stubs of every temporary the loop's arrays left as
+// they grew, about ten thousand a window here, and the first stub of `keep`,
+// older than the loop, found it full: the loop declined every compaction after
+// it, from the sixth window on, and peaked at 204 MB.
+test('compact: a compaction drops the stubs its move left dead from the log, and the loop keeps compacting', () => {
+  if (onWasi() || !counted()) return
+  const src = `export const f = (n) => {
+      const keep = []
+      let t = 0
+      for (let i = 0; i < n; i++) {
+        const a = [], b = []
+        for (let j = 0; j < 20; j++) { a.push(j); b.push(i) }
+        t += a[19] + b[0]
+        if (i % 20000 == 0) keep.push(i)
+      }
+      return t + keep.length + keep[keep.length - 1]
+    }`
+  const want = oracle(src), { exports, memory } = jz(src)
+  is(exports.f(200000), want.f(200000), 'f(200000)')
+  ok(memory.buffer.byteLength <= 16 * 1024 * 1024, `200000 rounds stay within 16 MB (${memory.buffer.byteLength >> 10} KB)`)
+})
+
+// A log too small for a window loses stubs, and a compaction whose floor lies
+// above one it lost declines (`__gc_begin`); one whose floor lies at or below
+// every lost stub needs none of them and makes the log whole again. Here the
+// inner loop's walks decline, each round's array older than it, and the outer
+// loop's walk, below every round, runs: the log full from the first round
+// declined every compaction of the call and kept 64 MB.
+test('compact: a full stub log declines a compaction above a stub it lost, not every one after', () => {
+  if (onWasi() || !counted()) return
+  const src = `let state = []
+    const work = (n) => { state = []; for (let i = 0; i < n; i++) state.push([i, i + 1]); return state.length }
+    export const f = (rounds) => { let t = 0; for (let r = 0; r < rounds; r++) t += work(4000) + state[r % 4000][1]; return t }`
+  const want = oracle(src), { exports, memory } = jz(src, { optimize: { compactStubs: 4 } })
+  is(exports.f(300), want.f(300), 'f(300)')
+  ok(memory.buffer.byteLength <= 16 * 1024 * 1024, `300 rounds through a log of four stay within 16 MB (${memory.buffer.byteLength >> 10} KB)`)
+})
+
+// A stub whose chain ends below the floor stays logged though the walk did not
+// reach its block: a frame outside the site may hold the block (grow's `p`,
+// rebound to the new storage as it grew) and another the stub (f's `x`, the
+// array's first address). churn's walks see neither; grow's next walk reaches
+// the block through `p`, moves it, and must rewrite the stub `x` reads through.
+// Recursion keeps the three frames apart.
+test('compact: a stub whose chain ends below the floor stays logged, reached or not', () => {
+  if (onWasi() || !counted()) return
+  const src = `const churn = (n, d) => { if (d > 0) return churn(n, d - 1); let s = ''; for (let i = 0; i < n; i++) s = (i % 10) + s; return s.length }
+    const grow = (p, rounds, n, d) => { if (d > 0) return grow(p, rounds, n, d - 1); let t = 0; for (let r = 0; r < rounds; r++) { for (let k = 0; k < 50; k++) p.push(r * 50 + k); t += churn(n, 1) } return t }
+    export const f = (n) => { const x = [1]; const t = grow(x, 6, n, 1); let s = 0; for (const v of x) s += v; return s + t + x.length }`
+  const want = oracle(src)
+  for (const optimize of levels(2, 'speed')) {
+    const { exports } = jz(src, { optimize })
+    for (const n of [7, 60000]) is(exports.f(n), want.f(n), `${optimize}: f(${n})`)
+  }
+})
+
 test('compact: a loop compacts before the memory\'s cap, not only at its amortized trigger', () => {
   if (onWasi() || !counted()) return
   // 20 MB kept beside the loop: the amortizing trigger (twice the walk plus

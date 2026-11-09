@@ -151,6 +151,7 @@ export function releaseSection(root, { releasable, flagged: conditional, rewound
       if (declared.has('$__root_reset')) push(then, get('call', '$__root_reset'))
       if (declared.has('$__esc_low')) { const clear = node(intern('i32.const')); push(clear, num(-1)); push(then, set('global.set', '$__esc_low', clear)) }
       if (declared.has('$__stubn')) { const zero = node(intern('i32.const')); push(zero, num(0)); push(then, set('global.set', '$__stubn', zero)) }
+      if (declared.has('$__stub_lost')) { const none = node(intern('i32.const')); push(none, num(-1)); push(then, set('global.set', '$__stub_lost', none)) }
       if (declared.has('$__ibase')) { const zero = node(intern('i32.const')); push(zero, num(0)); push(then, set('global.set', '$__ibase', zero)) }
     }
     push(f, set('global.set', '$__base', get('local.get', '$mark')))

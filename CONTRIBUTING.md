@@ -2948,8 +2948,23 @@ its forward to be rewritten (KIND_STUB); one whose chain ends in a block
 nothing reached names garbage and is left, where keeping it would hold every
 container that grew and died until the call returned (a parser's run at 196
 MB instead of 128). `__gc_move` forwards the logged boxes while the chains
-stand. A log that overflowed declines every loop compaction until the next
-outermost call; the host's compaction, with no frame suspended, empties it.
+stand and closes the log up over the entries the move leaves dead: a stub at
+or above the floor (every pointer to it the walk could see collapsed, and no
+frame outside the site names memory made after the floor), one no longer a
+stub forwarding where logged, one whose chain ends above the floor in a block
+the walk did not reach (freed by the move). A chain that ends below the floor
+stays logged, reached or not: a frame outside the site may hold its block
+(the grown array a caller's local was rebound to) and another its stub, and a
+later walk from a lower floor, reaching the block through roots this one did
+not have, moves it and must rewrite the stub. Kept whole, the log filled with
+the dead across a call's compactions: a loop growing fresh temporaries left
+it full in a few windows, its next growth of an older container went
+unlogged, and the loop declined every walk after (a 200,000-round loop at
+204 MB, now 4.3 MB). A full log keeps the lowest address of a stub it could
+not take (`__stub_lost`): a compaction whose floor lies above it declines, one
+whose floor lies at or below it runs, needing no entry of a stub above its
+floor, and its move makes the log whole again; an outermost call's start and
+the host's compaction, with no frame suspended, empty it.
 `test/compact.js` runs the caller's array, Map and object-field aliases and
 a closure's captured array through a callee's compacting loop under
 poisoning, and an overflowing log beside a wide one. A pointer to a relocation stub resolves

@@ -284,13 +284,16 @@ export const registerCompact = () => {
   // A stub a block left as it grew (module/array.js relocateWat, the
   // collections' growth): logged for a loop's compaction, which rewrites the
   // forward of one below its floor and keeps what it names, for the caller's
-  // local that may still name the stub; one above the floor it skips. The
-  // log overflowing declines every compaction until the next outermost call.
+  // local that may still name the stub; one above the floor it skips. A full
+  // log keeps the lowest address it could not take (`__stub_lost`): a
+  // compaction whose floor lies above it declines (`__gc_begin`), one whose
+  // floor lies at or below it runs, needing no entry of a stub above its
+  // floor, and its move makes the log whole again.
   ctx.core.stdlib['__gc_stub'] = `(func $__gc_stub (param $off i32) (param $box i64)
     (local $n i32) (local $at i32)
     (local.set $n (global.get $__stubn))
-    (if (i32.lt_s (local.get $n) (i32.const 0)) (then (return)))
-    (if (i32.ge_u (local.get $n) (i32.const ${stubEntries()})) (then (global.set $__stubn (i32.const -1)) (return)))
+    (if (i32.ge_u (local.get $n) (i32.const ${stubEntries()}))
+      (then (if (i32.lt_u (local.get $off) (global.get $__stub_lost)) (then (global.set $__stub_lost (local.get $off)))) (return)))
     (local.set $at (i32.add (global.get $__stubs) (i32.shl (local.get $n) (i32.const 4))))
     (i32.store (local.get $at) (local.get $off))
     (i64.store offset=8 (local.get $at) (local.get $box))
@@ -987,8 +990,8 @@ export const registerCompact = () => {
     (if (i32.lt_u (local.get $floor) (global.get $__pin)) (then (local.set $floor (global.get $__pin))))
     (local.set $floor (i32.and (i32.add (local.get $floor) (i32.const 7)) (i32.const -8)))
     (if (i32.ge_u (local.get $floor) (local.get $top)) (then ${DBG_GC ? '(global.set $__g_no_floor (i32.add (global.get $__g_no_floor) (i32.const 1)))' : ''} (return (i32.const 0))))
-    ${has('__stubn') ? `;; a stub log that overflowed: a caller's local may name a stub this compaction would not rewrite
-    (if (i32.lt_s (global.get $__stubn) (i32.const 0)) (then ${DBG_GC ? '(global.set $__g_no_stub (i32.add (global.get $__g_no_stub) (i32.const 1)))' : ''} (return (i32.const 0))))` : ''}
+    ${has('__stubn') ? `;; a stub the full log could not take below the floor: a caller's local may name it, and this compaction would not rewrite it
+    (if (i32.gt_u (local.get $floor) (global.get $__stub_lost)) (then ${DBG_GC ? '(global.set $__g_no_stub (i32.add (global.get $__g_no_stub) (i32.const 1)))' : ''} (return (i32.const 0))))` : ''}
     (global.set $__g_floor (local.get $floor))
     (global.set $__g_top (local.get $top))
     ;; the static data's end, which the heap starts past (HEAP.START where the data is shorter)
@@ -1145,18 +1148,41 @@ export const registerCompact = () => {
   ctx.core.stdlib['__gc_move'] = () => {
     const { resets, rehash } = endParts()
     return `(func $__gc_move (result i32)
-    (local $top i32) (local $floor i32) (local $i i32) (local $at i32) (local $t i32) (local $bits i64) (local $run i32) (local $dst i32) (local $w i32)
+    (local $top i32) (local $floor i32) (local $i i32) (local $at i32) (local $t i32) (local $bits i64) (local $run i32) (local $dst i32) (local $w i32) (local $j i32)
     (local.set $top (global.get $__g_top))
     (local.set $floor (global.get $__g_floor))
     (if (global.get $__g_fail) (then (return (local.get $top))))
-    ${has('__stubn') ? `;; the stub log's boxes, forwarded while the chains still stand
+    ${has('__stubn') ? `;; the stub log's boxes, forwarded while the chains still stand, and the log
+    ;; closed up over the entries this move leaves dead: a stub at or above the
+    ;; floor (every pointer to it the walk could see collapsed, and no frame
+    ;; suspended outside the site can name memory made after the floor), one no
+    ;; longer forwarding where logged, one whose chain ends above the floor in a
+    ;; block nothing reached (freed by the move). A chain that ends below the floor
+    ;; stays logged, reached or not: a later walk from a lower floor may reach
+    ;; its block through roots this one does not have. A log kept whole filled
+    ;; with the dead across a call's compactions and, full, declined every one
+    ;; after (\`__gc_begin\`).
     (local.set $i (i32.const 0))
+    (local.set $j (i32.const 0))
     (block $logged (loop $entry
       (br_if $logged (i32.ge_s (local.get $i) (global.get $__stubn)))
       (local.set $at (i32.add (global.get $__stubs) (i32.shl (local.get $i) (i32.const 4))))
-      (i64.store offset=8 (local.get $at) (call $__gc_fwd (i64.load offset=8 (local.get $at))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
-      (br $entry)))` : ''}
+      (local.set $t (i32.load (local.get $at)))
+      (br_if $entry (i32.or (i32.lt_u (local.get $t) (i32.add (global.get $__g_lo) (i32.const 16))) (i32.ge_u (local.get $t) (local.get $floor))))
+      (br_if $entry (i32.ne (i32.load (i32.sub (local.get $t) (i32.const 4))) (i32.const -1)))
+      (br_if $entry (i32.ne (i32.load (i32.sub (local.get $t) (i32.const 8))) (i32.wrap_i64 (i64.load offset=8 (local.get $at)))))
+      (local.set $dst (call $__gc_canon (local.get $t) (i32.const ${PTR.ARRAY})))
+      (if (i32.ge_u (local.get $dst) (local.get $floor))
+        (then (br_if $entry (i32.or (i32.gt_u (local.get $dst) (local.get $top)) (i32.eqz (call $__gc_was (local.get $dst)))))))
+      (local.set $w (i32.add (global.get $__stubs) (i32.shl (local.get $j) (i32.const 4))))
+      (i64.store offset=8 (local.get $w) (call $__gc_fwd (i64.load offset=8 (local.get $at))))
+      (i32.store (local.get $w) (local.get $t))
+      (local.set $j (i32.add (local.get $j) (i32.const 1)))
+      (br $entry)))
+    (global.set $__stubn (local.get $j))
+    ;; and every stub the full log lost lay at or above the floor (\`__gc_begin\`): the log is whole again
+    (global.set $__stub_lost (i32.const -1))` : ''}
     ;; the stubs' forwards, each once, now that every pointer forwarded through the chains as they stood
     (block $written (loop $pair
       (br_if $written (i32.ge_u (global.get $__g_sp) (global.get $__g_lim)))
@@ -1204,7 +1230,7 @@ export const registerCompact = () => {
 
   // The host's compaction, as the outermost call returns: no roots but the module's.
   ctx.core.stdlib['__compact'] = () => `(func $__compact (export "__jz_compact") (param $floor i32) (result i32)
-    ${has('__stubn') ? '(global.set $__stubn (i32.const 0))' : ''}
+    ${has('__stubn') ? '(global.set $__stubn (i32.const 0)) (global.set $__stub_lost (i32.const -1))' : ''}
     (if (i32.eqz (call $__gc_begin (local.get $floor))) (then (return (global.get $__heap))))
     (call $__gc_walk)
     (call $__gc_move))`
@@ -1240,6 +1266,6 @@ export const COMPACT_DEPS = {
   __gc_begin: ['__gc_room', '__gc_roots'],
   __gc_walk: ['__gc_mark', '__gc_update', '__gc_fwd_raw', '__gc_roots', '__gc_was', '__gc_canon', '__gc_seen', '__gc_list'],
   __gc_was: [],
-  __gc_move: () => ['__gc_fwd', ...(ctx.linkDemand.set || ctx.linkDemand.map ? ['__gc_rehash_ord'] : [])],
+  __gc_move: () => ['__gc_fwd', '__gc_was', '__gc_canon', ...(ctx.linkDemand.set || ctx.linkDemand.map ? ['__gc_rehash_ord'] : [])],
   __compact: ['__gc_begin', '__gc_walk', '__gc_move'],
 }

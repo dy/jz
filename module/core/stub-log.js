@@ -28,9 +28,11 @@ export const stubEntries = () => {
   return max ? Math.max(16, Math.min(asked, max >> 8)) : asked
 }
 export const stubLogBytes = () => stubEntries() * 16
-/** The globals of a module whose loops compact: the stub log's table and
- *  count (all ones once it overflowed: no loop compacts until the next
- *  outermost call). */
+/** The globals of a module whose loops compact: the stub log's table, its
+ *  count, and the lowest address of a stub the full log could not take (all
+ *  ones while it took every one): a compaction whose floor lies above it
+ *  declines, one at or below it runs, every stub it lost lying above its
+ *  floor, and the log is whole again after its move. */
 /** The host's pin, declared with the kernels (wat/assemble/stdlib-pull.js): the
  *  end of the highest block the host holds by address (a view of the module's
  *  memory, a closure, storage it made). No compaction moves memory below it;
@@ -67,6 +69,7 @@ export const declareSites = () => {
   if (ctx.scope.globals.has('__stubn')) return
   const dbg = typeof process !== 'undefined' && process.env?.JZ_DEBUG_GC === '1'
   for (const g of ['__stubs', '__stubn']) declGlobal(g, 'i32', 0, dbg ? { export: g } : undefined)
+  declGlobal('__stub_lost', 'i32', -1, dbg ? { export: '__stub_lost' } : undefined)
 }
 /** A growth helper's log of the stub it leaves at `off`, forwarding to `newOff`. */
 export const stubLogIR = (off, newOff, tag) => sitesOn()
