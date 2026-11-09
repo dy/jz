@@ -45,9 +45,10 @@ export const loopBodyOps = (tree, entered) => {
 // ignoring arbitrary fallback arms. Total loop cost remains independently capped.
 // `calls` are [export, args] pairs, run in order on one instance: the result is
 // the loops entered at instantiation, and for each call the loops it entered
-// (with the reset after it) and what it returned.
+// (with the reset after it) and what it returned. Each is a Map from the loop to
+// the times its head ran: once for a loop that tests at its head and runs no trip.
 export const runEntered = (tree, calls) => {
-  const loops = [], start = new Set(), runs = []
+  const loops = [], start = new Map(), runs = []
   let cur = start
   const walk = n => {
     if (!Array.isArray(n)) return
@@ -65,10 +66,10 @@ export const runEntered = (tree, calls) => {
   let binary
   try { binary = encodeWat(tree) }
   finally { tree.splice(1, 1); for (const [loop, body] of loops) loop.splice(body, 1) }
-  const imports = { ratchet: { enter: id => cur.add(loops[id][0]) } }
+  const imports = { ratchet: { enter: id => cur.set(loops[id][0], (cur.get(loops[id][0]) ?? 0) + 1) } }
   const each = (exports, reset) => {
     for (const [name, args] of calls) {
-      cur = new Set()
+      cur = new Map()
       runs.push({ loops: cur, ret: exports[name](...args) })
       reset?.()
     }
@@ -87,7 +88,7 @@ export const runEntered = (tree, calls) => {
 // The ops of the loops any of `calls` (argument lists of `f`) entered.
 export const enteredLoopOps = (tree, calls) => {
   const { start, runs } = runEntered(tree, calls.map(args => ['f', args]))
-  return loopBodyOps(tree, new Set([...start, ...runs.flatMap(r => [...r.loops])]))
+  return loopBodyOps(tree, new Set([...start.keys(), ...runs.flatMap(r => [...r.loops.keys()])]))
 }
 
 // Correct Number counters need a guarded integer loop plus a full-Number

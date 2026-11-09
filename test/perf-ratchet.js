@@ -307,6 +307,12 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 //            30800 -> 30784), no program loop among them. What they buy, jz against the tree
 //            before them (a9fd0e1a0, speed tier, 7 interleaved rounds, M4 Max at load ~13):
 //            mapstr 0.39x, setops 0.39x, mapobj 0.49x, mapint 0.52x.
+//   f07a4a11d (2026-11-09) `__gc_move` drops the dead stubs from the log as it forwards them
+//            (module/core/compact.js): 56 loop instructions in each of the 8 slice programs
+//            that link it (seeds 8-10, 19-21, 31, 32), slice +448; the calls enter none of them.
+//   the check made an equality, one baseline per host (2026-11-09): the JS entry takes this
+//            tree's counts, which had fallen below the cap: float 1548/784 -> 1372/608, mixed
+//            2341/1137 -> 2264/1060, slice entered 30784 -> 30656.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
@@ -325,24 +331,31 @@ const measure = (categories = Object.keys(CATEGORIES)) => {
   return totals
 }
 
+// The counts are the running host's, one baseline each: a wasi module links no
+// compaction kernel and no reset slot log (`__compact`, `__gc_*`,
+// `__durable_slot_*`) and its loops carry no compaction site (slice seed 8's
+// `f$exp`: 5 sites and 2 end gates on the JS host, none on wasi), so buf, slice
+// and condref count fewer loop ops there. `--update` rewrites the running host's
+// entry alone.
+const HOST = onWasi() ? 'wasi' : 'js'
+const UPDATE = `node test/perf-ratchet.js --update${HOST === 'wasi' ? ' under JZ_TEST_HOST=wasi' : ''}`
+const pair = v => typeof v === 'number' ? [v] : [v.total, v.entered]
 if (process.argv.includes('--update')) {
-  const totals = measure()
-  writeFileSync(BASELINE, JSON.stringify(totals, null, 2) + '\n')
-  console.log('updated perf-ratchet baseline:', totals)
-} else {
-  // The baseline is the JS host's. Under wasi the export wrapper carries the
-  // argument conversion loops the JS bridge performs outside the module
-  // (condref's `$f$exp`: 838 loop-body ops against 358), so the counts are
-  // host-specific there and the gate holds on the JS host alone.
   const base = JSON.parse(readFileSync(BASELINE, 'utf8'))
+  base[HOST] = measure()
+  writeFileSync(BASELINE, JSON.stringify(base, null, 2) + '\n')
+  console.log(`updated perf-ratchet ${HOST} baseline:`, base[HOST])
+} else {
+  const base = JSON.parse(readFileSync(BASELINE, 'utf8'))[HOST]
   for (const cat of Object.keys(base)) {
-    test(`perf-ratchet: ${cat} loop-body op count ≤ baseline (machine-independent codegen gate)`, () => {
-      if (onWasi()) return
-      const count = measure([cat])[cat]
-      const limit = base[cat]
-      ok(typeof limit === 'number' ? count <= limit : count.total <= limit.total && count.entered <= limit.entered,
-        `${cat}: ${JSON.stringify(count)} loop-body ops exceed baseline ${JSON.stringify(limit)} — a codegen regression ` +
-        `(a hot-loop optimization stopped firing?). If intentional, justify and re-baseline: node test/perf-ratchet.js --update`)
+    test(`perf-ratchet: ${cat} loop-body op count = the ${HOST} baseline (machine-independent codegen gate)`, () => {
+      const count = measure([cat])[cat], limit = base[cat]
+      const got = pair(count), want = pair(limit)
+      const above = got.some((n, i) => n > want[i]), equal = got.every((n, i) => n === want[i])
+      ok(equal, equal ? `${cat} = ${JSON.stringify(limit)}`
+        : above ? `${cat}: ${JSON.stringify(count)} loop-body ops exceed the ${HOST} baseline ${JSON.stringify(limit)} — a codegen regression ` +
+          `(a hot-loop optimization stopped firing?). If intentional, justify and re-baseline: ${UPDATE}`
+        : `${cat}: ${JSON.stringify(count)} loop-body ops are below the ${HOST} baseline ${JSON.stringify(limit)}: the count improved; lock it in: ${UPDATE}`)
     })
   }
 }

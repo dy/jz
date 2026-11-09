@@ -9,15 +9,17 @@
 //      any is, and among those of its status enters, call by call, the fewest
 //      loop-body ops (test/_loop-ops.js). A spelling not vectorized where another
 //      is falls short by `simd: 'lost'`; one of the best's status by `ops`, its
-//      ops past each call's fewest, summed over the calls.
+//      ops past each call's fewest, summed over the calls that do work.
 // (a) is correctness: a difference is a miscompile or a spelling of other work,
 // never listed. A shortfall of today is listed in test/spellings.json, the
 // default style and a kernel's first spelling among the others. A cell fails on
 // a gap not listed, on more ops than listed, and on a listed gap it no longer
 // has, so the list only shrinks. Rewrite it with `node test/spellings.js --update`.
-// A loop counts once a call enters it, whatever its trips: a call that runs no
-// iteration still counts the loop whose head test it ran, where a spelling that
-// tests before the loop (the guarded do-while) enters none.
+// A call in which no spelling runs a trip (no loop head runs twice) is left out
+// of (b) and kept in (a): a static count charges a zero-trip loop its whole body,
+// where the call ran its head test once, and charges the guarded do-while, which
+// tests before its loop, nothing.
+// The table is the JS host's: under wasi the tests return.
 import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { readFileSync, writeFileSync } from 'fs'
@@ -116,13 +118,15 @@ const hasSimd = (tree, entry) => tree.some(n => Array.isArray(n) && n[0] === 'fu
   (n[1] === '$' + entry || String(n[1]).startsWith(`$${entry}$`)) && SIMD.test(JSON.stringify(n)))
 
 // A program at a level: what each call answers, the ops of the loops entered
-// at instantiation and by each call, and whether the entry holds a SIMD op.
+// at instantiation and by each call, whether each ran a trip, and whether the
+// entry holds a SIMD op.
 const measure = (src, level, calls, entry) => {
   const tree = parseWat(compile(src, { optimize: level, wat: true }))
-  const { start, runs } = runEntered(tree, calls)
+  const { start, runs } = runEntered(tree, calls), entered = [start, ...runs.map(r => r.loops)]
   return {
     out: runs.map((r, i) => answer(r.ret, calls[i][1])),
-    ops: [start, ...runs.map(r => r.loops)].map(s => loopBodyOps(tree, s)),
+    ops: entered.map(m => loopBodyOps(tree, m)),
+    trips: entered.map(m => [...m.values()].some(heads => heads > 1)),
     simd: hasSimd(tree, entry),
   }
 }
@@ -141,9 +145,10 @@ const sweep = (prefix, programs, calls, entry, level) => {
   for (const m of ms.slice(1)) if (!same(m.out, ms[0].out)) bad.push(`${key(m.name)}: jz ${show(m.out)}, the default ${show(ms[0].out)}\n  ${m.src}`)
   const simd = ms.some(m => m.simd), peers = ms.filter(m => m.simd === simd)
   const least = peers[0].ops.map((_, c) => Math.min(...peers.map(m => m.ops[c])))
+  const work = least.map((_, c) => ms.some(m => m.trips[c]))
   const gaps = {}
   for (const m of ms) {
-    const ops = m.ops.reduce((s, n, c) => s + n - least[c], 0)
+    const ops = m.ops.reduce((s, n, c) => work[c] ? s + n - least[c] : s, 0)
     if (m.simd !== simd) gaps[key(m.name)] = { simd: 'lost' }
     else if (ops) gaps[key(m.name)] = { ops }
   }
@@ -187,6 +192,7 @@ const GROUPS = [
 ]
 
 if (process.argv.includes('--update')) {
+  if (onWasi()) throw new Error('spellings: the table is the JS host\'s; run --update without JZ_TEST_HOST=wasi')
   const known = {}, bad = []
   for (const [, , run] of GROUPS) for (const level of LEVELS) {
     const r = run(level)
@@ -204,7 +210,7 @@ if (process.argv.includes('--update')) {
   })
   for (const [name, prefix, run] of GROUPS) for (const level of LEVELS) {
     test(`spellings: ${name} at ${level === 2 ? 'level 2' : level} answers what the default does and compiles as well as the best spelling`, () => {
-      if (onWasi()) return   // the counts are the JS host's, as perf-ratchet's are
+      if (onWasi()) return
       const { bad, gaps } = run(level)
       ok(!bad.length, bad.length ? `answers differ, a miscompile or a spelling of other work:\n${bad.join('\n')}` : 'every spelling answers what the default and Node answer')
       const keys = cells().filter(k => k.startsWith(prefix) && k.endsWith(`/${level}`))
