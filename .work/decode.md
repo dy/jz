@@ -241,3 +241,190 @@ hangs on main 22ef18e30 (the nest's runs 17.9 s there, 2.6 s here).
   (depth 6 1.5 s, 7 6.4 s, 8 35.5 s to compile). Past a budget per node, a loop a discovery
   pass reaches takes the plain fixpoint (type/interval-proof.js, optimize/word-ranges.js):
   8 deep 3.7 s; depth ≤ 7 and watr compile to the same wasm. test/interval-proof.js.
+
+## Fixed (branch perf)
+
+| | Change | Kernel before → after | Decoder before → after |
+|---|---|---|---|
+| G7, G2 | A `for` head declaring a name beside its counter reads as the loop over the counter, the other names declared before it and their steps at the body's end, where the head's other names are stepped in its update or written in its body (`k += nCh * 3`, CAF's `off` stepped by an inner loop); a head whose other names are only read keeps its form. A cursor indexing the loop stepped by an integral expression of stable names (`k += nCh * 3`, a record's channel count) is a cursor word: the guard tests the stride a non-negative int32 and the cursor's entry an integer, the copy steps by a word of the stride read once (plan/integral-loops.js `canonicalHead`, `strideOf`) | `pcm.js k7` 0.69× → 1.53×, `c1f` 0.72× → 1.20–1.34×, `c7s` → 1.92–2.05× (level with `c7hs`) | wav pcm24 0.65× → 1.37–1.42×, float32 0.73× → 1.20–1.35×, caf pcm16 1.14× → 1.59–1.62×, caf float32 0.93× → 1.30× |
+
+Against main 4ce86036d, load 10–30; the decoder rows are full-table and single-case runs.
+Of the bench corpus, decode-wav (873 → 815 µs) and decode-dsd (level) compile differently.
+Caught by the corpus on the way and fixed before keeping: the rewrite took the lowering's
+own string-scan head (`min(len, src.length), i = 0`) and copied the loop, tokenizer 44 →
+67 µs; and `phase = 1.0; phase += o.up / o.dn` read as an integer cursor whose guard failed
+every run, resample 1.13 → 1.33 ms. And by the suite: a stride accumulator (`s += step`)
+indexing nothing was copied for no gain, and a stride cursor entered the copy where a run of
+a fractional stride had left it (`0.5 * i`), one sample off. The tokenizer case is held by the
+bench alone: no kernel of its shape reproduced the copy.
+
+The decoder numbers above are of the lab's measure as it stood, which warmed four rounds:
+see "Measuring" below for what that read.
+
+## Fixed (branch perf, stride cursors)
+
+| | Change | Kernel before → after | Decoder before → after (steady state) |
+|---|---|---|---|
+| G7, rest | A monotone cursor stepped by a name the loop holds (`p += w`, the integral copy's `k = k + stride`) advances K + m·w a round: the bounds guard holds w whole and non-negative, the rounds at most 2^31, and the extent entry + (K + m·w)·rounds within the receiver (type/loop-versioning.js `cursorStrideOf`, `maxCursorAdvance`; compile/emit/control-flow.js) | `pcm.js k7` 1.53× → 1.98× (level with the literal stride `c7hs`), `c1f` → 2.13× | wav pcm16 0.88× → 1.20×, pcm24 1.36× → 1.91×, float32 1.21× → 2.09×; bench decode-wav 815–829 → 633–636 µs paired |
+
+Against main 600b39ecb, the three tables in one sitting, each case warmed a second. Of the bench
+corpus only decode-wav compiles differently. A differential run of 5040 calls (strides 0, 1, 3,
+-1, 0.5, 1e10, 2^31 ± 1, NaN, Infinity; entries 0, -1, 0.5, 39, 1e10, NaN) agrees with Node but
+for a string stride `'2'` at a numeric export parameter, the boundary divergence main shares.
+
+## Measuring
+
+`measure` (bench/_audiojs/lib.mjs) warmed `warm` rounds, four for the decoders, and took the
+minimum of at most 30: about 34 calls. V8 runs a function in its baseline tier until its
+optimizing tier has compiled it, about 2 ms a kilobyte (src/growth.js), and decode-wav is a
+160 KB module of one large function: its float32 case read 680 µs on branch perf, 240 µs once
+warm, where main read 433 / 417. A change that grows a decoder's function read slower than it
+runs, and every decoder ratio in this file before this section mixes the two tiers in a
+proportion of its own. The warm-up now runs at least a second (`warmMs`).
+
+## Measured after branch perf (not fixed)
+
+Diagnostic copies of the packages, both engines, one process each, jz's heap reset after
+every decode as `decoders.mjs` does (without the reset jz's times grow with the heap and
+read up to 0.65 ms worse on QOA). Warmed 5 decodes (QOA) or 50 (MS ADPCM), short of the
+second the lab now warms; the steady-state table agrees on both (qoa 0.85×, ms-adpcm 0.80× on main).
+
+- QOA, 4.41 against 3.88 ms (0.88×). With the sample loop run zero times (`i < n - 20`):
+  0.67 / 0.36 ms; with it deleted: 0.57 / 0.31 ms; without the final join as well: 0.51 /
+  0.21 ms; without the slices: 0.15 / 0.15 ms. So: the sample loop +0.22 ms (its fast copy
+  is all words: no cold arm runs under `coldTrap`), the slice prologue +0.3 ms over 44,100
+  slice-channels, frame setup and the join level. The prologue's parts, none above ~0.1 ms:
+  the sample loop's entry guard (eight separate length conjuncts for `weights[0..3]`,
+  `history[0..3]`, where one per receiver holds them), two `__dv_index` calls on an f64
+  offset (`channels = b[p]` is a byte or undefined, `p` an f64 frame offset `p += size`
+  under `p + size > buf.length → break`), a region check, `channelData[c]` through
+  `__arr_value`, the destructure's nullish test. K1 (`table-rows.js plain` 1.02×) and K2
+  (`clamp-acc.js`: the sum is an i64 word, no f64 left) no longer carry QOA's gap.
+- MS ADPCM: the sample loop is the gap (148 / 105 µs; 6 / 3 µs without it), and a file of
+  `decodeMsWav` with the package's own header scan reproduces it (147 / 106 µs). `pcm.js
+  k6` does not measure it: alone in a file it runs 1.72× on main; beside the other kernels
+  of pcm.js, one of which hands COEFS's cell to the host (`hostArrays`, `retainedArrays`),
+  every row read in the module goes through the keyed dispatch, 0.64×. Ruled out: the
+  table (`MS_DEFAULT_COEFS` for the record's pushed rows), the block header reads, the
+  record's `samplesPerBlock` (`| 0`), hoisting `ch[0]`, `ch[1]`, the other codecs' paths,
+  the walk budgets of word-ranges and interval-proof. Its `pr` is f64 where k6's is an i64
+  word; masking `nib &= 15` in `expand` makes it a word and the decode slower (182 µs).
+  Diagnosed and fixed below (growth).
+- A row read by a key that is a Number or undefined (`coefs[predIdx[c]]`, an Int32Array
+  element at an index that may miss) takes the keyed dispatch, about 1,500 lines of inlined
+  property lookup, where on an array with no numeric property and none named "undefined"
+  the read is undefined or the read by the Number. Tried: a minimal kernel's function went
+  1,662 → 189 lines; decode-wav's MS loop the same speed, its WAT 460 lines larger. Not kept.
+
+## Fixed (branch perf, growth)
+
+MS ADPCM's loop as written runs at 95 µs, ahead of V8's 105, with the integral versions off
+(`versionIntegralLoops: false`): its fast copy is the specializer's (optimize/specialize.js),
+whose element reads hit, so `pr` is an i64 word. With the integral versions on, `decodeMsWav`
+grows past `IR_FULL` (room -3587), and past it the specializer copies kernel loops alone:
+the MS loops call `__throw_property_nullish`, a kernel call, and `__ptr_offset_fwd`, which
+was not one, so they stayed as written, every read checked and `pr` an f64.
+
+| | Change | Decoder before → after (steady state) |
+|---|---|---|
+| growth | The chase of a moved array's forwarding is a kernel's call (src/growth.js `kernelCall`): a loop takes it only where a header test says its array moved, and spends no round in it; the call only reads | wav ima-adpcm 0.96× → 1.24×, ms-adpcm 0.81× → 1.19× |
+
+decode-wav's wasm 158 → 174 KB and decode-aiff's 173 → 185 KB (aiff no faster); the bench's
+decode-wav case (16-bit) runs as before (646–656 µs against 649–655 paired). Of the bench corpus
+only decode-wav compiles differently; tta, qoa and caf compile to the same wasm.
+
+## Measured: TTA (not fixed)
+
+16-bit, steady state on main fb5705166: jz 13.06 ms, V8 11.40 (0.87×). By function (names on):
+`decodeValue` 38%, the bit reader's `unary` closure 24%, `decodeFrame` 5%. `unary` calls
+`bit()` through the closure ABI for every bit (six arguments, an f64 result tested for
+truthiness), its counter a guarded i64; `bit` reads `n` as an f64 cell (`if (!n)` a NaN-aware
+test, `n--` an f64 store) and calls `fill` the same way. Diagnostic copies, both engines:
+
+| copy | jz | V8 |
+|---|---|---|
+| as published | 13.06 ms | 11.40 ms |
+| `bit` written into `unary` | 11.83 | 10.96 |
+| `n`'s writes `| 0` | 12.91 | 11.43 |
+| both | 11.49 (0.96×) | 11.05 |
+| `bit()` out of the loop test (`if (!bit()) return c`) | 13.30 | 11.68 |
+
+So the splice of `bit` into `unary` is most of the gap and the loop test is not what stops it:
+the source inliner splices module functions, and these are closures, called directly only
+after the WAT devirtualization; `inlineTiny` (optimize/inline-tiny.js), which could splice
+such a call, runs at the speed tier alone and excludes a callee that calls the program (`bit`
+calls `fill`). Splicing a closure called directly into its sibling closures at the default
+level is a size-for-speed decision of the tiers, left open.
+
+## Fixed (branch perf, slices and DataView offsets)
+
+| | Change | Kernel before → after |
+|---|---|---|
+| G8 | A `for` stepped by a literal k counts ceil(span / k) trips (plan/integral-loops.js `tripOfLoop`): a frame's slices (`s += 20`) around a loop over its channels that steps the stream cursor take one copy for the frame, where each slice's two-channel loop took one of its own, guarded in floats every slice | `for (s < n; s += 20) for (c < ch; c++, o += 8)` reading a Uint8Array: jz 7.0 → 1.7 µs, V8 1.6 (0.23× → 0.94×) |
+| G9 | A DataView offset summing two words (`dv.getUint32(o + 4)`, `o` a cursor word) is an i64 sum, ToIndex its sign test (module/typedarray.js `dvArgument`): the emitter's sum widened to a float and called `__dv_index` per read | the same nest through a DataView: 5.4 → 4.6 µs, V8 1.8 (0.33× → 0.39×) |
+
+Neither changes a bench case's wasm or a decoder's time: QOA's slice loop holds a destructuring
+(below), and the decoders' other DataView reads take a word as it is. What G9's kernel keeps against
+V8 is the DataView read itself: per read, the view's data offset and length loaded from its
+descriptor, the sign test, the bounds test, the byte swap of a big-endian read in shifts.
+
+## Measured: QOA's destructuring (not fixed)
+
+QOA's slice loop holds `let { weights, history } = lmses[c]`, which prepare lowers with its test
+of the source as a closure called in place (`d ?? (() => { throw TypeError(…) })()`,
+prepare/handlers.js), and plan/integral-loops.js leaves a loop holding a closure as written. Three
+ways out, measured against main a6f1ebbd8:
+
+| | QOA lab, default (main 4.62 ms, 0.84×) | bench corpus |
+|---|---|---|
+| the test a statement (`if (d == null) throw new TypeError(…)`) | 4.05 ms (0.93×) | worley 1.24× and decode-dsd 1.30× the time, webaudio +65 KB: `sample({ perm }, x, y)`'s parameter, read field by field alone now, takes plan/lanes.js's sibling, which the source inliner then splices nowhere (main splices `sample` into the loop) |
+| the test an intrinsic in the `??` (`d ?? __throw…()`) | 76 ms | the summary reads the intrinsic as any value: every destructured binding loses its kind |
+| the copy taking such a call for a throw, which captures nothing | 4.30 ms (0.90×), speed tier 4.82 → 4.59 ms | decode-qoa 1.043× (paired against main in the bench, 8 of 8 rounds above 1), webaudio 1.019×; decode-qoa 0.99× under `--no-liftoff` |
+
+None kept. On the third the bench's decode-qoa (2 s of input decoded twice a run, the heap kept
+across a process's 52 decodes) and the lab's (10 s, the heap reset per decode) disagree, and eight
+runs of `main` in one process keep the bench's 3%: not the tier alone. Next: where the copy's code
+goes in the bench's build.
+
+## Measured: AIFF and the speed tier (not fixed)
+
+Steady state on main a6f1ebbd8, the speed tier against the default level (the rows that differ):
+
+| case | default | speed | V8 |
+|---|---|---|---|
+| aiff pcm16 | 2.17 ms | 3.09 ms | 1.91 ms |
+| aiff pcm24 | 2.23 ms | 3.01 ms | 2.13 ms |
+| caf ima4 | 132 µs | 157 µs | 134 µs |
+| alac 16-bit | 22.58 ms | 25.33 ms | 24.66 ms |
+| wav ms-adpcm | 101 µs | 109 µs | 119 µs |
+| tta 16-bit | 13.48 ms | 14.11 ms | 12.55 ms |
+
+The rest level, or faster at the speed tier (wav float32 238 → 215 µs, tta 24-bit 2.60 → 2.48 ms,
+tta 6ch 8.05 → 7.66 ms, dsd 62.6 → 60.5 ms). The earlier "speed tier slower" rows (ALAC 0.53×, TTA
+0.53×) were short runs, read in baseline code.
+
+AIFF pcm16 at the default level, 0.88×: the generic variant of `decodePCM_BE` is 98.9% of the wasm
+time. Its 16-bit nest (`for (i < frames) for (c < nCh) { v = b[p] << 8 | b[p + 1]; p += 2;
+channels[c][i] = … }`) reduced:
+
+| kernel | jz | V8 |
+|---|---|---|
+| the decoder's view, offset and depth literals | 1.13 ms | 1.79 ms |
+| the offset an export parameter | 2.65 ms | 1.78 ms |
+| that, the parameter taken as a cursor of the copy | 1.11 ms | 1.77 ms |
+| the decoder, `decodePCM_BE` called from `decodeAiffRaw` alone | 5.55 ms | 1.89 ms |
+
+- `p` enters from a parameter no caller proves an integer: the copy tests it as a name, and its
+  word's steps (`p$ += 2`) widen to floats. Taking such a name as a cursor (its entry tested whole,
+  every write an integer of it) fixes the kernel, not the decoder; on a second kernel it needed the
+  counted landing (plan/counted-loops.js) written `entry + K·(trips | 0)`, and with that the
+  cursor's value wrapped past 2^31 at O2 (from 2147483645: -2147483635 for 2147483661). Not kept.
+- In the decoder, plan/kind-split.js hoists the head's `let i = 0` out of the copies it makes by
+  `b`'s kind, so integral-loops reads `for (; i < frames; ++i)` and finds no trips. With a literal
+  head kept in each copy the frame loop copies, the function grows from 2315 to 8500 source nodes,
+  and the decode is no faster (2.17 ms). Not kept.
+- With one call site the inliner splices `decodePCM_BE` into `decodeAiffRaw` and that into the
+  factory's `decode` method (0.34×): the source inliner's caller budget is read before the splice
+  that crosses it. Moving the test after the splice (caller plus callee past `SOURCE_FULL`) did
+  not stop it: the second splice is of a callee with no loop of its own when the kernels are
+  counted. Not diagnosed further.

@@ -74,7 +74,7 @@ function extentTest(spec, locals) {
     if (c.presence || c.range || c.ind != null || (c.post && c.cursor == null) || receiverMayBeAbsent(c.recv, c.idx)) return null
     const len = ['.', c.recv, 'length']
     if (c.cursor != null) {
-      if (!i32(c.cursor)) return null
+      if (!i32(c.cursor) || c.Kw) return null
       const key = c.recv + '\0' + c.cursor, e = cursors.get(key)
       if (!e) cursors.set(key, { len, c: c.cursor, K: c.K, lo: c.cConst, hi: c.cConst, post: !!c.post })
       else { e.lo = Math.min(e.lo, c.cConst); e.hi = Math.max(e.hi, c.cConst); if (c.post) e.post = true }

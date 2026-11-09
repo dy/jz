@@ -14,11 +14,15 @@ import { IR_FULL, SOURCE_FULL, irSize } from '../src/growth.js'
 // Loops the specializer copies (test/specialize.js): a remainder of a counter
 // carried in a float, which the integer copy holds in a register. `pad` IR
 // nodes of straight-line code stand ahead of them, which keep their values;
-// `call`: the inner loop adds its remainder through a call of the program's.
+// `call`: the inner loop adds its remainder through a call of the program's;
+// 'fwd': it reads an offset through the chase of a relocated array's forwarding,
+// behind the header test every read of a moved array takes.
 const kernel = (pad, call = false) => {
   const stmts = Array.from({ length: Math.ceil(pad / 4) }, (_, k) => `(drop (i32.add (i32.const ${k}) (local.get $k)))`).join('\n')
   return parseWat(`(module
+    (memory 1)
     (func $half (param $v f64) (result f64) (f64.mul (local.get $v) (f64.const 0.5)))
+    (func $__ptr_offset_fwd (param $off i32) (result i32) (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (func $f (export "f") (param $x f64) (param $n f64) (result f64)
       (local $k i32) (local $i f64) (local $s f64) (local $p f64)
       ${stmts}
@@ -30,7 +34,9 @@ const kernel = (pad, call = false) => {
         (block $stop (loop $inner
           (br_if $stop (i32.eqz (f64.lt (local.get $i) (local.get $n))))
           (local.set $p (f64.convert_i32_s (i32.rem_s (i32.trunc_sat_f64_s (f64.add (local.get $p) (f64.const 3))) (i32.const 7))))
-          (local.set $s (f64.add (local.get $s) ${call ? '(call $half (local.get $p))' : '(local.get $p)'}))
+          (local.set $s (f64.add (local.get $s) ${call === 'fwd'
+            ? '(f64.add (local.get $p) (f64.convert_i32_s (if (result i32) (i32.eq (i32.load (i32.const 12)) (i32.const -1)) (then (call $__ptr_offset_fwd (i32.const 16))) (else (i32.const 16)))))'
+            : call ? '(call $half (local.get $p))' : '(local.get $p)'}))
           (local.set $i (f64.add (local.get $i) (f64.const 1)))
           (br $inner)))
         (local.set $k (i32.add (local.get $k) (i32.const 1)))
@@ -61,6 +67,15 @@ test('growth: the specializer copies a kernel loop past the budget', () => {
   ok(specialize(kernel(0), () => kernel(0)), 'within the budget')
   ok(irSize(funcOf(kernel(IR_FULL))) > IR_FULL, 'the function is past the budget')
   ok(specialize(kernel(IR_FULL), () => kernel(IR_FULL)), 'its loop, calling nothing, has its copy')
+})
+
+// The chase runs only where a header says its array moved: a loop reading a typed
+// array or an array it may not have moved spends no round in it (decode-wav's MS
+// ADPCM loop, the only call in it this chase, in a function its integral versions
+// took past the budget).
+test('growth: past the budget a loop whose one call chases a moved array is a kernel\'s', () => {
+  ok(irSize(funcOf(kernel(IR_FULL, 'fwd'))) > IR_FULL, 'the function is past the budget')
+  ok(specialize(kernel(IR_FULL, 'fwd'), () => kernel(IR_FULL, 'fwd')), 'its loop has its copy')
 })
 
 // Calls ahead of a loop take its function past the source budget.

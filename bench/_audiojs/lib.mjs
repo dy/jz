@@ -55,10 +55,14 @@ export function build(source, { name = 'entry.js', dir = scratch(), files = {}, 
 }
 
 /** Minimum over interleaved samples: on a busy machine it approaches the undisturbed time,
- *  and interleaving keeps drift from favouring one contender. */
-export function measure(fns, { rounds = 40, warm = 8, inner = 1, budget = 8000 } = {}) {
+ *  and interleaving keeps drift from favouring one contender. The warm-up runs `warm` rounds
+ *  and at least `warmMs`: V8 runs a function in its baseline tier until its optimizing tier
+ *  has compiled it, about 2 ms a kilobyte (src/growth.js), and a decoder of a 160 KB module
+ *  measured over 34 calls read its baseline code (decode-wav float32: 680 µs, 240 warm). */
+export function measure(fns, { rounds = 40, warm = 8, warmMs = 1000, inner = 1, budget = 8000 } = {}) {
   const names = Object.keys(fns), best = Object.fromEntries(names.map(k => [k, Infinity]))
-  for (let w = 0; w < warm; w++) for (const k of names) fns[k]()
+  const warmEnd = performance.now() + warmMs
+  for (let w = 0; w < warm || performance.now() < warmEnd; w++) for (const k of names) fns[k]()
   const end = performance.now() + budget
   for (let r = 0; r < rounds && performance.now() < end; r++) for (const k of names) {
     const f = fns[k], t = performance.now()

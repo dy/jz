@@ -375,51 +375,65 @@ function monotoneCursorOf(idx, iv) {
   return null
 }
 
-/** Per-iteration MAX advance of cursor `c` anywhere in `body`: `c++` / `c+=LIT`
- *  (LIT a positive int literal) contribute their amount wherever they occur
- *  (top-level statement or nested inside an expression, e.g. `stream[r++]`);
- *  sequential statements SUM; an `if` contributes its cond's advance plus
- *  max(then, else); a nested loop with no `c`-write contributes 0. Any other
- *  write to `c` (`=`, `-=`, `--`, …) — or a `c`-write inside a NESTED loop, whose
- *  per-inner-iteration advance this per-outer-iteration walk cannot hull — is
- *  non-monotone or unhullable and BAILS the whole candidate (null propagates up
- *  through every sum/max on the way out). */
-/** The literal a write `n` steps `c` up by: `c++`, `c += K`, `c = c + K` / `K + c`, the last
- *  through a ToInt32 wrap (`c = (c + K) | 0`, the idiom and the form a loop version gives
- *  a cursor's steps); null for any other write. */
+/** The step a write `n` moves `c` up by: a literal (`c++`, `c += K`, `c = c + K` / `K + c`,
+ *  the last through a ToInt32 wrap, `c = (c + K) | 0`, the idiom and the form a loop version
+ *  gives a cursor's steps), or a name (`c += w`, `c = (c + w) | 0`: a stride the loop holds,
+ *  a record's channel count); null for any other write. */
 const cursorStepOf = (n, c) => {
+  const by = (x) => typeof x === 'string' && x !== c ? x : intLiteralValue(x)
   if (n[0] === '++' && n[1] === c) return 1
-  if (n[0] === '+=' && n[1] === c) return intLiteralValue(n[2])
+  if (n[0] === '+=' && n[1] === c) return by(n[2])
   if (n[0] !== '=' || n[1] !== c || !Array.isArray(n[2])) return null
   let e = n[2]
   if (e[0] === '|' && e.length === 3) e = intLiteralValue(e[2]) === 0 ? e[1] : intLiteralValue(e[1]) === 0 ? e[2] : e
   if (!Array.isArray(e) || e[0] !== '+' || e.length !== 3) return null
-  return e[1] === c ? intLiteralValue(e[2]) : e[2] === c ? intLiteralValue(e[1]) : null
+  return e[1] === c ? by(e[2]) : e[2] === c ? by(e[1]) : null
 }
-function maxCursorAdvance(n, c) {
-  if (!Array.isArray(n)) return 0
+/** Per-iteration MAX advance of cursor `c` anywhere in `body`, as `{ k, m }`: k by
+ *  literals, m steps by the stride name `w` (null: no stride), which the guard holds
+ *  non-negative. `c++` / `c += LIT` (a positive int literal) / `c += w` contribute
+ *  wherever they occur (top-level statement or nested inside an expression, e.g.
+ *  `stream[r++]`); sequential statements SUM; an `if` contributes its cond's advance
+ *  plus the larger of each part of then and else (w ≥ 0, so the parts' maxima bound
+ *  the max); a nested loop with no `c`-write contributes 0. Any other write to `c`
+ *  (`=`, `-=`, `--`, a step by another name, …), and a `c`-write inside a NESTED loop,
+ *  whose per-inner-iteration advance this per-outer-iteration walk cannot hull, are
+ *  non-monotone or unhullable and BAIL the whole candidate (null propagates up
+ *  through every sum/max on the way out). */
+const ZERO = { k: 0, m: 0 }
+function maxCursorAdvance(n, c, w = null) {
+  if (!Array.isArray(n)) return ZERO
   const op = n[0]
-  if (op === '++' && n[1] === c) return 1
+  if (op === '++' && n[1] === c) return { k: 1, m: 0 }
   if (op === '--' && n[1] === c) return null
-  if ((op === '+=' || op === '=') && n[1] === c) { const k = cursorStepOf(n, c); return k != null && k > 0 ? k : null }
+  if ((op === '+=' || op === '=') && n[1] === c) {
+    const k = cursorStepOf(n, c)
+    return k === w && w != null ? { k: 0, m: 1 } : typeof k === 'number' && k > 0 ? { k, m: 0 } : null
+  }
   if (WRITE_OPS.has(op) && n[1] === c) return null
   if (op === 'if') {
     const [, cnd, thenB, elseB] = n
-    const cA = maxCursorAdvance(cnd, c)
+    const cA = maxCursorAdvance(cnd, c, w)
     if (cA == null) return null
-    const tA = maxCursorAdvance(thenB, c)
-    const eA = elseB !== undefined ? maxCursorAdvance(elseB, c) : 0
-    return tA == null || eA == null ? null : cA + Math.max(tA, eA)
+    const tA = maxCursorAdvance(thenB, c, w)
+    const eA = elseB !== undefined ? maxCursorAdvance(elseB, c, w) : ZERO
+    return tA == null || eA == null ? null : { k: cA.k + Math.max(tA.k, eA.k), m: cA.m + Math.max(tA.m, eA.m) }
   }
-  if (op === 'for' || op === 'while') return isReassigned(n, c) ? null : 0
-  if (op === '=>') return 0   // unreachable: containsNestedClosure already bailed the caller
-  let sum = 0
-  for (let k = 1; k < n.length; k++) {
-    const a = maxCursorAdvance(n[k], c)
+  if (op === 'for' || op === 'while') return isReassigned(n, c) ? null : ZERO
+  if (op === '=>') return ZERO   // unreachable: containsNestedClosure already bailed the caller
+  let k = 0, m = 0
+  for (let i = 1; i < n.length; i++) {
+    const a = maxCursorAdvance(n[i], c, w)
     if (a == null) return null
-    sum += a
+    k += a.k; m += a.m
   }
-  return sum
+  return { k, m }
+}
+/** The one name every stride step of `c` in `body` steps it by, or null: none, or two. */
+const cursorStrideOf = (body, c) => {
+  let w = null, two = false
+  walkAst(body, { enter: (n) => { if (n[0] === '=>') return false; if (n[1] !== c) return; const k = cursorStepOf(n, c); if (typeof k !== 'string') return; if (w != null && w !== k) two = true; w = k } })
+  return two ? false : w
 }
 
 /** Loop-versioning scan for the 'for' emitter: a countable loop
@@ -579,9 +593,12 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     if (cursorKCache.has(name)) return cursorKCache.get(name)
     // The guard reads the entry value. Body declarations do not exist there;
     // captured/global cursors and header writes can change outside this budget.
-    const K = !locals?.has(name) || ctx.func.boxed?.has(name)
+    // (a stride the guard re-reads: the same binding for the whole loop, a number the guard tests whole and non-negative)
+    const w = cursorStrideOf(body, name)
+    const a = w === false || w != null && !stable(w) || !locals?.has(name) || ctx.func.boxed?.has(name)
       || redeclaresName(body, name) || isReassigned(cond, name) || isReassigned(step, name)
-      ? null : maxCursorAdvance(body, name)
+      ? null : maxCursorAdvance(body, name, w)
+    const K = a && { k: a.k, m: a.m, w: a.m ? w : null }
     cursorKCache.set(name, K)
     return K
   }
@@ -683,7 +700,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
             const K = mc ? cursorAdvanceOf(mc.c) : null
             if (mc && K != null) {
               seen.add(key)
-              cands.push({ recv: n[1], idx: n[2], cursor: mc.c, K, cConst: mc.K0, post: !forcePre && cursorPost(mc.c, n[2]) })
+              cands.push({ recv: n[1], idx: n[2], cursor: mc.c, K: K.k, Kw: K.w, Km: K.m, cConst: mc.K0, post: !forcePre && cursorPost(mc.c, n[2]) })
             } else {
               // LAST resort — beyond the affine model (masked ring cursors, wrap
               // idioms): an interval HULL the static walk bounded but couldn't
@@ -719,7 +736,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   if (condRest != null) { forcePre = true; walkAst(condRest, { enter: scan }); forcePre = false }
   // typeof-process guard, not globalThis.process — a bare `globalThis` read
   // compiles to an env.globalThis import in the self-compile build; typeof folds dead
-  if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : c.cursor != null ? `:cursor(${c.cursor},K=${c.K})` : ':aff') + (c.post ? ':POST' : '')).join(' '))
+  if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : c.cursor != null ? `:cursor(${c.cursor},K=${c.K}${c.Kw ? `+${c.Km}*${c.Kw}` : ''})` : ':aff') + (c.post ? ':POST' : '')).join(' '))
   return cands.length
     ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands, down }
     : null
