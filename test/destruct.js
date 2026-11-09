@@ -1101,7 +1101,7 @@ test('destruct: an object pattern\'s nullish test is no closure', () => {
   for (const optimize of levels(0, 2, 3, 'size')) {
     const { g, pick } = jz(src, { optimize }).exports
     is(g(input, 512), js.g(input, 512), `g O${optimize}`)
-    is(pick({ a: 6, b: 7 }), 42, `present O${optimize}`)
+    if (!onWasi()) is(pick({ a: 6, b: 7 }), 42, `present O${optimize}`)   // wasi: js-object arg
     for (const v of [null, undefined]) is(pick(v), 'TypeError: Cannot destructure null or undefined', `${v} O${optimize}`)
   }
   if (belowOpt(3)) return
