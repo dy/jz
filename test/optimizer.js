@@ -6794,8 +6794,14 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
     }
     export let f = (src, out) => encode(src, out)
   `
+  // (the counted loop's landing, `clc + (trips | 0)`, is an integer: the counter, `op` or a splice's
+  // `…_op`, not the allocator's `$top`, may hold an i64 word, never the fact's i32)
   const wOutside = compile(outsideWrite, { wat: true, optimize: 'speed' })
-  ok(/\(local \$\S*op f64\)/.test(wOutside), 'accumulator written outside the loop stays f64 (no fact)')
+  ok(/\(local \$(?:\S*_)?op (f64|i64)\)/.test(wOutside) && !/\(local \$(?:\S*_)?op i32\)/.test(wOutside), 'accumulator written outside the loop takes no i32 (no fact)')
+  {
+    const src4 = new Uint8Array(N).map((_, i) => i & 1)
+    for (const O of levels(0, 'size', 'speed')) is(jz(outsideWrite, { optimize: O }).exports.f(src4, new Uint8Array(N)), N, `outside write O${O}`)
+  }
 
   // Negative control 3: unbounded trip count (a dynamic, unproven loop bound) —
   // no fact; forCounterRange itself returns null so nothing downstream fires.

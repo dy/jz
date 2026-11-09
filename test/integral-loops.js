@@ -2250,3 +2250,35 @@ test('integral loops: a loop stepped by a literal counts its trips, a cursor of 
   walkAst(ctx.funcs.list.find(g => g.name === 'frames')?.body, { enter: n => { for (const x of n) if (typeof x === 'string') names.add(x) } })
   ok([...names].some(n => n.startsWith('slice') && n.includes('int')), 'the slice loop is copied')
 })
+
+test('integral loops: a cursor near 2^31 - 1 stepped in a nest keeps its value past the word', () => {
+  // `p` enters an int32 and steps past 2^31 - 1: by a counted inner loop, whose landing
+  // `p = clc + 2 * (trips | 0)` is an integer of integers (plan/counted-loops.js), and by an
+  // arm (`if (v >= 0) p += 2`) no counted loop takes. A name the frame's guard tests that the
+  // round writes is an int32 where the copy enters, not where an inner version stands: an inner
+  // version read it as one and wrapped it (-2147483647 for 2147483649). The channel loop runs
+  // under kind copies of the samples' view, its head its own (plan/kind-split.js).
+  const shape = (step) => `function walk(b, p, out, frames, nCh) {
+      let s = 0
+      for (let i = 0; i < frames; i++)
+        for (let c = 0; c < nCh; c++) { let v = (b[p] << 8) | b[p + 1]; ${step}; out[c][i] = (v > 32767 ? v - 65536 : v) / 32768; s += v | 0 }
+      return p + s / 1e9
+    }
+    export function h(src, P, F, ch, view) {
+      const u = src instanceof Uint8Array ? src : new Uint8Array(src), b = view ? u.subarray(1) : u
+      const nCh = ch >>> 0, frames = Math.floor(F), p = P * 1
+      const out = Array.from({ length: nCh }, () => new Float32Array(frames))
+      return [walk(b, 0, out, frames, nCh), walk(b, p, out, frames, nCh), out[0][0]]
+    }`
+  const b = new Uint8Array(64).map((_, i) => i * 7)
+  for (const step of ['p += 2', 'if (v >= 0) p += 2']) {
+    const src = shape(step), host = oracle(src)
+    for (const optimize of levels(0, 2, 3)) {
+      const m = jz(src, { optimize }).exports
+      for (const P of [0, 3, 2147483645, 2147483640, 2147483647, -5, 1.5, 4294967290, 2 ** 40])
+        for (const [F, ch] of [[0, 2], [1, 2], [4, 2], [4, 3], [7.5, 1]])
+          for (const view of [false, true])
+            is(JSON.stringify(m.h(b, P, F, ch, view)), JSON.stringify(host.h(b, P, F, ch, view)), `O${optimize} ${step}: p ${P}, ${F} frames, ${ch} channels${view ? ', a view' : ''}`)
+    }
+  }
+})

@@ -1562,8 +1562,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     // (presence, hulls) where any is left. An index entering nonnegative is read
     // off its hull's floor, tested once here.
     const absorbs = new Map()   // version node → { subst: alias → name, extra: tests of this copy }
+    // (a name the guard tests that the loop writes is an int32 where the copy enters, not where an
+    // inner version stands: `p += 2` in an arm of the round takes it past 2^31 - 1 between them)
     const int32Now = (n) => {
-      if (n === counter || names.includes(n) || used.has(n) || cursors.has(n) || words.has(n) || !locals.has(n) && ctx.scope.globals.get(n)?.type === 'i32') return true
+      if (n === counter || names.includes(n) && !loopWrites.has(n) || used.has(n) || cursors.has(n) || words.has(n) || !locals.has(n) && ctx.scope.globals.get(n)?.type === 'i32') return true
       const leaves = new Set()
       if (!isIntName(n, leaves)) return false
       const h = env.has(n) ? env.get(n) : loopWrites.has(n) || inner.has(n) ? null : hullOf(n)

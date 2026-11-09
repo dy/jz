@@ -2118,12 +2118,14 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   includeForObjectPattern()
   includeForNamedCall('TypeError')
   // RequireObjectCoercible precedes computed keys and defaults, even when
-  // the pattern is empty. The source has already been captured once.
-  const message = decls ? [, 'Cannot destructure null or undefined'] : ['str', 'Cannot destructure null or undefined']
+  // the pattern is empty. The source has already been captured once. The
+  // test throws by a call of the runtime the summary types as no value
+  // (`d ?? __destructure_nullish()`, module/core.js): no closure stands in the
+  // body for a later pass to keep a loop's copy or a splice from.
   const checked = `${T}d${freshPrepareId()}`
   holds(checked, source)
   if (decls) decls.push(checked)
-  let fail = ['()', ['=>', null, ['{}', ['throw', ['()', 'TypeError', message]]]], null]
+  let fail = ['()', '__destructure_nullish', null]
   if (!decls) fail = prep(fail)
   out.push(['=', checked, ['??', source, fail]])
   source = checked

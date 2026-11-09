@@ -319,7 +319,7 @@ const ctorOf = (callee) => isName(callee) && callee.startsWith('new.') ? callee.
 export const listedBuiltin = (callee) => {
   const c = ctorOf(callee)
   if (c !== null) return FRESH_CTORS.test(c)
-  return callee === '__iter_arr' || callee === '__keys_ro' || callee === '__keys_dyn' || callee === '__present' || COLL_CURSOR.test(callee) || PURE_CALLEES.test(callee) ||
+  return callee === '__iter_arr' || callee === '__keys_ro' || callee === '__keys_dyn' || callee === '__present' || callee === '__destructure_nullish' || COLL_CURSOR.test(callee) || PURE_CALLEES.test(callee) ||
     FRESH_CTORS.test(callee) || WRITES_FIRST.test(callee) || READS_POINTER.test(callee) || PARK_LANE.test(callee) || callee === '__park_read_str'
 }
 
@@ -820,7 +820,7 @@ function census(view, roots, declRoots, params, typedParams = NO_NAMES, conditio
         if (t === K.ARRAY || t === K.TYPED || t === K.STRING || t === K.SET || t === K.MAP) { allocates(); return }
         return unknownCall('call __iter_arr')
       }
-      if (callee === '__keys_ro' || callee === '__keys_dyn') { allocates(); return }
+      if (callee === '__keys_ro' || callee === '__keys_dyn' || callee === '__destructure_nullish') { allocates(); return }
       // a receiver past its member read's test (plan/scope.js devirtClassCalls): the value, read as a member read reads it
       if (callee === '__present') return
       // a Set's or a Map's for…of cursor reads its table in place: no allocation, no store (a fused find too)
