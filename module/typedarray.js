@@ -1194,6 +1194,12 @@ export default (ctx) => {
   // raises a TypeError instead of silently truncating to 0.
   const dvIndex = (offNode, value = emit(offNode)) => {
     ctx.runtime.throws = true
+    // (a sum of two words, exact in an i64: what passes its sign test is below 2^32, an unsigned word)
+    if (value.wordSum) return typed(['block', ['result', 'i32'],
+      ['if', ['i64.lt_s', value, ['i64.const', 0]],
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_INDEX_RANGE)]]],
+          ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.DATAVIEW_INDEX_RANGE)]]]],
+      ['i32.wrap_i64', value]], 'i32')
     if (value.type === 'i32' && !value.unsigned &&
         (valTypeOf(offNode) === VAL.NUMBER || valTypeOf(offNode) === VAL.BOOL)) {
       const name = tempI32('dvi')
@@ -1212,6 +1218,19 @@ export default (ctx) => {
   const dvArgument = (node, bigint = false) => {
     node ??= [, undefined]
     const numeric = valTypeOf(node) === VAL.NUMBER || valTypeOf(node) === VAL.BOOL
+    // An offset summing two Numbers that are signed words (`o + 4`, a cursor and a
+    // field's width), which the emitter's sum widens to a float, is exact in an i64.
+    if (!bigint && Array.isArray(node) && (node[0] === '+' || node[0] === '-') && node.length === 3 &&
+        valTypeOf(node[1]) === VAL.NUMBER && valTypeOf(node[2]) === VAL.NUMBER) {
+      const a = emit(node[1]), b = emit(node[2])
+      const word = (v) => v.type === 'i32' && !v.unsigned ? v : Array.isArray(v) && v[0] === 'f64.convert_i32_s' ? v[1] : null
+      const wa = word(a), wb = word(b), wide = wa != null && wb != null, name = wide ? tempI64('dva') : temp('dva')
+      const value = typed(['local.get', `$${name}`], wide ? 'i64' : 'f64')
+      if (wide) value.wordSum = true
+      return { node, raw: false, value,
+        setup: ['local.set', `$${name}`, wide ? [node[0] === '+' ? 'i64.add' : 'i64.sub', ['i64.extend_i32_s', wa], ['i64.extend_i32_s', wb]]
+          : [node[0] === '+' ? 'f64.add' : 'f64.sub', asF64(a), asF64(b)]] }
+    }
     const raw = bigint && tagsOf(ctx.summary?.at(ctx.func.current).kindOfExpr(node) ?? 0) === bitOf(K.BIGINT)
     const value = raw ? readI64(node, emit(node)) : numeric ? emit(node) : storedValue(node)
     const word = numeric && value.type === 'i32' && !value.unsigned

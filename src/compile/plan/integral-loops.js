@@ -920,8 +920,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
     let needPresence = false
     // The trips of a loop as an expression at this loop's entry, where its
     // counter starts at a literal, steps up by one or more every time round and
-    // tests a bound of names the loop holds: `max(0, ceil(n) + adj - entry)`.
-    // Null where the loop may run on past any such count.
+    // tests a bound of names the loop holds: `max(0, ceil(n) + adj - entry)`,
+    // a k-th of that rounded up where a `for` steps by a literal k (a frame's
+    // slices, `s += 20`, around its channels). Null where the loop may run on
+    // past any such count.
     const tripNames = new Set()
     const tripsOf = (trip) => {
       if (!trip) return null
@@ -929,7 +931,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (!ns || !ns.every(x => !loopWrites.has(x) && stableBound(x))) return null
       for (const x of ns) tripNames.add(x)
       if (typeof trip.entry !== 'number') for (const x of boundTerms(Array.isArray(trip.entry) && trip.entry[0] === 'u-' ? trip.entry[1] : trip.entry) ?? []) tripNames.add(x)
-      const count = ['-', ['+', ['()', 'math.ceil', trip.n], [null, trip.adj]], typeof trip.entry === 'number' ? [null, trip.entry] : cloneNode(trip.entry)]
+      const span = ['-', ['+', ['()', 'math.ceil', trip.n], [null, trip.adj]], typeof trip.entry === 'number' ? [null, trip.entry] : cloneNode(trip.entry)]
+      const count = trip.by > 1 ? ['()', 'math.ceil', ['/', span, [null, trip.by]]] : span
       return ['()', 'math.max', [',', [null, 0], count]]
     }
     const tripOfLoop = (node, p, i) => {
@@ -956,9 +959,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           node[1].slice(2).every(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && !writesIn(node[4]).has(d[1]) && !refsName(d[2], node[1][1][1], REFS_THROUGH_ARROWS))) {
         const step = node[3]?.[0] === 'postfix' ? node[3][1] : node[3]
         const init = node[1][1][2], bound = headBound(test[2])
+        // (a step by a literal k runs a k-th of a unit step's trips, rounded up: `for (s = 0; s < n; s += 20)` ceil(n / 20) times)
+        const by = step?.[0] === '++' || step?.[0] === '+1' ? 1 : step?.[0] === '+=' && step[2]?.[0] == null && Number.isInteger(step[2][1]) && step[2][1] >= 1 ? step[2][1] : null
         // (an entry of stable names is the trips' expression: `for (let k = -r; k <= r; k++)` runs 2r + 1 times)
-        return (step?.[0] === '++' || step?.[0] === '+1' || step?.[0] === '+=' && step[2]?.[0] == null && step[2][1] === 1) && step[1] === node[1][1][1] && (typeof bound !== 'string' || !node[1].slice(2).some(d => d[1] === bound))
-          ? { n: bound, adj: test[0] === '<=' ? 1 : 0, entry: init[0] == null ? init[1] : init, counter: node[1][1][1] } : null
+        return by != null && step[1] === node[1][1][1] && (typeof bound !== 'string' || !node[1].slice(2).some(d => d[1] === bound))
+          ? { n: bound, adj: test[0] === '<=' ? 1 : 0, entry: init[0] == null ? init[1] : init, counter: node[1][1][1], by } : null
       }
       return null
     }

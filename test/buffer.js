@@ -1217,3 +1217,19 @@ test('ArrayBuffer slice dispatch preserves uncertain receivers, bounds and argum
     for (const [actual, expected] of retained) is(actual, expected, 'later successes and errors preserve earlier copies')
   }
 })
+
+test('DataView offsets summing two words read without the float conversion, errors as before', () => {
+  // `dv.getUint32(o + 4)` over an int32 cursor: the sum of two words is exact in an i64,
+  // its sign ToIndex's test, what passes below 2^32 for the bounds test
+  const src = `export function f(n, k) { const dv = new DataView(new ArrayBuffer(16)); for (let i = 0; i < 16; i++) dv.setUint8(i, i * 17)
+    const o = n | 0, d = k | 0
+    try { return [dv.getUint16(o + d), dv.getInt32(o - d, true), dv.setUint8(o + 1, 9), dv.getUint8(o + 1)] } catch (e) { return e.name } }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { f } = jz(src, { optimize }).exports
+    for (const n of [0, 1, 7, 11, 12, 14, 15, 16, -1, -3, 2147483647, -2147483648])
+      for (const k of [0, 1, 2, 3, -2, 2147483647, -2147483648]) is(f(n, k), want.f(n, k), `O${optimize}: ${n}, ${k}`)
+  }
+  if (belowOpt(2)) return
+  ok(!/call \$__dv_index/.test(compile(src, { wat: true })), 'no float ToIndex for a sum of words')
+})

@@ -2225,3 +2225,26 @@ test('integral loops: a stride cursor enters tested, an accumulator by a stride 
   ok(names('pick').some(n => n.includes(`${T}stride`)), 'a word for the index stride')
   ok(!names('sum').some(n => n.includes(`${T}stride`)), 'no word for an accumulator')
 })
+
+test('integral loops: a loop stepped by a literal counts its trips, a cursor of a short loop inside it a word of its copy', () => {
+  // a frame's slices (QOA's shape): `slice += 20` around a loop over the channels
+  // stepping the stream cursor; the copy is the outer loop's, one guard for the
+  // frame, not one per slice around two channels (0.23x of V8 as a kernel, 0.94x)
+  const src = `export const frames = (src, p) => { const b = src instanceof Uint8Array ? src : new Uint8Array(src)
+    const ch = b[p], samples = b[p + 1] << 8 | b[p + 2]; let o = 3, s = 0
+    for (let slice = 0; slice < samples; slice += 20) for (let c = 0; c < ch; c++, o += 4) s = (s + b[o] + b[o + 1]) | 0
+    return s + o }`
+  const host = oracle(src)
+  const b = new Uint8Array(4096).map((_, i) => i * 7 % 251)
+  const head = (ch, samples, p = 0) => { const a = b.slice(); a[p] = ch; a[p + 1] = samples >> 8; a[p + 2] = samples & 255; return a }
+  for (const optimize of levels(0, 2, 3))
+    for (const [ch, samples] of [[2, 100], [2, 101], [1, 19], [3, 20], [0, 400], [5, 0], [255, 65535]]) {
+      const a = head(ch, samples)
+      is(jz(src, { optimize }).exports.frames(a, 0), host.frames(a, 0), `O${optimize}: ${ch} channels, ${samples} samples`)
+    }
+  if (belowOpt(2)) return
+  compileInProcess(src)
+  const names = new Set()
+  walkAst(ctx.funcs.list.find(g => g.name === 'frames')?.body, { enter: n => { for (const x of n) if (typeof x === 'string') names.add(x) } })
+  ok([...names].some(n => n.startsWith('slice') && n.includes('int')), 'the slice loop is copied')
+})
