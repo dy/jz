@@ -757,7 +757,7 @@ export function watrTail(module, cfg, {
   // canonicalization reads its NaN as a literal)
   if (cfg.guardExtremes === true) time('guardExtremes', () => guardExtremes(optimized))
   // (on the tests the optimizer joined, before the float literals are pooled)
-  if (cfg.pairTests === true) time('pairTests', () => pairTests(optimized, { simd: !ctx.transform.noSimd }))
+  if (cfg.pairTests === true) time('pairTests', () => pairTests(optimized, { simd: !noSimd }))
   // (an export's boundary wrapper, `$name$exp` (compile/boundary-wrap.js), is the program's own:
   // the body it calls once is inlined there)
   const user = name => ctx.funcs.map.has(name.slice(1)) || name.endsWith('$exp') && ctx.funcs.map.has(name.slice(1, -4))
@@ -778,7 +778,7 @@ export function watrTail(module, cfg, {
   if (cfg.splitFuncs === true) time('splitFuncs', () => splitFuncs(optimized, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm }))
   // (on the vector loops every pass above left, each where it will run: a round's lane extremes
   // relaxed, tested once, the engine asked once a call)
-  if (cfg.relaxExtremes === true && cfg.relaxedSimd === true && !ctx.transform.noSimd) time('relaxExtremes', () => relaxExtremes(optimized))
+  if (cfg.relaxExtremes === true && cfg.relaxedSimd === true && !noSimd) time('relaxExtremes', () => relaxExtremes(optimized))
   // (last: on the vector loops every pass above left, each where it will run)
   if (cfg.hoistVectorConsts === true) time('hoistVectorConsts', () => hoistVectorConsts(optimized))
   return optimized
