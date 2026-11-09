@@ -38,6 +38,7 @@ import { skipLatches } from './skip-latches.js'
 import { guardExtremes } from './extreme-guards.js'
 import { hoistStillLoads } from './still-loads.js'
 import { pairTests } from './pair-tests.js'
+import { relaxExtremes } from './relaxed-extremes.js'
 import { foldTestedChoices } from './tested-choices.js'
 import { carryStores } from './carry-stores.js'
 import { pointerExits } from './pointer-exits.js'
@@ -775,6 +776,9 @@ export function watrTail(module, cfg, {
   // (the same: an inliner would splice a pass back into the function that runs once)
   if (cfg.loopPasses === true) time('loopPasses', () => loopPasses(optimized, { user }))
   if (cfg.splitFuncs === true) time('splitFuncs', () => splitFuncs(optimized, { fnMin: cfg.splitFn, fnTo: cfg.splitTo, armMin: cfg.splitArm }))
+  // (on the vector loops every pass above left, each where it will run: a round's lane extremes
+  // relaxed, tested once, the engine asked once a call)
+  if (cfg.relaxExtremes === true && cfg.relaxedSimd === true && !ctx.transform.noSimd) time('relaxExtremes', () => relaxExtremes(optimized))
   // (last: on the vector loops every pass above left, each where it will run)
   if (cfg.hoistVectorConsts === true) time('hoistVectorConsts', () => hoistVectorConsts(optimized))
   return optimized

@@ -210,6 +210,7 @@ const TESTS = [
   'share-quotients',
   'skip-latches',
   'extreme-guards',
+  'relaxed-extremes',
   'exit-tests',
   'still-loads',
   'pair-tests',

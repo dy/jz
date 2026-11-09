@@ -225,8 +225,9 @@ function cli(args) {
   try {
     if (!isWasm) {
       wasm = join(dir, 'jz.wasm')
-      // wasm2c mistranslates return_call with multi-value results: plain calls instead.
-      const r = spawnSync(process.execPath, [CLI, input, ...jz, '--host', 'wasi', '--no-tail-call', '-o', wasm], { stdio: ['ignore', 'ignore', 'inherit'] })
+      // wasm2c mistranslates return_call with multi-value results: plain calls instead. And
+      // WABT 1.0.39's reads no relaxed SIMD, 1.0.41's no f64x2.relaxed_min: standard SIMD only.
+      const r = spawnSync(process.execPath, [CLI, input, ...jz, '--host', 'wasi', '--no-tail-call', '--no-relaxed-simd', '-o', wasm], { stdio: ['ignore', 'ignore', 'inherit'] })
       if (r.status !== 0) { drop(); process.exit(r.status || 1) }
     }
     wasm2native(wasm, out, { dir, cflags: [...CFLAGS, ...(process.env.CFLAGS?.split(/\s+/).filter(Boolean) ?? [])], tools })

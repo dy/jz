@@ -691,9 +691,12 @@ const compileJz = c => {
 // w2c2 strips non-alnum outright; current w2c2 adds length prefixes and
 // escapes, and its host reads the generated header to select the matching ABI.
 // wasm2c gets a fixed module name instead (`-n jz`, scripts/native/compile.mjs).
+// And relaxed SIMD off: WABT 1.0.39's wasm2c reads none of it, and 1.0.41's no f64x2.relaxed_min
+// ("unexpected opcode: 0xfd 0x8f 0x2"), which a round's lane extremes take
+// (src/optimize/relaxed-extremes.js).
 const w2cWasmPath = c => join(caseBuild(c), `${c.id}nt.wasm`)
 const compileJzW2c = c => {
-  const optimize = { level: 'speed', tailCall: false, ...(EH_ABORT_VARIANT.has(c.id) ? { exceptions: false } : {}) }
+  const optimize = { level: 'speed', tailCall: false, relaxedSimd: false, ...(EH_ABORT_VARIANT.has(c.id) ? { exceptions: false } : {}) }
   if (OWN_GRAPH.has(c.id)) return writeFileSync(w2cWasmPath(c), compileJzWasi(c, optimize))
   execFileSync('node', [join(ROOT, 'cli.js'), c.js, '--host', 'wasi', '-O', JSON.stringify(optimize), '-o', w2cWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
 }

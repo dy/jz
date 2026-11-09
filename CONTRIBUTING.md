@@ -114,6 +114,39 @@ operator by operator. A frustum's six plane tests of a sphere
 between literals against a literal into the choice between its answers: a flag kept
 as a Number that the optimizer folds into one value (`(f64.ne (select 0 1 c) 0)`)
 is `(i32.eqz c)`, no float select for x64 to branch around.
+Last before the vector constants leave their loops, `relaxExtremes`
+(src/optimize/relaxed-extremes.js, speed tier, relaxed SIMD) takes a round's lane
+minima and maxima with f64x2.relaxed_min and relaxed_max. V8 lowers f64x2.min and max
+on x64 to seven and eight instructions, two minpd or maxpd and the steps that mend
+their NaN and signed-zero answers, and the relaxed ones to one minpd or maxpd; arm64
+runs all four as one fmin or fmax. Over operands none of which is NaN, every answer
+the specification lets a relaxed operator give is the extreme's value, wrong at most
+in the sign of a zero, so a tree of them (the lane extremes nested in one another)
+over such leaves answers each node's value, and a root that is not zero exactly. The
+round computes its trees into locals ahead of what reads them, its leaves in locals
+that hold them through one test: the sum of the leaves times every root, zero or NaN
+where a leaf is NaN or a root zero (or where a sum cancels or a product underflows).
+Where that fails, a second test looks for a NaN reaching a root or a leaf off the
+chains (below) and for a -0 leaf, and only where it finds one are the trees taken again
+with f64x2.min and max: a clamp to 0 or a color's zero channel makes zero roots, which
+pass the second test. Each call asks the engine once, through a NaN in a mutable
+global it cannot fold, how relaxed_min and relaxed_max answer a NaN and a number in
+each order (the specification fixes a run's answers), and the loop runs as a copy for
+the answer: IEEE's (arm64) a copy that tests nothing and carries none of the test's
+code (an Apple M4 ran hwb's round 0.85x to 1.04x from one process to the next with that
+code in it, never run); the other copy tests. A NaN reaches a tree's root along its
+chain of second operands where the engine answers the second (V8's minpd on x64), of
+first operands where it answers the first; the two chains part at the root, and each
+tree is ordered for its chains to end at leaves another tree's chains cover under the
+other answer, so a minimum and a maximum of the same leaves leave one to the sum. Any
+other answer takes the trees again every round. A tree later in the round moves up
+to the first past statements that neither branch nor call, touch none of its locals
+and, where it loads, store nothing (a store's address goes into a local first); a
+tree inside a construct of the round stays, as does one writing a local an earlier
+tree's root is (the trees taken again in order would read each other's relaxed
+values). The bench's jz → wasm2c lane and
+scripts/native/compile.mjs build without relaxed SIMD: WABT 1.0.39's wasm2c reads
+none of it, 1.0.41's no f64x2.relaxed_min (nor, on base, pcmconvert's relaxed_trunc).
 Before watr, `stillLoads` (src/optimize/still-loads.js, speed tier) reads ahead of
 a loop that writes no memory, calls nothing and sets no global the loads every
 round runs before anything can branch, at addresses the loop holds still, with the

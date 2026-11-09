@@ -193,6 +193,7 @@ export const TUNING_KEYS = [
   'sinkStores',               // a loop's every-round store to a slot nothing in it reads is a local, stored as the loop leaves (optimize/sink-stores.js, speed tier)
   'skipLatches',              // a test that skips a loop's inner scan runs the rest of the round in a copy of its own (optimize/skip-latches.js, speed tier)
   'guardExtremes',            // a loop's running minimum or maximum is taken after the loop where the round's test says it changes (optimize/extreme-guards.js, speed tier)
+  'relaxExtremes',            // a round's lane minima and maxima take the relaxed operators, tested once where the engine's are not IEEE's (optimize/relaxed-extremes.js, speed tier)
   'joinExitTests',            // a loop of a few passes leaving at its first hit is written out, its tests joined (compile/plan/exit-tests.js, speed tier)
   'stillLoads',               // a loop that writes no memory and calls nothing reads its invariant loads once before it (optimize/still-loads.js, speed tier)
   'pairTests',                // tests of one shape joined by | or & run two to a vector (optimize/pair-tests.js, speed tier)
