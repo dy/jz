@@ -1962,7 +1962,11 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (n[0] === '=>') return false
       const v = versions.get(n)
       if (!v) return
-      const hoist = v.names.every(x => (!loopWrites.has(x) && stableBound(x)) || cursors.has(x)), ab = hoist ? null : absorbs.get(n)
+      // (a cursor of this copy is an int32 every round, not the value an inner test captured
+      // into an alias where the copy enters: a version capturing one is absorbed, its alias
+      // taken from the cursor's word each round)
+      const captured = new Set(v.conj?.nameTests.map(t => t.n))
+      const hoist = v.names.every(x => (!loopWrites.has(x) && stableBound(x)) || cursors.has(x) && !captured.has(x)), ab = hoist ? null : absorbs.get(n)
       if (!hoist && !ab) return false
       if (hoist) {
         if (v.test) innerTests.push(v.aliases.length ? cloneWithSubst(v.test, new Map(), own) : v.test)

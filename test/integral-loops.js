@@ -2228,6 +2228,28 @@ test('integral loops: a stride cursor enters tested, an accumulator by a stride 
   ok(!names('sum').some(n => n.includes(`${T}stride`)), 'no word for an accumulator')
 })
 
+// A cursor stepped by a stride around an inner loop indexing by it (an overlap-add's
+// `pos += o.hop` over a frame): the inner copy's test of the cursor, taken where the
+// outer copy enters, held its word of the entry value, every frame added at 0.
+test('integral loops: an inner loop reads a stride cursor where each round leaves it', () => {
+  const kernel = (name, step, bound = 'o.n') => `export function ${name}(n, h) { const o = { n, h }, a = [n, h]
+    const d = new Float32Array(16).map((_, i) => i % 5), out = new Float64Array(d.length + 4 * n + 64); let pos = 0
+    for (let f = 0; f < 3; f++) { for (let i = 0; i < ${bound}; i++) out[pos + i] += d[i]; ${step} }
+    let s = 0; for (let i = 0; i < out.length; i++) s += out[i] * (i + 1); return s }`
+  const src = [kernel('field', 'pos += o.h'), kernel('elem', 'pos += a[1]'), kernel('param', 'pos += h'),
+    kernel('twice', 'pos += o.h; pos += o.h'), kernel('scaled', 'pos += o.h * 2'), kernel('arm', 'if (f > 0) pos += o.h')].join('\n')
+  const host = oracle(src)
+  for (const optimize of levels(0, 2, 3)) {
+    const m = jz(src, { optimize }).exports
+    for (const name of Object.keys(host)) for (const [n, h] of [[8, 2], [6, 1], [8, 3], [5, 0]])
+      is(m[name](n, h), host[name](n, h), `O${optimize}: ${name}(${n}, ${h})`)
+  }
+  if (belowOpt(2)) return
+  compileInProcess(src)
+  const names = (f) => { const out = new Set(); walkAst(ctx.funcs.list.find(g => g.name === f)?.body, { enter: n => { for (const x of n) if (typeof x === 'string') out.add(x) } }); return [...out] }
+  ok(names('field').some(n => n.includes(`${T}stride`)), 'the cursor steps by its stride\'s word')
+})
+
 test('integral loops: a loop stepped by a literal counts its trips, a cursor of a short loop inside it a word of its copy', () => {
   // a frame's slices (QOA's shape): `slice += 20` around a loop over the channels
   // stepping the stream cursor; the copy is the outer loop's, one guard for the
