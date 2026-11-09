@@ -429,9 +429,12 @@ function compileModule(source, strict, optJSON, modulesJSON, host, sourceType, b
     // and parked, where it sat under the tape's columns and the lane: the
     // compile state starts afresh, nothing reading it again this compile, and
     // the compile's memory keeps what the module, link's facts and the tail's
-    // inputs reach (`releaseTo`). Every reader past here takes `inputs`.
-    resetTape()
+    // inputs reach (`releaseTo`). Every reader past here takes `inputs`. The
+    // tape starts afresh after it: with its empty columns made above the mark,
+    // a kernel forced down this path on a small program threw the columns'
+    // first growth's RangeError (`offset is out of bounds`) once they moved.
     const inputs = releaseTo(heapMark, [assembled.module, assembled.link, cfg, facts])
+    resetTape()
     const root = fromWat(inputs[0])
     const kept = checkpointTape([root, inputs[1], inputs[2], inputs[3]])
     cfg = kept[2]; facts = kept[3]
