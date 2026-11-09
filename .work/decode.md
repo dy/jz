@@ -309,9 +309,49 @@ second the lab now warms; the steady-state table agrees on both (qoa 0.85×, ms-
   record's `samplesPerBlock` (`| 0`), hoisting `ch[0]`, `ch[1]`, the other codecs' paths,
   the walk budgets of word-ranges and interval-proof. Its `pr` is f64 where k6's is an i64
   word; masking `nib &= 15` in `expand` makes it a word and the decode slower (182 µs).
-  Not diagnosed.
+  Diagnosed and fixed below (growth).
 - A row read by a key that is a Number or undefined (`coefs[predIdx[c]]`, an Int32Array
   element at an index that may miss) takes the keyed dispatch, about 1,500 lines of inlined
   property lookup, where on an array with no numeric property and none named "undefined"
   the read is undefined or the read by the Number. Tried: a minimal kernel's function went
   1,662 → 189 lines; decode-wav's MS loop the same speed, its WAT 460 lines larger. Not kept.
+
+## Fixed (branch perf, growth)
+
+MS ADPCM's loop as written runs at 95 µs, ahead of V8's 105, with the integral versions off
+(`versionIntegralLoops: false`): its fast copy is the specializer's (optimize/specialize.js),
+whose element reads hit, so `pr` is an i64 word. With the integral versions on, `decodeMsWav`
+grows past `IR_FULL` (room -3587), and past it the specializer copies kernel loops alone:
+the MS loops call `__throw_property_nullish`, a kernel call, and `__ptr_offset_fwd`, which
+was not one, so they stayed as written, every read checked and `pr` an f64.
+
+| | Change | Decoder before → after (steady state) |
+|---|---|---|
+| growth | The chase of a moved array's forwarding is a kernel's call (src/growth.js `kernelCall`): a loop takes it only where a header test says its array moved, and spends no round in it; the call only reads | wav ima-adpcm 0.96× → 1.24×, ms-adpcm 0.81× → 1.19× |
+
+decode-wav's wasm 158 → 174 KB and decode-aiff's 173 → 185 KB (aiff no faster); the bench's
+decode-wav case (16-bit) runs as before (646–656 µs against 649–655 paired). Of the bench corpus
+only decode-wav compiles differently; tta, qoa and caf compile to the same wasm.
+
+## Measured: TTA (not fixed)
+
+16-bit, steady state on main fb5705166: jz 13.06 ms, V8 11.40 (0.87×). By function (names on):
+`decodeValue` 38%, the bit reader's `unary` closure 24%, `decodeFrame` 5%. `unary` calls
+`bit()` through the closure ABI for every bit (six arguments, an f64 result tested for
+truthiness), its counter a guarded i64; `bit` reads `n` as an f64 cell (`if (!n)` a NaN-aware
+test, `n--` an f64 store) and calls `fill` the same way. Diagnostic copies, both engines:
+
+| copy | jz | V8 |
+|---|---|---|
+| as published | 13.06 ms | 11.40 ms |
+| `bit` written into `unary` | 11.83 | 10.96 |
+| `n`'s writes `| 0` | 12.91 | 11.43 |
+| both | 11.49 (0.96×) | 11.05 |
+| `bit()` out of the loop test (`if (!bit()) return c`) | 13.30 | 11.68 |
+
+So the splice of `bit` into `unary` is most of the gap and the loop test is not what stops it:
+the source inliner splices module functions, and these are closures, called directly only
+after the WAT devirtualization; `inlineTiny` (optimize/inline-tiny.js), which could splice
+such a call, runs at the speed tier alone and excludes a callee that calls the program (`bit`
+calls `fill`). Splicing a closure called directly into its sibling closures at the default
+level is a size-for-speed decision of the tiers, left open.

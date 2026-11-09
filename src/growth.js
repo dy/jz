@@ -21,10 +21,11 @@
  * accumulator) runs the loop's own arithmetic in words, vectorized, or past a
  * test it answered once; a call in the loop runs as it did. A kernel loop,
  * one calling nothing but the math kernels, the integer conversion and
- * remainder and a throw (judged in the version, where the version exists to
- * drop the loop's calls), spends every iteration in what its version speeds
- * up: waves' `frame` takes 0.77x the time with its versions (the CPU time of
- * 40 frames at 640x480, warm). A loop that calls into the runtime or the
+ * remainder, a throw and a moved array's forwarding chase, which its header
+ * test takes for a moved array alone (judged in the version, where the version
+ * exists to drop the loop's calls), spends every iteration in what its version
+ * speeds up: waves' `frame` takes 0.77x the time with its versions (the CPU
+ * time of 40 frames at 640x480, warm). A loop that calls into the runtime or the
  * program spends its iterations in the callees: watr, whose `normalize` is
  * versioned around its property reads, pushes and string indexes, runs no
  * faster for those versions with the baseline tier off (1.72 ms with them,
@@ -81,9 +82,10 @@ export const kernelLoop = (loop) => !some(loop, n => n[0] === 'new' || n[0] === 
   n[0] === '()' && n.length > 2 && !(typeof n[1] === 'string' && n[1].startsWith('math.') && n[1] !== 'math.random'))
 
 // The calls a kernel makes: the math kernels, the integer conversion and
-// remainder, and a throw, which never comes back to the loop.
+// remainder, a throw, which never comes back to the loop, and the chase of a
+// relocated array's forwarding, which runs only where its header says it moved.
 const kernelCall = (name) => typeof name === 'string' &&
-  (pureKernel(name) || name === '$__to_int32' || name === '$__rem' || name.startsWith('$__throw_'))
+  (pureKernel(name) || name === '$__to_int32' || name === '$__rem' || name.startsWith('$__throw_') || name === '$__ptr_offset_fwd')
 
 /** Whether IR code (a loop, or the version that would run in its place) is a
  *  kernel's: it calls nothing but `kernelCall`s. */
