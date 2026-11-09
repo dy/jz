@@ -981,9 +981,9 @@ runs as phases of its own (scripts/self.js phaseEach), each taking items until t
 heap grew by a quarter of the address space left above its mark (a compile far from
 the end of memory runs it as one phase and walks no more): one phase held every
 function's garbage to its end,
-and on the compiler's own module it grew from 2.62 GB past the end of the address
-space. Six phases of 131 to 376 MB now take it, each compacted to what it made
-reachable, the heap at most 3.05 GB at a phase's end.
+and on the compiler's own module it grew from 2,624 MiB past the end of the address
+space. Six phases of 131 to 376 MiB now take it, each compacted to what it made
+reachable, the heap at most 3,053 MiB at a phase's end.
 
 Captured locals receive their cells independently, before a use that dominates
 all references. Allocation enters a conditional arm only when every reference
