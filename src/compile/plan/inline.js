@@ -181,10 +181,12 @@ const firstRead = (node, name) => {
   }
   return false
 }
-// A loop's test reads its bound by name: the versioning that takes the loop's counter
-// integral holds a bound of names, and an argument computed in the test is none.
-const readInTest = (node, name) => Array.isArray(node) && node[0] !== 'str' && node[0] != null &&
-  (LOOP_OPS.has(node[0]) && readCount(node[0] === 'for' ? node[2] : node[1], name) > 0 || node.slice(1).some(n => readInTest(n, name)))
+// A read a loop runs, in its test, its update or its body, runs once an iteration: an
+// argument computed there is computed again each time, and what takes the loop by its
+// names holds none of it (the versioning that takes the counter integral holds a bound
+// of names, a guarded arm takes a word of a binding its index adds).
+const readInLoop = (node, name) => Array.isArray(node) && node[0] !== 'str' && node[0] != null &&
+  (LOOP_OPS.has(node[0]) ? node.slice(node.length === 5 ? 2 : 1).some(n => readCount(n, name) > 0) : node.slice(1).some(n => readInLoop(n, name)))
 const readCount = (node, name) => {
   if (node === name) return 1
   if (!Array.isArray(node) || node[0] === 'str' || node[0] == null) return 0
@@ -260,7 +262,7 @@ const inlinedBody = (func, args) => {
     const arg = i < args.length ? args[i] : dflt != null ? cloneWithSubst(dflt, subst, new Map()) : [null, undefined]
     const name = params[i].name
     const direct = !closures && !func.defaults &&
-      (typeof arg === 'string' || readCount(func.body, name) === 1 && !readInTest(func.body, name)) && stableArgument(arg, roots, args) ||
+      (typeof arg === 'string' || readCount(func.body, name) === 1 && !readInLoop(func.body, name)) && stableArgument(arg, roots, args) ||
       leaf && args.every((a, j) => j === i || isLiteral(a)) &&
       ((readCount(leaf, name) === 1 && firstRead(leaf, name)) ||
         (typeof arg === 'string' && noCoercion(leaf)))

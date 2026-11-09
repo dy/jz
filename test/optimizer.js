@@ -9235,6 +9235,36 @@ test('an argument a spliced loop tests is bound once before it, so the loop it b
   is(jz(src, { optimize: { level: 'speed' } }).exports.main(100), oracle(src).main(100))
 })
 
+test('an argument a spliced loop body reads is bound once before the loop, so its guarded arm takes a word of it', () => {
+  // `r * 0.5` is read once in the callee's text, at an index of its loop's body:
+  // substituted there it is computed every iteration and no binding the guard can
+  // prove whole, so the copy stayed a byte loop and the sums scalar. Bound to a local
+  // once, the guarded arm reads a word of it (a fractional start fails the guard
+  // into the checked arm, which reads undefined as JS does).
+  if (onKernel()) return
+  const drive = (call) => `export let main = (m) => {
+      const x = new Float64Array(256), y = new Float64Array(64)
+      for (let i = 0; i < 256; i++) x[i] = i * 3 + 1
+      let t = 0
+      for (let r = 0; r < m; r++) t += ${call}
+      return t
+    }`
+  const kernels = {
+    'a copy lifts to memory.copy': [/memory\.copy/, `function take(src, at, n) { const out = new Float64Array(n); for (let k = 0; k < n; k++) out[k] = src[at + k]; let s = 0; for (let k = 0; k < n; k++) s += out[k] * k; return s }
+      ${drive('take(x, r * 0.5, 64)')}`],
+    'a window sum vectorizes': [/f64x2/, `function win(src, at, n) { let s = 0; for (let k = 0; k < n; k++) s += src[at + k]; return s }
+      ${drive('win(x, r * 0.5, 64)')}`],
+    'a scaled copy vectorizes': [/f64x2/, `function scale(src, dst, at, n) { for (let k = 0; k < n; k++) dst[k] = src[at + k] * 2; return dst[1] }
+      ${drive('scale(x, y, r * 0.5, 64)')}`],
+  }
+  for (const [name, [shape, src]] of Object.entries(kernels)) {
+    const text = compile(src, { wat: true, optimize: { level: 'speed' } })
+    ok(!/\(func \$(take|win|scale)\b/.test(text) && shape.test(text), name)
+    const m = jz(src, { optimize: { level: 'speed' } }).exports, host = oracle(src)
+    for (const n of [0, 1, 2, 9]) is(m.main(n), host.main(n), `${name}: main(${n})`)
+  }
+})
+
 test('an unrolled strided kernel spliced through a closure takes its canonical counted form', () => {
   // stdlib's ddot shape (an offset helper, a remainder loop, a main loop
   // unrolled by a module constant) spliced into a closure that is itself

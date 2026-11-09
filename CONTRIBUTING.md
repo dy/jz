@@ -382,8 +382,11 @@ single first operand, or reread a binding when its whole expression cannot
 invoke user code. Caller-local bindings no closure captures also substitute
 when neither the remaining arguments nor the callee writes them. Single-use
 Number arithmetic over those bindings follows the same proof unless a loop of
-the callee tests it: the versioning that takes a counter integral holds a bound of
-names (a sweep's `fn( n - (i & 7), x, y )` and its vectorized dot product). Other arguments
+the callee reads it, in its test, its update or its body: there it runs once an
+iteration, and what takes the loop by its names holds none of it. The versioning
+that takes a counter integral holds a bound of names (a sweep's `fn( n - (i & 7), x, y )`
+and its vectorized dot product); a guarded arm takes a word of a binding its index
+adds (`frame( src, s * 0.5, 100 )` copying `src[ start + k ]` lifts to `memory.copy`). Other arguments
 retain captures; alias/local passes can remove copies after proving their
 sources stay unchanged. A closure splice takes a proof of its own: the closure's
 bindings no closure inside it mentions, and the bindings around it that nothing
