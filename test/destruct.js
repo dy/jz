@@ -1073,3 +1073,37 @@ test('destruct: a pattern beside another declarator keeps that declarator', () =
     is(h([4, 5]), js.h([4, 5]), `h O${optimize}`)
   }
 })
+
+// An object pattern tests its source by a call of the runtime that throws,
+// typed as no value (`d ?? __destructure_nullish()`): no closure in the body, so a
+// filter destructuring its record (TTA's hybridFilter) splices into the loop
+// calling it, as a body without the pattern does.
+test('destruct: an object pattern\'s nullish test is no closure', () => {
+  const src = `
+    function filt(ch, v) {
+      let { q, d } = ch
+      if (ch.e < 0) for (let i = 0; i < 4; i++) q[i] -= d[i]
+      else if (ch.e > 0) for (let i = 0; i < 4; i++) q[i] += d[i]
+      let sum = ch.r
+      for (let i = 0; i < 4; i++) sum = (sum + Math.imul(d[i], q[i])) | 0
+      d[0] = d[1]; d[1] = d[2]; d[2] = d[3]; d[3] = v
+      ch.e = v
+      return (v + (sum >> 9)) | 0
+    }
+    export let g = (src, n) => {
+      const ch = { q: new Int32Array(4), d: new Int32Array(4), e: 0, r: 256 }
+      let acc = 0
+      for (let i = 0; i < n; i++) acc = (acc + filt(ch, src[i] - 128)) | 0
+      return acc
+    }
+    export let pick = (o) => { try { let { a, b } = o; return a * b } catch (e) { return e.name + ': ' + e.message } }`
+  const js = oracle(src), input = new Uint8Array(512).map((_, i) => (i * 37 + 11) & 255)
+  for (const optimize of levels(0, 2, 3, 'size')) {
+    const { g, pick } = jz(src, { optimize }).exports
+    is(g(input, 512), js.g(input, 512), `g O${optimize}`)
+    is(pick({ a: 6, b: 7 }), 42, `present O${optimize}`)
+    for (const v of [null, undefined]) is(pick(v), 'TypeError: Cannot destructure null or undefined', `${v} O${optimize}`)
+  }
+  if (belowOpt(3)) return
+  is((compile(src, { wat: true, optimize: 'speed' }).match(/call \$filt\b/g) || []).length, 0, 'the filter splices into its loop at the speed tier')
+})

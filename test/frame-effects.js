@@ -1605,19 +1605,25 @@ test('frame effects: a call through a record field names the closures it runs', 
   is(frame.closures.size, 1, 'the field\'s closure runs here')
 })
 
-// A destructuring of a value that may be missing throws by an arrow called in
-// place (`o ?? (() => { throw TypeError(…) })()`): the arrow runs here and
-// nowhere else, its sites the frame's, no computed callee.
+// An arrow called in place (`o ?? (() => { throw TypeError(…) })()`) runs here
+// and nowhere else: its sites are the frame's, no computed callee. A
+// destructuring's own test of a missing source is a call of the runtime
+// (`__destructure_nullish`), which the census lists as making its error.
 test('frame effects: an arrow called where it stands is walked in the frame', () => {
-  const src = `export function f(k, o) { const t = new Float64Array(k + 2); let { a, b } = o; t[0] = a + b; return t[0] }`
+  const src = `export function f(k, o) { const t = new Float64Array(k + 2); const v = o ?? (() => { throw TypeError('missing') })(); t[0] = v.a + v.b; return t[0] }
+    export function g(k, o) { const t = new Float64Array(k + 2); let { a, b } = o; t[0] = a + b; return t[0] }`
   for (const optimize of levels(0, 2, 3)) {
-    const f = jz(src, { optimize }).exports.f
-    is(f(1, { a: 2, b: 3 }), 5, `O${optimize}: present`)
-    let threw = null
-    try { f(1, undefined) } catch (e) { threw = e }
-    ok(threw instanceof TypeError, `O${optimize}: a missing value throws TypeError`)
+    const m = jz(src, { optimize }).exports
+    for (const name of ['f', 'g']) {
+      is(m[name](1, { a: 2, b: 3 }), 5, `O${optimize}: ${name} present`)
+      let threw = null
+      try { m[name](1, undefined) } catch (e) { threw = e }
+      ok(threw instanceof TypeError, `O${optimize}: ${name} throws TypeError for a missing value`)
+    }
   }
   compileInProcess(src, { optimize: 2 })
-  const frame = ctx.funcs.list.find(f => f.name === 'f').frame
-  is(frame.callsUnknown, false, `no unknown call: ${frame.siteWhy}`)
+  for (const name of ['f', 'g']) {
+    const frame = ctx.funcs.list.find(f => f.name === name).frame
+    is(frame.callsUnknown, false, `${name}: no unknown call: ${frame.siteWhy}`)
+  }
 })

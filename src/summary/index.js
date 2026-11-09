@@ -2439,6 +2439,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       // for…in's key list: property keys, strings, in an array of the call's own
       if (callee === '__keys_ro' || callee === '__keys_dyn') { if (!node) return kind(K.ARRAY); const out = arrayOf(node, K.NONE); raiseElem(out, STRING); return out }
       if (callee === '__hide_member') return NUMBER // metadata only; the preceding assignment owns the value write
+      if (callee === '__destructure_nullish') return K.NONE // a throw: the test of a destructured source (prepare/handlers.js)
       if (callee === '__tdz') return K.NONE // a frame field before its binding's step (src/ast.js TDZ_VALUE)
       // the async runtime's proof that a value is one of its promises, and the promise it then is (std/async.js)
       if (callee === '__p_is' || callee === '__p_plain') return BOOL

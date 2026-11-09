@@ -2964,6 +2964,7 @@ export default (ctx) => {
   ctx.core.emit['__data_prop'] = (obj, prop) => emitPropAccess(emit(obj), obj, prop[1])
   // A native brand guard is demanded by emitted wrappers, not source throws.
   ctx.core.emit.__throw_method_receiver = () => throwErrorIR('TypeError', 'incompatible method receiver')
+  ctx.core.emit.__destructure_nullish = () => throwErrorIR('TypeError', 'Cannot destructure null or undefined')
 
   ctx.core.emit['__data_key'] = (obj, key) => {
     if (ctx.transform.targetProfile.envImports && hasExternalIngress()) setLinkDemand('external')

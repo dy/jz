@@ -212,6 +212,7 @@ const CALL_MODULES = dict({
   '__gen_mark': ['core'],
   '__tdz': ['core'],
   '__present': ['core'],
+  '__destructure_nullish': ['core'],
   '__p_is': ['core'],
   '__p_cast': ['core'],
   '__p_plain': ['core'],

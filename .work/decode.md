@@ -428,3 +428,43 @@ channels[c][i] = … }`) reduced:
   that crosses it. Moving the test after the splice (caller plus callee past `SOURCE_FULL`) did
   not stop it: the second splice is of a callee with no loop of its own when the kernels are
   counted. Not diagnosed further.
+
+## Fixed (branch perf, the destructuring's test, a cursor near 2^31, the counted landing)
+
+| | Change | Effect |
+|---|---|---|
+| G10 | An object pattern tests its source by a call of the runtime the summary types as no value (`d ?? __destructure_nullish()`, prepare/handlers.js, module/core.js), where an arrow called in place threw | no closure in the body: the speed tier's source inliner splices TTA's `hybridFilter` (its `throw` test reached into the arrow), integral-loops copies QOA's slice loop |
+| G11 | An inner version reads a name of the enclosing copy as an int32 only where the loop does not write it (plan/integral-loops.js `int32Now`) | a miscompile on main: a cursor entering an int32 and stepped past 2^31 - 1 in an arm of the round (`if (v >= 0) p += 2`) came back wrapped (-2147483647 for 2147483649) at O2 and the speed tier |
+| G12 | The counted landing is `entry + K·(trips \| 0)` (plan/counted-loops.js): under its guard the trips are a word | the cursor reaches the next round's entry as an integer: AIFF's frame loop no longer rounds `p` through a float per frame |
+| G13 | kind-split keeps a `for` head in each copy unless the test reads a name it declares (plan/kind-split.js) | `for (let i = 0; i < frames; i++)` keeps its trips for integral-loops in each copy |
+
+G11 was found by G12: the landing made the cursor an integer to the copy, and the frame's
+copy then held it as an int32 for the inner versions; the same wrap is reachable on main with no
+counted loop at all (the arm step). The test pins both shapes at each level.
+
+Lab, steady state at the speed tier (V8 time over jz time), main against the branch: aiff pcm16
+0.62× → 0.83× (3.09 → 2.28 ms), aiff pcm24 0.71× → 0.91× (3.01 → 2.41 ms), qoa 0.85× → 0.95×
+(4.52 → 4.05 ms), tta 16-bit 0.89× → 0.99× (14.11 → 12.68 ms), tta 24-bit 0.85× → 0.95×, tta 6ch
+0.87× → 0.99×; every other row within run-to-run spread (caf ima4 read 157 / 166 µs once, 157–161 µs
+both ways re-run). The AIFF kernel (decodePCM_BE as published, called with a literal offset and a
+header's, the channel count a Number): 3.26 → 2.36 ms, V8 1.79; it runs more wasm instructions
+than main (87.3M against 84.2M) and the frame round's entry reads the cursor as a word, where
+main rounded it through a float on the path one frame's cursor hands the next.
+
+Bench, paired eight rounds against main aecdba61f (Apple M4 Max, the speed tier): decode-tta 0.878×
+the time, webaudio 0.981×, decode-qoa 1.043×, decode-dsd 1.020× (rounds 0.968–1.037); fftplan,
+stdlib-ddot, watr, wav, decode-wav and worley within 1% (worley's wasm 10.7 → 6.1 kB gzipped).
+
+## Measured: decode-qoa in the bench (not fixed)
+
+G10 makes the QOA decoder faster in the lab (4.54 → 4.09 ms at the speed tier) and 4% slower in
+the bench. Both builds of the bench case run the same wasm instructions in `frame` (1.6808e9
+against 1.6815e9 a run, the hot loop's straight-line runs alike); with V8's wasm inlining off
+(`--no-wasm-inlining`) the branch is the faster, 2.47 against 2.58 ms. What the bench's frame loop
+keeps and the lab's does not is a call per sample: `out[s + i] = …` is the polymorphic element
+store (`__arr_typed_obj_set_idx`, warning `deopt-dyn-write` at frame:97), which V8 inlines into
+`frame` within a budget its size sets; G10's slice copy grows `frame` past it. The store is opaque
+because the program itself reads the decoded record's `channelData` (the bench's checksum): the
+bundled decoder exporting `decodeQoa` types the store, the same code with `export const main =
+(b) => decodeQoa(b).channelData.length` does not, at every level, where one returning the record
+whole or its `sampleRate` does. Next: why a read of the field leaves the element kind of the array `frame` makes open.
