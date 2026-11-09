@@ -26,9 +26,11 @@
  * the time of f64x2.min on x64, the second test 0.88x to 0.90x.
  *
  * Each call asks the engine once, before its first statement, how it answers
- * relaxed_min and relaxed_max of a NaN and a number in both orders, the NaN read from
- * a global the engine cannot fold, and the loop runs as a copy for the answer. Both
- * NaN is IEEE's answer (arm64's fmin): a copy that tests nothing, its relaxed
+ * relaxed_min and relaxed_max of a NaN and a number, and of zeros of two signs, in both
+ * orders, the NaN and the -0 read from globals the engine cannot fold, and the loop runs
+ * as a copy for the answer. Both NaN, -0 the minimum and +0 the maximum, is IEEE's
+ * answer (arm64's fmin; the specification lets an engine answer the NaN so and still
+ * either zero): a copy that tests nothing, its relaxed
  * operators exact, and none of the test's code in its round (on an Apple M4 that code,
  * never run there, made hwb's round run anywhere from 0.85x to 1.04x the time from
  * one process to the next). The other copy tests. Where the engine answers the second
@@ -58,7 +60,7 @@ const RELAX = { 'f64x2.min': 'f64x2.relaxed_min', 'f64x2.max': 'f64x2.relaxed_ma
 const LABELLED = new Set(['block', 'loop', 'if', 'try', 'try_table'])
 const LISTS = new Set(['func', 'block', 'loop', 'then', 'else'])
 const HEADER = new Set(['export', 'param', 'result', 'local', 'type'])
-const NAN = '$__rnan'
+const NAN = '$__rnan', NEG_ZERO = '$__rnz'
 
 const isTree = (n) => isArr(n) && EXACT.has(n[0]) && n.length === 3
 const local = (n) => isArr(n) && (n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee')
@@ -307,16 +309,23 @@ export function relaxExtremes(ast) {
     const k = name('i32'), v = name('v128'), a = name('v128'), b = name('v128')
     const nanAt = (lane, other) => ['f64x2.replace_lane', lane, ['v128.const', 'f64x2', ...other], ['global.get', NAN]]
     const nans = (op, x, y) => ['i64x2.bitmask', ['f64x2.ne', ['local.tee', v, [op, x, y]], ['local.get', v]]]
+    // (and of zeros of two signs, each order a lane: a NaN answered as IEEE's implies no -0 below +0)
+    const zeroAt = (lane) => ['f64x2.replace_lane', lane, ['v128.const', 'f64x2', '0', '0'], ['global.get', NEG_ZERO]]
+    const signs = (op) => ['i64x2.bitmask', [op, ['local.get', a], ['local.get', b]]]
     const ask = [
-      ['local.set', names.check, ['i32.ne', ['local.tee', k, ['i32.or',
+      ['local.set', k, ['i32.or',
         nans('f64x2.relaxed_min', ['local.tee', a, nanAt(0, ['0', '1'])], ['local.tee', b, nanAt(1, ['1', '0'])]),
-        ['i32.shl', nans('f64x2.relaxed_max', ['local.get', a], ['local.get', b]), ['i32.const', 2]]]], ['i32.const', 15]]],
+        ['i32.shl', nans('f64x2.relaxed_max', ['local.get', a], ['local.get', b]), ['i32.const', 2]]]],
+      ['local.set', a, zeroAt(0)], ['local.set', b, zeroAt(1)],
+      // the copy that tests nothing: both NaN, and the minimum of the zeros both -0, the maximum both +0
+      ['local.set', names.check, ['i32.or', ['i32.ne', ['local.get', k], ['i32.const', 15]],
+        ['i32.ne', ['i32.or', signs('f64x2.relaxed_min'), ['i32.shl', signs('f64x2.relaxed_max'), ['i32.const', 2]]], ['i32.const', 3]]]],
       ['local.set', names.fix, ['i32.and', ['i32.ne', ['local.get', k], ['i32.const', 10]], ['i32.ne', ['local.get', k], ['i32.const', 5]]]],
     ]
     let at = typeof fn[1] === 'string' ? 2 : 1
     while (at < fn.length && isArr(fn[at]) && HEADER.has(fn[at][0])) at++
     fn.splice(at, 0, ...decls, ...ask)
   }
-  if (any) ast.splice(firstFunc, 0, ['global', NAN, ['mut', 'f64'], ['f64.const', 'nan']])
+  if (any) ast.splice(firstFunc, 0, ['global', NAN, ['mut', 'f64'], ['f64.const', 'nan']], ['global', NEG_ZERO, ['mut', 'f64'], ['f64.const', '-0']])
   return ast
 }

@@ -16,15 +16,16 @@ const g = (n) => ['local.get', n], k = (v) => ['i32.const', v]
 const latch = ['br_if', '$L', ['i32.lt_s', ['local.tee', '$i', ['i32.add', g('$i'), k(1)]], g('$n')]]
 const one = (body, locals = []) => {
   const m = relaxExtremes(['module', ['func', '$f', ...locals, body]])
-  return { global: m[1], fn: m[2] }
+  return { global: m[1], zero: m[2], fn: m.find(n => Array.isArray(n) && n[0] === 'func') }
 }
 const find = (n, f, acc = []) => { if (Array.isArray(n)) { if (f(n)) acc.push(n); n.forEach(c => find(c, f, acc)) } return acc }
 const loopOf = (fn) => find(fn, n => n[0] === 'loop')[0]   // (the tested one: the choice's first arm)
 
 test('relaxExtremes: a round\'s tree takes the relaxed operators, its test and the exact tree after it', () => {
   const tree = ['f64x2.min', ['f64x2.min', g('$r'), g('$g')], g('$b')]
-  const { global, fn } = one(['loop', '$L', ['local.set', '$m', tree], ['v128.store', g('$p'), g('$m')], latch])
+  const { global, zero, fn } = one(['loop', '$L', ['local.set', '$m', tree], ['v128.store', g('$p'), g('$m')], latch])
   is(global, ['global', '$__rnan', ['mut', 'f64'], ['f64.const', 'nan']], 'a NaN the engine cannot fold')
+  is(zero, ['global', '$__rnz', ['mut', 'f64'], ['f64.const', '-0']], 'and a -0: an engine answering the NaN as IEEE may still answer either zero')
   const choice = find(fn, n => n[0] === 'if' && n[2]?.[1]?.[0] === 'loop')[0], L = choice[2][1], plain = choice[3][1]
   is(choice[1], g('$__rx0'), 'the engine not IEEE\'s runs the tested round')
   // x64's answers: a NaN reaches the root along the chain of second operands (V8's) or of first ones,
@@ -39,6 +40,7 @@ test('relaxExtremes: a round\'s tree takes the relaxed operators, its test and t
   is(L[4], ['v128.store', g('$p'), g('$m')], 'what reads the root follows the test')
   is(plain, ['loop', '$L_rx0', L[2], L[4], ['br_if', '$L_rx0', latch[2]]], 'IEEE\'s engine runs the relaxed round untested, a loop of its own')
   ok(find(fn, n => n[0] === 'local.set' && n[1] === '$__rx0').length === 1, 'the engine asked once')
+  ok(find(fn, n => n[0] === 'f64x2.replace_lane' && n[3]?.[1] === '$__rnz').length === 2, 'and asked of zeros of two signs, each order a lane')
 })
 
 test('relaxExtremes: a minimum and a maximum of the same leaves cover each other\'s chains, one leaf left to sum', () => {
