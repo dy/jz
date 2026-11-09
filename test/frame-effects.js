@@ -1610,7 +1610,8 @@ test('frame effects: a call through a record field names the closures it runs', 
 // nowhere else, its sites the frame's, no computed callee.
 test('frame effects: an arrow called where it stands is walked in the frame', () => {
   const src = `export function f(k, o) { const t = new Float64Array(k + 2); let { a, b } = o; t[0] = a + b; return t[0] }`
-  for (const optimize of levels(0, 2, 3)) {
+  // wasi: js-object arg (the frame's census below holds on every host)
+  if (!onWasi()) for (const optimize of levels(0, 2, 3)) {
     const f = jz(src, { optimize }).exports.f
     is(f(1, { a: 2, b: 3 }), 5, `O${optimize}: present`)
     let threw = null
