@@ -625,3 +625,44 @@ test('counter width: a conditional\'s test observes an overflowed sum under its 
       is(got[name](...args), want[name](...args), `${name} at ${optimize}: f(${args})`)
   }
 })
+
+// A step under a test of its own name is the exact integer where the test
+// keeps the result in the word (`rep--` under `rep > 0`, `b++` under `b < n`
+// for a word `n`), and the Number everywhere else: at the word's end, under a
+// test the other way, after another write, in a loop the test does not head.
+test('counter width: a step keeps a word only under a test that holds it there', () => {
+  const pre = `const K = 3
+    const g = (v) => v | 0
+    const T = new Int32Array([2147483647, -2147483648, 5, 0])`
+  const forms = {
+    down: 'let b = g(k), t = 0; while (b > 0) { b--; if (++t > 3) break } return [b, t]',
+    downEnd: 'let b = g(k), t = 0; while (b >= -2147483648) { b--; if (++t > 3) break } return [b, b + 0.5, t]',
+    up: 'let b = g(k), t = 0; while (b < (n | 0)) { b++; if (++t > 3) break } return [b, t]',
+    upNumber: 'let b = g(k), t = 0; while (b < n) { b++; if (++t > 3) break } return [b, b + 0.5, t]',
+    upEnd: 'let b = g(k), t = 0; while (b <= 2147483647) { b++; if (++t > 3) break } return [b, b + 0.5, t]',
+    byTwo: 'let b = g(k), t = 0; while (b < 2147483647) { b += 2; if (++t > 3) break } return [b, b + 0.5, t]',
+    twice: 'let b = g(k), t = 0; while (b < 2147483647) { b++; b++; if (++t > 3) break } return [b, b + 0.5, t]',
+    rewritten: 'let b = 0, t = 0; b = g(n); while (b < 10) { b = g(k); b++; if (++t > 2) break } return [b, b + 0.5, t]',
+    inTest: 'let b = g(n), t = 0; while (b < 10 && (b = g(k)) !== 7) { b++; if (++t > 2) break } return [b, b + 0.5, t]',
+    nested: 'let b = g(k); if (b < 2147483647) { for (let j = 0; j < 3; j++) b++ } return [b, b + 0.5]',
+    bottom: 'let b = g(k), t = 0; do { b++; t++ } while (b < 5 && t < 3); return [b, b + 0.5, t]',
+    closure: 'let b = g(n), t = 0; const set = () => { b = g(k) }; while (b < 10) { set(); b++; if (++t > 2) break } return [b, b + 0.5, t]',
+    counted: 'let b = g(k), t = 0; for (; b < 2147483647 && t < 3; b++) t++; return [b, t]',
+    arm: 'let b = g(k); if (b < 2147483647) b++; if (b > -2147483648) b--; return [b, b + 0.5]',
+    otherWay: 'let b = g(k); if (b > 0) b++; return [b, b + 0.5]',
+    either: 'let b = g(k); if (b < 5 || n > 0) b++; return [b, b + 0.5]',
+    openBound: 'let b = g(k), x = g(n) + K; if (b < x) b++; return [b, b + 0.5, x]',
+    element: 'let b = g(k); if (b < T[0]) b++; if (b > T[1]) b--; return [b, b + 0.5]',
+    byte: 'const s = new Uint8Array([200, 3, 9]); let rep = s[n & 3], t = 0; while (rep > 0) { t += rep; rep-- } return [rep, t]',
+    unsigned: 'let b = g(k); const u = n >>> 0; if (b < u) b++; return [b, b + 0.5]',
+    unsignedElement: 'const U = new Uint32Array([4294967295, 0]); let b = g(k); if (b < U[0]) b++; return [b, b + 0.5]',
+  }
+  const src = pre + Object.entries(forms).map(([name, body]) => `\nexport let ${name} = (k, n) => { ${body} }`).join('')
+  const want = oracle(src)
+  const same = (a, b) => a.length === b.length && a.every((x, i) => Object.is(x, b[i]))
+  for (const optimize of levels(0, 1, 2, 'speed')) {
+    const got = run(src, { optimize })
+    for (const name in forms) for (const args of [[2147483647, 3], [2147483646, 3], [-2147483648, 3], [-2147483647, 3], [5, 3], [2147483645, 2147483647], [3, 2147483647], [2147483647, 4294967295]])
+      ok(same(got[name](...args), want[name](...args)), `${name} at ${optimize}: f(${args}) = ${got[name](...args)}, node ${want[name](...args)}`)
+  }
+})

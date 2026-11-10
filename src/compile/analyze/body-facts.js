@@ -8,11 +8,11 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { ASSIGN_OPS, MUTATE_OPS, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, I32_MIN, I32_MAX, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, refsName, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, meetRange, updateRep } from '../../reps.js'
-import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId, unsignedShiftFitsI32 } from '../../static.js'
+import { intExprRange, constIntExpr, staticPropertyKey, staticArrayElems, exprSchemaId, unsignedShiftFitsI32 } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { definitelyAssigned } from '../../summary/definite.js'
@@ -22,8 +22,10 @@ import {
   scanObjectArrayFacts, isFreshArrayCtor, stampBodyRanges, stampLoopCounterRanges,
   scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
+  FLIP,
 } from '../analyze-scans.js'
 import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
+import { counterStep } from '../loop-model.js'
 import { typedStorageNameCtor } from '../../typed-context.js'
 import { typedElementKey } from '../../typed-provenance.js'
 import { isPresentNumber, boolTagged } from '../../kind.js'
@@ -699,6 +701,8 @@ const wordStoreOf = (body, locals) => u => {
   const aux = typedElemAux(typedStorageNameCtor(ctx, dest[1], locals))
   return aux != null && (aux & 7) <= 5 && !(aux & (32 | 64))
 }
+// (widenLocalTypes: no guard, and the loops whose body runs again)
+const NO_GUARDS = [], LOOP_OPS = new Set(['for', 'while', 'do'])
 function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) {
   const i32SafeIdx = collectI32SafeIndexVars(body, locals)
   // Names this scope's own locals map might be reassigned FROM INSIDE A NESTED
@@ -806,20 +810,67 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
   // storage. `wide` is the storage with each such name taken as the Number.
   const open = new Set(), wide = new Map(locals)
   for (const [name, level] of intLevels) if (level === 1 && locals.get(name) === 'i32') { open.add(name); wide.set(name, 'f64') }
+  // A step `x ± c` is the exact integer where a test of `x` that holds on the
+  // way to it keeps the result in the word: `rep--` under `while (rep > 0)`,
+  // `i++` under `i < n` (a word bounds `i` one below the word's top). A guard is
+  // a test with the region it holds at the start of: a loop's on each round of
+  // its body and step, an `if`'s in its arm. It still holds at the step where
+  // the step is that region's one write of the name and no closure writes it.
+  const writes = (name, but) => (n) => n !== but && MUTATE_OPS.has(n[0]) && n[1] === name
+  let inClosures = null
+  const closureWrites = () => {
+    if (!inClosures) { inClosures = new Set(); walkAst(body, { enter: n => { if (n[0] === '=>') { collectAssignedNames(n, inClosures); return false } } }) }
+    return inClosures
+  }
+  // The least (`down`) or the most `name` is where `test` holds, or null.
+  const boundOf = (test, name, down) => {
+    if (!Array.isArray(test) || test.length !== 3) return null
+    if (test[0] === '&&') {
+      const a = boundOf(test[1], name, down), b = boundOf(test[2], name, down)
+      return a == null ? b : b == null ? a : down ? Math.max(a, b) : Math.min(a, b)
+    }
+    const mirrored = test[2] === name && test[1] !== name
+    const op = mirrored ? FLIP[test[0]] : test[0], other = mirrored ? test[1] : test[2]
+    if ((mirrored ? test[2] : test[1]) !== name) return null
+    // (a word on the other side: the comparison is of words, and the name one short of that side's end)
+    const k = constIntExpr(other) ?? (!refsName(other, name) && exprType(other, wide, null, true, body, readPresent) === 'i32' ? (down ? I32_MIN : I32_MAX) : null)
+    if (k == null) return null
+    return down ? (op === '>' ? k + 1 : op === '>=' ? k : null) : op === '<' ? k - 1 : op === '<=' ? k : null
+  }
+  const held = (step, name, guards) => {
+    // (the step by a constant, signed: compile/loop-model.js counterStep)
+    const move = counterStep(step), by = move ? constIntExpr(move.by) : null, c = by ? move.sign * by : null
+    return c != null && !closureWrites().has(name) && guards.some(({ test, region }) => {
+      const b = boundOf(test, name, c < 0)
+      return b != null && b + c >= I32_MIN && b + c <= I32_MAX && !some(test, writes(name)) && !region.some(r => some(r, writes(name, step)))
+    })
+  }
   let grew = true
-  const sums = (node) => {
+  const sums = (node, guards) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') { if (nestedNames.size) sums(node[2]); return }
+    if (op === '=>') { if (nestedNames.size) sums(node[2], NO_GUARDS); return }
     if (MUTATE_OPS.has(op) && typeof node[1] === 'string' && wide.get(node[1]) === 'i32') {
       const name = node[1], rhs = effectiveWriteValue(op, name, node[2])
-      if (exprType(rhs, locals, null, false, body, readPresent) === 'i32' && exprType(rhs, wide, null, true, body, readPresent) === 'f64') {
+      if (exprType(rhs, locals, null, false, body, readPresent) === 'i32' && exprType(rhs, wide, null, true, body, readPresent) === 'f64' && !held(node, name, guards)) {
         open.add(name); wide.set(name, 'f64'); grew = true
       }
     }
-    for (let i = 1; i < node.length; i++) sums(node[i])
+    if (op === 'while' && node.length === 3) { sums(node[1], NO_GUARDS); sums(node[2], [{ test: node[1], region: [node[2]] }]); return }
+    if (op === 'for' && node.length === 5) {
+      const round = node[2] == null ? NO_GUARDS : [{ test: node[2], region: [node[4], node[3]] }]
+      sums(node[1], guards); sums(node[2], NO_GUARDS); sums(node[4], round); sums(node[3], round)
+      return
+    }
+    if (op === 'if') {
+      sums(node[1], guards); sums(node[2], [...guards, { test: node[1], region: [node[2]] }]); sums(node[3], guards)
+      return
+    }
+    // (any other loop runs its body again with no test of ours before it)
+    const inner = LOOP_OPS.has(op) ? NO_GUARDS : guards
+    for (let i = 1; i < node.length; i++) sums(node[i], inner)
   }
-  while (grew) { grew = false; sums(body) }
+  while (grew) { grew = false; sums(body, NO_GUARDS) }
   if (open.size) {
     const bareEscapes = collectBareEscapes(body, locals)
     for (const name of open) if (bareEscapes.has(name) && !wordLocals.has(name)) locals.set(name, 'f64')

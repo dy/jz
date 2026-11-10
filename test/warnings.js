@@ -347,14 +347,23 @@ test('warnings: simd-why-not is off by default (noisy — opt-in only)', () => {
 test('warnings: int-global-truncation when a scalar global is i32-narrowed from a param', () => {
   // jz infers integer module globals to i32 (the size/index/stride perf win). A
   // scalar global fed from a parameter may hold a fractional Number that the i32
-  // carrier truncates — surfaced as an opt-in advisory (not demoted: the integer
-  // default is load-bearing; this is the rfft `N = n` shape, a bound only compared).
+  // carrier truncates: an opt-in advisory where the global stays a word, which
+  // it does while every read takes its word (`i & N`). A read of its magnitude
+  // keeps it a Number, a comparison under a conditional among them: there
+  // `N = 2.5` answers as the source does, and no advisory is due.
   const ws = warningsFor(`let N = 0
     export let init = (n) => { N = n; return 0 }
-    export let inside = (i) => i < N ? 1 : 0`)
+    export let inside = (i) => i & N`)
   const trunc = ws.filter(w => w.code === 'int-global-truncation')
   ok(trunc.length >= 1, 'fires for a param-fed i32-narrowed global')
   ok(/Float64Array/.test(trunc[0].message), 'points to Float64Array for fractional state')
+  const compared = `let N = 0
+    export let init = (n) => { N = n; return 0 }
+    export let inside = (i) => i < N ? 1 : 0`
+  is(warningsFor(compared).filter(w => w.code === 'int-global-truncation').length, 0, 'a compared global is no word: nothing to warn of')
+  const m = jz(compared).exports
+  m.init(2.5)
+  is([m.inside(2), m.inside(3)], [1, 0], 'and its fraction is compared')
 })
 
 test('warnings: filter state read back as a value stays f64 and draws no advisory', () => {

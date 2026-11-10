@@ -182,7 +182,7 @@ export function testRefinements(facts) {
 // A step that moves `name` by a fixed amount per pass: `++x`, `--x`, `x += S`, `x -= S`,
 // `x = x ± S`, `x = S + x` → { name, by, sign }, else null. (A step's postfix is its
 // update: src/normalize.js drops it.)
-function counterStep(s) {
+export function counterStep(s) {
   if (!Array.isArray(s) || typeof s[1] !== 'string') return null
   const [op, x, v] = s
   if ((op === '++' || op === '--') && s.length === 2) return { name: x, by: 1, sign: op === '++' ? 1 : -1 }

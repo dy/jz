@@ -283,7 +283,8 @@ const COMPARE_NULLISH = [USE.COMPARE, undefined, undefined, undefined, undefined
 const COMPARE_MISS = [USE.COMPARE, undefined, undefined, undefined, undefined, undefined, undefined, false, undefined, true]
 const GUARDED_STEP = [USE.REASSIGN, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true]
 const isNumLit = (e) => Array.isArray(e) && e[0] == null && typeof e[1] === 'number'
-const FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' }
+/** A relational operator read from its other side. */
+export const FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' }
 // How `x op k` (the name on the left when `left`) answers for undefined and
 // for zero: 2 when both are false, 1 when both agree otherwise, 0 when they differ.
 const missClass = (op, left, k) => {

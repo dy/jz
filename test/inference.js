@@ -2172,7 +2172,21 @@ test('param i32-narrowing: recursive identity arg does not poison the i32 consen
   const solve = wat.match(/\(func \$solve\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$all i32\)/.test(solve), 'recursive identity param `all` narrows to i32')
   ok(!/convert_i32_s|trunc_sat/.test(solve), 'no f64↔i32 round-trip in the recursive bitmask loop')
-  ok(/\(result i32\)/.test(solve) && /\(local \$cnt i32\)/.test(solve), 'recursive i32 result narrows (cnt + return stay i32, not f64)')
+  // The count is a sum of words, which may pass one word: it is the Number the
+  // source computes (a leaf weighing 10^9 counts 4 * 10^9 on a board of 6).
+  ok(/\(result f64\)/.test(solve) && /\(local \$cnt f64\)/.test(solve), 'the count and the result are Numbers')
+  const weighed = `let solve = (all, cols, d1, d2, w) => {
+      if (cols === all) return w
+      let cnt = 0, avail = all & ~(cols | d1 | d2)
+      while (avail !== 0) { let b = avail & (-avail); avail = avail - b; cnt = cnt + solve(all, cols|b, (d1|b)<<1, (d2|b)>>1, w) }
+      return cnt
+    }
+    export let main = (n, w) => solve((1<<n)-1, 0, 0, 0, w | 0)`
+  const host = oracle(weighed)
+  for (const optimize of [0, 2, 'speed']) {
+    const m = jz(weighed, { optimize }).exports
+    for (const [n, w] of [[4, 1], [6, 1], [6, 1000000000], [8, 100000000]]) is(m.main(n, w), host.main(n, w), `main(${n}, ${w}) at ${optimize}`)
+  }
 })
 
 // Recursive result cycle narrows to i32. A recursive integer function whose result feeds its own
@@ -2191,7 +2205,14 @@ test('result i32-narrowing: a recursive integer result narrows to i32 (optimisti
   const sumTo = wat.match(/\(func \$sumTo\b[\s\S]*?\n  \)/)[0]
   ok(/\(param \$n i32\)/.test(sumTo), 'recursive param `n` narrows to i32 (no |0 hint — decreasing-recursion cycle broken)')
   ok(/\(result i32\)/.test(sumTo), 'recursive sumTo result narrows to i32')
-  ok(!/f64\./.test(sumTo), 'no f64 ops in the recursive integer body (param + result + accumulator all i32)')
+  // The accumulator is a sum of words, a Number: only its masked result is a word.
+  const weighed = `let sumTo = (n, w) => { if (n <= 0) return w; let s = 0; let i = 0; while (i < n) { s = s + sumTo(n - 1 - i, w); i++ } return s & 0x3ffffff }
+    export let main = (n, w) => sumTo(n, w | 0) | 0`
+  const host = oracle(weighed)
+  for (const optimize of [0, 2, 'speed']) {
+    const m = jz(weighed, { optimize }).exports
+    for (const [n, w] of [[3, 1], [7, 1], [5, 0x3ffffff], [9, 0x3ffffff]]) is(m.main(n, w), host.main(n, w), `main(${n}, ${w}) at ${optimize}`)
+  }
 })
 
 // A function returning a typed-array-element read — `lookup = (keys, vals, k) => { … return vals[h] }`
