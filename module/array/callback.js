@@ -129,10 +129,12 @@ function exprUses(node, name) {
 // args-array alloc. Captures resolve naturally to outer locals.
 // Slow path: fall back to ctx.closure.call (heap-allocated args array per iteration).
 // usedParams: boolean array (fast path only) — callers can skip computing args for unused params.
-// elem: `{ index, expr }`, the parameter position that receives the array's
-// element and the read it stands for (callbackElem): the inlined local reads
-// as that element to the summary, so the body's member reads resolve the
-// element's layouts as the loop's own read would.
+// Each inlined local reads, to the summary, as the parameter it holds: the
+// kind the solve bound it to at every call (summary/index.js arrayCallback,
+// reduceResult, arrayFrom). elem: `{ index, expr }`, the parameter position
+// that receives the array's element and the read it stands for
+// (callbackElem): where no call bound that parameter, its local reads as
+// that element instead.
 export function makeCallback(fn, argReps, elem = null, thisArg) {
   if (Array.isArray(fn) && fn[0] === '=>') {
     const raw = extractParams(fn[1])
@@ -177,10 +179,15 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
             }
           }
           const subst = substExpr(body, mapping)
-          const view = elem && freshNames[elem.index] ? ctx.summary?.at(ctx.func.current) : null
-          if (view) view.alias(freshNames[elem.index], elem.expr, false)
+          const view = ctx.summary?.at(ctx.func.current), held = []
+          if (view) for (let i = 0; i < raw.length; i++) {
+            const t = freshNames[i]
+            if (!t) continue
+            if (view.aliasParam(t, fn[1], raw[i])) held.push(t)
+            else if (elem?.index === i) { view.alias(t, elem.expr, false); held.push(t) }
+          }
           let result
-          try { result = produce(subst) } finally { if (view) view.unalias(freshNames[elem.index]) }
+          try { result = produce(subst) } finally { for (const t of held) view.unalias(t) }
           // Preserve i32 result type so callers (truthyIR, etc.) can skip f64↔i32 round-trips.
           const ty = result.type === 'i32' ? 'i32' : 'f64'
           const wrapped = typed(['block', ['result', ty], ...stmts, result], ty)

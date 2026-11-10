@@ -319,11 +319,11 @@ export function summaryQueries(facts, internal = false) {
     // An emission temp standing for the present value of an expression (an
     // optional chain's guarded head): its kind is the expression's, without
     // the nullishness the guard excluded.
-    const aliases = new Map()   // an emission temp → { e, present }: the expression it holds, present or as it is
+    const aliases = new Map()   // an emission temp → { e, present, key }: the expression it holds, present or as it is, or the parameter binding of key ≥ 0
     // Names a guard proved present on the path being emitted (flow-types.js
     // withRefinements): their kind reads without its nullish part.
     const present = new Set()
-    const aliasKind = a => a.present ? core(kindOfExpr(a.e)) : kindOfExpr(a.e)
+    const aliasKind = a => a.key >= 0 ? readKey(a.key) : a.present ? core(kindOfExpr(a.e)) : kindOfExpr(a.e)
     const readKind = name => aliases.has(name) ? aliasKind(aliases.get(name)) : present.has(name) ? core(readKey(keyOfAnywhere(name))) : readKey(keyOfAnywhere(name))
     const kindOfExpr = n => selectedExpr(n, 7)
     // The numbers of a dense numeric array's elements (index.js `elemNums`).
@@ -603,7 +603,16 @@ export function summaryQueries(facts, internal = false) {
       // callback's element parameter), for the span of its continuation: temp
       // names recur across the closure bodies this scope covers, so an alias
       // never outlives its use.
-      alias: (name, e, present = true) => { aliases.set(name, { e, present }) },
+      alias: (name, e, present = true) => { aliases.set(name, { e, present, key: -1 }) },
+      // An emission temp holding parameter `p` of the closure with parameter
+      // node `params` (an inlined callback's argument): it reads as that
+      // binding. False, and no alias, where no call the solve walked bound it.
+      aliasParam: (name, params, p) => {
+        const s = scopeOfParams.get(params), key = s === undefined ? undefined : declared.get(s)?.get(p)
+        if (typeof key !== 'number' || !paramKeys.has(key) || readKey(key) === K.NONE) return false
+        aliases.set(name, { e: null, present: false, key })
+        return true
+      },
       unalias: (name) => { aliases.delete(name) },
       /** The name is present on the path being emitted (a guard proved it): its reads drop the nullish part. */
       present: (name) => { present.add(name) },

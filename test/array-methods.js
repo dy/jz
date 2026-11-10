@@ -471,6 +471,32 @@ test('.reduce', () => {
   ])
 })
 
+// An inlined callback's parameter reads as what every call binds it to: a
+// number folds as a number, a string, a kind that changes midway, an object
+// or a host value keep what JS answers.
+test('array callbacks: an inlined parameter reads as the kind its calls bind', () => {
+  const src = `export function sum(n) { const a = []; for (let i = 0; i < n; i++) a.push(i * 2); return a.reduce((s, x) => s + x, 0) }
+  export function max(n) { const a = []; for (let i = 0; i < n; i++) a.push((i * 7) % 5 - 2); return [a.reduce((m, x) => Math.max(m, x), -Infinity), [1, 2, 3].reduce((m, x) => Math.max(m, x), 0)] }
+  export function strings(n) { const a = []; for (let i = 0; i < n; i++) a.push('' + i); return [['a', 'b'].reduce((s, x) => s + x, ''), a.reduce((s, x) => s + x.length, 0), a.reduceRight((s, x) => s + x)] }
+  export function midway() { return [[1, 'a'].reduce((s, x) => s + x, 0), [1, 2, 'a', 3].reduce((s, x) => s + x, 0), [1, 2].reduce((s, x) => s + x, undefined)] }
+  export function empty(n) { const a = []; for (let i = 0; i < n; i++) a.push(i + 1); try { return a.reduce((p, x) => p * x) } catch (e) { return e instanceof TypeError } }
+  export function objects() { const ps = [{ x: 1, y: 2 }, { x: 5, y: 1 }, { x: 3, y: 9 }]; return [ps.reduce((m, p) => m.x > p.x ? m : p).x, ps.reduce((m, p) => p.y > m.y ? p : m, ps[0]).x, [1, 2].reduce((a, x) => a.concat([x * 2]), []).length] }
+  const seed = (a, z) => a.reduce((s, x) => s + x, z)
+  export function seeds() { return [seed([1, 2], 0), seed([1, 2], '')] }
+  export function host(a) { return [a.reduce((s, x) => s + x, 0), a.map((x, i) => x + i)] }
+  export function holes() { const a = [1, , 3]; a[5] = 7; return [a.reduce((s, x) => s + x, 0), a.find(x => x === undefined), a.findIndex(x => x + 1 > 7), a.findLast(x => x !== 7), a.some(x => x > 2), a.every(x => x > 0)] }
+  export function fused(n) { const a = []; for (let i = 0; i < n; i++) a.push(i); return [a.map(x => x + 1).reduce((s, x) => s + x, 0), a.filter(x => x % 2).reduce((s, x, i) => s + x * i, 0), a.map(x => '' + x).reduce((s, x) => s + x, '')] }`
+  const want = oracle(src)
+  const answer = (f, ...args) => { try { return f(...args) } catch (e) { return e.constructor.name } }
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const n of [0, 1, 5]) for (const name of ['sum', 'max', 'strings', 'empty', 'fused'])
+      is(answer(got[name], n), answer(want[name], n), `${name}(${n}), O${optimize}`)
+    for (const name of ['midway', 'objects', 'seeds', 'holes']) is(got[name](), want[name](), `${name}, O${optimize}`)
+    for (const a of [[1, 2], ['a', 'b'], [1, 'b'], []]) is(got.host(a), want.host(a), `host(${JSON.stringify(a)}), O${optimize}`)
+  }
+})
+
 // === .forEach ===
 
 test('.forEach: runs without error', () => {
