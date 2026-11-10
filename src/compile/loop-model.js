@@ -151,7 +151,7 @@ export function rewriteBlocks(body, tryStmt) {
 //     so it needs no counter discipline.
 export function loopFacts(init, cond, step, body) {
   const iv = guardCounterName(cond)
-  const range = iv && !isReassigned(body, iv) ? forCounterRange(init, cond, step, iv) : null
+  const range = iv && !isReassigned(body, iv) ? forCounterRange(init, cond, step, iv, undefined, body) : null
   const guard = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
   const guardRange = guard ? intExprRange(cond[2]) : null
   return Object.freeze({
@@ -182,7 +182,7 @@ export function testRefinements(facts) {
 // A step that moves `name` by a fixed amount per pass: `++x`, `--x`, `x += S`, `x -= S`,
 // `x = x ± S`, `x = S + x` → { name, by, sign }, else null. (A step's postfix is its
 // update: src/normalize.js drops it.)
-export function counterStep(s) {
+function counterStep(s) {
   if (!Array.isArray(s) || typeof s[1] !== 'string') return null
   const [op, x, v] = s
   if ((op === '++' || op === '--') && s.length === 2) return { name: x, by: 1, sign: op === '++' ? 1 : -1 }

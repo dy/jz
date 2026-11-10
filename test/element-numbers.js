@@ -126,7 +126,7 @@ test('element numbers: the transfer rules hold of the values they bound', async 
     for (const op in BIN) { const r = nrBinary(op, a, b, powRuntime); for (const x of xs) for (const y of ys) check(`${x} ${op} ${y}`, r, BIN[op](x, y)) }
     for (const op in UN) { const r = nrUnary(op, a); for (const x of xs) check(`${op} ${x}`, r, UN[op](x)) }
     for (const f of MATH) { const r = nrMath(f, [a]); for (const x of xs) check(`Math.${f}(${x})`, r, Math[f](x)) }
-    for (const f of ['min', 'max']) { const r = nrMath(f, [a, b]); for (const x of xs) for (const y of ys) check(`Math.${f}(${x}, ${y})`, r, Math[f](x, y)) }
+    for (const f of ['min', 'max', 'imul']) { const r = nrMath(f, [a, b]); for (const x of xs) for (const y of ys) check(`Math.${f}(${x}, ${y})`, r, Math[f](x, y)) }
     const e = nrPoint(sb[0]), rp = nrMath('pow', [a, e]); for (const x of xs) check(`Math.pow(${x}, ${sb[0]})`, rp, Math.pow(x, sb[0]))
   }
   is(bad, [], `${checked} values inside their ranges`)

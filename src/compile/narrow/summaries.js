@@ -117,8 +117,8 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
         if (r?.typedLen != null) lens.set(name, r.typedLen)
         else if (r?.arrayLen != null) lens.set(name, r.arrayLen)
       }
-      scanIntervalIdx(body, null, name => lens.get(name) ?? typedLens?.get(caller)?.get(name)
-        ?? arrays.locals.get(caller)?.get(name) ?? null, null, calls, entry, writes)
+      scanIntervalIdx(body, name => lens.get(name) ?? typedLens?.get(caller)?.get(name)
+        ?? arrays.locals.get(caller)?.get(name) ?? null, { calls, entry, stores: writes })
     } finally { restoreActiveFunction(ctx, prev) }
     return { calls, writes }
   }
@@ -135,7 +135,7 @@ export function inferNumericRanges(paramReps, callSites, callerCtx, addressTaken
     try {
       ctx.func.locals = callerCtx.get(caller.owner)?.callerLocals ?? new Map()
       ctx.func.localReps = new Map()
-      scanIntervalIdx(body, null, () => null, null, calls, new Map(), null)
+      scanIntervalIdx(body, () => null, { calls, entry: new Map() })
     } finally { restoreActiveFunction(ctx, prev) }
     return { calls, writes }
   }

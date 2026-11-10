@@ -8,28 +8,27 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { ASSIGN_OPS, MUTATE_OPS, I32_MIN, I32_MAX, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, refsName, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, I32_MIN, I32_MAX, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, meetRange, updateRep } from '../../reps.js'
-import { intExprRange, constIntExpr, staticPropertyKey, staticArrayElems, exprSchemaId, unsignedShiftFitsI32 } from '../../static.js'
+import { intExprRange, staticPropertyKey, staticArrayElems, exprSchemaId, unsignedShiftFitsI32 } from '../../static.js'
 import { exprType, intLevelMap } from '../../type.js'
 import { K, tagOf, paramOf, hasTag, valOf, core, UNKNOWN } from '../../summary/index.js'
 import { definitelyAssigned } from '../../summary/definite.js'
 import { ctorFromElemAux, typedElemAux } from '../../../layout.js'
 import {
   findMutations, collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, narrowWordLocals,
-  scanObjectArrayFacts, isFreshArrayCtor, stampBodyRanges, stampLoopCounterRanges,
-  scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
+  scanObjectArrayFacts, isFreshArrayCtor, stampLoopCounterRanges, stampCountdowns,
+  scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_STORE, BINDING_USE_OP, BINDING_USE_MISS,
   invalidateBindingUsesCache, resetMutationNamesCache,
-  FLIP,
 } from '../analyze-scans.js'
 import { makeTypedTracker, joinReassignedTypedLens } from './trackers.js'
-import { counterStep } from '../loop-model.js'
 import { typedStorageNameCtor } from '../../typed-context.js'
 import { typedElementKey } from '../../typed-provenance.js'
 import { isPresentNumber, boolTagged } from '../../kind.js'
-import { scanIntervalIdx, invalidateIntervalProof } from '../../type/interval-proof.js'
+import { scanIntervalIdx, writtenNumbers, functionLens, paramEntry, invalidateIntervalProof } from '../../type/interval-proof.js'
+import { nrInts, nrWord } from '../../summary/num-range.js'
 import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
 
 // Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
@@ -105,19 +104,17 @@ export function analyzeBody(body, storage = true) {
  * proofs. A later full query upgrades the same epoch's cached observations. */
 export const analyzeValueFacts = body => analyzeBody(body, false)
 
-const bindingRequests = (body, locals, valTypes) => {
+// The numbers of every local over its lifetime come from the interval proof
+// (its binding hulls), each name not bounded already asked.
+const bindingRequests = (locals) => {
   let requests
-  const uses = scanBindingUses(body)
-  for (const name of uses.keys()) {
-    const binding = uses.get(name)
-    if (!locals.has(name) || binding[BINDING_USE_DECLS] !== 1 || binding[BINDING_USE_INIT] === undefined ||
-        ctx.func.localReps?.get(name)?.range ||
-        locals.get(name) !== 'i32' && valTypes.get(name) !== VAL.NUMBER ||
-        binding[BINDING_USE_USES].some(u => u[BINDING_USE_KIND] === USE.CAPTURE)) continue
-    ;(requests ||= new Map()).set(name, undefined)
-  }
+  for (const name of locals.keys()) if (!ctx.func.localReps?.get(name)?.range) (requests ||= new Map()).set(name, undefined)
   return requests
 }
+// A body's element counts: its own locals' as the walk tracked them, the function's for the rest.
+const bodyLens = (locals, typedLens) => n => locals.has(n) ? typedLens?.get(n) ?? null : functionLens(n)
+// The element reads other provers hold in bounds (the canonical scans, the guards).
+const presentBy = (nodes) => n => nodes.has(n) || getFactStore().guardProven.has(n)
 const publishBindingHulls = hulls => {
   if (hulls) for (const name of hulls.keys()) {
     const range = hulls.get(name)
@@ -133,32 +130,28 @@ function refineStorageFacts(body, facts, cache) {
   withValueOverlay(facts.valTypes, () => withTypedElemOverlay(facts.typedElems, () => {
     const pending = facts.__storagePending, hulls = new Map(pending.hulls)
     for (const [name, range] of pending.ranges) updateRep(name, { range })
-    const lens = n => facts.locals.has(n) ? facts.typedLens.get(n) ?? null
-      : ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null
-    const entry = new Map()
-    for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
-    scanIntervalIdx(body, null, lens, null, null, entry, null, null, hulls)
+    const lens = bodyLens(facts.locals, facts.typedLens)
+    scanIntervalIdx(body, lens, { entry: paramEntry(), bindings: hulls, present: presentBy(facts.readPresent) })
     // Copy only the storage map; kind/schema/length observations remain shared
     // and previously returned maps stay immutable. No declaration walk repeats.
     const locals = new Map(pending.locals)
     stampLoopCounterRanges(body)
-    stampBodyRanges(body, facts.readPresent, facts.typedLens)
-    stampLoopCounterRanges(body)
+    stampCountdowns(body)
     publishBindingHulls(hulls)
-    const [unsignedLocals, wordLocals] = finalizeLocals(body, locals, facts.valTypes, facts.readPresent)
+    const [unsignedLocals, wordLocals] = finalizeLocals(body, locals, facts.valTypes, facts.readPresent, lens)
     result = { ...facts, locals, unsignedLocals, wordLocals, __storagePending: null }
   }))
   cache.set(body, result)
   return result
 }
 
-function finalizeLocals(body, locals, valTypes, presentNodes) {
+function finalizeLocals(body, locals, valTypes, presentNodes, lens) {
   const unsignedLocals = narrowUint32(body, locals, e => e[0] === '[]' &&
     typeof e[1] === 'string' && (typedElemAux(typedStorageNameCtor(ctx, e[1], locals)) & 7) === 5 && presentNodes.has(e))
   for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
   const wordLocals = ctx.transform.optimize?.wordLocals
     ? narrowWordLocals(body, locals, nm => valTypes.get(nm) === VAL.NUMBER, wordStoreOf(body, locals)) : EMPTY_BODY_FACT_SET
-  widenLocalTypes(body, locals, presentNodes, unsignedLocals, wordLocals)
+  widenLocalTypes(body, locals, presentNodes, unsignedLocals, wordLocals, lens)
   // A narrowing above retypes a never-reassigned decl whose initializer
   // reads the narrowed name (`const np = 20 + t % 101` over `const t = s
   // >>> 0`): the first pass typed it f64 through t's provisional f64. Re-
@@ -289,16 +282,13 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
   // after the body's constructor/length tracker has settled. Canonical proofs
   // use node identity so an access outside the loop cannot borrow its bound.
   const typedReads = [], presentNodes = new Set()
-  let presentKeys, bindingHulls, hasLoop = false
+  let presentKeys, bindingHulls
   const readPresent = e => {
     if (!presentKeys) {
       presentKeys = new Set()
       if (typedReads.length) scanBoundedArrIdx(body, null, null, presentNodes, summary)
-      const lens = n => locals.has(n) ? typedLens?.get(n) ?? null
-        : ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null
-      const entry = new Map()
-      for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
-      scanIntervalIdx(body, typedReads.length ? presentKeys : null, lens, null, null, entry, null, null, bindingHulls)
+      scanIntervalIdx(body, bodyLens(locals, typedLens), { out: typedReads.length ? presentKeys : null, entry: paramEntry(),
+        bindings: bindingHulls, present: presentBy(presentNodes) })
     }
     if (!e) return false
     return presentNodes.has(e) || presentKeys.has(e) || presentKeys.has(idxKey(e[1], e[2])) || getFactStore().guardProven.has(e)
@@ -458,7 +448,6 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') return  // don't cross closure boundary
-    if (op === 'for' || op === 'while') hasLoop = true
     if (op === '[]' && node.length === 3 && typeof node[1] === 'string') {
       const aux = typedElemAux(typedStorageNameCtor(ctx, node[1], locals))
       if (aux != null && (aux & 7) <= 5 && !(aux & 32)) typedReads.push(node)
@@ -572,19 +561,19 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     for (const a of pending) if (!locals.has(a)) locals.set(a, 'f64')
     joinReassignedTypedLens(body, n => typedElems.has(n), n => typedLens?.get(n) ?? ctx.func.typedLen?.get(n) ?? ctx.scope.globalTypedLen?.get(n) ?? null,
       (n, l) => { (typedLens ||= new Map()).set(n, l) })
-    // Existing typed-read presence walks can collect scalar hulls for free.
+    // Existing typed-read presence walks collect scalar hulls in the same walk.
     // Other bodies defer that work until a storage-width consumer asks for it.
-    const requestedHulls = hasLoop && ctx.transform.optimize?.intervalRanges ? bindingRequests(body, locals, valTypes) : null
+    const requestedHulls = bindingRequests(locals)
     if (storage || typedReads.length) bindingHulls = requestedHulls
     else deferredHulls = requestedHulls
     for (const read of typedReads) if (readPresent(read)) presentNodes.add(read)
     if (bindingHulls && !presentKeys) readPresent(null)
-    // Prove accumulator bounds and join every write to mutable scalars before
-    // widening: an observed local needs its complete hull, not just its init.
-    stampBodyRanges(body, presentNodes, typedLens)
     // a counter bounded by a length the walk typed (`i < a.length` over a typed
-    // local) has its hull once the declarations it reads have theirs
+    // local) has its hull once the declarations it reads have theirs; every
+    // other local's numbers over its lifetime are the proof's (before widening:
+    // an observed local needs its complete hull, not just its init)
     stampLoopCounterRanges(body)
+    stampCountdowns(body)
     publishBindingHulls(bindingHulls)
     if (deferredHulls) {
       const ranges = new Map()
@@ -594,7 +583,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
       }
       storagePending = { hulls: deferredHulls, locals: new Map(locals), ranges }
     }
-    ;[unsignedLocals, wordLocals] = finalizeLocals(body, locals, valTypes, presentNodes)
+    ;[unsignedLocals, wordLocals] = finalizeLocals(body, locals, valTypes, presentNodes, bodyLens(locals, typedLens))
   }))
 
   // SRoA: dissolve non-escaping object-literal bindings into field locals.
@@ -701,9 +690,8 @@ const wordStoreOf = (body, locals) => u => {
   const aux = typedElemAux(typedStorageNameCtor(ctx, dest[1], locals))
   return aux != null && (aux & 7) <= 5 && !(aux & (32 | 64))
 }
-// (widenLocalTypes: no guard, and the loops whose body runs again)
-const NO_GUARDS = [], LOOP_OPS = new Set(['for', 'while', 'do'])
-function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) {
+const WORD_NUMS = nrInts(I32_MIN, I32_MAX)
+function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals, lens) {
   const i32SafeIdx = collectI32SafeIndexVars(body, locals)
   // Names this scope's own locals map might be reassigned FROM INSIDE A NESTED
   // ARROW — a captured, mutated variable. analyzeBody runs before boxedCaptures
@@ -810,67 +798,27 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
   // storage. `wide` is the storage with each such name taken as the Number.
   const open = new Set(), wide = new Map(locals)
   for (const [name, level] of intLevels) if (level === 1 && locals.get(name) === 'i32') { open.add(name); wide.set(name, 'f64') }
-  // A step `x ± c` is the exact integer where a test of `x` that holds on the
-  // way to it keeps the result in the word: `rep--` under `while (rep > 0)`,
-  // `i++` under `i < n` (a word bounds `i` one below the word's top). A guard is
-  // a test with the region it holds at the start of: a loop's on each round of
-  // its body and step, an `if`'s in its arm. It still holds at the step where
-  // the step is that region's one write of the name and no closure writes it.
-  const writes = (name, but) => (n) => n !== but && MUTATE_OPS.has(n[0]) && n[1] === name
-  let inClosures = null
-  const closureWrites = () => {
-    if (!inClosures) { inClosures = new Set(); walkAst(body, { enter: n => { if (n[0] === '=>') { collectAssignedNames(n, inClosures); return false } } }) }
-    return inClosures
-  }
-  // The least (`down`) or the most `name` is where `test` holds, or null.
-  const boundOf = (test, name, down) => {
-    if (!Array.isArray(test) || test.length !== 3) return null
-    if (test[0] === '&&') {
-      const a = boundOf(test[1], name, down), b = boundOf(test[2], name, down)
-      return a == null ? b : b == null ? a : down ? Math.max(a, b) : Math.min(a, b)
-    }
-    const mirrored = test[2] === name && test[1] !== name
-    const op = mirrored ? FLIP[test[0]] : test[0], other = mirrored ? test[1] : test[2]
-    if ((mirrored ? test[2] : test[1]) !== name) return null
-    // (a word on the other side: the comparison is of words, and the name one short of that side's end)
-    const k = constIntExpr(other) ?? (!refsName(other, name) && exprType(other, wide, null, true, body, readPresent) === 'i32' ? (down ? I32_MIN : I32_MAX) : null)
-    if (k == null) return null
-    return down ? (op === '>' ? k + 1 : op === '>=' ? k : null) : op === '<' ? k - 1 : op === '<=' ? k : null
-  }
-  const held = (step, name, guards) => {
-    // (the step by a constant, signed: compile/loop-model.js counterStep)
-    const move = counterStep(step), by = move ? constIntExpr(move.by) : null, c = by ? move.sign * by : null
-    return c != null && !closureWrites().has(name) && guards.some(({ test, region }) => {
-      const b = boundOf(test, name, c < 0)
-      return b != null && b + c >= I32_MIN && b + c <= I32_MAX && !some(test, writes(name)) && !region.some(r => some(r, writes(name, step)))
-    })
-  }
-  let grew = true
-  const sums = (node, guards) => {
+  // A write is a word where the interval proof finds the value it stores one,
+  // every name still a word to the storage holding one wherever the proof knows
+  // no more: `rep--` under `while (rep > 0)`, `i++` under `i < n` (a word bounds
+  // `i` one below the word's top), a remainder, a mask. The proof walks again
+  // as the storage opens.
+  let words = null, grew = true
+  const wordWrite = (n) => nrWord((words ??= writtenNumbers(body, lens,
+    name => exprType(name, wide, null, true, body, readPresent) === 'i32' ? WORD_NUMS : null)).get(n))
+  const sums = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') { if (nestedNames.size) sums(node[2], NO_GUARDS); return }
+    if (op === '=>') { if (nestedNames.size) sums(node[2]); return }
     if (MUTATE_OPS.has(op) && typeof node[1] === 'string' && wide.get(node[1]) === 'i32') {
       const name = node[1], rhs = effectiveWriteValue(op, name, node[2])
-      if (exprType(rhs, locals, null, false, body, readPresent) === 'i32' && exprType(rhs, wide, null, true, body, readPresent) === 'f64' && !held(node, name, guards)) {
+      if (exprType(rhs, locals, null, false, body, readPresent) === 'i32' && exprType(rhs, wide, null, true, body, readPresent) === 'f64' && !wordWrite(node)) {
         open.add(name); wide.set(name, 'f64'); grew = true
       }
     }
-    if (op === 'while' && node.length === 3) { sums(node[1], NO_GUARDS); sums(node[2], [{ test: node[1], region: [node[2]] }]); return }
-    if (op === 'for' && node.length === 5) {
-      const round = node[2] == null ? NO_GUARDS : [{ test: node[2], region: [node[4], node[3]] }]
-      sums(node[1], guards); sums(node[2], NO_GUARDS); sums(node[4], round); sums(node[3], round)
-      return
-    }
-    if (op === 'if') {
-      sums(node[1], guards); sums(node[2], [...guards, { test: node[1], region: [node[2]] }]); sums(node[3], guards)
-      return
-    }
-    // (any other loop runs its body again with no test of ours before it)
-    const inner = LOOP_OPS.has(op) ? NO_GUARDS : guards
-    for (let i = 1; i < node.length; i++) sums(node[i], inner)
+    for (let i = 1; i < node.length; i++) sums(node[i])
   }
-  while (grew) { grew = false; sums(body, NO_GUARDS) }
+  while (grew) { grew = false; words = null; sums(body) }
   if (open.size) {
     const bareEscapes = collectBareEscapes(body, locals)
     for (const name of open) if (bareEscapes.has(name) && !wordLocals.has(name)) locals.set(name, 'f64')

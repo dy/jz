@@ -1,67 +1,112 @@
 /**
- * Integer interval interpretation for index, call-argument and store proofs.
- * The transfer functions share flow state and loop widening. Emission reads
- * memoized per-body index proofs through intervalProvenIdx/intervalIdxRanges;
- * parameter analysis supplies entry ranges and collects argument/store hulls.
+ * The numbers a function's locals hold, flow by flow: an abstract interpreter
+ * whose environment holds the table's values (summary/num-range.js `{lo, hi,
+ * int, nz, nan}`), every operator its transfer rule, loops by a widening join
+ * and narrowing. It proves index, call-argument and store hulls and each
+ * binding's numbers over its lifetime. Emission reads memoized per-body index
+ * proofs through intervalProvenIdx/intervalIdxRanges; parameter analysis
+ * supplies entry ranges and collects argument/store hulls.
  *
  * @module type/interval-proof
  */
 import {
   I32_MIN, I32_MAX, isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS,
-  walkAst, some, someDeep, REFS_THROUGH_ARROWS, callArgs, alwaysLeaves, collectAssignedNames,
+  walkAst, some, someDeep, REFS_THROUGH_ARROWS, REFS_IN_EXPR, refsName, callArgs, alwaysLeaves, collectAssignedNames,
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
-import { intLiteralValue } from '../static.js'
-import { nrBinary, nrInts, nrSpan } from '../summary/num-range.js'
+import { intLiteralValue, typedCtorRawOf, intExprRange } from '../static.js'
+import { typedElemAux, TYPED_ELEM_F16_FLAG, TYPED_ELEM_BIGINT_FLAG } from '../../layout.js'
+import { nrBinary, nrUnary, nrMath, nrInts, nrPoint, nrValue, nrJoin, nrEqual, nrSpan, nrWord } from '../summary/num-range.js'
 import { exprType } from './expr-type.js'
 import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget, maxMovementBudget } from './canonical-bounds.js'
 import { K, bitOf, TAGS, NULL_BITS } from '../summary/kind.js'
 
 // === Static interval proof (typedIdxProven class 5) ===
-// A tiny abstract interpreter over integer INTERVALS for const-bound loop nests —
-// the conv2d/blur shape class: every dimension folds to a literal, every index is a
+// The conv2d/blur shape class: every dimension folds to a literal, every index is a
 // chain of decls over ivs (`const irow = inCh+(oy+ky)*W+ox`), and the clamp idiom
 // (`if(xi<0)xi=0; else if(xi>=w)xi=w-1`) bounds the tap. No runtime guard can help
 // there (nest-level recognizers must see the BARE nest), and none is needed — the
 // whole computation is static. Accesses whose idx interval fits a STATIC receiver
 // length are recorded proven; everything else stays checked/versioned.
 
-// The smallest 2^k − 1 covering a non-negative m: the top of m's bit field. Integer
-// arithmetic on purpose — a transcendental (`Math.log2`) may differ in its last bit
-// between the native and the self-hosted compiler, and a proof must not.
+// The smallest 2^k − 1 covering a non-negative m: the top of m's bit field (integer
+// arithmetic: a transcendental may differ in its last bit between the native and
+// the self-hosted compiler, and a proof must not).
 const fieldAbove = (m) => m <= 0 ? 0 : 2 ** (32 - Math.clz32(m)) - 1
-const ipOk = (v) => v != null && v[0] >= I32_MIN && v[1] <= I32_MAX
-// (a remainder's hull where it is never -0: a hull here may authorize a signed word's storage)
-const wordRem = (a, B) => { const r = nrBinary('%', a, nrInts(B[0], B[1])); return r.nz ? nrSpan(r) : null }
+const empty = (v) => v.lo > v.hi
+// The edges where a value meets a pair: an index's span (a non-negative integer
+// one word holds, never NaN; -0 reads element 0), and a hull that may authorize a
+// signed word's storage (summary/num-range.js `nrWord`).
+const indexSpan = (v) => v && !empty(v) && v.int && !v.nan && v.lo >= 0 && v.hi <= I32_MAX ? [v.lo, v.hi] : null
+const wordSpan = (v) => nrWord(v) ? [v.lo, v.hi] : null
+// Every fact both values state of one value: what a test leaves of a name, a theorem's cap.
+const meet = (a, b) => nrValue(Math.max(a.lo, b.lo), Math.min(a.hi, b.hi), a.int || b.int, a.nz || b.nz, a.nan && b.nan)
+// The facts `a` states hold of every value `b` may be.
+const within = (b, a) => !!b && (empty(b) && !b.nan || (empty(b) || b.lo >= a.lo && b.hi <= a.hi) &&
+  (!a.int || b.int) && (!a.nz || b.nz) && (a.nan || !b.nan))
+// The widening join: an end the back edge moves past the entry's goes to the
+// word's end while the back edge is inside the word, else it opens (the verify
+// pass proves the word's end or widens on).
+// A constant K the loop's test tests a name's truth against gives the name
+// thresholds K - 1, K, K + 1: the nearest one the back edge has not passed
+// comes first, the verify pass deciding.
+const widen = (a, b, K = null) => nrValue(
+  b.lo < a.lo ? (K != null && b.lo >= K - 1 ? Math.min(b.lo, K + 1, Math.max(K - 1, Math.floor(b.lo))) : b.lo >= I32_MIN ? I32_MIN : -Infinity) : Math.min(a.lo, b.lo),
+  b.hi > a.hi ? (K != null && b.hi <= K + 1 ? Math.max(b.hi, K - 1, Math.min(K + 1, Math.ceil(b.hi))) : b.hi <= I32_MAX ? I32_MAX : Infinity) : Math.max(a.hi, b.hi),
+  a.int && b.int, a.nz && b.nz, a.nan || b.nan)
+const opened = (v) => v.lo === -Infinity || v.lo === I32_MIN || v.hi === Infinity || v.hi === I32_MAX
+// A theorem that caps a name from above alone: no fact of its values but the cap.
+const capOnly = (hi) => nrValue(-Infinity, hi, false, false, true)
+const WORD_VALUE = nrInts(I32_MIN, I32_MAX)
+// The one integer a value is, or null; whether a pair is inside one word.
+const point = (v) => v && v.int && !v.nan && v.lo === v.hi ? v.lo : null
+const inWord = (h) => h != null && h[0] >= I32_MIN && h[1] <= I32_MAX
+// The test that holds where one failed, NaN aside.
+const NEGATED = { '<': '>=', '<=': '>', '>': '<=', '>=': '<', '===': '!==', '!==': '===' }
 // The most a `length` counts where the summary holds the name to only arrays,
-// typed arrays and strings: a count below 2^32, and an array's below 2^31 (its
-// header word, of 8-byte cells in a 32-bit memory); null for any other name.
-const MAX_COUNT = 2 ** 32 - 1
+// typed arrays and strings: a count below 2^32, and an array's below 2^29 (its
+// 8-byte cells in a 32-bit memory, as static.js intExprRange reads it); null for
+// any other name.
+const MAX_COUNT = 2 ** 32 - 1, ARRAY_COUNT = 2 ** 29 - 1
 const COUNTED = bitOf(K.ARRAY) | bitOf(K.TYPED) | bitOf(K.STRING)
 const countOf = (x) => {
   const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(x)
   const t = k == null ? 0 : k & TAGS & ~NULL_BITS
-  return t === 0 || (t & ~COUNTED) !== 0 ? null : t === bitOf(K.ARRAY) ? I32_MAX : MAX_COUNT
+  return t === 0 || (t & ~COUNTED) !== 0 ? null : t === bitOf(K.ARRAY) ? ARRAY_COUNT : MAX_COUNT
 }
 // Initializer roots whose true result can carry range facts through a named const.
 const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
 
 /** Walk one function body; lens(name) returns a static element count or null.
- *  Optional calls/stores collect scalar hulls under the supplied entry ranges.
- *  Those maps preseed requested AST nodes with undefined; null means unknown.
- *  Repeated structural keys join conservatively across every occurrence.
- *  When provided, `out` receives a key string proven at every occurrence and each
- *  access NODE proven at its own position.
- *  `bindings` requests whole-binding hulls by name; reads before a known
- *  definition and any unknown write poison the result. Callers exclude captures.
- *  `misses` maps each unproven access of known length to [lo, hi, L]: its hull
- *  over the walk (null bounds where unknown), for a guard to test. */
-export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = null, stores = null, misses = null, bindings = null) {
+ *  What the walk collects, each a map the caller passes:
+ *  - `calls`/`stores`: scalar hulls of call arguments and stored values, under
+ *    the `entry` ranges of the parameters (integer pairs, as the hulls are: a
+ *    word's, `wordSpan`). Those maps preseed requested AST nodes with undefined;
+ *    null means unknown. Repeated structural keys join conservatively.
+ *  - `out`: a key string proven at every occurrence and each access NODE proven
+ *    at its own position; `ranges`, the hull of each key no length discharged.
+ *  - `bindings`: whole-binding hulls by name (the numbers of a local over its
+ *    lifetime, a word's pair); a read before a known definition and any unknown
+ *    write poison the result.
+ *  - `written`: what each write of a name stores, by node (the numbers of a
+ *    local at a write, as values).
+ *  - `misses`: each unproven access of known length as [lo, hi, L], its hull
+ *    over the walk (null bounds where unknown), for a guard to test.
+ *  `present(node)` answers for element reads another prover holds in bounds;
+ *  `assume(name)` gives the value of a name wherever the walk knows no more
+ *  of it (a storage hypothesis). The emitter's branch refinements are no
+ *  fact of the whole body: the walk reads none. */
+export function scanIntervalIdx(body, lens, facts = {}) {
+  const refinements = ctx.func.refinements
+  ctx.func.refinements = null
+  try { scanBody(body, lens, facts) } finally { ctx.func.refinements = refinements }
+}
+function scanBody(body, lens, { out = null, ranges = null, calls = null, entry = null, stores = null, misses = null, bindings = null, written = null, assume = null, present = null }) {
   // Branches retain their completed map and resume the saved entry map.
-  // Range pairs are immutable, so unchanged bounds can be shared at joins.
+  // Values are immutable, so unchanged ones can be shared at joins.
   // Missing map entries are unknown. Keep lexical/write ownership separately:
   // discarding an unknown interval must not reveal a same-named module constant.
-  let env = new Map()   // name → known [lo, hi]
+  let env = new Map()   // name → the numbers it holds (num-range.js)
   // Each loop's fixpoint walks its body several times, and every walk reruns
   // the fixpoints of the loops inside it: a nest costs about 5^depth walks of
   // its innermost body. Past a budget of 512 visits per node of the body
@@ -76,7 +121,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   const declared = new Set()
   if (entry) for (const [name, value] of entry) {
     declared.add(name)
-    if (value) env.set(name, value)
+    if (value) env.set(name, nrInts(value[0], value[1]))
   }
   // Structural keys survive lowering clones, but each occurrence must prove
   // its own bounds. One unchecked twin permanently rejects the shared proof.
@@ -93,24 +138,29 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // While-body fixpoint passes walk EXPLORATORILY — env may be transiently too
   // narrow, so proof/hull recording is suppressed until the stable final pass.
   let recording = true
+  // The step values of the writes an open loop bounds by its trips, joined over its passes.
+  const stepLog = new Map(), stepSide = new Map()   // write → value; `x ± v` → [write, the side v is]
+  const logStep = (write, v) => { if (!stepLog.has(write)) return; const p = stepLog.get(write); stepLog.set(write, p === undefined ? v ?? null : p && v ? nrJoin(p, v) : null) }
+  const recordWrite = (n, value) => {
+    if (!recording || !written) return
+    const prev = written.get(n)
+    written.set(n, prev === undefined ? value ?? null : prev && value ? nrJoin(prev, value) : null)
+  }
   const recordBinding = (name, value) => {
     if (!recording || !bindings?.has(name)) return
-    const v = ipOk(value) ? value : null, prev = bindings.get(name)
-    if (prev === undefined) bindings.set(name, v)
-    else if (!v) bindings.set(name, null)
-    else if (prev && (v[0] < prev[0] || v[1] > prev[1]))
-      bindings.set(name, [Math.min(prev[0], v[0]), Math.max(prev[1], v[1])])
+    const prev = bindings.get(name)
+    bindings.set(name, prev === undefined ? value ?? null : prev && value ? nrJoin(prev, value) : null)
   }
   const symEnv = new Map()   // name → { h: symbolic hull, incNode } — wrap cursors vs mutable bounds
   // Positive companion induction variables (`for (i += 3) { out[op] = …; op += 4 }`).
   // Unlike env's loop invariant, this hull is valid only BEFORE the companion's
   // direct increment in each iteration. Keeping that window explicit proves
   // codec/output cursors without pretending the post-increment value is in-bounds.
-  const coupledEnv = new Map() // name → { h: [lo, hi], incNode }
+  const coupledEnv = new Map() // name → { h: value, incNode }
   // names written inside ANY closure in this body: a later call can change them at
   // any point — they never hold a trusted interval
   const closureWrites = new Set()
-  const needed = !out && (calls || stores || bindings) ? new Set() : null
+  const needed = !out && !written && (calls || stores || bindings) ? new Set() : null
   const collectClosureWrites = (n, inClosure) => {
     if (typeof n === 'string') return bindings?.has(n) ?? false
     if (!Array.isArray(n)) return false
@@ -156,18 +206,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     outerWrites.set(loop, w)
     return w
   }
-  const activeFacts = new Map()   // name → [lo, hi] theorem stamped by a rewrite pass (peel)
-  // Immutable uint32 draws and lexically active increasing counters remain
-  // finite nonnegative integers even when their interval exceeds signed i32.
-  // This is only a dividend-sign proof for `%`, never a storage-width proof.
-  const nonNegIntegers = new Set()
-  walkAst(body, { enter: n => {
-    if (n[0] === '=>') return false
-    if (n[0] === 'const') for (let i = 1; i < n.length; i++) {
-      const d = n[i]
-      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === '>>>' && !closureWrites.has(d[1])) nonNegIntegers.add(d[1])
-    }
-  } })
+  const activeFacts = new Map()   // name → a theorem's value: a loop's cursor budget, a rewrite pass's stamp (peel)
+  // What a name holds where the walk knows no more: the caller's hypothesis.
+  const valueOf = (name) => env.get(name) ?? (assume && !closureWrites.has(name) ? assume(name) : null)
   // Preserve range facts through an immutable named guard:
   // `const inside = x >= 0 && x < W; if (inside) out[x] = 1`.
   // A definition is usable only while every referenced binding is unchanged;
@@ -188,12 +229,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   const setEnv = (name, v) => {
     invalidateBool(name)
     const f = activeFacts.get(name)
-    // A theorem's upper bound clamps the raw transfer before the word check:
-    // `++k` on a hull that touched the i32 top returns under the theorem's cap
-    // with its lower bound kept, instead of falling to the theorem alone.
-    if (f && v && Number.isFinite(v[1]) && v[1] > f[1]) v = [v[0], f[1]]
-    if (closureWrites.has(name) || !ipOk(v)) v = null
-    if (f) v = v ? [Math.max(v[0], f[0]), Math.min(v[1], f[1])] : f
+    if (closureWrites.has(name)) v = null
+    // (a theorem holds every value the name takes: `++k` past it is capped)
+    else if (f) v = v ? meet(v, f) : f
     if (v) env.set(name, v)
     else env.delete(name)
     recordBinding(name, v)
@@ -207,7 +245,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     for (const a of assigned) {
       if (!plain) { a.steps.add(name); continue }
       const p = a.values.get(name)
-      a.values.set(name, p === undefined ? v : p && v ? [Math.min(p[0], v[0]), Math.max(p[1], v[1])] : null)
+      a.values.set(name, p === undefined ? v : p && v ? nrJoin(p, v) : null)
     }
   }
   const constInt = (e) => {
@@ -219,23 +257,35 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     return null
   }
-  const ARITH = new Set(['+', '-', '*', '<<', '>>', '>>>', '&', '%', '|', '^'])
-  const ev = (e, wide = false) => {
-    if (typeof e === 'string') recordBinding(e, closureWrites.has(e) ? null : env.get(e))
+  // A number the source writes, or a module constant no local shadows.
+  const constNum = (e) => {
     const n = constInt(e)
-    if (n != null) return [n, n]
-    if (typeof e === 'string') return closureWrites.has(e) ? null : coupledEnv.get(e)?.h ?? env.get(e) ?? null
+    if (n != null) return nrPoint(n)
+    if (Array.isArray(e) && e[0] == null && typeof e[1] === 'number') return nrPoint(e[1])
+    if (typeof e === 'string' && !declared.has(e) && !env.has(e) && !closureWrites.has(e)) {
+      const c = ctx.scope?.constNums?.get?.(e)
+      if (typeof c === 'number') return nrPoint(c)
+    }
+    return null
+  }
+  const ARITH = new Set(['+', '-', '*', '/', '<<', '>>', '>>>', '&', '%', '|', '^'])
+  const SHIFTS = new Set(['<<', '>>', '>>>', '|', '^'])
+  const holds = (v, op) => !!v && !v.nan && v.lo >= (op === '>>>' ? 0 : I32_MIN) && v.hi <= (op === '>>>' ? 2 ** 32 - 1 : I32_MAX)
+  const ev = (e) => {
+    if (typeof e === 'string') recordBinding(e, closureWrites.has(e) ? null : env.get(e))
+    const c = constNum(e)
+    if (c) return c
+    if (typeof e === 'string') return closureWrites.has(e) ? null : coupledEnv.get(e)?.h ?? valueOf(e)
     if (!Array.isArray(e)) return null
     const [op, x, y] = e
     // An element hull describes a present value only. Retaining it across
     // a missing read would prove the next gather index valid after undefined
     // had become zero (or NaN in arithmetic).
     if (op === '[]' && e.length === 3 && typeof x === 'string') {
-      const present = visit(e)
-      if (!present) return null
-      const written = ctx.func.localReps?.get(x)?.arrayElemRange
-      const r = written ?? NARROW_ELEM_RANGE[ctx.func.typedElem?.get(x)]
-      return r ?? null
+      // (a read another prover holds in bounds: its element hull, a word's)
+      if (!visit(e) && !present?.(e)) { const w = intExprRange(e); return w ? nrInts(w[0], w[1]) : null }
+      const r = ctx.func.localReps?.get(x)?.arrayElemRange
+      return r ? nrInts(r[0], r[1]) : elementNumbers(typedCtorRawOf(x))
     }
     // `X.length` of a typed receiver with a known static length — the length-
     // identity atom: `const n = a.length` binds a singleton, `(a.length-1)>>1`
@@ -243,41 +293,29 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // binding's lifetime (the tracker drops the entry on any rebinding).
     if ((op === '.' || op === '?.') && e.length === 3 && typeof x === 'string' && e[2] === 'length') {
       const L = lens(x)
-      if (L != null) return [L, L]
+      if (L != null) return nrPoint(L)
       // Any other array's, typed array's or string's length is a count of
       // its elements (a nullish receiver throws before it reads).
       const most = op === '.' ? countOf(x) : null
-      if (most != null) return [0, most]
+      if (most != null) return nrInts(0, most)
     }
-    // Rounding is identity on this domain's present, finite integers. Loop
-    // copies round a Number bound before committing its word conversion.
-    if (op === '()' && (x === 'math.ceil' || x === 'math.floor' || x === 'math.trunc' || x === 'math.round')) {
-      const args = callArgs(e)
-      if (args.length === 1) return ev(args[0])
-    }
-    // `Math.imul(a, b)`: the product where it fits one signed word (exact there), any word otherwise.
-    if (op === '()' && x === 'math.imul') {
-      const args = callArgs(e)
-      if (args.length === 2) {
-        const A = ev(args[0]), B = ev(args[1])
-        if (A && B) { const p = [A[0] * B[0], A[0] * B[1], A[1] * B[0], A[1] * B[1]], r = [Math.min(...p), Math.max(...p)]; if (ipOk(r)) return r }
-        return [I32_MIN, I32_MAX]
-      }
-    }
-    // Grouping and numeric conversion preserve a proven integer interval.
+    // `Math`'s functions are pure: the table's rule over the arguments' numbers.
+    if (op === '()' && e.length === 3 && typeof x === 'string' && x.startsWith('math.')) return nrMath(x.slice(5), callArgs(e).map(a => ev(a)))
+    // Grouping and numeric conversion keep the numbers.
     // Load-CSE uses unary plus when its temporary needs a Number carrier.
-    if (e.length === 2 && (op === '()' || op === 'u+')) return ev(x, wide)
-    // Save the old hull before transferring a postfix update, exactly once.
+    if (e.length === 2 && op === '()') return ev(x)
+    if (e.length === 2 && (op === 'u+' || op === 'u-' || op === '-' || op === '~')) return nrUnary(op === '-' ? 'u-' : op, ev(x))
+    // Save the old value before transferring a postfix update, exactly once.
     if (op === 'postfix' && Array.isArray(x) &&
         (x[0] === '++' || x[0] === '--') && typeof x[1] === 'string') {
       const before = ev(x[1])
       visit(x)
-      const after = env.get(x[1]), delta = x[0] === '++' ? 1 : -1
+      const after = env.get(x[1])
       // A loop theorem can cap the updated cursor more tightly than its
       // incoming invariant. Exact integer transfer constrains the old value too.
-      return before && after ? [Math.max(before[0], after[0] - delta), Math.min(before[1], after[1] - delta)] : before
+      return before?.int && after?.int ? meet(before, nrBinary('-', after, nrPoint(x[0] === '++' ? 1 : -1))) : before
     }
-    // Prefix indices yield the interval after the mutation.
+    // Prefix updates yield the value after the mutation.
     if (e.length === 2 && (op === '++' || op === '--') && typeof x === 'string') {
       visit(e)
       return env.get(x) ?? null
@@ -287,12 +325,6 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (op === '=' && e.length === 3 && typeof x === 'string') {
       visit(e)
       return env.get(x) ?? null
-    }
-    if (e.length === 2 && (op === '-' || op === 'u-')) {
-      const v = ev(x)
-      // Call hulls may authorize signed-word storage. A zero input negates to
-      // -0, which an ordinary magnitude interval cannot distinguish from +0.
-      return ipOk(v) && (v[1] < 0 || v[0] > 0) ? [-v[1], -v[0]] : null
     }
     if (op === '?:' && e.length === 4) {   // join of both arms, each under its refinement
       visit(x)
@@ -308,60 +340,21 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (rE) env.set(rE[0], rE[1])
       const b = ev(e[3])
       hullInto(afterThen)
-      return a && b ? [Math.min(a[0], b[0]), Math.max(a[1], b[1])] : null
+      return a && b ? nrJoin(a, b) : null
     }
     // any non-arithmetic node (call, assignment, ternary, indexing…) routes through
     // visit so its env effects and access proofs are processed, value unknown
     if (e.length !== 3 || !ARITH.has(op)) { visit(e); return null }
-    // ToInt32 establishes a signed word even when its input is unknown.
-    if ((op === '|' || op === '>>') && intLiteralValue(y) === 0) { const v = ev(x); return ipOk(v) ? v : [I32_MIN, I32_MAX] }
-    // A pure comparison can use exact integer arithmetic beyond one word,
-    // e.g. n-1 with n an int32. Its own bindings still have signed-word hulls.
-    const wideArith = wide && (op === '+' || op === '-' || op === '*')
-    const A = ev(x, wideArith), B = ev(y, wideArith)
-    if (!A || !B) {
-      // a const mask bounds one-sidedly even when the other side is unknown
-      if (op === '&') {
-        // m ≥ 2^31 masks the SIGN bit (ToInt32) — result can be negative
-        const m = intLiteralValue(x) ?? intLiteralValue(y)
-        if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
-      }
-      // a modulus over a dividend that is non-negative by construction (`>>>`,
-      // a non-negative mask, a const bound to one) — the draw `rnd() % 101`
-      // over a uint32 word the interval cannot hold (beyond signed i32)
-      if (op === '%' && B && ((Array.isArray(x) && (x[0] === '>>>' || (x[0] === '&' && (intLiteralValue(x[1]) ?? intLiteralValue(x[2])) >= 0)))
-            || (typeof x === 'string' && nonNegIntegers.has(x))))
-        return wordRem(nrInts(0, Infinity), B)
-      return null
-    }
-    let r = null
-    if (op === '+') r = [A[0] + B[0], A[1] + B[1]]
-    else if (op === '-') r = [A[0] - B[1], A[1] - B[0]]
-    else if (op === '*') {
-      if (A[0] <= 0 && A[1] >= 0 && B[0] < 0 || B[0] <= 0 && B[1] >= 0 && A[0] < 0) return null
-      const p = [A[0] * B[0], A[0] * B[1], A[1] * B[0], A[1] * B[1]]
-      r = [Math.min(...p), Math.max(...p)]
-    }
-    else if (op === '<<' && B[0] >= 0 && B[1] <= 31) {
-      // Before signed wrap, an interval of masked counts scales each endpoint
-      // monotonically. The final word check rejects every wrapping result.
-      const lo = 2 ** B[0], hi = 2 ** B[1]
-      r = [Math.min(A[0] * lo, A[0] * hi), Math.max(A[1] * lo, A[1] * hi)]
-    }
-    // (a shift converts its operand: past one signed word, the word wraps to any)
-    else if (op === '>>' && B[0] === B[1] && B[0] >= 0 && B[0] <= 31) {
-      const W = ipOk(A) ? A : [I32_MIN, I32_MAX]
-      r = [W[0] >> B[0], W[1] >> B[0]]
-    }
-    else if (op === '>>>' && B[0] === B[1] && B[0] >= 0 && A[0] >= 0 && A[1] <= MAX_COUNT) r = [A[0] >>> B[0], A[1] >>> B[0]]
-    else if (op === '&' && B[0] === B[1] && B[0] >= 0 && B[0] <= 0x7fffffff) r = [0, B[0]]
-    // OR / XOR of two known non-negative fields cannot set a bit above either
-    // operand's highest possible bit. This covers packed table indices such as
-    // `((a & 3) << 4) | (b >>> 4)` without assuming the fields are disjoint,
-    // and the bit-reversal cursor `j ^= bit` staying inside its field.
-    else if ((op === '|' || op === '^') && A[0] >= 0 && B[0] >= 0) r = [0, fieldAbove(Math.max(A[1], B[1]))]
-    else if (op === '%') r = wordRem(nrInts(A[0], A[1]), B)
-    return ipOk(r) || wideArith && r && r.every(Number.isSafeInteger) ? r : null
+    const A = ev(x), B = ev(y)
+    // (a shift or a field of a number the walk does not know, or one its type
+    // does not hold, keeps no bound but the conversion's own: ToInt32's and
+    // ToUint32's word, `x | 0`, `x >> 0`, `x >>> 0`; a mask bounds any operand.
+    // The type's whole range is no fact of the program's numbers: a guard on it
+    // holds for no real length)
+    if (SHIFTS.has(op) && !(holds(A, op) && holds(B, op)) && !(point(B) === 0 && op !== '<<' && op !== '^')) return null
+    const side = stepSide.get(e)
+    if (side) logStep(side[0], side[1] === 2 ? B : A)
+    return nrBinary(op, A, B)
   }
   // condition refinement for if-arms: `name < K` / `name >= K` … over a known name.
   // The lhs also admits the AFFINE form `name ± c` (`inl_i + 3 <= N` — the strided
@@ -377,68 +370,100 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (exprType(name, ctx.func.locals) !== 'i32') return null
     if (ctx.func.localReps?.get(name)?.ptrKind != null) return null
     const p = ctx.func.current?.params?.find(q => q.name === name)
-    return p?.ptrKind == null ? [I32_MIN, I32_MAX] : null
+    return p?.ptrKind == null ? WORD_VALUE : null
   }
-  // Raw facts may exceed I32_MAX while separate conjuncts are being intersected
-  // (`x >= 0` and `x < W`). Only refine()/refineAll() publish an ipOk interval.
+  // What a test leaves of the name it compares: `[name, value]`, the value empty
+  // where the test cannot come out so. Each conjunct refines alone; refineAll
+  // meets them (`x >= 0` and `x < W`).
   const refineRaw = (c, negate, seedUnknown = false) => {
+    if (Array.isArray(c) && c[0] === '!' && c.length === 2) return refineRaw(c[1], !negate, seedUnknown)
+    const t = truthOf(c)
+    if (t) {
+      // A name's truth: no zero nor NaN where it held, a zero or NaN where it
+      // failed; a postfix step tested the old value, exact in an integer, the
+      // name one step on from it.
+      const [name, K] = t, v = valueOf(name)
+      if (!v || K && !v.int) return null
+      if (negate) return [name, meet(v, nrValue(K, K, true, K !== 0, true))]
+      return [name, v.int ? nrValue(v.lo === K ? K + 1 : v.lo, v.hi === K ? K - 1 : v.hi, true, v.nz, false) : nrValue(v.lo, v.hi, false, v.nz, false)]
+    }
     if (!Array.isArray(c) || c.length !== 3) return null
     let [op, l, r] = c
-    // rhs: an int literal/module const, a body-known interval (`xi >= ww`, or a
+    // rhs: a literal or module constant, a body-known value (`xi >= ww`, or a
     // RANGE-valued name — `child < end` inside the extract loop, where end is
     // the enclosing downward iv: the sound bound is the range's op-side
     // endpoint, hi for </<=, lo for >/>=), or a folded access-free expression
-    const rE = typeof r === 'string' ? env.get(r) : null
-    let rLo = constInt(r), rHi = rLo
-    if (rLo == null && rE) { rLo = rE[0]; rHi = rE[1] }
-    if (rLo == null && Array.isArray(r) && pureExpr(r)) {
-      const rr = ev(r, true)
-      if (rr) { rLo = rr[0]; rHi = rr[1] }
-    }
-    if (rLo == null) return null
+    let R = constNum(r) ?? (typeof r === 'string' ? env.get(r) ?? null : null)
+    if (!R && Array.isArray(r) && pureExpr(r)) R = ev(r)
+    // (a NaN side fails every comparison: where one held, neither side was NaN)
+    if (!R || empty(R)) return null
     // Bit-field discriminator: `(tag & MASK) === VALUE` narrows a bounded
     // integer source to the matching hull. Enumerating at most 65K values is a
     // compile-time-only, fail-closed operation and handles byte/word opcode
     // classes exactly (QOI's `(b0 & 0xc0) === 0` ⇒ b0 ∈ [0,63]).
-    if (!negate && (op === '===' || op === '==') && rLo === rHi &&
+    if (!negate && (op === '===' || op === '==') && R.lo === R.hi && R.int &&
         Array.isArray(l) && l[0] === '&' && l.length === 3) {
       const mask = intLiteralValue(l[1]) ?? intLiteralValue(l[2])
       const name = typeof l[1] === 'string' ? l[1] : typeof l[2] === 'string' ? l[2] : null
-      const v = name != null ? env.get(name) : null
-      if (mask != null && mask >= 0 && name != null && v && v[1] - v[0] <= 65536) {
+      const v = name != null ? env.get(name) : null, s = nrSpan(v)
+      if (mask != null && mask >= 0 && s && s[1] - s[0] <= 65536) {
         let lo = null, hi = null
-        for (let x = v[0]; x <= v[1]; x++) if ((x & mask) === rLo) { if (lo == null) lo = x; hi = x }
-        if (lo != null) return [name, [lo, hi]]
+        for (let x = s[0]; x <= s[1]; x++) if ((x & mask) === R.lo) { if (lo == null) lo = x; hi = x }
+        if (lo != null) return [name, meet(v, nrInts(lo, hi))]
       }
     }
-    let affineLhs = false
+    let bias = 0
     if (Array.isArray(l) && l.length === 3 && (l[0] === '+' || l[0] === '-')) {
       const cR = intLiteralValue(l[2]), cL = intLiteralValue(l[1])
-      if (typeof l[1] === 'string' && cR != null) { rLo = l[0] === '+' ? rLo - cR : rLo + cR; rHi = l[0] === '+' ? rHi - cR : rHi + cR; l = l[1]; affineLhs = true }
-      else if (l[0] === '+' && typeof l[2] === 'string' && cL != null) { rLo = rLo - cL; rHi = rHi - cL; l = l[2]; affineLhs = true }
+      if (typeof l[1] === 'string' && cR != null) { bias = l[0] === '+' ? cR : -cR; l = l[1] }
+      else if (l[0] === '+' && typeof l[2] === 'string' && cL != null) { bias = cL; l = l[2] }
     }
     if (typeof l !== 'string') return null
-    // A pre-existing finite env range proves affine +/- cannot wrap. A fresh
-    // full-i32 seed does not, so only seed bare-name comparisons here.
-    const known = env.get(l)
-    const fresh = seedUnknown && !affineLhs ? fullI32Range(l) : null
-    const v = known ?? fresh
+    // A known integer of finite ends proves `name ± c` exact; a fresh full-i32
+    // seed does not, so only bare-name comparisons seed.
+    const known = valueOf(l)
+    const v = known ?? (seedUnknown && !bias ? fullI32Range(l) : null)
     if (!v) return null
-    if (negate) op = op === '<' ? '>=' : op === '<=' ? '>' : op === '>' ? '<=' : op === '>=' ? '<'
-      : op === '===' ? '!==' : op === '!==' ? '===' : null
-    if (op === '<') return [l, [v[0], Math.min(v[1], rHi - 1)]]
-    if (op === '<=') return [l, [v[0], Math.min(v[1], rHi)]]
-    if (op === '>') return [l, [Math.max(v[0], rLo + 1), v[1]]]
-    if (op === '>=') return [l, [Math.max(v[0], rLo), v[1]]]
-    if (op === '===') return [l, [Math.max(v[0], rLo), Math.min(v[1], rHi)]]
+    if (bias) {
+      if (!nrSpan(v) || Math.abs(v.lo) > 2 ** 52 || Math.abs(v.hi) > 2 ** 52) return null
+      R = nrBinary('-', R, nrPoint(bias))
+    }
+    const relational = op === '<' || op === '<=' || op === '>' || op === '>='
+    if (negate) {
+      // (a NaN on the right fails the test whatever the name holds)
+      if (relational && R.nan) return null
+      op = NEGATED[op]
+      if (!op) return null
+    }
+    // A test of `<` and the like failing leaves a NaN; `!==` holding does.
+    const nan = v.nan && (negate && relational || op === '!==')
+    const lo = op === '>' ? (v.int ? Math.floor(R.lo) + 1 : R.lo) : op === '>=' || op === '===' ? (v.int ? Math.ceil(R.lo) : R.lo) : -Infinity
+    const hi = op === '<' ? (v.int ? Math.ceil(R.hi) - 1 : R.hi) : op === '<=' || op === '===' ? (v.int ? Math.floor(R.hi) : R.hi) : Infinity
+    if (op === '<' || op === '<=' || op === '>' || op === '>=' || op === '===')
+      return [l, nrValue(Math.max(v.lo, lo), Math.min(v.hi, hi), v.int, v.nz, nan)]
     // ≠K tightens only at an ENDPOINT (interior point removal keeps the hull) —
-    // exactly the toroidal-wrap ternary (`y === 0 ? h-1 : y-1`); singleton rhs only
-    if (op === '!==' && rLo === rHi) return [l, [v[0] === rLo ? rLo + 1 : v[0], v[1] === rLo ? rLo - 1 : v[1]]]
+    // exactly the toroidal-wrap ternary (`y === 0 ? h-1 : y-1`); a constant integer alone
+    if (op === '!==' && v.int && R.int && R.lo === R.hi) {
+      const K = R.lo
+      return [l, nrValue(v.lo === K ? K + 1 : v.lo, v.hi === K ? K - 1 : v.hi, true, v.nz, nan)]
+    }
     return null
   }
+  // The name a truth test reads and the value its truth turns on: a name and
+  // a prefix step test the name's value against 0, a postfix step the old
+  // value, the name then -1 (`x--`) or 1 (`x++`) where the old one was 0.
+  const truthOf = (c) => {
+    if (typeof c === 'string') return [c, 0]
+    if (!Array.isArray(c)) return null
+    if ((c[0] === '++' || c[0] === '--') && c.length === 2 && typeof c[1] === 'string') return [c[1], 0]
+    if (c[0] === 'postfix' && Array.isArray(c[1]) && (c[1][0] === '++' || c[1][0] === '--') && typeof c[1][1] === 'string') return [c[1][1], c[1][0] === '--' ? -1 : 1]
+    return null
+  }
+  // A refinement no execution reaches: no value, not even NaN.
+  const unreachable = (v) => empty(v) && !v.nan
   const refine = (c, negate) => {
     const r = refineRaw(c, negate)
-    return r && r[1][0] <= r[1][1] && ipOk(r[1]) ? r : null
+    return r && !unreachable(r[1]) ? r : null
   }
   // Whether the test cannot come out `!negate` from the current state: a
   // comparison whose refinement of its name's known interval is empty (`k > 0`
@@ -450,17 +475,17 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     if (!Array.isArray(c)) return false
     if (c[0] === (negate ? '||' : '&&') && c.length === 3) return impossible(c[1], negate) || impossible(c[2], negate)
     const r = refineRaw(c, negate)
-    return !!r && r[1][0] > r[1][1] && !isReassigned(c, r[0])
+    return !!r && unreachable(r[1]) && !isReassigned(c, r[0])
   }
   // A relational comparison with undefined is false (undefined converts to
   // NaN), and an element read of a receiver of known length L (a typed array,
   // an array) is undefined wherever its index is not an element index. So
   // where `E op a[x ± c]` HELD (op one of < <= > >=), the read hit:
-  // x ± c ∈ [0, L − 1]. The
+  // x ± c ∈ [0, L − 1], an integer. The
   // sentinel-terminated scans rely on it, e.g. the lower envelope's
   // `while (s <= z[k]) k--`, whose body never runs with z[k] missed. The index
   // must be a name, alone or with a literal offset, that E does not write, and
-  // an integer the walk already tracks (a known interval or an i32 local):
+  // a number the walk already tracks (a known value or an i32 local):
   // a hit proves the index an element index, not that the name is a number.
   const readHit = (c) => {
     if (!Array.isArray(c) || c.length !== 3 || !(c[0] === '<' || c[0] === '<=' || c[0] === '>' || c[0] === '>=')) return null
@@ -476,10 +501,10 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         bias = intLiteralValue(x[1]); x = x[2]
       }
       if (typeof x !== 'string' || closureWrites.has(x) || isReassigned(other, x)) continue
-      const known = env.get(x) ?? fullI32Range(x)
+      const known = valueOf(x) ?? fullI32Range(x)
       if (!known) continue
-      const v = [Math.max(known[0], -bias), Math.min(known[1], L - 1 - bias)]
-      if (v[0] <= v[1] && ipOk(v)) return [x, v]
+      const v = nrValue(Math.max(known.lo, -bias), Math.min(known.hi, L - 1 - bias), true, known.nz, false)
+      if (!empty(v)) return [x, v]
     }
     return null
   }
@@ -495,11 +520,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // (each conjunct refines from the same state: a name two of them bound takes both,
       // where the test writes nothing that could move it between them)
       const still = !some(c2, n => MUTATE_OPS.has(n[0]))
-      const meet = (h) => {
+      const take = (h) => {
         const i = out.findIndex(o => o[0] === h[0])
         if (i < 0) { out.push(h); return }
-        const m = [Math.max(out[i][1][0], h[1][0]), Math.min(out[i][1][1], h[1][1])]
-        if (m[0] <= m[1]) out[i] = [h[0], m]
+        const m = meet(out[i][1], h[1])
+        if (!unreachable(m)) out[i] = [h[0], m]
       }
       const parts = []
       const flat = (c3) => { if (Array.isArray(c3) && c3[0] === '&&') { flat(c3[1]); flat(c3[2]) } else parts.push(c3) }
@@ -516,21 +541,20 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       }
       for (let i = 0; i < parts.length; i++) {
         const r = refineRaw(parts[i], false, false)
-        if (r && !after?.[i].has(r[0]) && r[1][0] <= r[1][1] && ipOk(r[1])) { if (still) meet(r); else out.push(r) }
+        // (a truth test's own step is the write its refinement already takes)
+        const own = !!r && !(truthOf(parts[i]) ? after?.[i + 1] : after?.[i])?.has(r[0])
+        if (own && !unreachable(r[1])) { if (still) take(r); else out.push(r) }
         // A read's hit refines its index name, intersected with that name's other conjuncts.
         const h = readHit(parts[i])
-        if (h && !after?.[i].has(h[0])) meet(h)
+        if (h && !after?.[i].has(h[0])) take(h)
       }
       return out
     }
     const facts = new Map()
     const add = (r) => {
       if (!r || facts.get(r[0]) === null) return
-      const prev = facts.get(r[0])
-      const next = prev
-        ? [Math.max(prev[0], r[1][0]), Math.min(prev[1], r[1][1])]
-        : r[1]
-      facts.set(r[0], next[0] <= next[1] ? next : null)
+      const prev = facts.get(r[0]), next = prev ? meet(prev, r[1]) : r[1]
+      facts.set(r[0], unreachable(next) ? null : next)
     }
     const gather = (c3) => {
       if (typeof c3 === 'string') {
@@ -541,7 +565,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       } else { add(refineRaw(c3, false, seedUnknown)); add(readHit(c3)) }
     }
     gather(c2)
-    return [...facts].filter(([, v]) => v && ipOk(v)).map(([name, v]) => [name, v])
+    return [...facts].filter(([, v]) => v)
   }
   // descend into closures too — capture-writes stay dead
   const killAssigned = (n) => walkAst(n, { enter: n2 => {
@@ -581,7 +605,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     for (const k2 of env.keys()) {
       const a = env.get(k2), b = snap.get(k2)
       if (!b) env.delete(k2)
-      else if (a !== b) env.set(k2, [Math.min(a[0], b[0]), Math.max(a[1], b[1])])
+      else if (a !== b) env.set(k2, nrJoin(a, b))
     }
   }
   // LOOP FIXPOINT over the loop HEAD, the state where the condition is
@@ -597,7 +621,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // escapes it widens to unknown; the FINAL pass walks the stable head with
   // proof recording ON. The exit is the head invariant where the condition
   // failed, ∪ the break states.
-  const loopFixpoint = (seedFn, walkFn, condNode, exitBodyEnd = false) => {
+  const loopFixpoint = (seedFn, walkFn, condNode, exitBodyEnd = false, tighten = null) => {
     // Refines by the test and reports whether the body can run from here.
     const applyCond = () => {
       if (condNode == null) return true
@@ -614,60 +638,94 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       for (const s of lc.continues) hullInto(s)
       return lc
     }
+    // A walk from a head state, recording off, leaves what it left the last
+    // time it started there (the passes it walks are sound either way): the
+    // last walk's start and end are kept, and a pass that would start where it
+    // did reads its end instead.
+    let last = null
+    const walkFrom = (m) => {
+      if (last && last.from.size === m.size && [...m].every(([k2, v2]) => nrEqual(last.from.get(k2), v2))) return restore(last.end)
+      restore(m); seedFn(); walkPass()
+      last = { from: new Map(m), end: new Map(env) }
+    }
+    // (the head's entry state is the seeded one: a seed is a theorem of every
+    // head state, the first among them, so a seeded counter is no name the
+    // join widens)
+    seedFn()
     const entryEnv = new Map(env)
     const prevRec = recording
     const plain = !recording && steps > budget
     recording = false
     const writes = { values: new Map(), steps: new Set() }
     assigned.push(writes)
-    seedFn(); walkPass()                                // pass A: discovery
+    walkPass()                                          // pass A: discovery
     const stepEnv = new Map(env)
-    // WIDENING JOIN: an escaping bound widens to the i32 extreme instead of the
-    // one-step hull — the pass-B seed's cond refinement then clamps it to the
+    last = { from: entryEnv, end: stepEnv }
+    // WIDENING JOIN: an escaping bound goes to the word's end (past it, opens)
+    // instead of taking the one-step hull; the pass-B seed's cond refinement then clamps it to the
     // loop bound. This is what turns `for (; x + 3 <= N; x += 3)` into the
     // invariant x ∈ [0, N−3] (the strided-accumulator class) rather than
     // null: hull(entry, one step) can never contain step №2, so without the
     // widen every advancing cursor escapes to unknown.
-    const joined = new Map()
+    // (a truth test's constant, per name: `--i` against 0, `i--` against -1; a
+    // comparison's own refinement clamps where a truth test removes one point)
+    let thresholds = null
+    const constants = (c) => {
+      if (Array.isArray(c) && (c[0] === '&&' || c[0] === '||') && c.length === 3) { constants(c[1]); constants(c[2]); return }
+      if (Array.isArray(c) && c[0] === '!' && c.length === 2) { constants(c[1]); return }
+      const t = truthOf(c)
+      if (t) { (thresholds ??= new Map()).set(t[0], t[1]); return }
+    }
+    if (condNode != null) constants(condNode)
+    // (`carried`: the names the widening took past both edges' hull, the
+    // only ones a narrowing pass can tighten)
+    const joined = new Map(), carried = new Set()
+    const widenTo = (k2, a, b, K) => {
+      const j = widen(a, b, K), h = nrJoin(a, b)
+      if (j.lo < h.lo || j.hi > h.hi) carried.add(k2)
+      joined.set(k2, j)
+    }
     for (const k2 of entryEnv.keys()) {
       const a = entryEnv.get(k2), b = env.get(k2)
-      if (b) joined.set(k2,
-        [b[0] < a[0] ? I32_MIN : Math.min(a[0], b[0]), b[1] > a[1] ? I32_MAX : Math.max(a[1], b[1])])
+      if (b) widenTo(k2, a, b, thresholds?.get(k2))
     }
     // FIELD BOUNDS: a widened name may hold a bit-pattern invariant the linear
     // hull cannot express — `bit >>= 1` never leaves [0, bit₀], `j ^= bit`
     // never leaves the field below bit₀'s width — and the sentinel itself is
-    // too wide for the bit rules to verify. For every widened name whose edges
-    // are both non-negative, the field candidate is lo 0 and hi the smallest
+    // too open for the bit rules to verify. For every widened name whose edges
+    // are both non-negative words, the field candidate is lo 0 and hi the smallest
     // 2^k − 1 covering both edges; the candidates verify together in one pass
     // after the sentinel pass, and a name adopts its field only when it holds.
     const fields = new Map()
     for (const [k2, j] of joined) {
-      if (!j || (j[0] !== I32_MIN && j[1] !== I32_MAX)) continue
-      const a = entryEnv.get(k2), b = stepEnv.get(k2)
+      if (!opened(j)) continue
+      const a = wordSpan(entryEnv.get(k2)), b = wordSpan(stepEnv.get(k2))
       if (!a || !b || a[0] < 0 || b[0] < 0) continue
-      fields.set(k2, [j[0] === I32_MIN ? 0 : j[0], j[1] === I32_MAX ? fieldAbove(Math.max(a[1], b[1])) : j[1]])
+      const f = nrInts(j.lo <= I32_MIN ? 0 : j.lo, j.hi >= I32_MAX ? fieldAbove(Math.max(a[1], b[1])) : j.hi)
+      if (f.lo > j.lo || f.hi < j.hi) fields.set(k2, f)
     }
-    restore(joined); seedFn(); walkPass()               // pass B: verify
+    walkFrom(joined)                                    // pass B: verify
     // the back edge returns to the head, where the condition is evaluated
     // again: the walk-end state itself must lie in the head invariant
-    const holds = (k2, j) => { const v2 = env.get(k2); return !!(v2 && j && v2[0] >= j[0] && v2[1] <= j[1]) }
+    const holds = (k2, j) => !!j && within(env.get(k2), j)
     const failed = new Set()
     for (const [k2, j] of joined) if (j && !holds(k2, j)) failed.add(k2)
     // A name the discovery pass left where it entered, which the verify pass
     // moves, follows a name the join widened (`best = j` under `j < n`): its
     // invariant takes in what the verify pass left, and the pass verifies once
-    // more; a name that still escapes widens the way the join widens.
+    // more; a name that still escapes widens the way the join widens, and one
+    // the join carried past an end goes on to the next end at once.
     for (let round = 0; round < 2 && failed.size && !plain; round++) {
       let moved = false
       for (const k2 of failed) {
         const j = joined.get(k2), b = env.get(k2)
         if (!b) continue
-        joined.set(k2, round ? [b[0] < j[0] ? I32_MIN : j[0], b[1] > j[1] ? I32_MAX : j[1]] : [Math.min(j[0], b[0]), Math.max(j[1], b[1])])
+        if (round || carried.has(k2)) widenTo(k2, j, b)
+        else joined.set(k2, nrJoin(j, b))
         moved = true
       }
       if (!moved) break
-      restore(joined); seedFn(); walkPass()
+      walkFrom(joined)
       failed.clear()
       for (const [k2, j] of joined) if (j && !holds(k2, j)) failed.add(k2)
     }
@@ -679,7 +737,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // failed name must hold, or nothing from it is adopted.
       const trial = new Map(joined)
       for (const [k2, f] of fields) trial.set(k2, f)
-      restore(trial); seedFn(); walkPass()
+      walkFrom(trial)
       if ([...fields].every(([k2, f]) => holds(k2, f)) && [...failed].every(k2 => holds(k2, joined.get(k2)))) {
         for (const [k2, f] of fields) joined.set(k2, f)
         failed.clear()
@@ -696,12 +754,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     let candidates = false
     for (const [k2, j] of joined) {
       const a = entryEnv.get(k2), v = writes.values.get(k2)
-      if (!j || !a || !v || writes.steps.has(k2) || (j[0] !== I32_MIN && j[1] !== I32_MAX && !fields.has(k2))) continue
-      const c = [Math.max(j[0], Math.min(a[0], v[0])), Math.min(j[1], Math.max(a[1], v[1]))]
-      if (c[0] > j[0] || c[1] < j[1]) { trial.set(k2, c); candidates = true }
+      if (!j || !a || !v || writes.steps.has(k2) || (!opened(j) && !fields.has(k2))) continue
+      const c = meet(j, nrJoin(a, v))
+      if (c.lo > j.lo || c.hi < j.hi) { trial.set(k2, c); candidates = true }
     }
     if (candidates && !plain) {
-      restore(trial); seedFn(); walkPass()
+      walkFrom(trial)
       if ([...trial].every(([k2, t]) => !t || holds(k2, t))) for (const [k2, t] of trial) joined.set(k2, t)
     }
     // NARROWING (≤2 decreasing passes): the widened invariant is sound but
@@ -714,29 +772,26 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // (meet with the previous invariant keeps the sequence decreasing).
     //
     // GATE (exact, not heuristic — a raw compile-time win jz.wasm pays for):
-    // ONLY a name at a signed-word boundary can narrow. The join gave every
-    // non-escaping name its exact one-step hull (min/max of entry ∪ back-edge),
+    // ONLY a name the widening carried past its edges' hull can narrow (a bit
+    // field or an assigned hull it took since among them). The join gave every
+    // other name its exact one-step hull (min/max of entry ∪ back-edge),
     // which is already the tightest interval containing both edges — a fresh
     // walk reproduces the same stable end-state, so the meet is a no-op there.
-    // The escaped names (widened to the sentinel) are the sole candidates. If
-    // NONE widened, skip both extra body walks (the common case: cond-clamped
-    // ivs never escape). Turns the heapsort-class cost into zero on every
-    // ordinary loop.
-    const widened = () => {
-      for (const [, j] of joined) if (j && (j[0] === I32_MIN || j[1] === I32_MAX)) return true
-      return false
-    }
-    for (let np = 0; np < 2 && !plain && widened(); np++) {
-      restore(joined); seedFn(); walkPass()
+    // If NONE was carried, skip both extra body walks (the common case:
+    // cond-clamped ivs never escape), and the first pass reads the last
+    // verifying walk's end where no name moved since.
+    for (let np = 0; np < 2 && !plain && carried.size; np++) {
+      walkFrom(joined)
       let changed = false
       for (const [k2, j] of joined) {
         const a = entryEnv.get(k2), b = env.get(k2)
         if (!j || !a || !b) continue
-        const nl = Math.max(j[0], Math.min(a[0], b[0])), nh = Math.min(j[1], Math.max(a[1], b[1]))
-        if (nl > j[0] || nh < j[1]) { joined.set(k2, [nl, nh]); changed = true }
+        const c = meet(j, nrJoin(a, b))
+        if (c.lo > j.lo || c.hi < j.hi) { joined.set(k2, c); changed = true }
       }
       if (!changed) break
     }
+    tighten?.(joined)
     recording = prevRec
     restore(joined); seedFn()
     const lcF = walkPass()                              // FINAL: record on the stable env
@@ -751,6 +806,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     //    which body-end doesn't cover.
     // Either way the failed condition refines it (`while (i < n)` exits i ≥ n).
     if (!exitBodyEnd) restore(joined)
+    // (a test that writes leaves its writes on the exit edge: it runs there again)
+    if (condNode != null && some(condNode, x => MUTATE_OPS.has(x[0]))) visit(condNode)
     const rX = condNode != null ? refine(condNode, true) : null
     if (rX && !closureWrites.has(rX[0])) env.set(rX[0], rX[1])
     // ∪ break-edge states (a break bypasses the loop condition and reaches the
@@ -782,7 +839,9 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   // advance along any one body path; over a literal-trip loop this gives a
   // whole-body invariant `entry <= cursor <= entry + trips*maxAdvance`.
   // Unknown writes, nested control loops, abrupt edges, or closures reject.
-  const advanceBudget = (root, name, upperOnly = false) => maxAdvanceBudget(root, name, { constInt, evRange: ev, closureWrites, MUTATE_OPS, upperOnly })
+  // (the budgets read integer hulls a word holds, as pairs)
+  const evWord = (e) => { const v = ev(e); return v && v.int && !v.nan && v.lo >= I32_MIN && v.hi <= I32_MAX ? [v.lo, v.hi] : null }
+  const advanceBudget = (root, name, upperOnly = false) => maxAdvanceBudget(root, name, { constInt, evRange: evWord, closureWrites, MUTATE_OPS, upperOnly })
   // Two-counter amortized budget. Track `cursor + credit` path-sensitively
   // through one loop body. This proves buffered/RLE emitters where a rare
   // path writes K+1 bytes only after `credit > 0` and resets the credit:
@@ -917,7 +976,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // canonical literal-interval iv: `for (iv = A; iv </<= B; iv += STEP)` —
     // including affine tests (`iv + WIDTH <= B`) — or the DOWNWARD unit-step
     // twin (heapify roots, reverse scans). A/B fold through the full evaluator.
-    let iv = null, range = null, ivStep = null, nonNegCounter = null
+    let iv = null, range = null, ivStep = null, counter = null, trips = null
     const decls = declarationsOf(init)
     const down = Array.isArray(cond) && (cond[0] === '>' || cond[0] === '>=')
     if (Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=' || down)) {
@@ -931,34 +990,25 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         // the counter enters the loop with what the whole head left it, not its own
         // initializer: `let i = 0, c = (i = -1)` starts at -1, and `let i = k--`
         // ran its decrement once, in the head walk above
-        const dv = decls.get(name)
-        const As = env.get(name)
-        const Bs = cond[2] != null ? ev(cond[2]) : null
-        const A = As && As[0] === As[1] ? As[0] : null
-        const B = Bs && Bs[0] === Bs[1] ? Bs[0] : null
+        const A = point(env.get(name))
+        const Bv = cond[2] != null ? ev(cond[2]) : null, B = point(Bv)
         const delta = down ? null : stepDelta(step, name)
-        // A loop-local integer started at +0 or above and advanced only by
-        // a positive constant stays finite and nonnegative. Rounded Number
-        // addition eventually stops advancing; it cannot wrap or make -0.
-        // The upper loop bound need not be known to bound `counter % K`.
-        // Later declarators may have overwritten the counter initializer.
-        const start = dv != null ? constInt(dv) : null, afterInit = env.get(name)
-        if (start != null && start >= 0 && !Object.is(start, -0) && delta > 0 &&
-            afterInit && Object.is(afterInit[0], start) && Object.is(afterInit[1], start) &&
-            !loopMutable(name) && !isReassigned(cond, name) &&
-            !isReassigned(lbody, name) && !redeclaresName(lbody, name)) nonNegCounter = name
-        if (A != null && B != null && !loopMutable(name) && !isReassigned(lbody, name) && !redeclaresName(lbody, name)
-            && (cond[2] == null || boundInvariant(cond[2], lbody))
-            && (down ? isUnitDecrement(step, name) : delta != null && delta > 0)) {
+        const counts = A != null && !loopMutable(name) && !isReassigned(lbody, name) && !redeclaresName(lbody, name)
+          && (cond[2] == null || boundInvariant(cond[2], lbody))
+        if (counts && B != null && (down ? isUnitDecrement(step, name) : delta != null && delta > 0)) {
           iv = name
           ivStep = down ? -1 : delta
           range = down ? [cond[0] === '>' ? B + 1 : B, A]
             : [A, B - bias - (cond[0] === '<' ? 1 : 0)]
         }
+        // (a counter stepped up toward a bound of a known most: the body runs at most this often)
+        else if (counts && !down && delta > 0 && Bv && !Bv.nan && Number.isFinite(Bv.hi)) {
+          const top = (cond[0] === '<' ? Math.ceil(Bv.hi) - 1 : Math.floor(Bv.hi)) - bias
+          counter = name
+          trips = top < A ? 0 : Math.floor((top - A) / delta) + 1
+        }
       }
     }
-    const hadNonNeg = nonNegCounter && nonNegIntegers.has(nonNegCounter)
-    if (nonNegCounter) nonNegIntegers.add(nonNegCounter)
     // Companion-IV theorem. If a positive cursor has one direct positive
     // increment in the loop body, its value BEFORE that increment is bounded
     // by the statically known trip count. This is deliberately a lexical
@@ -969,8 +1019,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // Upper caps for cursors that also fall: every write inside the loop is
     // capped, no seed is set, and the loop fixpoint discovers the lower bound.
     const capped = []
+    if (iv && range[0] <= range[1]) trips = Math.floor((range[1] - range[0]) / Math.abs(ivStep)) + 1
     if (iv && ivStep > 0 && range && range[0] <= range[1]) {
-      const trips = Math.floor((range[1] - range[0]) / ivStep) + 1
       const stmts = Array.isArray(lbody) && (lbody[0] === ';' || lbody[0] === '{}') ? lbody.slice(1) : [lbody]
       const writesTo = (root, name) => {
         let count = 0
@@ -996,10 +1046,10 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           if (incNode[2][1] === name) delta = constInt(incNode[2][2])
           else if (incNode[2][2] === name) delta = constInt(incNode[2][1])
         }
-        const entry = env.get(name)
+        const entry = nrSpan(env.get(name))
         const h = entry && delta != null && delta > 0
           ? [entry[0], entry[1] + (trips - 1) * delta] : null
-        if (ipOk(h) && writesTo(lbody, name) === 1) coupled.push([name, h, incNode])
+        if (inWord(h) && writesTo(lbody, name) === 1) coupled.push([name, nrInts(h[0], h[1]), incNode])
       }
       const changedNames = new Set()
       walkAst(lbody, { enter: x => {
@@ -1028,42 +1078,77 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         const caps = indexCaps.get(name)
         if (!caps?.length) continue
         if (name === iv || loopMutable(name) || redeclaresName(lbody, name)) continue
-        const entry = env.get(name), maxAdvance = advanceBudget(lbody, name)
+        const entry = nrSpan(env.get(name)), maxAdvance = advanceBudget(lbody, name)
         let h = entry && entry[0] >= 0 && maxAdvance != null && maxAdvance > 0
           ? [entry[0], entry[1] + trips * maxAdvance] : null
         // Try every non-negative changed counter as an amortization credit;
         // keep only a strictly tighter, fully verified potential budget.
         if (h && caps.some(L => h[1] >= L)) for (const credit of changedNames) {
           if (credit === name || credit === iv || loopMutable(credit) || redeclaresName(lbody, credit)) continue
-          const ce = env.get(credit)
+          const ce = nrSpan(env.get(credit))
           if (!ce || ce[0] < 0) continue
           const K = potentialAdvance(lbody, name, credit)
           const ph = K != null && K >= 0 ? [entry[0], entry[1] + ce[1] + trips * K] : null
-          if (ipOk(ph) && ph[1] < h[1]) h = ph
+          if (inWord(ph) && ph[1] < h[1]) h = ph
         }
-        if (ipOk(h)) budgeted.push([name, h])
+        if (inWord(h)) budgeted.push([name, nrInts(h[0], h[1])])
         else if (entry) {
           // No decrement raises the cursor, so its rise stays budgeted when it also falls.
           const up = advanceBudget(lbody, name, true)
-          const cap = up != null ? [I32_MIN, entry[1] + trips * up] : null
-          if (ipOk(cap)) capped.push([name, cap])
+          const cap = up != null ? entry[1] + trips * up : null
+          if (cap != null && cap <= I32_MAX) capped.push([name, capOnly(cap)])
         }
       }
     }
+    // ACCUMULATORS: over a body that runs at most `trips` times, a name every
+    // write of which steps it (`acc += a[i]`, `p = p + dx`) stays within its
+    // entry and the trips times each way's most step; a Number stepped by
+    // constants, on the binary grid their sums keep exact. Each step's numbers
+    // are the passes' own, in flow (a read the walk holds in bounds there is
+    // its element's); the bound meets the head invariant before the final pass.
+    const accumulated = []
+    if (trips > 0) for (const name of collectAssignedNames(lbody, new Set())) {
+      const entry = env.get(name)
+      if (name === iv || name === counter || loopMutable(name) || redeclaresName(lbody, name) || activeFacts.has(name) ||
+          isReassigned(step, name) || isReassigned(cond, name) || !entry || entry.nan || !Number.isFinite(entry.lo) || !Number.isFinite(entry.hi)) continue
+      walkAst(lbody, { enter: m => {
+        if (m[0] === '=>') return false
+        if (!MUTATE_OPS.has(m[0]) || m[1] !== name) return
+        stepLog.set(m, undefined)
+        // (`x = x ± v`, an arm of `x = c ? x + v : x - v`: v's numbers where the sum is taken)
+        const arms = (r) => { if (!Array.isArray(r)) return; if (r[0] === '?:' && r.length === 4) { arms(r[2]); arms(r[3]) }
+          else if (r.length === 3 && (r[0] === '+' || r[0] === '-') && (r[1] === name || r[0] === '+' && r[2] === name)) stepSide.set(r, [m, r[1] === name ? 2 : 1]) }
+        if (m[0] === '=') arms(m[2])
+      } })
+      accumulated.push([name, entry])
+    }
+    // (a bound of every value in the loop: it caps the final pass's writes too)
+    const bounded = new Map()
+    const tighten = accumulated.length ? (joined) => {
+      for (const [name, entry] of accumulated) {
+        const h = accumulatedHull(lbody, name, entry, trips, (v, write) => stepLog.get(write) ?? null)
+        if (!h) continue
+        // (a theorem the loop already holds of the name, a cursor's budget, meets it)
+        const prior = activeFacts.get(name)
+        joined.set(name, joined.has(name) ? meet(joined.get(name), h) : h)
+        bounded.set(name, prior); activeFacts.set(name, prior ? meet(prior, h) : h)
+      }
+    } : null
     // Body fixpoint (same engine as `while` below): the canonical-iv range is
     // a body-independent theorem re-seeded each pass; everything else
     // discovers its invariant. This is what proves heapsort's `child` chains,
     // medianUs's `samples[mid]`, and strided codec input/output cursors.
     // The condition sees the iv's HEAD range, one step past the body range
     // (the test that exits); the body sees the body range.
-    const seeded = iv && ipOk(range) && range[0] <= range[1] && !closureWrites.has(iv)
-    const headRange = seeded ? (ivStep > 0 ? [range[0], range[1] + ivStep] : [range[0] - 1, range[1]]) : null
+    const seeded = iv && inWord(range) && range[0] <= range[1] && !closureWrites.has(iv)
+    const head = seeded ? (ivStep > 0 ? [range[0], range[1] + ivStep] : [range[0] - 1, range[1]]) : null
+    const headRange = inWord(head) ? nrInts(head[0], head[1]) : null, bodyRange = seeded ? nrInts(range[0], range[1]) : null
     const priorCoupled = new Map(coupled.map(([name]) => [name, coupledEnv.get(name)]))
-    const priorFacts = new Map([...budgeted, ...capped].map(([name]) => [name, activeFacts.get(name)]))
-    for (const [name, h] of budgeted) activeFacts.set(name, h)
-    for (const [name, h] of capped) activeFacts.set(name, h)
+    const theorems = [...budgeted, ...capped]
+    const priorFacts = new Map(theorems.map(([name]) => [name, activeFacts.get(name)]))
+    for (const [name, h] of theorems) activeFacts.set(name, h)
     const seeds = () => {
-      if (seeded && ipOk(headRange)) env.set(iv, headRange)
+      if (headRange) env.set(iv, headRange)
       else if (iv) env.delete(iv)
       for (const [name, h, incNode] of coupled) coupledEnv.set(name, { h, incNode })
       for (const [name, h] of budgeted) setEnv(name, h)
@@ -1071,22 +1156,25 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     loopFixpoint(seeds,
       (afterCond) => {
         if (cond != null) visit(cond)
-        if (seeded) env.set(iv, range)
+        if (seeded) env.set(iv, bodyRange)
         if (afterCond()) { visit(lbody); if (step != null) visit(step) }
       },
-      cond, seeded)
-    for (const [name] of [...budgeted, ...capped]) {
+      cond, seeded, tighten)
+    for (const [name, prior] of bounded) prior ? activeFacts.set(name, prior) : activeFacts.delete(name)
+    if (accumulated.length) walkAst(lbody, { enter: m => { stepLog.delete(m); stepSide.delete(m) } })
+    for (const [name] of theorems) {
       const prior = priorFacts.get(name)
       if (prior) activeFacts.set(name, prior)
       else activeFacts.delete(name)
     }
-    if (iv) env.delete(iv)   // iv holds the exit value after the loop
+    // (the names the loop's own declaration makes are its own: none outlives it)
+    if (Array.isArray(init) && init[0] === 'let') for (const name of decls.keys()) env.delete(name)
+    else if (iv) env.delete(iv)
     for (const [name] of coupled) {
       const prior = priorCoupled.get(name)
       if (prior) coupledEnv.set(name, prior)
       else coupledEnv.delete(name)
     }
-    if (nonNegCounter && !hadNonNeg) nonNegIntegers.delete(nonNegCounter)
     return
   }
   const visitWhile = (n, wrapEntry) => {
@@ -1097,7 +1185,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     const [, c, wbody] = n
     let iv = null, entry = null, brange = null
     if (Array.isArray(c) && c[0] === '<' && typeof c[1] === 'string' && wbody != null) {
-      entry = env.get(c[1]); brange = c[2] != null ? ev(c[2], pureExpr(c[2])) : null
+      entry = nrSpan(env.get(c[1])); brange = c[2] != null ? nrSpan(ev(c[2])) : null
       if (entry && brange && !loopMutable(c[1]) && ivMonotoneInc(wbody, c[1]) && !redeclaresName(wbody, c[1])
           && boundInvariant(c[2], wbody)) iv = c[1]
     }
@@ -1119,11 +1207,11 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         const inner = intLiteralValue(rhs[1]) != null ? rhs[2] : rhs[1]
         if (M == null || M < 0) continue
         if (!(Array.isArray(inner) && inner[0] === '+' && (inner[1] === a2[1] || inner[2] === a2[1]))) continue
-        const e0 = env.get(a2[1])
+        const e0 = nrSpan(env.get(a2[1]))
         if (!e0 || e0[0] < 0 || e0[1] > M) continue
         let writes = 0
         walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === a2[1]) writes++ } })
-        if (writes === 1 && !loopMutable(a2[1])) wraps.push([a2[1], [0, M]])
+        if (writes === 1 && !loopMutable(a2[1])) wraps.push([a2[1], nrInts(0, M)])
       }
       for (let k = 1; k < stmts.length - 1; k++) {
         const a2 = stmts[k], b2 = stmts[k + 1]
@@ -1139,7 +1227,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         const C = constInt(b2[1][2])
         const Cname = C == null && typeof b2[1][2] === 'string' ? b2[1][2] : null
         if ((C == null || C < 1) && Cname == null) continue
-        const e0 = env.get(nm)
+        const e0 = nrSpan(env.get(nm))
         const prior = Cname && wrapEntry?.find(([name, h]) => name === nm && h.hiName === Cname)?.[1]
         if ((!e0 && !prior) || e0 && (e0[0] < 0 || (C != null && e0[1] > C - 1))) continue
         if (Cname && !boundInvariant(Cname, wbody)) continue
@@ -1147,7 +1235,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         let writes = 0
         walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++ } })
         if (writes !== 2 || loopMutable(nm)) continue
-        if (C != null) wraps.push([nm, [0, C - 1], [0, C - 1 + K]])
+        if (C != null) wraps.push([nm, nrInts(0, C - 1), nrInts(0, C - 1 + K)])
         // symbolic bound (`let SEQLEN = 5` — mutable): the invariant is
         // si ∈ [0, C-1] RELATIVE to C's runtime value — recorded as a symbolic
         // hull for reads BEFORE the increment (the versioning guard closes it
@@ -1166,7 +1254,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string' && x[1] !== iv &&
             env.get(x[1]) && !loopMutable(x[1])) changed.add(x[1])
       } })
-      const options = { constInt, evRange: ev, closureWrites, MUTATE_OPS }
+      const options = { constInt, evRange: evWord, closureWrites, MUTATE_OPS }
       const minimum = changed.size ? minAdvanceBudget(wbody, iv, options) : 0
       const trips = minimum > 0 ? Math.max(0, Math.ceil((brange[1] - entry[0]) / minimum)) : 0
       if (trips > 0) {
@@ -1176,28 +1264,29 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
           if (!stepEnv) {
             stepEnv = new Map(env)
             for (const name of stepEnv.keys()) if (loopMutable(name) || isReassigned(wbody, name) || redeclaresName(wbody, name)) stepEnv.delete(name)
-            for (const [name, h, whole = h] of wraps) if (ipOk(whole)) stepEnv.set(name, whole)
+            for (const [name, h, whole = h] of wraps) stepEnv.set(name, whole)
             // A dependent write may follow this iteration’s increment. Its
             // operand needs the whole cursor lifetime, including that landing.
             const advance = maxAdvanceBudget(wbody, iv, options)
             const whole = advance > 0 ? [entry[0], Math.max(entry[1], brange[1] - 1 + advance)] : null
-            if (ipOk(whole)) stepEnv.set(iv, whole)
+            if (inWord(whole)) stepEnv.set(iv, nrInts(whole[0], whole[1]))
           }
           const saved = env, wasRecording = recording
           env = stepEnv; recording = false
-          try { return ev(e) }
+          try { return evWord(e) }
           finally { env = saved; recording = wasRecording }
         }
         for (const name of changed) {
           if (redeclaresName(wbody, name)) continue
-          const start = env.get(name)
+          const start = nrSpan(env.get(name))
+          if (!start) continue
           const advance = maxAdvanceBudget(wbody, name, options)
           let h = advance > 0 ? [start[0], start[1] + trips * advance] : null
-          if (!ipOk(h)) {
+          if (!inWord(h)) {
             const movement = maxMovementBudget(wbody, name, { ...options, evRange: stepRange })
             if (movement != null) h = [start[0] - trips * movement, start[1] + trips * movement]
           }
-          if (ipOk(h)) budgeted.push([name, h])
+          if (inWord(h)) budgeted.push([name, nrInts(h[0], h[1])])
         }
       }
     }
@@ -1217,7 +1306,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     loopFixpoint(seeds, (afterCond) => {
       visit(c)
-      if (iv) env.set(iv, [entry[0], brange[1] - 1])
+      if (iv) env.set(iv, nrInts(entry[0], brange[1] - 1))
       if (afterCond()) for (let k = 2; k < n.length; k++) visit(n[k])
     }, c)
     for (const [name] of budgeted) {
@@ -1270,15 +1359,16 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     }
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
       visit(n[1])
-      const idxV = ev(n[2])
+      const idxV = ev(n[2]), idx = indexSpan(idxV)
       const L = lens(n[1])
-      const proven = L != null && idxV && idxV[0] >= 0 && idxV[1] < L
+      const proven = L != null && !!idx && idx[1] < L
       if (!recording) return proven   // exploratory fixpoint pass: env effects only
       const k = out || ranges ? idxKey(n[1], n[2]) : null
       if (!proven) {
         if (out) { rejected.add(k); out.delete(k); rejectedNodes.add(n); out.delete(n) }
         if (misses && L != null) {
-          const prev = misses.get(n), lo = idxV ? idxV[0] : null, hi = idxV ? idxV[1] : null
+          const s = nrSpan(idxV), w = inWord(s) ? s : null
+          const prev = misses.get(n), lo = w ? w[0] : null, hi = w ? w[1] : null
           misses.set(n, prev ? [prev[0] == null || lo == null ? null : Math.min(prev[0], lo), prev[1] == null || hi == null ? null : Math.max(prev[1], hi), L] : [lo, hi, L])
         }
       }
@@ -1292,8 +1382,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       // Provisional guard-seeded hulls stay local; structural export would let
       // one guarded occurrence bless an unrelated same-key access.
       if (ranges) {
-        const h = !guardProofContext ? idxV && idxV[0] >= 0 ? idxV
-          : idxV == null && typeof n[2] === 'string' ? symEnv.get(n[2])?.h : null : null
+        const h = !guardProofContext ? idx
+          ?? (idxV == null && typeof n[2] === 'string' ? symEnv.get(n[2])?.h : null) : null
         const prev = ranges.get(k)
         ranges.set(k, !ranges.has(k) ? h ?? null : !prev || !h ? null
           : Array.isArray(prev) && Array.isArray(h)
@@ -1323,12 +1413,13 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (symEnv.get(n[1])?.incNode === n) symEnv.delete(n[1])   // past the increment: window closed
       if (coupledEnv.get(n[1])?.incNode === n) coupledEnv.delete(n[1])
       setEnv(n[1], ev(n[2]))
+      recordWrite(n, env.get(n[1]))
       if (assigned.length) noteAssigned(n[1], true)
       return
     }
     if (stores?.has(n) && op === '=' && Array.isArray(n[1]) && n[1][0] === '[]') {
       visit(n[1])
-      const value = ev(n[2])
+      const value = wordSpan(ev(n[2]))
       if (recording) {
         const prev = stores.get(n)
         stores.set(n, prev === undefined ? value : prev && value
@@ -1343,13 +1434,14 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         // `x += K` / `x -= K` / `x++` / `x--` transfer exactly — a strided
         // accumulator keeps a computable back-edge for the loop fixpoint
         // (cond-clamped by the widening join); anything else is unknown
-        const cur = env.get(n[1])
+        const cur = valueOf(n[1])
         let nv = null
-        if (op === '++') nv = cur && [cur[0] + 1, cur[1] + 1]
-        else if (op === '--') nv = cur && [cur[0] - 1, cur[1] - 1]
+        if (op === '++' || op === '--') nv = cur && nrBinary(op === '++' ? '+' : '-', cur, nrPoint(1))
+        else if (op === '+=' || op === '-=') { const a = ev(n[1]), v = ev(n[2]); logStep(n, v); nv = nrBinary(op[0], a, v) }
         else if (ARITH.has(op.slice(0, -1))) nv = ev([op.slice(0, -1), n[1], n[2]])
         else for (let k = 2; k < n.length; k++) visit(n[k])
         setEnv(n[1], nv)
+        recordWrite(n, env.get(n[1]))
         if (assigned.length) noteAssigned(n[1], false)
       }
       else {
@@ -1440,7 +1532,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
       if (calls?.has(n) && op === '()') {
         visit(n[1])
         const values = []
-        for (const arg of callArgs(n)) values.push(ev(arg))
+        for (const arg of callArgs(n)) values.push(wordSpan(ev(arg)))
         if (recording) {
           const prev = calls.get(n)
           calls.set(n, prev ? values.map((v, k) => v && prev[k]
@@ -1464,8 +1556,8 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
   const visitWithFacts = (n) => {
     const popped = []
     for (const [name, boundName] of n._rangeFacts) {
-      const B = boundName != null ? ev(boundName) : null
-      if (B && !activeFacts.has(name)) { activeFacts.set(name, [0, B[1] - 1]); popped.push(name) }
+      const B = boundName != null ? nrSpan(ev(boundName)) : null
+      if (B && !activeFacts.has(name)) { activeFacts.set(name, nrInts(0, B[1] - 1)); popped.push(name) }
     }
     const facts = n._rangeFacts
     n._rangeFacts = null   // re-entry brake (the self-compile subset has no delete)
@@ -1474,6 +1566,114 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     for (const name of popped) activeFacts.delete(name)
   }
   visit(Array.isArray(body) && body[0] === '=>' ? body[body.length - 1] : body)
+  // (a binding's hull may authorize a signed word's storage: an integer's never -0)
+  if (bindings) for (const [name, v] of bindings) if (v !== undefined) bindings.set(name, v?.nz ? nrSpan(v) : null)
+}
+
+/** Per-iteration motion of `name` in a loop body: P/N bound all its positive and
+ *  negative steps, intermediate values among them. Each direction is bounded
+ *  alone (a continue or a short circuit can skip an opposing step). Nested
+ *  loops writing it, resets and shadows reject. `rangeOf(value, write)` gives a
+ *  step's [lo, hi] over the loop. */
+export function collectStepRange(node, name, rangeOf, unit = 1) {
+  if (!Array.isArray(node)) return { P: 0, N: 0 }
+  const op = node[0]
+  if (MUTATE_OPS.has(op) && node[1] === name) {
+    if (op === '++') return { P: unit, N: 0 }
+    if (op === '--') return { P: 0, N: unit }
+    if (op === '+=' || op === '-=') {
+      if (refsName(node[2], name, REFS_IN_EXPR)) return null
+      const r = rangeOf(node[2], node)
+      if (!r) return null
+      const lo = op === '+=' ? r[0] : -r[1], hi = op === '+=' ? r[1] : -r[0]
+      return { P: Math.max(0, hi), N: Math.max(0, -lo) }
+    }
+    if (op === '=') return assignedStepRange(node[2], name, rangeOf, node)
+    return null
+  }
+  if (op === 'let' || op === 'const') {
+    let P = 0, N = 0
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (d === name) return null                                     // bare uninitialized shadow decl
+      if (Array.isArray(d) && d[1] === name) return null               // shadow: a fresh `name` rebinds here
+      if (Array.isArray(d) && d[0] === '=') {
+        const s = collectStepRange(d[2], name, rangeOf, unit)
+        if (s == null) return null
+        P += s.P; N += s.N
+      }
+    }
+    return { P, N }
+  }
+  if (op === 'if' || op === '?:') {
+    const c = collectStepRange(node[1], name, rangeOf, unit)
+    if (c == null || c.P || c.N) return null   // a write to `name` inside the CONDITION itself: reject, too exotic
+    const t = collectStepRange(node[2], name, rangeOf, unit)
+    const e = node.length > 3 && node[3] !== undefined ? collectStepRange(node[3], name, rangeOf, unit) : { P: 0, N: 0 }
+    if (t == null || e == null) return null
+    return { P: Math.max(t.P, e.P), N: Math.max(t.N, e.N) }
+  }
+  if (op === 'for' || op === 'while' || op === '=>')
+    return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0 }
+  let P = 0, N = 0
+  for (let i = 1; i < node.length; i++) {
+    const s = collectStepRange(node[i], name, rangeOf, unit)
+    if (s == null) return null
+    P += s.P; N += s.N
+  }
+  return { P, N }
+}
+
+// Assignment spelling of an additive recurrence. Every chosen arm must retain
+// the old value exactly once; no reassignment or extra self-read may hide in
+// the condition or the increment.
+function assignedStepRange(node, name, rangeOf, write) {
+  if (node === name) return { P: 0, N: 0 }
+  if (!Array.isArray(node)) return null
+  if (node[0] === '?:') {
+    if (isReassigned(node[1], name)) return null
+    const a = assignedStepRange(node[2], name, rangeOf, write), b = assignedStepRange(node[3], name, rangeOf, write)
+    return a && b ? { P: Math.max(a.P, b.P), N: Math.max(a.N, b.N) } : null
+  }
+  const op = node[0], left = node[1] === name
+  if (node.length !== 3 || !(op === '+' && (left || node[2] === name) || op === '-' && left)) return null
+  const value = node[left ? 2 : 1]
+  if (refsName(value, name, REFS_IN_EXPR)) return null
+  const r = rangeOf(value, write)
+  if (!r) return null
+  const lo = op === '+' ? r[0] : -r[1], hi = op === '+' ? r[1] : -r[0]
+  return { P: Math.max(0, hi), N: Math.max(0, -lo) }
+}
+
+// The numbers `name` takes in a loop body run at most `trips` times from
+// `entry`, each write a step (collectStepRange): integers by integer steps
+// exactly; a Number by constant steps on a binary grid. Rounded additions are
+// monotone, and integral grid ends with outward-rounded steps stay exact while
+// their scaled magnitude fits the safe integers, so the grid bounds the
+// recurrence without replacing it by its start plus trips times its step.
+function accumulatedHull(body, name, entry, trips, stepNumbers) {
+  if (!Number.isSafeInteger(trips)) return null
+  if (entry.int) {
+    const s = collectStepRange(body, name, (n, w) => { const v = stepNumbers(n, w); return v && v.int && !v.nan && Number.isFinite(v.lo) && Number.isFinite(v.hi) ? [v.lo, v.hi] : null })
+    if (s) {
+      const lo = entry.lo - trips * s.N, hi = entry.hi + trips * s.P
+      return Number.isSafeInteger(lo) && Number.isSafeInteger(hi) ? nrValue(lo, hi, true, false, false) : null
+    }
+  }
+  const constant = (n, w) => { const v = stepNumbers(n, w); return v && !v.nan && v.lo === v.hi && Number.isFinite(v.lo) ? v.lo : null }
+  const enclose = scale => {
+    const s = collectStepRange(body, name, (n, w) => { const v = constant(n, w); return v == null ? null : [Math.floor(v * scale), Math.ceil(v * scale)] }, scale)
+    if (!s) return null
+    const down = trips * s.N, up = trips * s.P, lo = Math.floor(entry.lo * scale) - down, hi = Math.ceil(entry.hi * scale) + up
+    return [down, up, lo, hi].every(Number.isSafeInteger) ? [lo / scale, hi / scale] : null
+  }
+  const coarse = enclose(1)
+  if (!coarse) return null
+  let scale = 1
+  const magnitude = Math.max(1, Math.abs(coarse[0]), Math.abs(coarse[1]))
+  while (scale < 0x100000000 && magnitude * scale < 2 ** 50) scale *= 2
+  const h = enclose(scale)
+  return h && nrValue(h[0], h[1], false, false, false)
 }
 
 /** Every write to `iv` in `node` is a strictly-positive unit step (++iv / iv+=1 /
@@ -1494,11 +1694,22 @@ function ivMonotoneInc(node, iv) {
   for (let k = 1; k < node.length; k++) if (!ivMonotoneInc(node[k], iv)) return false
   return true
 }
-const NARROW_ELEM_RANGE = {
-  'new.Int8Array': [-128, 127], 'new.Uint8Array': [0, 255], 'new.Uint8ClampedArray': [0, 255],
-  'new.Int16Array': [-32768, 32767], 'new.Uint16Array': [0, 65535],
-  'new.Int8Array.view': [-128, 127], 'new.Uint8Array.view': [0, 255], 'new.Uint8ClampedArray.view': [0, 255],
-  'new.Int16Array.view': [-32768, 32767], 'new.Uint16Array.view': [0, 65535],
+// The numbers an integer element of a typed array holds: its width's, signed or not.
+const elementNumbers = (ctor) => {
+  const aux = typedElemAux(ctor)
+  if (aux == null || (aux & 7) > 5 || aux & (TYPED_ELEM_F16_FLAG | TYPED_ELEM_BIGINT_FLAG)) return null
+  const bits = 8 << ((aux & 7) >> 1)
+  return aux & 1 ? nrInts(0, 2 ** bits - 1) : nrInts(-(2 ** (bits - 1)), 2 ** (bits - 1) - 1)
+}
+
+/** The element counts and the parameters' ranges of the current function: the
+ *  lens and entry state of its walks. */
+export const functionLens = (name) => ctx.func.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
+  ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
+export function paramEntry() {
+  const entry = new Map()
+  for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
+  return entry
 }
 
 /** Memoized per-function set of interval-proven `recv[idx]` keys (AdHocMemo
@@ -1515,11 +1726,7 @@ export function intervalProvenIdx(ctx) {
 
 function collectIntervalProof(ctx, body, cache) {
   const out = new Set(), ranges = new Map()
-  const lens = (name) => ctx.func.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
-    ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
-  const entry = new Map()
-  for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
-  scanIntervalIdx(body, out, lens, ranges, null, entry)
+  scanIntervalIdx(body, functionLens, { out, ranges, entry: paramEntry() })
   cache.set(body, out)
   getFactStore().ipRanges.set(body, ranges)
   return out
@@ -1529,13 +1736,18 @@ function collectIntervalProof(ctx, body, cache) {
  *  with their index hulls (scanIntervalIdx `misses`), from a fresh walk. */
 export function intervalMisses(ctx, body = ctx.func?.body) {
   const misses = new Map()
-  if (!Array.isArray(body)) return misses
-  const lens = (name) => ctx.func.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
-    ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
-  const entry = new Map()
-  for (const p of ctx.func.current?.params || []) entry.set(p.name, ctx.func.localReps?.get(p.name)?.range ?? null)
-  scanIntervalIdx(body, null, lens, null, null, entry, null, misses)
+  if (Array.isArray(body)) scanIntervalIdx(body, functionLens, { entry: paramEntry(), misses })
   return misses
+}
+
+/** What each write of a name in `body` stores, by node: the numbers of local
+ *  `x` at a write, where every name `assume(name)` answers holds that value
+ *  wherever the walk knows no more (a storage hypothesis, a word). A write the
+ *  walk does not reach is absent. */
+export function writtenNumbers(body, lens, assume) {
+  const written = new Map()
+  scanIntervalIdx(body, lens, { entry: paramEntry(), written, assume })
+  return written
 }
 
 /** Drop the memoized proofs of a body rewritten in place. */

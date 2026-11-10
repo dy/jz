@@ -149,6 +149,21 @@ test('counter width: width bounds never advertise a varying step as an exact str
     is(forCounterBounds(init, cond, step, 'j', n => n === 'stride' ? bad : range(n)), null, `${bad} is no positive integer step hull`)
 })
 
+test('counter width: a bound declared beside the counter holds its initializer only where the loop never writes it', () => {
+  if (!onKernel()) {
+    const init = ['let', ['=', 'i', [null, 0]], ['=', 'l', [null, 4]]], cond = ['<', 'i', 'l'], step = ['++', 'i']
+    const range = n => Array.isArray(n) && n[0] == null ? [n[1], n[1]] : null
+    is(forCounterBounds(init, cond, step, 'i', range, [';']).test, [0, 4], 'a bound the body leaves is its initializer')
+    is(forCounterBounds(init, cond, step, 'i', range, ['=', 'l', ['*', 'l', [null, 2]]]), null, 'a bound the body doubles is not')
+  }
+  // (base answered 8 for 404 at every level: x[4] to x[7] read unchecked, as present)
+  for (const grow of ['l = l * 2', 'l = l + 1']) compare(`export function f(k) {
+    const x = new Float64Array(4); let s = 0
+    for (let i = 0, l = x.length; i < l; i++) { s += x[i] === undefined ? 100 : 1; if (i === k) ${grow} }
+    return s
+  }`, [[0], [9]])
+})
+
 const countdown = (kind, init, body = 'out.push(i); if (++count === 4) break') => {
   if (kind === 'for') return `let out = [], count = 0; for (let i = ${init}; i--;) { ${body} }; return out`
   const loop = kind === 'do' ? `do { ${body} } while (--i)` : `while (${kind === 'post' ? 'i--' : '--i'}) { ${body} }`
@@ -257,7 +272,7 @@ test('counter width: interval binding hulls include every stable read and write'
   if (onKernel()) return
   const loop = ['while', ['<', 'i', 4], ['++', 'i']]
   const cases = [
-    ['landing', [';', ['let', ['=', 'i', 0]], loop, ['return', 'i']], [0, 7]],
+    ['landing', [';', ['let', ['=', 'i', 0]], loop, ['return', 'i']], [0, 4]],
     ['zero work', [';', ['let', ['=', 'i', 5]], loop, ['return', 'i']], [5, 5]],
     ['unknown word producer', [';', ['let', ['=', 'i', ['|', 'unknown', 0]]], ['return', 'i']], [-2147483648, 2147483647]],
     ['late unknown write', [';', ['let', ['=', 'i', 0]], loop, ['=', 'i', 'unknown']], null],
@@ -266,7 +281,8 @@ test('counter width: interval binding hulls include every stable read and write'
     ['conditional initializer', [';', ['if', 'flag', ['let', ['=', 'i', 0]]], ['return', 'i']], null],
     ['conditional receiver', [';', ['if', 'flag', ['let', ['=', 'i', 0]]], ['[]', 'i', 0]], null],
     ['unknown step', [';', ['let', ['=', 'i', 0]], ['while', ['<', 'i', 4], ['+=', 'i', 'step']]], null],
-    ['overflowing final update', [';', ['let', ['=', 'i', 2147483647]], ['while', ['<=', 'i', 2147483647], ['++', 'i']]], null],
+    // (the integers it takes, the landing past the word among them: no word's storage)
+    ['overflowing final update', [';', ['let', ['=', 'i', 2147483647]], ['while', ['<=', 'i', 2147483647], ['++', 'i']]], [2147483647, 2147483648]],
     ['captured write', [';', ['let', ['=', 'i', 0]], ['=>', [], ['=', 'i', 1.5]], loop], null],
     ['unknown destructured write', [';', ['let', ['=', 'i', 0]], ['=', ['[', 'i'], 'unknown']], null],
     ['exceptional exit', [';', ['let', ['=', 'i', 0]], ['catch', [';', ['=', 'i', 2], ['()', 'call']], [';', ['return', 'i']]]], null],
@@ -274,7 +290,7 @@ test('counter width: interval binding hulls include every stable read and write'
   for (const [name, body, expected] of cases) {
     const prior = ctx.func, bindings = new Map([['i', undefined]])
     ctx.func = createActiveFunction({ body })
-    try { scanIntervalIdx(body, null, () => null, null, null, null, null, null, bindings) }
+    try { scanIntervalIdx(body, () => null, { bindings }) }
     finally { ctx.func = prior }
     is(bindings.get('i'), expected, name)
   }
@@ -414,7 +430,7 @@ test('counter width: companion while cursors need progress on every continuing p
     const proven = new Set(), hulls = new Map([['op', undefined]])
     const prior = ctx.func
     ctx.func = createActiveFunction({ body })
-    try { scanIntervalIdx(body, proven, name => name === 'a' ? 4 : null, null, null, null, null, null, hulls) }
+    try { scanIntervalIdx(body, name => name === 'a' ? 4 : null, { out: proven, bindings: hulls }) }
     finally { ctx.func = prior }
     return { hit: proven.has(read), hull: hulls.get('op') }
   }
@@ -468,7 +484,7 @@ test('counter width: loop budgets cannot hide writes through module bindings', (
       ctx.func = createActiveFunction({ body })
       ctx.scope.globalTypes = new Map([[global, 'f64']])
       const proven = new Set(), hulls = new Map([['op', undefined]])
-      scanIntervalIdx(body, proven, name => name === 'a' ? 4 : null, null, null, null, null, null, hulls)
+      scanIntervalIdx(body, name => name === 'a' ? 4 : null, { out: proven, bindings: hulls })
       ok(!proven.has(read), `${global}: the call can invalidate the trip or cursor budget`)
       is(hulls.get('op'), null, 'the complete lifetime remains unknown')
     }

@@ -6738,9 +6738,9 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
   // `op` is declared BEFORE the loop, stepped only by a body literal (`op += 4`),
   // guarded by a SHIFTED loop bound (`i + 3 <= N`) — the exact base64 encode/decode
   // shape f95b56bc/efe34b1c/d6460bce/c8700daa all named as "no existing slot in any
-  // current channel". analyze-scans.js's stampBodyRanges proves op's whole-
-  // function range from the loop's own trip count (static.js's forCounterRange,
-  // generalized to a shifted guard) and durably stamps it via updateRep — so Pass D's
+  // current channel". The interval proof bounds op over the loop's own trip count
+  // (type/interval-proof.js accumulatedHull, under the shifted guard) and publishes
+  // its binding hull as the range, so Pass D's
   // bare-escape check (the `return op` at the end) sees a real hull instead of
   // demoting op to f64.
   const N = 3072
@@ -8881,9 +8881,10 @@ export let main = () => {
     for (const optimize of levels(0, 2, 'speed'))
       ok(Object.is(run(src, { optimize }).main(), expected), `${name} at O${optimize}: ${run(src, { optimize }).main()} vs ${expected}`)
     if (belowOpt(2) || onKernel()) continue
-    // (one test of the window's last index, `j + 7 < length`, covers the inner loop's eight reads)
+    // (one test of the window's last index, `j + 7 < length`, covers the inner loop's eight reads;
+    // where the counter's own extent is known, the last window's, `j0 + (n - 1) + 7`, covers every window's)
     const text = compile(src, { wat: true, optimize: 'speed' }).replace(/\s+/g, ' ')
-    ok(/\(i(32|64)\.lt_s \(i\1\.add \(i\1\.const (?:7|0x0*7)\)/.test(text), `${name}: the inner guard still lifts`)
+    ok(/\(i(32|64)\.lt_s \(i\1\.add (?:\(i\1\.add )?\(i\1\.const (?:7|0x0*7)\)/.test(text), `${name}: the inner guard still lifts`)
   }
 })
 

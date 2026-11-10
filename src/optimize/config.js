@@ -7,7 +7,7 @@
  *   0 — nothing. Fastest compile, largest output. Useful for live coding.
  *   1 — encoding/frame compactness (treeshake + local slots + fusedRewrite-inline).
  *       Cheap, no IR rewrites that perturb V8's tier-up shape.
- *       Whole-binding/argument interval fixpoints start at level 2; callers can
+ *       Interprocedural interval fixpoints start at level 2; callers can
  *       opt in with intervalRanges without enabling the other passes.
  *   2 — default. All stable jz passes + full watr (treeshake / dedupe / dedupTypes /
  *       coalesce / propagate / packData / fold / peephole / vacuum / mergeBlocks /

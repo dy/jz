@@ -144,7 +144,7 @@ export const PASS_NAMES = [
   'carryElements',            // an element a loop stores for its next pass stays in a local (compile/carry-elements.js)
   'arrayViews',               // a slice read only as a spread source keeps its array and a range (compile/array-view.js)
   'wordLocals',               // a local every read of which re-applies ToInt32 holds its word (compile/analyze-scans.js narrowWordLocals)
-  'intervalRanges',           // whole-binding and interprocedural interval fixpoints; omitted by the compile-budget tiers
+  'intervalRanges',           // interprocedural interval fixpoints (argument and store hulls); omitted by the compile-budget tiers
   'guardViews',               // a typed array a guard proves is read through a view of its constructor (compile/plan/guard-views.js)
   'staticLocals',             // a typed array a function makes at a literal length and keeps to itself: static storage, its address a constant (compile/fixed-memory.js)
   'hoistConstLit',            // loop-invariant const array/object literal hoist (allocate once)

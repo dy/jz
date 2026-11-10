@@ -150,7 +150,7 @@ const counterRanges = (body) => {
     for (let i = 1; i < init.length; i++) {
       const d = init[i]
       if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || isReassigned(n[4], d[1])) continue
-      const r = forCounterRange(init, n[2], n[3], d[1])
+      const r = forCounterRange(init, n[2], n[3], d[1], undefined, n[4])
       if (r) { m.set(d[1], [r[0], r[1]]); continue }
       // (a bound of no hull but a known magnitude, `i < len` under `len = samples.length`: the counter stays below it, stepped up by one)
       const startNode = d[2], start = Array.isArray(startNode) && startNode[0] == null && Number.isInteger(startNode[1]) ? startNode[1] : typeof startNode === 'number' && Number.isInteger(startNode) ? startNode : null

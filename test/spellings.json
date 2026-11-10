@@ -69,12 +69,12 @@
   "kernel/ring/p=(p+1)%M (canonical)/speed": {"ops":27},
   "kernel/ring/p++; if(p===M)p=0/2": {"ops":27},
   "kernel/ring/p++; if(p===M)p=0/speed": {"ops":27},
-  "kernel/ring/if(++p>=M)p-=M/2": {"ops":29},
-  "kernel/ring/if(++p>=M)p-=M/speed": {"ops":29},
+  "kernel/ring/if(++p>=M)p-=M/2": {"ops":28},
+  "kernel/ring/if(++p>=M)p-=M/speed": {"ops":28},
   "kernel/ring/p=p+1===M?0:p+1/2": {"ops":27},
   "kernel/ring/p=p+1===M?0:p+1/speed": {"ops":27},
   "kernel/ring/p=(p+1)&(M-1)/2": {"ops":2},
   "kernel/ring/p=(p+1)&(M-1)/speed": {"ops":27},
-  "kernel/ring/step first, use old q/2": {"ops":35},
-  "kernel/ring/step first, use old q/speed": {"ops":37}
+  "kernel/ring/step first, use old q/2": {"ops":4},
+  "kernel/ring/step first, use old q/speed": {"ops":29}
 }

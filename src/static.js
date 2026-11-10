@@ -452,8 +452,8 @@ export function typedValueExprRange(n) {
 // Lives here (not emit.js) since forCounterRange has exactly ONE dependency —
 // intExprRange/constIntExpr, both already leaf-level in this file — and BOTH
 // an emit-time consumer (emit.js's ctx.func.refinements channel) and an
-// ANALYZE-TIME consumer (analyze-scans.js's stampBodyRanges, INDUCTION-
-// VARIABLE FACT project) need the identical proof: the whole point of "the
+// ANALYZE-TIME consumer (analyze-scans.js's stampLoopCounterRanges, through
+// forCounterBounds) need the identical proof: the whole point of "the
 // canonical range evaluator... shared" (intExprRange's own doc, above).
 //
 // Returns a real, closed [lo, hi] hull for `name` — sound for the ENTIRE body
@@ -628,18 +628,18 @@ export const bottomOf = (e, rangeOf = intExprRange) => {
   return null
 }
 
-export function forCounterRange(init, cond, step, name, rangeOf = intExprRange) {
-  return forCounterBoundsIn(init, cond, step, name, rangeOf, false)
+export function forCounterRange(init, cond, step, name, rangeOf = intExprRange, body = null) {
+  return forCounterBoundsIn(init, cond, step, name, rangeOf, false, body)
 }
 
 /** The counter's complete width, allowing a bounded positive step magnitude.
  *  A varying step has no exact stride: consumers needing trips/stride continue
  *  to use forCounterRange. Its largest step still bounds the final overshoot. */
-export function forCounterBounds(init, cond, step, name, rangeOf = intExprRange) {
-  return forCounterBoundsIn(init, cond, step, name, rangeOf, true)
+export function forCounterBounds(init, cond, step, name, rangeOf = intExprRange, body = null) {
+  return forCounterBoundsIn(init, cond, step, name, rangeOf, true, body)
 }
 
-function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep) {
+function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep, body) {
   if (!Array.isArray(cond) || !RELATIONAL_OPS.has(cond[0])) return null
   const shift = nameShift(cond[1], name)
   if (shift == null) return null
@@ -684,9 +684,12 @@ function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep) {
   const initRange = rangeOf(initExpr)
   // A bound no hull closes on both sides still closes the counter on the side it
   // runs toward: `i < Math.min(len, s.length)` rises below a string's length.
+  // (a bound the loop declares beside the counter holds its initializer where
+  // the loop, `body` given, writes it nowhere: `l = l + 1` in the body moves it)
   let boundRange0 = rangeOf(cond[2])
   if (!boundRange0) {
-    const bound = (typeof cond[2] === 'string' ? counterInit(init, cond[2]) : null) ?? cond[2]
+    const b = cond[2], held = typeof b === 'string' && body != null && ![body, cond, step].some(r => r != null && isReassigned(r, b))
+    const bound = (held ? counterInit(init, b) : null) ?? b
     const side = increasing ? topOf(bound, rangeOf) : bottomOf(bound, rangeOf)
     if (side != null) boundRange0 = increasing ? [-Infinity, side] : [side, Infinity]
   }

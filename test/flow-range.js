@@ -105,7 +105,7 @@ test('flow range: the arm that writes a local after its test gets no fact', () =
 
 // A ring counter `j = (j + 1) % K` is bounded by its divisor alone: every write
 // has a hull with no seed from j itself, so j is an i32 and its remainder the
-// integer one (analyze-scans.js stampBodyRanges).
+// integer one (type/interval-proof.js, the table's remainder over the widened counter).
 test('flow range: a remainder by a literal bounds the counter it writes', () => {
   const src = `export let ring = (n, k) => { let t = 0, j = 0, q = -3
     for (let i = 0; i < n; i++) { j = (j + 1) % 256; q = (q - k) % 7; t += j * 3 + q }

@@ -194,13 +194,20 @@ const POW_SLACK = 2 ** -40
 /** `Math.<name>(...args)` over the arguments' ranges. */
 export function nrMath(name, args, powOf) {
   if (args.some(a => a === NR_NONE)) return args.every(a => a) ? NR_NONE : null
-  if (name === 'imul') return WORD
+  // (the product of the two words where one word holds it: exact there, any word else)
+  if (name === 'imul') {
+    if (args.length !== 2) return WORD
+    const x = toWord(args[0]), y = toWord(args[1]), p = [x.lo * y.lo, x.lo * y.hi, x.hi * y.lo, x.hi * y.hi]
+    const lo = Math.min(...p), hi = Math.max(...p)
+    return lo >= I32_MIN && hi <= I32_MAX ? words(lo, hi) : WORD
+  }
   if (name === 'clz32') return make(0, 32, true, true, false)
   const a = args[0]
   if (!a) return null
   if (name === 'pow') return pow(a, args, powOf)
   if (empty(a)) return NAN
-  // (a rounding of a finite number is an integer; of an infinity, the infinity)
+  // (a rounding of an integer is the integer, -0 and NaN their own; of a finite number an integer; of an infinity, the infinity)
+  if (a.int && args.length === 1 && (name === 'round' || name === 'floor' || name === 'ceil' || name === 'trunc')) return a
   const whole = !posInf(a) && !negInf(a)
   switch (name) {
     case 'abs': return args.length === 1 ? make(a.lo >= 0 ? a.lo : a.hi <= 0 ? -a.hi : 0, Math.max(-a.lo, a.hi), a.int, true, a.nan, a.gap) : null

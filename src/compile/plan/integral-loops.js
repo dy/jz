@@ -814,7 +814,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const range = entryOk ? forCounterRange(loop[1], [comparison, counter, bound], loop[3], counter, entryRange) : null
       const values = bodyWrites.get(n)
       const knownBound = intExprRange(n) ?? (!params.has(n) && values?.length === 1 && !isReassigned(body, n) ? intExprRange(values[0]) : null)
-      const alreadyBounded = knownBound && forCounterRange(loop[1], loop[2], loop[3], counter, e => e === n ? knownBound : intExprRange(e))
+      const alreadyBounded = knownBound && forCounterRange(loop[1], loop[2], loop[3], counter, e => e === n ? knownBound : intExprRange(e), loop[4])
       const terms = stableTerms(n)
       if (loop[2][1] === counter && terms &&
           !captured.has(counter) && !writesIn(loop[4]).has(counter) &&
@@ -1157,7 +1157,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         const a = around[k]
         if (a[0] !== 'for' || a[1]?.[0] !== 'let' || a[1].length !== 2 || a[1][1]?.[0] !== '=' || a[1][1][1] !== n) continue
         if (isReassigned(a[4], n) || isReassigned(a[2], n)) return null
-        return forCounterRange(a[1], a[2], a[3], n)
+        return forCounterRange(a[1], a[2], a[3], n, undefined, a[4])
       }
       return null
     }

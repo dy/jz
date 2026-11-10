@@ -7,11 +7,11 @@ import { ASSIGN_OPS, COMPARE_OPS, MUTATE_OPS, effectiveWriteValue, ACCESSOR_GET,
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
-  constIntExpr, constNumExpr, counterInit, guardCounterName, elementCounter, forCounterRange, forCounterBounds, typedCtorRawOf,
+  constIntExpr, counterInit, guardCounterName, elementCounter, forCounterBounds, typedCtorRawOf,
 } from '../static.js'
 import { exprType } from '../type.js'
 import { K, NUMBER, tagOf, hasTag, typedElemKind } from '../summary/kind.js'
-import { maxAdvanceBudget } from '../type/canonical-bounds.js'
+import { collectStepRange } from '../type/interval-proof.js'
 import { repOf, updateRep } from '../reps.js'
 import { typedElemAux } from '../../layout.js'
 
@@ -283,8 +283,7 @@ const COMPARE_NULLISH = [USE.COMPARE, undefined, undefined, undefined, undefined
 const COMPARE_MISS = [USE.COMPARE, undefined, undefined, undefined, undefined, undefined, undefined, false, undefined, true]
 const GUARDED_STEP = [USE.REASSIGN, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, true]
 const isNumLit = (e) => Array.isArray(e) && e[0] == null && typeof e[1] === 'number'
-/** A relational operator read from its other side. */
-export const FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' }
+const FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' }
 // How `x op k` (the name on the left when `left`) answers for undefined and
 // for zero: 2 when both are false, 1 when both agree otherwise, 0 when they differ.
 const missClass = (op, left, k) => {
@@ -1349,14 +1348,8 @@ function bareEscapeScan(body, crossClosure, wide, keepEdges) {
   }
 }
 
-// A finite trip count plus bounded per-iteration motion proves an accumulator's
-// whole-function hull. Stamp the existing ValueRep before local widening, so
-// storage decisions and later expression folding consume the same proof.
-// Every write must belong to a proven region; repeated outer iterations must
-// initialize the accumulator again, and peeled copies join their bounds.
-
-/** Any write outside the proved loop bodies invalidates their shared hull.
- *  Declarations initialize the region and are checked separately. */
+/** Whether `root` writes `name` outside the subtrees in `exclude`: a
+ *  declaration's initializer is read, the declaration itself is no write. */
 function writesOutsideLoop(root, exclude, name) {
   if (!Array.isArray(root) || exclude.has(root)) return false
   const op = root[0]
@@ -1370,30 +1363,6 @@ function writesOutsideLoop(root, exclude, name) {
   }
   for (let i = 1; i < root.length; i++) if (writesOutsideLoop(root[i], exclude, name)) return true
   return false
-}
-
-/** Each name's unique `let`/`const NAME = initExpr` declarator's initializer,
- *  searched anywhere in `root` OUTSIDE `exclude`'s subtree — the
- *  co-induction candidate's OWN declaration (temporal-dead-zone scoping in
- *  valid JS guarantees it textually precedes any use, so no separate
- *  position check is needed). Null for more than one match (ambiguous —
- *  possibly a real shadow in a disjoint block; this compiler's flat
- *  per-function local model makes that rare, but bail rather than guess);
- *  an uninitialized `let NAME` is no match (nothing to prove a range from).
- *  One walk answers every name a loop asks about. */
-function outerDeclInits(root, exclude) {
-  const inits = new Map()
-  ;(function walk(n) {
-    if (!Array.isArray(n) || n === exclude) return
-    if (n[0] === 'let' || n[0] === 'const') {
-      for (let i = 1; i < n.length; i++) {
-        const d = n[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') inits.set(d[1], inits.has(d[1]) ? null : d[2])
-      }
-    }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  })(root)
-  return inits
 }
 
 // Find an initializer on the lexical path to this loop, in the current
@@ -1414,79 +1383,6 @@ function dominatingLoopInit(root, loop, name) {
     }
   }
   return visit(root, null) ?? null
-}
-
-/** Per-iteration motion: P/N bound all positive/negative steps, including
- *  intermediate values. Bound each direction separately: continue and short
- *  circuits can skip an opposing step. Nested loops, resets and shadows reject. */
-function collectStepRange(node, name, rangeOf, unit = 1) {
-  if (!Array.isArray(node)) return { P: 0, N: 0 }
-  const op = node[0]
-  if (MUTATE_OPS.has(op) && node[1] === name) {
-    if (op === '++') return { P: unit, N: 0 }
-    if (op === '--') return { P: 0, N: unit }
-    if (op === '+=' || op === '-=') {
-      if (refsName(node[2], name, REFS_IN_EXPR)) return null
-      const r = rangeOf(node[2], node)
-      if (!r) return null
-      const lo = op === '+=' ? r[0] : -r[1], hi = op === '+=' ? r[1] : -r[0]
-      return { P: Math.max(0, hi), N: Math.max(0, -lo) }
-    }
-    if (op === '=') return assignedStepRange(node[2], name, rangeOf, node)
-    return null
-  }
-  if (op === 'let' || op === 'const') {
-    let P = 0, N = 0
-    for (let i = 1; i < node.length; i++) {
-      const d = node[i]
-      if (d === name) return null                                     // bare uninitialized shadow decl
-      if (Array.isArray(d) && d[1] === name) return null               // shadow — a fresh `name` rebinds here
-      if (Array.isArray(d) && d[0] === '=') {
-        const s = collectStepRange(d[2], name, rangeOf, unit)
-        if (s == null) return null
-        P += s.P; N += s.N
-      }
-    }
-    return { P, N }
-  }
-  if (op === 'if' || op === '?:') {
-    const c = collectStepRange(node[1], name, rangeOf, unit)
-    if (c == null || c.P || c.N) return null   // a write to `name` inside the CONDITION itself — reject, too exotic
-    const t = collectStepRange(node[2], name, rangeOf, unit)
-    const e = node.length > 3 && node[3] !== undefined ? collectStepRange(node[3], name, rangeOf, unit) : { P: 0, N: 0 }
-    if (t == null || e == null) return null
-    return { P: Math.max(t.P, e.P), N: Math.max(t.N, e.N) }
-  }
-  if (op === 'for' || op === 'while' || op === '=>')
-    return refsName(node, name, REFS_IN_EXPR) ? null : { P: 0, N: 0 }
-  let P = 0, N = 0
-  for (let i = 1; i < node.length; i++) {
-    const s = collectStepRange(node[i], name, rangeOf, unit)
-    if (s == null) return null
-    P += s.P; N += s.N
-  }
-  return { P, N }
-}
-
-// Assignment spelling of an additive recurrence. Every chosen arm must retain
-// the old value exactly once; no reassignment or extra self-read may hide in
-// the condition or the increment.
-function assignedStepRange(node, name, rangeOf, write) {
-  if (node === name) return { P: 0, N: 0 }
-  if (!Array.isArray(node)) return null
-  if (node[0] === '?:') {
-    if (isReassigned(node[1], name)) return null
-    const a = assignedStepRange(node[2], name, rangeOf, write), b = assignedStepRange(node[3], name, rangeOf, write)
-    return a && b ? { P: Math.max(a.P, b.P), N: Math.max(a.N, b.N) } : null
-  }
-  const op = node[0], left = node[1] === name
-  if (node.length !== 3 || !(op === '+' && (left || node[2] === name) || op === '-' && left)) return null
-  const value = node[left ? 2 : 1]
-  if (refsName(value, name, REFS_IN_EXPR)) return null
-  const r = rangeOf(value, write)
-  if (!r) return null
-  const lo = op === '+' ? r[0] : -r[1], hi = op === '+' ? r[1] : -r[0]
-  return { P: Math.max(0, hi), N: Math.max(0, -lo) }
 }
 
 // A name written inside any closure of `body` can change at any call: the
@@ -1517,6 +1413,33 @@ const writesBeside = (cond, name) => {
   let writes = 0
   walkAst(cond, { enter: n => { if (n[1] === name && MUTATE_OPS.has(n[0])) writes++ } })
   return writes !== 1
+}
+
+/** A countdown that is the right arm of a `||` or `&&` test (a do-while's flag
+ *  loop, `while (F || --i)`), the one write of a counter declared once: the
+ *  interval proof refines no arm of `||`, so its hull is stamped here. From a
+ *  start of at least 1 a prefix step ends at 0; from 0 a postfix one at -1. */
+export function stampCountdowns(body) {
+  const { closureWrites } = bodyQueries(body)
+  const regions = [body], loops = new Set(['for', 'while', 'do'])
+  walkAst(body, { enter: node => {
+    if (node[0] === '=>') return false
+    if (!loops.has(node[0])) return
+    const op = node[0], condition = node[op === 'for' || op === 'do' ? 2 : 1], loopBody = node[op === 'for' ? 4 : op === 'do' ? 1 : 2]
+    if (Array.isArray(condition) && (condition[0] === '||' || condition[0] === '&&')) {
+      const cond = condition[2], post = Array.isArray(cond) && cond[0] === 'postfix'
+      const dec = post ? cond[1] : cond, name = Array.isArray(dec) && dec[0] === '--' ? dec[1] : null
+      const binding = typeof name === 'string' ? scanBindingUses(body).get(name) : null
+      if (binding?.[BINDING_USE_DECLS] === 1 && !repOf(name)?.range) {
+        const init = op === 'for' ? counterInit(node[1], name) : dominatingLoopInit(regions[regions.length - 1], node, name)
+        const r = init != null && binding[BINDING_USE_INIT] === init && !isReassigned(condition[1], name) && !isReassigned(loopBody, name) &&
+          !(op === 'for' && isReassigned(node[3], name)) && !closureWrites(name) && !writesOutsideLoop(body, new Set([node]), name) ? intExprRange(init) : null
+        if (r && Number.isInteger(r[0]) && Number.isInteger(r[1]) && !Object.is(r[0], -0) && r[0] >= (post ? 0 : 1) && r[1] <= 2147483647)
+          updateRep(name, { range: [post ? -1 : 0, r[1]] })
+      }
+    }
+    regions.push(loopBody)
+  }, exit: node => { if (loops.has(node[0])) regions.pop() } })
 }
 
 /** A counter a `for` declares and only its step moves holds its guard's test
@@ -1569,7 +1492,7 @@ export function stampLoopCounterRanges(body) {
       updateRep(name, { range: [r[0], hi] })
       return
     }
-    const range = forCounterBounds(own ? init : ['let', ['=', name, entry]], cond, step, name, rangeOf)
+    const range = forCounterBounds(own ? init : ['let', ['=', name, entry]], cond, step, name, rangeOf, loopBody)
     if (!range || range.test[0] < -2147483648 || range.test[1] > 2147483647) return
     updateRep(name, { range: range.test })
     // Other loop-local counters move at the same bounded number of step
@@ -1590,214 +1513,6 @@ export function stampLoopCounterRanges(body) {
         updateRep(other, { range: [lo, hi] })
     }
   } })
-}
-
-// Enclose repeated floating additions on an exact binary grid. Rounded
-// additions are monotone; integral grid endpoints plus outward-rounded steps
-// stay exact while their scaled magnitude fits the safe integer range. This
-// bounds the recurrence without replacing it with start + count * step.
-function fractionalLoopRange(body, name, init, trips) {
-  const literal = n => constNumExpr(n, key => ctx.scope.constNums?.get(key) ?? null)
-  const start = literal(init)
-  if (!Number.isFinite(start) || !Number.isSafeInteger(trips)) return null
-  const enclose = scale => {
-    const step = collectStepRange(body, name, n => {
-      const v = literal(n)
-      return Number.isFinite(v) ? [Math.floor(v * scale), Math.ceil(v * scale)] : null
-    }, scale)
-    if (!step) return null
-    const down = trips * step.N, up = trips * step.P
-    const lo = Math.floor(start * scale) - down, hi = Math.ceil(start * scale) + up
-    return [down, up, lo, hi].every(Number.isSafeInteger) ? [lo / scale, hi / scale] : null
-  }
-  const coarse = enclose(1)
-  if (!coarse) return null
-  let scale = 1
-  const magnitude = Math.max(1, Math.abs(coarse[0]), Math.abs(coarse[1]))
-  while (scale < 0x100000000 && magnitude * scale < 2 ** 50) scale *= 2
-  return enclose(scale)
-}
-
-export function stampBodyRanges(body, readPresent, typedLens) {
-  const fractional = new Map()
-  const { closureWrites, singleInitializer } = bodyQueries(body)
-  const rangeOf = (n, at) => {
-    // The occurrence proof is available before the all-writers fixpoint below
-    // publishes local ranges. An immutable copy keeps that exact read's value;
-    // do not substitute arbitrary or mutable initializer expressions here.
-    if (at && typeof n === 'string' && !repOf(n)?.range) {
-      const init = scanBindingUses(body).get(n)?.[BINDING_USE_INIT]
-      if (Array.isArray(init) && init[0] === '[]' && readPresent?.has(init) &&
-          singleInitializer(n) && dominatingLoopInit(body, at, n) === init) return rangeOf(init)
-    }
-    if (Array.isArray(n) && typeof n[1] === 'string') {
-      if (n[0] === '|' && constIntExpr(n[2]) === 0) {
-        const r = fractional.get(n[1])
-        if (r && r[0] >= -2147483648 && r[1] <= 2147483647) return r.map(Math.trunc)
-      }
-      if (n[0] === '.' && n[2] === 'length') {
-        const len = typedLens?.get(n[1]) ?? repOf(n[1])?.arrayLen
-        if (len != null) return [len, len]
-      }
-      if (n[0] === '[]' && readPresent?.has(n)) {
-        const range = repOf(n[1])?.arrayElemRange
-        if (range) return range
-        const aux = typedElemAux(typedCtorRawOf(n[1]))
-        if (aux != null && (aux & 7) <= 5 && !(aux & 32)) {
-          const bits = 8 << ((aux & 7) >> 1)
-          return aux & 1 ? [0, 2 ** bits - 1] : [-(2 ** (bits - 1)), 2 ** (bits - 1) - 1]
-        }
-      }
-    }
-    return intExprRange(n)
-  }
-  // A write `j = (j + 1) % K` by a constant K: taking j within the remainder's
-  // own bound, its dividend (sums and products of j, constants and names of
-  // finite hulls) stays finite, so from j's finite first value on every value
-  // it takes is below K. `hullOver` is the hull of `n` with `self` held to `bound`.
-  const hullOver = (n, self, bound) => intExprRange(n, x => x === self ? bound : null)
-  const defRangeOf = (name, n) => {
-    const r = rangeOf(n)
-    if (r || !Array.isArray(n) || n[0] !== '%' || n.length !== 3) return r
-    const k = constIntExpr(n[2])
-    if (k == null || k === 0) return null
-    const m = Math.abs(k) - 1, h = hullOver(n[1], name, [-m, m])
-    return h && Math.abs(h[0]) <= 2 ** 53 && Math.abs(h[1]) <= 2 ** 53 ? [-m, m] : null
-  }
-  const regions = [body], proofs = new Map(), defs = new Map(), declared = new Set(), bad = new Set()
-  let countdowns = null
-  const addDef = (name, rhs) => {
-    if (typeof name !== 'string') return
-    if (!defs.has(name)) defs.set(name, [])
-    defs.get(name).push(rhs)
-  }
-  const record = (name, loopBody, init, range, float = false) => {
-    if (!Number.isFinite(range[0]) || !Number.isFinite(range[1])) return
-    const prev = proofs.get(name)
-    if (prev) {
-      // Two sequential loops can share a declaration but not its entry
-      // value: the first loop already advanced it. Distinct declarations in
-      // peeled regions reset independently; one shared initializer does not.
-      if (prev.starts.has(init) && !prev.loops.has(loopBody)) prev.ambiguous = true
-      prev.starts.add(init)
-      prev.range[0] = Math.min(prev.range[0], range[0])
-      prev.range[1] = Math.max(prev.range[1], range[1])
-      prev.loops.add(loopBody)
-      prev.float ||= float
-    } else proofs.set(name, { range, loops: new Set([loopBody]), starts: new Set([init]), float, ambiguous: false })
-  }
-  // A reduction inside an outer loop needs an initializer in that iteration.
-  // Peeled regions may reuse binding names; join their independently proved
-  // hulls, then require every write to belong to one of those regions.
-  const loops = new Set(['for', 'while', 'do'])
-  walkAst(body, { enter: node => {
-    if (node[0] === '=>') {
-      for (const name of collectAssignedNames(node, new Set())) bad.add(name)
-      return false
-    }
-    if (node[0] === 'let' || node[0] === 'const') {
-      for (let i = 1; i < node.length; i++) {
-        const d = node[i]
-        if (typeof d === 'string') {
-          declared.add(d)
-          if (!node.some(x => Array.isArray(x) && x[0] === '=' && x[1] === d)) bad.add(d)
-        } else if (Array.isArray(d) && d[0] === '=') declared.add(d[1])
-      }
-    }
-    if (node[0] === '=') addDef(node[1], node[2])
-    else if (MUTATE_OPS.has(node[0]) && typeof node[1] === 'string') bad.add(node[1])
-    if (loops.has(node[0])) {
-      const op = node[0], condition = node[op === 'for' || op === 'do' ? 2 : 1]
-      // A rightmost countdown test may be skipped (the first do-while
-      // iteration), but its false terminal value still exits this loop.
-      const short = Array.isArray(condition) && (condition[0] === '||' || condition[0] === '&&')
-      const cond = short ? condition[2] : condition
-      const post = Array.isArray(cond) && cond[0] === 'postfix'
-      const dec = post ? cond[1] : cond, name = Array.isArray(dec) && dec[0] === '--' ? dec[1] : null
-      const binding = typeof name === 'string' ? scanBindingUses(body).get(name) : null
-      if (binding?.[BINDING_USE_DECLS] === 1) {
-        const loopBody = node[op === 'for' ? 4 : op === 'do' ? 1 : 2]
-        const init = op === 'for' ? counterInit(node[1], name) : dominatingLoopInit(regions[regions.length - 1], node, name)
-        if (init != null && binding[BINDING_USE_INIT] === init && !(short && isReassigned(condition[1], name)) &&
-            !isReassigned(loopBody, name) && !(op === 'for' && isReassigned(node[3], name)) &&
-            !closureWrites(name) && !writesOutsideLoop(body, new Set([node]), name))
-          (countdowns ||= []).push([name, init, post])
-      }
-    }
-    if (node[0] === 'for' && node.length === 5) {
-      const [, init, cond, step, loopBody] = node
-      const counterName = guardCounterName(cond)
-      const counterRange = counterName ? forCounterRange(init, cond, step, counterName, rangeOf) : null
-      if (counterRange && counterRange.step > 0 && !isReassigned(loopBody, counterName) && !closureWrites(counterName)) {
-        const trips = Math.floor((counterRange[1] - counterRange[0]) / counterRange.step) + 1
-        // Every write target in the body is a candidate; nested, conditional and
-        // shadowed writes are filtered by collectStepRange/writesOutsideLoop below.
-        let outer = null
-        if (trips > 0) for (const name of collectAssignedNames(loopBody, new Set())) {
-          if (name === counterName || repOf(name)?.range || closureWrites(name)) continue
-          const initExpr = (outer ??= outerDeclInits(regions[regions.length - 1], loopBody)).get(name)
-          if (initExpr == null) continue
-          const initRange = intExprRange(initExpr)
-          const delta = collectStepRange(loopBody, name, rangeOf)
-          if (!initRange || delta == null) {
-            const range = fractionalLoopRange(loopBody, name, initExpr, trips)
-            if (range) { record(name, loopBody, initExpr, range, true); continue }
-          }
-          if (!initRange) continue
-          if (delta == null) {
-            const adv = maxAdvanceBudget(loopBody, name, { constInt: constIntExpr, evRange: intExprRange, closureWrites: EMPTY_SCAN_SET, MUTATE_OPS })
-            if (adv != null && adv > 0) record(name, loopBody, initExpr, [initRange[0], initRange[1] + trips * adv])
-            continue
-          }
-          record(name, loopBody, initExpr, [initRange[0] - trips * delta.N, initRange[1] + trips * delta.P])
-        }
-      }
-    }
-    if (loops.has(node[0])) regions.push(node[node[0] === 'for' ? 4 : node[0] === 'do' ? 1 : 2])
-  }, exit: node => { if (loops.has(node[0])) regions.pop() } })
-  for (const [name, proof] of proofs)
-    if (!proof.ambiguous && !writesOutsideLoop(body, proof.loops, name)) {
-      if (proof.float) fractional.set(name, proof.range)
-      else updateRep(name, { range: proof.range })
-    }
-  // A mutable scalar retains a closed hull only when EVERY write has one.
-  // Missing reads, uninitialized declarations, steps and closure writes
-  // disqualify it. Unknown dependencies defer; cycles never seed themselves.
-  let changed = true
-  while (changed) {
-    changed = false
-    if (countdowns) for (const [name, init, post] of countdowns) {
-      if (repOf(name)?.range) continue
-      const r = rangeOf(init)
-      // Prefix from zero runs away below zero; postfix tests the old value and
-      // performs one final decrement to -1. Entry and every visible update
-      // belong to this hull, including a break before the terminal test.
-      if (!r || !Number.isInteger(r[0]) || !Number.isInteger(r[1]) || Object.is(r[0], -0) ||
-          r[0] < (post ? 0 : 1) || r[1] > 2147483647) continue
-      updateRep(name, { range: [post ? -1 : 0, r[1]] })
-      changed = true
-    }
-    for (const [name, values] of defs) {
-      if (!declared.has(name) || bad.has(name) || repOf(name)?.range) continue
-      let lo = Infinity, hi = -Infinity, known = true
-      for (const rhs of values) {
-        const r = defRangeOf(name, rhs)
-        if (!r) { known = false; break }
-        lo = Math.min(lo, r[0]); hi = Math.max(hi, r[1])
-      }
-      if (known && Number.isFinite(lo) && Number.isFinite(hi)) {
-        // Prove a nonnegative invariant against EVERY write, including the
-        // initializer. A ring begun at zero and incremented before wrapping
-        // stays nonnegative even though the remainder's generic hull is signed.
-        if (lo < 0 && hi >= 0 && values.every(rhs => {
-          const r = hullOver(rhs, name, [0, hi])
-          return r && r[0] >= 0 && !Object.is(r[0], -0) && r[1] <= hi
-        })) lo = 0
-        updateRep(name, { range: [lo, hi] })
-        changed = true
-      }
-    }
-  }
 }
 
 const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])

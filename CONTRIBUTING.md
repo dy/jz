@@ -3258,11 +3258,28 @@ The source loop transforms share one closure-write census per function. They
 preserve writes to existing bindings and introduce only private temporary locals,
 so changing loop arithmetic does not require rescanning all nested closures.
 
-The interval interpreter also supplies call-argument and typed-store bounds.
-`intervalRanges` enables whole-binding hulls and the complete interprocedural
-scalar/element fixpoint at O2/O3/size. O0/O1 omit those optional certificates;
-typed-read presence, signed-zero/overflow vetoes and conservative ABI validation
-still run. Already proved summary bounds also retain the magnitude of signed-word
+The interval interpreter (`src/type/interval-proof.js`) is the one engine of a
+local's numbers. Its environment holds the numeric table's values
+(`summary/num-range.js`, `{lo, hi, int, nz, nan}`), each operator its table rule;
+a loop widens an escaping end to the word's end first and opens it past that,
+then verifies and narrows. A nest's walks multiply by depth, so a pass costs a
+walk only where it can change something: the head's entry is the seeded state (a
+counted loop's counter is no name the join widens), a pass that would start where
+an earlier one did reads that one's end, and narrowing runs only where the
+widening carried a name past its edges' hull. It answers a local's numbers over its lifetime (binding
+hulls: every local of every body at every level, published as `rep.range` where
+they are integers never -0) and what each write stores (`writtenNumbers`, which
+local widening reads under its storage hypothesis), and supplies index proofs and
+call-argument and typed-store bounds. Over a counted loop it bounds a name every
+write of which steps it by the trips times each way's most step (integers
+exactly, a Number stepped by constants on a binary grid). A test of a name's truth
+(`while (x--)`, `if (left)`) refines it, and a test that writes leaves its writes
+on the exit edge. A shift or a bit field of a number it does not hold keeps no
+bound but the conversion's own (`x | 0`, `x >>> 0`) and a mask's: the type's
+whole range is no fact of the program's numbers, and a guard on it holds for no
+real length. `intervalRanges` enables the interprocedural scalar/element fixpoint
+at O2/O3/size. O0/O1 omit those optional certificates; typed-read presence,
+signed-zero/overflow vetoes and conservative ABI validation still run. Already proved summary bounds also retain the magnitude of signed-word
 parameters; the interval budget controls the separate caller solve, not these
 existing ABI facts. An explicit pass override changes this compile-budget choice. No
 source-size threshold or special compiler-input policy controls these proofs.
@@ -3275,14 +3292,13 @@ Exhausting the validation budget publishes nothing. This proves parameter width,
 not a bound on recursive result accumulation. Return/throw arms contribute no
 fall-through state; rounding a proved integer preserves its hull, and a varying
 shift count preserves a hull only when every scaled endpoint still fits the word.
-A loop-local counter initialized to a nonnegative integer other than `-0`, then
-advanced only by a positive integer constant, keeps its sign even with an unknown
-upper bound. This lexical fact bounds `counter % K` for positive constant `K`;
-it proves no i32 magnitude for the counter itself. Body, condition and captured
-writes reject it. `test/interval-proof.js` pins the fact's scope and rejections,
-and the remainder and dense-switch tests pin signed-zero behavior and lowering.
-Its branches retain completed environments and share one hull join. Range pairs
-are immutable, so unchanged bounds survive a join without another allocation.
+A counter started at a nonnegative integer and stepped up by positive constants
+is a nonnegative integer of any magnitude in the table, so `counter % K` is
+bounded with no i32 magnitude for the counter itself; the names a `for`
+declares do not outlive it. `test/interval-proof.js` pins the fact's scope and
+rejections, and the remainder and dense-switch tests pin signed-zero behavior and
+lowering. Its branches retain completed environments and share one hull join.
+Values are immutable, so unchanged ones survive a join without another allocation.
 Compile-time bitwise and integer-store folds share exact ToInt32 conversion;
 large constants reduce modulo 2^32 before the compiler's runtime i64 boundary.
 DataView calls capture arguments before offset/value conversion. ToIndex uses
