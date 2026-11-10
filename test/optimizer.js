@@ -3692,22 +3692,52 @@ test('.typed:slice with negative and OOB indices', () => {
   is(full(), 5)                        // [10,20,30,40,50]
 })
 
-test('promoted int array .filter().map() chain stays typed end-to-end', () => {
-  // [1..5] auto-promotes to Int32Array. .filter and .map both have .typed:*
-  // emitters; the result of .filter is TYPED so the subsequent .map's `.${m}`
-  // dispatch hits `.typed:map` via emit.js:2211 lookup.
+test('promoteIntArrayLiterals: a .filter().map() chain answers as an Array\'s does', () => {
+  // The map of a filter's result is no promoted map: the summary holds the
+  // filter's array to no count (an index past what it kept is undefined), so
+  // a walk over it may miss and its map's elements are not known words. The
+  // literal stays an Array there; a walk over a receiver nothing else reaches
+  // cannot miss, which the summary does not say yet.
   const src = `
     export const main = () => {
       const xs = [1, 2, 3, 4, 5]
       const ys = xs.filter(x => x > 2).map(x => x * 10)
       return ys.length * 100 + ys[0] + ys[1] * 10 + ys[2] * 1000
     }
+    export const past = () => { const xs = [1, 2, 3, 4, 5], ys = xs.filter(x => x > 4); return [ys[0], ys[1], ys.length] }
+    export const halves = () => { const xs = [1, 2, 3]; return xs.filter(x => x > 1).map(x => x / 2) }
   `
-  const body = compileMain(src)
-  ok(!/\(local \$xs f64\)/.test(body), 'xs promoted away from f64 ARRAY')
-  const { main } = run(src)
   // [3,4,5].filter(>2) → [3,4,5]; *10 → [30,40,50] → 3*100 + 30 + 40*10 + 50*1000 = 50_730
-  is(main(), 50730)
+  for (const optimize of [0, 1, 2, 'speed']) {
+    const { main, past, halves } = run(src, { optimize })
+    is(main(), 50730, `the chain at ${optimize}`)
+    is(past(), [5, undefined, 1], `an index past what the filter kept, at ${optimize}`)
+    is(halves(), [1, 1.5], `a map of fractions is an Array of them, at ${optimize}`)
+  }
+})
+
+// What a `.slice`, `.map` or `.filter` of the literal makes is a typed array
+// once the literal is one: an Array wherever the program can tell (a return, an
+// argument, an element, a spread), and an Array's map keeps what an Int32Array
+// cannot (a fraction, a boolean, a sum past the word, an unsigned word, -0).
+test('promoteIntArrayLiterals: a derived array is an Array where it is told from one, and a map keeps its values', () => {
+  const forms = {
+    sum: 'return xs.map(x => x + 1)', halves: 'return xs.map(x => x / 2)', tests: 'return xs.map(x => x > 1)', wide: 'return xs.map(x => x * 2147483647)',
+    unsigned: 'return xs.map(x => (x - 2) >>> 0)', negated: 'return xs.map(x => -(x - 1))', words: 'return xs.map(x => x & 2)', kept: 'return xs.filter(x => x > 1)',
+    tail: 'return xs.slice(1)', argument: 'return keep(xs.filter(x => x > 1))', element: 'return [xs.slice(1), 1][0]', spread: 'return [...xs.map(x => x * 2)]',
+    named: 'const d = xs.map(x => x / 2); return d', chain: 'const d = xs.filter(x => x > 1).map(x => x + 0.5); return d', twice: 'const d = xs.slice(1), e = d.map(x => x > 2); return e',
+    read: 'const d = xs.map(x => x / 2); return [d[0], d[1], d.length]', inside: 'const d = xs.map(x => x * 2); let s = 0; for (let i = 0; i < d.length; i++) s += d[i]; return [s]',
+  }
+  const src = `const keep = (a) => a\n` + Object.entries(forms).map(([name, body]) => `export let ${name} = () => { const xs = [1, 2, 3, 4]; ${body} }`).join('\n')
+  const want = oracle(src)
+  for (const optimize of [0, 1, 2, 'speed']) {
+    const got = run(src, { optimize })
+    for (const name in forms) {
+      const g = got[name](), w = want[name]()
+      ok(Array.isArray(g), `${name} at ${optimize}: an Array`)
+      ok(g.length === w.length && g.every((v, i) => Object.is(v, w[i])), `${name} at ${optimize}: ${g}, node ${w}`)
+    }
+  }
 })
 
 test('promoteIntArrayLiterals: hole disqualifies', () => {

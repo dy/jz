@@ -35,6 +35,7 @@ import {
   smallConstForTripCount, containsDeclOf, cloneWithSubst, typedElemCtor,
 } from '../../type.js'
 import { VAL } from '../../reps.js'
+import { nrWord } from '../../summary/num-range.js'
 import { includeModule } from '../../autoload.js'
 import { analyzeValueFacts, setFuncBody } from '../analyze.js'
 import { scanBindingUses, USE, BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_NULL_CMP, BINDING_USE_STORE } from '../analyze-scans.js'
@@ -1271,31 +1272,6 @@ export const scalarizeFunctionArrayLiterals = () => {
 // re-dispatch via emit.js:2211's `.typed:<m>` lookup (VAL.TYPED ⇒ typed
 // emitter). Methods missing here (.join, .sort, .reverse, .subarray, .fill,
 // .toString, .copyWithin, …) lack a typed emitter — disqualify the candidate.
-// Does an inline arrow callback provably yield a NUMBER for every element?
-// Conservative: only shapes whose result is structurally numeric qualify —
-// arithmetic/bitwise/compare ops, numeric literals, the element param itself,
-// Math.* calls. A call to a user fn, an object/array/string literal, or any
-// unknown shape returns false (the caller then keeps the plain-array rep).
-const _NUM_OPS = new Set(['+', '-', '*', '/', '%', '**', '|', '&', '^', '<<', '>>', '>>>',
-  '<', '<=', '>', '>=', '==', '!=', '===', '!==', '!', '~', 'u+', 'u-'])
-const _numericCallbackBody = (fn) => {
-  if (!Array.isArray(fn) || fn[0] !== '=>') return false
-  const params = new Set()
-  const raw = fn[1]
-  for (const p of Array.isArray(raw) && raw[0] === ',' ? raw.slice(1) : raw != null ? [raw] : [])
-    if (typeof p === 'string') params.add(p)
-  const numeric = (n) => {
-    if (typeof n === 'number') return true
-    if (typeof n === 'string') return params.has(n)   // element/index param — numeric under a promoted receiver
-    if (!Array.isArray(n)) return false
-    if (n[0] == null) return typeof n[1] === 'number' // number node — wrapper is null OR undefined in the live AST
-    if (_NUM_OPS.has(n[0])) return n.slice(1).every(a => a == null || numeric(a))
-    if (n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('Math.')) return true
-    return false
-  }
-  // expression body only; block bodies ({…return…}) stay conservative
-  return numeric(fn[2])
-}
 
 const _TYPED_SAFE_METHODS = new Set([
   'set',
@@ -1408,13 +1384,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
     if (Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') &&
         typeof callee[1] === 'string' && candidates.has(callee[1])) {
       if (!_TYPED_SAFE_METHODS.has(callee[2])) disqualified.add(callee[1])
-      // `.map` is the one whitelisted method that writes CALLBACK RESULTS into the
-      // typed output: `.typed:map` ToNumber-coerces them (spec for a REAL typed
-      // receiver), but a plain array's map must return the callback's values
-      // verbatim — `[10,20].map(s => mk(s))` yields objects. Promote across map
-      // only when the callback provably yields numbers; anything else (object/
-      // string/unknown call results) keeps the plain-array representation.
-      else if (callee[2] === 'map' && !_numericCallbackBody(node[2])) disqualified.add(callee[1])
+      // (what a `.slice`, `.map` or `.filter` makes, and what a map may hold: _derivedUses)
       // The callback receives the original receiver, whose Array identity,
       // writable length and element storage must survive when observed.
       else if (_TYPED_CALLBACK_METHODS.has(callee[2]) && callbackReadsArray(node[2], callee[2] === 'reduce' ? 3 : 2)) disqualified.add(callee[1])
@@ -1514,54 +1484,78 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
 // Array.isArray-shaped identity check).
 const _DERIVED_ARRAY_METHODS = new Set(['slice', 'map', 'filter'])
 
-// Registers `d` (an `['=', name, rhs]` node — a let/const declarator OR a
-// bare reassignment) as derived when `rhs` is `rootName.slice/map/filter(…)`
-// and `rootName` resolves to a candidate. Shared by both walk sites below.
-const _registerIfDerived = (d, candidates, derived) => {
-  if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') return
-  const rhs = d[2]
-  if (!Array.isArray(rhs) || rhs[0] !== '()') return
-  const callee = rhs[1]
-  if (!Array.isArray(callee) || callee[0] !== '.' || typeof callee[1] !== 'string' ||
-      !_DERIVED_ARRAY_METHODS.has(callee[2])) return
-  const src = callee[1]
-  const root = candidates.has(src) ? src : derived.get(src)?.root
-  if (root) derived.set(d[1], { initDecl: d, root })
+// The name a chain of `.slice/.map/.filter` calls starts at where `names` has
+// it (`xs.filter(f).map(g)` is `xs`'s), else null: a value the promotion of
+// that name makes a typed array.
+const _derivedBase = (node, names) => {
+  while (Array.isArray(node) && node[0] === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+      _DERIVED_ARRAY_METHODS.has(node[1][2])) {
+    const recv = node[1][1]
+    if (typeof recv === 'string') return names.has(recv) ? recv : null
+    node = recv
+  }
+  return null
 }
 
-// Walk `body` to collect every `let derivedName = rootName.slice/map/filter(…)`
-// binding, where `rootName` resolves (directly, or through an earlier entry
-// in `derived` — same-body decls run in source order) to a literal-array
-// candidate. `derivedName` holds no literal of its own — it is never
-// promoted directly — but its VALUE is shaped by whatever `rootName`
-// resolves to at emit time, so an identity-observing use of `derivedName`
-// must disqualify `rootName`'s promotion just as surely as observing
-// `rootName` itself would. See promoteIntArrayLiteralsInBody's own comment
-// for how this is applied (a second _disqualifyPromotion pass, then
-// propagate to root) and _disqualifyPromotion's `Array.isArray` branch for
-// the gap this closes.
-//
-// Two registration sites, not one: `var`'s hoist-then-assign desugaring
-// (jz hoists `var` to a bare `let name` with NO initializer, then a
-// SEPARATE plain `name = …` statement — prepare/index.js) means a derived
-// rest-destructure binding is NOT always a let/const declarator — it can be
-// a bare top-level `['=', name, rootName.slice(…)]` reassignment sitting
-// next to (not inside) any `let`/`const` node. `_disqualifyPromotion`
-// already treats a bare `=` identically to a declarator once it's in
-// `initSet` (its very first check, `initSet.has(node)`, only cares about
-// object identity) — this collector just needs to also OFFER that node up.
-// Found live: `var [...b] = [4, 5]; Array.isArray(b)` (audit-#12 Family A,
-// test262 for/var-ary-ptrn-rest-id-* — the `let [...a]`/`const [...x]` forms
-// alone didn't exercise this path, so it shipped unnoticed initially).
-const _collectDerivedArrayNames = (node, candidates, derived) => walkAst(node, { enter: node => {
-  const op = node[0]
-  if (op === '=>') return false
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < node.length; i++) _registerIfDerived(node[i], candidates, derived)
-  } else if (op === '=') {
-    _registerIfDerived(node, candidates, derived)
+// Every name a derived value is bound to (`let ys = xs.filter(f).map(g)`, a
+// bare `ys = xs.slice(0)`: `var`'s hoist-then-assign and a rest pattern,
+// `const [...x] = [1]`, desugar to one), with the candidates it derives from
+// and the declarators that bind it: name → { roots, decls }. A derived name
+// holds no literal of its own and is never rewritten, but its value is a
+// typed array once a root is promoted, so a use that tells one from an Array
+// disqualifies each root. To a fixed point: a loop may bind a name from one
+// derived below it.
+const _collectDerivedArrayNames = (body, candidates, derived) => {
+  const names = { has: n => candidates.has(n) || derived.has(n) }
+  const register = (d) => {
+    if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') return false
+    const base = _derivedBase(d[2], names)
+    if (base == null) return false
+    let entry = derived.get(d[1]), grew = false
+    if (!entry) { derived.set(d[1], entry = { roots: new Set(), decls: new Set() }); grew = true }
+    for (const root of candidates.has(base) ? [base] : derived.get(base).roots) if (!entry.roots.has(root)) { entry.roots.add(root); grew = true }
+    entry.decls.add(d)
+    return grew
   }
-} })
+  for (let grew = true; grew;) {
+    grew = false
+    walkAst(body, { enter: node => {
+      const op = node[0]
+      if (op === '=>') return false
+      if (op === 'let' || op === 'const') { for (let i = 1; i < node.length; i++) if (register(node[i])) grew = true }
+      else if (op === '=' && register(node)) grew = true
+    } })
+  }
+}
+
+// A `.slice`, `.map` or `.filter` of a promoted array is a typed array where
+// the source made an Array. It stands where every use of it is one a typed
+// array answers as an Array does (its length, a numeric index, a method
+// promotion crosses, a binding walked as a derived name, a dropped value) and
+// a map's results are the words an Int32Array holds (summary `elemNumsOfExpr`:
+// an Array's map keeps a fraction, a boolean, a sum past the word, where the
+// typed map stores each as an int32). `roots(name)` are the candidates a base
+// name derives from.
+const _derivedUses = (node, names, roots, disqualified, valTypes, view, callee = false) => {
+  if (!Array.isArray(node) || node[0] === '=>') return
+  const op = node[0]
+  // (a chain's callback handed its receiver observes the typed array itself)
+  if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') && _TYPED_CALLBACK_METHODS.has(node[1][2])) {
+    const base = _derivedBase(node[1][1], names)
+    if (base != null && callbackReadsArray(node[2], node[1][2] === 'reduce' ? 3 : 2)) for (const r of roots(base)) disqualified.add(r)
+  }
+  for (let i = 1; i < node.length; i++) {
+    const c = node[i], base = _derivedBase(c, names)
+    if (base != null) {
+      const safe = op === ';' || op === '{}'
+        || op === '=' && i === 2 && typeof node[1] === 'string'
+        || (op === '.' || op === '?.') && i === 1 && (callee ? _TYPED_SAFE_METHODS : _TYPED_SAFE_PROPS).has(node[2])
+        || op === '[]' && i === 1 && _isNumericKey(node[2], valTypes)
+      if (!safe || c[1][2] === 'map' && !nrWord(view?.elemNumsOfExpr(c))) for (const r of roots(base)) disqualified.add(r)
+    }
+    _derivedUses(c, names, roots, disqualified, valTypes, view, op === '()' && i === 1)
+  }
+}
 
 // Walk `body` to collect every `let X = [intLit, …]` candidate. Each entry
 // carries the exact init-decl AST node so the disqualifier can skip the
@@ -1632,31 +1626,21 @@ const promoteIntArrayLiteralsInBody = (body) => {
   const disqualified = new Set()
   _disqualifyPromotion(body, candidates, disqualified, initSet, valTypes)
 
-  // Derived-name flow (closes the KNOWN GAP the `Array.isArray` branch above
-  // documents): `let derivedName = candidateName.slice/map/filter(…)` hands
-  // `derivedName` a value that is ITSELF shaped by the candidate's promotion
-  // (a TYPED carrier instead of ARRAY once promoted) — test262's rest-pattern
-  // destructuring desugars exactly to this (`const [...x] = [1]` → `let %tmp
-  // = [1], x = %tmp.slice(0)`, prepare/index.js expandDestruct), so `x` is a
-  // derived name one hop from the literal candidate. Walk the SAME
-  // disqualification logic a second time treating derived names as the
-  // "candidates" — zero changes to _disqualifyPromotion itself, so every
-  // existing candidate-side pin (the .map/.filter-promotes tests, the
-  // string-key/mutation/escape disqualifiers) is untouched byte-for-byte —
-  // then propagate any hit back to the ROOT literal candidate. A derived
-  // name is never itself rewritten (only real candidates are), so this only
-  // ever REMOVES a candidate from `validated`, never adds one — precision
-  // over the blanket disqualifier the comment above rejected.
+  // Derived values: a name bound to a candidate's `.slice/.map/.filter` is
+  // walked by the same disqualifier as a candidate of its own, a hit passing
+  // to each root it derives from, and every such call is checked where it
+  // stands (_derivedUses). Both only ever remove a candidate.
   const derived = new Map()
   _collectDerivedArrayNames(body, candidates, derived)
   if (derived.size) {
-    const derivedNames = new Map()
     const derivedInitSet = new Set()
-    for (const [name, { root, initDecl }] of derived) { derivedNames.set(name, root); derivedInitSet.add(initDecl) }
+    for (const { decls } of derived.values()) for (const d of decls) derivedInitSet.add(d)
     const derivedDisqualified = new Set()
-    _disqualifyPromotion(body, derivedNames, derivedDisqualified, derivedInitSet, valTypes)
-    for (const [name, root] of derivedNames) if (derivedDisqualified.has(name)) disqualified.add(root)
+    _disqualifyPromotion(body, derived, derivedDisqualified, derivedInitSet, valTypes)
+    for (const name of derivedDisqualified) for (const root of derived.get(name).roots) disqualified.add(root)
   }
+  const names = { has: n => candidates.has(n) || derived.has(n) }
+  _derivedUses(body, names, n => candidates.has(n) ? [n] : derived.get(n).roots, disqualified, valTypes, ctx.summary?.at(body))
 
   const validated = new Set()
   for (const name of candidates.keys()) if (!disqualified.has(name)) validated.add(name)
