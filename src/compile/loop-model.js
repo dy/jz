@@ -71,15 +71,11 @@ export function closureMutatedVars(body) {
   return out
 }
 
-// The unique `+1` increment OF `iv` in a `;`-body: returns its statement index, or
-// -1 when absent, or null when `iv` has TWO unit increments (ambiguous — every
-// consumer bails). This is the `while`-loop IV-increment discovery each pass
-// re-derived with its own scan; a `for`'s IV comes from unitIncVar(L.step).
-// (Increments of OTHER variables are ignored — same as every original scan.)
 // The sole unit-increment statement of ANY variable in a `;`-body — { iv, ivIdx }
 // when exactly one statement is a `+1` increment (of whatever variable), else null.
-// This is loop-divmod's IV DISCOVERY form: no candidate IV is known up front, and a
-// second increment (even of another var) is ambiguous. Contrast uniqueUnitIncOf.
+// This is loop-divmod's IV DISCOVERY form for a `while`: no candidate IV is known up
+// front, and a second increment (even of another var) is ambiguous; a `for`'s IV
+// comes from unitIncVar(L.step).
 export function soleUnitInc(body) {
   if (!Array.isArray(body) || body[0] !== ';') return null
   let iv = null, ivIdx = -1
@@ -88,15 +84,6 @@ export function soleUnitInc(body) {
     if (v) { if (iv) return null; iv = v; ivIdx = k }
   }
   return iv ? { iv, ivIdx } : null
-}
-
-export function uniqueUnitIncOf(body, iv) {
-  if (!Array.isArray(body) || body[0] !== ';') return null
-  let ivIdx = -1
-  for (let k = 1; k < body.length; k++) {
-    if (unitIncVar(body[k]) === iv) { if (ivIdx >= 0) return null; ivIdx = k }
-  }
-  return ivIdx
 }
 
 // One safety oracle per loop: is `name` written by the loop body? Combines the
