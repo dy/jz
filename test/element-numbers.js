@@ -97,7 +97,7 @@ test('element numbers: values that are not words read as they are', () => {
 test('element numbers: the transfer rules hold of the values they bound', async () => {
   const { nrPoint, nrInts, nrJoin, nrBinary, nrUnary, nrMath } = await import('../src/summary/num-range.js')
   const { powRuntime } = await import('../src/prepare/math-kernel.js')
-  const POOL = [-0, 0, 0.25, -0.5, 0.5, 0.75, -0.75, 1, -1, 1.5, -2.5, 3, 7, -7, 16, -16, 2048, -14336, 2 ** 31, -(2 ** 31), 2 ** 32,
+  const POOL = [-0, 0, 0.25, -0.5, 0.5, 0.75, -0.75, 1, -1, 1.5, -2.5, 3, 7, -7, 16, -16, 31, 33, 255, 2048, -14336, 2 ** 31 - 1, 2 ** 31, -(2 ** 31), 2 ** 32,
     1e-200, -1e-200, 2 ** 53 + 2, -(2 ** 60), 1e300, -1e300, 1.7e308, NaN, Infinity, -Infinity]
   const OPEN = [[nrInts(0, Infinity), [0, 1, 15, 16, 2 ** 40, 1e300]], [nrInts(-Infinity, 3), [3, 0, -1, -16, -(2 ** 60), -1.7e308]],
     [nrInts(-Infinity, Infinity), [0, -5, 5, 1e308, -1e308]]]
@@ -130,6 +130,26 @@ test('element numbers: the transfer rules hold of the values they bound', async 
     const e = nrPoint(sb[0]), rp = nrMath('pow', [a, e]); for (const x of xs) check(`Math.pow(${x}, ${sb[0]})`, rp, Math.pow(x, sb[0]))
   }
   is(bad, [], `${checked} values inside their ranges`)
+})
+
+// The bitwise operators read each operand's word: a field of non-negative words
+// stays below the higher one's top bit, a shift that keeps a word scales it,
+// a count of a range shifts by each of its counts.
+test('element numbers: bit fields and shifts of words', async () => {
+  const { nrInts, nrPoint, nrBinary, nrUnary, nrSpan, NUMBER } = await import('../src/summary/num-range.js')
+  const span = (op, a, b) => nrSpan(nrBinary(op, a, b))
+  is(span('|', nrBinary('<<', nrInts(0, 3), nrPoint(4)), nrInts(0, 15)), [0, 63], 'a packed table index: two fields')
+  is(span('^', nrInts(0, 511), nrInts(1, 256)), [0, 511], 'a bit-reversal cursor stays in its field')
+  is(span('|', nrInts(-3, 5), nrPoint(0)), [-3, 5], 'x | 0 of a word is the word')
+  is(span('|', nrInts(-3, 5), nrPoint(1)), [-2147483648, 2147483647], 'a negative operand sets any bit')
+  is(span('&', NUMBER, nrInts(0, 200)), [0, 200], 'a non-negative operand bounds a mask')
+  is(span('>>>', nrInts(0, 2 ** 32 - 1), nrPoint(0)), [0, 2 ** 32 - 1], 'x >>> 0 of a uint32 keeps it')
+  is(span('>>>', nrInts(-1, 3), nrPoint(28)), [0, 15], 'a negative word shifted unsigned')
+  is(span('>>', nrInts(-64, 64), nrInts(1, 3)), [-32, 32], 'a range of counts')
+  is(span('<<', nrInts(-3, 5), nrInts(0, 2)), [-12, 20], 'a left shift inside the word')
+  is(span('<<', nrInts(0, 2 ** 30), nrPoint(2)), [-2147483648, 2147483647], 'a left shift past the word wraps to any')
+  is(span('|', nrBinary('/', nrInts(0, 7), nrPoint(2)), nrPoint(0)), [0, 3], 'ToInt32 truncates a fraction')
+  is(nrSpan(nrUnary('~', nrInts(0, 7))), [-8, -1], 'a complement')
 })
 
 // The remainder by a nonzero integer of an integer that is never NaN: below the

@@ -79,24 +79,62 @@ export const nrHull = (r) => r && !empty(r) && !r.nan && Number.isFinite(r.lo) &
  *  holds every value it may be (the summary's elements and parameters). */
 export const nrReal = (r) => r && (r === NR_NONE || !r.nan && Number.isFinite(r.lo) && Number.isFinite(r.hi)) ? r : null
 
+const U32_MAX = 0xffffffff
 const WORD = make(I32_MIN, I32_MAX, true, true, false)
-const UWORD = make(0, 0xffffffff, true, true, false)
+const UWORD = make(0, U32_MAX, true, true, false)
 const nonNegative = v => v.lo >= 0 && v.nz
+const words = (lo, hi) => make(lo, hi, true, true, false)
+
+// What ToInt32 (ToUint32 where `top` is 2^32 - 1) makes of a value: its
+// integer part where the type holds every value (NaN and -0 to 0), any word else.
+const toWord = (v, top = I32_MAX) => {
+  const all = top === I32_MAX ? WORD : UWORD
+  if (!v || !(v.lo >= (top === I32_MAX ? I32_MIN : 0) && v.hi <= top || empty(v))) return all
+  if (empty(v)) return words(0, 0)
+  const lo = Math.trunc(v.lo) || 0, hi = Math.trunc(v.hi) || 0
+  return words(v.nan ? Math.min(lo, 0) : lo, v.nan ? Math.max(hi, 0) : hi)
+}
+// The bits below the highest a non-negative word m may set: 2^k - 1 covering m.
+// Integer arithmetic on purpose: a transcendental (`Math.log2`) may differ in
+// its last bit between the native and the self-hosted compiler, and a bound must not.
+const fieldAbove = (m) => m <= 0 ? 0 : 2 ** (32 - Math.clz32(m)) - 1
+// The counts a shift reads (ToUint32 & 31), as [least, most].
+const countOf = (b) => {
+  const c = toWord(b, U32_MAX)
+  return c.lo === c.hi ? [c.lo & 31, c.lo & 31] : c.hi <= 31 ? [c.lo, c.hi] : [0, 31]
+}
+
+/** A bitwise operator over two values: every operand is its word first. */
+function bitwise(op, a, b) {
+  if (op === '>>>') {
+    const [k0, k1] = countOf(b), u = toWord(a, U32_MAX)
+    return words(u.lo >>> k1, u.hi >>> k0)
+  }
+  const x = toWord(a)
+  if (op === '>>') {
+    // (monotone in the word; toward zero, or toward -1, as the count grows)
+    const [k0, k1] = countOf(b)
+    return words(Math.min(x.lo >> k0, x.lo >> k1), Math.max(x.hi >> k0, x.hi >> k1))
+  }
+  if (op === '<<') {
+    // (a shift that stays in the word scales it; one past it wraps to any)
+    const [k0, k1] = countOf(b), p = [x.lo * 2 ** k0, x.lo * 2 ** k1, x.hi * 2 ** k0, x.hi * 2 ** k1]
+    const lo = Math.min(...p), hi = Math.max(...p)
+    return lo >= I32_MIN && hi <= I32_MAX ? words(lo, hi) : WORD
+  }
+  const y = toWord(b)
+  // (`&` clears bits: a non-negative operand bounds the result; `|` and `^`
+  // set none above the higher of two non-negative operands' highest bit)
+  if (op === '&') return x.lo >= 0 || y.lo >= 0 ? words(0, Math.min(x.lo >= 0 ? x.hi : I32_MAX, y.lo >= 0 ? y.hi : I32_MAX)) : WORD
+  if (y.lo === 0 && y.hi === 0) return x
+  if (x.lo === 0 && x.hi === 0) return y
+  if (x.lo < 0 || y.lo < 0) return WORD
+  return words(op === '|' ? Math.max(x.lo, y.lo) : 0, fieldAbove(Math.max(x.hi, y.hi)))
+}
 
 export function nrBinary(op, a, b, powOf) {
   if (a === NR_NONE || b === NR_NONE) return a && b ? NR_NONE : null
-  // ToInt32 of anything is a word: the bitwise operators give one whatever they read
-  if (op === '|' || op === '^' || op === '<<') return op === '|' && b && b.lo === 0 && b.hi === 0 && nrWord(a) ? a : WORD
-  if (op === '&') {
-    const m = b && b.lo === b.hi && b.lo >= 0 && b.lo <= I32_MAX ? b.lo : a && a.lo === a.hi && a.lo >= 0 && a.lo <= I32_MAX ? a.lo : -1
-    return m >= 0 ? make(0, m, true, true, false) : WORD
-  }
-  if (op === '>>' || op === '>>>') {
-    // (a count that may be NaN may be 0: ToUint32 of NaN)
-    const k = b && b.lo === b.hi && b.int && !b.nan ? b.lo & 31 : -1
-    if (op === '>>') return k < 0 ? WORD : nrWord(a) ? make(a.lo >> k, a.hi >> k, true, true, false) : make(I32_MIN >> k, I32_MAX >> k, true, true, false)
-    return k <= 0 ? UWORD : make(0, 0xffffffff >>> k, true, true, false)
-  }
+  if (op === '|' || op === '^' || op === '&' || op === '<<' || op === '>>' || op === '>>>') return bitwise(op, a, b)
   if (op === '**') return nrMath('pow', [a, b], powOf)
   if (!a || !b) return null
   // (NaN is what arithmetic makes of a NaN)
@@ -136,7 +174,7 @@ export function nrBinary(op, a, b, powOf) {
 
 export function nrUnary(op, a) {
   if (a === NR_NONE) return NR_NONE
-  if (op === '~') return WORD
+  if (op === '~') { const x = toWord(a); return words(-x.hi - 1, -x.lo - 1) }
   if (!a) return null
   if (op === 'u+') return a
   // (-x is -0 of a +0)
