@@ -141,8 +141,28 @@ export function unswitchTypedParamLoop(fn, f16 = false) {
   // `hoisted` (Map keyed by structural JSON, shared across the whole body scan)
   // collects any receiver-guard conditions found — see receiverGuardedRead's
   // doc comment — for the caller to hoist above the loop, deduplicated.
+  // The inline ToNumber of a value (ir/coerce.js toNumF64): the value set to a temp,
+  // then the temp where it is no NaN, else __to_num of it. Its value, else null.
+  function coercedValue(n) {
+    if (!Array.isArray(n) || n[0] !== 'block' || n.length !== 4 || !Array.isArray(n[2]) || n[2][0] !== 'local.set' || n[2].length !== 3) return null
+    const t = n[2][1], get = (x) => isLocalGet(x, t), test = n[3]
+    if (!Array.isArray(test) || test[0] !== 'if' || test.length !== 5 || !Array.isArray(test[2]) || test[2][0] !== 'f64.eq' || !get(test[2][1]) || !get(test[2][2])) return null
+    const then = test[3], other = test[4]
+    if (!Array.isArray(then) || then[0] !== 'then' || then.length !== 2 || !get(then[1])) return null
+    if (!Array.isArray(other) || other[0] !== 'else' || other.length !== 2 || !Array.isArray(other[1]) || other[1][0] !== 'call' ||
+        other[1][1] !== '$__to_num' || !Array.isArray(other[1][2]) || other[1][2][0] !== 'i64.reinterpret_f64' || !get(other[1][2][1])) return null
+    return n[2][2]
+  }
+
   function cloneRead(n, p, base, hoisted, ind) {
     if (!Array.isArray(n)) return n
+    // (the ToNumber of a read the clone takes from the proven Float64Array: an
+    // element is a Number, its own ToNumber)
+    const coerced = coercedValue(n)
+    if (coerced) {
+      const v = cloneRead(coerced, p, base, hoisted, ind)
+      if (Array.isArray(v) && v[0] === 'f64.load' && Array.isArray(v[1]) && v[1][0] === 'i32.add' && isLocalGet(v[1][1], base)) return v
+    }
     if (n[0] === 'call' && n[1] === '$__to_num' && n.length === 3
         && Array.isArray(n[2]) && n[2][0] === 'i64.reinterpret_f64' && typedIdx(n[2][1], p) && isLocalGet(n[2][1][3], ind))
       return ['f64.load', ['i32.add', ['local.get', base], ['i32.shl', cloneIR(n[2][1][3]), ['i32.const', 3]]]]
