@@ -8,7 +8,7 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { ASSIGN_OPS, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, meetRange, updateRep } from '../../reps.js'
@@ -799,12 +799,30 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
 
   // Integer arithmetic may exceed one word. A comparison observes that width
   // just like a returned value; only a proved hull or word-only uses keep i32.
-  let level1I32 = false
-  for (const [name, level] of intLevels) if (level === 1 && locals.get(name) === 'i32') { level1I32 = true; break }
-  if (level1I32) {
+  // The arithmetic is a name's of level 1, a sum whose word exprType holds by
+  // its operands' carriers alone (strictly, by no hull), and a copy of either:
+  // the levels have none for a term they cannot name an integer (a module
+  // binding, a call's word), so `a += K` is no level 1 and still a word to its
+  // storage. `wide` is the storage with each such name taken as the Number.
+  const open = new Set(), wide = new Map(locals)
+  for (const [name, level] of intLevels) if (level === 1 && locals.get(name) === 'i32') { open.add(name); wide.set(name, 'f64') }
+  let grew = true
+  const sums = (node) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === '=>') { if (nestedNames.size) sums(node[2]); return }
+    if (MUTATE_OPS.has(op) && typeof node[1] === 'string' && wide.get(node[1]) === 'i32') {
+      const name = node[1], rhs = effectiveWriteValue(op, name, node[2])
+      if (exprType(rhs, locals, null, false, body, readPresent) === 'i32' && exprType(rhs, wide, null, true, body, readPresent) === 'f64') {
+        open.add(name); wide.set(name, 'f64'); grew = true
+      }
+    }
+    for (let i = 1; i < node.length; i++) sums(node[i])
+  }
+  while (grew) { grew = false; sums(body) }
+  if (open.size) {
     const bareEscapes = collectBareEscapes(body, locals)
-    for (const [name, level] of intLevels)
-      if (level === 1 && locals.get(name) === 'i32' && bareEscapes.has(name) && !wordLocals.has(name)) locals.set(name, 'f64')
+    for (const name of open) if (bareEscapes.has(name) && !wordLocals.has(name)) locals.set(name, 'f64')
   }
   // Pass E: a binding that carries its Booleans as atoms (kind.js boolTagged,
   // emit/dispatch.js boolCarrier) is stored as the tagged f64, never the raw

@@ -1318,8 +1318,16 @@ function bareEscapeScan(body, crossClosure, wide, keepEdges) {
     }
     mode = 'value'   // fell out of an idx/edge-affine chain (or already were in 'value' mode)
     // a bounded result says nothing of a wide operand a comparison inside it reads
-    if (escapeInRangeI32(node) && !(wide && refsAny(node, wide, THROUGH_ARROWS))) return
+    if (escapeInRangeI32(node) && !(wide && refsAny(node, wide, THROUGH_ARROWS))) { tests(node); return }
     for (let i = 1; i < node.length; i++) walk(node[i], mode)
+  }
+  // What a bounded result still observes: the test of each conditional inside
+  // it, whose arms alone bound it (`a < 0 ? 1 : 0` is [0, 1] whatever `a` is).
+  const tests = (node) => {
+    if (!Array.isArray(node) || node[0] === '=>') return
+    const cond = node[0] === '?:' && node.length === 4
+    if (cond) walk(node[1], 'value')
+    for (let i = cond ? 2 : 1; i < node.length; i++) tests(node[i])
   }
   // A value copied through locals still escapes from each arithmetic source.
   const drain = () => { for (; drained < queue.length; drained++) for (const rhs of edges.get(queue[drained]) || []) walk(rhs, 'value') }

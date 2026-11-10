@@ -571,3 +571,57 @@ test('counter width: a compound assignment widens an integer-declared local as i
     }
   }
 })
+
+// A sum of words is no word: `a += K` at the top of the word is the Number the
+// source computes, whatever names the term (a module constant or binding, a
+// call's word, an element), and its copies with it.
+test('counter width: a sum by a term the integer levels cannot name widens as a literal\'s does', () => {
+  const pre = `const K = 3
+    let G = 5
+    const g = (v) => v | 0
+    const T = new Int32Array([9, 2147483647])`
+  const forms = {
+    step: L => `let a = k | 0; a += ${L}; return [a, a + 0.5]`,
+    plain: L => `let a = k | 0; a = a + ${L}; return [a, a + 0.5]`,
+    down: L => `let a = (-k - 1) | 0; a -= ${L}; return [a, a + 0.5]`,
+    decl: L => `const a = k | 0; const b = ${L} + a; return [b, b + 0.5]`,
+    loop: L => `let a = k | 0; for (let j = 0; j < 3; j++) a += ${L}; return [a, a + 0.5]`,
+    copy: L => `let a = k | 0; a += ${L}; const c = a; return [c, c | 0]`,
+    arm: L => `let a = k | 0; a += 3; const e = n > 0 ? a : ${L}; return [e, e + 0.5]`,
+    store: L => `let a = k | 0; a += ${L}; const F = new Float64Array(1); F[0] = a; const B = [0]; B[0] = a; return [F[0], B[0]]`,
+    index: L => `let a = k | 0; a += ${L}; return [T[a] ?? -1, [4, 5][a] ?? -1]`,
+    once: L => `let b = ${L}; b = g(k); b++; return [b, b + 0.5]`,
+  }
+  const same = (a, b) => a.length === b.length && a.every((x, i) => Object.is(x, b[i]))
+  for (const leaf of ['3', 'K', 'G', 'g(n)', 'T[0]', 'K + K', 'K * 2']) {
+    const src = pre + Object.entries(forms).map(([name, body]) => `\nexport let ${name} = (k, n) => { ${body(leaf)} }`).join('')
+    const want = oracle(src)
+    for (const optimize of levels(0, 1, 2, 'speed')) {
+      const got = run(src, { optimize })
+      for (const name in forms) for (const args of [[2147483647, 3], [2147483640, 9], [-2147483648, -2147483648], [1, 3]])
+        ok(same(got[name](...args), want[name](...args)), `${name} by ${leaf} at ${optimize}: f(${args}) = ${got[name](...args)}, node ${want[name](...args)}`)
+    }
+  }
+})
+
+// A comparison reads its operand's magnitude wherever it stands: a conditional
+// whose arms bound it (`a < 0 ? 1 : 0` is 0 or 1) still tests the sum.
+test('counter width: a conditional\'s test observes an overflowed sum under its bounded arms', () => {
+  const forms = {
+    below: 'return a < 0 ? 1 : 0',
+    above: 'return a > 2147483647 ? 1 : 0',
+    equal: 'return a === -2147483646 ? 1 : 0',
+    param: 'return a < n ? 1 : 0',
+    nested: 'return (a < 0 ? 1 : 0) + 5',
+    arg: 'return Math.abs(a > 100 ? 2 : 3)',
+    decl: 'const r = a < 0 ? 1 : 0; return r',
+    inner: 'return a < 0 ? 1 : a > 2147483647 ? 2 : 3',
+  }
+  const src = Object.entries(forms).map(([name, tail]) => `export let ${name} = (k, n) => { let a = k | 0; a += 3; ${tail} }`).join('\n')
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 'speed')) {
+    const got = run(src, { optimize })
+    for (const name in forms) for (const args of [[2147483647, 5], [2147483644, 5], [1, 5], [-2147483648, 5]])
+      is(got[name](...args), want[name](...args), `${name} at ${optimize}: f(${args})`)
+  }
+})
