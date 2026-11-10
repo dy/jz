@@ -49,7 +49,7 @@
  * @module summary
  */
 import { SPAN_BINARY, spanBinary } from './span.js'
-import { NR_NONE, nrPoint, nrInts, nrJoin, nrEqual, nrBinary, nrUnary, nrMath } from './num-range.js'
+import { NR_NONE, nrPoint, nrInts, nrReals, nrJoin, nrEqual, nrBinary, nrUnary, nrMath, nrReal, nrHull } from './num-range.js'
 import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
@@ -966,17 +966,11 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     if (e.length === 3 && !RANGE_BINARY.has(op) && SPAN_BINARY.has(op)) return spanOf(e)
     if (e.length !== 3 || !RANGE_BINARY.has(op)) return null
+    // (a remainder of integers is one below the divisor's magnitude: their spans first)
+    const s = op === '%' ? spanOf(e) : null
+    if (s) return s
     const a = rangeOf(e[1]), b = rangeOf(e[2])
-    if (!a || !b) return null
-    let lo, hi
-    if (op === '+') { lo = a[0] + b[0]; hi = a[1] + b[1] }
-    else if (op === '-') { lo = a[0] - b[1]; hi = a[1] - b[0] }
-    else if (op === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
-    else if (op === '/' && (b[0] > 0 || b[1] < 0)) { const p = [a[0] / b[0], a[0] / b[1], a[1] / b[0], a[1] / b[1]]; lo = Math.min(...p); hi = Math.max(...p) }
-    // a remainder takes the dividend's sign and stays below the divisor's magnitude; a divisor that may be zero gives NaN
-    else if (op === '%' && (b[0] > 0 || b[1] < 0)) { const m = Math.max(-b[0], b[1]), top = Number.isInteger(m) && Number.isInteger(a[0]) && Number.isInteger(a[1]) ? m - 1 : m; lo = a[0] >= 0 ? 0 : Math.max(a[0], -top); hi = a[1] <= 0 ? 0 : Math.min(a[1], top) }
-    else return null
-    return Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null
+    return a && b ? nrHull(nrBinary(op, nrReals(a[0], a[1]), nrReals(b[0], b[1]))) : null
   }
   // The numbers an expression's value can be (num-range.js), with whether they
   // are integers, never -0 and how far from zero: a literal, a counter, a
@@ -998,7 +992,9 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return Array.isArray(b) && b[0] === 'return' && b.length === 2 && b[1] != null ? b[1] : null
   }
   const numArgs = (a) => a == null ? [] : Array.isArray(a) && a[0] === ',' ? a.slice(1) : [a]
-  const numRangeOf = (e, scope = current, env = null) => {
+  // (a value that may be NaN or an infinity bounds no element: the summary keeps finite numbers)
+  const numRangeOf = (e, scope = current, env = null) => nrReal(numsOf(e, scope, env))
+  const numsOf = (e, scope, env) => {
     if (typeof e === 'number') return nrPoint(e)
     if (typeof e === 'string') {
       if (env !== null) return env.has(e) ? env.get(e) : null

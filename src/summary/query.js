@@ -6,6 +6,7 @@ import { VAL } from '../reps.js'
 import { typedElementKey } from '../typed-provenance.js'
 import { NONE_CONTRACT, readContract } from './contract.js'
 import { SPAN_BINARY, spanBinary } from './span.js'
+import { nrWord } from './num-range.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
 
 import {
@@ -787,7 +788,7 @@ export function summaryQueries(facts, internal = false) {
       wordReadRange: n => {
         if (!Array.isArray(n) || n[0] !== '[]' || n.length !== 3 || !presentReads.has(n)) return null
         const r = elemNumsOf(n[1])
-        return r && r.int && r.nz && r.lo >= -0x80000000 && r.hi <= 0x7fffffff ? [r.lo, r.hi] : null
+        return nrWord(r) ? [r.lo, r.hi] : null
       },
       // The array's elements are Numbers where they are present: a hole, a
       // miss and a stored undefined or null aside, every element is a Number.

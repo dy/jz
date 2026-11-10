@@ -91,29 +91,35 @@ test('element numbers: values that are not words read as they are', () => {
 
 // Every transfer rule against the host's own arithmetic: values drawn from each
 // operand's range (its ends, a seeded draw inside it that keeps its facts) give
-// results inside the result's range, of its facts.
+// results inside the result's range, of its facts. The operands are joins of
+// points (NaN, -0, the infinities and magnitudes past 2^53 among them) and
+// integers of an open end, the intervals a loop's widening leaves.
 test('element numbers: the transfer rules hold of the values they bound', async () => {
-  const { nrPoint, nrJoin, nrBinary, nrUnary, nrMath } = await import('../src/summary/num-range.js')
-  const POOL = [-0, 0, 0.25, -0.5, 0.5, 0.75, -0.75, 1, -1, 1.5, -2.5, 3, 7, -7, 2048, -14336, 2 ** 31, -(2 ** 31), 1e-200, -1e-200]
+  const { nrPoint, nrInts, nrJoin, nrBinary, nrUnary, nrMath } = await import('../src/summary/num-range.js')
+  const POOL = [-0, 0, 0.25, -0.5, 0.5, 0.75, -0.75, 1, -1, 1.5, -2.5, 3, 7, -7, 16, -16, 2048, -14336, 2 ** 31, -(2 ** 31), 2 ** 32,
+    1e-200, -1e-200, 2 ** 53 + 2, -(2 ** 60), 1e300, -1e300, 1.7e308, NaN, Infinity, -Infinity]
+  const OPEN = [[nrInts(0, Infinity), [0, 1, 15, 16, 2 ** 40, 1e300]], [nrInts(-Infinity, 3), [3, 0, -1, -16, -(2 ** 60), -1.7e308]],
+    [nrInts(-Infinity, Infinity), [0, -5, 5, 1e308, -1e308]]]
   let seed = 7
   const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 2 ** 32 }
   const pick = () => { const n = 1 + Math.floor(rnd() * 3), s = []; for (let i = 0; i < n; i++) s.push(POOL[Math.floor(rnd() * POOL.length)]); return s }
-  const holds = (r, v) => Number.isFinite(v) && v >= r.lo && v <= r.hi && (!r.int || Number.isInteger(v)) && (!r.nz || !Object.is(v, -0)) && Math.abs(v) >= r.gap
+  const operand = () => { if (rnd() < 0.2) return OPEN[Math.floor(rnd() * OPEN.length)]; const s = pick(); return [s.map(nrPoint).reduce(nrJoin), s] }
+  const holds = (r, v) => Number.isNaN(v) ? r.nan : v >= r.lo && v <= r.hi && (!r.int || Number.isInteger(v)) && (!r.nz || !Object.is(v, -0)) && Math.abs(v) >= r.gap
   // values of a range: its set's, its ends where they keep its facts, draws inside it
   const values = (r, set) => {
     const out = [...set]
     for (const v of [r.lo, r.hi]) if (holds(r, v)) out.push(v)
-    for (let i = 0; i < 6; i++) { let v = r.lo + (r.hi - r.lo) * rnd(); if (r.int) v = Math.round(v); if (holds(r, v)) out.push(v) }
+    for (let i = 0; i < 6 && Number.isFinite(r.hi - r.lo); i++) { let v = r.lo + (r.hi - r.lo) * rnd(); if (r.int) v = Math.round(v); if (holds(r, v)) out.push(v) }
     return out
   }
-  const BIN = { '+': (x, y) => x + y, '-': (x, y) => x - y, '*': (x, y) => x * y, '/': (x, y) => x / y, '%': (x, y) => x % y, '&': (x, y) => x & y, '|': (x, y) => x | y, '>>': (x, y) => x >> y, '>>>': (x, y) => x >>> y }
-  const UN = { 'u-': x => -x, '~': x => ~x }
+  const BIN = { '+': (x, y) => x + y, '-': (x, y) => x - y, '*': (x, y) => x * y, '/': (x, y) => x / y, '%': (x, y) => x % y, '**': (x, y) => x ** y,
+    '&': (x, y) => x & y, '|': (x, y) => x | y, '^': (x, y) => x ^ y, '<<': (x, y) => x << y, '>>': (x, y) => x >> y, '>>>': (x, y) => x >>> y }
+  const UN = { 'u-': x => -x, 'u+': x => +x, '~': x => ~x }
   const MATH = ['abs', 'sign', 'round', 'floor', 'ceil', 'trunc', 'sqrt']
   let checked = 0, bad = []
   const check = (label, r, v) => { if (r === null) return; checked++; if (!holds(r, v)) bad.push(`${label} = ${Object.is(v, -0) ? '-0' : v} outside ${JSON.stringify(r)}`) }
-  for (let t = 0; t < 400 && bad.length < 5; t++) {
-    const sa = pick(), sb = pick()
-    const a = sa.map(nrPoint).reduce(nrJoin), b = sb.map(nrPoint).reduce(nrJoin)
+  for (let t = 0; t < 600 && bad.length < 5; t++) {
+    const [a, sa] = operand(), [b, sb] = operand()
     if (!a || !b) continue
     const xs = values(a, sa), ys = values(b, sb)
     for (const op in BIN) { const r = nrBinary(op, a, b); for (const x of xs) for (const y of ys) check(`${x} ${op} ${y}`, r, BIN[op](x, y)) }
@@ -123,4 +129,22 @@ test('element numbers: the transfer rules hold of the values they bound', async 
     const e = nrPoint(sb[0]), rp = nrMath('pow', [a, e]); for (const x of xs) check(`Math.pow(${x}, ${sb[0]})`, rp, Math.pow(x, sb[0]))
   }
   is(bad, [], `${checked} values inside their ranges`)
+})
+
+// The remainder by a nonzero integer of an integer that is never NaN: below the
+// divisor's magnitude whatever the dividend's (a counter a loop widened to an
+// open end), the dividend's sign, -0 only of a negative or -0 dividend.
+test('element numbers: the remainder of an integer of any magnitude', async () => {
+  const { nrInts, nrPoint, nrBinary, nrWord, nrSpan } = await import('../src/summary/num-range.js')
+  const rem = (lo, hi, k) => nrBinary('%', nrInts(lo, hi), nrPoint(k))
+  is(nrSpan(rem(0, Infinity, 16)), [0, 15], 'an open non-negative dividend by 16')
+  ok(nrWord(rem(1, Infinity, 16)), 'a word, never -0 nor NaN')
+  is(nrSpan(rem(0, Infinity, -16)), [0, 15], 'a negative divisor: its magnitude')
+  is(nrSpan(rem(0, 9, 16)), [0, 9], 'a dividend below the divisor keeps its own bound')
+  is(nrSpan(rem(-Infinity, Infinity, 16)), [-15, 15], 'a dividend of either sign')
+  ok(!rem(-20, 3, 16).nz && !nrWord(rem(-20, 3, 16)), 'a negative dividend may give -0')
+  ok(rem(0, Infinity, 0).nan, 'a zero divisor: NaN')
+  ok(nrBinary('%', nrPoint(Infinity), nrPoint(16)).nan, 'an infinite dividend: NaN')
+  const half = nrBinary('%', nrInts(0, Infinity), nrPoint(2.5))
+  ok(!half.int && half.hi === 2.5, 'a fractional divisor: no integer, below its magnitude')
 })
