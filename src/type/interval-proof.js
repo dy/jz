@@ -8,7 +8,7 @@
  */
 import {
   I32_MIN, I32_MAX, isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS,
-  walkAst, some, someDeep, REFS_THROUGH_ARROWS, callArgs, alwaysLeaves,
+  walkAst, some, someDeep, REFS_THROUGH_ARROWS, callArgs, alwaysLeaves, collectAssignedNames,
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
@@ -501,15 +501,26 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         const m = [Math.max(out[i][1][0], h[1][0]), Math.min(out[i][1][1], h[1][1])]
         if (m[0] <= m[1]) out[i] = [h[0], m]
       }
-      const gatherKnown = (c3) => {
-        if (Array.isArray(c3) && c3[0] === '&&') { gatherKnown(c3[1]); gatherKnown(c3[2]); return }
-        const r = refineRaw(c3, false, false)
-        if (r && r[1][0] <= r[1][1] && ipOk(r[1])) { if (still) meet(r); else out.push(r) }
-        // A read's hit refines its index name, intersected with that name's other conjuncts.
-        const h = readHit(c3)
-        if (h) meet(h)
+      const parts = []
+      const flat = (c3) => { if (Array.isArray(c3) && c3[0] === '&&') { flat(c3[1]); flat(c3[2]) } else parts.push(c3) }
+      flat(c2)
+      // A name a conjunct or a later one writes is where that write left it:
+      // `i < n && s[i++]` holds `i` to n itself in the body, so a bound reaches
+      // there only from a conjunct no write of the name follows. `after[i]` are
+      // the names written from conjunct i on.
+      let after = null
+      if (!still) {
+        after = new Array(parts.length)
+        const seen = new Set()
+        for (let i = parts.length - 1; i >= 0; i--) { collectAssignedNames(parts[i], seen); after[i] = new Set(seen) }
       }
-      gatherKnown(c2)
+      for (let i = 0; i < parts.length; i++) {
+        const r = refineRaw(parts[i], false, false)
+        if (r && !after?.[i].has(r[0]) && r[1][0] <= r[1][1] && ipOk(r[1])) { if (still) meet(r); else out.push(r) }
+        // A read's hit refines its index name, intersected with that name's other conjuncts.
+        const h = readHit(parts[i])
+        if (h && !after?.[i].has(h[0])) meet(h)
+      }
       return out
     }
     const facts = new Map()

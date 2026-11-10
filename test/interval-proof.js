@@ -1606,3 +1606,30 @@ test('interval proof: an eight-deep nest compiles, its reads in bounds', () => {
   const src = `export let f = (n) => { const a = new Float64Array(16); for (let k = 0; k < 16; k++) a[k] = k * 0.5; let s = 0; ${body}; return s }`
   for (const optimize of levels(2)) is(jz(src, { optimize }).exports.f(2), oracle(src).f(2), `f(2) at ${optimize}`)
 })
+
+// A test that bounds a name and then writes it leaves the name where the write
+// did: `i < n && s[i++] !== 0` runs its body with `i` up to n itself, so a read
+// at `i` there is checked and a step of it is no step under the bound.
+test('interval proof: a name a test bounds and then writes is not held to the bound in the body', () => {
+  const src = `export let typed = () => { const s = new Uint8Array([1, 1, 1, 1]), t = new Float64Array([5, 6, 7, 8]); let i = 0, r = 0; const n = 4
+      while (i < n && s[i++] !== 0) { r += t[i] === undefined ? 100 : t[i] } return r }
+    export let array = () => { const s = [1, 1, 1, 1], t = [5, 6, 7, 8]; let i = 0, r = 0; while (i < 4 && s[i++] !== 0) { r += t[i] === undefined ? 100 : t[i] } return r }
+    export let length = () => { const s = new Uint8Array([1, 1, 1, 1]), t = new Float64Array([5, 6, 7, 8]); let i = 0, r = 0; while (i < t.length && s[i++] !== 0) { r += t[i] ?? 100 } return r }
+    export let stepped = () => { const t = new Float64Array([5, 6, 7, 8]); let r = 0; for (let i = 0; i < 4 && (i += 2) > 0; ) { r += t[i] ?? 100 } return r }
+    export let stored = () => { const s = new Uint8Array([1, 1, 1, 1]), t = new Uint8Array(4), u = new Uint8Array(4); let i = 0; while (i < 4 && s[i++] !== 0) { t[i] = 7 } return [Array.from(t), Array.from(u)] }
+    export let word = (k) => { let b = 3 | 0, c = 0; while (b < 10 && (b = k | 0) !== 7) { b++; if (++c > 2) break } return [b, b + 0.5, c] }
+    export let after = (k) => { const t = new Float64Array([5, 6, 7, 8]); let i = 9, r = 0, c = 0; while ((i = k & 3) >= 0 && i < 4 && c++ < 3) { r += t[i] } return r }
+    export let own = () => { const a = [1, 2, 3, 4]; let i = 0, r = 0; while (i < a.length && a[i++] > 0) { r += a[i] ?? 100 } return r }
+    export let down = () => { const t = new Float64Array([5, 6, 7, 8]); let i = 3, r = 0; while (i >= 0 && t[i--] > 0) { r += t[i] ?? 100 } return r }
+    export let sequence = () => { const t = new Float64Array([5, 6, 7, 8]); let i = 0, r = 0; while (i < 4 && (i++, true)) { r += t[i] ?? 100 } return r }
+    export let inner = () => { const t = new Float64Array([5, 6, 7, 8]); let i = 0, r = 0; while (i >= 0 && (i < 4 && t[i++] > 0)) { r += t[i] ?? 100 } return r }
+    export let two = () => { const t = new Float64Array([5, 6, 7, 8]); let i = 0, j = 0, r = 0; while (i < 4 && j < 4 && (j = i + 4) > 0 && i++ >= 0) { r += (t[i] ?? 100) + (t[j] ?? 1000) } return r }
+    export let either = () => { const t = new Float64Array([5, 6, 7, 8]); let i = 3, r = 0; if (!(i >= 4 || t[i++] === 0)) { r += t[i] ?? 100 } return r }
+    export let value = () => { const t = new Float64Array([5, 6, 7, 8]); let i = 3; return i < 4 && i++ >= 0 && (t[i] ?? 100) }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const m = jz(src, { optimize }).exports
+    for (const name of ['typed', 'array', 'length', 'stepped', 'stored', 'own', 'down', 'sequence', 'inner', 'two', 'either', 'value']) is(m[name](), host[name](), `${name} at ${optimize}`)
+    for (const k of [2147483647, 2, 7]) { is(m.word(k), host.word(k), `word(${k}) at ${optimize}`); is(m.after(k), host.after(k), `after(${k}) at ${optimize}`) }
+  }
+})
