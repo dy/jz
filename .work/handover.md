@@ -166,3 +166,17 @@ f78b03479843bca03f823dcd5b9c4679f7ccca52 probe/three-ci
 02f2a41eafd3fe8173a229c391c2bb40df841af6 probe/three-z
 b33e45ec7ac0079864c622a4fabb105707b0b3e1 probe/v1
 ```
+
+## Agent branches of 2026-11-10, tips before deletion
+
+Landed on `main` by cherry-pick or fast-forward (checked: every commit's patch is in
+`main`). A tip can be restored while its objects are in the clone: `git branch <name> <sha>`.
+
+```
+b8e1c2ede worktree-agent-a58529a9940a7b114   phase 2a, landed as 4329ac723..21e90c516
+d19cee4b9 worktree-agent-ac6268c36a2b2510f   phase 3b, landed as d2843e18b..7b662fb90
+7b662fb90 land-3b                            the landing branch of 3b, an ancestor of main
+```
+
+`wasi-proc-exit` (process.exit under host:'wasi') landed as 751665c63, 803529fff,
+a0638326f.
