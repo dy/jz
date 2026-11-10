@@ -554,3 +554,20 @@ test('counter width: element-admitted counters keep Number semantics past what b
     }`, [[1, 2], [0, 1], [3, 0], [NaN, 4]])
   compare(`export function f(ops) { let d, n = 0; for (let i = 0; (d = ops[i++]);) n += d; return n }`, [[[1, 2, 3]], [[4, 0, 6]], [[]]])
 })
+
+test('counter width: a compound assignment widens an integer-declared local as its plain form does', () => {
+  // `i ||= x` stores either of the two, `i **= x` a power: neither is a word because `i` began as one.
+  // (a bitwise operand of 2^63 and over is the README's own divergence, so none is given)
+  const args = [2.5, NaN, -0, 0.5, 4294967296, -3, 31]
+  const same = (a, b) => [].concat(a).every((x, i) => Object.is(x, [].concat(b)[i]))
+  for (const op of [...MUTATE_OPS].filter(op => op.length > 1 && op !== '++' && op !== '--')) {
+    const src = [0, 5, -1].map((init, k) => `export let v${k} = (x) => { let i = ${init}; i ${op} x; return [i, i + 0.5, 1 / i] }
+      export let l${k} = (x) => { let i = ${init}, s = 0; for (let k = 0; k < 3; k++) { i ${op} x; s += i } return [i, s] }`).join('\n')
+    const want = oracle(src)
+    for (const optimize of levels(0, 2, 'speed')) {
+      const got = run(src, { optimize })
+      for (const name in want) for (const x of args)
+        ok(same(got[name](x), want[name](x)), `i ${op} ${Object.is(x, -0) ? '-0' : x} in ${name} at ${optimize}: ${got[name](x)}, node ${want[name](x)}`)
+    }
+  }
+})

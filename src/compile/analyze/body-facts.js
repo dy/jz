@@ -8,7 +8,7 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
+import { ASSIGN_OPS, effectiveWriteValue, commaList, collectAssignedNames, collectParamNames, walkAst, some, takeScratchSet, releaseScratchSet } from '../../ast.js'
 import { withValueOverlay, withTypedElemOverlay } from '../flow-state.js'
 import { makeMapOverlay } from '../map-overlay.js'
 import { VAL, meetRange, updateRep } from '../../reps.js'
@@ -54,6 +54,8 @@ import { idxKey, scanBoundedArrIdx } from '../../type/canonical-bounds.js'
  * representation facts settle or the phase changes. Returned maps are
  * owned by this cache and must not be modified by consumers.
  */
+// `+=`, `||=`, `**=` and the rest: each stores what `effectiveWriteValue` names.
+const COMPOUND_OPS = new Set([...ASSIGN_OPS].filter(op => op !== '='))
 const EMPTY_BODY_FACT_MAP = new Map()
 const EMPTY_BODY_FACT_SET = new Set()
 const EMPTY_OBJECT_ARRAY_FACTS = [EMPTY_BODY_FACT_MAP, EMPTY_BODY_FACT_SET, EMPTY_BODY_FACT_SET, EMPTY_BODY_FACT_SET]
@@ -520,11 +522,11 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
       return
     }
 
-    // compound-assign widening (locals slice)
-    if ((op === '+=' || op === '-=' || op === '*=' || op === '%=') && typeof node[1] === 'string') {
-      const name = node[1], opChar = op[0]
-      const t = exprType([opChar, node[1], node[2]], locals)
-      if (locals.has(name) && locals.get(name) === 'i32' && t === 'f64') locals.set(name, 'f64')
+    // A compound assignment stores what its operator makes of the two (`i ||= x` either
+    // of them, `i **= x` a power): the local widens as it does for `i = i op x`.
+    if (COMPOUND_OPS.has(op) && typeof node[1] === 'string') {
+      const name = node[1]
+      if (locals.get(name) === 'i32' && exprType(effectiveWriteValue(op, name, node[2]), locals) === 'f64') locals.set(name, 'f64')
     }
     if (op === '/=' && typeof node[1] === 'string') {
       if (locals.has(node[1])) locals.set(node[1], 'f64')
@@ -782,9 +784,9 @@ function widenLocalTypes(body, locals, readPresent, unsignedLocals, wordLocals) 
         const name = node[1], rhs = node[2]
         if (widenValue(name, rhs)) widened = true
       }
-      if ((op === '+=' || op === '-=' || op === '*=' || op === '%=') && typeof node[1] === 'string') {
+      if (COMPOUND_OPS.has(op) && typeof node[1] === 'string') {
         const name = node[1]
-        if (widenValue(name, [op[0], name, node[2]])) widened = true
+        if (widenValue(name, effectiveWriteValue(op, name, node[2]))) widened = true
       }
       if (op === '/=' && typeof node[1] === 'string') {
         const name = node[1]
