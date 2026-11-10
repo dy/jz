@@ -35,6 +35,8 @@ import { constNumExpr } from './static.js'
 import { ctx } from './ctx.js'
 
 const MIRROR = new Map([['<', '>'], ['<=', '>='], ['>', '<'], ['>=', '<=']])
+// A do-while's flag as its lowering names it: jzify's (jzify/names.js `doFlag`) or strict prepare's (`'do'`).
+const DO_FLAG = /^[\uE000\uE002]do\d/
 const NEGATE = new Map([['<', '>='], ['<=', '>'], ['>', '<='], ['>=', '<']])
 
 const isArr = Array.isArray
@@ -180,10 +182,11 @@ export function normalize(node, isNumber, valueOf = () => null) {
   }
 
   /** prepare's lowered do-while, `let F = true` then `while (F || c) { F = false; B }`
-   *  → { c, body: B }, else null. */
+   *  → { c, body: B }, else null. F is the flag the lowering minted: one the source
+   *  wrote itself may be read after its loop. */
   const doLoop = (decl, w) => {
     const d = isArr(decl) && decl[0] === 'let' && decl.length === 2 ? decl[1] : null
-    if (!isArr(d) || d[0] !== '=' || typeof d[1] !== 'string' || truth(d[2]) !== true) return null
+    if (!isArr(d) || d[0] !== '=' || typeof d[1] !== 'string' || !DO_FLAG.test(d[1]) || truth(d[2]) !== true) return null
     const F = d[1], t = isArr(w) && w[0] === 'while' && w.length === 3 ? w[1] : null
     if (!isArr(t) || t[0] !== '||' || t.length !== 3 || t[1] !== F) return null
     const list = isArr(w[2]) && w[2][0] === '{}' ? w[2][1] : w[2], s = isArr(list) && list[0] === ';' ? list[1] : null
@@ -197,9 +200,15 @@ export function normalize(node, isNumber, valueOf = () => null) {
   /** The test holds over the literals `prev` declares and the constants. */
   const holds = (c, prev) => {
     if (!isArr(c) || c.length !== 3 || !(RELATIONAL_OPS.has(c[0]) || EQUALITY_OPS.has(c[0]))) return false
+    // (a name holds its literal on entry where every declaration after it in the statement
+    // is of a literal too: another value may write the name on its way, `j = (i = v, 0)`)
     const lits = new Map()
     if (isArr(prev) && (prev[0] === 'let' || prev[0] === 'const'))
-      for (let i = 1; i < prev.length; i++) { const d = prev[i]; if (isArr(d) && d[0] === '=' && typeof d[1] === 'string' && num(d[2]) != null) lits.set(d[1], num(d[2])) }
+      for (let i = prev.length - 1; i >= 1; i--) {
+        const d = prev[i]
+        if (!isArr(d) || d[0] !== '=' || typeof d[1] !== 'string' || num(d[2]) == null) break
+        lits.set(d[1], num(d[2]))
+      }
     const at = (x) => lits.has(x) ? lits.get(x) : valueOf(x)
     const a = constNumExpr(c[1], at), b = constNumExpr(c[2], at), op = c[0]
     if (a == null || b == null) return false

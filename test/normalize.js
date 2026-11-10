@@ -69,7 +69,7 @@ test('normalize: a leading break is the test; a negation goes where neither side
 })
 
 test('normalize: a do-while whose test holds on entry is a while', () => {
-  const lowered = (c, body) => [['let', ['=', 'F', lit(true)]], ['while', ['||', 'F', c], ['{}', [';', ['=', 'F', lit(false)], body]]]]
+  const lowered = (c, body, F = '\uE002do0') => [['let', ['=', F, lit(true)]], ['while', ['||', F, c], ['{}', [';', ['=', F, lit(false)], body]]]]
   const guarded = norm(fn(['if', ['<', 'i', 'n'], [';', ...lowered(['<', 'i', 'n'], [';', 'x', ['++', 'i']])]]))
   is(show(guarded[1][2]), show(['while', ['<', 'i', 'n'], [';', 'x', ['++', 'i']]]), 'the whole of `if (c)`, the same test')
   const entry = norm(fn(...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])), x => x === 'N' ? 4 : null)
@@ -80,6 +80,10 @@ test('normalize: a do-while whose test holds on entry is a while', () => {
   is(later[1][2][0], 'let', 'false on entry: the body runs once, as written')
   const other = norm(fn(['if', ['<', 'i', 'm'], [';', ...lowered(['<', 'i', 'n'], 'x')]]))
   is(other[1][2][0], 'if', 'another test')
+  const own = norm(fn(...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']], 'go'), ['return', 'go']), x => x === 'N' ? 4 : null)
+  is(own[1][2][0], 'let', 'a flag the source wrote: it may be read after the loop, the loop as written')
+  const written = norm(['{}', [';', ['let', ['=', 'i', lit(0)], ['=', 'j', [',', ['=', 'i', 'v'], lit(0)]]], ...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])]], x => x === 'N' ? 4 : null)
+  is(written[1][2][0], 'let', 'a declaration after the literal may write it: no value on entry')
 })
 
 // Programs on the edges, each against Node at every level.
@@ -95,6 +99,10 @@ const CASES = [
   ['export let f = (n) => { let s = 0, c = 0; const g = () => { c++; return n }; for (let i = 0; g() > i; i = i + 1) s += c; return s * 100 + c }', [4, 0]],
   ['export let f = (n) => { let s = 0, i = 0; do { s++; i++ } while (i < 3); i = 5; do { s += 10; i++ } while (i < 3); return s * 100 + i }', [0]],
   ['export let f = (n) => { let i = 0, s = 0; if (i < n) do { i++; if (i % 2) continue; s += i } while (i < n); return s }', [0, 7, 7.5, NaN]],
+  // a flag loop the source wrote, its flag read after it
+  ['export let f = (n) => { let i = 0; let go = true; while (go || i < 3) { go = false; i++ } return go ? -1 : i + n }', [0]],
+  // the counter written between its literal and the loop
+  ['export let f = (n) => { let s = 0; let i = 0, j = (i = n, 0); do { s += 1; i++ } while (i < 3); return s * 100 + i + j }', [9, 0]],
   ['export let f = (n) => { let s = 0, i = 0; L: do { i++; if (i % 3 === 0) continue L; s += i } while (i < 9); return s + n }', [0]],
   // a counter a closure steps is no Number by syntax
   ['export let f = (n) => { let i = 0, s = 0; const bump = () => { i += 2 }; for (; i < n; i += 1) { s++; if (s % 3 === 0) bump() } return s * 1000 + i }', [10, 11]],
