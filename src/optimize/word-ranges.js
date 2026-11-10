@@ -20,6 +20,8 @@
  * @module optimize/word-ranges
  */
 
+import { nrBinary, nrInts, nrSpan } from '../summary/num-range.js'
+
 const isArr = Array.isArray
 const MIN = -2147483648, MAX = 2147483647
 const FULL = { lo: MIN, hi: MAX }
@@ -271,7 +273,8 @@ export function wordRanges(fn) {
     if (op === 'i32.shl' && kb != null) return range(a.lo * 2 ** (kb & 31), a.hi * 2 ** (kb & 31))
     if (op === 'i32.shr_s' && kb != null) return { lo: a.lo >> (kb & 31), hi: a.hi >> (kb & 31) }
     if ((op === 'i32.or' || op === 'i32.xor') && a.lo >= 0 && b.lo >= 0) return { lo: op === 'i32.or' ? Math.max(a.lo, b.lo) : 0, hi: mask(Math.max(a.hi, b.hi)) }
-    if (op === 'i32.rem_u' && b.lo > 0 && a.lo >= 0) return { lo: 0, hi: Math.min(a.hi, b.hi - 1) }
+    // (read unsigned, the remainder of the values where both are non-negative)
+    if (op === 'i32.rem_u' && b.lo > 0 && a.lo >= 0) { const r = nrSpan(nrBinary('%', nrInts(a.lo, a.hi), nrInts(b.lo, b.hi))); return r && { lo: r[0], hi: r[1] } }
     if (op === 'i32.div_u' && b.lo > 0 && a.lo >= 0) return { lo: Math.floor(a.lo / b.hi), hi: Math.floor(a.hi / b.lo) }
     return null
   }

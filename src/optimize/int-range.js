@@ -30,6 +30,7 @@
 
 import { isPureIR, writesLocal } from '../ir/classify.js'
 import { guardDefinitions } from './guard-defs.js'
+import { nrBinary, nrPoint, nrValue } from '../summary/num-range.js'
 
 const isArr = Array.isArray
 
@@ -40,6 +41,16 @@ const BOOL = Object.freeze({ lo: 0, hi: 1, int: true, nz: false, nan: false })
 const NUMBER = Object.freeze({ lo: -Infinity, hi: Infinity, int: false, nz: true, nan: true })
 const NAN = Object.freeze({ lo: Infinity, hi: -Infinity, int: true, nz: false, nan: true })
 const val = (lo, hi, int = true, nz = false, nan = false) => lo <= hi ? { lo, hi, int, nz, nan } : nan ? NAN : null
+/** Any integer an i64 holds. */
+const INTEGER = Object.freeze({ lo: -Infinity, hi: Infinity, int: true, nz: false, nan: false })
+// The table's value of an interval here (summary/num-range.js), and back: an
+// integer here of an open end may be an infinity a sum ran to, the table's is
+// finite; its `nz` is a value that is never -0, here one that may be; an
+// integer register's (`word`) is finite whatever its ends, never -0 nor NaN;
+// the table's least magnitude has no place here.
+const numOf = (v, word = false) => !v || v.of ? null : word ? nrValue(v.lo, v.hi, true, true, false)
+  : nrValue(v.lo, v.hi, v.int && Number.isFinite(v.lo) && Number.isFinite(v.hi), !v.nz, v.nan)
+const ofNum = (r, word = false) => r && val(r.lo, r.hi, r.int, !r.nz && !word, r.nan)
 const exact = v => val(v, v, Number.isInteger(v), Object.is(v, -0))
 const none = v => v.lo > v.hi   // NaN alone
 
@@ -839,8 +850,9 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
     for (let i = 0; i < kids.length; i++) seenAt.set(kids[i], vs[i])
     const r = kids.length === n.length - 1 ? remainderOf(n) : null
     if (r) {
-      const v = seenAt.get(r.x) ?? null, m = Math.abs(r.k) - 1
-      return isInt(v) ? val(v.lo < 0 ? -Math.min(m, -v.lo) : 0, v.hi > 0 ? Math.min(m, v.hi) : 0, true, v.lo < 0 || v.nz) : v ? NUMBER : null
+      // (the lowering is the remainder where its quotient is exact: an integer within 2^52)
+      const v = seenAt.get(r.x) ?? null
+      return isInt(v) ? ofNum(nrBinary('%', numOf(v), nrPoint(r.k))) : v ? NUMBER : null
     }
     return value(n, op, vs[0], vs[1], kids[0], kids[1])
   }
@@ -960,8 +972,7 @@ export function intRanges(fn, bodyStart, assume = null, regions = null) {
       case 'i32.rem_s': case 'i64.rem_s': {
         const k = numConst(y)
         if (k == null || k === 0) return op === 'i32.rem_s' ? I32 : null
-        const m = Math.abs(k) - 1, v = a ?? (op === 'i32.rem_s' ? I32 : null)
-        return v ? val(v.lo < 0 ? -Math.min(m, -v.lo) : 0, v.hi > 0 ? Math.min(m, v.hi) : 0) : val(-m, m)
+        return ofNum(nrBinary('%', numOf(a && !a.of ? a : op === 'i32.rem_s' ? I32 : INTEGER, true), nrPoint(k)), true)
       }
       case 'i32.div_s': case 'i64.div_s': {
         const k = numConst(y), v = a ?? (op === 'i32.div_s' ? I32 : null)

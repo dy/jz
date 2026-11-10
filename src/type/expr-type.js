@@ -23,6 +23,7 @@ import { typedStorageNameCtor } from '../typed-context.js'
 import { isPresentNumber } from '../kind.js'
 import { typedElementKey } from '../typed-provenance.js'
 import { inBoundsCharCodeAt } from './canonical-bounds.js'
+import { nrBinary, nrInts, nrWord } from '../summary/num-range.js'
 
 // The bitwise and signed-shift operators: i32 on numbers, f64 (the i64 carrier) on BigInts.
 const SIGNED_BIT_OPS = new Set(['&', '|', '^', '~', '<<', '>>'])
@@ -202,24 +203,22 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot, readPresent) 
     }
     return bound(expr[1]) + bound(expr[2]) <= 0x7fffffff ? 'i32' : 'f64'
   }
-  // `%` fits i32 only when its divisor cannot be zero and its dividend cannot
-  // produce -0. Mirror emission's constant and positive-interval proofs.
+  // `%` fits i32 where the remainder is a word (summary/num-range.js: no zero
+  // divisor, no -0 of a negative dividend) by a divisor emission takes to an
+  // integer remainder: a literal within a word (positive under a uint32
+  // dividend, emit's `i32.rem_u`), or a runtime one positive within a word.
   if (op === '%') {
-    // (a uint32 word wider than its storage is still a word to the remainder, below)
-    const ta = isUnsignedI32Expr(expr[1], locals) ? 'i32' : exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent), tb = exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent)
-    if (ta !== 'i32' || tb !== 'i32') return 'f64'
+    // (a uint32 word wider than its storage is still a word to the remainder)
+    const unsigned = isUnsignedI32Expr(expr[1], locals)
+    const ta = unsigned ? 'i32' : exprType(expr[1], locals, valTypes, strict, bodyRoot, readPresent), tb = exprType(expr[2], locals, valTypes, strict, bodyRoot, readPresent)
+    if (ta !== 'i32' || tb !== 'i32' || isUnsignedI32Expr(expr[2], locals)) return 'f64'
     // the divisor as a folded module-const expression (`MAXPTS - 20 + 1`) is a literal too
     const dv = staticValue(expr[2]) !== NO_VALUE ? staticValue(expr[2]) : (constIntExpr(expr[2]) ?? NO_VALUE)
-    if (isUnsignedI32Expr(expr[2], locals)) return 'f64'
-    const divisorRange = intExprRange(expr[2])
-    const positiveDivisor = divisorRange && divisorRange[0] > 0 && divisorRange[1] <= 0x7fffffff
-    // A uint32 dividend by a positive literal takes emit's `i32.rem_u` path;
-    // the remainder is below the divisor, a signed i32 whenever K ≤ 2^31.
-    if (isUnsignedI32Expr(expr[1], locals))
-      return positiveDivisor || (dv !== NO_VALUE && typeof dv === 'number' && Number.isInteger(dv) && dv > 0 && dv <= 0x80000000) ? 'i32' : 'f64'
-    const range = intExprRange(expr[1])
-    return range && range[0] >= 0 && (positiveDivisor || (dv !== NO_VALUE && typeof dv === 'number' &&
-      dv !== 0 && Number.isInteger(dv) && Math.abs(dv) < 0x80000000)) ? 'i32' : 'f64'
+    const k = typeof dv === 'number' && Number.isInteger(dv) ? dv : null, divisor = intExprRange(expr[2])
+    const b = k != null && (unsigned ? k > 0 && k <= 0x80000000 : Math.abs(k) < 0x80000000) ? [k, k]
+      : divisor && divisor[0] > 0 && divisor[1] <= 0x7fffffff ? divisor : null
+    const a = unsigned ? [0, 0xFFFFFFFF] : intExprRange(expr[1])
+    return a && b && nrWord(nrBinary('%', nrInts(a[0], a[1]), nrInts(b[0], b[1]))) ? 'i32' : 'f64'
   }
   // Storage and emission share the same product proof: both the magnitude
   // and the zero sign must survive an i32 multiply.

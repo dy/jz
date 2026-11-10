@@ -9,7 +9,8 @@ import { asF64, asI32, asI64, block64, coerceAtomsToNum, coerceNullishToNum, emi
 import { MUTATE_OPS, some, isReassigned, walkAst, literalNumber } from '../../ast.js'
 import { censusMaybeUndefined, censusMaybeUndefinedKind, isPresentNumber, numericDenied, valTypeOf, stringMayMiss } from '../../kind.js'
 import { VAL, mayBeUndefined, repOf } from '../../reps.js'
-import { intExprRange, negRangeFitsI32, forCounterRange, cancelledIntExpr } from '../../static.js'
+import { intExprRange, negRangeFitsI32, forCounterRange, cancelledIntExpr, constNumExpr, intLiteralValue } from '../../static.js'
+import { NUMBER as NUMBER_NUMS, nrBinary, nrPoint, nrReals } from '../../summary/num-range.js'
 import { K, core, hasTag, tagsOf, tagOf, paramOf, UNKNOWN, typedAux, bitOf, TAGS, NULL_BITS } from '../../summary/kind.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { exprType, wholeKey } from '../../type.js'
@@ -90,8 +91,13 @@ const i32Magnitude = (e, depth = 0) => {
   if (e[0] === '()' && e.length === 3 && typeof e[1] === 'string' && /^math\.(floor|ceil|round|trunc)$/.test(e[1])) { const x = i32Magnitude(e[2], depth); return x == null ? null : x + 1 }
   if (e[0] === '.' && e.length === 3 && e[2] === 'length') return 2 ** 32
   if ((e[0] === '[]' || e[0] === '?.[]') && e.length === 3) return typedElemMagnitude(e[1])
-  // a remainder by a literal stays below it (or is NaN, where its dividend is not finite)
-  if (e[0] === '%' && e.length === 3 && Array.isArray(e[2]) && e[2][0] == null && typeof e[2][1] === 'number' && e[2][1] !== 0) return Math.abs(e[2][1])
+  // a remainder by a nonzero constant stays below it and its dividend (or is NaN, where its dividend is not finite)
+  if (e[0] === '%' && e.length === 3) {
+    const k = constNumExpr(e[2], intLiteralValue), x = i32Magnitude(e[1], depth)
+    if (!k || !Number.isFinite(k)) return null
+    const r = nrBinary('%', x == null ? NUMBER_NUMS : nrReals(-x, x), nrPoint(k))
+    return Math.max(-r.lo, r.hi)
+  }
   return null
 }
 // a body → the hull of each `for` counter under its bound (static.js forCounterRange), where the bound hulls

@@ -16,6 +16,7 @@ import { NO_VALUE, staticValue, unsignedShiftFitsI32 } from '../static.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { typedElemAux } from '../../layout.js'
 import { NUMBER } from '../summary/kind.js'
+import { NUMBER as NUMBER_NUMS, nrBinary, nrInts, nrPoint, nrValue, nrWord } from '../summary/num-range.js'
 
 // === Integer-certainty fixpoint (shared by analyzeIntCertain + program-facts) ===
 
@@ -108,6 +109,8 @@ function collectIntDefs(body, capturedNames, defs, steps) {
 // consumers); level 2 feeds raw-i32 slot loads and i32 local typing, where
 // saturation or a lost -0 would be a WRONG VALUE, not a lost optimization.
 const INT_MATH_FNS_I32 = new Set(['imul', 'clz32'])
+// What each level holds, as the numeric table's values (summary/num-range.js).
+const LEVEL_NUMS = [NUMBER_NUMS, nrValue(-Infinity, Infinity, true, false, false), nrInts(-2147483648, 2147483647)]
 const _numLevel = (v) => typeof v === 'boolean' ? 2
   : typeof v !== 'number' || !Number.isInteger(v) || Object.is(v, -0) ? 0
   : v >= -2147483648 && v <= 2147483647 ? 2 : 1
@@ -147,18 +150,17 @@ function makeIntLevelExpr(intLevels, slotLevelOf, readPresent) {
       const b = expr[2] != null ? levelOf(expr[2]) : a
       return a && b ? 1 : 0                          // integral-closed, range-open
     }
-    // `a % b` is integer-valued only when b is a provably-nonzero integer
-    // constant — `a % 0` is NaN, which is not an integer. A runtime or zero
-    // divisor leaves the expression non-int (f64), so result-narrowing won't
-    // truncate a NaN remainder to 0 and floor-elision won't drop a NaN.
-    // Never strict: `-5 % 5` is -0.
+    // `a % b` (summary/num-range.js) of an integer by a constant or by a divisor
+    // name whose hull excludes zero (an array's length a guard proves positive,
+    // body-facts.js's declRange): `a % 0` is NaN, which is not an integer, so
+    // result-narrowing won't truncate a NaN remainder to 0 and floor-elision
+    // won't drop a NaN. Strict only where no -0 can come out: `-5 % 5` is -0.
     if (op === '%') {
-      const bv = staticValue(expr[2])
-      if (bv !== NO_VALUE && typeof bv === 'number' && bv !== 0 && Number.isInteger(bv) && levelOf(expr[1])) return 1
-      // A divisor name whose hull excludes zero (an array's length a guard
-      // proves positive, body-facts.js's declRange): the remainder of integers.
-      const r = typeof expr[2] === 'string' ? repOf(expr[2])?.range : null
-      return r && (r[0] > 0 || r[1] < 0) && levelOf(expr[2]) && levelOf(expr[1]) ? 1 : 0
+      const bv = staticValue(expr[2]), r = typeof expr[2] === 'string' ? repOf(expr[2])?.range : null
+      const b = typeof bv === 'number' ? nrPoint(bv) : r && levelOf(expr[2]) ? nrInts(r[0], r[1]) : null
+      if (!b) return 0
+      const v = nrBinary('%', LEVEL_NUMS[levelOf(expr[1])], b)
+      return nrWord(v) ? 2 : v.int && !v.nan ? 1 : 0
     }
     if (op === '/' && exactDivs.has(expr)) return levelOf(expr[1]) && levelOf(expr[2]) ? 1 : 0
     if (op === 'u-') return levelOf(expr[1]) ? 1 : 0 // -(0) is -0; -(-2^31) exceeds int32

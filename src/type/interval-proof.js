@@ -12,6 +12,7 @@ import {
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
+import { nrBinary, nrInts, nrSpan } from '../summary/num-range.js'
 import { exprType } from './expr-type.js'
 import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget, minAdvanceBudget, maxMovementBudget } from './canonical-bounds.js'
 import { K, bitOf, TAGS, NULL_BITS } from '../summary/kind.js'
@@ -30,6 +31,8 @@ import { K, bitOf, TAGS, NULL_BITS } from '../summary/kind.js'
 // between the native and the self-hosted compiler, and a proof must not.
 const fieldAbove = (m) => m <= 0 ? 0 : 2 ** (32 - Math.clz32(m)) - 1
 const ipOk = (v) => v != null && v[0] >= I32_MIN && v[1] <= I32_MAX
+// (a remainder's hull where it is never -0: a hull here may authorize a signed word's storage)
+const wordRem = (a, B) => { const r = nrBinary('%', a, nrInts(B[0], B[1])); return r.nz ? nrSpan(r) : null }
 // The most a `length` counts where the summary holds the name to only arrays,
 // typed arrays and strings: a count below 2^32, and an array's below 2^31 (its
 // header word, of 8-byte cells in a 32-bit memory); null for any other name.
@@ -323,13 +326,12 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
         const m = intLiteralValue(x) ?? intLiteralValue(y)
         if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
       }
-      // a positive literal modulus over a dividend that is non-negative by
-      // construction (`>>>`, a non-negative mask, a const bound to one) — the
-      // draw `rnd() % 101` over a uint32 word the interval cannot hold (beyond signed i32)
-      if (op === '%' && B && B[0] === B[1] && B[0] > 0
-          && ((Array.isArray(x) && (x[0] === '>>>' || (x[0] === '&' && (intLiteralValue(x[1]) ?? intLiteralValue(x[2])) >= 0)))
+      // a modulus over a dividend that is non-negative by construction (`>>>`,
+      // a non-negative mask, a const bound to one) — the draw `rnd() % 101`
+      // over a uint32 word the interval cannot hold (beyond signed i32)
+      if (op === '%' && B && ((Array.isArray(x) && (x[0] === '>>>' || (x[0] === '&' && (intLiteralValue(x[1]) ?? intLiteralValue(x[2])) >= 0)))
             || (typeof x === 'string' && nonNegIntegers.has(x))))
-        return [0, B[0] - 1]
+        return wordRem(nrInts(0, Infinity), B)
       return null
     }
     let r = null
@@ -358,7 +360,7 @@ export function scanIntervalIdx(body, out, lens, ranges, calls = null, entry = n
     // `((a & 3) << 4) | (b >>> 4)` without assuming the fields are disjoint,
     // and the bit-reversal cursor `j ^= bit` staying inside its field.
     else if ((op === '|' || op === '^') && A[0] >= 0 && B[0] >= 0) r = [0, fieldAbove(Math.max(A[1], B[1]))]
-    else if (op === '%' && B[0] === B[1] && B[0] > 0 && A[0] >= 0) r = [0, Math.min(A[1], B[0] - 1)]
+    else if (op === '%') r = wordRem(nrInts(A[0], A[1]), B)
     return ipOk(r) || wideArith && r && r.every(Number.isSafeInteger) ? r : null
   }
   // condition refinement for if-arms: `name < K` / `name >= K` … over a known name.

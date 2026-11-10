@@ -8,6 +8,7 @@ import { repOf, VAL } from './reps.js'
 import { STRING, K, tagOf, paramOf, typedAux, UNKNOWN } from './summary/kind.js'
 import { TYPED_ELEM_CODE, DATA_VIEW_FLAG } from '../layout.js'
 import { typedCtorName } from './typed-provenance.js'
+import { nrBinary, nrInts, nrSpan } from './summary/num-range.js'
 
 // A loop guard's relational operators.
 
@@ -295,27 +296,16 @@ export function intExprRange(n, nameRange = null) {
     const a = intExprRange(n[1], nameRange)
     return a ? [-a[1], -a[0]] : null
   }
-  // `x % K` by a positive literal on an integer-hulled dividend: the
-  // remainder takes the dividend's sign and stays below K (a `>>>`/`&` form
-  // is non-negative by the rules above, so `(s >>> 8) % 6` is [0, 5]).
+  // `x % y` of integer hulls (summary/num-range.js): the dividend's sign, below
+  // the divisor's magnitude (a `>>>`/`&` form is non-negative by the rules
+  // above, so `(s >>> 8) % 6` is [0, 5]). A uint32 dividend (`x >>> 0`, or a
+  // name carrying that draw, beyond the i32 hull) is non-negative by
+  // construction: `rnd() % 101` is [0, 100].
   if (op === '%' && n.length === 3) {
-    const k = constIntExpr(n[2]), a = intExprRange(n[1], nameRange)
-    if (k != null && k > 0 && a) {
-      if (a[0] >= 0) return [0, Math.min(a[1], k - 1)]
-      if (a[1] <= 0) return [Math.max(a[0], 1 - k), 0]
-      return [Math.max(a[0], 1 - k), Math.min(a[1], k - 1)]
-    }
-    // a uint32 dividend (`x >>> 0`, or a name carrying that draw, beyond the
-    // i32 hull) is non-negative by construction: `rnd() % 101` is [0, 100]
-    if (k != null && k > 0 && !a && ((Array.isArray(n[1]) && n[1][0] === '>>>' && n[1].length === 3)
-        || (typeof n[1] === 'string' && repOf(n[1])?.unsigned === true))) return [0, k - 1]
-    // a runtime divisor whose hull is positive: the same bounds at its top
-    const b = k == null ? intExprRange(n[2], nameRange) : null
-    if (b && b[0] > 0 && a) {
-      if (a[0] >= 0) return [0, Math.min(a[1], b[1] - 1)]
-      if (a[1] <= 0) return [Math.max(a[0], 1 - b[1]), 0]
-      return [Math.max(a[0], 1 - b[1]), Math.min(a[1], b[1] - 1)]
-    }
+    const a = intExprRange(n[1], nameRange) ?? ((Array.isArray(n[1]) && n[1][0] === '>>>' && n[1].length === 3)
+      || (typeof n[1] === 'string' && repOf(n[1])?.unsigned === true) ? [0, 0xFFFFFFFF] : null)
+    const b = a && intExprRange(n[2], nameRange)
+    return b ? nrSpan(nrBinary('%', nrInts(a[0], a[1]), nrInts(b[0], b[1]))) : null
   }
   // A rounding is monotone: of a hull, the rounded ends; of a quotient by a
   // literal (`Math.floor(len / 2)`), the quotient's ends rounded.
