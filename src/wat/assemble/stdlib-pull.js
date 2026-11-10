@@ -270,7 +270,10 @@ export function pullStdlib(sec) {
   // linear memory (e.g. to marshal host values in), independent of what the wasm itself
   // reaches — honour it even for an otherwise-memoryless program.
   const explicitMemory = ctx.memory.pages > 0 || !!ctx.memory.shared
-  const needsMemory = needsAlloc || explicitMemory || ctx.runtime.hostThrows ||
+  // A WASI host takes the module's memory export before it serves any call, one that
+  // reads no memory too (`proc_exit`; wasmtime: "missing required memory export").
+  const wasiImport = ctx.module.imports.some(i => i[1] === '"wasi_snapshot_preview1"')
+  const needsMemory = needsAlloc || explicitMemory || wasiImport || ctx.runtime.hostThrows ||
     dataLen() > (ctx.runtime.staticDataLen || 0) ||
     reachable.has('__ptr_type') ||
     [...reachable].some(n => MEM_OPS.test(realize(n))) ||

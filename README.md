@@ -80,7 +80,8 @@ the top-level code first where the entry has not, so the module also serves `was
 exports. In a JS host, `instantiate()` runs the top-level code and drives the timers;
 `instance.exports._start()` runs the rest of the command.
 `process.exit(code)` ends the command with that status (WASI `proc_exit`): nothing after it runs,
-no `finally` either. It is the one member of `process` a WASI module has.
+no `finally` either. The code converts as an int32 does, and none is 0; `wasmtime` takes 0 to 125.
+It is the one member of `process` a WASI module has.
 
 ## Examples
 

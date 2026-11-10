@@ -1149,6 +1149,9 @@ test('process.exit ends a WASI command with its status', async () => {
     export const none = () => { process.exit() }
     export const twice = (code) => { try { process.exit(code) } catch (e) { return 1 } finally { console.log('finally') } }`
   ok(imports(src, 'wasi').includes('wasi_snapshot_preview1.proc_exit'), 'imports proc_exit')
+  // a WASI host asks for the memory before it serves any call (wasmtime: "missing required memory export")
+  ok(WebAssembly.Module.exports(new WebAssembly.Module(compile('process.exit(5)', { host: 'wasi' }))).some(e => e.name === 'memory'),
+    'a command whose one WASI call is the exit exports its memory')
   const codes = [], out = []
   const { exports } = instantiate(compile(src, { host: 'wasi' }), { wasi: { exit: (code) => { codes.push(code) }, write: (fd, text) => out.push(text) } })
   const leaves = (fn, arg) => { try { fn(arg); return 'returned' } catch (e) { return e instanceof WebAssembly.RuntimeError ? codes[codes.length - 1] : e } }
@@ -1174,5 +1177,8 @@ test('process.exit ends a WASI command with its status', async () => {
     let status = 0, stdout = ''
     try { stdout = execSync('wasmtime /tmp/jz_wasi_exit.wasm', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch (e) { status = e.status; stdout = e.stdout }
     is([status, stdout], [7, 'before\n'], 'wasmtime: status 7, nothing after the exit')
+    writeFileSync('/tmp/jz_wasi_exit.wasm', compile('process.exit(5)', { host: 'wasi' }))
+    try { execSync('wasmtime /tmp/jz_wasi_exit.wasm', { stdio: 'ignore' }); status = 0 } catch (e) { status = e.status }
+    is(status, 5, 'wasmtime: a command that only exits')
   }
 })
