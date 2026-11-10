@@ -10,7 +10,7 @@
 import print from 'watr/print'
 import { enterActiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
 import { dataAlign, dataPush, dataLen, dataRecord, pushStaticSlots } from '../src/static-data.js'
-import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
+import { staticArrayPtr, typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, TRUE_NAN, FALSE_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, walk, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemStore, freshId, undefExpr, isNullish } from '../src/ir.js'
 import { emit, storedValue, storedFieldValue, withIgnoredArgs, deps } from '../src/bridge.js'
 import { NUMBER } from '../src/summary/kind.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -356,19 +356,13 @@ export default (ctx) => {
     const v = temp('ik'), i = tempI32('iki'), len = tempI32('ikl')
     const vPtr = () => ['i64.reinterpret_f64', ['local.get', `$${v}`]]
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'ik' })
-    const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${v}`, asF64(emit(obj))],
       ['local.set', `$${len}`, ['call', `$${lenCall}`, vPtr()]],
       ['call', '$__dense_check', ['local.get', `$${len}`]],
       out.init,
-      ['local.set', `$${i}`, ['i32.const', 0]],
-      ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        elemStore(out.local, i, ['f64.reinterpret_i64',
-          ['call', '$__to_str', ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]),
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', `$loop${id}`]]],
+      ...walk(i, ['local.get', `$${len}`], [elemStore(out.local, i, ['f64.reinterpret_i64',
+        ['call', '$__to_str', ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${i}`]]]]])]),
       out.ptr], 'f64')
   }
 
@@ -661,18 +655,12 @@ export default (ctx) => {
       const s = temp('osv'), i = tempI32('osvi'), len = tempI32('osvl')
       const sPtr = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
       const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'osv' })
-      const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(obj))],
         ['local.set', `$${len}`, ['call', '$__str_len', sPtr()]],
         ['call', '$__dense_check', ['local.get', `$${len}`]],
         out.init,
-        ['local.set', `$${i}`, ['i32.const', 0]],
-        ['block', `$brk${id}`, ['loop', `$loop${id}`,
-          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          elemStore(out.local, i, ['call', '$__str_idx', sPtr(), ['local.get', `$${i}`]]),
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', `$loop${id}`]]],
+        ...walk(i, ['local.get', `$${len}`], [elemStore(out.local, i, ['call', '$__str_idx', sPtr(), ['local.get', `$${i}`]])]),
         out.ptr], 'f64')
     }
     if (arrayValType(obj)) return emitIndexed(obj, 1)
@@ -699,22 +687,17 @@ export default (ctx) => {
       const s = temp('oes'), i = tempI32('oesi'), len = tempI32('oesl'), pair = tempI32('oep')
       const sPtr = () => ['i64.reinterpret_f64', ['local.get', `$${s}`]]
       const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'oes' })
-      const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${s}`, asF64(emit(obj))],
         ['local.set', `$${len}`, ['call', '$__str_len', sPtr()]],
         ['call', '$__dense_check', ['local.get', `$${len}`]],
         out.init,
-        ['local.set', `$${i}`, ['i32.const', 0]],
-        ['block', `$brk${id}`, ['loop', `$loop${id}`,
-          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ...walk(i, ['local.get', `$${len}`], [
           ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
           ['f64.store', slotAddr(pair, 0), ['f64.reinterpret_i64',
             ['call', '$__to_str', ['i64.reinterpret_f64', ['f64.convert_i32_s', ['local.get', `$${i}`]]]]]],
           ['f64.store', slotAddr(pair, 1), ['call', '$__str_idx', sPtr(), ['local.get', `$${i}`]]],
-          elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', `$loop${id}`]]],
+          elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`]))]),
         out.ptr], 'f64')
     }
     if (arrayValType(obj)) return emitIndexed(obj, 2)
@@ -870,14 +853,11 @@ export default (ctx) => {
     const va = asF64(emit(arr))
     const t = temp('fe'), ptr = tempI32('fp'), len = tempI32('fl')
     const i = tempI32('fi'), pair = tempI32('fv'), key = tempI64('fk')
-    const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${t}`, ['call', '$__hash_new']],
       ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
-      ['local.set', `$${i}`, ['i32.const', 0]],
-      ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+      ...walk(i, ['local.get', `$${len}`], [
         // Load pair (array of 2): pair = ptr_offset(arr[i])
         ['local.set', `$${pair}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64',
           ['f64.load', ['i32.add', ['local.get', `$${ptr}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]]]],
@@ -888,9 +868,7 @@ export default (ctx) => {
         // the result is the HASH made above: its store needs no other kind's arm
         ['local.set', `$${t}`, ['f64.reinterpret_i64', ['call', '$__hash_set_local', ['i64.reinterpret_f64', ['local.get', `$${t}`]],
           ['local.get', `$${key}`],
-          ['i64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]]],
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', `$loop${id}`]]],
+          ['i64.load', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]]]]]]]),
       ['local.get', `$${t}`]], 'f64')
   }
 
@@ -1000,7 +978,6 @@ function emitObjectAssignDynamic(target, sources) {
   const t = temp('oat'), s = temp('oas'), sBase = tempI32('oasb')
   const keys = temp('oak'), keysBase = tempI32('oakb'), len = tempI32('oan')
   const i = tempI32('oai'), key = temp('oakey')
-  const id = freshId(ctx)
   const setKey = (keyBits, valBits) =>
     ['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${t}`]], keyBits, valBits]]
   const body = [['local.set', `$${t}`, asF64(emit(target))], ...assignTargetGuard(target, t)]
@@ -1019,15 +996,11 @@ function emitObjectAssignDynamic(target, sources) {
       ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'oak', false, true)],
       ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
-      ['local.set', `$${i}`, ['i32.const', 0]],
-      ['block', `$oabrk${id}_${si}`, ['loop', `$oaloop${id}_${si}`,
-        ['br_if', `$oabrk${id}_${si}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+      ...walk(i, ['local.get', `$${len}`], [
         ['local.set', `$${key}`, ['f64.load',
           ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
         ['if', copiedPresent(s, key), ['then',
-          setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, key))]],
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', `$oaloop${id}_${si}`]]])
+          setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, key))]]]))
   }
   body.push(['local.get', `$${t}`])
   return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -1472,18 +1445,14 @@ function emitDynamicSpread(props, excluded = null) {
       ['local.set', `$${keys}`, runtimeKeysFromTemp(s, 'dsk', false, true)],
       ['local.set', `$${keysBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${keys}`]]]],
-      ['local.set', `$${i}`, ['i32.const', 0]],
-      ['block', `$dsbrk${id}_${pi}`, ['loop', `$dsloop${id}_${pi}`,
-        ['br_if', `$dsbrk${id}_${pi}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+      ...walk(i, ['local.get', `$${len}`], [
         ['local.set', `$${key}`, ['f64.load',
           ['i32.add', ['local.get', `$${keysBase}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]],
         ['block', `$dsskip${id}_${pi}`,
           ...omit.map(k => ['br_if', `$dsskip${id}_${pi}`, ['call', '$__eq_strict', ['i64.reinterpret_f64', ['local.get', `$${key}`]], k]]),
-unless(['i64.reinterpret_f64', ['local.get', `$${key}`]], skip ? [...skip.names.map(n => ['str', n]), ...skip.exprs] : [],
-          ['if', copiedPresent(s, key), ['then',
-            setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, key))]])],
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', `$dsloop${id}_${pi}`]]])
+          unless(['i64.reinterpret_f64', ['local.get', `$${key}`]], skip ? [...skip.names.map(n => ['str', n]), ...skip.exprs] : [],
+            ['if', copiedPresent(s, key), ['then',
+              setKey(['i64.reinterpret_f64', ['local.get', `$${key}`]], copiedValue(s, key))]])]]))
   }
   body.push(['local.get', `$${t}`])
   return typed(['block', ['result', 'f64'], ...body], 'f64')
@@ -1571,22 +1540,17 @@ function hashKeysFromTemp(t, symbols = false) {
   // __coll_order header comment: the two can disagree) — out must be sized to
   // what the fill loop below actually writes.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hka' })
-  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$' + order, ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     out.init,
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$brk${id}`, ['loop', `$loop${id}`,
-      ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+    ...walk(i, ['local.get', `$${n}`], [
       ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
         ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
       elemStore(out.local, i,
-        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$loop${id}`]]],
+        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]])]),
     out.ptr]
 }
 
@@ -1596,22 +1560,17 @@ function hashValuesFromTemp(t) {
   const i = tempI32('hvi'), ord = tempI32('hvr'), slot = tempI32('hvs')
   // len is __coll_order's OWN live count — see hashKeysFromTemp's comment above.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hva' })
-  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__prop_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     out.init,
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$vbrk${id}`, ['loop', `$vloop${id}`,
-      ['br_if', `$vbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+    ...walk(i, ['local.get', `$${n}`], [
       ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
         ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
       elemStore(out.local, i,
-        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$vloop${id}`]]],
+        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]])]),
     out.ptr]
 }
 
@@ -1621,16 +1580,13 @@ function hashEntriesFromTemp(t) {
   const i = tempI32('hei'), ord = tempI32('her'), slot = tempI32('hes'), pair = tempI32('hep')
   // len is __coll_order's OWN live count — see hashKeysFromTemp's comment above.
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'hea' })
-  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__prop_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', 24]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     out.init,
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$ebrk${id}`, ['loop', `$eloop${id}`,
-      ['br_if', `$ebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+    ...walk(i, ['local.get', `$${n}`], [
       ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
         ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
       ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
@@ -1638,9 +1594,7 @@ function hashEntriesFromTemp(t) {
         ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 8]]]],
       ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
         ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', 16]]]],
-      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$eloop${id}`]]],
+      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`]))]),
     out.ptr]
 }
 

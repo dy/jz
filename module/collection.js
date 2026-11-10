@@ -16,7 +16,7 @@
 
 import print from 'watr/print'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
-import { isNumericIR, ptrOffsetIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
+import { isNumericIR, ptrOffsetIR, staticArrayPtr, throwErrorIR, throwTypeErrorIR, typed, asF64, asI64, asI32, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, walk, mkPtrIR, ptrTypeEq, boxedPtrTypeEq, elemStore, arrayValue, elemLoad, boolBoxIR, freshId, callWithArgs, numberNanIR, undefExpr } from '../src/ir.js'
 import { emit, deps, call, general, storedValue, withIgnoredArgs } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { NUMBER, K as KIND, hasTag, tagOf, core } from '../src/summary/kind.js'
@@ -720,12 +720,8 @@ export default (ctx) => {
           ...(lean ? [] : [['local.set', `$${capL}`, capExpr], ['call', '$__table_check', ['local.get', `$${capL}`]]]),
           table.init,
           ['local.set', `$${setL}`, table.ptr],
-          ['local.set', `$${iL}`, ['i32.const', 0]],
-          ['block', `$d_${iL}`, ['loop', `$l_${iL}`,
-            ['br_if', `$d_${iL}`, ['i32.ge_s', ['local.get', `$${iL}`], ['local.get', `$${lenL}`]]],
-            ['call', `$${add}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${setL}`]]], asI64(storedValue(['[]', arrL, iL]))],
-            ['local.set', `$${iL}`, ['i32.add', ['local.get', `$${iL}`], ['i32.const', 1]]],
-            ['br', `$l_${iL}`]]],
+          ...walk(iL, ['local.get', `$${lenL}`],
+            [['call', `$${add}`, ['i32.wrap_i64', ['i64.reinterpret_f64', ['local.get', `$${setL}`]]], asI64(storedValue(['[]', arrL, iL]))]]),
           ['local.get', `$${setL}`]], 'f64')
       } finally { view.unalias(arrL); view.unalias(iL) }
     }
@@ -741,17 +737,13 @@ export default (ctx) => {
       ['call', '$__table_check', ['local.get', `$${capL}`]],
       out.init,
       ['local.set', `$${setL}`, out.ptr],
-      ['local.set', `$${iL}`, ['i32.const', 0]],
-      ['block', `$d_${iL}`, ['loop', `$l_${iL}`,
-        ['br_if', `$d_${iL}`, ['i32.ge_s', ['local.get', `$${iL}`], ['local.get', `$${lenL}`]]],
+      ...walk(iL, ['local.get', `$${lenL}`], [
         ['local.set', `$${setL}`, ['f64.reinterpret_i64',
           ['call', '$__set_add',
             ['i64.reinterpret_f64', ['local.get', `$${setL}`]],
             ['i64.reinterpret_f64', ['call', '$' + read,
               ['i64.reinterpret_f64', ['local.get', `$${arrL}`]],
-              ['local.get', `$${iL}`]]]]]],
-        ['local.set', `$${iL}`, ['i32.add', ['local.get', `$${iL}`], ['i32.const', 1]]],
-        ['br', `$l_${iL}`]]],
+              ['local.get', `$${iL}`]]]]]]]),
       ['local.get', `$${setL}`]], 'f64')
   })
 
@@ -1209,9 +1201,8 @@ export default (ctx) => {
     inc(...(isMap ? ['__map_set', '__map_get'] : ['__hash_new', '__hash_set', '__hash_get', '__to_key']))
     if (isMap) noteKeys()
     const recv = temp('gbs'), cb = temp('gbc'), result = temp('gbr')
-    const len = tempI32('gbl'), i = tempI32('gbi')
+    const i = tempI32('gbi')
     const item = temp('gbv'), key = tempI64('gbk'), bucket = temp('gbb')
-    const id = freshId(ctx)
     const resI64 = ['i64.reinterpret_f64', ['local.get', `$${result}`]]
     const nb = allocPtr({ type: PTR.ARRAY, len: 0, cap: 0, tag: 'gbn' })
     const initResult = isMap
@@ -1232,10 +1223,8 @@ export default (ctx) => {
         ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', errorCodeLiteral(ERR.GROUP_BY_CALLBACK)]]], ['throw', '$__jz_err', ['f64.const', errorCodeLiteral(ERR.GROUP_BY_CALLBACK)]]]],
       ['local.set', `$${recv}`, iterArray(typed(['local.get', `$${recv}`], 'f64'), items)],
       ['local.set', `$${result}`, initResult],
-      ['local.set', `$${i}`, ['i32.const', 0]],
-      ['block', `$gbrk${id}`, ['loop', `$gloop${id}`,
-        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
-        ['br_if', `$gbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+      // (the length as it stands at each test: the callback may grow the source)
+      ...walk(i, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]], [
         ['local.set', `$${item}`, ['call', '$' + read, ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${i}`]]],
         ['local.set', `$${key}`, keyOf(ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'),
           [typed(['local.get', `$${item}`], 'f64'), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))],
@@ -1250,9 +1239,7 @@ export default (ctx) => {
         // push may relocate the bucket — re-store the (possibly moved) pointer
         ['local.set', `$${bucket}`, ['call', '$__arr_push1', ['i64.reinterpret_f64', ['local.get', `$${bucket}`]], typed(['local.get', `$${item}`], 'f64')]],
         ['local.set', `$${result}`, ['f64.reinterpret_i64',
-          ['call', set, resI64, ['local.get', `$${key}`], ['i64.reinterpret_f64', ['local.get', `$${bucket}`]]]]],
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', `$gloop${id}`]]],
+          ['call', set, resI64, ['local.get', `$${key}`], ['i64.reinterpret_f64', ['local.get', `$${bucket}`]]]]]]),
       ['local.get', `$${result}`]], 'f64')
   }
   ctx.core.emit['Object.groupBy'] = emitGroupBy(false)
@@ -3603,22 +3590,17 @@ function collKeysFromTemp(t, stride, fieldOff = 8, readOnly = false) {
   // what the fill loop below actually writes, or a header-trusting size leaves
   // its tail uninitialized (header too high) or reads past $ord (header too low).
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'cka' })
-  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', stride]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     collectionViewInit(out, n, readOnly),
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$ckbrk${id}`, ['loop', `$ckloop${id}`,
-      ['br_if', `$ckbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+    ...walk(i, ['local.get', `$${n}`], [
       ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
         ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
       elemStore(out.local, i,
-        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', fieldOff]]]),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$ckloop${id}`]]],
+        ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', fieldOff]]])]),
     out.ptr]
 }
 
@@ -3633,16 +3615,13 @@ function collEntriesFromTemp(t, stride, aOff = 8, bOff = 16, readOnly = false) {
   // len is __coll_order's OWN live count, not the header length — see
   // collKeysFromTemp's comment above (same reasoning applies here).
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'cea' })
-  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${off}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${cap}`, ['call', '$__cap', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     ['local.set', `$${ord}`, ['call', '$__coll_order', ['local.get', `$${off}`], ['local.get', `$${cap}`], ['i32.const', stride]]],
     ['local.set', `$${n}`, ['global.get', '$__coll_order_n']],
     collectionViewInit(out, n, readOnly),
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$cebrk${id}`, ['loop', `$celoop${id}`,
-      ['br_if', `$cebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+    ...walk(i, ['local.get', `$${n}`], [
       ['local.set', `$${slot}`, ['i32.load', ['i32.add', ['local.get', `$${ord}`],
         ['i32.shl', ['local.get', `$${i}`], ['i32.const', 2]]]]],
       ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
@@ -3650,9 +3629,7 @@ function collEntriesFromTemp(t, stride, aOff = 8, bOff = 16, readOnly = false) {
         ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', aOff]]]],
       ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
         ['f64.load', ['i32.add', ['local.get', `$${slot}`], ['i32.const', bOff]]]],
-      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$celoop${id}`]]],
+      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`]))]),
     out.ptr]
 }
 
@@ -3671,16 +3648,10 @@ function arrIdxFromTemp(t) {
   inc('__len')
   const n = tempI32('ain'), i = tempI32('aii')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aia' })
-  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     out.init,
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$aibrk${id}`, ['loop', `$ailoop${id}`,
-      ['br_if', `$aibrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
-      elemStore(out.local, i, ['f64.convert_i32_s', ['local.get', `$${i}`]]),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$ailoop${id}`]]],
+    ...walk(i, ['local.get', `$${n}`], [elemStore(out.local, i, ['f64.convert_i32_s', ['local.get', `$${i}`]])]),
     out.ptr]
 }
 
@@ -3689,20 +3660,15 @@ function arrEntriesFromTemp(t) {
   inc('__len', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr')
   const n = tempI32('aen'), i = tempI32('aei'), src = tempI32('aes'), pair = tempI32('aep')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aea' })
-  const id = freshId(ctx)
   return ['block', ['result', 'f64'],
     ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
     out.init,
     ['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$aebrk${id}`, ['loop', `$aeloop${id}`,
-      ['br_if', `$aebrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+    ...walk(i, ['local.get', `$${n}`], [
       ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
       ['f64.store', ['local.get', `$${pair}`], ['f64.convert_i32_s', ['local.get', `$${i}`]]],
       ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]], arrayValue(elemLoad(src, i))],
-      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$aeloop${id}`]]],
+      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`]))]),
     out.ptr]
 }
 
@@ -3716,20 +3682,15 @@ function arrEntriesFromTempTyped(t) {
   inc('__len', '__typed_get_idx', '__alloc_hdr')
   const n = tempI32('aetn'), i = tempI32('aeti'), pair = tempI32('aetp')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aet' })
-  const id = freshId(ctx)
-  const P = () => ['i64.reinterpret_f64', ['local.get', `$${t}`]]
+  const P =() => ['i64.reinterpret_f64', ['local.get', `$${t}`]]
   return ['block', ['result', 'f64'],
     ['local.set', `$${n}`, ['call', '$__len', P()]],
     out.init,
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$aetbrk${id}`, ['loop', `$aetloop${id}`,
-      ['br_if', `$aetbrk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+    ...walk(i, ['local.get', `$${n}`], [
       ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
       ['f64.store', ['local.get', `$${pair}`], ['f64.convert_i32_s', ['local.get', `$${i}`]]],
       ['f64.store', ['i32.add', ['local.get', `$${pair}`], ['i32.const', 8]],
         ['call', '$__typed_get_idx', P(), ['local.get', `$${i}`]]],
-      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`])),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$aetloop${id}`]]],
+      elemStore(out.local, i, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`]))]),
     out.ptr]
 }

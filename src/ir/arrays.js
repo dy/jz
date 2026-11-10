@@ -51,6 +51,24 @@ export function elemStore(ptr, i, val) {
   return ctx.abi.array.ops.store(['local.get', `$${ptr}`], ['local.get', `$${i}`], val)
 }
 
+/** The counted walk of every loop an emitter builds over the indices of an
+ *  array or a typed array: `i` from `start` (0, or `len - 1` walking down)
+ *  while `i < len` (`i >= 0` down), the visit, a step of one. It is a source
+ *  loop's form as the `for` emitter writes it (compile/emit/control-flow.js),
+ *  the test negated at the top and the step at the bottom, so whatever reads a
+ *  counted loop reads this one. `len` is a pure i32 expression, read at each
+ *  test; a visit leaves the walk by `(br $brk<id>)`. Two statements. */
+export function walk(i, len, visit, { reverse = false, start, id = freshId(ctx) } = {}) {
+  const at = () => ['local.get', `$${i}`]
+  return [
+    ['local.set', `$${i}`, start ?? (reverse ? ['i32.sub', len, ['i32.const', 1]] : ['i32.const', 0])],
+    ['block', `$brk${id}`, ['loop', `$loop${id}`,
+      ['br_if', `$brk${id}`, ['i32.eqz', reverse ? ['i32.ge_s', at(), ['i32.const', 0]] : ['i32.lt_s', at(), len]]],
+      ...visit,
+      ['local.set', `$${i}`, [reverse ? 'i32.sub' : 'i32.add', at(), ['i32.const', 1]]],
+      ['br', `$loop${id}`]]]]
+}
+
 /** Emit a loop iterating over array elements. Returns IR instruction list.
  *  bodyFn(ptr, len, i, item) should return an array of IR instructions.
  *  ARRAY-only — elemLoad assumes f64-stride data layout. After __ptr_offset
@@ -82,10 +100,6 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, ca
   // Forward: i 0→len-1. Reverse (findLast*): i len-1→0, same elem indices.
   // Optional `from`: an i32 expression for the first index (indexOf's
   // fromIndex, already resolved against the length by the caller).
-  const start = from ?? (reverse ? ['i32.sub', ['local.get', `$${len}`], ['i32.const', 1]] : ['i32.const', 0])
-  const done = reverse ? ['i32.lt_s', ['local.get', `$${i}`], ['i32.const', 0]]
-                       : ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]
-  const step = ['i32.const', reverse ? -1 : 1]
   const body = bodyFn(ptr, len, i, typed(['local.get', `$${item}`], 'f64'))
   const load = ['local.set', `$${item}`, elemLoad(ptr, i)]
   let visit = [load, ...body]
@@ -104,13 +118,7 @@ export function arrayLoop(arrExpr, bodyFn, lenLocal, ptrLocal, reverse, from, ca
       ? [resolve(), ['if', present, ['then', ...read], ...(callbacks.onMissing ? [['else', ...callbacks.onMissing(i)]] : [])]]
       : read
   } else visit = [['local.set', `$${item}`, arrayValue(elemLoad(ptr, i))], ...body]
-  setup.push(
-    ['local.set', `$${i}`, start],
-    ['block', `$brk${id}`, ['loop', `$loop${id}`,
-      ['br_if', `$brk${id}`, done],
-      ...visit,
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], step]],
-      ['br', `$loop${id}`]]])
+  setup.push(...walk(i, ['local.get', `$${len}`], visit, { reverse, start: from, id }))
   return setup
 }
 

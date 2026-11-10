@@ -13,7 +13,7 @@ import { demandHostReceiver } from '../func-exports.js'
 import { INTRINSIC_ARITY, INTRINSIC_VARIADIC } from '../../builtin-signatures.js'
 import { storedValue } from '../../bridge.js'
 import {
-  TOMB_NAN, throwTypeErrorIR, allocPtr, asF64, block64, deferBigintBox, dispatchByPtrType, flat, freshId, isNumericIR, isPureIR, materializeDeferredBigint, multiCount, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr,
+  TOMB_NAN, throwTypeErrorIR, allocPtr, asF64, block64, deferBigintBox, dispatchByPtrType, flat, freshId, isNumericIR, isPureIR, materializeDeferredBigint, multiCount, ptrTypeEq, reconstructArgsWithSpreads, temp, tempI32, typed, undefExpr, walk,
 } from '../../ir.js'
 import { valTypeOf } from '../../kind.js'
 import { VAL } from '../../reps.js'
@@ -136,7 +136,6 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT, arrayBa
   const scalarLoop = () => {
     const sidx = `${T}sidx${freshId(ctx)}`
     ctx.func.locals.set(sidx, 'i32')
-    const loopId = freshId(ctx)
     // When the source is statically known to be a typed array, __typed_idx suffices.
     // Otherwise (STRING, or unknown type whose runtime value may be a string) dispatch on
     // ptr_type: STRING→__str_idx, else→__typed_idx.
@@ -154,16 +153,10 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT, arrayBa
           ['then', (inc('__str_idx'), ['call', '$__str_idx', srcI64(), ['local.get', `$${sidx}`]])],
           ['else', (inc(read), ['call', '$' + read, srcI64(), ['local.get', `$${sidx}`]])]
         ])
-    // Reset the counter on each entry — WASM zeroes locals once at function
-    // entry, but this loop re-executes when the spread sits inside a JS loop;
-    // a stale `sidx` (= prior srcLen) would skip the copy entirely.
-    return ['block', `$break${loopId}`,
-      ['local.set', `$${sidx}`, ['i32.const', 0]],
-      ['loop', `$loop${loopId}`,
-        ['br_if', `$break${loopId}`, ['i32.ge_s', ['local.get', `$${sidx}`], ['local.get', `$${srcLenLocal}`]]],
-        ['f64.store', destAddr(['i32.add', ['local.get', `$${posLocal}`], ['local.get', `$${sidx}`]]), elem],
-        ['local.set', `$${sidx}`, ['i32.add', ['local.get', `$${sidx}`], ['i32.const', 1]]],
-        ['br', `$loop${loopId}`]]]
+    // (the walk sets its counter on each entry: this loop re-executes when the
+    // spread sits inside a JS loop, and a stale `sidx` would skip the copy)
+    return ['block', ...walk(sidx, ['local.get', `$${srcLenLocal}`],
+      [['f64.store', destAddr(['i32.add', ['local.get', `$${posLocal}`], ['local.get', `$${sidx}`]]), elem]])]
   }
   const advance = ['local.set', `$${posLocal}`,
     ['i32.add', ['local.get', `$${posLocal}`], ['local.get', `$${srcLenLocal}`]]]
@@ -475,18 +468,7 @@ function emitSpreadElementLoop(spreadExpr, bodyFn) {
   // stay clean.
   if (val) ctx.func.localValTypesOverlay.set(arr, val)
   ctx.func.localValTypesOverlay.set(idx, VAL.NUMBER)
-  const loopId = freshId(ctx)
-  const exhausted = ['i32.ge_u', ['local.get', `$${idx}`], ['local.get', `$${len}`]]
-  return [
-    ...stage,
-    ['local.set', `$${idx}`, ['i32.const', 0]],
-    ['block', `$break${loopId}`,
-      ['loop', `$continue${loopId}`,
-        ['br_if', `$break${loopId}`, exhausted],
-        ...bodyFn(arr, idx, len),
-        ['local.set', `$${idx}`, ['i32.add', ['local.get', `$${idx}`], ['i32.const', 1]]],
-        ['br', `$continue${loopId}`]]],
-  ]
+  return [...stage, ...walk(idx, ['local.get', `$${len}`], bodyFn(arr, idx, len))]
 }
 
 function emitAsValue(fn) {

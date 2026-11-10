@@ -8,7 +8,7 @@
  * @module array
  */
 
-import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, staticArrayPtr, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
+import { throwErrorIR, numberCarrierIR, numberNanIR, typed, asF64, asI64, asI32, keyIndex, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, staticArrayPtr, walk, arrayLoop, arrayValue, deferBigintBox, elemStore, throwTypeErrorIR, truthyIR, extractF64Bits, slotAddr, isLiteralStr, resolveValType, isGlobal, undefExpr, ptrTypeEq, boxedPtrTypeEq, isPureIR, freshId, isNullish, isUndef, toStrI64, fwdOffsetIR, cloneIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven, wholeKey } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValuePlanned, storedValueNarrow, positionArgs } from '../src/bridge.js'
 import { numericArrayExpr, numericArraysOn } from '../src/compile/numeric-arrays.js'
@@ -322,14 +322,9 @@ export default (ctx) => {
     const out = allocPtr({ type: PTR.ARRAY, len: nIR, cap: capIR, tag: 'newarr' })
     // The slots are holes: each reads undefined until written (the arena's
     // bytes read as 0; `a[0] ??= 7` on `new Array(1)` kept the 0).
-    const k = tempI32('hole'), id = freshId(ctx)
-    const holes = len == null ? [] : [
-      ['local.set', `$${k}`, ['i32.const', 0]],
-      ['block', `$hbrk${id}`, ['loop', `$hloop${id}`,
-        ['br_if', `$hbrk${id}`, ['i32.ge_s', ['local.get', `$${k}`], nIR]],
-        ['i64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${k}`], ['i32.const', 3]]], ['i64.const', TOMB_NAN]],
-        ['local.set', `$${k}`, ['i32.add', ['local.get', `$${k}`], ['i32.const', 1]]],
-        ['br', `$hloop${id}`]]]]
+    const k = tempI32('hole')
+    const holes = len == null ? [] : walk(k, nIR,
+      [['i64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.shl', ['local.get', `$${k}`], ['i32.const', 3]]], ['i64.const', TOMB_NAN]]])
     // `new Array(len)` (23.1.1.1): a Number argument is the length, and one
     // that is not an integer in [0, 2^32) throws a RangeError; a single
     // argument of any other kind is the array's one element. A length past
@@ -2795,7 +2790,6 @@ export default (ctx) => {
   function emitArraySortInPlace(setup, value, fn, dense = false) {
     const arrTmp = temp('sr'), base = tempI32('sb'), len = tempI32('sl'), m = tempI32('sm'), i = tempI32('si')
     const buf = tempI32('sbf'), tmp = tempI32('stp'), v = temp('sv'), present = dense ? null : tempI32('sn')
-    const id = freshId(ctx)
     const cmp = sortComparator(fn), byDefault = cmp == null ? null : cmp.callable ? false : tempI32('sdf')
     const keyed = byDefault !== false, shift = keyed ? 4 : 3
     const get = (n) => ['local.get', `$${n}`]
@@ -2836,28 +2830,21 @@ export default (ctx) => {
         ...scratch.take,
         ['local.set', `$${tmp}`, ['i32.add', get(buf), ['i32.shl', get(len), ['i32.const', shift]]]],
         // the elements out, undefined set aside
-        ['local.set', `$${m}`, ['i32.const', 0]], ['local.set', `$${i}`, ['i32.const', 0]],
+        ['local.set', `$${m}`, ['i32.const', 0]],
         ...(dense ? [] : [['local.set', `$${present}`, ['i32.const', 0]]]),
-        ['block', `$sortgd${id}`, ['loop', `$sortg${id}`,
-          ['br_if', `$sortgd${id}`, ['i32.ge_s', get(i), get(len)]],
+        ...walk(i, get(len), [
           ['local.set', `$${v}`, ['f64.load', slot(base, i)]],
           dense ? collect : ['if', ['i64.ne', ['i64.reinterpret_f64', get(v)], ['i64.const', TOMB_NAN]], ['then',
-            ['local.set', `$${present}`, ['i32.add', get(present), ['i32.const', 1]]], collect]],
-          ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
-          ['br', `$sortg${id}`]]],
+            ['local.set', `$${present}`, ['i32.add', get(present), ['i32.const', 1]]], collect]]]),
         mergeSortIR(buf, tmp, m, shift, after),
         // back into the array, as it stands now, undefined last
         ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', get(arrTmp)]]],
         durableArrSnapNode(base, ['i64.reinterpret_f64', get(arrTmp)]),
-        ['local.set', `$${i}`, ['i32.const', 0]],
-        ['block', `$sortwd${id}`, ['loop', `$sortw${id}`,
-          ['br_if', `$sortwd${id}`, ['i32.ge_s', get(i), get(len)]],
+        ...walk(i, get(len), [
           ['f64.store', slot(base, i), ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(m)],
             ['then', ['f64.load', keyed ? plus8(rec(i)) : rec(i)]],
             ['else', dense ? undefExpr() : ['if', ['result', 'f64'], ['i32.lt_s', get(i), get(present)],
-              ['then', undefExpr()], ['else', ['f64.const', `nan:${TOMB_NAN}`]]]]]],
-          ['local.set', `$${i}`, ['i32.add', get(i), ['i32.const', 1]]],
-          ['br', `$sortw${id}`]]],
+              ['then', undefExpr()], ['else', ['f64.const', `nan:${TOMB_NAN}`]]]]]]]),
         scratch.release]],
       get(arrTmp)
     ], 'f64')

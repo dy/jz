@@ -23,7 +23,7 @@
 
 import print from 'watr/print'
 import { T } from '../src/ast.js'
-import { typed, boxedPtrTypeEq, asF64, asI32Sat, asI64, asPtrOffset, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY, numberNanIR } from '../src/ir.js'
+import { typed, boxedPtrTypeEq, asF64, asI32Sat, asI64, asPtrOffset, toInt32, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, walk, toNumF64, toStrI64, MAX_CLOSURE_ARITY, numberNanIR } from '../src/ir.js'
 import { emit, argIR, storedValue, positionArgs, withIgnoredArgs, bool, method, deps, general, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, isPresentNumber } from '../src/kind.js'
 import { intExprRange } from '../src/static.js'
@@ -2430,19 +2430,15 @@ export default (ctx) => {
     // array, every spread expanded, then each converts in turn.
     if (codes.some(c => Array.isArray(c) && c[0] === '...')) {
       inc('__str_concat_raw', '__len', '__typed_idx')
-      const list = temp('cl'), out = temp('cls'), n = tempI32('cln'), i = tempI32('cli'), id = ctx.func.uniq++
+      const list = temp('cl'), out = temp('cls'), n = tempI32('cln'), i = tempI32('cli')
       const at = typed(['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${list}`]], ['local.get', `$${i}`]], 'f64')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${list}`, asF64(emit(['[', ...codes]))],
         ['local.set', `$${n}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${list}`]]]],
         ['local.set', `$${out}`, asF64(emit(['str', '']))],
-        ['local.set', `$${i}`, ['i32.const', 0]],
-        ['block', `$cld${id}`, ['loop', `$cll${id}`,
-          ['br_if', `$cld${id}`, ['i32.ge_u', ['local.get', `$${i}`], ['local.get', `$${n}`]]],
+        ...walk(i, ['local.get', `$${n}`], [
           ['local.set', `$${out}`, ['call', '$__str_concat_raw', ['i64.reinterpret_f64', ['local.get', `$${out}`]],
-            ['i64.reinterpret_f64', ['call', `$${make}`, unit(toNumF64(null, at))]]]],
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', `$cll${id}`]]],
+            ['i64.reinterpret_f64', ['call', `$${make}`, unit(toNumF64(null, at))]]]]]),
         ['local.get', `$${out}`]], 'f64')
     }
     const one = (node, ir) => ['call', `$${make}`, unit(toNumF64(node, ir))]

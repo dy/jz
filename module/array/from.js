@@ -9,7 +9,7 @@
  *
  * @module array/from
  */
-import { typed, asF64, asI64, temp, tempI32, allocPtr, elemStore, resolveValType, ptrTypeEq, freshId, throwTypeErrorIR, cloneIR } from '../../src/ir.js'
+import { typed, asF64, asI64, temp, tempI32, allocPtr, walk, elemStore, resolveValType, ptrTypeEq, freshId, throwTypeErrorIR, cloneIR } from '../../src/ir.js'
 import { emit } from '../../src/bridge.js'
 import { valTypeOf } from '../../src/kind.js'
 import { staticPropertyKey } from '../../src/static.js'
@@ -167,20 +167,15 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
     const srcIR = asF64(emit(src))
     const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }], null, thisArg)
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'aff' })
-    const id = freshId(ctx)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, srcIR],
       ...callbackSetup(cb),
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
       ...(sourceVt === VAL.TYPED ? [['call', '$__dense_check', ['local.get', `$${len}`]]] : []),
       out.init,
-      ['local.set', `$${i}`, ['i32.const', 0]],
-      ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+      ...walk(i, ['local.get', `$${len}`], [
         ['local.set', `$${item}`, ['call', `$${read}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
-        elemStore(out.local, i, asF64(cb.stored([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)]))),
-        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-        ['br', `$loop${id}`]]],
+        elemStore(out.local, i, asF64(cb.stored([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)])))]),
       out.ptr], 'f64')
   }
 
@@ -219,7 +214,6 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
       ['then', ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
       ['else', objectIndex]]]], 'f64')
   const item = cb ? cb.stored([indexed, idxArg(cb, i)]) : indexed
-  const id = freshId(ctx)
   ctx.runtime.throws = true
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${s}`, srcIR],
@@ -239,11 +233,6 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
       ['then', ['drop', throwTypeErrorIR()]]],
     ...toLengthIR(rawLen, num, len),
     out.init,
-    ['local.set', `$${i}`, ['i32.const', 0]],
-    ['block', `$brk${id}`, ['loop', `$loop${id}`,
-      ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], lenIR]],
-      elemStore(out.local, i, asF64(item)),
-      ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-      ['br', `$loop${id}`]]],
+    ...walk(i, lenIR, [elemStore(out.local, i, asF64(item))]),
     out.ptr], 'f64')
 }

@@ -42,6 +42,6 @@ export { keyIndex, int32Bits, asF64, asI32, asI32Sat, asPtrOffset, asParamType, 
 export { bigintStrict, bigintEraseErr, boxBigInt, rawBigInt, deferBigintBox, materializeDeferredBigint, unboxBigInt, applyBigintRepresentationAction, applyBindingWriteAction, maybeUnboxBigInt, isBigIntBox, isSchemaSlotBigintPossible, isPlanTaggedBigint, isPlanRawBigint, isTaggedElemRead, readI64MayUnbox, readI64 } from './ir/bigint.js'
 export { flatSlotOf, flatSlotRaw } from './compile/flat-slots.js'
 export { usesDynProps, needsDynShadow, isBoundName, isGlobal, isConst, boxedAddr, dollar, clearDollar, readVar, writeVar, bindingCarrierIR, capturedCellSave, cellSnap } from './ir/vars.js'
-export { slotAddr, elemLoad, elemStore, arrayLoop, allocPtr, staticArrayPtr, arrayValue } from './ir/arrays.js'
+export { slotAddr, elemLoad, elemStore, walk, arrayLoop, allocPtr, staticArrayPtr, arrayValue } from './ir/arrays.js'
 export { NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, NULL_WAT, UNDEF_WAT, FALSE_IR, TRUE_IR, nullExpr, undefExpr, boolBoxIR, nullableBoolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, isNullish, isUndef, isNull, materializeErrorIR, throwErrorIR, throwTypeErrorIR, isBoolAtom, valueTruthyIR, truthyIR, numberNanIR, canonicalNumberIR, numberCarrierIR } from './ir/sentinels.js'
 export { cloneIR, coerceNullishToNum, coerceAtomsToNum, mayYieldUndef, mayYieldUndefOf, missToNaN, objectToPrimitive, storedElement, toNumF64, TO_PRIMITIVE, toStrI64 } from './ir/coerce.js'
