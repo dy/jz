@@ -2,7 +2,7 @@
 // A timeout or cancellation kills the process group, including nested builders.
 import { spawn } from 'node:child_process'
 import { openSync, closeSync, readSync, fstatSync, mkdtempSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, availableParallelism, cpus, totalmem } from 'node:os'
 import { join } from 'node:path'
 
 export function positiveInteger(value, name) {
@@ -11,8 +11,34 @@ export function positiveInteger(value, name) {
   return n
 }
 
+// Cores at work over a fifth of a second. The load average is no measure of it:
+// for a minute after a run ends it still counts that run, and the next would
+// start narrow.
+function busyCores(ms = 200) {
+  const times = () => cpus().map(c => c.times)
+  const before = times()
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  return times().reduce((busy, t, i) => {
+    let total = 0
+    for (const k in t) total += t[k] - before[i][k]
+    return total > 0 ? busy + 1 - (t.idle - before[i].idle) / total : busy
+  }, 0)
+}
+
+// The processes one suite run spreads its files over: an explicit count, or the
+// cores idle now. One core stays free and the cores other work holds stay with
+// it, so two runs started together share the machine; a process to every 2 GiB.
+export function suiteJobs(requested, count = Infinity, cores = availableParallelism(), busy, memory = totalmem()) {
+  const jobs = requested != null ? positiveInteger(requested, 'jobs')
+    : Math.min(cores - 1 - Math.round(busy ?? busyCores()), Math.floor(memory / (2 * 1024 ** 3)))
+  return Math.max(1, Math.min(jobs, count))
+}
+
+// Tasks run one at a time unless the caller counts the jobs: a suite leg spends
+// JZ_TEST_JOBS itself, on runs of its own files (test/index.js). The count is taken
+// once, here, and handed to every task.
 export async function runTasks(tasks, {
-  jobs = positiveInteger(process.env.JZ_TEST_JOBS || 1, 'JZ_TEST_JOBS'),
+  jobs = 1,
   timeout = positiveInteger(process.env.JZ_TEST_TIMEOUT || 3_600_000, 'JZ_TEST_TIMEOUT'),
   logDir = mkdtempSync(join(tmpdir(), 'jz-tests-')),
   cwd = process.cwd(),
@@ -35,11 +61,12 @@ export async function runTasks(tasks, {
     for (const stop of active.values()) stop()
   }
   process.on('SIGINT', cancel); process.on('SIGTERM', cancel)
+  const budget = process.env.JZ_TEST_JOBS || String(suiteJobs())
   console.log(`test logs: ${logDir} (jobs=${jobs})`)
   const run = task => new Promise(resolve => {
     const started = performance.now(), path = join(logDir, `${task.name}.log`)
     const fd = openSync(path, 'w')
-    const env = { ...process.env, TST_FORMAT: 'tap', ...task.env }
+    const env = { ...process.env, JZ_TEST_JOBS: budget, TST_FORMAT: 'tap', ...task.env }
     for (const k of Object.keys(env)) if (env[k] == null) delete env[k]
     let p
     try {

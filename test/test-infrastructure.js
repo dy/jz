@@ -4,11 +4,11 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
-import { suiteArgs, suiteOf, SUITES } from './_suites.js'
-import { testJobs } from './_jobs.js'
+import { suiteArgs, suiteOf, splits, SUITES } from './_suites.js'
+import { testJobs, shards } from './_jobs.js'
 import { sharedKernel, kernelHash } from './_shared-kernel.js'
 import { collector } from './_gc.js'
-import { runTasks, matrixTasks, invariantTask, extendedTasks, legEnv } from '../scripts/test-tasks.mjs'
+import { runTasks, suiteJobs, matrixTasks, invariantTask, extendedTasks, legEnv } from '../scripts/test-tasks.mjs'
 
 const root = join(import.meta.dirname, '..')
 const clean = env => Object.fromEntries(Object.entries({ ...process.env, ...legEnv(env) }).filter(([, v]) => v != null))
@@ -32,9 +32,10 @@ test('test suites: every file has exactly one owner, and listing compiles nothin
 })
 
 test('test suites: explicit files and full sweeps remain available; invalid options fail', () => {
-  is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'] })
+  is(suiteArgs(['test/dyn-keys.js', '--list']), { suite: 'core', list: true, files: ['dyn-keys'], jobs: undefined })
+  is(suiteArgs(['--jobs=4']).jobs, 4)
   is(suiteArgs([], true).suite, 'all')
-  for (const args of [['--suite=nope'], ['--suite=core', '--suite=all'], ['--unknown'], ['math', 'math.js']]) throws(() => suiteArgs(args))
+  for (const args of [['--suite=nope'], ['--suite=core', '--suite=all'], ['--unknown'], ['math', 'math.js'], ['--jobs=0'], ['--jobs='], ['--jobs=2', '--jobs=3']]) throws(() => suiteArgs(args))
   const source = `import { ownedLevels } from './test/_matrix.js'; console.log(JSON.stringify(ownedLevels(0, 2, 'speed', 'size')))`
   const values = env => {
     const r = spawnSync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env: clean(env), encoding: 'utf8', timeout: 30000 })
@@ -61,6 +62,34 @@ test('test workers: automatic count is bounded by memory and CPUs, explicit valu
   is(testJobs('4', 2), 2)
   is(testJobs(undefined, 0), 1)
   for (const v of ['', '0', '-1', '1.5', 'NaN', 'Infinity']) throws(() => testJobs(v, 100))
+})
+
+test('suite processes: the idle cores, contiguous runs of near-equal weight, only where files share nothing', () => {
+  const gib = 1024 ** 3
+  is(suiteJobs(undefined, 100, 14, 3.4, 36 * gib), 10, 'a core stays free, busy cores stay with their work')
+  is(suiteJobs(undefined, 100, 14, 20, 36 * gib), 1, 'a busy machine gets one process')
+  const measured = suiteJobs(undefined, 1000)
+  ok(Number.isInteger(measured) && measured >= 1 && measured <= 1000, 'the busy cores are measured when not given')
+  is(suiteJobs(undefined, 100, 64, 0, 8 * gib), 4, 'a process to every 2 GiB')
+  is(suiteJobs(undefined, 3, 64, 0, 64 * gib), 3, 'never more processes than files')
+  is(suiteJobs('6', 100, 2, 9, gib), 6, 'an explicit count is honored')
+  for (const v of ['', '0', '1.5']) throws(() => suiteJobs(v, 100))
+  const weight = { a: 5, b: 1, c: 1, d: 1, e: 4 }, files = Object.keys(weight)
+  is(shards(files, f => weight[f], 3), [['a'], ['b', 'c', 'd'], ['e']])
+  is(shards(['a', 'b'], f => weight[f], 8), [['a'], ['b']], 'more runs asked than files')
+  is(shards([], f => weight[f], 3), [])
+  // every file in exactly one run, in order, whatever the count and the weights
+  for (const w of [f => weight[f], () => 0, f => f === 'e' ? 99 : 1]) for (let n = 1; n <= 7; n++) {
+    const runs = shards(files, w, n)
+    is(runs.flat(), files)
+    ok(runs.length <= n && runs.every(r => r.length))
+  }
+  is(['core', 'generated', 'integration', 'bootstrap', 'all'].map(splits), [true, true, false, false, false])
+  // --jobs is refused where a run cannot split; an empty JZ_TEST_JOBS is unset
+  const listed = (args, env) => spawnSync(process.execPath, ['test/index.js', '--list', ...args], { cwd: root, env: clean(env), encoding: 'utf8', timeout: 30000 })
+  is(listed(['--jobs=2']).status, 0)
+  is(listed(['--jobs=2'], { JZ_TEST_JOBS: '' }).stdout, listed([]).stdout)
+  for (const args of [['--jobs=2', 'math'], ['--jobs=2', '--suite=integration'], ['--jobs=2', '--suite=all']]) ok(listed(args).status !== 0, args.join(' '))
 })
 
 test('test reporter: BigInt failures preserve later failures and the final result', () => {
@@ -262,6 +291,21 @@ test('test tasks: bounded concurrency, logs, and nonzero/spawn/timeout failures'
     }
     is(active, 0); is(peak, 2)
     ok(readFileSync(results[0].log, 'utf8').includes('job 0'))
+    // The count is taken once a command and handed to every task: unset, both
+    // tasks read one number; set, they read it; a task's own value wins.
+    const told = async (jobs, env) => {
+      const prev = process.env.JZ_TEST_JOBS
+      if (jobs == null) delete process.env.JZ_TEST_JOBS; else process.env.JZ_TEST_JOBS = jobs
+      try {
+        const print = ['-e', 'console.log("jobs=" + process.env.JZ_TEST_JOBS)']
+        const rs = await runTasks([{ name: 'told-a', args: print }, { name: 'told-b', args: print, env }], { logDir: dir })
+        return rs.map(r => readFileSync(r.log, 'utf8').match(/jobs=(.*)/)[1])
+      } finally { if (prev == null) delete process.env.JZ_TEST_JOBS; else process.env.JZ_TEST_JOBS = prev }
+    }
+    const [a, b] = await told()
+    ok(/^[1-9]\d*$/.test(a) && a === b, `unset: one count for both tasks (${a}, ${b})`)
+    is(await told('3'), ['3', '3'])
+    is(await told('3', { JZ_TEST_JOBS: '1' }), ['3', '1'])
     const failed = await runTasks([
       { name: 'exit', args: ['-e', 'process.exit(7)'] },
       { name: 'spawn', command: join(dir, 'absent'), args: [] },

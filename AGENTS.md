@@ -63,10 +63,14 @@ What this implies for HOW we optimize:
 ## Verify before claiming done
 
 - `npm test` — core suite (in-process compiler), without hidden bootstrap builds
-  or generated population sweeps. Run it before reporting any change. Focus with
-  `npm test -- dyn-keys strings`; inspect ownership with `node test/index.js --suite=all --list`.
-- `npm run test:matrix` — core opt0/opt2/opt3/wasi matrix. Jobs default to one;
-  `JZ_TEST_JOBS=N` opts into concurrency. Do not launch overlapping batteries.
+  or generated population sweeps. Run it before reporting any change. It splits the
+  files over the idle cores, each process a contiguous run of them (`test/index.js`);
+  `JZ_TEST_JOBS=N` or `--jobs=N` sets the count. `JZ_TEST_JOBS=1` is the one-process
+  run, kept by CI's default leg, where the state a file leaves behind meets every
+  later file. Focus with `npm test -- dyn-keys strings` (named files run in one
+  process); inspect ownership with `node test/index.js --suite=all --list`.
+- `npm run test:matrix` — core opt0/opt2/opt3/wasi matrix, a leg at a time, each
+  split the same way. Do not launch overlapping batteries.
 - `npm run test:extended` — integration matrix plus generated correctness/WAT/
   codegen populations on native and WASI. These checks moved out of core, not out
   of CI. `test:integration` / `test:generated` run just the current leg.

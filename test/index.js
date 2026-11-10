@@ -296,8 +296,16 @@ const TESTS = [
   'examples',
 ]
 
-import { suiteArgs, suiteOf } from './_suites.js'
-const { suite, list, files: argFilters } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
+import { statSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { suiteArgs, suiteOf, splits } from './_suites.js'
+import { shards } from './_jobs.js'
+import { runTasks, suiteJobs } from '../scripts/test-tasks.mjs'
+const { suite, list, files: argFilters, jobs: jobsArg } = suiteArgs(process.argv.slice(2), process.env.JZ_TEST_TARGET === 'jz.wasm')
+// A whole core or generated run may be split over processes; named files and a
+// suite whose files share artifacts run in this one (test/_suites.js).
+const splittable = !argFilters.length && splits(suite)
+if (jobsArg != null && !splittable) throw new Error('--jobs splits a whole core or generated run; named files and the other suites run in one process')
 
 // Files that are wholly host-bridge / host-runtime: their compile inputs depend
 // on host options (imports/host globals, external js objects, CLI argv, host
@@ -415,6 +423,29 @@ if (argFilters.length && selected.length !== argFilters.length) {
 
 // Listing is side-effect free: do not load the compiler or any test fixtures.
 if (list) { console.log(selected.join('\n')); process.exit(0) }
+
+// A splittable run spreads over the idle cores (scripts/test-tasks.mjs), or the count
+// --jobs or JZ_TEST_JOBS names: each process takes a contiguous run of files,
+// named to it, and runs them as below.
+const jobs = splittable ? suiteJobs(jobsArg ?? (process.env.JZ_TEST_JOBS || undefined), selected.length) : 1
+if (jobs > 1) {
+  // A file's size stands in for its time, unknown before it runs. Three runs to a
+  // process, the heaviest started first, so the light ones level the finish.
+  const size = name => statSync(new URL(`./${name}.js`, import.meta.url)).size
+  const runs = shards(selected, size, jobs * 3).map(files => ({ files, size: files.reduce((sum, f) => sum + size(f), 0) })).sort((a, b) => b.size - a.size)
+  const results = await runTasks(runs.map(({ files }) => ({
+    name: `${suite}-${files[0]}`, args: [fileURLToPath(import.meta.url), ...files], env: { JZ_TEST_JOBS: '1' },
+  })), { jobs })
+  // The totals are each run's last summary: a test may print a nested run's own.
+  const totals = {}
+  for (const r of results) {
+    const last = {}
+    if (r.log) for (const [, key, n] of readFileSync(r.log, 'utf8').matchAll(/^# (\w+) (\d+)$/gm)) last[key] = Number(n)
+    for (const key in last) totals[key] = (totals[key] || 0) + last[key]
+  }
+  console.log(Object.entries(totals).map(([key, n]) => `# ${key} ${n}`).join('\n'))
+  process.exit(results.some(r => r.code) ? 1 : 0)
+}
 
 // JZ_TEST_TARGET=jz.wasm — run the whole suite against the self-compiled jz.wasm
 // kernel instead of the in-process compiler. Set the target BEFORE importing any

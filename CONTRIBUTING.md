@@ -6065,9 +6065,10 @@ Tests use [tst](https://github.com/dy/tst). Choose the owner of the work you nee
 
 | Command | Work |
 | --- | --- |
-| `npm test` | Core semantic/structural regressions, one process; **no bootstrap or generated population sweeps** |
-| `npm test -- strings dyn-keys` | Named files, regardless of owner; keeps completed-test GC and warm compile-state checks |
-| `npm run test:matrix` | Core default/O0/O3/WASI legs |
+| `npm test` | Core semantic/structural regressions, split over the idle cores; **no bootstrap or generated population sweeps** |
+| `JZ_TEST_JOBS=1 npm test` | The same in one process: the state a file leaves behind meets every later file (CI's default leg) |
+| `npm test -- strings dyn-keys` | Named files, regardless of owner, in one process; keeps completed-test GC and warm compile-state checks |
+| `npm run test:matrix` | Core default/O0/O3/WASI legs, one at a time |
 | `npm run test:integration` | Libraries, tools, examples, site/package smoke for the current leg |
 | `npm run test:generated` | Fuzz correctness, WAT populations, deterministic codegen ratchet for the current leg |
 | `npm run test:extended` | Integration matrix plus native/WASI generated owners |
@@ -6085,8 +6086,14 @@ checks that the union is complete. CI runs the core and integration on all four
 legs, generated checks on native/WASI, and bootstrap in its own workflow.
 No seeds, oracle comparisons, or optimization profiles are removed.
 
-Matrix/extended/battery subprocesses default to **one job**. Set `JZ_TEST_JOBS=2`
-(or battery `--jobs=2`) deliberately; do not start several batteries on one
+A whole core or generated run splits its files over processes (`test/index.js`):
+as many as the cores idle when the command starts, less one, a process to every 2 GiB
+(a matrix takes the count once, for all its legs);
+`JZ_TEST_JOBS=N` (or `--jobs=N`, battery `--jobs=N`) sets the count. Each process
+takes a contiguous run of the file list, so neighbours still share one compiler.
+Integration and bootstrap files build what a later file reads and stay in one
+process, in order. Matrix, extended and battery legs run one at a time, each
+spending the jobs on its own files; do not start several batteries on one
 machine. Logs go to printed temporary-directory paths, not parent-process
 strings. `JZ_TEST_TIMEOUT` bounds an ordinary task in milliseconds (default one
 hour); bootstrap has a four-hour task budget and always runs alone in the battery.

@@ -46,7 +46,11 @@ jobs:
         run: npm run lint:imports && npm run audit:files
       - name: test (${{ matrix.variant }})
         run: |
+          # The default leg keeps the whole suite in one process: compiler state a
+          # file leaves behind meets every later file's compiles. The other legs
+          # split it over the runner's cores (test/index.js).
           case "${{ matrix.variant }}" in
+            default) export JZ_TEST_JOBS=1 ;;
             opt0) export JZ_TEST_OPTIMIZE=0 ;;
             opt3) export JZ_TEST_OPTIMIZE=3 ;;
             wasi) export JZ_TEST_HOST=wasi ;;

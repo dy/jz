@@ -5,14 +5,14 @@
 import { runTasks, matrixTasks, invariantTask, extendedTasks, legEnv, positiveInteger } from './test-tasks.mjs'
 
 const args = process.argv.slice(2)
-let fast = false, list = false, jobs = process.env.JZ_TEST_JOBS || 1
+let fast = false, list = false
 for (const arg of args) {
   if (arg === 'fast') fast = true
   else if (arg === '--list') list = true
-  else if (arg.startsWith('--jobs=')) jobs = arg.slice(7)
+  // the processes each suite leg spreads its files over; the legs run in turn
+  else if (arg.startsWith('--jobs=')) process.env.JZ_TEST_JOBS = String(positiveInteger(arg.slice(7), 'jobs'))
   else throw new Error(`Unknown battery argument '${arg}'; use [fast] [--jobs=N] [--list]`)
 }
-jobs = positiveInteger(jobs, 'jobs')
 const tasks = [...matrixTasks(), invariantTask()]
 if (!fast) tasks.push(...extendedTasks(), invariantTask('integration'),
   { name: 'fuzz-extended', args: ['test/fuzz.js'], env: legEnv({ JZ_DEBUG_INVARIANTS: '1' }) },
@@ -23,9 +23,9 @@ if (list) {
   for (const t of [...tasks, ...(!fast ? [bootstrap] : [])]) console.log(`${t.name}: node ${t.args.join(' ')}`)
 } else {
   const start = performance.now()
-  const results = await runTasks(tasks, { jobs })
+  const results = await runTasks(tasks)
   // A failing native run is not a reason to start hours of self-hosted work.
-  if (!fast && results.every(r => r.code === 0)) results.push(...await runTasks([bootstrap], { jobs: 1 }))
+  if (!fast && results.every(r => r.code === 0)) results.push(...await runTasks([bootstrap]))
   const failures = results.filter(r => r.code !== 0)
   console.log(`BATTERY ${failures.length ? 'RED: ' + failures.map(r => r.name).join(', ') : 'GREEN'} (${((performance.now() - start) / 60000).toFixed(1)} min)`)
   process.exitCode = failures.length ? 1 : 0
