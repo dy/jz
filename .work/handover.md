@@ -113,6 +113,26 @@ From the decode session (its notes are `.work/decode.md`):
 - The QOA store opening, G12 showing in the plan but not in the wasm types, and
   decode-tta's grade are written up in `.work/decode.md`, "Handed over".
 
+## Local batch branches, tips before deletion
+
+Deleted after the landing; their content is in main by cherry-pick (checked by added
+lines, see the table above). A tip can be restored while its objects are still in the
+clone: `git branch <name> <sha>`.
+
+```
+96fb4fab9 intel
+1a62d762d o3
+54b5e6e1f mem
+e2f0c0155 minmax
+611fbe762 three
+2d12f13af colors
+62fc1e8ee batch32
+```
+
+Left in place: the scratch worktree `/private/tmp/jzw/dbg-wt` (a169cb673) with three
+modified files, reported as debug toggles and edits already in main. The git guard
+blocked discarding them while another session was open; the owner decides.
+
 ## Remote probe branches, tips before deletion
 
 The owner approved deleting the probe branches that have no use (2026-11-09). Checked:
