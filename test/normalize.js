@@ -68,6 +68,23 @@ test('normalize: a leading break is the test; a negation goes where neither side
     show(['for', null, ['<', 'i', lit(8)], ['++', 'i'], [';', 'x']]), 'for (;;)')
 })
 
+test('normalize: an integer counted up by one toward a constant tests `i < B`', () => {
+  const t = (init, c, step = ['++', 'i'], body = [';', 'x'], valueOf = x => x === 'N' ? 8 : null) =>
+    show(norm(['{}', [';', ['for', init, c, step, body]]], valueOf)[1][1][2])
+  const from = (v) => ['let', ['=', 'i', lit(v)]]
+  is(t(from(0), ['<=', 'i', ['-', 'N', lit(1)]]), show(['<', 'i', lit(8)]), 'i <= N - 1: an integer below the bound one up')
+  is(t(from(0), ['<=', 'i', lit(2.5)]), show(['<', 'i', lit(3)]), 'i <= 2.5: below the next integer')
+  is(t(from(-3), ['!==', 'i', 'N']), show(['<', 'i', 'N']), 'i !== N from below')
+  for (const [why, init, c, step, body] of [
+    ['a start past the bound never meets it', from(9), ['!==', 'i', 'N']],
+    ['a fractional bound is never met', from(0), ['!==', 'i', lit(4.5)]],
+    ['a fractional start', from(0.5), ['<=', 'i', 'N']],
+    ['a step of two', from(0), ['!==', 'i', 'N'], ['+=', 'i', lit(2)]],
+    ['a body that writes the counter', from(0), ['!==', 'i', 'N'], ['++', 'i'], [';', ['=', 'i', lit(3)]]],
+    ['a bound no constant holds', from(0), ['<=', 'i', 'n']],
+  ]) is(t(init, c, step, body), show(c), why)
+})
+
 test('normalize: a do-while whose test holds on entry is a while', () => {
   const lowered = (c, body, F = '\uE002do0') => [['let', ['=', F, lit(true)]], ['while', ['||', F, c], ['{}', [';', ['=', F, lit(false)], body]]]]
   const guarded = norm(fn(['if', ['<', 'i', 'n'], [';', ...lowered(['<', 'i', 'n'], [';', 'x', ['++', 'i']])]]))
@@ -110,6 +127,13 @@ const CASES = [
   ['export let f = (n) => { let s = "1"; for (let i = 0; i < n; i++) s += 1; let t = 0; for (let k = "0"; k < n; k = k + 1) t++; return s + t }', [3]],
   ['const N = 6\nlet g = 0\nfor (let k = 0; N > k; k += 1) g += k\nexport let f = (n) => g + n', [1]],
   ['export let f = (n) => { let s = 0; out: for (let j = 0; j < 3; j++) { let i = 0; while (true) { if (i > n) break out; if (i >= 4) break; s += i * 10 + j; i = i + 1 } } return s }', [2, 9]],
+  // an integer counter toward a constant: `<=` a step below it, `!==` met from below, and the edges no rewrite takes
+  ['const N = 7\nexport let f = (n) => { let s = 0; for (let i = 0; i <= N - 1; i++) s += i; return s * 10 + n }', [0, 2]],
+  ['export let f = (n) => { let s = 0; for (let i = -3; i <= 2.5; i++) s += i; return s + n }', [0]],
+  ['export let f = (n) => { let s = 0; for (let i = -3; i !== 4; i = 1 + i) s += i * i; return s + n }', [0]],
+  ['const N = 5\nexport let f = (n) => { let s = 0; for (let i = 7; i !== N; i++) { s++; if (s > 20) break } return s + n }', [0]],
+  ['export let f = (n) => { let s = 0; for (let i = 0; i !== 4.5; i++) { s++; if (s > 9) break } return s + n }', [0]],
+  ['export let f = (n) => { let s = 0; for (let i = 0; i !== 6; i++) { s += i; if (i === 2) i = 9; if (s > 40) break } return s + n }', [0]],
 ]
 
 test('normalize: each rewrite answers what Node does', () => {

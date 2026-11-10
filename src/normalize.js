@@ -19,6 +19,9 @@
  *     two conversions cannot be seen.
  *   - `while (true) { if (c) break; B }` is `while (!c) B`, `for (;;)` alike.
  *   - `!(a >= b)` is `a < b` where neither side can be NaN (`3 >= NaN` is false).
+ *   - A `for` counting an integer up by one, declared by the loop from an integer
+ *     literal, tested against a constant B: `i <= B` is `i < floor(B) + 1`, and
+ *     `i !== B` is `i < B` where B is an integer at or above the start.
  *   - A do-while, which prepare lowered to `let F = true; while (F || c) {
  *     F = false; B }`, is `while (c) B` where its test holds on entry: as the
  *     whole of `if (c)`, the same test, or over the literals the statement
@@ -171,11 +174,26 @@ export function normalize(node, isNumber, valueOf = () => null) {
     list.splice(1, 1)
     return s[1]
   }
+  /** A `for` counting an integer up by one toward a constant: its test as `i < B`.
+   *  The counter is declared by the loop from an integer literal and written by
+   *  its step alone, so it is an integer: `i <= B` is `i < floor(B) + 1`, and
+   *  `i !== B` stops where `i < B` does where B is an integer at or above the start. */
+  const counted = (n) => {
+    const [, init, c, s, body] = n
+    if (!isArr(c) || c.length !== 3 || typeof c[1] !== 'string' || !(c[0] === '<=' || c[0] === '!==' || c[0] === '!=')) return
+    const i = c[1], d = isArr(init) && init[0] === 'let' ? init.slice(1).find(d => isArr(d) && d[0] === '=' && d[1] === i) : null
+    const start = d ? num(d[2]) : null, B = constNumExpr(c[2], valueOf)
+    if (!Number.isInteger(start) || B == null || !Number.isFinite(B) || Math.abs(B) >= 2 ** 52 ||
+        !isArr(s) || s[0] !== '++' || s[1] !== i || isReassigned(body, i) || isReassigned(c[2], i) ||
+        init.some(e => isArr(e) && e[0] === '=' && e[1] !== i && mentions(e[2], i))) return
+    if (c[0] === '<=') n[2] = noted(c, ['<', i, [null, Math.floor(B) + 1]])
+    else if (Number.isInteger(B) && start <= B) n[2] = noted(c, ['<', i, c[2]])
+  }
   const loop = (n) => {
     const [at, body] = n[0] === 'for' ? [2, 4] : [1, 2]
     if (n[at] == null || truth(n[at]) === true) { const c = leadingBreak(n[body]); if (c) n[at] = not(c) }
     if (n[at] != null) n[at] = test(n[at])
-    if (n[0] === 'for') { visit(n[1]); n[3] = steps(n[3]) }
+    if (n[0] === 'for') { visit(n[1]); n[3] = steps(n[3]); counted(n) }
     visit(n[at])
     n[body] = step(n[body])
     visit(n[body])
