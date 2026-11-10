@@ -468,3 +468,74 @@ because the program itself reads the decoded record's `channelData` (the bench's
 bundled decoder exporting `decodeQoa` types the store, the same code with `export const main =
 (b) => decodeQoa(b).channelData.length` does not, at every level, where one returning the record
 whole or its `sampleRate` does. Next: why a read of the field leaves the element kind of the array `frame` makes open.
+
+## Handed over (2026-11-09, at main 508428d82, none fixed)
+
+### QOA's store: frame's own array read through a field of a union with a module record
+
+The `decode` method returns `EMPTY` (a module-level frozen record) or `{ channelData: out.length
+=== 1 ? out[0] : out[0].map(…), sampleRate }`, where `out[0]` is the very array `frame` stores
+into. Written `out[0].map((_, c) => join(out.map((o) => o[c])))` always, frame's array never
+reaching the field, the store is typed with the program reading `.channelData`; without the
+`return EMPTY` arms it is typed too. The opening needs both: frame's own array in the field, and a
+module-level record at the read. The smallest pair (`deopt-dyn-write` at `frame:3`, levels 0, 2
+and speed):
+
+```js
+function frame(n) {
+  const channelData = Array.from({ length: 2 }, () => new Float32Array(n))
+  for (let c = 0; c < 2; c++) { const out = channelData[c]; for (let i = 0; i < n; i++) out[i] = i / n }
+  return channelData
+}
+const EMPTY = { channelData: [] }
+const decode = (n) => n ? { channelData: frame(n) } : EMPTY
+export const main = (n) => decode(n).channelData
+```
+
+Typed at speed, each from that one change: the record written in place (`n ? { channelData:
+frame(n) } : { channelData: [] }`, no `EMPTY`), the conditional inside the field (`({ channelData:
+n ? frame(n) : [] })`), the record returned whole (`main = (n) => decode(n)`), only
+`.channelData.length` read. The last differs from the decoder, where `.channelData.length` keeps
+the store dynamic (above): the pair does not hold every path the decoder has. From the repo root,
+the source in `h.js`:
+
+```sh
+node -e "import('./test/util.js').then(({ compile }) => { const w = []; compile(require('fs').readFileSync(process.argv[1], 'utf8'), { optimize: 'speed', warnings: (x) => w.push(x) }); console.log(w.filter((x) => x.code === 'deopt-dyn-write').map((x) => x.fn + ':' + x.line).join(' ') || 'typed') })" h.js
+```
+
+### G12 in the plan, not in the wasm types (not finished)
+
+A pcm16 nest shaped like AIFF's `decodePCM_BE`, at O2:
+
+```js
+function pcm(b, p, channels, frames, nCh) {
+  for (let i = 0; i < frames; i++)
+    for (let c = 0; c < nCh; c++) { let v = (b[p] << 8) | b[p + 1]; p += 2; channels[c][i] = (v > 32767 ? v - 65536 : v) / 32768 }
+}
+export function g(src, ch) {
+  const b = src instanceof Uint8Array ? src : src instanceof ArrayBuffer ? new Uint8Array(src) : src
+  const nCh = ch >>> 0, off = ((b[0] << 8) | b[1]) + 2
+  const frames = Math.floor((b.length - off) / (2 * nCh))
+  if (!(frames > 0)) return 0
+  const channels = Array.from({ length: nCh }, () => new Float32Array(frames))
+  pcm(b, off, channels, frames, nCh)
+  let s = 0
+  for (let c = 0; c < nCh; c++) s += channels[c][frames - 1]
+  return s
+}
+```
+
+After 414ad53dc the frame loop's integral copy enters `p` as a cursor word (`p′ = 0; p′ = p | 0`)
+and lands it `p′ = clc′ + 2·(clt′ | 0)`; at be07fd142 it read `p′ = p` and landed `clc′ + 2·clt′`.
+The WAT locals of `p`'s copies are f64 in both builds on this kernel (`pcm` spliced into `g`). Not
+checked: the published AIFF kernel's WAT (`decodePCM_BE` as published, called with a literal
+offset and a header's), so where the measured gain (3.26 → 2.36 ms) sits in the wasm is not shown.
+414ad53dc has no structural pin.
+
+### decode-tta's grade
+
+test/bench.js grades decode-tta `near` (within 10%) from the paired rounds of 2026-11-06 (jz/V8
+1.07), and bench/claims.mjs names it in `CLAIM_UNMET`. After G10 the bench case takes 0.878× its
+time at aecdba61f (paired, the speed tier, M4 Max); were V8 and the cases between the two the same,
+about 0.94 of V8, an estimate and not a measurement. The grade may tighten and the entry may leave
+`CLAIM_UNMET`; both need a reference run. Nothing changed.
