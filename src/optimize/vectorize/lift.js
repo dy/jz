@@ -924,10 +924,13 @@ export function liftExprV(expr, ctx) {
   // f64 lane only (the *2/_v helpers are f64x2). SIMD_PINNED keeps the scalar target alive
   // through watr's single-caller inlining so the `call` node still exists at lift time.
   // `$__to_num` is a numeric coercion jz wraps around a helper param it couldn't prove is f64
-  // (e.g. `decode(src[j])`), boxing it via `i64.reinterpret_f64` first. In the lane every value
-  // is already a genuine finite f64, so `__to_num(reinterpret_i64(x)) == x` — lift straight
-  // through, peeling the box round-trip.
-  if (op === 'call' && expr[1] === '$__to_num' && expr.length === 3) {
+  // (e.g. `decode(src[j])`), boxing it via `i64.reinterpret_f64` first. Inside a pure helper
+  // inlined below (inlineDepth > 0) every value is a genuine f64 (the helper's clone is folded
+  // for an argument proven numeric, optimize/driver.js), so `__to_num(reinterpret_i64(x)) == x` —
+  // lift straight through, peeling the box round-trip. Anywhere else the value may be a boxed
+  // null, boolean or undefined (an emitter's ToNumber of a callback's result,
+  // `Float64Array.from(a, x => null)`), which the identity would store as it is.
+  if (op === 'call' && expr[1] === '$__to_num' && expr.length === 3 && ctx.inlineDepth > 0) {
     let arg = expr[2]
     if (isArr(arg) && arg[0] === 'i64.reinterpret_f64' && arg.length === 2) arg = arg[1]
     return liftExprV(arg, ctx)
