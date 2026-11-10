@@ -926,7 +926,7 @@ export function liftExprV(expr, ctx) {
   // `$__to_num` is a numeric coercion jz wraps around a helper param it couldn't prove is f64
   // (e.g. `decode(src[j])`), boxing it via `i64.reinterpret_f64` first. Inside a pure helper
   // inlined below (inlineDepth > 0) every value is a genuine f64 (the helper's clone is folded
-  // for an argument proven numeric, optimize/driver.js), so `__to_num(reinterpret_i64(x)) == x` —
+  // for an argument proven numeric, optimize/driver.js), so `__to_num(reinterpret_i64(x)) == x`:
   // lift straight through, peeling the box round-trip. Anywhere else the value may be a boxed
   // null, boolean or undefined (an emitter's ToNumber of a callback's result,
   // `Float64Array.from(a, x => null)`), which the identity would store as it is.
