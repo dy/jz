@@ -567,6 +567,19 @@ test('.forEach: its value is undefined on every receiver, and its callback write
   }
 })
 
+// A typed store's value read in a loop's test: the staging of its reference
+// (`t[i++]`) emits the step as a statement, and the store keeps its own value.
+test('typed store: an element store\'s value in a loop test compares what it stored', () => {
+  const src = `export let f = () => { const t = new Float64Array(4); let i = 0, c = 0; while (i < 4 && (t[i++] = 1) > 0) { c++ } return [c, Array.from(t)] }
+  export let g = () => { const t = new Int32Array(4); let i = 0, c = 0; while (i < 4 && (t[i++] += 7) > 5) { c++ } return [c, Array.from(t)] }
+  export let h = () => { const o = { a: 1 }, t = [0, 0]; let i = 0; const r = (t[i++] = 5) + (o.a = 3); return [r, t, i] }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name in want) is(got[name](), want[name](), `${name}, O${optimize}`)
+  }
+})
+
 // === .find ===
 
 test('.find: found', () => {
@@ -1468,6 +1481,25 @@ test('Array.from: opaque runtime sources support indexed host array-likes', () =
 
 test('Array.from(string): pin current per-char behavior (unaffected by the typed-source fix)', () => {
   is(runHost(`export let f = () => { let r = Array.from('abc'); return r[0] + r[1] + r[2] }`).f(), 'abc')
+})
+
+// An array source is walked as its iterator walks it (ES §23.1.2.1 step 5), to
+// its length at each step: a mapper that grows it is visited further, one that
+// shrinks it stops there. A Set or a Map gives its entries, written directly or
+// reaching a helper that also takes an array, a string or an array-like.
+test('Array.from: a mapper sees the array it changes, and a Set or a Map gives its entries', () => {
+  const src = `export let grow = () => { const a = [1, 2, 3]; const r = Array.from(a, (x, i) => { if (i === 0) a.push(4); return x * 2 }); return [r, a] }
+  export let grows = () => { const a = [1]; return Array.from(a, (x, i) => { if (a.length < 40) a.push(x + 1); return x + i }) }
+  export let shrink = () => { const a = [1, 2, 3, 4]; return Array.from(a, x => { a.pop(); return x }) }
+  export let typed = () => { const t = new Float64Array([1.5, 2]); return Array.from(t, (x, i) => x + i) }
+  export let sets = () => { const s = new Set([1, 2, 2, 3]), m = new Map([[1, 'a'], [2, 'b']]); return [Array.from(s), Array.from(s, (x, i) => x * 10 + i), Array.from(m), Array.from(m, ([k, v]) => v + k)] }
+  const toArr = (x) => Array.from(x)
+  export let helper = () => [toArr(new Set([1, 2, 2])), toArr([3]), toArr('ab'), toArr(new Map([[1, 2]])), toArr({ length: 2, 0: 'a' })]`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name in want) is(got[name](), want[name](), `${name}, O${optimize}`)
+  }
 })
 
 // === .length assignment ===

@@ -19,6 +19,7 @@ import { errorCodeLiteral, ERR } from '../../err-codes.js'
 import { DENSE_MAX } from '../core.js'
 import { makeCallback, idxArg } from './callback.js'
 import { representationProgramHasBigint } from '../../src/compile/representation-plan.js'
+import { K, hasTag } from '../../src/summary/kind.js'
 
 // Array.from(items, mapfn): spec step 2 — if mapfn is not undefined and
 // IsCallable(mapfn) is false, throw a TypeError before iterating items.
@@ -111,10 +112,12 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
   const sourceVt = resolveValType(src, valTypeOf, lookupValType)
   const read = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
   if (mapFn && !ctx.closure.call) ctx.module.include('fn')
-  if (sourceVt === VAL.SET || sourceVt === VAL.MAP || sourceVt === VAL.CLOSURE)
-    err(sourceVt === VAL.CLOSURE
-      ? 'Array.from: a function/generator source is not supported — jz has no iterator-protocol dispatch for a callable'
-      : 'Array.from: Set/Map sources are not supported here — spread it instead: [...source]')
+  if (sourceVt === VAL.CLOSURE)
+    err('Array.from: a function/generator source is not supported: jz has no iterator-protocol dispatch for a callable')
+  // A Set or a Map gives its entries in order: a fresh array of them
+  // (module/collection.js `__iter_arr`), taken after the mapper is evaluated.
+  const entries = sourceVt === VAL.SET || sourceVt === VAL.MAP
+  if (entries && !mapFn) return asF64(emit(['()', '__iter_arr', src]))
   const staticLength = staticArrayLikeLength(src)
   if ((staticLength != null && valTypeOf(staticLength) === VAL.BIGINT) ||
       ((sourceVt === VAL.OBJECT || sourceVt === VAL.HASH) && valTypeOf(['.', src, 'length']) === VAL.BIGINT))
@@ -159,24 +162,41 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
     return typed(['call', '$' + copy, asI64(emit(src))], 'f64')
   }
 
-  // Known Array/TypedArray + mapper: fixed integer length, but each element
-  // is read afresh so callback mutations of not-yet-visited slots are visible.
-  if (mapFn && (sourceVt === VAL.ARRAY || sourceVt === VAL.TYPED)) {
+  // Known Array/TypedArray/Set/Map + mapper: each element is read afresh, so
+  // callback mutations of not-yet-visited slots are visible. An array is
+  // walked as its iterator walks it (ES §23.1.2.1 step 5), to its length at
+  // each step: a mapper that grows it is visited further, one that shrinks it
+  // stops there, and the result grows past the first length by push. A typed
+  // array's length and a collection's entries are fixed.
+  if (mapFn && (sourceVt === VAL.ARRAY || sourceVt === VAL.TYPED || entries)) {
     inc('__len', read, ...(sourceVt === VAL.TYPED ? ['__dense_check'] : []))
     const s = temp('afs'), len = tempI32('afl'), i = tempI32('afi'), item = temp('afv')
     const srcIR = asF64(emit(src))
     const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }], null, thisArg)
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'aff' })
+    const s64 = ['i64.reinterpret_f64', ['local.get', `$${s}`]]
+    const value = asF64(cb.stored([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)]))
+    const live = sourceVt === VAL.ARRAY, r = live ? temp('afr') : null, v = live ? temp('afm') : null
+    if (live) inc('__arr_push1')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, srcIR],
       ...callbackSetup(cb),
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ...(entries ? [['local.set', `$${s}`, asF64(ctx.core.emit['__iter_arr'](['__raw_local', s], src))]] : []),
+      ['local.set', `$${len}`, ['call', '$__len', s64]],
       ...(sourceVt === VAL.TYPED ? [['call', '$__dense_check', ['local.get', `$${len}`]]] : []),
       out.init,
-      ...walk(i, ['local.get', `$${len}`], [
-        ['local.set', `$${item}`, ['call', `$${read}`, ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
-        elemStore(out.local, i, asF64(cb.stored([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)])))]),
-      out.ptr], 'f64')
+      ...(live ? [['local.set', `$${r}`, out.ptr]] : []),
+      ...walk(i, live ? ['call', '$__len', s64] : ['local.get', `$${len}`], [
+        ['local.set', `$${item}`, ['call', `$${read}`, s64, ['local.get', `$${i}`]]],
+        ...(live ? [['local.set', `$${v}`, value],
+          ['if', ['i32.lt_s', ['local.get', `$${i}`], ['local.get', `$${len}`]],
+            ['then', elemStore(out.local, i, ['local.get', `$${v}`])],
+            ['else', ['local.set', `$${r}`, ['call', '$__arr_push1', ['i64.reinterpret_f64', ['local.get', `$${r}`]], ['local.get', `$${v}`]]]]]]
+          : [elemStore(out.local, i, value)])]),
+      // (a source the mapper shrank: the result ends where the walk did)
+      ...(live ? [['if', ['i32.lt_s', ['local.get', `$${i}`], ['local.get', `$${len}`]],
+        ['then', ['i32.store', ['i32.sub', ['local.get', `$${out.local}`], ['i32.const', 8]], ['local.get', `$${i}`]]]],
+        typed(['local.get', `$${r}`], 'f64')] : [out.ptr])], 'f64')
   }
 
   // General array-like path. Construct/evaluate the source once, evaluate the
@@ -215,13 +235,19 @@ export const arrayFromEmit = (src, mapFn, thisArg) => {
       ['else', objectIndex]]]], 'f64')
   const item = cb ? cb.stored([indexed, idxArg(cb, i)]) : indexed
   ctx.runtime.throws = true
+  // (a Set or a Map, where the summary lets one come here, gives its entries' array)
+  const k = ctx.summary?.at(ctx.func.current)?.kindOfExpr(src)
+  const isType = (type) => ['i32.eq', ['local.get', `$${t}`], ['i32.const', type]]
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${s}`, srcIR],
     ...callbackSetup(cb),
     ['local.set', `$${t}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
-    ['if', ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.STRING]], ['then',
+    ['if', isType(PTR.STRING), ['then',
       ['local.set', `$${s}`, ['call', '$__str_points', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
       ['local.set', `$${t}`, ['i32.const', PTR.ARRAY]]]],
+    ...(!k || hasTag(k, K.SET) || hasTag(k, K.MAP) ? [['if', ['i32.or', isType(PTR.SET), isType(PTR.MAP)], ['then',
+      ['local.set', `$${s}`, asF64(ctx.core.emit['__iter_arr'](['__raw_local', s], ['__raw_local', s]))],
+      ['local.set', `$${t}`, ['i32.const', PTR.ARRAY]]]]] : []),
     ...(checkExternalIterable ? [[
       'if', ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.EXTERNAL]],
       ['then', ['if',

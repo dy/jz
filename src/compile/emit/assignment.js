@@ -152,11 +152,18 @@ function stagedReference(name, update = true, rhs) {
 const afterStaging = (pre, out) => out?.type ? typed(['block', ['result', out.type], ...pre, out], out.type) : ['block', ...pre, ...(out ? [out] : [])]
 export const putReference = (ref, value, source = ref) => ref[0] === '[]'
   ? emitElementAssign(ref[1], ref[2], value, source) : emitPropertyAssign(ref[1], ref[2], value)
+// The write through a staged reference, at the expectation of the assignment:
+// staging emitted the reference's parts, each at its own (`t[i++] = 1` in a
+// loop's test kept the step's 'void' and stored no value to compare).
+const staged = (name, update, rhs, write) => {
+  const expect = ctx.func._expect, s = stagedReference(name, update, rhs)
+  if (!s) return null
+  ctx.func._expect = expect
+  return afterStaging(s.pre, write(s.ref))
+}
 /** Lower a compound member write through its staged reference: `build` receives the reference to read and write. */
 export function throughReference(name, rhs, build) {
-  const staged = stagedReference(name, true, rhs)
-  if (!staged) return build(name)
-  return afterStaging(staged.pre, build(staged.ref))
+  return staged(name, true, rhs, build) ?? build(name)
 }
 /** `ref op= val` as `ref = ref op val`: the rebuilt binary keeps the plan's
  *  compound identity, so its BigInt arm is boxed for the tagged slot it
@@ -273,11 +280,8 @@ export const assignmentOps = {
     // and writes through the same reference.
     if (Array.isArray(name) && (name[0] === '[]' || name[0] === '.')) {
       const update = Array.isArray(val) && (val[0] === '+1' || val[0] === '-1')
-      const staged = stagedReference(name, update, val)
-      if (staged) {
-        const value = update ? [val[0], staged.ref] : val
-        return afterStaging(staged.pre, putReference(staged.ref, value, name))
-      }
+      const out = staged(name, update, val, ref => putReference(ref, update ? [val[0], ref] : val, name))
+      if (out) return out
     }
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val, name)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
