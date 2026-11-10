@@ -277,7 +277,7 @@ const compilePipeline = (code, opts = {}, jzify) => {
   ctx.transform.sourceMap = !!mapOptions
 
   // The canonical front half (src/front.js): parse →
-  // liftIIFEs → jzify → prepare → preEval — ONE function shared verbatim with
+  // liftIIFEs → jzify → prepare → preEval → normalize — ONE function shared verbatim with
   // every self-compile kernel entry, so the two pipelines cannot drift (they did:
   // the kernel skipped preEval — audit P0 2026-07-25).
   let ast = frontHalf(code, {

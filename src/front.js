@@ -1,7 +1,7 @@
 /**
  * Canonical compile FRONT HALF — the one semantic pipeline every entry runs:
  *
- *   parse → liftIIFEs → jzify → prepare → preEval
+ *   parse → liftIIFEs → jzify → prepare → preEval → normalize (one loop form, src/normalize.js)
  *
  * Host (index.js jzCompileInner) and self-compile kernel (scripts/self.js — ALL
  * entries: compileSelf, compileWat, compileWarnings, compileDiag) MUST consume

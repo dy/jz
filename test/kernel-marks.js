@@ -98,7 +98,7 @@ test('kernel marks: a name the table lacks records as `other`; the table names e
   // every phase a native compile times, through the same profiler hook the kernel installs, is in the table
   const profile = {}
   compileInProcess('class P { x = 1; len() { return this.x } }; const a = [new P()]; export let f = (n) => { let s = 0; for (let i = 0; i < n; i++) s += a[i % 1].len(); return s }; export let g = (m) => { const o = {}; o["k" + m] = m; return JSON.stringify(o) }', { optimize: 3, profile })
-  const timed = new Set(profile.entries.map(e => e.name).filter(n => !['parse', 'liftIIFE', 'jzify', 'prepare', 'preEval', 'compile', 'watOptimize', 'watCleanup', 'watrCompile', 'watrPrint', 'snapshotInit', 'lateLink'].includes(n)))
+  const timed = new Set(profile.entries.map(e => e.name).filter(n => !['parse', 'liftIIFE', 'jzify', 'prepare', 'preEval', 'normalize', 'compile', 'watOptimize', 'watCleanup', 'watrCompile', 'watrPrint', 'snapshotInit', 'lateLink'].includes(n)))
   const missing = [...timed].filter(n => !PHASE_NAMES.includes(n))
   is(missing.join(' '), '', 'every timed phase is named')
 })
