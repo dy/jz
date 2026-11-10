@@ -129,9 +129,10 @@ e2f0c0155 minmax
 62fc1e8ee batch32
 ```
 
-Left in place: the scratch worktree `/private/tmp/jzw/dbg-wt` (a169cb673) with three
-modified files, reported as debug toggles and edits already in main. The git guard
-blocked discarding them while another session was open; the owner decides.
+The scratch worktree `/private/tmp/jzw/dbg-wt` (a169cb673) was removed on 2026-11-09
+at the owner's word, after a check of its three modified files: the `scope.js` addition
+(`unobservedStatic`) and the `frame-effects.js` guard are in main line for line, and
+`inline.js` held only debug switches (`OLDS`, `OLDT`, `DBGH`).
 
 ## Remote probe branches, tips before deletion
 
