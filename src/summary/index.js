@@ -2859,22 +2859,26 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // result for every iteration that actually invokes it.
     return merge(initial, out)
   }
-  // An array's callback method binds the callback to (element, index, array):
-  // `map` collects the callback's results in the call's own cell, the
-  // predicates keep the elements, `reduce` recurs through its accumulator.
+  // An array's or a typed array's callback method binds the callback to
+  // (element, index, array): `map` collects the callback's results in the
+  // call's own cell (a typed array's in a typed array of its kind), the
+  // predicates keep the elements, `reduce` recurs through its accumulator. A
+  // typed array has no hole: a search visits only its elements.
   const ARRAY_CALLBACKS = new Set(['map', 'filter', 'forEach', 'find', 'findLast', 'findIndex', 'findLastIndex', 'some', 'every', 'flatMap'])
   const arrayCallback = (node, recv, name, base, n) => {
     const cb = argumentAt(base, n, 0)
     if (tagOf(cb) !== K.CLOSURE || paramOf(cb) === UNKNOWN) { escapeArgs(base, n); return ANY }
     for (let i = 2; i < n; i++) escape(ks[base + i])
-    const mayMiss = fixedLen(recv) < 0 || hasTag(elemOf(recv), K.ABSENT)
+    const typedRecv = tagOf(recv) === K.TYPED
+    const mayMiss = !typedRecv && (fixedLen(recv) < 0 || hasTag(elemOf(recv), K.ABSENT))
     const finds = name === 'find' || name === 'findLast' || name === 'findIndex' || name === 'findLastIndex'
-    const elem = mayMiss && finds ? orAbsent(elemOf(recv)) : elemOf(recv)
+    const elem = typedRecv ? typedElemKind(recv) : mayMiss && finds ? orAbsent(elemOf(recv)) : elemOf(recv)
     const b = sp
     pushK(elem); pushK(NUMBER); pushK(recv)
     knums[b] = cellNums(recv); knums[b + 1] = indexNums(recv)
     const r = callClosure(paramOf(cb), b, 3, null, n > 1 ? ks[base + 1] : NULLISH)
     sp = b
+    if (typedRecv && (name === 'map' || name === 'filter')) return typedMethodKind(name, recv)
     // `map` makes as many elements as the receiver has, its callback's results
     if (name === 'map') {
       const item = mayMiss ? orAbsent(r) : r, nums = hasTag(item, K.NUMBER) ? callbackNums(paramOf(cb)) : NR_NONE
@@ -3114,6 +3118,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     // reach whatever else the value may be (below).
     if (t === K.ANY && hasTag(recv, K.OBJECT)) { const fk = lostObjectRead(name, false); if (tagOf(fk) === K.CLOSURE && paramOf(fk) !== UNKNOWN) callClosure(paramOf(fk), base, n, node, recv) }
     if (t === K.TYPED) {
+      if (node && name !== 'flatMap' && ARRAY_CALLBACKS.has(name)) return arrayCallback(node, recv, name, base, n)
       const same = typedMethodKind(name, recv)
       if (same !== null) { if (name === 'map' || name === 'filter' || name === 'sort') escapeArgs(base, n); return same }
       if (name === 'at') return orAbsent(typedElemKind(recv))
