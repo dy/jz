@@ -27,11 +27,16 @@ import { VAL, lookupValType } from '../../src/reps.js'
 import { ctx, PTR } from '../../src/ctx.js'
 import { valOf as summaryValOf } from '../../src/summary/index.js'
 import { K, hasTag } from '../../src/summary/kind.js'
+import { withRefinements } from '../../src/compile/flow-types.js'
+import { DENSE_MAX } from '../core.js'
 
 // Callback methods retain the initial bound and observe receiver mutations.
+// The visit sees the counter inside that bound, as a source loop's body sees
+// its counter (compile/loop-model.js counterRefinements).
 const SKIP_MISSING = {}
 export const callbackLoop = (recv, body, len, ptr, reverse, options = SKIP_MISSING) =>
-  arrayLoop(recv.value, body, len, ptr, reverse, undefined, { ...options, fixed: recv.fixed, dense: recv.dense })
+  arrayLoop(recv.value, (...a) => withRefinements(new Map([[a[2], { rlo: 0, rhi: Math.max(0, (recv.len >= 0 ? recv.len : DENSE_MAX) - 1) }]]), null, () => body(...a)),
+    len, ptr, reverse, undefined, { ...options, fixed: recv.len >= 0, dense: recv.dense })
 
 export function hoistArrayValue(arr) {
   const recv = temp('ar')
@@ -39,7 +44,8 @@ export function hoistArrayValue(arr) {
     setup: ['local.set', `$${recv}`, asF64(emit(arr))],
     value: typed(['local.get', `$${recv}`], 'f64'),
     dense: ctx.summary?.at(ctx.func.current).arrayDenseOfExpr(arr) === true,
-    fixed: (ctx.summary?.at(ctx.func.current).fixedLenOfExpr(arr) ?? -1) >= 0,
+    // (the length the summary fixes the receiver at, or -1)
+    len: ctx.summary?.at(ctx.func.current).fixedLenOfExpr(arr) ?? -1,
   }
 }
 
@@ -123,6 +129,9 @@ function exprUses(node, name) {
   return refsName(node, name, REFS_IN_EXPR)
 }
 
+// The local an argument is a bare read of, else null.
+const localRead = (ir) => Array.isArray(ir) && ir[0] === 'local.get' && typeof ir[1] === 'string' ? ir[1].slice(1) : null
+
 // Callback factory: returns { setup, call, usedParams } where call(argExprs) emits the invocation.
 // Fast path: literal arrow with simple-string params and pure expression body → inline,
 // substituting param refs with fresh locals. Zero closure alloc, zero call_indirect, zero
@@ -150,8 +159,26 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
           const stmts = []
           const mapping = new Map()
           const freshNames = []
+          const view = ctx.summary?.at(ctx.func.current), held = [], overlaid = []
           for (let i = 0; i < raw.length; i++) {
             if (!usedParams[i]) { freshNames.push(null); continue }  // skip dead local + arg evaluation
+            // An argument a local already holds is the parameter: the body reads
+            // that local, as a source loop's body reads its own (`s + x`, with no
+            // copy between the fold and its accumulator). The summary binds the
+            // parameter (aliasParam); a tagged carrier stays in a local of its
+            // own mark wherever the value may be a BigInt.
+            const local = localRead(argExprs[i])
+            if (local && view?.aliasParam(local, fn[1], raw[i])) {
+              if (!argReps?.[i]?.tagged || !hasTag(view.kindOfExpr(local), K.BIGINT)) {
+                mapping.set(raw[i], local)
+                freshNames.push(null)
+                held.push(local)
+                const val = argReps?.[i]?.val
+                if (val) { overlaid.push([local, ctx.func.localValTypesOverlay.get(local)]); ctx.func.localValTypesOverlay.set(local, val) }
+                continue
+              }
+              view.unalias(local)
+            }
             const fresh = temp('inl')
             mapping.set(raw[i], fresh)
             freshNames.push(fresh)
@@ -179,7 +206,6 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
             }
           }
           const subst = substExpr(body, mapping)
-          const view = ctx.summary?.at(ctx.func.current), held = []
           if (view) for (let i = 0; i < raw.length; i++) {
             const t = freshNames[i]
             if (!t) continue
@@ -187,7 +213,10 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
             else if (elem?.index === i) { view.alias(t, elem.expr, false); held.push(t) }
           }
           let result
-          try { result = produce(subst) } finally { for (const t of held) view.unalias(t) }
+          try { result = produce(subst) } finally {
+            for (const t of held.reverse()) view.unalias(t)
+            for (const [t, was] of overlaid.reverse()) { if (was === undefined) ctx.func.localValTypesOverlay.delete(t); else ctx.func.localValTypesOverlay.set(t, was) }
+          }
           // Preserve i32 result type so callers (truthyIR, etc.) can skip f64↔i32 round-trips.
           const ty = result.type === 'i32' ? 'i32' : 'f64'
           const wrapped = typed(['block', ['result', ty], ...stmts, result], ty)
@@ -196,6 +225,8 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
           // carry it through or downstream asF64 numeric-converts the raw offset
           // (map stored [1104,1128] instead of the objects a named ctor fn returned).
           if (result.ptrKind != null) { wrapped.ptrKind = result.ptrKind; wrapped.ptrAux = result.ptrAux }
+          // (an unsigned word, `x >>> 0`, converts as one: -1 is 4294967295)
+          if (result.unsigned) wrapped.unsigned = true
           return wrapped
       }
       // The rebuilt body has no plan facts of its own: for a store it names
@@ -259,10 +290,11 @@ export function callbackArgReps(arr) {
   return [itemRep, idxRep, arrRep]
 }
 
-function idxF64(i) { return typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64') }
-// Skip f64-convert when callback's index param is unused — saves per-iteration conversion.
+// The callback's index argument: the walk's counter, an i32 local (an inlined
+// arrow reads the counter itself, a closure takes it converted), or null where
+// an inlined arrow never reads its index.
 export function idxArg(cb, i, slot = 1) {
-  return cb.usedParams && !cb.usedParams[slot] ? null : idxF64(i)
+  return cb.usedParams && !cb.usedParams[slot] ? null : typed(['local.get', `$${i}`], 'i32')
 }
 // The callback's array argument (`(v, i, arr) =>`, reduce's fourth): the
 // receiver value, or null when an inlined arrow provably never reads it.

@@ -604,17 +604,18 @@ export function summaryQueries(facts, internal = false) {
       // callback's element parameter), for the span of its continuation: temp
       // names recur across the closure bodies this scope covers, so an alias
       // never outlives its use.
-      alias: (name, e, present = true) => { aliases.set(name, { e, present, key: -1 }) },
+      alias: (name, e, present = true) => { aliases.set(name, { e, present, key: -1, prev: aliases.get(name) }) },
       // An emission temp holding parameter `p` of the closure with parameter
       // node `params` (an inlined callback's argument): it reads as that
       // binding. False, and no alias, where no call the solve walked bound it.
       aliasParam: (name, params, p) => {
         const s = scopeOfParams.get(params), key = s === undefined ? undefined : declared.get(s)?.get(p)
         if (typeof key !== 'number' || !paramKeys.has(key) || readKey(key) === K.NONE) return false
-        aliases.set(name, { e: null, present: false, key })
+        aliases.set(name, { e: null, present: false, key, prev: aliases.get(name) })
         return true
       },
-      unalias: (name) => { aliases.delete(name) },
+      // (an alias nests: a temp an inner callback reads as its parameter reads as before once that callback is emitted)
+      unalias: (name) => { const a = aliases.get(name); if (a?.prev) aliases.set(name, a.prev); else aliases.delete(name) },
       /** The name is present on the path being emitted (a guard proved it): its reads drop the nullish part. */
       present: (name) => { present.add(name) },
       unpresent: (name) => { present.delete(name) },

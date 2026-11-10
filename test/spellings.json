@@ -47,8 +47,6 @@
   "kernel/dot/for-of + idx/speed": {"simd":"lost"},
   "kernel/dot/forEach/2": {"simd":"lost"},
   "kernel/dot/forEach/speed": {"simd":"lost"},
-  "kernel/dot/reduce/2": {"simd":"lost"},
-  "kernel/dot/reduce/speed": {"simd":"lost"},
   "kernel/map/for i<N i++ (canonical)/2": {"ops":12},
   "kernel/map/for i<N i++ (canonical)/speed": {"ops":4},
   "kernel/map/while i-=-1/2": {"ops":12},

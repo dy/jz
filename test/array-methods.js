@@ -497,6 +497,33 @@ test('array callbacks: an inlined parameter reads as the kind its calls bind', (
   }
 })
 
+// A typed array's callback inlines as an array's, its index the walk's counter:
+// each method answers what JS answers over every element kind, a view, a
+// parameter, a receiver of no static kind, a BigInt receiver, a callback that
+// stores into the receiver or reaches its buffer, an empty receiver, and an
+// index read at the edges of int32.
+test('typed callbacks: inlined over the one walk, as JS answers', () => {
+  const src = `const all = (t) => { const o = []; const r = t.forEach((x, i) => o.push(x * i)); return [r === undefined, o, Array.from(t.map((x, i, a) => a.length + i + x)), Array.from(t.filter((x, i) => i % 2)), t.find(x => x < 3), t.findIndex(x => x === 0), t.findLast(x => x > 0), t.findLastIndex(x => x < 0), t.some(x => x > 200), t.every(x => x > -1e9), t.reduce((s, x, i) => s + x * i, 10), t.reduceRight((s, x) => s + '' + x, ''), Array.from(t.map(x => x > 1)), Array.from(t.map(x => '' + x))] }
+  export function kinds() { const v = [3, 1.5, -2, 250, 0, 7]; return [all(new Float64Array(v)), all(new Float32Array(v)), all(new Int32Array(v)), all(new Uint8Array(v)), all(new Uint8ClampedArray(v)), all(new Int8Array(v))] }
+  export function index() { const t = new Float64Array([5, 6, 7]), a = [5, 6, 7]; return [Array.from(t.map((x, i) => (i + 2147483647) | 0)), Array.from(t.map((x, i) => i * 2147483647 * 4)), Array.from(t.map((x, i) => i / 2)), t.reduce((s, x, i) => s + i + 'a', ''), t.every((x, i) => typeof i === 'number'), a.map((x, i) => (i + 2147483647) | 0), a.map((x, i) => i * 1e10), a.reduce((s, x, i) => s + i / 3, 0), Array.from({ length: 3 }, (_, i) => i * 2)] }
+  export function view() { const v = new Float64Array([1, 2, 3, 4, 5]).subarray(1, 4); return [v.reduce((s, x, i) => s + x * i, 0), Array.from(v.map(x => x * 2)), v.findLastIndex(x => x < 4)] }
+  export function param(n) { const t = new Float64Array(n); for (let i = 0; i < n; i++) t[i] = i * 1.5; return [t.reduce((s, x, i) => s + x * i, 0), Array.from(t.filter((x, i) => i % 2)), t.findIndex((x, i) => x > i)] }
+  const mk = (k) => k ? new Float32Array([1.5, 2]) : new Int8Array([-3, 4])
+  export function open(k) { const t = mk(k); return [t.reduce((s, x) => s + x, 0), Array.from(t.map(x => x * 2)), t.find(x => x > 1)] }
+  export function bigint() { const u = new BigInt64Array([1n, -2n, 3n]); return [String(u.reduce((s, x) => s + x)), String(u.map(x => x * 2n)), u.findIndex(x => x === 3n), String(new Int16Array([3, 1]).reduce((s, x) => s + BigInt(x), 0n))] }
+  export function stores() { const t = new Float64Array([1, 2, 3, 4]); const m = t.map((x, i) => (i + 1 < t.length ? (t[i + 1] = x * 10) : 0, x)); const b = new ArrayBuffer(16), d = new Float64Array(b), u = new Uint8Array(b); d[0] = 1; d[1] = 2; return [Array.from(m), Array.from(t), d.reduce((s, x) => (u[15] = 0, s + x), 0)] }
+  export function empty() { const t = new Float64Array(0); let thrown = false; try { t.reduce((s, x) => s + x) } catch (e) { thrown = e instanceof TypeError } return [thrown, t.reduce((s, x) => s + x, 7), t.find(x => true), t.findIndex(x => true), t.some(x => true), t.every(x => false)] }
+  export function nested() { const t = new Float64Array([1, 2, 3]), a = [1, 2, 3]; return [Array.from(t.map((x, i) => t.reduce((s, y, j) => s + y * j * i, x))), a.map((x, i) => a.reduce((s, y, j) => s + y * j * i, x)), a.filter((x, i) => a.some((y, j) => j === i && y > 1))] }
+  export function results() { const a = [1, 2, 3, 4, 5, 6, 7, 8], t = new Float64Array(a); return [Array.from(Float64Array.from(a, x => null)), Array.from(Float64Array.from(a, x => undefined)), Array.from(Float64Array.from(a, x => x > 3)), Array.from(t.map(x => null)), Array.from(t.map(x => x > 3 ? true : null)), Array.from(t.map(x => x > 3 ? null : x)), Array.from(t.map((x, i) => i - 1 >>> 0))] }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name of ['kinds', 'index', 'view', 'bigint', 'stores', 'empty', 'nested', 'results']) is(got[name](), want[name](), `${name}, O${optimize}`)
+    for (const n of [0, 1, 5]) is(got.param(n), want.param(n), `param(${n}), O${optimize}`)
+    for (const k of [0, 1]) is(got.open(k), want.open(k), `open(${k}), O${optimize}`)
+  }
+})
+
 // === .forEach ===
 
 test('.forEach: its value is undefined on every receiver, and its callback writes what it captures', () => {
