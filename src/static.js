@@ -581,9 +581,9 @@ export function elementCounter(cond, step) {
   const last = post ? top + 1 : top
   return last <= I32_MAX ? { name, recv: read[1], post, top: last } : null
 }
-// `i++`, `++i`, `i += 1` or `i = i + 1` as a loop's whole step.
+// `++i`, `i += 1` or `i = i + 1` as a loop's whole step (a step's postfix is its update:
+// src/normalize.js drops it, and writes a Number's step `++i`).
 const unitStep = (s, name) => {
-  if (Array.isArray(s) && s[0] === 'postfix') s = s[1]
   if (!Array.isArray(s) || s[1] !== name) return false
   if (s[0] === '++' && s.length === 2) return true
   if (s[0] === '+=' && s.length === 3) return constIntExpr(s[2]) === 1
@@ -663,12 +663,7 @@ function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep) {
     const r = rangeOf(e)
     return r && Number.isSafeInteger(r[0]) && Number.isSafeInteger(r[1]) && r[0] > 0 ? r : null
   }
-  // Only the mutation matters in a discarded loop step.
-  const unwrapPostfixVal = (e) =>
-    Array.isArray(e) && e[0] === 'postfix' ? e[1]
-    : Array.isArray(e) && e[0] === '-' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '++' && constIntExpr(e[2]) === 1 ? e[1]
-    : Array.isArray(e) && e[0] === '+' && e.length === 3 && Array.isArray(e[1]) && e[1][0] === '--' && constIntExpr(e[2]) === 1 ? e[1]
-    : e
+  // (only the mutation matters in a discarded loop step: prepare and src/normalize.js drop its postfix)
   // mutOp: the '++'/'--' unary that moves `name` one unit in the guard's own
   // direction. arithOp: the binary '+'/'-' a spelled-out `name = name ± K`
   // step uses in that SAME direction — only that direction's operand-order
@@ -678,7 +673,6 @@ function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep) {
   // Exact-stride queries return a positive constant magnitude. Width-only
   // queries may instead accept its closed positive integer hull.
   const stepMag = (s, mutOp, arithOp) => {
-    s = unwrapPostfixVal(s)
     if (Array.isArray(s) && s[0] === mutOp && s[1] === name) return 1
     if (Array.isArray(s) && s[0] === (mutOp === '++' ? '+=' : '-=') && s[1] === name) return positive(s[2])
     if (Array.isArray(s) && s[0] === '=' && s[1] === name &&

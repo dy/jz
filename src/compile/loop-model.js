@@ -28,17 +28,15 @@ export const freshLoopId = () => ctx.transform.loopXformId++
 export const loopLitVal = (n) => Array.isArray(n) && n.length === 2 && n[0] == null && typeof n[1] === 'number' ? n[1] : null
 export const litN = (n, k) => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] === k
 
-// The induction variable a statement increments by exactly +1, else null. Covers
-// `i++`, `++i`, `i += 1`, `i = i + 1` / `i = 1 + i`, and the step of a loop copy's
-// word, `i = (i + 1) | 0` (plan/integral-loops.js: the word's own wrap is the step).
+// The induction variable a statement increments by exactly +1, else null: `++i`, the
+// step of every Number (src/normalize.js; a statement's postfix is its update), `i += 1`,
+// `i = i + 1` / `i = 1 + i` of a counter not a Number by syntax, and the step of a loop
+// copy's word, `i = (i + 1) | 0` (plan/integral-loops.js: the word's own wrap is the step).
 export function unitIncVar(stmt) {
   if (!Array.isArray(stmt)) return null
-  if (stmt[0] === 'postfix') stmt = stmt[1]
   if (stmt[0] === '=' && typeof stmt[1] === 'string' && Array.isArray(stmt[2]) && stmt[2][0] === '|' && stmt[2].length === 3 && litN(stmt[2][2], 0) &&
       Array.isArray(stmt[2][1]) && stmt[2][1][0] === '+') stmt = ['=', stmt[1], stmt[2][1]]
-  let inc = stmt
-  if (stmt[0] === '-' && litN(stmt[2], 1) && Array.isArray(stmt[1]) && stmt[1][0] === '++') inc = stmt[1]
-  if (inc[0] === '++' && typeof inc[1] === 'string') return inc[1]
+  if (stmt[0] === '++' && typeof stmt[1] === 'string') return stmt[1]
   if (stmt[0] === '+=' && typeof stmt[1] === 'string' && litN(stmt[2], 1)) return stmt[1]
   if (stmt[0] === '=' && typeof stmt[1] === 'string' && Array.isArray(stmt[2]) && stmt[2][0] === '+') {
     const [, a, b] = stmt[2]
@@ -181,13 +179,10 @@ export function testRefinements(facts) {
   return facts.test ? new Map([[facts.iv, { rlo: facts.test.lo, rhi: facts.test.hi }]]) : null
 }
 
-// A step that moves `name` by a fixed amount per pass: `x++`, `x--`, `x += S`, `x -= S`,
-// `x = x ± S`, `x = S + x` (discarding a postfix value keeps the same write) →
-// { name, by, sign }, else null.
+// A step that moves `name` by a fixed amount per pass: `++x`, `--x`, `x += S`, `x -= S`,
+// `x = x ± S`, `x = S + x` → { name, by, sign }, else null. (A step's postfix is its
+// update: src/normalize.js drops it.)
 function counterStep(s) {
-  if (Array.isArray(s) && s[0] === 'postfix') s = s[1]
-  if (Array.isArray(s) && s.length === 3 && (s[0] === '-' || s[0] === '+') && Array.isArray(s[1]) &&
-      (s[1][0] === '++' || s[1][0] === '--') && constIntExpr(s[2]) === 1) s = s[1]
   if (!Array.isArray(s) || typeof s[1] !== 'string') return null
   const [op, x, v] = s
   if ((op === '++' || op === '--') && s.length === 2) return { name: x, by: 1, sign: op === '++' ? 1 : -1 }
