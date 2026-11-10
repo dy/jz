@@ -13,8 +13,8 @@
 // (a) is correctness: a difference is a miscompile or a spelling of other work,
 // never listed. A shortfall of today is listed in test/spellings.json, the
 // default style and a kernel's first spelling among the others. A cell fails on
-// a gap not listed, on more ops than listed, and on a listed gap it no longer
-// has, so the list only shrinks. Rewrite it with `node test/spellings.js --update`.
+// any difference from its listing, a smaller gap too, so the list holds what the
+// compiler does and only shrinks. Rewrite it with `node test/spellings.js --update`.
 // A call in which no spelling runs a trip (no loop head runs twice) is left out
 // of (b) and kept in (a): a static count charges a zero-trip loop its whole body,
 // where the call ran its head test once, and charges the guarded do-while, which
@@ -181,7 +181,7 @@ const verdict = (key, g = {}, k = {}) => {
   const bad = []
   if (g.ops && !k.ops) bad.push(`${key}: ${g.ops} ops past the best spelling, not listed`)
   else if (g.ops > k.ops) bad.push(`${key}: ${g.ops} ops past the best spelling, listed ${k.ops}`)
-  else if (!g.ops && k.ops) bad.push(`${key}: no ops past the best spelling now, remove its ops`)
+  else if ((g.ops || 0) < (k.ops || 0)) bad.push(`${key}: ${g.ops || 'no'} ops past the best spelling now, listed ${k.ops}`)
   if (g.simd !== k.simd) bad.push(`${key}: ${g.simd ? 'not vectorized where another spelling is' : 'vectorized as the best spelling'}, listed ${k.simd ?? 'none'}`)
   return bad
 }
@@ -204,6 +204,12 @@ if (process.argv.includes('--update')) {
   if (bad.length) { console.error(`answers differ, not listed:\n${bad.join('\n')}`); process.exitCode = 1 }
 } else {
   const known = JSON.parse(readFileSync(KNOWN, 'utf8'))
+  test('spellings: a cell passes only as listed, a smaller gap failing like a larger one', () => {
+    const fails = (g, k) => verdict('cell', g, k).length
+    for (const [g, k] of [[{}, {}], [{ ops: 5 }, { ops: 5 }], [{ simd: 'lost' }, { simd: 'lost' }]]) ok(!fails(g, k), `as listed: ${show([g, k])}`)
+    for (const [g, k] of [[{ ops: 5 }, {}], [{ ops: 5 }, { ops: 3 }], [{ ops: 3 }, { ops: 5 }], [{}, { ops: 5 }],
+      [{ simd: 'lost' }, {}], [{}, { simd: 'lost' }], [{ simd: 'lost' }, { ops: 5 }], [{ ops: 5 }, { simd: 'lost' }]]) ok(fails(g, k), `differs: ${show([g, k])}`)
+  })
   test('spellings: every listed gap names a cell the gate measures', () => {
     const all = new Set(cells()), stale = Object.keys(known).filter(k => !all.has(k))
     ok(!stale.length, stale.length ? `not measured: ${stale.join(', ')}` : 'listed cells')
