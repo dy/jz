@@ -28,14 +28,14 @@ import { ctx, PTR } from '../../src/ctx.js'
 import { valOf as summaryValOf } from '../../src/summary/index.js'
 import { K, hasTag } from '../../src/summary/kind.js'
 import { withRefinements } from '../../src/compile/flow-types.js'
-import { DENSE_MAX } from '../core.js'
 
 // Callback methods retain the initial bound and observe receiver mutations.
-// The visit sees the counter inside that bound, as a source loop's body sees
-// its counter (compile/loop-model.js counterRefinements).
+// The visit sees the counter inside that bound (an i32 length where the
+// summary fixes none), as a source loop's body sees its counter
+// (compile/loop-model.js counterRefinements).
 const SKIP_MISSING = {}
 export const callbackLoop = (recv, body, len, ptr, reverse, options = SKIP_MISSING) =>
-  arrayLoop(recv.value, (...a) => withRefinements(new Map([[a[2], { rlo: 0, rhi: Math.max(0, (recv.len >= 0 ? recv.len : DENSE_MAX) - 1) }]]), null, () => body(...a)),
+  arrayLoop(recv.value, (...a) => withRefinements(new Map([[a[2], { rlo: 0, rhi: Math.max(0, (recv.len >= 0 ? recv.len : 0x7fffffff) - 1) }]]), null, () => body(...a)),
     len, ptr, reverse, undefined, { ...options, fixed: recv.len >= 0, dense: recv.dense })
 
 export function hoistArrayValue(arr) {
