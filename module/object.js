@@ -850,13 +850,17 @@ export default (ctx) => {
     if (nullishThrow) return nullishThrow
     inc('__hash_new', '__hash_set_local', '__is_str_key', '__to_key')
     inc('__str_hash', '__key_eq')
-    const va = asF64(emit(arr))
-    const t = temp('fe'), ptr = tempI32('fp'), len = tempI32('fl')
+    ctx.module.include('collection')
+    const src = temp('fes'), t = temp('fe'), ptr = tempI32('fp'), len = tempI32('fl')
     const i = tempI32('fi'), pair = tempI32('fv'), key = tempI64('fk')
+    const entries = () => ['i64.reinterpret_f64', ['local.get', `$${src}`]]
     return typed(['block', ['result', 'f64'],
+      // The iterable, evaluated once, as the array of its entries: an array as
+      // it is, a Map's pairs (module/collection.js `__iter_arr`).
+      ['local.set', `$${src}`, asF64(emit(['()', '__iter_arr', arr]))],
       ['local.set', `$${t}`, ['call', '$__hash_new']],
-      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', va]]],
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', va]]],
+      ['local.set', `$${ptr}`, ['call', '$__ptr_offset', entries()]],
+      ['local.set', `$${len}`, ['call', '$__len', entries()]],
       ...walk(i, ['local.get', `$${len}`], [
         // Load pair (array of 2): pair = ptr_offset(arr[i])
         ['local.set', `$${pair}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64',

@@ -2931,6 +2931,24 @@ test('objects: numeric keys are property keys through fromEntries and a negative
   }
 })
 
+// Object.fromEntries takes its iterable once and reads its entries: an array's
+// pairs as they are, a Map's as its entries.
+test('objects: fromEntries evaluates its argument once and takes a Map\'s entries', () => {
+  const src = `let n = 0
+  const pairs = () => { n++; return [['a', 1], ['b', 2]] }
+  const table = () => { n++; return new Map([['a', 1], [3, 'c']]) }
+  const of = (e) => Object.fromEntries(e)
+  export let once = () => { n = 0; const o = Object.fromEntries(pairs()); return [n, o.a, o.b].join() }
+  export let map = () => { n = 0; const o = Object.fromEntries(table()); return [n, o.a, o[3], Object.keys(o)].join() }
+  export let either = () => [of([['p', 1]]).p, of(new Map([['q', 2]])).q, Object.keys(of(new Map())).length].join()
+  export let order = () => { let log = ''; const k = (s) => { log += s; return s }; const o = Object.fromEntries([[k('a'), k('1')], [k('b'), k('2')]]); return log + o.a + o.b }`
+  const e = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const ex = jz(src, { optimize }).exports
+    for (const name of ['once', 'map', 'either', 'order']) is(ex[name](), e[name](), `${name} @O${optimize}`)
+  }
+})
+
 // A module object's slot written `undefined` at runtime: the bracket read sees
 // it. The write lives in the global shadow table beside the literal's
 // init-time sidecar, and a present `undefined` there was read as a miss, so

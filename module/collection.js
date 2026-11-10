@@ -3682,7 +3682,7 @@ function arrEntriesFromTempTyped(t) {
   inc('__len', '__typed_get_idx', '__alloc_hdr')
   const n = tempI32('aetn'), i = tempI32('aeti'), pair = tempI32('aetp')
   const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${n}`], tag: 'aet' })
-  const P =() => ['i64.reinterpret_f64', ['local.get', `$${t}`]]
+  const P = () => ['i64.reinterpret_f64', ['local.get', `$${t}`]]
   return ['block', ['result', 'f64'],
     ['local.set', `$${n}`, ['call', '$__len', P()]],
     out.init,
