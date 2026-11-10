@@ -2709,7 +2709,7 @@ export default (ctx) => {
         ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i), arrArg(mapCb, recv.value)]))],
         ['local.set', `$${tmp}`, asF64(forCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(forCb, i)]))]
       ])
-      return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, forCb.check, ...loop, ['f64.const', 0]], 'f64')
+      return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, forCb.check, ...loop, undefExpr()], 'f64')
     }
     if (thisArg === undefined && up && up.method === 'filter' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
@@ -2720,7 +2720,7 @@ export default (ctx) => {
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i), arrArg(filterCb, recv.value)])),
           ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxArg(forCb, i)]))]]]
       ])
-      return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, forCb.check, ...loop, ['f64.const', 0]], 'f64')
+      return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, forCb.check, ...loop, undefExpr()], 'f64')
     }
     const recv = hoistArrayValue(arr)
     const tmp = temp('ft')
@@ -2728,7 +2728,7 @@ export default (ctx) => {
     const loop = callbackLoop(recv, (_ptr, _len, i, item) => [
       ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)]))]
     ])
-    return typed(['block', ['result', 'f64'], recv.setup, cb.setup, cb.check, ...loop, ['f64.const', 0]], 'f64')
+    return typed(['block', ['result', 'f64'], recv.setup, cb.setup, cb.check, ...loop, undefExpr()], 'f64')
   }
 
   // .reverse() → in-place swap arr[i] ↔ arr[len-1-i], returns the array.

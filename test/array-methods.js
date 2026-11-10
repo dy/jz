@@ -499,12 +499,26 @@ test('array callbacks: an inlined parameter reads as the kind its calls bind', (
 
 // === .forEach ===
 
-test('.forEach: runs without error', () => {
-  // forEach returns 0 (void). We can't test side effects because capture is by value.
-  is(run(`export let f = () => {
-    let a = [1, 2, 3]
-    return a.forEach((x) => x * 2)
-  }`).f(), 0)
+test('.forEach: its value is undefined on every receiver, and its callback writes what it captures', () => {
+  const src = `const each = (a) => a.forEach(v => v)
+  export function array() { const a = [1, 2, 3]; let s = 0; const r = a.forEach(x => { s += x }); return [r === undefined, typeof r, r ?? 'd', s] }
+  export function fused() { const a = [1, 2, 3]; return [typeof a.map(x => x + 1).forEach(x => x), typeof a.filter(x => x > 1).forEach(x => x)] }
+  export function typedArray() { const t = new Float64Array(2); const r = t.forEach(v => v); return [r === undefined, typeof r] }
+  export function collections() { const m = new Map([[1, 2]]), s = new Set([1, 2]); return [typeof m.forEach((v, k) => v), typeof s.forEach(v => v), m.forEach(v => v) ?? 'd'] }
+  export function helper() { return [each([1]) === undefined, typeof each([]), each([1]) ?? 'd'] }
+  export function empties() { const m = new Map(), s = new Set(), t = new Float64Array(0), a = []; return [typeof m.forEach(v => v), typeof s.forEach(v => v), typeof t.forEach(v => v), typeof a.forEach(v => v), typeof [1].values().forEach(v => v)] }
+  export function kept() { const a = [1, 2]; let r = 5; r = a.forEach(v => v); const o = { v: a.forEach(v => v) }; return [r == null, r ? 1 : 2, String(r), r + 1, typeof o.v, JSON.stringify([a.forEach(v => v)])] }
+  export function host(a) { const r = a.forEach(v => v); return [r === undefined, typeof r] }
+  export function returned(a) { return a.forEach(v => v) }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name of ['array', 'fused', 'typedArray', 'collections', 'helper', 'empties', 'kept']) is(got[name](), want[name](), `${name}, O${optimize}`)
+    for (const a of [[1, 2], []]) {
+      is(got.host(a), want.host(a), `host(${JSON.stringify(a)}), O${optimize}`)
+      is(got.returned(a), want.returned(a), `returned(${JSON.stringify(a)}), O${optimize}`)
+    }
+  }
 })
 
 // === .find ===

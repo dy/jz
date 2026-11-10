@@ -3369,9 +3369,7 @@ export default (ctx) => {
   // The element-type-name list is needed by allocPtr for typedAux:
   const ET_NAME = TYPED_ELEM_NAMES
 
-  // .forEach: callback (item, idx). Result is 0 to match array.js's
-  // convention (spec says undefined; both modules pick 0 since f() exposes the
-  // result as f64 and NaN-boxed undef reads as NaN).
+  // .forEach: callback (item, idx, typedArray). Its value is undefined.
   // Pre-allocate locals BEFORE typedLoop — bodyFn captures `cbLoc` by closure;
   // TDZ would fire if we declared it after.
   ctx.core.emit['.typed:forEach'] = (arr, fn, thisArg) => {
@@ -3385,7 +3383,7 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'],
       loop.setup[0], callback.setup, callback.check,
       ...loop.setup.slice(1),
-      ['f64.const', 0]], 'f64')
+      undefExpr()], 'f64')
   }
 
   // .reduce / .reduceRight: callback (acc, item, index, typedArray) → acc.

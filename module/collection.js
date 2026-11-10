@@ -1192,7 +1192,7 @@ export default (ctx) => {
         ['br_if', `$febrk${id}`, ['i32.eqz', cursorCall(c, recv(), stride)]],
         ['drop', asF64(callback.call([cursorField(c, valOff), cursorField(c, keyOff), recv()]))],
         ['br', `$feloop${id}`]]],
-      ['f64.const', 0]], 'f64')
+      undefExpr()], 'f64')
   }
   ctx.core.emit[`.${VAL.MAP}:forEach`] = collForEach(MAP_ENTRY, 16, 8)
   ctx.core.emit[`.${VAL.SET}:forEach`] = collForEach(SET_ENTRY, 8, 8)
