@@ -1083,7 +1083,9 @@ test('minimal: an own-name-current array reads without the forwarding follow', (
     return s * 1000 + a.length
   }`
   const pre3 = compile(captured, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
-  ok(pre3.includes('call $__ptr_offset '), 'a captured array keeps the follow')
+  // (the follow is f's own: a helper the module links, `__len`, calls it too)
+  const body3 = pre3.slice(pre3.indexOf('(func $f'), pre3.indexOf('(func', pre3.indexOf('(func $f') + 10))
+  ok(/call \$__ptr_offset\s/.test(body3), 'a captured array keeps the follow')
   for (const n of [0, 5, 40]) for (const O of levels(0, 'size', 3)) is(jz(captured, { optimize: O }).exports.f(n), jsFn(captured, 'f')(n), `captured O${O} n=${n}`)
 })
 

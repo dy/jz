@@ -1058,7 +1058,7 @@ test('summary contract: a call through a dispatch table crosses boxed; the direc
   is(summary.resultContract('f').carrier, CARRIER.BOXED, 'the export returning it crosses boxed: its return edge boxes')
 })
 
-test('summary contract: a typed array callback\'s parameter is unbounded, its result boxed, the reduce\'s the element domain', () => {
+test('summary contract: a typed array callback\'s parameter is the element kind, its result boxed, the reduce\'s the element domain', () => {
   const params = [',', 'x'], accParams = [',', 'a', 'b']
   const typedArr = ['()', 'new.BigInt64Array', ['[', lit(2n), lit(3n)]]
   const funcs = [
@@ -1066,7 +1066,7 @@ test('summary contract: a typed array callback\'s parameter is unbounded, its re
     { name: 'reduced', sig: { params: [], results: ['f64'] }, body: ['()', ['.', typedArr, 'reduce'], ['=>', accParams, ['+', 'a', 'b']]] },
   ]
   const summary = summarize([';', ['()', 'mapped', null], ['()', 'reduced', null]], { funcs, schemas: [], brandOf: () => null, imports: new Map(), exported: () => false })
-  is(summary.at(params).kindOf('x'), kind(K.ANY), 'the map callback escapes: its parameter is every kind')
+  is(summary.at(params).kindOf('x'), kind(K.BIGINT), 'the map callback is bound as an array\'s is: its parameter is the element kind')
   is(summary.resultContract(params).carrier, CARRIER.BOXED, 'a BigInt among a bounded result crosses the closure ABI boxed')
   is(summary.at(accParams).kindOf('a'), kind(K.BIGINT), 'the reduce callback is bound: accumulator and element are the element kind')
   is(summary.resultContract(accParams).carrier, CARRIER.BOXED)
