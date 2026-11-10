@@ -40,7 +40,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode, extractParams, collectParamName, collectParamNames } from '../../ast.js'
+import { T, MUTATE_OPS, numberGuard, some, walkAst, stmtList, cloneNode, noted, extractParams, collectParamName, collectParamNames } from '../../ast.js'
 import { frameRoots } from '../../function.js'
 import { freshId } from '../../ir.js'
 import { includeModule } from '../../autoload.js'
@@ -214,12 +214,11 @@ function unitWalk(node, parent, idx, locals, captured) {
     // the copy's own declarations, fresh; the step a literal, written downward as a subtraction
     const own = new Map([...inner].map(n => [n, `${n}${T}uw${freshId(ctx)}`]))
     const out = cloneWithSubst(body, new Map(), own)
-    // (a step by the name, `x += dx` or `x = x - dx`, is the literal's: `x += 1`, `x -= 1`, the
-    // value it leaves the same; a literal step stays as written)
+    // (a step by the name, `x += dx` or `x = x - dx`, is the unit step, `++x` or `--x`, in the
+    // one loop form (src/normalize.js): the value it leaves the same; a literal step stays as written)
     const step = (n) => {
       if (!Array.isArray(n) || n[0] === '=>') return n
-      if (typeof by === 'string' && MUTATE_OPS.has(n[0]) && n[1] === x)
-        return like(n, n[0] === '=' ? ['=', x, [k > 0 ? '+' : '-', x, lit(1)]] : [k > 0 ? '+=' : '-=', x, lit(1)])
+      if (typeof by === 'string' && MUTATE_OPS.has(n[0]) && n[1] === x) return noted(n, [k > 0 ? '++' : '--', x])
       for (let i = 1; i < n.length; i++) n[i] = step(n[i])
       return n
     }
