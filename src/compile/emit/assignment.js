@@ -346,11 +346,17 @@ export const assignmentOps = {
   // `**` is always f64 (and has its own const-exponent lowering) — full desugar.
   '**=': (name, val) => throughReference(name, val, ref => emit(['=', ref, ['**', ref, val]])),
 
-  // Bare bindings normalize before planning. Remaining member assignments
-  // share the same binary operation and write path, not a second i64 gate.
-  ...Object.fromEntries(['&=', '|=', '^=', '<<=', '>>=', '>>>='].map(op =>
-    [op, (name, val) => memberCompound(op.slice(0, -1), name, val)]
-  )),
+  // Prepare writes a bare binding's as `x = x | v`; a pass after it can make one
+  // again (a record's field held in a local: `o.n |= v`), which is that same
+  // assignment. Member assignments share the binary operation and write path,
+  // not a second i64 gate.
+  ...Object.fromEntries(['&=', '|=', '^=', '<<=', '>>=', '>>>='].map(op => [op, (name, val) => {
+    const sym = op.slice(0, -1)
+    if (typeof name !== 'string') return memberCompound(sym, name, val)
+    const bin = [sym, name, val]
+    ctx.plans.compoundOf.set(bin, name)
+    return emit(['=', name, bin])
+  }])),
 
   // Logical compound assignments: a ||= b → a = a || b, a &&= b → a = a && b
   // Logical/nullish compound assignments: read → check → conditionally write

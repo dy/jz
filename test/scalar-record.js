@@ -153,3 +153,10 @@ test('scalar record: an absent own slot retains its class method fallback', () =
     return p.x + p.n
   }`)
 })
+
+test('scalar record: a field held in a local takes every compound assignment', () => {
+  // prepare writes a bare `x |= v` as `x = x | v`; a field's local met the emitter after it
+  agree(['+=', '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=', '||=', '&&=', '??='].map((op, k) => `
+    export const o${k} = (n) => { const o = { v: 5, k: 1 }; o.v ${op} n; o.k ${op} o.v; return [o.v, o.k] }
+    export const a${k} = (n) => { const a = [5, 1]; a[0] ${op} n; a[1] ${op} a[0]; return a[0] + a[1] }`).join(''))
+})
