@@ -27,6 +27,7 @@ import { prepareImports, programModuleAsts, importedBinding } from './prepare/ha
 import prepare from './prepare/index.js'
 import { preEval } from './prepare/pre-eval.js'
 import { includeAllMods } from './autoload.js'
+import { normalizeProgram } from './normalize.js'
 
 /** source → preEval'd prepared AST (the tree compileAst consumes).
  * `eagerStdlib` is a test-only switch proving that module registration order
@@ -47,5 +48,7 @@ export function frontHalf(code, { strict, sourceType = 'jz', jzify, time = (n, f
   // preEval: fold every statically-evaluable construct (numeric/string/bool chains,
   // pure Math.* calls, zero-arg pure calls incl. lift-iife's IIFEs) down to literals,
   // over every module initializer and function body, before compile sees them.
-  return time('preEval', () => preEval(ast))
+  const out = time('preEval', () => preEval(ast))
+  time('normalize', () => normalizeProgram(out))
+  return out
 }

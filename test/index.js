@@ -164,6 +164,7 @@ const TESTS = [
   'counter-width',
   'shift-precedence',
   'loop-step',
+  'normalize',
   'field-cse',
   'tag-literals',
   'scalar-record',

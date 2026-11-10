@@ -313,6 +313,13 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 //   the check made an equality, one baseline per host (2026-11-09): the JS entry takes this
 //            tree's counts, which had fallen below the cap: float 1548/784 -> 1372/608, mixed
 //            2341/1137 -> 2264/1060, slice entered 30784 -> 30656.
+//   one loop form (src/normalize.js, 2026-11-09): the default style's step `i = i + 1`
+//            reaches the readers as `++i`. Mixed seed 7 then meets plan/integral-loops.js's
+//            trip rule (`COUNTS`: `++`, not `i = i + 1`), which holds `acc` to a word under a
+//            guard no run of a trip passes (`1 + max(1, ceil(n) + 1) * 1103515500` within
+//            i32) and leaves the loop as written cold, without the wide accumulator: that
+//            program 77/38 -> 63/63, mixed 2264/1060 -> 2250/1085 on both hosts, every other
+//            program as it was. Written `i++`, `++i` or `i += 1`, it compiled so before.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}
