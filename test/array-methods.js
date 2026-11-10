@@ -524,6 +524,25 @@ test('typed callbacks: inlined over the one walk, as JS answers', () => {
   }
 })
 
+// A filter's array holds what the test kept, however many the receiver has: an
+// index past them is undefined, whatever the receiver's own length proves.
+test('.filter: an index past what it kept is undefined', () => {
+  const src = `const pick = (a) => a.filter(x => x > 2)
+  export let numbers = () => { const xs = [1.5, 2.5, 3.5]; const d = xs.filter(x => x > 3); return [d[0], d[1], d[2], d.length] }
+  export let strings = () => { const xs = ['a', 'b', 'c']; const d = xs.filter(x => x === 'b'); return [d[0], d[1], d[2], d.length] }
+  export let passed = () => { const d = pick([1, 2, 3, 4]); return [d[0], d[1], d[2], d[3], d.length] }
+  export let none = () => { const d = [1, 2, 3, 4].filter(x => false); return [d[0], d.length, d.at(0), 0 in d] }
+  export let direct = () => { const xs = [1, 2, 3, 4]; return [xs.filter(x => x === 2)[0], xs.filter(x => x === 2)[1]] }
+  export let walked = () => { const xs = [1, 2, 3, 4]; const d = xs.filter(x => x > 3); let s = 0; for (let i = 0; i < xs.length; i++) s += d[i] ?? 100; return s }
+  export let mapped = () => { const d = [1, 2, 3, 4].filter(x => x > 3).map(x => x * 2); return [d[0], d[1], d.length] }
+  export let all = () => { const xs = [1, 2, 3]; const d = xs.filter(x => true); return [d[0], d[2], d[3], d.length] }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name in want) is(got[name](), want[name](), `${name}, O${optimize}`)
+  }
+})
+
 // === .forEach ===
 
 test('.forEach: its value is undefined on every receiver, and its callback writes what it captures', () => {

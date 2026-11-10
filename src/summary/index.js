@@ -2885,7 +2885,12 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
       const out = arrayOf(node, item, nums, fixedLen(recv)); raiseElem(out, item, false, false, false, nums); return out
     }
     if (name === 'flatMap') { const out = arrayOf(node, K.NONE); raiseElem(out, tagOf(r) === K.ARRAY ? elemOf(r) : r); return out }
-    if (name === 'filter') return recv
+    // `filter` keeps some of the receiver's elements in an array of its own, of
+    // no known count: the receiver's length says nothing of an index into it
+    if (name === 'filter') {
+      const kept = mayMiss ? orAbsent(elemOf(recv)) : elemOf(recv), nums = hasTag(kept, K.NUMBER) ? cellNums(recv) : NR_NONE
+      const out = arrayOf(node, kept, nums, LEN_OPEN); raiseElem(out, kept, false, false, false, nums); return out
+    }
     if (name === 'find' || name === 'findLast') return orAbsent(elem)
     if (name === 'findIndex' || name === 'findLastIndex') return NUMBER
     if (name === 'forEach') return NULLISH
