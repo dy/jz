@@ -4,7 +4,7 @@
  * jz emits only the few `wasi_snapshot_preview1` imports its lowerings use:
  * `fd_write` (console.log/error, fs.writeSync), `fd_read` (readStdin, fs.readSync), `clock_time_get`
  * (Date.now/performance.now/timers), `random_get` (only with `{ randomSeed: true }`,
- * to seed Math.random), plus no-op `proc_exit` / `environ_*` stubs. This shim
+ * to seed Math.random), `proc_exit` (process.exit), plus no-op `environ_*` stubs. This shim
  * implements exactly that set, so jz modules run in browsers and plain Node
  * without native WASI. (The compiled `.wasm` uses standard WASI and runs on
  * wasmtime/wasmer/deno natively — the shim is only for hosts that lack WASI.)
@@ -28,6 +28,8 @@
  * @param {function} [opts.write] - Custom write: (fd, text) => void. Without it,
  *   bytes go to process.stdout/stderr unchanged (fs.writeSync stays binary-exact).
  * @param {function} [opts.read] - Custom read: (fd, buf: Uint8Array) => bytesRead
+ * @param {function} [opts.exit] - Custom exit: (code) => void, for `process.exit(code)`. Without it
+ *   the host process exits. Where it returns, the module traps (a WebAssembly.RuntimeError).
  */
 import { decodeUtf8 } from './utf8.js'
 
@@ -87,7 +89,14 @@ export function wasi(opts = {}) {
         else for (let i = 0; i < buf_len; i++) bytes[i] = (Math.random() * 256) | 0
         return 0
       },
-      proc_exit() {},
+      // process.exit(code): `opts.exit`, else the host's own exit. Where that returns (an
+      // `exit` that records the code, a browser with no process), the module traps past
+      // the call: a trap, unlike an Error thrown from here, is nothing the program's own
+      // try/catch takes or its finally runs under, as an exit is not.
+      proc_exit(code) {
+        if (opts.exit) opts.exit(code)
+        else globalThis.process?.exit?.(code)
+      },
       environ_sizes_get(count_ptr, size_ptr) {
         const dv = new DataView(mem.buffer)
         dv.setUint32(count_ptr, 0, true)

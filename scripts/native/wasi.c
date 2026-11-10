@@ -10,6 +10,7 @@
  *   fd_filestat_get          which is the current directory
  *   clock_time_get           Date.now, performance.now, timers
  *   random_get               Math.random seeding, crypto.getRandomValues
+ *   proc_exit                process.exit
  *
  * Failures return the WASI errno (wasi-libc wasi/wasip1.h numbering); jz turns
  * it into a thrown number. Shared by scripts/native/compile.mjs and the bench's
@@ -230,6 +231,12 @@ u32 w2c_wasi__snapshot__preview1_random_get(wasi_t* w, u32 buf, u32 len) {
     if (getentropy(p + off, n)) return errno_wasi(errno);
   }
   return E_SUCCESS;
+}
+
+/* fd_write is unbuffered here, so nothing of the program's is left to flush. */
+void w2c_wasi__snapshot__preview1_proc_exit(wasi_t* w, u32 code) {
+  (void)w;
+  exit((int)code);
 }
 
 int main(void) {

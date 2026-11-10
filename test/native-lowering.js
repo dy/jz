@@ -209,12 +209,13 @@ crypto.getRandomValues(r)
 let nz = 0
 for (let i = 0; i < 64; i++) if (r[i]) nz++
 console.log(s, s.length, nz > 40, Date.now() > 1.7e12, performance.now() >= 0)
+process.exit(0)
 `)
   is(WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(wasm))).map(i => i.name).sort(), [...PROVIDED].sort(),
     'the program imports every function the shim provides')
   const expected = 'héllo ✓ 7 true true true\n'
   // fd 3, the first preopen, is the working directory.
-  is(execFileSync(bin, { cwd: dir, encoding: 'utf8' }), expected, 'native: path_open/fd_read/fd_write/fd_close/fd_filestat_get/random_get/clock_time_get')
+  is(execFileSync(bin, { cwd: dir, encoding: 'utf8' }), expected, 'native: path_open/fd_read/fd_write/fd_close/fd_filestat_get/random_get/clock_time_get/proc_exit')
   is(readFileSync(join(dir, 'note.txt'), 'utf8'), 'héllo ✓', 'native: the file holds UTF-8')
   if (WASMTIME) is(execFileSync('wasmtime', ['--dir', '.', wasm], { cwd: dir, encoding: 'utf8' }), expected, 'wasmtime --dir . agrees')
 
@@ -228,6 +229,15 @@ console.log('not reached')
   is(r2.stdout, 'caught 8\n', 'a bad descriptor throws WASI EBADF (8), caught by try/catch')
   is(r2.status, 134, 'an uncaught throw traps with exit status 134, as wasmtime does')
   ok(/^wasm trap: /.test(r2.stderr), 'the trap reason goes to stderr')
+
+  const exit = build(dir, 'exit', `console.log('before')
+const leave = (code) => { process.exit(code) }
+leave(7)
+console.log('not reached')
+`)
+  const r3 = spawnSync(exit.bin, { encoding: 'utf8' })
+  is([r3.status, r3.stdout], [7, 'before\n'], 'process.exit ends the command with its status, from a call below the top level, and nothing after it runs')
+  if (WASMTIME) is(spawnSync('wasmtime', [exit.wasm], { encoding: 'utf8' }).status, 7, 'wasmtime agrees')
 }))
 
 // WABT writes every multi-value result struct into the header, SIMDe's v128 only for

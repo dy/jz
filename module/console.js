@@ -24,7 +24,7 @@
  * @module console
  */
 
-import { typed, asF64, asI64, mkPtrIR, temp, tempI32, walk, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
+import { typed, asF64, asI64, toInt32, toNumF64, mkPtrIR, temp, tempI32, walk, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
 import { emit, bool, deps, reg, wat, hostImport, storedValue } from '../src/bridge.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { exprType } from '../src/type.js'
@@ -263,6 +263,18 @@ const setupWasi = (ctx) => {
   })
   ctx.core.emit['console.now'] = ctx.core.emit['Date.now']
   ctx.core.emit['console.perfNow'] = ctx.core.emit['performance.now']
+
+  // `process.exit(code)` ends the command with that status: `proc_exit` does not
+  // return, and nothing after the call runs. No code is 0. (In a JS host
+  // `process` is the host's own object, an env import.)
+  const needExit = () => hostImport('wasi_snapshot_preview1', 'proc_exit',
+    ['func', '$__proc_exit', ['param', 'i32']])
+  reg('process.exit', [], (code, ...rest) => {
+    needExit()
+    const status = code === undefined ? ['i32.const', 0] : toInt32(toNumF64(code, emit(code)))
+    return typed(['block', ['result', 'f64'], ...rest.map(a => ['drop', asF64(emit(a))]),
+      ['call', '$__proc_exit', status], ['unreachable']], 'f64')
+  })
 }
 
 const setupJsHost = (ctx) => {

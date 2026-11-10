@@ -24,7 +24,7 @@ const SHIM = join(HERE, 'wasi.c')
 /** Hoists the memory base and drops WABT's load barriers where guard pages allow (see the file). */
 export const POSTPROCESS = join(HERE, 'postprocess-watr.awk')
 /** The wasi_snapshot_preview1 imports wasi.c implements: every one jz emits. */
-export const PROVIDED = ['fd_read', 'fd_write', 'fd_close', 'fd_filestat_get', 'path_open', 'clock_time_get', 'random_get']
+export const PROVIDED = ['fd_read', 'fd_write', 'fd_close', 'fd_filestat_get', 'path_open', 'clock_time_get', 'random_get', 'proc_exit']
 /** wasm2c output keeps IEEE semantics only without contraction (no fused multiply-add). */
 export const CFLAGS = ['-O3', '-ffp-contract=off']
 const RUNTIME = ['wasm-rt-impl.c', 'wasm-rt-mem-impl.c', 'wasm-rt-exceptions-impl.c']

@@ -36,7 +36,7 @@ exports.square(7) // 49
 `jz(source, opts)` compiles and instantiates. `compile(source, opts)` returns the wasm, and
 `instantiate(wasm, { imports, memory, wasi })` runs it, also from `jz/interop` without the compiler:
 `memory` is the memory of a module compiled to import one (`jz()` makes it from the descriptor),
-`wasi: { write, read }` the stdio of a `host: 'wasi'` module in a JS host. An import or a memory the
+`wasi: { write, read, exit }` the stdio and the `process.exit` of a `host: 'wasi'` module in a JS host. An import or a memory the
 module needs and the call does not give is a TypeError naming it.
 These are all the options: any other key throws a `TypeError` naming it.
 
@@ -79,6 +79,8 @@ reactor instead: its `_initialize` runs the top-level code, then its body. Every
 the top-level code first where the entry has not, so the module also serves `wasmtime --invoke f`; `run` and every other name are ordinary
 exports. In a JS host, `instantiate()` runs the top-level code and drives the timers;
 `instance.exports._start()` runs the rest of the command.
+`process.exit(code)` ends the command with that status (WASI `proc_exit`): nothing after it runs,
+no `finally` either. It is the one member of `process` a WASI module has.
 
 ## Examples
 

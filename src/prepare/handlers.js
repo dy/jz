@@ -2938,7 +2938,8 @@ function resolveCallee(callee, args) {
       addHostImport(obj, prop, alias, spec)
       return alias
     }
-    if (key && includeForNamedCall(key)) return sourceBuiltin(key)
+    // (a name its module serves on this target: `process.exit` is WASI's, and a JS host's own `process` otherwise)
+    if (key && includeForNamedCall(key) && ctx.core.emit[key] !== undefined) return sourceBuiltin(key)
     if (includeForGenericMethod(prop)) return prep(callee)
     const mod = namespaceModOf(obj)
     if (mod) {

@@ -1136,3 +1136,43 @@ test('WASI: the program\'s own _start and _initialize run after jz\'s init', () 
     is(execSync('wasmtime /tmp/jz_wasi_entry.wasm 2>/dev/null', { encoding: 'utf-8' }), want, `wasmtime: ${JSON.stringify(want)}`)
   }
 })
+
+// `process.exit(code)` under host:'wasi' is `proc_exit`: the command ends with that
+// status and nothing after the call runs. In a JS host the shim hands the code to
+// `wasi: { exit }`, and where that returns the module traps: no try/catch of the
+// program's takes a trap.
+test('process.exit ends a WASI command with its status', async () => {
+  const { instantiate } = await import('../interop.js')
+  const imports = (src, host) => WebAssembly.Module.imports(new WebAssembly.Module(compile(src, { host }))).map(i => `${i.module}.${i.name}`)
+  const src = `const leave = (code) => { console.log('leaving'); process.exit(code) }
+    export const f = (code) => { if (code !== -1) leave(code); return 5 }
+    export const none = () => { process.exit() }
+    export const twice = (code) => { try { process.exit(code) } catch (e) { return 1 } finally { console.log('finally') } }`
+  ok(imports(src, 'wasi').includes('wasi_snapshot_preview1.proc_exit'), 'imports proc_exit')
+  const codes = [], out = []
+  const { exports } = instantiate(compile(src, { host: 'wasi' }), { wasi: { exit: (code) => { codes.push(code) }, write: (fd, text) => out.push(text) } })
+  const leaves = (fn, arg) => { try { fn(arg); return 'returned' } catch (e) { return e instanceof WebAssembly.RuntimeError ? codes[codes.length - 1] : e } }
+  is(leaves(exports.f, 3), 3, 'the code reaches `wasi: { exit }`, and the call traps')
+  is(leaves(exports.f, 0), 0, 'zero is a status too')
+  is(leaves(exports.f, 2.9), 2, 'a fraction converts as an int32 does')
+  is(leaves(exports.none), 0, 'no code is 0')
+  is(exports.f(-1), 5, 'a path that does not exit returns')
+  is(leaves(exports.twice, 4), 4, "the program's own try/catch does not take the exit")
+  is(codes, [3, 0, 2, 0, 4], 'one call of `exit` per exit')
+  is(out.join(''), 'leaving\n'.repeat(3), 'what ran before the exit is written; nothing after it, no finally')
+
+  // a JS host keeps its own `process`: an env import, no WASI one
+  const js = imports(`export const f = (code) => { process.exit(code) }`, 'js')
+  ok(js.includes('env.process') && !js.some(i => i.startsWith('wasi_')), `host:'js' imports the host's process: ${js}`)
+  // the rest of `process` has no WASI meaning
+  let msg = ''
+  try { compile(`export const f = () => process.argv`, { host: 'wasi' }) } catch (e) { msg = e.message }
+  ok(/host global `process` requires an env import/.test(msg), 'another member of process is refused as before')
+
+  if (hasCmd('wasmtime')) {
+    writeFileSync('/tmp/jz_wasi_exit.wasm', compile(`console.log('before')\nconst leave = (c) => { process.exit(c) }\nleave(7)\nconsole.log('after')`, { host: 'wasi' }))
+    let status = 0, stdout = ''
+    try { stdout = execSync('wasmtime /tmp/jz_wasi_exit.wasm', { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch (e) { status = e.status; stdout = e.stdout }
+    is([status, stdout], [7, 'before\n'], 'wasmtime: status 7, nothing after the exit')
+  }
+})

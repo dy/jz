@@ -5,7 +5,8 @@
 `compile.mjs` builds a standalone executable from a jz program: jz
 `--host wasi --no-tail-call` → wasm2c → C compiler, linked with `wasi.c`, a
 WASI Preview 1 shim for exactly the imports jz emits (`fd_read`, `fd_write`,
-`path_open`, `fd_close`, `fd_filestat_get`, `clock_time_get`, `random_get`).
+`path_open`, `fd_close`, `fd_filestat_get`, `clock_time_get`, `random_get`,
+`proc_exit`).
 
 ```bash
 node scripts/native/compile.mjs host.js -o host     # jz options may follow: -O3, -D K=V, --no-simd
