@@ -1350,7 +1350,9 @@ function nestedWritesOf(node, loopWrites) {
       }
       return
     }
-    if (FLOW_LOOP_OPS.has(op)) inLoop = true
+    // (a function body runs any number of times, as a loop body does: a walk
+    // that runs an arrow in place runs its writes each round, compile/in-place.js)
+    if (FLOW_LOOP_OPS.has(op) || op === '=>') inLoop = true
     if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && typeof n[1] === 'string')
       (inLoop ? loopWrites : flatWrites).add(n[1])
     for (let i = 1; i < n.length; i++) walk(n[i], inLoop)

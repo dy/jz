@@ -17,7 +17,9 @@
  */
 import { DBG_INVARIANTS } from '../../src/debug.js'
 import { arrayLoop, typed, asF64, UNDEF_NAN, temp, throwTypeErrorIR, ptrTypeEq, undefExpr } from '../../src/ir.js'
-import { emit, storedValue } from '../../src/bridge.js'
+import { emit, emitVoid, storedValue } from '../../src/bridge.js'
+import { bodyParts, declaredNames } from '../../src/compile/in-place.js'
+import { withControlFrame } from '../../src/compile/flow-state.js'
 import { valTypeOf } from '../../src/kind.js'
 import { typedCtorElemValType } from '../../src/kind-traits.js'
 import { plannedTypedStorageCtor } from '../../src/compile/typed-storage-plan.js'
@@ -66,7 +68,7 @@ export function captureCallback(fn, name = temp('af'), thisArg) {
     check: known ? ['nop'] : ['if', ['i32.eqz', ['i32.and',
       ['f64.ne', value, value], ptrTypeEq(value, PTR.CLOSURE)]],
       ['then', ['drop', throwTypeErrorIR('call')]]],
-    value, dynamic: true, call, stored: call,
+    value, dynamic: true, call, stored: call, run: args => [['drop', call(args)]],
   }
 }
 
@@ -112,17 +114,22 @@ function hasInlineCarriers(node, view) {
   return true
 }
 
-// Substitute variable references in a pure expression. Skips property names on `.` / `?.`
-// and object-literal keys on `:`. Body must be pre-checked with isPureExpr.
+// Substitute variable references: a node no name of `mapping` reaches is kept
+// as it is, with what the plan knows of it. Skips literals, property names on
+// `.` / `?.` and object-literal keys on `:`.
 function substExpr(node, mapping) {
   if (typeof node === 'string') return mapping.has(node) ? mapping.get(node) : node
   if (!Array.isArray(node)) return node
   const op = node[0]
-  if (op === '.' || op === '?.') return [op, substExpr(node[1], mapping), node[2]]
-  if (op === ':') return [op, node[1], substExpr(node[2], mapping)]
-  const out = [op]
-  for (let i = 1; i < node.length; i++) out.push(substExpr(node[i], mapping))
-  return out
+  if (op == null || op === 'str') return node
+  if (op === '.' || op === '?.') { const o = substExpr(node[1], mapping); return o === node[1] ? node : [op, o, ...node.slice(2)] }
+  if (op === ':') { const v = substExpr(node[2], mapping); return v === node[2] ? node : [op, node[1], v] }
+  let out = null
+  for (let i = 1; i < node.length; i++) {
+    const c = substExpr(node[i], mapping)
+    if (c !== node[i]) (out ??= node.slice())[i] = c
+  }
+  return out ?? node
 }
 
 function exprUses(node, name) {
@@ -132,12 +139,16 @@ function exprUses(node, name) {
 // The local an argument is a bare read of, else null.
 const localRead = (ir) => Array.isArray(ir) && ir[0] === 'local.get' && typeof ir[1] === 'string' ? ir[1].slice(1) : null
 
-// Callback factory: returns { setup, call, usedParams } where call(argExprs) emits the invocation.
-// Fast path: literal arrow with simple-string params and pure expression body → inline,
-// substituting param refs with fresh locals. Zero closure alloc, zero call_indirect, zero
-// args-array alloc. Captures resolve naturally to outer locals.
-// Slow path: fall back to ctx.closure.call (heap-allocated args array per iteration).
-// usedParams: boolean array (fast path only) — callers can skip computing args for unused params.
+// Callback factory: returns { setup, call, stored, run, usedParams } where
+// call(argExprs) emits the invocation and run(argExprs) its statements, the
+// value dropped. An arrow runs inline, its parameters substituted by the walk's
+// locals or fresh ones: no closure, no call_indirect, no argument array, its
+// captures the function's own locals. It does where its body is a pure
+// expression, and where the analysis found the walk calling it in place
+// (compile/in-place.js): then its statements run in the walk, a local of the
+// function it writes is that local, and its value is its last `return`.
+// Anything else is a closure call (ctx.closure.call).
+// usedParams: boolean array (inline only): callers can skip computing args for unused params.
 // Each inlined local reads, to the summary, as the parameter it holds: the
 // kind the solve bound it to at every call (summary/index.js arrayCallback,
 // reduceResult, arrayFrom). elem: `{ index, expr }`, the parameter position
@@ -148,13 +159,18 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
   if (Array.isArray(fn) && fn[0] === '=>') {
     const raw = extractParams(fn[1])
     const body = fn[2]
-    if (raw.every(p => typeof p === 'string') && isPureExpr(body) &&
+    if (ctx.func.inPlace?.has(fn) || raw.every(p => typeof p === 'string') && isPureExpr(body) &&
         (!representationProgramHasBigint(ctx) || hasInlineCarriers(body, ctx.summary?.at(fn[1])))) {
       const usedParams = raw.map(p => exprUses(body, p))
+      const { stmts: run, value } = bodyParts(body)
+      // (each round declares the body's own bindings anew, in its statements or
+      // in its value where a splice left one: the walk's function holds them)
+      const declared = declaredNames(body)
       // `call` yields the body's value in its own form (an i32 boolean stays
       // i32 for a test); `stored` yields the container store's form (a
       // boolean its atom, a BigInt its planned box), for a result kept as a
-      // value: stored into an array, handed to another callback, folded.
+      // value: stored into an array, handed to another callback, folded;
+      // a null `produce` its statements alone, the value dropped.
       const inline = (argExprs, produce) => {
           const stmts = []
           const mapping = new Map()
@@ -205,21 +221,30 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
               if (argReps[i].tagged) (ctx.func.taggedLocals ??= new Set()).add(fresh)
             }
           }
-          const subst = substExpr(body, mapping)
           if (view) for (let i = 0; i < raw.length; i++) {
             const t = freshNames[i]
             if (!t) continue
             if (view.aliasParam(t, fn[1], raw[i])) held.push(t)
             else if (elem?.index === i) { view.alias(t, elem.expr, false); held.push(t) }
           }
-          let result
-          try { result = produce(subst) } finally {
+          for (const name of declared) {
+            if (!ctx.func.locals.has(name)) ctx.func.locals.set(name, 'f64')
+            if (view?.aliasDeclared(name, fn[1] ?? fn[2])) held.push(name)
+          }
+          let effects = [], result
+          try {
+            // (a frame on the control stack: the statements run once a round, as a loop body's do)
+            if (run.length) effects = withControlFrame({ brk: null }, () => emitVoid(['{}', [';', ...run.map(s => substExpr(s, mapping))]]))
+            const v = value == null ? [null, undefined] : substExpr(value, mapping)
+            result = produce ? produce(v) : value == null ? [] : emitVoid(v)
+          } finally {
             for (const t of held.reverse()) view.unalias(t)
             for (const [t, was] of overlaid.reverse()) { if (was === undefined) ctx.func.localValTypesOverlay.delete(t); else ctx.func.localValTypesOverlay.set(t, was) }
           }
+          if (!produce) return [...stmts, ...effects, ...result]
           // Preserve i32 result type so callers (truthyIR, etc.) can skip f64↔i32 round-trips.
           const ty = result.type === 'i32' ? 'i32' : 'f64'
-          const wrapped = typed(['block', ['result', ty], ...stmts, result], ty)
+          const wrapped = typed(['block', ['result', ty], ...stmts, ...effects, result], ty)
           // An i32 result carrying ptrKind is an UNBOXED POINTER (a narrowed-return
           // callee: the caller must rebox via this metadata) — the block wrapper must
           // carry it through or downstream asF64 numeric-converts the raw offset
@@ -229,8 +254,8 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
           if (result.unsigned) wrapped.unsigned = true
           return wrapped
       }
-      // The rebuilt body has no plan facts of its own: for a store it names
-      // the tagged slot it lands in (representationComputedExprAction).
+      // The inlined value has no plan facts in this function: for a store it
+      // names the tagged slot it lands in (representationComputedExprAction).
       const stored = node => {
         if (Array.isArray(node)) ctx.plans.compoundOf.set(node, true)
         return storedValue(node)
@@ -241,6 +266,7 @@ export function makeCallback(fn, argReps, elem = null, thisArg) {
         usedParams,
         call: (argExprs) => inline(argExprs, emit),
         stored: (argExprs) => inline(argExprs, stored),
+        run: (argExprs) => inline(argExprs, null),
       }
     }
   }

@@ -9,7 +9,7 @@ import { storedValue } from '../../bridge.js'
 import { primitiveKind } from '../../evaluation-effects.js'
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
-  PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, hasOptionalChain, walkAst,
+  PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, hasOptionalChain, isReassigned, walkAst,
 } from '../../ast.js'
 import { LAYOUT, OPTF, PTR, ctx, err, inc, emitArity } from '../../ctx.js'
 import {
@@ -523,6 +523,11 @@ export const callOps = {
     findFreeVars(body, paramSet, captures)
     for (const def of Object.values(defaults)) findFreeVars(def, paramSet, captures)
 
+    // A local the closure writes is held in a cell (analyze-scans.js boxedCaptures):
+    // one held by value is an arrow the analysis found a walk running in place
+    // (compile/in-place.js) that reached the emitter as a value, its writes lost.
+    const lost = captures.find(c => !ctx.func.boxed?.has(c) && isReassigned(body, c))
+    if (lost != null) throw new Error(`an arrow writing ${lost} reached a closure where the analysis ran it in place`)
     // Pass closure info including rest param and defaults.
     // self: the capture that is the closure itself, a binding no cell holds
     const self = binding != null && captures.includes(binding) && !ctx.func.boxed?.has(binding) ? binding : null

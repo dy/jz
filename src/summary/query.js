@@ -614,6 +614,14 @@ export function summaryQueries(facts, internal = false) {
         aliases.set(name, { e: null, present: false, key, prev: aliases.get(name) })
         return true
       },
+      // A binding the body of that closure declares, read where the body runs in
+      // place (module/array/callback.js): its own name reads as that binding.
+      aliasDeclared: (name, params) => {
+        const s = scopeOfParams.get(params), key = s === undefined ? undefined : declared.get(s)?.get(name)
+        if (typeof key !== 'number') return false
+        aliases.set(name, { e: null, present: false, key, prev: aliases.get(name) })
+        return true
+      },
       // (an alias nests: a temp an inner callback reads as its parameter reads as before once that callback is emitted)
       unalias: (name) => { const a = aliases.get(name); if (a?.prev) aliases.set(name, a.prev); else aliases.delete(name) },
       /** The name is present on the path being emitted (a guard proved it): its reads drop the nullish part. */

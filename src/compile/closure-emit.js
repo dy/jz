@@ -178,7 +178,9 @@ export function analyzeClosureBodyForEmit(cb) {
         updateRep(name, fields)
       }
       inheritPtrAliases(cb.body, ctx.func.locals, ctx.func.boxed)
-    }
+    // A closure an expression body makes writes this frame's parameter through
+    // its cell, as one a block makes (`(t) => ((() => { t = 7 })(), t)` answered 10).
+    } else boxedCaptures(frameNode(cb), cb.params, cb.self != null ? [...cb.captures, cb.self] : cb.captures)
 
     const boxedCaptureNames = new Set(cb.captures.filter(name => parentBoxedCaptures.has(name)))
     const boxedValueCaptureNames = new Set(cb.captures.filter(name =>

@@ -20,6 +20,8 @@ export { emitter } from './ctx.js'
 
 export const emit = (...a) => ctx.bridge.emit(...a)
 export const emitReference = (...a) => ctx.bridge.emitReference(...a)
+// A statement, or a block of them, its value dropped (an inlined callback's body, module/array/callback.js).
+export const emitVoid = (...a) => ctx.bridge.emitVoid(...a)
 // Identity-safe re-emission of an ambiguous BOOL-merge node (kind.js
 // hasAmbiguousBoolMerge, .work/archive/todo.md §deletion-sweep) — the
 // escape-site twin of `emit` for consumers (container/closure-arg boxing)

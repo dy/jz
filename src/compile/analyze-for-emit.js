@@ -482,8 +482,10 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (block && ctx.schema.slotI32Certain?.size) {
     ctx.func.locals = reanalyzeBody(body).locals
   }
+  // A closure a parameter default makes captures too, and one an expression
+  // body makes writes a parameter through its cell as one a block makes does.
+  boxedCaptures(frameNode(func))
   if (block) {
-    boxedCaptures(frameNode(func))   // a closure a parameter default makes captures too
     // Lower provably-monomorphic pointer locals to i32 offset storage.
     // VAL.TYPED unbox requires a known element ctor (aux byte) — without it,
     // the use site can't pick the right i32.store{8,16}/i32.store width and
@@ -600,6 +602,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     block,
     locals: ctx.func.locals,
     boxed: ctx.func.boxed,
+    inPlace: ctx.func.inPlace,
     cellTypes,
     flatObjects: ctx.func.flatObjects,
     fieldCaches: ctx.func.fieldCaches,

@@ -10,7 +10,9 @@
  * first, and the name is gone.
  *
  * `b` is `a` when
- *   - every definition of `b` is the name `a`, and nothing else writes `b`;
+ *   - every definition of `b` is the name `a`, and nothing else writes `b`
+ *     (or `for…of`'s iterable of `a`, which the summary holds to a present
+ *     array or typed array: the loop reads `a` itself);
  *   - `a` is a parameter nothing writes, a local defined only by its declaration,
  *     or a module binding proved constant after initialization (including a
  *     settled function target), so what `b` took is what `a` holds;
@@ -32,6 +34,7 @@
  */
 import { ctx } from '../../ctx.js'
 import { MUTATE_OPS, TYPEOF } from '../../ast.js'
+import { VAL } from '../../reps.js'
 import { definitelyAssigned } from '../../summary/definite.js'
 import { setFuncBody } from '../analyze/body-facts.js'
 import { splitReassigned } from '../../prepare/split-bindings.js'
@@ -237,10 +240,19 @@ const aliasesIn = (f) => {
     : (ctx.scope.consts?.has(a) || ctx.funcs.globalDevirt?.has(a)) && !defs.has(a))
   let assigned = null
   const to = new Map()
+  const view = ctx.summary?.at(f.sig)
   // An immutable literal object cannot take a nullish fallback. This also
   // exposes the alias introduced by the destructuring receiver check.
-  const sourceOf = v => isArr(v) && v[0] === '??' && typeof v[1] === 'string' &&
-    stable(v[1]) && !captured.has(v[1]) && defs.get(v[1])?.[0]?.[0] === '{}' ? v[1] : v
+  // `for…of`'s iterable (prepare/handlers.js) of a present array or typed
+  // array is that array: `__iter_arr` hands either back as it is
+  // (module/collection.js), but a typed array where buffers resize, which it
+  // checks against its buffer first.
+  const iteratesItself = a => { const vt = view?.valOfExpr(a); return vt === VAL.ARRAY || vt === VAL.TYPED && !ctx.features.resizable }
+  const sourceOf = v => {
+    const a = !isArr(v) ? null : v[0] === '??' ? v[1] : v[0] === '()' && v[1] === '__iter_arr' ? v[2] : null
+    if (typeof a !== 'string' || !stable(a) || captured.has(a)) return v
+    return (v[0] === '??' ? defs.get(a)?.[0]?.[0] === '{}' : iteratesItself(a)) ? a : v
+  }
   for (const b of declared) {
     if (captured.has(b) || written.has(b) || params.has(b) || guarded.has(b)) continue
     const l = defs.get(b)

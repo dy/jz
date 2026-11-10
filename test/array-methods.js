@@ -567,6 +567,58 @@ test('.forEach: its value is undefined on every receiver, and its callback write
   }
 })
 
+// A callback written in place for an array's or a typed array's walk runs in
+// that walk (compile/in-place.js): its statements are the function's, a local it
+// writes stays a local, and what it declares is new each round. Over an array,
+// a typed array and a parameter, every method answers as JS does: block bodies
+// with a value and without, writes of every kind, rounds that change a kind,
+// loops, labels, switch and try inside, a throw, a receiver it stores into,
+// closures made inside (the closure stays) and after, another closure reading
+// or writing what it writes.
+test('array callbacks: a callback a walk runs in place writes the function\'s own locals', () => {
+  const BODIES = {
+    each: `let s = 0, n = 0; t.forEach((x, i) => { const d = x - i; s += d * d; n++ }); return [s, n]`,
+    fold: `let n = 0; const r = t.reduce((s, x, i) => { n += i; const y = x * 2; return s + y }, 0); return [r, n, t.length ? t.reduce((s, x) => { const y = s * 2; return y - x }) : -1]`,
+    tests: `let n = 0; return [t.find(x => { n++; return x > 3 }), t.findIndex(x => { n++; return x === 0 }), t.findLast(x => { n++; return x < 3 }), t.findLastIndex(x => { n++; return x > 1e9 }), t.some(x => { n++; return x > 100 }), t.every(x => { n++; return x !== -2 }), n]`,
+    maps: `let n = 0; return [Array.from(t.map((x, i) => { n += x; return n + i })), Array.from(t.filter(x => { n++; return n % 2 === 0 })), n, t.map(x => { x * 2 }).length, t.reduceRight((s, x, i) => { n += i; return s + x }, 0), n]`,
+    kinds: `let s = 0, k = 2147483647, v = [7, 8], f = 0; t.forEach((x, i) => { if (i === 1) s = 'a'; s = s + x; k += 1; if (i > 0) v = v + 1; else v = 5; f += 0.5 }); return [s, k, v, f]`,
+    rounds: `const out = []; t.forEach((x, i) => { let c = 0, u; c += x; if (i % 2) u = x; const [p, q] = [c, i]; out.push(c, u, p * q) }); return out`,
+    flow: `let s = 0; for (let k = 0; k < 3; k++) t.forEach(x => { o: for (let j = 0; j < 3; j++) { if (j === 1) continue; for (let m = 0; m < 2; m++) { if (m > j) continue o; s += x * j * k + m } } }); t.forEach((x, i) => { switch (i % 3) { case 0: s += 1; break; case 1: s += 10; default: s += 100 } try { if (x > 3) throw 1; s += x } catch (e) { s -= e } }); return s`,
+    seen: `let s = 0; const get = () => s, fns = []; t.forEach(x => { s += x }); t.forEach(x => { fns.push(() => x + s) }); const late = () => s; s += 1; let w = 0; const inc = () => { w++ }; t.forEach(x => { inc(); w += x }); return [get(), late(), fns.map(f => f()), w]`,
+    thrown: `let n = 0; try { t.forEach(x => { n++; if (n === 2) throw new Error('e' + n) }) } catch (e) { return [n, e.message] } return n`,
+    value: `let s = 0; const r = t.forEach(x => { s += x; return s }); const q = t.forEach(x => s += x); return [r, q, s, t.forEach(x => {}, (s = 100, null)), s]`,
+    nested: `let s = 0; t.forEach(x => { [1, 2].forEach(x => { s += x }) }); t.forEach((x, i) => { t.forEach((y, j) => { s += i * 10 + j }) }); return s`,
+    self: `t.forEach((x, i, a) => { a[i] = x * 2 }); return Array.from(t)`,
+    // (a helper the plan splices into the callback: its value declares the call's argument)
+    spliced: `let s = 0; t.forEach(x => { s = twice(s, x) }); return [s, Array.from(t.map(x => twice(x, 1))), t.some(x => owns({ x: 1 }, 'x' + x))]`,
+  }
+  const RECV = { arr: '[1.5, -2, 0, 4, 7.25]', f64: 'new Float64Array([1.5, -2, 0, 4, 7.25])', i32: 'new Int32Array([1, -2, 0, 4, 2147483647])', none: '[]' }
+  let src = `const twice = (a, k) => { const t = a * 2; return t + k }\nconst owns = (o, k) => o.hasOwnProperty(k)\nconst grow = () => { const a = [1, 2, 3]; let n = 0; a.forEach(x => { n++; if (a.length < 6) a.push(x) }); const b = [1, 2, 3, 4, 5]; let s = 0; b.forEach(x => { s += x; b.pop() }); return [n, a.length, s, b.length] }\nexport { grow }\n`
+  for (const [k, lit] of Object.entries(RECV)) for (const [n, body] of Object.entries(BODIES)) src += `export const ${k}_${n} = () => { const t = ${lit}; ${body} }\n`
+  for (const [n, body] of Object.entries(BODIES)) src += `export const p_${n} = (t) => { ${body} }\nexport const q_${n} = () => p_${n}([3, 1.5, -2])\n`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name in want) if (!name.startsWith('p_')) is(got[name](), want[name](), `${name}, O${optimize}`)
+  }
+  // The walk holds the sum in a local: no closure, no cell.
+  const wat = funcWat(compile(`export let f = (n) => { const a = new Float64Array(n); let s = 0; a.forEach((x, i) => { s += x * i }); return s }`, { optimize: 2, wat: true }), 'f')
+  ok(!wat.includes('call_indirect') && !wat.includes('cell_'), 'forEach runs its block in the walk')
+})
+
+// A closure an expression-bodied function makes writes the function's parameter through its cell, as one a block makes.
+test('closures: an expression body\'s closure writes its parameter', () => {
+  const src = `export let set = (s) => ((() => { s = 7 })(), s)
+  export let each = (s) => ([1, 2, 3].forEach(x => { s += x }), s)
+  export let dflt = (s, g = () => { s = 9 }) => (g(), s)
+  export let closure = (s) => { const mk = () => (t) => ((() => { t = s + 7 })(), t); return mk()(s) }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name in want) is(got[name](10), want[name](10), `${name}, O${optimize}`)
+  }
+})
+
 // A typed store's value read in a loop's test: the staging of its reference
 // (`t[i++]`) emits the step as a statement, and the store keeps its own value.
 test('typed store: an element store\'s value in a loop test compares what it stored', () => {
@@ -1499,6 +1551,26 @@ test('Array.from: a mapper sees the array it changes, and a Set or a Map gives i
   for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
     const got = runHost(src, { optimize })
     for (const name in want) is(got[name](), want[name](), `${name}, O${optimize}`)
+  }
+})
+
+// A for…of over a present array or typed array reads it, with no copy binding
+// between the loop and its receiver (compile/plan/alias.js): it answers as the
+// iterator does over one the body grows, shrinks, stores into or rebinds, and
+// over a string, a Set, a Map and a source that may be missing as before.
+test('for…of: reads the array it walks, as JS answers', () => {
+  const src = `export let grow = () => { const a = [1, 2, 3]; let n = 0; for (const x of a) { if (n < 5) a.push(x); n++ } return [n, a.length] }
+  export let shrink = () => { const a = [1, 2, 3, 4, 5]; let n = 0; for (const x of a) { a.pop(); n++ } return [n, a.length] }
+  export let store = () => { const a = [1, 2, 3]; let s = 0, i = 0; for (const x of a) { if (i + 1 < a.length) a[i + 1] = x * 10; s += x; i++ } return [s, a] }
+  export let rebind = () => { let a = [1, 2, 3], s = 0; for (const x of a) { s += x; a = [9, 9, 9, 9] } return [s, a.length] }
+  export let captured = () => { let a = [1, 2, 3]; const set = () => { a = [7] }; let s = 0; for (const x of a) { s += x; set() } return [s, a] }
+  export let typed = () => { const a = new Float64Array([1, 2, 3]), b = new Float64Array([4, 5, 6]); let s = 0, i = 0; for (const x of a) { s += x * b[i]; i++ } return s }
+  export let others = () => { let s = '', n = 0; for (const c of 'héllo') s += c; for (const x of new Set([1, 2, 2])) n += x; for (const [k, v] of new Map([[1, 2], [3, 4]])) n += k * v; return [s, n] }
+  export let missing = (k) => { const a = k ? [1, 2] : null; let s = 0; try { for (const x of a) s += x } catch (e) { return e instanceof TypeError } return s }`
+  const want = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = runHost(src, { optimize })
+    for (const name in want) for (const k of [0, 1]) is(got[name](k), want[name](k), `${name}(${k}), O${optimize}`)
   }
 })
 

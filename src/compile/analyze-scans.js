@@ -14,6 +14,7 @@ import { K, NUMBER, tagOf, hasTag, typedElemKind } from '../summary/kind.js'
 import { maxAdvanceBudget } from '../type/canonical-bounds.js'
 import { repOf, updateRep } from '../reps.js'
 import { typedElemAux } from '../../layout.js'
+import { inPlaceArrow } from './in-place.js'
 
 export function findFreeVars(node, bound, free, scope) {
   if (node == null) return
@@ -162,6 +163,15 @@ export function boxedCaptures(body, params = NO_NAMES, captures = NO_NAMES) {
     const op = node[0]
     if (op === '=>') {
       markArrowCaptures(node, assignTarget, own)
+      return
+    }
+    // An arrow a walk runs in place is this function's code: what it writes
+    // stays a local, as it would in a loop (compile/in-place.js).
+    const inPlace = op === '()' ? inPlaceArrow(node) : null
+    if (inPlace) {
+      ;(ctx.func.inPlace ??= new Set()).add(inPlace)
+      walk(node[1], null)
+      if (node[2] !== inPlace) for (let i = 2; i < node[2].length; i++) walk(node[2][i], null)
       return
     }
 

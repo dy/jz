@@ -2697,32 +2697,29 @@ export default (ctx) => {
     const up = detectUpstream(arr)
     if (thisArg === undefined && up && up.method === 'map' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
-      const mapped = temp('mv'), tmp = temp('ft')
+      const mapped = temp('mv')
       const upReps = callbackArgReps(up.source)
       const mapCb = makeCallback(up.fn, upReps), forCb = makeCallback(fn)
       const loop = callbackLoop(recv, (_p, _l, i, item) => [
         ['local.set', `$${mapped}`, asF64(mapCb.call([item, idxArg(mapCb, i), arrArg(mapCb, recv.value)]))],
-        ['local.set', `$${tmp}`, asF64(forCb.call([typed(['local.get', `$${mapped}`], 'f64'), idxArg(forCb, i)]))]
+        ...forCb.run([typed(['local.get', `$${mapped}`], 'f64'), idxArg(forCb, i)])
       ])
       return typed(['block', ['result', 'f64'], recv.setup, mapCb.setup, forCb.setup, forCb.check, ...loop, undefExpr()], 'f64')
     }
     if (thisArg === undefined && up && up.method === 'filter' && isPureCallback(fn) && !callbackReadsArray(fn)) {
       const recv = hoistArrayValue(up.source)
-      const tmp = temp('ft')
       const upReps = callbackArgReps(up.source)
       const filterCb = makeCallback(up.fn, upReps), forCb = makeCallback(fn, upReps)
       const loop = callbackLoop(recv, (_p, _l, i, item) => [
         ['if', truthyIR(filterCb.call([item, idxArg(filterCb, i), arrArg(filterCb, recv.value)])),
-          ['then', ['local.set', `$${tmp}`, asF64(forCb.call([item, idxArg(forCb, i)]))]]]
+          ['then', ...forCb.run([item, idxArg(forCb, i)])]]
       ])
       return typed(['block', ['result', 'f64'], recv.setup, filterCb.setup, forCb.setup, forCb.check, ...loop, undefExpr()], 'f64')
     }
     const recv = hoistArrayValue(arr)
-    const tmp = temp('ft')
     const cb = makeCallback(fn, callbackArgReps(arr), null, thisArg)
-    const loop = callbackLoop(recv, (_ptr, _len, i, item) => [
-      ['local.set', `$${tmp}`, asF64(cb.call([item, idxArg(cb, i), arrArg(cb, recv.value)]))]
-    ])
+    const loop = callbackLoop(recv, (_ptr, _len, i, item) =>
+      cb.run([item, idxArg(cb, i), arrArg(cb, recv.value)]))
     return typed(['block', ['result', 'f64'], recv.setup, cb.setup, cb.check, ...loop, undefExpr()], 'f64')
   }
 

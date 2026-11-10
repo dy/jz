@@ -1465,7 +1465,7 @@ test('invariant: in-process inspection preserves the selected execution compiler
 
 // Exercise developer diagnostics independently of the compiler's debug setting.
 test('debug lifecycle: repeated sessions, drift and failed-session recovery', () => {
-  const bridge = Object.fromEntries(['emit','emitReference','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
+  const bridge = Object.fromEntries(['emit','emitReference','emitVoid','bool','idx','spread','emitIdentitySafe'].map(k => [k, () => {}]))
   const fresh = () => ({
     core: { includes: new Set(), emit: {} }, module: {}, scope: {},
     funcs: { list: [], names: new Set(), map: new Map(), multiProp: new Map() },

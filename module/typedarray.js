@@ -3196,7 +3196,7 @@ export default (ctx) => {
     // need no extra scope.
     inc('__len', '__typed_get_idx', '__typed_elem_arg', '__typed_set_idx', '__typed_set_idx_tagged', '__ptr_aux', '__typed_shift', '__alloc_hdr_n', '__mkptr')
     const cbLoc = temp('tmrc'), arrLoc = temp('tmra'), dstLoc = temp('tmrd')
-    const callback = captureCallback(fn, cbLoc, thisArg)
+    const callback = typedCallback(arr, fn, cbLoc, thisArg)
     const len = tempI32('tmrl'), i = tempI32('tmri')
     const aux = tempI32('tmrx'), shift = tempI32('tmrsh'), byteLen = tempI32('tmrb')
     const srcPtr64 = ['i64.reinterpret_f64', ['local.get', `$${arrLoc}`]]
@@ -3333,9 +3333,11 @@ export default (ctx) => {
   // reduceResult), as an array's does. A BigInt or open element kind keeps the
   // closure ABI and its argument boxing (argOf). `lead` counts the parameters
   // before the element (reduce's accumulator).
+  // An arrow the walk runs in place (compile/in-place.js) has a receiver the
+  // summary holds to Numbers: it runs inline over the runtime walk too.
   const typedCallback = (arr, fn, cbLoc, thisArg, lead = []) => {
     const r = resolveElem(arr)
-    return r && !r.isBigInt
+    return (r ? !r.isBigInt : ctx.func.inPlace?.has(fn))
       ? makeCallback(fn, [...lead, { val: VAL.NUMBER }, { val: VAL.NUMBER }, { val: VAL.TYPED }], callbackElem(arr, lead.length), thisArg)
       : captureCallback(fn, cbLoc, thisArg)
   }
@@ -3350,9 +3352,8 @@ export default (ctx) => {
   ctx.core.emit['.typed:forEach'] = (arr, fn, thisArg) => {
     const cbLoc = temp('tfc')
     const callback = typedCallback(arr, fn, cbLoc, thisArg)
-    const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, receiver, argOf) => [
-      ['drop', asF64(callback.call(itemArgs(callback, argOf(load()), i, receiver)))]
-    ])
+    const loop = typedLoop(arr, (load, i, _len, _ptr, _exit, receiver, argOf) =>
+      callback.run(itemArgs(callback, argOf(load()), i, receiver)))
     if (!loop) return null
     return typed(['block', ['result', 'f64'],
       loop.setup[0], callback.setup, callback.check,
@@ -3595,7 +3596,7 @@ export default (ctx) => {
       // the .set fork) instead of treating falsy as "try the next strategy".
       inc('__len', '__typed_get_idx', '__typed_elem_arg', '__typed_set_idx', '__ptr_aux', '__typed_shift', '__alloc_hdr_n', '__mkptr')
       const cbLoc = temp('tfrc'), arrLoc = temp('tfra'), dstLoc = temp('tfrd')
-      const callback = captureCallback(fn, cbLoc, thisArg)
+      const callback = typedCallback(arr, fn, cbLoc, thisArg)
       const srcLen = tempI32('tfrl'), srci = tempI32('tfri'), count = tempI32('tfrn')
       const aux = tempI32('tfrx'), shift = tempI32('tfrsh'), dstOff = tempI32('tfro')
       const srcPtr64 = ['i64.reinterpret_f64', ['local.get', `$${arrLoc}`]]
