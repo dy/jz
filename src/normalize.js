@@ -17,6 +17,11 @@
  *   - A loop test with a counter on the right and none on the left is mirrored:
  *     `n > i` is `i < n`. Converting a Number calls nothing, so the order of the
  *     two conversions cannot be seen.
+ *   - `while (true) { if (c) break; B }` is `while (!c) B`, `for (;;)` alike.
+ *   - A do-while, which prepare lowered to `let F = true; while (F || c) {
+ *     F = false; B }`, is `while (c) B` where its test holds on entry: as the
+ *     whole of `if (c)`, the same test, or over the literals the statement
+ *     before it declares and the constants.
  *
  * `isNumber(name)`: the name holds a Number, never NaN, wherever the tree reads
  * it. `valueOf(name)`: the number a constant holds, or null. A counter is a
@@ -24,7 +29,7 @@
  *
  * @module normalize
  */
-import { MUTATE_OPS, noted, collectAssignedNames, isReassigned } from './ast.js'
+import { MUTATE_OPS, RELATIONAL_OPS, EQUALITY_OPS, REFS_THROUGH_ARROWS, noted, collectAssignedNames, isReassigned, refsName } from './ast.js'
 import { constNumExpr } from './static.js'
 import { ctx } from './ctx.js'
 
@@ -33,6 +38,22 @@ const MIRROR = new Map([['<', '>'], ['<=', '>='], ['>', '<'], ['>=', '<=']])
 const isArr = Array.isArray
 /** A number literal's value, or null. */
 const num = (n) => isArr(n) && n.length === 2 && n[0] == null && typeof n[1] === 'number' ? n[1] : null
+/** A literal's truth, or null. */
+const truth = (n) => !isArr(n) ? null : n[0] === 'bool' ? (typeof n[1] === 'number' ? !!n[1] : null)
+  : n.length === 2 && n[0] == null ? !!n[1] : null
+const mentions = (n, x) => refsName(n, x, REFS_THROUGH_ARROWS)
+const hasArrow = (n) => isArr(n) && (n[0] === '=>' || n.some((c, i) => i > 0 && hasArrow(c)))
+const same = (a, b) => {
+  if (!isArr(a) || !isArr(b)) return Object.is(a, b)
+  if (a.length !== b.length || (a[0] == null) !== (b[0] == null)) return false
+  for (let i = a[0] == null ? 1 : 0; i < a.length; i++) if (!same(a[i], b[i])) return false
+  return true
+}
+/** The one statement a `{}` or a one-statement `;` holds, or the statement. */
+const only = (s) => {
+  while (isArr(s) && s.length === 2 && (s[0] === '{}' || s[0] === ';')) s = s[1]
+  return s
+}
 
 /** A write that leaves a Number a Number: `x++`, `x += K`, `x = K`, `x = x ± K`, `x = K + x`,
  *  each K finite by `fin`. */
@@ -124,16 +145,66 @@ export function normalize(node, isNumber, valueOf = () => null) {
     for (let i = 1; i < s.length; i++) s[i] = step(isArr(s[i]) && s[i][0] === 'postfix' && s[i].length === 2 ? s[i][1] : s[i])
     return s
   }
+  // (in a test: `!!c` is c)
+  const not = (c) => isArr(c) && c[0] === '!' && c.length === 2 ? c[1] : ['!', c]
+
+  /** The test of a leading `if (c) break` of a body, the statement taken out of it; else null. */
+  const leadingBreak = (body) => {
+    const list = isArr(body) && body[0] === '{}' ? body[1] : body
+    if (!isArr(list) || list[0] !== ';' || list.length < 2) return null
+    const s = list[1], b = isArr(s) && s[0] === 'if' && s.length === 3 ? only(s[2]) : null
+    if (!isArr(b) || b[0] !== 'break' || b.length !== 1) return null
+    list.splice(1, 1)
+    return s[1]
+  }
   const loop = (n) => {
     const [at, body] = n[0] === 'for' ? [2, 4] : [1, 2]
+    if (n[at] == null || truth(n[at]) === true) { const c = leadingBreak(n[body]); if (c) n[at] = not(c) }
     if (n[at] != null) n[at] = test(n[at])
     if (n[0] === 'for') { visit(n[1]); n[3] = steps(n[3]) }
     visit(n[at])
     n[body] = step(n[body])
     visit(n[body])
   }
+
+  /** prepare's lowered do-while, `let F = true` then `while (F || c) { F = false; B }`
+   *  → { c, body: B }, else null. */
+  const doLoop = (decl, w) => {
+    const d = isArr(decl) && decl[0] === 'let' && decl.length === 2 ? decl[1] : null
+    if (!isArr(d) || d[0] !== '=' || typeof d[1] !== 'string' || truth(d[2]) !== true) return null
+    const F = d[1], t = isArr(w) && w[0] === 'while' && w.length === 3 ? w[1] : null
+    if (!isArr(t) || t[0] !== '||' || t.length !== 3 || t[1] !== F) return null
+    const list = isArr(w[2]) && w[2][0] === '{}' ? w[2][1] : w[2], s = isArr(list) && list[0] === ';' ? list[1] : null
+    if (!isArr(s) || s[0] !== '=' || s[1] !== F || truth(s[2]) !== false) return null
+    const rest = list.slice(2)
+    if (mentions(t[2], F) || rest.some(r => mentions(r, F))) return null
+    return { c: t[2], body: rest.length === 1 ? rest[0] : [';', ...rest] }
+  }
+  /** The do-while a statement is the whole of, `[';', let F, while]`, else null. */
+  const doOf = (s) => { s = only(s); return isArr(s) && s[0] === ';' && s.length === 3 ? doLoop(s[1], s[2]) : null }
+  /** The test holds over the literals `prev` declares and the constants. */
+  const holds = (c, prev) => {
+    if (!isArr(c) || c.length !== 3 || !(RELATIONAL_OPS.has(c[0]) || EQUALITY_OPS.has(c[0]))) return false
+    const lits = new Map()
+    if (isArr(prev) && (prev[0] === 'let' || prev[0] === 'const'))
+      for (let i = 1; i < prev.length; i++) { const d = prev[i]; if (isArr(d) && d[0] === '=' && typeof d[1] === 'string' && num(d[2]) != null) lits.set(d[1], num(d[2])) }
+    const at = (x) => lits.has(x) ? lits.get(x) : valueOf(x)
+    const a = constNumExpr(c[1], at), b = constNumExpr(c[2], at), op = c[0]
+    if (a == null || b == null) return false
+    return op === '<' ? a < b : op === '<=' ? a <= b : op === '>' ? a > b : op === '>=' ? a >= b
+      : op === '===' || op === '==' ? a === b : a !== b
+  }
   const block = (list) => {
     for (let k = 1; k < list.length; k++) {
+      const s = list[k], prev = k > 1 ? list[k - 1] : null
+      // (its two statements in the list, or a statement of them alone, strict prepare's, or a label's)
+      const d = doLoop(s, list[k + 1]), [p, i] = isArr(s) && s[0] === 'label' ? [s, 2] : [list, k], l = d ? null : doOf(p[i])
+      if (d && holds(d.c, prev)) list.splice(k, 2, ['while', d.c, d.body])
+      else if (l && holds(l.c, prev)) p[i] = ['while', l.c, l.body]
+      else if (isArr(s) && s[0] === 'if' && s.length === 3 && !hasArrow(s[1])) {
+        const g = doOf(s[2])
+        if (g && same(g.c, s[1])) list[k] = noted(s, ['while', g.c, g.body])
+      }
       list[k] = step(list[k])
       visit(list[k])
     }

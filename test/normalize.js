@@ -56,6 +56,30 @@ test('normalize: a test with the counter on the right is mirrored, where nothing
   is(t(['>', ['=', 'i', lit(5)], 'i']), show(['>', ['=', 'i', lit(5)], 'i']), 'a left side that writes the counter: the reads would swap')
 })
 
+test('normalize: a leading break is the test', () => {
+  const brk = (c) => norm(fn(['while', ['bool', 1], [';', ['if', c, ['break']], ['++', 'i']]]))[1][2]
+  is(show(brk(['>=', 'i', 'n'])), show(['while', ['!', ['>=', 'i', 'n']], [';', ['++', 'i']]]), 'while (true)')
+  is(show(brk(['!', 'done'])[1]), show('done'), '`!!c` is c in a test')
+  const labeled = norm(fn(['while', ['bool', 1], [';', ['if', 'c', ['break', 'out']], ['++', 'i']]]))[1][2]
+  is(labeled[1][0], 'bool', 'a break of another loop is no test of this one')
+  is(show(loopOf(fn(['for', null, null, ['++', 'i'], [';', ['if', ['>=', 'i', lit(8)], ['break']], 'x']]))),
+    show(['for', null, ['!', ['>=', 'i', lit(8)]], ['++', 'i'], [';', 'x']]), 'for (;;)')
+})
+
+test('normalize: a do-while whose test holds on entry is a while', () => {
+  const lowered = (c, body) => [['let', ['=', 'F', lit(true)]], ['while', ['||', 'F', c], ['{}', [';', ['=', 'F', lit(false)], body]]]]
+  const guarded = norm(fn(['if', ['<', 'i', 'n'], [';', ...lowered(['<', 'i', 'n'], [';', 'x', ['++', 'i']])]]))
+  is(show(guarded[1][2]), show(['while', ['<', 'i', 'n'], [';', 'x', ['++', 'i']]]), 'the whole of `if (c)`, the same test')
+  const entry = norm(fn(...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])), x => x === 'N' ? 4 : null)
+  is(show(entry[1][2]), show(['while', ['<', 'i', 'N'], [';', 'x', ['++', 'i']]]), 'true over the literal declared before it')
+  const nested = norm(fn([';', ...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])]), x => x === 'N' ? 4 : null)
+  is(show(nested[1][2]), show(['while', ['<', 'i', 'N'], [';', 'x', ['++', 'i']]]), 'a statement of the two, as strict prepare writes it')
+  const later = norm(fn(...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])), x => x === 'N' ? 0 : null)
+  is(later[1][2][0], 'let', 'false on entry: the body runs once, as written')
+  const other = norm(fn(['if', ['<', 'i', 'm'], [';', ...lowered(['<', 'i', 'n'], 'x')]]))
+  is(other[1][2][0], 'if', 'another test')
+})
+
 // Programs on the edges, each against Node at every level.
 const CASES = [
   // a NaN bound: `!(i >= n)` runs where `i < n` would not
