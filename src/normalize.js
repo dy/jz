@@ -143,6 +143,11 @@ const forms = (isNumber, valueOf) => {
   return { step, test }
 }
 
+/** A test in the one form where `isNumber` holds its names Numbers, never NaN:
+ *  the second caller's, a versioned copy whose guard holds them so
+ *  (plan/integral-loops.js). Rewrites `c` in place where it can. */
+export const normalTest = (c, isNumber, valueOf = () => null) => forms(isNumber, valueOf).test(c)
+
 /** Rewrite `node`, a statement tree, into the one loop form. */
 export function normalize(node, isNumber, valueOf = () => null) {
   const { step, test } = forms(isNumber, valueOf)

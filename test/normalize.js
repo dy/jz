@@ -86,6 +86,9 @@ test('normalize: a do-while whose test holds on entry is a while', () => {
 const CASES = [
   // a NaN bound: `!(i >= n)` runs where `i < n` would not
   ['export let f = (n) => { let i = 0, s = 0; while (true) { if (i >= n) break; s += i; i++; if (i > 50) break } return s }', [10, NaN, 3.5, -1, undefined, '7']],
+  // the test its one exit: a copy over the bound's word reads `i < n` (plan/integral-loops.js), the loop as written the rest
+  ['export let f = (n) => { let i = 0, s = 0; while (true) { if (i >= n) break; s += i * 2; i++ } return s }', [10, 3.5, -1, 0, '7', 47.5]],
+  ['export let f = (n) => { const a = new Float64Array(16); let i = 0; while (true) { if (i >= n) break; a[i] = i + 0.5; i++ } let s = 0; for (let k = 0; k < 16; k++) s += a[k]; return s }', [16, 3.5, -2, 0, '9']],
   // a flipped test over a string bound converts it, either way round
   ['export let f = (n) => { let s = 0; for (let i = 0; n > i; i -= -1) s += i; return s }', [5, '5', 2.5, NaN]],
   // a left side that calls: it reads after the counter now, and writes nothing the test reads

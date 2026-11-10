@@ -163,6 +163,7 @@ import { SOURCE_FULL, kernelLoop } from '../../growth.js'
 import { occursOutside } from './counted-loops.js'
 import { isExported } from '../func-exports.js'
 import { constIntExpr, forCounterRange, intExprRange } from '../../static.js'
+import { normalTest } from '../../normalize.js'
 import { isExactDivision, markExactDivisions } from '../../type/int-certain.js'
 import { MAX_SMALL_FOR_UNROLL } from '../../type/loop-unroll.js'
 import { maxAdvanceBudget, minAdvanceBudget, maxMovementBudget } from '../../type/canonical-bounds.js'
@@ -278,6 +279,21 @@ const LEAVES = new Set(['break', 'continue', 'return', 'throw'])
  *  with one), no `continue` of the loop's own skips to the steps, the counter
  *  enters from a literal or a name, and neither the steps moved nor the other
  *  declarations read it. `{ wrap, loop }`, or null for any other loop. */
+/** A loop's negated test in the one form where its names are Numbers (`!(i >= n)` is
+ *  `i < n`): { loop, at, orig, test }, else null. */
+const negatedTest = (loop) => {
+  const at = loop[0] === 'for' ? 2 : 1, orig = loop[at]
+  if (!Array.isArray(orig) || orig[0] !== '!') return null
+  // (where the test is the loop's one exit: a loop that breaks too, an escape or a search, has no
+  // trips for the copy to count, and as written it stays the escape vectorizer's, which reads one
+  // inner loop where a copy makes two: optimize/vectorize/divergent-escape.js)
+  if (some(loop[loop.length - 1], n => n[0] === 'break' || n[0] === 'return' || n[0] === 'throw')) return null
+  const names = new Set()
+  walkAst(orig, { enter: (n) => { for (let i = 1; i < n.length; i++) if (typeof n[i] === 'string') names.add(n[i]) } })
+  const test = normalTest(cloneNode(orig), (x) => names.has(x))
+  return Array.isArray(test) && BOUND_TESTS.has(test[0]) && test.length === 3 ? { loop, at, orig, test } : null
+}
+
 const canonicalHead = (loop) => {
   if (loop[0] !== 'for' || !Array.isArray(loop[1]) || (loop[1][0] !== 'let' && loop[1][0] !== 'const')) return null
   const [, head, test, update, body] = loop
@@ -617,13 +633,19 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
   // (a loop read over its counter alone, kept so where the pass copied it, its head restored where not,
   // before a loop around reads it: a later pass reads the head as written, in a copy around too)
   const tentative = []
+  // (a negated test read in the one form: the loop's own test again once the copy took the form, or did not)
+  let trial = null
+  const settleTrial = () => { if (trial) { trial.loop[trial.at] = trial.orig; trial = null } }
   const settle = () => {
     for (const t of tentative.splice(0)) {
       const list = t.wrap[1]
       if (list[list.length - 1] === t.loop && t.parent[t.idx] === t.wrap) t.parent[t.idx] = t.orig
     }
+    settleTrial()
   }
-  for (let [loop, parent, idx, enclosing, around] of loops) {
+  const retried = new Set()
+  for (let k = 0; k < loops.length; k++) {
+    let [loop, parent, idx, enclosing, around] = loops[k]
     settle()
     if (grown > SOURCE_FULL && !kernelLoop(loop)) continue
     if (parent[idx] !== loop) continue
@@ -635,6 +657,12 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       parent[idx] = canon.wrap
       parent = canon.wrap[1]; idx = parent.length - 1; loop = canon.loop
     }
+    // A test the front end left negated (`!(i >= n)`, `while (true)` over a leading
+    // break, n a parameter: NaN there runs the loop on) is `i < n` where neither side
+    // is NaN (src/normalize.js): the loop reads in that form, and the copy keeps it
+    // where its guard holds each side to a word, the rest as written.
+    if (!retried.has(loops[k][0])) trial = negatedTest(loop)
+    if (trial) loop[trial.at] = trial.test
     let size = nodeSize(loop)
     walkAst(loop, { enter: (n) => { if (n[0] === '=>') return false; const v = versions.get(n); if (v) { size -= nodeSize(n) - nodeSize(v.asWritten); return false } } })
     if (size > MAX_SIZE) continue
@@ -1925,6 +1953,10 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       if (!seenTests.has(k)) { seenTests.add(k); wordTests.push(t) }
     }
     if (!names.length && !heldDivisors.length && !numbers.length && !present.length && !counterBound && !cursors.size && !wraps.length) continue
+    // (each side of a test read in the one form a word of the copy: the bound its rounding, in range by the guard,
+    // a name an int32 by its test or entering as a literal; else the loop again, as written)
+    const word = (e) => e === counterBound?.name || typeof e === 'string' && (names.includes(e) || counters.includes(e)) || Array.isArray(e) && e[0] == null && Number.isFinite(e[1])
+    if (trial && !(word(trial.test[1]) && word(trial.test[2]))) { retried.add(loops[k][0]); k--; continue }
     // A Number the copy writes gets a name of its own too: a local has one
     // representation, and the original loop keeps the float values the copy
     // does not. The copy's own declarations also get fresh names. Fixed
@@ -2011,6 +2043,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       strideDecls.push(['=', w, ['|', e, [null, 0]]]); n[2] = w
     }
     const copy = cloneWithSubst(loop, new Map(), own)
+    settleTrial()
     for (const [, n, e] of strides) n[2] = e
     // (the walk's word reads a missed link as -1)
     if (linkWalk) {
