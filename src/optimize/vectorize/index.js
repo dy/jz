@@ -239,7 +239,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // becomes the primary source for the name every bl-based
       // recognizer below reads (tryMemCopyFill/tryVectorize/tryReduce/
       // tryStencil/tryToneMap/tryStrengthReduceIV — all share
-      // this one `bl`), and `matchInc1`'s WAT walk above becomes the fail-open FALLBACK (link
+      // this one `bl`), and the scaffold's WAT walk above becomes the fail-open FALLBACK (link
       // miss keeps its structurally-derived name) plus, under JZ_DEBUG_INVARIANTS, the shadow
       // (assertLoopPlanAgrees, run just above, already fills that role — nothing left to add).
       // Bound/hull are NOT flipped here: assertLoopPlanAgrees only proves `plan.boundConst`

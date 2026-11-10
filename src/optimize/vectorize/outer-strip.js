@@ -1,5 +1,5 @@
 import { walkAst, cloneNode } from '../../ast.js'
-import { isI32Const, isLocalGet, matchInc1, matchIncN } from './addr-model.js'
+import { isI32Const, isLocalGet, matchIncN } from './addr-model.js'
 import { LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 import { CMP_LANE, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
@@ -146,7 +146,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   // inner IV bump stays scalar. Per-pixel coords now resolve via laneMap. ----
   const liftedInner = []
   for (const s of ibody) {
-    if (matchInc1(s) === innerIV || matchIncN(s)?.name === innerIV) { liftedInner.push(s); continue }
+    if (matchIncN(s)?.name === innerIV) { liftedInner.push(s); continue }
     if (!(isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3)) return null
     const name = s[1], rhs = s[2]
     if (fnLocals.get(name) !== 'f64') return null
@@ -309,7 +309,7 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
 
   // Lift one inner-loop body statement → its lifted form(s), or null to bail.
   const liftInnerStmt = (s, innerIV) => {
-    if (matchInc1(s) === innerIV || matchIncN(s)?.name === innerIV) return [s]   // IV bump: scalar
+    if (matchIncN(s)?.name === innerIV) return [s]   // IV bump: scalar
     if (isArr(s) && s[0] === 'local.set' && typeof s[1] === 'string' && s.length === 3) {
       const name = s[1], rhs = s[2]
       if (fnLocals.get(name) !== 'f64') return laneInvariant(rhs) ? [s] : null   // scalar i32 counter

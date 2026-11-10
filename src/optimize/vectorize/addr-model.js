@@ -15,23 +15,10 @@ export function constNum(node) {
 }
 
 /**
- * Match increment shape `(local.set $X (i32.add (local.get $X) (i32.const 1)))`.
- * Returns $X or null.
- */
-export function matchInc1(stmt) {
-  if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
-  const x = stmt[1]
-  const v = stmt[2]
-  if (!isArr(v) || v[0] !== 'i32.add' || v.length !== 3) return null
-  if (!isLocalGet(v[1], x)) return null
-  if (constNum(v[2]) !== 1) return null
-  return x
-}
-
-/**
- * Match increment shape `(local.set $X (i32.add (local.get $X) (i32.const C)))`
- * for any constant C. Returns { name, c } or null. Generalizes matchInc1 to the
- * strided-pointer bumps (`p += stride`) the ramp-map recognizer must scale.
+ * Match increment shape `(local.set $X (i32.add (local.get $X) (i32.const C)))`,
+ * the counter's step (C = 1) and the strided-pointer bumps (`p += stride`) the
+ * ramp-map recognizer must scale. Returns { name, c } or null. The emitter writes
+ * `++i` so, and every source step of one reaches it as `++i` (src/normalize.js).
  */
 export function matchIncN(stmt) {
   if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null

@@ -1,7 +1,7 @@
 
 import { DBG_INVARIANTS } from '../../debug.js'
 import { cloneNode, walkAst } from '../../ast.js'
-import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, matchExitBrIf, matchInc1, matchIncN } from './addr-model.js'
+import { assertBodyModelSound, buildBodyModel, collectReferencedNames, collectWrites, constNum, hasGlobalSet, hasImpureCall, hasSideEffect, isI32Const, isLocalGet, matchExitBrIf, matchIncN } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { SAFE_OFFSET_CALLS } from '../licm.js'
 
@@ -299,7 +299,8 @@ export function matchBlockLoop(blockNode, opts = {}) {
   }
 
   const incIdx = endIdx - 1
-  let incVar = matchInc1(loopNode[incIdx])
+  const inc1 = matchIncN(loopNode[incIdx])
+  let incVar = inc1?.c === 1 ? inc1.name : null
   // CSE'd increment (gated): O3 may fold `x+1` into a body tee (the `xe = x+1` wrap) and write the
   // increment as `x = $t` reusing it. Recover the IV when `$t` is `(tee/set $t (i32.add x 1))` in body.
   if (!incVar && opts.allowInlinedLi) {
