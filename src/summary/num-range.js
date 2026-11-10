@@ -17,7 +17,6 @@
  *
  * @module summary/num-range
  */
-import { powRuntime } from '../prepare/math-kernel.js'
 
 export const NR_NONE = Object.freeze({ lo: Infinity, hi: -Infinity, int: true, nz: true, nan: false, gap: Infinity })
 export const NUMBER = Object.freeze({ lo: -Infinity, hi: Infinity, int: false, nz: false, nan: true, gap: 0 })
@@ -145,10 +144,13 @@ export function nrUnary(op, a) {
   return null
 }
 
-// A pow's ends as the runtime kernel computes them, widened past any rounding
-// an implementation within 2^-40 of the true power makes between them.
-const POW_SLACK = 2 ** -40
-const powEnds = (x, y) => powRuntime(x, y)
+// A pow's ends as the host computes them, widened past any rounding an
+// implementation within 2^-40 of the true power makes between them, the
+// runtime kernel's among them (the host's own error, under 2^-52, inside the
+// second 2^-40): the table imports no kernel, so a bounds proof that reads it
+// imports no emission (test/passes.js).
+const POW_SLACK = 2 ** -39
+const powEnds = (x, y) => x ** y
 
 /** `Math.<name>(...args)` over the arguments' ranges. */
 export function nrMath(name, args) {
