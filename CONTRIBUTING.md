@@ -5829,7 +5829,9 @@ so in its commit.
 
 ### Architecture
 
-- One lowering pipeline: parse → jzify → prepare → summary (a fixpoint solver
+- One lowering pipeline: parse → jzify → prepare → normalize (one loop form,
+  `src/normalize.js`: a Number's step is `++i`, a counter tests on the left, a
+  leading break and a do-while true on entry are a `while`'s test) → summary (a fixpoint solver
   behind a query view) → plan sweeps → narrow → emit → optimize → link. Watr
   owns generic propagation, folding, LICM, local-slot allocation and the final
   optimizer. There is no second IR layer.
