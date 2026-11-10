@@ -65,10 +65,10 @@ Rules for every change here:
 
 | # | Phase | Done when | State |
 |---|---|---|---|
-| 0 | Base: land `v1`, split the suite over cores, spelling gate, two-sided ratchet per host | main green on the four legs, pushed | in progress |
-| 1 | Normalize loops on the AST (flipped tests, step spellings, `while (true)` with a leading break, guarded `do…while`; `do…while` first-class instead of flagged) | corpus styles in the gate have no gap beyond the default's; form lists in `loop-model.js`/`static.js` shrink to the one form | next |
-| 2 | One domain: a transfer table with module constants resolved, behind every `%`/mask/step rule; `interval-proof` as the engine, on by default; the local's type decided once | ring and offset-index kernels close; `int-certain`, the stamp scans and the duplicate rules are deleted | |
-| 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | |
+| 0 | Base: land `v1`, split the suite over cores, spelling gate, two-sided ratchet per host | main green on the four legs, pushed | done (e7b8b62f4) |
+| 1 | Normalize loops on the AST (flipped tests, step spellings, `while (true)` with a leading break, guarded `do…while`; `do…while` first-class instead of flagged) | corpus styles in the gate have no gap beyond the default's; form lists in `loop-model.js`/`static.js` shrink to the one form | landed: `src/normalize.js`, gate 243 -> 84 gaps, no corpus style with a gap the default lacks. Left: a caller after kinds (a counter declared from a parameter is no Number by syntax, so the readers keep `i += 1`, `i = i + 1`), and `do…while` first-class |
+| 2 | One domain: a transfer table with module constants resolved, behind every `%`/mask/step rule; `interval-proof` as the engine, on by default; the local's type decided once | ring and offset-index kernels close; `int-certain`, the stamp scans and the duplicate rules are deleted | 2a briefed (`.work/phase-2a-domain.md`): the transfer table, the `%` sites, the ring cursor, the copy no run enters |
+| 3 | One loop constructor in emit; callback parameters and accumulators typed from the summary | `for…of`, `forEach`, `reduce` cells equal the `for` cell; `reduce` links no string helper on numbers | 3a landed (parameters read the summary: reduce over numbers is one `f64.add`); 3b briefed (`.work/phase-3b-loops.md`) |
 | 4 | Compile time: memoize jz's per-function passes for parsed helpers (key: IR, config, four module flags, callee closure), a `settled` set for watr | allocating programs compile 3× faster warm; a debug mode proves memo = fresh on the whole suite | |
 | 5 | Pass table and shared index: every optimize pass takes `(fn, facts)`, order and requirements are data, def-use and loop tree built once | no `ctx` read under `src/optimize`; the hand sequences are generated from the table | |
 | 6 | Vectorizer legality from induction facts and a dependence test, if-conversion; recognizers become cost choices | the fixed-order recognizer list is gone; no corpus cell loses SIMD | |
@@ -76,6 +76,26 @@ Rules for every change here:
 | 8 | Peephole rules as a checked table | each rule has a machine-checked equivalence | |
 | 9 | Claims: a held-out lane measured once on first contact; a lane at exact JS semantics; relaxations opt-in | README states only what the lanes show | |
 | 10 | CONTRIBUTING.md cut to a guide; shape-pin tests retired with the recognizers they pin | under 30 KB; pins replaced by gate cells | |
+
+## Found on the way (2026-11-09)
+
+Each was on `main` before the phase that met it; each has a test now unless marked open.
+- `forEach` answered 0, not `undefined`, on every receiver (five emitters, an old convention).
+- `i ||= 2.5`, `&&=`, `**=` on an integer-declared local stored a truncated word: the
+  local-type walk listed five compound operators by hand (body-facts.js).
+- `const o = { n: 5 }; o.n |= v` did not compile at the default level: the bitwise
+  handlers trusted prepare to have rewritten every bare `x |= v`, and scalar replacement
+  makes one after it (emit/assignment.js).
+- The do-while recognizer of phase 1 took a flag loop the source wrote, and an entry
+  literal a later declarator overwrote (both fixed before landing).
+- Open: `Array.from(set)` through a helper answers `[]` at level 0 where the direct form
+  is a compile error with a message (module/array/from.js).
+- Open: the ratchet's `mixed` entered count rose 1060 -> 1085 with phase 1, because one
+  spelling used to dodge a versioning defect every other spelling paid (phase 2a, item 2).
+- Open: `fgather` compiles 15 ops better as a `while` than as a `for`; `watr` grew 163
+  bytes at speed with 3a, unexplained.
+
+A hand-listed operator or spelling set was the cause each time but the first.
 
 ## Decisions taken
 
