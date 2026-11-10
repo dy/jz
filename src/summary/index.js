@@ -50,6 +50,7 @@
  */
 import { SPAN_BINARY, spanBinary } from './span.js'
 import { NR_NONE, nrPoint, nrInts, nrReals, nrJoin, nrEqual, nrBinary, nrUnary, nrMath, nrReal, nrHull } from './num-range.js'
+import { powRuntime } from '../prepare/math-kernel.js'
 import { MUTATE_OPS, EXACT_MATH, extractParams, isBrand, returnExprs, isBlockBody, ACCESSOR_GET, ACCESSOR_SET, CLASS_T, TYPEOF, isNumberGuard, typeofPredicate, canonicalKeyOrder, schemaKey, isArrayIndexKey, layoutView, ENUM_DATA, isTdzDecl, spreadExclusions, some, STATIC_BASE, T as SEP } from '../ast.js'
 import { encodeTypedElemAux, TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_ANY_VIEW_FLAG, ctorFromElemAux, TYPED_ELEM_BIGINT_FLAG, TYPED_ELEM_F16_FLAG, DATA_VIEW_FLAG, PTR } from '../../layout.js'
 import { ITER_RECORD_KEYS } from '../std/iter-helpers.js'
@@ -998,7 +999,7 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     if (op === '()' && e.length === 3 && typeof e[1] === 'string') {
       const callee = e[1], args = numArgs(e[2])
       if (args.some(a => Array.isArray(a) && a[0] === '...')) return null
-      if (callee.startsWith('math.')) return nrMath(callee.slice(5), args.map(a => numRangeOf(a, scope, env)))
+      if (callee.startsWith('math.')) return nrMath(callee.slice(5), args.map(a => numRangeOf(a, scope, env)), powRuntime)
       if (funcByName.has(callee) && keyOf(callee, scope ?? MODULE) === null) return inlineNums(callee, args, scope, env)
       return null
     }

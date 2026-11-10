@@ -83,7 +83,7 @@ const WORD = make(I32_MIN, I32_MAX, true, true, false)
 const UWORD = make(0, 0xffffffff, true, true, false)
 const nonNegative = v => v.lo >= 0 && v.nz
 
-export function nrBinary(op, a, b) {
+export function nrBinary(op, a, b, powOf) {
   if (a === NR_NONE || b === NR_NONE) return a && b ? NR_NONE : null
   // ToInt32 of anything is a word: the bitwise operators give one whatever they read
   if (op === '|' || op === '^' || op === '<<') return op === '|' && b && b.lo === 0 && b.hi === 0 && nrWord(a) ? a : WORD
@@ -97,7 +97,7 @@ export function nrBinary(op, a, b) {
     if (op === '>>') return k < 0 ? WORD : nrWord(a) ? make(a.lo >> k, a.hi >> k, true, true, false) : make(I32_MIN >> k, I32_MAX >> k, true, true, false)
     return k <= 0 ? UWORD : make(0, 0xffffffff >>> k, true, true, false)
   }
-  if (op === '**') return nrMath('pow', [a, b])
+  if (op === '**') return nrMath('pow', [a, b], powOf)
   if (!a || !b) return null
   // (NaN is what arithmetic makes of a NaN)
   if (empty(a) || empty(b)) return NAN
@@ -144,22 +144,23 @@ export function nrUnary(op, a) {
   return null
 }
 
-// A pow's ends as the host computes them, widened past any rounding an
-// implementation within 2^-40 of the true power makes between them, the
-// runtime kernel's among them (the host's own error, under 2^-52, inside the
-// second 2^-40): the table imports no kernel, so a bounds proof that reads it
-// imports no emission (test/passes.js).
-const POW_SLACK = 2 ** -39
-const powEnds = (x, y) => x ** y
+// A pow's ends as the caller's `powOf(x, y)` computes them, widened past any
+// rounding an implementation within 2^-40 of the true power makes between
+// them. The summary passes the runtime kernel (prepare/math-kernel.js
+// `powRuntime`): a host's own pow may differ in its last bit between the
+// native and the self-hosted compiler, and a bound must not. The table imports
+// no kernel, so a bounds proof that reads it imports no emission
+// (test/passes.js); with no `powOf`, a power other than 0 has no bound.
+const POW_SLACK = 2 ** -40
 
 /** `Math.<name>(...args)` over the arguments' ranges. */
-export function nrMath(name, args) {
+export function nrMath(name, args, powOf) {
   if (args.some(a => a === NR_NONE)) return args.every(a => a) ? NR_NONE : null
   if (name === 'imul') return WORD
   if (name === 'clz32') return make(0, 32, true, true, false)
   const a = args[0]
   if (!a) return null
-  if (name === 'pow') return pow(a, args)
+  if (name === 'pow') return pow(a, args, powOf)
   if (empty(a)) return NAN
   // (a rounding of a finite number is an integer; of an infinity, the infinity)
   const whole = !posInf(a) && !negInf(a)
@@ -187,13 +188,13 @@ export function nrMath(name, args) {
 
 // A positive base to a constant finite power: monotone in the base (any base,
 // NaN among them, to the power 0 is 1).
-function pow(a, args) {
+function pow(a, args, powOf) {
   const b = args[1]
   if (args.length !== 2 || !b || empty(b) || b.lo !== b.hi || !Number.isFinite(b.lo)) return null
   const y = b.lo
   if (y === 0) return make(1, 1, true, true, b.nan)
-  if (empty(a) || !(a.lo > 0)) return null
-  const p = powEnds(a.lo, y), q = powEnds(a.hi, y)
+  if (!powOf || empty(a) || !(a.lo > 0)) return null
+  const p = powOf(a.lo, y), q = powOf(a.hi, y)
   const lo = Math.min(p, q) * (1 - POW_SLACK), hi = Math.max(p, q) * (1 + POW_SLACK)
   return make(lo, hi, false, true, a.nan || b.nan, lo)
 }

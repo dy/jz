@@ -96,6 +96,7 @@ test('element numbers: values that are not words read as they are', () => {
 // integers of an open end, the intervals a loop's widening leaves.
 test('element numbers: the transfer rules hold of the values they bound', async () => {
   const { nrPoint, nrInts, nrJoin, nrBinary, nrUnary, nrMath } = await import('../src/summary/num-range.js')
+  const { powRuntime } = await import('../src/prepare/math-kernel.js')
   const POOL = [-0, 0, 0.25, -0.5, 0.5, 0.75, -0.75, 1, -1, 1.5, -2.5, 3, 7, -7, 16, -16, 2048, -14336, 2 ** 31, -(2 ** 31), 2 ** 32,
     1e-200, -1e-200, 2 ** 53 + 2, -(2 ** 60), 1e300, -1e300, 1.7e308, NaN, Infinity, -Infinity]
   const OPEN = [[nrInts(0, Infinity), [0, 1, 15, 16, 2 ** 40, 1e300]], [nrInts(-Infinity, 3), [3, 0, -1, -16, -(2 ** 60), -1.7e308]],
@@ -122,7 +123,7 @@ test('element numbers: the transfer rules hold of the values they bound', async 
     const [a, sa] = operand(), [b, sb] = operand()
     if (!a || !b) continue
     const xs = values(a, sa), ys = values(b, sb)
-    for (const op in BIN) { const r = nrBinary(op, a, b); for (const x of xs) for (const y of ys) check(`${x} ${op} ${y}`, r, BIN[op](x, y)) }
+    for (const op in BIN) { const r = nrBinary(op, a, b, powRuntime); for (const x of xs) for (const y of ys) check(`${x} ${op} ${y}`, r, BIN[op](x, y)) }
     for (const op in UN) { const r = nrUnary(op, a); for (const x of xs) check(`${op} ${x}`, r, UN[op](x)) }
     for (const f of MATH) { const r = nrMath(f, [a]); for (const x of xs) check(`Math.${f}(${x})`, r, Math[f](x)) }
     for (const f of ['min', 'max']) { const r = nrMath(f, [a, b]); for (const x of xs) for (const y of ys) check(`Math.${f}(${x}, ${y})`, r, Math[f](x, y)) }
