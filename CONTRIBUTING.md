@@ -1103,7 +1103,9 @@ payloads, the readers that keep the boxed layout, growth through compactions,
 the reset's raw record and the arrays built of lanes.
 The summary also bounds the numbers an array's elements can be, per cell
 (`elemNums`, src/summary/num-range.js: an interval, whether every value is an
-integer, whether none is -0, the least magnitude): a literal states its
+integer, whether none is -0, the least magnitude; finite and never NaN here,
+where the table, which every level that bounds a number reads, also carries a
+NaN and an open end): a literal states its
 elements, a `map` its callback's results, a `fill` its value; any other store of
 a number (an index store, a push, a host's or an unknown callee's) opens the
 cell, and a range still widening after four rounds opens. A callback's
@@ -3655,9 +3657,12 @@ its remainder by a constant is `rem_s`, its quotient under a truncation is
 emitter also uses word remainders for positive runtime divisors with a proven
 integer interval. Signed dividends retain their sign when the result is zero;
 storage classification preserves that Number result, and a ToInt32 consumer
-can discard only the zero-sign correction. Cyclic remainder bounds may prove
-a nonnegative interval only when every write, including initialization, keeps
-it; fractional increments do not acquire an integer bound.
+can discard only the zero-sign correction. Cyclic remainder bounds
+(`p = (p + 1) % M`, `M` a literal or a module constant, compile/analyze-scans.js
+through `intExprRange`) may prove a nonnegative interval only when every write,
+including initialization, keeps it; fractional increments do not acquire an
+integer bound. Every level's remainder interval is the one rule of
+src/summary/num-range.js, each caller converting its own facts at its edge.
 A `select` yields its first operand where its condition holds and its second
 where it fails, so an operand that reads a local the condition compares (or the
 condition of a select it is an operand of) lies within the comparison there: the

@@ -71,8 +71,8 @@
   "kernel/map/helper fn/speed": {"ops":4},
   "kernel/map/ternary bound/2": {"ops":12},
   "kernel/map/ternary bound/speed": {"ops":4},
-  "kernel/ring/p=(p+1)%M (canonical)/2": {"ops":43},
-  "kernel/ring/p=(p+1)%M (canonical)/speed": {"ops":49},
+  "kernel/ring/p=(p+1)%M (canonical)/2": {"ops":2},
+  "kernel/ring/p=(p+1)%M (canonical)/speed": {"ops":27},
   "kernel/ring/p++; if(p===M)p=0/2": {"ops":27},
   "kernel/ring/p++; if(p===M)p=0/speed": {"ops":27},
   "kernel/ring/if(++p>=M)p-=M/2": {"ops":29},
@@ -81,6 +81,6 @@
   "kernel/ring/p=p+1===M?0:p+1/speed": {"ops":27},
   "kernel/ring/p=(p+1)&(M-1)/2": {"ops":2},
   "kernel/ring/p=(p+1)&(M-1)/speed": {"ops":27},
-  "kernel/ring/step first, use old q/2": {"ops":45},
-  "kernel/ring/step first, use old q/speed": {"ops":51}
+  "kernel/ring/step first, use old q/2": {"ops":36},
+  "kernel/ring/step first, use old q/speed": {"ops":38}
 }

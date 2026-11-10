@@ -1642,33 +1642,18 @@ export function stampBodyRanges(body, readPresent, typedLens) {
     }
     return intExprRange(n)
   }
-  // A write `j = (j + 1) % K` by a positive literal K: taking j within the
-  // remainder's own bound, its dividend (sums and products of j, literals and
-  // names of finite hulls) stays finite, so from j's finite first value on
-  // every value it takes is below K.
-  const hullOver = (n, self, bound) => {
-    if (typeof n === 'string') return n === self ? bound : repOf(n)?.range ?? null
-    const c = constNumExpr(n)
-    if (Number.isInteger(c)) return [c, c]
-    if (!Array.isArray(n)) return null
-    const a = hullOver(n[1], self, bound), b = n.length > 2 ? hullOver(n[2], self, bound) : null
-    if (!a || (n.length > 2 && !b)) return null
-    if (n[0] === 'u+' && n.length === 2) return a
-    if (n[0] === 'u-' || (n[0] === '-' && n.length === 2)) return [-a[1], -a[0]]
-    if (n[0] === '+') return [a[0] + b[0], a[1] + b[1]]
-    if (n[0] === '-') return [a[0] - b[1], a[1] - b[0]]
-    if (n[0] === '*') { const p = [a[0] * b[0], a[0] * b[1], a[1] * b[0], a[1] * b[1]]; return [Math.min(...p), Math.max(...p)] }
-    if (n[0] === '%' && b[0] > 0 && b[0] === b[1])
-      return [a[0] < 0 ? Math.max(a[0], 1 - b[0]) : 0, a[1] > 0 ? Math.min(a[1], b[0] - 1) : 0]
-    return null
-  }
+  // A write `j = (j + 1) % K` by a constant K: taking j within the remainder's
+  // own bound, its dividend (sums and products of j, constants and names of
+  // finite hulls) stays finite, so from j's finite first value on every value
+  // it takes is below K. `hullOver` is the hull of `n` with `self` held to `bound`.
+  const hullOver = (n, self, bound) => intExprRange(n, x => x === self ? bound : null)
   const defRangeOf = (name, n) => {
     const r = rangeOf(n)
     if (r || !Array.isArray(n) || n[0] !== '%' || n.length !== 3) return r
     const k = constIntExpr(n[2])
-    if (k == null || k <= 0) return null
-    const h = hullOver(n[1], name, [1 - k, k - 1])
-    return h && Math.abs(h[0]) <= 2 ** 53 && Math.abs(h[1]) <= 2 ** 53 ? [1 - k, k - 1] : null
+    if (k == null || k === 0) return null
+    const m = Math.abs(k) - 1, h = hullOver(n[1], name, [-m, m])
+    return h && Math.abs(h[0]) <= 2 ** 53 && Math.abs(h[1]) <= 2 ** 53 ? [-m, m] : null
   }
   const regions = [body], proofs = new Map(), defs = new Map(), declared = new Set(), bad = new Set()
   let countdowns = null
