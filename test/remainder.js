@@ -127,6 +127,25 @@ test('remainder: cyclic bounds preserve fractions and negative writes', () => {
   }
 })
 
+// A cursor `p = (p + 1) % M` by a module constant holds the bound the literal
+// gives (compile/analyze-scans.js through intExprRange): an integer local, and
+// a negative divisor or start keeps the dividend's sign and its -0.
+test('remainder: a cyclic cursor by a module constant is a word, of either sign', () => {
+  const source = `const M = 16, K = -5
+    const T = new Float64Array(M)
+    export function cursor(n) { let p = 0, s = 0; for (let i = 0; i < n; i++) { T[p] += i; s += T[p]; p = (p + 1) % M } return s + p }
+    export function negative(n) { let p = 0; for (let i = 0; i < n; i++) p = (p + 1) % K; return p }
+    export function below(n) { let p = -3, r = 0; for (let i = 0; i < n; i++) { p = (p - 1) % M; r = 1 / p } return r }`
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const wasm = run(source, { optimize }), host = oracle(source)
+    for (const name of ['cursor', 'negative', 'below']) for (const n of [0, 1, 4, 5, 13, 16, 17, 40])
+      ok(Object.is(wasm[name](n), host[name](n)), `${optimize}: ${name}(${n})`)
+    // (a version's copy names its word apart: `$pint…`)
+    const body = funcWat(wat(source, { optimize }), 'cursor')
+    ok(/\(local \$p\w* i32\)/.test(body) && !/\(local \$p f64\)/.test(body), `${optimize}: the cursor is an i32 local`)
+  }
+})
+
 test('remainder: unsigned helper results retain their word proof in floating locals', () => {
   const source = `export function sequence(seed,n){
     let state=seed|0;

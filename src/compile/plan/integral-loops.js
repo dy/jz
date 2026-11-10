@@ -713,10 +713,12 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       return false
     }
     // a name every write of which, anywhere, is an integer of such names is
-    // one already; so is a parameter every call passes an integer of none
+    // one already; so is a parameter every call passes an integer of none, and
+    // a module constant of one word (`p = (p + 1) % M` as `% 16`)
     const already = (n, seen = new Set()) => {
       if (seen.has(n)) return true
       seen.add(n)
+      if (!locals.has(n) && constIntExpr(n) != null) return true
       const values = bodyWrites.get(n) ?? NO_WRITES, found = new Set()
       if (params.has(n) ? !integralEntry(n) : values.length === 0) return false
       return values.every(v => v !== null && integral(v, found, intArray)) && [...found].every(x => already(x, seen))

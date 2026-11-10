@@ -81,6 +81,6 @@
   "kernel/ring/p=p+1===M?0:p+1/speed": {"ops":27},
   "kernel/ring/p=(p+1)&(M-1)/2": {"ops":2},
   "kernel/ring/p=(p+1)&(M-1)/speed": {"ops":27},
-  "kernel/ring/step first, use old q/2": {"ops":36},
-  "kernel/ring/step first, use old q/speed": {"ops":38}
+  "kernel/ring/step first, use old q/2": {"ops":35},
+  "kernel/ring/step first, use old q/speed": {"ops":37}
 }
