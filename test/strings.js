@@ -1793,3 +1793,10 @@ export let f = (x) => [1 + 2 + 'a' + 'b', 'a' + 1 + 'b' + 'c', x + 'p' + 'q', o 
   // a chain is no directive, though its literals join: default parameters allow it
   is(jz(`export function f(a = 1) { 'use' + ' strict'; return a }`).exports.f(), 1, 'a joined chain is no directive')
 })
+
+// repeat takes its count's Number: a string's digits, a boolean's 1.
+test('strings: repeat counts by the Number of its argument', () => {
+  const src = `export let f = (k) => { const s = '2'; return ['ab'.repeat('3'), 'ab'.repeat(s), 'ab'.repeat(' 2 '), 'ab'.repeat(''), 'ab'.repeat('x'), 'ab'.repeat(true), 'ab'.repeat(null), 'ab'.repeat(k), 'ab'.repeat(k / 2), 'ab'.repeat(k ? '2' : 3)].join('|') }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 'size')) for (const k of [0, 1, 3]) is(jz(src, { optimize }).exports.f(k), host.f(k), `O${optimize}: k = ${k}`)
+})

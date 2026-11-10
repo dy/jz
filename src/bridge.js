@@ -218,10 +218,12 @@ const cast = { I: asI64, F: asF64, i: asI32 }
 // the chokepoint here. An ambiguous BOOL∪NUMBER merge (`cond && 1`) passed as
 // an 'I'-sig stdlib arg (any `call()`/`method()` registration) collapsed the
 // same way the 16 named sites did.
+// An 'i' position takes its argument's Number first (`'x'.repeat('3')` is 'xxx'):
+// a string's box is no NaN to the word conversion.
 const coerce = (sig, nodes) =>
   sig.split('').map((c, i) => nodes[i] === undefined ? cast[c](undefExpr()) : c === 'I'
     ? asI64(storedValue(nodes[i]))
-    : cast[c](emit(nodes[i])))
+    : c === 'i' ? asI32(toNumF64(nodes[i], emit(nodes[i]), true)) : cast[c](emit(nodes[i])))
 
 const wrap = (fmt, call) => {
   if (fmt === 'i64') return typed(['f64.reinterpret_i64', call], 'f64')
