@@ -126,8 +126,29 @@ before this session, most at every level. Each has a test now unless marked open
 - 3b itself made `Float64Array.from(a, x => null)` store null boxes at level 2 and over
   once its loop vectorized (the lift took `__to_num` for the identity anywhere); its
   agent fixed it on the branch before the hand-back.
+- A name a test bounds and then writes kept the bound in the body: after
+  `while (i < n && s[i++] !== 0)` a read `t[i]` at `i = n` was taken unchecked and
+  answered 0 for `undefined`, at every level (type/interval-proof.js `refineAll`, and
+  the emitter's own refinements, compile/flow-types.js).
+- Three tests pinned a miscompile and were rewritten to the source's answer: the
+  n-queens count as a word (`cnt = cnt + solve(…)` wrapped past 2^31: a leaf weighing
+  10^9 on a board of 6 answered -294967296 for 4000000000), a masked recursive sum's
+  accumulator as a word, and a param-fed global compared under a conditional kept as a
+  word (`N = 2.5; i < N ? 1 : 0` answered as `N = 2`; every other spelling of the
+  comparison already kept the Number). `bench/nqueens` now adds its count in f64: one
+  unpaired run each way, 2.62 ms against 2.42 ms with V8 at 5.24 and 4.64 in the same
+  runs (0.50 and 0.52 of V8), 931 B against 885 B.
+- A step under a test of its own name stays a word where the test keeps the result in
+  the word (`rep--` under `rep > 0`): a rule in body-facts.js `widenLocalTypes`, beside
+  the binding-use scan's own guarded step (analyze-scans.js `guardedStep`, which asks a
+  different question of the same shape). Both belong to the one engine of 2b/2c.
 - Open: `Array.from(a, f)` where `f` grows `a` stops at the first length (`[2, 4, 6]`
   for Node's `[2, 4, 6, 8]`).
+- Open, level 1 only: `let i = 3, r = 0; if (i >= 4 || i++ === 9) { r = -1 } else { r += i }`
+  leaves `r` 7 for 4 (the else arm adds the stepped `i` to its old value).
+- Open, levels 2 and over: `while (i < 4 && (t[i++] = 1) > 0) { c++ }` over a
+  Float64Array compiles to a module that does not validate (a typed store's value in a
+  loop test).
 - Open: a map of a filter's result is no longer promoted with its literal (the summary
   holds a walk over an array of no known count to miss; one over a receiver nothing else
   reaches cannot).
@@ -137,7 +158,9 @@ before this session, most at every level. Each has a test now unless marked open
 
 The causes this time: two classifiers of one fact, a fact of a value applied to what
 derives from it (twice), a box read as a number (three times), an expression emitted at
-two reads.
+two reads, a fact of a test applied after the test wrote its name. Three of the fixes
+first failed five pins in the full suite: I had run the gates and the files beside the
+change, not the suite, before committing them.
 
 ## Decisions taken
 
