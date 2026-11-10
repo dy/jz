@@ -144,8 +144,12 @@ function stagedReference(name, update = true, rhs) {
   const keyEffect = name[0] === '[]' && (coercingKey || effectful(name[2]) || rhsEffect)
   // Read-modify-write uses the same container for GetValue and PutValue.
   // Even a syntactically plain field can invoke a host getter at runtime.
+  // (the staging's own emits leave the write's expectation as they found it: the
+  // store reads it next, and `(t[i++] = 1) > 0` takes the assignment's value)
+  const expect = ctx.func._expect
   const recv = stage(name[1], 'ref', keyEffect || rhsEffect || update && Array.isArray(name[1]))
   const key = keyEffect ? stage(name[2], 'key', coercingKey || rhsEffect, coercingKey) : name[2]
+  ctx.func._expect = expect
   if (writeback) (ctx.func.externalFieldRefs ??= new Map()).set(recv, writeback)
   return pre.length ? { ref: [name[0], recv, key], pre } : null
 }

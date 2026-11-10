@@ -103,6 +103,19 @@ test('index store: receiver, key and RHS are captured before key coercion', () =
   }
 })
 
+// A key with an effect is staged before the right side; the store after it is
+// still the assignment's value where the program reads one (a void store there
+// left the comparison an operand short: invalid wasm at every level).
+test('index store: a staged key leaves the store its value', () => {
+  const source = `export let f = () => { const t = new Float64Array(4), u = new Float64Array(4); let i = 0; while (i < 4 && (t[i++] = 1) > 0) { u[i] = 7; t[i] = 9 } return [t, u] }
+    export let g = (n) => { const a = [0, 0, 0]; let k = 0, s = 0; while (k < n && (a[k++] = k * 2) < 5) s += a[k - 1]; return [s, a] }`
+  for (const level of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const host = oracle(source), wasm = run(source, { optimize: level })
+    is(wasm.f().map(a => [...a]), host.f().map(a => [...a]), `O${level}, typed`)
+    for (const n of [0, 2, 3]) is(wasm.g(n), host.g(n), `O${level}, array ${n}`)
+  }
+})
+
 // A store whose right side calls reads its receiver into a temp first
 // (emit/assignment.js stagedReference). A growth moves the array; the binding,
 // where it still names the old block, follows it with the temp, so a table a
