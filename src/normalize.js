@@ -18,6 +18,7 @@
  *     `n > i` is `i < n`. Converting a Number calls nothing, so the order of the
  *     two conversions cannot be seen.
  *   - `while (true) { if (c) break; B }` is `while (!c) B`, `for (;;)` alike.
+ *   - `!(a >= b)` is `a < b` where neither side can be NaN (`3 >= NaN` is false).
  *   - A do-while, which prepare lowered to `let F = true; while (F || c) {
  *     F = false; B }`, is `while (c) B` where its test holds on entry: as the
  *     whole of `if (c)`, the same test, or over the literals the statement
@@ -34,6 +35,7 @@ import { constNumExpr } from './static.js'
 import { ctx } from './ctx.js'
 
 const MIRROR = new Map([['<', '>'], ['<=', '>='], ['>', '<'], ['>=', '<=']])
+const NEGATE = new Map([['<', '>='], ['<=', '>'], ['>', '<='], ['>=', '<']])
 
 const isArr = Array.isArray
 /** A number literal's value, or null. */
@@ -107,6 +109,7 @@ export function numberNames(body, outer = () => null) {
 const forms = (isNumber, valueOf) => {
   const value = (n) => num(n) ?? (typeof n === 'string' ? valueOf(n) : null)
   const counter = (n) => typeof n === 'string' && isNumber(n) && valueOf(n) == null
+  const notNaN = (n) => typeof n === 'string' && isNumber(n) || value(n) != null && !Number.isNaN(value(n))
 
   /** The amount a statement steps a name by, else null. */
   const stepBy = (s) => {
@@ -131,6 +134,10 @@ const forms = (isNumber, valueOf) => {
     if (!isArr(c)) return c
     const op = c[0]
     if ((op === '&&' || op === '||') && c.length === 3) { c[1] = test(c[1]); c[2] = test(c[2]); return c }
+    if (op === '!' && c.length === 2) {
+      const x = c[1]
+      return isArr(x) && x.length === 3 && NEGATE.has(x[0]) && notNaN(x[1]) && notNaN(x[2]) ? test(noted(c, [NEGATE.get(x[0]), x[1], x[2]])) : c
+    }
     return c.length === 3 && MIRROR.has(op) && counter(c[2]) && !counter(c[1]) && !isReassigned(c[1], c[2]) ? noted(c, [MIRROR.get(op), c[2], c[1]]) : c
   }
   return { step, test }

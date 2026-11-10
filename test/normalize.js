@@ -56,14 +56,16 @@ test('normalize: a test with the counter on the right is mirrored, where nothing
   is(t(['>', ['=', 'i', lit(5)], 'i']), show(['>', ['=', 'i', lit(5)], 'i']), 'a left side that writes the counter: the reads would swap')
 })
 
-test('normalize: a leading break is the test', () => {
-  const brk = (c) => norm(fn(['while', ['bool', 1], [';', ['if', c, ['break']], ['++', 'i']]]))[1][2]
-  is(show(brk(['>=', 'i', 'n'])), show(['while', ['!', ['>=', 'i', 'n']], [';', ['++', 'i']]]), 'while (true)')
+test('normalize: a leading break is the test; a negation goes where neither side can be NaN', () => {
+  const brk = (c, valueOf) => norm(fn(['while', ['bool', 1], [';', ['if', c, ['break']], ['++', 'i']]]), valueOf)[1][2]
+  is(show(brk(['>=', 'i', 'n'])), show(['while', ['!', ['>=', 'i', 'n']], [';', ['++', 'i']]]), 'a parameter bound may be NaN: the negation stays')
+  is(show(brk(['>=', 'i', 'N'], x => x === 'N' ? 64 : null)), show(['while', ['<', 'i', 'N'], [';', ['++', 'i']]]), 'a constant bound')
+  is(show(brk(['>=', 'i', lit(NaN)])[1]), show(['!', ['>=', 'i', lit(NaN)]]), 'a NaN literal')
   is(show(brk(['!', 'done'])[1]), show('done'), '`!!c` is c in a test')
   const labeled = norm(fn(['while', ['bool', 1], [';', ['if', 'c', ['break', 'out']], ['++', 'i']]]))[1][2]
   is(labeled[1][0], 'bool', 'a break of another loop is no test of this one')
   is(show(loopOf(fn(['for', null, null, ['++', 'i'], [';', ['if', ['>=', 'i', lit(8)], ['break']], 'x']]))),
-    show(['for', null, ['!', ['>=', 'i', lit(8)]], ['++', 'i'], [';', 'x']]), 'for (;;)')
+    show(['for', null, ['<', 'i', lit(8)], ['++', 'i'], [';', 'x']]), 'for (;;)')
 })
 
 test('normalize: a do-while whose test holds on entry is a while', () => {
