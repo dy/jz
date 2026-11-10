@@ -1680,3 +1680,19 @@ test('audit: indexOf compares strictly and Object.is is SameValue', () => {
     is(got.same('abcdefgh'), expected.same('abcdefgh'), `same ${optimize}`)
   }
 })
+
+// A local both arms of a conditional write, one of them by adding to the zero it
+// starts at, keeps a slot of its own: sharing one with the temp a step in the
+// test left behind made the sum start from that temp (watr 5.13.5 coalesceLocals).
+test('audit: an arm that adds to a local\'s initial zero reads zero, not a dead temp', () => {
+  const src = `export let step = (k) => { let i = k | 0, r = 0; if (i >= 4 || i++ === 9) { r = -1 } else { r += i } return [r, i] }
+    export let other = (k) => { let i = k | 0, j = 10, r = 0; if (i >= 4 || j++ === 9) { r = -1 } else { r += j } return [r, j] }
+    export let alone = (k) => { let i = k | 0, r = 0; if (i++ === 9) { r = -1 } else { r += i } return [r, i] }
+    export let float = (k) => { let i = k + 0.5, r = 0; if (i >= 4 || i++ === 9) { r = -1 } else { r += i } return [r, i] }
+    export let first = (k) => { let i = k | 0, r = 0; if (i >= 4 || i++ === 3) { r += i } else { r = -1 } return [r, i] }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size', 'speed')) {
+    const got = jz(src, { optimize }).exports
+    for (const name in host) for (const k of [3, 9, 4, 0]) is(got[name](k), host[name](k), `${name}(${k}) at ${optimize}`)
+  }
+})
