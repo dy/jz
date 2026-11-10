@@ -927,8 +927,8 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     return spanOf(e, scope, integral)
   }
   // The finite interval a numeric expression stays in: a literal, an integer
-  // name or a counter (spanOf), arithmetic on those, a rounding or `Math`
-  // bound of one, the hull of a conditional. null where the walk cannot bound it.
+  // name or a counter (spanOf), arithmetic on those, the hull of a
+  // conditional. null where the walk cannot bound it.
   const rangeOf = (e) => {
     if (typeof e === 'number') return Number.isFinite(e) ? pointRange(e) : null
     if (typeof e === 'string') return spanOf(e) ?? constRanges.get(keyOf(e)) ?? (typeof current === 'string' ? paramRangeOf(current, e) : null)
@@ -945,25 +945,6 @@ function solveSummary(ast, { inits = [], funcs, schemas, brandOf, boundSchema = 
     }
     if (op === 'u-' && e.length === 2) { const a = rangeOf(e[1]); return a && [-a[1], -a[0]] }
     if (op === '?:' && e.length === 4) { const a = rangeOf(e[2]), b = rangeOf(e[3]); return a && b && [Math.min(a[0], b[0]), Math.max(a[1], b[1])] }
-    if (op === '()' && typeof e[1] === 'string' && e[1].startsWith('Math.')) {
-      const args = e[2] == null ? [] : Array.isArray(e[2]) && e[2][0] === ',' ? e[2].slice(1) : [e[2]]
-      const a = args.length ? rangeOf(args[0]) : null
-      if (!a) return null
-      switch (e[1]) {
-        case 'Math.floor': return [Math.floor(a[0]), Math.floor(a[1])]
-        case 'Math.ceil': return [Math.ceil(a[0]), Math.ceil(a[1])]
-        case 'Math.round': return [Math.round(a[0]), Math.round(a[1])]
-        case 'Math.trunc': return [Math.trunc(a[0]), Math.trunc(a[1])]
-        case 'Math.abs': return [a[0] > 0 ? a[0] : a[1] < 0 ? -a[1] : 0, Math.max(-a[0], a[1])]
-        case 'Math.sqrt': return a[0] >= 0 ? [Math.sqrt(a[0]), Math.sqrt(a[1])] : null
-        case 'Math.min': case 'Math.max': {
-          if (args.length !== 2) return null
-          const b = rangeOf(args[1]); if (!b) return null
-          return e[1] === 'Math.min' ? [Math.min(a[0], b[0]), Math.min(a[1], b[1])] : [Math.max(a[0], b[0]), Math.max(a[1], b[1])]
-        }
-        default: return null
-      }
-    }
     if (e.length === 3 && !RANGE_BINARY.has(op) && SPAN_BINARY.has(op)) return spanOf(e)
     if (e.length !== 3 || !RANGE_BINARY.has(op)) return null
     // (a remainder of integers is one below the divisor's magnitude: their spans first)
