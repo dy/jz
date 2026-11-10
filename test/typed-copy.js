@@ -123,3 +123,22 @@ test('typed copy: a closed source extent needs only runtime element-kind dispatc
       is(f(mode, count), host(mode, count), `O${optimize}: kind ${mode}, view count ${count}`)
   }
 })
+
+// A typed array stores a value's Number: a string literal's digits at an integer
+// element (its box is no NaN to the word conversion), and each element of an
+// Array a set copies in (a boolean, a string, null).
+test('typed copy: a string literal and an Array\'s elements store as their Numbers', () => {
+  const src = `export let literal = () => { const t = new Int32Array(4); t[0] = '7'; t[1] = '7.9'; t[2] = '0x10'; t[3] = ' 12 '; return Array.from(t) }
+  export let bytes = () => { const t = new Uint8Array(3); t[0] = '7'; t[1] = '1e2'; t[2] = 'abc'; return Array.from(t) }
+  export let joined = () => { const t = new Int16Array(2); t[0] = '7' + ''; for (let i = 1; i < 2; i++) t[i] = '9'; return Array.from(t) }
+  export let floats = () => { const t = new Float64Array(2); t[0] = '7.5'; t[1] = 'x'; return Array.from(t) }
+  export let mixed = () => { const t = new Float64Array(4); t.set([true, '3', null, undefined]); return Array.from(t) }
+  export let words = () => { const t = new Int32Array(4); t.set([true, '3', false, [5]]); return Array.from(t) }
+  export let named = () => { const a = [true, '2.5']; const t = new Float32Array(3); t.set(a, 1); return Array.from(t) }
+  export let numbers = () => { const t = new Float64Array(2); t.set([1.5, -0]); return Array.from(t) }`
+  const host = oracle(src)
+  for (const optimize of levels(0, 1, 2, 3, 'size')) {
+    const got = run(src, { optimize })
+    for (const name in host) is(got[name](), host[name](), `O${optimize}: ${name}`)
+  }
+})

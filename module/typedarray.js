@@ -1473,25 +1473,10 @@ export default (ctx) => {
       const out = allocPtr({ type: PTR.TYPED, aux,
         len: ['i32.mul', ['local.get', `$${len}`], ['i32.const', stride]], stride: 1, tag: 'tf' })
       const t = out.local
-      // Each slot converts with ToNumber by what the summary knows of it: a
-      // Number copies, a nullish or boolean atom converts in place, a string or
-      // an object takes the full conversion. A slot of unknown kind (a host
-      // array) follows the constructor's length policy: the full conversion
-      // where the program links it already, else in place, every other box NaN.
-      // (BigInt lanes keep their raw copy.)
-      const view = ctx.summary.at(ctx.func.current), k = view.kindOfExpr(src)
-      const el = elemHint ?? (tagOf(k) === K.ARRAY ? view.elemOfKind(k) : null)
-      const tags = el == null ? 0 : tagsOf(el)
-      const atoms = bitOf(K.NUMBER) | bitOf(K.ABSENT) | bitOf(K.NULLISH) | bitOf(K.BOOL) | bitOf(K.ANY)
-      const numeric = bigint || el === NUMBER
-      const full = !numeric && ((tags & ~atoms) !== 0 || ctx.core.includes.has('__to_num'))
-      const v = temp('tfv')
+      // Each slot converts with ToNumber (arraySlotNumber); BigInt lanes keep
+      // their raw copy.
       const slot = ['f64.load', ['i32.add', ['local.get', `$${off}`], ['i32.shl', ['local.get', `$${i}`], ['i32.const', 3]]]]
-      if (full) { ctx.module.include('number'); inc('__to_num') }
-      const srcF64 = numeric ? slot
-        : full ? ['if', ['result', 'f64'], ['f64.eq', ['local.tee', `$${v}`, slot], ['local.get', `$${v}`]],
-          ['then', ['local.get', `$${v}`]], ['else', ['call', '$__to_num', ['i64.reinterpret_f64', ['local.get', `$${v}`]]]]]
-        : ['block', ['result', 'f64'], ['local.set', `$${v}`, slot], coerceAtomsToNum(typed(['local.get', `$${v}`], 'f64'))]
+      const srcF64 = bigint ? slot : arraySlotNumber(src, slot, elemHint)
       const dstAddr = ['i32.add', ['local.get', `$${t}`], ['i32.mul', ['local.get', `$${i}`], ['i32.const', stride]]]
       const storeExprs = (fl.isF16 || fl.isClamped)
         ? [elemStoreIR(fl, dstAddr, srcF64)]
@@ -2986,6 +2971,25 @@ export default (ctx) => {
       : ['block', ['result', 'f64'], ...pre, ...take, guard([STORE[et], off, i32val]), ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
   }
 
+  // An Array's slot as the Number ToNumber makes of it, by what the summary
+  // knows of the array's elements: a Number as it is, a nullish or boolean atom
+  // converted in place, a string or an object by the full conversion. A slot of
+  // unknown kind (a host array) takes the full conversion where the program
+  // links it already, else in place, every other box NaN.
+  const arraySlotNumber = (src, slot, elemHint = null) => {
+    const view = ctx.summary.at(ctx.func.current), k = view.kindOfExpr(src)
+    const el = elemHint ?? (tagOf(k) === K.ARRAY ? view.elemOfKind(k) : null)
+    if (el === NUMBER) return slot
+    const tags = el == null ? 0 : tagsOf(el)
+    const atoms = bitOf(K.NUMBER) | bitOf(K.ABSENT) | bitOf(K.NULLISH) | bitOf(K.BOOL) | bitOf(K.ANY)
+    const full = (tags & ~atoms) !== 0 || ctx.core.includes.has('__to_num')
+    const v = temp('tfv')
+    if (full) { ctx.module.include('number'); inc('__to_num') }
+    return full ? ['if', ['result', 'f64'], ['f64.eq', ['local.tee', `$${v}`, slot], ['local.get', `$${v}`]],
+        ['then', ['local.get', `$${v}`]], ['else', ['call', '$__to_num', ['i64.reinterpret_f64', ['local.get', `$${v}`]]]]]
+      : ['block', ['result', 'f64'], ['local.set', `$${v}`, slot], coerceAtomsToNum(typed(['local.get', `$${v}`], 'f64'))]
+  }
+
   // TypedArray.prototype.set(source, offset = 0). A typed source of the same byte
   // layout (sameBytes) is one memory.copy, which moves as memmove and so serves
   // a source view of the receiver itself. A typed source of another kind
@@ -3038,7 +3042,8 @@ export default (ctx) => {
       val = typed(elemLoadIR(s, at(sp, SHIFT[s.et])), 'f64')
     } else {
       inc('__typed_idx')
-      val = typed(['call', '$__typed_idx', srcPtr, ['local.get', `$${i}`]], 'f64')
+      // (an Array's element stores as its Number: `t.set([true, '3'])` is 1, 3)
+      val = typed(arraySlotNumber(src, ['call', '$__typed_idx', srcPtr, ['local.get', `$${i}`]]), 'f64')
     }
     return typed(['block', ['result', 'f64'], ...setup, ...guard, ...srcBase,
       ...walk(i, ['local.get', `$${n}`], [elemStoreIR(r, at(dst, shift), val)]),

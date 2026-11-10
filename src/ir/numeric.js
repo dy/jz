@@ -9,7 +9,7 @@ import { ctx, err, inc, OPTF } from '../ctx.js'
 import { I32_MIN, I32_MAX, isLeaf, nodeEqual } from '../ast.js'
 import { typed } from './tag.js'
 import { writesLocal } from './classify.js'
-import { ATOM, atomNanHex } from '../../layout.js'
+import { ATOM, atomNanHex, TOMB_NAN } from '../../layout.js'
 import { temp, tempI32 } from './locals.js'
 import { boxPtrIR, valKindToPtr } from './pointers.js'
 import { int32 } from '../static.js'
@@ -387,6 +387,11 @@ const convRange = (child, signed) => {
 // bounds describe only numeric outcomes; a NaN-only arm is an empty interval.
 // Other consumers keep the default finite-value contract.
 const NAN_RANGE = { lo: Infinity, hi: -Infinity }
+// A constant that is NaN as a Number: NaN itself and the boxes ToNumber reads
+// as NaN, undefined and a hole. Any other payload is a value of its own (a
+// string's digits, true's 1), which no range bounds.
+const NAN_CONSTS = new Set(['nan', UNDEF, `nan:${TOMB_NAN}`].map(s => s.toLowerCase()))
+const nanConst = (v) => typeof v === 'number' ? Number.isNaN(v) : typeof v === 'string' && NAN_CONSTS.has(v.replace(/^[-+]/, '').toLowerCase())
 /** The facts a comparison `X <op> k` (or `k <op> X`) establishes for the f64
  *  local X: `t` holds where the test is true, `f` where it is false. `X < k`
  *  bounds X above by k on the true side and below by k on the false side;
@@ -459,7 +464,7 @@ export const f64Range = (n, get, allowNaN = false) => {
       return fin(Math.max(lo, rng ? rng.lo : -Infinity), Math.min(hi, rng ? rng.hi : Infinity))
     }
     if (op === 'f64.const') {
-      if (allowNaN && (Number.isNaN(n[1]) || (typeof n[1] === 'string' && /^[-+]?nan(?::0x[0-9a-f]+)?$/i.test(n[1])))) return NAN_RANGE
+      if (allowNaN && nanConst(n[1])) return NAN_RANGE
       return typeof n[1] === 'number' ? fin(n[1], n[1]) : null
     }
     if (op === 'f64.convert_i32_s') return convRange(n[1], true)
