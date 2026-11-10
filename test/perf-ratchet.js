@@ -320,6 +320,14 @@ const BASELINE = join(import.meta.dirname, 'perf-ratchet.json')
 //            i32) and leaves the loop as written cold, without the wide accumulator: that
 //            program 77/38 -> 63/63, mixed 2264/1060 -> 2250/1085 on both hosts, every other
 //            program as it was. Written `i++`, `++i` or `i += 1`, it compiled so before.
+//   a copy's word for a cursor no second trip keeps in the word (plan/integral-loops.js
+//            `oneTrip`, 2026-11-10): the guard `entry + trips * step` within i32 that `acc`
+//            took (entry 0, a step of up to 1103515500) admits one trip at most, n <= 1, so the
+//            copy runs no loop and the loop as written goes cold for every run of two. The
+//            cursor is no longer the copy's word: the loop keeps its counter's copy, both copies
+//            with the wide accumulator, as every spelling compiled it before src/normalize.js:
+//            that program 63/63 -> 77/38, mixed 2250/1085 -> 2264/1060 on both hosts, the total
+//            the second wide copy's 14 ops, every other program as it was.
 // Total loop-body ops across the fixed corpus, per category. Deterministic.
 const measure = (categories = Object.keys(CATEGORIES)) => {
   const totals = {}

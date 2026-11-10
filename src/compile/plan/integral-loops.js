@@ -1172,6 +1172,9 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const a = numOf(e[1]), b = numOf(e[2])
       return a == null || b == null ? null : e[0] === '+' ? a + b : e[0] === '-' ? a - b : e[0] === '*' ? a * b : null
     }
+    // Whether the guard `from + trips * by` within the word passes no second trip: a copy that
+    // runs one trip at most is no loop, and the loop as written would go cold for every run of two.
+    const oneTrip = (from, by) => from != null && by != null && (from + 2 * by > I32_MAX || from + 2 * by < I32_MIN)
     // A ring: every step of `c` in the loop (`c++`, `c += k`, `c = c + k`) is the
     // statement before `if (c >= B) c = L`, B of stable names, L an int32 literal
     // (`qHead++; if (qHead >= QN) qHead = 0`). Whatever the trips, an int32 below B
@@ -1274,7 +1277,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
         const base = entry ? [null, floor != null ? Math.max(entry[1], floor) : entry[1]] : floor != null ? ['()', 'math.max', [',', c, [null, floor]]] : c
         // (module constants count as their values: `MAXCODES` trips from an entry of a hull is a number)
         const top = ['+', base, ['*', trips, sum(terms)]], at = literalTrips(top)
-        if (at != null && at > 2147483647) continue
+        if (at != null && at > 2147483647 || at == null && oneTrip(numOf(base), numOf(sum(terms)))) continue
         cursorRange.set(c, [entry ? [null, floor != null ? Math.min(entry[0], floor) : entry[0]] : floor != null ? ['()', 'math.min', [',', c, [null, floor]]] : c, top])
         if (at == null) cursorTests.push(['<=', top, [null, 2147483647]])
         // (what the loop leaves the cursor within, for a loop after it)
@@ -1931,6 +1934,7 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
       const bottom = lo < 0 ? ['+', entry ? lit(entry[0]) : c, ['*', trips, lit(lo)]] : entry ? lit(entry[0]) : c
       const atTop = literalTrips(top), atBottom = literalTrips(bottom)
       if (atTop != null && atTop > I32_MAX || atBottom != null && atBottom < I32_MIN) continue
+      if (entry && (oneTrip(entry[1], hi) || oneTrip(entry[0], lo))) continue
       if (atTop == null) cursorTests.push(['<=', top, lit(I32_MAX)])
       if (atBottom == null) cursorTests.push(['>=', bottom, lit(I32_MIN)])
       if (!entry) cursorTests.push(['||', ['!==', c, lit(0)], ['>', ['/', lit(1), c], lit(0)]])
