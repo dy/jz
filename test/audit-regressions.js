@@ -1976,3 +1976,26 @@ test('audit: a module binding a function assigns is not what the caller last wro
     for (const k of [0, 5]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
   }
 })
+
+// `Array.isArray` of a value the compiler holds for an array answers true only
+// where the value is present: one that may be undefined or null beside its
+// arrays (a binding filled later, a `find`'s or a `get`'s result, a callee's
+// null) is asked of the value.
+test('audit: Array.isArray of a value that may be missing asks the value', () => {
+  const cases = [
+    `export let f = (k) => { let a; if (k > 3) a = [1, 2]; return Array.isArray(a) ? a.length : -1 }`,
+    `export let f = (k) => { let a = [1, 2]; if (k > 3) a = null; return Array.isArray(a) ? a.length : -1 }`,
+    `const g = (k) => k > 3 ? [1, 2] : null\nexport let f = (k) => { const a = g(k); return Array.isArray(a) ? a.length : -1 }`,
+    `export let f = (k) => { const a = [[1], [2, 3]].find((x) => x.length > k); return Array.isArray(a) ? a.length : -1 }`,
+    `export let f = (k) => { const m = new Map([[1, [7, 8]]]); const a = m.get(k); return Array.isArray(a) ? a.length : -1 }`,
+    `export let f = (k) => { const m = [[1, 2], null, [3]]; const a = m[k & 3]; return Array.isArray(a) ? a.length : -1 }`,
+    `const g = (a, b) => (Array.isArray(b) ? b.length : -1) + a\nexport let f = (k) => g(k) + g(k, [1, 2, 3]) * 10`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const k of [0, 1, 5, 9]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
+  }
+  if (onKernel()) return
+  // (an array that is present is one by the fact, with no test of its tag)
+  ok(!compile(`export let f = (k) => { const a = [k, k + 1]; return Array.isArray(a) ? a.length : -1 }`, { optimize: 0, wat: true }).includes('__ptr_type'), 'a present array answers without a tag test')
+})
