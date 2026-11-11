@@ -178,11 +178,16 @@ export function observeNodeFacts(node, f) {
   }
   // Bracket form of the same: `o['zz'] = v` (isLiteralStr keeps it out of
   // dynWriteVars, so it must be recorded here or it's invisible to every gate).
-  if (MUTATE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]' &&
-      isLiteralStr(args[0][2]) && typeof args[0][1] === 'string') {
-    let s = f.literalWriteKeys.get(args[0][1])
-    if (!s) f.literalWriteKeys.set(args[0][1], s = new Set())
-    s.add(args[0][2][1])
+  // It writes the property the dot form writes, through any receiver
+  // (`o['w'] *= 3` stays in this form: a literal holding `w` is not one
+  // shared static instance).
+  if (MUTATE_OPS.has(op) && Array.isArray(args[0]) && args[0][0] === '[]' && isLiteralStr(args[0][2])) {
+    f.writtenProps.add(args[0][2][1])
+    if (typeof args[0][1] === 'string') {
+      let s = f.literalWriteKeys.get(args[0][1])
+      if (!s) f.literalWriteKeys.set(args[0][1], s = new Set())
+      s.add(args[0][2][1])
+    }
   }
   // Object.assign may copy runtime-enumerated keys outside a target's static
   // schema. Mark a named target like a computed write so later enumeration

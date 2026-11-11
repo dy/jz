@@ -2027,3 +2027,22 @@ test('audit: a literal\'s slot that is written is read as what it holds', () => 
   const wat = compile(top + `export let f = (x) => { const a = [1, 2]; a[0] = Math.floor(x); return A[a[1]] + a[0] }`, { optimize: 'size', wat: true })
   ok(!/\$f[\s\S]*?i32\.lt_u[\s\S]*?\(func /.test(wat.slice(wat.indexOf('(func $f'))), 'an unwritten slot indexes with no bounds test')
 })
+
+// A literal nothing writes is one shared static instance. A write through a
+// literal string key (`o['w'] *= 3`, which stays in the bracket form) writes
+// the property the dot form writes: a literal holding it is built per
+// evaluation, or one call's product is the next call's operand.
+test('audit: a literal written through a string key is no shared instance', () => {
+  const cases = [
+    `export let f = (v) => { const o = { w: 2, t: 1 }; o['w'] *= 3; return o.w }`,
+    `export let f = (v) => { const o = { w: 2, t: 1 }; o['w'] += v; return o.w }`,
+    `export let f = (v) => { const o = { w: 2, t: 1 }; const k = 'w'; o[k] *= 3; return o.w }`,
+    `const g = (o) => o.w\nexport let f = (v) => { const o = { w: 2, t: 1 }; o['w'] *= 3; return g(o) }`,
+    `const mk = () => ({ w: 2, t: 1 })\nexport let f = (v) => { mk()['w'] *= 3; return mk().w + v }`,
+    `export let f = (v) => { const o = { w: 2, t: 1 }; o['w']++; --o['t']; return o.w * 10 + o.t }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const v of [2, 0.5, 2, 5]) is(got.f(v), host.f(v), `${src} for ${v} at ${optimize}`)
+  }
+})
