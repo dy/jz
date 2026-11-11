@@ -360,10 +360,6 @@ const LEGACY_LANG_LIMITATIONS = new Map([
   // String literal: a backslash before a non-ASCII non-escape character.
   ['test/language/literals/string/S7.8.4_A4.2_T5.js', 'backslash before non-ASCII non-escape char'],
   ['test/language/literals/string/S7.8.4_A4.2_T7.js', 'backslash before non-ASCII non-escape char'],
-  // Parser gap (tracked upstream in subscript): `do <stmt> while (...)`.
-  ['test/language/statements/do-while/S12.6.1_A1.js', 'parser: do-while statement'],
-  ['test/language/statements/do-while/S12.6.1_A2.js', 'parser: do-while statement'],
-  ['test/language/statements/variable/S12.2_A12.js', 'parser: do-while with var statement'],
   // Nested for-in walking an object hierarchy.
   ['test/language/statements/for-in/S12.6.4_A5.1.js', 'nested for-in over prototype chain'],
   ['test/language/statements/for-in/S12.6.4_A5.js', 'nested for-in over prototype chain'],
@@ -447,7 +443,6 @@ function shouldSkipBase(content, rel = '') {
   if (/\bvalueOf\b\s*:/.test(codeContent) || /\bvalueOf\s*:\s*function/.test(codeContent)) return 'valueOf coercion unsupported'
   if (rel.includes('language/arguments-object/') && !isArgumentsObjectTest(rel))
     return 'arguments object outside jzify-supported subset'
-  if (/\bdo\s*;\s*while\b/.test(codeContent)) return 'do-while empty-statement parser gap'
   if (rel.includes('/optional-catch-binding')) return 'optional catch binding parser gap'
   if (rel.includes('/block-scope/shadowing/') && rel.includes('catch-parameter')) return 'catch parameter shadowing codegen gap'
   if (content.includes('for-in-order')) return 'for-in mutation-order semantics outside simple jz subset'

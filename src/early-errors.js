@@ -220,6 +220,7 @@ lexicalTemplateExpr = (src, start, strict) => {
 
 const P_CONTROL = 0, P_SEMIS = 1, P_REST = 2, P_REST_COMMA = 3, P_REST_DEPTH = 4, P_BASE_DEPTH = 5, P_EXPR_DEPTH = 6
 const P_FOR_INOF = 7, P_FOR_DECL = 8, P_FOR_COMMAS = 9, P_FOR_INIT = 10, P_FOR_TOKENS = 11, P_FOR_CONSEQUENT = 12
+const P_DO_TAIL = 13
 const REST_BINDING = 1, REST_EXPRESSION = 2
 
 // Cheap, single-pass, deliberately approximate: tracks only quote/backslash
@@ -391,6 +392,10 @@ const validateLexicalSource = (src, strict) => {
   // right before a real token is processed below, by the arrow-token check.
   let sawNewline = false
   const parens = [], doBlocks = [], doBlockEnds = new Set()
+  // A `do` whose body is a statement, by the depth it stands at, and where each
+  // do-while's test closes: the `)` that ends the statement, as a `}` ends a block.
+  const doStmts = [], doTailEnds = new Set()
+  let pendingDoTail = false
   while (i < src.length) {
     const c = src.charCodeAt(i), ch = src[i]
     at = i
@@ -420,7 +425,7 @@ const validateLexicalSource = (src, strict) => {
     // newline state once, for the arrow-token check just below, then reset.
     const hadNewline = sawNewline
     sawNewline = false
-    if (ch !== '{') pendingDo = false
+    if (ch !== '{') { if (pendingDo) doStmts.push(nesting * 65536 + parens.length); pendingDo = false }
     if ((ch === '"' || ch === "'") && quotedToken && !hadNewline)
       fail('adjacent string literals require an operator or statement terminator')
     if (ch !== '"' && ch !== "'") quotedToken = false
@@ -490,7 +495,7 @@ const validateLexicalSource = (src, strict) => {
           // A same-line non-block Statement needs its own explicit terminator.
           // Across a LineTerminator ASI may supply it; blocks and declaration-
           // shaped consequents end at `}` without ASI.
-          if (!prev[1] && prevCh !== ';' && prevCh !== '}')
+          if (!prev[1] && prevCh !== ';' && prevCh !== '}' && !doTailEnds.has(prev[0]))
             fail('if consequent requires a semicolon or LineTerminator before else')
         }
       }
@@ -505,6 +510,11 @@ const validateLexicalSource = (src, strict) => {
             fail('semicolon is not allowed between a do body and while')
         }
         doTail = prev[0] >= 0 && doBlockEnds.has(prev[0])
+        // A statement for a body ends at its `;`, its `}`, its line, or the `)` of a
+        // do-while of its own: the `while` behind it is the tail.
+        if (!doTail && lastPunct !== '.' && prev[0] >= 0 && doStmts[doStmts.length - 1] === nesting * 65536 + parens.length &&
+            (src[prev[0]] === ';' || src[prev[0]] === '}' || prev[1] || doTailEnds.has(prev[0]))) { doStmts.pop(); doTail = true }
+        if (doTail) pendingDoTail = true
       }
       // A classic for head needs exactly two semicolons; a for-in/of head
       // needs a top-level `in`/`of` and none. Record only the outermost header
@@ -629,11 +639,12 @@ const validateLexicalSource = (src, strict) => {
     if (ch === '(') {
       const parent = parens[parens.length - 1]
       parens.push([pendingControl, 0, false, false, -1, nesting,
-        parent && parent[P_EXPR_DEPTH] >= 0 ? nesting : -1, false, false, 0, false, 0, 0])
-      pendingControl = null
+        parent && parent[P_EXPR_DEPTH] >= 0 ? nesting : -1, false, false, 0, false, 0, 0, pendingDoTail])
+      pendingControl = null; pendingDoTail = false
     }
     else if (ch === ')') {
       const group = parens.pop()
+      if (group && group[P_DO_TAIL]) doTailEnds.add(i)
       if (group && group[P_CONTROL] === 'for') {
         if ((group[P_SEMIS] === 0 && !group[P_FOR_INOF]) ||
             (group[P_SEMIS] !== 0 && group[P_SEMIS] !== 2))

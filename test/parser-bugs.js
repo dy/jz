@@ -1206,3 +1206,21 @@ test('from, as and of are names outside their clauses: a line starting with one 
     }
     is(parse('a\nfrom\nb'), [';', 'a', 'from', 'b'])
 })
+
+// A statement for a do-while's body ends at its own `;`, with the `while` behind it,
+// and the test's `)` ends the do-while as a `}` would: what follows on the line is the
+// next statement (subscript 10.8.3; "Unclosed (" and "Unclosed {" before it).
+test('a do-while takes a statement body and ends at its test', () => {
+    const cases = [
+        ['export let f = (n) => { let i = 0; do i++; while (i < n); return i }', [0, 3], [1, 3]],
+        ['export let f = (n) => { let i = 0; do { i++ } while (i < n) return i }', [0, 3], [1, 3]],
+        ['export let f = (n) => { let i = 0, j = 0; do do j++; while (j < 2) while (++i < n) return i * 10 + j }', [0, 3], [12, 34]],
+        ['export let f = (n) => { let i = 0; do ; while (++i < n) return i }', [0, 3], [1, 3]],
+        ['export let f = (n) => { let i = 0; if (n) do i += 2; while (i < n) else i = 9; return i }', [0, 3], [9, 4]],
+        ['export let f = (n) => { let i = 0; a: do { i++; if (i > 1) break a } while (i < n) i += 100; return i }', [0, 3], [101, 102]],
+    ]
+    for (const [src, args, want] of cases) for (const optimize of levels(0, 2))
+        args.forEach((a, k) => is(jz(src, { optimize }).exports.f(a), want[k], `${src} for ${a} at ${optimize}`))
+    is(parse('do x++; while (c)'), ['do', ['++', 'x', null], 'c'])
+    is(parse('do { x } while (c) y'), [';', ['do', 'x', 'c'], 'y'])
+})

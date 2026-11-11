@@ -100,7 +100,7 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "10.8.2",
+    "subscript": "10.8.3",
     "watr": "5.13.5"
   },
   "keywords": [
