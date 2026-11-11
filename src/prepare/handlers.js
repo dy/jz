@@ -39,7 +39,7 @@ import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedCons
 import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindSchema, censusUnknownInitDecl, objLiteralSid } from './schema.js'
 import { importEdge, namespaceValue } from './module-eval.js'
-import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, withLoopLocalNames } from './scope.js'
+import { bindingNames, blockDeclNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, namesAny, popScope, prescanBlockDecls, pushScope, resolveScope, withLoopLocalNames } from './scope.js'
 import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, NS_OBJECTS, SIMD_NS, STATIC_CONSTS, arrowWrites, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames, BUILTIN_FNS, GLOBAL_TYPEOF, builtinGlobalOf, hostGlobalName } from './state.js'
 
 
@@ -1381,6 +1381,11 @@ const handlers = {
   // then fresh cells for the first test/body, then fresh cells before each
   // update/test/body. A body continue joins the copy-out after its finalizers.
   'for'(head, body, label = null) {
+    // The parser hands a braced body as its bare list, and the frame pushed below is the
+    // head's and the body's at once. A body that declares a name its head names has a
+    // binding of its own: it keeps its block. (`for (let i = 0; i < k; i++) { let i = 5 }`
+    // stepped the body's `i` and never ended; `for (x of a) { let x = 1 }` left `x` unset.)
+    if (namesAny(head, blockDeclNames(body))) body = withLoc(['{}', body], body)
     if (Array.isArray(head) && head[0] === ';' && Array.isArray(head[1]) && head[1][0] === 'let') {
       const captured = []
       for (let i = 1; i < head[1].length; i++) {

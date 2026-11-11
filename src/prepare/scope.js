@@ -39,27 +39,38 @@ export function prescanBlockDecls(node) {
   const top = scopes[scopes.length - 1]
   if (!top) return
   const fnNames = funcLocalNames[funcLocalNames.length - 1]
-  const scan = (s) => {
-    if (!Array.isArray(s)) return
-    // a nested bare [';' …] list is the SAME block scope (only {} creates one) —
-    // the for-of lowering wraps bodies as [';', bindStmt, origBody]
-    if (s[0] === ';') { for (let i = 1; i < s.length; i++) scan(s[i]); return }
-    if (s[0] !== 'let' && s[0] !== 'const') return
-    for (let i = 1; i < s.length; i++) {
-      const d = s[i], t = Array.isArray(d) && d[0] === '=' ? d[1] : d
-      for (const name of bindingNames(t)) {
-        if (typeof name !== 'string' || top.has(name) || name.includes(T)) continue
-        // loopLocalNames: a depth-0 loop-body binding a nested closure captures
-        // (see its declaration) — mint it exactly like a depth!==0 local instead
-        // of letting it fall through to the single-instance global spelling.
-        const isLL = loopLocalNames.has(name)
-        top.set(name, (prepState.depth !== 0 || isLL) ? mintForScope(name, isLL)
-          : (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${freshPrepareId()}` : name)
-      }
-    }
+  for (const name of blockDeclNames(node)) {
+    if (typeof name !== 'string' || top.has(name) || name.includes(T)) continue
+    // loopLocalNames: a depth-0 loop-body binding a nested closure captures
+    // (see its declaration) — mint it exactly like a depth!==0 local instead
+    // of letting it fall through to the single-instance global spelling.
+    const isLL = loopLocalNames.has(name)
+    top.set(name, (prepState.depth !== 0 || isLL) ? mintForScope(name, isLL)
+      : (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${freshPrepareId()}` : name)
   }
-  scan(node)
 }
+
+/** The names a block declares for itself, in source order: its immediate plain
+ *  `let`/`const` bindings. */
+export function blockDeclNames(node, out = new Set()) {
+  if (!Array.isArray(node)) return out
+  // a nested bare [';' …] list is the SAME block scope (only {} creates one) —
+  // the for-of lowering wraps bodies as [';', bindStmt, origBody]
+  if (node[0] === ';') for (let i = 1; i < node.length; i++) blockDeclNames(node[i], out)
+  else if (node[0] === 'let' || node[0] === 'const') for (let i = 1; i < node.length; i++) {
+    const d = node[i]
+    bindingNames(Array.isArray(d) && d[0] === '=' ? d[1] : d, out)
+  }
+  return out
+}
+
+/** Whether `node` names a variable of `names`: a literal's value, a regex's source
+ *  and a property's name are none (a key is one only where it is computed). */
+export const namesAny = (node, names) => typeof node === 'string' ? names.has(node)
+  : Array.isArray(node) && node[0] != null && node[0] !== '//' && node[0] !== 'str' && (
+    node[0] === '.' || node[0] === '?.' ? namesAny(node[1], names)
+    : node[0] === ':' ? (typeof node[1] !== 'string' && namesAny(node[1], names)) || namesAny(node[2], names)
+    : node.some((c, i) => i > 0 && namesAny(c, names)))
 
 export function pushScope(scope = new Map()) {
   scopes.push(scope)

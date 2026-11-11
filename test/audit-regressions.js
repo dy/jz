@@ -1824,3 +1824,42 @@ test('audit: a name other code writes is no integer by the writes in sight', () 
   const kept = `export let f = (k) => { let pos = 0; const next = () => { pos++; return Math.floor(pos) }; const o = { next }; o.next(); return o.next() + k }`
   ok(!compile(kept, { optimize: 0, wat: true }).includes('f64.floor'), 'an integral capture is floored by no instruction')
 })
+
+// A `for`'s braced body is a block of its own: a `let` in it of a name the head
+// names is another binding than the head's. The parser hands the body as its
+// bare list, and the head's frame held it: `for (let i = 0; i < k; i++) { let i
+// = 5 }` stepped the body's `i` and never ended, a bound the body redeclared was
+// read from the body, and `for (x of a) { let x }` assigned the body's `x`.
+test('audit: a for body that declares a name of its head has its own', () => {
+  const cases = [
+    `export let f = (k) => { let c = 0; for (let i = 0; i < k; i++) { let i = 5; c += i } return c }`,
+    `export let f = (k) => { let c = 0; for (let i = 0; i < k; i += 1) { let i = 1; i += 2; c += i } return c }`,
+    `export let f = (k) => { let c = 0, i = 0; for (i = 0; i < k; i++) { let i = 5; c += i } return c * 100 + i }`,
+    `export let f = (k) => { let c = 0; for (let i = 0; i < k; i++) { for (let i = 0; i < 2; i++) { let i = 3; c += i } } return c }`,
+    `export let f = (k) => { let c = 0; out: for (let i = 0; i < k; i++) { let i = 5; if (c > 20) break out; c += i } return c }`,
+    `export let f = (k) => { let c = 0, n = 3; for (let i = 0; i < n; i++) { let n = 100; c += n + k } return c + n }`,
+    `export let f = (k) => { let c = 0, d = 1; for (let i = 0; i < 4; i += d) { let d = 50; c += d + k } return c + d }`,
+    `export let f = (k) => { let c = 0, s = 2; for (let i = s; i < 5; i++) { let s = 9; c += s + i } return c + s + k }`,
+    `export let f = (k) => { let c = 0; for (let i = 0, g = () => i; i < 3; i++) { let i = 10; c += i + g() } return c + k }`,
+    `export let f = (k) => { let c = 0; const fs = []; for (let i = 0; i < k; i++) { let i = 7; fs.push(() => i) } for (const g of fs) c += g(); return c }`,
+    `export let f = (k) => { let c = 0; const xs = [1, 2, 3]; for (const v of xs) { const xs = k; c += v + xs } return c }`,
+    `export let f = (k) => { let c = 0, x = 0; for (x of [1, 2, 3]) { let x = k; c += x } return c * 10 + x }`,
+    `export let f = (k) => { let c = 0; for (const [a, b] of [[1, 2], [3, 4]]) { const a = k; c += a + b } return c }`,
+    `export let f = (k) => { let c = 0; const o = { a: 1, bb: 2 }; for (const p in o) { const o = k; c += p.length + o } return c }`,
+    `export let f = (k) => { let c = 0, p = ''; const o = { a: 1, bb: 2 }; for (p in o) { let p = k; c += p } return c * 10 + p.length }`,
+    `let C = 0\nfor (let i = 0; i < 4; i++) { let i = 5; C += i }\nexport let f = (k) => C + k`,
+    `let C = 0\nfor (const x of [1, 2, 3]) { const x = 7; C += x }\nexport let f = (k) => C + k`,
+    `let C = 0, n = 3\nfor (let i = 0; i < n; i++) { let n = 100; C += n }\nexport let f = (k) => C + n + k`,
+    `let C = 0, x = 0\nfor (x of [1, 2, 3]) { let x = 7; C += x }\nexport let f = (k) => C * 10 + x + k`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 2, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const k of [0, 2, 7]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
+  }
+  if (onKernel()) return
+  // (a name the head does not name stays in the loop's frame: the body is its bare list, and a
+  // literal's text, a property's name and a key are no names)
+  const plain = (body) => compile(`export let f = (a) => { let c = 0; for (let i = 0; a[i] !== 'x' && i < a.length; i++) { ${body} } return c }`, { optimize: 2 })
+  is(plain(`const x = a[i].length; c += x`).length, plain(`const y = a[i].length; c += y`).length, 'a literal the body names apart')
+  is(plain(`const length = a[i].length; c += length`).length, plain(`const y = a[i].length; c += y`).length, 'a property the body names apart')
+})
