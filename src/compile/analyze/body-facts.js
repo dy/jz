@@ -134,12 +134,22 @@ const publishBindingHulls = (hulls, locals) => {
 // A binding integral wherever its integer typed reads hit (`intOrMiss`): a miss
 // leaves undefined, which arithmetic carries as NaN and a key's test finds, never
 // a fraction. Where one such read is unproven, the walk again with every read
-// taken as hitting: what is integral there and not over the first walk is.
-function publishMissable(body, locals, hulls, lens) {
-  const hits = bindingRequests(locals)
+// taken as hitting: what is integral there and not over the first walk is. A
+// key alone reads it (expr-type.js wholeOrMissKey: a name, a step of one, a sum,
+// a difference or a product of such), so the walk asks of a key's names alone.
+const keyNames = (k, out) => {
+  if (typeof k === 'string') out.add(k)
+  else if (Array.isArray(k) && (k[0] === 'postfix' || (k[0] === '++' || k[0] === '--') && k.length === 2)) keyNames(k[1], out)
+  else if (Array.isArray(k) && (k[0] === '+' || k[0] === '-' || k[0] === '*') && k.length === 3) { keyNames(k[1], out); keyNames(k[2], out) }
+}
+function publishMissable(body, hulls, lens) {
+  const names = new Set()
+  walkAst(body, { enter: n => { if (n[0] === '=>') return false; if (n[0] === '[]' && n.length === 3) keyNames(n[2], names) } })
+  let hits = null
+  for (const name of names) if (hulls.has(name) && !hulls.get(name)?.whole) (hits ||= new Map()).set(name, undefined)
   if (!hits) return
   scanIntervalIdx(body, lens, { entry: paramEntry(), bindings: hits, present: () => true })
-  for (const [name, v] of hits) if (v?.whole && v.lo <= v.hi && !hulls.get(name)?.whole && !boolTagged(name)) updateRep(name, { intOrMiss: true })
+  for (const [name, v] of hits) if (v?.whole && v.lo <= v.hi && !boolTagged(name)) updateRep(name, { intOrMiss: true })
 }
 
 function refineStorageFacts(body, facts, cache) {
@@ -594,7 +604,7 @@ function computeBodyFacts(body, bodyFacts, elemOrigin, storage) {
     stampLoopCounterRanges(body)
     stampCountdowns(body)
     publishBindingHulls(bindingHulls, locals)
-    if (bindingHulls && typedReads.some(r => !presentNodes.has(r) && !missBlind.has(r))) publishMissable(body, locals, bindingHulls, bodyLens(locals, typedLens))
+    if (bindingHulls && typedReads.some(r => !presentNodes.has(r) && !missBlind.has(r))) publishMissable(body, bindingHulls, bodyLens(locals, typedLens))
     if (deferredHulls) {
       const ranges = new Map()
       for (const name of locals.keys()) {
