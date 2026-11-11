@@ -183,6 +183,7 @@ b70b0a25e land-3c                            the landing branch of 3c, an ancest
 b0f52ced0 land-2c                            the landing branch of 2c, an ancestor of main
 69fdca41f worktree-agent-a94139a3c3b6dc7cb   phase 1b, landed as 0b3f3b09e, 69fdca41f (fast-forward)
 4aaaddbc3 land-1b                            the tree 1b's batteries ran on: main's tree at 69fdca41f under other commits, not an ancestor
+267ad34bb land-fixes                         eight fixes found on the way (2026-11-11), landed by fast-forward as de94b68cc..267ad34bb
 ```
 
 `wasi-proc-exit` (process.exit under host:'wasi') landed as 751665c63, 803529fff,

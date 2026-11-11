@@ -237,17 +237,18 @@ each class it met. 2c's own batteries answered 0 diffs and held neither regressi
   precision given up (a module global stored as a Number whose every write is an
   integer is floored again; a closure's parameter rewritten to a word reads as a
   Number) is 2d's to return.
-- Open, on `main`: `for (let i = 0; i < k; i++) { let i = 5; c += i }` never returns
-  (the body's own `let i` is taken for the loop's; one more pair of braces and it
-  answers). In prepare; 1b has landed, so nothing holds the fix back.
-- Open, on `main`, levels 2 and over: `let i = null, c = 0; for (; i < 3; i += 1) c++`
-  runs 0 times for 3. The test compares the null box, a NaN, where its number is 0
-  (a shadow local `inum` is declared and not read there: compile/num-shadow.js).
+- Was open on `main`, fixed as de94b68cc (below): `for (let i = 0; i < k; i++) { let i
+  = 5; c += i }` never returned (the body's own `let i` was taken for the loop's; one
+  more pair of braces and it answered).
+- Was open on `main`, levels 2 and over, fixed as 2265a4914 (below): `let i = null, c =
+  0; for (; i < 3; i += 1) c++` ran 0 times for 3. The test compared the null box, a
+  NaN, where its number is 0. The cause named here first (the shadow local `inum`,
+  compile/num-shadow.js) was not it.
 - Open, on `main`: `do i++; while (c)` and `do { … } while (c) stmt` are compile errors
   ("Unclosed (", "Unclosed {"); both are JS. The parser package's: subscript's `do` rule
   skipped five characters after the body for its `while` and ended no statement at the
-  test's `)`. Fixed there as 10.8.3 (9909ce7, tag v10.8.3; committed, not published as
-  of this note). Through jz's parser, 56,004 sources (jz, watr, subscript, three.js,
+  test's `)`. Fixed there as 10.8.3 (published; see below). Through jz's parser, 56,004
+  sources (jz, watr, subscript, three.js,
   test262) parse as before but 25 of test262: 5 positive tests parse now, 20 negative
   ones reject as before. jz pins 10.8.2: the bump has test/test262.js to reconcile (its
   three `parser: do-while` entries and its `do ; while` skip rule; the gate has not run
@@ -270,6 +271,65 @@ over 25 kinds of counter: four kinds lost their gap (a local from `param | 0`, a
 function's parameter, a counter declared bare, a countdown), none gained one. What the
 brief got wrong is in the row above: no gate cell could move, and the flag has a reader
 besides normalize.
+
+The fixes landed after 1b (de94b68cc..267ad34bb, eight commits, each with a differential
+test in test/audit-regressions.js). Found by probes written against the rule (a compiled
+answer is Node's) around each defect the reviews above left open, 1,608 programs at six
+levels after the fixes: 0 diffs but one probe of mine that reads a `let` before its
+declaration.
+
+- The for body's own `let` (de94b68cc; the line above). The parser hands a braced body
+  as its bare list, and the head's frame held the body's declarations: of 57 probe
+  programs on `main`, 7 never returned, 11 answered wrong and 2 were refused.
+- A null's conversion to 0, levels 2 and over (2265a4914; the line above, whose cause
+  was not the shadow local): the pass that drops an undefined test whose value only
+  comparisons read (optimize/nan-canon.js) dropped the null test beside it.
+- `let x = null; if (c) x = undefined` kept null at levels 2 and over (707d47956): two
+  definitions were compared by their JSON text (compile/plan/alias.js). The class is
+  wider than this site: about 35 comparisons or map keys of a node by its JSON text
+  under `src`, which writes NaN, the infinities, null and undefined as `null` and -0 as
+  `0`. A 152-program probe finds no other live one; briefed apart
+  (node-keys, after phase 4, before phase 5 moves `src/optimize`).
+- `g(-0)` beside `g(0)` compiled the parameter as -0 for both (cba74ea40, levels 0, 1
+  and size): -0 was an integer constant of a parameter (compile/narrow/index.js).
+- A module binding of a Number, a string or a Boolean that may be null or undefined was
+  read as its declared kind (4f5754644): `Object.is(X, NaN)` held for a null `X`,
+  `typeof X` named the Boolean, `X < 'b'` compared null as a string. A BigInt keeps its
+  claim (dropping it made `X < 6` throw).
+- `let X = 'ab'` read as 'ab' in a template after `X = 'cdef'`, at every level
+  (f375142a8): the fold ran during the walk, ahead of the scan that drops an assigned
+  name.
+- What a function knows of a module binding, or of a cell a closure assigns, ended at
+  no call (43d73d4ed): `X = 1; w(); return X + 1` and `if (typeof X === 'number') {
+  w(); return X + 1 }` added a string as a number where `w` had stored one, and an
+  export's result crossed as an f64 where it was a string. The summary's straight-line
+  facts and the emitter's guard refinements both (summary/index.js `fnAssigned`,
+  compile/flow-types.js `heldOver`).
+- `Array.isArray` answered true for every operand the compiler held for an array
+  (267ad34bb): `let a; if (c) a = []`, a `find`'s or a `get`'s result and a callee's
+  null read their length through undefined.
+
+The cost, bench bytes against e278d719b: +3,667 at size (0.13%), +10,263 at speed
+(0.17%). The null test kept (stdlib-dists, webaudio, stdlib-special, decode-dsd,
+decode-tta, movavg, jessie) and `Array.isArray` asking the value (polytri +2,407 and
++6,464, setops, watr at speed): the kind's one tag for null and undefined makes a
+comparison pay the null test where only undefined can arrive, and two of polytri's
+loop-versioning guards on names of kind array-or-absent stay run-time tests. Both are
+precision to return, not defects. The other six fixes moved no byte.
+
+The landing tree (267ad34bb): core 7,294, level 0 7,077, level 3 7,091, wasi 7,166,
+generated 68, self-compile 89.
+
+Still open after these:
+- subscript 10.8.3 is published (the owner's, b916571). jz pins 10.8.2: the bump is on
+  the branch `bump-subscript` (06a4d9cca: the pin, the lock, src/early-errors.js for
+  `if (c) do x; while (y) else z`, test/test262.js's three `parser: do-while` entries
+  and its `do ; while` rule, a test) and lands once the shared modules hold 10.8.3; its
+  full battery has not run.
+- A method named `do` (class or object shorthand) does not parse, and methods named
+  `if` and `for` are refused by an early error. Both before 10.8.3.
+- From 2d's agent: a Boolean another function stores into a numeric module binding is
+  taken for an index (`W[G] = 9` hits the wrong slot).
 
 ## Decisions taken
 
