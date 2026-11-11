@@ -172,7 +172,7 @@ before this session, most at every level. Each has a test now unless marked open
 - What 2b's brief got wrong: the table's `+` cannot serve `int-range.js`, whose readers
   take `int` as "an integer wherever finite" (the ring counter became f64; reverted);
   "ring step first equals canonical" needs scheduling, not a range.
-- Open, for the owner: a module global fed a fraction through a closure's or a
+- Decided by the owner (make it sound; with 2c's agent): a module global fed a fraction through a closure's or a
   callback's parameter is a word. `let S = 0; export let f = () => { const add = (x) =>
   { S += x }; S = 0; add(1.5); add(2); return S }` answers 3 for 3.5, and so does
   `[1.5, 2].forEach(x => { S += x })`, at every level; a named function's parameter is

@@ -79,8 +79,18 @@ with its smallest source.
   `src/compile/emit/control-flow.js` and the loop plans under `src/compile/plan/`.
   Stay out of them; where you must touch one, keep it to the lines you need and name
   them in the report.
-- Do not change `src/compile/plan/scope.js` `inferModuleIntGlobals`: its integer
-  default is a decision the owner has not made yet.
+- `src/compile/plan/scope.js` `inferModuleIntGlobals` is in scope (the owner decided,
+  2026-11-10: make it sound). A module global is a word only where every value
+  written to it anywhere in the program is proven one, or every read of it re-applies
+  ToInt32; the integer default for a parameter, a host import's result, a field or
+  element read and a dynamic callee goes. On `main`, at every level:
+  `let S = 0; export let f = () => { const add = (x) => { S += x }; S = 0; add(1.5);
+  add(2); return S }` answers 3 for 3.5, and so does `[1.5, 2].forEach(x => { S += x })`.
+  It reads `intLevelMap` too, so it is the same decision over the whole program.
+  State the cost: each bench case and ratchet category that moves because a global
+  became a Number. Where a bound fed from an export's parameter loses a fast loop, the
+  remedy is general (a loop versioned on its bound being an integer at entry), never a
+  default. The opt-in warning `int-global-truncation` has nothing left to warn of.
 
 ## Verify, in this order
 
