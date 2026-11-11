@@ -2696,8 +2696,11 @@ function prepDecl(op, ...inits) {
         // Effectively-const string literals: shape inference for `let SRC = '{...}'`
         // patterns (bench convention to defeat compile-time JSON.parse fold without
         // losing schema knowledge). Recorded on init; post-prep scan removes any
-        // entry whose name is later assigned to.
-        if (Array.isArray(normed) && normed[0] === 'str' && typeof normed[1] === 'string')
+        // entry whose name is later assigned to. A name the module assigns anywhere
+        // is never recorded: a template or a concatenation read in a function body
+        // folds while the walk is on, ahead of that scan (`let X = 'ab'` assigned
+        // 'cdef' read as 'ab' in a template's `${X}`).
+        if (Array.isArray(normed) && normed[0] === 'str' && typeof normed[1] === 'string' && !prepState.reassignedTopLevel?.has(name))
           (ctx.scope.shapeStrs ||= new Map()).set(declName, normed[1])
         recordGlobalRep(declName, normed)
       }

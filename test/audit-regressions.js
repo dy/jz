@@ -1931,3 +1931,21 @@ test('audit: a module binding that may be nullish is read as what it holds', () 
     for (const k of [0, 4, 6]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
   }
 })
+
+// A module's `let` of a string literal is folded where it is read only while no
+// statement of the module assigns it: a template in a function body folded while
+// the walk was on, ahead of the scan that drops an assigned name.
+test('audit: a reassigned module string is read, not folded', () => {
+  const cases = [
+    'let X = \'ab\'\nexport let f = (k) => { if (k > 3) X = \'cdef\'; return `${X}`.length }',
+    'let X = \'ab\'\nexport let f = (k) => { X = \'ab\'; if (k > 3) X = null; return `a${X}b`.length }',
+    'let X = \'ab\'\nconst w = (k) => { if (k > 3) X = \'cdef\' }\nexport let f = (k) => { w(k); return `${X}`.length + (X + \'!\').length * 10 }',
+  ]
+  for (const src of cases) for (const optimize of levels(0, 2, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const k of [0, 5]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
+  }
+  if (onKernel()) return
+  // (a module string no statement assigns still folds)
+  ok(!compile('let X = \'ab\'\nexport let f = (k) => `${X}${X}`.length + k', { optimize: 0, wat: true }).includes('__str_concat'), 'an unassigned module string folds in a template')
+})
