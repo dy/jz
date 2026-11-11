@@ -142,13 +142,11 @@ export const guardConstants = () => {
 
 // ── walks to an end tested by equality ──────────────────────────────────────
 
-/** A step of `x` by a name, `x += d`, `x = x + d` (sign 1) or `x -= d`, `x = x - d`
- *  (sign -1): { by: d, sign }, else null. */
+/** A step of `x` by a name, `x += d` (sign 1) or `x -= d` (sign -1, a Number's
+ *  every spelling of it, src/normalize.js): { by: d, sign }, else null. */
 const nameStep = (n, x) => {
-  if (!Array.isArray(n) || n[1] !== x) return null
-  const v = n[0] === '+=' || n[0] === '-=' ? n[2]
-    : n[0] === '=' && Array.isArray(n[2]) && (n[2][0] === '+' || n[2][0] === '-') && n[2].length === 3 && n[2][1] === x ? n[2][2] : null
-  return typeof v === 'string' && v !== x && intOf(v) == null ? { by: v, sign: n[0] === '-=' || n[0] === '=' && n[2][0] === '-' ? -1 : 1 } : null
+  const v = Array.isArray(n) && n[1] === x && (n[0] === '+=' || n[0] === '-=') ? n[2] : null
+  return typeof v === 'string' && v !== x && intOf(v) == null ? { by: v, sign: n[0] === '-=' ? -1 : 1 } : null
 }
 /** The way every write of `x` in `body` steps it by one unit: `{ by: 1 | -1, sign: 1 }`
  *  for literal steps (`x++`, `x -= 1`), `{ by: d, sign }` for steps by one name the
@@ -266,21 +264,16 @@ export const unitWalks = () => {
 
 // ── counted loops ───────────────────────────────────────────────────────────
 
-/** `i++`, `i += s`, `i = i + s` with s an integer constant: the signed step, else 0. */
+/** `++i`, `--i`, `i += s`, `i -= s` with s an integer constant: the signed step, else 0. */
 const stepOf = (step, name) => {
   if (!Array.isArray(step) || step[1] !== name) return 0
   if (step[0] === '++') return 1
   if (step[0] === '--') return -1
   if (step[0] === '+=' || step[0] === '-=') { const k = intOf(step[2]); return k == null ? 0 : step[0] === '+=' ? k : -k }
-  if (step[0] === '=' && Array.isArray(step[2]) && (step[2][0] === '+' || step[2][0] === '-') && step[2][1] === name) {
-    const k = intOf(step[2][2])
-    return k == null ? 0 : step[2][0] === '+' ? k : -k
-  }
   return 0
 }
 /** The name a cursor steps by, where the step is no constant: `c += sx`. */
-const strideOf = (step) => Array.isArray(step) && (step[0] === '+=' || (step[0] === '=' && Array.isArray(step[2]) && step[2][0] === '+' && step[2][1] === step[1]))
-  && typeof step[1] === 'string' ? (n => typeof n === 'string' && intOf(n) == null ? n : null)(step[0] === '+=' ? step[2] : step[2][2]) : null
+const strideOf = (step) => Array.isArray(step) && step[0] === '+=' && typeof step[1] === 'string' && typeof step[2] === 'string' && intOf(step[2]) == null ? step[2] : null
 
 /** Every read of `name` in `node` is an element index, behind constant offsets at most. */
 const indexOnly = (node, name) => {
@@ -694,7 +687,7 @@ function offsetTest(node, func, levels) {
   if (!Array.isArray(init) || init[0] !== 'let' || !Array.isArray(init[1]) || init[1][0] !== '=' || typeof init[1][1] !== 'string') return false
   const i = init[1][1], a = init[1][2]
   if (!isInt(a) || a[1] < 0) return false
-  if (!Array.isArray(step) || step[1] !== i || !(step[0] === '++' || (step[0] === '+=' && isInt(step[2]) && step[2][1] === 1))) return false
+  if (!Array.isArray(step) || step[0] !== '++' || step[1] !== i) return false
   if (!Array.isArray(test) || (test[0] !== '<' && test[0] !== '<=') || !Array.isArray(test[1]) || test[1][0] !== '+' || test[1].length !== 3) return false
   const c = test[1][1] === i ? test[1][2] : test[1][2] === i ? test[1][1] : null, n = test[2]
   if (c == null || writes(body, i)) return false

@@ -130,10 +130,9 @@ const counterRanges = (body) => {
       walkAst(n[2], { enter: (w) => {
         if (w[0] === '=>') { if (isReassigned(w, name)) ok = false; return false }
         if (!MUTATE_OPS.has(w[0]) || w[1] !== name) return
-        // `k++`, `k += c`, `k = k + c`, `k = (k + c) | 0`: a step up by a literal
+        // `++k`, `k += c` (a Number's steps, src/normalize.js), a word copy's `k = (k + c) | 0`: a step up by a literal
         const lit = (e) => typeof e === 'number' ? (Number.isInteger(e) && e > 0 ? e : null) : Array.isArray(e) && e[0] == null && Number.isInteger(e[1]) && e[1] > 0 ? e[1] : null
-        let rhs = w[0] === '=' ? w[2] : null
-        if (Array.isArray(rhs) && rhs[0] === '|' && rhs.length === 3 && lit(rhs[2]) === null && Array.isArray(rhs[2]) && rhs[2][0] == null && rhs[2][1] === 0) rhs = rhs[1]
+        const rhs = w[0] === '=' && Array.isArray(w[2]) && w[2][0] === '|' && w[2].length === 3 && Array.isArray(w[2][2]) && w[2][2][0] == null && w[2][2][1] === 0 ? w[2][1] : null
         const k = w[0] === '++' ? 1 : w[0] === '+=' ? lit(w[2]) : Array.isArray(rhs) && rhs[0] === '+' && rhs.length === 3 && rhs[1] === name ? lit(rhs[2]) : null
         if (k == null) ok = false; else step = Math.max(step, k)
       } })
@@ -153,7 +152,7 @@ const counterRanges = (body) => {
       // (a bound of no hull but a known magnitude, `i < len` under `len = samples.length`: the counter stays below it, stepped up by one)
       const startNode = d[2], start = Array.isArray(startNode) && startNode[0] == null && Number.isInteger(startNode[1]) ? startNode[1] : typeof startNode === 'number' && Number.isInteger(startNode) ? startNode : null
       const below = Array.isArray(n[2]) && (n[2][0] === '<' || n[2][0] === '<=') && n[2][1] === d[1] ? boundBelow(n[2][2]) : null
-      const unit = Array.isArray(n[3]) && (n[3][0] === '++' || n[3][0] === '+=' && (n[3][2] === 1 || Array.isArray(n[3][2]) && n[3][2][0] == null && n[3][2][1] === 1)) && n[3][1] === d[1]
+      const unit = Array.isArray(n[3]) && n[3][0] === '++' && n[3][1] === d[1]
       if (start != null && below && unit) m.set(d[1], [start, Math.max(start, below[1])])
     }
   } })

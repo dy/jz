@@ -29,21 +29,14 @@ export const loopLitVal = (n) => Array.isArray(n) && n.length === 2 && n[0] == n
 export const litN = (n, k) => Array.isArray(n) && n.length === 2 && n[0] == null && n[1] === k
 
 // The induction variable a statement increments by exactly +1, else null: `++i`, the
-// step of every Number (src/normalize.js; a statement's postfix is its update), `i += 1`,
-// `i = i + 1` / `i = 1 + i` of a counter not a Number by syntax, and the step of a loop
-// copy's word, `i = (i + 1) | 0` (plan/integral-loops.js: the word's own wrap is the step).
+// step of every Number (src/normalize.js; a statement's postfix is its update), and the
+// step of a loop copy's word, `i = (i + 1) | 0` (plan/integral-loops.js: the word's own
+// wrap is the step, made after normalization and read by the passes after the copy).
 export function unitIncVar(stmt) {
-  if (!Array.isArray(stmt)) return null
-  if (stmt[0] === '=' && typeof stmt[1] === 'string' && Array.isArray(stmt[2]) && stmt[2][0] === '|' && stmt[2].length === 3 && litN(stmt[2][2], 0) &&
-      Array.isArray(stmt[2][1]) && stmt[2][1][0] === '+') stmt = ['=', stmt[1], stmt[2][1]]
-  if (stmt[0] === '++' && typeof stmt[1] === 'string') return stmt[1]
-  if (stmt[0] === '+=' && typeof stmt[1] === 'string' && litN(stmt[2], 1)) return stmt[1]
-  if (stmt[0] === '=' && typeof stmt[1] === 'string' && Array.isArray(stmt[2]) && stmt[2][0] === '+') {
-    const [, a, b] = stmt[2]
-    if (a === stmt[1] && litN(b, 1)) return stmt[1]
-    if (b === stmt[1] && litN(a, 1)) return stmt[1]
-  }
-  return null
+  if (!Array.isArray(stmt) || typeof stmt[1] !== 'string') return null
+  if (stmt[0] === '++') return stmt[1]
+  const sum = stmt[0] === '=' && Array.isArray(stmt[2]) && stmt[2][0] === '|' && litN(stmt[2][2], 0) ? stmt[2][1] : null
+  return Array.isArray(sum) && sum[0] === '+' && sum[1] === stmt[1] && litN(sum[2], 1) ? stmt[1] : null
 }
 
 // Normalize a `while` / flat `for` (`['for', init, cond, update, body]`) into a common
@@ -179,16 +172,13 @@ export function testRefinements(facts) {
   return facts.test ? new Map([[facts.iv, { rlo: facts.test.lo, rhi: facts.test.hi }]]) : null
 }
 
-// A step that moves `name` by a fixed amount per pass: `++x`, `--x`, `x += S`, `x -= S`,
-// `x = x ± S`, `x = S + x` → { name, by, sign }, else null. (A step's postfix is its
-// update: src/normalize.js drops it.)
+// A step that moves `name` by a fixed amount per pass: `++x`, `--x`, `x += S`, `x -= S`
+// (a Number's every step, src/normalize.js) → { name, by, sign }, else null.
 function counterStep(s) {
   if (!Array.isArray(s) || typeof s[1] !== 'string') return null
   const [op, x, v] = s
   if ((op === '++' || op === '--') && s.length === 2) return { name: x, by: 1, sign: op === '++' ? 1 : -1 }
   if (op === '+=' || op === '-=') return { name: x, by: v, sign: op === '+=' ? 1 : -1 }
-  if (op === '=' && Array.isArray(v) && v.length === 3 && (v[0] === '+' || v[0] === '-') && v[1] === x) return { name: x, by: v[2], sign: v[0] === '+' ? 1 : -1 }
-  if (op === '=' && Array.isArray(v) && v.length === 3 && v[0] === '+' && v[2] === x) return { name: x, by: v[1], sign: 1 }
   return null
 }
 

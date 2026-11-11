@@ -947,6 +947,11 @@ function foldStmts(stmts, env, state) {
       out.push(cond === s0[1] && bodyF === s0[2] ? s0 : ['while', cond, bodyF])
       continue
     }
+    if (op === 'do') {
+      const bodyF = s0[1] != null ? foldBlockLike(s0[1], new Map(env), state) : s0[1], cond = foldNode(s0[2], env, state)
+      out.push(cond === s0[2] && bodyF === s0[1] ? s0 : ['do', bodyF, cond])
+      continue
+    }
 
     out.push(foldNode(s0, env, state))
   }

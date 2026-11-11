@@ -148,7 +148,7 @@ export function markLoopLocal(nm) {
  *  (pay-per-capture — an uncaptured loop var keeps the cheaper single-
  *  instance global) for the duration of `run()`, then restore. Shared by
  *  'for' (for-of/for-in/for-head-capture all funnel through the classic ';'
- *  branch after desugaring) and 'while' (do-while lowers to while). See
+ *  branch after desugaring), 'while' and 'do' (prepare/handlers.js loopBody). See
  *  loopLocalNames' own declaration for the full rationale. */
 export function withLoopLocalNames(body, run) {
   let added = null

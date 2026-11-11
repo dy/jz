@@ -265,8 +265,8 @@ export function inferInternalArrayLengths() {
     }
     return null
   }
-  const unitInc = (n, name) => Array.isArray(n) &&
-    ((n[0] === '++' && n[1] === name) || (n[0] === '+=' && n[1] === name && cint(n[2]) === 1))
+  // (a Number's step by one, src/normalize.js)
+  const unitInc = (n, name) => Array.isArray(n) && n[0] === '++' && n[1] === name
   // refsName's unconditional-descend form (skipArrow: false): a closure capture
   // can read/alias/mutate the name at any time, so it counts as a reference
   // everywhere this predicate gates a reject. A shadowing arrow param matches

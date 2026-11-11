@@ -208,7 +208,7 @@ export function splitReassigned(fn, nested = false) {
   }
   // the names a declaration statement declares
   const declaredBy = (s) => { const out = []; if (Array.isArray(s) && (s[0] === 'let' || s[0] === 'const')) for (let i = 1; i < s.length; i++) { const d = s[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') out.push(d[1]) } return out }
-  const hasLoop = (n) => Array.isArray(n) && n[0] !== '=>' && (n[0] === 'for' || n[0] === 'while' || n.some((c, i) => i > 0 && hasLoop(c)))
+  const hasLoop = (n) => Array.isArray(n) && n[0] !== '=>' && (n[0] === 'for' || n[0] === 'while' || n[0] === 'do' || n.some((c, i) => i > 0 && hasLoop(c)))
   // a kind with fewer tags, or the same tags and a parameter the other lacks
   const narrower = (a, b) => a != null && b != null && a !== b && (tagsOf(a) !== tagsOf(b) ? (tagsOf(a) & ~tagsOf(b)) === 0 : paramOf(a) !== UNKNOWN && paramOf(b) === UNKNOWN)
   // The number bindings the loops of `rest` read as an element index, or as
@@ -221,7 +221,7 @@ export function splitReassigned(fn, nested = false) {
     const walk = (n, inLoop) => {
       if (!Array.isArray(n) || n[0] === '=>' || n[0] === 'str') return
       if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) { const d = n[i]; if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { inits.set(d[1], d[2]); if (!inLoop) straight.add(d[1]) } }
-      const loop = inLoop || n[0] === 'for' || n[0] === 'while'
+      const loop = inLoop || n[0] === 'for' || n[0] === 'while' || n[0] === 'do'
       if (loop && n[0] === '[]' && n.length === 3) mention(n[2], index)
       if (loop && (n[0] === '%' || n[0] === '/') && n.length === 3) { mention(n[1], index); mention(n[2], divisor) }
       for (let i = 1; i < n.length; i++) walk(n[i], loop)

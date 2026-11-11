@@ -49,6 +49,5 @@ export function frontHalf(code, { strict, sourceType = 'jz', jzify, time = (n, f
   // pure Math.* calls, zero-arg pure calls incl. lift-iife's IIFEs) down to literals,
   // over every module initializer and function body, before compile sees them.
   const out = time('preEval', () => preEval(ast))
-  time('normalize', () => normalizeProgram(out))
-  return out
+  return time('normalize', () => normalizeProgram(out).ast)
 }

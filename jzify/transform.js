@@ -734,12 +734,7 @@ export function createTransform(opts) {
         : ['finally', transformStatement(c[1])])]
     },
 
-    'do'(body, cond) {
-      const flag = names.doFlag()
-      return [';',
-        ['let', ['=', flag, [null, true]]],
-        ['while', ['||', flag, transform(cond)], ['{}', [';', ['=', flag, [null, false]], transformStatement(body)]]]]
-    },
+    'do'(body, cond) { return ['do', transformStatement(body), transform(cond)] },
 
     // The classic for-head `[';', init, cond, step]` is a fixed 3-slot structure,
     // NOT a statement sequence. Transform each slot individually and keep null slots

@@ -107,15 +107,8 @@ function adviseHeapGrowth() {
   }
 }
 
-function forInductionVar(step) {
-  if (!Array.isArray(step)) return null
-  if (step[0] === '++' || step[0] === '--') return typeof step[1] === 'string' ? step[1] : null
-  if (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++')
-    return typeof step[1][1] === 'string' ? step[1][1] : null
-  if ((step[0] === '+=' || step[0] === '-=') && step[2]?.[0] == null && step[2]?.[1] === 1)
-    return typeof step[1] === 'string' ? step[1] : null
-  return null
-}
+// (a Number's step by one is `++i` or `--i`, src/normalize.js)
+const forInductionVar = (step) => Array.isArray(step) && (step[0] === '++' || step[0] === '--') && typeof step[1] === 'string' ? step[1] : null
 
 function indexStrideOnVar(indexExpr, iv) {
   if (!Array.isArray(indexExpr)) return 1

@@ -31,10 +31,8 @@ import { MUTATE_OPS } from '../../ast.js'
 
 const BYTE_CTORS = new Set(['new.Uint8Array', 'new.Int8Array', 'new.Uint8ClampedArray'])
 const lit = (n) => Array.isArray(n) && n[0] == null && typeof n[1] === 'number' ? n[1] : null
-const isStep = (s, i) => Array.isArray(s) && (
-  s[0] === '=' && s[1] === i && Array.isArray(s[2]) && s[2][0] === '+' && (s[2][1] === i && lit(s[2][2]) === 1 || s[2][2] === i && lit(s[2][1]) === 1) ||
-  s[0] === '+=' && s[1] === i && lit(s[2]) === 1 ||
-  s[0] === '++' && s[1] === i ||
+// (a Number's step by one is `++i`, src/normalize.js; a postfix one where its value is read)
+const isStep = (s, i) => Array.isArray(s) && (s[0] === '++' && s[1] === i ||
   s[0] === 'postfix' && Array.isArray(s[1]) && s[1][0] === '++' && s[1][1] === i)
 const zero = (n) => lit(n) === 0 && !Object.is(lit(n), -0)
 // an options literal's entries (module/fs.js optionItems), and a plain or quoted key's name

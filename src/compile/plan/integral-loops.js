@@ -821,8 +821,8 @@ const versionBody = (body, params, view, func, programFacts, frame = func ? fram
           range && range.test[0] >= -2147483648 && range.test[1] <= 2147483647 &&
           !alreadyBounded && !intExprRange(n) && !(typeof n === 'string' && int32Held(n)))
         counterBound = { name: n, terms, bound, comparison, testAt: 2, min: -2147483648 - Math.min(0, adjust), max: 2147483647 - Math.max(0, adjust), entryWords,
-          // (the trips: a literal start, a unit step up)
-          trip: up && init?.[0] == null && Number.isInteger(init[1]) && (COUNTS.has(loop[3]?.[0]) || loop[3]?.[0] === 'postfix' && COUNTS.has(loop[3][1]?.[0]) || loop[3]?.[0] === '+=' && loop[3][2]?.[0] == null && loop[3][2][1] === 1) && !/^-/.test(loop[3][0] ?? loop[3][1]?.[0]) ? { n, adj: inclusive ? 1 : 0, entry: init[1] } : null }
+          // (the trips: a literal start, a unit step up, a Number's `++i`: src/normalize.js)
+          trip: up && init?.[0] == null && Number.isInteger(init[1]) && COUNTS.has(loop[3]?.[0]) && !/^-/.test(loop[3][0]) ? { n, adj: inclusive ? 1 : 0, entry: init[1] } : null }
     }
     // A while counter has an observable entry outside the loop. Capture its
     // word only behind the same exact-entry guard, then reserve room for every

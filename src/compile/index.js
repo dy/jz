@@ -39,7 +39,8 @@ import { beginAssignedMemo, endAssignedMemo, some } from '../ast.js'
 import {
   structInlinePass, unionInlinePass, clearBodyFacts,
 } from './analyze.js'
-import { invalidateBindingUsesCache, resetBindingUsesCache, scanBindingUses } from './analyze-scans.js'
+import { invalidateBindingUsesCache, resetBindingUsesCache, resetMutationNamesCache, scanBindingUses } from './analyze-scans.js'
+import { normalizeProgram } from '../normalize.js'
 import { VAL } from '../reps.js'
 import { representationHostBoxesParam } from './representation-plan.js'
 import { unboxAdmittedCursors } from './analyze/ptr-eligibility.js'
@@ -244,6 +245,14 @@ export function assemble(ast, profiler) {
   // summary, which reads it, and before any pass rewrites a body; no pass defines a method.
   ctx.transform.userConversions = definesToPrimitive(collectMemberUses())
   ctx.summary = summarizeProgram()
+  // A loop's counter the summary holds a Number reaches every reader in the one
+  // form, whatever it was declared from (src/normalize.js, its second caller).
+  if (phase(profiler, 'normalize', () => normalizeProgram(ast, ctx.summary).changed)) {
+    getFactStore().revision++
+    resetBindingUsesCache()
+    resetMutationNamesCache()
+    ctx.summary = summarizeProgram()
+  }
   // A syntactic method name alone does not make its native value reachable.
   // Root the prepared reader only when a receiver's settled kind admits it.
   const methodReaders = ctx.funcs.builtinMethodReaders

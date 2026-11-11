@@ -850,27 +850,9 @@ const handlers = {
     if (els != null) { pushScope(); prescanBlockDecls(els); const e = dropDeadPostfix(prepStatement(els)); popScope(); return ['if', c, t, e] }
     return ['if', c, t]
   },
-  'while': (cond, body) => {
-    const c = prep(stripBoolNot(cond))
-    pushScope()
-    // See loopLocalNames' declaration — a module-scope while body's own
-    // captured let/const needs the same per-iteration (not global) treatment
-    // a for-loop's body gets above.
-    const b = withLoopLocalNames(body, () => { prescanBlockDecls(body); return dropDeadPostfix(prepStatement(body)) })
-    popScope()
-    return ['while', c, b]
-  },
-  // do { body } while (cond) → flag-guarded while: `flag=true; while (flag||cond) { flag=false; body }`.
-  // jzify lowers this in default mode (jzify/transform.js), but strict mode skips jzify — without
-  // this prepare-stage twin, strict `do-while` reaches emit as a raw 'do' and dies ("Unknown op: do"),
-  // contradicting the README's strict-subset list. Re-prep the synthetic tree so scope/normalize apply.
-  'do': (body, cond) => {
-    const flag = `${T}do${freshPrepareId()}`
-    return prep([';',
-      ['let', ['=', flag, [null, true]]],
-      ['while', ['||', flag, cond],
-        ['{}', [';', ['=', flag, [null, false]], body]]]])
-  },
+  'while': (cond, body) => { const c = prep(stripBoolNot(cond)); return ['while', c, loopBody(body)] },
+  // do { body } while (cond): a loop of its own until src/normalize.js lowers it, the one place.
+  'do': (body, cond) => { const b = loopBody(body); return ['do', b, prep(stripBoolNot(cond))] },
 
   'export': decl => {
     if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const'))
@@ -1976,6 +1958,15 @@ function capturedLoopContinues(node, done, label, nested = false) {
 function prepBlock(node) {
   pushScope()
   try { prescanBlockDecls(node); return prep(node) }
+  finally { popScope() }
+}
+
+// A `while`'s or a `do`'s body in a scope of its own: see loopLocalNames' declaration,
+// a module-scope loop body's own captured let/const needs the per-iteration (not
+// global) treatment a for-loop's body gets.
+function loopBody(body) {
+  pushScope()
+  try { return withLoopLocalNames(body, () => { prescanBlockDecls(body); return dropDeadPostfix(prepStatement(body)) }) }
   finally { popScope() }
 }
 

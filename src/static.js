@@ -571,15 +571,8 @@ export function elementCounter(cond, step) {
   const last = post ? top + 1 : top
   return last <= I32_MAX ? { name, recv: read[1], post, top: last } : null
 }
-// `++i`, `i += 1` or `i = i + 1` as a loop's whole step (a step's postfix is its update:
-// src/normalize.js drops it, and writes a Number's step `++i`).
-const unitStep = (s, name) => {
-  if (!Array.isArray(s) || s[1] !== name) return false
-  if (s[0] === '++' && s.length === 2) return true
-  if (s[0] === '+=' && s.length === 3) return constIntExpr(s[2]) === 1
-  return s[0] === '=' && s.length === 3 && Array.isArray(s[2]) && s[2][0] === '+' && s[2].length === 3 &&
-    (s[2][1] === name && constIntExpr(s[2][2]) === 1 || s[2][2] === name && constIntExpr(s[2][1]) === 1)
-}
+// `++i` as a loop's whole step (a Number's step by one, src/normalize.js; a step's postfix is its update).
+const unitStep = (s, name) => Array.isArray(s) && s[0] === '++' && s.length === 2 && s[1] === name
 /** A typed array of elements, as the summary names it: no DataView, whose
  *  `length` is undefined (summary/kind.js isCount: an element aux proves it). */
 const typedElements = (name) => {
@@ -654,24 +647,11 @@ function forCounterBoundsIn(init, cond, step, name, rangeOf, rangedStep, body) {
     return r && Number.isSafeInteger(r[0]) && Number.isSafeInteger(r[1]) && r[0] > 0 ? r : null
   }
   // (only the mutation matters in a discarded loop step: prepare and src/normalize.js drop its postfix)
-  // mutOp: the '++'/'--' unary that moves `name` one unit in the guard's own
-  // direction. arithOp: the binary '+'/'-' a spelled-out `name = name ± K`
-  // step uses in that SAME direction — only that direction's operand-order
-  // swap (`K + name`) is a valid alternate spelling; `K - name` is a
-  // DIFFERENT (decreasing-into-K) quantity, never a same-direction rewrite of
-  // `name - K`, so it's deliberately excluded (the `arithOp === '+'` guard).
-  // Exact-stride queries return a positive constant magnitude. Width-only
-  // queries may instead accept its closed positive integer hull.
-  const stepMag = (s, mutOp, arithOp) => {
-    if (Array.isArray(s) && s[0] === mutOp && s[1] === name) return 1
-    if (Array.isArray(s) && s[0] === (mutOp === '++' ? '+=' : '-=') && s[1] === name) return positive(s[2])
-    if (Array.isArray(s) && s[0] === '=' && s[1] === name &&
-        Array.isArray(s[2]) && s[2][0] === arithOp && s[2].length === 3 &&
-        (s[2][1] === name || arithOp === '+' && s[2][2] === name))
-      return positive(s[2][1] === name ? s[2][2] : s[2][1])
-    return null
-  }
-  const stepMatches = (s) => increasing ? stepMag(s, '++', '+') : stepMag(s, '--', '-')
+  // A Number's step (src/normalize.js) is `++`/`--` or `+=`/`-=` an amount: the one moving
+  // `name` in the guard's own direction. Exact-stride queries return a positive constant
+  // magnitude. Width-only queries may instead accept its closed positive integer hull.
+  const stepMatches = (s) => !Array.isArray(s) || s[1] !== name ? null
+    : s[0] === (increasing ? '++' : '--') ? 1 : s[0] === (increasing ? '+=' : '-=') ? positive(s[2]) : null
   let stepOK = null
   for (const s of Array.isArray(step) && step[0] === ',' ? step.slice(1) : [step]) {
     const magnitude = stepMatches(s)

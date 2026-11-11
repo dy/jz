@@ -12,7 +12,6 @@ import { T } from '../src/ast.js'
 export function createNames() {
   let swIdx = 0
   let argsIdx = 0
-  let doIdx = 0
   let classIdx = 0
   let objThisIdx = 0
   let staticClassIdx = 0
@@ -20,13 +19,12 @@ export function createNames() {
 
   return {
     reset() {
-      swIdx = argsIdx = doIdx = classIdx = objThisIdx = staticClassIdx = classBaseIdx = 0
+      swIdx = argsIdx = classIdx = objThisIdx = staticClassIdx = classBaseIdx = 0
     },
     switchDisc: () => `${T}sw${swIdx++}`,
     switchStart: () => `${T}swst${swIdx++}`,
     switchBreak: () => `${T}swbrk${swIdx++}`,
     arg: () => `\uE001arg${argsIdx++}`,
-    doFlag: () => `\uE002do${doIdx++}`,
     objThis: () => `\uE003obj${objThisIdx++}`,
     classSelf: () => `\uE003self${classIdx++}`,
     classBase: () => `\uE003base${classBaseIdx++}`,

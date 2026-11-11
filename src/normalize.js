@@ -12,8 +12,9 @@
  *
  *   - A step of a Number, as a statement or a `for` step: `i += 1`, `i = i + 1`,
  *     `i = 1 + i`, `i -= -1`, `i = i - -1` is `++i`; by minus one `--i`; by any
- *     other K, `i += K` or `i -= K` with K above zero. `(i + 1) | 0` wraps: it is
- *     another step.
+ *     other K, `i += K` or `i -= K` with K above zero; by a value no constant
+ *     holds, `i = i + v` is `i += v` and `i = i - v` is `i -= v`, and `i = v + i`
+ *     is `i += v` where v is a Number too. `(i + 1) | 0` wraps: it is another step.
  *   - A loop test with a counter on the right and none on the left is mirrored:
  *     `n > i` is `i < n`. Converting a Number calls nothing, so the order of the
  *     two conversions cannot be seen.
@@ -22,25 +23,30 @@
  *   - A `for` counting an integer up by one, declared by the loop from an integer
  *     literal, tested against a constant B: `i <= B` is `i < floor(B) + 1`, and
  *     `i !== B` is `i < B` where B is an integer at or above the start.
- *   - A do-while, which prepare lowered to `let F = true; while (F || c) {
- *     F = false; B }`, is `while (c) B` where its test holds on entry: as the
- *     whole of `if (c)`, the same test, or over the literals the statement
- *     before it declares and the constants.
+ *   - `do B while (c)` is lowered here, the one place: `while (c) B` where its
+ *     test holds on entry (as the whole of `if (c)`, the same test, or over the
+ *     literals the statement before it declares and the constants), else
+ *     `let F = true; while (F || c) { F = false; B }`.
  *
- * `isNumber(name)`: the name holds a Number, never NaN, wherever the tree reads
- * it. `valueOf(name)`: the number a constant holds, or null. A counter is a
- * Number that is no constant.
+ * `isNumber(name)`: the name holds a Number wherever the tree reads it; `isReal`,
+ * never NaN either. `valueOf(name)`: the number a constant holds, or null. A
+ * counter is a Number the tree writes that is no constant. It runs twice
+ * (`normalizeProgram`): before the summary, a Number one by syntax, then once
+ * kinds are known, a local the summary holds a Number too.
  *
  * @module normalize
  */
-import { MUTATE_OPS, RELATIONAL_OPS, EQUALITY_OPS, REFS_THROUGH_ARROWS, noted, collectAssignedNames, isReassigned, refsName } from './ast.js'
+import { MUTATE_OPS, RELATIONAL_OPS, EQUALITY_OPS, REFS_THROUGH_ARROWS, T, noted, collectAssignedNames, collectParamName, extractParams, isReassigned, refsName } from './ast.js'
 import { constNumExpr } from './static.js'
 import { ctx } from './ctx.js'
+import { K, tagOf, NULL_BITS } from './summary/kind.js'
 
 const MIRROR = new Map([['<', '>'], ['<=', '>='], ['>', '<'], ['>=', '<=']])
-// A do-while's flag as its lowering names it: jzify's (jzify/names.js `doFlag`) or strict prepare's (`'do'`).
-const DO_FLAG = /^[\uE000\uE002]do\d/
 const NEGATE = new Map([['<', '>='], ['<=', '>'], ['>', '<='], ['>=', '<']])
+// (the do-whiles' flags, apart in a program; and the rewrites made, which tell the
+// second call whether a tree changed)
+let doFlags = 0, rewrites = 0
+const note = (from, to) => { rewrites++; return noted(from, to) }
 
 const isArr = Array.isArray
 /** A number literal's value, or null. */
@@ -79,19 +85,23 @@ const numericWrite = (n, fin) => {
  *  with finite numbers (those and its own constants) and steps of itself by them,
  *  every write in the function that declares it: never NaN. A name it never
  *  writes is a constant. `outer(name)`: the finite number a constant around the
- *  body holds, or null. → { isNumber, valueOf } */
-export function numberNames(body, outer = () => null) {
-  const home = new Map(), init = new Map(), bad = new Set(), written = new Set(), steps = []
+ *  body holds, or null. `homeOf(name)`: the arrow declaring a local no other arrow
+ *  writes (null: the body's own function, whose parameters are `params`), else
+ *  undefined; a local an arrow writes is a cell a call may write (.work/architecture.md 3c).
+ *  → { isNumber, valueOf, homeOf } */
+export function numberNames(body, outer = () => null, params = []) {
+  const home = new Map(), decl = new Map(params.map(p => [p, null])), init = new Map(), bad = new Set(), written = new Set(), steps = []
   const given = (v) => { const k = num(v) ?? (typeof v === 'string' ? outer(v) : null); return k != null && Number.isFinite(k) ? k : null }
   const walk = (n, fn) => {
     if (!isArr(n)) return
-    if (n[0] === '=>') fn = n
+    if (n[0] === '=>') { fn = n; const ps = new Set(); for (const p of extractParams(n[1])) collectParamName(p, ps); for (const p of ps) decl.set(p, n) }
     if (n[0] === 'let' || n[0] === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
-        if (typeof d === 'string') { bad.add(d); continue }
+        if (typeof d === 'string') { bad.add(d); decl.set(d, fn); continue }
         if (!isArr(d) || d[0] !== '=' || typeof d[1] !== 'string') { walk(d, fn); continue }
         const v = given(d[2])
+        decl.set(d[1], fn)
         if (home.has(d[1]) || v == null) bad.add(d[1])
         else { home.set(d[1], fn); init.set(d[1], v) }
         walk(d[2], fn)
@@ -102,19 +112,21 @@ export function numberNames(body, outer = () => null) {
     for (let i = 1; i < n.length; i++) walk(n[i], fn)
   }
   walk(body, null)
-  for (const [n] of steps) written.add(n[1])
+  for (const [n, fn] of steps) { written.add(n[1]); if (decl.get(n[1]) !== fn) decl.delete(n[1]) }
   const constant = (x) => home.has(x) && !bad.has(x) && !written.has(x)
   const fin = (v) => given(v) != null || typeof v === 'string' && constant(v)
   for (const [n, fn] of steps) if (home.get(n[1]) !== fn || !numericWrite(n, fin)) bad.add(n[1])
   const isNumber = (x) => home.has(x) && !bad.has(x)
-  return { isNumber, valueOf: (x) => constant(x) ? init.get(x) : null }
+  return { isNumber, valueOf: (x) => constant(x) ? init.get(x) : null, homeOf: (x) => decl.get(x) }
 }
 
-/** The step and the test in the one form, over the Numbers `isNumber` names and the constants `valueOf` holds. */
-const forms = (isNumber, valueOf) => {
+/** The step and the test in the one form, over the Numbers `isNumber` names (`isReal`
+ *  those never NaN) and the constants `valueOf` holds; a counter is one of them the
+ *  tree writes (`written`, where given: a parameter no write moves is no counter). */
+const forms = (isNumber, valueOf, isReal = isNumber, written = null) => {
   const value = (n) => num(n) ?? (typeof n === 'string' ? valueOf(n) : null)
-  const counter = (n) => typeof n === 'string' && isNumber(n) && valueOf(n) == null
-  const notNaN = (n) => typeof n === 'string' && isNumber(n) || value(n) != null && !Number.isNaN(value(n))
+  const counter = (n) => typeof n === 'string' && isNumber(n) && valueOf(n) == null && (!written || written.has(n))
+  const notNaN = (n) => typeof n === 'string' && isReal(n) || value(n) != null && !Number.isNaN(value(n))
 
   /** The amount a statement steps a name by, else null. */
   const stepBy = (s) => {
@@ -128,12 +140,18 @@ const forms = (isNumber, valueOf) => {
     return null
   }
   const step = (s) => {
-    const k = stepBy(s)
-    if (k == null || k === 0 || !Number.isFinite(k) || !isNumber(s[1])) return s
-    const x = s[1]
-    if (k === 1 || k === -1) return noted(s, [k > 0 ? '++' : '--', x])
-    if (s[0] === (k > 0 ? '+=' : '-=') && num(s[2]) === Math.abs(k)) return s
-    return noted(s, [k > 0 ? '+=' : '-=', x, [null, Math.abs(k)]])
+    if (!isArr(s) || s.length !== 3 || typeof s[1] !== 'string' || !isNumber(s[1])) return s
+    const [op, x, v] = s, k = stepBy(s)
+    if (k == null) {
+      // (by a value no constant holds: `x + v` adds as `x += v` does, whatever v is; `v + x` only where v is a Number)
+      if (op !== '=' || !isArr(v) || v.length !== 3 || (v[0] !== '+' && v[0] !== '-')) return s
+      if (v[1] === x) return note(s, [v[0] + '=', x, v[2]])
+      return v[0] === '+' && v[2] === x && typeof v[1] === 'string' && isNumber(v[1]) ? note(s, ['+=', x, v[1]]) : s
+    }
+    if (k === 0 || !Number.isFinite(k)) return s
+    if (k === 1 || k === -1) return note(s, [k > 0 ? '++' : '--', x])
+    if (op === (k > 0 ? '+=' : '-=') && num(v) === Math.abs(k)) return s
+    return note(s, [k > 0 ? '+=' : '-=', x, [null, Math.abs(k)]])
   }
   const test = (c) => {
     if (!isArr(c)) return c
@@ -141,21 +159,21 @@ const forms = (isNumber, valueOf) => {
     if ((op === '&&' || op === '||') && c.length === 3) { c[1] = test(c[1]); c[2] = test(c[2]); return c }
     if (op === '!' && c.length === 2) {
       const x = c[1]
-      return isArr(x) && x.length === 3 && NEGATE.has(x[0]) && notNaN(x[1]) && notNaN(x[2]) ? test(noted(c, [NEGATE.get(x[0]), x[1], x[2]])) : c
+      return isArr(x) && x.length === 3 && NEGATE.has(x[0]) && notNaN(x[1]) && notNaN(x[2]) ? test(note(c, [NEGATE.get(x[0]), x[1], x[2]])) : c
     }
-    return c.length === 3 && MIRROR.has(op) && counter(c[2]) && !counter(c[1]) && !isReassigned(c[1], c[2]) ? noted(c, [MIRROR.get(op), c[2], c[1]]) : c
+    return c.length === 3 && MIRROR.has(op) && counter(c[2]) && !counter(c[1]) && !isReassigned(c[1], c[2]) ? note(c, [MIRROR.get(op), c[2], c[1]]) : c
   }
   return { step, test }
 }
 
 /** A test in the one form where `isNumber` holds its names Numbers, never NaN:
- *  the second caller's, a versioned copy whose guard holds them so
- *  (plan/integral-loops.js). Rewrites `c` in place where it can. */
+ *  a versioned copy whose guard holds them so (plan/integral-loops.js).
+ *  Rewrites `c` in place where it can. */
 export const normalTest = (c, isNumber, valueOf = () => null) => forms(isNumber, valueOf).test(c)
 
 /** Rewrite `node`, a statement tree, into the one loop form. */
-export function normalize(node, isNumber, valueOf = () => null) {
-  const { step, test } = forms(isNumber, valueOf)
+export function normalize(node, isNumber, valueOf = () => null, isReal = isNumber) {
+  const { step, test } = forms(isNumber, valueOf, isReal, collectAssignedNames(node, new Set()))
   // (a step's value unused: a postfix is its update)
   const steps = (s) => {
     if (!isArr(s) || s[0] !== ',') return step(s)
@@ -172,6 +190,7 @@ export function normalize(node, isNumber, valueOf = () => null) {
     const s = list[1], b = isArr(s) && s[0] === 'if' && s.length === 3 ? only(s[2]) : null
     if (!isArr(b) || b[0] !== 'break' || b.length !== 1) return null
     list.splice(1, 1)
+    rewrites++
     return s[1]
   }
   /** A `for` counting an integer up by one toward a constant: its test as `i < B`.
@@ -186,8 +205,8 @@ export function normalize(node, isNumber, valueOf = () => null) {
     if (!Number.isInteger(start) || B == null || !Number.isFinite(B) || Math.abs(B) >= 2 ** 52 ||
         !isArr(s) || s[0] !== '++' || s[1] !== i || isReassigned(body, i) || isReassigned(c[2], i) ||
         init.some(e => isArr(e) && e[0] === '=' && e[1] !== i && mentions(e[2], i))) return
-    if (c[0] === '<=') n[2] = noted(c, ['<', i, [null, Math.floor(B) + 1]])
-    else if (Number.isInteger(B) && start <= B) n[2] = noted(c, ['<', i, c[2]])
+    if (c[0] === '<=') n[2] = note(c, ['<', i, [null, Math.floor(B) + 1]])
+    else if (Number.isInteger(B) && start <= B) n[2] = note(c, ['<', i, c[2]])
   }
   const loop = (n) => {
     const [at, body] = n[0] === 'for' ? [2, 4] : [1, 2]
@@ -195,26 +214,27 @@ export function normalize(node, isNumber, valueOf = () => null) {
     if (n[at] != null) n[at] = test(n[at])
     if (n[0] === 'for') { visit(n[1]); n[3] = steps(n[3]); counted(n) }
     visit(n[at])
-    n[body] = step(n[body])
+    n[body] = stmt(n[body])
     visit(n[body])
   }
 
-  /** prepare's lowered do-while, `let F = true` then `while (F || c) { F = false; B }`
-   *  → { c, body: B }, else null. F is the flag the lowering minted: one the source
-   *  wrote itself may be read after its loop. */
-  const doLoop = (decl, w) => {
-    const d = isArr(decl) && decl[0] === 'let' && decl.length === 2 ? decl[1] : null
-    if (!isArr(d) || d[0] !== '=' || typeof d[1] !== 'string' || !DO_FLAG.test(d[1]) || truth(d[2]) !== true) return null
-    const F = d[1], t = isArr(w) && w[0] === 'while' && w.length === 3 ? w[1] : null
-    if (!isArr(t) || t[0] !== '||' || t.length !== 3 || t[1] !== F) return null
-    const list = isArr(w[2]) && w[2][0] === '{}' ? w[2][1] : w[2], s = isArr(list) && list[0] === ';' ? list[1] : null
-    if (!isArr(s) || s[0] !== '=' || s[1] !== F || truth(s[2]) !== false) return null
-    const rest = list.slice(2)
-    if (mentions(t[2], F) || rest.some(r => mentions(r, F))) return null
-    return { c: t[2], body: rest.length === 1 ? rest[0] : [';', ...rest] }
+  /** A statement in the one form: a step its normal step; a do-while (under its labels)
+   *  `while (c) B` where its test holds on entry over the literals `prev` declares, else
+   *  `let F = true; while (F || c) { F = false; B }`, a flag no stage reads as one: the
+   *  analyses take it for the loop it is (a countdown `c` in its arm keeps its range,
+   *  analyze-scans.js stampCountdowns). A `continue` reaches the test of either. */
+  const stmt = (s, prev) => {
+    let holder = null, d = s
+    while (isArr(d) && d[0] === 'label' && d.length === 3) { holder = d; d = d[2] }
+    if (!isArr(d) || d[0] !== 'do' || d.length !== 3) return step(s)
+    rewrites++
+    const [, body, c] = d, F = `${T}do${doFlags++}`
+    const low = prev !== undefined && holds(c, prev) ? ['while', c, body]
+      : [';', ['let', ['=', F, [null, true]]], ['while', ['||', F, c], ['{}', [';', ['=', F, [null, false]], body]]]]
+    if (!holder) return low
+    holder[2] = low
+    return s
   }
-  /** The do-while a statement is the whole of, `[';', let F, while]`, else null. */
-  const doOf = (s) => { s = only(s); return isArr(s) && s[0] === ';' && s.length === 3 ? doLoop(s[1], s[2]) : null }
   /** The test holds over the literals `prev` declares and the constants. */
   const holds = (c, prev) => {
     if (!isArr(c) || c.length !== 3 || !(RELATIONAL_OPS.has(c[0]) || EQUALITY_OPS.has(c[0]))) return false
@@ -235,16 +255,10 @@ export function normalize(node, isNumber, valueOf = () => null) {
   }
   const block = (list) => {
     for (let k = 1; k < list.length; k++) {
-      const s = list[k], prev = k > 1 ? list[k - 1] : null
-      // (its two statements in the list, or a statement of them alone, strict prepare's, or a label's)
-      const d = doLoop(s, list[k + 1]), [p, i] = isArr(s) && s[0] === 'label' ? [s, 2] : [list, k], l = d ? null : doOf(p[i])
-      if (d && holds(d.c, prev)) list.splice(k, 2, ['while', d.c, d.body])
-      else if (l && holds(l.c, prev)) p[i] = ['while', l.c, l.body]
-      else if (isArr(s) && s[0] === 'if' && s.length === 3 && !hasArrow(s[1])) {
-        const g = doOf(s[2])
-        if (g && same(g.c, s[1])) list[k] = noted(s, ['while', g.c, g.body])
-      }
-      list[k] = step(list[k])
+      // (a do-while the whole of `if (c)` with the same test: it holds on entry)
+      const s = list[k], g = isArr(s) && s[0] === 'if' && s.length === 3 && !hasArrow(s[1]) ? only(s[2]) : null
+      if (isArr(g) && g[0] === 'do' && g.length === 3 && same(g[2], s[1])) list[k] = note(s, ['while', g[2], g[1]])
+      list[k] = stmt(list[k], k > 1 ? list[k - 1] : null)
       visit(list[k])
     }
   }
@@ -254,31 +268,43 @@ export function normalize(node, isNumber, valueOf = () => null) {
     const op = n[0]
     if (op === ';') return block(n)
     if (op === 'while' && n.length === 3 || op === 'for' && n.length === 5) return loop(n)
-    if (op === 'if') { n[2] = step(n[2]); if (n.length > 3) n[3] = step(n[3]) }
-    else if (op === '{}' || op === 'label') n[n.length - 1] = step(n[n.length - 1])
+    if (op === 'if') { n[2] = stmt(n[2]); if (n.length > 3) n[3] = stmt(n[3]) }
+    else if (op === '{}' || op === 'label') n[n.length - 1] = stmt(n[n.length - 1])
+    // (a do-while in any other place a statement stands: a case's, a catch's)
+    else for (let i = 1; i < n.length; i++) if (isArr(n[i]) && (n[i][0] === 'do' || n[i][0] === 'label')) n[i] = stmt(n[i])
     for (let i = 1; i < n.length; i++) visit(n[i])
   }
   visit(node)
   return node
 }
 
-/** The front end's normalization: every function body and module init, before
- *  anything reads a loop. Kinds are unknown here, so a Number is one by syntax
- *  (`numberNames`), and a module's constant one declared `const` from a literal. */
-export function normalizeProgram(ast) {
-  const inits = [';', ast, ...(ctx.module.moduleInits ?? [])], consts = moduleConstants(inits)
-  const constOf = (x) => consts.get(x) ?? null, isConst = (x) => consts.has(x)
-  const written = new Set()
+/** Every function body and module init in the one loop form: before the summary
+ *  (src/front.js), over the Numbers of the syntax (`numberNames`) and the module's
+ *  constants, and once it knows kinds (src/compile/index.js, `summary` given), over
+ *  a local it holds a Number too, whatever it was declared from (a parameter, a
+ *  call, another name), where no arrow but its own writes it. A kind does not rule
+ *  out NaN: a negated test keeps the syntactic facts. → { ast: the module's
+ *  statement, replaced where it was a do-while, changed: whether a tree changed } */
+export function normalizeProgram(ast, summary = null) {
+  if (!summary) doFlags = 0
+  const was = rewrites, inits = [';', ast, ...(ctx.module.moduleInits ?? [])], consts = moduleConstants(inits)
+  const constOf = (x) => consts.get(x) ?? null, written = new Set()
+  const each = (body, params, scope, own = () => true) => {
+    const { isNumber, valueOf, homeOf } = numberNames(body, constOf, params)
+    const real = (x) => isNumber(x) && own(x) || consts.has(x)
+    const kind = (x, at = homeOf(x)) => { const k = at !== undefined && own(x) ? summary.at(at?.[2] ?? scope).kindOfExpr(x) : 0; return tagOf(k) === K.NUMBER && !(k & NULL_BITS) }
+    normalize(body, summary ? (x) => real(x) || kind(x) : real, (x) => (own(x) ? valueOf(x) : null) ?? constOf(x), real)
+  }
   for (const f of ctx.funcs.list) {
     if (f.raw || !isArr(f.body)) continue
     collectAssignedNames(f.body, written)
-    const { isNumber, valueOf } = numberNames(f.body, constOf)
-    normalize(f.body, x => isNumber(x) || isConst(x), x => valueOf(x) ?? constOf(x))
+    each(f.body, (f.sig?.params ?? []).map(p => p.name), f.sig)
   }
-  // (a module's name any function writes, or the host, is no Number by the module's syntax)
-  const { isNumber, valueOf } = numberNames(inits, constOf)
-  const own = (x) => isNumber(x) && !written.has(x) && ctx.funcs.exports?.[x] == null
-  normalize(inits, x => own(x) || isConst(x), x => (own(x) ? valueOf(x) : null) ?? constOf(x))
+  // (a module's name a function writes, or the host, is no Number of the module's own)
+  each(inits, [], '', (x) => !written.has(x) && ctx.funcs.exports?.[x] == null)
+  const mods = ctx.module.moduleInits ?? []
+  for (let i = 0; i < mods.length; i++) mods[i] = inits[i + 2]
+  return { ast: inits[1], changed: rewrites !== was }
 }
 
 /** A module's constants: the names its statements declare `const` from finite

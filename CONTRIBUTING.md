@@ -5889,8 +5889,13 @@ so in its commit.
 
 - One lowering pipeline: parse → jzify → prepare → normalize (one loop form,
   `src/normalize.js`: a Number's step is `++i`, a counter tests on the left, a
-  leading break and a do-while true on entry are a `while`'s test) → summary (a fixpoint solver
-  behind a query view) → plan sweeps → narrow → emit → optimize → link. Watr
+  leading break is a `while`'s test, and `do…while` is lowered there alone, a
+  `while` where its test holds on entry, else `let F = true; while (F || c) {
+  F = false; B }`) → summary (a fixpoint solver behind a query view) → normalize
+  again over the locals the summary holds Numbers, whatever they were declared
+  from → plan sweeps → narrow → emit → optimize → link. No stage past normalize
+  sees a `do` or reads a flag as a do-while's, and the loop readers take one
+  spelling of a step. Watr
   owns generic propagation, folding, LICM, local-slot allocation and the final
   optimizer. There is no second IR layer.
 - The summary is the authority for shapes: construction identity, side

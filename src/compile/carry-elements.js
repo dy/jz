@@ -87,12 +87,11 @@ const writesNames = (n, names) => some(n, x => MUTATE_OPS.has(x[0]) && names.has
   || [...collectAllBoundNames(n)].some(x => names.has(x))
 const calls = (n) => some(n, x => x[0] === '()' || x[0] === '?.()' || x[0] === 'new' || x[0] === '=>', { skipArrow: false })
 
-/** The constant step `step` moves `q` by (`q++`, `++q`, `q += 2`, `q = q + 2`), or null. */
+/** The constant step `step` moves `q` by (`++q`, `q += 2`: a Number's every spelling of one, src/normalize.js), or null. */
 const stepBy = (step, q) => {
   if (!isArr(step) || step[1] !== q) return null
   if (step[0] === '++' && step.length === 2) return 1
   if (step[0] === '+=' && step.length === 3) return litOf(step[2])
-  if (step[0] === '=' && isArr(step[2]) && step[2][0] === '+' && step[2][1] === q) return litOf(step[2][2])
   return null
 }
 

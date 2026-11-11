@@ -5,7 +5,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { levels } from './_matrix.js'
-import { oracle, jz } from './util.js'
+import { oracle, jz, wat } from './util.js'
 import { normalize, numberNames } from '../src/normalize.js'
 
 const lit = (v) => [null, v]
@@ -85,22 +85,31 @@ test('normalize: an integer counted up by one toward a constant tests `i < B`', 
   ]) is(t(init, c, step, body), show(c), why)
 })
 
-test('normalize: a do-while whose test holds on entry is a while', () => {
-  const lowered = (c, body, F = '\uE002do0') => [['let', ['=', F, lit(true)]], ['while', ['||', F, c], ['{}', [';', ['=', F, lit(false)], body]]]]
-  const guarded = norm(fn(['if', ['<', 'i', 'n'], [';', ...lowered(['<', 'i', 'n'], [';', 'x', ['++', 'i']])]]))
-  is(show(guarded[1][2]), show(['while', ['<', 'i', 'n'], [';', 'x', ['++', 'i']]]), 'the whole of `if (c)`, the same test')
-  const entry = norm(fn(...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])), x => x === 'N' ? 4 : null)
-  is(show(entry[1][2]), show(['while', ['<', 'i', 'N'], [';', 'x', ['++', 'i']]]), 'true over the literal declared before it')
-  const nested = norm(fn([';', ...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])]), x => x === 'N' ? 4 : null)
-  is(show(nested[1][2]), show(['while', ['<', 'i', 'N'], [';', 'x', ['++', 'i']]]), 'a statement of the two, as strict prepare writes it')
-  const later = norm(fn(...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])), x => x === 'N' ? 0 : null)
-  is(later[1][2][0], 'let', 'false on entry: the body runs once, as written')
-  const other = norm(fn(['if', ['<', 'i', 'm'], [';', ...lowered(['<', 'i', 'n'], 'x')]]))
-  is(other[1][2][0], 'if', 'another test')
-  const own = norm(fn(...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']], 'go'), ['return', 'go']), x => x === 'N' ? 4 : null)
-  is(own[1][2][0], 'let', 'a flag the source wrote: it may be read after the loop, the loop as written')
-  const written = norm(['{}', [';', ['let', ['=', 'i', lit(0)], ['=', 'j', [',', ['=', 'i', 'v'], lit(0)]]], ...lowered(['<', 'i', 'N'], [';', 'x', ['++', 'i']])]], x => x === 'N' ? 4 : null)
-  is(written[1][2][0], 'let', 'a declaration after the literal may write it: no value on entry')
+test('normalize: a do-while is a while where its test holds on entry, else a flag loop', () => {
+  const N = (v) => (x) => x === 'N' ? v : null, body = () => [';', 'x', ['++', 'i']]
+  const guarded = norm(fn(['if', ['<', 'i', 'n'], ['do', body(), ['<', 'i', 'n']]]))
+  is(show(guarded[1][2]), show(['while', ['<', 'i', 'n'], body()]), 'the whole of `if (c)`, the same test')
+  const entry = norm(fn(['do', body(), ['<', 'i', 'N']]), N(4))
+  is(show(entry[1][2]), show(['while', ['<', 'i', 'N'], body()]), 'true over the literal declared before it')
+  const labeled = norm(fn(['label', 'L', ['do', body(), ['<', 'i', 'N']]]), N(4))
+  is(show(labeled[1][2]), show(['label', 'L', ['while', ['<', 'i', 'N'], body()]]), 'under its label: a continue of it reaches the test of either')
+  const later = norm(fn(['do', body(), ['<', 'i', 'N']]), N(0))[1][2], F = later[1]?.[1]?.[1]
+  is(show(later), show([';', ['let', ['=', F, lit(true)]], ['while', ['||', F, ['<', 'i', 'N']], ['{}', [';', ['=', F, lit(false)], body()]]]]), 'false on entry: the body runs once, then the test')
+  const other = norm(fn(['if', ['<', 'i', 'm'], ['do', 'x', ['<', 'i', 'n']]]))
+  is(other[1][2][2][0], ';', 'another test: the guard stays')
+  const written = norm(['{}', [';', ['let', ['=', 'i', lit(0)], ['=', 'j', [',', ['=', 'i', 'v'], lit(0)]]], ['do', body(), ['<', 'i', 'N']]]], N(4))
+  is(written[1][2][0], ';', 'a declaration after the literal may write it: no value on entry')
+})
+
+test('normalize: once kinds are known, a counter declared from a parameter is in the one form too', () => {
+  const src = (loop) => `const a = new Float64Array(64)\nexport let f = (k, n, d) => { let s = 0; ${loop} s += a[i]; return s }`
+  for (const optimize of [2, 'speed']) for (const [canon, spellings] of [
+    ['for (let i = k; i < n; ++i)', ['for (let i = k; n > i; i = 1 + i)', 'for (let i = k; i < n; i = i + 1)', 'for (let i = k; n > i; i -= -1)', 'for (let i = k; i < n; i = i - -1)']],
+    ['for (let i = k; i < n; i += d)', ['for (let i = k; i < n; i = i + d)', 'for (let i = k; n > i; i = d + i)']],
+  ]) {
+    const want = wat(src(canon), { optimize })
+    for (const s of spellings) ok(wat(src(s), { optimize }) === want, `${s} compiles as ${canon} at ${optimize}`)
+  }
 })
 
 // Programs on the edges, each against Node at every level.
@@ -121,6 +130,12 @@ const CASES = [
   // the counter written between its literal and the loop
   ['export let f = (n) => { let s = 0; let i = 0, j = (i = n, 0); do { s += 1; i++ } while (i < 3); return s * 100 + i + j }', [9, 0]],
   ['export let f = (n) => { let s = 0, i = 0; L: do { i++; if (i % 3 === 0) continue L; s += i } while (i < 9); return s + n }', [0]],
+  // a do-while its test may fail on entry: the body once, a continue to the test, a labeled one from a nested loop, a break and a return
+  ['export let f = (n) => { let s = 0, i = n; L: do { i++; for (let j = 0; j < 3; j++) { if (j === i) continue L; s += j } if (i === 5) continue; if (s > 40) break; if (i === 7) return -s } while (i < 6); return s * 100 + i }', [0, 3, 9, NaN, 2.5]],
+  ['let S = 0, I = 9\ndo { S += I; I++ } while (I < 4)\nexport let f = (n) => S * 100 + I + n', [0]],
+  // a counter from a parameter, a Number of the summary's, of every value; and one a helper is handed a string and a number for
+  ['export let f = (n) => { let s = 0; for (let i = n - 3; n > i; i = 1 + i) s += i; let j = n; while (j < n + 2) { s += j; j -= -1 } return s }', [5, 2.5, NaN, -0, 2 ** 52]],
+  ['const count = (a, b) => { let r = 0; for (let i = a; b > i; i += 1) { r += 1; if (r > 40) break } return r }\nexport let f = (n) => count(String(n), 5) + count(n, 5) * 100', [0, 3, 2.5]],
   // a counter a closure steps is no Number by syntax
   ['export let f = (n) => { let i = 0, s = 0; const bump = () => { i += 2 }; for (; i < n; i += 1) { s++; if (s % 3 === 0) bump() } return s * 1000 + i }', [10, 11]],
   ['export let f = (n) => { let s = 0; for (let i = -0; i < 2; i -= -1) s += 1 / i; return s + n }', [0]],

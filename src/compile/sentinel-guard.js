@@ -82,15 +82,13 @@ const cursorIndex = (e) => {
   return null
 }
 
-/** The constant step a node moves `c` by (`c++`, `--c`, `c += 2`, `c = c - 1`), or null. */
+/** The constant step a node moves `c` by (`c++`, `--c`, `c += 2`, `c -= 2`: a Number's
+ *  every spelling of one, src/normalize.js), or null. */
 const stepOf = (s, c) => {
   if (!isArr(s) || s[1] !== c) return null
   if (s[0] === '++') return 1
   if (s[0] === '--') return -1
   if (s[0] === '+=' || s[0] === '-=') { const k = intLiteralValue(s[2]); return k == null ? null : s[0] === '+=' ? k : -k }
-  if (s[0] === '=' && isArr(s[2]) && (s[2][0] === '+' || s[2][0] === '-') && s[2][1] === c) {
-    const k = intLiteralValue(s[2][2]); return k == null ? null : s[2][0] === '+' ? k : -k
-  }
   return null
 }
 
