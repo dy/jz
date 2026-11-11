@@ -238,6 +238,12 @@ export const BINDING_USE_MISS = 9
 export const BINDING_USE_SELF = 10
 const SELF_WRITE = [USE.REASSIGN]
 SELF_WRITE[BINDING_USE_SELF] = true
+// An assignment read as a number (`r = (p = x) + 1`, `return (p = x)`,
+// `A[p = x]`): a read of the number assigned, whatever its target keeps of it.
+// Not one whose value a statement discards or a word operator takes.
+export const BINDING_USE_READ = 11
+const READ_WRITE = [USE.REASSIGN]
+READ_WRITE[BINDING_USE_READ] = true
 const SIMPLE_USE = Array.from({ length: 15 }, (_, kind) => [kind])
 // The interned records below are read-only and hold primitives alone, so
 // equal ones are shared as well: a member read or write is one record per
@@ -397,14 +403,16 @@ function collectBindingUses(body, trackNames, bindingUses) {
   // child (let-rhs, assign-rhs, call/index args, closure body, …) must route
   // through here or its use goes unrecorded (a latent miscompile: the binding
   // looks unused and an optimization fires unsoundly).
-  const val = (child, inClosure, discarded = false) => {
+  // `unread`: nothing reads the child's value as a number (a statement
+  // discards it, a word operator takes its word).
+  const val = (child, inClosure, discarded = false, unread = discarded) => {
     if (typeof child === 'string') use(child, inClosure ? USE.CAPTURE : USE.BARE)
-    else walk(child, inClosure, discarded)
+    else walk(child, inClosure, discarded, unread)
   }
 
   // Classify the target of an assignment-like node (`=`, compound, `++`, `--`).
-  const assignTarget = (t, compound) => {
-    if (typeof t === 'string') { use(t, USE.REASSIGN); return }
+  const assignTarget = (t, compound, read = false) => {
+    if (typeof t === 'string') { use(t, USE.REASSIGN, read ? READ_WRITE : undefined); return }
     if (!Array.isArray(t)) return
     const o = t[0]
     if ((o === '.' || o === '?.') && typeof t[1] === 'string') {
@@ -420,7 +428,7 @@ function collectBindingUses(body, trackNames, bindingUses) {
     walk(t)                                     // some other LHS shape — generic
   }
 
-  function walk(node, inClosure, discarded = false) {
+  function walk(node, inClosure, discarded = false, unread = discarded) {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (typeof op !== 'string') return          // literal node `[null, value]`
@@ -463,6 +471,11 @@ function collectBindingUses(body, trackNames, bindingUses) {
       underGuards(node[2], () => { val(node[3], false, true); val(node[4], false, true) })
       return
     }
+    // (a sequence nothing reads: `i++, p = x` in a loop's step. One that is read may be an argument list.)
+    if (op === ',' && unread) {
+      for (let i = 1; i < node.length; i++) val(node[i], false, false, true)
+      return
+    }
 
     // === precise classification (outside any closure) ===
     if (ASSIGN_OPS.has(op)) {
@@ -476,7 +489,7 @@ function collectBindingUses(body, trackNames, bindingUses) {
         } else val(rhs)
         return
       }
-      assignTarget(node[1], op !== '=')
+      assignTarget(node[1], op !== '=', op === '=' && !unread)
       if (op === '=' && discarded && typeof node[2] === 'string' && (typeof node[1] === 'string' || node[1]?.[0] === '[]')) {
         use(node[2], USE.BARE, [USE.BARE, node[1]])
       } else val(node[2])
@@ -550,7 +563,7 @@ function collectBindingUses(body, trackNames, bindingUses) {
       for (let i = 1; i < node.length; i++) {
         const c = node[i]
         if (typeof c === 'string') use(c, USE.WORD)
-        else walk(c)
+        else walk(c, false, false, true)
       }
       return
     }
@@ -583,13 +596,14 @@ function collectBindingUses(body, trackNames, bindingUses) {
       if (typeof c === 'string') use(c, USE.BOOL_TEST, boolTest(op))
       else walk(c)
       // the first arm (then, the loop body, the true value) runs where the test held
-      underGuards(c, () => val(node[2], false, op !== '?:'))
-      for (let i = 3; i < node.length; i++) val(node[i], false, op !== '?:')
+      // (a conditional's arm is read as the conditional is)
+      underGuards(c, () => val(node[2], false, op !== '?:', op !== '?:' || unread))
+      for (let i = 3; i < node.length; i++) val(node[i], false, op !== '?:', op !== '?:' || unread)
       return
     }
     if (op === '&&' && node.length === 3) {
       val(node[1])
-      underGuards(node[1], () => val(node[2]))
+      underGuards(node[1], () => val(node[2], false, false, unread))
       return
     }
 
@@ -1134,7 +1148,8 @@ export function narrowWordLocals(body, locals, isNumber, wordStore) {
     let reads = 0
     for (const u of s[BINDING_USE_USES]) {
       const k = u[BINDING_USE_KIND]
-      if (k === USE.REASSIGN) continue
+      // (an assignment read as a number reads the number, which the word is not)
+      if (k === USE.REASSIGN) { if (u[BINDING_USE_READ] === true) { reads = 0; break } continue }
       if (k === USE.BARE && typeof u[BINDING_USE_STORE] === 'string') {
         const target = u[BINDING_USE_STORE]
         let sources = copies?.get(target)

@@ -2046,3 +2046,28 @@ test('audit: a literal written through a string key is no shared instance', () =
     for (const v of [2, 0.5, 2, 5]) is(got.f(v), host.f(v), `${src} for ${v} at ${optimize}`)
   }
 })
+
+// A local every read of which takes its word keeps the word. An assignment read
+// as a number is no such read: its value is the number assigned (`A[p = 0.5]`
+// is no element, `return (p = 2 ** 32)` is 2^32), which the word is not.
+test('audit: an assignment read as a number is the number, whatever its target keeps', () => {
+  const cases = [
+    `export let f = (v) => { let p = 2; const r = (p = v * 1) + 1; return (p & 3) + r * 8 }`,
+    `export let f = (v) => { let p = 2; if (v > 5) return (p = v * 2); return p & 3 }`,
+    `export let f = (v) => { let p = 2; const c = (p = v * 1) > 2.5 ? 1 : 0; return (p & 3) * 10 + c }`,
+    `const g = (x) => x * 2\nexport let f = (v) => { let p = 2; const r = g(p = v * 1); return (p & 3) + r * 8 }`,
+    `export let f = (v) => { let p = 2, t = 0; t = p = v * 1; return (p & 3) + t * 8 }`,
+    `const A = [10, 20, 30]\nexport let f = (v) => { let p = 2; const r = A[p = v * 1]; return (p & 3) + (r === undefined ? -1 : r) * 8 }`,
+    `export let f = (v) => { let p = 2; const r = (p = v * 1) ? 1 : 0; return (p & 3) * 10 + r }`,
+    `export let f = (v) => { let p = 2; const q = (p = Math.floor(v)) + 1; if (v > -9) p = q; return p & 3 }`,
+    `export let f = (v) => { const a = [1, 2]; const q = (a[1] = Math.floor(v)) + 1; a[1] = q; return a[1] & 3 }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 1, 2, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const v of [2, 0.5, -1.5, NaN, Infinity, 2147483648, 4294967297.5, 7]) is(got.f(v), host.f(v), `${src} for ${v} at ${optimize}`)
+  }
+  if (onKernel()) return
+  // (a word whose assignments are statements, or read by a word reader, is still a word)
+  const wat = compile(`export let f = (v) => { let h = 2166136261; h = Math.imul(h ^ (v | 0), 16777619); const t = (h = h ^ (h >>> 13)) | 0; return (h ^ t) >>> 0 }`, { optimize: 'speed', wat: true })
+  ok(!/\(local \$h\w* f64\)/.test(wat), 'a hash local stays a word')
+})
