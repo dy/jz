@@ -49,7 +49,7 @@ export function inferIntegralParams(callSites, callerCtx, addressTaken, ast) {
   // The hypothesis is the stamp itself: each walk reads it as the parameter's number.
   for (const [func, ks] of cand) for (const k of ks) func.sig.params[k].intLevel = 1
   const dirty = new Set()
-  const retract = (func, k) => { if (!cand.get(func)?.delete(k)) return; delete func.sig.params[k].intLevel; dirty.add(func) }
+  const retract = (func, k) => { if (!cand.get(func)?.delete(k)) return; func.sig.params[k].intLevel = 0; dirty.add(func) }
   // Each caller of a candidate: the innermost flow its call runs in.
   const callers = new Map()
   for (const cs of callSites) {
@@ -107,5 +107,5 @@ export function inferIntegralParams(callSites, callerCtx, addressTaken, ast) {
       for (const k of [...ks]) if (start.has(func.sig.params[k].name) && !held.has(func.sig.params[k].name)) retract(func, k)
     }
   }
-  for (const [func, ks] of cand) if (!reached.has(func)) for (const k of ks) delete func.sig.params[k].intLevel
+  for (const [func, ks] of cand) if (!reached.has(func)) for (const k of ks) func.sig.params[k].intLevel = 0
 }
