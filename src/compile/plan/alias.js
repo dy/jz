@@ -258,7 +258,7 @@ const aliasesIn = (f) => {
     const l = defs.get(b)
     if (!l?.length) continue
     const a = sourceOf(l[0])
-    if (typeof a === 'string' ? a === b || !l.every(v => sourceOf(v) === a) || !stable(a) : !decider(a) || !l.every(v => decider(v) && JSON.stringify(v) === JSON.stringify(a))) continue
+    if (typeof a === 'string' ? a === b || !l.every(v => sourceOf(v) === a) || !stable(a) : !decider(a) || !l.every(v => decider(v) && v[0] === a[0] && v[1] === a[1])) continue
     if (bare.has(b) && !(assigned ??= definitelyAssigned(body)).has(b)) continue
     to.set(b, a)
   }

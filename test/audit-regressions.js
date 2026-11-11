@@ -1882,3 +1882,19 @@ test('audit: a null read as a number is 0 in a comparison', () => {
     for (const n of [0, 3, 7]) is(got.f(n), host.f(n), `${src} for ${n} at ${optimize}`)
   }
 })
+
+// null and undefined are two values. A binding whose every definition is one
+// deciding value reads as it, and the definitions were compared by their JSON
+// text, which writes both as null: `x = undefined` after `let x = null` was lost.
+test('audit: a binding written null and undefined holds either', () => {
+  const cases = [
+    `export let f = (k) => { let x = null; if (k > 5) x = undefined; return x === undefined ? 1 : 0 }`,
+    `export let f = (k) => { let x = undefined; if (k > 5) x = null; return (x === undefined ? 1 : 0) + (x === null ? 10 : 0) }`,
+    `export let f = (k) => { let x = null; if (k > 5) x = undefined; if (k > 8) x = k; return x + 1 }`,
+    `export let f = (k) => { let x = null; if (k > 5) x = undefined; return (x == null ? 1 : 0) + (Object.is(x, null) ? 10 : 0) }`,
+  ]
+  for (const src of cases) for (const optimize of levels(0, 2, 'speed')) {
+    const host = oracle(src), got = jz(src, { optimize }).exports
+    for (const k of [0, 6, 9]) is(got.f(k), host.f(k), `${src} for ${k} at ${optimize}`)
+  }
+})
